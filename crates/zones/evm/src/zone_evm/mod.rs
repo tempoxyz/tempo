@@ -69,8 +69,8 @@ impl<L1: L1StorageReader> ZoneTxHandler<L1> {
 
         // Mirrored registry values depend on the anchor, but the accepted cache is keyed by slot
         // only. Keep its entries only while they were loaded at this transaction's anchor.
-        // Anchor-changing transactions read at a new anchor without selecting it first, so a
-        // cache hit would hide the change: they always start from an empty registry cache.
+        // Anchor-changing transactions switch anchors mid-transaction, and a cache hit skips
+        // `L1OverlayDB`, which would hide the switch: they always start from an empty cache.
         let changes_anchor = matches!(
             ZoneTransactionKind::classify(request.envelope.transaction()),
             ZoneTransactionKind::AdvanceTempo | ZoneTransactionKind::AdvanceTempoHeaders
