@@ -48,12 +48,23 @@ pub enum ConfigCommitmentWriteGas {
 }
 
 impl ConfigCommitmentWriteGas {
-    fn cost(self, previous: B256) -> Result<u64> {
+    /// Gas charged before the previous commitment is read: the cheaper of the two writes.
+    fn static_cost(self) -> u64 {
+        match self {
+            Self::Intrinsic => 0,
+            Self::Precompile => CONFIG_COMMITMENT_UPDATE_GAS,
+        }
+    }
+
+    /// Gas charged once the previous commitment is known, on top of [`Self::static_cost`].
+    fn dynamic_cost(self, previous: B256) -> Result<u64> {
         match self {
             Self::Intrinsic if previous.is_zero() => Ok(0),
             Self::Intrinsic => Err(TempoPrecompileError::InvalidConfigCommitmentWrite),
-            Self::Precompile if previous.is_zero() => Ok(CONFIG_COMMITMENT_REGISTRATION_GAS),
-            Self::Precompile => Ok(CONFIG_COMMITMENT_UPDATE_GAS),
+            Self::Precompile if previous.is_zero() => {
+                Ok(CONFIG_COMMITMENT_REGISTRATION_GAS - CONFIG_COMMITMENT_UPDATE_GAS)
+            }
+            Self::Precompile => Ok(0),
         }
     }
 }
