@@ -4,7 +4,8 @@ use std::{net::SocketAddr, num::NonZeroUsize, time::Duration};
 
 /// Default cap on simulation requests (`eth_call`, `eth_estimateGas`, `eth_fillTransaction`) the
 /// redacted RPC runs at once.
-pub const DEFAULT_MAX_CONCURRENT_SIMULATIONS: NonZeroUsize = NonZeroUsize::new(16).unwrap();
+pub const DEFAULT_MAX_CONCURRENT_SIMULATIONS: NonZeroUsize =
+    NonZeroUsize::new(16).expect("value is not zero");
 
 /// Listener, authentication, and zone metadata configuration for the redacted RPC server.
 ///
