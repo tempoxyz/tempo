@@ -579,7 +579,7 @@ where
         if !self.disable_fee_amm_check {
             let fee = transaction.fee_token_cost();
             match self.amm_liquidity_cache.has_enough_liquidity(
-                fee_token,
+                fee_token.address(),
                 fee,
                 evm.overlay_db_mut(),
             ) {
@@ -590,7 +590,7 @@ where
                         InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(
                             HandlerError::external(TempoInvalidTransaction::CollectFeePreTx(
                                 FeePaymentError::InsufficientAmmLiquidity {
-                                    user_token: Some(fee_token),
+                                    user_token: Some(fee_token.address()),
                                     validator_token: None,
                                     fee,
                                 },
@@ -913,7 +913,7 @@ mod tests {
         TempoChainSpec,
         spec::{MODERATO, TEMPO_T0_BASE_FEE, TEMPO_T1_TX_GAS_LIMIT_CAP},
     };
-    use tempo_evm::{TempoBlockEnv, TempoEvmExt, TempoTxEnv, build_tempo_evm};
+    use tempo_evm::{ResolvedFeeToken, TempoBlockEnv, TempoEvmExt, TempoTxEnv, build_tempo_evm};
     use tempo_precompiles::{
         PATH_USD_ADDRESS,
         tip20::{TIP20Token, slots as tip20_slots},
@@ -3369,7 +3369,8 @@ mod tests {
             let mut registry = TxRegistry::new();
             registry.register(2, |tx: &TempoTxEnv| Some(tx), handler(
                 move |request: &mut TxRequest<'_, '_, TempoEvmTypes, TempoTxEnv>| -> HandlerResult<()> {
-                    request.host.ext_mut().resolved_fee_token = Some(PATH_USD_ADDRESS);
+                    request.host.ext_mut().resolved_fee_token =
+                        Some(ResolvedFeeToken::Selected(PATH_USD_ADDRESS));
                     request.host.ext_mut().key_expiry = Some(123);
                     Err(error.clone())
                 },

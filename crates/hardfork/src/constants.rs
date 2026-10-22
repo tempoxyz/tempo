@@ -241,6 +241,9 @@ pub mod mainnet {
 
     /// T12 activation timestamp (Oct 13th 2026 14:00 UTC).
     pub const MAINNET_T12_TIMESTAMP: u64 = 1_791_900_000;
+
+    /// T13 activation timestamp (Nov 3rd 2026 15:00 UTC).
+    pub const MAINNET_T13_TIMESTAMP: u64 = 1_793_718_000;
 }
 
 pub mod moderato {
@@ -311,4 +314,7 @@ pub mod moderato {
 
     /// T12 activation timestamp (Oct 8th 2026 14:00 UTC).
     pub const MODERATO_T12_TIMESTAMP: u64 = 1_791_468_000;
+
+    /// T13 activation timestamp (Oct 29th 2026 15:00 UTC).
+    pub const MODERATO_T13_TIMESTAMP: u64 = 1_793_286_000;
 }

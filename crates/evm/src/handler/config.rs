@@ -1,8 +1,9 @@
 //! EVM2 transaction handler plumbing.
 
 use crate::{
-    FeePaymentError, ProtocolFeeContext, ProtocolFeeManager, SYSTEM_CALL_GAS_LIMIT, TempoEvmTx,
-    TempoFeeManager, TempoInvalidTransaction, TempoStateAccess, TempoTxEnv,
+    FeePaymentError, ProtocolFeeContext, ProtocolFeeManager, ResolvedFeeToken,
+    SYSTEM_CALL_GAS_LIMIT, TempoEvmTx, TempoFeeManager, TempoInvalidTransaction, TempoStateAccess,
+    TempoTxEnv,
 };
 use alloy_consensus::{Transaction, TxEip1559, TxEip2930, TxLegacy};
 use alloy_primitives::{Address, TxKind, U256};
@@ -102,7 +103,7 @@ pub struct TempoEvmExt {
     /// Whether transaction-pool execution may skip the fee AMM liquidity check.
     pub skip_liquidity_check: bool,
     /// Fee token resolved for the most recently handled transaction.
-    pub resolved_fee_token: Option<Address>,
+    pub resolved_fee_token: Option<ResolvedFeeToken>,
     /// Access-key expiry resolved for the most recently handled transaction.
     pub key_expiry: Option<u64>,
 }
@@ -259,9 +260,13 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
         let fee_payer = envelope
             .fee_payer()
             .map_err(|_| TempoInvalidTransaction::InvalidFeePayerSignature)?;
-        let fee_token = host.ext().resolved_fee_token.ok_or_else(|| {
-            HandlerError::Fatal("fee token was not resolved before settlement".into())
-        })?;
+        let fee_token = host
+            .ext()
+            .resolved_fee_token
+            .ok_or_else(|| {
+                HandlerError::Fatal("fee token was not resolved before settlement".into())
+            })?
+            .address();
         let fee_manager = host.ext().fee_manager.clone();
         let beneficiary = host.block().beneficiary;
         let validator_fee = if actual_spending.is_zero() && refund.is_zero() {
@@ -311,7 +316,7 @@ impl TempoHandlerHooks {
         })?;
 
         let fee_manager = host.ext().fee_manager.clone();
-        let fee_token = fee_manager
+        let resolved_fee_token = fee_manager
             .get_fee_token(host, envelope, fee_payer, max_fee, spec)
             .map_err(|error| match error {
                 TempoPrecompileError::TIP20(TIP20Error::InsufficientBalance(error)) => {
@@ -323,7 +328,8 @@ impl TempoHandlerHooks {
                 }
                 error => HandlerError::from(error),
             })?;
-        host.ext_mut().resolved_fee_token = Some(fee_token);
+        host.ext_mut().resolved_fee_token = Some(resolved_fee_token);
+        let fee_token = resolved_fee_token.address();
         if !fee_token.is_tip20() {
             return Err(TempoInvalidTransaction::FeeTokenNotTip20 { address: fee_token }.into());
         }

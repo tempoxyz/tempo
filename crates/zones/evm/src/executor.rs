@@ -6,11 +6,16 @@
 
 use alloy_consensus::TxReceipt as _;
 use alloy_eip7928::{BlockAccessIndex, BlockAccessList};
+use alloy_eips::eip2935::HISTORY_STORAGE_ADDRESS;
 use alloy_sol_types::{SolCall as _, SolEvent as _};
-use evm2::{TxResultWithState, evm::Bal};
+use evm2::{
+    SpecId, TxResultWithState,
+    evm::{Bal, SystemTx},
+};
+use reth_chainspec::EthereumHardforks as _;
 use reth_evm::{
     BlockExecutionError, BlockExecutionOutput, BlockExecutor, BlockTransactionResult,
-    BlockValidationError, ExecutorTx, GasOutput, RecoveredTx,
+    BlockValidationError, ExecutorTx, GasOutput, RecoveredTx, execute::map_handler_error,
 };
 use reth_evm_ethereum::{EthBlockExecutor, EthTransactionResultWithState};
 use reth_execution_types::StateUpdate;
@@ -153,6 +158,7 @@ impl BlockTransactionResult<TempoEvmTypes> for ZoneTxResult {
 pub struct ZoneBlockExecutor<'a> {
     inner: EthBlockExecutor<'a, TempoEvmTypes, TempoReceiptBuilder>,
     phase: ZoneBlockPhase,
+    prague_active: bool,
 }
 
 impl<'a> ZoneBlockExecutor<'a> {
@@ -162,6 +168,8 @@ impl<'a> ZoneBlockExecutor<'a> {
         ctx: TempoBlockExecutionCtx<'a>,
         chain_spec: &'a ZoneChainSpec,
     ) -> Self {
+        let prague_active =
+            chain_spec.is_prague_active_at_timestamp(evm.block().timestamp.saturating_to::<u64>());
         Self {
             inner: EthBlockExecutor::new(
                 evm,
@@ -170,6 +178,7 @@ impl<'a> ZoneBlockExecutor<'a> {
                 TempoReceiptBuilder::default(),
             ),
             phase: ZoneBlockPhase::AwaitingAdvanceTempo,
+            prague_active,
         }
     }
 }
@@ -192,7 +201,22 @@ impl<'a> BlockExecutor for ZoneBlockExecutor<'a> {
             return Err(BlockValidationError::msg("withdrawals are not permitted").into());
         }
 
-        self.inner.apply_pre_execution_changes()
+        if self.inner.evm().config_spec_id().is_t13() {
+            // TIP-1119: Zones explicitly select history storage and omit Ethereum system calls.
+            if self.prague_active && !self.inner.evm().block().number.is_zero() {
+                let parent_hash = self.inner.context().parent_hash;
+                let result = self
+                    .inner
+                    .evm_mut()
+                    .system_call(SystemTx::new(HISTORY_STORAGE_ADDRESS, parent_hash.0.into()))
+                    .map_err(map_handler_error)?
+                    .detach();
+                self.inner.commit_pending_state(&result.pending_state);
+            }
+            Ok(())
+        } else {
+            self.inner.apply_pre_execution_changes()
+        }
     }
 
     fn execute_transaction_without_commit(
@@ -225,7 +249,7 @@ impl<'a> BlockExecutor for ZoneBlockExecutor<'a> {
     }
 
     fn finish_with_block_access_list(
-        self,
+        mut self,
     ) -> Result<(BlockExecutionOutput<Self::Receipt>, Option<BlockAccessList>), BlockExecutionError>
     {
         if self.phase == ZoneBlockPhase::AwaitingAdvanceTempo {
@@ -273,6 +297,13 @@ impl<'a> BlockExecutor for ZoneBlockExecutor<'a> {
                  system transaction",
             )
             .into());
+        }
+
+        if self.inner.evm().config_spec_id().is_t13() {
+            // TIP-1119: omit Ethereum requests and post-execution system calls. Both are gated on
+            // Prague, so finish under Shanghai rules. Zones reject withdrawals and pay no block
+            // rewards, so no balance increments remain.
+            self.inner.set_spec_id(SpecId::SHANGHAI);
         }
 
         self.inner.finish_with_block_access_list()
@@ -337,9 +368,22 @@ mod tests {
     };
 
     use alloy_consensus::{Header, Sealable as _, Signed, TxLegacy};
+    use alloy_eips::{
+        eip2935::{HISTORY_STORAGE_ADDRESS, HISTORY_STORAGE_CODE},
+        eip4788::BEACON_ROOTS_ADDRESS,
+        eip7002::WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS,
+        eip7251::CONSOLIDATION_REQUEST_PREDEPLOY_ADDRESS,
+    };
     use alloy_primitives::{Address, B256, Bytes, Log, Signature, U256};
     use alloy_sol_types::{SolCall, SolEvent};
-    use evm2::{TxResult, TxResultWithState, evm::InMemoryDB};
+    use evm2::{
+        TxResult, TxResultWithState,
+        bytecode::Bytecode,
+        evm::{
+            AccountInfo, BUILDER_DEPOSIT_REQUEST_ADDRESS, BUILDER_EXIT_REQUEST_ADDRESS,
+            DynDatabase as _, InMemoryDB,
+        },
+    };
     use reth_chainspec::EthChainSpec as _;
     use reth_evm::{BlockExecutor, BlockExecutorFactory};
     use reth_evm_ethereum::{EthBlockExecutionCtx, EthTransactionResultWithState};
@@ -1183,5 +1227,115 @@ mod tests {
 
             Ok(())
         })
+    }
+
+    #[test]
+    fn system_calls_activation_selects_history_only() {
+        let mut genesis = DEV.genesis().clone();
+        genesis.config.chain_id = zone_chain_id(DEV.chain_id(), 2).unwrap();
+        let chain_spec = std::sync::Arc::new(ZoneChainSpec::from_genesis(genesis).unwrap());
+        let config = ZoneEvmConfig::new(chain_spec.clone(), MockL1Reader::default(), Address::ZERO);
+        let excluded = [
+            BEACON_ROOTS_ADDRESS,
+            WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS,
+            CONSOLIDATION_REQUEST_PREDEPLOY_ADDRESS,
+            BUILDER_DEPOSIT_REQUEST_ADDRESS,
+            BUILDER_EXIT_REQUEST_ADDRESS,
+        ];
+        for block_number in [0u64, 1] {
+            for (fork, has_code) in [
+                (TempoHardfork::T12, true),
+                (TempoHardfork::T13, false),
+                (TempoHardfork::T13, true),
+            ] {
+                let mut db = InMemoryDB::default();
+                if has_code {
+                    // Every excluded contract writes slot zero if automatically called.
+                    let marker = Bytecode::new_raw(alloy_primitives::bytes!("600160005500"));
+                    for address in excluded {
+                        db.insert_account_info(
+                            &address,
+                            AccountInfo::default().with_code(marker.clone()),
+                        );
+                    }
+                    db.insert_account_info(
+                        &HISTORY_STORAGE_ADDRESS,
+                        AccountInfo::default()
+                            .with_code(Bytecode::new_raw(HISTORY_STORAGE_CODE.clone())),
+                    );
+                }
+                let mut env = TempoEvmEnv {
+                    spec: fork,
+                    ..Default::default()
+                };
+                env.block.number = U256::from(block_number);
+                let evm = config.evm_with_env(&mut db, env);
+                let ctx = TempoBlockExecutionCtx {
+                    inner: EthBlockExecutionCtx {
+                        parent_hash: B256::repeat_byte(0x42),
+                        parent_beacon_block_root: has_code.then_some(B256::ZERO),
+                        ommers: &[],
+                        withdrawals: None,
+                        extra_data: Bytes::new(),
+                        tx_count_hint: None,
+                        slot_number: None,
+                    },
+                    general_gas_limit: 0,
+                    shared_gas_limit: 0,
+                    consensus_context: None,
+                };
+                let mut executor = ZoneBlockExecutor::new(evm, ctx, &chain_spec);
+                executor.apply_pre_execution_changes().unwrap();
+                // Isolate automatic system calls from the required opening transaction.
+                executor.phase = ZoneBlockPhase::Executing;
+                let receipt = TempoReceipt {
+                    tx_type: TempoTxType::Legacy,
+                    success: true,
+                    cumulative_gas_used: 21_000,
+                    // Malformed Ethereum deposit logs must remain ordinary receipt logs.
+                    logs: if has_code {
+                        vec![]
+                    } else {
+                        vec![Log::new_unchecked(
+                            chain_spec.deposit_contract().unwrap().address,
+                            vec![B256::repeat_byte(0x01)],
+                            Bytes::new(),
+                        )]
+                    },
+                };
+                executor.inner.receipts.push(receipt.clone());
+                executor.inner.cumulative_gas_used = 21_000;
+                executor.inner.blob_gas_used = 131_072;
+                let output = executor.finish().unwrap();
+                db.commit_source(&reth_execution_types::BundleSource(&output.state));
+                let result = output.result;
+                assert_eq!(result.receipts, vec![receipt]);
+                assert!(result.requests.is_empty());
+                assert_eq!(result.gas_used, 21_000);
+                assert_eq!(result.blob_gas_used, 131_072);
+                assert_eq!(
+                    db.get_storage(&HISTORY_STORAGE_ADDRESS, &U256::ZERO)
+                        .unwrap(),
+                    if has_code && block_number > 0 {
+                        U256::from_be_bytes([0x42; 32])
+                    } else {
+                        U256::ZERO
+                    },
+                );
+                for address in excluded {
+                    // Zones execute pre-T13 blocks under Osaka, before the builder request
+                    // contracts exist.
+                    let called = !fork.is_t13()
+                        && address != BUILDER_DEPOSIT_REQUEST_ADDRESS
+                        && address != BUILDER_EXIT_REQUEST_ADDRESS
+                        && (address != BEACON_ROOTS_ADDRESS || block_number > 0);
+                    assert_eq!(
+                        db.get_storage(&address, &U256::ZERO).unwrap(),
+                        U256::from(u64::from(called)),
+                        "{address} at {fork:?}, block {block_number}"
+                    );
+                }
+            }
+        }
     }
 }

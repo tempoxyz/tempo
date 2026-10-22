@@ -4234,7 +4234,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c54e03a951783e8b327515db3f2a2fd0e3bed362a96b066f341ce66ed49b4ead"
 dependencies = [
  "data-encoding",
- "syn 3.0.6",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -5043,7 +5043,7 @@ dependencies = [
 
 [[package]]
 name = "exithatch"
-version = "0.3.5"
+version = "0.3.6"
 
 [[package]]
 name = "eyre"
@@ -6106,7 +6106,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tower-service",
- "webpki-roots 1.0.9",
+ "webpki-roots 1.0.10",
 ]
 
 [[package]]
@@ -9625,7 +9625,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
- "webpki-roots 1.0.9",
+ "webpki-roots 1.0.10",
 ]
 
 [[package]]
@@ -13043,7 +13043,7 @@ dependencies = [
  "rustls-webpki",
  "security-framework",
  "security-framework-sys",
- "webpki-root-certs 1.0.9",
+ "webpki-root-certs 1.0.10",
  "windows-sys 0.61.2",
 ]
 
@@ -13061,9 +13061,9 @@ checksum = "eec689c0bc40ff2458a5977b6619cb718087084a18e02a131c599b62d05e1a5f"
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.15"
+version = "0.103.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3c3cf1d8b1e7d4927e2d154c3fcb02979afb9939629c62cd9048d4f07b60ac2"
+checksum = "4443b1b6d39d7c663139942cc4558262562d2c84123bb6282ef177009ca8b281"
 dependencies = [
  "aws-lc-rs",
  "ring",
@@ -14079,7 +14079,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
@@ -14237,6 +14237,7 @@ dependencies = [
  "clap",
  "commonware-codec",
  "commonware-cryptography",
+ "evm2",
  "eyre",
  "once_cell",
  "paste",
@@ -14245,6 +14246,7 @@ dependencies = [
  "reth-network-peers",
  "serde",
  "serde_json",
+ "tempo-contracts",
  "tempo-dkg-onchain-artifacts",
  "tempo-hardfork",
  "tempo-primitives",
@@ -14912,7 +14914,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-vsock-proxy"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "clap",
  "libc",
@@ -14987,8 +14989,9 @@ dependencies = [
 
 [[package]]
 name = "tempo-zone"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
+ "alloy-primitives",
  "reth-cli-util",
  "reth-node-core",
  "rustls",
@@ -14997,7 +15000,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-zone-prover-enclave"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "alloy-consensus",
  "alloy-genesis",
@@ -15022,7 +15025,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-zone-prover-utils"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -15489,7 +15492,7 @@ dependencies = [
  "tower-layer",
  "tower-service",
  "tracing",
- "webpki-roots 1.0.9",
+ "webpki-roots 1.0.10",
 ]
 
 [[package]]
@@ -16316,14 +16319,14 @@ version = "0.26.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "75c7f0ef91146ebfb530314f5f1d24528d7f0767efbfd31dce919275413e393e"
 dependencies = [
- "webpki-root-certs 1.0.9",
+ "webpki-root-certs 1.0.10",
 ]
 
 [[package]]
 name = "webpki-root-certs"
-version = "1.0.9"
+version = "1.0.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b96554aa2acc8ccdb7e1c9a58a7a68dd5d13bccc69cd124cb09406db612a1c9b"
+checksum = "58ec80e73fd8baf57bf0d9615554c75348bda990d6d5bbeab964dd068319fecb"
 dependencies = [
  "rustls-pki-types",
 ]
@@ -16334,14 +16337,14 @@ version = "0.26.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "521bc38abb08001b01866da9f51eb7c5d647a19260e00054a8c7fd5f9e57f7a9"
 dependencies = [
- "webpki-roots 1.0.9",
+ "webpki-roots 1.0.10",
 ]
 
 [[package]]
 name = "webpki-roots"
-version = "1.0.9"
+version = "1.0.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7dcd9d09a39985f5344844e66b0c530a33843579125f23e21e9f0f220850f22a"
+checksum = "1c1c8e20c8a38fc7d65abfe74eb7280e4aa667e8eec8bc84996d2874810748d9"
 dependencies = [
  "rustls-pki-types",
 ]
@@ -17084,7 +17087,7 @@ checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 
 [[package]]
 name = "zone-chainspec"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "alloy-eips",
  "alloy-genesis",
@@ -17102,7 +17105,7 @@ dependencies = [
 
 [[package]]
 name = "zone-checker"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "alloy-consensus",
  "alloy-contract",
@@ -17149,10 +17152,11 @@ dependencies = [
 
 [[package]]
 name = "zone-evm"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "alloy-consensus",
  "alloy-eip7928",
+ "alloy-eips",
  "alloy-genesis",
  "alloy-primitives",
  "alloy-provider",
@@ -17183,7 +17187,7 @@ dependencies = [
 
 [[package]]
 name = "zone-l1"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -17224,7 +17228,7 @@ dependencies = [
 
 [[package]]
 name = "zone-node"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "alloy",
  "alloy-chains",
@@ -17320,7 +17324,7 @@ dependencies = [
 
 [[package]]
 name = "zone-p2p"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "alloy-primitives",
  "alloy-signer-local",
@@ -17345,7 +17349,7 @@ dependencies = [
 
 [[package]]
 name = "zone-payload"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -17385,7 +17389,7 @@ dependencies = [
 
 [[package]]
 name = "zone-precompiles"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "aes-gcm",
  "alloy",
@@ -17415,7 +17419,7 @@ dependencies = [
 
 [[package]]
 name = "zone-primitives"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
@@ -17427,7 +17431,7 @@ dependencies = [
 
 [[package]]
 name = "zone-prover"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "alloy-consensus",
  "alloy-primitives",
@@ -17458,7 +17462,7 @@ dependencies = [
 
 [[package]]
 name = "zone-rpc"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -17496,7 +17500,7 @@ dependencies = [
 
 [[package]]
 name = "zone-sequencer"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "alloy-chains",
  "alloy-consensus",
@@ -17547,7 +17551,7 @@ dependencies = [
 
 [[package]]
 name = "zone-spf"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",

@@ -4,8 +4,8 @@ use alloy_primitives::{Address, U256};
 use evm2::{Evm, registry::HandlerResult};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_evm::{
-    ProtocolFeeContext, ProtocolFeeManager, TempoEvmTypes, TempoInvalidTransaction,
-    TempoStateAccess, TempoTx, TempoTxEnv,
+    ProtocolFeeContext, ProtocolFeeManager, ResolvedFeeToken, TempoEvmTypes,
+    TempoInvalidTransaction, TempoStateAccess, TempoTx, TempoTxEnv,
 };
 use tempo_precompiles::{
     error::Result,
@@ -52,11 +52,11 @@ impl ProtocolFeeManager for ZoneProtocolFeeManager {
         _fee_payer: Address,
         _max_fee: U256,
         spec: TempoHardfork,
-    ) -> Result<Address> {
+    ) -> Result<ResolvedFeeToken> {
         // Tempo's transaction handler calls this hook. The trait default reads the L1
         // TipFeeManager, so Zones must override it to resolve their genesis-configured default.
         let actions = host.ext().actions.clone();
-        resolve_fee_token(host, tx, spec, actions)
+        resolve_fee_token(host, tx, spec, actions).map(ResolvedFeeToken::Selected)
     }
 
     fn validate_fee_token(

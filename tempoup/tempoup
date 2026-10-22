@@ -6,7 +6,7 @@ set -e
 
 # NOTE: if you make modifications to this script, please increment the version number.
 # WARNING: the SemVer pattern: major.minor.patch must be followed as we use it to determine if the script is up to date.
-TEMPOUP_INSTALLER_VERSION="0.0.16"
+TEMPOUP_INSTALLER_VERSION="0.0.17"
 
 REPO="tempoxyz/tempo"
 # GPG key fingerprint for release signing verification
@@ -213,6 +213,11 @@ preflight_dependencies() {
     fi
 
     info "Install prerequisites: curl found, checksum tool found"
+
+    # Anonymous release selection parses the GitHub releases JSON with jq.
+    if [[ -z "$VERSION" ]] && ! check_cmd jq && ! gh_authenticated; then
+        error "jq not found. Install jq for automatic release selection, run 'gh auth login', or specify a version with 'tempoup -i <VERSION>'."
+    fi
 
     if [[ "$UNSAFE_SKIP_VERIFY" == "1" ]]; then
         warn "Skipping release integrity verification (--unsafe-skip-verify)."

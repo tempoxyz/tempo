@@ -300,6 +300,19 @@ fi
 contains "$output" "jq not found"
 ok "anonymous release selection without a JSON parser fails closed"
 
+no_jq_preflight='
+    gh_authenticated() { return 1; }
+    check_cmd() { [[ "$1" != jq ]]; }
+    preflight_dependencies
+'
+if output="$(run_tempoup "$no_jq_preflight" 2>&1)"; then
+    fail "preflight without jq succeeded for automatic release selection"
+fi
+contains "$output" "jq not found"
+run_tempoup "VERSION=v1.0.0; $no_jq_preflight" >/dev/null 2>&1 ||
+    fail "preflight required jq for an explicit version"
+ok "preflight requires jq only for anonymous release selection"
+
 # Use local stubs; verification failures must abort before installation proceeds.
 for tag in v0.0.0 v1.1.1 v1.1.2 v1.1.3 v1.13.1; do
     for result in valid invalid missing; do

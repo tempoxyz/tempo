@@ -969,7 +969,6 @@ provision_up() {
         "$ZONE_BIN" node \
         --chain "$zone_genesis" --datadir "$zone_db" \
         --l1.rpc-url ws://127.0.0.1:8545 \
-        --l1.portal-address "$portal" \
         --http --http.addr 127.0.0.1 --http.port 8546 \
         --http.api all \
         --ws --ws.addr 127.0.0.1 --ws.port 8546 \

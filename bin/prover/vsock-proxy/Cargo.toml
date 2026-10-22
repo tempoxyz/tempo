@@ -1,6 +1,6 @@
 [package]
 name = "tempo-vsock-proxy"
-version = "0.3.5"
+version = "0.3.6"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true

@@ -42,7 +42,7 @@ use tempo_primitives::{
     },
 };
 
-use crate::{FeePaymentError, TempoEvm, TempoInvalidTransaction, TempoTxEnv};
+use crate::{FeePaymentError, ResolvedFeeToken, TempoEvm, TempoInvalidTransaction, TempoTxEnv};
 
 // ==================== Test Constants ====================
 
@@ -4828,6 +4828,42 @@ fn test_fee_fallback_does_not_replace_inferred_token() -> eyre::Result<()> {
         FEE_FALLBACK_GAS_PRICE,
     ));
     assert!(is_insufficient_fee_token_balance(result, 999_999));
+    Ok(())
+}
+
+#[test]
+fn test_fee_fallback_validation_reports_token_source() -> eyre::Result<()> {
+    let (mut fallback, payer, tokens) =
+        create_fee_fallback_evm(TempoHardfork::T13, [2_000_000, 2_000_000], 0)?;
+    let result = fallback.transact_commit(fee_fallback_tx(
+        payer,
+        IDENTITY_PRECOMPILE,
+        Bytes::new(),
+        FEE_FALLBACK_GAS_PRICE,
+    ))?;
+    assert!(result.status);
+    assert_eq!(
+        fallback.ext().resolved_fee_token,
+        Some(ResolvedFeeToken::Fallback(tokens[0]))
+    );
+
+    let (mut preferred, payer, tokens) =
+        create_fee_fallback_evm(TempoHardfork::T13, [2_000_000, 2_000_000], 0)?;
+    with_fee_fallback_storage(&mut preferred, || {
+        TipFeeManager::new()
+            .set_user_token(payer, IFeeManager::setUserTokenCall { token: tokens[0] })
+    })?;
+    let result = preferred.transact_commit(fee_fallback_tx(
+        payer,
+        IDENTITY_PRECOMPILE,
+        Bytes::new(),
+        FEE_FALLBACK_GAS_PRICE,
+    ))?;
+    assert!(result.status);
+    assert_eq!(
+        preferred.ext().resolved_fee_token,
+        Some(ResolvedFeeToken::Selected(tokens[0]))
+    );
     Ok(())
 }
 

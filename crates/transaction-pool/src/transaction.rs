@@ -25,7 +25,7 @@ use std::{
     sync::{Arc, OnceLock},
 };
 use tempo_contracts::precompiles::PaymentSlots;
-use tempo_evm::{TempoInvalidTransaction, TempoTxEnv};
+use tempo_evm::{ResolvedFeeToken, TempoInvalidTransaction, TempoTxEnv};
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN,
     nonce::NonceManager,
@@ -66,7 +66,7 @@ pub struct TempoPooledTransaction {
     ///
     /// Used by `keychain_subject()` so pool maintenance matches against the same token
     /// that was validated without requiring state access.
-    resolved_fee_token: OnceLock<Address>,
+    resolved_fee_token: OnceLock<ResolvedFeeToken>,
     /// Cached keychain subject for the signer of an inline `KeyAuthorization`.
     key_authorization_signer_subject: OnceLock<Option<KeychainSubject>>,
     /// Cached target key of an inline `KeyAuthorization`.
@@ -390,7 +390,7 @@ impl TempoPooledTransaction {
     /// The validator sets this after EVM validation resolves the token from the
     /// transaction's explicit `fee_token` field or from fee-manager state. Pool
     /// maintenance code should not call this directly.
-    pub fn set_resolved_fee_token(&self, fee_token: Address) {
+    pub fn set_resolved_fee_token(&self, fee_token: ResolvedFeeToken) {
         let _ = self.resolved_fee_token.set(fee_token);
     }
 
@@ -422,7 +422,17 @@ impl TempoPooledTransaction {
     /// the pool validator. Prefer [`Self::effective_fee_token`] in maintenance code
     /// that needs the token a transaction will actually use to pay fees.
     pub fn resolved_fee_token(&self) -> Option<Address> {
-        self.resolved_fee_token.get().copied()
+        self.resolved_fee_token.get().map(|token| token.address())
+    }
+
+    /// Returns whether validation took the fee token from the ordered fallback list.
+    ///
+    /// Only such tokens can change when the fee payer's fallback-token balances change. This is
+    /// `false` for transactions that have not completed validation.
+    pub fn is_fallback_fee_token(&self) -> bool {
+        self.resolved_fee_token
+            .get()
+            .is_some_and(|token| token.is_fallback())
     }
 
     /// Returns the effective fee token for pool maintenance and accounting.
@@ -1207,7 +1217,7 @@ mod tests {
         let nonce_key_slot = transaction.nonce_key_slot();
         let _ = transaction.tx_env();
         transaction.set_key_expiry(Some(123));
-        transaction.set_resolved_fee_token(Address::random());
+        transaction.set_resolved_fee_token(ResolvedFeeToken::Selected(Address::random()));
 
         let fresh = transaction.with_discarded_caches();
 

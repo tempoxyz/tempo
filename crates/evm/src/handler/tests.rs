@@ -2,8 +2,8 @@ use super::*;
 
 mod regressions;
 use crate::{
-    FeeTokenResolver, ProtocolFeeContext, ProtocolFeeManager, TempoBlockEnv, TempoEvmExt,
-    TempoEvmTx, TempoFeeManager, signature_gas::P256_VERIFY_GAS, tempo_tx_registry,
+    FeeTokenResolver, ProtocolFeeContext, ProtocolFeeManager, ResolvedFeeToken, TempoBlockEnv,
+    TempoEvmExt, TempoEvmTx, TempoFeeManager, signature_gas::P256_VERIFY_GAS, tempo_tx_registry,
 };
 use alloy_consensus::transaction::Recovered;
 use alloy_primitives::{B256, Bytes, Signature};
@@ -183,8 +183,10 @@ impl ProtocolFeeManager for ValidatorTokenLookupFailsFeeManager {
         _fee_payer: Address,
         _max_fee: U256,
         _spec: TempoHardfork,
-    ) -> tempo_precompiles::error::Result<Address> {
-        Ok(tx.evm_tx().fee_token().unwrap_or(DEFAULT_FEE_TOKEN))
+    ) -> tempo_precompiles::error::Result<ResolvedFeeToken> {
+        Ok(ResolvedFeeToken::Selected(
+            tx.evm_tx().fee_token().unwrap_or(DEFAULT_FEE_TOKEN),
+        ))
     }
 
     fn get_validator_token(
@@ -1957,7 +1959,7 @@ fn test_refund_cap_removed_on_t7() {
 
     let refunded_for_spec = |spec: TempoHardfork| -> u64 {
         let mut evm = test_evm(spec);
-        evm.ext_mut().resolved_fee_token = Some(DEFAULT_FEE_TOKEN);
+        evm.ext_mut().resolved_fee_token = Some(ResolvedFeeToken::Selected(DEFAULT_FEE_TOKEN));
         let mut result = MessageResult::<TempoEvmTypes> {
             stop: InstrStop::Stop,
             gas: GasTracker::new_spent_with_reservoir(SPENT, 0),
@@ -4141,7 +4143,7 @@ fn test_state_gas_aa_auth_list_nonce_zero() {
     let gas_limit = 1_000_000;
     let (remaining, reservoir) =
         initial_gas_and_reservoir(evm.version(), gas_limit, regular, state);
-    evm.ext_mut().resolved_fee_token = Some(DEFAULT_FEE_TOKEN);
+    evm.ext_mut().resolved_fee_token = Some(ResolvedFeeToken::Selected(DEFAULT_FEE_TOKEN));
     let settled = TempoHandlerHooks::settle_transaction(
         &mut evm,
         &aa_env,
@@ -4433,7 +4435,7 @@ fn test_state_gas_batch_create_accounting() {
         );
         assert_eq!(result.gas.reservoir(), create_state_gas - state_spent);
 
-        evm.ext_mut().resolved_fee_token = Some(DEFAULT_FEE_TOKEN);
+        evm.ext_mut().resolved_fee_token = Some(ResolvedFeeToken::Selected(DEFAULT_FEE_TOKEN));
         let settled = TempoHandlerHooks::settle_transaction(
             &mut evm,
             &legacy_env(TxKind::Create, Bytes::new()),

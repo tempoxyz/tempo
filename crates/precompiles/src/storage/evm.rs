@@ -1884,4 +1884,48 @@ mod tests {
 
         Ok(())
     }
+
+    mod config_commitment {
+        use super::*;
+        use crate::storage::{ConfigCommitmentWriteGas, StorageCtx};
+
+        #[test]
+        fn evm_storage_reads_zero_and_rejects_writes() {
+            const ACCOUNT: Address = Address::repeat_byte(1);
+            const INITIAL: B256 = B256::repeat_byte(2);
+            let mut evm = TestEvm::new(TempoHardfork::T14);
+            let mut provider = evm.provider_max_gas();
+            StorageCtx::enter(&mut provider, || {
+                let mut ctx = StorageCtx;
+                let before = ctx.gas_used();
+                ctx.with_account_info(Address::repeat_byte(9), |_| Ok(()))
+                    .unwrap();
+                let account_access = ctx.gas_used() - before;
+                assert!(account_access > 0);
+
+                let before = ctx.gas_used();
+                assert_eq!(ctx.config_commitment(ACCOUNT).unwrap(), B256::ZERO);
+                assert_eq!(ctx.gas_used() - before, account_access);
+
+                // Each read touches the account it was asked about, so another fresh account is cold too.
+                let before = ctx.gas_used();
+                assert_eq!(
+                    ctx.config_commitment(Address::repeat_byte(2)).unwrap(),
+                    B256::ZERO
+                );
+                assert_eq!(ctx.gas_used() - before, account_access);
+
+                for gas in [
+                    ConfigCommitmentWriteGas::Intrinsic,
+                    ConfigCommitmentWriteGas::Precompile,
+                ] {
+                    assert_eq!(
+                        ctx.set_config_commitment(ACCOUNT, INITIAL, gas),
+                        Err(TempoPrecompileError::InvalidConfigCommitmentWrite)
+                    );
+                }
+                assert_eq!(ctx.config_commitment(ACCOUNT).unwrap(), B256::ZERO);
+            });
+        }
+    }
 }

@@ -36,8 +36,10 @@ serde_json.workspace = true
 paste.workspace = true
 commonware-codec = { workspace = true, optional = true }
 commonware-cryptography = { workspace = true, optional = true }
+evm2 = { workspace = true, optional = true }
 
 [dev-dependencies]
+tempo-contracts.workspace = true
 
 [features]
 default = ["std", "serde", "reth", "cli"]
@@ -47,20 +49,24 @@ std = [
     "alloy-genesis/std",
     "alloy-primitives/std",
     "commonware-cryptography?/std",
+    "evm2?/std",
     "once_cell/std",
     "reth-chainspec?/std",
     "reth-network-peers?/std",
     "serde/std",
     "serde_json/std",
+    "tempo-contracts/std",
     "tempo-primitives/std",
 ]
 serde = [
     "tempo-hardfork/serde",
     "alloy-eips/serde",
     "alloy-primitives/serde",
+    "evm2?/serde",
+    "tempo-contracts/serde",
     "tempo-primitives/serde"
 ]
-evm = ["tempo-hardfork/evm", "tempo-primitives/evm"]
+evm = ["dep:evm2", "tempo-hardfork/evm", "tempo-primitives/evm"]
 reth = [
     "std",
     "evm",

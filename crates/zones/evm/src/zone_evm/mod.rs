@@ -133,7 +133,9 @@ pub(crate) mod tests {
         atomic::{AtomicUsize, Ordering},
     };
     use tempo_chainspec::{hardfork::TempoHardfork, spec::DEV};
-    use tempo_evm::{TempoEvmEnv, TempoEvmTypes, TempoInvalidTransaction, TempoTxEnv};
+    use tempo_evm::{
+        ResolvedFeeToken, TempoEvmEnv, TempoEvmTypes, TempoInvalidTransaction, TempoTxEnv,
+    };
     use tempo_precompiles::TIP403_REGISTRY_ADDRESS;
     use tempo_primitives::{
         TempoTxEnvelope,
@@ -331,7 +333,8 @@ pub(crate) mod tests {
             handler(
                 move |request: &mut TxRequest<'_, '_, TempoEvmTypes, TempoTxEnv>| {
                     assert_eq!(observed_l1.initial_anchor(), Some(U256::from(42)));
-                    request.host.ext_mut().resolved_fee_token = Some(Address::ZERO);
+                    request.host.ext_mut().resolved_fee_token =
+                        Some(ResolvedFeeToken::Selected(Address::ZERO));
                     if observed_preparations.fetch_add(1, Ordering::SeqCst) == 1 {
                         return Err(HandlerError::Fatal("injected preparation failure".into()));
                     }
