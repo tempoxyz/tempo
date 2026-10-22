@@ -12,7 +12,7 @@ use tempo_primitives::Block;
 use tokio::sync::{OnceCell, broadcast};
 
 /// A block with a threshold BLS certificate (notarization or finalization).
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CertifiedBlock {
     pub epoch: u64,
@@ -25,6 +25,20 @@ pub struct CertifiedBlock {
     /// The Tempo block.
     #[serde(with = "serde_sealed_or_recovered_block")]
     pub block: SealedOrRecoveredBlock<Block>,
+}
+
+impl std::fmt::Debug for CertifiedBlock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let block = self.block.block_with_parent();
+        f.debug_struct("CertifiedBlock")
+            .field("epoch", &self.epoch)
+            .field("view", &self.view)
+            .field("digest", &self.digest)
+            .field("number", &block.block.number)
+            .field("hash", &block.block.hash)
+            .field("parent_hash", &block.parent)
+            .finish()
+    }
 }
 
 /// Identifies the block by number, hash, and parent hash only. The full block can be megabytes of
@@ -251,6 +265,27 @@ mod tests {
                 B256::ZERO
             )
         );
+    }
+
+    #[test]
+    fn consensus_event_debug_omits_block_payload() {
+        let block: CertifiedBlock = serde_json::from_value(certified_block_fixture()).unwrap();
+
+        for event in [
+            Event::Notarized {
+                block: block.clone(),
+                seen: 42,
+            },
+            Event::Finalized { block, seen: 42 },
+        ] {
+            let direct = format!("{event:?}");
+            let shared = format!("{:?}", SharedEvent::new(event));
+            for rendered in [direct, shared] {
+                assert!(rendered.contains("number: 0"), "{rendered}");
+                assert!(!rendered.contains("certificate"), "{rendered}");
+                assert!(!rendered.contains("transactions"), "{rendered}");
+            }
+        }
     }
 
     #[tokio::test]
