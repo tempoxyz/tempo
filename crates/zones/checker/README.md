@@ -104,11 +104,18 @@ height.
 After catching up, 60 seconds without notifications triggers a comparison with
 local canonical history. If blocks are missing, the checker re-arms Reth backfill
 from the last durably verified block, even if live notification forwarding has
-stopped. A changed verified hash rebuilds from authenticated genesis. Recovery
+stopped. A failed local history read skips that check and is retried at the next
+timeout. A changed verified hash rebuilds from authenticated genesis. Recovery
 does not interrupt an active backfill or block verification, advance the verified
 cursor without checking blocks, or clear a persisted divergence. A checker with
 an active finding still observes blocks only through live notifications; idle
 replay recovery applies only while verification is active.
+
+Reth does not restart its canonical notification forwarder after it exits on
+broadcast lag. Until the node restarts, the checker advances only through these
+idle replays, re-executing Zone blocks from local history, and other ExExes on
+the node stay stalled. A rising `notification_recoveries_total` means the node
+should be restarted.
 
 ## Failure behavior
 
@@ -145,10 +152,11 @@ The node's existing metrics endpoint exports:
 - `reth_tempo_zone_checker_verified_zone_blocks_total`
 - `reth_tempo_zone_checker_recovery_rebuilds_total`
 - `reth_tempo_zone_checker_notification_recoveries_total`
+- `reth_tempo_zone_checker_notification_check_failures_total`
 
 At minimum, alert when `disabled` or `divergence_active` is `1`, verification
-lag continues to grow, or the verified height stops advancing while the Zone
-head advances.
+lag continues to grow, the verified height stops advancing while the Zone head
+advances, or `notification_recoveries_total` increases.
 
 ### Verified activity logs
 

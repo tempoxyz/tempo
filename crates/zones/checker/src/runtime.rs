@@ -6,11 +6,11 @@ use alloy_consensus::BlockHeader as _;
 use alloy_eips::BlockNumHash;
 use alloy_provider::{DynProvider, Provider as _, ProviderBuilder};
 use alloy_rpc_client::{ConnectionConfig, RpcClient, WebSocketConfig};
+use eyre::WrapErr as _;
 use futures::{StreamExt as _, TryStreamExt as _, future};
 use reth_chainspec::ChainSpecProvider;
-use reth_evm::ConfigureEvm;
 use reth_exex::{ExExContext, ExExHead, ExExNotification, ExExNotifications};
-use reth_node_api::{FullNodeComponents, NodePrimitives, NodeTypes};
+use reth_node_api::{ConfigureEvm, FullNodeComponents, NodePrimitives, NodeTypes};
 use reth_primitives_traits::RecoveredBlock;
 use reth_storage_api::{BlockHashReader, BlockNumReader, StateProviderFactory};
 use tempo_alloy::TempoNetwork;
@@ -125,15 +125,15 @@ where
         Store::open_or_create(&config.database_path, &checkpoint)?
     };
     let provider = ctx.provider().clone();
-    let (mut snapshot, mut backfill_target) = recover_notifications(
-        &provider,
-        &mut ctx.notifications,
-        &store,
-        snapshot,
-        &checkpoint,
+    let recovery = CursorRecovery {
+        store: &store,
+        checkpoint: &checkpoint,
         metrics,
-    )?;
-    metrics.update(&snapshot);
+    };
+    let Replay {
+        mut snapshot,
+        target: mut backfill_target,
+    } = recovery.replay(&provider, &mut ctx.notifications, snapshot)?;
     ctx.send_finished_height(snapshot.metadata.verified_zone.into())?;
 
     let mut context = VerificationContext {
@@ -143,35 +143,45 @@ where
     };
     loop {
         // Do not restart a slow backfill job or interrupt verification of a delivered batch.
-        let notification = if let Some(timeout) = notification_idle_timeout(
+        let notification = if idle_recovery_armed(
             snapshot.metadata.verified_zone.number,
             &snapshot.metadata.status,
             backfill_target,
         ) {
-            match tokio::time::timeout(timeout, ctx.notifications.try_next()).await {
+            match tokio::time::timeout(NOTIFICATION_IDLE_TIMEOUT, ctx.notifications.try_next())
+                .await
+            {
                 Ok(notification) => notification?,
                 Err(_) => {
-                    let head = ctx.provider().chain_info()?;
                     let verified = snapshot.metadata.verified_zone;
-                    if notification_gap(
-                        verified,
-                        head.best_number,
-                        ctx.provider().block_hash(verified.number)?,
-                    ) {
-                        (snapshot, backfill_target) = recover_notifications(
-                            &provider,
-                            &mut ctx.notifications,
-                            &store,
+                    let canonical = provider.chain_info().and_then(|head| {
+                        Ok((head.best_number, provider.block_hash(verified.number)?))
+                    });
+                    let (head, verified_canonical_hash) = match canonical {
+                        Ok(canonical) => canonical,
+                        Err(error) => {
+                            // A missed check only delays recovery; retry after the next timeout.
+                            metrics.notification_check_failures_total.increment(1);
+                            tracing::error!(
+                                target: "zone::checker",
+                                %error,
+                                "checker cannot read local canonical history; skipping idle check"
+                            );
+                            continue;
+                        }
+                    };
+                    if notification_gap(verified, head, verified_canonical_hash) {
+                        Replay {
                             snapshot,
-                            &checkpoint,
-                            metrics,
-                        )?;
-                        metrics.update(&snapshot);
+                            target: backfill_target,
+                        } = recovery
+                            .replay(&provider, &mut ctx.notifications, snapshot)
+                            .wrap_err("idle notification recovery")?;
                         metrics.notification_recoveries_total.increment(1);
                         tracing::warn!(
                             target: "zone::checker",
                             verified_zone = snapshot.metadata.verified_zone.number,
-                            canonical_zone = head.best_number,
+                            canonical_zone = head,
                             "checker notifications idle; replaying local canonical history"
                         );
                     }
@@ -185,17 +195,12 @@ where
             break;
         };
         if !matches!(&notification, ExExNotification::ChainCommitted { .. }) {
-            snapshot = store.reset(&checkpoint)?;
+            let genesis = store.reset(&checkpoint)?;
             metrics.recovery_rebuilds_total.increment(1);
-            metrics.update(&snapshot);
-            (snapshot, backfill_target) = recover_notifications(
-                &provider,
-                &mut ctx.notifications,
-                &store,
+            Replay {
                 snapshot,
-                &checkpoint,
-                metrics,
-            )?;
+                target: backfill_target,
+            } = recovery.replay(&provider, &mut ctx.notifications, genesis)?;
             tracing::warn!(target: "zone::checker", "unexpected Zone revert; rebuilding from genesis");
             continue;
         }
@@ -628,47 +633,67 @@ fn validate_tempo_advance(parent: u64, tip: u64) -> eyre::Result<()> {
     Ok(())
 }
 
-/// Restart canonical replay from the durable cursor, rebuilding it if it was orphaned.
-///
-/// The returned target suppresses idle recovery until this backfill has made progress
-/// through the captured head. Read it before resetting the stream so advancing
-/// heads do not leave us waiting beyond Reth's captured target.
-fn recover_notifications<TProvider, TEvm>(
-    provider: &TProvider,
-    notifications: &mut ExExNotifications<TProvider, TEvm>,
-    store: &Store,
-    mut snapshot: Snapshot,
-    checkpoint: &Checkpoint,
-    metrics: &CheckerMetrics,
-) -> eyre::Result<(Snapshot, u64)>
-where
-    TProvider: BlockHashReader + BlockNumReader,
-    TEvm: ConfigureEvm,
-{
-    let target = provider.chain_info()?.best_number;
-    let verified = snapshot.metadata.verified_zone;
-    if provider.block_hash(verified.number)? != Some(verified.hash) {
+/// Durable state needed to restart canonical replay from the verified cursor.
+struct CursorRecovery<'a> {
+    store: &'a Store,
+    checkpoint: &'a Checkpoint,
+    metrics: &'a CheckerMetrics,
+}
+
+/// Snapshot to resume from and the canonical head its replay must reach.
+struct Replay {
+    snapshot: Snapshot,
+    /// Idle recovery stays disarmed until verification reaches this height.
+    target: u64,
+}
+
+impl CursorRecovery<'_> {
+    /// Restart Reth's canonical replay after the durable cursor, rebuilding it if it was orphaned.
+    ///
+    /// The target is read before the stream restarts, so it never exceeds the head Reth
+    /// captures for its backfill and the checker never waits on blocks Reth will not replay.
+    fn replay<P, E>(
+        &self,
+        provider: &P,
+        notifications: &mut ExExNotifications<P, E>,
+        snapshot: Snapshot,
+    ) -> eyre::Result<Replay>
+    where
+        P: BlockHashReader + BlockNumReader,
+        E: ConfigureEvm,
+    {
+        let target = provider.chain_info()?.best_number;
+        let snapshot = self.reconcile(provider, snapshot)?;
+        notifications.catch_up_with_head(ExExHead::new(snapshot.metadata.verified_zone.into()))?;
+        self.metrics.update(&snapshot);
+        Ok(Replay { snapshot, target })
+    }
+
+    /// Rebuild from authenticated genesis when the durable cursor left local canonical history.
+    fn reconcile(
+        &self,
+        provider: &impl BlockHashReader,
+        snapshot: Snapshot,
+    ) -> eyre::Result<Snapshot> {
+        let verified = snapshot.metadata.verified_zone;
+        if provider.block_hash(verified.number)? == Some(verified.hash) {
+            return Ok(snapshot);
+        }
         tracing::warn!(
             target: "zone::checker",
             zone_block = verified.number,
             zone_hash = %verified.hash,
             "checker tip is not in local Zone history; rebuilding"
         );
-        snapshot = store.reset(checkpoint)?;
-        metrics.recovery_rebuilds_total.increment(1);
+        let snapshot = self.store.reset(self.checkpoint)?;
+        self.metrics.recovery_rebuilds_total.increment(1);
+        Ok(snapshot)
     }
-    notifications.catch_up_with_head(ExExHead::new(snapshot.metadata.verified_zone.into()))?;
-    Ok((snapshot, target))
 }
 
-/// Suppress idle recovery while replay is active or verification has stopped on a finding.
-fn notification_idle_timeout(
-    verified: u64,
-    status: &Status,
-    backfill_target: u64,
-) -> Option<Duration> {
-    (verified >= backfill_target && matches!(status, Status::Verifying))
-        .then_some(NOTIFICATION_IDLE_TIMEOUT)
+/// Arm idle recovery only once replay reached its target and verification is still active.
+fn idle_recovery_armed(verified: u64, status: &Status, backfill_target: u64) -> bool {
+    verified >= backfill_target && matches!(status, Status::Verifying)
 }
 
 /// A higher canonical head or an orphaned verified cursor requires replay.
@@ -801,6 +826,15 @@ mod tests {
 
     #[tokio::test]
     async fn notification_recovery_replays_after_broadcast_lag() -> eyre::Result<()> {
+        // Capacity of the manager-to-ExEx queue.
+        const DOWNSTREAM_CAPACITY: usize = 1024;
+        // Capacity of Reth's canonical state broadcast.
+        const BROADCAST_CAPACITY: usize = 256;
+        // The bridge parks on the first notification past the full downstream queue.
+        const DELIVERED: u64 = DOWNSTREAM_CAPACITY as u64 + 1;
+        // One more than the broadcast holds makes the parked bridge lag and exit.
+        const CANONICAL_HEAD: u64 = DELIVERED + BROADCAST_CAPACITY as u64 + 1;
+
         let directory = tempfile::tempdir()?;
         let provider = MockEthProvider::<EthPrimitives>::default();
         let genesis = Block::default();
@@ -809,8 +843,14 @@ mod tests {
         let checkpoint = recovery_checkpoint(genesis_ref);
         let (store, mut snapshot) =
             Store::open_or_create(&directory.path().join("checker"), &checkpoint)?;
+        let metrics = CheckerMetrics::default();
+        let recovery = CursorRecovery {
+            store: &store,
+            checkpoint: &checkpoint,
+            metrics: &metrics,
+        };
         let wal = Wal::new(directory.path().join("wal"))?;
-        let (sender, receiver) = mpsc::channel(1024);
+        let (sender, receiver) = mpsc::channel(DOWNSTREAM_CAPACITY);
         // The manager remains alive after its canonical forwarding task exits.
         let _keep_alive = sender.clone();
         let mut notifications = ExExNotifications::new(
@@ -820,7 +860,7 @@ mod tests {
             receiver,
             wal.handle(),
         );
-        let (canonical, mut canonical_receiver) = broadcast::channel(256);
+        let (canonical, mut canonical_receiver) = broadcast::channel(BROADCAST_CAPACITY);
         let (received, mut received_receiver) = mpsc::unbounded_channel();
         let bridge = tokio::spawn(async move {
             // Match the upstream bridge, including its silent exit on Lagged.
@@ -830,7 +870,7 @@ mod tests {
             }
         });
         let mut parent = genesis_ref;
-        for number in 1..=1282 {
+        for number in 1..=CANONICAL_HEAD {
             let block = Block {
                 header: Header {
                     number,
@@ -849,15 +889,15 @@ mod tests {
                     BTreeMap::new(),
                 )),
             })?;
-            // Notification 1025 blocks on the full downstream queue; the final
-            // 257 overflow the canonical broadcast before we poll the checker.
-            if number <= 1025 {
+            // The last delivered notification parks the bridge on the full downstream
+            // queue; the rest overflow the canonical broadcast before we poll the checker.
+            if number <= DELIVERED {
                 tokio::time::timeout(Duration::from_secs(10), received_receiver.recv())
                     .await?
                     .unwrap();
             }
         }
-        for expected in 1..=1025 {
+        for expected in 1..=DELIVERED {
             let notification =
                 tokio::time::timeout(Duration::from_secs(10), notifications.try_next())
                     .await??
@@ -878,22 +918,18 @@ mod tests {
         }
         tokio::time::timeout(Duration::from_secs(10), bridge).await??;
         assert!(
-            tokio::time::timeout(Duration::from_millis(10), notifications.try_next(),)
+            tokio::time::timeout(Duration::from_millis(10), notifications.try_next())
                 .await
                 .is_err()
         );
 
-        let (recovered, target) = recover_notifications(
-            &provider,
-            &mut notifications,
-            &store,
-            snapshot,
-            &checkpoint,
-            &CheckerMetrics::default(),
-        )?;
+        let Replay {
+            snapshot: recovered,
+            target,
+        } = recovery.replay(&provider, &mut notifications, snapshot)?;
         snapshot = recovered;
-        assert_eq!(target, 1282);
-        assert_eq!(snapshot.metadata.verified_zone.number, 1025);
+        assert_eq!(target, CANONICAL_HEAD);
+        assert_eq!(snapshot.metadata.verified_zone.number, DELIVERED);
         // No new live notification is sent. Reth must recover every missing
         // block from local history, starting strictly after the durable cursor.
         while snapshot.metadata.verified_zone.number < target {
@@ -946,37 +982,14 @@ mod tests {
             checkpoint.tempo,
             &[],
         )?)?;
-        let wal = Wal::new(directory.path().join("wal"))?;
-        let (_sender, receiver) = mpsc::channel(1);
-        let mut notifications = ExExNotifications::new(
-            genesis_ref.into(),
-            provider.clone(),
-            EthEvmConfig::mainnet(),
-            receiver,
-            wal.handle(),
-        );
-        let (recovered, target) = recover_notifications(
-            &provider,
-            &mut notifications,
-            &store,
-            snapshot,
-            &checkpoint,
-            &CheckerMetrics::default(),
-        )?;
-        assert_eq!(target, 1);
+        let metrics = CheckerMetrics::default();
+        let recovery = CursorRecovery {
+            store: &store,
+            checkpoint: &checkpoint,
+            metrics: &metrics,
+        };
+        let recovered = recovery.reconcile(&provider, snapshot)?;
         assert_eq!(recovered.metadata.verified_zone, genesis_ref);
-        assert_eq!(
-            notification_idle_timeout(
-                recovered.metadata.verified_zone.number,
-                &recovered.metadata.status,
-                target
-            ),
-            None
-        );
-        assert_eq!(
-            notification_idle_timeout(target, &recovered.metadata.status, target),
-            Some(NOTIFICATION_IDLE_TIMEOUT)
-        );
         assert_eq!(store.load()?, recovered);
         Ok(())
     }
@@ -998,39 +1011,23 @@ mod tests {
                 summary: "persisted divergence".into(),
             },
         )?;
-        let wal = Wal::new(directory.path().join("wal"))?;
-        let (_sender, receiver) = mpsc::channel(1);
-        let mut notifications = ExExNotifications::new(
-            genesis_ref.into(),
-            provider.clone(),
-            EthEvmConfig::mainnet(),
-            receiver,
-            wal.handle(),
-        );
-        let (recovered, _) = recover_notifications(
-            &provider,
-            &mut notifications,
-            &store,
-            snapshot.clone(),
-            &checkpoint,
-            &CheckerMetrics::default(),
-        )?;
+        let metrics = CheckerMetrics::default();
+        let recovery = CursorRecovery {
+            store: &store,
+            checkpoint: &checkpoint,
+            metrics: &metrics,
+        };
+        let recovered = recovery.reconcile(&provider, snapshot.clone())?;
         assert_eq!(recovered, snapshot);
         assert_eq!(store.load()?, snapshot);
         Ok(())
     }
 
     #[test]
-    fn notification_timeout_waits_for_backfill_and_preserves_findings() {
-        assert_eq!(notification_idle_timeout(9, &Status::Verifying, 10), None);
-        assert_eq!(
-            notification_idle_timeout(10, &Status::Verifying, 10),
-            Some(NOTIFICATION_IDLE_TIMEOUT)
-        );
-        assert_eq!(
-            notification_idle_timeout(11, &Status::Verifying, 10),
-            Some(NOTIFICATION_IDLE_TIMEOUT)
-        );
+    fn idle_recovery_waits_for_backfill_and_preserves_findings() {
+        assert!(!idle_recovery_armed(9, &Status::Verifying, 10));
+        assert!(idle_recovery_armed(10, &Status::Verifying, 10));
+        assert!(idle_recovery_armed(11, &Status::Verifying, 10));
         let status = Status::Diverged {
             finding: Finding {
                 zone: BlockRef::new(10, B256::repeat_byte(1)),
@@ -1038,7 +1035,7 @@ mod tests {
             },
         };
         for verified in [9, 10, 11] {
-            assert_eq!(notification_idle_timeout(verified, &status, 10), None);
+            assert!(!idle_recovery_armed(verified, &status, 10));
         }
     }
 

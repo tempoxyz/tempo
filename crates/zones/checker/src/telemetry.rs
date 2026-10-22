@@ -136,6 +136,8 @@ pub(crate) struct CheckerMetrics {
     pub(crate) recovery_rebuilds_total: Counter,
     /// Number of canonical replays requested after idle notification gaps.
     pub(crate) notification_recoveries_total: Counter,
+    /// Number of idle notification checks skipped because local history could not be read.
+    pub(crate) notification_check_failures_total: Counter,
     /// Time from a deposit's Tempo block to the Zone block that processed it.
     pub(crate) deposit_latency_seconds: Histogram,
     /// Time from a user withdrawal's Zone request to the Tempo block that processed it.
