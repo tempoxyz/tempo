@@ -917,7 +917,7 @@ cast code 0x5A4d000000000000000000000000000000000000 --rpc-url "$ETH_RPC_URL"
 | `--http.port` | 8546 | HTTP JSON-RPC port |
 | `--redacted-rpc.port` | 8544 | Redacted RPC server port |
 | `--redacted-rpc.max-auth-token-validity-secs` | 2592000 | Maximum auth token validity the redacted RPC accepts, in seconds. The effective limit is capped at 30 days. |
-| `--redacted-rpc.max-concurrent-simulations` | 16 | Maximum `eth_call`, `eth_estimateGas`, and `eth_fillTransaction` requests the redacted RPC runs at once across all callers. Further simulations fail with `-32009` until one finishes. |
+| `--redacted-rpc.max-concurrent-simulations` | 16 | Maximum `eth_call`, `eth_estimateGas`, and `eth_fillTransaction` requests the redacted RPC runs at once across all callers. Further simulations wait in arrival order and fail with `-32009` if none finishes within two seconds. |
 
 ### Environment Variables
 

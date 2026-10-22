@@ -685,7 +685,8 @@ pub struct ZoneArgs {
     pub redacted_rpc_max_auth_token_validity_secs: u64,
 
     /// Maximum `eth_call`, `eth_estimateGas`, and `eth_fillTransaction` requests the redacted RPC
-    /// runs at once across all callers. Further simulations fail with `-32009` until one finishes.
+    /// runs at once across all callers. Further simulations wait in arrival order and fail with
+    /// `-32009` if none finishes within two seconds.
     #[arg(
         long = "redacted-rpc.max-concurrent-simulations",
         env = "REDACTED_RPC_MAX_CONCURRENT_SIMULATIONS",

@@ -29,7 +29,8 @@ pub struct RedactedRpcConfig {
     /// transports enforce the same response budget.
     pub max_response_size: usize,
     /// Maximum simulation requests (`eth_call`, `eth_estimateGas`, `eth_fillTransaction`) running
-    /// at once across all callers. Further simulations fail fast with `-32009` until one finishes.
+    /// at once across all callers. Further simulations wait in arrival order and fail with `-32009`
+    /// if no permit frees up within two seconds.
     ///
     /// Simulations can fetch uncached Tempo L1 state through the provider that block building
     /// uses. Authorization tokens are self-signed, so only a global cap bounds that load.

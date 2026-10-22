@@ -1052,7 +1052,7 @@ Fee quotes are caller-independent: `eth_gasPrice` returns the fixed T1 gas price
 - `eth_getLogs`, `eth_getFilterLogs`, `eth_getFilterChanges`: filtered to TIP-20 events where the caller is a relevant party (see [Event Filtering](#event-filtering)).
 - `eth_newFilter`, `eth_newBlockFilter`, `eth_uninstallFilter`: allowed, filters are scoped to the authenticated account.
 
-`eth_call`, `eth_estimateGas`, and `eth_fillTransaction` share one node-wide cap on concurrent requests (`--redacted-rpc.max-concurrent-simulations`). Simulations can fetch uncached Tempo state for arbitrary accounts, and authorization tokens are self-signed, so the cap is global rather than per caller. Requests over the cap fail immediately with `-32009` instead of queueing.
+`eth_call`, `eth_estimateGas`, and `eth_fillTransaction` share one node-wide cap on concurrent requests (`--redacted-rpc.max-concurrent-simulations`). Simulations can fetch uncached Tempo state for arbitrary accounts, and authorization tokens are self-signed, so the cap is global rather than per caller. Requests over the cap wait in arrival order for up to two seconds, then fail with `-32009`, so a caller that reissues simulations back to back cannot take every freed slot ahead of callers already waiting. A request keeps its slot until execution finishes, even if the client disconnects. The cap shares capacity per request, not per caller, so a caller that sends far more simulations than others still gets most of it.
 
 Methods outside this allowlist are not classified separately as restricted or disabled. Raw state and full block endpoints, mining and mempool methods, and all `debug_*`, `admin_*`, and `txpool_*` methods return `-32601`. Sequencers and operators use the unrestricted RPC on port 8545 instead of receiving elevated access through an authorization token. Requests for full transactions through the otherwise-allowed `eth_getBlockByNumber` and `eth_getBlockByHash` methods return `-32005` and must likewise use the unrestricted endpoint.
 
@@ -1144,7 +1144,7 @@ There are no state-changing methods via authorization token. Withdrawals require
 | `-32004` | Account mismatch | `from` mismatch on `eth_call` / `eth_estimateGas` |
 | `-32005` | Sequencer only | Full block transactions require the unrestricted operator RPC |
 | `-32006` | Method disabled | WebSocket subscription kind is not available on zones |
-| `-32009` | Server is busy, try again later | The node's concurrent simulation cap is reached |
+| `-32009` | Server is busy, try again later | The node's concurrent simulation cap stayed full for the whole wait |
 | `-32601` | Method not found | Method is not exposed by the redacted RPC allowlist |
 
 Methods where the user explicitly supplies a mismatched parameter return explicit errors (the user already knows the address they provided). Methods that query about other accounts return silent dummy values (`0x0`, `null`, empty results) to avoid revealing "data exists but you can't see it."

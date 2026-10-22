@@ -39,7 +39,7 @@ pub(crate) struct RedactedRpcAuthMetrics {
 #[derive(Metrics, Clone)]
 #[metrics(scope = "tempo_zone_redacted_rpc_simulations")]
 pub(crate) struct RedactedRpcSimulationMetrics {
-    /// Number of simulation requests rejected because the concurrency cap was reached.
+    /// Number of simulation requests rejected because no permit freed up before the wait deadline.
     pub(crate) rejected_total: Counter,
 }
 
