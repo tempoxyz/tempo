@@ -743,9 +743,9 @@ async fn configurable_account_rpc_maximum_mixed_quorums_and_validation_cost_orde
         OwnerKey::Secp(_) => {
             ConfigurableAccountError::Quorum(ConfigurableAccountQuorumError::SignerNotOwner)
         }
-        OwnerKey::P256 { .. } => {
-            ConfigurableAccountError::OwnerSignatureRecoveryFailed { approval_index: 7 }
-        }
+        OwnerKey::P256 { .. } => ConfigurableAccountError::Quorum(
+            ConfigurableAccountQuorumError::OwnerSignatureRecoveryFailed { approval_index: 7 },
+        ),
     };
     reject_with(
         &env,
