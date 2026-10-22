@@ -21,6 +21,7 @@ pub struct ConfigurableAccountSimulationSpec {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigurableAccountSimulationApproval {
+    /// Configured owner whose approval is modeled.
     pub owner: Address,
     /// Omission conservatively models a maximum-size `WebAuthn` approval.
     #[serde(default, skip_serializing_if = "Option::is_none")]
