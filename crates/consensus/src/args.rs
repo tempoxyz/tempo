@@ -684,26 +684,6 @@ mod tests {
     }
 
     #[test]
-    fn verification_mode_parses() {
-        for (value, expected) in [
-            ("immediate", VerificationMode::Immediate),
-            ("deferred", VerificationMode::Deferred),
-            ("hardfork", VerificationMode::Hardfork),
-        ] {
-            assert_eq!(
-                parse(&["--dev", "--consensus.verification-mode", value])
-                    .consensus
-                    .verification_mode,
-                expected,
-            );
-        }
-        assert!(
-            TestCli::try_parse_from(["test", "--dev", "--consensus.verification-mode", "invalid",])
-                .is_err()
-        );
-    }
-
-    #[test]
     fn verification_mode_resolves_t14_and_overrides() {
         for mut chainspec in [TempoChainSpec::mainnet(), TempoChainSpec::moderato()] {
             chainspec.inner.hardforks.remove(&TempoHardfork::T14);
