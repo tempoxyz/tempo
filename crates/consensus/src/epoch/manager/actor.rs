@@ -64,7 +64,7 @@ use tempo_primitives::TempoHeader;
 use tracing::{Level, Span, debug, error, error_span, info, instrument, warn, warn_span};
 
 use crate::{
-    consensus::Digest,
+    consensus::{Digest, application::EpochApplication},
     epoch::manager::ingress::{EpochTransition, Exit},
     storage::FinalizedBlocksProvider as _,
 };
@@ -395,25 +395,18 @@ where
         let certificate = certificates_mux.register(epoch.get()).await.unwrap();
         let resolver = resolver_mux.register(epoch.get()).await.unwrap();
 
-        let deferred = self
+        let application = self
             .config
-            .verification_mode
-            .is_deferred_at(&self.config.execution_node.chain_spec(), boundary_timestamp);
-        let application_context = self.parent_context.child("application");
-        let application = if deferred {
-            self.config
-                .application
-                .to_deferred(application_context, epoch)
-        } else {
-            self.config
-                .application
-                .to_immediate(application_context, epoch)
-        };
+            .application
+            .for_timestamp(boundary_timestamp, || {
+                self.parent_context.child("application")
+            });
+        let deferred = matches!(application, EpochApplication::Deferred(_));
         self.metrics
             .deferred_verification
             .metric()
             .set(i64::from(deferred));
-        info!(mode = %self.config.verification_mode, deferred, boundary_timestamp, "starting simplex engine");
+        info!(deferred, boundary_timestamp, "starting simplex engine");
 
         let engine = simplex::Engine::new(
             engine_ctx,
@@ -485,7 +478,6 @@ where
     fn exit(&mut self, cause: Span, Exit { epoch }: Exit) {
         if let Some(engine) = self.active_epochs.remove(&epoch) {
             engine.abort();
-            self.config.application.exit(epoch);
             self.metrics.active_epochs.metric().dec();
             info!("stopped engine backing epoch");
         } else {

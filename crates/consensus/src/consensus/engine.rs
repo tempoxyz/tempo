@@ -295,11 +295,12 @@ where
             application,
             marshal_mailbox.clone(),
             epoch_strategy.clone(),
+            execution_node.chain_spec(),
+            self.verification_mode,
         );
 
         let epoch_manager_config = epoch::manager::Config {
             application,
-            verification_mode: self.verification_mode,
             execution_node: execution_node.clone(),
             blocker: self.blocker.clone(),
             page_cache: page_cache_ref,

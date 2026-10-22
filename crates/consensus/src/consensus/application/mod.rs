@@ -1,9 +1,9 @@
 //! The interface between the consensus layer and the execution layer.
 //!
 //! [`Inner`] implements [`commonware_consensus::Application`]. [`Application`]
-//! constructs an inline or deferred wrapper for each epoch's simplex engine
-//! using its preceding boundary timestamp. Marshal's reporter prunes the gates
-//! of active epochs; wrappers are released when their epoch exits.
+//! selects an inline or deferred wrapper using the preceding epoch boundary
+//! timestamp. Each wrapper is constructed on first use and shared across epochs.
+//! Marshal's reporter prunes both wrappers' gates.
 //! The wrappers fetch parents, re-propose epoch boundary blocks, check epoch
 //! membership and parent linkage, persist verified blocks, broadcast proposals,
 //! and gate finalize votes on durability. [`Inner`] builds blocks through the
@@ -16,7 +16,7 @@ pub(super) use r#impl::Config;
 pub(crate) use r#impl::Inner;
 pub(super) use parent_state::TempoParentState;
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::sync::{Arc, OnceLock};
 
 use commonware_actor::Feedback;
 use commonware_consensus::{
@@ -27,17 +27,20 @@ use commonware_consensus::{
         standard::{Deferred, Inline, Standard},
     },
     simplex::{Plan, scheme::bls12381_threshold::vrf::Scheme, types::Context},
-    types::{Epoch, FixedEpocher, Round},
+    types::{FixedEpocher, Round},
 };
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 use commonware_runtime::{Clock, Spawner};
 use commonware_utils::channel::oneshot;
-use parking_lot::Mutex;
 use rand_core::Rng;
+use tempo_chainspec::TempoChainSpec;
 
-use crate::consensus::{Digest, block::Block};
+use crate::{
+    VerificationMode,
+    consensus::{Digest, block::Block},
+};
 
-/// Factory and marshal reporter for the active epochs' verification wrappers.
+/// Selects and lazily constructs the two shared verification wrappers.
 pub(crate) struct Application<E>
 where
     E: Rng + Spawner + commonware_runtime::Metrics + Clock,
@@ -45,7 +48,10 @@ where
     inner: Inner,
     marshal: Mailbox<Scheme<PublicKey, MinSig>, Standard<Block>>,
     epocher: FixedEpocher,
-    active: Arc<Mutex<BTreeMap<Epoch, EpochApplication<E>>>>,
+    chainspec: Arc<TempoChainSpec>,
+    verification_mode: VerificationMode,
+    immediate: Arc<OnceLock<EpochApplication<E>>>,
+    deferred: Arc<OnceLock<EpochApplication<E>>>,
 }
 
 impl<E> Clone for Application<E>
@@ -57,7 +63,10 @@ where
             inner: self.inner.clone(),
             marshal: self.marshal.clone(),
             epocher: self.epocher.clone(),
-            active: self.active.clone(),
+            chainspec: self.chainspec.clone(),
+            verification_mode: self.verification_mode,
+            immediate: self.immediate.clone(),
+            deferred: self.deferred.clone(),
         }
     }
 }
@@ -70,42 +79,62 @@ where
         inner: Inner,
         marshal: Mailbox<Scheme<PublicKey, MinSig>, Standard<Block>>,
         epocher: FixedEpocher,
+        chainspec: Arc<TempoChainSpec>,
+        verification_mode: VerificationMode,
     ) -> Self {
         Self {
             inner,
             marshal,
             epocher,
-            active: Arc::new(Mutex::new(BTreeMap::new())),
+            chainspec,
+            verification_mode,
+            immediate: Arc::new(OnceLock::new()),
+            deferred: Arc::new(OnceLock::new()),
         }
     }
 
-    /// Constructs an immediate wrapper and registers it for finalized-tip reports.
-    pub(crate) fn to_immediate(&self, context: E, epoch: Epoch) -> EpochApplication<E> {
-        let application = EpochApplication::Immediate(Inline::new(
-            context,
-            self.inner.clone(),
-            self.marshal.clone(),
-            self.epocher.clone(),
-        ));
-        self.active.lock().insert(epoch, application.clone());
-        application
+    /// Selects verification using the previous epoch boundary timestamp (genesis for epoch zero).
+    /// Constructs the selected wrapper on first use; later epochs share its state.
+    /// Calls `context` only when constructing a wrapper.
+    pub(crate) fn for_timestamp(
+        &self,
+        timestamp: u64,
+        context: impl FnOnce() -> E,
+    ) -> EpochApplication<E> {
+        if self
+            .verification_mode
+            .is_deferred_at(&self.chainspec, timestamp)
+        {
+            self.to_deferred(context)
+        } else {
+            self.to_immediate(context)
+        }
     }
 
-    /// Constructs a deferred wrapper and registers it for finalized-tip reports.
-    pub(crate) fn to_deferred(&self, context: E, epoch: Epoch) -> EpochApplication<E> {
-        let application = EpochApplication::Deferred(Deferred::new(
-            context,
-            self.inner.clone(),
-            self.marshal.clone(),
-            self.epocher.clone(),
-        ));
-        self.active.lock().insert(epoch, application.clone());
-        application
+    fn to_immediate(&self, context: impl FnOnce() -> E) -> EpochApplication<E> {
+        self.immediate
+            .get_or_init(|| {
+                EpochApplication::Immediate(Inline::new(
+                    context(),
+                    self.inner.clone(),
+                    self.marshal.clone(),
+                    self.epocher.clone(),
+                ))
+            })
+            .clone()
     }
 
-    /// Releases the reporter's wrapper after the epoch's engine has stopped.
-    pub(crate) fn exit(&self, epoch: Epoch) {
-        self.active.lock().remove(&epoch);
+    fn to_deferred(&self, context: impl FnOnce() -> E) -> EpochApplication<E> {
+        self.deferred
+            .get_or_init(|| {
+                EpochApplication::Deferred(Deferred::new(
+                    context(),
+                    self.inner.clone(),
+                    self.marshal.clone(),
+                    self.epocher.clone(),
+                ))
+            })
+            .clone()
     }
 }
 
@@ -116,10 +145,13 @@ where
     type Activity = Update<Block>;
 
     fn report(&mut self, activity: Self::Activity) -> Feedback {
-        // Prune every active epoch, but acknowledge each delivered block only once.
+        // Prune initialized wrappers, but acknowledge each delivered block only once.
         if let Update::Tip(..) = &activity {
-            for application in self.active.lock().values_mut() {
-                application.report(activity.clone());
+            for application in [self.immediate.get(), self.deferred.get()]
+                .into_iter()
+                .flatten()
+            {
+                application.clone().report(activity.clone());
             }
         }
         self.inner.report(activity)
