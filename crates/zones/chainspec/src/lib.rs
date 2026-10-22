@@ -12,7 +12,7 @@ use reth_chainspec::{
     ForkFilter, ForkId, Hardfork, Hardforks, Head,
 };
 use reth_network_peers::NodeRecord;
-use std::{fmt::Display, sync::Arc};
+use std::{collections::BTreeMap, fmt::Display, sync::Arc};
 use tempo_chainspec::{
     TempoChainSpec, TempoConsensusSpec,
     hardfork::TempoHardfork,
@@ -57,6 +57,27 @@ impl ZoneChainSpec {
         decode_l1_chain_id(genesis.config.chain_id)?;
         inherit_parent_fork_activations(&mut genesis, l1)?;
         Ok(Self::from_explicit_genesis(genesis))
+    }
+
+    /// Returns this chain specification with the Tempo fork schedule replaced by the parent's.
+    ///
+    /// Forks in `activations` activate at their parent timestamps and every other Tempo fork is
+    /// disabled, so the Zone follows its L1 even where its genesis scheduled forks differently.
+    /// Ethereum activations keep their Zone genesis values.
+    pub fn with_l1_tempo_forks(&self, activations: &BTreeMap<TempoHardfork, u64>) -> Self {
+        let mut genesis = self.inner.genesis().clone();
+        for fork in TempoHardfork::VARIANTS {
+            if let Some(key) = fork.genesis_key() {
+                let activation = activations
+                    .get(fork)
+                    .map_or(serde_json::Value::Null, |&time| time.into());
+                genesis
+                    .config
+                    .extra_fields
+                    .insert(key.to_owned(), activation);
+            }
+        }
+        Self::from_explicit_genesis(genesis)
     }
 
     /// Zone identifier encoded in the genesis chain ID.
@@ -375,6 +396,38 @@ mod tests {
             zone.tempo_fork_activation(TempoHardfork::T11),
             ForkCondition::Timestamp(789)
         );
+    }
+
+    #[test]
+    fn l1_tempo_forks_replace_the_genesis_schedule() {
+        let mut genesis = DEV.genesis().clone();
+        genesis.config.chain_id = zone_chain_id(31_318, 9).unwrap();
+        test_utils::set_tempo_fork(&mut genesis, TempoHardfork::T13, 100);
+        let zone = ZoneChainSpec::from_genesis(genesis).unwrap();
+
+        let activations = BTreeMap::from([
+            (TempoHardfork::T0, 0),
+            (TempoHardfork::T12, 0),
+            (TempoHardfork::T13, 500),
+        ]);
+        let inherited = zone.with_l1_tempo_forks(&activations);
+
+        assert_eq!(inherited.chain_id(), zone.chain_id());
+        assert_eq!(inherited.genesis_hash(), zone.genesis_hash());
+        assert_eq!(
+            inherited.ethereum_fork_activation(EthereumHardfork::Osaka),
+            zone.ethereum_fork_activation(EthereumHardfork::Osaka)
+        );
+        assert_eq!(
+            inherited.tempo_fork_activation(TempoHardfork::T13),
+            ForkCondition::Timestamp(500)
+        );
+        assert_eq!(
+            inherited.tempo_fork_activation(TempoHardfork::T11),
+            ForkCondition::Never
+        );
+        assert_eq!(inherited.tempo_hardfork_at(499), TempoHardfork::T12);
+        assert_eq!(inherited.tempo_hardfork_at(500), TempoHardfork::T13);
     }
 
     #[test]
