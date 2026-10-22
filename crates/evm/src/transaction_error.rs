@@ -282,15 +282,6 @@ impl TempoInvalidTransaction {
             | Self::LegacyKeychainSignature
             | Self::CallsValidation(_) => true,
 
-            Self::ConfigurableAccount(error) => match error {
-                ConfigurableAccountError::AccountMismatch { .. }
-                | ConfigurableAccountError::InvalidSignatureContext
-                | ConfigurableAccountError::Quorum(_) => true,
-                ConfigurableAccountError::UnsupportedContext
-                | ConfigurableAccountError::InvalidAccount { .. }
-                | ConfigurableAccountError::ConfigurationCommitmentMismatch { .. } => false,
-            },
-
             // State- or fork-dependent: may resolve as the chain advances.
             Self::ValidAfter { .. }
             | Self::ValidBefore { .. }
@@ -306,6 +297,15 @@ impl TempoInvalidTransaction {
             | Self::NonceManagerError(_)
             | Self::V2KeychainBeforeActivation
             | Self::RootKeyRetired { .. } => false,
+
+            Self::ConfigurableAccount(error) => match error {
+                ConfigurableAccountError::AccountMismatch { .. }
+                | ConfigurableAccountError::InvalidSignatureContext
+                | ConfigurableAccountError::Quorum(_) => true,
+                ConfigurableAccountError::UnsupportedContext
+                | ConfigurableAccountError::InvalidAccount { .. }
+                | ConfigurableAccountError::ConfigurationCommitmentMismatch { .. } => false,
+            },
         }
     }
 }
