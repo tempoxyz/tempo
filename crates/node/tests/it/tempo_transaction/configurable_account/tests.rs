@@ -220,12 +220,36 @@ async fn configurable_account_rpc_registration_revert_retry_and_rotation() -> ey
 
     let replacement = ConfigurableAccount::new(0x21, 2);
     let (next, rotate) = account.rotate_to(&replacement);
-    // The current config signs a transaction that waits in the pool behind the rotation.
+    // The current config signs transactions that wait in the pool behind the rotation: as the
+    // sender, as the grant signer of its access key and as the access key of another account.
     let mut stale = account.transaction(&env, vec![noop()]);
     stale.nonce += 1;
     let signature = account.sign(&stale)?;
     let stale: TempoTxEnvelope = stale.into_signed(signature).into();
-    let stale = pend(&env, &[&stale]).await?[0];
+    let chain_id = env.chain_id();
+    let key = signer(0x34);
+    let parent = signer(0x40);
+    env.fund_account(parent.address()).await?;
+    let grant = KeyAuthorization::unrestricted(chain_id, SignatureType::Secp256k1, key.address())
+        .with_account(account.address);
+    let grant_signature = account.quorum(grant.signature_hash(), false)?;
+    let mut key_tx = account.transaction(&env, vec![noop()]);
+    key_tx.nonce += 2;
+    key_tx.key_authorization = Some(grant.into_signed(grant_signature));
+    let key_tx = key_signed(key_tx, account.address, &key)?;
+    let delegation = KeyAuthorization::unrestricted(
+        chain_id,
+        SignatureType::ConfigurableAccount,
+        account.address,
+    );
+    let signature =
+        PrimitiveSignature::Secp256k1(parent.sign_hash_sync(&delegation.signature_hash())?);
+    // Nothing sends the parent's first nonce, so no block includes this transaction.
+    let mut delegate_tx = create_basic_aa_tx(chain_id, 1, vec![noop()], GAS_LIMIT);
+    delegate_tx.key_authorization = Some(delegation.into_signed(signature));
+    let signature = account.as_delegate(&delegate_tx, parent.address(), false)?;
+    let delegate_tx: TempoTxEnvelope = delegate_tx.into_signed(signature).into();
+    let stale = pend(&env, &[&stale, &key_tx, &delegate_tx]).await?;
     let tx = account.transaction(&env, vec![rotate]);
     let signature = account.sign(&tx)?;
     account.submit(&mut env, tx, signature, true).await?;
@@ -233,9 +257,9 @@ async fn configurable_account_rpc_registration_revert_retry_and_rotation() -> ey
         commitment(&env, account.address).await?,
         next.commitment().unwrap()
     );
-    // The rotation changes the commitment, so the pool revalidates the transaction and evicts
-    // it (TIP-1112).
-    env.setup.node.wait_for_pool_removal([stale]).await?;
+    // The rotation changes the commitment, so the pool revalidates the transactions and evicts
+    // them (TIP-1112).
+    env.setup.node.wait_for_pool_removal(stale).await?;
     let tx = account.transaction(&env, vec![noop()]);
     reject_with(
         &env,
