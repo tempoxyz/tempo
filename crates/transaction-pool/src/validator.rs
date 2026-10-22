@@ -926,8 +926,6 @@ mod tests {
         },
     };
 
-    mod configurable;
-
     /// Arbitrary validity window (in seconds) used for expiring-nonce transactions in tests.
     const TEST_VALIDITY_WINDOW: u64 = 25;
 
