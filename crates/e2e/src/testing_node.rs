@@ -92,7 +92,7 @@ where
     pub feed_state: FeedStateHandle,
     /// Local proposal work budget used whenever the consensus engine starts.
     pub proposal_return_budget: Duration,
-    /// Build feedback shared with this node's execution layer.
+    /// Proposal budget estimator shared by this node's consensus and execution layers.
     pub estimator: tempo_node::Estimator,
     /// Verification mode used whenever the consensus engine starts.
     pub verification_mode: VerificationMode,

@@ -13,6 +13,9 @@ use crate::{
 };
 
 /// Initial ratio of total replayable build work to work at transaction cutoff.
+///
+/// For example, `1.35` means "when cutoff work is 100 ms, expect the completed
+/// replayable build work to be about 135 ms".
 pub const DEFAULT_BUILD_TIME_MULTIPLIER: f64 = 1.35;
 const MAX_BUILD_TIME_MULTIPLIER: u64 = 1_700_000;
 const BUILD_TIME_MULTIPLIER_DECAY: u64 = 8;

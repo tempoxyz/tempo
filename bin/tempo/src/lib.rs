@@ -557,7 +557,8 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                 None => node,
             }
         });
-        // Apply after overrides so both consumers receive the same handle.
+        // Applied after the overrides, which may replace the node's estimator,
+        // so the payload builder and consensus share the same handle.
         let tempo_node = tempo_node.with_estimator(estimator.clone());
         let executed_state = tempo_node.executed_state();
 
@@ -662,6 +663,8 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             });
         }
 
+        // The receiver is only dropped when the consensus thread has already
+        // exited, which `consensus_dead_rx` below reports.
         let _ = consensus_startup_tx.send((node, executed_state, args, gossip_transport, estimator));
 
         // TODO: emit these inside a span
