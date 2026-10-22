@@ -9,7 +9,7 @@ use clap::{Arg, ArgAction, Args, CommandFactory, FromArgMatches};
 use eyre::WrapErr as _;
 use reth_chainspec::EthChainSpec as _;
 use reth_cli_runner::CliRunner;
-use reth_ethereum::cli::{Cli, Commands, ExtendedCommand};
+use reth_ethereum::cli::{Cli, ExtendedCommand};
 use reth_rpc_server_types::DefaultRpcModuleValidator;
 use reth_tracing::tracing::{info, warn};
 use tempo_alloy::{TempoNetwork, provider::TempoProviderExt, rpc::ForkSchedule};
@@ -186,9 +186,6 @@ fn run_node(mut cli: ZoneNodeCli, l1_access: CliL1Access) -> eyre::Result<()> {
         Err(error) => return Err(eyre::eyre!("invalid L1_HTTP_RPC_URL: {error}")),
     };
     validate_l1_access(l1_access, l1_rpc_url.is_some())?;
-    if let Commands::Node(command) = &mut cli.command {
-        inherit_l1_fork_schedule(&mut command.chain, &command.ext.l1_rpc_url)?;
-    }
 
     let components = move |spec: Arc<ZoneChainSpec>| {
         let evm_config = cli_evm_config(spec.clone(), l1_rpc_url.clone());
@@ -201,6 +198,8 @@ fn run_node(mut cli: ZoneNodeCli, l1_access: CliL1Access) -> eyre::Result<()> {
         if args.block_interval_ms.is_some() {
             warn!(target: "reth::cli", "--block.interval-ms is deprecated, has no effect, and will be removed in the next release");
         }
+
+        inherit_l1_fork_schedule(&mut builder.config_mut().chain, &args.l1_rpc_url).await?;
 
         let zone_id = builder.config().chain.zone_id();
         validate_deprecated_zone_id(args.zone_id, zone_id)?;
@@ -284,36 +283,35 @@ fn run_node(mut cli: ZoneNodeCli, l1_access: CliL1Access) -> eyre::Result<()> {
 ///
 /// Devnet L1s get their schedule from genesis files at runtime, so the Zone genesis may not match
 /// it. The schedule is read once at startup; an L1 schedule change needs a Zone restart.
-fn inherit_l1_fork_schedule(chain: &mut Arc<ZoneChainSpec>, l1_rpc_url: &str) -> eyre::Result<()> {
+async fn inherit_l1_fork_schedule(
+    chain: &mut Arc<ZoneChainSpec>,
+    l1_rpc_url: &str,
+) -> eyre::Result<()> {
     let parent_chain_id = decode_l1_chain_id(chain.chain_id())?;
     if tempo_chain_spec_for_l1(parent_chain_id).is_some() {
         return Ok(());
     }
 
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .wrap_err("failed building the runtime for reading the L1 fork schedule")?;
-    let schedule = runtime
-        .block_on(tokio::time::timeout(L1_FORK_SCHEDULE_TIMEOUT, async {
-            let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
-                .connect(l1_rpc_url)
-                .await
-                .wrap_err("failed connecting to the L1 RPC")?;
-            let l1_chain_id = provider
-                .get_chain_id()
-                .await
-                .wrap_err("failed reading the L1 chain ID")?;
-            eyre::ensure!(
-                l1_chain_id == parent_chain_id,
-                "L1 RPC chain ID {l1_chain_id} does not match zone parent chain ID {parent_chain_id}"
-            );
-            provider
-                .get_fork_schedule()
-                .await
-                .wrap_err("failed reading tempo_forkSchedule from the L1 RPC")
-        }))
-        .wrap_err("timed out reading the L1 fork schedule")??;
+    let schedule = tokio::time::timeout(L1_FORK_SCHEDULE_TIMEOUT, async {
+        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+            .connect(l1_rpc_url)
+            .await
+            .wrap_err("failed connecting to the L1 RPC")?;
+        let l1_chain_id = provider
+            .get_chain_id()
+            .await
+            .wrap_err("failed reading the L1 chain ID")?;
+        eyre::ensure!(
+            l1_chain_id == parent_chain_id,
+            "L1 RPC chain ID {l1_chain_id} does not match zone parent chain ID {parent_chain_id}"
+        );
+        provider
+            .get_fork_schedule()
+            .await
+            .wrap_err("failed reading tempo_forkSchedule from the L1 RPC")
+    })
+    .await
+    .wrap_err("timed out reading the L1 fork schedule")??;
     let activations = l1_tempo_fork_activations(schedule)?;
 
     info!(target: "reth::cli", ?activations, "Inherited Tempo fork schedule from L1");
@@ -997,8 +995,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn known_l1_keeps_its_compiled_fork_schedule() {
+    #[tokio::test]
+    async fn known_l1_keeps_its_compiled_fork_schedule() {
         let parent = tempo_chainspec::spec::MODERATO.clone();
         let mut genesis = parent.genesis().clone();
         genesis.config.chain_id =
@@ -1007,7 +1005,9 @@ mod tests {
         let mut chain = spec.clone();
 
         // An unreachable URL proves no RPC is attempted for a known parent.
-        inherit_l1_fork_schedule(&mut chain, "ws://127.0.0.1:1").unwrap();
+        inherit_l1_fork_schedule(&mut chain, "ws://127.0.0.1:1")
+            .await
+            .unwrap();
         assert!(Arc::ptr_eq(&chain, &spec));
     }
 
