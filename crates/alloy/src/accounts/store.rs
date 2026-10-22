@@ -11,7 +11,6 @@ use std::{
     sync::{Arc, LazyLock, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
-use tempo_primitives::transaction::ConfigurableAccountSignature;
 
 use alloy_network::{NetworkTransactionBuilder, NetworkWallet, TransactionBuilder};
 use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256, keccak256};
@@ -32,8 +31,9 @@ use tempo_contracts::precompiles::ITIP20;
 use tempo_primitives::{
     SignatureType, TempoAddressExt, TempoTxEnvelope,
     transaction::{
-        AccountSignature, Call, CallScope, KeyAuthorization, KeychainSignature, PrimitiveSignature,
-        SelectorRule, SignedKeyAuthorization, TempoSignature, TempoTypedTransaction, TokenLimit,
+        AccountSignature, Call, CallScope, ConfigurableAccountSignature, KeyAuthorization,
+        KeychainSignature, PrimitiveSignature, SelectorRule, SignedKeyAuthorization,
+        TempoSignature, TempoTypedTransaction, TokenLimit,
         tt_signature::{P256SignatureWithPreHash, WebAuthnSignature},
     },
 };
@@ -326,11 +326,16 @@ impl TempoAccessKey {
                 "chain ID does not match the selected key",
             ));
         }
-        validate_authorization_for_account(self.account, authorization)
-            .map_err(TempoAccessKeyError::AuthorizationAccount)?;
+        if authorization
+            .account
+            .is_some_and(|account| account != self.account)
+        {
+            return Err(TempoAccessKeyError::InvalidAuthorization(
+                "account does not match the selected key",
+            ));
+        }
         if authorization.account.is_none()
-            && matches!(authorization.signature, AccountSignature::Primitive(_))
-            && authorization.recover_signer().ok() != Some(self.account)
+            && authorization.recover_account().ok() != Some(self.account)
         {
             return Err(TempoAccessKeyError::InvalidAuthorization(
                 "signature does not recover the root account",
@@ -671,8 +676,6 @@ enum TempoAccessKeyError {
     AuthorizationMismatch,
     #[error("invalid pending Tempo key authorization: {0}")]
     InvalidAuthorization(&'static str),
-    #[error("invalid pending Tempo key authorization: {0}")]
-    AuthorizationAccount(#[source] TempoAuthorizationAccountError),
     #[error(
         "Tempo key authorization for {key_id} on account {account} and chain {chain_id} is already in flight"
     )]
@@ -683,29 +686,6 @@ enum TempoAccessKeyError {
     },
     #[error("Tempo key-authorization reservation state is unavailable")]
     ReservationStateUnavailable,
-}
-
-/// Parent-binding failures, without checking signatures or on-chain authority.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub enum TempoAuthorizationAccountError {
-    /// Explicit parent metadata differs from the selected account.
-    #[error("authorization account mismatch: expected {expected}, actual {actual}")]
-    AccountMismatch {
-        /// Selected parent.
-        expected: Address,
-        /// Parent named in the authorization metadata.
-        actual: Address,
-    },
-    /// The configurable account signature names a different account.
-    #[error(
-        "configurable account signature account mismatch: expected {expected}, actual {actual}"
-    )]
-    ConfigurableAccountMismatch {
-        /// Selected parent.
-        expected: Address,
-        /// Account named in the signature.
-        actual: Address,
-    },
 }
 
 /// Errors returned while reading or selecting from a Tempo Accounts store.
@@ -768,9 +748,6 @@ pub enum TempoAccountsError {
     /// A supplied authorization did not describe the access key being stored.
     #[error("invalid Tempo Accounts access-key authorization: {0}")]
     InvalidAuthorization(&'static str),
-    /// An authorization names another parent or uses forbidden signature encoding.
-    #[error("invalid Tempo Accounts access-key authorization: {0}")]
-    AuthorizationAccount(#[source] TempoAuthorizationAccountError),
     /// The active account selector was missing or invalid.
     #[error("Tempo Accounts active account is missing or invalid")]
     ActiveAccount,
@@ -2003,7 +1980,8 @@ impl TryFrom<PersistedSignedKeyAuthorization> for SignedKeyAuthorization {
             // Ox 0.14 uses an empty RLP list as the positional limits
             // placeholder when scopes follow it. Preserve that exact signed
             // wire shape. Newer TIP-1053 fields switched skipped fields to the
-            // canonical optional null placeholder. Native signatures never used this legacy form.
+            // canonical optional null placeholder.
+            // Configurable account signatures never used the legacy form.
             None if has_scopes
                 && !has_tip1053_fields
                 && matches!(&signature, PersistedAuthorizationSignature::Primitive(_)) =>
@@ -2311,6 +2289,7 @@ fn stored_access_key(key: &PersistedAccessKey) -> Result<TempoStoredAccessKey, T
         authorization.key_id != key.address
             || authorization.chain_id != key.chain_id
             || authorization.key_type != key_type
+            || authorization_account(authorization).is_some_and(|account| account != key.access)
     }) {
         return Err(TempoAccountsError::InvalidAccessKey {
             address: key.address,
@@ -2318,14 +2297,6 @@ fn stored_access_key(key: &PersistedAccessKey) -> Result<TempoStoredAccessKey, T
         });
     }
 
-    if let Some(authorization) = &key_authorization {
-        validate_authorization_for_account(key.access, authorization).map_err(|reason| {
-            TempoAccountsError::InvalidAccessKey {
-                address: key.address,
-                reason: reason.to_string(),
-            }
-        })?;
-    }
     let allowed_calls =
         effective_allowed_calls(key, key_authorization.as_ref()).map_err(|error| {
             TempoAccountsError::InvalidAccessKey {
@@ -2379,38 +2350,21 @@ fn validate_stored_authorization(
             "the authorization key ID does not match the local signer",
         ));
     }
-    validate_authorization_for_account(account, authorization)
-        .map_err(TempoAccountsError::AuthorizationAccount)
+    if authorization_account(authorization).is_some_and(|authorized| authorized != account) {
+        return Err(TempoAccountsError::InvalidAuthorization(
+            "the authorization targets a different account",
+        ));
+    }
+    Ok(())
 }
 
-/// Checks parent metadata; an unnamed configurable account grant must be parent-signed.
-/// Does not verify signatures or on-chain authority.
-fn validate_authorization_for_account(
-    account: Address,
-    authorization: &SignedKeyAuthorization,
-) -> Result<(), TempoAuthorizationAccountError> {
-    if let Some(actual) = authorization.account
-        && actual != account
-    {
-        return Err(TempoAuthorizationAccountError::AccountMismatch {
-            expected: account,
-            actual,
-        });
-    }
-    match &authorization.signature {
-        AccountSignature::Primitive(_) => Ok(()),
-        AccountSignature::ConfigurableAccount(signature)
-            if signature.account() == account || authorization.account == Some(account) =>
-        {
-            Ok(())
-        }
-        AccountSignature::ConfigurableAccount(signature) => Err(
-            TempoAuthorizationAccountError::ConfigurableAccountMismatch {
-                expected: account,
-                actual: signature.account(),
-            },
-        ),
-    }
+/// The account an authorization names without recovering a primitive signer: its explicit
+/// account, else the account of its configurable account signature.
+fn authorization_account(authorization: &SignedKeyAuthorization) -> Option<Address> {
+    authorization.account.or(authorization
+        .signature
+        .as_configurable_account()
+        .map(ConfigurableAccountSignature::account))
 }
 
 struct EditableTempoCliStore {
@@ -3081,14 +3035,14 @@ fn select_access_key(
                 || authorization
                     .expiry
                     .is_some_and(|expiry| expiry.get() <= now)
+                || authorization
+                    .account
+                    .is_some_and(|authorized_account| authorized_account != account)
         }) {
             continue;
         }
         if key_authorization.as_ref().is_some_and(|authorization| {
-            validate_authorization_for_account(account, authorization).is_err()
-                || (authorization.account.is_none()
-                    && matches!(authorization.signature, AccountSignature::Primitive(_))
-                    && authorization.recover_signer().ok() != Some(account))
+            authorization.account.is_none() && authorization.recover_account().ok() != Some(account)
         }) {
             continue;
         }
@@ -3337,8 +3291,7 @@ mod tests {
     use alloy_network::{NetworkWallet, TransactionBuilder};
     use alloy_provider::{ProviderBuilder, SendableTx, fillers::TxFiller, mock::Asserter};
     use alloy_rpc_types_eth::{TransactionInput, TransactionRequest};
-    use serde_json::{from_value, json, to_value};
-    use tempo_primitives::transaction::{ConfigurableAccountConfig, ConfigurableAccountOwner};
+    use tempo_primitives::{TempoTxEnvelope, transaction::TempoSignature};
 
     use super::*;
 
@@ -5001,143 +4954,5 @@ mod tests {
             },
         });
         fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
-    }
-
-    fn configurable_authorization(
-        account: Address,
-        signer: &PrivateKeySigner,
-    ) -> SignedKeyAuthorization {
-        let config = ConfigurableAccountConfig {
-            salt: B256::ZERO,
-            version: 1,
-            threshold: 1,
-            owners: vec![ConfigurableAccountOwner {
-                owner: Address::repeat_byte(1),
-                weight: 1,
-            }],
-        };
-        KeyAuthorization::unrestricted(4217, SignatureType::Secp256k1, signer.address())
-            .into_signed(
-                ConfigurableAccountSignature::try_new(
-                    account,
-                    config,
-                    vec![PrimitiveSignature::default()],
-                )
-                .unwrap(),
-            )
-    }
-
-    #[test_case::test_case(false, false; "unscoped_parent")]
-    #[test_case::test_case(true, false; "scoped_parent")]
-    #[test_case::test_case(false, true; "admin_signer")]
-    fn configurable_authorization_persists_complete_signature(scoped: bool, admin: bool) {
-        let account = Address::repeat_byte(2);
-        let signer = PrivateKeySigner::random();
-        let signing_account = if admin {
-            Address::repeat_byte(3)
-        } else {
-            account
-        };
-        let mut authorization = configurable_authorization(signing_account, &signer);
-        if admin {
-            authorization.authorization.account = Some(account);
-        }
-        if scoped {
-            authorization.authorization.allowed_calls = Some(vec![CallScope {
-                target: Address::repeat_byte(3),
-                selector_rules: Vec::new(),
-            }]);
-        }
-        let writable = writable_access_key(account, &signer, &authorization).unwrap();
-        let value = to_value(writable).unwrap();
-        assert!(value["keyAuthorization"]["signature"].is_string());
-        let persisted: PersistedSignedKeyAuthorization =
-            from_value(value["keyAuthorization"].clone()).unwrap();
-        let decoded = SignedKeyAuthorization::try_from(persisted).unwrap();
-        assert_eq!(decoded, authorization);
-        assert_eq!(decoded.signature_hash(), authorization.signature_hash());
-        assert_eq!(decoded.limits, None);
-        assert!(validate_authorization_for_account(account, &decoded).is_ok());
-    }
-
-    #[test_case::test_case(false; "primitive")]
-    #[test_case::test_case(true; "configurable_account")]
-    fn explicit_wrong_account_metadata_is_rejected(configurable_account: bool) {
-        let account = Address::repeat_byte(2);
-        let signer = PrivateKeySigner::random();
-        let mut authorization = if configurable_account {
-            configurable_authorization(account, &signer)
-        } else {
-            KeyAuthorization::unrestricted(4217, SignatureType::Secp256k1, signer.address())
-                .into_signed(PrimitiveSignature::default())
-        };
-        let mut record =
-            to_value(writable_access_key(account, &signer, &authorization).unwrap()).unwrap();
-        let path = write_store(json!([record]));
-        let store = TempoAccountsStore::open(&path).unwrap();
-        assert_eq!(
-            store.access_keys().unwrap()[0].key_authorization(),
-            Some(&authorization)
-        );
-        let wrong = Address::repeat_byte(3);
-        record["keyAuthorization"]["account"] = json!(wrong);
-        overwrite_store(&path, json!([record]));
-        let Err(TempoAccountsError::InvalidAccessKey { address, reason }) = store.access_keys()
-        else {
-            panic!("expected persisted account metadata rejection")
-        };
-        assert_eq!(address, signer.address());
-        assert_eq!(
-            reason,
-            format!("authorization account mismatch: expected {account}, actual {wrong}")
-        );
-        fs::remove_file(path).unwrap();
-
-        authorization.authorization.account = Some(wrong);
-        let error = validate_authorization_for_account(account, &authorization).unwrap_err();
-        assert_eq!(
-            error,
-            TempoAuthorizationAccountError::AccountMismatch {
-                expected: account,
-                actual: wrong,
-            }
-        );
-        assert!(matches!(
-            validate_stored_authorization(account, &signer, &authorization),
-            Err(TempoAccountsError::AuthorizationAccount(actual)) if actual == error
-        ));
-    }
-
-    #[test]
-    fn named_parent_mismatch_and_keychain_authorization_are_rejected() {
-        let account = Address::repeat_byte(2);
-        let signer = PrivateKeySigner::random();
-        assert_eq!(
-            validate_authorization_for_account(
-                Address::repeat_byte(3),
-                &configurable_authorization(account, &signer)
-            ),
-            Err(
-                TempoAuthorizationAccountError::ConfigurableAccountMismatch {
-                    expected: Address::repeat_byte(3),
-                    actual: account,
-                }
-            )
-        );
-        let authorization = configurable_authorization(account, &signer);
-        let writable = writable_access_key(account, &signer, &authorization).unwrap();
-        let mut value = to_value(writable).unwrap();
-        value["keyAuthorization"]["signature"] = to_value(
-            TempoSignature::Keychain(KeychainSignature::new(
-                account,
-                PrimitiveSignature::default(),
-            ))
-            .to_bytes(),
-        )
-        .unwrap();
-        assert!(
-            from_value::<PersistedSignedKeyAuthorization>(value["keyAuthorization"].clone())
-                .is_err()
-        );
     }
 }

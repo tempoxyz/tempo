@@ -6,8 +6,7 @@ pub use header::TempoHeaderResponse;
 mod configurable_account;
 mod request;
 pub use configurable_account::{
-    ConfigurableAccountSimulationApproval, ConfigurableAccountSimulationError,
-    ConfigurableAccountSimulationSpec,
+    ConfigurableAccountSimulationApproval, ConfigurableAccountSimulationSpec,
 };
 pub use request::{FeeToken, TempoCallBuilderExt, TempoTransactionRequest};
 
