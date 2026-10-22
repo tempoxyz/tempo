@@ -212,20 +212,17 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
             ),
             TempoEvmTx::AA(_) => return Ok(()),
         };
-        // T14 root-key checks: a configurable account's primitive key no longer signs.
+        // T14 root-key checks: a configurable account's primitive key no longer signs. A
+        // sender-only check charges no gas.
         let spec = host.config_spec_id();
-        let (native_gas, native_state_gas) =
-            configurable_account::validate_state(host, envelope, spec)?;
+        configurable_account::validate_state(host, envelope, spec)?;
         let new_accounts = zero_nonce_authorizations.saturating_add(u64::from(nonce == 0));
         *intrinsic = intrinsic.saturating_add(new_accounts.saturating_mul(u64::from(
             host.version().gas_params.get(GasId::NewAccountCost),
         )));
-        *initial_state_gas = initial_state_gas
-            .saturating_add(
-                new_accounts.saturating_mul(host.version().gas_params.new_account_state_gas()),
-            )
-            .saturating_add(native_state_gas);
-        *intrinsic = intrinsic.saturating_add(native_gas);
+        *initial_state_gas = initial_state_gas.saturating_add(
+            new_accounts.saturating_mul(host.version().gas_params.new_account_state_gas()),
+        );
         Ok(())
     }
 

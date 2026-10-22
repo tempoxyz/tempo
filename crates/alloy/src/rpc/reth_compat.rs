@@ -201,7 +201,7 @@ impl TempoTransactionRequest {
             signature
                 .verify_approvals(grant.signature_hash())
                 .map_err(|error| {
-                    EthApiError::InvalidParams(ConfigurableAccountError::from(error).to_string())
+                    EthApiError::InvalidParams(ConfigurableAccountError::Quorum(error).to_string())
                 })?;
         }
         let Some(spec) = self.configurable_account_simulation.as_ref() else {

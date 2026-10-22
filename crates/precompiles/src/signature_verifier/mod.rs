@@ -21,6 +21,15 @@ use tempo_primitives::transaction::{
 };
 use tracing::trace;
 
+/// Gas cost for secp256k1 signature verification.
+const SECP256K1_VERIFY_GAS: u64 = 3_000;
+
+/// Gas cost for P256 signature verification.
+const P256_VERIFY_GAS: u64 = 8_000;
+
+/// Gas cost for WebAuthn signature verification.
+const WEBAUTHN_VERIFY_GAS: u64 = 8_000;
+
 #[contract(addr = SIGNATURE_VERIFIER_ADDRESS)]
 pub struct SignatureVerifier {}
 
@@ -35,7 +44,12 @@ impl SignatureVerifier {
             .map_err(|_| SignatureVerifierError::invalid_format())?;
 
         // Charge verification gas before performing verification.
-        self.storage.deduct_gas(sig.base_verification_gas())?;
+        let verify_gas = match &sig {
+            PrimitiveSignature::Secp256k1(_) => SECP256K1_VERIFY_GAS,
+            PrimitiveSignature::P256(_) => P256_VERIFY_GAS,
+            PrimitiveSignature::WebAuthn(_) => WEBAUTHN_VERIFY_GAS,
+        };
+        self.storage.deduct_gas(verify_gas)?;
 
         // Verify and recover signer.
         sig.recover_signer(&hash)
@@ -146,7 +160,6 @@ impl SignatureVerifier {
         signature_type: SignatureType,
     ) -> Result<Option<AuthorizedKey>> {
         let timestamp = self.storage.timestamp().saturating_to::<u64>();
-        // Pre-T14 verification ignored the stored type; preserve that behavior on replay.
         let expected_type = self
             .storage
             .spec()
@@ -228,11 +241,11 @@ pub fn configurable_account_verification_gas(
 /// Unlike `tempo_evm`'s `primitive_signature_verification_gas`, this does not subtract the
 /// ecrecover baseline already covered by ordinary intrinsic gas.
 fn primitive_verification_gas(signature: &PrimitiveSignature) -> u64 {
-    let webauthn_data_gas = match signature {
-        PrimitiveSignature::WebAuthn(sig) => calldata_gas(&sig.webauthn_data),
-        PrimitiveSignature::Secp256k1(_) | PrimitiveSignature::P256(_) => 0,
-    };
-    signature.base_verification_gas() + webauthn_data_gas
+    match signature {
+        PrimitiveSignature::Secp256k1(_) => SECP256K1_VERIFY_GAS,
+        PrimitiveSignature::P256(_) => P256_VERIFY_GAS,
+        PrimitiveSignature::WebAuthn(sig) => WEBAUTHN_VERIFY_GAS + calldata_gas(&sig.webauthn_data),
+    }
 }
 
 /// Istanbul calldata cost of `input`: one token per zero byte, four per nonzero byte.
@@ -245,4 +258,192 @@ fn calldata_gas(input: &[u8]) -> u64 {
 }
 
 #[cfg(test)]
-mod tests;
+mod tests {
+    use super::*;
+    use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
+    use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_primitives::transaction::{
+        ConfigurableAccountConfig, ConfigurableAccountOwner, ConfigurableAccountSignature,
+        tt_signature::{SIGNATURE_TYPE_P256, SIGNATURE_TYPE_WEBAUTHN},
+    };
+
+    fn sign_recover(hash: B256, signature: Vec<u8>) -> Result<Address> {
+        SignatureVerifier::new().recover(hash, Bytes::from(signature))
+    }
+
+    #[test]
+    fn keychain_verification_rejects_configurable_account() -> eyre::Result<()> {
+        let account = Address::repeat_byte(1);
+        let configurable_account = ConfigurableAccountSignature::try_new(
+            Address::repeat_byte(2),
+            ConfigurableAccountConfig {
+                salt: B256::ZERO,
+                version: 1,
+                threshold: 1,
+                owners: vec![ConfigurableAccountOwner {
+                    owner: Address::repeat_byte(3),
+                    weight: 1,
+                }],
+            },
+            vec![PrimitiveSignature::default()],
+        )
+        .unwrap();
+        let signature =
+            TempoSignature::Keychain(KeychainSignature::new(account, configurable_account));
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
+        StorageCtx::enter(&mut storage, || {
+            let verifier = SignatureVerifier::new();
+            for result in [
+                verifier.verify_keychain(account, B256::ZERO, signature.to_bytes()),
+                verifier.verify_keychain_admin(account, B256::ZERO, signature.to_bytes()),
+            ] {
+                assert_eq!(
+                    result.unwrap_err(),
+                    SignatureVerifierError::invalid_format().into()
+                );
+            }
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_verify_secp256k1_valid() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        StorageCtx::enter(&mut storage, || {
+            let signer = PrivateKeySigner::random();
+            let hash = B256::repeat_byte(0xAA);
+            let sig = signer.sign_hash_sync(&hash)?;
+            let sig_bytes = sig.as_bytes().to_vec();
+            assert_eq!(sig_bytes.len(), 65);
+
+            let result = sign_recover(hash, sig_bytes)?;
+            assert_eq!(result, signer.address());
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_verify_p256_valid() -> eyre::Result<()> {
+        use p256::{ecdsa::SigningKey, elliptic_curve::rand_core::OsRng};
+        use tempo_primitives::transaction::tt_signature::{derive_p256_address, normalize_p256_s};
+
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        StorageCtx::enter(&mut storage, || {
+            let signing_key = SigningKey::random(&mut OsRng);
+            let verifying_key = signing_key.verifying_key();
+            let encoded = verifying_key.to_encoded_point(false);
+            let pub_key_x =
+                B256::from_slice(encoded.x().ok_or_else(|| eyre::eyre!("missing x coord"))?);
+            let pub_key_y =
+                B256::from_slice(encoded.y().ok_or_else(|| eyre::eyre!("missing y coord"))?);
+            let expected_address = derive_p256_address(&pub_key_x, &pub_key_y);
+
+            let hash = B256::repeat_byte(0xBB);
+            let (signature, _) = signing_key.sign_prehash_recoverable(hash.as_slice())?;
+            let r = B256::from_slice(&signature.r().to_bytes());
+            let s =
+                normalize_p256_s(&signature.s().to_bytes()).expect("p256 crate produces valid s");
+
+            // Build encoded P256 signature: 0x01 || r || s || x || y || prehash(0)
+            let mut sig_bytes = Vec::new();
+            sig_bytes.push(SIGNATURE_TYPE_P256);
+            sig_bytes.extend_from_slice(r.as_slice());
+            sig_bytes.extend_from_slice(s.as_slice());
+            sig_bytes.extend_from_slice(pub_key_x.as_slice());
+            sig_bytes.extend_from_slice(pub_key_y.as_slice());
+            sig_bytes.push(0); // pre_hash = false
+            assert_eq!(sig_bytes.len(), 130);
+
+            let result = sign_recover(hash, sig_bytes)?;
+            assert_eq!(result, expected_address);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_verify_empty_signature_reverts() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        StorageCtx::enter(&mut storage, || {
+            let result = sign_recover(B256::ZERO, vec![]);
+            assert!(result.is_err());
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_verify_secp256k1_wrong_length_reverts() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        StorageCtx::enter(&mut storage, || {
+            // 64 bytes — not 65
+            let result = sign_recover(B256::ZERO, vec![0u8; 64]);
+            assert!(result.is_err());
+            // 66 bytes — not 65
+            let result = sign_recover(B256::ZERO, vec![0u8; 66]);
+            assert!(result.is_err());
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_verify_p256_wrong_length_reverts() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        StorageCtx::enter(&mut storage, || {
+            // 0x01 prefix + 128 bytes (should be 129)
+            let mut sig = vec![SIGNATURE_TYPE_P256];
+            sig.extend_from_slice(&[0u8; 128]);
+            let result = sign_recover(B256::ZERO, sig);
+            assert!(result.is_err());
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_verify_webauthn_too_short_reverts() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        StorageCtx::enter(&mut storage, || {
+            // 0x02 prefix + 127 bytes (min is 128)
+            let mut sig = vec![SIGNATURE_TYPE_WEBAUTHN];
+            sig.extend_from_slice(&[0u8; 127]);
+            let result = sign_recover(B256::ZERO, sig);
+            assert!(result.is_err());
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_verify_webauthn_too_long_reverts() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        StorageCtx::enter(&mut storage, || {
+            // 0x02 prefix + 2049 bytes (max is 2048)
+            let mut sig = vec![SIGNATURE_TYPE_WEBAUTHN];
+            sig.extend_from_slice(&[0u8; 2049]);
+            let result = sign_recover(B256::ZERO, sig);
+            assert!(result.is_err());
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_verify_unknown_type_reverts() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        StorageCtx::enter(&mut storage, || {
+            let mut sig = vec![0x05];
+            sig.extend_from_slice(&[0u8; 129]);
+            let result = sign_recover(B256::ZERO, sig);
+            assert!(result.is_err());
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_verify_invalid_secp256k1_signature_reverts() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        StorageCtx::enter(&mut storage, || {
+            let result = sign_recover(B256::ZERO, vec![0u8; 65]);
+            assert!(result.is_err());
+            Ok(())
+        })
+    }
+}

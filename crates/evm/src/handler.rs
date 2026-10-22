@@ -211,11 +211,11 @@ fn calculate_key_authorization_gas(
     key_auth: &tempo_primitives::transaction::SignedKeyAuthorization,
     gas_params: &GasParams,
     spec: TempoHardfork,
-) -> Result<(u64, u64), TempoPrecompileError> {
+) -> (u64, u64) {
     // All signature types pay ECRECOVER_GAS (3k) as the baseline since
     // primitive_signature_verification_gas assumes ecrecover is already in base 21k.
     // For KeyAuthorization, we're doing an additional signature verification.
-    let sig_gas = ECRECOVER_GAS + account_signature_verification_gas(&key_auth.signature)?;
+    let sig_gas = ECRECOVER_GAS + account_signature_verification_gas(&key_auth.signature);
 
     let num_limits = key_auth
         .authorization
@@ -273,13 +273,13 @@ fn calculate_key_authorization_gas(
         let state_gas =
             u64::from(gas_params.get(GasId::SstoreSetState)).saturating_mul(num_sstores);
 
-        Ok((regular_gas, state_gas))
+        (regular_gas, state_gas)
     } else {
         // Pre-T1B: Original heuristic constants
-        Ok((
+        (
             KEY_AUTH_BASE_GAS + sig_gas + num_limits * KEY_AUTH_PER_LIMIT_GAS,
             0,
-        ))
+        )
     }
 }
 
@@ -288,7 +288,7 @@ fn key_authorization_gas(
     authorization: &tempo_primitives::transaction::SignedKeyAuthorization,
     host: &Evm<'_, TempoEvmTypes>,
     spec: TempoHardfork,
-) -> Result<(u64, u64), TempoPrecompileError> {
+) -> (u64, u64) {
     calculate_key_authorization_gas(authorization, &host.version().gas_params, spec)
 }
 
@@ -309,7 +309,10 @@ fn key_authorization_gas(
 ///   - Pre-T1B: 27k base + 3k ecrecover + 22k per spending limit
 ///   - T1B+: ecrecover + SLOAD + SSTORE × (1 + N limits)
 /// - Floor gas calculation (EIP-7623, Prague+)
-fn intrinsic_gas(host: &Evm<'_, TempoEvmTypes>, aa: &TempoAaTx) -> HandlerResult<(u64, u64, u64)> {
+fn intrinsic_gas(
+    host: &Evm<'_, TempoEvmTypes>,
+    aa: &TempoAaTx,
+) -> Result<(u64, u64, u64), TempoInvalidTransaction> {
     let signed = aa.inner();
     let tx = signed.tx();
     let spec = host.config_spec_id();
@@ -320,7 +323,7 @@ fn intrinsic_gas(host: &Evm<'_, TempoEvmTypes>, aa: &TempoAaTx) -> HandlerResult
     let mut tokens = 0u64;
 
     // 2. Signature verification gas
-    regular = regular.saturating_add(tempo_signature_verification_gas(signed.signature())?);
+    regular = regular.saturating_add(tempo_signature_verification_gas(signed.signature()));
 
     // 3. Per-call overhead: cold account access for calls after the first. The 21k base stipend
     // already covers the first call's target access.
@@ -336,7 +339,7 @@ fn intrinsic_gas(host: &Evm<'_, TempoEvmTypes>, aa: &TempoAaTx) -> HandlerResult
     for authorization in &tx.tempo_authorization_list {
         regular = regular
             .saturating_add(u64::from(params.get(GasId::TxEip7702PerEmptyAccountCost)))
-            .saturating_add(tempo_signature_verification_gas(authorization.signature())?);
+            .saturating_add(tempo_signature_verification_gas(authorization.signature()));
         state = state.saturating_add(params.eip7702_auth_state_gas());
         if spec.is_t1() && authorization.nonce == 0 {
             // TIP-1000: Storage pricing updates for launch
@@ -349,7 +352,7 @@ fn intrinsic_gas(host: &Evm<'_, TempoEvmTypes>, aa: &TempoAaTx) -> HandlerResult
     // 5. Key authorization costs (if present)
     if let Some(authorization) = &tx.key_authorization {
         let (auth_regular, auth_state) =
-            calculate_key_authorization_gas(authorization, params, spec)?;
+            calculate_key_authorization_gas(authorization, params, spec);
         regular = regular.saturating_add(auth_regular);
         state = state.saturating_add(auth_state);
     }
@@ -359,7 +362,7 @@ fn intrinsic_gas(host: &Evm<'_, TempoEvmTypes>, aa: &TempoAaTx) -> HandlerResult
         // Note: Transaction value is not allowed in AA transactions as there is no balances in accounts yet.
         // Check added in https://github.com/tempoxyz/tempo/pull/759
         if !call.value.is_zero() {
-            return Err(TempoInvalidTransaction::ValueTransferNotAllowedInAATx.into());
+            return Err(TempoInvalidTransaction::ValueTransferNotAllowedInAATx);
         }
         // 4a. Calldata gas using EVM2's token pricing.
         tokens = tokens.saturating_add(calldata_tokens(&call.input));
@@ -495,9 +498,7 @@ fn validate_key_authorization(
         return Err(ConfigurableAccountError::UnsupportedContext.into());
     }
 
-    // Configurable-account roles are bound by `configurable_account::verify` instead.
-    let native = aa.native_authorizations().iter().any(Option::is_some);
-    let access_key = if native { None } else { access_key_id(aa)? };
+    let access_key = access_key_id(aa)?;
     let same_tx_auth_use = access_key == Some(key_auth.key_id);
     if access_key.is_some() && !same_tx_auth_use && !spec.is_t6() {
         return Err(TempoInvalidTransaction::AccessKeyCannotAuthorizeOtherKeys);
@@ -544,14 +545,10 @@ fn validate_key_authorization(
         });
     }
 
-    let signer = (!native || !spec.is_t6())
-        .then(|| key_auth.recover_signer())
-        .transpose()
+    let signer = key_auth
+        .recover_account()
         .map_err(|_| TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed)?;
-    if let Some(signer) = signer
-        && !spec.is_t6()
-        && signer != aa.signer()
-    {
+    if !spec.is_t6() && signer != aa.signer() {
         return Err(TempoInvalidTransaction::KeyAuthorizationNotSignedByRoot {
             expected: aa.signer(),
             actual: signer,
@@ -577,9 +574,7 @@ fn validate_key_authorization(
         });
     }
 
-    if spec.is_t6()
-        && let Some(signer) = signer
-    {
+    if spec.is_t6() {
         if signer != aa.signer() && key_auth.account.is_none() {
             return Err(TempoInvalidTransaction::KeychainValidationFailed {
                 reason: "admin-signed key authorization account mismatch".into(),
@@ -1462,6 +1457,8 @@ fn prepare_aa(
     // Route to the AA gas calculation and validation path.
     let (mut intrinsic, mut initial_state_gas, floor_gas) =
         intrinsic_gas(request.host, request.tx.inner())?;
+    intrinsic = intrinsic.saturating_add(native_gas);
+    initial_state_gas = initial_state_gas.saturating_add(native_state_gas);
     let (nonce_gas, nonce_state_gas) = nonce_intrinsic_gas(request.host, request.tx.inner());
 
     // For T0+, include 2D nonce gas in validation (charged upfront)
@@ -1505,13 +1502,6 @@ fn prepare_aa(
 
         // Recheck the complete cost here, including Genesis nonce gas added after
         // initial validation. This CREATE case must not use the unbounded gas fallback.
-        validate_intrinsic_gas(tx.gas_limit, intrinsic, initial_state_gas)?;
-    }
-    intrinsic = intrinsic.saturating_add(native_gas);
-    initial_state_gas = initial_state_gas.saturating_add(native_state_gas);
-    // Recheck only the configurable-account costs: Genesis 2D nonce gas is added after the
-    // historical sufficiency check above.
-    if native_gas != 0 || native_state_gas != 0 {
         validate_intrinsic_gas(tx.gas_limit, intrinsic, initial_state_gas)?;
     }
 
