@@ -2587,16 +2587,15 @@ fn grant_tx(f: &Fixture, nonce: u64, key_type: SignatureType, key: Address) -> A
     })
 }
 
-/// Asserts that `error` is the keychain's signature type mismatch.
-fn assert_type_mismatch(error: TempoInvalidTransaction) {
-    assert!(
-        matches!(
-            &error,
-            TempoInvalidTransaction::KeychainValidationFailed { reason }
-                if reason.contains("SignatureTypeMismatch")
-        ),
-        "{error:?}"
-    );
+/// The keychain's rejection of a `signature` type for a key stored as `stored`.
+fn type_mismatch(stored: SignatureType, signature: SignatureType) -> TempoInvalidTransaction {
+    let error = TempoPrecompileError::from(AccountKeychainError::signature_type_mismatch(
+        stored.into(),
+        signature.into(),
+    ));
+    TempoInvalidTransaction::KeychainValidationFailed {
+        reason: format!("{error:?}"),
+    }
 }
 
 /// The environment of `tx` sent by `sender`, optionally as a plain RPC simulation request.
@@ -2997,7 +2996,10 @@ fn retired_root_rejects_delegated_roles() {
         &unmigrated_config,
         &unmigrated_owner,
     );
-    assert_type_mismatch(rejection(&mut f, &tx, account));
+    assert_eq!(
+        rejection(&mut f, &tx, account),
+        type_mismatch(SignatureType::Secp256k1, SignatureType::ConfigurableAccount)
+    );
 
     // A configurable delegate grant does not accept a primitive signature that recovers to its
     // key ID.
@@ -3011,7 +3013,10 @@ fn retired_root_rejects_delegated_roles() {
     let result = f.run(&tx);
     assert!(result.status, "{result:?}");
     let tx = keychain_tx(&f, &primitive_delegate, 8, vec![f.getter()]);
-    assert_type_mismatch(rejection(&mut f, &tx, account));
+    assert_eq!(
+        rejection(&mut f, &tx, account),
+        type_mismatch(SignatureType::ConfigurableAccount, SignatureType::Secp256k1)
+    );
 }
 
 /// A primitive admin access key that migrated signs grants for its parent through its owner
