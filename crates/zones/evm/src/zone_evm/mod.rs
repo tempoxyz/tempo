@@ -6,6 +6,7 @@ mod validation;
 pub(crate) use contract_creation::zone_execution_config;
 pub use validation::validate_transaction;
 
+use crate::executor::ZoneTransactionKind;
 use alloy_consensus::transaction::Recovered;
 use alloy_primitives::B256;
 use evm2::{
@@ -68,9 +69,13 @@ impl<L1: L1StorageReader> ZoneTxHandler<L1> {
 
         // Mirrored registry values depend on the anchor, but the accepted cache is keyed by slot
         // only. Keep its entries only while they were loaded at this transaction's anchor.
-        // `advanceTempo` changes the anchor mid-transaction, so it must run on an empty cache;
-        // `ZoneBlockPhase` makes it the first transaction of a fresh per-block EVM.
-        if self.l1.select_registry_cache_anchor(initial_anchor) {
+        // Anchor-changing transactions read at a new anchor without selecting it first, so a
+        // cache hit would hide the change: they always start from an empty registry cache.
+        let changes_anchor = matches!(
+            ZoneTransactionKind::classify(request.envelope.transaction()),
+            ZoneTransactionKind::AdvanceTempo | ZoneTransactionKind::AdvanceTempoHeaders
+        );
+        if self.l1.select_registry_cache_anchor(initial_anchor) || changes_anchor {
             request
                 .host
                 .state_mut()

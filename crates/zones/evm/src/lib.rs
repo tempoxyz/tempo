@@ -508,15 +508,21 @@ mod tests {
 
     #[test]
     fn advance_tempo_keeps_overlay_reads_on_child_anchor() {
-        check_registry_reads_after_advance(true);
+        check_registry_reads_after_advance(true, false);
     }
 
     #[test]
     fn discarded_advance_tempo_preserves_parent_registry_anchor() {
-        check_registry_reads_after_advance(false);
+        check_registry_reads_after_advance(false, false);
     }
 
-    fn check_registry_reads_after_advance(commit_advance: bool) {
+    #[test]
+    fn advance_tempo_ignores_registry_entries_cached_at_parent_anchor() {
+        check_registry_reads_after_advance(true, true);
+        check_registry_reads_after_advance(false, true);
+    }
+
+    fn check_registry_reads_after_advance(commit_advance: bool, warm_parent_cache: bool) {
         const PARENT: u64 = 0;
         const CHILD: u64 = 1;
         let portal = Address::repeat_byte(0x42);
@@ -624,6 +630,12 @@ mod tests {
         }
         .abi_encode();
 
+        if warm_parent_cache {
+            let result = evm.transact(&policy_id_tx).unwrap().discard();
+            assert!(result.status, "registry read reverted: {result:?}");
+        }
+        let reads_before_advance = reader.storage_requests().len();
+
         let tx = system_tx_env(ZONE_INBOX_ADDRESS, calldata.into());
         let executed = evm
             .transact(&tx)
@@ -643,7 +655,7 @@ mod tests {
             "transaction completion must clear the shared L1 anchor"
         );
 
-        let requests = reader.storage_requests();
+        let requests = reader.storage_requests()[reads_before_advance..].to_vec();
         let portal = ZonePortalStorage::new(portal);
         let child_policy_request = (TIP403_REGISTRY_ADDRESS, B256::from(policy_slot), CHILD);
         let parent_policy_request = (TIP403_REGISTRY_ADDRESS, B256::from(policy_slot), PARENT);

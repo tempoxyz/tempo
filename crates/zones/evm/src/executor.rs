@@ -93,7 +93,7 @@ impl ZoneBlockPhase {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ZoneTransactionKind {
+pub(crate) enum ZoneTransactionKind {
     AdvanceTempo,
     AdvanceTempoHeaders,
     Regular,
@@ -102,7 +102,7 @@ enum ZoneTransactionKind {
 }
 
 impl ZoneTransactionKind {
-    fn classify(tx: &TempoTxEnvelope) -> Self {
+    pub(crate) fn classify(tx: &TempoTxEnvelope) -> Self {
         if !tx.is_system_tx() {
             return Self::Regular;
         }
