@@ -59,6 +59,7 @@ pub(crate) async fn init_finalizations_archive<TContext>(
     partition_prefix: &str,
     page_cache: CacheRef,
     epoch_strategy: &FixedEpocher,
+    freezer_table_initial_size: u32,
 ) -> eyre::Result<
     immutable::Archive<TContext, Digest, Finalization<Scheme<PublicKey, MinSig>, Digest>>,
 >
@@ -73,7 +74,7 @@ where
             freezer_table_partition: format!(
                 "{partition_prefix}-{FINALIZATIONS_BY_HEIGHT}-freezer-table"
             ),
-            freezer_table_initial_size: BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES,
+            freezer_table_initial_size,
             freezer_table_resize_frequency: FREEZER_TABLE_RESIZE_FREQUENCY,
             freezer_table_resize_chunk_size: FREEZER_TABLE_RESIZE_CHUNK_SIZE,
             freezer_key_partition: format!(
@@ -234,10 +235,15 @@ where
     P: BlockIdReader + BlockReader<Block = tempo_primitives::Block> + ?Sized,
 {
     let page_cache = CacheRef::from_pooler(context, BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
-    let archive =
-        init_finalizations_archive(context, crate::PARTITION_PREFIX, page_cache, epoch_strategy)
-            .await
-            .wrap_err("failed to open finalizations-by-height archive")?;
+    let archive = init_finalizations_archive(
+        context,
+        crate::PARTITION_PREFIX,
+        page_cache,
+        epoch_strategy,
+        BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES,
+    )
+    .await
+    .wrap_err("failed to open finalizations-by-height archive")?;
 
     if archive.last_index().is_none() {
         return Ok(None);

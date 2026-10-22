@@ -29,6 +29,7 @@ fn finalizations_archive_tip_epoch_must_match_its_height() {
                 "test",
                 fresh_page_cache(&context),
                 &epoch_strategy,
+                BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES,
             )
             .await
             .unwrap();
@@ -49,6 +50,7 @@ fn finalizations_archive_tip_epoch_must_match_its_height() {
                 "test",
                 fresh_page_cache(&context),
                 &epoch_strategy,
+                BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES,
             )
             .await;
             if cert_epoch == expected_epoch {

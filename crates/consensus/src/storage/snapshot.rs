@@ -10,6 +10,7 @@ use eyre::{OptionExt as _, WrapErr as _, eyre};
 use reth_provider::{BlockIdReader, BlockReader};
 
 use crate::{
+    config::BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES,
     consensus::{Digest, block::Block},
     storage::{
         BUFFER_POOL_CAPACITY, BUFFER_POOL_PAGE_SIZE, init_finalizations_archive,
@@ -81,6 +82,7 @@ where
         storage_partition_prefix,
         page_cache.clone(),
         epoch_strategy,
+        BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES,
     )
     .await
     .wrap_err("failed to open finalizations-by-height archive")?;
@@ -151,6 +153,7 @@ where
         storage_partition_prefix,
         page_cache.clone(),
         epoch_strategy,
+        BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES,
     )
     .await
     .wrap_err("failed to open snapshot finalizations-by-height archive")?;
@@ -469,6 +472,7 @@ mod tests {
             "test-snapshot",
             fresh_page_cache(context),
             &FixedEpocher::new(commonware_utils::NZU64!(10)),
+            BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES,
         )
         .await
         .expect("init finalizations archive");

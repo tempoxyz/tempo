@@ -939,6 +939,8 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
             c.engine.suppress_persistence_during_build = true;
             c.engine.share_sparse_trie_with_payload_builder =
                 share_sparse_trie_with_payload_builder;
+            // In MB. The 4 GB default per node dominated e2e memory, capping test parallelism.
+            c.engine.cross_block_cache_size = 16;
             c
         });
 

@@ -95,6 +95,9 @@ pub struct Builder<TBlocker, TPeerManager> {
     /// Number of recently finalized blocks retained in the prunable archive
     /// passed to the marshal actor. Older blocks are served from reth.
     pub finalized_blocks_retention: u64,
+    /// Initial entry count of the finalizations archive's freezer table,
+    /// used only when the table is created.
+    pub freezer_table_initial_size: u32,
 }
 
 impl<TBlocker, TPeerManager> Builder<TBlocker, TPeerManager>
@@ -173,6 +176,7 @@ where
                 ),
                 max_pending_acks: MAX_PENDING_ACKS,
                 finalized_blocks_retention: self.finalized_blocks_retention,
+                freezer_table_initial_size: self.freezer_table_initial_size,
                 epoch_strategy: epoch_strategy.clone(),
                 scheme_provider: scheme_provider.clone(),
             },
