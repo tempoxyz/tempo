@@ -71,7 +71,7 @@ impl BestTransactionsPrewarming {
         Txs: BestTransactions<Item = BestTransaction>,
         Provider: StateProviderFactory + Clone + 'static,
     {
-        let pool = Arc::clone(&ctx.prewarm.stateful_pool);
+        let pool = WorkerStatefulPool::new(Arc::clone(ctx.prewarm.executor.prewarming_pool()));
 
         pool.in_place_scope(|scope| {
             let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
@@ -100,8 +100,9 @@ impl BestTransactionsPrewarming {
                         .send(Some(PrewarmedTransaction::without_replay(tx.clone())));
                 }
 
+                let pool = Arc::clone(&pool);
                 scope.spawn(move |_| {
-                    let tx = Self::prewarm_transaction(prewarm, tx, expiring_nonce_offset);
+                    let tx = Self::prewarm_transaction(prewarm, &pool, tx, expiring_nonce_offset);
                     if let Some(transactions_tx) = transactions_tx {
                         let _ = transactions_tx.send(Some(tx));
                     }
@@ -163,6 +164,7 @@ impl BestTransactionsPrewarming {
     #[instrument(level = "trace", skip_all, fields(parallel = prewarm.parallel, tx_hash = ?tx.hash()))]
     fn prewarm_transaction<Provider>(
         prewarm: PrewarmingExecutionContext<Provider>,
+        pool: &WorkerStatefulPool,
         tx: BestTransaction,
         expiring_nonce_offset: Option<usize>,
     ) -> PrewarmedTransaction
@@ -173,7 +175,7 @@ impl BestTransactionsPrewarming {
             return PrewarmedTransaction::without_replay(tx);
         }
 
-        let replay = prewarm.stateful_pool.get_or_init(
+        let replay = pool.get_or_init(
             || prewarm.evm_for_ctx(),
             |state| {
                 let evm = state.as_mut()?;
@@ -347,7 +349,6 @@ pub(crate) struct PrewarmingExecutionContext<Provider> {
     cache: Option<SavedCache>,
     evm_env: EvmEnvFor<TempoEvmConfig>,
     stop: Arc<AtomicBool>,
-    stateful_pool: Arc<WorkerStatefulPool>,
     parallel: bool,
 }
 
@@ -363,7 +364,6 @@ where
         evm_env: EvmEnvFor<TempoEvmConfig>,
         parallel: bool,
     ) -> Self {
-        let stateful_pool = WorkerStatefulPool::new(Arc::clone(executor.prewarming_pool()));
         Self {
             provider,
             executor,
@@ -371,7 +371,6 @@ where
             cache,
             evm_env,
             stop: Arc::new(AtomicBool::new(false)),
-            stateful_pool,
             parallel,
         }
     }
@@ -734,7 +733,6 @@ mod tests {
         let evm_env = evm_config
             .next_evm_env(&parent_header, &attributes)
             .expect("test next block env");
-        let stateful_pool = WorkerStatefulPool::new(Arc::clone(executor.prewarming_pool()));
         PrewarmingExecutionContext {
             provider,
             executor,
@@ -742,7 +740,6 @@ mod tests {
             cache: None,
             evm_env,
             stop: Arc::default(),
-            stateful_pool,
             parallel,
         }
     }
@@ -1025,15 +1022,13 @@ mod tests {
         context.evm_env.block_env.basefee = 0;
 
         let pool = Arc::new(WorkerPool::new(1, "prewarm-actions-test"));
-        context.stateful_pool = WorkerStatefulPool::new(Arc::clone(&pool));
-        context
-            .stateful_pool
-            .init::<PrewarmEvmState>(|_| context.evm_for_ctx());
+        let stateful_pool = WorkerStatefulPool::new(Arc::clone(&pool));
+        stateful_pool.init::<PrewarmEvmState>(|_| context.evm_for_ctx());
 
         pool.install_fn(|| {
             let failed_action =
                 StorageAction::Sstore(Address::random(), U256::ONE, U256::from(2), U256::from(3));
-            context.stateful_pool.get_or_init(
+            stateful_pool.get_or_init(
                 || context.evm_for_ctx(),
                 |state| {
                     let evm = state.as_mut().expect("prewarm EVM");
@@ -1045,11 +1040,12 @@ mod tests {
             let sender = Address::random();
             let failed = BestTransactionsPrewarming::prewarm_transaction(
                 context.clone(),
+                &stateful_pool,
                 test_payment_tx(sender, 0),
                 None,
             );
             assert!(failed.replay.is_none());
-            context.stateful_pool.get_or_init(
+            stateful_pool.get_or_init(
                 || context.evm_for_ctx(),
                 |state| {
                     let evm = state.as_mut().expect("prewarm EVM");
@@ -1059,6 +1055,7 @@ mod tests {
 
             let successful = BestTransactionsPrewarming::prewarm_transaction(
                 context.clone(),
+                &stateful_pool,
                 test_payment_tx(sender, 500_000),
                 None,
             );
@@ -1159,21 +1156,22 @@ mod tests {
         let mut second = prewarming_context(executor, false);
         second.evm_env.block_env.beneficiary = Address::repeat_byte(2);
         let pool = Arc::new(WorkerPool::new(1, "prewarm-run-test"));
-        first.stateful_pool = WorkerStatefulPool::new(Arc::clone(&pool));
-        second.stateful_pool = WorkerStatefulPool::new(Arc::clone(&pool));
+        let first_pool = WorkerStatefulPool::new(Arc::clone(&pool));
+        let second_pool = WorkerStatefulPool::new(Arc::clone(&pool));
         let foreign = WorkerStatefulPool::new(Arc::clone(&pool));
         foreign.init(|_| String::from("validation worker state"));
 
         pool.install_fn(|| {
-            for context in [&first, &second] {
+            for (context, stateful_pool) in [(&first, &first_pool), (&second, &second_pool)] {
                 let tx = test_tx(Address::random(), 0);
                 let warmed = BestTransactionsPrewarming::prewarm_transaction(
                     context.clone(),
+                    stateful_pool,
                     tx.clone(),
                     None,
                 );
                 assert_eq!(warmed.tx.hash(), tx.hash());
-                context.stateful_pool.get(|state: &PrewarmEvmState| {
+                stateful_pool.get(|state: &PrewarmEvmState| {
                     let evm = state.as_ref().unwrap();
                     assert_eq!(
                         evm.block().beneficiary,
@@ -1183,15 +1181,15 @@ mod tests {
             }
         });
 
-        drop(first);
+        drop(first_pool);
         pool.install_fn(|| {
-            second.stateful_pool.get(|state: &PrewarmEvmState| {
+            second_pool.get(|state: &PrewarmEvmState| {
                 assert_eq!(
                     state.as_ref().unwrap().block().beneficiary,
                     second.evm_env.block_env.beneficiary,
                 );
             })
         });
-        drop(second);
+        drop(second_pool);
     }
 }
