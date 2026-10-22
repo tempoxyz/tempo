@@ -18,18 +18,32 @@ workspace = true
 
 [dependencies]
 alloy-contract = { workspace = true, optional = true }
+alloy-network = { workspace = true, optional = true }
+alloy-provider = { workspace = true, optional = true }
+alloy-rpc-types-eth = { workspace = true, optional = true }
+alloy-transport = { workspace = true, optional = true }
 alloy-primitives.workspace = true
 alloy-sol-types = { workspace = true, features = ["json"] }
+k256 = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 tempo-hardfork.workspace = true
 
 [dev-dependencies]
 alloy-primitives = { workspace = true, features = ["rand"] }
 alloy-provider = { workspace = true, features = ["reqwest", "reqwest-rustls-tls"] }
+alloy-transport.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [features]
 default = ["std", "rpc"]
 std = ["alloy-primitives/std", "alloy-sol-types/std", "serde?/std", "tempo-hardfork/std"]
-rpc = ["dep:alloy-contract"]
-serde = ["dep:serde", "alloy-primitives/serde", "tempo-hardfork/serde"]
+rpc = [
+    "dep:alloy-contract",
+    "dep:alloy-network",
+    "dep:alloy-provider",
+    "dep:alloy-rpc-types-eth",
+    "dep:alloy-transport",
+    "dep:k256",
+    "alloy-primitives/k256",
+]
+serde = ["dep:serde", "alloy-primitives/serde", "k256?/serde", "tempo-hardfork/serde"]

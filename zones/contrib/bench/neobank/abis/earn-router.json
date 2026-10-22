@@ -1,0 +1,30 @@
+[
+  {
+    "type": "event",
+    "name": "EarnDeposit",
+    "anonymous": false,
+    "inputs": [
+      {"name":"actionId","type":"bytes32","indexed":true},
+      {"name":"earnVault","type":"address","indexed":true},
+      {"name":"inputToken","type":"address","indexed":true},
+      {"name":"inputAmount","type":"uint256","indexed":false},
+      {"name":"vaultAssets","type":"uint256","indexed":false},
+      {"name":"earnShares","type":"uint256","indexed":false},
+      {"name":"zoneDepositHash","type":"bytes32","indexed":false}
+    ]
+  },
+  {
+    "type": "event",
+    "name": "EarnRedeem",
+    "anonymous": false,
+    "inputs": [
+      {"name":"actionId","type":"bytes32","indexed":true},
+      {"name":"earnVault","type":"address","indexed":true},
+      {"name":"outputToken","type":"address","indexed":true},
+      {"name":"earnShares","type":"uint256","indexed":false},
+      {"name":"vaultAssets","type":"uint256","indexed":false},
+      {"name":"outputAmount","type":"uint256","indexed":false},
+      {"name":"zoneDepositHash","type":"bytes32","indexed":false}
+    ]
+  }
+]

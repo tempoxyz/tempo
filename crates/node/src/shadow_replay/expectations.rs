@@ -4,12 +4,11 @@
 //! accepts it.
 
 use super::analysis::{AccountDelta, Field};
-use crate::shadow_replay::{Boundary, Evidence, ObservedTx, TxOutcome, fees::post_fee_slot_change};
+use crate::shadow_replay::{Boundary, Evidence, ObservedTx, fees::post_fee_slot_change};
 use alloy::{
     consensus::Transaction as _,
-    primitives::{Address, B256, KECCAK256_EMPTY, TxKind, U256, address, keccak256},
+    primitives::{B256, KECCAK256_EMPTY, U256, keccak256},
 };
-use reth_revm::context_interface::cfg::gas::CALL_STIPEND;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::{
     precompiles::*,
@@ -18,13 +17,8 @@ use tempo_contracts::{
         ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
     },
 };
-use tempo_precompiles::{
-    abi_decoder_config_for_spec, storage::StorageAction, storage_credits::StorageCredits,
-    tip_fee_manager::amm::compute_amount_out,
-};
-use tempo_primitives::{
-    TempoAddressExt as _, TempoTxEnvelope, transaction::calc_gas_balance_spending,
-};
+use tempo_precompiles::{storage::StorageAction, tip_fee_manager::amm::compute_amount_out};
+use tempo_primitives::{TempoTxEnvelope, transaction::calc_gas_balance_spending};
 
 #[derive(Debug)]
 pub(crate) struct Expectation {
@@ -64,15 +58,6 @@ impl Context<'_> {
             && real_amount == calc_gas_balance_spending(real.gas.tx_gas_used(), price)
             && shadow_amount == calc_gas_balance_spending(shadow.gas.tx_gas_used(), price))
         .then_some((real_hash, shadow_hash))
-    }
-
-    /// Borrows all top-level calls (including AA subcalls) from the canonical transaction.
-    /// Internal EVM calls are not present in the transaction envelope.
-    fn call(&self) -> impl Iterator<Item = (TxKind, &[u8])> + '_ {
-        self.tx
-            .into_iter()
-            .flat_map(TempoTxEnvelope::calls)
-            .map(|(kind, input)| (kind, input.as_ref()))
     }
 }
 
@@ -134,120 +119,6 @@ const FEE_STATE: Expectation = Expectation {
     },
 };
 
-/// Storage accepted by a precompile-scoped expectation, including its TIP-1060 credit balance.
-fn precompile_storage(field: &Field, precompile: Address) -> bool {
-    field.name == "storage"
-        && (field.address == Some(precompile)
-            || (field.address == Some(STORAGE_CREDITS_ADDRESS)
-                && field.slot == Some(StorageCredits::slot(precompile))))
-}
-
-/// Returns whether T11 rejects `calldata` for the Tempo precompile at `address` only because of
-/// trailing bytes, which T12 accepts per TIP-1116.
-fn rejects_only_trailing_bytes(to: Address, calldata: &[u8]) -> bool {
-    fn check<C: alloy::sol_types::SolInterface>(calldata: &[u8]) -> Option<bool> {
-        let decodes =
-            |spec| C::abi_decode_with_config(calldata, abi_decoder_config_for_spec(spec)).is_ok();
-        C::valid_selector(*calldata.first_chunk::<4>()?)
-            .then(|| decodes(TempoHardfork::T12) && !decodes(TempoHardfork::T11))
-    }
-
-    // Mirrors the interfaces routed by each precompile's `dispatch!`.
-    match to {
-        TIP20_FACTORY_ADDRESS => check::<ITIP20Factory::ITIP20FactoryCalls>(calldata),
-        TIP20_CHANNEL_RESERVE_ADDRESS => {
-            check::<ITIP20ChannelReserve::ITIP20ChannelReserveCalls>(calldata)
-        }
-        ADDRESS_REGISTRY_ADDRESS => check::<IAddressRegistry::IAddressRegistryCalls>(calldata),
-        TIP403_REGISTRY_ADDRESS => check::<ITIP403Registry::ITIP403RegistryCalls>(calldata),
-        TIP_FEE_MANAGER_ADDRESS => check::<IFeeManager::IFeeManagerCalls>(calldata)
-            .or_else(|| check::<ITIPFeeAMM::ITIPFeeAMMCalls>(calldata)),
-        STABLECOIN_DEX_ADDRESS => check::<IStablecoinDEX::IStablecoinDEXCalls>(calldata),
-        NONCE_PRECOMPILE_ADDRESS => check::<INonce::INonceCalls>(calldata),
-        VALIDATOR_CONFIG_ADDRESS => check::<IValidatorConfig::IValidatorConfigCalls>(calldata),
-        ACCOUNT_KEYCHAIN_ADDRESS => check::<IAccountKeychain::IAccountKeychainCalls>(calldata),
-        VALIDATOR_CONFIG_V2_ADDRESS => {
-            check::<IValidatorConfigV2::IValidatorConfigV2Calls>(calldata)
-        }
-        SIGNATURE_VERIFIER_ADDRESS => {
-            check::<ISignatureVerifier::ISignatureVerifierCalls>(calldata)
-        }
-        RECEIVE_POLICY_GUARD_ADDRESS => {
-            check::<IReceivePolicyGuard::IReceivePolicyGuardCalls>(calldata)
-        }
-        STORAGE_CREDITS_ADDRESS => check::<IStorageCredits::IStorageCreditsCalls>(calldata),
-        CURRENT_COMMITTEE_ADDRESS => check::<ICurrentCommittee::ICurrentCommitteeCalls>(calldata),
-        ZONE_FACTORY_ADDRESS => check::<IZoneFactory::IZoneFactoryCalls>(calldata),
-        address if address.is_tip20() => check::<ITIP20::ITIP20Calls>(calldata)
-            .or_else(|| check::<IRolesAuth::IRolesAuthCalls>(calldata)),
-        _ => None,
-    }
-    .unwrap_or(false)
-}
-
-/// Accepts the effects of a direct precompile call that T11 rejected only for trailing bytes.
-const T12_ALLOW_PRECOMPILE_ABI_SUFFIX: Expectation = Expectation {
-    id: "t12.allow-abi-suffix",
-    check: |ctx, field| {
-        if !ctx.call().any(|(kind, calldata)| {
-            kind.to()
-                .is_some_and(|to| rejects_only_trailing_bytes(*to, calldata))
-        }) {
-            return None;
-        }
-
-        // After T11's empty-revert rejection, accept any T12 effect except tx invalidation.
-        let (real, _) = ctx.observed_txs()?;
-        (real.outcome == TxOutcome::Revert
-            && real.output_hash == KECCAK256_EMPTY
-            && field.name != "execution")
-            .then_some(())
-    },
-};
-
-const T12_TIP20_CHANNEL: Expectation = Expectation {
-    id: "t12.tip20-channel-reserve",
-    check: |ctx, field| {
-        if !precompile_storage(field, TIP20_CHANNEL_RESERVE_ADDRESS) {
-            return None;
-        }
-
-        let is_related = ctx
-            .call()
-            .any(|(kind, _)| matches!(kind.to(), Some(&TIP20_CHANNEL_RESERVE_ADDRESS)));
-
-        is_related.then_some(())?;
-        ctx.observed_txs().map(|_| ())
-    },
-};
-
-// LiFiDiamond swaps can call the DEX internally.
-const LIFI_DIAMOND: Address = address!("2cacae8e22418e65dcf7651c67aebe6288eb8243");
-
-// Uniswap Universal Router swaps can reach the DEX through a v4 hook.
-const UNISWAP_UNIVERSAL_ROUTER: Address = address!("182a927119d56008d921126764bf884221b10f59");
-
-const T12_STABLECOIN_DEX: Expectation = Expectation {
-    id: "t12.stablecoin-dex",
-    check: |ctx, field| {
-        if !precompile_storage(field, STABLECOIN_DEX_ADDRESS) {
-            return None;
-        }
-
-        let is_related = ctx.call().any(|(kind, _)| {
-            kind.to().is_some_and(|to| {
-                matches!(
-                    to,
-                    &STABLECOIN_DEX_ADDRESS | &LIFI_DIAMOND | &UNISWAP_UNIVERSAL_ROUTER
-                )
-            })
-        });
-
-        is_related.then_some(())?;
-        ctx.observed_txs().map(|_| ())
-    },
-};
-
 const T13_ZONE_RUNTIME_UPGRADE: Expectation = Expectation {
     id: "t13.zone-runtime-upgrade",
     check: |ctx, field| {
@@ -284,48 +155,15 @@ const T13_ZONE_RUNTIME_UPGRADE: Expectation = Expectation {
     },
 };
 
-/// Treats low-headroom success-to-halt transitions as T12 SSTORE sentry failures.
-const T12_SSTORE_SENTRY: Expectation = Expectation {
-    id: "t12.sstore-sentry",
-    check: |ctx, field| {
-        let (real, shadow) = ctx.observed_txs()?;
-        if real.outcome != TxOutcome::Success
-            || shadow.outcome != TxOutcome::Halt
-            || ctx
-                .tx?
-                .gas_limit()
-                .checked_sub(real.gas.total_gas_spent())?
-                > CALL_STIPEND
-            || field.name == "execution"
-        {
-            return None;
-        }
-
-        // This is a pre-refund gas-headroom heuristic, not proof of a sentry failure.
-        // SSTORE can occur in any contract, nested call, or AA batch.
-        Some(())
-    },
-};
-
 /// Fork-specific checks are ordered oldest-first; baseline fee normalization is added separately.
-const REGISTRY: &[(TempoHardfork, &[Expectation])] = &[
-    (
-        TempoHardfork::T12,
-        &[
-            T12_ALLOW_PRECOMPILE_ABI_SUFFIX,
-            T12_TIP20_CHANNEL,
-            T12_STABLECOIN_DEX,
-            T12_SSTORE_SENTRY,
-        ],
-    ),
-    (TempoHardfork::T13, &[T13_ZONE_RUNTIME_UPGRADE]),
-];
+const REGISTRY: &[(TempoHardfork, &[Expectation])] =
+    &[(TempoHardfork::T13, &[T13_ZONE_RUNTIME_UPGRADE])];
 
 pub(crate) fn between(
     canonical: TempoHardfork,
     candidate: TempoHardfork,
 ) -> Vec<&'static Expectation> {
-    // Gas-derived fee differences can occur for any fork pair, not just when T12 is new.
+    // Gas-derived fee differences can occur for any fork pair.
     std::iter::once(&FEE_STATE)
         .chain(
             REGISTRY
@@ -339,11 +177,11 @@ pub(crate) fn between(
 #[cfg(test)]
 mod tests {
     use super::{
-        super::{Block, RecoveredBlock, ReplayOutcome, TransitionState},
+        super::{Block, RecoveredBlock, ReplayOutcome, TransitionState, TxOutcome},
         *,
     };
     use crate::shadow_replay::analysis::{MAX_SAMPLES, Report};
-    use alloy::primitives::Signature;
+    use alloy::primitives::{Address, Signature};
     use reth_revm::{
         context::result::ResultGas,
         db::states::{StorageSlot, TransitionAccount},
@@ -401,20 +239,9 @@ mod tests {
                 .map(|rule| rule.id)
                 .collect::<Vec<_>>()
         };
-        assert_eq!(
-            ids(T11, T12),
-            [
-                FEE_STATE.id,
-                T12_ALLOW_PRECOMPILE_ABI_SUFFIX.id,
-                T12_TIP20_CHANNEL.id,
-                T12_STABLECOIN_DEX.id,
-                T12_SSTORE_SENTRY.id,
-            ]
-        );
+        assert_eq!(ids(T11, T12), [FEE_STATE.id]);
         assert_eq!(ids(T12, T13), [FEE_STATE.id, T13_ZONE_RUNTIME_UPGRADE.id]);
-        let mut combined = ids(T11, T12);
-        combined.extend(ids(T12, T13).into_iter().skip(1)); // baseline runs only once
-        assert_eq!(ids(T11, T13), combined);
+        assert_eq!(ids(T11, T13), ids(T12, T13));
         assert_eq!(ids(T12, T12), [FEE_STATE.id]);
         assert_eq!(ids(T13, T12), [FEE_STATE.id]);
     }
@@ -648,105 +475,5 @@ mod tests {
         let report = Report::analyze(&real, &shadow, &[], &block(vec![]));
         assert_eq!(report.unexplained, 1);
         assert_eq!(report.samples[0].1.field.name, "storage_reset");
-    }
-
-    #[test]
-    fn sentry_expectation_requires_low_gas_headroom_regardless_of_calls() {
-        let call = Call {
-            to: TxKind::Call(Address::repeat_byte(0x11)),
-            value: U256::ZERO,
-            input: Default::default(),
-        };
-        let mut real = evidence(&[32_366, 21_000]);
-        let mut shadow = evidence(&[35_212, 21_000]);
-        // Refunds lower receipt gas used, but do not increase gas available during execution.
-        tx_mut(&mut real, 0).gas = ResultGas::default()
-            .with_total_gas_spent(35_166)
-            .with_refunded(2_800);
-        let halted = tx_mut(&mut shadow, 0);
-        halted.outcome = TxOutcome::Halt;
-        halted.receipt_logs_hash = B256::repeat_byte(1);
-        halted.output_hash = KECCAK256_EMPTY;
-        write_slot(tx_mut(&mut real, 0), 900);
-        write_slot(tx_mut(&mut shadow, 0), 800);
-
-        let block = block(vec![signed_tx(vec![call.clone()])]);
-        let rules = between(TempoHardfork::T11, TempoHardfork::T12);
-        let report = Report::analyze(&real, &shadow, &rules, &block);
-        assert_eq!(report.outcome(&shadow), ReplayOutcome::Expected);
-        assert_eq!(report.expected, [(T12_SSTORE_SENTRY.id, 4)].into());
-
-        for gas_spent in [35_212 - CALL_STIPEND, 35_212] {
-            tx_mut(&mut real, 0).gas.set_total_gas_spent(gas_spent);
-            assert_eq!(
-                Report::analyze(&real, &shadow, &rules, &block).outcome(&shadow),
-                ReplayOutcome::Expected
-            );
-        }
-        for gas_spent in [35_212 - CALL_STIPEND - 1, 35_213] {
-            tx_mut(&mut real, 0).gas.set_total_gas_spent(gas_spent);
-            assert_eq!(
-                Report::analyze(&real, &shadow, &rules, &block).unexplained,
-                4
-            );
-        }
-        tx_mut(&mut real, 0).gas.set_total_gas_spent(35_166);
-        for outcome in [TxOutcome::Success, TxOutcome::Revert] {
-            tx_mut(&mut shadow, 0).outcome = outcome;
-            assert!(Report::analyze(&real, &shadow, &rules, &block).unexplained > 0);
-        }
-        tx_mut(&mut shadow, 0).outcome = TxOutcome::Halt;
-        tx_mut(&mut real, 0).outcome = TxOutcome::Revert;
-        assert_eq!(
-            Report::analyze(&real, &shadow, &rules, &block).unexplained,
-            4
-        );
-        tx_mut(&mut real, 0).outcome = TxOutcome::Success;
-
-        let field = Field {
-            name: "outcome",
-            address: None,
-            slot: None,
-            fee_associated: false,
-        };
-        for calls in [
-            vec![call.clone()],
-            vec![call.clone(), call.clone()],
-            vec![Call {
-                to: TxKind::Create,
-                ..call.clone()
-            }],
-            vec![Call {
-                to: TxKind::Call(LIFI_DIAMOND),
-                ..call.clone()
-            }],
-            vec![Call {
-                to: TxKind::Call(address!("20c0000000000000000000000000000000000001")),
-                ..call
-            }],
-        ] {
-            let tx = signed_tx(calls);
-            let ctx = Context {
-                boundary: Boundary::Transaction(0),
-                real: &real,
-                shadow: &shadow,
-                base_fee: None,
-                tx: Some(&tx),
-            };
-            assert!((T12_SSTORE_SENTRY.check)(&ctx, &field).is_some());
-        }
-
-        // No acceptance outside the activation boundary or at another transaction.
-        let rules = between(TempoHardfork::T12, TempoHardfork::T12);
-        assert_eq!(
-            Report::analyze(&real, &shadow, &rules, &block).unexplained,
-            4
-        );
-        tx_mut(&mut shadow, 1).outcome = TxOutcome::Halt;
-        let rules = between(TempoHardfork::T11, TempoHardfork::T12);
-        assert_eq!(
-            Report::analyze(&real, &shadow, &rules, &block).unexplained,
-            1
-        );
     }
 }

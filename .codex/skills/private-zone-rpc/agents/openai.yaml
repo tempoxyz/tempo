@@ -1,0 +1,4 @@
+interface:
+  display_name: "Private Zone RPC"
+  short_description: "Authenticate private Tempo Zone RPC endpoints"
+  default_prompt: "Use $private-zone-rpc to call web3_clientVersion on a private Tempo Zone RPC endpoint."

@@ -10,7 +10,7 @@ use commonware_runtime::{Runner as _, deterministic};
 use tempo_primitives::ed25519::PublicKey;
 
 use super::harness::{
-    ElCall, ForkchoiceStateExt as _, GENESIS, Harness, HarnessOptions, STARTUP_FCU,
+    ElCall, FakeMarshal, ForkchoiceStateExt as _, GENESIS, Harness, HarnessOptions, STARTUP_FCU,
     STARTUP_FCU_CALL, built_payload, make_block, make_block_with_proposer, round,
 };
 use crate::consensus::Digest;
@@ -404,6 +404,54 @@ fn redelivered_finalized_block_at_the_tracked_state_is_acknowledged() {
             ],
         );
         assert_eq!(h.execution.finalized(), Some((1, d1)),);
+    });
+}
+
+#[test_traced]
+fn finalized_block_above_the_reported_tip_is_acknowledged() {
+    deterministic::Runner::default().start(|context| async move {
+        let b1 = make_block(1, 1, GENESIS);
+        let b2 = make_block(2, 2, b1.digest());
+        let b3 = make_block(3, 3, b2.digest());
+        let b4 = make_block(4, 4, b3.digest());
+        let (d2, d3, d4) = (b2.digest(), b3.digest(), b4.digest());
+
+        let marshal = FakeMarshal::new();
+        marshal.add_block(b1);
+        marshal.add_block(b2);
+
+        // A restart backfills to the floor at the stored finalized tip.
+        let mut h = Harness::builder()
+            .marshal(marshal)
+            .harness_options(HarnessOptions {
+                finalized_floor: 2,
+                finalized_tip: (round(2), 2, d2),
+                ..Default::default()
+            })
+            .start(&context);
+        h.wait_until(|| h.execution.finalized() == Some((2, d2)))
+            .await;
+
+        // Marshal then delivers the next finalized block without reporting a
+        // tip for it first. The block itself proves its finality.
+        h.deliver_finalized(b3)
+            .await
+            .expect("a finalized block above the reported tip should be acknowledged");
+        assert_eq!(h.execution.finalized(), Some((3, d3)));
+
+        h.deliver_tip(round(4), 4, d4);
+        h.deliver_finalized(b4)
+            .await
+            .expect("finalization should continue past the unreported block");
+        assert_eq!(
+            h.execution.fcus(),
+            vec![
+                STARTUP_FCU,
+                (d2, d2, false),
+                (d3, d3, false),
+                (d4, d4, false)
+            ],
+        );
     });
 }
 

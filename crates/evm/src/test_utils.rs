@@ -140,6 +140,9 @@ impl TestExecutorBuilder {
                         ..Default::default()
                     },
                     epoch_length: self.epoch_length,
+                    configurable_account_recovery_factory: chainspec
+                        .info
+                        .configurable_account_recovery_factory(),
                     ..Default::default()
                 },
             },
