@@ -9,7 +9,7 @@ use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
 use reth_evm::{Evm, EvmEnvFor};
 use reth_revm::database::StateProviderDatabase;
 use reth_storage_api::{EvmStateProviderBox, StateProvider, StateProviderFactory};
-use reth_tasks::{TaskExecutor, WorkerPool};
+use reth_tasks::{TaskExecutor, WorkerPool, WorkerRunId};
 use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
@@ -82,7 +82,7 @@ impl BestTransactionsPrewarming {
         pool.in_place_scope(|scope| {
             let prewarm = ctx.prewarm.clone();
             scope.spawn(move |_| {
-                pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
+                pool.init::<PrewarmEvmState>(&prewarm.run_id, |_| prewarm.evm_for_ctx());
             });
 
             let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
@@ -166,7 +166,7 @@ impl BestTransactionsPrewarming {
             }
         });
 
-        pool.clear();
+        pool.clear(&ctx.prewarm.run_id);
     }
 
     /// Prewarms a transaction by executing it on top of the latest state.
@@ -187,7 +187,9 @@ impl BestTransactionsPrewarming {
                 return None;
             }
 
-            let evm = worker.get_or_init(|| prewarm.evm_for_ctx()).as_mut()?;
+            let evm = worker
+                .get_or_init(&prewarm.run_id, || prewarm.evm_for_ctx())
+                .as_mut()?;
 
             if prewarm.is_stopped() {
                 return None;
@@ -357,6 +359,7 @@ pub(crate) struct PrewarmingExecutionContext<Provider> {
     cache: Option<SavedCache>,
     evm_env: EvmEnvFor<TempoEvmConfig>,
     stop: Arc<AtomicBool>,
+    run_id: WorkerRunId,
     parallel: bool,
 }
 
@@ -379,6 +382,7 @@ where
             cache,
             evm_env,
             stop: Arc::new(AtomicBool::new(false)),
+            run_id: WorkerRunId::default(),
             parallel,
         }
     }
@@ -747,6 +751,7 @@ mod tests {
             cache: None,
             evm_env,
             stop: Arc::default(),
+            run_id: WorkerRunId::default(),
             parallel,
         }
     }
@@ -1029,14 +1034,14 @@ mod tests {
         context.evm_env.block_env.basefee = 0;
 
         let pool = WorkerPool::new(1, "prewarm-actions-test");
-        pool.init::<PrewarmEvmState>(|_| context.evm_for_ctx());
+        pool.init::<PrewarmEvmState>(&context.run_id, |_| context.evm_for_ctx());
 
         pool.install_fn(|| {
             let failed_action =
                 StorageAction::Sstore(Address::random(), U256::ONE, U256::from(2), U256::from(3));
             WorkerPool::with_worker_mut(|worker| {
                 let evm = worker
-                    .get_mut::<PrewarmEvmState>()
+                    .get_mut::<PrewarmEvmState>(&context.run_id)
                     .as_mut()
                     .expect("prewarm EVM");
                 // Model an action recorded before the failed execution returned an error.
@@ -1052,14 +1057,14 @@ mod tests {
             assert!(failed.replay.is_none());
             WorkerPool::with_worker_mut(|worker| {
                 let evm = worker
-                    .get_mut::<PrewarmEvmState>()
+                    .get_mut::<PrewarmEvmState>(&context.run_id)
                     .as_mut()
                     .expect("prewarm EVM");
                 assert_eq!(evm.take_actions(), Some(Vec::new()));
             });
 
             let successful = BestTransactionsPrewarming::prewarm_transaction(
-                context,
+                context.clone(),
                 test_payment_tx(sender, 500_000),
                 None,
             );
@@ -1068,7 +1073,7 @@ mod tests {
             assert!(!replay.actions.contains(&failed_action));
         });
 
-        pool.clear();
+        pool.clear(&context.run_id);
     }
 
     #[test]
@@ -1152,5 +1157,55 @@ mod tests {
         for expected in remaining {
             assert_eq!(prewarming.next().unwrap().tx.hash(), expected.hash());
         }
+    }
+
+    #[test]
+    fn prewarm_replaces_foreign_type_and_previous_build_environment() {
+        let executor = TaskExecutor::test();
+        let mut first = prewarming_context(executor.clone(), false);
+        first.evm_env.block_env.beneficiary = Address::repeat_byte(1);
+        let mut second = prewarming_context(executor, false);
+        second.evm_env.block_env.beneficiary = Address::repeat_byte(2);
+        let pool = WorkerPool::new(1, "prewarm-run-test");
+        let foreign_run = WorkerRunId::default();
+        pool.init(&foreign_run, |_| String::from("validation worker state"));
+
+        pool.install_fn(|| {
+            for context in [&first, &second] {
+                let tx = test_tx(Address::random(), 0);
+                let warmed = BestTransactionsPrewarming::prewarm_transaction(
+                    context.clone(),
+                    tx.clone(),
+                    None,
+                );
+                assert_eq!(warmed.tx.hash(), tx.hash());
+                WorkerPool::with_worker(|worker| {
+                    let evm = worker
+                        .get::<PrewarmEvmState>(&context.run_id)
+                        .as_ref()
+                        .unwrap();
+                    assert_eq!(
+                        evm.block().beneficiary,
+                        context.evm_env.block_env.beneficiary
+                    );
+                });
+            }
+        });
+
+        pool.clear(&first.run_id);
+        pool.install_fn(|| {
+            WorkerPool::with_worker(|worker| {
+                assert_eq!(
+                    worker
+                        .get::<PrewarmEvmState>(&second.run_id)
+                        .as_ref()
+                        .unwrap()
+                        .block()
+                        .beneficiary,
+                    second.evm_env.block_env.beneficiary,
+                );
+            })
+        });
+        pool.clear(&second.run_id);
     }
 }
