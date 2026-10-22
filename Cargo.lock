@@ -16983,6 +16983,8 @@ dependencies = [
  "reth-codecs",
  "reth-db",
  "reth-ethereum-primitives",
+ "reth-evm",
+ "reth-evm-ethereum",
  "reth-exex",
  "reth-metrics",
  "reth-node-api",

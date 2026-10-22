@@ -101,6 +101,13 @@ On normal restart, Reth replays notifications after the last durably verified
 Zone block. Each block transition is persisted before the ExEx acknowledges its
 height.
 
+After catching up, 60 seconds without notifications triggers a comparison with
+local canonical history. If blocks are missing, the checker re-arms Reth backfill
+from the last durably verified block, even if live notification forwarding has
+stopped. A changed verified hash rebuilds from authenticated genesis. Recovery
+does not interrupt an active backfill or block verification, advance the verified
+cursor without checking blocks, or clear a persisted divergence.
+
 ## Failure behavior
 
 Temporary Tempo RPC or local-state acquisition failures retry without advancing
@@ -135,6 +142,7 @@ The node's existing metrics endpoint exports:
 - `reth_tempo_zone_checker_acquisition_retries_total`
 - `reth_tempo_zone_checker_verified_zone_blocks_total`
 - `reth_tempo_zone_checker_recovery_rebuilds_total`
+- `reth_tempo_zone_checker_notification_recoveries_total`
 
 At minimum, alert when `disabled` or `divergence_active` is `1`, verification
 lag continues to grow, or the verified height stops advancing while the Zone
