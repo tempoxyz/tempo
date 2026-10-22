@@ -3,8 +3,11 @@
 The repository's `.agents/setup` installs the tools, prepares a pinned checkout of
 Tempo Explorer, and caches the TIDX and database images. Application
 processes belong to `.amp/services.yaml`; setup and resume do not start them.
-Setup also generates L1 genesis from the locked Tempo dependency and the zone
-contract artifacts, including the native ZoneFactory owned by the dev account.
+Setup also builds the zone contract artifacts. Cargo output lives on the Archil
+disk that `.agents/resume` mounts, so the `l1` service generates L1 genesis from
+the workspace's dev genesis and those artifacts on its first start (including the
+native ZoneFactory owned by the dev account), and the `zone` service builds
+`tempo-zone` before starting it.
 
 From the repository root in an orb:
 

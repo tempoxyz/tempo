@@ -47,6 +47,10 @@ macro_rules! tempo_genesis_info {
                     #[serde(skip_serializing_if = "Option::is_none")]
                     [<$variant:lower _time>]: Option<u64>,
                 )*
+                /// Development-only TIP-1110 factory; public networks remain unconfigured.
+                // TODO: set the canonical TIP-1110 recovery factory for public networks before T14 activation
+                #[serde(skip_serializing_if = "Option::is_none")]
+                configurable_account_recovery_factory: Option<Address>,
             }
 
             impl TempoGenesisInfo {
@@ -82,6 +86,11 @@ impl TempoGenesisInfo {
 
     pub fn general_gas_limit(&self) -> Option<u64> {
         self.general_gas_limit
+    }
+
+    /// Returns the TIP-1110 configurable account recovery factory configured in genesis, if any.
+    pub const fn configurable_account_recovery_factory(&self) -> Option<Address> {
+        self.configurable_account_recovery_factory
     }
 }
 
@@ -901,9 +910,17 @@ mod tests {
             assert!(cs.is_t12_active_at_timestamp(1791900000));
             assert_eq!(cs.tempo_hardfork_at(1791900000), TempoHardfork::T12);
             assert_eq!(cs.tempo_hardfork_at(1791900001), TempoHardfork::T12);
-            assert!(!cs.is_t13_active_at_timestamp(u64::MAX));
+
+            // Before T13 activation (1793718000 = Nov 3rd 2026 16:00 CET)
+            assert!(!cs.is_t13_active_at_timestamp(1793717999));
+            assert_eq!(cs.tempo_hardfork_at(1793717999), TempoHardfork::T12);
+
+            // At and after T13 activation
+            assert!(cs.is_t13_active_at_timestamp(1793718000));
+            assert_eq!(cs.tempo_hardfork_at(1793718000), TempoHardfork::T13);
+            assert_eq!(cs.tempo_hardfork_at(1793718001), TempoHardfork::T13);
             assert!(!cs.is_t14_active_at_timestamp(u64::MAX));
-            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T12);
+            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T13);
         }
 
         #[test]
@@ -1021,9 +1038,17 @@ mod tests {
             assert!(cs.is_t12_active_at_timestamp(1791468000));
             assert_eq!(cs.tempo_hardfork_at(1791468000), TempoHardfork::T12);
             assert_eq!(cs.tempo_hardfork_at(1791468001), TempoHardfork::T12);
-            assert!(!cs.is_t13_active_at_timestamp(u64::MAX));
+
+            // Before T13 activation (1793286000 = Oct 29th 2026 16:00 CET)
+            assert!(!cs.is_t13_active_at_timestamp(1793285999));
+            assert_eq!(cs.tempo_hardfork_at(1793285999), TempoHardfork::T12);
+
+            // At and after T13 activation
+            assert!(cs.is_t13_active_at_timestamp(1793286000));
+            assert_eq!(cs.tempo_hardfork_at(1793286000), TempoHardfork::T13);
+            assert_eq!(cs.tempo_hardfork_at(1793286001), TempoHardfork::T13);
             assert!(!cs.is_t14_active_at_timestamp(u64::MAX));
-            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T12);
+            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T13);
         }
 
         #[test]
