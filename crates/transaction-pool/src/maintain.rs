@@ -604,11 +604,13 @@ where
                 account
                     .original_info
                     .as_ref()
-                    .map_or(&[][..], |info| info.extension.as_ref())
+                    .map(|info| info.extension.as_ref())
+                    .unwrap_or_default()
                     != account
                         .info
                         .as_ref()
-                        .map_or(&[][..], |info| info.extension.as_ref())
+                        .map(|info| info.extension.as_ref())
+                        .unwrap_or_default()
             })
             .map(|(address, _)| *address)
             .collect();
