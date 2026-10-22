@@ -703,9 +703,10 @@ fn prepare_keychain(
         //   the loaded admin/signature-type facts below when the sidecar signer is the same key
         let timestamp = host.block().timestamp.saturating_to::<u64>();
 
-        // Extract the signature type from the inner signature to validate it matches
-        // the key_type stored in the keychain. This prevents using a signature of one
-        // type to authenticate as a key registered with a different type.
+        // Extract the signature type from the inner signature to validate it against
+        // the key_type stored in the keychain: a signature must have the key's stored type,
+        // except a migrated delegate's owner quorum on its primitive grant (see
+        // `AccountKeychain::accepts_signature_type`).
         // Only validate signature type on T1+ to maintain backward compatibility
         // with historical blocks during re-execution.
         let expected_signature_type = (key_authorization.is_some()
