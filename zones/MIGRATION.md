@@ -17,7 +17,7 @@ success gate. Root `.gitmodules` owns the imported Solidity dependencies. Tempo'
 
 The root Cargo workspace now owns the imported Zones crates, prover binaries,
 and lockfile. `cargo zone-xtask` runs Zones tooling; `cargo xtask` continues to run
-Tempo tooling. Zones crates retain version 0.3.6 independently of Tempo.
+Tempo tooling. Zones crates retain version 0.3.7 independently of Tempo.
 
 Root lint and test jobs cover the unified workspace. The build matrix includes
 Zones and prover binaries, and root nextest configuration preserves Zones’
@@ -36,7 +36,7 @@ through Earn’s `zones-read` STS policy.
 
 ## Product workflow cutover
 
-Zones releases use `zones/vX.Y.Z` tags and keep version 0.3.6 in their manifests;
+Zones releases use `zones/vX.Y.Z` tags and keep version 0.3.7 in their manifests;
 Tempo keeps `vX.Y.Z` tags and the root workspace version. Zones release assets
 use the slash-free `vX.Y.Z` version and never become the repository's latest
 release. Docker recipes live under `zones/docker` and build the root workspace.
