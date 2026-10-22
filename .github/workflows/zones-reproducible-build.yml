@@ -23,10 +23,8 @@ on:
 
 jobs:
   build:
-    if: >-
-      github.repository == 'tempoxyz/tempo' &&
-      (github.event_name == 'workflow_dispatch' || vars.ZONES_REPRODUCIBLE_ENABLED == 'true')
-    uses: tempoxyz/gh-actions/.github/workflows/reproducible-build.yml@947d9a3ccb2425a9c94d563fd721cc0e33c89e26 # 2026-10-15T00-15-06Z-947d9a3c
+    if: github.repository == 'tempoxyz/tempo'
+    uses: tempoxyz/gh-actions/.github/workflows/reproducible-build.yml@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
     permissions:
       contents: read
       id-token: write
