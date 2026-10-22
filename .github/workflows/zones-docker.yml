@@ -346,6 +346,7 @@ jobs:
       (github.event_name != 'schedule' && github.event_name != 'push')))
     runs-on: depot-ubuntu-latest-16
     permissions:
+      actions: read
       contents: read
       packages: read
       id-token: write
@@ -565,6 +566,56 @@ jobs:
           VERGEN_GIT_SHA: ${{ github.sha }}
           VERGEN_GIT_SHA_SHORT: ${{ steps.shortsha.outputs.shortsha }}
 
+      - name: Build private-copy EIF toolchain
+        if: steps.eif_builder.outputs.hit != 'true'
+        uses: tempoxyz/gh-actions/vendor/depot/bake-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          files: zones/docker/docker-bake.hcl
+          targets: tempo-zone-prover-eif-builder
+          set: tempo-zone-prover-eif-builder.tags=tempo-zone-prover-eif-builder:local
+          project: 0c6tg19qsp
+          load: true
+          # Rebuild the fallback toolchain without layers tied to an earlier
+          # Bake call's expired registry authorization session.
+          no-cache: true
+          pull: true
+
+
+      - name: Test deferred genesis checkpoint
+        if: inputs.defer_genesis
+        run: node --test .github/scripts/wait-clean-zone-image.test.cjs
+
+      # This rebuild runs in parallel with candidate compilation. Finish and
+      # compare it before publishing the marker that starts the fork clock.
+      - name: Wait for independent source rebuild before genesis
+        if: inputs.defer_genesis
+        id: clean-before-genesis
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            await require('./.github/scripts/wait-clean-zone-image.cjs')({github, context, core});
+
+      - name: Download independent source image before genesis
+        if: inputs.defer_genesis
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ steps.clean-before-genesis.outputs.artifact-id }}
+          path: ${{ runner.temp }}/clean-image
+
+      - name: Compare source images before genesis
+        if: inputs.defer_genesis
+        run: |
+          set -euo pipefail
+          docker load --input "$RUNNER_TEMP/candidate-images/tempo-zone.tar"
+          docker load --input "$RUNNER_TEMP/clean-image/tempo-zone.tar"
+          candidate=$(docker image inspect tempo-zone:candidate --format '{{.Id}}')
+          clean=$(docker image inspect tempo-zone:clean --format '{{.Id}}')
+          [[ "$candidate" =~ ^sha256:[0-9a-f]{64}$ && "$candidate" == "$clean" ]] || {
+            echo "::error::Production image mismatch before genesis: candidate $candidate; clean $clean"
+            exit 1
+          }
+          echo "Independent source image verified before scheduling the fork: $candidate"
+
       - name: Mark compilation complete
         id: compiled
         run: |
@@ -607,21 +658,6 @@ jobs:
 
           genesis_sha=$(sha256sum .tempo-genesis/genesis.json | cut -d' ' -f1)
           echo "Embedding Tempo devnet genesis sha256:${genesis_sha}"
-
-      - name: Build private-copy EIF toolchain
-        if: steps.eif_builder.outputs.hit != 'true'
-        uses: tempoxyz/gh-actions/vendor/depot/bake-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
-        with:
-          files: zones/docker/docker-bake.hcl
-          targets: tempo-zone-prover-eif-builder
-          set: tempo-zone-prover-eif-builder.tags=tempo-zone-prover-eif-builder:local
-          project: 0c6tg19qsp
-          load: true
-          # Rebuild the fallback toolchain without layers tied to an earlier
-          # Bake call's expired registry authorization session.
-          no-cache: true
-          pull: true
-
 
       - name: Build tempo-zone-prover EIF
         env:
