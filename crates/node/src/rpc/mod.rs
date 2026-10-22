@@ -1,5 +1,4 @@
 pub mod admin;
-mod configurable_account;
 pub mod consensus;
 pub mod error;
 pub mod eth_ext;
@@ -9,7 +8,7 @@ pub mod simulate;
 pub mod token;
 
 pub use admin::{TempoAdminApi, TempoAdminApiServer};
-use alloy_eips::{BlockId, eip2718::Encodable2718};
+use alloy_eips::BlockId;
 use alloy_primitives::B256;
 use alloy_rpc_types_eth::{Log, ReceiptWithBloom, state::EvmOverrides};
 pub use consensus::{TempoConsensusApiServer, TempoConsensusRpc};
@@ -17,9 +16,7 @@ pub use eth_ext::{TempoEthExt, TempoEthExtApiServer};
 pub use fork_schedule::{TempoForkScheduleApiServer, TempoForkScheduleRpc};
 use futures::TryFutureExt;
 pub use operator::{TempoOperatorApiServer, TempoOperatorRpc};
-use reth_primitives_traits::{
-    HeaderTy, NodePrimitives, SealedHeaderFor, TransactionMeta, TxTy, WithEncoded,
-};
+use reth_primitives_traits::{HeaderTy, SealedHeaderFor, TransactionMeta, WithEncoded};
 use reth_rpc_eth_api::{FromEthApiError, IntoEthApiError, RpcTxReq};
 use reth_transaction_pool::{PoolTransaction, PoolTx, TransactionOrigin};
 pub use simulate::{TempoSimulate, TempoSimulateApiServer, TempoSimulateV1Response};
@@ -43,10 +40,10 @@ use reth_ethereum::tasks::{
 use reth_evm::{BlockExecutorFactory, ConfigureEvm, Database, EvmEnvFor, TxEnvFor};
 use reth_node_api::{FullNodeComponents, FullNodeTypes, NodeTypes};
 use reth_node_builder::rpc::{EthApiBuilder, EthApiCtx};
-use reth_provider::{ChainSpecProvider, ProviderError};
+use reth_provider::{ChainSpecProvider, ProviderError, StateProvider as _};
 use reth_rpc::{DynRpcConverter, eth::EthApi};
 use reth_rpc_eth_api::{
-    EthApiTypes, FullEthApiTypes, RpcConverter, RpcNodeCore, RpcNodeCoreExt,
+    EthApiTypes, RpcConverter, RpcNodeCore, RpcNodeCoreExt,
     helpers::{
         Call, EthApiSpec, EthBlocks, EthCall, EthFees, EthState, EthSubscriptions, EthTransactions,
         LoadBlock, LoadFee, LoadPendingBlock, LoadReceipt, LoadState, LoadTransaction,
@@ -59,8 +56,8 @@ use reth_rpc_eth_api::{
     transaction::{ConvertReceiptInput, ReceiptConverter},
 };
 use reth_rpc_eth_types::{
-    EthApiError, EthApiSettings, EthStateCache, FeeHistoryCache, FillTransaction, GasPriceOracle,
-    PendingBlock, RpcInvalidTransactionError, SignError, builder::config::PendingBlockKind,
+    EthApiError, EthApiSettings, EthStateCache, FeeHistoryCache, GasPriceOracle, PendingBlock,
+    RpcInvalidTransactionError, SignError, builder::config::PendingBlockKind,
     receipt::EthReceiptConverter,
 };
 use tempo_alloy::{TempoNetwork, rpc::TempoTransactionReceipt};
@@ -341,40 +338,7 @@ impl<N> EthFees for TempoEthApi<N> where N: TempoEthApiBounds {}
 
 impl<N> Trace for TempoEthApi<N> where N: TempoEthApiBounds {}
 
-impl<N> EthCall for TempoEthApi<N>
-where
-    N: TempoEthApiBounds,
-{
-    /// Estimates gas for `request`, which `eth_estimateGas` and `eth_fillTransaction` both use.
-    ///
-    /// From T14 a fee payer signature costs one cold account access: the fee payer's account is
-    /// read to check its root key. A request carrying [`FEE_PAYER_SIGNATURE_MARKER`] is sponsored
-    /// by a fee payer that is not known yet, so the estimate adds that access on top of the
-    /// unsponsored estimate and keeps a request gas limit as a bound on the total. Before T14 the
-    /// marker is not handled and the request is estimated as it is.
-    async fn estimate_gas_at(
-        &self,
-        mut request: RpcTxReq<Self::NetworkTypes>,
-        at: BlockId,
-        overrides: EvmOverrides,
-    ) -> Result<U256, Self::Error> {
-        if request.fee_payer_signature != Some(FEE_PAYER_SIGNATURE_MARKER) {
-            return EstimateCall::estimate_gas_at(self, request, at, overrides).await;
-        }
-        let (evm_env, _) = self.evm_env_at(at).await?;
-        if !evm_env.spec.is_t14() {
-            return EstimateCall::estimate_gas_at(self, request, at, overrides).await;
-        }
-        let fee_payer_access = account_access_gas(&evm_env.version.gas_params, true);
-        request.fee_payer_signature = None;
-        request.inner.gas = request
-            .inner
-            .gas
-            .map(|limit| limit.saturating_sub(fee_payer_access));
-        let estimate = EstimateCall::estimate_gas_at(self, request, at, overrides).await?;
-        Ok(estimate.saturating_add(U256::from(fee_payer_access)))
-    }
-}
+impl<N> EthCall for TempoEthApi<N> where N: TempoEthApiBounds {}
 
 impl<N> GetBlockAccessList for TempoEthApi<N> where N: TempoEthApiBounds {}
 
@@ -450,13 +414,6 @@ where
         mut request: TempoTransactionRequest,
         mut db: impl Database<Error: Into<EthApiError>>,
     ) -> Result<TxEnvFor<Self::Evm>, Self::Error> {
-        configurable_account::prepare_configurable_account_simulation(
-            &mut request,
-            evm_env.spec,
-            &evm_env.block.ext,
-            &mut db,
-        )
-        .map_err(Self::Error::from_eth_err)?;
         if let Some(nonce_key) = request.nonce_key
             && !nonce_key.is_zero()
             && request.nonce.is_none()
@@ -478,7 +435,43 @@ where
     }
 }
 
-impl<N> EstimateCall for TempoEthApi<N> where N: TempoEthApiBounds {}
+impl<N> EstimateCall for TempoEthApi<N>
+where
+    N: TempoEthApiBounds,
+{
+    /// Estimates gas for `request`, which `eth_estimateGas` and `eth_fillTransaction` both use.
+    ///
+    /// From T14 a fee payer signature costs one cold account access: the fee payer's account is
+    /// read to check its root key. A request carrying [`FEE_PAYER_SIGNATURE_MARKER`] is sponsored
+    /// by a fee payer that is not known yet, so the estimate adds that access on top of the
+    /// unsponsored estimate and keeps a request gas limit as a bound on the total. Before T14 the
+    /// marker is not handled and the request is estimated as it is.
+    async fn estimate_gas_at(
+        &self,
+        mut request: RpcTxReq<Self::NetworkTypes>,
+        at: BlockId,
+        overrides: EvmOverrides,
+    ) -> Result<U256, Self::Error> {
+        let (evm_env, at) = self.evm_env_at(at).await?;
+        let mut fee_payer_access = 0;
+        if request.fee_payer_signature == Some(FEE_PAYER_SIGNATURE_MARKER) && evm_env.spec.is_t14()
+        {
+            fee_payer_access = account_access_gas(&evm_env.version.gas_params, true);
+            request.fee_payer_signature = None;
+            request.inner.gas = request
+                .inner
+                .gas
+                .map(|limit| limit.saturating_sub(fee_payer_access));
+        }
+        let estimate = self
+            .spawn_blocking_io_with_state(at, move |this, state| {
+                this.estimate_gas_with(evm_env, request, state.into_evm_state_provider(), overrides)
+            })
+            .await?;
+        Ok(estimate.saturating_add(U256::from(fee_payer_access)))
+    }
+}
+
 impl<N> EthSubscriptions for TempoEthApi<N> where N: TempoEthApiBounds {}
 impl<N> LoadBlock for TempoEthApi<N> where N: TempoEthApiBounds {}
 impl<N> LoadReceipt for TempoEthApi<N> where N: TempoEthApiBounds {}
@@ -488,60 +481,7 @@ impl<N> LoadTransaction for TempoEthApi<N> where N: TempoEthApiBounds {}
 impl<N> EthTransactions for TempoEthApi<N>
 where
     N: TempoEthApiBounds,
-    Self: FullEthApiTypes<NetworkTypes = TempoNetwork> + RpcNodeCore<Pool = N::Pool>,
-    <Self as RpcNodeCore>::Primitives: NodePrimitives<SignedTx = TempoTxEnvelope>,
 {
-    fn fill_transaction(
-        &self,
-        mut request: RpcTxReq<Self::NetworkTypes>,
-    ) -> impl Future<Output = Result<FillTransaction<TxTy<Self::Primitives>>, Self::Error>> + Send
-    where
-        Self: EthApiSpec + LoadBlock + EstimateCall + LoadFee,
-    {
-        let this = self.clone();
-        async move {
-            let configurable = request.has_configurable_simulation();
-            if request.key_authorization_simulation.is_some() {
-                return Err(Self::Error::from_eth_err(EthApiError::InvalidParams(
-                    "fillTransaction requires a real signed grant; use keyAuthorizationSimulation only for call and estimateGas".into()
-                )));
-            }
-            if request.inner.nonce.is_none() {
-                request.inner.nonce = Some(this.next_available_nonce_for(&request).await?);
-            }
-            // Estimation must not reject a mismatched chain id: the inner fill reports it.
-            let chain_id = request.inner.chain_id.take();
-            // Preserve Tempo's nonce and fee-token allowance hooks before delegating
-            // fee defaults/encoding. Native hints need validation even with explicit gas.
-            if configurable || request.inner.gas.is_none() {
-                let estimated_gas = EthCall::estimate_gas_at(
-                    &this,
-                    request.clone(),
-                    BlockId::pending(),
-                    EvmOverrides::default(),
-                )
-                .await?;
-                request.inner.gas.get_or_insert(estimated_gas.to());
-            }
-            request.inner.chain_id = chain_id;
-            if !configurable {
-                return EthTransactions::fill_transaction(&this.inner, request)
-                    .await
-                    .map_err(Self::Error::from_eth_err);
-            }
-            let authorization = configurable_account::prepare_fill_output(&mut request)
-                .map_err(Self::Error::from_eth_err)?;
-            let filled = EthTransactions::fill_transaction(&this.inner, request)
-                .await
-                .map_err(Self::Error::from_eth_err)?;
-            let tx = configurable_account::restore_fill_authorization(filled.tx, authorization)
-                .map_err(Self::Error::from_eth_err)?;
-            Ok(FillTransaction {
-                raw: tx.encoded_2718().into(),
-                tx,
-            })
-        }
-    }
     fn signers(&self) -> &SignersForRpc<Self::Provider, Self::NetworkTypes> {
         self.inner.signers()
     }
