@@ -946,11 +946,7 @@ mod tests {
 
     #[tokio::test]
     async fn legacy_genesis_writes_every_fork_time() {
-        let factory = Address::repeat_byte(0x11);
-        let genesis = generate(&format!(
-            "--t3-time 100 --configurable-account-recovery-factory {factory}"
-        ))
-        .await;
+        let genesis = generate("--t3-time 100").await;
 
         for fork in TempoHardfork::VARIANTS.iter().skip(1) {
             let expected = if *fork == TempoHardfork::T3 { 100 } else { 0 };
@@ -971,18 +967,25 @@ mod tests {
             genesis.alloc[&tempo_precompiles::CONFIGURABLE_ACCOUNT_ADDRESS].code,
             Some(Bytes::from_static(&[0xef]))
         );
-        // The recovery factory is reserved in the alloc and configured in the chainspec.
-        assert_eq!(
-            genesis.alloc[&factory].code,
-            Some(Bytes::from_static(&[0xef]))
-        );
-        assert_eq!(genesis.alloc[&factory].nonce, Some(1));
-        assert_eq!(
-            tempo_chainspec::TempoChainSpec::from_genesis(genesis)
-                .info
-                .configurable_account_recovery_factory(),
-            Some(factory)
-        );
+    }
+
+    #[tokio::test]
+    async fn recovery_factory_is_configured_and_reserved_only_when_t14_is_at_genesis() {
+        let factory = Address::repeat_byte(0x11);
+        for (t14_time, reserved) in [(0, Some(predeployed_contract(&[0xef]))), (100, None)] {
+            let genesis = generate(&format!(
+                "--t14-time {t14_time} --configurable-account-recovery-factory {factory}"
+            ))
+            .await;
+
+            assert_eq!(genesis.alloc.get(&factory), reserved.as_ref(), "{t14_time}");
+            assert_eq!(
+                tempo_chainspec::TempoChainSpec::from_genesis(genesis)
+                    .info
+                    .configurable_account_recovery_factory(),
+                Some(factory)
+            );
+        }
     }
 
     #[tokio::test]
