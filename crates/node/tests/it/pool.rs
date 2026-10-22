@@ -301,12 +301,10 @@ async fn test_fallback_balance_updates_revalidate_only_relevant_crossings() -> e
 #[tokio::test(flavor = "multi_thread")]
 async fn submit_pending_tx() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
-    let node = crate::utils::TestNodeBuilder::new()
+    let setup = crate::utils::TestNodeBuilder::new()
         .build_with_node_access()
-        .await?
-        .node
-        .into_inner()
-        .inner;
+        .await?;
+    let node = &setup.node.inner;
 
     // <cast mktx 0x20c0000000000000000000000000000000000000 'transfer(address,uint256)' 0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC 100000000 --private-key 0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d --gas-limit 2000000 --gas-price 44000000000000 --priority-gas-price 1 --chain-id 1337 --nonce 0>
     let raw = hex!(
@@ -336,12 +334,10 @@ async fn submit_pending_tx() -> eyre::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_insufficient_funds() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
-    let node = crate::utils::TestNodeBuilder::new()
+    let setup = crate::utils::TestNodeBuilder::new()
         .build_with_node_access()
-        .await?
-        .node
-        .into_inner()
-        .inner;
+        .await?;
+    let node = &setup.node.inner;
 
     let tx = TempoTransaction {
         chain_id: node.chain_spec().chain_id(),

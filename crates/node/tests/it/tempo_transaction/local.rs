@@ -844,7 +844,7 @@ async fn test_aa_2d_nonce_out_of_order_arrival() -> eyre::Result<()> {
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use p256::{
@@ -1300,7 +1300,7 @@ async fn test_propagate_2d_transactions() -> eyre::Result<()> {
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_key_authorization_witness_mines_without_burning_and_allows_reuse() -> eyre::Result<()>
 {
     reth_tracing::init_test_tracing();
@@ -1369,7 +1369,7 @@ async fn test_key_authorization_witness_mines_without_burning_and_allows_reuse()
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_key_authorization_witness_burn_evicts_pending_replay() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
@@ -1638,7 +1638,7 @@ async fn test_t6_admin_key_authorization_cross_account_replay_rejected_e2e() -> 
 }
 
 /// Verifies that transactions signed with a revoked access key cannot be executed.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_aa_keychain_revocation_toctou_dos() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
@@ -1990,7 +1990,7 @@ async fn test_aa_expiring_nonce_replay_protection() -> eyre::Result<()> {
 /// 2. Submits transactions that pass validation
 /// 3. Reduces spending limit so execution would fail
 /// 4. Transactions should be evicted from the mempool
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_aa_keychain_spending_limit_toctou_dos() -> eyre::Result<()> {
     use tempo_precompiles::account_keychain::updateSpendingLimitCall;
 
@@ -2265,7 +2265,7 @@ async fn test_v1_keychain_in_auth_list_rejected_post_t1c() -> eyre::Result<()> {
 /// V2 keychain cross-account replay prevention. A shared access key
 /// authorized on Alice and Bob must not allow replaying Alice's inner sig on Bob.
 /// Tests both secp256k1 and P256.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_v2_keychain_blocks_cross_account_replay() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
