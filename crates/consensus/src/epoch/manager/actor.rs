@@ -395,9 +395,9 @@ where
             .verification_mode
             .is_deferred_at(&self.config.execution_node.chain_spec(), boundary_timestamp);
         let application = if deferred {
-            self.config.application.to_deferred()
+            self.config.application.to_deferred(epoch)
         } else {
-            self.config.application.to_immediate()
+            self.config.application.to_immediate(epoch)
         };
         self.metrics
             .deferred_verification
@@ -475,6 +475,7 @@ where
     fn exit(&mut self, cause: Span, Exit { epoch }: Exit) {
         if let Some(engine) = self.active_epochs.remove(&epoch) {
             engine.abort();
+            self.config.application.exit(epoch);
             self.metrics.active_epochs.metric().dec();
             info!("stopped engine backing epoch");
         } else {

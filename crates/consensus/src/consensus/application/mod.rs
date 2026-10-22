@@ -1,8 +1,9 @@
 //! The interface between the consensus layer and the execution layer.
 //!
 //! [`Inner`] implements [`commonware_consensus::Application`]. [`Application`]
-//! shares inline and deferred wrappers with marshal's reporter. Each epoch's
-//! simplex engine selects one wrapper using its preceding boundary timestamp.
+//! constructs an inline or deferred wrapper for each epoch's simplex engine
+//! using its preceding boundary timestamp. Marshal's reporter prunes the gates
+//! of active epochs; wrappers are released when their epoch exits.
 //! The wrappers fetch parents, re-propose epoch boundary blocks, check epoch
 //! membership and parent linkage, persist verified blocks, broadcast proposals,
 //! and gate finalize votes on durability. [`Inner`] builds blocks through the
@@ -15,6 +16,8 @@ pub(super) use r#impl::Config;
 pub(crate) use r#impl::Inner;
 pub(super) use parent_state::TempoParentState;
 
+use std::{collections::BTreeMap, sync::Arc};
+
 use commonware_actor::Feedback;
 use commonware_consensus::{
     Automaton, CertifiableAutomaton, Relay, Reporter,
@@ -24,22 +27,26 @@ use commonware_consensus::{
         standard::{Deferred, Inline, Standard},
     },
     simplex::{Plan, scheme::bls12381_threshold::vrf::Scheme, types::Context},
-    types::{FixedEpocher, Round},
+    types::{Epoch, FixedEpocher, Round},
 };
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 use commonware_runtime::{Clock, Spawner};
 use commonware_utils::channel::oneshot;
+use parking_lot::Mutex;
 use rand_core::Rng;
 
 use crate::consensus::{Digest, block::Block};
 
-/// Shared verification wrappers and reporter for every epoch's simplex engine.
+/// Factory and marshal reporter for the active epochs' verification wrappers.
 pub(crate) struct Application<E>
 where
     E: Rng + Spawner + commonware_runtime::Metrics + Clock,
 {
-    deferred: Deferred<E, Scheme<PublicKey, MinSig>, Inner, Block, FixedEpocher>,
-    immediate: Inline<E, Scheme<PublicKey, MinSig>, Inner, Block, FixedEpocher>,
+    context: Arc<E>,
+    inner: Inner,
+    marshal: Mailbox<Scheme<PublicKey, MinSig>, Standard<Block>>,
+    epocher: FixedEpocher,
+    active: Arc<Mutex<BTreeMap<Epoch, EpochApplication<E>>>>,
 }
 
 impl<E> Clone for Application<E>
@@ -48,8 +55,11 @@ where
 {
     fn clone(&self) -> Self {
         Self {
-            deferred: self.deferred.clone(),
-            immediate: self.immediate.clone(),
+            context: self.context.clone(),
+            inner: self.inner.clone(),
+            marshal: self.marshal.clone(),
+            epocher: self.epocher.clone(),
+            active: self.active.clone(),
         }
     }
 }
@@ -65,24 +75,45 @@ where
         epocher: FixedEpocher,
     ) -> Self {
         Self {
-            deferred: Deferred::new(
-                context.child("deferred"),
-                inner.clone(),
-                marshal.clone(),
-                epocher.clone(),
-            ),
-            immediate: Inline::new(context.child("immediate"), inner, marshal, epocher),
+            context: Arc::new(context),
+            inner,
+            marshal,
+            epocher,
+            active: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
-    /// Clones the immediate verification wrapper for one epoch.
-    pub(crate) fn to_immediate(&self) -> EpochApplication<E> {
-        EpochApplication::Immediate(self.immediate.clone())
+    /// Constructs an immediate wrapper and registers it for finalized-tip reports.
+    pub(crate) fn to_immediate(&self, epoch: Epoch) -> EpochApplication<E> {
+        let application = EpochApplication::Immediate(Inline::new(
+            self.context
+                .child("immediate")
+                .with_attribute("epoch", epoch),
+            self.inner.clone(),
+            self.marshal.clone(),
+            self.epocher.clone(),
+        ));
+        self.active.lock().insert(epoch, application.clone());
+        application
     }
 
-    /// Clones the deferred verification wrapper for one epoch.
-    pub(crate) fn to_deferred(&self) -> EpochApplication<E> {
-        EpochApplication::Deferred(self.deferred.clone())
+    /// Constructs a deferred wrapper and registers it for finalized-tip reports.
+    pub(crate) fn to_deferred(&self, epoch: Epoch) -> EpochApplication<E> {
+        let application = EpochApplication::Deferred(Deferred::new(
+            self.context
+                .child("deferred")
+                .with_attribute("epoch", epoch),
+            self.inner.clone(),
+            self.marshal.clone(),
+            self.epocher.clone(),
+        ));
+        self.active.lock().insert(epoch, application.clone());
+        application
+    }
+
+    /// Releases the reporter's wrapper after the epoch's engine has stopped.
+    pub(crate) fn exit(&self, epoch: Epoch) {
+        self.active.lock().remove(&epoch);
     }
 }
 
@@ -93,12 +124,13 @@ where
     type Activity = Update<Block>;
 
     fn report(&mut self, activity: Self::Activity) -> Feedback {
-        // Overlapping epochs can use different wrappers. Prune both gates,
-        // but deliver each block acknowledgement to Inner exactly once.
+        // Prune every active epoch, but acknowledge each delivered block only once.
         if let Update::Tip(..) = &activity {
-            self.immediate.report(activity.clone());
+            for application in self.active.lock().values_mut() {
+                application.report(activity.clone());
+            }
         }
-        self.deferred.report(activity)
+        self.inner.report(activity)
     }
 }
 
@@ -173,6 +205,20 @@ where
         match self {
             Self::Deferred(application) => application.broadcast(payload, plan),
             Self::Immediate(application) => application.broadcast(payload, plan),
+        }
+    }
+}
+
+impl<E> Reporter for EpochApplication<E>
+where
+    E: Rng + Spawner + commonware_runtime::Metrics + Clock,
+{
+    type Activity = Update<Block>;
+
+    fn report(&mut self, activity: Self::Activity) -> Feedback {
+        match self {
+            Self::Deferred(application) => application.report(activity),
+            Self::Immediate(application) => application.report(activity),
         }
     }
 }
