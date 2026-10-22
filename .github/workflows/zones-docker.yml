@@ -423,8 +423,9 @@ jobs:
           fi
           if ! git merge-base --is-ancestor "$commit_sha" refs/remotes/origin/main; then
             # Prepare Zones Release tags the commit on its pre-release branch,
-            # which a squash merge keeps off main. Accept it only as one commit
-            # on main that changes nothing but Zones version lines.
+            # which a squash merge keeps off main. Accept it only for zones/v*
+            # tags, as one commit on main that changes nothing but Zones
+            # version lines. prover/v* tags must point to a commit on main.
             read -r -a ancestry <<< "$(git rev-list --parents -n 1 "$commit_sha")"
             parent="${ancestry[1]:-}"
             changed_files="$(git diff --name-only "$parent" "$commit_sha" || true)"
@@ -436,7 +437,7 @@ jobs:
               git diff -U0 "$parent" "$commit_sha" | grep -E '^[+-]' |
                 grep -Ev '^(\+\+\+|---) ' | grep -Ev '^[+-]version = "[^"]+"$' || true
             )"
-            if [[ "${#ancestry[@]}" -ne 2 ]] ||
+            if [[ "$component" != zones || "${#ancestry[@]}" -ne 2 ]] ||
                ! git merge-base --is-ancestor "$parent" refs/remotes/origin/main ||
                [[ -z "$changed_files" || -n "$unexpected_files" || -n "$unexpected_lines" ]]; then
               echo "Release tag $tag does not point to a commit on main or a Zones version bump on one" >&2
