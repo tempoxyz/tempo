@@ -276,14 +276,19 @@ pub(crate) fn register_commitments(
     StorageCtx::enter_evm_without_tip1060_accounting(host, || {
         let mut seen = Vec::with_capacity(2);
         for (account, commitment) in roles {
-            if !seen.contains(&account) && StorageCtx.config_commitment(account)?.is_zero() {
+            if seen.contains(&account) {
+                continue;
+            }
+            seen.push(account);
+            // Read again rather than carried over from `validate_state`: nothing writes the
+            // commitment in between, so this only registers accounts still unset.
+            if StorageCtx.config_commitment(account)?.is_zero() {
                 StorageCtx.set_config_commitment(
                     account,
                     commitment,
                     ConfigCommitmentWriteGas::Intrinsic,
                 )?;
             }
-            seen.push(account);
         }
         Ok::<(), TempoPrecompileError>(())
     })?;
@@ -396,8 +401,7 @@ fn validate_native_roles(
                 // The sender's creation is free here only when another TIP-1000 charge pays it:
                 // the nonce-zero charge of a protocol-nonce transaction, or the first-call CREATE
                 // charge of a 2D or expiring nonce key.
-                let pays_nonce_zero_account_gas =
-                    tx.nonce_key.is_zero() && spec.is_t1() && tx.nonce == 0;
+                let pays_nonce_zero_account_gas = tx.nonce_key.is_zero() && tx.nonce == 0;
                 let pays_first_call_create_account_gas = !tx.nonce_key.is_zero()
                     && tx.calls.first().is_some_and(|call| call.to.is_create())
                     && account.nonce == 0;
