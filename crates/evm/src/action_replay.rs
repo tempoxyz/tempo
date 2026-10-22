@@ -134,6 +134,11 @@ where
                     let value = current
                         .checked_add(delta)
                         .ok_or(StorageActionReplayError::Overflow)?;
+                    // The recorder emits `Sinc` only when the slot did not go from zero to
+                    // non-zero, since that write needs TIP-1060 credit accounting.
+                    if current.is_zero() && !value.is_zero() {
+                        return Err(StorageActionReplayError::ActionConflict.into());
+                    }
                     self.replay_state.sstore(address, key, value)?;
                 }
                 StorageAction::Sdec(address, key, sload_value, delta) => {
@@ -143,6 +148,10 @@ where
                     let value = current
                         .checked_sub(delta)
                         .ok_or(StorageActionReplayError::Underflow)?;
+                    // Likewise `Sdec` is never recorded for a non-zero to zero write.
+                    if !current.is_zero() && value.is_zero() {
+                        return Err(StorageActionReplayError::ActionConflict.into());
+                    }
                     self.replay_state.sstore(address, key, value)?;
                 }
                 StorageAction::FeeAmmSwap(key, sload_value, amount_in) => {
@@ -664,6 +673,55 @@ mod tests {
                     StorageActionReplayError::from_block_execution_error(&result.unwrap_err()),
                     Some(StorageActionReplayError::ActionConflict)
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn semantic_sinc_sdec_conflict_when_replay_crosses_zero() {
+        use crate::test_utils::{TestExecutorBuilder, test_chainspec};
+
+        let token = Address::repeat_byte(0x42);
+        let slot = U256::from(7);
+        let chainspec = test_chainspec();
+        // (action built from the observed prewarm value, value in the replay database, conflicts)
+        for (action, current, conflicts) in [
+            (
+                StorageAction::Sdec(token, slot, U256::from(150), U256::from(50)),
+                150,
+                false,
+            ),
+            (
+                StorageAction::Sdec(token, slot, U256::from(150), U256::from(50)),
+                60,
+                false,
+            ),
+            (
+                StorageAction::Sdec(token, slot, U256::from(150), U256::from(50)),
+                50,
+                true,
+            ),
+            (
+                StorageAction::Sinc(token, slot, U256::from(150), U256::from(50)),
+                150,
+                false,
+            ),
+            (
+                StorageAction::Sinc(token, slot, U256::from(150), U256::from(50)),
+                0,
+                true,
+            ),
+        ] {
+            let mut db = state_with_storage(token, slot, U256::from(current));
+            let mut executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
+            let result = executor.replay_actions([action], None);
+            if conflicts {
+                assert_eq!(
+                    StorageActionReplayError::from_block_execution_error(&result.unwrap_err()),
+                    Some(StorageActionReplayError::ActionConflict)
+                );
+            } else {
+                result.unwrap();
             }
         }
     }
