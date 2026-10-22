@@ -18,8 +18,8 @@ use tempo_primitives::{
     TempoTxEnvelope,
     transaction::{
         Call, ConfigurableAccountConfig, ConfigurableAccountOwner, ConfigurableAccountSignature,
-        KeyAuthorization, KeychainSignature, PrimitiveSignature, SignatureType,
-        SignedKeyAuthorization, TempoSignature, TempoTransaction,
+        KeyAuthorization, KeychainSignature, PrimitiveSignature, SignatureType, TempoSignature,
+        TempoTransaction,
     },
 };
 
@@ -92,11 +92,6 @@ async fn test_configurable_accounts_are_rejected() -> eyre::Result<()> {
     )
     .into_signed(configurable.clone());
 
-    let noop = vec![Call {
-        to: TxKind::Call(dev_address),
-        value: U256::ZERO,
-        input: Bytes::new(),
-    }];
     let owners = vec![IConfigurableAccount::ConfigurableAccountOwner {
         owner: delegate,
         weight: 1,
@@ -108,14 +103,73 @@ async fn test_configurable_accounts_are_rejected() -> eyre::Result<()> {
         }
         .abi_encode(),
     );
-    let upgrade_account = vec![Call {
-        to: TxKind::Call(CONFIGURABLE_ACCOUNT_ADDRESS),
-        value: U256::ZERO,
-        input: upgrade_account_input.clone(),
-    }];
-    // Each case takes its own nonce so a case the pool accepts cannot shadow the next one.
-    let transaction =
-        |nonce, calls, key_authorization: Option<SignedKeyAuthorization>| TempoTransaction {
+    let update_config_input = Bytes::from(
+        IConfigurableAccount::updateConfigCall {
+            current: IConfigurableAccount::ConfigurableAccountConfig {
+                salt: B256::ZERO,
+                version: 0,
+                threshold: 1,
+                owners: owners.clone(),
+            },
+            threshold: 1,
+            owners,
+        }
+        .abi_encode(),
+    );
+    let call = |to, input| {
+        vec![Call {
+            to: TxKind::Call(to),
+            value: U256::ZERO,
+            input,
+        }]
+    };
+
+    // A case without its own signature is signed by the root key. Each case takes its own nonce
+    // so a case the pool accepts cannot shadow the next one.
+    let cases = [
+        (
+            "configurable account key authorization",
+            call(dev_address, Bytes::new()),
+            Some(delegate_grant.into_signed(delegate_grant_signature)),
+            None,
+        ),
+        (
+            "key authorization signed by a configurable account",
+            call(dev_address, Bytes::new()),
+            Some(configurable_grant),
+            None,
+        ),
+        (
+            "configurable account signature",
+            call(dev_address, Bytes::new()),
+            None,
+            Some(TempoSignature::ConfigurableAccount(configurable.clone())),
+        ),
+        (
+            "keychain-wrapped configurable account signature",
+            call(dev_address, Bytes::new()),
+            None,
+            Some(TempoSignature::Keychain(KeychainSignature::new(
+                dev_address,
+                configurable,
+            ))),
+        ),
+        (
+            "upgradeAccount transaction",
+            call(CONFIGURABLE_ACCOUNT_ADDRESS, upgrade_account_input.clone()),
+            None,
+            None,
+        ),
+        (
+            "updateConfig transaction",
+            call(CONFIGURABLE_ACCOUNT_ADDRESS, update_config_input.clone()),
+            None,
+            None,
+        ),
+    ];
+    let mut mismatches = Vec::new();
+    for (nonce, (case, calls, key_authorization, signature)) in (next_nonce..).zip(cases) {
+        let transaction = TempoTransaction {
             chain_id,
             fee_token: Some(PATH_USD_ADDRESS),
             max_priority_fee_per_gas: u128::from(TEMPO_T0_BASE_FEE),
@@ -131,50 +185,11 @@ async fn test_configurable_accounts_are_rejected() -> eyre::Result<()> {
             key_authorization,
             tempo_authorization_list: vec![],
         };
-    let root_signed = |transaction: TempoTransaction| -> eyre::Result<TempoTxEnvelope> {
-        let signature = root.sign_hash_sync(&transaction.signature_hash())?;
-        Ok(transaction.into_signed(signature.into()).into())
-    };
-
-    let cases: [(&str, TempoTxEnvelope); 5] = [
-        (
-            "configurable account key authorization",
-            root_signed(transaction(
-                next_nonce,
-                noop.clone(),
-                Some(delegate_grant.into_signed(delegate_grant_signature)),
-            ))?,
-        ),
-        (
-            "key authorization signed by a configurable account",
-            root_signed(transaction(
-                next_nonce + 1,
-                noop.clone(),
-                Some(configurable_grant),
-            ))?,
-        ),
-        (
-            "upgradeAccount",
-            root_signed(transaction(next_nonce + 2, upgrade_account, None))?,
-        ),
-        (
-            "configurable account signature",
-            transaction(next_nonce + 3, noop.clone(), None)
-                .into_signed(TempoSignature::ConfigurableAccount(configurable.clone()))
-                .into(),
-        ),
-        (
-            "keychain-wrapped configurable account signature",
-            transaction(next_nonce + 4, noop, None)
-                .into_signed(TempoSignature::Keychain(KeychainSignature::new(
-                    dev_address,
-                    configurable,
-                )))
-                .into(),
-        ),
-    ];
-    let mut mismatches = Vec::new();
-    for (case, envelope) in cases {
+        let signature = match signature {
+            Some(signature) => signature,
+            None => root.sign_hash_sync(&transaction.signature_hash())?.into(),
+        };
+        let envelope: TempoTxEnvelope = transaction.into_signed(signature).into();
         let outcome = match provider
             .send_raw_transaction(&envelope.encoded_2718())
             .await
@@ -196,36 +211,6 @@ async fn test_configurable_accounts_are_rejected() -> eyre::Result<()> {
         allowAnyCalls: true,
         allowedCalls: vec![],
     };
-    let authorize_key_input = IAccountKeychain::authorizeKey_1Call {
-        keyId: delegate,
-        signatureType: IAccountKeychain::SignatureType::ConfigurableAccount,
-        config: restrictions.clone(),
-    }
-    .abi_encode();
-    let authorize_key_with_witness_input = IAccountKeychain::authorizeKey_2Call {
-        keyId: delegate,
-        signatureType: IAccountKeychain::SignatureType::ConfigurableAccount,
-        config: restrictions,
-        witness: B256::ZERO,
-    }
-    .abi_encode();
-    let authorize_admin_key_input = IAccountKeychain::authorizeAdminKeyCall {
-        keyId: delegate,
-        signatureType: IAccountKeychain::SignatureType::ConfigurableAccount,
-        witness: B256::ZERO,
-    }
-    .abi_encode();
-    let update_config_input = IConfigurableAccount::updateConfigCall {
-        current: IConfigurableAccount::ConfigurableAccountConfig {
-            salt: B256::ZERO,
-            version: 0,
-            threshold: 1,
-            owners: owners.clone(),
-        },
-        threshold: 1,
-        owners,
-    }
-    .abi_encode();
     let invalid_signature_type =
         Bytes::from(IAccountKeychain::InvalidSignatureType {}.abi_encode());
     let unauthorized =
@@ -234,25 +219,44 @@ async fn test_configurable_accounts_are_rejected() -> eyre::Result<()> {
         (
             "authorizeKey",
             ACCOUNT_KEYCHAIN_ADDRESS,
-            authorize_key_input,
+            IAccountKeychain::authorizeKey_1Call {
+                keyId: delegate,
+                signatureType: IAccountKeychain::SignatureType::ConfigurableAccount,
+                config: restrictions.clone(),
+            }
+            .abi_encode()
+            .into(),
             &invalid_signature_type,
         ),
         (
             "authorizeKey with witness",
             ACCOUNT_KEYCHAIN_ADDRESS,
-            authorize_key_with_witness_input,
+            IAccountKeychain::authorizeKey_2Call {
+                keyId: delegate,
+                signatureType: IAccountKeychain::SignatureType::ConfigurableAccount,
+                config: restrictions,
+                witness: B256::ZERO,
+            }
+            .abi_encode()
+            .into(),
             &invalid_signature_type,
         ),
         (
             "authorizeAdminKey",
             ACCOUNT_KEYCHAIN_ADDRESS,
-            authorize_admin_key_input,
+            IAccountKeychain::authorizeAdminKeyCall {
+                keyId: delegate,
+                signatureType: IAccountKeychain::SignatureType::ConfigurableAccount,
+                witness: B256::ZERO,
+            }
+            .abi_encode()
+            .into(),
             &invalid_signature_type,
         ),
         (
             "nested upgradeAccount",
             forwarder,
-            upgrade_account_input.to_vec(),
+            upgrade_account_input,
             &unauthorized,
         ),
         (
@@ -267,7 +271,7 @@ async fn test_configurable_accounts_are_rejected() -> eyre::Result<()> {
                 TransactionRequest::default()
                     .from(dev_address)
                     .to(to)
-                    .input(Bytes::from(input).into()),
+                    .input(input.into()),
             )
             .await;
         if !outcome.as_ref().is_err_and(|err| {
