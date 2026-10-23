@@ -195,4 +195,10 @@ pub(crate) struct ZoneMonitorMetrics {
 
     /// Head-page refills requested by the withdrawal processor.
     pub withdrawal_store_refill_total: Counter,
+
+    /// Withdrawal slots drained in the same L1 transaction as their batch submission.
+    pub atomic_withdrawal_slots_total: Counter,
+
+    /// Withdrawals processed in the same L1 transaction as their batch submission.
+    pub atomic_withdrawals_processed_total: Counter,
 }

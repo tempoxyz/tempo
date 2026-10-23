@@ -27,6 +27,7 @@ use tempo_precompiles::{
 };
 use tempo_primitives::TempoHeader;
 use zone_chainspec::test_utils::set_tempo_fork;
+use zone_prover::VerifierMode;
 use zone_rpc::types::ZoneExecutionWitness;
 use zone_sequencer::{BatchData, BatchSubmitter};
 use zone_spf::{
@@ -171,7 +172,8 @@ async fn test_t13_migrates_and_settles_existing_portal() -> eyre::Result<()> {
                 &submitter.prepare_batch(legacy).await?,
                 None,
                 None,
-                zone_prover::VerifierMode::NitroV1,
+                VerifierMode::NitroV1,
+                None,
             )
             .await
             .map_err(|err| eyre::eyre!("legacy settlement: {err:?}"))?;
@@ -312,13 +314,13 @@ async fn test_t13_migrates_and_settles_existing_portal() -> eyre::Result<()> {
     let prepared = submitter.prepare_batch(batch).await?;
     // This harness has no Nitro attestation service. Use `NoProof` explicitly.
     let settled = submitter
-        .submit_batch(&prepared, None, None, zone_prover::VerifierMode::NoProof)
+        .submit_batch(&prepared, None, None, VerifierMode::NoProof, None)
         .await
         .map_err(|err| eyre::eyre!("T13 settlement: {err:?}"))?;
-    assert_eq!(settled.lastProcessedEnabledTokenCount, 3);
-    assert_eq!(settled.withdrawalBatchIndex, 3);
+    assert_eq!(settled.event.lastProcessedEnabledTokenCount, 3);
+    assert_eq!(settled.event.withdrawalBatchIndex, 3);
     assert_eq!(
-        settled.withdrawalQueueIndex,
+        settled.event.withdrawalQueueIndex,
         U256::MAX,
         "empty batch must not create a withdrawal queue"
     );
@@ -331,7 +333,7 @@ async fn test_t13_migrates_and_settles_existing_portal() -> eyre::Result<()> {
     );
     assert!(
         submitter
-            .submit_batch(&prepared, None, None, zone_prover::VerifierMode::NoProof)
+            .submit_batch(&prepared, None, None, VerifierMode::NoProof, None)
             .await
             .is_err(),
         "settlement cannot replay"
