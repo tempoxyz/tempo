@@ -21,44 +21,74 @@ env:
   # Pin vergen's build timestamp so reth-node-core and tempo-node compile identically across runs;
   # otherwise they and every crate depending on them miss sccache on every build.
   SOURCE_DATE_EPOCH: "1700000000"
+  # Test builds don't need debuginfo; dropping it halves link output and the target dir.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  # rustc links with its bundled lld unless told otherwise; use the mold from setup-mold.
+  # Steps that set RUSTFLAGS ignore this and keep linking with lld.
+  CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
   TEMPO_MAINNET_RPC_URL: ${{ secrets.TEMPO_MAINNET_RPC_URL }}
   TEMPO_TESTNET_RPC_URL: ${{ secrets.TEMPO_TESTNET_RPC_URL }}
   TEMPO_DEVNET_RPC_URL: ${{ secrets.TEMPO_DEVNET_RPC_URL }}
 
 jobs:
-  check-precompiles:
-    name: Check precompiles changes
-    runs-on: ubuntu-latest
+  zones-artifacts:
+    name: Build Zones test artifacts
+    runs-on: depot-ubuntu-latest-16
+    timeout-minutes: 30
     permissions:
-      id-token: write
       contents: read
-    outputs:
-      coverage: ${{ steps.check.outputs.coverage }}
+      id-token: write
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          fetch-depth: 0
           persist-credentials: false
-      - name: Check for precompiles changes
-        id: check
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          BASE_REF: ${{ github.base_ref }}
+          submodules: recursive
+      - name: Check out Earn contracts
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: tempoxyz/earn
+          ref: main
+          path: earn
+          persist-credentials: false
+      - name: Initialize Earn public dependencies
+        working-directory: earn
+        # PropAMM is private and only needed by Earn's integration tests.
+        run: git submodule update --init lib/forge-std lib/openzeppelin-contracts
+      - name: Install Foundry
+        uses: tempoxyz/gh-actions/actions/setup-foundry@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          version: nightly-fc14f674bd853bc817c308a5202faa5be8df05e7
+
+      - name: Resolve Solidity cache key
+        id: solidity-key
         run: |
-          # Only run coverage on pull_request events when precompiles/contracts changed
-          if [[ "$EVENT_NAME" != "pull_request" ]]; then
-            echo "coverage=false" >> "$GITHUB_OUTPUT"
-            echo "Skipping coverage: not a pull_request event (event: $EVENT_NAME)"
-          elif git diff --name-only origin/"$BASE_REF"...HEAD | grep -qE '^(crates/(precompiles|contracts)/|tips/verify/)'; then
-            echo "coverage=true" >> "$GITHUB_OUTPUT"
-            echo "Running coverage: precompiles/contracts changed"
-          else
-            echo "coverage=false" >> "$GITHUB_OUTPUT"
-            echo "Skipping coverage: no precompiles/contracts changes"
-          fi
+          {
+            echo "forge-sha=$(forge --version | sed -n 's/^Commit SHA: //p')"
+            echo "contracts-tree=$(git rev-parse HEAD:crates/zones/contracts)"
+            echo "earn-sha=$(git -C earn rev-parse HEAD)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Restore Solidity artifacts
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            earn/cache
+            crates/zones/contracts/cache
+            crates/zones/contracts/out
+          key: zones-forge-v3-${{ runner.os }}-${{ steps.solidity-key.outputs.forge-sha }}-${{ steps.solidity-key.outputs.contracts-tree }}-${{ steps.solidity-key.outputs.earn-sha }}
+
+      - name: Build Solidity artifacts
+        run: bash scripts/build-zones-test-artifacts.sh
+      - name: Upload Zones test artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: zones-test-artifacts
+          path: crates/zones/contracts/out
+          if-no-files-found: error
+          retention-days: 1
 
   genesis:
     name: Genesis generation
@@ -69,16 +99,19 @@ jobs:
       contents: read
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
-      - uses: tempoxyz/gh-actions/actions/setup-mold@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
-      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+      - uses: tempoxyz/gh-actions/actions/setup-mold@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           version: v0.15.0
+      - uses: ./.github/actions/native-libs # zizmor: ignore[self-repository] actionlint does not support $/ references yet.
+        with:
+          cargo-args: -p tempo-xtask
       - name: Generate genesis
         run: |
           cargo xtask generate-genesis \
@@ -99,7 +132,7 @@ jobs:
 
   test:
     name: test (${{ matrix.partition }}/2)
-    needs: check-precompiles
+    needs: zones-artifacts
     runs-on: depot-ubuntu-latest-32
     timeout-minutes: 30
     permissions:
@@ -111,60 +144,31 @@ jobs:
         partition: [1, 2]
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
-        with:
-          components: ${{ needs.check-precompiles.outputs.coverage == 'true' && 'llvm-tools-preview' || '' }}
-      - uses: tempoxyz/gh-actions/actions/setup-mold@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
-      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+      - uses: tempoxyz/gh-actions/actions/setup-mold@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           version: v0.15.0
-      - uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+      - uses: ./.github/actions/native-libs # zizmor: ignore[self-repository] actionlint does not support $/ references yet.
+        with:
+          cargo-args: --workspace
+      - uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           tool: nextest@0.9.127
-      # Build and run tests WITH coverage (only when precompiles changed)
-      - name: Build and compile tests with coverage
-        if: needs.check-precompiles.outputs.coverage == 'true'
-        run: cargo nextest run --profile ci -E 'not (package(tempo-e2e) | (package(tempo-node) & binary(it) & test(/test_matrices_(testnet|devnet)/)))' --partition count:${{ matrix.partition }}/2 --no-run
-        env:
-          RUSTFLAGS: -C instrument-coverage
-      - name: Run tests with coverage
-        if: needs.check-precompiles.outputs.coverage == 'true'
-        run: |
-          mkdir -p coverage
-          cargo nextest run --profile ci -E 'not (package(tempo-e2e) | (package(tempo-node) & binary(it) & test(/test_matrices_(testnet|devnet)/)))' --partition count:${{ matrix.partition }}/2
-        env:
-          RUSTFLAGS: -C instrument-coverage
-          LLVM_PROFILE_FILE: ${{ github.workspace }}/coverage/cargo-%p-%m.profraw
-      # Build and run tests WITHOUT coverage (when precompiles not changed)
-      - name: Build and compile tests
-        if: needs.check-precompiles.outputs.coverage != 'true'
-        run: cargo nextest run --profile ci -E 'not (package(tempo-e2e) | (package(tempo-node) & binary(it) & test(/test_matrices_(testnet|devnet)/)))' --partition count:${{ matrix.partition }}/2 --no-run
-      - name: Run tests
-        if: needs.check-precompiles.outputs.coverage != 'true'
-        run: cargo nextest run --profile ci -E 'not (package(tempo-e2e) | (package(tempo-node) & binary(it) & test(/test_matrices_(testnet|devnet)/)))' --partition count:${{ matrix.partition }}/2
-      - name: Generate precompiles coverage profdata
-        if: needs.check-precompiles.outputs.coverage == 'true'
-        run: |
-          LLVM_BIN="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | grep host | cut -d' ' -f2)/bin"
-          "$LLVM_BIN/llvm-profdata" merge -sparse coverage/*.profraw -o coverage/cargo-test.profdata
-          mkdir -p coverage/precompiles-bin
-          # Copy precompiles and contracts test binaries
-          find target/debug/deps -name 'tempo_precompiles-*' -type f -executable ! -name '*.d' -exec cp {} coverage/precompiles-bin/ \;
-          find target/debug/deps -name 'tempo_contracts-*' -type f -executable ! -name '*.d' -exec cp {} coverage/precompiles-bin/ \;
-      - name: Upload precompiles coverage artifacts
-        if: needs.check-precompiles.outputs.coverage == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - name: Download Zones test artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: cargo-test-coverage-${{ matrix.partition }}
-          path: |
-            coverage/cargo-test.profdata
-            coverage/precompiles-bin/
-          retention-days: 1
+          name: zones-test-artifacts
+          path: crates/zones/contracts/out
+      - name: Build and compile tests
+        run: cargo nextest run --profile ci --lib --bins --tests -E 'not (package(tempo-e2e) | (package(tempo-node) & binary(it) & test(/test_matrices_(testnet|devnet)/)))' --partition count:${{ matrix.partition }}/2 --no-run
+      - name: Run tests
+        run: cargo nextest run --profile ci --lib --bins --tests -E 'not (package(tempo-e2e) | (package(tempo-node) & binary(it) & test(/test_matrices_(testnet|devnet)/)))' --partition count:${{ matrix.partition }}/2
 
   e2e:
     name: e2e (${{ matrix.partition }}/4)
@@ -182,20 +186,23 @@ jobs:
       RUST_MIN_STACK: 8388608
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
-      - uses: tempoxyz/gh-actions/actions/setup-mold@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
-      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+      - uses: tempoxyz/gh-actions/actions/setup-mold@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           version: v0.15.0
-      - uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+      - uses: ./.github/actions/native-libs # zizmor: ignore[self-repository] actionlint does not support $/ references yet.
+        with:
+          cargo-args: -p tempo-e2e
+      - uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           tool: nextest@0.9.127
-      - uses: tempoxyz/gh-actions/vendor/astral-sh/setup-uv@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+      - uses: tempoxyz/gh-actions/vendor/astral-sh/setup-uv@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         continue-on-error: true
         with:
           version: "0.12.16"
@@ -229,16 +236,19 @@ jobs:
       contents: read
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
-      - uses: tempoxyz/gh-actions/actions/setup-mold@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
-      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+      - uses: tempoxyz/gh-actions/actions/setup-mold@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           version: v0.15.0
+      - uses: ./.github/actions/native-libs # zizmor: ignore[self-repository] actionlint does not support $/ references yet.
+        with:
+          cargo-args: -p tempo
       - name: Build tempo
         run: cargo build --bin tempo
       - name: Run CLI tests
@@ -253,7 +263,7 @@ jobs:
       contents: read
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -279,18 +289,21 @@ jobs:
       contents: read
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           toolchain: "1.96" # MSRV
-      - uses: tempoxyz/gh-actions/actions/setup-mold@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
-      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+      - uses: tempoxyz/gh-actions/actions/setup-mold@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           version: v0.15.0
+      - uses: ./.github/actions/native-libs # zizmor: ignore[self-repository] actionlint does not support $/ references yet.
+        with:
+          cargo-args: -p tempo
       - name: Build with MSRV
         run: cargo build --bin tempo
         env:
@@ -303,7 +316,6 @@ jobs:
     permissions:
       id-token: write
     needs:
-      - check-precompiles
       - test
       - e2e
       - cli
@@ -312,9 +324,9 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
       - name: Decide whether the needed jobs succeeded or failed
-        uses: tempoxyz/gh-actions/actions/check-needs@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        uses: tempoxyz/gh-actions/actions/check-needs@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           jobs: ${{ toJSON(needs) }}

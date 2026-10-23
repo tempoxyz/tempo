@@ -5,7 +5,7 @@ use alloy_primitives::Address;
 use alloy_rpc_types_engine::ForkchoiceState;
 use reth_e2e_test_utils::wallet::{Wallet, test_signer};
 use reth_node_api::BuiltPayload;
-use reth_node_metrics::recorder::install_prometheus_recorder;
+use reth_node_metrics::recorder::{PrometheusRecorder, install_prometheus_recorder};
 use reth_primitives_traits::AlloyBlockHeader as _;
 
 /// Test that verifies backfill sync works correctly.
@@ -137,9 +137,20 @@ async fn test_backfill_sync() -> eyre::Result<()> {
     );
 
     assert!(
-        tempo_e2e::get_pipeline_runs(metrics_recorder) == 1,
+        get_pipeline_runs(metrics_recorder) == 1,
         "Backfill was never triggered"
     );
 
     Ok(())
+}
+
+/// Returns the number of pipeline runs recorded by the Prometheus metrics recorder.
+fn get_pipeline_runs(recorder: &PrometheusRecorder) -> u64 {
+    recorder
+        .handle()
+        .render()
+        .lines()
+        .find(|line| line.starts_with("reth_consensus_engine_beacon_pipeline_runs"))
+        .and_then(|line| line.split_whitespace().nth(1)?.parse().ok())
+        .unwrap_or(0)
 }

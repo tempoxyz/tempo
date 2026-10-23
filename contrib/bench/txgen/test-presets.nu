@@ -30,4 +30,35 @@ assert equal (txgen-workload-metadata-args $default.scenario_id $default.spec_pa
 for preset in [tip20 tip20_existing_recipients mix dex mpp neobank-deposit neobank-swap neobank-withdraw zones vault-deposit vault-withdraw] {
     assert equal (txgen-workload-metadata-args $preset "") ["-m" "workload_mix_weighting=gas"]
 }
-print "Preset alias, transfer compatibility, state-bloat setup, and workload metadata checks passed"
+# The policy preset uses distinct issuer and receiver lists on the current layout.
+let policy_spec = (txgen-resolve-bench-spec tip20-policy)
+assert equal $policy_spec.kind static
+assert ("tip20-policy" in $TXGEN_HELPER_ALWAYS_FUND_PRESETS)
+assert equal (open $policy_spec.spec_path).merge.templates.tip20_transfer.fee_token (txgen-tip20-token-address 1)
+let policy = (txgen-tip20-policy-calls 2 17)
+assert equal ($policy.admin_calls | where function == changeTransferPolicyId | get args) [["20"] ["24"]]
+assert equal ($policy.admin_calls | where function == createCompoundPolicy | get args) [[17 18 19] [21 22 23]]
+assert equal ($policy.admin_calls | where function == createPolicy | length) 8
+assert equal $policy.receive_call.function setReceivePolicy
+assert equal $policy.receive_call.args [25 26 "0x0000000000000000000000000000000000000000"]
+# Single-workload throughput presets reuse public-mix fixtures and keep their own label.
+for preset in [zone-portal-throughput vault-throughput] {
+    let spec = (txgen-resolve-bench-spec $preset)
+    assert equal ($spec.spec_path | path basename) $"($preset).yml"
+    assert ($preset in $TXGEN_HELPER_PUBLIC_MIX_PRESETS)
+    assert ($preset in $TXGEN_HELPER_ALWAYS_FUND_PRESETS)
+    assert equal (txgen-scenario-metadata-args $preset $spec.spec_path) ["-m" $"preset=($preset)" "-m" $"scenario=($preset)"]
+    txgen-configure-existing-recipients-env $spec.spec_path 1024 4
+    assert (($env.TXGEN_EXISTING_RECIPIENTS_END | into int) > 10000)
+    let out_dir = (mktemp -d)
+    let rendered = (txgen-prepare-public-mix-preset $spec.spec_path 1000 4 2 1337 --out-dir $out_dir)
+    assert equal ($rendered | path basename) $"($preset).yml"
+    hide-env TXGEN_EXISTING_RECIPIENTS_END
+    txgen-configure-existing-recipients-env $rendered 1024 4
+    assert (($env.TXGEN_EXISTING_RECIPIENTS_END | into int) > 10000)
+    let kind = if $preset == "vault-throughput" { "vault" } else { "zone" }
+    let categories = (txgen-workload-metadata-args $preset $rendered | last | str replace "workload_mix_weights=" "" | from json | columns | sort)
+    assert equal $categories [$"($kind)_deposit" $"($kind)_withdraw"]
+    rm -rf $out_dir
+}
+print "Preset, policy setup, state-bloat, and workload metadata checks passed"

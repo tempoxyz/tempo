@@ -1,0 +1,39 @@
+{
+  "contracts": {
+    "tests/solidity/tempo_state.sol:TempoStateStorage": {
+      "storage-layout": {
+        "storage": [
+          {
+            "astId": 4,
+            "contract": "tests/solidity/tempo_state.sol:TempoStateStorage",
+            "label": "tempoBlockHash",
+            "offset": 0,
+            "slot": "0",
+            "type": "t_bytes32"
+          },
+          {
+            "astId": 6,
+            "contract": "tests/solidity/tempo_state.sol:TempoStateStorage",
+            "label": "tempoBlockNumber",
+            "offset": 0,
+            "slot": "1",
+            "type": "t_uint64"
+          }
+        ],
+        "types": {
+          "t_bytes32": {
+            "encoding": "inplace",
+            "label": "bytes32",
+            "numberOfBytes": "32"
+          },
+          "t_uint64": {
+            "encoding": "inplace",
+            "label": "uint64",
+            "numberOfBytes": "8"
+          }
+        }
+      }
+    }
+  },
+  "version": "0.8.33+commit.64118f21.Darwin.appleclang"
+}

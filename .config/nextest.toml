@@ -9,23 +9,18 @@ test-threads = "num-cpus"
 [profile.ci.junit]
 path = "junit.xml"
 
-# Treat timeout as success while debugging snapshot-restart flakiness.
-[[profile.ci.overrides]]
-filter = "test(can_restart_after_joining_from_snapshot)"
-slow-timeout = { period = "3m", terminate-after = 3, on-timeout = "pass" }
-
-# Heavy e2e tests that flake under resource contention — run exclusively.
-# threads-required = "num-test-threads" reserves all slots, so no other test runs concurrently.
-# Scheduled last to avoid blocking the rest of the suite.
+# Start the longest e2e tests first so they overlap with the rest of their
+# partition instead of extending its tail.
 [[profile.ci.overrides]]
 filter = """
   package(tempo-e2e) & (
-    test(can_restart_after_joining_from_snapshot) |
-    test(validator_can_fast_sync_after_full_dkg)
+    test(/^tests::dkg::fast_sync_after_full_dkg::/) |
+    test(=tests::restart::validator_catches_up_with_gap_of_three_epochs) |
+    test(=tests::sync::can_restart_after_joining_from_snapshot) |
+    test(=tests::backfill::validator_joins_on_large_gap_without_triggering_pipeline_sync)
   )
 """
-threads-required = "num-test-threads"
-priority = -100
+priority = 100
 
 # tempo-e2e tests spawn multiple execution nodes, each creating 4 rayon thread
 # pools (cpu, rpc, trie, storage) via reth's Runtime. Even with test_with_handle()
@@ -60,8 +55,8 @@ failure-output = "final"
 [[profile.default.overrides]]
 filter = """
   package(tempo-e2e) & (
-    test(can_restart_after_joining_from_snapshot) |
-    test(validator_can_fast_sync_after_full_dkg)
+    test(=tests::sync::can_restart_after_joining_from_snapshot) |
+    test(=tests::dkg::fast_sync_after_full_dkg::validator_can_fast_sync_after_full_dkg)
   )
 """
 threads-required = "num-test-threads"
@@ -73,4 +68,24 @@ threads-required = 4
 
 [[profile.default.overrides]]
 filter = "package(tempo-node) & binary(it)"
+threads-required = 4
+
+# The longest Zone integration tests start first so they don't extend the tail
+# of their test partition.
+[[profile.ci.overrides]]
+filter = """
+  package(zone-node) & binary(it) &
+    test(/^(network_chaos_e2e|network_chaos_p2p_e2e|hardfork_e2e|hardfork_settlement_e2e)::/)
+"""
+priority = 100
+
+# Integration tests spin up full reth nodes — limit concurrency to avoid
+# resource contention and flaky timeouts on CI runners.
+[[profile.ci.overrides]]
+filter = """
+  package(/^zone-/) & (
+    test(/^(e2e|earn_zone_e2e|l1_e2e|network_chaos_e2e|network_chaos_p2p_e2e|restart_e2e|handoff_e2e)::/) |
+    test(advance_tempo)
+  )
+"""
 threads-required = 4

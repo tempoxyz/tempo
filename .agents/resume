@@ -1,8 +1,58 @@
 #!/usr/bin/env bash
-# Runs on every orb wake. Keep fast: only checks that the toolchain from .agents/setup is present.
+# Runs on every orb wake. Mount Archil before enabling this checkout's Cargo output directory.
 set -euo pipefail
+
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+# Fail closed even when mounting fails or the agent starts before this hook finishes.
+printf '[build]\ntarget-dir = "/dev/null/tempo-target"\nbuild-dir = "/dev/null/tempo-target"\n' > .cargo/orb.toml.tmp
+mv .cargo/orb.toml.tmp .cargo/orb.toml
 
 # shellcheck disable=SC1091
 source "$HOME/.cargo/env"
 cargo --version
 cargo nextest --version | head -1
+
+# ARCHIL_MOUNT_TOKEN (secret), ARCHIL_DISK_ID, and ARCHIL_REGION come from Amp workspace settings.
+# Conditional mode keeps shared sccache writable by all orbs without exclusive delegations:
+# https://docs.archil.com/concepts/shared-disks
+archil_mount="$HOME/archil"
+: "${ARCHIL_MOUNT_TOKEN:?Archil credentials are required for Cargo output}"
+: "${ARCHIL_DISK_ID:?Archil disk is required for Cargo output}"
+: "${AMP_PROJECT_ID:?Amp project identity is required for Cargo output}"
+if findmnt -n -t fuse.archil "$archil_mount" >/dev/null; then
+  echo "Archil already mounted at $archil_mount"
+else
+  # The underlying local directory must stay empty and unwritable if FUSE disappears.
+  if mountpoint -q "$archil_mount"; then
+    echo "Unexpected filesystem at $archil_mount" >&2
+    exit 1
+  fi
+  sudo mkdir -p "$archil_mount"
+  if [[ -n "$(sudo find "$archil_mount" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+    echo "Refusing to mount over local files at $archil_mount" >&2
+    exit 1
+  fi
+  sudo chown root:root "$archil_mount"
+  sudo chmod 0555 "$archil_mount"
+  sudo --preserve-env=ARCHIL_MOUNT_TOKEN \
+    archil mount "$ARCHIL_DISK_ID" "$archil_mount" --region "${ARCHIL_REGION:-aws-us-west-2}" --conditional
+  # New disks are owned by root; the ownership change persists on the disk.
+  [[ -O "$archil_mount" ]] || sudo chown "$(id -u):$(id -g)" "$archil_mount"
+  echo "Archil mounted at $archil_mount"
+fi
+
+# Generated only after snapshot activation; retained on wake, cleared by setup before snapshotting.
+mkdir -p .amp
+if [[ ! -s .amp/archil-output-id ]]; then
+  cat /proc/sys/kernel/random/uuid > .amp/archil-output-id
+fi
+orb_id=$(cat .amp/archil-output-id)
+[[ "$orb_id" =~ ^[0-9a-f-]{36}$ ]]
+project_id=$(printf '%s' "$AMP_PROJECT_ID" | sha256sum | cut -d ' ' -f 1)
+output="$archil_mount/cargo/$project_id/$orb_id/target"
+mkdir -p "$output"
+# Persistent project-local configuration survives cargo clean and later agent shells.
+# Do not export CARGO_TARGET_DIR from this hook: child-process exports do not reach agent commands.
+printf '[build]\ntarget-dir = "%s"\nbuild-dir = "%s"\n' "$output" "$output" > .cargo/orb.toml.tmp
+mv .cargo/orb.toml.tmp .cargo/orb.toml
+echo "Cargo output: $output"

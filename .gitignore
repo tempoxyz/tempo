@@ -16,12 +16,17 @@ profile.json.gz
 
 .DS_Store
 .idea
-.vscode
+.vscode/*
+!/.vscode/settings.json
+!/.vscode/extensions.json
 **/.env
 **/.envrc
 localnet/**
 
 .claude/
+!/.claude/
+/.claude/*
+!/.claude/skills
 !docs/.claude/
 CLAUDE.local.md
 research.md
@@ -45,3 +50,15 @@ __pycache__/
 
 # Amp orb portals
 .amp/portals/*
+.amp/deps/
+.amp/state/
+# Generated only inside orbs; never copy an output identity into a project snapshot.
+/.amp/archil-output-id
+/.cargo/orb.toml
+/.cargo/orb.toml.tmp
+
+# Imported Zones test fixtures and generated Solidity artifacts
+/earn/
+crates/zones/contracts/cache/
+crates/zones/contracts/out/
+crates/zones/contracts/benchmark-out/

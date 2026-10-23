@@ -1,0 +1,51 @@
+services:
+  l1:
+    command: bash .amp/service l1
+    port: 8545
+    review: false
+    portal:
+      title: Local Tempo L1
+      description: Anvil in Tempo mode; JSON-RPC POST endpoint.
+  zone:
+    command: bash .amp/service zone
+    port: 9545
+    env:
+      L1_PORTAL_URL: ${services.l1.publicURL}
+    review: false
+    portal:
+      title: Local zone devnet
+      description: Local development zone operator JSON-RPC. POST requests to this URL.
+  postgres:
+    command: bash .amp/service postgres
+    port: 15432
+  clickhouse:
+    command: bash .amp/service clickhouse
+    port: 18123
+    health: /ping
+  tidx:
+    command: bash .amp/service tidx
+    port: 18080
+    health: /health
+    env:
+      ZONE_PORTAL_URL: ${services.zone.publicURL}
+    review: false
+    portal:
+      url: /status
+      title: Local TIDX
+      description: Indexes this orb's zone; SQL queries are available at /query.
+  api:
+    command: bash .amp/service api
+    port: 18787
+    health: /health
+    env:
+      TIDX_PORTAL_URL: ${services.tidx.publicURL}
+  explorer:
+    command: bash .amp/service explorer
+    port: 13000
+    health: /
+    env:
+      TIDX_PORTAL_URL: ${services.tidx.publicURL}
+    agent: control
+    portal:
+      title: Local zone explorer
+      description: Tempo Explorer connected to the local zone and local TIDX.

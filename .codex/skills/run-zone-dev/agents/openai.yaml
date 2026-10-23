@@ -1,0 +1,4 @@
+interface:
+  display_name: "Run Zone Dev"
+  short_description: "Run and validate Tempo Zone dev mode"
+  default_prompt: "Use $run-zone-dev to start and validate Tempo Zone dev mode against either a Tempo dev L1 or Anvil."

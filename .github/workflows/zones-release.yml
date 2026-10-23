@@ -1,0 +1,706 @@
+name: Zones Release
+# Adapted from Reth's release workflow
+# https://github.com/paradigmxyz/reth/blob/main/.github/workflows/release.yml
+
+on:
+  push:
+    tags:
+      - "zones/v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing Git tag to release (e.g., zones/v0.3.5)"
+        required: false
+        type: string
+      sha:
+        description: "Exact 40-character commit SHA on main to verify (dry-run only; omit tag). Defaults to the head of the selected ref"
+        required: false
+        type: string
+      dry_run:
+        description: "Verify the canonical Linux x86_64 binary without publishing an image or release"
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: full
+  RUST_TOOLCHAIN: "1.96.0"
+
+concurrency:
+  group: zones-release-${{ inputs.sha || (inputs.tag && format('refs/tags/{0}', inputs.tag)) || (github.event_name == 'workflow_dispatch' && github.sha) || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  resolve-release:
+    if: github.repository == 'tempoxyz/tempo'
+    name: Resolve release inputs
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+      commit_sha: ${{ steps.release.outputs.commit_sha }}
+      short_sha: ${{ steps.release.outputs.short_sha }}
+      source_date_epoch: ${{ steps.release.outputs.source_date_epoch }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Validate commit dry-run inputs
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_SHA: ${{ inputs.sha }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$INPUT_SHA" ]]; then
+            [[ "$DRY_RUN" == "true" && -z "$INPUT_TAG" ]] || {
+              echo "sha requires dry_run=true and an empty tag" >&2
+              exit 1
+            }
+            [[ "$INPUT_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+              echo "sha must be an exact 40-character lowercase commit SHA" >&2
+              exit 1
+            }
+          elif [[ -z "$INPUT_TAG" && "$DRY_RUN" != "true" ]]; then
+            echo "Provide a release tag, or set dry_run to verify a commit" >&2
+            exit 1
+          fi
+
+      - name: Check out release source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && (inputs.sha || (inputs.tag && format('refs/tags/{0}', inputs.tag)) || github.sha) || github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+          submodules: false
+
+      - name: Record immutable release inputs
+        id: release
+        shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_SHA: ${{ inputs.sha }}
+        run: |
+          set -euo pipefail
+
+          commit_sha="$(git rev-parse HEAD)"
+          short_sha="$(git rev-parse --short=7 HEAD)"
+          source_date_epoch="$(git show -s --format=%ct HEAD)"
+
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && -z "$INPUT_TAG" ]]; then
+            # Commit dry run: the requested SHA, or the head of the dispatched ref.
+            expected_sha="${INPUT_SHA:-$GITHUB_SHA}"
+            [[ "$commit_sha" == "$expected_sha" ]] || {
+              echo "Checked-out commit does not match requested SHA" >&2
+              exit 1
+            }
+            tag=""
+            version="sha-$short_sha"
+          else
+            if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+              tag="$INPUT_TAG"
+            else
+              tag="${GITHUB_REF#refs/tags/}"
+            fi
+            [[ "$tag" =~ ^zones/v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]] || {
+              echo "Expected a Zones release tag: zones/vX.Y.Z[-prerelease]" >&2
+              exit 1
+            }
+            version="${tag#zones/}"
+            tag_commit="$(git rev-parse --verify "refs/tags/$tag^{commit}")" || {
+              echo "Release tag does not resolve to a commit: $version" >&2
+              exit 1
+            }
+            [[ "$tag_commit" == "$commit_sha" ]] || {
+              echo "Release tag $tag resolves to $tag_commit, not $commit_sha" >&2
+              exit 1
+            }
+          fi
+
+          [[ "$commit_sha" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "Resolved ref is not a full commit SHA: $commit_sha" >&2
+            exit 1
+          }
+          [[ "$source_date_epoch" =~ ^[0-9]+$ ]] || {
+            echo "Invalid SOURCE_DATE_EPOCH: $source_date_epoch" >&2
+            exit 1
+          }
+          # Reject source that has not reached protected main before OIDC-enabled
+          # build jobs execute scripts from that checkout.
+          git show-ref --verify --quiet refs/remotes/origin/main || {
+            echo "Protected main was not fetched" >&2
+            exit 1
+          }
+          git merge-base --is-ancestor "$commit_sha" refs/remotes/origin/main || {
+            echo "Release source $commit_sha is not a commit on main" >&2
+            exit 1
+          }
+
+          {
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "commit_sha=$commit_sha"
+            echo "short_sha=$short_sha"
+            echo "source_date_epoch=$source_date_epoch"
+          } >> "$GITHUB_OUTPUT"
+
+  check-version:
+    name: Check version
+    runs-on: ubuntu-latest
+    needs: resolve-release
+    if: ${{ github.event.inputs.dry_run != 'true' }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Check out resolved commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve-release.outputs.commit_sha }}
+          persist-credentials: false
+          submodules: recursive
+
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - name: Verify crate version matches tag
+        # Check that the Cargo version starts with the tag, so Cargo version
+        # 1.4.8 matches both v1.4.8 and v1.4.8-rc.1.
+        env:
+          VERSION: ${{ needs.resolve-release.outputs.version }}
+        run: |
+          set -euo pipefail
+          tag="${VERSION#v}"
+          cargo_ver="$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "tempo-zone") | .version')"
+          [[ "$tag" == "$cargo_ver" || "$tag" == "$cargo_ver-"* ]] || {
+            echo "Tag $tag does not match Cargo version $cargo_ver" >&2
+            exit 1
+          }
+
+  build-linux-x86_64-release:
+    name: Build canonical Linux x86_64 release binary
+    needs: resolve-release
+    runs-on: depot-ubuntu-latest-16
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      asset_artifact_id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Check out resolved commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve-release.outputs.commit_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          submodules: recursive
+
+      # Linux x86_64 is the canonical reproducible release contract.
+      - name: Build the canonical reproducible binary
+        env:
+          GIT_SHA: ${{ needs.resolve-release.outputs.commit_sha }}
+          SOURCE_DATE_EPOCH: ${{ needs.resolve-release.outputs.source_date_epoch }}
+          VERSION: ${{ needs.resolve-release.outputs.version }}
+        run: zones/scripts/reproducible-build.sh
+
+      - name: Prepare release archive and checksums
+        id: prepare
+        shell: bash
+        env:
+          VERSION: ${{ needs.resolve-release.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          target="x86_64-unknown-linux-gnu"
+          binary_name="tempo-zone-${VERSION}-${target}"
+          archive_name="${binary_name}.tar.gz"
+          binary_checksum_name="${binary_name}.sha256"
+
+          cp out/tempo-zone "$binary_name"
+          tar --owner=0 --group=0 --numeric-owner --mode=0755 -czf "$archive_name" "$binary_name"
+          shasum -a 256 "$archive_name" > "${archive_name}.sha256"
+          printf '%s  %s\n' "$(sha256sum out/tempo-zone | awk '{print $1}')" "$binary_name" \
+            > "$binary_checksum_name"
+
+          {
+            echo "archive_name=$archive_name"
+            echo "archive_checksum_name=${archive_name}.sha256"
+            echo "binary_checksum_name=$binary_checksum_name"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload canonical Linux x86_64 release assets
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tempo-zone-x86_64-unknown-linux-gnu
+          path: |
+            ${{ steps.prepare.outputs.archive_name }}
+            ${{ steps.prepare.outputs.archive_checksum_name }}
+            ${{ steps.prepare.outputs.binary_checksum_name }}
+          if-no-files-found: error
+
+  rebuild-linux-x86_64-release:
+    name: Clean rebuild canonical Linux x86_64 binary
+    needs: resolve-release
+    runs-on: depot-ubuntu-latest-16
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      binary_sha256: ${{ steps.hash.outputs.sha256 }}
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Check out resolved commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve-release.outputs.commit_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Rebuild the canonical reproducible binary without cache
+        env:
+          GIT_SHA: ${{ needs.resolve-release.outputs.commit_sha }}
+          SOURCE_DATE_EPOCH: ${{ needs.resolve-release.outputs.source_date_epoch }}
+          VERSION: ${{ needs.resolve-release.outputs.version }}
+          NO_CACHE: "1"
+        run: |
+          set -euo pipefail
+          docker builder prune --all --force
+          zones/scripts/reproducible-build.sh
+
+      - name: Hash clean rebuild
+        id: hash
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256="$(sha256sum out/tempo-zone | awk '{print $1}')"
+          [[ "$sha256" =~ ^[0-9a-f]{64}$ ]] || {
+            echo "Invalid clean-build SHA-256: $sha256" >&2
+            exit 1
+          }
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
+
+  compare-linux-x86_64-release:
+    name: Verify canonical Linux x86_64 release binary
+    needs:
+      - resolve-release
+      - build-linux-x86_64-release
+      - rebuild-linux-x86_64-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      archive_sha256: ${{ steps.verify.outputs.archive_sha256 }}
+      manifest_artifact_id: ${{ steps.manifest.outputs.artifact-id }}
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Download canonical Linux x86_64 release assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.build-linux-x86_64-release.outputs.asset_artifact_id }}
+          path: ${{ runner.temp }}/canonical-linux-x86_64-assets
+
+      - name: Verify archived binary against clean rebuild
+        id: verify
+        shell: bash
+        env:
+          COMMIT_SHA: ${{ needs.resolve-release.outputs.commit_sha }}
+          SOURCE_DATE_EPOCH: ${{ needs.resolve-release.outputs.source_date_epoch }}
+          VERSION: ${{ needs.resolve-release.outputs.version }}
+          CLEAN_REBUILD_SHA256: ${{ needs.rebuild-linux-x86_64-release.outputs.binary_sha256 }}
+          CANDIDATE_ARTIFACT_ID: ${{ needs.build-linux-x86_64-release.outputs.asset_artifact_id }}
+          CANDIDATE_ASSET_DIR: ${{ runner.temp }}/canonical-linux-x86_64-assets
+          CONTRACT_NAME: tempo-zone-linux-x86_64-reproducible
+          CONTRACT_VERSION: "1"
+          MANIFEST: ${{ runner.temp }}/tempo-zone-linux-x86_64-verification.json
+        run: |
+          set -Eeuo pipefail
+
+          comparison_result="failed"
+          failure=""
+          candidate_sha256=""
+          candidate_archive_sha256=""
+
+          write_manifest() {
+            jq -n \
+              --arg commit_sha "$COMMIT_SHA" \
+              --arg version "$VERSION" \
+              --arg contract_name "$CONTRACT_NAME" \
+              --arg contract_version "$CONTRACT_VERSION" \
+              --argjson source_date_epoch "$SOURCE_DATE_EPOCH" \
+              --arg candidate_artifact_id "$CANDIDATE_ARTIFACT_ID" \
+              --arg candidate_archive_sha256 "$candidate_archive_sha256" \
+              --arg candidate_sha256 "$candidate_sha256" \
+              --arg clean_rebuild_sha256 "$CLEAN_REBUILD_SHA256" \
+              --arg comparison_result "$comparison_result" \
+              --arg failure "$failure" \
+              '{
+                commit_sha: $commit_sha,
+                version: $version,
+                contract: {
+                  name: $contract_name,
+                  version: $contract_version,
+                  dockerfile: "zones/docker/Dockerfile.reproducible",
+                  target: "x86_64-unknown-linux-gnu",
+                  cargo_profile: "zones-reproducible",
+                  cargo_features: ["jemalloc"],
+                  source_date_epoch: $source_date_epoch
+                },
+                candidate_artifact_id: $candidate_artifact_id,
+                candidate_archive_sha256: $candidate_archive_sha256,
+                candidate_binary_sha256: $candidate_sha256,
+                clean_rebuild_binary_sha256: $clean_rebuild_sha256,
+                comparison_result: $comparison_result,
+                failure: $failure
+              }' > "$MANIFEST"
+          }
+
+          trap 'write_manifest' EXIT
+
+          [[ "$CANDIDATE_ARTIFACT_ID" =~ ^[0-9]+$ ]] || {
+            failure="invalid candidate artifact ID"
+            echo "Invalid candidate artifact ID: $CANDIDATE_ARTIFACT_ID" >&2
+            exit 1
+          }
+          [[ "$CLEAN_REBUILD_SHA256" =~ ^[0-9a-f]{64}$ ]] || {
+            failure="invalid clean rebuild SHA-256"
+            echo "Invalid clean rebuild SHA-256: $CLEAN_REBUILD_SHA256" >&2
+            exit 1
+          }
+
+          target="x86_64-unknown-linux-gnu"
+          binary_name="tempo-zone-${VERSION}-${target}"
+          archive_name="${binary_name}.tar.gz"
+          archive_checksum_name="${archive_name}.sha256"
+          binary_checksum_name="${binary_name}.sha256"
+          mapfile -d '' candidate_assets < <(find "$CANDIDATE_ASSET_DIR" -type f -print0)
+          if [[ ${#candidate_assets[@]} -ne 3 ]]; then
+            failure="candidate artifact must contain only the archive and its two checksums"
+            echo "$failure" >&2
+            exit 1
+          fi
+          mapfile -t archive_paths < <(find "$CANDIDATE_ASSET_DIR" -type f -name "$archive_name" -print)
+          if [[ ${#archive_paths[@]} -ne 1 ]]; then
+            failure="candidate artifact does not contain exactly one $archive_name"
+            echo "$failure" >&2
+            exit 1
+          fi
+          archive_path="${archive_paths[0]}"
+          asset_dir="$(dirname "$archive_path")"
+
+          for asset in "$archive_path" \
+              "$asset_dir/$archive_checksum_name" \
+              "$asset_dir/$binary_checksum_name"; do
+            [[ -f "$asset" ]] || {
+              failure="candidate artifact is missing $(basename "$asset")"
+              echo "$failure" >&2
+              exit 1
+            }
+          done
+
+          (
+            cd "$asset_dir"
+            sha256sum --strict --check "$archive_checksum_name"
+          ) || {
+            failure="candidate archive checksum does not match its archive"
+            exit 1
+          }
+
+          # Validate headers before extraction: matching bytes alone cannot
+          # rule out a root-owned setuid executable or a link in the archive.
+          if ! python3 - "$archive_path" "$binary_name" <<'PY'
+          import sys
+          import tarfile
+
+          with tarfile.open(sys.argv[1], "r:gz") as archive:
+              members = archive.getmembers()
+              if len(members) != 1:
+                  raise SystemExit("Expected exactly one archive member")
+              member = members[0]
+              if (member.name != sys.argv[2] or not member.isfile()
+                      or member.uid != 0 or member.gid != 0 or member.mode != 0o755):
+                  raise SystemExit("Expected a root-owned regular binary with mode 0755")
+          PY
+          then
+            failure="candidate archive has unsafe member headers"
+            echo "$failure" >&2
+            exit 1
+          fi
+
+          extract_dir="$RUNNER_TEMP/canonical-linux-x86_64-extracted"
+          mkdir -p "$extract_dir"
+          tar -xzf "$archive_path" -C "$extract_dir"
+          candidate_binary="$extract_dir/$binary_name"
+          [[ -f "$candidate_binary" && ! -L "$candidate_binary" ]] || {
+            failure="candidate archive binary is missing or is a symlink"
+            echo "$failure" >&2
+            exit 1
+          }
+
+          candidate_sha256="$(sha256sum "$candidate_binary" | awk '{print $1}')"
+          candidate_archive_sha256="$(sha256sum "$archive_path" | awk '{print $1}')"
+          [[ "$candidate_sha256" =~ ^[0-9a-f]{64}$ ]] || {
+            failure="invalid archived candidate binary SHA-256"
+            echo "$failure" >&2
+            exit 1
+          }
+
+          read -r declared_binary_sha256 declared_binary_name < "$asset_dir/$binary_checksum_name"
+          if [[ "$declared_binary_sha256" != "$candidate_sha256" || "$declared_binary_name" != "$binary_name" ]]; then
+            failure="candidate bare-binary checksum does not match archived binary"
+            echo "$failure" >&2
+            exit 1
+          fi
+
+          if [[ "$candidate_sha256" != "$CLEAN_REBUILD_SHA256" ]]; then
+            failure="canonical release binary checksum does not match clean rebuild"
+            echo "::error::Canonical Linux x86_64 reproducible binary verification mismatch"
+            exit 1
+          fi
+
+          comparison_result="success"
+          echo "archive_sha256=$candidate_archive_sha256" >> "$GITHUB_OUTPUT"
+          echo "Canonical Linux x86_64 release binary checksum matches clean rebuild"
+
+      - name: Upload release verification manifest
+        id: manifest
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tempo-zone-linux-x86_64-reproducible-verification
+          path: ${{ runner.temp }}/tempo-zone-linux-x86_64-verification.json
+          if-no-files-found: warn
+
+  build-other-release:
+    name: Build ${{ matrix.platform.target }} release binary
+    needs: resolve-release
+    # Dry runs are a focused reproducible-contract test; full releases retain
+    # the ARM Linux and macOS artifact builds below.
+    if: github.event_name != 'workflow_dispatch' || inputs.dry_run == false
+    runs-on: ${{ matrix.platform.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          # These release artifacts remain outside the reproducible contract.
+          - os: depot-ubuntu-latest-arm-16
+            target: aarch64-unknown-linux-gnu
+          - os: depot-macos-15
+            target: aarch64-apple-darwin
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Check out resolved commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve-release.outputs.commit_sha }}
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ matrix.platform.target }}
+
+      - name: Install mold linker
+        if: runner.os == 'Linux'
+        uses: tempoxyz/gh-actions/actions/setup-mold@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Build binary
+        env:
+          CARGO_TARGET_DIR: target
+          TARGET: ${{ matrix.platform.target }}
+        run: >-
+          cargo build --locked --bin tempo-zone --features "asm-keccak,jemalloc"
+          --profile maxperf --target "$TARGET"
+
+      - name: Prepare binary
+        id: prepare
+        shell: bash
+        env:
+          TARGET: ${{ matrix.platform.target }}
+          VERSION: ${{ needs.resolve-release.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          binary_name="tempo-zone-${VERSION}-${TARGET}"
+          archive_name="${binary_name}.tar.gz"
+
+          cp "target/${TARGET}/maxperf/tempo-zone" "$binary_name"
+          tar czf "$archive_name" "$binary_name"
+          shasum -a 256 "$archive_name" > "${archive_name}.sha256"
+
+          {
+            echo "archive_name=$archive_name"
+            echo "archive_checksum_name=${archive_name}.sha256"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload release assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tempo-zone-${{ matrix.platform.target }}
+          path: |
+            ${{ steps.prepare.outputs.archive_name }}
+            ${{ steps.prepare.outputs.archive_checksum_name }}
+          if-no-files-found: error
+
+  create-release:
+    name: Create Release
+    needs:
+      - resolve-release
+      - check-version
+      - build-linux-x86_64-release
+      - rebuild-linux-x86_64-release
+      - compare-linux-x86_64-release
+      - build-other-release
+    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false) }}
+    # Keep the release write token outside the candidate builder's trust domain.
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: write
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      # This is necessary for generating the changelog. It has to come before
+      # downloading artifacts or else checkout deletes the artifacts.
+      - name: Check out resolved commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve-release.outputs.commit_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download verified canonical Linux x86_64 assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.build-linux-x86_64-release.outputs.asset_artifact_id }}
+          path: artifacts/canonical
+
+      - name: Download Linux ARM release assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: tempo-zone-aarch64-unknown-linux-gnu
+          path: artifacts/aarch64-unknown-linux-gnu
+
+      - name: Download macOS ARM release assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: tempo-zone-aarch64-apple-darwin
+          path: artifacts/aarch64-apple-darwin
+
+      - name: Download Linux x86_64 verification manifest
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.compare-linux-x86_64-release.outputs.manifest_artifact_id }}
+          path: artifacts/verification
+
+      - name: Bind canonical assets to independent verification
+        env:
+          VERSION: ${{ needs.resolve-release.outputs.version }}
+          COMMIT_SHA: ${{ needs.resolve-release.outputs.commit_sha }}
+          CANDIDATE_ARTIFACT_ID: ${{ needs.build-linux-x86_64-release.outputs.asset_artifact_id }}
+          VERIFIED_ARCHIVE_SHA256: ${{ needs.compare-linux-x86_64-release.outputs.archive_sha256 }}
+          CLEAN_REBUILD_SHA256: ${{ needs.rebuild-linux-x86_64-release.outputs.binary_sha256 }}
+        run: |
+          set -euo pipefail
+          manifest=artifacts/verification/tempo-zone-linux-x86_64-verification.json
+          jq -e --arg commit "$COMMIT_SHA" --arg version "$VERSION" \
+            --arg artifact "$CANDIDATE_ARTIFACT_ID" --arg archive "$VERIFIED_ARCHIVE_SHA256" \
+            --arg binary "$CLEAN_REBUILD_SHA256" \
+            '.comparison_result == "success" and .commit_sha == $commit and .version == $version and
+             .candidate_artifact_id == $artifact and .candidate_archive_sha256 == $archive and
+             .candidate_binary_sha256 == $binary and .clean_rebuild_binary_sha256 == $binary' \
+            "$manifest" > /dev/null
+          binary_name="tempo-zone-${VERSION}-x86_64-unknown-linux-gnu"
+          cd artifacts/canonical
+          printf '%s  %s\n' "$VERIFIED_ARCHIVE_SHA256" "${binary_name}.tar.gz" \
+            > "${binary_name}.tar.gz.sha256"
+          sha256sum --strict --check "${binary_name}.tar.gz.sha256"
+          # Publish checksums from trusted verification, not candidate declarations.
+          printf '%s  %s\n' "$CLEAN_REBUILD_SHA256" "$binary_name" > "${binary_name}.sha256"
+
+      - name: Create Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.resolve-release.outputs.version }}
+          COMMIT_SHA: ${{ needs.resolve-release.outputs.commit_sha }}
+          TAG: ${{ needs.resolve-release.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          prerelease=""
+          if [[ "$VERSION" == *-* ]]; then
+            prerelease="--prerelease"
+          fi
+
+          assets=()
+          add_asset() {
+            local directory="$1" name="$2"
+            local -a matches
+            mapfile -d '' matches < <(find "$directory" -type f -name "$name" -print0)
+            [[ ${#matches[@]} -eq 1 ]] || {
+              echo "Expected exactly one release asset: $name" >&2
+              exit 1
+            }
+            assets+=("${matches[0]}")
+          }
+          binary_name="tempo-zone-${VERSION}-x86_64-unknown-linux-gnu"
+          add_asset artifacts/canonical "${binary_name}.tar.gz"
+          add_asset artifacts/canonical "${binary_name}.tar.gz.sha256"
+          add_asset artifacts/canonical "${binary_name}.sha256"
+          for target in aarch64-unknown-linux-gnu aarch64-apple-darwin; do
+            binary_name="tempo-zone-${VERSION}-${target}"
+            add_asset "artifacts/$target" "${binary_name}.tar.gz"
+            add_asset "artifacts/$target" "${binary_name}.tar.gz.sha256"
+          done
+          add_asset artifacts/verification tempo-zone-linux-x86_64-verification.json
+
+          # Re-read and peel the remote tag after the builds, including annotated
+          # tags, so a moved tag cannot label binaries from another commit.
+          tag_object="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq '.object')"
+          while [[ "$(jq -r '.type' <<< "$tag_object")" == tag ]]; do
+            tag_sha="$(jq -r '.sha' <<< "$tag_object")"
+            tag_object="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_sha" --jq '.object')"
+          done
+          [[ "$(jq -r '.type' <<< "$tag_object")" == commit && \
+              "$(jq -r '.sha' <<< "$tag_object")" == "$COMMIT_SHA" ]] || {
+            echo "Release tag $TAG no longer resolves to verified commit $COMMIT_SHA" >&2
+            exit 1
+          }
+
+          gh release create "$TAG" \
+            --repo ${{ github.repository }} \
+            --verify-tag \
+            --title "Zones $VERSION" \
+            --latest=false \
+            --draft \
+            --notes "" \
+            $prerelease \
+            "${assets[@]}"

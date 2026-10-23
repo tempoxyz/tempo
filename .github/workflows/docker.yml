@@ -9,7 +9,7 @@ on:
       - main
       - "rc/*"
     tags:
-      - "v*.*.*"
+      - "tempo/v*.*.*"
   merge_group:
   workflow_dispatch:
     inputs:
@@ -58,7 +58,7 @@ jobs:
       id-token: write
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
       - name: Resolve build source
         id: source
@@ -117,7 +117,7 @@ jobs:
           ref: ${{ steps.source.outputs.sha }}
           persist-credentials: false
 
-      - uses: tempoxyz/gh-actions/vendor/depot/setup-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+      - uses: tempoxyz/gh-actions/vendor/depot/setup-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
       - name: Determine Docker labels
         id: docker-labels
@@ -138,9 +138,20 @@ jobs:
           LABELS
           fi
 
+      - name: Resolve release tag version
+        id: release-tag
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          # Docker semver tags come from tempo/vX.Y.Z; other refs leave the value
+          # empty so metadata-action falls back to the ref.
+          case "$REF" in
+            refs/tags/tempo/v*) echo "version=${REF#refs/tags/tempo/}" >> "$GITHUB_OUTPUT" ;;
+          esac
+
       - name: Docker metadata for tempo
         id: meta-tempo
-        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           images: |
             ${{ env.REGISTRY }}/tempo
@@ -152,9 +163,9 @@ jobs:
           tags: |
             type=schedule,pattern=nightly,enable=${{ inputs.pr_number == '' }}
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
-            type=semver,pattern={{version}},enable=${{ inputs.pr_number == '' }}
-            type=semver,pattern={{major}}.{{minor}},enable=${{ inputs.pr_number == '' }}
-            type=semver,pattern={{major}},enable=${{ inputs.pr_number == '' }}
+            type=semver,pattern={{version}},value=${{ steps.release-tag.outputs.version }},enable=${{ inputs.pr_number == '' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.release-tag.outputs.version }},enable=${{ inputs.pr_number == '' }}
+            type=semver,pattern={{major}},value=${{ steps.release-tag.outputs.version }},enable=${{ inputs.pr_number == '' }}
             type=raw,value=stable,enable=${{ inputs.pr_number == '' && github.ref_type == 'tag' }}
             type=raw,value=latest,enable=${{ inputs.pr_number == '' && '{{is_default_branch}}' || 'false' }}
             type=edge,branch=main,enable=${{ inputs.pr_number == '' }}
@@ -163,7 +174,7 @@ jobs:
 
       - name: Docker metadata for tempo-devnet
         id: meta-tempo-devnet
-        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           images: |
             ${{ env.REGISTRY }}/tempo-devnet
@@ -175,9 +186,9 @@ jobs:
           tags: |
             type=schedule,pattern=nightly,enable=${{ inputs.pr_number == '' }}
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
-            type=semver,pattern={{version}},enable=${{ inputs.pr_number == '' }}
-            type=semver,pattern={{major}}.{{minor}},enable=${{ inputs.pr_number == '' }}
-            type=semver,pattern={{major}},enable=${{ inputs.pr_number == '' }}
+            type=semver,pattern={{version}},value=${{ steps.release-tag.outputs.version }},enable=${{ inputs.pr_number == '' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.release-tag.outputs.version }},enable=${{ inputs.pr_number == '' }}
+            type=semver,pattern={{major}},value=${{ steps.release-tag.outputs.version }},enable=${{ inputs.pr_number == '' }}
             type=raw,value=stable,enable=${{ inputs.pr_number == '' && github.ref_type == 'tag' }}
             type=raw,value=latest,enable=${{ inputs.pr_number == '' && '{{is_default_branch}}' || 'false' }}
             type=edge,branch=main,enable=${{ inputs.pr_number == '' }}
@@ -186,7 +197,7 @@ jobs:
 
       - name: Docker metadata for tempo-localnet
         id: meta-tempo-localnet
-        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           images: |
             ${{ env.REGISTRY }}/tempo-localnet
@@ -198,9 +209,9 @@ jobs:
           tags: |
             type=schedule,pattern=nightly,enable=${{ inputs.pr_number == '' }}
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
-            type=semver,pattern={{version}},enable=${{ inputs.pr_number == '' }}
-            type=semver,pattern={{major}}.{{minor}},enable=${{ inputs.pr_number == '' }}
-            type=semver,pattern={{major}},enable=${{ inputs.pr_number == '' }}
+            type=semver,pattern={{version}},value=${{ steps.release-tag.outputs.version }},enable=${{ inputs.pr_number == '' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.release-tag.outputs.version }},enable=${{ inputs.pr_number == '' }}
+            type=semver,pattern={{major}},value=${{ steps.release-tag.outputs.version }},enable=${{ inputs.pr_number == '' }}
             type=raw,value=stable,enable=${{ inputs.pr_number == '' && github.ref_type == 'tag' }}
             type=raw,value=latest,enable=${{ inputs.pr_number == '' && '{{is_default_branch}}' || 'false' }}
             type=edge,branch=main,enable=${{ inputs.pr_number == '' }}
@@ -209,7 +220,7 @@ jobs:
 
       - name: Docker metadata for tempo-sidecar
         id: meta-tempo-sidecar
-        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           images: |
             ${{ env.REGISTRY }}/tempo-sidecar
@@ -221,9 +232,9 @@ jobs:
           tags: |
             type=schedule,pattern=nightly,enable=${{ inputs.pr_number == '' }}
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
-            type=semver,pattern={{version}},enable=${{ inputs.pr_number == '' }}
-            type=semver,pattern={{major}}.{{minor}},enable=${{ inputs.pr_number == '' }}
-            type=semver,pattern={{major}},enable=${{ inputs.pr_number == '' }}
+            type=semver,pattern={{version}},value=${{ steps.release-tag.outputs.version }},enable=${{ inputs.pr_number == '' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.release-tag.outputs.version }},enable=${{ inputs.pr_number == '' }}
+            type=semver,pattern={{major}},value=${{ steps.release-tag.outputs.version }},enable=${{ inputs.pr_number == '' }}
             type=raw,value=stable,enable=${{ inputs.pr_number == '' && github.ref_type == 'tag' }}
             type=raw,value=latest,enable=${{ inputs.pr_number == '' && '{{is_default_branch}}' || 'false' }}
             type=edge,branch=main,enable=${{ inputs.pr_number == '' }}
@@ -232,7 +243,7 @@ jobs:
 
       - name: Docker metadata for tempo-xtask
         id: meta-tempo-xtask
-        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           images: |
             ${{ env.REGISTRY }}/tempo-xtask
@@ -244,9 +255,9 @@ jobs:
           tags: |
             type=schedule,pattern=nightly,enable=${{ inputs.pr_number == '' }}
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
-            type=semver,pattern={{version}},enable=${{ inputs.pr_number == '' }}
-            type=semver,pattern={{major}}.{{minor}},enable=${{ inputs.pr_number == '' }}
-            type=semver,pattern={{major}},enable=${{ inputs.pr_number == '' }}
+            type=semver,pattern={{version}},value=${{ steps.release-tag.outputs.version }},enable=${{ inputs.pr_number == '' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.release-tag.outputs.version }},enable=${{ inputs.pr_number == '' }}
+            type=semver,pattern={{major}},value=${{ steps.release-tag.outputs.version }},enable=${{ inputs.pr_number == '' }}
             type=raw,value=stable,enable=${{ inputs.pr_number == '' && github.ref_type == 'tag' }}
             type=raw,value=latest,enable=${{ inputs.pr_number == '' && '{{is_default_branch}}' || 'false' }}
             type=edge,branch=main,enable=${{ inputs.pr_number == '' }}
@@ -254,21 +265,21 @@ jobs:
             type=raw,value=pr-${{ inputs.pr_number }},enable=${{ inputs.pr_number != '' }}
 
       - name: Log in to Container Registry
-        uses: tempoxyz/gh-actions/vendor/docker/login-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        uses: tempoxyz/gh-actions/vendor/docker/login-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Log in to Docker Hub
-        uses: tempoxyz/gh-actions/vendor/docker/login-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        uses: tempoxyz/gh-actions/vendor/docker/login-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           username: ${{ vars.DOCKER_HUB_USER }}
           password: ${{ secrets.DOCKER_HUB_TOKEN }}
 
       - name: Build and push Docker images
         id: build-and-push
-        uses: tempoxyz/gh-actions/vendor/depot/bake-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        uses: tempoxyz/gh-actions/vendor/depot/bake-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           files: |
             docker-bake.hcl
@@ -280,7 +291,7 @@ jobs:
           targets: ${{ ((inputs.pr_number == '' && github.event_name == 'schedule') || github.event.inputs.nightly == 'true') && 'nightly' || 'default' }}
           project: 0c6tg19qsp
           push: true
-          no-cache: ${{ inputs.pr_number == '' && startsWith(github.ref, 'refs/tags/v') }}
+          no-cache: ${{ inputs.pr_number == '' && startsWith(github.ref, 'refs/tags/tempo/v') }}
           pull: ${{ github.event_name != 'merge_group' }}
         env:
           VERGEN_GIT_SHA: ${{ steps.source.outputs.sha }}
@@ -323,7 +334,7 @@ jobs:
           retention-days: 7
 
       - name: Install cosign
-        uses: tempoxyz/gh-actions/vendor/sigstore/cosign-installer@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        uses: tempoxyz/gh-actions/vendor/sigstore/cosign-installer@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
       - name: Sign Docker images
         id: sign-images
@@ -334,6 +345,7 @@ jobs:
           TEMPO_LOCALNET_TAGS: ${{ steps.meta-tempo-localnet.outputs.tags }}
           TEMPO_SIDECAR_TAGS: ${{ steps.meta-tempo-sidecar.outputs.tags }}
           TEMPO_XTASK_TAGS: ${{ steps.meta-tempo-xtask.outputs.tags }}
+          BUILD_METADATA: ${{ steps.build-and-push.outputs.metadata }}
         run: |
           set -euo pipefail
           sign_image() {
@@ -356,25 +368,34 @@ jobs:
             done
           }
 
-          images=(
-            "$TEMPO_TAGS"
-            "$TEMPO_DEVNET_TAGS"
-            "$TEMPO_LOCALNET_TAGS"
-            "$TEMPO_SIDECAR_TAGS"
-            "$TEMPO_XTASK_TAGS"
-          )
+          # cosign signs digests, not tags: every tag of a repository shares one
+          # signature, so sign each repository's digest once, all concurrently.
+          refs=()
+          for target in tempo tempo-devnet tempo-localnet tempo-sidecar tempo-xtask; do
+            tags_var="${target^^}_TAGS"
+            tags_var="${tags_var//-/_}"
+            digest="$(jq -r --arg target "$target" '.[$target]["containerimage.digest"] // empty' <<< "$BUILD_METADATA")"
+            if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "No image digest for $target in build metadata" >&2
+              exit 1
+            fi
+            while IFS= read -r repo; do
+              [ -n "$repo" ] && refs+=("$repo@$digest")
+            done < <(sed -n 's/:[^:/]*$//p' <<< "${!tags_var}" | sort -u)
+          done
+
+          pids=()
+          for ref in "${refs[@]}"; do
+            sign_image "$ref" &
+            pids+=("$!")
+          done
           sign_failures=0
-          for tags in "${images[@]}"; do
-            while IFS= read -r image; do
-              [ -n "$image" ] || continue
-              if ! sign_image "$image"; then
-                sign_failures=$((sign_failures + 1))
-              fi
-            done <<< "$tags"
+          for pid in "${pids[@]}"; do
+            wait "$pid" || sign_failures=$((sign_failures + 1))
           done
 
           if [ "$sign_failures" -ne 0 ]; then
-            echo "Failed to sign $sign_failures image reference(s)" >&2
+            echo "Failed to sign $sign_failures image digest(s)" >&2
             exit 1
           fi
 
