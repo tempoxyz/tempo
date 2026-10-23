@@ -13,7 +13,7 @@
 
 use std::{sync::Arc, time::Duration};
 
-use alloy_primitives::{Address, Bytes};
+use alloy_primitives::{Address, B256, Bytes};
 use jsonrpsee::{
     core::RpcResult,
     types::{
@@ -405,7 +405,9 @@ where
 /// A newer list is taken from any sequencer, so one offline sequencer does not leave this node
 /// behind. The copy moves back, to an older list or to none when no sequencer holds a written
 /// list (for example after `--deposits.allowlist` is turned off), only when every sequencer
-/// answered, so a lagging sequencer that alone answers cannot roll it back.
+/// answered, so a lagging sequencer that alone answers cannot roll it back. Lists are ordered by
+/// nonce, then by hash, so sequencers whose lists diverged under one nonce do not make the copy
+/// switch between them from round to round.
 async fn refresh_mirror(client: &AllowlistClient, mirror: &AllowlistMirror) -> RpcResult<bool> {
     let statuses = answers(client, &Request::Status).await?;
     if let Some(error) = &statuses.error {
@@ -420,13 +422,13 @@ async fn refresh_mirror(client: &AllowlistClient, mirror: &AllowlistMirror) -> R
             Response::Status(status) if status.initialized => Some(status),
             _ => None,
         })
-        .max_by_key(|status| status.nonce)
+        .max_by_key(list_order)
     else {
         return Ok(follow_back && mirror.clear());
     };
-    let fetch = mirror
-        .status()
-        .is_none_or(|current| current != newest && (follow_back || newest.nonce > current.nonce));
+    let fetch = mirror.status().is_none_or(|current| {
+        current != newest && (follow_back || list_order(&newest) > list_order(&current))
+    });
     if !fetch {
         return Ok(false);
     }
@@ -434,20 +436,24 @@ async fn refresh_mirror(client: &AllowlistClient, mirror: &AllowlistMirror) -> R
     if let Some(error) = &snapshots.error {
         debug!(target: "zone::allowlist", %error, "Some sequencers did not return their allowlist");
     }
-    // The sequencers that answer this round may lag behind those that reported `newest`.
+    // The sequencers that answer this round may lag behind those that reported `newest`, or
+    // apply a write since; the next round settles either case.
     let Some(snapshot) = snapshots
         .responses
         .into_iter()
-        .filter_map(|(_, response)| match response {
-            Response::Snapshot(snapshot) if snapshot.status.initialized => Some(snapshot),
+        .find_map(|(_, response)| match response {
+            Response::Snapshot(snapshot) if snapshot.status == newest => Some(snapshot),
             _ => None,
         })
-        .max_by_key(|snapshot| snapshot.status.nonce)
-        .filter(|snapshot| snapshot.status.nonce >= newest.nonce)
     else {
         return Ok(false);
     };
     Ok(mirror.replace(snapshot))
+}
+
+/// Orders written lists by nonce, then by hash, so every RPC-only node picks the same one.
+fn list_order(status: &DepositAllowlistStatus) -> (u64, B256) {
+    (status.nonce, status.list_hash)
 }
 
 fn relay_error(message: String) -> ErrorObjectOwned {
@@ -852,6 +858,69 @@ mod tests {
         assert!(changed(refresh).await);
         assert_eq!(fixture.relay.mirror.status(), None);
         assert!(fixture.relay.mirror.allows_all(&[new]));
+    }
+
+    #[tokio::test]
+    async fn mirror_settles_on_one_of_two_lists_that_share_a_nonce() {
+        let mut fixture = RelayFixture::new();
+        let diverged = |byte, address| DepositAllowlistSnapshot {
+            status: DepositAllowlistStatus {
+                list_hash: B256::repeat_byte(byte),
+                ..status(2)
+            },
+            addresses: vec![address],
+        };
+        let lower = diverged(0x10, Address::repeat_byte(1));
+        let higher = diverged(0x20, Address::repeat_byte(2));
+
+        // The list with the greater hash wins, whichever sequencer answers first.
+        let refresh = fixture.refresh_mirror();
+        fixture
+            .answer([
+                ok(Response::Status(higher.status)),
+                ok(Response::Status(lower.status)),
+                disabled(),
+            ])
+            .await;
+        fixture
+            .answer([
+                ok(Response::Snapshot(lower.clone())),
+                ok(Response::Snapshot(higher.clone())),
+                disabled(),
+            ])
+            .await;
+        assert!(changed(refresh).await);
+        assert_eq!(fixture.relay.mirror.status(), Some(higher.status));
+
+        // Later rounds keep it instead of switching to the other list.
+        let refresh = fixture.refresh_mirror();
+        fixture
+            .answer([
+                ok(Response::Status(higher.status)),
+                ok(Response::Status(lower.status)),
+                disabled(),
+            ])
+            .await;
+        assert!(!changed(refresh).await);
+
+        // A fetched list is installed only if it is the one the status round chose.
+        let refresh = fixture.refresh_mirror();
+        fixture
+            .answer([
+                ok(Response::Status(status(3))),
+                ok(Response::Status(higher.status)),
+                disabled(),
+            ])
+            .await;
+        fixture
+            .answer([
+                malformed(),
+                ok(Response::Snapshot(higher.clone())),
+                disabled(),
+            ])
+            .await;
+        assert!(!changed(refresh).await);
+        assert_eq!(fixture.relay.mirror.status(), Some(higher.status));
     }
 
     fn full_list() -> Vec<Address> {
