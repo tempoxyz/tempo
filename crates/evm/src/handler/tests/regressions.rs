@@ -8,6 +8,7 @@ fn test_aa_authorizations_validate_current_state_in_list_order() {
         TempoHardfork::T0,
         TempoHardfork::T1,
         TempoHardfork::T14,
+        TempoHardfork::T15,
     ] {
         let mut evm = test_evm(spec);
         let signer = PrivateKeySigner::random();

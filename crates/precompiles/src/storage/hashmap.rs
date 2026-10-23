@@ -243,7 +243,7 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
     }
 
     fn amsterdam_eip8037_enabled(&self) -> bool {
-        self.amsterdam_eip8037_enabled || self.spec.is_t14()
+        self.amsterdam_eip8037_enabled || self.spec.is_t15()
     }
 
     fn is_static(&self) -> bool {

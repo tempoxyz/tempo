@@ -331,7 +331,7 @@ async fn test_block_building_only_non_payment_txs() -> eyre::Result<()> {
 async fn test_block_building_more_txs_than_fit() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    // Setup transactions request 5M gas. At T14, state creation is exempt
+    // Setup transactions request 5M gas. At T15, state creation is exempt
     // from block limits, so 8M still fits setup but forces the 330 transfers
     // (about 11M execution gas) to overflow into another block.
     let mut setup = crate::utils::TestNodeBuilder::new()

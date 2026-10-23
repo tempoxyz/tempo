@@ -9,7 +9,7 @@ const CONTRACT: Address = Address::repeat_byte(0x72);
 /// Ported from the revm TIP-1016 branch. Calling the just-deployed contract
 /// proves CREATE succeeded before the later call rolls the entire batch back.
 #[test]
-fn test_t14_aa_failed_batch_refunds_rolled_back_create_state_gas() -> eyre::Result<()> {
+fn test_t15_aa_failed_batch_refunds_rolled_back_create_state_gas() -> eyre::Result<()> {
     let signer = P256KeyPair::random();
     let created = signer.address.create(1);
     let batch = signer.sign_tx(
@@ -28,13 +28,13 @@ fn test_t14_aa_failed_batch_refunds_rolled_back_create_state_gas() -> eyre::Resu
                 let mut version = *evm.version();
                 version.gas_params[evm2::version::GasId::CreateState] = 0;
                 let precompiles = tempo_precompiles::TempoPrecompiles::<TempoEvmTypes>::new(
-                    TempoHardfork::T14,
+                    TempoHardfork::T15,
                     evm.ext().actions.clone(),
                     evm.ext().non_creditable_slots.clone(),
                 );
                 evm.set_execution_config(
-                    ExecutionConfig::for_spec_and_version(TempoHardfork::T14, version),
-                    TempoHardfork::T14,
+                    ExecutionConfig::for_spec_and_version(TempoHardfork::T15, version),
+                    TempoHardfork::T15,
                     tempo_tx_registry(SpecId::OSAKA),
                     precompiles,
                 );
@@ -57,7 +57,7 @@ fn test_t14_aa_failed_batch_refunds_rolled_back_create_state_gas() -> eyre::Resu
 }
 
 fn evm(cap: u64) -> TempoEvm<'static> {
-    let spec = TempoHardfork::T14;
+    let spec = TempoHardfork::T15;
     let mut version = tempo_chainspec::gas_params::version(SpecId::OSAKA, spec, false);
     version.chain_id = 1;
     version.tx_gas_limit_cap = cap;

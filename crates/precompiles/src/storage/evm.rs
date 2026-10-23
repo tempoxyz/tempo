@@ -1421,7 +1421,7 @@ mod tests {
     #[test]
     fn test_storage_creation_oog_consumes_execution_gas_and_settles_state_gas() -> eyre::Result<()>
     {
-        let mut evm = TestEvm::new(TempoHardfork::T14);
+        let mut evm = TestEvm::new(TempoHardfork::T15);
         let mut provider = evm.provider_with_gas_limit(100, 50);
         provider.deduct_state_gas(75)?;
         provider.refund_gas(5_000);
@@ -1486,7 +1486,7 @@ mod tests {
 
     #[test]
     fn test_state_gas_used_only_counts_state_creating_ops() -> eyre::Result<()> {
-        let mut evm = TestEvm::new(TempoHardfork::T14);
+        let mut evm = TestEvm::new(TempoHardfork::T15);
         let gas_params = evm.gas_params();
         let mut provider = evm.provider_with_reservoir(0);
 
@@ -1540,7 +1540,7 @@ mod tests {
     /// spills into regular gas once the reservoir is exhausted.
     #[test]
     fn test_state_gas_spills_from_reservoir_to_regular_gas() -> eyre::Result<()> {
-        let mut evm = TestEvm::new(TempoHardfork::T14);
+        let mut evm = TestEvm::new(TempoHardfork::T15);
 
         // Reservoir = 500k: enough for 2 full SSTOREs (2 × 245k = 490k)
         // but the 3rd SSTORE (245k) must spill 235k into regular gas.
@@ -1612,7 +1612,8 @@ mod tests {
         for (spec, expected_execution, expected_state) in [
             (TempoHardfork::T7, 254_300, 0),
             (TempoHardfork::T13, 254_300, 0),
-            (TempoHardfork::T14, 9_300, 245_000),
+            (TempoHardfork::T14, 254_300, 0),
+            (TempoHardfork::T15, 9_300, 245_000),
         ] {
             let mut evm = TestEvm::new(spec);
             let mut provider = evm.provider_with_reservoir(245_000);
@@ -1625,8 +1626,8 @@ mod tests {
     }
 
     #[test]
-    fn test_t14_cold_sstore_matches_tip1016_spec() -> eyre::Result<()> {
-        let mut evm = TestEvm::new(TempoHardfork::T14);
+    fn test_t15_cold_sstore_matches_tip1016_spec() -> eyre::Result<()> {
+        let mut evm = TestEvm::new(TempoHardfork::T15);
         let mut provider = evm.provider_with_reservoir(490_000);
 
         let (address, cold_slot, warm_slot) = (Address::random(), U256::ONE, U256::from(2));
@@ -1663,8 +1664,8 @@ mod tests {
     }
 
     #[test]
-    fn test_t14_set_code_new_account_matches_tip1016_success_path() -> eyre::Result<()> {
-        let mut evm = TestEvm::new(TempoHardfork::T14);
+    fn test_t15_set_code_new_account_matches_tip1016_success_path() -> eyre::Result<()> {
+        let mut evm = TestEvm::new(TempoHardfork::T15);
         let gas_params = evm.gas_params();
 
         let code = Bytes::from(vec![0xef]);
@@ -1763,16 +1764,16 @@ mod tests {
     }
 
     #[test]
-    fn test_sstore_with_limited_execution_gas_t14() -> eyre::Result<()> {
-        // T14 SSTORE uses the reservoir for state gas and a limited execution budget.
-        let mut evm = TestEvm::new(TempoHardfork::T14);
+    fn test_sstore_with_limited_execution_gas_t15() -> eyre::Result<()> {
+        // T15 SSTORE uses the reservoir for state gas and a limited execution budget.
+        let mut evm = TestEvm::new(TempoHardfork::T15);
         let gas_params = evm.gas_params();
 
         let static_gas = u64::from(gas_params.get(GasId::SstoreStatic));
         let dynamic_gas = 25_000u64;
         let gas_limit = static_gas + dynamic_gas;
 
-        // Generous reservoir so T14 state-gas (zero->non-zero) doesn't spill into regular gas.
+        // Generous reservoir so T15 state-gas (zero->non-zero) doesn't spill into regular gas.
         let mut provider = evm.provider_with_gas_limit(gas_limit, u64::MAX);
 
         let initial_gas = provider.gas_used();
@@ -1848,9 +1849,9 @@ mod tests {
     }
 
     #[test]
-    fn test_multiple_sstore_with_limited_execution_gas_t14() -> eyre::Result<()> {
-        // T14 multiple SSTOREs under a constrained execution gas budget.
-        let mut evm = TestEvm::new(TempoHardfork::T14);
+    fn test_multiple_sstore_with_limited_execution_gas_t15() -> eyre::Result<()> {
+        // T15 multiple SSTOREs under a constrained execution gas budget.
+        let mut evm = TestEvm::new(TempoHardfork::T15);
         let gas_params = evm.gas_params();
 
         let static_gas = u64::from(gas_params.get(GasId::SstoreStatic));
@@ -1946,7 +1947,7 @@ mod tests {
             let ending = message.input[1];
             let refund = if message.input[2] == 0 { 400 } else { -1_400 };
             let mut storage =
-                EvmPrecompileStorageProvider::new(evm, gas, TempoHardfork::T14, false);
+                EvmPrecompileStorageProvider::new(evm, gas, TempoHardfork::T15, false);
             write(&mut storage, address, 0, 11, 150, 1_000);
             let outer = storage.checkpoint();
             write(&mut storage, address, 1, 17, 200, refund);
@@ -1985,7 +1986,7 @@ mod tests {
                         (1, InstrStop::Revert),
                         (2, InstrStop::PrecompileOOG),
                     ] {
-                        let mut evm = TestEvm::new(TempoHardfork::T14);
+                        let mut evm = TestEvm::new(TempoHardfork::T15);
                         let mut map = PrecompileMap::new();
                         map.insert(Precompile::new(
                             address,
@@ -2068,9 +2069,9 @@ mod tests {
     }
 
     #[test]
-    fn test_t14_nested_checkpoint_restores_refunds_and_preserves_committed_gas() -> eyre::Result<()>
+    fn test_t15_nested_checkpoint_restores_refunds_and_preserves_committed_gas() -> eyre::Result<()>
     {
-        let mut evm = TestEvm::new(TempoHardfork::T14);
+        let mut evm = TestEvm::new(TempoHardfork::T15);
         let mut provider = evm.provider_with_reservoir(1_000_000);
         let address = Address::repeat_byte(0x22);
 
@@ -2133,8 +2134,8 @@ mod tests {
     }
 
     #[test]
-    fn test_t14_sstore_restore_refund_matches_tip1016_spec() -> eyre::Result<()> {
-        let mut evm = TestEvm::new(TempoHardfork::T14);
+    fn test_t15_sstore_restore_refund_matches_tip1016_spec() -> eyre::Result<()> {
+        let mut evm = TestEvm::new(TempoHardfork::T15);
         let reservoir = 245_000;
         let mut provider = evm.provider_with_reservoir(reservoir);
 
@@ -2174,8 +2175,8 @@ mod tests {
     }
 
     #[test]
-    fn test_t14_set_code_charges_hash_cost_per_word_of_code_bytes() -> eyre::Result<()> {
-        let mut evm = TestEvm::new(TempoHardfork::T14);
+    fn test_t15_set_code_charges_hash_cost_per_word_of_code_bytes() -> eyre::Result<()> {
+        let mut evm = TestEvm::new(TempoHardfork::T15);
         let gas_params = evm.gas_params();
 
         let code_len = 45usize; // 2 words, e.g. the zone portal proxy runtime
@@ -2199,9 +2200,9 @@ mod tests {
     }
 
     #[test]
-    fn test_t14_set_code_oog_rolls_back_installed_code() -> eyre::Result<()> {
+    fn test_t15_set_code_oog_rolls_back_installed_code() -> eyre::Result<()> {
         for fail_execution_charge in [true, false] {
-            let mut evm = TestEvm::new(TempoHardfork::T14);
+            let mut evm = TestEvm::new(TempoHardfork::T15);
             let gas_params = evm.gas_params();
             let code = Bytes::from(vec![0xef]);
             let execution_gas = u64::from(gas_params[GasId::CodeDepositCost])
@@ -2232,8 +2233,8 @@ mod tests {
     }
 
     #[test]
-    fn test_t14_set_code_pre_touched_destination_skips_create() -> eyre::Result<()> {
-        let mut evm = TestEvm::new(TempoHardfork::T14);
+    fn test_t15_set_code_pre_touched_destination_skips_create() -> eyre::Result<()> {
+        let mut evm = TestEvm::new(TempoHardfork::T15);
         let gas_params = evm.gas_params();
 
         let address = Address::random();

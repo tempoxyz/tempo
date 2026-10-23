@@ -823,7 +823,7 @@ mod tests {
         let mut db = InMemoryDB::default();
         db.insert_account_info(&caller, evm2::evm::AccountInfo::default().with_nonce(1));
         let mut executor = TestExecutorBuilder::default()
-            .with_spec(TempoHardfork::T14)
+            .with_spec(TempoHardfork::T15)
             .with_epoch_length(100)
             .with_general_gas_limit(30_000_000)
             .build(db, &chainspec);
@@ -892,7 +892,7 @@ mod tests {
     fn test_commit_accumulates_refund_aware_block_gas() {
         let chainspec = test_chainspec();
         let mut executor = TestExecutorBuilder::default()
-            .with_spec(TempoHardfork::T14)
+            .with_spec(TempoHardfork::T15)
             .with_epoch_length(100)
             .with_general_gas_limit(30_000_000)
             .build(InMemoryDB::default(), &chainspec);

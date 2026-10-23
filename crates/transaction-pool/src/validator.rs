@@ -1116,12 +1116,12 @@ mod tests {
     }
 
     #[test]
-    fn block_gas_policy_tracks_t14_without_changing_the_head() {
+    fn block_gas_policy_tracks_t15_without_changing_the_head() {
         let mut spec = (*MODERATO).as_ref().clone();
         for &fork in TempoHardfork::VARIANTS {
             spec.inner.hardforks.insert(
                 fork,
-                reth_chainspec::ForkCondition::Timestamp(if fork.is_t14() { 100 } else { 0 }),
+                reth_chainspec::ForkCondition::Timestamp(if fork.is_t15() { 100 } else { 0 }),
             );
         }
         let spec = Arc::new(spec);

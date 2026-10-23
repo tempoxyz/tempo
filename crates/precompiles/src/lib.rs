@@ -613,11 +613,11 @@ mod tests {
         );
     }
 
-    /// T14+ precompile state gas must only include state-creating gas, not all gas consumed. A
+    /// T15+ precompile state gas must only include state-creating gas, not all gas consumed. A
     /// read-only operation and a nonzero-to-nonzero storage update must both use no state gas.
     #[test]
-    fn test_t14_state_gas_only_includes_state_creating_ops() {
-        let spec = TempoHardfork::T14;
+    fn test_t15_state_gas_only_includes_state_creating_ops() {
+        let spec = TempoHardfork::T15;
         let sender = Address::repeat_byte(0x01);
         let recipient = Address::repeat_byte(0x02);
         let mut evm = test_evm(spec, false);
@@ -696,8 +696,8 @@ mod tests {
 
     /// TIP-1016 forwards execution refunds while TIP-1060 handles storage credits.
     #[test]
-    fn test_precompile_gas_refund_in_reservoir_t14() {
-        let spec = TempoHardfork::T14;
+    fn test_precompile_gas_refund_in_reservoir_t15() {
+        let spec = TempoHardfork::T15;
         let sender = Address::repeat_byte(0x01);
         let recipient = Address::repeat_byte(0x02);
         let mut evm = test_evm(spec, false);
