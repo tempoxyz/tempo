@@ -482,6 +482,7 @@ mod tests {
                 timestamp: 1,
                 timestamp_millis_part: 2,
                 beneficiary: Address::ZERO,
+                gas_limit: 30_000_000,
                 tempo_import: TempoImport::CheckpointOnly {
                     headers_rlp: vec![Bytes::from_static(&[0x01, 0x02])],
                 },
