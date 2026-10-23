@@ -1,10 +1,9 @@
 # TIP-1098 Nitro attestation fuzzing
 
 `parse_attestation` feeds arbitrary COSE/CBOR documents into the consensus parser. Whenever the
-structural parser extracts certificates, it also runs `x509-parser` and `rustls-webpki` over every
-DER value. If Tempo accepts the complete non-cryptographic X.509 profile, both independent parsers
-must accept the same certificates and `rustls-webpki` must also accept the pinned root as a trust
-anchor.
+structural parser extracts certificates, it also runs `x509-parser` over every DER value. If Tempo
+accepts the complete non-cryptographic X.509 profile, `x509-parser` must accept the same
+certificates.
 
 Signature checks are intentionally stubbed so mutations can reach the certificate-profile logic;
 SHA-384 hashing remains real.
