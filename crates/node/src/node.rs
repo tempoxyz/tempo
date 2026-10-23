@@ -46,7 +46,9 @@ use std::sync::Arc;
 use tempo_chainspec::{TempoConsensusSpec, hardfork::TempoHardfork, spec::TempoChainSpec};
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_payload_builder::{TempoPayloadBuilder, TempoPayloadBuilderConfig};
-use tempo_payload_types::{DEFAULT_BUILD_TIME_MULTIPLIER, Estimator, TempoPayloadAttributes};
+use tempo_payload_types::{
+    DEFAULT_BUILD_TIME_MULTIPLIER, Estimator, EstimatorConfig, TempoPayloadAttributes,
+};
 use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType};
 use tempo_transaction_pool::{
     AA2dPool, AA2dPoolConfig, AddressFilter, TempoTransactionPool,
@@ -114,11 +116,13 @@ pub struct TempoNodeArgs {
     /// Initial estimate of total replayable payload build work divided by work
     /// at transaction cutoff.
     ///
-    /// The builder keeps learning the ratio at runtime. Higher values stop pool transaction
-    /// execution earlier to leave more room for `builder_finish`.
+    /// The builder updates this at runtime. Higher values stop pool transaction
+    /// execution earlier to leave more room for `builder_finish`. Must be
+    /// between 1.0 and 1.7, the range the builder learns it in.
     #[arg(
         long = "builder.build-time-multiplier",
-        default_value_t = DEFAULT_BUILD_TIME_MULTIPLIER
+        default_value_t = DEFAULT_BUILD_TIME_MULTIPLIER,
+        value_parser = parse_build_time_multiplier
     )]
     pub builder_build_time_multiplier: f64,
 
@@ -911,9 +915,15 @@ where
             _ => None,
         });
 
-        let estimator = self
-            .estimator
-            .unwrap_or_else(|| Estimator::new(self.build_time_multiplier));
+        let estimator = match self.estimator {
+            Some(estimator) => estimator,
+            None => Estimator::new(
+                EstimatorConfig::default().with_build_time_multiplier(self.build_time_multiplier),
+            )
+            .map_err(|reason| {
+                eyre::eyre!("invalid payload builder build time multiplier: {reason}")
+            })?,
+        };
         Ok(TempoPayloadBuilder::new(
             pool,
             ctx.provider().clone(),
@@ -930,6 +940,21 @@ where
             estimator,
         ))
     }
+}
+
+/// Parses `--builder.build-time-multiplier`, rejecting values the estimator
+/// would reject.
+///
+/// Validating here rejects a bad value at parse time, with an error that
+/// names the flag, before anything builds an estimator from it.
+fn parse_build_time_multiplier(value: &str) -> Result<f64, String> {
+    let multiplier = value
+        .parse::<f64>()
+        .map_err(|error| format!("invalid build time multiplier `{value}`: {error}"))?;
+    EstimatorConfig::default()
+        .with_build_time_multiplier(multiplier)
+        .validate()?;
+    Ok(multiplier)
 }
 
 /// Parses `value` as an address list, falling back to reading it as a file.

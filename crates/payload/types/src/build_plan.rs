@@ -15,8 +15,9 @@ pub(crate) const BUILD_TIME_MULTIPLIER_SCALE: u64 = 1_000_000;
 pub struct BuildPlan {
     /// Remaining proposal budget handed to this build.
     pub build_budget: Duration,
-    multiplier_scaled: u64,
-    validation_latency: Option<ValidationLatencyEstimate>,
+    pub(crate) multiplier_scaled: u64,
+    pub(crate) dry_finish: Duration,
+    pub(crate) validation_latency: Option<ValidationLatencyEstimate>,
 }
 
 /// Projected total duration of a build and its validation, including elapsed time.
@@ -47,6 +48,7 @@ impl BuildPlan {
     ///
     /// Panics if `multiplier_scaled` is below [`BUILD_TIME_MULTIPLIER_SCALE`],
     /// which would project less work than has already been performed.
+    #[cfg(test)]
     pub(crate) fn new(
         build_budget: Duration,
         multiplier_scaled: u64,
@@ -60,6 +62,7 @@ impl BuildPlan {
         Self {
             build_budget,
             multiplier_scaled,
+            dry_finish: Duration::ZERO,
             validation_latency,
         }
     }
@@ -69,8 +72,12 @@ impl BuildPlan {
         self.multiplier_scaled as f64 / BUILD_TIME_MULTIPLIER_SCALE as f64
     }
 
-    /// The validation latency estimate in use, or `None` if the plan has no
-    /// validation feedback.
+    /// The finish reserved after this build has waited for transactions.
+    pub fn dry_finish(&self) -> Duration {
+        self.dry_finish
+    }
+
+    /// The validation latency estimate in use, or `None` before feedback is available.
     pub fn validation_latency(&self) -> Option<ValidationLatencyEstimate> {
         self.validation_latency
     }
@@ -79,10 +86,10 @@ impl BuildPlan {
     ///
     /// `elapsed` is wall-clock time spent in the builder so far, `idle_elapsed` the
     /// part of it spent waiting for transactions, which validators do not replay.
-    /// Builder work is projected with the multiplier; validator work comes from
-    /// feedback, capped at the builder projection. Absent or unusable feedback
-    /// falls back to the builder projection. The total includes work already
-    /// performed, with proposer idle time counted once.
+    /// Builder work is projected with the multiplier, with a fixed finish floor
+    /// after waiting for transactions. Validator feedback is capped at that projection.
+    /// Absent or unusable feedback falls back to the builder projection. The total
+    /// includes work already performed, with proposer idle time counted once.
     pub fn decision(
         &self,
         elapsed: Duration,
@@ -90,7 +97,11 @@ impl BuildPlan {
         current_workload: ValidationLatencyWorkload,
     ) -> PayloadBudgetDecision {
         let work_elapsed = elapsed.saturating_sub(idle_elapsed);
-        let predicted_builder_work = scaled_duration(work_elapsed, self.multiplier_scaled);
+        let mut predicted_builder_work = scaled_duration(work_elapsed, self.multiplier_scaled);
+        if !idle_elapsed.is_zero() {
+            predicted_builder_work =
+                predicted_builder_work.max(work_elapsed.saturating_add(self.dry_finish));
+        }
 
         let predicted_validator_work = self
             .validation_latency
