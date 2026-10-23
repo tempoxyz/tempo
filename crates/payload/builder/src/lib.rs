@@ -9,7 +9,6 @@ mod prewarming;
 
 use crossbeam_channel::Sender;
 use reth_trie_common::ordered_root::OrderedTrieRootEncodedBuilder;
-pub use tempo_payload_types::DEFAULT_BUILD_TIME_MULTIPLIER;
 
 use crate::{
     encode::{
@@ -133,13 +132,10 @@ pub struct TempoPayloadBuilder<Provider> {
     evm_config: TempoEvmConfig,
     metrics: TempoPayloadBuilderMetrics,
     cache_metrics: CachedStateMetrics,
-    /// Shared proposal budget estimator.
+    /// Proposal budget estimator that paces builds with a `payload_build_budget`.
     ///
-    /// Consensus feeds it validation and network observations;
-    /// the builder reads one [`tempo_payload_types::BuildPlan`] per paced build
-    /// from it and reports the finished build's replayable work back. The
-    /// network reservation is not read here: the proposal window reaches the
-    /// builder as `payload_build_budget` in the attributes.
+    /// One [`tempo_payload_types::BuildPlan`] is taken from it per paced build,
+    /// and the finished build's replayable work is reported back to it.
     estimator: Estimator,
 }
 
@@ -182,11 +178,11 @@ impl TempoPayloadBuilderConfig {
 }
 
 impl<Provider> TempoPayloadBuilder<Provider> {
-    /// Creates a builder that paces consensus builds with `estimator`.
+    /// Creates a builder that paces builds with a `payload_build_budget` using
+    /// `estimator`.
     ///
-    /// Pass the handle consensus uses, so that the builder's stop decisions
-    /// see the validation times consensus observes; an estimator of its own
-    /// only learns from this builder's builds.
+    /// Stop decisions only account for the validation feedback recorded on
+    /// `estimator`, so share a handle with whatever records it.
     pub fn new(
         pool: TempoTransactionPool<Provider>,
         provider: Provider,

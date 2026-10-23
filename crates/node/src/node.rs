@@ -45,10 +45,10 @@ use reth_transaction_pool::{
 use std::sync::Arc;
 use tempo_chainspec::{TempoConsensusSpec, hardfork::TempoHardfork, spec::TempoChainSpec};
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
-use tempo_payload_builder::{
-    DEFAULT_BUILD_TIME_MULTIPLIER, TempoPayloadBuilder, TempoPayloadBuilderConfig,
+use tempo_payload_builder::{TempoPayloadBuilder, TempoPayloadBuilderConfig};
+use tempo_payload_types::{
+    DEFAULT_BUILD_TIME_MULTIPLIER, Estimator, EstimatorConfig, TempoPayloadAttributes,
 };
-use tempo_payload_types::{Estimator, EstimatorConfig, TempoPayloadAttributes};
 use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType};
 use tempo_transaction_pool::{
     AA2dPool, AA2dPoolConfig, AddressFilter, TempoTransactionPool,
@@ -340,6 +340,11 @@ impl TempoNode {
         self
     }
 
+    /// Returns the payload builder settings, including any node overrides.
+    pub fn payload_builder_builder(&self) -> &TempoPayloadBuilderBuilder {
+        &self.payload_builder_builder
+    }
+
     /// Maps the payload builder builder.
     pub fn map_payload_builder_builder<F>(mut self, f: F) -> Self
     where
@@ -349,13 +354,12 @@ impl TempoNode {
         self
     }
 
-    /// Shares the proposal budget estimator between the payload builder and
-    /// consensus.
+    /// Sets the proposal budget estimator the payload builder paces builds with.
     ///
-    /// Consensus hands the same handle to its engine so that the validation
-    /// times it observes reach the builder's stop decisions and the builder's
-    /// finished builds reach consensus's metrics; the proposal window itself
-    /// reaches the builder through the payload attributes.
+    /// Clones share state, so passing a clone of the estimator the consensus
+    /// engine records validation feedback on lets the builder's stop decisions
+    /// account for it. Without one, the builder uses a private estimator seeded
+    /// from [`TempoPayloadBuilderBuilder::build_time_multiplier`].
     pub fn with_estimator(mut self, estimator: Estimator) -> Self {
         self.payload_builder_builder.estimator = Some(estimator);
         self
@@ -870,9 +874,10 @@ pub struct TempoPayloadBuilderBuilder {
     /// Initial estimate of total replayable payload build work divided by work
     /// at transaction cutoff.
     ///
-    /// Only used when no shared `estimator` is provided.
+    /// Only used when no `estimator` is provided.
     pub build_time_multiplier: f64,
-    /// Proposal budget estimator shared with consensus, if the node runs one.
+    /// Proposal budget estimator the payload builder paces builds with, or
+    /// `None` for a private one seeded from `build_time_multiplier`.
     pub estimator: Option<Estimator>,
 }
 
