@@ -11,7 +11,7 @@ use tempo_precompiles::{tip20::Recipient, tip403_registry::TIP403Registry};
 /// implementation, and tests enforce this bound at production gas. It is metered on the advance's
 /// gas, not a separate gas limit: an attempt that uses more is rolled back as `DebitFailed`.
 ///
-/// About 1.8x the costliest measured debit (2.81M at T14 gas). Even when every request spends the
+/// About 1.8x the costliest measured debit (2.81M at T15 gas). Even when every request spends the
 /// full bound, a forced exit stays cheaper than the 14 deposits its admission weight displaces, so
 /// the deposit-only queue remains the worst weight-14 mix.
 pub(crate) const FORCED_EXIT_DEBIT_GAS: u64 = 5_000_000;

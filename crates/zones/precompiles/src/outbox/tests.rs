@@ -1004,7 +1004,7 @@ fn forced_withdrawal_is_root_authorized_fee_free_and_finalizes_in_mixed_order() 
 {
     use tempo_precompiles::account_keychain::AccountKeychain;
     let mut h = Harness::new()?;
-    h.ctx.cfg.spec = TempoHardfork::T14;
+    h.ctx.cfg.spec = TempoHardfork::T15;
     // Leave an ordinary withdrawal pending to check its encoding/stride survives the new path.
     assert!(!h.request(100, BOB, B256::repeat_byte(3))?.is_revert());
     let ordinary = h.pending()?.remove(0);
@@ -1128,7 +1128,7 @@ fn forced_withdrawal_is_root_authorized_fee_free_and_finalizes_in_mixed_order() 
 #[test]
 fn forced_withdrawal_policy_and_debit_failures_leave_no_partial_state() -> eyre::Result<()> {
     let mut h = Harness::new()?;
-    h.ctx.cfg.spec = TempoHardfork::T14;
+    h.ctx.cfg.spec = TempoHardfork::T15;
     assert_eq!(
         h.forced(ALICE, 1_000_000),
         Err(ZoneOutboxError::only_zone_inbox().into())
@@ -1189,7 +1189,7 @@ fn forced_withdrawal_enforces_native_pause_sender_and_receive_policies() -> eyre
     use tempo_precompiles::{RECEIVE_POLICY_GUARD_ADDRESS, tip403_registry::TIP403Registry};
     for policy in 0..3 {
         let mut h = Harness::new()?;
-        h.ctx.cfg.spec = TempoHardfork::T14;
+        h.ctx.cfg.spec = TempoHardfork::T15;
         {
             let mut storage = test_storage_provider(&mut h.ctx, u64::MAX, false);
             StorageCtx::enter(&mut storage, || -> TempoResult<()> {
@@ -1238,7 +1238,7 @@ fn forced_withdrawal_enforces_native_pause_sender_and_receive_policies() -> eyre
 #[test]
 fn forced_withdrawal_preserves_outer_rollback() -> eyre::Result<()> {
     let mut h = Harness::new()?;
-    h.ctx.cfg.spec = TempoHardfork::T14;
+    h.ctx.cfg.spec = TempoHardfork::T15;
     let l1 = L1State::new(h.l1.clone(), PORTAL);
     let mut storage = test_storage_provider(&mut h.ctx, u64::MAX, false);
     StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
@@ -1274,7 +1274,7 @@ fn forced_withdrawal_preserves_outer_rollback() -> eyre::Result<()> {
 fn forced_withdrawal_missing_l1_state_and_out_of_gas_are_fatal() -> eyre::Result<()> {
     for missing_l1 in [false, true] {
         let mut h = Harness::new()?;
-        h.ctx.cfg.spec = TempoHardfork::T14;
+        h.ctx.cfg.spec = TempoHardfork::T15;
         let l1 = h.l1.clone();
         if missing_l1 {
             h.l1 = MockL1Reader::failing_storage();
@@ -1307,7 +1307,7 @@ fn forced_withdrawal_missing_l1_state_and_out_of_gas_are_fatal() -> eyre::Result
 #[test]
 fn forced_withdrawal_aborts_when_advance_cannot_fund_debit_allotment() -> eyre::Result<()> {
     let mut h = Harness::new()?;
-    h.ctx.cfg.spec = TempoHardfork::T14;
+    h.ctx.cfg.spec = TempoHardfork::T15;
     let logs_before = h.ctx.journaled_state.logs().to_vec();
     assert_eq!(
         h.forced_with_gas(ZONE_INBOX_ADDRESS, 1_000_000, FORCED_EXIT_DEBIT_GAS),
@@ -1321,14 +1321,14 @@ fn forced_withdrawal_aborts_when_advance_cannot_fund_debit_allotment() -> eyre::
     Ok(())
 }
 
-/// The costliest debit fits `FORCED_EXIT_DEBIT_GAS` at production T14 gas: the first forced
+/// The costliest debit fits `FORCED_EXIT_DEBIT_GAS` at production T15 gas: the first forced
 /// withdrawal (empty outbox queue and fallback map), cold storage, and a compound transfer policy.
 /// An attempt that needs one more unit of gas than its bound rolls back as `DebitFailed`.
 #[test]
-fn forced_debit_worst_case_fits_its_bound_at_t14() -> eyre::Result<()> {
+fn forced_debit_worst_case_fits_its_bound_at_t15() -> eyre::Result<()> {
     let mut h = Harness::new()?;
-    h.ctx.cfg.spec = TempoHardfork::T14;
-    h.ctx.cfg.gas_params = tempo_revm::gas_params::tempo_gas_params(TempoHardfork::T14);
+    h.ctx.cfg.spec = TempoHardfork::T15;
+    h.ctx.cfg.gas_params = tempo_revm::gas_params::tempo_gas_params(TempoHardfork::T15);
     {
         let mut storage = test_storage_provider(&mut h.ctx, u64::MAX, false);
         StorageCtx::enter(&mut storage, || -> TempoResult<()> {
@@ -1367,7 +1367,7 @@ fn forced_debit_worst_case_fits_its_bound_at_t14() -> eyre::Result<()> {
     let checkpoint = h.ctx.journaled_state.checkpoint();
     let (result, needed) = h.try_debit(FORCED_EXIT_DEBIT_GAS)?;
     assert_eq!(result, Ok(()));
-    eprintln!("worst-case forced debit at T14: {needed} gas");
+    eprintln!("worst-case forced debit at T15: {needed} gas");
     assert!(
         needed <= FORCED_EXIT_DEBIT_GAS,
         "debit needs {needed} gas, above FORCED_EXIT_DEBIT_GAS"

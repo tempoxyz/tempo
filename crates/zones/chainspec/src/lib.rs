@@ -174,7 +174,7 @@ impl EthChainSpec for ZoneChainSpec {
     }
 
     fn next_block_base_fee(&self, parent: &TempoHeader, target_timestamp: u64) -> Option<u64> {
-        if !self.tempo_hardfork_at(target_timestamp).is_t14() {
+        if !self.tempo_hardfork_at(target_timestamp).is_t15() {
             return Some(0);
         }
         // A missing parent base fee is treated as zero, which the T7 floor clamps up.
@@ -281,15 +281,15 @@ mod tests {
         header
     }
 
-    /// Activates T13 at genesis and schedules T14 at `timestamp`, or disables T14 if `None`.
-    fn dev_zone_spec_with_t14_at(zone_id: u32, timestamp: Option<u64>) -> ZoneChainSpec {
+    /// Activates T14 at genesis and schedules T15 at `timestamp`, or disables T15 if `None`.
+    fn dev_zone_spec_with_t15_at(zone_id: u32, timestamp: Option<u64>) -> ZoneChainSpec {
         let mut genesis = DEV.genesis().clone();
         genesis.config.chain_id = zone_chain_id(DEV.chain_id(), zone_id).unwrap();
         match timestamp {
             Some(timestamp) => {
-                test_utils::set_tempo_fork(&mut genesis, TempoHardfork::T14, timestamp)
+                test_utils::set_tempo_fork(&mut genesis, TempoHardfork::T15, timestamp)
             }
-            None => test_utils::set_tempo_fork(&mut genesis, TempoHardfork::T13, 0),
+            None => test_utils::set_tempo_fork(&mut genesis, TempoHardfork::T14, 0),
         }
         ZoneChainSpec::from_genesis(genesis).unwrap()
     }
@@ -408,8 +408,8 @@ mod tests {
     }
 
     #[test]
-    fn next_block_base_fee_is_zero_without_t14() {
-        let zone = dev_zone_spec_with_t14_at(2, None);
+    fn next_block_base_fee_is_zero_without_t15() {
+        let zone = dev_zone_spec_with_t15_at(2, None);
         let parent = zone.genesis_header();
         let timestamp = parent.inner.timestamp;
 
@@ -418,17 +418,17 @@ mod tests {
     }
 
     #[test]
-    fn next_block_base_fee_is_zero_before_t14() {
-        let zone = dev_zone_spec_with_t14_at(2, Some(100));
+    fn next_block_base_fee_is_zero_before_t15() {
+        let zone = dev_zone_spec_with_t15_at(2, Some(100));
         let busy_parent = header(98, TEMPO_T7_BASE_FEE_CAP, TEMPO_T7_BASE_FEE_GAS_TARGET * 3);
 
-        assert_eq!(zone.tempo_hardfork_at(99), TempoHardfork::T13);
+        assert_eq!(zone.tempo_hardfork_at(99), TempoHardfork::T14);
         assert_eq!(zone.next_block_base_fee(&busy_parent, 99), Some(0));
     }
 
     #[test]
-    fn next_block_base_fee_starts_at_floor_on_t14_activation() {
-        let zone = dev_zone_spec_with_t14_at(2, Some(100));
+    fn next_block_base_fee_starts_at_floor_on_t15_activation() {
+        let zone = dev_zone_spec_with_t15_at(2, Some(100));
         let mut parent = header(99, 0, 0);
 
         assert_eq!(
@@ -443,8 +443,8 @@ mod tests {
     }
 
     #[test]
-    fn next_block_base_fee_follows_t7_controller_after_t14_activation() {
-        let zone = dev_zone_spec_with_t14_at(2, Some(100));
+    fn next_block_base_fee_follows_t7_controller_after_t15_activation() {
+        let zone = dev_zone_spec_with_t15_at(2, Some(100));
         let busy_parent = header(
             100,
             TEMPO_T7_BASE_FEE_FLOOR,
@@ -458,17 +458,17 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_fees_follow_inherited_t14_activation() {
+    fn dynamic_fees_follow_inherited_t15_activation() {
         let mut l1_genesis = DEV.genesis().clone();
-        test_utils::set_tempo_fork(&mut l1_genesis, TempoHardfork::T14, 100);
+        test_utils::set_tempo_fork(&mut l1_genesis, TempoHardfork::T15, 100);
         let l1 = TempoChainSpec::from_genesis(l1_genesis);
         let mut genesis = DEV.genesis().clone();
         genesis.config.chain_id = zone_chain_id(DEV.chain_id(), 2).unwrap();
-        genesis.config.extra_fields.remove("t14Time");
+        genesis.config.extra_fields.remove("t15Time");
         let zone = ZoneChainSpec::from_genesis_with_l1(genesis, &l1).unwrap();
 
         assert_eq!(
-            zone.tempo_fork_activation(TempoHardfork::T14),
+            zone.tempo_fork_activation(TempoHardfork::T15),
             ForkCondition::Timestamp(100)
         );
         assert_eq!(zone.next_block_base_fee(&header(98, 0, 0), 99), Some(0));

@@ -46,7 +46,7 @@ fn activate(h: &Harness, block: u64, version: u64) -> eyre::Result<()> {
 fn active_harness() -> eyre::Result<Harness> {
     let mut h = Harness::new()?;
     h.ctx.cfg.chain_id = zone_chain_id();
-    set_spec(&mut h, TempoHardfork::T14);
+    set_spec(&mut h, TempoHardfork::T15);
     activate(&h, 1, 1)?;
     Ok(h)
 }
@@ -768,7 +768,7 @@ fn forced_balance_boundaries_and_classification_order() -> eyre::Result<()> {
 #[test]
 fn maximum_forced_exit_workload_fits_system_gas_budget() -> eyre::Result<()> {
     const REQUESTS: u64 = 210 / 14; // ZonePortal.FORCED_EXIT_ADMISSION_WEIGHT
-    let gas_params = tempo_revm::gas_params::tempo_gas_params(TempoHardfork::T14);
+    let gas_params = tempo_revm::gas_params::tempo_gas_params(TempoHardfork::T15);
     let mut h = active_harness()?;
     h.ctx.cfg.gas_params = gas_params.clone();
     let enabled_tokens = (1..=8).map(maximum_metadata_token).collect::<Vec<_>>();
@@ -826,7 +826,7 @@ fn maximum_forced_exit_workload_fits_system_gas_budget() -> eyre::Result<()> {
 #[test]
 fn forced_exit_costs_less_than_the_deposits_it_displaces() -> eyre::Result<()> {
     const DISPLACED_DEPOSITS: usize = 14; // ZonePortal.FORCED_EXIT_ADMISSION_WEIGHT
-    let gas_params = tempo_revm::gas_params::tempo_gas_params(TempoHardfork::T14);
+    let gas_params = tempo_revm::gas_params::tempo_gas_params(TempoHardfork::T15);
     let mut h = active_harness()?;
     h.ctx.cfg.gas_params = gas_params.clone();
     let (_, entries) = funded_requests(&mut h, 1, true)?;
@@ -1017,7 +1017,7 @@ fn reverting_debit_is_debit_failed_and_never_stalls_the_inbox() -> eyre::Result<
     Ok(())
 }
 
-/// Forced entries execute only under T14 rules with `forcedExitVersion == 1` at the imported
+/// Forced entries execute only under T15 rules with `forcedExitVersion == 1` at the imported
 /// anchor. Otherwise each is consumed as `NotActivated` without using its decryption data,
 /// whatever the request would have done, and the inbox advances past it.
 #[test]
@@ -1030,10 +1030,11 @@ fn inactive_forced_entries_are_not_activated_and_advance_the_inbox() -> eyre::Re
     for (spec, version) in [
         (TempoHardfork::T12, 1),
         (TempoHardfork::T13, 1),
-        (TempoHardfork::T14, 0),
-        (TempoHardfork::T14, 2),
-        (TempoHardfork::T14, u64::MAX),
         (TempoHardfork::T14, 1),
+        (TempoHardfork::T15, 0),
+        (TempoHardfork::T15, 2),
+        (TempoHardfork::T15, u64::MAX),
+        (TempoHardfork::T15, 1),
     ] {
         for (balance, result) in expected.clone() {
             let mut h = active_harness()?;
@@ -1053,16 +1054,16 @@ fn inactive_forced_entries_are_not_activated_and_advance_the_inbox() -> eyre::Re
             let executed = execute(&mut h, vec![entry])?;
             let case = format!("{spec:?} version={version} {result:?}");
             let portal = ForcedExitPortalStorage::new(PORTAL);
-            // Only T14 rules read the version, and only at the imported anchor.
-            let t14 = spec.is_t14();
+            // Only T15 rules read the version, and only at the imported anchor.
+            let t15 = spec.is_t15();
             assert_eq!(
                 h.l1.requested(1, &portal.forced_exit_version),
-                t14,
+                t15,
                 "{case}"
             );
             assert!(!h.l1.requested(0, &portal.forced_exit_version), "{case}");
             assert!(!h.l1.requested(2, &portal.forced_exit_version), "{case}");
-            if t14 && version == 1 {
+            if t15 && version == 1 {
                 assert_eq!(executed.results, [result], "{case}");
                 continue;
             }

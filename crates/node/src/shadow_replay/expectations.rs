@@ -14,7 +14,7 @@ use tempo_contracts::{
     precompiles::*,
     zones::{
         T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
-        T14_ZONE_PORTAL_RUNTIME, ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME,
+        T15_ZONE_PORTAL_RUNTIME, ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME,
         ZONE_VERIFIER_RUNTIME,
     },
 };
@@ -134,8 +134,8 @@ const T13_ZONE_RUNTIME_UPGRADE: Expectation = Expectation {
     },
 };
 
-const T14_ZONE_PORTAL_RUNTIME_UPGRADE: Expectation = Expectation {
-    id: "t14.zone-portal-runtime-upgrade",
+const T15_ZONE_PORTAL_RUNTIME_UPGRADE: Expectation = Expectation {
+    id: "t15.zone-portal-runtime-upgrade",
     check: |ctx, field| {
         if field.address? != ZONE_PORTAL_IMPL_ADDRESS {
             return None;
@@ -144,7 +144,7 @@ const T14_ZONE_PORTAL_RUNTIME_UPGRADE: Expectation = Expectation {
             ctx,
             field,
             &[ZONE_PORTAL_RUNTIME, T13_ZONE_PORTAL_RUNTIME],
-            &T14_ZONE_PORTAL_RUNTIME,
+            &T15_ZONE_PORTAL_RUNTIME,
         )
     },
 };
@@ -186,7 +186,7 @@ fn runtime_upgrade(
 /// Fork-specific checks are ordered oldest-first; baseline fee normalization is added separately.
 const REGISTRY: &[(TempoHardfork, &[Expectation])] = &[
     (TempoHardfork::T13, &[T13_ZONE_RUNTIME_UPGRADE]),
-    (TempoHardfork::T14, &[T14_ZONE_PORTAL_RUNTIME_UPGRADE]),
+    (TempoHardfork::T15, &[T15_ZONE_PORTAL_RUNTIME_UPGRADE]),
 ];
 
 pub(crate) fn between(
@@ -261,7 +261,7 @@ mod tests {
     }
 
     #[test]
-    fn accepts_t14_portal_upgrade_from_prior_runtimes() {
+    fn accepts_t15_portal_upgrade_from_prior_runtimes() {
         let shadow = |address, previous: Option<&Bytes>, current: &Bytes| {
             let mut state = reth_revm::db::TransitionState::default();
             state.transitions.insert(
@@ -301,7 +301,7 @@ mod tests {
                 slot: None,
                 fee_associated: false,
             };
-            (T14_ZONE_PORTAL_RUNTIME_UPGRADE.check)(&ctx, &code)
+            (T15_ZONE_PORTAL_RUNTIME_UPGRADE.check)(&ctx, &code)
         };
         let portal = ZONE_PORTAL_IMPL_ADDRESS;
         for previous in [
@@ -309,20 +309,20 @@ mod tests {
             Some(&ZONE_PORTAL_RUNTIME),
             Some(&T13_ZONE_PORTAL_RUNTIME),
         ] {
-            assert!(check(portal, &shadow(portal, previous, &T14_ZONE_PORTAL_RUNTIME)).is_some());
+            assert!(check(portal, &shadow(portal, previous, &T15_ZONE_PORTAL_RUNTIME)).is_some());
         }
         let unexpected = Bytes::from_static(&[0x00]);
         assert!(
             check(
                 portal,
-                &shadow(portal, Some(&unexpected), &T14_ZONE_PORTAL_RUNTIME)
+                &shadow(portal, Some(&unexpected), &T15_ZONE_PORTAL_RUNTIME)
             )
             .is_none()
         );
         assert!(check(portal, &shadow(portal, None, &T13_ZONE_PORTAL_RUNTIME)).is_none());
-        // T14 leaves the verifier and messenger on their T13 runtimes.
+        // T15 leaves the verifier and messenger on their T13 runtimes.
         let verifier = ZONE_VERIFIER_ADDRESS;
-        assert!(check(verifier, &shadow(verifier, None, &T14_ZONE_PORTAL_RUNTIME)).is_none());
+        assert!(check(verifier, &shadow(verifier, None, &T15_ZONE_PORTAL_RUNTIME)).is_none());
     }
 
     #[test]
@@ -339,16 +339,17 @@ mod tests {
         assert_eq!(ids(T11, T13), ids(T12, T13));
         assert_eq!(ids(T12, T12), [FEE_STATE.id]);
         assert_eq!(ids(T13, T12), [FEE_STATE.id]);
+        assert_eq!(ids(T13, T14), [FEE_STATE.id]);
         assert_eq!(
-            ids(T13, T14),
-            [FEE_STATE.id, T14_ZONE_PORTAL_RUNTIME_UPGRADE.id]
+            ids(T13, T15),
+            [FEE_STATE.id, T15_ZONE_PORTAL_RUNTIME_UPGRADE.id]
         );
         assert_eq!(
-            ids(T12, T14),
+            ids(T12, T15),
             [
                 FEE_STATE.id,
                 T13_ZONE_RUNTIME_UPGRADE.id,
-                T14_ZONE_PORTAL_RUNTIME_UPGRADE.id
+                T15_ZONE_PORTAL_RUNTIME_UPGRADE.id
             ]
         );
     }

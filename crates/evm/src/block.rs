@@ -27,7 +27,7 @@ use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, INITIAL_FACTORY_OWNER,
     InitialZoneFactoryAccount, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
     STORAGE_CREDITS_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
-    initial_zone_factory_state, t13_zone_factory_state, t14_zone_factory_state,
+    initial_zone_factory_state, t13_zone_factory_state, t15_zone_factory_state,
 };
 use tempo_primitives::{SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType};
 use tempo_revm::{ExecutionContext, evm::TempoContext};
@@ -273,7 +273,7 @@ where
         Ok(())
     }
 
-    /// Installs the shared runtimes of the newest runtime-upgrade fork (T13 or T14) active at
+    /// Installs the shared runtimes of the newest runtime-upgrade fork (T13 or T15) active at
     /// `timestamp`.
     ///
     /// Chains starting at that fork supply their runtime code in genesis. Preserve those
@@ -285,11 +285,11 @@ where
     ) -> Result<(), BlockExecutionError> {
         let spec = &self.inner.spec;
         let genesis_timestamp = spec.genesis().timestamp;
-        let state = if spec.is_t14_active_at_timestamp(timestamp) {
-            if spec.is_t14_active_at_timestamp(genesis_timestamp) {
+        let state = if spec.is_t15_active_at_timestamp(timestamp) {
+            if spec.is_t15_active_at_timestamp(genesis_timestamp) {
                 return Ok(());
             }
-            t14_zone_factory_state(INITIAL_FACTORY_OWNER)
+            t15_zone_factory_state(INITIAL_FACTORY_OWNER)
         } else if spec.is_t13_active_at_timestamp(timestamp) {
             if spec.is_t13_active_at_timestamp(genesis_timestamp) {
                 return Ok(());
@@ -775,7 +775,7 @@ mod tests {
         },
         zones::{
             T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
-            T14_ZONE_PORTAL_RUNTIME, ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME,
+            T15_ZONE_PORTAL_RUNTIME, ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME,
             ZONE_VERIFIER_RUNTIME,
         },
     };
@@ -2116,7 +2116,7 @@ mod tests {
                 .extra_fields
                 .insert_value("t13Time".into(), activation)
                 .unwrap();
-            genesis.config.extra_fields.remove("t14Time");
+            genesis.config.extra_fields.remove("t15Time");
             let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
             let mut db = State::builder().with_bundle_update().build();
             let mut expected = Vec::new();
@@ -2217,7 +2217,7 @@ mod tests {
                 .extra_fields
                 .insert_value("t13Time".into(), activation)
                 .unwrap();
-            genesis.config.extra_fields.remove("t14Time");
+            genesis.config.extra_fields.remove("t15Time");
             let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
             let mut db = State::builder().with_bundle_update().build();
             let mut executor = TestExecutorBuilder::default()
@@ -2252,15 +2252,15 @@ mod tests {
         }
     }
 
-    /// Returns a DEV chainspec with T13 and T14 at the given timestamps (`None` disables T14).
-    fn zone_runtime_fork_spec(t13: u64, t14: Option<u64>) -> Arc<TempoChainSpec> {
+    /// Returns a DEV chainspec with T13 and T15 at the given timestamps (`None` disables T15).
+    fn zone_runtime_fork_spec(t13: u64, t15: Option<u64>) -> Arc<TempoChainSpec> {
         let mut genesis = DEV.genesis().clone();
         let fields = &mut genesis.config.extra_fields;
         fields.insert_value("t13Time".into(), t13).unwrap();
-        match t14 {
-            Some(t14) => fields.insert_value("t14Time".into(), t14).unwrap(),
+        match t15 {
+            Some(t15) => fields.insert_value("t15Time".into(), t15).unwrap(),
             None => {
-                fields.remove("t14Time");
+                fields.remove("t15Time");
             }
         }
         Arc::new(TempoChainSpec::from_genesis(genesis))
@@ -2296,14 +2296,14 @@ mod tests {
     }
 
     #[test]
-    fn zone_runtime_upgrade_activates_at_t14() {
+    fn zone_runtime_upgrade_activates_at_t15() {
         let t13 = [
             T13_ZONE_PORTAL_RUNTIME,
             T13_ZONE_VERIFIER_RUNTIME,
             T13_ZONE_MESSENGER_RUNTIME,
         ];
-        let t14 = [
-            T14_ZONE_PORTAL_RUNTIME,
+        let t15 = [
+            T15_ZONE_PORTAL_RUNTIME,
             T13_ZONE_VERIFIER_RUNTIME,
             T13_ZONE_MESSENGER_RUNTIME,
         ];
@@ -2312,37 +2312,37 @@ mod tests {
             ZONE_VERIFIER_RUNTIME,
             ZONE_MESSENGER_RUNTIME,
         ];
-        for (t13_time, t14_time, timestamp, expected) in [
-            // T13 after genesis, then T14.
+        for (t13_time, t15_time, timestamp, expected) in [
+            // T13 after genesis, then T15.
             (10, 20, 19, &t13),
-            (10, 20, 20, &t14),
-            (10, 20, 21, &t14),
-            // Both forks at once install the T14 set, including the T13 verifier and messenger.
+            (10, 20, 20, &t15),
+            (10, 20, 21, &t15),
+            // Both forks at once install the T15 set, including the T13 verifier and messenger.
             (20, 20, 19, &initial),
-            (20, 20, 20, &t14),
-            // T13 at genesis keeps its genesis runtimes until T14 upgrades them.
+            (20, 20, 20, &t15),
+            // T13 at genesis keeps its genesis runtimes until T15 upgrades them.
             (0, 20, 19, &initial),
-            (0, 20, 20, &t14),
+            (0, 20, 20, &t15),
         ] {
-            let chainspec = zone_runtime_fork_spec(t13_time, Some(t14_time));
+            let chainspec = zone_runtime_fork_spec(t13_time, Some(t15_time));
             let mut db = State::builder().with_bundle_update().build();
             assert_eq!(
                 &installed_zone_runtimes(&mut db, &chainspec, timestamp),
                 expected,
-                "t13={t13_time} t14={t14_time} timestamp={timestamp}"
+                "t13={t13_time} t15={t15_time} timestamp={timestamp}"
             );
         }
     }
 
     #[test]
-    fn t14_at_genesis_preserves_zone_runtimes() {
+    fn t15_at_genesis_preserves_zone_runtimes() {
         for (genesis_timestamp, activation) in [(0, 0), (100, 50), (100, 100)] {
             let mut genesis = DEV.genesis().clone();
             genesis.timestamp = genesis_timestamp;
             genesis
                 .config
                 .extra_fields
-                .insert_value("t14Time".into(), activation)
+                .insert_value("t15Time".into(), activation)
                 .unwrap();
             let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
             let mut db = State::builder().with_bundle_update().build();
@@ -2377,11 +2377,11 @@ mod tests {
     }
 
     #[test]
-    fn t14_zone_runtime_upgrade_is_written_once() {
+    fn t15_zone_runtime_upgrade_is_written_once() {
         let chainspec = zone_runtime_fork_spec(10, Some(20));
         let mut db = State::builder().with_bundle_update().build();
         let mut executor = TestExecutorBuilder::default()
-            .with_spec(TempoHardfork::T14)
+            .with_spec(TempoHardfork::T15)
             .with_parent_beacon_block_root(B256::ZERO)
             .build(&mut db, &chainspec);
         executor.deploy_zone_factory_at_boundary().unwrap();
@@ -2406,12 +2406,12 @@ mod tests {
         assert_eq!(
             calls.len(),
             1,
-            "T14 upgrade must dispatch exactly one update"
+            "T15 upgrade must dispatch exactly one update"
         );
         assert_eq!(
             calls[0].keys().copied().collect::<Vec<_>>(),
             [ZONE_PORTAL_IMPL_ADDRESS],
-            "T14 replaces only the portal on a T13 chain"
+            "T15 replaces only the portal on a T13 chain"
         );
     }
 
@@ -2427,7 +2427,7 @@ mod tests {
             .extra_fields
             .insert_value("t13Time".into(), 1)
             .unwrap();
-        genesis.config.extra_fields.remove("t14Time");
+        genesis.config.extra_fields.remove("t15Time");
         let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
         let mut db = State::builder().with_bundle_update().build();
         let mut executor = TestExecutorBuilder::default()

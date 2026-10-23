@@ -863,9 +863,9 @@ where
     Api: FullEthApi + EthApiTypes<NetworkTypes = TempoNetwork> + Send + Sync + 'static,
     Api::Provider: ChainSpecProvider<ChainSpec = ZoneChainSpec>,
 {
-    /// Returns the next block's base fee if T14 is active, or `None` before T14, where the public
+    /// Returns the next block's base fee if T15 is active, or `None` before T15, where the public
     /// fee policy's fixed values apply instead.
-    fn t14_base_fee(&self) -> Result<Option<u64>, JsonRpcError> {
+    fn t15_base_fee(&self) -> Result<Option<u64>, JsonRpcError> {
         let provider = self.eth.api.provider();
         let header = provider
             .latest_header()
@@ -874,11 +874,11 @@ where
         if !provider
             .chain_spec()
             .tempo_hardfork_at(header.timestamp())
-            .is_t14()
+            .is_t15()
         {
             return Ok(None);
         }
-        // T14 is already active, so the latest timestamp selects the same fork as the next block's.
+        // T15 is already active, so the latest timestamp selects the same fork as the next block's.
         Ok(provider
             .chain_spec()
             .next_block_base_fee(header.header(), header.timestamp()))
@@ -975,7 +975,7 @@ where
 
     fn gas_price(&self) -> BoxFut<'_> {
         Box::pin(async move {
-            let gas_price = self.t14_base_fee()?.unwrap_or(TEMPO_T1_BASE_FEE);
+            let gas_price = self.t15_base_fee()?.unwrap_or(TEMPO_T1_BASE_FEE);
             to_raw(&U256::from(gas_price))
         })
     }
@@ -995,11 +995,11 @@ where
                 EthFees::fee_history(&self.eth.api, block_count, newest_block, reward_percentiles)
                     .await
                     .map_err(internal)?;
-            let is_t14 = self.t14_base_fee()?.is_some();
+            let is_t15 = self.t15_base_fee()?.is_some();
             // reth derives the trailing next-block fee using the newest block's own timestamp, so a
-            // range ending on the last pre-T14 block reports a zero fee. Prefer the successor's
+            // range ending on the last pre-T15 block reports a zero fee. Prefer the successor's
             // actual base fee when it already exists.
-            if is_t14
+            if is_t15
                 && !history.gas_used_ratio.is_empty()
                 && let Some(successor) = EthBlocks::rpc_block_header(
                     &self.eth.api,
@@ -1015,7 +1015,7 @@ where
                 *trailing_fee = u128::from(successor_fee);
             }
             // Redact gas fields (like `gas_used_ratio`) that can be used to guess tx counts
-            redact_fee_history(&mut history, !is_t14);
+            redact_fee_history(&mut history, !is_t15);
             to_raw(&history)
         })
     }
@@ -1198,7 +1198,7 @@ where
         Box::pin(async move {
             self.enforce_authorized(&mut request, &auth)?;
 
-            let (gas_price, max_fee_per_gas) = public_fee_quote(self.t14_base_fee()?);
+            let (gas_price, max_fee_per_gas) = public_fee_quote(self.t15_base_fee()?);
             apply_public_fee_policy(&mut request, gas_price, max_fee_per_gas);
 
             let result = EthTransactions::fill_transaction(&self.eth.api, request)
@@ -1620,11 +1620,11 @@ fn redact_fee_history(history: &mut FeeHistory, redact_base_fee: bool) {
 
 /// Returns the `(gas_price, max_fee_per_gas)` defaults for `eth_fillTransaction`.
 ///
-/// From T14, the max fee leaves headroom for the base fee to rise, capped at the protocol's maximum
+/// From T15, the max fee leaves headroom for the base fee to rise, capped at the protocol's maximum
 /// base fee so payers aren't required to hold balance for a fee that can never be charged. Before
-/// T14, keep the fixed public values, where the max fee intentionally equals the gas price.
-fn public_fee_quote(t14_base_fee: Option<u64>) -> (u128, u128) {
-    match t14_base_fee {
+/// T15, keep the fixed public values, where the max fee intentionally equals the gas price.
+fn public_fee_quote(t15_base_fee: Option<u64>) -> (u128, u128) {
+    match t15_base_fee {
         Some(base_fee) => (
             u128::from(base_fee),
             u128::from(base_fee.saturating_mul(2).min(TEMPO_T7_BASE_FEE_CAP)),
@@ -1972,7 +1972,7 @@ mod tests {
     }
 
     #[test]
-    fn redact_fee_history_preserves_base_fees_at_t14() {
+    fn redact_fee_history_preserves_base_fees_at_t15() {
         let mut history = FeeHistory {
             base_fee_per_gas: vec![1, 2, 3],
             ..Default::default()
@@ -2015,7 +2015,7 @@ mod tests {
         assert_eq!(
             public_fee_quote(None),
             (T0_BASE_FEE, T0_BASE_FEE),
-            "pre-T14 quotes keep the fixed public values"
+            "pre-T15 quotes keep the fixed public values"
         );
         assert_eq!(
             public_fee_quote(Some(600_000_000)),

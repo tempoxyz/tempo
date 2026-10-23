@@ -48,7 +48,7 @@ use tempo_contracts::{
         account_keychain::IAccountKeychain::{
             IAccountKeychainInstance, KeyRestrictions, SignatureType as KeyInfoSignatureType,
         },
-        t14_zone_factory_state,
+        t15_zone_factory_state,
     },
     zones::{
         ZONE_OUTBOX_ADDRESS,
@@ -210,7 +210,7 @@ fn redirect_portal_verifier(code: &[u8]) -> eyre::Result<alloy_primitives::Bytes
     // (2**160 - 1) & sload(16): this unique sequence loads the proof-call target.
     // Replace PUSH1 0x10; SLOAD with PUSH2 0xBEEF, preserving all jump offsets.
     // solc emits the address mask as either `1 << 160; 1; swap; sub` (the T13 runtime) or
-    // `1; dup; 1 << 160; sub` (the T14 runtime).
+    // `1; dup; 1 << 160; sub` (the T15 runtime).
     const VERIFIER_SLOAD: [u8; 4] = alloy_primitives::hex!("60105416");
     const ADDRESS_MASKS: [&[u8]; 2] = [
         &alloy_primitives::hex!("600160a01b60019003"),
@@ -235,7 +235,7 @@ fn redirect_portal_verifier(code: &[u8]) -> eyre::Result<alloy_primitives::Bytes
 }
 
 fn install_native_zone_factory(genesis: &mut Genesis, owner: Address) -> eyre::Result<()> {
-    for account in t14_zone_factory_state(owner) {
+    for account in t15_zone_factory_state(owner) {
         let storage = account
             .storage
             .map(|(slot, value)| BTreeMap::from([(slot.into(), value.into())]));
@@ -1201,7 +1201,7 @@ impl ZoneTestNode {
         let (mut genesis, _) = build_l1_anchored_genesis(l1_http_url, portal_address).await?;
 
         // Explicit Zone execution fork; the L1 fixture must still activate forced exits on
-        // its T14 portal through the admin transaction.
+        // its T15 portal through the admin transaction.
         genesis
             .config
             .extra_fields

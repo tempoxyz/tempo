@@ -81,53 +81,56 @@ fn sponsored_transaction(
     Ok(signed.into())
 }
 
-fn t14_genesis() -> eyre::Result<alloy::genesis::Genesis> {
+fn t15_genesis() -> eyre::Result<alloy::genesis::Genesis> {
     let mut genesis = zone_node::genesis::genesis_template()?;
-    set_tempo_fork(&mut genesis, TempoHardfork::T14, 1);
+    set_tempo_fork(&mut genesis, TempoHardfork::T15, 1);
     Ok(genesis)
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn t13_keeps_legacy_fees_without_t14() -> eyre::Result<()> {
-    let mut genesis = zone_node::genesis::genesis_template()?;
-    set_tempo_fork(&mut genesis, TempoHardfork::T13, 0);
-    let (zone, mut fixture) =
-        start_local_zone_with_fixture_and_withdrawal_batch_interval(ZONE_ID, 2, 2, genesis).await?;
-    fixture.inject_empty_block(zone.deposit_queue());
-    zone.wait_for_block_number(1, DEFAULT_TIMEOUT).await?;
-    let block = zone
-        .provider()
-        .get_block_by_number(1.into())
-        .await?
-        .expect("first Zone block");
-    assert_eq!(block.header.base_fee_per_gas(), Some(0));
+async fn pre_t15_keeps_legacy_fees_without_t15() -> eyre::Result<()> {
+    for fork in [TempoHardfork::T13, TempoHardfork::T14] {
+        let mut genesis = zone_node::genesis::genesis_template()?;
+        set_tempo_fork(&mut genesis, fork, 0);
+        let (zone, mut fixture) =
+            start_local_zone_with_fixture_and_withdrawal_batch_interval(ZONE_ID, 2, 2, genesis)
+                .await?;
+        fixture.inject_empty_block(zone.deposit_queue());
+        zone.wait_for_block_number(1, DEFAULT_TIMEOUT).await?;
+        let block = zone
+            .provider()
+            .get_block_by_number(1.into())
+            .await?
+            .expect("first Zone block");
+        assert_eq!(block.header.base_fee_per_gas(), Some(0));
 
-    let rpc = redacted_rpc(&zone).await?;
-    let gas_price = rpc
-        .gas_price()
-        .await
-        .map_err(|err| eyre::eyre!(err.to_string()))?;
-    assert_eq!(
-        serde_json::from_str::<U256>(gas_price.get())?,
-        U256::from(TEMPO_T1_BASE_FEE)
-    );
-    let history = rpc
-        .fee_history(1, BlockNumberOrTag::Number(1), Some(Vec::new()))
-        .await
-        .map_err(|err| eyre::eyre!(err.to_string()))?;
-    let history: FeeHistory = serde_json::from_str(history.get())?;
-    assert_eq!(
-        history.base_fee_per_gas,
-        vec![u128::from(TEMPO_T0_BASE_FEE); 2]
-    );
-    assert_eq!(history.gas_used_ratio, vec![0.0]);
+        let rpc = redacted_rpc(&zone).await?;
+        let gas_price = rpc
+            .gas_price()
+            .await
+            .map_err(|err| eyre::eyre!(err.to_string()))?;
+        assert_eq!(
+            serde_json::from_str::<U256>(gas_price.get())?,
+            U256::from(TEMPO_T1_BASE_FEE)
+        );
+        let history = rpc
+            .fee_history(1, BlockNumberOrTag::Number(1), Some(Vec::new()))
+            .await
+            .map_err(|err| eyre::eyre!(err.to_string()))?;
+        let history: FeeHistory = serde_json::from_str(history.get())?;
+        assert_eq!(
+            history.base_fee_per_gas,
+            vec![u128::from(TEMPO_T0_BASE_FEE); 2]
+        );
+        assert_eq!(history.gas_used_ratio, vec![0.0]);
+    }
     Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn t14_activates_dynamic_base_fee() -> eyre::Result<()> {
+async fn t15_activates_dynamic_base_fee() -> eyre::Result<()> {
     let (zone, mut fixture) =
-        start_local_zone_with_fixture_and_withdrawal_batch_interval(ZONE_ID, 2, 2, t14_genesis()?)
+        start_local_zone_with_fixture_and_withdrawal_batch_interval(ZONE_ID, 2, 2, t15_genesis()?)
             .await?;
 
     let genesis = zone
@@ -148,7 +151,7 @@ async fn t14_activates_dynamic_base_fee() -> eyre::Result<()> {
             genesis.header.base_fee_per_gas().expect("genesis base fee"),
             genesis.header.gas_used(),
         )),
-        "the T14 activation block must adjust from its parent"
+        "the T15 activation block must adjust from its parent"
     );
     let rpc = redacted_rpc(&zone).await?;
     let gas_price = rpc
@@ -182,7 +185,7 @@ async fn t14_activates_dynamic_base_fee() -> eyre::Result<()> {
                     .expect("first block base fee")
             ),
         ],
-        "fee history must use the canonical T14 successor fee at the fork boundary"
+        "fee history must use the canonical T15 successor fee at the fork boundary"
     );
 
     fixture.inject_empty_block(zone.deposit_queue());
@@ -210,7 +213,7 @@ async fn t14_activates_dynamic_base_fee() -> eyre::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn sponsored_transaction_settles_nonzero_base_fee() -> eyre::Result<()> {
     let (zone, mut fixture) =
-        start_local_zone_with_fixture_and_withdrawal_batch_interval(ZONE_ID, 2, 2, t14_genesis()?)
+        start_local_zone_with_fixture_and_withdrawal_batch_interval(ZONE_ID, 2, 2, t15_genesis()?)
             .await?;
     let sender = PrivateKeySigner::random();
     let fee_payer = PrivateKeySigner::random();
@@ -250,7 +253,7 @@ async fn sponsored_transaction_settles_nonzero_base_fee() -> eyre::Result<()> {
     assert!(receipt.status(), "sponsored transaction must succeed");
     assert!(
         receipt.effective_gas_price > 0,
-        "T14 transaction must pay a nonzero base fee"
+        "T15 transaction must pay a nonzero base fee"
     );
     let block = provider
         .get_block_by_number(

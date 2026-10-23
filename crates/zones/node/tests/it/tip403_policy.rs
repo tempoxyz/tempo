@@ -164,7 +164,7 @@ async fn test_l1_blacklisted_sender_cannot_pay_for_empty_transaction() -> eyre::
     Ok(())
 }
 
-/// From T14 every fee-paying transaction collects a fee, which requires the sequencer's fee
+/// From T15 every fee-paying transaction collects a fee, which requires the sequencer's fee
 /// recipient to be an authorized recipient of the fee token. The transaction is rejected until the
 /// policy admits the sequencer.
 #[tokio::test(flavor = "multi_thread")]
@@ -259,7 +259,7 @@ async fn test_policy_gated_fee_token_requires_authorized_fee_recipient() -> eyre
     assert!(receipt.status(), "fee-paying transaction should succeed");
     assert!(
         receipt.effective_gas_price > 0,
-        "T14 must charge a base fee"
+        "T15 must charge a base fee"
     );
 
     Ok(())

@@ -37,9 +37,9 @@ helpers. Stateful execution lives in the Zone inbox and outbox precompiles.
 
 ## Activation
 
-Forced exits require Tempo T14, which installs the forced-exit portal runtime on
-Tempo L1 (`T14_ZONE_PORTAL_RUNTIME`). Historical portal runtimes remain in use
-before T14 and do not support forced requests. After the fork, each portal's `forcedExitVersion`
+Forced exits require Tempo T15, which installs the forced-exit portal runtime on
+Tempo L1 (`T15_ZONE_PORTAL_RUNTIME`). Historical portal runtimes remain in use
+before T15 and do not support forced requests. After the fork, each portal's `forcedExitVersion`
 storage value starts at 0 and `requestForcedExit` reverts with
 `ForcedExitsNotActivated`. The portal admin enables admission by calling
 `activateForcedExits()`, which irreversibly sets `forcedExitVersion` to 1 and emits
@@ -48,7 +48,7 @@ storage value starts at 0 and `requestForcedExit` reverts with
 Zone execution processes a forced request only when the Zone block runs under the
 forced-exit fork and the portal's `forcedExitVersion` is 1 at the imported Tempo
 block. Otherwise the entry is consumed as `NotActivated`, with no decryption and
-no nonce or principal effect, so Zones should schedule T14 before their portal
+no nonce or principal effect, so Zones should schedule T15 before their portal
 activates. The admin must activate only after the Zone node and prover are
 upgraded; an older node cannot track forced entries in the deposit queue and
 stalls on the first one.

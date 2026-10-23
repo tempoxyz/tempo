@@ -106,12 +106,12 @@ impl ZoneInbox {
         tempo_state.finalize_checkpoints(l1, &[call.header])?;
         let tempo_block_number = tempo_state.tempo_block_number()?;
 
-        // Forced exits run only under T14 rules with activation authenticated at the imported L1
+        // Forced exits run only under T15 rules with activation authenticated at the imported L1
         // anchor, including historical replay. Otherwise each forced entry is `NotActivated`.
         let forced_exits_live = deposits
             .iter()
             .any(|entry| matches!(entry, DecodedQueuedDeposit::ForcedExit(_)))
-            && self.storage.spec().is_t14()
+            && self.storage.spec().is_t15()
             && l1.read_l1(&ForcedExitPortalStorage::new(l1.portal()).forced_exit_version)? == 1;
 
         let has_token_enablements = !call.enabledTokens.is_empty();

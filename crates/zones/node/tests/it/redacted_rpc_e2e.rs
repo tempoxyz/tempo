@@ -523,7 +523,7 @@ async fn test_public_methods() -> eyre::Result<()> {
         );
     }
 
-    // The inherited DEV schedule activates T14 at genesis.
+    // The inherited DEV schedule activates T15 at genesis.
     let latest = ctx
         .zone
         .provider()

@@ -38,7 +38,7 @@ const CONTRACT_CREATION_TX_GAS: u64 = 1_000_000;
 const LEADER_INCLUSION_TIMEOUT: Duration = Duration::from_secs(30);
 const P2P_RECOVERY_TIMEOUT: Duration = Duration::from_secs(45);
 
-/// Zero-fee transactions remain valid until T14 activates dynamic base fees.
+/// Zero-fee transactions remain valid until T15 activates dynamic base fees.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_zero_fee_transactions_are_admitted_and_included() -> eyre::Result<()> {
     let mut genesis = zone_node::genesis::genesis_template()?;
