@@ -714,11 +714,12 @@ pub struct ZoneArgs {
         env = "SEQUENCER_PROVER_ADDRESS",
         value_name = "HARDFORK=HOST:PORT",
         value_delimiter = ',',
-        requires_all = ["enable_prover", "prover_attestation_policy"]
+        requires = "enable_prover"
     )]
     pub prover_addresses: Vec<HardforkProverAddress>,
 
-    /// JSON PCR allowlist required to authenticate remote provers.
+    /// JSON PCR allowlist that overrides the compiled-in verifier PCRs used to authenticate
+    /// remote provers.
     #[arg(
         long = "sequencer.prover-attestation-policy",
         env = "SEQUENCER_PROVER_ATTESTATION_POLICY",
@@ -1020,18 +1021,16 @@ mod tests {
         assert!(local_prover.enable_prover);
         assert!(local_prover.prover_addresses.is_empty());
         assert!(local_prover.prover_attestation_policy.is_none());
-        let missing_policy = ZoneArgsParser::try_parse_from(
+        let compiled_pcrs = ZoneArgsParser::try_parse_from(
             common[..common.len() - 2]
                 .iter()
                 .copied()
-                .chain(["--sequencer.prover-address", "T12=old:5000"]),
+                .chain(["--sequencer.prover-address", "T13=new:5000"]),
         )
-        .unwrap_err();
-        assert!(
-            missing_policy
-                .to_string()
-                .contains("--sequencer.prover-attestation-policy")
-        );
+        .unwrap()
+        .zone;
+        assert_eq!(compiled_pcrs.prover_addresses.len(), 1);
+        assert!(compiled_pcrs.prover_attestation_policy.is_none());
         let error = ZoneArgsParser::try_parse_from(
             common
                 .into_iter()
