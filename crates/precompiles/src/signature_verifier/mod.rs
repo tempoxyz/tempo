@@ -21,15 +21,6 @@ use tempo_primitives::transaction::{
 };
 use tracing::trace;
 
-/// Gas cost for secp256k1 signature verification.
-const SECP256K1_VERIFY_GAS: u64 = 3_000;
-
-/// Gas cost for P256 signature verification.
-const P256_VERIFY_GAS: u64 = 8_000;
-
-/// Gas cost for WebAuthn signature verification.
-const WEBAUTHN_VERIFY_GAS: u64 = 8_000;
-
 #[contract(addr = SIGNATURE_VERIFIER_ADDRESS)]
 pub struct SignatureVerifier {}
 
@@ -44,11 +35,7 @@ impl SignatureVerifier {
             .map_err(|_| SignatureVerifierError::invalid_format())?;
 
         // Charge verification gas before performing verification.
-        let verify_gas = match &sig {
-            PrimitiveSignature::Secp256k1(_) => SECP256K1_VERIFY_GAS,
-            PrimitiveSignature::P256(_) => P256_VERIFY_GAS,
-            PrimitiveSignature::WebAuthn(_) => WEBAUTHN_VERIFY_GAS,
-        };
+        let verify_gas = sig.base_verification_gas();
         self.storage.deduct_gas(verify_gas)?;
 
         // Verify and recover signer.
@@ -223,7 +210,7 @@ pub fn configurable_account_verification_gas(
     signature
         .signatures()
         .iter()
-        .map(primitive_verification_gas)
+        .map(PrimitiveSignature::verification_gas)
         .chain([
             calldata_gas(&witness),
             keccak_cost(signature.config().commitment_preimage_len())?,
@@ -231,18 +218,6 @@ pub fn configurable_account_verification_gas(
         ])
         .try_fold(0u64, u64::checked_add)
         .ok_or(TempoPrecompileError::OutOfGas)
-}
-
-/// Full primitive verification cost, including `WebAuthn` data calldata.
-///
-/// Unlike `tempo_evm`'s `primitive_signature_verification_gas`, this does not subtract the
-/// ecrecover baseline already covered by ordinary intrinsic gas.
-fn primitive_verification_gas(signature: &PrimitiveSignature) -> u64 {
-    match signature {
-        PrimitiveSignature::Secp256k1(_) => SECP256K1_VERIFY_GAS,
-        PrimitiveSignature::P256(_) => P256_VERIFY_GAS,
-        PrimitiveSignature::WebAuthn(sig) => WEBAUTHN_VERIFY_GAS + calldata_gas(&sig.webauthn_data),
-    }
 }
 
 /// Istanbul calldata cost of `input`: one token per zero byte, four per nonzero byte.
