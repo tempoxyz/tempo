@@ -1,4 +1,5 @@
 use super::{tempo_transaction::MAX_WEBAUTHN_SIGNATURE_LENGTH, tt_signature::PrimitiveSignature};
+use crate::gas::keccak_gas;
 use alloc::vec::Vec;
 use alloy_primitives::{Address, B256, Keccak256, keccak256};
 use alloy_rlp::{BufMut, Decodable, Encodable, Error as RlpError};
@@ -221,6 +222,12 @@ impl ConfigurableAccountConfig {
 
     fn account_address(&self) -> Result<Address, ConfigurableAccountConfigError> {
         Ok(Address::from_word(keccak256(self.account_preimage()?)))
+    }
+
+    /// Hashing gas to derive the account address from this configuration (TIP-1114).
+    /// Returns `None` if the cost overflows `u64`.
+    pub fn derivation_gas(&self) -> Option<u64> {
+        keccak_gas(self.account_preimage_len())
     }
 }
 

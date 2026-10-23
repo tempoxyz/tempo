@@ -3,8 +3,8 @@
 pub mod dispatch;
 
 use crate::{
-    error::Result,
-    storage::{ConfigCommitmentWriteGas, Handler, keccak_cost},
+    error::{Result, TempoPrecompileError},
+    storage::{ConfigCommitmentWriteGas, Handler},
 };
 use alloy::primitives::{Address, B256, KECCAK256_EMPTY};
 pub use tempo_chainspec::is_valid_native_account as valid_account;
@@ -56,8 +56,11 @@ impl ConfigurableAccount {
         let config = config(salt, 0, threshold, owners);
         // Reject an invalid configuration before charging the proof hashing gas.
         config.validate()?;
-        self.storage
-            .deduct_gas(keccak_cost(config.account_preimage_len())?)?;
+        self.storage.deduct_gas(
+            config
+                .derivation_gas()
+                .ok_or(TempoPrecompileError::OutOfGas)?,
+        )?;
         let account = config.derive_account()?;
         if !valid_account(account, self.storage.spec()) {
             return Err(ConfigurableAccountError::invalid_account().into());
