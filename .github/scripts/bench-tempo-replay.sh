@@ -147,12 +147,14 @@ build_tempo() {
 
   echo "Building $label tempo ($ref) with features: $build_features"
   cd "$src_dir"
-  RUSTFLAGS="-C target-cpu=native -C force-frame-pointers=yes" \
+  RUSTC_WRAPPER="" CARGO_BUILD_JOBS=8 \
+    RUSTFLAGS="-C target-cpu=native -C force-frame-pointers=yes" \
     cargo build --profile profiling --bin tempo --no-default-features --features "$build_features"
   cd -
 }
 
-# Compile sequentially to keep the nightly comparison within runner memory.
+# Compile sequentially with eight jobs and no sccache to bound runner memory
+# and avoid its long-compilation fallback during the nightly comparison.
 build_tempo baseline "$BASELINE_REF" ../tempo-baseline
 build_tempo feature "$FEATURE_REF" ../tempo-feature
 

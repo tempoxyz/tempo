@@ -1669,7 +1669,8 @@ def "main e2e" [
     let baseline_tbc = (tracy-build-config $baseline_build_features $tracy)
     let feature_tbc = (tracy-build-config $feature_build_features $tracy)
     let effective_no_cache = $no_cache or ($tracy != "off")
-    # Compile sequentially to keep the nightly comparison within runner memory.
+    # Compile sequentially with eight jobs and no sccache to bound runner memory
+    # and avoid its long-compilation fallback during the nightly comparison.
     mut builds = []
     if $needs_baseline {
         $builds = ($builds | append { wt: $baseline_wt, ref_name: $baseline, sha: $baseline, label: "baseline", features: $baseline_tbc.features, extra_rustflags: $baseline_tbc.extra_rustflags, bench_features: $baseline_build_features })
@@ -1677,13 +1678,16 @@ def "main e2e" [
     if $needs_feature {
         $builds = ($builds | append { wt: $feature_wt, ref_name: $feature, sha: $feature, label: "feature", features: $feature_tbc.features, extra_rustflags: $feature_tbc.extra_rustflags, bench_features: $feature_build_features })
     }
-    $builds | each { |b|
-        if $effective_no_cache {
-            build-in-worktree --no-cache --no-default-features=$no_default_features --extra-rustflags $b.extra_rustflags --bench-features $b.bench_features $b.wt $b.ref_name $profile $b.features $b.sha
-        } else {
-            build-in-worktree --no-default-features=$no_default_features $b.wt $b.ref_name $profile $b.features $b.sha
-        }
-    } | ignore
+    let build_specs = $builds
+    with-env { RUSTC_WRAPPER: "", CARGO_BUILD_JOBS: "8" } {
+        $build_specs | each { |b|
+            if $effective_no_cache {
+                build-in-worktree --no-cache --no-default-features=$no_default_features --extra-rustflags $b.extra_rustflags --bench-features $b.bench_features $b.wt $b.ref_name $profile $b.features $b.sha
+            } else {
+                build-in-worktree --no-default-features=$no_default_features $b.wt $b.ref_name $profile $b.features $b.sha
+            }
+        } | ignore
+    }
     let baseline_tempo = if $needs_baseline { worktree-bin $baseline_wt $profile "tempo" } else { "" }
     let feature_tempo = if $needs_feature { worktree-bin $feature_wt $profile "tempo" } else { "" }
     let regenesis_tempo = if $regenesis_needed {
