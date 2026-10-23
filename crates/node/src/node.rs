@@ -45,10 +45,8 @@ use reth_transaction_pool::{
 use std::sync::Arc;
 use tempo_chainspec::{TempoConsensusSpec, hardfork::TempoHardfork, spec::TempoChainSpec};
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
-use tempo_payload_builder::{
-    DEFAULT_BUILD_TIME_MULTIPLIER, TempoPayloadBuilder, TempoPayloadBuilderConfig,
-};
-use tempo_payload_types::TempoPayloadAttributes;
+use tempo_payload_builder::{TempoPayloadBuilder, TempoPayloadBuilderConfig};
+use tempo_payload_types::{DEFAULT_BUILD_TIME_MULTIPLIER, Estimator, TempoPayloadAttributes};
 use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType};
 use tempo_transaction_pool::{
     AA2dPool, AA2dPoolConfig, AddressFilter, TempoTransactionPool,
@@ -116,7 +114,7 @@ pub struct TempoNodeArgs {
     /// Initial estimate of total replayable payload build work divided by work
     /// at transaction cutoff.
     ///
-    /// The builder updates this at runtime. Higher values stop pool transaction
+    /// The builder keeps learning the ratio at runtime. Higher values stop pool transaction
     /// execution earlier to leave more room for `builder_finish`.
     #[arg(
         long = "builder.build-time-multiplier",
@@ -175,6 +173,7 @@ impl TempoNodeArgs {
             enable_prewarming: !self.builder_disable_prewarming,
             enable_parallel: self.builder_parallel,
             build_time_multiplier: self.builder_build_time_multiplier,
+            estimator: None,
         }
     }
 }
@@ -337,12 +336,28 @@ impl TempoNode {
         self
     }
 
+    /// Returns the payload builder settings, including any node overrides.
+    pub fn payload_builder_builder(&self) -> &TempoPayloadBuilderBuilder {
+        &self.payload_builder_builder
+    }
+
     /// Maps the payload builder builder.
     pub fn map_payload_builder_builder<F>(mut self, f: F) -> Self
     where
         F: FnOnce(TempoPayloadBuilderBuilder) -> TempoPayloadBuilderBuilder,
     {
         self.payload_builder_builder = f(self.payload_builder_builder);
+        self
+    }
+
+    /// Sets the proposal budget estimator the payload builder paces builds with.
+    ///
+    /// Clones share state, so passing a clone of the estimator the consensus
+    /// engine records validation feedback on lets the builder's stop decisions
+    /// account for it. Without one, the builder uses a private estimator seeded
+    /// from [`TempoPayloadBuilderBuilder::build_time_multiplier`].
+    pub fn with_estimator(mut self, estimator: Estimator) -> Self {
+        self.payload_builder_builder.estimator = Some(estimator);
         self
     }
 
@@ -483,7 +498,7 @@ where
     fn components_builder(&self) -> Self::ComponentsBuilder {
         Self::components(
             self.pool_builder.clone(),
-            self.payload_builder_builder,
+            self.payload_builder_builder.clone(),
             self.network_builder.clone(),
         )
     }
@@ -843,7 +858,7 @@ where
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct TempoPayloadBuilderBuilder {
     /// Enable state provider metrics for the payload builder.
@@ -854,7 +869,12 @@ pub struct TempoPayloadBuilderBuilder {
     pub enable_parallel: bool,
     /// Initial estimate of total replayable payload build work divided by work
     /// at transaction cutoff.
+    ///
+    /// Only used when no `estimator` is provided.
     pub build_time_multiplier: f64,
+    /// Proposal budget estimator the payload builder paces builds with, or
+    /// `None` for a private one seeded from `build_time_multiplier`.
+    pub estimator: Option<Estimator>,
 }
 
 impl Default for TempoPayloadBuilderBuilder {
@@ -864,6 +884,7 @@ impl Default for TempoPayloadBuilderBuilder {
             enable_prewarming: true,
             enable_parallel: false,
             build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
+            estimator: None,
         }
     }
 }
@@ -890,6 +911,9 @@ where
             _ => None,
         });
 
+        let estimator = self
+            .estimator
+            .unwrap_or_else(|| Estimator::new(self.build_time_multiplier));
         Ok(TempoPayloadBuilder::new(
             pool,
             ctx.provider().clone(),
@@ -902,8 +926,8 @@ where
                 enable_prewarming: self.enable_prewarming,
                 skip_state_root: ctx.config().tree_config().skip_state_root(),
                 enable_parallel: self.enable_parallel,
-                build_time_multiplier: self.build_time_multiplier,
             },
+            estimator,
         ))
     }
 }
