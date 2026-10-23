@@ -39,7 +39,7 @@ use tempo_consensus::{VerificationMode, feed::FeedStateHandle};
 pub mod consensus_snapshot;
 pub mod execution_runtime;
 pub mod metrics;
-pub use execution_runtime::ExecutionNodeConfig;
+pub use execution_runtime::{ExecutionNodeConfig, Persistence};
 pub mod testing_node;
 pub use execution_runtime::ExecutionRuntime;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -150,6 +150,9 @@ pub struct Setup {
     /// Whether validators announce `tempo/1` and publish finalization
     /// certificates over it.
     pub with_gossip: bool,
+
+    /// Reth persistence settings for every validator. `None` keeps reth's defaults.
+    pub persistence: Option<Persistence>,
 }
 
 impl Setup {
@@ -169,6 +172,7 @@ impl Setup {
             proposal_return_budget: Duration::from_millis(100),
             fee_recipient: Address::ZERO,
             with_gossip: false,
+            persistence: None,
         }
     }
 
@@ -230,6 +234,13 @@ impl Setup {
             ..self
         }
     }
+
+    pub fn persistence(self, persistence: Persistence) -> Self {
+        Self {
+            persistence: Some(persistence),
+            ..self
+        }
+    }
 }
 
 impl Default for Setup {
@@ -256,6 +267,7 @@ pub async fn setup_validators(
         proposal_return_budget,
         fee_recipient,
         with_gossip,
+        persistence,
         ..
     }: Setup,
 ) -> (Vec<TestingNode<Context>>, ExecutionRuntime) {
@@ -320,6 +332,7 @@ pub async fn setup_validators(
         // Validators publish but never ingest; they already receive certificates
         // over their authenticated consensus network.
         execution_config.gossip = with_gossip.then(|| execution_runtime::gossip_config(false));
+        execution_config.persistence = persistence;
 
         nodes.push(TestingNode::new(
             uid,

@@ -263,6 +263,21 @@ pub struct ExecutionNodeConfig {
     /// The protocol is registered before the network starts because `RLPx`
     /// negotiates capabilities during the handshake.
     pub gossip: Option<tempo_node::gossip::Config>,
+    /// Reth persistence settings. `None` keeps reth's defaults.
+    pub persistence: Option<Persistence>,
+}
+
+/// Reth engine settings that decide when canonical blocks are persisted.
+#[derive(Clone, Copy, Debug)]
+pub struct Persistence {
+    /// `--engine.persistence-threshold`.
+    pub threshold: u64,
+    /// `--engine.persistence-backpressure-threshold`.
+    pub backpressure_threshold: u64,
+    /// `--engine.memory-block-buffer-target`.
+    pub memory_block_buffer_target: u64,
+    /// `--engine.num-state-masking-blocks`.
+    pub num_state_masking_blocks: u64,
 }
 
 impl ExecutionNodeConfig {
@@ -278,6 +293,7 @@ impl ExecutionNodeConfig {
             feed_state: None,
             share_sparse_trie_with_payload_builder: false,
             gossip: None,
+            persistence: None,
         }
     }
 }
@@ -913,6 +929,7 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
         feed_state,
         share_sparse_trie_with_payload_builder,
         gossip,
+        persistence,
     } = config;
     let node_config = NodeConfig::new(Arc::new(chain_spec))
         .with_rpc(
@@ -939,6 +956,13 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
             c.engine.suppress_persistence_during_build = true;
             c.engine.share_sparse_trie_with_payload_builder =
                 share_sparse_trie_with_payload_builder;
+            if let Some(persistence) = persistence {
+                c.engine.persistence_threshold = persistence.threshold;
+                c.engine.persistence_backpressure_threshold =
+                    Some(persistence.backpressure_threshold);
+                c.engine.memory_block_buffer_target = Some(persistence.memory_block_buffer_target);
+                c.engine.num_state_masking_blocks = persistence.num_state_masking_blocks;
+            }
             c
         });
 

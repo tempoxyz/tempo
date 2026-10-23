@@ -10,8 +10,9 @@ use reth_ethereum::storage::BlockNumReader;
 use reth_node_metrics::recorder::install_prometheus_recorder;
 
 use crate::{
-    Setup, connect_execution_peers, connect_execution_to_peers, get_pipeline_runs,
-    metrics::MetricsExt, setup_validators,
+    Persistence, Setup, connect_execution_peers, connect_execution_to_peers, get_pipeline_runs,
+    metrics::{MetricsExt, wait_for_height},
+    setup_validators,
 };
 
 #[test_traced]
@@ -34,6 +35,48 @@ fn validator_joins_on_large_gap_without_triggering_pipeline_sync() {
     }
     .run();
     let _ = tempo_eyre::install();
+}
+
+/// A late validator catches up under the tightest persistence settings reth
+/// accepts, where marshal's ack depth (`backpressure + buffer target = 31`)
+/// is smallest relative to reth's persistence batch. Acks only arrive once
+/// reth persists, so a smaller depth would stall the backfill.
+#[test_traced]
+fn validator_catches_up_with_tightest_persistence_settings() {
+    let _ = tempo_eyre::install();
+
+    let setup = Setup::new(crate::VERIFICATION_MODE)
+        .epoch_length(100)
+        .persistence(Persistence {
+            threshold: 25,
+            backpressure_threshold: 26,
+            memory_block_buffer_target: 5,
+            num_state_masking_blocks: 10,
+        });
+    let cfg = Config::default()
+        .with_seed(setup.seed)
+        .with_timeout(Some(Duration::from_secs(600)));
+
+    Runner::from(cfg).start(|mut context| async move {
+        let (mut nodes, _execution_runtime) = setup_validators(&mut context, setup).await;
+
+        let mut last = nodes.pop().unwrap();
+        join_all(nodes.iter_mut().map(|node| node.start(&context))).await;
+        connect_execution_peers(&nodes).await;
+
+        // Several ack depths behind, so the backfill fills marshal's queue repeatedly.
+        let gap = 3 * 31;
+        while nodes[0].execution_provider().best_block_number().unwrap() < gap {
+            context.sleep(Duration::from_secs(1)).await;
+        }
+
+        last.start(&context).await;
+        connect_execution_to_peers(&last, &nodes).await;
+
+        // Marshal's processed height only advances on acks, which the
+        // executor sends once reth durably persisted the blocks.
+        wait_for_height(&context, &last, gap + 31).await;
+    });
 }
 
 struct AssertJoinsLate {
