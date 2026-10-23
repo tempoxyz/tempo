@@ -270,14 +270,6 @@ pub(crate) struct DepositAllowlistStatus {
     pub(crate) count: usize,
 }
 
-impl DepositAllowlistStatus {
-    /// Orders lists by age: writes carry increasing nonces, and an uninitialized list is older
-    /// than any written one.
-    pub(crate) const fn version(&self) -> (bool, u64) {
-        (self.initialized, self.nonce)
-    }
-}
-
 /// A sequencer's allowlist and its status.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -514,9 +506,9 @@ impl TransferAllowlist for DepositAllowlist {
 /// Copy of the sequencers' allowlist that an RPC-only node keeps to reject transfers on
 /// submission, refreshed by the relay's `mirror_sequencers` task.
 ///
-/// Until the first fetch succeeds it admits every transfer, as does a copy of an uninitialized
-/// list; the sequencers still enforce their own lists. The copy only moves to newer lists. Cloning
-/// shares the same copy.
+/// It admits every transfer until the first fetch finds a written list, and again once the
+/// sequencers no longer hold one; the sequencers still enforce their own lists. Cloning shares the
+/// same copy.
 #[derive(Debug, Clone, Default)]
 pub struct AllowlistMirror {
     inner: Arc<MirrorInner>,
@@ -524,14 +516,14 @@ pub struct AllowlistMirror {
 
 #[derive(Debug, Default)]
 struct MirrorInner {
-    /// Newest list fetched from the sequencers, `None` before the first fetch.
+    /// Newest written list fetched from the sequencers, `None` while none is known.
     snapshot: RwLock<Option<DepositAllowlistSnapshot>>,
     /// Wakes the refresh task early, after this node relays a write.
     refresh: Notify,
 }
 
 impl AllowlistMirror {
-    /// The version of the copy, `None` before the first fetch.
+    /// The version of the copy, `None` while it holds no written list.
     pub(crate) fn status(&self) -> Option<DepositAllowlistStatus> {
         self.inner
             .snapshot
@@ -540,22 +532,22 @@ impl AllowlistMirror {
             .map(|snapshot| snapshot.status)
     }
 
-    /// Install `snapshot` if it is newer than the current copy, returning whether it was
-    /// installed. A sequencer that lags behind or lost its file cannot roll the copy back.
-    pub(crate) fn update(&self, mut snapshot: DepositAllowlistSnapshot) -> bool {
-        let mut current = self.inner.snapshot.write();
-        if current
-            .as_ref()
-            .is_some_and(|current| current.status.version() >= snapshot.status.version())
-        {
-            return false;
-        }
+    /// Install `snapshot`, a written list, returning whether its version differs from the
+    /// current copy.
+    pub(crate) fn replace(&self, mut snapshot: DepositAllowlistSnapshot) -> bool {
         // Lookups binary-search the addresses; sequencers send them sorted, but they arrive over
         // P2P.
         snapshot.addresses.sort_unstable();
         snapshot.addresses.dedup();
+        let mut current = self.inner.snapshot.write();
+        let changed = current.as_ref().map(|current| current.status) != Some(snapshot.status);
         *current = Some(snapshot);
-        true
+        changed
+    }
+
+    /// Drop the copy so every transfer is admitted again, returning whether it held one.
+    pub(crate) fn clear(&self) -> bool {
+        self.inner.snapshot.write().take().is_some()
     }
 
     /// Ask the refresh task to check the sequencers now instead of at its next interval.
@@ -572,19 +564,14 @@ impl AllowlistMirror {
 impl TransferAllowlist for AllowlistMirror {
     fn allows_all(&self, addresses: &[Address]) -> bool {
         self.inner.snapshot.read().as_ref().is_none_or(|snapshot| {
-            !snapshot.status.initialized
-                || addresses
-                    .iter()
-                    .all(|address| snapshot.addresses.binary_search(address).is_ok())
+            addresses
+                .iter()
+                .all(|address| snapshot.addresses.binary_search(address).is_ok())
         })
     }
 
     fn is_written(&self) -> bool {
-        self.inner
-            .snapshot
-            .read()
-            .as_ref()
-            .is_some_and(|snapshot| snapshot.status.initialized)
+        self.inner.snapshot.read().is_some()
     }
 }
 
@@ -1240,30 +1227,26 @@ mod tests {
         assert_eq!(mirror.status(), None);
         assert!(mirror.allows_all(&[CAROL]));
         assert!(!mirror.is_written());
+        assert!(!mirror.clear());
 
         let dir = tempfile::tempdir().unwrap();
         let allowlist = load(dir.path().join(DEPOSIT_ALLOWLIST_FILE_NAME));
-        let uninitialized = allowlist.snapshot();
-        assert!(mirror.update(uninitialized.clone()));
-        assert!(mirror.allows_all(&[CAROL]));
-        assert!(!mirror.is_written());
-
         allowlist.replace(vec![ALICE, BOB]).unwrap();
         let mut snapshot = allowlist.snapshot();
         // Lookups do not rely on the sequencer sending addresses in order.
         snapshot.addresses.reverse();
-        assert!(mirror.update(snapshot.clone()));
+        assert!(mirror.replace(snapshot.clone()));
         assert_eq!(mirror.status(), Some(allowlist.status()));
         assert!(mirror.is_written());
         assert!(mirror.allows_all(&[ALICE]));
         assert!(mirror.allows_all(&[BOB]));
         assert!(!mirror.allows_all(&[CAROL]));
-        assert!(!mirror.update(snapshot));
+        assert!(!mirror.replace(snapshot));
 
-        // A sequencer that lags behind or lost its file cannot roll the copy back.
-        assert!(!mirror.update(uninitialized));
-        assert_eq!(mirror.status(), Some(allowlist.status()));
-        assert!(!mirror.allows_all(&[CAROL]));
+        assert!(mirror.clear());
+        assert_eq!(mirror.status(), None);
+        assert!(!mirror.is_written());
+        assert!(mirror.allows_all(&[CAROL]));
     }
 
     fn call(to: Address, input: impl Into<Bytes>) -> Call {

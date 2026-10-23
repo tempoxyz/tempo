@@ -367,9 +367,10 @@ on submission, returning `transfer sender or recipient is not allowlisted` inste
 them. It needs no flag: reading the list needs no signature. It fetches the newest list any
 sequencer holds (by nonce) at startup, after every write it relays, and within 5 seconds of a
 write relayed through another follower, then drops pooled transactions the new list rejects. It
-holds no file and only moves to newer lists, so a sequencer that lags behind cannot roll it back.
-Until its first fetch succeeds, or while the sequencers' lists are uninitialized, it admits every
-transfer and the sequencers still enforce their own lists.
+holds no file. It moves back to an older list, or drops its copy once no sequencer holds a written
+list (for example after `--deposits.allowlist` is turned off), only when every sequencer answers,
+so a lagging sequencer cannot roll it back. Until it finds a written list it admits every transfer,
+and the sequencers still enforce their own lists.
 
 Removing an account from the list does not trap its funds. Fee payments and transfers to the
 outbox are exempt, so it can still withdraw. A withdrawal's `zoneFallbackRecipient` is credited
