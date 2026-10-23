@@ -1,8 +1,8 @@
 use super::*;
 use crate::{
     FeeTokenResolver, ProtocolFeeManager, TempoBlockEnv, TempoFeeManager, TempoTxEnv,
-    evm::TempoEvm, gas_params::tempo_gas_params, signature_gas::P256_VERIFY_GAS,
-    tx::TempoBatchCallEnv,
+    evm::TempoEvm, gas_params::tempo_gas_params,
+    signature_gas::primitive_signature_verification_gas, tx::TempoBatchCallEnv,
 };
 use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
 use proptest::prelude::*;
@@ -21,8 +21,8 @@ use revm::{
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, ITIPFeeAMM};
 use tempo_precompiles::{
-    PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, storage::ContractStorage, test_util::TIP20Setup,
-    tip_fee_manager::TipFeeManager,
+    ECRECOVER_GAS, PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, storage::ContractStorage,
+    test_util::TIP20Setup, tip_fee_manager::TipFeeManager,
 };
 use tempo_primitives::transaction::{
     Call, PrimitiveSignature, RecoveredTempoAuthorization, TempoSignature,
@@ -720,8 +720,8 @@ fn test_aa_gas_p256_signature() {
     // Calculate base gas for normal tx
     let base_gas = calculate_initial_tx_gas(spec, &calldata, false, 0, 0, 0, None);
 
-    // Expected: normal tx + P256_VERIFY_GAS
-    let expected = base_gas.initial_total_gas() + P256_VERIFY_GAS;
+    // Expected: normal tx + 5_000 (P256 verification, net of the ecrecover in the base cost)
+    let expected = base_gas.initial_total_gas() + 5_000;
     assert_eq!(gas.initial_total_gas(), expected,);
 }
 
@@ -1282,7 +1282,7 @@ fn test_t4_key_authorization_matches_tip1016_sstore_regular_cost() {
     // TIP-1016 is opt-in via amsterdam_eip8037; manually enable for this test.
     let gas_params = crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
 
-    let sig_gas = ECRECOVER_GAS + primitive_signature_verification_gas(&key_auth.signature);
+    let sig_gas = key_auth.signature.verification_gas();
     let sload = gas_params.warm_storage_read_cost() + gas_params.cold_storage_additional_cost();
     let scope_extra_gas = call_scope_extra_gas(&key_auth.authorization);
     let (regular_gas, state_gas) =
@@ -1304,7 +1304,7 @@ fn test_t7_key_authorization_intrinsic_includes_storage_credit_value() {
         ));
 
     let gas_params = crate::gas_params::tempo_gas_params(TempoHardfork::T7);
-    let sig_gas = ECRECOVER_GAS + primitive_signature_verification_gas(&key_auth.signature);
+    let sig_gas = key_auth.signature.verification_gas();
     let sload = gas_params.warm_storage_read_cost() + gas_params.cold_storage_additional_cost();
     let scope_extra_gas = call_scope_extra_gas(&key_auth.authorization);
     let (regular_gas, state_gas) =

@@ -1,7 +1,7 @@
 use super::tempo_transaction::{
     MAX_WEBAUTHN_SIGNATURE_LENGTH, P256_SIGNATURE_LENGTH, SECP256K1_SIGNATURE_LENGTH, SignatureType,
 };
-use crate::gas::{P256_VERIFY_GAS, SECP256K1_VERIFY_GAS, WEBAUTHN_VERIFY_GAS};
+use crate::gas::{P256_VERIFY_GAS, SECP256K1_VERIFY_GAS, WEBAUTHN_VERIFY_GAS, calldata_gas};
 use alloc::vec::Vec;
 use alloy_primitives::{Address, B256, Bytes, Signature, U256, keccak256, uint};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -346,6 +346,17 @@ impl PrimitiveSignature {
             Self::Secp256k1(_) => SECP256K1_VERIFY_GAS,
             Self::P256(_) => P256_VERIFY_GAS,
             Self::WebAuthn(_) => WEBAUTHN_VERIFY_GAS,
+        }
+    }
+
+    /// Full gas to verify the signature: [`Self::base_verification_gas`] plus, for `WebAuthn`,
+    /// the calldata cost of `webauthn_data`.
+    ///
+    /// This does not subtract the ecrecover baseline already covered by ordinary intrinsic gas.
+    pub fn verification_gas(&self) -> u64 {
+        match self {
+            Self::Secp256k1(_) | Self::P256(_) => self.base_verification_gas(),
+            Self::WebAuthn(sig) => self.base_verification_gas() + calldata_gas(&sig.webauthn_data),
         }
     }
 }
