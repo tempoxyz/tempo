@@ -60,3 +60,11 @@ For example: `derek bench preset=tip20-policy bloat=100` (E2E), or
 and transaction gas on T13/T14, while benchmark timings use normal node caches.
 The snapshots create a fresh recipient balance and initial validator fee accrual;
 benchmark receivers already have balances from faucet funding.
+
+`zone-earn-mix` and `bridge-mix` model live customer traffic shapes, with gas-share
+weights taken from mainnet; each file lists its window, the mainnet shares and
+what it does not model. `zone-earn-mix` reuses the public-mix fixtures (zone
+portal settlement, Earn vault and transfers), so it has the same requirements.
+`bridge-mix` deploys a bridge fixture (`bridge/`) and splits bridge payouts from a
+small operator pool and sponsored bridge deposits, for example
+`derek bench preset=bridge-mix`. Refresh the weights when the traffic changes.
