@@ -54,6 +54,13 @@ const MAINNET_TESTNET_EPOCH_LENGTH_BLOCKS: u64 = 21_600;
 /// the finalized tip should be able to sync from peers.
 pub const MINIMAL_PEER_SYNC_FINALIZED_BLOCKS: u64 = 3 * MAINNET_TESTNET_EPOCH_LENGTH_BLOCKS;
 
+/// Runs the validator's consensus engine against `execution_node` until it
+/// exits.
+///
+/// `estimator` must be the handle the node's payload builder was given (see
+/// `TempoNode::with_estimator`), not merely one configured the same way:
+/// consensus feeds it the validation times and network samples the builder's
+/// stop decisions read, and reads back the builder's finished builds.
 pub async fn run_consensus_stack(
     context: commonware_runtime::tokio::Context,
     config: Args,
@@ -63,7 +70,7 @@ pub async fn run_consensus_stack(
     gossip_transport: Option<tempo_node::gossip::TransportHandle>,
     estimator: tempo_payload_types::Estimator,
 ) -> eyre::Result<()> {
-    config.validate_simplex_timing()?;
+    config.validate()?;
 
     let network_identity = config
         .network_identity()
@@ -102,6 +109,7 @@ pub async fn run_consensus_stack(
     let broadcaster = network.register(BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT);
     let marshal = network.register(MARSHAL_CHANNEL_IDENT, backfill_quota);
     let dkg = network.register(DKG_CHANNEL_IDENT, DKG_LIMIT);
+
     let consensus_engine = crate::consensus::engine::Builder {
         network_identity,
         execution_node: Some(execution_node),

@@ -557,17 +557,11 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             }
         });
         let payload_builder = tempo_node.payload_builder_builder();
-        let estimator = match payload_builder.estimator.clone() {
-            Some(estimator) => estimator,
-            None => tempo_node::Estimator::new(
-                tempo_node::EstimatorConfig::new(
-                    args.consensus.target_block_time.into_duration(),
-                    args.consensus.network_budget.into_duration(),
-                )
-                    .with_build_time_multiplier(payload_builder.build_time_multiplier),
-            )
-            .map_err(|reason| eyre::eyre!("invalid proposal budget flags: {reason}"))?,
-        };
+        // Validate the pacing flags even when an override supplies an estimator.
+        let estimator = args
+            .consensus
+            .estimator(payload_builder.build_time_multiplier)?;
+        let estimator = payload_builder.estimator.clone().unwrap_or(estimator);
         // Share the overridden settings with both the payload builder and consensus.
         let tempo_node = tempo_node.with_estimator(estimator.clone());
         let executed_state = tempo_node.executed_state();
@@ -1199,6 +1193,16 @@ mod tests {
             Duration::from_millis(50)
         );
         assert_eq!(node_cmd.ext.node_args.builder_build_time_multiplier, 1.15);
+        assert_eq!(
+            node_cmd
+                .ext
+                .consensus
+                .estimator_config(node_cmd.ext.node_args.builder_build_time_multiplier)
+                .network_budget_max,
+            Duration::from_millis(300)
+        );
+        assert_eq!(node_cmd.ext.consensus.network_reserve_percentile, 75);
+        assert!(node_cmd.ext.consensus.network_reserve_fast_rise);
 
         let mut cli = TempoCli::try_parse_from([
             "tempo",
