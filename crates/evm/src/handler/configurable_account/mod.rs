@@ -23,7 +23,7 @@ use tempo_precompiles::{
     error::TempoPrecompileError,
     storage::{
         CONFIG_COMMITMENT_REGISTRATION_GAS, ConfigCommitmentWriteGas, StorageCtx,
-        account_config_commitment, keccak_cost,
+        account_config_commitment,
     },
 };
 use tempo_primitives::transaction::{
@@ -391,7 +391,10 @@ fn validate_native_roles(
                 }
             })?;
         if account.commitment.is_zero() {
-            extra_gas += keccak_cost(signature.config().account_preimage_len())?;
+            extra_gas += signature
+                .config()
+                .derivation_gas()
+                .ok_or(TempoPrecompileError::OutOfGas)?;
             if first {
                 extra_gas += CONFIG_COMMITMENT_REGISTRATION_GAS;
                 // The sender's creation is free here only when another TIP-1000 charge pays it:

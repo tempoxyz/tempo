@@ -5,7 +5,7 @@ use crate::{
     account_keychain::{AccountKeychain, AuthorizedKey},
     configurable_account::valid_account,
     error::{Result, TempoPrecompileError},
-    storage::{account_config_commitment, keccak_cost},
+    storage::account_config_commitment,
 };
 use alloy::primitives::{Address, B256, Bytes, KECCAK256_EMPTY};
 use tempo_contracts::precompiles::SignatureVerifierError;
@@ -103,7 +103,9 @@ impl SignatureVerifier {
         })?;
 
         let initial_proof_gas = if commitment.is_zero() {
-            keccak_cost(config.account_preimage_len())?
+            config
+                .derivation_gas()
+                .ok_or(TempoPrecompileError::OutOfGas)?
         } else {
             0
         };
