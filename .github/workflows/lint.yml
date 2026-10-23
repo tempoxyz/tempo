@@ -292,6 +292,29 @@ jobs:
         env:
           CC_riscv32imac_unknown_none_elf: riscv64-unknown-elf-gcc
 
+  readme:
+    name: generated README
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Check generated README
+        run: |
+          python3 scripts/generate_readme.py
+          if [[ -n "$(git status --porcelain -- README.md)" ]]; then
+            git diff -- README.md
+            echo "README.md is stale; run: python3 scripts/generate_readme.py"
+            exit 1
+          fi
+
   lint-success:
     name: lint success
     runs-on: ubuntu-latest
@@ -307,6 +330,7 @@ jobs:
       - deny-fuzz
       - zepter
       - no-std
+      - readme
     timeout-minutes: 30
     steps:
       - name: Secure runner
