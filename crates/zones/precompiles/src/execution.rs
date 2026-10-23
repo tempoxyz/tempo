@@ -42,7 +42,7 @@ use tempo_precompiles::{
 /// Shared EVM configuration and accounting state installed for every Zone precompile wrapper.
 #[derive(Clone, Debug)]
 pub struct ZonePrecompileEnv {
-    spec: TempoHardfork,
+    pub(crate) spec: TempoHardfork,
     actions: StorageActions,
     non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
 }

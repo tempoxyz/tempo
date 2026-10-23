@@ -1,12 +1,19 @@
 //! Zone transaction policies shared by pool admission and block execution.
 
-use alloy_primitives::Address;
-use tempo_evm::{TempoInvalidTransaction, TempoTx, TempoTxEnv};
+use alloy_primitives::{Address, TxKind};
+use alloy_sol_types::SolCall;
+use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_contracts::precompiles::{CONFIGURABLE_ACCOUNT_ADDRESS, IConfigurableAccount};
+use tempo_evm::{
+    TempoInvalidTransaction, TempoTx, TempoTxEnv, transaction_error::ConfigurableAccountError,
+};
+use tempo_primitives::transaction::SignatureType;
 
 /// Validates transaction policies enforced by the Zone EVM.
 pub fn validate_transaction(
     tx: &TempoTxEnv,
     contract_deployer_allowlist: &[Address],
+    spec: TempoHardfork,
 ) -> Result<(), TempoInvalidTransaction> {
     let has_eip7702_authorizations = tx
         .as_eip7702()
@@ -26,6 +33,30 @@ pub fn validate_transaction(
         return Err(TempoInvalidTransaction::CallsValidation(
             "contract creation is not supported",
         ));
+    }
+
+    // Configurable accounts stay blocked until zones sync configurations (TIP-1114 Zones).
+    if spec.is_t14()
+        && (tx.as_aa().is_some_and(|aa| {
+            // An outer or keychain-inner signature without a primitive type is a configurable
+            // account.
+            aa.signature().primitive_signature_type().is_none()
+                || aa.tx().key_authorization.as_ref().is_some_and(|auth| {
+                    auth.key_type == SignatureType::ConfigurableAccount
+                        || auth.signature.as_configurable_account().is_some()
+                })
+        }) || tx.calls().any(|(kind, input)| {
+            kind == TxKind::Call(CONFIGURABLE_ACCOUNT_ADDRESS)
+                && matches!(
+                    input.first_chunk(),
+                    Some(
+                        &IConfigurableAccount::updateConfigCall::SELECTOR
+                            | &IConfigurableAccount::upgradeAccountCall::SELECTOR
+                    )
+                )
+        }))
+    {
+        return Err(ConfigurableAccountError::UnsupportedContext.into());
     }
 
     Ok(())
