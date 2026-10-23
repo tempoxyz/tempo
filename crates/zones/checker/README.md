@@ -177,7 +177,8 @@ Operational warnings and errors retain their diagnostic fields.
 | `portal_deposit_bounce_back_pending` | Authenticated pending Portal deposit bounce-back entered accounting. |
 | `portal_forced_exits_activated` | Authenticated Portal forced-exit activation. |
 | `portal_forced_exit_requested` | Authenticated Portal forced-exit admission. |
-| `portal_forced_exit_compensation_pending` | Authenticated forced-exit compensation parked as an admin refund. |
+| `portal_forced_exit_fee_pending` | Authenticated forced-exit fee parked for the admin. |
+| `portal_forced_exit_fees_claimed` | Authenticated parked forced-exit fees claimed by the admin. |
 | `portal_refund_accounted` | Authenticated Portal refund entered accounting. |
 | `zone_deposit_minted` | Verified Zone deposit mint. |
 | `zone_deposit_failed` | Authenticated failed Zone deposit. |

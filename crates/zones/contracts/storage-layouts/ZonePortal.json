@@ -375,6 +375,14 @@
       "offset": 0,
       "slot": "30",
       "type": "t_uint64"
+    },
+    {
+      "astId": 6106,
+      "contract": "src/runtime/tempo/ZonePortal.sol:ZonePortal",
+      "label": "pendingForcedExitFees",
+      "offset": 0,
+      "slot": "31",
+      "type": "t_mapping(t_address,t_mapping(t_address,t_uint128))"
     }
   ],
   "types": {

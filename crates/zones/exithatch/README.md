@@ -12,8 +12,8 @@ helpers. Stateful execution lives in the Zone inbox and outbox precompiles.
 
 1. **Request on L1.** The account signs an authorization and encrypts it with
    the Zone's published encryption key. `ZonePortal.requestForcedExit` collects
-   compensation from the fee payer, pays the portal admin (or parks the
-   payment as a claimable refund if the admin can't receive it), and appends
+   the fee from the fee payer, pays the portal admin (or parks the
+   fee for `claimForcedExitFees` if the admin can't receive it), and appends
    the request to the shared inbox. The fee payer may differ from the account.
 2. **Execute on the Zone.** The inbox verifies the decryption witness, decrypts
    the request, and checks authorization, the admission deadline, replay, and
@@ -33,7 +33,7 @@ helpers. Stateful execution lives in the Zone inbox and outbox precompiles.
 4. **Deliver or recover.** Ordinary withdrawal processing pays the L1 recipient.
    Failed delivery queues a bounce-back to the debited Zone account, using the
    existing pending-credit recovery path if policy prevents an immediate mint.
-   Admission compensation is not refunded.
+   The admission fee is not refunded.
 
 ## Activation
 

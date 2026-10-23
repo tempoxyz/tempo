@@ -17,7 +17,7 @@ use tempo_primitives::transaction::PrimitiveSignature;
 pub mod test_utils;
 
 pub const VERSION: u8 = 1;
-pub const FORCED_EXIT_COMPENSATION: u128 = 100_000;
+pub const FORCED_EXIT_FEE: u128 = 100_000;
 pub const MIN_CIPHERTEXT_SIZE: usize = 384;
 pub const MAX_CIPHERTEXT_SIZE: usize = 2368;
 /// TIP-0001's maximum primitive encoding, including the type byte.

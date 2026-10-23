@@ -30,8 +30,8 @@ mod activity_event {
         "portal_deposit_bounce_back_pending";
     pub(super) const PORTAL_FORCED_EXITS_ACTIVATED: &str = "portal_forced_exits_activated";
     pub(super) const PORTAL_FORCED_EXIT_REQUESTED: &str = "portal_forced_exit_requested";
-    pub(super) const PORTAL_FORCED_EXIT_COMPENSATION_PENDING: &str =
-        "portal_forced_exit_compensation_pending";
+    pub(super) const PORTAL_FORCED_EXIT_FEE_PENDING: &str = "portal_forced_exit_fee_pending";
+    pub(super) const PORTAL_FORCED_EXIT_FEES_CLAIMED: &str = "portal_forced_exit_fees_claimed";
     pub(super) const PORTAL_REFUND_ACCOUNTED: &str = "portal_refund_accounted";
     pub(super) const ZONE_DEPOSIT_MINTED: &str = "zone_deposit_minted";
     pub(super) const ZONE_DEPOSIT_FAILED: &str = "zone_deposit_failed";
@@ -222,11 +222,12 @@ fn log_tempo_event(event: &L1PortalEvent, context: &ActivityContext) {
         L1PortalEvent::ForcedExitRequested => {
             activity_log!(context, activity_event::PORTAL_FORCED_EXIT_REQUESTED,)
         }
-        L1PortalEvent::ForcedExitCompensationPending { .. } => {
-            activity_log!(
-                context,
-                activity_event::PORTAL_FORCED_EXIT_COMPENSATION_PENDING,
-            )
+        L1PortalEvent::ForcedExitFeePending { .. } => {
+            activity_log!(context, activity_event::PORTAL_FORCED_EXIT_FEE_PENDING,)
+        }
+        L1PortalEvent::ForcedExitFeesClaimed { amount: 0, .. } => {}
+        L1PortalEvent::ForcedExitFeesClaimed { .. } => {
+            activity_log!(context, activity_event::PORTAL_FORCED_EXIT_FEES_CLAIMED,)
         }
         L1PortalEvent::RefundClaimed { amount: 0, .. } => {}
         L1PortalEvent::RefundClaimed { .. } => {

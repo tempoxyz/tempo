@@ -185,7 +185,7 @@ async fn forced_exit_flow(bounce: bool) -> eyre::Result<()> {
         l1.wait_for_balance(
             PATH_USD_ADDRESS,
             l1.admin_address(),
-            recipient_before + amount + U256::from(4 * exithatch::FORCED_EXIT_COMPENSATION),
+            recipient_before + amount + U256::from(4 * exithatch::FORCED_EXIT_FEE),
             timeout,
         )
         .await?;

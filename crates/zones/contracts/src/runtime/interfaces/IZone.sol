@@ -322,6 +322,7 @@ address constant ZONE_OUTBOX = 0x1c00000000000000000000000000000000000002;
 //            + forcedExitVersion (uint64) + forcedExitCount (uint64) [packed]
 //   slot 29: forcedExitRequests (mapping(uint64 => ForcedExitMetadata))
 //   slot 30: _lastProcessedForcedExitId (uint64)
+//   slot 31: pendingForcedExitFees (mapping(address => mapping(address => uint128)))
 //
 // These constants are the single source of truth for cross-domain reads.
 // ZoneInbox and ZoneOutbox use them to read portal state via
@@ -479,11 +480,12 @@ interface IZonePortal {
 
     event ForcedExitsActivated(uint64 version);
 
-    /// @notice Emitted when forced-exit compensation cannot be paid to the admin and is parked in
-    ///         `refunds` for `claimRefund`.
-    event ForcedExitCompensationPending(
-        address indexed admin, address indexed token, uint128 amount
-    );
+    /// @notice Emitted when a forced-exit fee cannot be paid to the admin and is parked in
+    ///         `pendingForcedExitFees` for `claimForcedExitFees`.
+    event ForcedExitFeePending(address indexed admin, address indexed token, uint128 amount);
+
+    /// @notice Emitted when `admin` claims its parked forced-exit fees.
+    event ForcedExitFeesClaimed(address indexed admin, address indexed token, uint128 amount);
 
     /// @notice Remaining weighted admission units, including the withdrawal reserve.
     /// @dev Each withdrawal may require one unit for a callback deposit or bounce-back.
@@ -494,13 +496,13 @@ interface IZonePortal {
         external
         view
         returns (address token, uint64 depositNumber);
-    function FORCED_EXIT_COMPENSATION() external view returns (uint128);
+    function FORCED_EXIT_FEE() external view returns (uint128);
 
     /// @notice Queue an encrypted root authorization; processing is performed by the Zone.
     /// @dev Requires activated forced exits, an unpaused portal, an eligible fee payer, an enabled
     ///      token, a valid bounded envelope/key, and shared public inbox capacity.
     ///      Collects 100_000 base units from msg.sender and immediately pays the portal admin. If
-    ///      that payout fails, the compensation is parked in `refunds[token][admin]` instead.
+    ///      that payout fails, the fee is parked in `pendingForcedExitFees[token][admin]` instead.
     function requestForcedExit(
         address token,
         uint256 keyIndex,
@@ -508,6 +510,15 @@ interface IZonePortal {
     )
         external
         returns (uint64 requestId, uint64 depositNumber);
+
+    /// @notice Fees parked for `admin` because the payout at admission failed.
+    /// @dev Kept apart from user `refunds`; keyed by the address that was admin at admission.
+    function pendingForcedExitFees(address token, address admin) external view returns (uint128);
+
+    /// @notice Claim the caller's parked fees in `token`, paid to the caller.
+    /// @dev Requires no `Role.Account` and works for a former admin. Reverts with
+    ///      `CallbackRejected` and leaves the balance unchanged if the transfer fails.
+    function claimForcedExitFees(address token) external returns (uint128 amount);
 
     /// @notice Emitted after a batch is accepted by `submitBatch`.
     /// @dev `withdrawalQueueIndex` is the logical (non-wrapping) withdrawal queue index the
@@ -652,7 +663,7 @@ interface IZonePortal {
     error InvalidForcedExitCiphertextLength(uint256 actual);
     error ForcedExitsNotActivated();
     error ForcedExitsAlreadyActivated();
-    error ForcedExitCompensationRejected();
+    error ForcedExitFeeRejected();
     error InvalidProofOfPossession();
     error DepositTooSmall();
     error DepositBlockCapacityExceeded(uint64 maximum);

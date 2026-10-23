@@ -899,7 +899,7 @@ ASCII("forced-exit-v1") || portal[20] || keyIndex[32, big-endian]
 
 `requestForcedExit(token, keyIndex, encrypted)` requires version 1 activation (see [Network Upgrades and Hard Fork Activation](#network-upgrades-and-hard-fork-activation)), no withdrawal processing in progress (it cannot be called from a withdrawal callback), an unpaused portal, an eligible fee payer under the ordinary depositor access rules, an enabled token, a valid current or unexpired encryption key, a valid compressed ephemeral point, a bounded ciphertext, and shared public inbox capacity. Token `depositsActive` controls principal deposits and does not prevent forced-exit admission.
 
-The portal transfers `FORCED_EXIT_COMPENSATION = 100_000` base units (0.1 of a six-decimal TIP-20 token) from the fee payer and then tries to pay the current admin in that token. The fee payer needs L1 balance and approval for this compensation. The inbound transfer is strict: if the token's receive policy does not let the portal receive it directly, admission reverts with `ForcedExitCompensationRejected()`, and any other failure of the inbound transfer also reverts the admission. If delivery to the admin fails (for example a blocked admin, a TIP-403 receive policy, or failed recipient resolution), admission still succeeds: the portal credits `refunds[token][admin] += FORCED_EXIT_COMPENSATION` and emits `ForcedExitCompensationPending(admin, token, amount)`, and the admin collects it later through `claimRefund(token)`. The admin therefore cannot block forced exits by refusing compensation. No withdrawal principal is deposited, and compensation is not refunded to the fee payer for rejection, an empty balance, or failed delivery.
+The portal transfers `FORCED_EXIT_FEE = 100_000` base units (0.1 of a six-decimal TIP-20 token) from the fee payer and then tries to pay the current admin in that token. The fee payer needs L1 balance and approval for this fee. The inbound transfer is strict: if the token's receive policy does not let the portal receive it directly, admission reverts with `ForcedExitFeeRejected()`, and any other failure of the inbound transfer also reverts the admission. If delivery to the admin fails (for example a blocked admin, a TIP-403 receive policy, or failed recipient resolution), admission still succeeds: the portal credits `pendingForcedExitFees[token][admin] += FORCED_EXIT_FEE` and emits `ForcedExitFeePending(admin, token, amount)`. The admin therefore cannot block forced exits by refusing the fee. `claimForcedExitFees(token)` pays only `msg.sender`, needs no `Role.Account`, and reverts with `CallbackRejected()` on failure. No withdrawal principal is deposited, and the fee is not refunded to the fee payer for rejection, an empty balance, or failed delivery.
 
 Admission allocates a monotonically increasing `requestId` and global `depositNumber`, records the L1 block number and timestamp, and appends the complete `ForcedExit` entry to the shared queue. `forcedExitRequests(requestId)` stores only `(token, depositNumber)` as admission identity. `ForcedExitRequested(depositNumber, entry)` exposes the token, fee payer, key index, encrypted envelope, and admission block/time. The authorization account, recipient, nonce, and deadline remain encrypted.
 
@@ -937,7 +937,7 @@ senderTag = keccak256(abi.encodePacked(account, privateRequestHash, fallbackNonc
 
 Neither the private request hash nor a public request-ID-derived tag is published on L1. The shared inbox transaction hash is not substituted for `privateRequestHash`. The Zone emits `ForcedWithdrawalRequested` with the withdrawal index, token, sender tag, recipient, amount, and fallback nonce; it omits the debited account, authorization nonce, and signature.
 
-Every terminal result advances the processed queue hash and number. Rejected and empty entries create no withdrawal, principal refund, or bounce-back. Fatal errors, including resource exhaustion and state/witness failures, roll back the enclosing transition, including earlier entries, nonce consumption, and cursor progress. L1 compensation already paid at admission is unaffected.
+Every terminal result advances the processed queue hash and number. Rejected and empty entries create no withdrawal, principal refund, or bounce-back. Fatal errors, including resource exhaustion and state/witness failures, roll back the enclosing transition, including earlier entries, nonce consumption, and cursor progress. The L1 fee already paid at admission is unaffected.
 
 ### Forced-Exit Settlement and Recovery
 
@@ -1957,9 +1957,14 @@ interface IZonePortal {
 
     event ForcedExitRequested(uint64 indexed depositNumber, ForcedExit entry);
 
-    /// @notice Emitted when forced-exit compensation cannot be paid to the admin and is parked in
-    ///         `refunds` for `claimRefund`.
-    event ForcedExitCompensationPending(
+    /// @notice Emitted when a forced-exit fee cannot be paid to the admin and is parked in
+    ///         `pendingForcedExitFees` for `claimForcedExitFees`.
+    event ForcedExitFeePending(
+        address indexed admin, address indexed token, uint128 amount
+    );
+
+    /// @notice Emitted when `admin` claims its parked forced-exit fees.
+    event ForcedExitFeesClaimed(
         address indexed admin, address indexed token, uint128 amount
     );
 
@@ -1969,13 +1974,13 @@ interface IZonePortal {
         external
         view
         returns (address token, uint64 depositNumber);
-    function FORCED_EXIT_COMPENSATION() external view returns (uint128);
+    function FORCED_EXIT_FEE() external view returns (uint128);
 
     /// @notice Queue an encrypted root authorization; processing is performed by the Zone.
     /// @dev Requires protocol activation, an unpaused portal, an eligible fee payer, an enabled
     ///      token, a valid bounded envelope/key, and shared public inbox capacity.
     ///      Collects 100_000 base units from msg.sender and immediately pays the portal admin. If
-    ///      that payout fails, the compensation is parked in `refunds[token][admin]` instead.
+    ///      that payout fails, the fee is parked in `pendingForcedExitFees[token][admin]` instead.
     function requestForcedExit(
         address token,
         uint256 keyIndex,
@@ -1983,6 +1988,12 @@ interface IZonePortal {
     )
         external
         returns (uint64 requestId, uint64 depositNumber);
+
+    /// @notice Fees parked for `admin` because the payout at admission failed.
+    function pendingForcedExitFees(address token, address admin) external view returns (uint128);
+
+    /// @notice Claim the caller's parked fees in `token`, paid to the caller.
+    function claimForcedExitFees(address token) external returns (uint128 amount);
 
     // Events
     event DepositMade(

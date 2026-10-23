@@ -3,6 +3,7 @@ pragma solidity ^0.8.13;
 
 import {
     BlockTransition,
+    Capability,
     DepositPayload,
     DepositQueueTransition,
     DepositType,
@@ -299,30 +300,42 @@ contract ForcedExitTest is BaseTest {
         assertEq(number, 1);
     }
 
-    /// Admission succeeds with the compensation parked for the admin to claim later.
-    function assertCompensationParked(uint256 balance, uint256 adminBalance) internal {
+    function setAdminReceives(bool receives) internal {
+        vm.prank(admin);
+        registry.setReceivePolicy(
+            receives ? ALLOW_ALL_POLICY_ID : REJECT_ALL_POLICY_ID, ALLOW_ALL_POLICY_ID, address(0)
+        );
+    }
+
+    /// Admission succeeds with the fee parked for the admin to claim later.
+    /// Returns the admin's balance, which parking leaves unchanged.
+    function assertFeeParked() internal returns (uint256 adminBalance) {
+        uint256 balance = pathUSD.balanceOf(alice);
+        adminBalance = pathUSD.balanceOf(admin);
         vm.expectEmit(true, true, false, true, address(portal));
-        emit IZonePortal.ForcedExitCompensationPending(admin, address(pathUSD), FEE);
+        emit IZonePortal.ForcedExitFeePending(admin, address(pathUSD), FEE);
         (uint64 id, uint64 number) = request(384);
         assertEq(id, 1);
         assertEq(number, 1);
         assertEq(pathUSD.balanceOf(alice), balance - FEE);
         assertEq(pathUSD.balanceOf(admin), adminBalance);
         assertEq(pathUSD.balanceOf(address(portal)), FEE);
-        assertEq(portal.refunds(address(pathUSD), admin), FEE);
-    }
-
-    function claimParkedCompensation(uint256 adminBalance) internal {
-        vm.expectEmit(true, true, false, true, address(portal));
-        emit IZonePortal.RefundClaimed(admin, address(pathUSD), FEE);
-        vm.prank(admin);
-        assertEq(portal.claimRefund(address(pathUSD)), FEE);
-        assertEq(pathUSD.balanceOf(admin), adminBalance + FEE);
-        assertEq(pathUSD.balanceOf(address(portal)), 0);
+        assertEq(portal.pendingForcedExitFees(address(pathUSD), admin), FEE);
+        // Parked fees are kept apart from user refunds.
         assertEq(portal.refunds(address(pathUSD), admin), 0);
     }
 
-    function test_blockedAdminParksCompensation() public {
+    function claimParkedFee(uint256 adminBalance) internal {
+        vm.expectEmit(true, true, false, true, address(portal));
+        emit IZonePortal.ForcedExitFeesClaimed(admin, address(pathUSD), FEE);
+        vm.prank(admin);
+        assertEq(portal.claimForcedExitFees(address(pathUSD)), FEE);
+        assertEq(pathUSD.balanceOf(admin), adminBalance + FEE);
+        assertEq(pathUSD.balanceOf(address(portal)), 0);
+        assertEq(portal.pendingForcedExitFees(address(pathUSD), admin), 0);
+    }
+
+    function test_blockedAdminParksFee() public {
         address[] memory blocked = new address[](1);
         blocked[0] = admin;
         uint64 policy = registry.createPolicyWithAccounts(
@@ -330,42 +343,87 @@ contract ForcedExitTest is BaseTest {
         );
         vm.prank(pathUSDAdmin);
         pathUSD.changeTransferPolicyId(policy);
-        uint256 balance = pathUSD.balanceOf(alice);
-        uint256 adminBalance = pathUSD.balanceOf(admin);
-        assertCompensationParked(balance, adminBalance);
+        uint256 adminBalance = assertFeeParked();
 
-        // The blocked admin cannot pull the parked compensation out either.
+        // The blocked admin cannot pull the parked fee out either.
         vm.prank(admin);
         vm.expectRevert(IZonePortal.CallbackRejected.selector);
-        portal.claimRefund(address(pathUSD));
-        assertEq(portal.refunds(address(pathUSD), admin), FEE);
+        portal.claimForcedExitFees(address(pathUSD));
+        assertEq(portal.pendingForcedExitFees(address(pathUSD), admin), FEE);
+        assertEq(pathUSD.balanceOf(admin), adminBalance);
 
         registry.modifyPolicyBlacklist(policy, admin, false);
-        claimParkedCompensation(adminBalance);
+        claimParkedFee(adminBalance);
     }
 
-    function test_parkedCompensationAccumulatesAcrossRequests() public {
-        vm.prank(admin);
-        registry.setReceivePolicy(REJECT_ALL_POLICY_ID, ALLOW_ALL_POLICY_ID, address(0));
+    function test_parkedFeeAccumulatesAcrossRequests() public {
+        setAdminReceives(false);
         request(384);
         request(384);
-        assertEq(portal.refunds(address(pathUSD), admin), 2 * FEE);
+        assertEq(portal.pendingForcedExitFees(address(pathUSD), admin), 2 * FEE);
+        assertEq(portal.refunds(address(pathUSD), admin), 0);
         assertEq(pathUSD.balanceOf(address(portal)), 2 * FEE);
 
-        // Once the admin accepts transfers again, new compensation is paid directly.
-        vm.prank(admin);
-        registry.setReceivePolicy(ALLOW_ALL_POLICY_ID, ALLOW_ALL_POLICY_ID, address(0));
+        // Once the admin accepts transfers again, new fees are paid directly.
+        setAdminReceives(true);
         uint256 adminBalance = pathUSD.balanceOf(admin);
         request(384);
         assertEq(pathUSD.balanceOf(admin), adminBalance + FEE);
-        assertEq(portal.refunds(address(pathUSD), admin), 2 * FEE);
+        assertEq(portal.pendingForcedExitFees(address(pathUSD), admin), 2 * FEE);
         vm.prank(admin);
-        assertEq(portal.claimRefund(address(pathUSD)), 2 * FEE);
+        assertEq(portal.claimForcedExitFees(address(pathUSD)), 2 * FEE);
         assertEq(pathUSD.balanceOf(address(portal)), 0);
     }
 
+    function test_parkedFeeClaimableWithoutAccountRoleAfterAbdication() public {
+        vm.startPrank(admin);
+        portal.setAllowedAccount(admin, false);
+        portal.abdicate(Capability.AccessPolicy);
+        vm.stopPrank();
+        setAdminReceives(false);
+        uint256 adminBalance = assertFeeParked();
+
+        // After abdication the admin can never regain Role.Account, so claimRefund stays closed.
+        vm.warp(block.timestamp + portal.ABDICATION_DELAY());
+        vm.startPrank(admin);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IZonePortal.CapabilityAbdicated.selector, Capability.AccessPolicy
+            )
+        );
+        portal.setAllowedAccount(admin, true);
+        vm.expectRevert(abi.encodeWithSelector(IZonePortal.AccountNotAllowed.selector, admin));
+        portal.claimRefund(address(pathUSD));
+        vm.stopPrank();
+        setAdminReceives(true);
+
+        claimParkedFee(adminBalance);
+    }
+
+    function test_formerAdminClaimsFeesParkedUnderIt() public {
+        setAdminReceives(false);
+        uint256 adminBalance = assertFeeParked();
+
+        vm.prank(admin);
+        portal.transferAdmin(bob);
+        vm.prank(bob);
+        portal.acceptAdmin();
+
+        // The new admin inherits none of the fees parked before it took over.
+        uint256 bobBalance = pathUSD.balanceOf(bob);
+        vm.expectEmit(true, true, false, true, address(portal));
+        emit IZonePortal.ForcedExitFeesClaimed(bob, address(pathUSD), 0);
+        vm.prank(bob);
+        assertEq(portal.claimForcedExitFees(address(pathUSD)), 0);
+        assertEq(pathUSD.balanceOf(bob), bobBalance);
+        assertEq(portal.pendingForcedExitFees(address(pathUSD), admin), FEE);
+
+        setAdminReceives(true);
+        claimParkedFee(adminBalance);
+    }
+
     function test_portalReceivePolicyBlockedPreservesExistingBacking() public {
-        // Seed backing through an ordinary deposit before blocking incoming compensation.
+        // Seed backing through an ordinary deposit before blocking incoming fees.
         vm.prank(alice);
         portal.depositEncrypted(address(pathUSD), 10e6, 0, _depositPayload(alice, 0), alice);
         uint256 backing = pathUSD.balanceOf(address(portal));
@@ -379,7 +437,7 @@ contract ForcedExitTest is BaseTest {
         // Model the blocked-recipient state, independent of how it was configured.
         vm.prank(address(portal));
         registry.setReceivePolicy(REJECT_ALL_POLICY_ID, ALLOW_ALL_POLICY_ID, address(0));
-        vm.expectRevert(IZonePortal.ForcedExitCompensationRejected.selector);
+        vm.expectRevert(IZonePortal.ForcedExitFeeRejected.selector);
         request(384);
         assertEq(pathUSD.balanceOf(alice), balance);
         assertEq(pathUSD.balanceOf(admin), adminBalance);
@@ -402,20 +460,16 @@ contract ForcedExitTest is BaseTest {
         assertEq(pathUSD.balanceOf(address(portal)), backing);
     }
 
-    function test_adminReceivePolicyBlockedParksCompensation() public {
-        vm.prank(admin);
-        registry.setReceivePolicy(REJECT_ALL_POLICY_ID, ALLOW_ALL_POLICY_ID, address(0));
+    function test_adminReceivePolicyBlockedParksFee() public {
+        setAdminReceives(false);
 
-        uint256 balance = pathUSD.balanceOf(alice);
-        uint256 adminBalance = pathUSD.balanceOf(admin);
         uint256 guardBalance = pathUSD.balanceOf(StdPrecompiles.RECEIVE_POLICY_GUARD_ADDRESS);
-        assertCompensationParked(balance, adminBalance);
+        uint256 adminBalance = assertFeeParked();
         // The payout is skipped rather than diverted to the receive-policy guard.
         assertEq(pathUSD.balanceOf(StdPrecompiles.RECEIVE_POLICY_GUARD_ADDRESS), guardBalance);
 
-        vm.prank(admin);
-        registry.setReceivePolicy(ALLOW_ALL_POLICY_ID, ALLOW_ALL_POLICY_ID, address(0));
-        claimParkedCompensation(adminBalance);
+        setAdminReceives(true);
+        claimParkedFee(adminBalance);
     }
 
     function test_pausedTokenRollsBackAdmission() public {

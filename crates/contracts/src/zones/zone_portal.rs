@@ -136,7 +136,11 @@ crate::sol! {
         function remainingDepositCapacity() external view returns (uint64);
         function forcedExitCount() external view returns (uint64);
         function forcedExitRequests(uint64 requestId) external view returns (address token, uint64 depositNumber);
-        function FORCED_EXIT_COMPENSATION() external view returns (uint128);
+        function FORCED_EXIT_FEE() external view returns (uint128);
+        /// Fees parked for `admin` because the payout at admission failed.
+        function pendingForcedExitFees(address token, address admin) external view returns (uint128);
+        /// Claim the caller's parked forced-exit fees in `token`, paid to the caller.
+        function claimForcedExitFees(address token) external returns (uint128 amount);
         /// Processed prefix transition for the portal's append-only enabled-token array.
         struct TokenEnablementTransition {
             uint64 prevProcessedTokenCount;
@@ -146,7 +150,8 @@ crate::sol! {
         // -- Events --
         event ForcedExitsActivated(uint64 version);
         event ForcedExitRequested(uint64 indexed depositNumber, ForcedExit entry);
-        event ForcedExitCompensationPending(address indexed admin, address indexed token, uint128 amount);
+        event ForcedExitFeePending(address indexed admin, address indexed token, uint128 amount);
+        event ForcedExitFeesClaimed(address indexed admin, address indexed token, uint128 amount);
 
         event DepositMade(
             bytes32 indexed newCurrentDepositQueueHash,
@@ -291,7 +296,7 @@ crate::sol! {
         error InvalidForcedExitCiphertextLength(uint256 actual);
         error ForcedExitsNotActivated();
         error ForcedExitsAlreadyActivated();
-        error ForcedExitCompensationRejected();
+        error ForcedExitFeeRejected();
         error InvalidProofOfPossession();
         error DepositTooSmall();
         error TokenEnablementBlockCapacityExceeded(uint64 maximum);

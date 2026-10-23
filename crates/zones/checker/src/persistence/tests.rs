@@ -1,6 +1,7 @@
 use alloy_primitives::{Address, B256, U256};
+use reth_codecs::{Compress as _, Decompress as _};
 use reth_db::{
-    Database as _,
+    Database as _, RawKey, RawTable, RawValue,
     transaction::{DbTx as _, DbTxMut as _},
 };
 
@@ -9,7 +10,7 @@ use crate::accounting::{AccountKey, BalanceChange, Effect, LiabilityKind, State,
 use super::{
     BlockRef, CandidateTransition, Checkpoint, Finding, Identity, PersistenceError, SCHEMA_VERSION,
     Status, Store,
-    schema::{Meta, MetaKey, MetaValue},
+    schema::{Meta, MetaKey, MetaValue, TokenValue, Tokens},
 };
 
 fn block(number: u64, byte: u8) -> BlockRef {
@@ -145,6 +146,45 @@ fn inspect_identity_validates_schema() {
     assert!(matches!(
         Store::inspect_identity(&path),
         Err(PersistenceError::Schema { .. })
+    ));
+}
+
+#[test]
+fn v1_database_fails_schema_check_before_token_decode() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("checker");
+    let checkpoint = Checkpoint {
+        identity: identity(),
+        zone: block(0, 10),
+        tempo: block(20, 20),
+        state: Default::default(),
+    };
+    Store::create_atomic(&path, &checkpoint).unwrap();
+
+    // A v1 `TokenState` has five `U256` fields, one fewer than the current shape.
+    let current = TokenValue(TokenState::default()).compress();
+    let field_len = (current.len() - 1) / 6;
+    let v1_row = current[..current.len() - field_len].to_vec();
+    assert!(TokenValue::decompress(&v1_row).is_err());
+
+    let (store, _) = Store::open(&path, identity()).unwrap();
+    let tx = store.db.tx_mut().unwrap();
+    tx.put::<Meta>(MetaKey::Version, MetaValue::Version(1))
+        .unwrap();
+    tx.put::<RawTable<Tokens>>(
+        RawKey::new(Address::repeat_byte(6)),
+        RawValue::from_vec(v1_row),
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    drop(store);
+
+    assert!(matches!(
+        Store::open(&path, identity()),
+        Err(PersistenceError::Schema {
+            expected: SCHEMA_VERSION,
+            actual: 1,
+        })
     ));
 }
 
