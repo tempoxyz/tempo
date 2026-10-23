@@ -1,5 +1,4 @@
-use commonware_actor::Feedback;
-use commonware_consensus::{Reporter, marshal::Update, types::Epoch};
+use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
     bls12381::primitives::{group::Share, sharing::Sharing, variant::MinSig},
     ed25519::PublicKey,
@@ -8,8 +7,6 @@ use commonware_utils::ordered;
 use eyre::WrapErr as _;
 use futures::channel::mpsc;
 use tracing::Span;
-
-use crate::consensus::block::Block;
 
 #[derive(Clone, Debug)]
 pub(crate) struct Mailbox {
@@ -45,17 +42,6 @@ impl Mailbox {
     }
 }
 
-impl Reporter for Mailbox {
-    type Activity = Update<Block>;
-
-    fn report(&mut self, update: Self::Activity) -> Feedback {
-        match self.inner.unbounded_send(Message::in_current_span(update)) {
-            Ok(()) => Feedback::Ok,
-            Err(_) => Feedback::Closed,
-        }
-    }
-}
-
 #[derive(Debug)]
 pub(super) struct Message {
     pub(super) cause: Span,
@@ -75,7 +61,6 @@ impl Message {
 pub(super) enum Content {
     Enter(EpochTransition),
     Exit(Exit),
-    Report(Update<Block>),
 }
 
 impl From<EpochTransition> for Content {
@@ -101,10 +86,4 @@ pub(super) struct EpochTransition {
 #[derive(Debug)]
 pub(super) struct Exit {
     pub(super) epoch: Epoch,
-}
-
-impl From<Update<Block>> for Content {
-    fn from(value: Update<Block>) -> Self {
-        Self::Report(value)
-    }
 }

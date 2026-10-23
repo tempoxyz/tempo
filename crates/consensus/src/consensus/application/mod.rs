@@ -1,13 +1,14 @@
 //! The interface between the consensus layer and the execution layer.
 //!
-//! [`Inner`] implements [`commonware_consensus::Application`]. [`Factory`]
-//! selects an inline or deferred wrapper using the preceding epoch boundary
-//! timestamp. Each wrapper is constructed on first use and shared across epochs.
-//! The epoch manager forwards marshal updates to prune both wrappers' gates.
-//! The wrappers fetch parents, re-propose epoch boundary blocks, check epoch
-//! membership and parent linkage, persist verified blocks, broadcast proposals,
-//! and gate finalize votes on durability. [`Inner`] builds blocks through the
-//! executor and checks proposals before this node votes for them.
+//! [`Inner`] implements [`commonware_consensus::Application`]. At startup the
+//! engine wraps it in both an inline and a deferred marshal wrapper, held by
+//! [`Factory`]. The factory is marshal's reporter and hands each epoch's
+//! simplex engine the wrapper selected by the preceding epoch boundary
+//! timestamp. The wrappers fetch parents, re-propose epoch boundary blocks,
+//! check epoch membership and parent linkage, persist verified blocks,
+//! broadcast proposals, and gate finalize votes on durability. [`Inner`] builds
+//! blocks through the executor and checks proposals before this node votes for
+//! them.
 
 mod r#impl;
 mod parent_state;
@@ -16,7 +17,7 @@ pub(super) use r#impl::Config;
 pub(crate) use r#impl::Inner;
 pub(super) use parent_state::TempoParentState;
 
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use commonware_actor::Feedback;
 use commonware_consensus::{
@@ -33,7 +34,7 @@ use commonware_cryptography::{
     bls12381::primitives::variant::MinSig, certificate::Scheme as CertificateScheme,
     ed25519::PublicKey,
 };
-use commonware_runtime::{Clock, ContextCell, Spawner};
+use commonware_runtime::{Clock, Spawner};
 use commonware_utils::channel::oneshot;
 use rand_core::Rng;
 use tempo_chainspec::TempoChainSpec;
@@ -43,7 +44,7 @@ use crate::{VerificationMode, consensus::block::Block};
 pub(crate) type TempoFactory<TContext> =
     Factory<TContext, Scheme<PublicKey, MinSig>, Inner, Block, FixedEpocher>;
 
-/// Selects and lazily constructs the two shared verification wrappers.
+/// Both verification wrappers, shared by marshal and every epoch's simplex engine.
 pub(crate) struct Factory<E, S, A, B, ES>
 where
     E: Rng + Spawner + commonware_runtime::Metrics + Clock,
@@ -52,15 +53,28 @@ where
     B: CertifiableBlock + Clone,
     ES: Epocher,
 {
-    /// Parent context shared by engine startup and lazy wrapper construction.
-    pub(super) context: ContextCell<E>,
-    inner: A,
-    marshal: Mailbox<S, Standard<B>>,
-    epocher: ES,
+    immediate: Inline<E, S, A, B, ES>,
+    deferred: Deferred<E, S, A, B, ES>,
     chainspec: Arc<TempoChainSpec>,
     verification_mode: VerificationMode,
-    immediate: OnceLock<Application<E, S, A, B, ES>>,
-    deferred: OnceLock<Application<E, S, A, B, ES>>,
+}
+
+impl<E, S, A, B, ES> Clone for Factory<E, S, A, B, ES>
+where
+    E: Rng + Spawner + commonware_runtime::Metrics + Clock,
+    S: CertificateScheme,
+    A: commonware_consensus::Application<E>,
+    B: CertifiableBlock + Clone,
+    ES: Epocher,
+{
+    fn clone(&self) -> Self {
+        Self {
+            immediate: self.immediate.clone(),
+            deferred: self.deferred.clone(),
+            chainspec: self.chainspec.clone(),
+            verification_mode: self.verification_mode,
+        }
+    }
 }
 
 impl<E, S, A, B, ES> Factory<E, S, A, B, ES>
@@ -77,8 +91,10 @@ where
     B: CertifiableBlock<Context = <A as commonware_consensus::Application<E>>::Context> + Clone,
     ES: Epocher,
 {
+    /// Both wrappers register identical metrics under `context`, so they share
+    /// the same `application_*` series.
     pub(crate) fn new(
-        context: E,
+        context: &E,
         inner: A,
         marshal: Mailbox<S, Standard<B>>,
         epocher: ES,
@@ -86,59 +102,32 @@ where
         verification_mode: VerificationMode,
     ) -> Self {
         Self {
-            context: ContextCell::new(context),
-            inner,
-            marshal,
-            epocher,
+            immediate: Inline::new(
+                context.child("application"),
+                inner.clone(),
+                marshal.clone(),
+                epocher.clone(),
+            ),
+            deferred: Deferred::new(context.child("application"), inner, marshal, epocher),
             chainspec,
             verification_mode,
-            immediate: OnceLock::new(),
-            deferred: OnceLock::new(),
         }
     }
 
     /// Selects verification using the previous epoch boundary timestamp (genesis for epoch zero).
-    /// Constructs the selected wrapper on first use; later epochs share its state.
-    /// Creates the application context only when constructing a wrapper.
     pub(crate) fn for_timestamp(&self, timestamp: u64) -> Application<E, S, A, B, ES> {
         if self
             .verification_mode
             .is_deferred_at(&self.chainspec, timestamp)
         {
-            self.to_deferred()
+            Application::Deferred(self.deferred.clone())
         } else {
-            self.to_immediate()
+            Application::Immediate(self.immediate.clone())
         }
-    }
-
-    fn to_immediate(&self) -> Application<E, S, A, B, ES> {
-        self.immediate
-            .get_or_init(|| {
-                Application::Immediate(Inline::new(
-                    self.context.child("application"),
-                    self.inner.clone(),
-                    self.marshal.clone(),
-                    self.epocher.clone(),
-                ))
-            })
-            .clone()
-    }
-
-    fn to_deferred(&self) -> Application<E, S, A, B, ES> {
-        self.deferred
-            .get_or_init(|| {
-                Application::Deferred(Deferred::new(
-                    self.context.child("application"),
-                    self.inner.clone(),
-                    self.marshal.clone(),
-                    self.epocher.clone(),
-                ))
-            })
-            .clone()
     }
 }
 
-impl<E, S, A, B, ES> Factory<E, S, A, B, ES>
+impl<E, S, A, B, ES> Reporter for Factory<E, S, A, B, ES>
 where
     E: Rng + Spawner + commonware_runtime::Metrics + Clock,
     S: CertificateScheme,
@@ -147,18 +136,15 @@ where
     B: CertifiableBlock<Context = <A as commonware_consensus::Application<E>>::Context> + Clone,
     ES: Epocher,
 {
-    /// Prunes initialized wrappers and acknowledges each delivered block once.
-    pub(crate) fn report(&mut self, activity: Update<B>) -> Feedback {
-        // Prune initialized wrappers, but acknowledge each delivered block only once.
+    type Activity = Update<B>;
+
+    fn report(&mut self, activity: Self::Activity) -> Feedback {
+        // Both wrappers prune their gates on tips; only one forwards blocks so
+        // each is acknowledged once.
         if let Update::Tip(..) = &activity {
-            for application in [self.immediate.get(), self.deferred.get()]
-                .into_iter()
-                .flatten()
-            {
-                application.clone().report(activity.clone());
-            }
+            self.immediate.report(activity.clone());
         }
-        self.inner.report(activity)
+        self.deferred.report(activity)
     }
 }
 
@@ -265,25 +251,6 @@ where
         match self {
             Self::Deferred(application) => application.broadcast(payload, plan),
             Self::Immediate(application) => application.broadcast(payload, plan),
-        }
-    }
-}
-
-impl<E, S, A, B, ES> Reporter for Application<E, S, A, B, ES>
-where
-    E: Rng + Spawner + commonware_runtime::Metrics + Clock,
-    S: CertificateScheme,
-    A: commonware_consensus::Application<E, Block = B, Context = Context<B::Digest, S::PublicKey>>
-        + Reporter<Activity = Update<B>>,
-    B: CertifiableBlock<Context = <A as commonware_consensus::Application<E>>::Context> + Clone,
-    ES: Epocher,
-{
-    type Activity = Update<B>;
-
-    fn report(&mut self, activity: Self::Activity) -> Feedback {
-        match self {
-            Self::Deferred(application) => application.report(activity),
-            Self::Immediate(application) => application.report(activity),
         }
     }
 }

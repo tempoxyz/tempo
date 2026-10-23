@@ -250,12 +250,6 @@ where
                             }
                         }
                         Content::Exit(exit) => self.exit(cause, exit),
-                        Content::Report(update) => {
-                            if !cause.in_scope(|| self.config.application.report(update)).accepted() {
-                                error!("application reporter is closed; exiting actor");
-                                return;
-                            }
-                        }
                     }
                 },
             )

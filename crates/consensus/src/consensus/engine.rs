@@ -16,8 +16,8 @@ use commonware_cryptography::{
 };
 use commonware_p2p::{AddressableManager, Blocker, Receiver, Sender};
 use commonware_runtime::{
-    BufferPooler, Clock, Handle, Metrics, Network, Spawner, Storage, buffer::paged::CacheRef,
-    spawn_cell,
+    BufferPooler, Clock, ContextCell, Handle, Metrics, Network, Spawner, Storage,
+    buffer::paged::CacheRef, spawn_cell,
 };
 use commonware_utils::NZUsize;
 use eyre::{OptionExt as _, WrapErr as _, ensure};
@@ -292,7 +292,7 @@ where
             epoch_strategy: epoch_strategy.clone(),
         });
         let application = application::Factory::new(
-            context,
+            &context,
             application,
             marshal_mailbox.clone(),
             epoch_strategy.clone(),
@@ -319,6 +319,7 @@ where
         };
 
         Ok(Engine {
+            context: ContextCell::new(context),
             max_message_size: self.max_message_size,
 
             broadcast,
@@ -360,6 +361,7 @@ where
     TBlocker: Blocker<PublicKey = PublicKey>,
     TPeerManager: AddressableManager<PublicKey = PublicKey>,
 {
+    context: ContextCell<TContext>,
     max_message_size: u32,
 
     /// broadcasts messages to and caches messages from untrusted peers.
@@ -443,7 +445,7 @@ where
         ),
     ) -> Handle<eyre::Result<()>> {
         spawn_cell!(
-            self.epoch_manager_config.application.context,
+            self.context,
             self.run(
                 votes_network,
                 certificates_network,
@@ -482,7 +484,7 @@ where
             impl Receiver<PublicKey = PublicKey>,
         ),
     ) -> eyre::Result<()> {
-        let context = &*self.epoch_manager_config.application.context;
+        let context = &*self.context;
         let votes_channel = limit_channel(
             context,
             votes_channel,
@@ -523,7 +525,7 @@ where
 
         let broadcast = self.broadcast.start(broadcast_channel);
         let resolver = marshal::resolver::p2p::init(
-            context.child("p2p"),
+            self.context.child("p2p"),
             self.resolver_config,
             marshal_channel,
         );
@@ -544,12 +546,14 @@ where
             )),
         ));
 
-        let (epoch_manager, epoch_manager_mailbox) =
-            epoch::manager::init(context.child("epoch_manager"), self.epoch_manager_config);
         let marshal = self.marshal.start(
-            Reporters::from((epoch_manager_mailbox.clone(), reporters)),
+            Reporters::from((self.epoch_manager_config.application.clone(), reporters)),
             self.broadcast_mailbox,
             resolver,
+        );
+        let (epoch_manager, epoch_manager_mailbox) = epoch::manager::init(
+            self.context.child("epoch_manager"),
+            self.epoch_manager_config,
         );
         let epoch_manager =
             epoch_manager.start(votes_channel, certificates_channel, resolver_channel);
