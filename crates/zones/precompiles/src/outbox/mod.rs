@@ -390,6 +390,11 @@ impl ZoneOutbox {
             withdrawalBatchIndex: self.withdrawal_batch_index.read()?,
         })
     }
+
+    /// Storage slot holding the Zone fallback recipient of the withdrawal with `fallback_nonce`.
+    pub fn fallback_recipient_slot(&self, fallback_nonce: u64) -> U256 {
+        self.fallback_recipients[fallback_nonce].slot()
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Storable)]
