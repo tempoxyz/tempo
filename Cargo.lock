@@ -14257,13 +14257,10 @@ dependencies = [
  "codspeed-criterion-compat",
  "commonware-codec",
  "commonware-cryptography",
- "commonware-math",
- "commonware-utils",
  "derive_more",
  "eyre",
  "indexmap 2.14.2",
  "insta",
- "rand 0.10.3",
  "rayon",
  "reth-chainspec",
  "reth-consensus",
@@ -14329,6 +14326,44 @@ dependencies = [
  "reth-rpc-server-types",
  "tempo-alloy",
  "tempo-precompiles",
+]
+
+[[package]]
+name = "tempo-fuzz-harness"
+version = "1.16.1"
+dependencies = [
+ "alloy-consensus",
+ "alloy-eips",
+ "alloy-evm",
+ "alloy-primitives",
+ "alloy-rlp",
+ "alloy-sol-types",
+ "bincode",
+ "codspeed-criterion-compat",
+ "commonware-codec",
+ "reth-chainspec",
+ "reth-consensus",
+ "reth-evm",
+ "reth-primitives-traits",
+ "reth-trie-common",
+ "revm",
+ "tempo-chainspec",
+ "tempo-contracts",
+ "tempo-dkg-onchain-artifacts",
+ "tempo-evm",
+ "tempo-fuzz-types",
+ "tempo-precompiles",
+ "tempo-primitives",
+]
+
+[[package]]
+name = "tempo-fuzz-types"
+version = "1.16.1"
+dependencies = [
+ "alloy-primitives",
+ "revm",
+ "serde",
+ "tempo-hardfork",
 ]
 
 [[package]]
