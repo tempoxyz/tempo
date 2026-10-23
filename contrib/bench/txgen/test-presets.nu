@@ -78,8 +78,8 @@ assert equal ($zone_earn | path basename) "zone-earn-mix.yml"
 let zone_earn_weights = (txgen-workload-metadata-args zone-earn-mix $zone_earn | last | str replace "workload_mix_weights=" "" | from json)
 assert equal ($zone_earn_weights | columns | sort) [public_transfer vault_deposit vault_withdraw zone_deposit zone_withdraw]
 rm -rf $zone_earn_dir
-# Gap variants: pinned portal count, single-sender settlement, fresh payees, lane split.
-for preset in [zone-earn-hot zone-earn-serial bridge-mix-new-accounts lane-mix] {
+# Gap variants: pinned portal count, single-sender settlement, fresh payees.
+for preset in [zone-earn-hot zone-earn-serial bridge-mix-new-accounts] {
     let spec = (txgen-resolve-bench-spec $preset)
     assert equal ($spec.spec_path | path basename) $"($preset).yml"
     assert ($preset in $TXGEN_HELPER_ALWAYS_FUND_PRESETS)

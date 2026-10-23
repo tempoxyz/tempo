@@ -12,7 +12,6 @@ const TXGEN_HELPER_ALWAYS_FUND_PRESETS = [
     "dex"
     "bridge-mix"
     "bridge-mix-new-accounts"
-    "lane-mix"
     "neobank-deposit"
     "neobank-swap"
     "neobank-withdraw"

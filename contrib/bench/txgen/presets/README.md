@@ -72,7 +72,5 @@ small operator pool and sponsored bridge deposits, for example
 Gap variants: `zone-earn-hot` pins every zone operation to one portal (shared
 portal and vault state, up to the TIP-1096 deposit cap); `zone-earn-serial`
 sends zone settlement and Earn deposits from one account with ordered nonces;
-`bridge-mix-new-accounts` pays every bridge payout to a fresh address; and
-`lane-mix` splits plain transfers between the payment lane and, with a
-one-entry access list, the general lane (needs txgen template `access_list`).
+and `bridge-mix-new-accounts` pays every bridge payout to a fresh address.
 Run them at mainnet limits (`gas-limit=500M general-gas-limit=30M`) to compare.
