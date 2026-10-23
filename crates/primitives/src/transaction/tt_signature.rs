@@ -1,8 +1,9 @@
 use super::tempo_transaction::{
     MAX_WEBAUTHN_SIGNATURE_LENGTH, P256_SIGNATURE_LENGTH, SECP256K1_SIGNATURE_LENGTH, SignatureType,
 };
-use crate::gas::{P256_VERIFY_GAS, SECP256K1_VERIFY_GAS, WEBAUTHN_VERIFY_GAS, calldata_gas};
+use crate::gas::{P256_VERIFY_GAS, SECP256K1_VERIFY_GAS, WEBAUTHN_VERIFY_GAS};
 use alloc::vec::Vec;
+use alloy_eips::eip7623::{STANDARD_TOKEN_COST, tokens_in_calldata};
 use alloy_primitives::{Address, B256, Bytes, Signature, U256, keccak256, uint};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use sha2::{Digest, Sha256};
@@ -356,7 +357,10 @@ impl PrimitiveSignature {
     pub fn verification_gas(&self) -> u64 {
         match self {
             Self::Secp256k1(_) | Self::P256(_) => self.base_verification_gas(),
-            Self::WebAuthn(sig) => self.base_verification_gas() + calldata_gas(&sig.webauthn_data),
+            Self::WebAuthn(sig) => {
+                self.base_verification_gas()
+                    + tokens_in_calldata(&sig.webauthn_data) * STANDARD_TOKEN_COST
+            }
         }
     }
 }
