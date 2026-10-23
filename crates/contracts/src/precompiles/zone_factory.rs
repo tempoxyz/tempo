@@ -1,6 +1,6 @@
 use crate::zones::{
     T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
-    T14_ZONE_PORTAL_RUNTIME, ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
+    T15_ZONE_PORTAL_RUNTIME, ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
 };
 use alloy_primitives::{Address, Bytes, FixedBytes, U256, address, fixed_bytes};
 
@@ -99,9 +99,9 @@ pub fn t13_zone_factory_state(owner: Address) -> [InitialZoneFactoryAccount; 4] 
 }
 
 /// Returns the native ZoneFactory state with TIP-1145-aware portal authorization.
-pub fn t14_zone_factory_state(owner: Address) -> [InitialZoneFactoryAccount; 4] {
+pub fn t15_zone_factory_state(owner: Address) -> [InitialZoneFactoryAccount; 4] {
     let mut accounts = t13_zone_factory_state(owner);
-    accounts[1].code = T14_ZONE_PORTAL_RUNTIME;
+    accounts[1].code = T15_ZONE_PORTAL_RUNTIME;
     accounts
 }
 

@@ -49,7 +49,7 @@ abstract contract InvariantBaseTest is TempoTest {
             factory.createToken("TOKEN4", "T4", "USD", pathUSD, admin, bytes32("token4"))
         );
 
-        // These policy-ID models exercise legacy tokens, including under T14.
+        // These policy-ID models exercise legacy tokens, including under T15.
         _seedLegacyPolicyToken(pathUSD);
 
         // Setup pathUSD with issuer role (pathUSDAdmin is the pathUSD admin from TempoTest)

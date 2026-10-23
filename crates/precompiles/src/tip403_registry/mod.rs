@@ -337,7 +337,7 @@ impl TIP403Registry {
         })
     }
 
-    /// Returns the registered policy ID, including active T14 token-specific policies.
+    /// Returns the registered policy ID, including active T15 token-specific policies.
     pub(crate) fn registered_token_transfer_policy_id(
         &self,
         token: Address,
@@ -345,7 +345,7 @@ impl TIP403Registry {
         let binding = self.token_transfer_policies[token].read()?;
         Ok(if binding.is_set {
             Some(binding.policy_id)
-        } else if self.storage.spec().is_t14() && self.token_policy(token)?.is_set {
+        } else if self.storage.spec().is_t15() && self.token_policy(token)?.is_set {
             Some(TOKEN_POLICY_ID)
         } else {
             None
@@ -365,7 +365,7 @@ impl TIP403Registry {
     }
 
     /// Migrates valid, unregistered TIP-20 tokens to registry-owned transfer policy bindings.
-    /// Invalid, already-registered, and (T14+) token-specific token addresses are skipped.
+    /// Invalid, already-registered, and (T15+) token-specific token addresses are skipped.
     pub fn migrate_transfer_policy_ids(
         &mut self,
         call: ITIP403Registry::migrateTransferPolicyIdsCall,
@@ -467,7 +467,7 @@ impl TIP403Registry {
     /// Returns `account`'s receive-policy configuration.
     ///
     /// # Errors
-    /// - `ReceivePolicyIdsUnsupported` — (T14+) `account` opted into TIP-1145 receive configs
+    /// - `ReceivePolicyIdsUnsupported` — (T15+) `account` opted into TIP-1145 receive configs
     pub fn receive_policy(&self, account: Address) -> Result<ITIP403Registry::receivePolicyReturn> {
         let ReceivePolicyConfig::Legacy(config) = self.receive_policies[account].config.read()?
         else {
@@ -499,7 +499,7 @@ impl TIP403Registry {
     /// Checks the receive policy. If valid, returns `None`. Otherwise returns the
     /// blocking reason and recovery address.
     ///
-    /// (T14+) Receivers with a TIP-1145 configuration use flat modes; others fall back to their
+    /// (T15+) Receivers with a TIP-1145 configuration use flat modes; others fall back to their
     /// legacy policy IDs.
     pub(crate) fn check_receive_policy(
         &self,
@@ -599,8 +599,8 @@ impl TIP403Registry {
         if msg_sender.is_virtual() {
             return Err(TIP403RegistryError::virtual_address_not_allowed().into());
         }
-        // (T14+) TIP-1145 receivers cannot switch back to policy IDs.
-        if self.storage.spec().is_t14() && self.receive_config(msg_sender)?.is_some() {
+        // (T15+) TIP-1145 receivers cannot switch back to policy IDs.
+        if self.storage.spec().is_t15() && self.receive_config(msg_sender)?.is_some() {
             return Err(TIP403RegistryError::receive_policy_ids_unsupported().into());
         }
 
@@ -945,7 +945,7 @@ impl TIP403Registry {
         } else {
             token.legacy_transfer_policy_id()?
         };
-        if policy_id == TOKEN_POLICY_ID && self.storage.spec().is_t14() {
+        if policy_id == TOKEN_POLICY_ID && self.storage.spec().is_t15() {
             return Ok(match self.token_policy(token.address())? {
                 policy if policy.is_set => IssuerPolicy::TokenSpecific(policy),
                 _ => IssuerPolicy::Generic(REJECT_ALL_POLICY_ID),

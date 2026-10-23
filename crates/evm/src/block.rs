@@ -27,7 +27,7 @@ use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, INITIAL_FACTORY_OWNER,
     InitialZoneFactoryAccount, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
     STORAGE_CREDITS_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
-    initial_zone_factory_state, t13_zone_factory_state, t14_zone_factory_state,
+    initial_zone_factory_state, t13_zone_factory_state, t15_zone_factory_state,
 };
 use tempo_primitives::{SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType};
 use tempo_revm::{ExecutionContext, evm::TempoContext};
@@ -275,8 +275,8 @@ where
 
     /// Installs the shared runtimes for the active hardfork.
     fn upgrade_zone_runtimes_at_boundary(&mut self) -> Result<(), BlockExecutionError> {
-        let [_, portal, verifier, messenger] = if self.evm().cfg.spec.is_t14() {
-            t14_zone_factory_state(INITIAL_FACTORY_OWNER)
+        let [_, portal, verifier, messenger] = if self.evm().cfg.spec.is_t15() {
+            t15_zone_factory_state(INITIAL_FACTORY_OWNER)
         } else {
             t13_zone_factory_state(INITIAL_FACTORY_OWNER)
         };
@@ -554,11 +554,11 @@ where
                 .inner
                 .spec
                 .is_t13_active_at_timestamp(self.inner.spec.genesis().timestamp))
-            || (self.inner.spec.is_t14_active_at_timestamp(timestamp)
+            || (self.inner.spec.is_t15_active_at_timestamp(timestamp)
                 && !self
                     .inner
                     .spec
-                    .is_t14_active_at_timestamp(self.inner.spec.genesis().timestamp))
+                    .is_t15_active_at_timestamp(self.inner.spec.genesis().timestamp))
         {
             self.upgrade_zone_runtimes_at_boundary()?;
         }
@@ -2105,6 +2105,7 @@ mod tests {
             (TempoHardfork::T13, 100, 50),
             (TempoHardfork::T13, 100, 100),
             (TempoHardfork::T14, 100, 100),
+            (TempoHardfork::T15, 100, 100),
         ] {
             let mut genesis = DEV.genesis().clone();
             genesis.timestamp = genesis_timestamp;
@@ -2172,7 +2173,7 @@ mod tests {
 
     #[test]
     fn zone_runtime_upgrade_activates_at_fork() {
-        for fork in [TempoHardfork::T13, TempoHardfork::T14] {
+        for fork in [TempoHardfork::T13, TempoHardfork::T14, TempoHardfork::T15] {
             for (activation, timestamp, upgraded) in [
                 (u64::MAX, 10, false),
                 (10, 9, false),
@@ -2189,7 +2190,9 @@ mod tests {
                     )
                     .unwrap();
                 let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
-                let previous = if fork.is_t14() {
+                let previous = if fork.is_t15() {
+                    TempoHardfork::T14
+                } else if fork.is_t14() {
                     TempoHardfork::T13
                 } else {
                     TempoHardfork::T12
@@ -2211,8 +2214,8 @@ mod tests {
                 executor.evm_mut().ctx_mut().block.timestamp = U256::from(timestamp);
                 executor.apply_pre_execution_changes().unwrap();
                 drop(executor);
-                let expected = if spec.is_t14() {
-                    t14_zone_factory_state(INITIAL_FACTORY_OWNER)
+                let expected = if spec.is_t15() {
+                    t15_zone_factory_state(INITIAL_FACTORY_OWNER)
                 } else if spec.is_t13() {
                     t13_zone_factory_state(INITIAL_FACTORY_OWNER)
                 } else {

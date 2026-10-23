@@ -38,7 +38,7 @@ impl Precompile for TIP20Token {
                     totalSupply(call) => view(call, |_| self.total_supply()),
                     supplyCap(call) => view(call, |_| self.supply_cap()),
                     transferPolicyId(call) => view(call, |_| self.transfer_policy_id()),
-                    #[schedule(since = T14)]
+                    #[schedule(since = T15)]
                     transferPolicy(call) => view(call, |_| {
                         let policy = self.transfer_policy()?;
                         Ok(ITIP20::transferPolicyReturn {
@@ -202,7 +202,12 @@ mod tests {
     fn test_mint_updates_storage() -> eyre::Result<()> {
         let admin = Address::random();
         let recipient = Address::random();
-        for spec in [TempoHardfork::T0, TempoHardfork::T13, TempoHardfork::T14] {
+        for spec in [
+            TempoHardfork::T0,
+            TempoHardfork::T13,
+            TempoHardfork::T14,
+            TempoHardfork::T15,
+        ] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
             StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
                 let mut token = TIP20Setup::create("Test", "TST", admin)
@@ -347,7 +352,12 @@ mod tests {
         let admin = Address::random();
         let pauser = Address::random();
         let unpauser = Address::random();
-        for spec in [TempoHardfork::T0, TempoHardfork::T13, TempoHardfork::T14] {
+        for spec in [
+            TempoHardfork::T0,
+            TempoHardfork::T13,
+            TempoHardfork::T14,
+            TempoHardfork::T15,
+        ] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
             StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
                 let quote = TIP20Setup::create("Quote", "QT", admin).apply()?;
@@ -390,7 +400,12 @@ mod tests {
         let burner = Address::random();
         let initial_balance = U256::from(1000);
         let burn_amount = U256::from(300);
-        for spec in [TempoHardfork::T0, TempoHardfork::T13, TempoHardfork::T14] {
+        for spec in [
+            TempoHardfork::T0,
+            TempoHardfork::T13,
+            TempoHardfork::T14,
+            TempoHardfork::T15,
+        ] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
             StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
                 let mut token = TIP20Setup::create("Test", "TST", admin)
@@ -486,7 +501,12 @@ mod tests {
         let recipient = Address::random();
         let supply_cap = U256::from(1000);
         let mint_amount = U256::from(1001);
-        for spec in [TempoHardfork::T0, TempoHardfork::T13, TempoHardfork::T14] {
+        for spec in [
+            TempoHardfork::T0,
+            TempoHardfork::T13,
+            TempoHardfork::T14,
+            TempoHardfork::T15,
+        ] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
             StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
                 let mut token = TIP20Setup::create("Test", "TST", admin)
@@ -693,8 +713,8 @@ mod tests {
         use crate::test_util::{assert_full_coverage, check_selector_coverage};
         use tempo_contracts::precompiles::{IRolesAuth::IRolesAuthCalls, ITIP20::ITIP20Calls};
 
-        // Use T14 so the TIP-1006 and TIP-1145 selectors are active too.
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
+        // Use T15 so the TIP-1006 and TIP-1145 selectors are active too.
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
         let admin = Address::random();
 
         StorageCtx::enter(&mut storage, || {

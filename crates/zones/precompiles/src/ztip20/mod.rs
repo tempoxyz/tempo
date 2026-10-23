@@ -341,7 +341,7 @@ mod tests {
         let account = Address::repeat_byte(0x22);
         let rules = rules();
 
-        for spec in [TempoHardfork::T13, TempoHardfork::T14] {
+        for spec in [TempoHardfork::T13, TempoHardfork::T14, TempoHardfork::T15] {
             assert!(matches!(
                 admit_at(
                     &rules,

@@ -37,6 +37,6 @@ a new schedule. L1 upgrades not present in the snapshot require a coordinated
 configuration update. Existing Zone databases are not modified by generation.
 
 For offline development or tests, `--hardfork T11` enables forks through T11 at
-timestamp zero and disables T12/T13/T14. Individual `--t*-time` flags still take
+timestamp zero and disables T12/T13/T14/T15. Individual `--t*-time` flags still take
 precedence in offline mode, but cannot be combined with RPC-derived schedules.
 The bundled dev genesis regeneration recipe explicitly selects T14.

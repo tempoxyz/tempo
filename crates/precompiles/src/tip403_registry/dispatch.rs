@@ -69,7 +69,7 @@ impl Precompile for TIP403Registry {
                     modifyPolicyBlacklist(call) => mutate(call, msg_sender, |sender, c| self.modify_policy_blacklist(sender, c)),
                     #[schedule(since = T2)]
                     createCompoundPolicy(call) => mutate(call, msg_sender, |sender, c| self.create_compound_policy(sender, c)),
-                    #[schedule(since = T14)]
+                    #[schedule(since = T15)]
                     tokenPolicy(call) => view(call, |c| {
                         let policy = self.token_policy(c.token)?;
                         Ok(ITIP403Registry::tokenPolicyReturn {
@@ -79,12 +79,12 @@ impl Precompile for TIP403Registry {
                             mintRecipientMode: policy.mint_recipient,
                         })
                     }),
-                    #[schedule(since = T14)]
+                    #[schedule(since = T15)]
                     tokenUserFlags(call) => view(call, |c| self.token_user_flags(c.token, c.account)),
-                    #[schedule(since = T14)]
+                    #[schedule(since = T15)]
                     isTokenAuthorized(call) => view(call, |c| self.is_token_authorized(c.token, c.account, c.role)),
                     // Unconfigured receivers report allow-all with originator recovery.
-                    #[schedule(since = T14)]
+                    #[schedule(since = T15)]
                     receiveConfig(call) => view(call, |c| {
                         let config = self.receive_config(c.receiver)?;
                         Ok(ITIP403Registry::receiveConfigReturn {
@@ -95,37 +95,37 @@ impl Precompile for TIP403Registry {
                                 .map_or(Address::ZERO, |cfg| cfg.recovery_authority(c.receiver)),
                         })
                     }),
-                    #[schedule(since = T14)]
+                    #[schedule(since = T15)]
                     receiveSenderMembership(call) => view(call, |c| {
                         self.receive_sender_members[c.receiver][c.sender].read()
                     }),
-                    #[schedule(since = T14)]
+                    #[schedule(since = T15)]
                     setTokenPolicyModes(call) => mutate(call, msg_sender, |sender, c| {
                         self.set_token_policy_modes(sender, c)
                     }),
-                    #[schedule(since = T14)]
+                    #[schedule(since = T15)]
                     addTokenMembers(call) => mutate(call, msg_sender, |sender, c| {
                         self.modify_token_members(sender, c.token, &c.accounts, c.role, true)
                     }),
-                    #[schedule(since = T14)]
+                    #[schedule(since = T15)]
                     removeTokenMembers(call) => mutate(call, msg_sender, |sender, c| {
                         self.modify_token_members(sender, c.token, &c.accounts, c.role, false)
                     }),
-                    #[schedule(since = T14)]
+                    #[schedule(since = T15)]
                     setReceiveConfig(call) => mutate(call, msg_sender, |sender, c| self.set_receive_config(sender, c)),
-                    #[schedule(since = T14)]
+                    #[schedule(since = T15)]
                     addReceiveTokens(call) => mutate(call, msg_sender, |sender, c| {
                         self.modify_receive_members(sender, MembershipKind::RECEIVE_TOKEN, &c.tokens, true)
                     }),
-                    #[schedule(since = T14)]
+                    #[schedule(since = T15)]
                     removeReceiveTokens(call) => mutate(call, msg_sender, |sender, c| {
                         self.modify_receive_members(sender, MembershipKind::RECEIVE_TOKEN, &c.tokens, false)
                     }),
-                    #[schedule(since = T14)]
+                    #[schedule(since = T15)]
                     addReceiveSenders(call) => mutate(call, msg_sender, |sender, c| {
                         self.modify_receive_members(sender, MembershipKind::RECEIVE_SENDER, &c.senders, true)
                     }),
-                    #[schedule(since = T14)]
+                    #[schedule(since = T15)]
                     removeReceiveSenders(call) => mutate(call, msg_sender, |sender, c| {
                         self.modify_receive_members(sender, MembershipKind::RECEIVE_SENDER, &c.senders, false)
                     })
@@ -594,8 +594,8 @@ mod tests {
 
     #[test]
     fn test_selector_coverage() -> eyre::Result<()> {
-        // Use T14 to test all selectors, including TIP-1092 and TIP-1145 token policies.
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
+        // Use T15 to test all selectors, including TIP-1092 and TIP-1145 token policies.
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 
@@ -664,7 +664,7 @@ mod tests {
     }
 
     #[test]
-    fn test_tip1145_selectors_are_t14_gated_and_validate_enums() -> eyre::Result<()> {
+    fn test_tip1145_selectors_are_t15_gated_and_validate_enums() -> eyre::Result<()> {
         let account = Address::random();
         let set_receive_config = ITIP403Registry::setReceiveConfigCall {
             tokenMode: ITIP403Registry::PolicyMode::ALLOW,
@@ -673,17 +673,19 @@ mod tests {
         }
         .abi_encode();
 
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
-        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
-            let result = TIP403Registry::new()
-                .call(&set_receive_config, account)
-                .map_err(|err| eyre::eyre!("{err:?}"))?;
-            assert!(result.is_revert());
-            assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
-            Ok(())
-        })?;
+        for fork in [TempoHardfork::T13, TempoHardfork::T14] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, fork);
+            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                let result = TIP403Registry::new()
+                    .call(&set_receive_config, account)
+                    .map_err(|err| eyre::eyre!("{err:?}"))?;
+                assert!(result.is_revert());
+                assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
+                Ok(())
+            })?;
+        }
 
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             let mut registry = TIP403Registry::new();
             let result = registry

@@ -41,7 +41,7 @@ use tempo_contracts::{
     contracts::{CreateX, Multicall3, SafeDeployer},
     precompiles::{
         INITIAL_FACTORY_OWNER, IValidatorConfigV2, createTokenCall, initial_zone_factory_state,
-        t13_zone_factory_state, t14_zone_factory_state,
+        t13_zone_factory_state, t15_zone_factory_state,
     },
 };
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -531,8 +531,8 @@ fn insert_zone_state_at_genesis(
 ) {
     if hardforks.active_at_genesis(TempoHardfork::T10) {
         println!("Initializing ZoneFactory and shared runtimes");
-        let accounts = if hardforks.active_at_genesis(TempoHardfork::T14) {
-            t14_zone_factory_state(INITIAL_FACTORY_OWNER)
+        let accounts = if hardforks.active_at_genesis(TempoHardfork::T15) {
+            t15_zone_factory_state(INITIAL_FACTORY_OWNER)
         } else if hardforks.active_at_genesis(TempoHardfork::T13) {
             t13_zone_factory_state(INITIAL_FACTORY_OWNER)
         } else {
@@ -886,7 +886,7 @@ mod tests {
         },
         zones::{
             T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
-            T14_ZONE_PORTAL_RUNTIME, ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME,
+            T15_ZONE_PORTAL_RUNTIME, ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME,
             ZONE_VERIFIER_RUNTIME,
         },
     };
@@ -993,7 +993,8 @@ mod tests {
     fn genesis_installs_active_fork_shared_runtimes() {
         for (fork, portal) in [
             (TempoHardfork::T13, T13_ZONE_PORTAL_RUNTIME),
-            (TempoHardfork::T14, T14_ZONE_PORTAL_RUNTIME),
+            (TempoHardfork::T14, T13_ZONE_PORTAL_RUNTIME),
+            (TempoHardfork::T15, T15_ZONE_PORTAL_RUNTIME),
         ] {
             let mut alloc = BTreeMap::new();
             let hardforks = TempoHardforkArgs {

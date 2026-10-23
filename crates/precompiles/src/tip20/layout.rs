@@ -131,18 +131,18 @@ impl TIP20Token {
         Slot::new(slots::TOTAL_SUPPLY, self.address)
     }
 
-    /// Loads the control word. Pre-T14 this is exactly the legacy `paused` read.
+    /// Loads the control word. Pre-T15 this is exactly the legacy `paused` read.
     pub(crate) fn get_token_control(&self) -> Result<TokenControl> {
-        if !self.storage.spec().is_t14() {
+        if !self.storage.spec().is_t15() {
             return Ok(TokenControl::default().with_paused(self.paused.read()?));
         }
         self.control_slot().read()?.validate(self.address)
     }
 
-    /// Probes the layout, returning the control word of packed tokens. Pre-T14 every token is
+    /// Probes the layout, returning the control word of packed tokens. Pre-T15 every token is
     /// legacy, so no storage is read.
     pub fn token_control(&self) -> Result<Option<TokenControl>> {
-        if !self.storage.spec().is_t14() {
+        if !self.storage.spec().is_t15() {
             return Ok(None);
         }
         Ok(Some(self.get_token_control()?).filter(TokenControl::is_packed))
@@ -372,7 +372,7 @@ mod tests {
     use tempo_primitives::{MasterId, UserTag};
 
     fn roundtrip(control: TokenControl) -> U256 {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
         let address = Address::new_tip20(0x20);
         StorageCtx::enter(&mut storage, || {
             let mut slot = Slot::<TokenControl>::new(slots::PAUSED, address);
@@ -504,7 +504,7 @@ mod tests {
 
     #[test]
     fn issuer_modes_and_memberships() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
         let admin = Address::random();
         let (alice, bob, carol) = (Address::random(), Address::random(), Address::random());
 
@@ -647,7 +647,7 @@ mod tests {
 
     #[test]
     fn receive_configs_filter_tokens_then_senders() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
         let admin = Address::random();
         let (sender, receiver, recovery) =
             (Address::random(), Address::random(), Address::random());
@@ -771,7 +771,7 @@ mod tests {
         })
     }
 
-    /// Creates a legacy token before T14 with a generic blacklist, then switches to T14.
+    /// Creates a legacy token before T15 with a generic blacklist, then switches to T15.
     fn legacy_token(admin: Address, blocked: Address) -> Result<(TIP20Token, u64)> {
         StorageCtx.set_spec(TempoHardfork::T13);
         let mut token = TIP20Setup::create("Legacy", "LGC", admin)
@@ -791,13 +791,13 @@ mod tests {
                 newPolicyId: policy_id,
             },
         )?;
-        StorageCtx.set_spec(TempoHardfork::T14);
+        StorageCtx.set_spec(TempoHardfork::T15);
         Ok((token, policy_id))
     }
 
     #[test]
     fn activation_converts_legacy_tokens() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
         let admin = Address::random();
         let (alice, blocked) = (Address::random(), Address::random());
 
@@ -914,7 +914,7 @@ mod tests {
 
     #[test]
     fn activation_rejects_null_quote() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
         let admin = Address::random();
 
         StorageCtx::enter(&mut storage, || {
@@ -939,7 +939,7 @@ mod tests {
         let admin = Address::random();
         let (alice, bob) = (Address::random(), Address::random());
 
-        for fork in [TempoHardfork::T13, TempoHardfork::T14] {
+        for fork in [TempoHardfork::T13, TempoHardfork::T14, TempoHardfork::T15] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, fork);
             StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
                 // A legacy-layout mirror (as zones create) without a registry binding.
@@ -959,12 +959,12 @@ mod tests {
                 token.grant_role_internal(admin, ISSUER_ROLE)?;
                 let mut registry = TIP403Registry::new();
                 registry.token_transfer_policies[address].delete()?;
-                if !fork.is_t14() {
+                if !fork.is_t15() {
                     StorageCtx.reset_counters();
                     assert_eq!(token.transfer_policy_id()?, REJECT_ALL_POLICY_ID);
                     assert_eq!(StorageCtx.counter_sload(), 2);
                 }
-                StorageCtx.set_spec(TempoHardfork::T14);
+                StorageCtx.set_spec(TempoHardfork::T15);
                 assert!(token.token_control()?.is_none());
                 assert_eq!(
                     mint(&mut token, admin, alice, 10),

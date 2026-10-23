@@ -206,7 +206,7 @@ impl TIP20Token {
 
     /// Returns the maximum mintable supply.
     pub fn supply_cap(&self) -> Result<U256> {
-        if self.storage.spec().is_t14() {
+        if self.storage.spec().is_t15() {
             self.supply_cap_of(&self.get_supply()?)
         } else {
             self.supply_cap.read()
@@ -220,7 +220,7 @@ impl TIP20Token {
 
     /// Returns the TIP-403 transfer policy ID governing this token's transfers.
     ///
-    /// (T14+) Tokens with a token-specific policy report [`TOKEN_POLICY_ID`].
+    /// (T15+) Tokens with a token-specific policy report [`TOKEN_POLICY_ID`].
     pub fn transfer_policy_id(&self) -> Result<u64> {
         Ok(match TIP403Registry::new().issuer_policy(self)? {
             IssuerPolicy::Generic(policy_id) => policy_id,
@@ -308,10 +308,10 @@ impl TIP20Token {
     ) -> Result<()> {
         self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
 
-        // (T14+) TIP-1145 activation: the reserved ID permanently selects the prepared
+        // (T15+) TIP-1145 activation: the reserved ID permanently selects the prepared
         // token-specific policy and converts the token to the packed layout. Afterwards, generic
         // policy IDs are unsupported.
-        if self.storage.spec().is_t14() {
+        if self.storage.spec().is_t15() {
             let control = self.get_token_control()?;
             if call.newPolicyId == TOKEN_POLICY_ID {
                 if !control.is_packed() {
@@ -1126,7 +1126,7 @@ impl TIP20Token {
     /// Initializes the TIP-20 token precompile with metadata, quote token, supply cap, and
     /// default admin role. Called once by [`TIP20Factory`] during token creation.
     ///
-    /// (T14+) New tokens use the TIP-1145 packed layout with an `ALLOW` token-specific policy,
+    /// (T15+) New tokens use the TIP-1145 packed layout with an `ALLOW` token-specific policy,
     /// unless their quote cannot be packed (a non-pathUSD token with a null quote).
     pub fn initialize(
         &mut self,
@@ -1150,7 +1150,7 @@ impl TIP20Token {
 
     /// Like [`Self::initialize`]. With `mirror_registry`, for environments whose TIP-403 state
     /// mirrors another chain (e.g. zones), the token keeps the legacy layout, as a packed mode
-    /// cache could not be synchronized. At T14, without a registry binding, its policy resolves
+    /// cache could not be synchronized. At T15, without a registry binding, its policy resolves
     /// from the registry's token-specific policy, or rejects all if none is active.
     #[allow(clippy::too_many_arguments)]
     pub fn initialize_with_mirror(
@@ -1171,7 +1171,7 @@ impl TIP20Token {
         self.name.write(name.to_string())?;
         self.symbol.write(symbol.to_string())?;
 
-        let packed = !mirror_registry && self.storage.spec().is_t14();
+        let packed = !mirror_registry && self.storage.spec().is_t15();
         if !(packed && self.try_initialize_packed(currency, quote_token)?) {
             self.currency.write(currency.to_string())?;
 
@@ -1939,7 +1939,7 @@ pub(crate) mod tests {
             recovery_address: Address,
         ) -> Result<()> {
             let mut registry = TIP403Registry::new();
-            if StorageCtx.spec().is_t14() {
+            if StorageCtx.spec().is_t15() {
                 let mode = |id| match id {
                     REJECT_ALL_POLICY_ID => ITIP403Registry::PolicyMode::DENY,
                     ALLOW_ALL_POLICY_ID => ITIP403Registry::PolicyMode::ALLOW,
@@ -1974,6 +1974,7 @@ pub(crate) mod tests {
             for (spec, recovery) in [
                 (TempoHardfork::T6, Address::ZERO),
                 (TempoHardfork::T14, Address::random()),
+                (TempoHardfork::T15, Address::random()),
             ] {
                 let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
                 storage.set_timestamp(U256::from(BLOCKED_AT));
@@ -2167,6 +2168,7 @@ pub(crate) mod tests {
             for (spec, sender_policy) in [
                 (TempoHardfork::T6, ALLOW_ALL_POLICY_ID),
                 (TempoHardfork::T14, REJECT_ALL_POLICY_ID),
+                (TempoHardfork::T15, REJECT_ALL_POLICY_ID),
             ] {
                 let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
                 storage.set_timestamp(U256::from(BLOCKED_AT));
@@ -3007,7 +3009,12 @@ pub(crate) mod tests {
     #[test]
     fn test_initialize_sets_next_quote_token() -> eyre::Result<()> {
         let admin = Address::random();
-        for spec in [TempoHardfork::T0, TempoHardfork::T13, TempoHardfork::T14] {
+        for spec in [
+            TempoHardfork::T0,
+            TempoHardfork::T13,
+            TempoHardfork::T14,
+            TempoHardfork::T15,
+        ] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
             StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
                 let token = TIP20Setup::create("Test", "TST", admin).apply()?;
@@ -3018,8 +3025,8 @@ pub(crate) mod tests {
                 let path_usd = TIP20Token::from_address(PATH_USD_ADDRESS)?;
                 assert_eq!(path_usd.quote_token()?, Address::ZERO);
                 assert_eq!(path_usd.next_quote_token()?, Address::ZERO);
-                assert_eq!(path_usd.token_control()?.is_some(), spec.is_t14());
-                if spec.is_t14() {
+                assert_eq!(path_usd.token_control()?.is_some(), spec.is_t15());
+                if spec.is_t15() {
                     for slot in [slots::QUOTE_TOKEN, slots::NEXT_QUOTE_TOKEN] {
                         assert_eq!(StorageCtx.sload(token.address, slot)?, U256::ZERO);
                     }
@@ -3033,7 +3040,12 @@ pub(crate) mod tests {
     #[test]
     fn test_update_quote_token() -> eyre::Result<()> {
         let admin = Address::random();
-        for spec in [TempoHardfork::T0, TempoHardfork::T13, TempoHardfork::T14] {
+        for spec in [
+            TempoHardfork::T0,
+            TempoHardfork::T13,
+            TempoHardfork::T14,
+            TempoHardfork::T15,
+        ] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
             StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
                 let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
@@ -3161,7 +3173,12 @@ pub(crate) mod tests {
     #[test]
     fn test_finalize_quote_token_update() -> eyre::Result<()> {
         let admin = Address::random();
-        for spec in [TempoHardfork::T0, TempoHardfork::T13, TempoHardfork::T14] {
+        for spec in [
+            TempoHardfork::T0,
+            TempoHardfork::T13,
+            TempoHardfork::T14,
+            TempoHardfork::T15,
+        ] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
             StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
                 let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
@@ -3266,7 +3283,12 @@ pub(crate) mod tests {
     #[test]
     fn test_arbitrary_currency() -> eyre::Result<()> {
         let admin = Address::random();
-        for spec in [TempoHardfork::T0, TempoHardfork::T13, TempoHardfork::T14] {
+        for spec in [
+            TempoHardfork::T0,
+            TempoHardfork::T13,
+            TempoHardfork::T14,
+            TempoHardfork::T15,
+        ] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
             StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
                 for (currency, inline) in [
@@ -3282,7 +3304,7 @@ pub(crate) mod tests {
                     assert_eq!(token.is_usd()?, currency == "USD");
                     assert_eq!(
                         StorageCtx.sload(token.address, slots::CURRENCY)?.is_zero(),
-                        currency.is_empty() || (spec.is_t14() && inline),
+                        currency.is_empty() || (spec.is_t15() && inline),
                         "{spec:?}: {currency:?}"
                     );
                 }
@@ -3639,7 +3661,12 @@ pub(crate) mod tests {
     #[test]
     fn test_initialize_supply_cap() -> eyre::Result<()> {
         let admin = Address::random();
-        for spec in [TempoHardfork::T0, TempoHardfork::T13, TempoHardfork::T14] {
+        for spec in [
+            TempoHardfork::T0,
+            TempoHardfork::T13,
+            TempoHardfork::T14,
+            TempoHardfork::T15,
+        ] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
             StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
                 let token = TIP20Setup::create("Token", "TKN", admin).apply()?;
@@ -3647,11 +3674,11 @@ pub(crate) mod tests {
                 assert_eq!(token.supply_cap()?, U128_MAX);
                 assert_eq!(
                     StorageCtx.counter_sload(),
-                    if spec.is_t14() { 2 } else { 1 }
+                    if spec.is_t15() { 2 } else { 1 }
                 );
                 assert_eq!(
                     StorageCtx.sload(token.address, slots::TOTAL_SUPPLY)?,
-                    if spec.is_t14() {
+                    if spec.is_t15() {
                         U128_MAX << 128
                     } else {
                         U256::ZERO
@@ -3659,7 +3686,7 @@ pub(crate) mod tests {
                 );
                 assert_eq!(
                     StorageCtx.sload(token.address, slots::SUPPLY_CAP)?,
-                    if spec.is_t14() { U256::ZERO } else { U128_MAX }
+                    if spec.is_t15() { U256::ZERO } else { U128_MAX }
                 );
                 Ok(())
             })?;
@@ -4751,12 +4778,17 @@ pub(crate) mod tests {
     #[test]
     fn test_new_token_registers_transfer_policy() -> eyre::Result<()> {
         let admin = Address::random();
-        for spec in [TempoHardfork::T9, TempoHardfork::T13, TempoHardfork::T14] {
+        for spec in [
+            TempoHardfork::T9,
+            TempoHardfork::T13,
+            TempoHardfork::T14,
+            TempoHardfork::T15,
+        ] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
             StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
                 let token = TIP20Setup::create("Token", "TKN", admin).apply()?;
                 let registry = TIP403Registry::new();
-                let policy_id = if spec.is_t14() {
+                let policy_id = if spec.is_t15() {
                     TOKEN_POLICY_ID
                 } else {
                     ALLOW_ALL_POLICY_ID
@@ -4774,7 +4806,7 @@ pub(crate) mod tests {
                 );
                 assert_eq!(token.transfer_policy_id()?, policy_id);
                 assert_eq!(token.legacy_transfer_policy_id()?, 0);
-                if spec.is_t14() {
+                if spec.is_t15() {
                     assert_eq!(
                         registry.emitted_events().last(),
                         Some(

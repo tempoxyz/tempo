@@ -461,11 +461,11 @@ pub fn set_empty_transfer_policy(admin: Address, token: Address) -> Result<u64> 
 }
 
 /// Sets empty sender and token blacklists with originator recovery for each account.
-/// Uses receive configurations at T14 and legacy receive policies on earlier forks.
-/// T14 accounts must have empty receive-token and receive-sender lists.
+/// Uses receive configurations at T15 and legacy receive policies on earlier forks.
+/// T15 accounts must have empty receive-token and receive-sender lists.
 pub fn set_empty_receive_policies(admin: Address, accounts: &[Address]) -> Result<()> {
     let mut registry = TIP403Registry::new();
-    if StorageCtx.spec().is_t14() {
+    if StorageCtx.spec().is_t15() {
         let call = ITIP403Registry::setReceiveConfigCall {
             tokenMode: ITIP403Registry::PolicyMode::BLACKLIST,
             senderMode: ITIP403Registry::PolicyMode::BLACKLIST,

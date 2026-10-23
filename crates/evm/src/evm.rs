@@ -1333,7 +1333,7 @@ mod tests {
             .iter()
             .flat_map(|hardfork| [(hardfork, false), (hardfork, true)])
         {
-            // Keep the existing cases since T5 and compare policy-heavy payments across T14.
+            // Keep the existing cases since T5 and compare policy-heavy payments across T15.
             if !hardfork.is_t5() || (with_policies && !hardfork.is_t13()) {
                 continue;
             }

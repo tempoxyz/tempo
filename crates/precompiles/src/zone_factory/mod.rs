@@ -607,13 +607,14 @@ mod tests {
             (TempoHardfork::T12, false),
             (TempoHardfork::T13, false),
             (TempoHardfork::T14, false),
+            (TempoHardfork::T15, false),
             (TempoHardfork::T13, true),
         ] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
             StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
                 let mut token = TIP20Setup::path_usd(ADMIN).apply()?;
                 if converted {
-                    StorageCtx.set_spec(TempoHardfork::T14);
+                    StorageCtx.set_spec(TempoHardfork::T15);
                     token.change_transfer_policy_id(
                         ADMIN,
                         ITIP20::changeTransferPolicyIdCall {

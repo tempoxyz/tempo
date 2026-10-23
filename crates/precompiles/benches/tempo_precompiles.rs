@@ -419,7 +419,7 @@ fn tip20_mutate(c: &mut Criterion) {
         let admin = Address::ZERO;
         let from = Address::repeat_byte(1u8);
         let to = Address::repeat_byte(2u8);
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("TestToken", "TEST", admin)
                 .with_issuer(admin)
