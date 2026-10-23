@@ -7,8 +7,10 @@ use super::{
         SignatureType,
     },
 };
+use crate::gas::{P256_VERIFY_GAS, SECP256K1_VERIFY_GAS, WEBAUTHN_VERIFY_GAS};
 use alloc::vec::Vec;
 use alloy_consensus::crypto::RecoveryError;
+use alloy_eips::eip7623::{STANDARD_TOKEN_COST, tokens_in_calldata};
 use alloy_primitives::{Address, B256, Bytes, Signature, U256, keccak256, uint};
 use alloy_rlp::{BufMut, Decodable, Encodable, Error as RlpError, Header, decode_exact};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -343,6 +345,29 @@ impl PrimitiveSignature {
                     &webauthn_sig.pub_key_x,
                     &webauthn_sig.pub_key_y,
                 ))
+            }
+        }
+    }
+
+    /// Gas to verify the signature itself, excluding any calldata cost.
+    pub const fn base_verification_gas(&self) -> u64 {
+        match self {
+            Self::Secp256k1(_) => SECP256K1_VERIFY_GAS,
+            Self::P256(_) => P256_VERIFY_GAS,
+            Self::WebAuthn(_) => WEBAUTHN_VERIFY_GAS,
+        }
+    }
+
+    /// Full gas to verify the signature: [`Self::base_verification_gas`] plus, for `WebAuthn`,
+    /// the calldata cost of `webauthn_data`.
+    ///
+    /// This does not subtract the ecrecover baseline already covered by ordinary intrinsic gas.
+    pub fn verification_gas(&self) -> u64 {
+        match self {
+            Self::Secp256k1(_) | Self::P256(_) => self.base_verification_gas(),
+            Self::WebAuthn(sig) => {
+                self.base_verification_gas()
+                    + tokens_in_calldata(&sig.webauthn_data) * STANDARD_TOKEN_COST
             }
         }
     }

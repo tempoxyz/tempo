@@ -1458,7 +1458,8 @@ fn prepare_aa(
     )?;
 
     // Configurable-account state checks load more accounts, so transaction warmth goes first.
-    warm_base_accounts(request.host, caller, tx.calls[0].to);
+    request.host.state_mut().prewarm(&caller);
+    warm_base_accounts(request.host, tx.calls[0].to);
     warm_access_list(request.host, &tx.access_list);
     let (native_gas, native_state_gas) =
         configurable_account::validate_state(request.host, request.envelope, spec)?;

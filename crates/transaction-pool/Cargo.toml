@@ -25,7 +25,6 @@ tempo-precompiles.workspace = true
 
 reth-transaction-pool.workspace = true
 reth-evm.workspace = true
-reth-execution-types.workspace = true
 reth-chainspec.workspace = true
 reth-primitives-traits.workspace = true
 reth-storage-api.workspace = true
