@@ -98,6 +98,8 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) hashed_post_state_duration_seconds: Histogram,
     /// Time to compute the state root and trie updates via `state_root_with_updates`.
     pub(crate) state_root_with_updates_duration_seconds: Histogram,
+    /// Build time multiplier in use after the last paced build.
+    pub(crate) build_time_multiplier_last: Gauge,
 }
 
 /// Reason the payload builder stopped adding pool transactions to the block.
