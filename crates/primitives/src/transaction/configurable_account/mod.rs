@@ -80,7 +80,7 @@ impl ConfigurableAccountConfig {
     /// Reserved namespace checks belong to the caller's chain context.
     pub fn derive_account(&self) -> Result<Address, ConfigurableAccountConfigError> {
         self.validate()?;
-        let account = self.account_address_validated();
+        let account = Address::from_word(keccak256(self.account_preimage()?));
         if account.is_zero() {
             return Err(ConfigurableAccountConfigError::DerivedAccountZero);
         }
@@ -225,13 +225,6 @@ impl ConfigurableAccountConfig {
             input.push(owner.weight);
         }
     }
-
-    fn account_address_validated(&self) -> Address {
-        Address::from_word(keccak256(
-            self.account_preimage()
-                .expect("validated account config has an encodable owner count"),
-        ))
-    }
 }
 
 /// Configurable account transaction signature.
@@ -358,7 +351,11 @@ impl ConfigurableAccountSignature {
             }
             // The config was validated against `account` at construction, which excludes a zero or
             // owner account, so a derived collision with either is reported as a mismatch.
-            let expected = self.config.account_address_validated();
+            let expected = Address::from_word(keccak256(
+                self.config
+                    .account_preimage()
+                    .expect("validated account config has an encodable owner count"),
+            ));
             if expected != self.account {
                 return Err(ConfigurableAccountStateError::InitialAccountMismatch {
                     expected,
