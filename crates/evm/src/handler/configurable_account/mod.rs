@@ -19,13 +19,11 @@ use evm2::{
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{
     CONFIGURABLE_ACCOUNT_ADDRESS,
-    configurable_account::{
-        ConfigurableAccount, UpgradeEligibility, initial_account_proof_gas, valid_account,
-    },
+    configurable_account::{ConfigurableAccount, UpgradeEligibility, valid_account},
     error::TempoPrecompileError,
     storage::{
         CONFIG_COMMITMENT_REGISTRATION_GAS, ConfigCommitmentWriteGas, StorageCtx,
-        account_config_commitment,
+        account_config_commitment, keccak_cost,
     },
 };
 use tempo_primitives::transaction::{
@@ -393,7 +391,7 @@ fn validate_native_roles(
                 }
             })?;
         if account.commitment.is_zero() {
-            extra_gas += initial_account_proof_gas(signature.config())?;
+            extra_gas += keccak_cost(signature.config().account_preimage_len())?;
             if first {
                 extra_gas += CONFIG_COMMITMENT_REGISTRATION_GAS;
                 // The sender's creation is free here only when another TIP-1000 charge pays it:

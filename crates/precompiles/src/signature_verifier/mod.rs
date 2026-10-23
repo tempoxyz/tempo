@@ -3,9 +3,9 @@ pub mod dispatch;
 use crate::{
     SIGNATURE_VERIFIER_ADDRESS,
     account_keychain::{AccountKeychain, AuthorizedKey},
-    configurable_account::{initial_account_proof_gas, valid_account},
+    configurable_account::valid_account,
     error::{Result, TempoPrecompileError},
-    storage::account_config_commitment,
+    storage::{account_config_commitment, keccak_cost},
 };
 use alloy::primitives::{Address, B256, Bytes, KECCAK256_EMPTY};
 use tempo_contracts::precompiles::SignatureVerifierError;
@@ -103,7 +103,7 @@ impl SignatureVerifier {
         })?;
 
         let initial_proof_gas = if commitment.is_zero() {
-            initial_account_proof_gas(config)?
+            keccak_cost(config.account_preimage_len())?
         } else {
             0
         };
