@@ -329,12 +329,14 @@ mod tests {
 
     use super::*;
     use crate::{
-        TIP_FEE_MANAGER_ADDRESS,
+        RECEIVE_POLICY_GUARD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
         tip20::{ITIP20, TIP20Token},
-        tip403_registry::{ITIP403Registry, TIP403Registry},
+        tip403_registry::{
+            ALLOW_ALL_POLICY_ID, ITIP403Registry, REJECT_ALL_POLICY_ID, TIP403Registry,
+        },
     };
 
     #[test]
@@ -1079,6 +1081,69 @@ mod tests {
 
             Ok(())
         })
+    }
+
+    /// Distributing fees to a validator whose policy blocks the fee manager under originator
+    /// recovery would be guarded with the fee manager as originator, which can never claim. From
+    /// T13 the distribution reverts and the collected-fee ledger is untouched; before T13 the
+    /// funds still land in the guard.
+    #[test]
+    fn test_distribute_fees_blocked_by_receive_policy_with_originator_recovery() -> eyre::Result<()>
+    {
+        for spec in [TempoHardfork::T12, TempoHardfork::T13] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            let admin = Address::random();
+            let validator = Address::random();
+            let fee_amount = U256::from(500);
+
+            StorageCtx::enter(&mut storage, || {
+                let token = TIP20Setup::create("TestToken", "TEST", admin)
+                    .with_issuer(admin)
+                    .with_mint(TIP_FEE_MANAGER_ADDRESS, fee_amount)
+                    .apply()?;
+                let mut fee_manager = TipFeeManager::new();
+                fee_manager.collected_fees[validator][token.address()].write(fee_amount)?;
+                TIP403Registry::new().set_receive_policy(
+                    validator,
+                    ITIP403Registry::setReceivePolicyCall {
+                        senderPolicyId: REJECT_ALL_POLICY_ID,
+                        tokenFilterId: ALLOW_ALL_POLICY_ID,
+                        recoveryAuthority: Address::ZERO,
+                    },
+                )?;
+
+                // A failed precompile call reverts its frame; the checkpoint models that here.
+                let frame = StorageCtx.checkpoint();
+                let result = fee_manager.distribute_fees(validator, token.address());
+                let balance_of = |account| token.balance_of(ITIP20::balanceOfCall { account });
+
+                if spec.is_t13() {
+                    drop(frame);
+                    assert_eq!(result, Err(TIP20Error::policy_forbids().into()));
+                    assert_eq!(
+                        fee_manager.collected_fees[validator][token.address()].read()?,
+                        fee_amount
+                    );
+                    assert_eq!(balance_of(TIP_FEE_MANAGER_ADDRESS)?, fee_amount);
+                    assert_eq!(balance_of(RECEIVE_POLICY_GUARD_ADDRESS)?, U256::ZERO);
+                } else {
+                    frame.commit();
+                    result?;
+                    // Legacy: the ledger is zeroed and the guard holds an unclaimable receipt.
+                    assert_eq!(
+                        fee_manager.collected_fees[validator][token.address()].read()?,
+                        U256::ZERO
+                    );
+                    assert_eq!(balance_of(TIP_FEE_MANAGER_ADDRESS)?, U256::ZERO);
+                    assert_eq!(balance_of(RECEIVE_POLICY_GUARD_ADDRESS)?, fee_amount);
+                }
+                assert_eq!(balance_of(validator)?, U256::ZERO);
+
+                Ok::<(), TempoPrecompileError>(())
+            })?;
+        }
+
+        Ok(())
     }
 
     #[test]
