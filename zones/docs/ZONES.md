@@ -351,7 +351,17 @@ transfers once [transfers are enabled](#enabling-zone-transfers). A sequencer wi
 calls of an AA batch) is a `transfer`, `transferFrom`, or memo variant whose `from` or `to` is not
 listed. While it leads, it also executes each pool transaction and leaves it out of the block,
 dropping it from its pool, when any TIP-20 `Transfer` it emits names an unlisted `from` or `to`.
-The `transferFrom` spender does not need to be listed.
+Submission also rejects a `transferFrom` from an unlisted caller, whatever parties it names, so
+an unlisted account cannot learn whether an address is listed from whether its transaction is
+accepted.
+
+An RPC follower started with `--deposits.allowlist.admin` keeps an in-memory copy of the list
+so it can reject the same transactions on submission, returning `transfer sender or recipient is
+not allowlisted` instead of forwarding them. It fetches the newest list any sequencer holds (by
+nonce) at startup, after every write it relays, and within 5 seconds of a write relayed through
+another follower, then drops pooled transactions the new list rejects. It holds no file. Until
+its first fetch succeeds, or while the sequencers' lists are uninitialized, it admits every
+transfer and the sequencers still enforce their own lists.
 
 Removing an account from the list does not trap its funds. Fee payments and transfers to the
 outbox are exempt, so it can still withdraw. A withdrawal's `zoneFallbackRecipient` is credited
@@ -361,9 +371,9 @@ and the fallback recipient must both be listed.
 Limits:
 
 - Only the leader enforces the list; followers and the prover accept any block.
-- RPC followers do not hold the list. A transfer submitted through one is accepted and forwarded,
-  then rejected by the sequencers, so the sender sees a transaction that never lands. Simulations
-  (`eth_call`, `eth_estimateGas`) do not check the list either.
+- The submission error tells a listed sender that a counterparty is not listed, so a listed
+  account can check addresses one at a time.
+- Simulations (`eth_call`, `eth_estimateGas`) do not check the list.
 - Deposit recipients are not checked, so a listed depositor can still credit an unlisted zone
   address. That address can only withdraw.
 
@@ -372,7 +382,7 @@ Limits:
 | Node | Flags |
 |------|-------|
 | Sequencer | `--deposits.allowlist --deposits.allowlist.admin <ADDRESS>` |
-| RPC follower (relay) | `--deposits.allowlist.admin <ADDRESS>` |
+| RPC follower (relay and transfer checks) | `--deposits.allowlist.admin <ADDRESS>` |
 
 Without `--deposits.allowlist`, a sequencer credits every deposit, admits every transfer, and
 ignores the file.
@@ -934,7 +944,7 @@ cast code 0x5A4d000000000000000000000000000000000000 --rpc-url "$ETH_RPC_URL"
 | `--sequencer.prover-attestation-policy` | (required for remote proving) | JSON PCR0–2 allowlist shared by all endpoints; authenticates the transport and controls evidence freshness without changing L1 verifier policy |
 | `--shadow-prover.pcrs` | (optional) | Pin PCR0,PCR1,PCR2 (three comma-separated, nonzero 48-byte hex measurements) to authenticate remote Nitro proofs on an RPC follower |
 | `--deposits.allowlist` | false | Bounce deposits from L1 senders missing from `<datadir>/deposit-allowlist.json`, and reject zone transfers unless both parties are listed; see [Sequencer deposit allowlist](#sequencer-deposit-allowlist) |
-| `--deposits.allowlist.admin` | (required with `--deposits.allowlist`) | Address whose EIP-712 signatures authorize `zoneAdmin` allowlist writes; on an `rpc_only` follower, enables relaying them to the sequencers |
+| `--deposits.allowlist.admin` | (required with `--deposits.allowlist`) | Address whose EIP-712 signatures authorize `zoneAdmin` allowlist writes; on an `rpc_only` follower, enables relaying them to the sequencers and checking transfers against the sequencers' list |
 | `--deposit-decryption-keys-file` | (optional) | File containing additional historical or pre-provisioned deposit decryption keys, one hex key per line |
 | `--zone.batch-interval-blocks` | 120 | Zone blocks between empty withdrawal batch boundaries / L1 submissions (~1 minute at Tempo's 500 ms block time) |
 | `--zone.poll-interval-secs` | 1 | Fallback interval for reconciling the canonical Zone head when no native notification arrives |

@@ -22,19 +22,18 @@ use crate::abi::{IZoneOutbox, ZONE_OUTBOX_ADDRESS};
 
 /// Zone accounts that may send and receive TIP-20 transfers in blocks this node builds.
 pub trait TransferAllowlist: fmt::Debug + Send + Sync + 'static {
-    /// Whether `address` may send or receive Zone transfers. An allowlist that has never been
-    /// written allows every address.
-    fn allows(&self, address: Address) -> bool;
+    /// Whether every one of `addresses` may send or receive Zone transfers, read from a single
+    /// version of the list so a concurrent write cannot approve each party under a different
+    /// one. An allowlist that has never been written allows every address.
+    fn allows_all(&self, addresses: &[Address]) -> bool;
 
-    /// Whether a TIP-20 transfer from `from` to `to` may be included in a block whose fee
-    /// recipient is `fee_recipient`.
+    /// Whether a TIP-20 transfer from `from` to `to` is allowed.
     ///
-    /// Transfers to the fee recipient settle fees, and transfers to or from the zero address or
-    /// the outbox mint, burn, or withdraw, so they are exempt: an account removed from the list
-    /// can still pay fees and withdraw.
-    fn allows_transfer(&self, fee_recipient: Address, from: Address, to: Address) -> bool {
+    /// Transfers to or from the zero address or the outbox mint, burn, or withdraw, so they are
+    /// exempt: an account removed from the list can still withdraw.
+    fn allows_transfer(&self, from: Address, to: Address) -> bool {
         let exempt = |address: Address| address.is_zero() || address == ZONE_OUTBOX_ADDRESS;
-        exempt(from) || exempt(to) || to == fee_recipient || (self.allows(from) && self.allows(to))
+        exempt(from) || exempt(to) || self.allows_all(&[from, to])
     }
 
     /// Whether `sender` may request a withdrawal whose L1 bounce-back credits
@@ -42,12 +41,12 @@ pub trait TransferAllowlist: fmt::Debug + Send + Sync + 'static {
     ///
     /// Naming oneself is always allowed, so an unlisted account can still withdraw.
     fn allows_withdrawal_fallback(&self, sender: Address, fallback_recipient: Address) -> bool {
-        fallback_recipient == sender || (self.allows(sender) && self.allows(fallback_recipient))
+        fallback_recipient == sender || self.allows_all(&[sender, fallback_recipient])
     }
 }
 
 /// Pool error for a transaction that moves Zone funds to or from an account the allowlist does
-/// not allow. It does not say which account, so it does not reveal list membership.
+/// not allow. It does not say which account failed the check.
 pub fn unlisted_transfer_error() -> InvalidPoolTransactionError {
     InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(
         TempoInvalidTransaction::EthInvalidTransaction(
@@ -58,6 +57,9 @@ pub fn unlisted_transfer_error() -> InvalidPoolTransactionError {
 
 /// Whether every TIP-20 transfer and withdrawal fallback recipient in the executed transaction
 /// is allowed in a block whose fee recipient is `beneficiary`.
+///
+/// Transfers to `beneficiary` settle fees, so they are also exempt and an account removed from
+/// the list can still pay for its withdrawal.
 pub(crate) fn allows_executed(
     allowlist: &dyn TransferAllowlist,
     beneficiary: Address,
@@ -73,7 +75,7 @@ pub(crate) fn allows_executed(
             else {
                 return false;
             };
-            return allowlist.allows_transfer(beneficiary, from, to);
+            return to == beneficiary || allowlist.allows_transfer(from, to);
         }
         if log.address != ZONE_OUTBOX_ADDRESS
             || log.topics().first() != Some(&IZoneOutbox::WithdrawalRequested::SIGNATURE_HASH)
@@ -109,7 +111,10 @@ mod tests {
         context::result::{ExecutionResult, HaltReason, ResultAndState},
         state::{Account, EvmState, EvmStorageSlot, TransactionId},
     };
-    use std::collections::BTreeSet;
+    use std::{
+        collections::BTreeSet,
+        sync::atomic::{AtomicBool, Ordering},
+    };
 
     const ALICE: Address = address!("0x00000000000000000000000000000000000a11ce");
     const BOB: Address = address!("0x0000000000000000000000000000000000000b0b");
@@ -121,9 +126,31 @@ mod tests {
     struct Listed(BTreeSet<Address>);
 
     impl TransferAllowlist for Listed {
-        fn allows(&self, address: Address) -> bool {
-            self.0.contains(&address)
+        fn allows_all(&self, addresses: &[Address]) -> bool {
+            addresses.iter().all(|address| self.0.contains(address))
         }
+    }
+
+    /// Holds only ALICE, then only BOB after every lookup, as if each lookup raced a write that
+    /// swapped them.
+    #[derive(Debug, Default)]
+    struct Swapping(AtomicBool);
+
+    impl TransferAllowlist for Swapping {
+        fn allows_all(&self, addresses: &[Address]) -> bool {
+            let listed = if self.0.fetch_xor(true, Ordering::SeqCst) {
+                BOB
+            } else {
+                ALICE
+            };
+            addresses.iter().all(|address| *address == listed)
+        }
+    }
+
+    #[test]
+    fn both_parties_are_checked_against_one_list_version() {
+        assert!(!Swapping::default().allows_transfer(ALICE, BOB));
+        assert!(!Swapping::default().allows_withdrawal_fallback(ALICE, BOB));
     }
 
     struct Executed(ResultAndState<HaltReason>);

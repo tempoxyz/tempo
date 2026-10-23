@@ -3046,6 +3046,109 @@ async fn test_transfer_allowlist_restricts_both_parties() -> eyre::Result<()> {
     Ok(())
 }
 
+/// An RPC-only node mirrors the sequencers' allowlist: it accepts transfers between listed
+/// accounts, drops queued transfers once their recipient is removed, and rejects new ones on
+/// submission instead of forwarding them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_rpc_node_mirrors_transfer_allowlist() -> eyre::Result<()> {
+    use alloy::providers::ProviderBuilder;
+    use tempo_contracts::precompiles::ITIP20;
+
+    reth_tracing::init_test_tracing();
+
+    const AMOUNT: u128 = 1_000_000;
+    const TRANSFER_GAS: u64 = 500_000;
+
+    let alice_signer = crate::utils::signer_at(3);
+    let (alice, bob) = (alice_signer.address(), crate::utils::signer_at(4).address());
+    let fixture = start_real_p2p_cluster_with_deposit_allowlist(4, 3, &[alice, bob]).await?;
+    let (cluster, rpc) = (&fixture.cluster, &fixture.rpc_node);
+    let (l1, leader) = (&cluster.l1, &cluster.nodes[0]);
+
+    let opt_in_block = l1
+        .set_transfers_enabled_on_portal(cluster.portal_address, true)
+        .await?;
+    let mut account =
+        ZoneAccount::with_signer(alice_signer.clone(), l1, leader, cluster.portal_address);
+    l1.fund_user(alice, AMOUNT).await?;
+    account.deposit(AMOUNT, L1_TIMEOUT, leader).await?;
+    rpc.wait_for_l2_tempo_finalized(opt_in_block, L1_TIMEOUT)
+        .await?;
+    rpc.wait_for_balance(ZONE_TOKEN_ADDRESS, alice, U256::from(AMOUNT), L1_TIMEOUT)
+        .await?;
+
+    let token = ITIP20::new(
+        ZONE_TOKEN_ADDRESS,
+        ProviderBuilder::new()
+            .wallet(alice_signer)
+            .connect_http(rpc.http_url().clone())
+            .erased(),
+    );
+    let nonce = rpc.provider().get_transaction_count(alice).await?;
+    let receipt = token
+        .transfer(bob, U256::ONE)
+        .nonce(nonce)
+        .gas(TRANSFER_GAS)
+        .send()
+        .await?
+        .with_timeout(Some(L1_TIMEOUT))
+        .get_receipt()
+        .await?;
+    assert!(
+        receipt.status(),
+        "a transfer between listed accounts failed"
+    );
+
+    // Queue a transfer to Bob behind a nonce gap, then remove Bob through the RPC node.
+    let queued = *token
+        .transfer(bob, U256::ONE)
+        .nonce(nonce + 2)
+        .gas(TRANSFER_GAS)
+        .send()
+        .await?
+        .tx_hash();
+    send_set(
+        rpc,
+        &sign_set(
+            &deposit_allowlist_admin(),
+            fixture.zone_chain_id,
+            &[bob],
+            false,
+            1,
+        )?,
+    )
+    .await?;
+    poll_until(
+        L1_TIMEOUT,
+        Duration::from_millis(250),
+        "the RPC node drops the queued transfer to the removed recipient",
+        || async {
+            Ok(rpc
+                .provider()
+                .get_transaction_by_hash(queued)
+                .await?
+                .is_none()
+                .then_some(()))
+        },
+    )
+    .await?;
+
+    let error = token
+        .transfer(bob, U256::ONE)
+        .nonce(nonce + 1)
+        .gas(TRANSFER_GAS)
+        .send()
+        .await
+        .expect_err("the RPC node must reject a transfer to a removed recipient")
+        .to_string();
+    assert!(
+        error.contains("transfer sender or recipient is not allowlisted"),
+        "{error}"
+    );
+
+    Ok(())
+}
+
 /// Both the current key and a historical key accepted during rotation grace must decrypt.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_deposit_old_key_during_grace_mints_after_rotation() -> eyre::Result<()> {
