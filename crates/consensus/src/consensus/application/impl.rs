@@ -60,7 +60,7 @@ pub(in crate::consensus) struct Config<TContext> {
 
     /// Fixed proposal window, opened at the header stamp and capped by preparation.
     pub(in crate::consensus) proposal_budget: ProposalBudget,
-    /// Build and validation feedback shared with the payload builder.
+    /// Proposal budget estimator that records local validation feedback.
     pub(in crate::consensus) estimator: Estimator,
 
     /// The epoch strategy used by tempo, to map block heights to epochs.

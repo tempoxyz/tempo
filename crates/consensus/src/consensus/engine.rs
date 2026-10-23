@@ -87,7 +87,7 @@ pub struct Builder<TBlocker, TPeerManager> {
     /// The leader uses this window for proposal preparation, payload building,
     /// and pacing, capped at one target interval after proposal entry.
     pub proposal_budget: tempo_payload_types::ProposalBudget,
-    /// Build and validation feedback shared with the payload builder.
+    /// Proposal budget estimator that records local validation feedback.
     pub estimator: tempo_payload_types::Estimator,
     pub fcu_heartbeat_interval: Duration,
 

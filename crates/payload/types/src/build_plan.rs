@@ -5,7 +5,7 @@ use std::time::Duration;
 use crate::{ValidationLatencyEstimate, ValidationLatencyWorkload};
 
 /// Fixed-point scale for build time multipliers.
-pub const BUILD_TIME_MULTIPLIER_SCALE: u64 = 1_000_000;
+pub(crate) const BUILD_TIME_MULTIPLIER_SCALE: u64 = 1_000_000;
 
 /// Point-in-time inputs for one payload build's stop decision.
 ///
@@ -48,7 +48,8 @@ impl BuildPlan {
     ///
     /// Panics if `multiplier_scaled` is below [`BUILD_TIME_MULTIPLIER_SCALE`],
     /// which would project less work than has already been performed.
-    pub fn new(
+    #[cfg(test)]
+    pub(crate) fn new(
         build_budget: Duration,
         multiplier_scaled: u64,
         validation_latency: Option<ValidationLatencyEstimate>,
