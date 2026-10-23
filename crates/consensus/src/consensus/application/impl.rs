@@ -29,7 +29,9 @@ use futures::{FutureExt as _, StreamExt as _, channel::oneshot};
 use rand_core::Rng;
 use reth_primitives_traits::BlockBody as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
-use tempo_payload_types::{Estimator, TempoPayloadAttributes, ValidationLatencyWorkload};
+use tempo_payload_types::{
+    Estimator, ProposalBudget, TempoPayloadAttributes, ValidationLatencyWorkload,
+};
 use tempo_primitives::TempoConsensusContext;
 use tempo_telemetry_util::display_duration;
 use tracing::{Level, debug, info, instrument, warn};
@@ -56,13 +58,8 @@ pub(in crate::consensus) struct Config<TContext> {
     /// post-state of its parent.
     pub(in crate::consensus) parent_state: TempoParentState,
 
-    /// Local proposal return budget, excluding the network propagation allowance.
-    ///
-    /// Starts at `target_block_time - network_budget` when the application is
-    /// called. Commonware's parent fetch happens beforehand and is not charged
-    /// against this budget. Proposal preparation time is deducted before handing
-    /// the remaining budget to the payload builder.
-    pub(in crate::consensus) proposal_return_budget: Duration,
+    /// Fixed proposal window, opened at the header stamp and capped by preparation.
+    pub(in crate::consensus) proposal_budget: ProposalBudget,
     /// Proposal budget estimator that records local validation feedback.
     pub(in crate::consensus) estimator: Estimator,
 
@@ -75,8 +72,8 @@ pub(in crate::consensus) struct Config<TContext> {
 pub(crate) struct Inner {
     public_key: PublicKey,
     epoch_strategy: FixedEpocher,
-    /// Local proposal window after reserving network propagation time.
-    proposal_return_budget: Duration,
+    /// Fixed proposal window after reserving network propagation time.
+    proposal_budget: ProposalBudget,
 
     executor: crate::executor::Mailbox,
     dkg_manager: crate::dkg::manager::Mailbox,
@@ -93,7 +90,7 @@ impl Inner {
         Self {
             public_key: config.public_key,
             epoch_strategy: config.epoch_strategy,
-            proposal_return_budget: config.proposal_return_budget,
+            proposal_budget: config.proposal_budget,
             executor: config.executor,
             dkg_manager: config.dkg_manager,
             parent_state: config.parent_state,
@@ -166,8 +163,12 @@ impl Inner {
             (extra_data, None)
         };
 
+        // Pace from the clock reading used for the header timestamp.
+        let window_opened = Instant::now();
+        let window_opened_unix_ms = runtime.current().epoch_millis();
+
         // Use current timestamp but make sure that if parent's timestamp is in the future, we account for that.
-        let mut epoch_millis = runtime.current().epoch_millis();
+        let mut epoch_millis = window_opened_unix_ms;
         if epoch_millis <= parent.timestamp_millis() {
             self.metrics.parent_ahead_of_local_time.metric().inc();
             epoch_millis = parent.timestamp_millis() + 1
@@ -183,11 +184,13 @@ impl Inner {
         });
 
         let proposer_public_key = crate::utils::public_key_to_b256(&self.public_key);
-        // Give the builder only the proposal window that remains when payload
-        // construction is requested.
-        let build_budget = self
-            .proposal_return_budget
-            .saturating_sub(propose_start.elapsed());
+        // Bound the return by proposal entry even when preparation was slow.
+        let proposal_budget = self
+            .proposal_budget
+            .after_preparation(window_opened.saturating_duration_since(propose_start));
+        let build_budget = proposal_budget
+            .return_budget
+            .saturating_sub(window_opened.elapsed());
         let attrs = TempoPayloadAttributes::new(
             Some(proposer_public_key),
             timestamp,
@@ -227,12 +230,12 @@ impl Inner {
             block,
             execution_block_encoded,
         );
-        let proposal_elapsed = propose_start.elapsed();
-        // Pace proposal return from the propose start. Validators still need
+        let proposal_elapsed = window_opened.elapsed();
+        // Pace proposal return from the header stamp. Validators still need
         // to repeat replayable build work, so leave room for it before
         // returning the proposal.
-        let return_delay = self
-            .proposal_return_budget
+        let return_delay = proposal_budget
+            .return_budget
             .saturating_sub(proposal_elapsed)
             .saturating_sub(validation_latency_elapsed);
         debug!(
