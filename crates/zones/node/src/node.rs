@@ -7,7 +7,7 @@ use crate::{
     DepositAllowlist, DepositAllowlistAdmin, ZoneConsensus, ZoneEngine,
     deposit_allowlist::{
         AllowlistMirror, AllowlistRelay, DepositAllowlistApiServer as _, apply_relayed_requests,
-        validate_transfer_calls,
+        mirror_sequencers, validate_transfer_calls,
     },
     follower::PeerTipRegistry,
     replication::{BACKFILL_SERVE_QUEUE_CAPACITY, serve_backfill_requests},
@@ -306,7 +306,7 @@ pub struct ZoneNode {
     p2p_config: Option<P2pConfig>,
     /// Admin whose signed allowlist writes an RPC-only node relays to the sequencers.
     deposit_allowlist_admin: Option<DepositAllowlistAdmin>,
-    /// Copy of the sequencers' allowlist that a relaying RPC-only node checks transfers against.
+    /// Copy of the sequencers' allowlist that an RPC-only node checks transfers against.
     allowlist_mirror: AllowlistMirror,
     /// Whether a consumer outside this builder drains the deposit queue.
     external_deposit_consumer: bool,
@@ -534,7 +534,7 @@ where
     p2p_config: Option<P2pConfig>,
     /// Admin whose signed allowlist writes an RPC-only node relays to the sequencers.
     deposit_allowlist_admin: Option<DepositAllowlistAdmin>,
-    /// Copy of the sequencers' allowlist that the relay keeps current.
+    /// Copy of the sequencers' allowlist that an RPC-only node keeps current.
     allowlist_mirror: AllowlistMirror,
     /// Whether a consumer outside this builder drains the deposit queue.
     external_deposit_consumer: bool,
@@ -847,8 +847,8 @@ where
         let debug_l1_provider = l1_provider.clone();
         let evm_chain_spec = ctx.node.evm_config().chain_spec().clone();
         let datadir = ctx.config.datadir().data_dir().to_path_buf();
-        // A sequencer serves its own allowlist; an RPC-only node configured with the admin relays
-        // each call to every sequencer over P2P.
+        // A sequencer serves its own allowlist. An RPC-only node mirrors the sequencers' lists and,
+        // when configured with the admin, relays each call to every sequencer over P2P.
         let local_allowlist = self
             .sequencer_config
             .as_ref()
@@ -864,15 +864,21 @@ where
                     "zone-deposit-allowlist-applier",
                     apply_relayed_requests(local_allowlist, ports.requests),
                 );
-            } else if let Some(admin) = self.deposit_allowlist_admin {
-                let relay = AllowlistRelay::new(
-                    ports.client,
-                    admin,
+            } else {
+                task_executor.spawn_task(mirror_sequencers(
+                    ports.client.clone(),
                     self.allowlist_mirror.clone(),
-                    task_executor.clone(),
-                );
-                task_executor.spawn_task(relay.clone().mirror_sequencers(pool.clone()));
-                allowlist_rpc = Some(relay.into_rpc().remove_context());
+                    pool.clone(),
+                ));
+                if let Some(admin) = self.deposit_allowlist_admin {
+                    let relay = AllowlistRelay::new(
+                        ports.client,
+                        admin,
+                        self.allowlist_mirror.clone(),
+                        task_executor.clone(),
+                    );
+                    allowlist_rpc = Some(relay.into_rpc().remove_context());
+                }
             }
         }
         let handle = self
@@ -1820,8 +1826,7 @@ where
             let allowlist: Arc<dyn TransferAllowlist> = Arc::new(allowlist);
             payload_factory = payload_factory.with_transfer_allowlist(allowlist.clone());
             pool_builder = pool_builder.with_transfer_allowlist(allowlist);
-        } else if self.deposit_allowlist_admin.is_some() {
-            // An RPC-only node that relays allowlist writes mirrors the sequencers' list.
+        } else if self.p2p_config.as_ref().is_some_and(P2pConfig::is_rpc_only) {
             pool_builder =
                 pool_builder.with_transfer_allowlist(Arc::new(self.allowlist_mirror.clone()));
         }

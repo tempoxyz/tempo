@@ -355,12 +355,20 @@ Submission also rejects a `transferFrom` from an unlisted caller, whatever parti
 an unlisted account cannot learn whether an address is listed from whether its transaction is
 accepted.
 
-An RPC follower started with `--deposits.allowlist.admin` keeps an in-memory copy of the list
-so it can reject the same transactions on submission, returning `transfer sender or recipient is
-not allowlisted` instead of forwarding them. It fetches the newest list any sequencer holds (by
-nonce) at startup, after every write it relays, and within 5 seconds of a write relayed through
-another follower, then drops pooled transactions the new list rejects. It holds no file. Until
-its first fetch succeeds, or while the sequencers' lists are uninitialized, it admits every
+Once the list is written, submission also rejects any call to Multicall3, the only zone contract
+that relays calls. Its calldata does not show the transfers it makes, so a relayed transfer the
+leader leaves out would otherwise be forwarded and executed again every few seconds without
+paying fees. Multicall3 calls as itself, so a transfer it relays could land only if Multicall3
+itself were listed. Read-only `eth_call`s through it are unaffected, and an AA batch replaces
+batched writes.
+
+Every RPC follower keeps an in-memory copy of the list so it can reject the same transactions
+on submission, returning `transfer sender or recipient is not allowlisted` instead of forwarding
+them. It needs no flag: reading the list needs no signature. It fetches the newest list any
+sequencer holds (by nonce) at startup, after every write it relays, and within 5 seconds of a
+write relayed through another follower, then drops pooled transactions the new list rejects. It
+holds no file and only moves to newer lists, so a sequencer that lags behind cannot roll it back.
+Until its first fetch succeeds, or while the sequencers' lists are uninitialized, it admits every
 transfer and the sequencers still enforce their own lists.
 
 Removing an account from the list does not trap its funds. Fee payments and transfers to the
@@ -382,7 +390,7 @@ Limits:
 | Node | Flags |
 |------|-------|
 | Sequencer | `--deposits.allowlist --deposits.allowlist.admin <ADDRESS>` |
-| RPC follower (relay and transfer checks) | `--deposits.allowlist.admin <ADDRESS>` |
+| RPC follower (relay writes) | `--deposits.allowlist.admin <ADDRESS>` |
 
 Without `--deposits.allowlist`, a sequencer credits every deposit, admits every transfer, and
 ignores the file.
@@ -946,7 +954,7 @@ cast code 0x5A4d000000000000000000000000000000000000 --rpc-url "$ETH_RPC_URL"
 | `--sequencer.prover-attestation-policy` | (optional) | JSON PCR0–2 allowlist shared by all endpoints, overriding the PCRs compiled into the binary for each assigned fork; authenticates the transport and controls evidence freshness without changing L1 verifier policy |
 | `--shadow-prover.pcrs` | (optional) | Pin PCR0,PCR1,PCR2 (three comma-separated, nonzero 48-byte hex measurements) to authenticate remote Nitro proofs on an RPC follower |
 | `--deposits.allowlist` | false | Bounce deposits from L1 senders missing from `<datadir>/deposit-allowlist.json`, and reject zone transfers unless both parties are listed; see [Sequencer deposit allowlist](#sequencer-deposit-allowlist) |
-| `--deposits.allowlist.admin` | (required with `--deposits.allowlist`) | Address whose EIP-712 signatures authorize `zoneAdmin` allowlist writes; on an `rpc_only` follower, enables relaying them to the sequencers and checking transfers against the sequencers' list |
+| `--deposits.allowlist.admin` | (required with `--deposits.allowlist`) | Address whose EIP-712 signatures authorize `zoneAdmin` allowlist writes; on an `rpc_only` follower, enables relaying them to the sequencers |
 | `--deposit-decryption-keys-file` | (optional) | File containing additional historical or pre-provisioned deposit decryption keys, one hex key per line |
 | `--zone.batch-interval-blocks` | 120 | Zone blocks between empty withdrawal batch boundaries / L1 submissions (~1 minute at Tempo's 500 ms block time) |
 | `--zone.poll-interval-secs` | 1 | Fallback interval for reconciling the canonical Zone head when no native notification arrives |

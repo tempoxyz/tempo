@@ -2680,7 +2680,7 @@ async fn test_rpc_node_relays_deposit_allowlist_to_every_sequencer() -> eyre::Re
     let first_signer = crate::utils::signer_at(3);
     let second_signer = crate::utils::signer_at(4);
     let (first, second) = (first_signer.address(), second_signer.address());
-    let fixture = start_real_p2p_cluster_with_deposit_allowlist(4, 3, &[first]).await?;
+    let fixture = start_real_p2p_cluster_with_deposit_allowlist(4, 3, &[first], true).await?;
     let (cluster, rpc) = (&fixture.cluster, &fixture.rpc_node);
     let (admin, zone_chain_id) = (deposit_allowlist_admin(), fixture.zone_chain_id);
 
@@ -2811,7 +2811,7 @@ async fn test_rpc_node_allowlist_write_fails_with_offline_sequencer() -> eyre::R
     reth_tracing::init_test_tracing();
 
     let added = crate::utils::signer_at(4).address();
-    let fixture = start_real_p2p_cluster_with_deposit_allowlist(4, 2, &[]).await?;
+    let fixture = start_real_p2p_cluster_with_deposit_allowlist(4, 2, &[], true).await?;
     let (cluster, rpc) = (&fixture.cluster, &fixture.rpc_node);
     let write = sign_set(
         &deposit_allowlist_admin(),
@@ -2898,7 +2898,7 @@ async fn test_transfer_allowlist_restricts_both_parties() -> eyre::Result<()> {
         crate::utils::signer_at(4).address(),
         crate::utils::signer_at(5).address(),
     );
-    let fixture = start_real_p2p_cluster_with_deposit_allowlist(4, 3, &[alice, bob]).await?;
+    let fixture = start_real_p2p_cluster_with_deposit_allowlist(4, 3, &[alice, bob], true).await?;
     let (cluster, rpc) = (&fixture.cluster, &fixture.rpc_node);
     let (l1, leader) = (&cluster.l1, &cluster.nodes[0]);
 
@@ -3046,9 +3046,9 @@ async fn test_transfer_allowlist_restricts_both_parties() -> eyre::Result<()> {
     Ok(())
 }
 
-/// An RPC-only node mirrors the sequencers' allowlist: it accepts transfers between listed
-/// accounts, drops queued transfers once their recipient is removed, and rejects new ones on
-/// submission instead of forwarding them.
+/// An RPC-only node mirrors the sequencers' allowlist even without the admin: it accepts transfers
+/// between listed accounts, drops queued transfers once their recipient is removed, and rejects
+/// new ones on submission instead of forwarding them.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_rpc_node_mirrors_transfer_allowlist() -> eyre::Result<()> {
     use alloy::providers::ProviderBuilder;
@@ -3061,7 +3061,8 @@ async fn test_rpc_node_mirrors_transfer_allowlist() -> eyre::Result<()> {
 
     let alice_signer = crate::utils::signer_at(3);
     let (alice, bob) = (alice_signer.address(), crate::utils::signer_at(4).address());
-    let fixture = start_real_p2p_cluster_with_deposit_allowlist(4, 3, &[alice, bob]).await?;
+    // Without the admin the RPC node relays no writes but still mirrors the sequencers' list.
+    let fixture = start_real_p2p_cluster_with_deposit_allowlist(4, 3, &[alice, bob], false).await?;
     let (cluster, rpc) = (&fixture.cluster, &fixture.rpc_node);
     let (l1, leader) = (&cluster.l1, &cluster.nodes[0]);
 
@@ -3099,7 +3100,7 @@ async fn test_rpc_node_mirrors_transfer_allowlist() -> eyre::Result<()> {
         "a transfer between listed accounts failed"
     );
 
-    // Queue a transfer to Bob behind a nonce gap, then remove Bob through the RPC node.
+    // Queue a transfer to Bob behind a nonce gap, then remove Bob at every sequencer.
     let queued = *token
         .transfer(bob, U256::ONE)
         .nonce(nonce + 2)
@@ -3107,17 +3108,16 @@ async fn test_rpc_node_mirrors_transfer_allowlist() -> eyre::Result<()> {
         .send()
         .await?
         .tx_hash();
-    send_set(
-        rpc,
-        &sign_set(
-            &deposit_allowlist_admin(),
-            fixture.zone_chain_id,
-            &[bob],
-            false,
-            1,
-        )?,
-    )
-    .await?;
+    let remove_bob = sign_set(
+        &deposit_allowlist_admin(),
+        fixture.zone_chain_id,
+        &[bob],
+        false,
+        1,
+    )?;
+    for node in &cluster.nodes {
+        send_set(node, &remove_bob).await?;
+    }
     poll_until(
         L1_TIMEOUT,
         Duration::from_millis(250),
