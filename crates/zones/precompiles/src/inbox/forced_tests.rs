@@ -4,6 +4,7 @@ use crate::{
     forced_exit_storage::ForcedExitPortalStorage,
     inbox::forced::{ForcedExitResult, OBSERVED},
 };
+use alloy_sol_types::SolEvent;
 use exithatch::{
     ForcedExitAuthorization, ForcedExitReason as Reason, MAX_SIGNATURE_SIZE, test_utils::*,
 };
@@ -245,6 +246,8 @@ struct Executed {
     output: PrecompileOutput,
     /// Every forced-exit classification, in queue order. Empty for reverted transitions.
     results: Vec<ForcedExitResult>,
+    /// `ForcedExitProcessed` events emitted by the transition, in order.
+    events: Vec<ForcedExitProcessed>,
 }
 
 /// Run one `advanceTempo` over `entries`, publishing their queue head at the next anchor.
@@ -302,16 +305,54 @@ fn execute_raw(
     };
     reload(h);
     OBSERVED.with(|observed| observed.borrow_mut().clear());
+    let logs_before = h.ctx.journaled_state.logs().len();
     let output = h.call_with_gas(Address::ZERO, call.abi_encode(), gas)?;
     let observed = OBSERVED.with(|observed| observed.take());
+    let events = h.ctx.journaled_state.logs()[logs_before..]
+        .iter()
+        .filter_map(|log| ForcedExitProcessed::decode_log(log).ok())
+        .inspect(|log| assert_eq!(log.address, ZONE_INBOX_ADDRESS))
+        .map(|log| log.data)
+        .collect::<Vec<_>>();
     let results = if output.is_success() {
         let after = with_zone(h, || Ok(ZoneInbox::new().processed_deposit_number()?))?;
         assert_eq!(after, before + count, "every entry advances the cursor");
+        assert_reported(&observed, &events);
         observed
     } else {
+        assert!(events.is_empty(), "a reverted transition emits nothing");
         Vec::new()
     };
-    Ok(Executed { output, results })
+    Ok(Executed {
+        output,
+        results,
+        events,
+    })
+}
+
+/// Every authenticated result emits exactly one `ForcedExitProcessed` with its code and amount, in
+/// order. `NotActivated`, `InvalidPayload` and `InvalidAuthorization` emit nothing.
+fn assert_reported(results: &[ForcedExitResult], events: &[ForcedExitProcessed]) {
+    let expected = results
+        .iter()
+        .filter(|result| {
+            !matches!(
+                result,
+                ForcedExitResult::Rejected(
+                    Reason::NotActivated | Reason::InvalidPayload | Reason::InvalidAuthorization
+                )
+            )
+        })
+        .map(|result| match result {
+            ForcedExitResult::Exited { amount } => (result.code(), *amount),
+            _ => (result.code(), 0),
+        })
+        .collect::<Vec<_>>();
+    let reported = events
+        .iter()
+        .map(|event| (event.reason, event.amount))
+        .collect::<Vec<_>>();
+    assert_eq!(reported, expected, "{results:?}");
 }
 
 fn fund_account(h: &mut Harness, account: Address, amount: U256) -> eyre::Result<()> {
@@ -427,7 +468,7 @@ fn forced_exit_accepts_earlier_admission_but_rejects_future_height() -> eyre::Re
         let before = snapshot(&mut h)?;
         let executed = execute(&mut h, vec![entry])?;
         if admission_block == 0 {
-            assert_eq!(executed.results, [ForcedExitResult::Exited]);
+            assert_eq!(executed.results, [ForcedExitResult::Exited { amount: 42 }]);
             assert_eq!(root_balance(&mut h)?, 0);
             assert_eq!(h.pending_withdrawals()?.len(), 1);
         } else {
@@ -468,7 +509,10 @@ fn l1_token_pause_rejects_admitted_requests_without_blocking_inbox() -> eyre::Re
             // The first request exits the full balance, leaving nothing for the second.
             assert_eq!(
                 executed.results,
-                [ForcedExitResult::Exited, ForcedExitResult::Empty]
+                [
+                    ForcedExitResult::Exited { amount: 42 },
+                    ForcedExitResult::Empty
+                ]
             );
             assert_eq!(root_balance(&mut h)?, 0);
             assert_eq!(
@@ -493,7 +537,7 @@ fn forced_full_balance_replay_and_empty_finalize_with_exact_commitment() -> eyre
     assert_eq!(
         executed.results,
         [
-            ForcedExitResult::Exited,
+            ForcedExitResult::Exited { amount: 42 },
             ForcedExitResult::Rejected(Reason::NonceAlreadyConsumed),
             ForcedExitResult::Empty,
         ]
@@ -617,7 +661,10 @@ fn rejected_requests_are_classified_and_never_stall_the_inbox() -> eyre::Result<
         };
         assert_eq!(
             executed.results,
-            [ForcedExitResult::Rejected(reason), ForcedExitResult::Exited],
+            [
+                ForcedExitResult::Rejected(reason),
+                ForcedExitResult::Exited { amount: 42 }
+            ],
             "{case:?}"
         );
         // Only an authenticated request consumes its nonce, even when execution rejects it.
@@ -676,8 +723,8 @@ fn forced_balance_boundaries_and_classification_order() -> eyre::Result<()> {
             false,
             ForcedExitResult::Rejected(Reason::BalanceOverflow),
         ),
-        (U256::ONE, true, ForcedExitResult::Exited),
-        (max, true, ForcedExitResult::Exited),
+        (U256::ONE, true, ForcedExitResult::Exited { amount: 1 }),
+        (max, true, ForcedExitResult::Exited { amount: u128::MAX }),
     ] {
         let mut h = active_harness()?;
         if amount > max {
@@ -706,7 +753,7 @@ fn forced_balance_boundaries_and_classification_order() -> eyre::Result<()> {
         );
         assert!(consumed(&mut h, 1)?);
         let pending = h.pending_withdrawals()?;
-        if expected == ForcedExitResult::Exited {
+        if matches!(expected, ForcedExitResult::Exited { .. }) {
             assert_eq!(pending.len(), 1);
             assert_eq!(pending[0].amount, amount.to::<u128>());
             assert_eq!(h.balance(PATH_USD_ADDRESS, ROOT)?, U256::ZERO);
@@ -721,7 +768,9 @@ fn forced_balance_boundaries_and_classification_order() -> eyre::Result<()> {
 #[test]
 fn maximum_forced_exit_workload_fits_system_gas_budget() -> eyre::Result<()> {
     const REQUESTS: u64 = 210 / 14; // ZonePortal.FORCED_EXIT_ADMISSION_WEIGHT
+    let gas_params = tempo_revm::gas_params::tempo_gas_params(TempoHardfork::T14);
     let mut h = active_harness()?;
+    h.ctx.cfg.gas_params = gas_params.clone();
     let enabled_tokens = (1..=8).map(maximum_metadata_token).collect::<Vec<_>>();
     h.set_token_enablements(&enabled_tokens);
     // Maximum-size WebAuthn roots: the largest admitted ciphertext and the most expensive
@@ -730,12 +779,15 @@ fn maximum_forced_exit_workload_fits_system_gas_budget() -> eyre::Result<()> {
     let executed = execute_with(&mut h, entries, enabled_tokens, u64::MAX)?;
     assert_eq!(
         executed.results,
-        vec![ForcedExitResult::Exited; REQUESTS as usize]
+        vec![ForcedExitResult::Exited { amount: 1 }; REQUESTS as usize]
     );
     assert_eq!(h.pending_withdrawals()?.len(), REQUESTS as usize);
-    // Add a separate full transition for the 20 reserved refund entries. This overcounts
-    // header/cursor work rather than hiding it.
-    let gas_bound = executed.output.gas_used + failed_deposit_gas(20, 0)?;
+    // Add a separate full transition for the 20 reserved refund entries, at the same gas
+    // schedule. This overcounts header/cursor work rather than hiding it. Also charge every
+    // request its full debit bound on top of the debit it actually ran.
+    let gas_bound = executed.output.gas_used
+        + failed_deposit_gas(20, 0, Some(gas_params))?
+        + REQUESTS * crate::outbox::FORCED_EXIT_DEBIT_GAS;
     eprintln!(
         "{REQUESTS} max-size WebAuthn forced exits + 8 token initializations + 20 refund bound: \
          {gas_bound} gas (forced transition {})",
@@ -769,6 +821,28 @@ fn maximum_forced_exit_workload_fits_system_gas_budget() -> eyre::Result<()> {
     Ok(())
 }
 
+/// Weight 14 holds because a forced exit charged its full debit bound costs less than the 14
+/// deposits its admission displaces, which keeps the deposit-only queue the worst mix.
+#[test]
+fn forced_exit_costs_less_than_the_deposits_it_displaces() -> eyre::Result<()> {
+    const DISPLACED_DEPOSITS: usize = 14; // ZonePortal.FORCED_EXIT_ADMISSION_WEIGHT
+    let gas_params = tempo_revm::gas_params::tempo_gas_params(TempoHardfork::T14);
+    let mut h = active_harness()?;
+    h.ctx.cfg.gas_params = gas_params.clone();
+    let (_, entries) = funded_requests(&mut h, 1, true)?;
+    let executed = execute_with(&mut h, entries, Vec::new(), u64::MAX)?;
+    assert_eq!(executed.results, [ForcedExitResult::Exited { amount: 1 }]);
+    let forced = executed.output.gas_used + crate::outbox::FORCED_EXIT_DEBIT_GAS;
+    let displaced = failed_deposit_gas(DISPLACED_DEPOSITS, 0, Some(gas_params))?;
+    eprintln!("1 max-size WebAuthn forced exit + debit bound: {forced} gas");
+    eprintln!("{DISPLACED_DEPOSITS} failed deposits: {displaced} gas");
+    assert!(
+        forced <= displaced,
+        "forced exit ({forced}) costs more than {DISPLACED_DEPOSITS} deposits ({displaced})"
+    );
+    Ok(())
+}
+
 #[test]
 fn forced_exit_keeps_nonce_consumed_through_pending_credit_recovery() -> eyre::Result<()> {
     let mut h = active_harness()?;
@@ -776,7 +850,7 @@ fn forced_exit_keeps_nonce_consumed_through_pending_credit_recovery() -> eyre::R
     let entry = request(&mut h, 1, &payload(&auth(1)))?;
     assert_eq!(
         execute(&mut h, vec![entry])?.results,
-        [ForcedExitResult::Exited]
+        [ForcedExitResult::Exited { amount: 17 }]
     );
     let nonce = h.pending_withdrawals()?[0].fallbackNonce;
     let mut encoded_nonce = [0; 20];
@@ -852,7 +926,7 @@ fn admitted_forced_workload_preserves_ordinary_capacity() -> eyre::Result<()> {
         let executed = execute_with(&mut h, entries, Vec::new(), 225_000_000)?;
         assert_eq!(
             executed.results,
-            vec![ForcedExitResult::Exited; REQUESTS as usize],
+            vec![ForcedExitResult::Exited { amount: 1 }; REQUESTS as usize],
             "ordinary slots used={used}"
         );
         let pending = h.pending_withdrawals()?;
@@ -872,13 +946,84 @@ fn admitted_forced_workload_preserves_ordinary_capacity() -> eyre::Result<()> {
     Ok(())
 }
 
-/// Forced entries require both the fork and `forcedExitVersion == 1` at the imported anchor.
-/// Otherwise the whole transition reverts before any request is classified, whatever the
-/// request would have done.
+/// `ForcedExitProcessed` carries the authenticated account, request ID, nonce, code, and the
+/// debited amount for each authenticated result, and nothing for unauthenticated ones.
 #[test]
-fn activation_gate_rejects_the_whole_transition() -> eyre::Result<()> {
+fn forced_exit_processed_reports_authenticated_results() -> eyre::Result<()> {
+    let mut h = active_harness()?;
+    fund(&mut h, 42)?;
+    let mut expired = auth(3);
+    expired.admitBefore = 0;
+    let entries = vec![
+        request(&mut h, 1, &payload(&auth(1)))?,
+        request(&mut h, 2, &payload(&auth(1)))?,
+        request(&mut h, 3, &vec![0; 384])?,
+        request(&mut h, 4, &payload(&expired))?,
+        request(&mut h, 5, &payload(&auth(2)))?,
+    ];
+    let executed = execute(&mut h, entries)?;
+    assert_eq!(
+        executed.results,
+        [
+            ForcedExitResult::Exited { amount: 42 },
+            ForcedExitResult::Rejected(Reason::NonceAlreadyConsumed),
+            ForcedExitResult::Rejected(Reason::InvalidPayload),
+            ForcedExitResult::Rejected(Reason::InvalidAuthorization),
+            ForcedExitResult::Empty,
+        ]
+    );
+    let event = |request_id, nonce: u64, reason: Reason, amount| ForcedExitProcessed {
+        account: ROOT,
+        requestId: request_id,
+        nonce: U256::from(nonce),
+        reason: reason as u8,
+        amount,
+    };
+    assert_eq!(
+        executed.events,
+        [
+            event(1, 1, Reason::None, 42),
+            event(2, 1, Reason::NonceAlreadyConsumed, 0),
+            event(5, 2, Reason::None, 0),
+        ]
+    );
+    Ok(())
+}
+
+/// A debit attempt that reverts is a terminal `DebitFailed`: the nonce is consumed, principal is
+/// unchanged, and later entries still execute.
+#[test]
+fn reverting_debit_is_debit_failed_and_never_stalls_the_inbox() -> eyre::Result<()> {
+    let mut h = active_harness()?;
+    fund(&mut h, 42)?;
+    // Fallback allocation runs after transfer and burn, so both must roll back.
+    with_zone(&mut h, || {
+        Ok(ZoneOutbox::new().last_fallback_nonce.write(u64::MAX)?)
+    })?;
+    let failed = request(&mut h, 1, &payload(&auth(1)))?;
+    let next = deposit(&mut h, BOB, 5)?;
+    let before = snapshot(&mut h)?;
+    let executed = execute(&mut h, vec![failed, next])?;
+    assert_eq!(
+        executed.results,
+        [ForcedExitResult::Rejected(Reason::DebitFailed)]
+    );
+    let after = snapshot(&mut h)?;
+    assert_eq!(after.root_balance, U256::from(42));
+    assert_eq!(after.supply, before.supply + U256::from(5));
+    assert_eq!(after.pending, 0);
+    assert!(consumed(&mut h, 1)?);
+    assert_eq!(h.balance(PATH_USD_ADDRESS, BOB)?, U256::from(5));
+    Ok(())
+}
+
+/// Forced entries execute only under T14 rules with `forcedExitVersion == 1` at the imported
+/// anchor. Otherwise each is consumed as `NotActivated` without using its decryption data,
+/// whatever the request would have done, and the inbox advances past it.
+#[test]
+fn inactive_forced_entries_are_not_activated_and_advance_the_inbox() -> eyre::Result<()> {
     let expected = [
-        (42, ForcedExitResult::Exited),
+        (42, ForcedExitResult::Exited { amount: 42 }),
         (0, ForcedExitResult::Empty),
         (42, ForcedExitResult::Rejected(Reason::InvalidPayload)),
     ];
@@ -905,10 +1050,10 @@ fn activation_gate_rejects_the_whole_transition() -> eyre::Result<()> {
             let entry = request(&mut h, 1, &plaintext)?;
             set_spec(&mut h, spec);
             let before = snapshot(&mut h)?;
-            let executed = execute(&mut h, vec![entry.clone()])?;
+            let executed = execute(&mut h, vec![entry])?;
             let case = format!("{spec:?} version={version} {result:?}");
             let portal = ForcedExitPortalStorage::new(PORTAL);
-            // The fork check precedes anchoring, so a pre-fork transition reads nothing.
+            // Only T14 rules read the version, and only at the imported anchor.
             let t14 = spec.is_t14();
             assert_eq!(
                 h.l1.requested(1, &portal.forced_exit_version),
@@ -921,15 +1066,46 @@ fn activation_gate_rejects_the_whole_transition() -> eyre::Result<()> {
                 assert_eq!(executed.results, [result], "{case}");
                 continue;
             }
-            assert!(executed.output.is_revert(), "{case}");
-            assert_eq!(snapshot(&mut h)?, before, "{case}");
-            if !t14 {
-                // The same entry executes as soon as the fork is active.
-                set_spec(&mut h, TempoHardfork::T14);
-                assert_eq!(execute(&mut h, vec![entry])?.results, [result], "{case}");
-            }
+            assert_eq!(
+                executed.results,
+                [ForcedExitResult::Rejected(Reason::NotActivated)],
+                "{case}"
+            );
+            let after = snapshot(&mut h)?;
+            assert_eq!(after.processed, before.processed + 1, "{case}");
+            assert_ne!(after.queue_hash, before.queue_hash, "{case}");
+            assert_eq!(after.root_balance, U256::from(balance), "{case}");
+            assert_eq!(after.supply, before.supply, "{case}");
+            assert_eq!(after.pending, 0, "{case}");
+            assert_eq!(after.nonces, before.nonces, "{case}");
+            assert_eq!(h.fallback_recipient(1)?, Address::ZERO, "{case}");
         }
     }
+    Ok(())
+}
+
+/// A `NotActivated` entry still takes exactly one decryption witness, but never verifies it.
+#[test]
+fn not_activated_entry_consumes_one_unverified_decryption() -> eyre::Result<()> {
+    let mut h = active_harness()?;
+    fund(&mut h, 42)?;
+    activate(&h, 1, 0)?;
+    let mut entry = request(&mut h, 1, &payload(&auth(1)))?;
+    entry.1.as_mut().unwrap().cpProof.s = B256::ZERO;
+    let next = deposit(&mut h, BOB, 5)?;
+    let executed = execute(&mut h, vec![entry, next])?;
+    assert_eq!(
+        executed.results,
+        [ForcedExitResult::Rejected(Reason::NotActivated)]
+    );
+    assert_eq!(h.balance(PATH_USD_ADDRESS, BOB)?, U256::from(5));
+    assert_eq!(root_balance(&mut h)?, 42);
+
+    let mut missing = request(&mut h, 2, &payload(&auth(2)))?;
+    missing.1 = None;
+    let before = snapshot(&mut h)?;
+    assert!(execute(&mut h, vec![missing])?.output.is_revert());
+    assert_eq!(snapshot(&mut h)?, before);
     Ok(())
 }
 
@@ -949,7 +1125,10 @@ fn mixed_batch_executes_forced_exits_in_queue_order() -> eyre::Result<()> {
     // The deposit funds the first exit; the bounce-back funds the second.
     assert_eq!(
         executed.results,
-        [ForcedExitResult::Exited, ForcedExitResult::Exited]
+        [
+            ForcedExitResult::Exited { amount: 900 },
+            ForcedExitResult::Exited { amount: 321 },
+        ]
     );
     let pending = h.pending_withdrawals()?;
     let amounts = pending.iter().map(|p| p.amount).collect::<Vec<_>>();
@@ -967,7 +1146,7 @@ fn replay_is_rejected_across_batches_and_after_bounce_back() -> eyre::Result<()>
     let first = request(&mut h, 1, &payload(&auth(1)))?;
     assert_eq!(
         execute(&mut h, vec![first])?.results,
-        [ForcedExitResult::Exited]
+        [ForcedExitResult::Exited { amount: 42 }]
     );
     let fallback_nonce = h.pending_withdrawals()?[0].fallbackNonce;
 
@@ -984,7 +1163,7 @@ fn replay_is_rejected_across_batches_and_after_bounce_back() -> eyre::Result<()>
         executed.results,
         [
             ForcedExitResult::Rejected(Reason::NonceAlreadyConsumed),
-            ForcedExitResult::Exited,
+            ForcedExitResult::Exited { amount: 42 },
         ]
     );
     let pending = h.pending_withdrawals()?;
@@ -1019,7 +1198,7 @@ fn malleated_root_signature_cannot_exit_twice() -> eyre::Result<()> {
         assert_eq!(
             executed.results,
             [
-                ForcedExitResult::Exited,
+                ForcedExitResult::Exited { amount: 42 },
                 ForcedExitResult::Rejected(Reason::NonceAlreadyConsumed),
             ]
         );
@@ -1076,7 +1255,10 @@ fn bad_plaintext_is_isolated(mutation: PlaintextMutation) -> eyre::Result<()> {
     if malleated {
         assert_eq!(
             executed.results,
-            [ForcedExitResult::Exited, ForcedExitResult::Empty]
+            [
+                ForcedExitResult::Exited { amount: 42 },
+                ForcedExitResult::Empty
+            ]
         );
     } else {
         assert!(
@@ -1089,7 +1271,7 @@ fn bad_plaintext_is_isolated(mutation: PlaintextMutation) -> eyre::Result<()> {
         );
         assert_eq!(
             executed.results[1],
-            ForcedExitResult::Exited,
+            ForcedExitResult::Exited { amount: 42 },
             "{mutation:?}"
         );
         assert!(!consumed(&mut h, 1)?, "{mutation:?}");
@@ -1175,7 +1357,11 @@ fn outer_mutation_reverts(mutation: OuterMutation) -> eyre::Result<()> {
         && crate::chaum_pedersen::recover_point(&secret, parity)
             == crate::chaum_pedersen::recover_point(&secret, original_parity)
     {
-        assert_eq!(executed.results, [ForcedExitResult::Exited], "{mutation:?}");
+        assert_eq!(
+            executed.results,
+            [ForcedExitResult::Exited { amount: 42 }],
+            "{mutation:?}"
+        );
         return Ok(());
     }
     assert!(executed.output.is_revert(), "{mutation:?} executed");

@@ -53,6 +53,7 @@ proptest.workspace = true
 rand_08.workspace = true
 serde = { workspace = true, features = ["alloc"] }
 tempo-precompiles = { workspace = true, features = ["test-utils"] }
+tempo-revm.workspace = true
 
 [features]
 dst = ["tempo-precompiles/dst"]

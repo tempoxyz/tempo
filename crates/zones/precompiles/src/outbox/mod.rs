@@ -2,7 +2,9 @@
 //!
 mod dispatch;
 mod forced;
-pub(crate) use forced::{ForcedWithdrawalError, ForcedWithdrawalRequest};
+#[cfg(test)]
+pub(crate) use forced::FORCED_EXIT_DEBIT_GAS;
+pub(crate) use forced::ForcedWithdrawalRequest;
 
 #[cfg(test)]
 mod tests;
