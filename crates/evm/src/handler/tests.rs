@@ -3,7 +3,8 @@ use super::*;
 mod regressions;
 use crate::{
     FeeTokenResolver, ProtocolFeeContext, ProtocolFeeManager, ResolvedFeeToken, TempoBlockEnv,
-    TempoEvmExt, TempoEvmTx, TempoFeeManager, signature_gas::P256_VERIFY_GAS, tempo_tx_registry,
+    TempoEvmExt, TempoEvmTx, TempoFeeManager, signature_gas::primitive_signature_verification_gas,
+    tempo_tx_registry,
 };
 use alloy_consensus::transaction::Recovered;
 use alloy_primitives::{B256, Bytes, Signature};
@@ -90,12 +91,14 @@ use evm2::evm::AccountInfo;
 use std::sync::Arc;
 use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, TIP20Error, TIPFeeAMMError};
 use tempo_precompiles::{
-    TIP_FEE_MANAGER_ADDRESS,
+    ECRECOVER_GAS, TIP_FEE_MANAGER_ADDRESS,
     storage::{ContractStorage, Handler, StorageActions},
     tip_fee_manager::TipFeeManager,
     tip20::TIP20Token,
 };
-use tempo_primitives::{TempoAddressExt, TempoTxEnvelope, transaction::calc_gas_balance_spending};
+use tempo_primitives::{
+    TempoAddressExt, TempoTxEnvelope, gas::P256_VERIFY_GAS, transaction::calc_gas_balance_spending,
+};
 
 fn legacy_env(to: TxKind, input: Bytes) -> TempoTxEnv {
     Recovered::new_unchecked(
@@ -681,7 +684,7 @@ fn test_aa_gas_single_call_vs_normal_tx() {
     // Calculate expected gas using EVM2's function for equivalent normal tx
     let version =
         tempo_chainspec::gas_params::version(SpecId::CANCUN, TempoHardfork::Genesis, false);
-    let normal_tx_gas = evm2::ethereum::intrinsic_gas(
+    let normal_tx_gas = evm2::ethereum::intrinsic_and_floor_gas(
         &version,
         SIGNER,
         TxKind::Call(to),
@@ -689,7 +692,8 @@ fn test_aa_gas_single_call_vs_normal_tx() {
         0,
         0,
         U256::ZERO,
-    );
+    )
+    .0;
 
     // AA with secp256k1 + single call should match normal tx exactly
     assert_eq!((aa_gas.0 + aa_gas.1), normal_tx_gas);
@@ -737,7 +741,7 @@ fn test_aa_gas_multiple_calls_overhead() {
     // Calculate base gas for a single normal tx
     let version =
         tempo_chainspec::gas_params::version(SpecId::CANCUN, TempoHardfork::Genesis, false);
-    let base_tx_gas = evm2::ethereum::intrinsic_gas(
+    let base_tx_gas = evm2::ethereum::intrinsic_and_floor_gas(
         &version,
         SIGNER,
         TxKind::Call(Address::ZERO),
@@ -745,7 +749,8 @@ fn test_aa_gas_multiple_calls_overhead() {
         0,
         0,
         U256::ZERO,
-    );
+    )
+    .0;
 
     // For 3 calls: base (21k) + 3*calldata + 2*per-call overhead (calls 2 and 3)
     // = 21k + 2*(calldata cost) + 2*COLD_ACCOUNT_ACCESS_COST
@@ -793,7 +798,7 @@ fn test_aa_gas_p256_signature() {
 
     // Calculate base gas for normal tx
     let version = tempo_chainspec::gas_params::version(spec, TempoHardfork::Genesis, false);
-    let base_gas = evm2::ethereum::intrinsic_gas(
+    let base_gas = evm2::ethereum::intrinsic_and_floor_gas(
         &version,
         SIGNER,
         TxKind::Call(Address::ZERO),
@@ -801,10 +806,11 @@ fn test_aa_gas_p256_signature() {
         0,
         0,
         U256::ZERO,
-    );
+    )
+    .0;
 
-    // Expected: normal tx + P256_VERIFY_GAS
-    let expected = base_gas + P256_VERIFY_GAS;
+    // Expected: normal tx + P256 verification, minus the ecrecover already in the base cost
+    let expected = base_gas + P256_VERIFY_GAS - ECRECOVER_GAS;
     assert_eq!((gas.0 + gas.1), expected,);
 }
 
@@ -841,7 +847,7 @@ fn test_aa_gas_create_call() {
 
     // Calculate expected using EVM2's function for CREATE tx
     let version = tempo_chainspec::gas_params::version(spec, TempoHardfork::Genesis, false);
-    let base_gas = evm2::ethereum::intrinsic_gas(
+    let base_gas = evm2::ethereum::intrinsic_and_floor_gas(
         &version,
         SIGNER,
         TxKind::Create,
@@ -849,7 +855,8 @@ fn test_aa_gas_create_call() {
         0,
         0,
         U256::ZERO,
-    );
+    )
+    .0;
 
     // AA CREATE should match normal CREATE exactly
     assert_eq!((gas.0 + gas.1), base_gas,);
@@ -924,7 +931,7 @@ fn test_aa_gas_access_list() {
 
     // Calculate expected using EVM2's function
     let version = tempo_chainspec::gas_params::version(spec, TempoHardfork::Genesis, false);
-    let base_gas = evm2::ethereum::intrinsic_gas(
+    let base_gas = evm2::ethereum::intrinsic_and_floor_gas(
         &version,
         SIGNER,
         TxKind::Call(Address::ZERO),
@@ -932,7 +939,8 @@ fn test_aa_gas_access_list() {
         0,
         0,
         U256::ZERO,
-    );
+    )
+    .0;
 
     // Expected: normal tx
     assert_eq!((gas.0 + gas.1), base_gas,);
@@ -1019,7 +1027,7 @@ fn test_aa_gas_floor_gas_prague() {
 
     // Calculate expected floor gas using EVM2's function
     let version = tempo_chainspec::gas_params::version(spec, TempoHardfork::Genesis, false);
-    let base_gas = evm2::ethereum::floor_gas(
+    let base_gas = evm2::ethereum::intrinsic_and_floor_gas(
         &version,
         SIGNER,
         TxKind::Call(Address::ZERO),
@@ -1027,7 +1035,8 @@ fn test_aa_gas_floor_gas_prague() {
         0,
         0,
         U256::ZERO,
-    );
+    )
+    .1;
 
     // Floor gas should match EVM2's calculation for same calldata
     assert_eq!(
