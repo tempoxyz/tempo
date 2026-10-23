@@ -14,7 +14,11 @@ const TXGEN_HELPER_ALWAYS_FUND_PRESETS = [
     "tip20-policy"
     "vault-deposit"
     "vault-withdraw"
+    "vault-throughput"
+    "zone-portal-throughput"
 ]
+# Presets composed by txgen-prepare-public-mix-preset from the public-mix fixtures.
+const TXGEN_HELPER_PUBLIC_MIX_PRESETS = ["public-mix" "vault-throughput" "zone-portal-throughput"]
 const TXGEN_HELPER_EXISTING_RECIPIENTS_START = 10000
 const TXGEN_HELPER_KEYCHAIN_ACCESS_KEYS_START = 100000
 const TXGEN_HELPER_KEYCHAIN_AUTHORIZE_SETUP_GAS_LIMIT = 20000000
@@ -503,7 +507,8 @@ def txgen-spec-effective-text [spec_path: string] {
             } else {
                 [ $base_dir $include_path ] | path join
             }
-            open --raw $resolved
+            # Rendered specs include presets that include fragments; read the whole tree.
+            txgen-spec-effective-text $resolved
         }
         | append $raw
         | str join "\n"
@@ -752,9 +757,9 @@ def txgen-prepare-vault-preset [spec_path: string, accounts: int, chain_id: int]
     $output
 }
 
-# Only public-mix needs category metadata; all presets use gas weighting.
+# Only public-mix-composed presets need category metadata; all presets use gas weighting.
 def txgen-workload-metadata-args [preset_name: string, spec_path: string] {
-    if $preset_name != "public-mix" { return ["-m" "workload_mix_weighting=gas"] }
+    if $preset_name not-in $TXGEN_HELPER_PUBLIC_MIX_PRESETS { return ["-m" "workload_mix_weighting=gas"] }
 
     # Read only the prepared file's mix, not its included setup/template specs.
     # Pin the jq-compatible Python yq, rather than relying on a system yq variant.
@@ -818,7 +823,8 @@ def txgen-prepare-public-mix-preset [spec_path: string, count: int, accounts: in
         [ (txgen-repo-root) $TXGEN_HELPER_DEFAULT_RENDERED_SPECS_DIR (random uuid) ] | path join
     } else { $out_dir | path expand }
     mkdir $output_dir
-    let output = ($output_dir | path join public-mix.yml)
+    # Keep the preset's file name: reports derive the preset label from it.
+    let output = ($output_dir | path join ($spec_path | path basename))
     # Match the other public-mix workloads without account-nonce dependencies.
     # Setup and standalone vault/zone presets retain their ordered nonce lanes.
     let templates = ($deposits.templates | merge $withdrawals.templates | merge $zone_spec.templates
@@ -876,7 +882,7 @@ def txgen-run-preset-pipeline [
     txgen-configure-existing-recipients-env $spec_path $bloat_mib $bloat_token_count
     txgen-configure-fee-amm-env $spec_path
     let preset_name = ($spec_path | path basename | str replace --regex '\.yml$' '')
-    let is_public_mix = $preset_name == "public-mix"
+    let is_public_mix = $preset_name in $TXGEN_HELPER_PUBLIC_MIX_PRESETS
     let tx_count = [($tps * $duration) 1] | math max
     mut zone_metadata = []
     if $preset_name == "zones" or $is_public_mix {
