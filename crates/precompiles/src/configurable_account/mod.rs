@@ -55,13 +55,12 @@ impl ConfigurableAccount {
         threshold: u8,
         owners: &[IConfigurableAccount::ConfigurableAccountOwner],
     ) -> Result<Address> {
-        let factory = self.factory()?;
         let config = config(salt, 0, threshold, owners);
         // Reject an invalid configuration before charging the proof hashing gas.
         config.validate()?;
         self.storage
             .deduct_gas(initial_account_proof_gas(&config)?)?;
-        let account = config.derive_account(factory)?;
+        let account = config.derive_account()?;
         if !valid_account(account, self.storage.spec()) {
             return Err(ConfigurableAccountError::invalid_account().into());
         }
@@ -178,12 +177,6 @@ impl ConfigurableAccount {
         ))?;
         Ok(hash)
     }
-
-    fn factory(&self) -> Result<Address> {
-        self.storage
-            .with_block_env(|block| block.ext.configurable_account_recovery_factory())
-            .ok_or_else(|| ConfigurableAccountError::invalid_config().into())
-    }
 }
 
 /// What the transaction allows `upgradeAccount` to do, as decided by the handler before execution.
@@ -205,7 +198,7 @@ pub enum UpgradeEligibility {
 ///
 /// Fails with `OutOfGas` if the cost overflows `u64`.
 pub fn initial_account_proof_gas(config: &ConfigurableAccountConfig) -> Result<u64> {
-    keccak_cost(config.account_salt_preimage_len())?
+    keccak_cost(config.account_preimage_len())?
         .checked_add(keccak_cost(CONFIGURABLE_ACCOUNT_CREATE2_PREIMAGE_LEN)?)
         .ok_or(TempoPrecompileError::OutOfGas)
 }
