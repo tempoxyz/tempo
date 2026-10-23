@@ -1,11 +1,12 @@
 //! EVM2 transaction handler plumbing.
 
+use super::configurable_account;
 use crate::{
     FeePaymentError, ProtocolFeeContext, ProtocolFeeManager, ResolvedFeeToken,
     SYSTEM_CALL_GAS_LIMIT, TempoEvmTx, TempoFeeManager, TempoInvalidTransaction, TempoStateAccess,
     TempoTxEnv,
 };
-use alloy_consensus::{Transaction, TxEip1559, TxEip2930, TxLegacy};
+use alloy_consensus::{Transaction, TxEip1559, TxEip2930, TxLegacy, transaction::Recovered};
 use alloy_primitives::{Address, TxKind, U256};
 use evm2::{
     Evm, EvmConfig, EvmConfigSelector, EvmFeatures, EvmTypesHost, ExecutionConfig, OpcodeConfig,
@@ -211,10 +212,17 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
             ),
             TempoEvmTx::AA(_) => return Ok(()),
         };
+        // T14 root-key checks: a configurable account's primitive key no longer signs. A
+        // sender-only check charges no gas.
+        let spec = host.config_spec_id();
+        let (validation_gas, validation_state_gas) =
+            configurable_account::validate_state(host, envelope, spec)?;
         let new_accounts = zero_nonce_authorizations.saturating_add(u64::from(nonce == 0));
+        *intrinsic = intrinsic.saturating_add(validation_gas);
         *intrinsic = intrinsic.saturating_add(new_accounts.saturating_mul(u64::from(
             host.version().gas_params.get(GasId::NewAccountCost),
         )));
+        *initial_state_gas = initial_state_gas.saturating_add(validation_state_gas);
         *initial_state_gas = initial_state_gas.saturating_add(
             new_accounts.saturating_mul(host.version().gas_params.new_account_state_gas()),
         );
@@ -311,6 +319,9 @@ impl TempoHandlerHooks {
 
         StorageCtx::enter_evm_without_tip1060_accounting(host, || {
             AccountKeychain::new().set_tx_origin(envelope.evm_tx().signer())?;
+            if spec.is_t14() {
+                envelope.seed_upgrade_authority()?;
+            }
             TIP20ChannelReserve::new()
                 .set_channel_open_context_hash(envelope.channel_open_context_hash())
         })?;
@@ -537,6 +548,28 @@ fn prepare_eip7702(
     eip7702::prepare_with_hooks::<TempoEvmTypes, TempoHandlerHooks>(request)
 }
 
+/// Executes an EIP-7702 transaction. From T14 an authorization by a configurable account is
+/// skipped like an invalid one: the account's root key is retired and can no longer delegate.
+fn execute_eip7702(
+    request: TxRequest<'_, '_, TempoEvmTypes, LazyTxEip7702>,
+    prepared: PreparedTx,
+) -> HandlerResult<TxResult<TempoEvmTypes>> {
+    let spec = request.host.config_spec_id();
+    let Some(tx) =
+        configurable_account::apply_authorizations(request.host, request.tx.inner(), spec)?
+    else {
+        return eip7702::execute_prepared::<TempoEvmTypes, TempoHandlerHooks>(request, prepared);
+    };
+    let signer = request.tx.signer();
+    eip7702::execute_prepared::<TempoEvmTypes, TempoHandlerHooks>(
+        TxRequest {
+            tx: Recovered::new_unchecked(&tx, signer),
+            ..request
+        },
+        prepared,
+    )
+}
+
 fn validate_no_native_value(envelope: &TempoTxEnv) -> Result<(), TempoInvalidTransaction> {
     if envelope.transaction().value().is_zero() {
         Ok(())
@@ -577,10 +610,7 @@ pub fn tempo_tx_registry(spec_id: SpecId) -> TxRegistry<TempoEvmTypes, TxResult<
         registry.register(
             4,
             TempoTxEnv::as_eip7702,
-            handler(
-                prepare_eip7702,
-                eip7702::execute_prepared::<TempoEvmTypes, TempoHandlerHooks>,
-            ),
+            handler(prepare_eip7702, execute_eip7702),
         );
     }
     registry.register(

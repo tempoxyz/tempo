@@ -1,6 +1,7 @@
 use super::{tempo_transaction::MAX_WEBAUTHN_SIGNATURE_LENGTH, tt_signature::PrimitiveSignature};
-use crate::gas::keccak_gas;
+use crate::gas::{SECP256K1_VERIFY_GAS, keccak_gas};
 use alloc::vec::Vec;
+use alloy_eips::eip7623::{STANDARD_TOKEN_COST, tokens_in_calldata};
 use alloy_primitives::{Address, B256, Keccak256, keccak256};
 use alloy_rlp::{BufMut, Decodable, Encodable, Error as RlpError};
 
@@ -9,6 +10,11 @@ pub const SIGNATURE_TYPE_CONFIGURABLE_ACCOUNT: u8 = 0x05;
 
 /// Domain prefix for configurable account owner approvals.
 pub const CONFIGURABLE_ACCOUNT_SIGNATURE_DOMAIN: &[u8] = b"tempo:configurable-account:signature";
+
+/// Byte length of the owner approval digest preimage: domain, 32-byte inner digest, 20-byte
+/// account and 8-byte config version.
+const CONFIGURABLE_ACCOUNT_SIGNATURE_PREIMAGE_LEN: usize =
+    CONFIGURABLE_ACCOUNT_SIGNATURE_DOMAIN.len() + 32 + 20 + 8;
 
 /// Maximum number of owners allowed in an account config.
 pub const MAX_CONFIGURABLE_ACCOUNT_OWNERS: usize = 48;
@@ -390,6 +396,32 @@ impl ConfigurableAccountSignature {
                 .iter()
                 .map(|signature| signature.size() - size_of::<PrimitiveSignature>())
                 .sum::<usize>()
+    }
+
+    /// Full owner quorum verification cost for a registered account, before account access:
+    /// each approval, the calldata of the account and config witness, and the hashes of the
+    /// config commitment and the approval digest preimages.
+    ///
+    /// Initial address derivation is not included. Returns `None` if the cost overflows `u64`.
+    pub fn verification_gas(&self) -> Option<u64> {
+        let mut witness = alloy_rlp::encode(self.account);
+        self.config.encode(&mut witness);
+        self.signatures
+            .iter()
+            .map(PrimitiveSignature::verification_gas)
+            .chain([
+                tokens_in_calldata(&witness) * STANDARD_TOKEN_COST,
+                keccak_gas(self.config.commitment_preimage_len())?,
+                keccak_gas(CONFIGURABLE_ACCOUNT_SIGNATURE_PREIMAGE_LEN)?,
+            ])
+            .try_fold(0u64, u64::checked_add)
+    }
+
+    /// Verification gas this signature adds on top of the base 21k, which already covers one
+    /// secp256k1 verification. Returns `None` if the cost overflows `u64`.
+    pub fn intrinsic_verification_gas(&self) -> Option<u64> {
+        self.verification_gas()
+            .map(|gas| gas.saturating_sub(SECP256K1_VERIFY_GAS))
     }
 }
 

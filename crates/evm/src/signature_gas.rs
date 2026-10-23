@@ -6,11 +6,13 @@ const KEYCHAIN_VALIDATION_GAS: u64 = COLD_SLOAD_COST as u64 + 900;
 
 /// Verification cost beyond the baseline signature charge, without keychain processing.
 #[inline]
-pub(crate) fn account_signature_verification_gas(signature: &AccountSignature) -> u64 {
+fn account_signature_verification_gas(signature: &AccountSignature) -> u64 {
     match signature {
         AccountSignature::Primitive(signature) => signature.intrinsic_verification_gas(),
-        // TODO: Configurable account verification gas is implemented in #7578.
-        AccountSignature::ConfigurableAccount(_) => 0,
+        // Only a `u64` overflow fails; saturating keeps such a transaction unaffordable.
+        AccountSignature::ConfigurableAccount(signature) => {
+            signature.intrinsic_verification_gas().unwrap_or(u64::MAX)
+        }
     }
 }
 
@@ -23,10 +25,12 @@ pub(crate) fn tempo_signature_verification_gas(signature: &TempoSignature) -> u6
     match signature {
         TempoSignature::Primitive(primitive_sig) => primitive_sig.intrinsic_verification_gas(),
         TempoSignature::Keychain(keychain_sig) => {
-            account_signature_verification_gas(&keychain_sig.signature) + KEYCHAIN_VALIDATION_GAS
+            account_signature_verification_gas(&keychain_sig.signature)
+                .saturating_add(KEYCHAIN_VALIDATION_GAS)
         }
-        // TODO: Configurable account verification gas is implemented in #7578.
-        TempoSignature::ConfigurableAccount(_) => 0,
+        TempoSignature::ConfigurableAccount(signature) => {
+            signature.intrinsic_verification_gas().unwrap_or(u64::MAX)
+        }
     }
 }
 

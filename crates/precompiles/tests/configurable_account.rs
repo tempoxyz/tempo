@@ -152,6 +152,8 @@ fn account_namespace_excludes_reserved_addresses() {
             (Address::ZERO, false),
             (Address::with_last_byte(1), false),
             (address!("0000000000000000000000000000000000000100"), false),
+            // The precompile itself is reserved once it is registered at T14.
+            (CONFIGURABLE_ACCOUNT_ADDRESS, !spec.is_t14()),
             (address!("20c0000000000000000000000000000000000001"), false),
             (Address::new_virtual(MasterId::ZERO, UserTag::ZERO), false),
             (address!("5ad0000000000000000000000000000000000001"), false),

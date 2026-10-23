@@ -1789,6 +1789,7 @@ pub(super) async fn run_fill_sign_send<E: TestEnv>(
             "eth_fillTransaction should not set fee_token (client must set it)"
         );
         tx.fee_token = Some(DEFAULT_FEE_TOKEN);
+        add_fee_payer_access_gas(&mut tx);
         sign_fee_payer(&mut tx, signer_addr, &fee_payer_signer)?;
 
         let signature = match test_case.key_type {
@@ -1856,6 +1857,7 @@ pub(super) async fn run_fill_sign_send<E: TestEnv>(
         let fee_payer_signer = PrivateKeySigner::random();
         if test_case.fee_payer {
             let _ = env.fund_account(fee_payer_signer.address()).await?;
+            add_fee_payer_access_gas(&mut tx);
             sign_fee_payer(&mut tx, signer_addr, &fee_payer_signer)?;
         }
 

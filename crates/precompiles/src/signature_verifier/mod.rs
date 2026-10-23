@@ -3,9 +3,11 @@ pub mod dispatch;
 use crate::{
     SIGNATURE_VERIFIER_ADDRESS,
     account_keychain::{AccountKeychain, AuthorizedKey},
-    error::Result,
+    configurable_account::valid_account,
+    error::{Result, TempoPrecompileError},
+    storage::account_config_commitment,
 };
-use alloy::primitives::{Address, B256, Bytes};
+use alloy::primitives::{Address, B256, Bytes, KECCAK256_EMPTY};
 use tempo_contracts::precompiles::SignatureVerifierError;
 use tempo_precompiles_macros::contract;
 use tempo_primitives::transaction::{
@@ -76,6 +78,54 @@ impl SignatureVerifier {
         Ok(self
             .active_key(account, recovered.key_id, recovered.signature_type)?
             .is_some_and(|key| key.is_admin))
+    }
+
+    fn verify_configurable_account(
+        &self,
+        account: Address,
+        hash: B256,
+        bytes: &[u8],
+    ) -> Result<bool> {
+        let signature = TempoSignature::from_bytes(bytes).map_err(|error| {
+            trace!(%error, "malformed configurable account signature");
+            SignatureVerifierError::invalid_format()
+        })?;
+        let Some(signature) = signature.as_configurable_account() else {
+            return Err(SignatureVerifierError::invalid_format().into());
+        };
+        let config = signature.config();
+        let spec = self.storage.spec();
+        let (commitment, has_code) = self.storage.with_account_info(account, |info| {
+            Ok((
+                account_config_commitment(info, spec)?,
+                info.code_hash != KECCAK256_EMPTY,
+            ))
+        })?;
+
+        let initial_proof_gas = if commitment.is_zero() {
+            config
+                .derivation_gas()
+                .ok_or(TempoPrecompileError::OutOfGas)?
+        } else {
+            0
+        };
+        let verification_gas = signature
+            .verification_gas()
+            .and_then(|gas| gas.checked_add(initial_proof_gas))
+            .ok_or(TempoPrecompileError::OutOfGas)?;
+        self.storage.deduct_gas(verification_gas)?;
+        if signature.account() != account || !valid_account(account, spec) || has_code {
+            return Ok(false);
+        }
+        if signature.validate_account_commitment(commitment).is_err() {
+            return Ok(false);
+        }
+
+        signature.verify_approvals(hash).map_err(|error| {
+            trace!(%error, "invalid configurable account approvals");
+            SignatureVerifierError::invalid_signature()
+        })?;
+        Ok(true)
     }
 
     /// Returns the active access key, or `None` when the keychain rejects it.
