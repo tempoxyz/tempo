@@ -11,9 +11,7 @@ pub use self::config::{
 use self::config::{TempoFeeContext, TempoHandlerHooks};
 use crate::{
     FeePaymentError, TempoAaTx, TempoInvalidTransaction, TempoTxEnv,
-    signature_gas::{
-        account_signature_full_verification_gas, calldata_tokens, tempo_signature_verification_gas,
-    },
+    signature_gas::{calldata_tokens, tempo_signature_verification_gas},
     transaction_error::ConfigurableAccountError,
 };
 use alloy_primitives::{Address, KECCAK256_EMPTY, TxKind, U256};
@@ -213,7 +211,8 @@ fn calculate_key_authorization_gas(
 ) -> (u64, u64) {
     // The base 21k includes one ecrecover, for the transaction's own signature. The key
     // authorization's signature is verified on top of that, so it pays the full verification gas.
-    let sig_gas = account_signature_full_verification_gas(&key_auth.signature);
+    // Saturating on overflow keeps such a transaction unaffordable.
+    let sig_gas = key_auth.signature.verification_gas().unwrap_or(u64::MAX);
 
     let num_limits = key_auth
         .authorization
