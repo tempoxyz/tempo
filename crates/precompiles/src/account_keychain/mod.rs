@@ -30,7 +30,7 @@ use crate::{
     configurable_account::valid_account,
     error::Result,
     has_duplicates_metered,
-    storage::{Handler, Mapping, Set},
+    storage::{Handler, Mapping, Set, StorageCtx, account_config_commitment},
     tip20_factory::TIP20Factory,
 };
 use alloy::primitives::{Address, B256, FixedBytes, KECCAK256_EMPTY, TxKind, U256, keccak256};
@@ -268,6 +268,16 @@ impl AccountKeychain {
     ) -> Result<()> {
         let config = &config;
         self.ensure_admin_caller(msg_sender)?;
+        if self.storage.spec().is_t14() {
+            let spec = self.storage.spec();
+            let invalid_parent = StorageCtx::with_warm_caller_info(msg_sender, |info| {
+                let commitment = account_config_commitment(info, spec)?;
+                Ok(!commitment.is_zero() && info.code_hash != KECCAK256_EMPTY)
+            })?;
+            if invalid_parent {
+                return Err(AccountKeychainError::invalid_key_id().into());
+            }
+        }
         let is_t3 = self.storage.spec().is_t3();
 
         // Validate inputs
@@ -1637,8 +1647,7 @@ impl AccountKeychain {
 mod tests {
     use super::*;
     use crate::{
-        error::TempoPrecompileError,
-        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        error::TempoPrecompileError, storage::hashmap::HashMapStorageProvider,
         test_util::TIP20Setup,
     };
     use alloy::primitives::{Address, B256, Bytes, TxKind, U256};

@@ -181,6 +181,11 @@ impl ConfigurableAccount {
         ))?;
         Ok(hash)
     }
+
+    /// One-time storage initialization.
+    pub fn initialize(&mut self) -> Result<()> {
+        self.__initialize()
+    }
 }
 
 /// What the transaction allows `upgradeAccount` to do, as decided by the handler before execution.

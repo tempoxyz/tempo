@@ -247,6 +247,16 @@ pub trait PrecompileStorageProvider {
         commitment: B256,
         gas: ConfigCommitmentWriteGas,
     ) -> Result<()>;
+
+    /// Reads the warm transaction caller without a second account-access charge.
+    /// Normal transaction setup has already loaded this caller. Production rejects a cold
+    /// account; this is not a generic cache-only read, and callers must have checked that
+    /// `address` is the transaction origin.
+    fn with_warm_caller_info(
+        &mut self,
+        address: Address,
+        f: &mut dyn FnMut(&AccountInfo),
+    ) -> Result<()>;
 }
 
 /// Storage operations for a given (contract) address.
