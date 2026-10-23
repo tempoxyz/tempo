@@ -14,7 +14,7 @@ use tempo_contracts::{
     precompiles::*,
     zones::{
         T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
-        T14_ZONE_PORTAL_RUNTIME, ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME,
+        T15_ZONE_PORTAL_RUNTIME, ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME,
         ZONE_VERIFIER_RUNTIME,
     },
 };
@@ -134,15 +134,15 @@ const T13_ZONE_RUNTIME_UPGRADE: Expectation = Expectation {
     },
 };
 
-const T14_ZONE_RUNTIME_UPGRADE: Expectation = Expectation {
-    id: "t14.zone-runtime-upgrade",
+const T15_ZONE_RUNTIME_UPGRADE: Expectation = Expectation {
+    id: "t15.zone-runtime-upgrade",
     check: |ctx, field| {
-        // T14 replaces only the portal runtime. A shadow arm that skips T13 upgrades directly.
+        // T15 replaces only the portal runtime. A shadow arm that skips T13 upgrades directly.
         shadow_runtime_upgrade(ctx, field, |address| {
             (address == ZONE_PORTAL_IMPL_ADDRESS).then(|| {
                 (
                     vec![ZONE_PORTAL_RUNTIME, T13_ZONE_PORTAL_RUNTIME],
-                    T14_ZONE_PORTAL_RUNTIME,
+                    T15_ZONE_PORTAL_RUNTIME,
                 )
             })
         })
@@ -186,7 +186,7 @@ fn shadow_runtime_upgrade(
 /// Fork-specific checks are ordered oldest-first; baseline fee normalization is added separately.
 const REGISTRY: &[(TempoHardfork, &[Expectation])] = &[
     (TempoHardfork::T13, &[T13_ZONE_RUNTIME_UPGRADE]),
-    (TempoHardfork::T14, &[T14_ZONE_RUNTIME_UPGRADE]),
+    (TempoHardfork::T15, &[T15_ZONE_RUNTIME_UPGRADE]),
 ];
 
 pub(crate) fn between(
@@ -258,12 +258,12 @@ mod tests {
         assert!((T13_ZONE_RUNTIME_UPGRADE.check)(&ctx(&upgraded), &code).is_some());
         let unexpected = transition(None, keccak256(&ZONE_VERIFIER_RUNTIME));
         assert!((T13_ZONE_RUNTIME_UPGRADE.check)(&ctx(&unexpected), &code).is_none());
-        // T14 leaves the verifier on its T13 runtime.
-        assert!((T14_ZONE_RUNTIME_UPGRADE.check)(&ctx(&upgraded), &code).is_none());
+        // T15 leaves the verifier on its T13 runtime.
+        assert!((T15_ZONE_RUNTIME_UPGRADE.check)(&ctx(&upgraded), &code).is_none());
     }
 
     #[test]
-    fn accepts_t14_portal_upgrade_from_either_earlier_runtime() {
+    fn accepts_t15_portal_upgrade_from_either_earlier_runtime() {
         let address = ZONE_PORTAL_IMPL_ADDRESS;
         let transition = |before: &Bytes, after: &Bytes| {
             let mut state = reth_revm::db::TransitionState::default();
@@ -297,7 +297,7 @@ mod tests {
             fee_associated: false,
         };
         let check = |shadow: &Evidence| {
-            (T14_ZONE_RUNTIME_UPGRADE.check)(
+            (T15_ZONE_RUNTIME_UPGRADE.check)(
                 &Context {
                     boundary: Boundary::PreBlock,
                     real: &real,
@@ -309,7 +309,7 @@ mod tests {
             )
         };
         for before in [ZONE_PORTAL_RUNTIME, T13_ZONE_PORTAL_RUNTIME] {
-            assert!(check(&transition(&before, &T14_ZONE_PORTAL_RUNTIME)).is_some());
+            assert!(check(&transition(&before, &T15_ZONE_PORTAL_RUNTIME)).is_some());
         }
         assert!(check(&transition(&ZONE_PORTAL_RUNTIME, &T13_ZONE_PORTAL_RUNTIME)).is_none());
     }
@@ -328,13 +328,15 @@ mod tests {
         assert_eq!(ids(T11, T13), ids(T12, T13));
         assert_eq!(ids(T12, T12), [FEE_STATE.id]);
         assert_eq!(ids(T13, T12), [FEE_STATE.id]);
-        assert_eq!(ids(T13, T14), [FEE_STATE.id, T14_ZONE_RUNTIME_UPGRADE.id]);
+        assert_eq!(ids(T13, T14), [FEE_STATE.id]);
+        assert_eq!(ids(T14, T15), [FEE_STATE.id, T15_ZONE_RUNTIME_UPGRADE.id]);
+        assert_eq!(ids(T13, T15), [FEE_STATE.id, T15_ZONE_RUNTIME_UPGRADE.id]);
         assert_eq!(
-            ids(T12, T14),
+            ids(T12, T15),
             [
                 FEE_STATE.id,
                 T13_ZONE_RUNTIME_UPGRADE.id,
-                T14_ZONE_RUNTIME_UPGRADE.id
+                T15_ZONE_RUNTIME_UPGRADE.id
             ]
         );
     }

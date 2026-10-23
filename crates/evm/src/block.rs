@@ -27,7 +27,7 @@ use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, INITIAL_FACTORY_OWNER,
     InitialZoneFactoryAccount, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
     STORAGE_CREDITS_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
-    initial_zone_factory_state, t13_zone_factory_state, t14_zone_factory_state,
+    initial_zone_factory_state, t13_zone_factory_state, t15_zone_factory_state,
 };
 use tempo_primitives::{SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType};
 use tempo_revm::{ExecutionContext, evm::TempoContext};
@@ -279,9 +279,9 @@ where
         self.install_zone_runtimes_at_boundary([portal, verifier, messenger])
     }
 
-    /// Installs the T14 shared runtimes, which add the zone transfer opt-in to the portal.
-    fn upgrade_zone_runtimes_at_t14_boundary(&mut self) -> Result<(), BlockExecutionError> {
-        let [_, portal, verifier, messenger] = t14_zone_factory_state(INITIAL_FACTORY_OWNER);
+    /// Installs the T15 shared runtimes, which add the zone transfer opt-in to the portal.
+    fn upgrade_zone_runtimes_at_t15_boundary(&mut self) -> Result<(), BlockExecutionError> {
+        let [_, portal, verifier, messenger] = t15_zone_factory_state(INITIAL_FACTORY_OWNER);
         self.install_zone_runtimes_at_boundary([portal, verifier, messenger])
     }
 
@@ -551,15 +551,15 @@ where
         // Chains starting at a runtime-upgrade fork supply its runtime code in genesis. Preserve
         // those allocations (including locally compiled contracts on test chains). Chains that
         // activate the fork later follow the normal runtime upgrade path. Only the newest active
-        // runtime set is installed, so T13 runtimes are never reinstalled over T14 ones.
+        // runtime set is installed, so T13 runtimes are never reinstalled over T15 ones.
         let genesis_timestamp = self.inner.spec.genesis().timestamp;
-        if self.inner.spec.is_t14_active_at_timestamp(timestamp) {
+        if self.inner.spec.is_t15_active_at_timestamp(timestamp) {
             if !self
                 .inner
                 .spec
-                .is_t14_active_at_timestamp(genesis_timestamp)
+                .is_t15_active_at_timestamp(genesis_timestamp)
             {
-                self.upgrade_zone_runtimes_at_t14_boundary()?;
+                self.upgrade_zone_runtimes_at_t15_boundary()?;
             }
         } else if self.inner.spec.is_t13_active_at_timestamp(timestamp)
             && !self
@@ -778,7 +778,7 @@ mod tests {
         },
         zones::{
             T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
-            T14_ZONE_PORTAL_RUNTIME, ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME,
+            T15_ZONE_PORTAL_RUNTIME, ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME,
             ZONE_VERIFIER_RUNTIME,
         },
     };
@@ -2222,7 +2222,7 @@ mod tests {
             genesis
                 .config
                 .extra_fields
-                .insert("t14Time".into(), serde_json::Value::Null);
+                .insert("t15Time".into(), serde_json::Value::Null);
             let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
             let mut db = State::builder().with_bundle_update().build();
             let mut executor = TestExecutorBuilder::default()
@@ -2258,24 +2258,25 @@ mod tests {
     }
 
     #[test]
-    fn zone_runtime_upgrade_activates_at_t14() {
+    fn zone_runtime_upgrade_activates_at_t15() {
         let t13 = [
             T13_ZONE_PORTAL_RUNTIME,
             T13_ZONE_VERIFIER_RUNTIME,
             T13_ZONE_MESSENGER_RUNTIME,
         ];
-        let t14 = [
-            T14_ZONE_PORTAL_RUNTIME,
+        let t15 = [
+            T15_ZONE_PORTAL_RUNTIME,
             T13_ZONE_VERIFIER_RUNTIME,
             T13_ZONE_MESSENGER_RUNTIME,
         ];
         for (timestamp, spec, expected_runtimes) in [
-            (19, TempoHardfork::T13, t13),
-            (20, TempoHardfork::T14, t14.clone()),
-            (21, TempoHardfork::T14, t14),
+            (14, TempoHardfork::T13, t13.clone()),
+            (19, TempoHardfork::T14, t13),
+            (20, TempoHardfork::T15, t15.clone()),
+            (21, TempoHardfork::T15, t15),
         ] {
             let mut genesis = DEV.genesis().clone();
-            for (fork, activation) in [("t13Time", 10u64), ("t14Time", 20)] {
+            for (fork, activation) in [("t13Time", 10u64), ("t14Time", 15), ("t15Time", 20)] {
                 genesis
                     .config
                     .extra_fields

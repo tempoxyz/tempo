@@ -41,7 +41,7 @@ use tempo_contracts::{
     contracts::{CreateX, Multicall3, SafeDeployer},
     precompiles::{
         INITIAL_FACTORY_OWNER, IValidatorConfigV2, createTokenCall, initial_zone_factory_state,
-        t13_zone_factory_state, t14_zone_factory_state,
+        t13_zone_factory_state, t15_zone_factory_state,
     },
 };
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -533,8 +533,8 @@ fn insert_zone_state_at_genesis(
         println!("Initializing ZoneFactory and shared runtimes");
         // A later runtime set applies only when every earlier upgrade is also active at genesis.
         let t13_at_genesis = hardforks.active_at_genesis(TempoHardfork::T13);
-        let accounts = if t13_at_genesis && hardforks.active_at_genesis(TempoHardfork::T14) {
-            t14_zone_factory_state(INITIAL_FACTORY_OWNER)
+        let accounts = if t13_at_genesis && hardforks.active_at_genesis(TempoHardfork::T15) {
+            t15_zone_factory_state(INITIAL_FACTORY_OWNER)
         } else if t13_at_genesis {
             t13_zone_factory_state(INITIAL_FACTORY_OWNER)
         } else {
@@ -888,7 +888,7 @@ mod tests {
         },
         zones::{
             T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
-            T14_ZONE_PORTAL_RUNTIME, ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME,
+            T15_ZONE_PORTAL_RUNTIME, ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME,
             ZONE_VERIFIER_RUNTIME,
         },
     };
@@ -945,6 +945,29 @@ mod tests {
         assert_eq!(
             tempo_chainspec::TempoHardforks::tempo_hardfork_at(&chainspec, u64::MAX),
             TempoHardfork::T13
+        );
+        assert_eq!(
+            genesis.alloc[&ZONE_PORTAL_IMPL_ADDRESS].code.as_ref(),
+            Some(&T13_ZONE_PORTAL_RUNTIME)
+        );
+    }
+
+    #[tokio::test]
+    async fn t14_genesis_preserves_t13_portal() {
+        let genesis = generate("--hardfork T14").await;
+        let chainspec = tempo_chainspec::TempoChainSpec::from_genesis(genesis.clone());
+
+        assert_eq!(
+            genesis.config.extra_fields.get("t14Time"),
+            Some(&serde_json::json!(0))
+        );
+        assert_eq!(
+            genesis.config.extra_fields.get("t15Time"),
+            Some(&serde_json::Value::Null)
+        );
+        assert_eq!(
+            tempo_chainspec::TempoHardforks::tempo_hardfork_at(&chainspec, u64::MAX),
+            TempoHardfork::T14
         );
         assert_eq!(
             genesis.alloc[&ZONE_PORTAL_IMPL_ADDRESS].code.as_ref(),
@@ -1009,13 +1032,13 @@ mod tests {
     }
 
     #[test]
-    fn t14_genesis_installs_t14_shared_runtimes() {
+    fn t15_genesis_installs_t15_shared_runtimes() {
         let mut alloc = BTreeMap::new();
         let hardforks = TempoHardforkArgs::default();
         insert_zone_state_at_genesis(&hardforks, &mut alloc);
 
         for (destination, expected) in [
-            (ZONE_PORTAL_IMPL_ADDRESS, T14_ZONE_PORTAL_RUNTIME),
+            (ZONE_PORTAL_IMPL_ADDRESS, T15_ZONE_PORTAL_RUNTIME),
             (ZONE_VERIFIER_ADDRESS, T13_ZONE_VERIFIER_RUNTIME),
             (ZONE_MESSENGER_ADDRESS, T13_ZONE_MESSENGER_RUNTIME),
         ] {
