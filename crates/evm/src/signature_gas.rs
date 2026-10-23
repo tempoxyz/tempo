@@ -30,18 +30,6 @@ fn account_signature_verification_gas(signature: &AccountSignature) -> u64 {
     }
 }
 
-/// Full gas to verify an account signature, with no ecrecover baseline already covered by the
-/// transaction's own signature. Saturates to `u64::MAX` if the cost overflows.
-#[inline]
-pub(crate) fn account_signature_full_verification_gas(signature: &AccountSignature) -> u64 {
-    match signature {
-        AccountSignature::Primitive(signature) => signature.verification_gas(),
-        AccountSignature::ConfigurableAccount(signature) => {
-            signature.verification_gas().unwrap_or(u64::MAX)
-        }
-    }
-}
-
 /// Calculates the gas cost for verifying an AA signature.
 ///
 /// For keychain signatures, adds key validation overhead to the inner signature cost. Returns the
