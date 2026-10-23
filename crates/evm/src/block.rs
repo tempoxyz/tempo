@@ -289,35 +289,6 @@ impl<'a> TempoBlockExecutor<'a> {
         Ok(())
     }
 
-    /// Reserves the configured recovery address before native transactions can execute.
-    ///
-    /// Installs `0xEF` marker bytecode and raises the nonce to at least one, preserving the
-    /// balance and storage.
-    fn reserve_configurable_account_recovery_factory(
-        &mut self,
-        address: Address,
-    ) -> Result<(), BlockExecutionError> {
-        let original = match self.evm_mut().state_mut().account_info_untracked(&address) {
-            Ok(info) => info,
-            Err(error) => return Err(map_database_error(error)),
-        };
-        let account = original.clone().unwrap_or_default();
-        let nonce = account.nonce.max(1);
-        let current = account
-            .with_nonce(nonce)
-            .with_code(Bytecode::new_raw(Bytes::from_static(&[0xef])));
-        if original
-            .as_ref()
-            .is_some_and(|info| info.code_hash == current.code_hash && info.nonce == nonce)
-        {
-            return Ok(());
-        }
-        let mut state = PendingState::default();
-        state.insert_account(address, original, Some(current));
-        self.inner.commit_pending_state(&state);
-        Ok(())
-    }
-
     /// Installs and initializes the complete TIP-1091 state when T10 first becomes active.
     fn deploy_zone_factory_at_boundary(&mut self) -> Result<(), BlockExecutionError> {
         let [factory, portal, verifier, messenger] =
@@ -636,14 +607,6 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         }
         if self.evm().config_spec_id().is_t14() {
             self.deploy_precompile_at_boundary(CONFIGURABLE_ACCOUNT_ADDRESS, &[])?;
-            if let Some(factory) = self
-                .evm()
-                .block()
-                .ext
-                .configurable_account_recovery_factory()
-            {
-                self.reserve_configurable_account_recovery_factory(factory)?;
-            }
         }
         // Chains starting at T13 supply their runtime code in genesis. Preserve those
         // allocations (including locally compiled contracts on test chains). Chains
