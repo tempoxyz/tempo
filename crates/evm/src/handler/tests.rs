@@ -3,8 +3,7 @@ use super::*;
 mod regressions;
 use crate::{
     FeeTokenResolver, ProtocolFeeContext, ProtocolFeeManager, ResolvedFeeToken, TempoBlockEnv,
-    TempoEvmExt, TempoEvmTx, TempoFeeManager, signature_gas::primitive_signature_verification_gas,
-    tempo_tx_registry,
+    TempoEvmExt, TempoEvmTx, TempoFeeManager, tempo_tx_registry,
 };
 use alloy_consensus::transaction::Recovered;
 use alloy_primitives::{B256, Bytes, Signature};
@@ -2203,9 +2202,9 @@ proptest! {
             webauthn_data: Bytes::from(vec![0u8; webauthn_data_len]),
         });
 
-        let secp_gas = primitive_signature_verification_gas(&secp_sig);
-        let p256_gas = primitive_signature_verification_gas(&p256_sig);
-        let webauthn_gas = primitive_signature_verification_gas(&webauthn_sig);
+        let secp_gas = secp_sig.intrinsic_verification_gas();
+        let p256_gas = p256_sig.intrinsic_verification_gas();
+        let webauthn_gas = webauthn_sig.intrinsic_verification_gas();
 
         prop_assert!(secp_gas <= p256_gas, "secp256k1 should be <= p256");
         prop_assert!(p256_gas <= webauthn_gas, "p256 should be <= webauthn");

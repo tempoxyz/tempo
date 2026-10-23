@@ -87,6 +87,8 @@ pub struct Builder<TBlocker, TPeerManager> {
     /// The leader uses this window for proposal preparation, payload building,
     /// and pacing after commonware has fetched the parent.
     pub proposal_return_budget: Duration,
+    /// Proposal budget estimator that records local validation feedback.
+    pub estimator: tempo_payload_types::Estimator,
     pub fcu_heartbeat_interval: Duration,
 
     pub feed_state: crate::feed::FeedStateHandle,
@@ -289,19 +291,20 @@ where
                 executed_state: self.executed_state.clone(),
             },
             proposal_return_budget: self.proposal_return_budget,
+            estimator: self.estimator.clone(),
             epoch_strategy: epoch_strategy.clone(),
         });
-        let application = application::Marshaled::new(
-            context.child("application"),
+        let application = application::Factory::new(
+            &context,
             application,
             marshal_mailbox.clone(),
             epoch_strategy.clone(),
+            execution_node.chain_spec(),
             self.verification_mode,
         );
 
         let epoch_manager_config = epoch::manager::Config {
             application,
-            verification_mode: self.verification_mode,
             execution_node: execution_node.clone(),
             blocker: self.blocker.clone(),
             page_cache: page_cache_ref,
