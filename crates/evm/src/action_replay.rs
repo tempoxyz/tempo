@@ -929,9 +929,8 @@ mod tests {
         // The parent state affords the max fee, so prewarming succeeds.
         let mut prewarm_evm = new_evm(2_100_000);
         prewarm_evm.ext_mut().actions.enable();
-        let signer = tx.evm_tx().signer();
         let prewarmed = prewarm_evm
-            .transact(&Recovered::new_unchecked(tx.clone(), signer))
+            .transact(&Recovered::new_unchecked(tx.clone(), payer))
             .unwrap()
             .discard();
         assert!(prewarmed.status);
@@ -941,7 +940,7 @@ mod tests {
         // not its max fee. Fresh execution rejects it.
         let balance = U256::from(1_829_000);
         let error = new_evm(1_829_000)
-            .transact(&Recovered::new_unchecked(tx, signer))
+            .transact(&Recovered::new_unchecked(tx, payer))
             .map(|_| ())
             .unwrap_err();
         assert!(matches!(
