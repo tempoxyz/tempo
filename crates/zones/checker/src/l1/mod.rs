@@ -62,6 +62,8 @@ pub(crate) struct L1BlockEvidence {
 /// Recognized Portal events from one authenticated L1 block, in receipt order.
 #[derive(Debug)]
 pub(crate) struct L1BlockEvents {
+    /// Number from the authenticated Tempo header.
+    pub(crate) number: u64,
     /// Timestamp in milliseconds from the authenticated Tempo header.
     pub(crate) timestamp_millis: u64,
     pub(crate) events: Vec<L1PortalEvent>,
@@ -178,6 +180,7 @@ fn collect_tracked_l1_block_evidence(
     }
     Ok(L1BlockEvidence {
         blocks: vec![L1BlockEvents {
+            number: evidence.block.number,
             timestamp_millis: evidence.timestamp_millis,
             events: collector.finish(),
         }],
@@ -280,6 +283,7 @@ fn collect_l1_block_evidence(
     }
     Ok(L1BlockEvidence {
         blocks: vec![L1BlockEvents {
+            number,
             timestamp_millis,
             events: event_collector.finish(),
         }],
@@ -418,9 +422,9 @@ mod tests {
             evidence
                 .blocks()
                 .iter()
-                .map(|block| block.timestamp_millis)
+                .map(|block| (block.number, block.timestamp_millis))
                 .collect::<Vec<_>>(),
-            vec![101_000, 102_000, 103_000]
+            vec![(101, 101_000), (102, 102_000), (103, 103_000)]
         );
         let mut state = State::default();
         // Applying a deposit before its deferred enablement would fail with UnknownToken.

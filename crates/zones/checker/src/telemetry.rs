@@ -138,6 +138,10 @@ pub(crate) struct CheckerMetrics {
     pub(crate) deposit_latency_seconds: Histogram,
     /// Time from a user withdrawal's Zone request to the Tempo block that processed it.
     pub(crate) withdrawal_latency_seconds: Histogram,
+    /// Time from the request block's imported L1 reference to L1 withdrawal processing.
+    pub(crate) l1_withdrawal_latency_seconds: Histogram,
+    /// L1 blocks from the request block's imported L1 reference to L1 processing.
+    pub(crate) l1_withdrawal_latency_blocks: Histogram,
 }
 
 impl CheckerMetrics {
@@ -167,6 +171,11 @@ impl CheckerMetrics {
         }
         for &latency in &samples.withdrawals {
             self.withdrawal_latency_seconds.record(latency);
+        }
+        for latency in &samples.l1_withdrawals {
+            self.l1_withdrawal_latency_seconds.record(latency.seconds);
+            self.l1_withdrawal_latency_blocks
+                .record(latency.blocks as f64);
         }
     }
 }

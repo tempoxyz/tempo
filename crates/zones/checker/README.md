@@ -136,6 +136,24 @@ The node's existing metrics endpoint exports:
 - `reth_tempo_zone_checker_verified_zone_blocks_total`
 - `reth_tempo_zone_checker_recovery_rebuilds_total`
 
+Bridge latency summaries also expose:
+
+- `reth_tempo_zone_checker_deposit_latency_seconds`
+- `reth_tempo_zone_checker_withdrawal_latency_seconds`
+- `reth_tempo_zone_checker_l1_withdrawal_latency_seconds`
+- `reth_tempo_zone_checker_l1_withdrawal_latency_blocks`
+
+The L1 withdrawal summaries measure from the last L1 block imported by the Zone
+block that requested a user withdrawal to the L1 block emitting its
+`WithdrawalProcessed` event. The time summary uses actual L1 block timestamps;
+the block summary subtracts actual L1 block numbers. Pairing uses the sender tag
+and includes failed callbacks, excluding deposit bounce-backs and unknown tags.
+These are all user withdrawals, not only card spends, and exclude client submission
+time. Requests in flight across checker restarts are not sampled. Only completions
+verified in Zone blocks no more than ten minutes old are exported, so historical
+catch-up does not backfill the summaries. Dashboards can use `_sum` / `_count`
+increases for a longer-window mean; multiply seconds by 1,000 to show milliseconds.
+
 At minimum, alert when `disabled` or `divergence_active` is `1`, verification
 lag continues to grow, or the verified height stops advancing while the Zone
 head advances.
