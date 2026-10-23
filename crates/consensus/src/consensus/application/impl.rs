@@ -63,7 +63,7 @@ pub(in crate::consensus) struct Config<TContext> {
     /// against this budget. Proposal preparation time is deducted before handing
     /// the remaining budget to the payload builder.
     pub(in crate::consensus) proposal_return_budget: Duration,
-    /// Build and validation feedback shared with the payload builder.
+    /// Proposal budget estimator that records local validation feedback.
     pub(in crate::consensus) estimator: Estimator,
 
     /// The epoch strategy used by tempo, to map block heights to epochs.

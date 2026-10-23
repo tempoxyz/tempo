@@ -87,7 +87,7 @@ pub struct Builder<TBlocker, TPeerManager> {
     /// The leader uses this window for proposal preparation, payload building,
     /// and pacing after commonware has fetched the parent.
     pub proposal_return_budget: Duration,
-    /// Build and validation feedback shared with the payload builder.
+    /// Proposal budget estimator that records local validation feedback.
     pub estimator: tempo_payload_types::Estimator,
     pub fcu_heartbeat_interval: Duration,
 
