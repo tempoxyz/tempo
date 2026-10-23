@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+# Patch the workspace's dev genesis with the zone contract artifacts that setup
+# builds into crates/zones/contracts/out, including the native ZoneFactory.
+temporary=$(mktemp -d)
+trap 'rm -rf "$temporary"' EXIT
+cargo zone-xtask install-reference-zone-factory \
+    --genesis crates/chainspec/src/genesis/dev.json \
+    --output "$temporary/genesis.json" \
+    --owner 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
+mkdir -p .amp/deps
+mv "$temporary/genesis.json" .amp/deps/l1-genesis.json

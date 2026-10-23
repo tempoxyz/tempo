@@ -4075,9 +4075,9 @@ dependencies = [
 
 [[package]]
 name = "ctutils"
-version = "0.4.3"
+version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "03bb0e1cc970d482d121d9a1744999169b69a07470b3d644a7894e53fcaf4574"
+checksum = "12218662ccac37d9714f2191252553d67585b97df8c839cbe49e0bde278dc865"
 dependencies = [
  "cmov",
  "subtle",
@@ -5042,7 +5042,7 @@ dependencies = [
 
 [[package]]
 name = "exithatch"
-version = "0.3.6"
+version = "0.3.7"
 
 [[package]]
 name = "eyre"
@@ -7554,11 +7554,17 @@ checksum = "1db0d8f1fc9e62caebd0319e11eaec5822b0186c171568f0480b46a0137f9108"
 dependencies = [
  "base64 0.22.1",
  "evmap",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "indexmap 2.14.2",
+ "ipnet",
  "metrics",
  "metrics-util",
  "quanta 0.12.6",
  "thiserror 2.0.21",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -14905,10 +14911,13 @@ dependencies = [
 
 [[package]]
 name = "tempo-vsock-proxy"
-version = "0.3.6"
+version = "0.4.0"
 dependencies = [
  "clap",
  "libc",
+ "metrics",
+ "metrics-exporter-prometheus",
+ "reth-metrics",
  "tokio",
  "tokio-vsock",
  "tracing",
@@ -14980,7 +14989,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-zone"
-version = "0.3.6"
+version = "0.3.7"
 dependencies = [
  "alloy-primitives",
  "reth-cli-util",
@@ -14991,7 +15000,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-zone-prover-enclave"
-version = "0.3.6"
+version = "0.4.0"
 dependencies = [
  "alloy-consensus",
  "alloy-genesis",
@@ -15016,7 +15025,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-zone-prover-utils"
-version = "0.3.6"
+version = "0.4.0"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -17078,7 +17087,7 @@ checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 
 [[package]]
 name = "zone-chainspec"
-version = "0.3.6"
+version = "0.3.7"
 dependencies = [
  "alloy-eips",
  "alloy-genesis",
@@ -17096,7 +17105,7 @@ dependencies = [
 
 [[package]]
 name = "zone-checker"
-version = "0.3.6"
+version = "0.3.7"
 dependencies = [
  "alloy-consensus",
  "alloy-contract",
@@ -17143,7 +17152,7 @@ dependencies = [
 
 [[package]]
 name = "zone-evm"
-version = "0.3.6"
+version = "0.3.7"
 dependencies = [
  "alloy-consensus",
  "alloy-eip7928",
@@ -17178,7 +17187,7 @@ dependencies = [
 
 [[package]]
 name = "zone-l1"
-version = "0.3.6"
+version = "0.3.7"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -17219,7 +17228,7 @@ dependencies = [
 
 [[package]]
 name = "zone-node"
-version = "0.3.6"
+version = "0.3.7"
 dependencies = [
  "alloy",
  "alloy-chains",
@@ -17252,6 +17261,7 @@ dependencies = [
  "minicbor",
  "minicbor-serde",
  "p256 0.13.2",
+ "parking_lot",
  "reqwest 0.13.5",
  "reth-chain-state",
  "reth-chainspec",
@@ -17324,7 +17334,7 @@ dependencies = [
 
 [[package]]
 name = "zone-p2p"
-version = "0.3.6"
+version = "0.3.7"
 dependencies = [
  "alloy-primitives",
  "alloy-signer-local",
@@ -17349,7 +17359,7 @@ dependencies = [
 
 [[package]]
 name = "zone-payload"
-version = "0.3.6"
+version = "0.3.7"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -17389,7 +17399,7 @@ dependencies = [
 
 [[package]]
 name = "zone-precompiles"
-version = "0.3.6"
+version = "0.3.7"
 dependencies = [
  "aes-gcm",
  "alloy",
@@ -17419,7 +17429,7 @@ dependencies = [
 
 [[package]]
 name = "zone-primitives"
-version = "0.3.6"
+version = "0.3.7"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
@@ -17431,7 +17441,7 @@ dependencies = [
 
 [[package]]
 name = "zone-prover"
-version = "0.3.6"
+version = "0.3.7"
 dependencies = [
  "alloy-consensus",
  "alloy-primitives",
@@ -17462,7 +17472,7 @@ dependencies = [
 
 [[package]]
 name = "zone-rpc"
-version = "0.3.6"
+version = "0.3.7"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -17500,7 +17510,7 @@ dependencies = [
 
 [[package]]
 name = "zone-sequencer"
-version = "0.3.6"
+version = "0.3.7"
 dependencies = [
  "alloy-chains",
  "alloy-consensus",
@@ -17551,7 +17561,7 @@ dependencies = [
 
 [[package]]
 name = "zone-spf"
-version = "0.3.6"
+version = "0.3.7"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",

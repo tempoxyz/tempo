@@ -3,7 +3,8 @@ use super::*;
 mod regressions;
 use crate::{
     FeeTokenResolver, ProtocolFeeContext, ProtocolFeeManager, ResolvedFeeToken, TempoBlockEnv,
-    TempoEvmExt, TempoEvmTx, TempoFeeManager, signature_gas::P256_VERIFY_GAS, tempo_tx_registry,
+    TempoEvmExt, TempoEvmTx, TempoFeeManager, signature_gas::primitive_signature_verification_gas,
+    tempo_tx_registry,
 };
 use alloy_consensus::transaction::Recovered;
 use alloy_primitives::{B256, Bytes, Signature};
@@ -90,12 +91,14 @@ use evm2::evm::AccountInfo;
 use std::sync::Arc;
 use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, TIP20Error, TIPFeeAMMError};
 use tempo_precompiles::{
-    TIP_FEE_MANAGER_ADDRESS,
+    ECRECOVER_GAS, TIP_FEE_MANAGER_ADDRESS,
     storage::{ContractStorage, Handler, StorageActions},
     tip_fee_manager::TipFeeManager,
     tip20::TIP20Token,
 };
-use tempo_primitives::{TempoAddressExt, TempoTxEnvelope, transaction::calc_gas_balance_spending};
+use tempo_primitives::{
+    TempoAddressExt, TempoTxEnvelope, gas::P256_VERIFY_GAS, transaction::calc_gas_balance_spending,
+};
 
 fn legacy_env(to: TxKind, input: Bytes) -> TempoTxEnv {
     Recovered::new_unchecked(
@@ -806,8 +809,8 @@ fn test_aa_gas_p256_signature() {
     )
     .0;
 
-    // Expected: normal tx + P256_VERIFY_GAS
-    let expected = base_gas + P256_VERIFY_GAS;
+    // Expected: normal tx + P256 verification, minus the ecrecover already in the base cost
+    let expected = base_gas + P256_VERIFY_GAS - ECRECOVER_GAS;
     assert_eq!((gas.0 + gas.1), expected,);
 }
 
