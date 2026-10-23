@@ -68,7 +68,11 @@ contract TempoTest is Tempo, Test {
         vm.store(addr, bytes32(uint256(12)), bytes32(uint256(paused ? 1 : 0)));
         vm.store(addr, bytes32(uint256(13)), bytes32(cap));
         // Restore the pre-T15 allow-all binding and clear the token-specific registration.
-        vm.store(TIP403_REGISTRY, keccak256(abi.encode(addr, uint256(4))), bytes32((uint256(1) << 64) | 1));
+        vm.store(
+            TIP403_REGISTRY,
+            keccak256(abi.encode(addr, uint256(4))),
+            bytes32((uint256(1) << 64) | 1)
+        );
         vm.store(TIP403_REGISTRY, keccak256(abi.encode(addr, uint256(5))), bytes32(0));
     }
 
