@@ -1454,7 +1454,7 @@ async fn test_key_authorization_witness_burn_evicts_pending_replay() -> eyre::Re
 async fn test_t6_authorize_admin_key_abi_e2e() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    // TIP-1137 removes admin keys at T14.
+    // TIP-1137 removes admin key creation at T14.
     let mut setup = TestNodeBuilder::new()
         .with_genesis(make_genesis_at(TempoHardfork::T13))
         .build_with_node_access()
@@ -1500,7 +1500,7 @@ async fn test_t6_authorize_admin_key_abi_e2e() -> eyre::Result<()> {
 async fn test_t6_inline_admin_key_authorization_e2e() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    // TIP-1137 removes admin keys at T14.
+    // TIP-1137 removes admin key creation at T14.
     let mut setup = TestNodeBuilder::new()
         .with_genesis(make_genesis_at(TempoHardfork::T13))
         .build_with_node_access()
@@ -1539,7 +1539,7 @@ async fn test_t6_inline_admin_key_authorization_e2e() -> eyre::Result<()> {
 async fn test_t6_admin_key_authorizes_child_admin_key_e2e() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    // TIP-1137 removes admin keys at T14.
+    // TIP-1137 removes admin key creation at T14.
     let mut setup = TestNodeBuilder::new()
         .with_genesis(make_genesis_at(TempoHardfork::T13))
         .build_with_node_access()
@@ -1599,11 +1599,7 @@ async fn test_t6_admin_key_authorizes_child_admin_key_e2e() -> eyre::Result<()> 
 async fn test_t6_admin_key_authorization_cross_account_replay_rejected_e2e() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    // TIP-1137 removes admin keys at T14.
-    let mut setup = TestNodeBuilder::new()
-        .with_genesis(make_genesis_at(TempoHardfork::T13))
-        .build_with_node_access()
-        .await?;
+    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
     let alice_signer = test_signer(0);
     let alice_addr = alice_signer.address();
     let bob_signer = test_signer(1);

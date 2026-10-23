@@ -1376,7 +1376,6 @@ where
         // T6 stateless signer/account checks run in `validate_env`. This state-aware phase only
         // proves that a non-root sidecar signer is an active admin key for the caller account.
         if cfg.spec.is_t6()
-            && !cfg.spec.is_t14()
             && let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref()
             && let Some(key_auth) = tempo_tx_env.key_authorization.as_ref()
         {
@@ -1869,11 +1868,8 @@ where
             }
 
             if let Some(key_auth) = &aa_env.key_authorization {
-                // TIP-1137: T14 removes T6 admin keys, so only the root key authorizes keys again.
-                let admin_keys_active = cfg.spec.is_t6() && !cfg.spec.is_t14();
-
                 // Check if this TX is using a Keychain signature (access key). Non-admin access
-                // keys cannot authorize other keys; T6-T13 admin keys can.
+                // keys cannot authorize other keys; T6 admin keys can.
                 let mut same_tx_auth_use = false;
                 if let Some(keychain_sig) = aa_env.signature.as_keychain() {
                     // Use override_key_id if provided (for gas estimation), otherwise recover from signature
@@ -1887,7 +1883,7 @@ where
                     };
 
                     same_tx_auth_use = access_key_addr == key_auth.key_id;
-                    if !same_tx_auth_use && !admin_keys_active {
+                    if !same_tx_auth_use && !cfg.spec.is_t6() {
                         return Err(
                             TempoInvalidTransaction::AccessKeyCannotAuthorizeOtherKeys.into()
                         );
@@ -1930,13 +1926,6 @@ where
                     .into());
                 }
 
-                if key_auth.is_admin() && cfg.spec.is_t14() {
-                    return Err(TempoInvalidTransaction::KeychainValidationFailed {
-                        reason: "admin key authorizations are not active since T14".to_string(),
-                    }
-                    .into());
-                }
-
                 if key_auth.is_admin()
                     && (key_auth.expiry.is_some()
                         || key_auth.limits.is_some()
@@ -1950,7 +1939,7 @@ where
                     .into());
                 }
 
-                if !admin_keys_active {
+                if !cfg.spec.is_t6() {
                     let auth_signer = key_auth.recover_signer().map_err(|_| {
                         TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed
                     })?;
@@ -1996,7 +1985,7 @@ where
                     }
                 }
 
-                if admin_keys_active {
+                if cfg.spec.is_t6() {
                     let auth_signer = key_auth.recover_signer().map_err(|_| {
                         TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed
                     })?;
