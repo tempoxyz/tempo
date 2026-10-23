@@ -61,8 +61,8 @@ Older Anvil builds only add Tempo fields to Ethereum headers at the RPC layer.
 The dev command rejects those builds because Zones require canonical Tempo block
 hashes and parent links.
 
-For Amp orbs, [local portals](.amp/README.md) provide a zone devnet, TIDX, and
-Tempo Explorer through `.amp/services.yaml`.
+For Amp orbs, [local portals](../.amp/README.md) provide a zone devnet, TIDX, and
+Tempo Explorer through the repository root's `.amp/services.yaml`.
 
 ### Deploying a Zone
 

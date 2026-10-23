@@ -10,7 +10,7 @@ use alloy_evm::{
         inspector::NoOpInspector,
     },
 };
-use alloy_primitives::{Address, Bytes, TxKind};
+use alloy_primitives::{Address, B256, Bytes, TxKind};
 use reth_revm::{
     InspectSystemCallEvm, MainContext,
     context::{
@@ -24,9 +24,14 @@ use std::{
     rc::Rc,
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_precompiles::{storage::StorageAction, storage_credits::NonCreditableSlots};
+use tempo_precompiles::{
+    error::TempoPrecompileError,
+    storage::{StorageAction, StorageActions},
+    storage_credits::NonCreditableSlots,
+    validator_config_v2::{ValidatorConfigV2, ValidatorConfigV2Error},
+};
 use tempo_revm::{
-    ProtocolFeeManager, TempoInvalidTransaction, TempoTxEnv, ValidationContext,
+    ProtocolFeeManager, TempoInvalidTransaction, TempoStateAccess, TempoTxEnv, ValidationContext,
     evm::{PrecompilesBuilder, TempoContext},
     handler::TempoEvmHandler,
 };
@@ -139,6 +144,44 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     /// Provides a mutable reference to the inner [`tempo_revm::TempoEvm`].
     pub fn inner_mut(&mut self) -> &mut tempo_revm::TempoEvm<DB, I> {
         &mut self.inner
+    }
+
+    /// Resolves the fee recipient registered for `proposer` in `ValidatorConfigV2`.
+    ///
+    /// Returns `None` before T2, when V2 is not initialized as of the parent block, or when
+    /// `proposer` has no V2 record. A registered zero fee recipient is returned as
+    /// `Some(Address::ZERO)`, which burns the fees. Reads bypass the journal,
+    /// so this must be called before any changes of the current block are committed to see the
+    /// parent state.
+    pub fn proposer_fee_recipient(
+        &mut self,
+        proposer: B256,
+    ) -> Result<Option<Address>, TempoPrecompileError> {
+        let ctx = self.ctx_mut();
+        if !ctx.cfg.spec.is_t2() {
+            return Ok(None);
+        }
+        let parent_number = ctx.block.number.saturating_to::<u64>().saturating_sub(1);
+
+        // Read-only access keeps the slots out of the journal so gas accounting is unaffected.
+        ctx.journaled_state.database.with_read_only_storage_ctx(
+            ctx.cfg.spec,
+            StorageActions::disabled(),
+            || {
+                let config = ValidatorConfigV2::default();
+                if !config.is_initialized()? || config.get_initialized_at_height()? > parent_number
+                {
+                    return Ok(None);
+                }
+                match config.validator_by_public_key(proposer) {
+                    Ok(v) => Ok(Some(v.feeRecipient)),
+                    Err(TempoPrecompileError::ValidatorConfigV2Error(
+                        ValidatorConfigV2Error::ValidatorNotFound(_),
+                    )) => Ok(None),
+                    Err(err) => Err(err),
+                }
+            },
+        )
     }
 
     /// Returns the validator-credited fee amount (post-feeAMM haircut) recorded by the most

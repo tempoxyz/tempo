@@ -1354,7 +1354,7 @@ def "main render-txgen-spec" [
     --duration: int = 90                                # Public-mix duration in seconds
 ] {
     let spec = (txgen-resolve-bench-spec $preset $out_dir)
-    if $spec.scenario_id == "public-mix" {
+    if $spec.scenario_id in $TXGEN_HELPER_PUBLIC_MIX_PRESETS {
         let window_ms = ($env.TXGEN_ZONE_SETTLEMENT_WINDOW_MS? | default "3000" | into int)
         if $window_ms < 1 or $tps < 1 or $duration < 1 {
             error make {msg: "Public mix requires positive TPS, duration, and zone sizing window"}

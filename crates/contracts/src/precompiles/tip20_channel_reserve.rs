@@ -224,6 +224,8 @@ crate::sol! {
         error CloseNotReady();
         /// Top-up would overflow the packed deposit.
         error DepositOverflow();
+        /// The voucher's expected signer has a retired root key (a configuration commitment).
+        error RootKeyRetired(address account);
     }
 }
 

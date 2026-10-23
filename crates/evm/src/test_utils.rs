@@ -140,7 +140,9 @@ impl TestExecutorBuilder {
                         ..Default::default()
                     },
                     epoch_length: self.epoch_length,
-                    multisig_recovery_factory: chainspec.info.multisig_recovery_factory(),
+                    configurable_account_recovery_factory: chainspec
+                        .info
+                        .configurable_account_recovery_factory(),
                     ..Default::default()
                 },
             },

@@ -1,0 +1,14 @@
+# Isolated L1 execution throughput of vault deposits and withdrawals, on the
+# public-mix fixtures.
+# Selects only vault deposits and withdrawals, with equal weights; the vault, MPP
+# and zone fixture setup from public-mix still runs before measurement.
+# Same requirements as public-mix: chain 1337, T10+ and nonzero state bloat.
+# Saturation runs raise both gas limits, e.g.
+# `derek bench preset=vault-throughput bloat=100 gas-limit=1T general-gas-limit=1T`.
+include: public-mix.yml
+
+mix:
+  - template: vault_deposit
+    weight: 50
+  - template: vault_withdraw
+    weight: 50
