@@ -2,6 +2,7 @@
 pragma solidity >=0.8.13 <0.9.0;
 
 import "./TempoTest.t.sol";
+import { LibString } from "solady/utils/LibString.sol";
 import { IValidatorConfig } from "tempo-std/interfaces/IValidatorConfig.sol";
 import { IValidatorConfigV2 } from "tempo-std/interfaces/IValidatorConfigV2.sol";
 
@@ -1299,6 +1300,111 @@ contract ValidatorConfigV2Test is TempoTest {
         vm.prank(setupVal1);
         vm.expectRevert(abi.encodeWithSelector(IValidatorConfigV2.NotInitialized.selector));
         validatorConfigV2.setIpAddresses(1, "10.0.0.150:8000", "10.0.0.150");
+    }
+
+    function test_endpointLength_rejectsOversizedInputs() public {
+        vm.skip(keccak256(bytes(vm.getEvmVersion())) != keccak256("t14"));
+        _initializeV2();
+
+        // Leading zeroes make a 256-byte ingress that still parses as a socket address.
+        string memory oversizedIngress =
+            string.concat("192.168.1.2:", LibString.repeat("0", 242), "80");
+        string memory oversizedEgress = LibString.repeat("0", 256);
+        assertEq(bytes(oversizedIngress).length, 256);
+        string[2] memory ingresses = [oversizedIngress, ingress2];
+        string[2] memory egresses = [egress2, oversizedEgress];
+        string[2] memory invalid = [oversizedIngress, oversizedEgress];
+        IValidatorConfigV2.Validator memory before = validatorConfigV2.validatorByIndex(1);
+
+        for (uint256 i; i < invalid.length; ++i) {
+            bytes memory expected =
+                abi.encodeWithSelector(IValidatorConfigV2.InvalidIp.selector, invalid[i]);
+            // Endpoint validation must precede signature decoding for add and rotate.
+            vm.expectRevert(expected);
+            validatorConfigV2.addValidator(
+                validator1, PUB_KEY_0, ingresses[i], egresses[i], validator1, ""
+            );
+            vm.expectRevert(expected);
+            validatorConfigV2.rotateValidator(1, PUB_KEY_0, ingresses[i], egresses[i], "");
+            vm.expectRevert(expected);
+            validatorConfigV2.setIpAddresses(1, ingresses[i], egresses[i]);
+
+            assertEq(validatorConfigV2.validatorCount(), 2);
+            IValidatorConfigV2.Validator memory afterCall = validatorConfigV2.validatorByIndex(1);
+            assertEq(abi.encode(afterCall), abi.encode(before));
+        }
+    }
+
+    function test_endpointLength_acceptsMaximumIngress() public {
+        _initializeV2();
+        string memory maximumIngress =
+            string.concat("192.168.1.1:", LibString.repeat("0", 241), "80");
+        assertEq(bytes(maximumIngress).length, 255);
+        validatorConfigV2.addValidator(
+            validator1,
+            PUB_KEY_0,
+            maximumIngress,
+            egress1,
+            validator1,
+            _signAdd(PRIV_KEY_0, validator1, maximumIngress, egress1, validator1)
+        );
+        assertEq(validatorConfigV2.validatorByIndex(2).ingress, maximumIngress);
+
+        maximumIngress = string.concat("192.168.1.2:", LibString.repeat("0", 241), "80");
+        validatorConfigV2.rotateValidator(
+            2,
+            PUB_KEY_1,
+            maximumIngress,
+            egress2,
+            _signRotate(PRIV_KEY_1, validator1, maximumIngress, egress2)
+        );
+        assertEq(validatorConfigV2.validatorByIndex(2).ingress, maximumIngress);
+
+        maximumIngress = string.concat("192.168.1.3:", LibString.repeat("0", 241), "80");
+        validatorConfigV2.setIpAddresses(2, maximumIngress, egress3);
+        assertEq(validatorConfigV2.validatorByIndex(2).ingress, maximumIngress);
+    }
+
+    function test_endpointLength_setterHardforkGate() public {
+        _initializeV2();
+        string memory oversizedIngress =
+            string.concat("192.168.1.2:", LibString.repeat("0", 242), "80");
+        if (keccak256(bytes(vm.getEvmVersion())) == keccak256("t14")) {
+            vm.expectRevert(
+                abi.encodeWithSelector(IValidatorConfigV2.InvalidIp.selector, oversizedIngress)
+            );
+            validatorConfigV2.setIpAddresses(1, oversizedIngress, egress2);
+            assertEq(validatorConfigV2.validatorByIndex(1).ingress, "10.0.0.100:8000");
+        } else {
+            validatorConfigV2.setIpAddresses(1, oversizedIngress, egress2);
+            assertEq(validatorConfigV2.validatorByIndex(1).ingress, oversizedIngress);
+        }
+    }
+
+    function test_endpointLength_preservesMalformedErrors() public {
+        _initializeV2();
+        string[2] memory ingresses = [string("invalid"), ingress2];
+        string[2] memory egresses = [egress2, string("invalid")];
+        bytes[2] memory expected = [
+            abi.encodeWithSelector(
+                IValidatorConfigV2.NotIpPort.selector,
+                "invalid",
+                "input was not of the form `<ip>:<port>`"
+            ),
+            abi.encodeWithSelector(
+                IValidatorConfigV2.NotIp.selector, "invalid", "input was not a valid IP address"
+            )
+        ];
+        for (uint256 i; i < expected.length; ++i) {
+            vm.expectRevert(expected[i]);
+            validatorConfigV2.addValidator(
+                validator1, PUB_KEY_0, ingresses[i], egresses[i], validator1, ""
+            );
+            vm.expectRevert(expected[i]);
+            validatorConfigV2.rotateValidator(1, PUB_KEY_0, ingresses[i], egresses[i], "");
+            vm.expectRevert(expected[i]);
+            validatorConfigV2.setIpAddresses(1, ingresses[i], egresses[i]);
+        }
     }
 
 }
