@@ -48,6 +48,13 @@ pub use testing_node::TestingNode;
 pub const CONSENSUS_NODE_PREFIX: &str = "consensus";
 pub const EXECUTION_NODE_PREFIX: &str = "execution";
 
+/// Initial size of the consensus finalizations freezer table.
+///
+/// The production size is a ~100MB table, and the deterministic runtime's
+/// in-memory storage copies a blob in full on every sync. The table grows on
+/// demand, so tests start small.
+pub const FREEZER_TABLE_INITIAL_SIZE: u32 = 2u32.pow(8);
+
 const MAX_MESSAGE_SIZE: u32 = 1024 * 1024;
 
 fn generate_consensus_node_config(

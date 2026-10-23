@@ -329,6 +329,7 @@ impl FollowerBuilder {
             // Plenty of headroom for any test; the marshal will fall back to
             // reth past this depth via the hybrid finalized blocks store.
             finalized_blocks_retention: 1024,
+            freezer_table_initial_size: crate::FREEZER_TABLE_INITIAL_SIZE,
         };
 
         let handle = config

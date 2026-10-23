@@ -142,6 +142,7 @@ pub async fn run_consensus_stack(
         feed_state,
 
         finalized_blocks_retention: config.finalized_blocks_retention,
+        freezer_table_initial_size: config::BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES,
     }
     .try_init(context.child("engine"))
     .await
@@ -218,6 +219,7 @@ pub async fn run_follow_stack(
         upstream_request_timeout,
         fcu_heartbeat_interval: config.fcu_heartbeat_interval.into_duration(),
         finalized_blocks_retention: config.finalized_blocks_retention,
+        freezer_table_initial_size: config::BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES,
     };
 
     let ret = follow_engine

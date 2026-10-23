@@ -85,6 +85,9 @@ pub struct Config<TUpstream> {
     /// Number of recently finalized blocks retained in the prunable archive
     /// passed to the marshal actor. Older blocks are served from reth.
     pub finalized_blocks_retention: u64,
+    /// Initial entry count of the finalizations archive's freezer table,
+    /// used only when the table is created.
+    pub freezer_table_initial_size: u32,
 }
 
 impl<TUpstream> Config<TUpstream> {
@@ -135,6 +138,7 @@ impl<TUpstream> Config<TUpstream> {
                 view_retention_timeout: commonware_consensus::types::ViewDelta::new(1),
                 max_pending_acks: NZUsize!(1),
                 finalized_blocks_retention: self.finalized_blocks_retention,
+                freezer_table_initial_size: self.freezer_table_initial_size,
                 epoch_strategy: epoch_strategy.clone(),
                 scheme_provider: scheme_provider.clone(),
             },
