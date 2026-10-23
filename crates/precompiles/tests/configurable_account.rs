@@ -22,8 +22,7 @@ use tempo_primitives::{
     MasterId, TempoAddressExt, TempoBlockEnv, UserTag,
     gas::keccak_gas,
     transaction::configurable_account::{
-        CONFIGURABLE_ACCOUNT_CREATE2_PREIMAGE_LEN, CONFIGURABLE_ACCOUNT_UPGRADE_DOMAIN,
-        MAX_CONFIGURABLE_ACCOUNT_OWNERS,
+        CONFIGURABLE_ACCOUNT_UPGRADE_DOMAIN, MAX_CONFIGURABLE_ACCOUNT_OWNERS,
     },
 };
 
@@ -185,8 +184,7 @@ fn derive_account_charges_input_and_proof_hashing_gas() {
             weighted_owners(&[(Address::repeat_byte(0x11), 1), (OWNER, 1)]),
         ] {
             let config = config(B256::ZERO, 0, 1, &owners);
-            let proof_gas = keccak(config.account_preimage_len())
-                + keccak(CONFIGURABLE_ACCOUNT_CREATE2_PREIMAGE_LEN);
+            let proof_gas = keccak(config.account_preimage_len());
             assert_eq!(initial_account_proof_gas(&config).unwrap(), proof_gas);
 
             let calldata = IConfigurableAccount::deriveAccountCall {
