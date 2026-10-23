@@ -1,9 +1,15 @@
 use super::{tempo_transaction::MAX_WEBAUTHN_SIGNATURE_LENGTH, tt_signature::PrimitiveSignature};
 use crate::gas::{SECP256K1_VERIFY_GAS, keccak_gas};
 use alloc::vec::Vec;
+use alloy_consensus::crypto::RecoveryError;
 use alloy_eips::eip7623::{STANDARD_TOKEN_COST, tokens_in_calldata};
 use alloy_primitives::{Address, B256, Keccak256, b256, keccak256};
 use alloy_rlp::{BufMut, Decodable, Encodable, Error as RlpError};
+
+#[cfg(not(feature = "std"))]
+use once_cell::race::OnceBox as OnceLock;
+#[cfg(feature = "std")]
+use std::sync::OnceLock;
 
 /// Tempo signature type byte for configurable account signatures.
 pub const SIGNATURE_TYPE_CONFIGURABLE_ACCOUNT: u8 = 0x05;
@@ -258,7 +264,7 @@ impl ConfigurableAccountConfig {
 }
 
 /// Configurable account transaction signature.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable)]
+#[derive(Clone, Debug, alloy_rlp::RlpEncodable)]
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(rlp))]
 pub struct ConfigurableAccountSignature {
     /// Configurable account authorized by this signature.
@@ -272,6 +278,30 @@ pub struct ConfigurableAccountSignature {
     ///
     /// Each approval is a primitive signature; recursive authorization is not supported.
     signatures: Vec<PrimitiveSignature>,
+    /// Inner digest whose owner quorum last verified.
+    ///
+    /// Excluded from encoding, equality and hashing.
+    #[rlp(skip)]
+    verified_digest: OnceLock<B256>,
+}
+
+// Equality and hashing exclude the verification cache.
+impl PartialEq for ConfigurableAccountSignature {
+    fn eq(&self, other: &Self) -> bool {
+        self.account == other.account
+            && self.config == other.config
+            && self.signatures == other.signatures
+    }
+}
+
+impl Eq for ConfigurableAccountSignature {}
+
+impl core::hash::Hash for ConfigurableAccountSignature {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        self.account.hash(state);
+        self.config.hash(state);
+        self.signatures.hash(state);
+    }
 }
 
 impl ConfigurableAccountSignature {
@@ -288,6 +318,7 @@ impl ConfigurableAccountSignature {
             account,
             config,
             signatures,
+            verified_digest: OnceLock::new(),
         };
         signature.validate_shape()?;
         Ok(signature)
@@ -338,10 +369,15 @@ impl ConfigurableAccountSignature {
     }
 
     /// Verifies the owner approvals against this configuration, without checking account state.
+    ///
+    /// Caches a successful digest, so repeated checks of the same role are free.
     pub fn verify_approvals(
         &self,
         inner_digest: B256,
     ) -> Result<(), ConfigurableAccountQuorumError> {
+        if self.verified_digest.get() == Some(&inner_digest) {
+            return Ok(());
+        }
         let digest = self.digest(inner_digest);
         let mut weight = ConfigurableAccountWeightAccumulator::new(self.config.threshold)?;
         for (approval_index, approval) in self.signatures.iter().enumerate() {
@@ -357,7 +393,29 @@ impl ConfigurableAccountSignature {
                 return Err(ConfigurableAccountQuorumError::ExcessSignatures);
             }
         }
-        weight.finish()
+        weight.finish()?;
+        self.cache_verified_digest(inner_digest);
+        Ok(())
+    }
+
+    /// Verifies the owner quorum over `inner_digest` and returns the named account.
+    ///
+    /// Stateless: the account's code, commitment or initial derivation must still be checked
+    /// against state.
+    pub fn recover_account(&self, inner_digest: B256) -> Result<Address, RecoveryError> {
+        self.verify_approvals(inner_digest)
+            .map_err(|_| RecoveryError::new())?;
+        Ok(self.account)
+    }
+
+    #[cfg(feature = "std")]
+    fn cache_verified_digest(&self, digest: B256) {
+        let _ = self.verified_digest.set(digest);
+    }
+
+    #[cfg(not(feature = "std"))]
+    fn cache_verified_digest(&self, digest: B256) {
+        let _ = self.verified_digest.set(alloc::boxed::Box::new(digest));
     }
 
     /// Checks the stored commitment or, on first use, derives the named account.
