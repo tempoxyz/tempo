@@ -10,7 +10,7 @@ use tempo_contracts::precompiles::SignatureVerifierError;
 use tempo_precompiles_macros::contract;
 use tempo_primitives::transaction::{
     SignatureType,
-    tt_signature::{KeychainSignature, PrimitiveSignature, TempoSignature},
+    tt_signature::{AccountSignature, KeychainSignature, PrimitiveSignature, TempoSignature},
 };
 use tracing::trace;
 
@@ -116,14 +116,16 @@ impl SignatureVerifier {
         if keychain_sig.is_legacy() {
             return Err(SignatureVerifierError::invalid_format().into());
         }
+        let AccountSignature::Primitive(signature) = &keychain_sig.signature else {
+            return Err(SignatureVerifierError::invalid_format().into());
+        };
 
         let signing_hash = KeychainSignature::signing_hash(hash, keychain_sig.user_address);
-        let inner = &keychain_sig.signature;
-        let key_id = self.recover(signing_hash, inner.to_bytes())?;
+        let key_id = self.recover(signing_hash, signature.to_bytes())?;
         Ok(RecoveredKeychainKey {
             account: keychain_sig.user_address,
             key_id,
-            signature_type: inner.signature_type(),
+            signature_type: signature.signature_type(),
         })
     }
 }
@@ -145,12 +147,48 @@ mod tests {
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_primitives::transaction::tt_signature::{
-        SIGNATURE_TYPE_P256, SIGNATURE_TYPE_WEBAUTHN,
+    use tempo_primitives::transaction::{
+        ConfigurableAccountConfig, ConfigurableAccountOwner, ConfigurableAccountSignature,
+        tt_signature::{SIGNATURE_TYPE_P256, SIGNATURE_TYPE_WEBAUTHN},
     };
 
     fn sign_recover(hash: B256, signature: Vec<u8>) -> Result<Address> {
         SignatureVerifier::new().recover(hash, Bytes::from(signature))
+    }
+
+    #[test]
+    fn keychain_verification_rejects_configurable_account() -> eyre::Result<()> {
+        let account = Address::repeat_byte(1);
+        let configurable_account = ConfigurableAccountSignature::try_new(
+            Address::repeat_byte(2),
+            ConfigurableAccountConfig {
+                salt: B256::ZERO,
+                version: 1,
+                threshold: 1,
+                owners: vec![ConfigurableAccountOwner {
+                    owner: Address::repeat_byte(3),
+                    weight: 1,
+                }],
+            },
+            vec![PrimitiveSignature::default()],
+        )
+        .unwrap();
+        let signature =
+            TempoSignature::Keychain(KeychainSignature::new(account, configurable_account));
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
+        StorageCtx::enter(&mut storage, || {
+            let verifier = SignatureVerifier::new();
+            for result in [
+                verifier.verify_keychain(account, B256::ZERO, signature.to_bytes()),
+                verifier.verify_keychain_admin(account, B256::ZERO, signature.to_bytes()),
+            ] {
+                assert_eq!(
+                    result.unwrap_err(),
+                    SignatureVerifierError::invalid_format().into()
+                );
+            }
+            Ok(())
+        })
     }
 
     #[test]

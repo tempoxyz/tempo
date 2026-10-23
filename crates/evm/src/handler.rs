@@ -10,7 +10,9 @@ pub use self::config::{
 use self::config::{TempoFeeContext, TempoHandlerHooks};
 use crate::{
     FeePaymentError, TempoAaTx, TempoInvalidTransaction, TempoTxEnv,
-    signature_gas::{calldata_tokens, tempo_signature_verification_gas},
+    signature_gas::{
+        account_signature_verification_gas, calldata_tokens, tempo_signature_verification_gas,
+    },
 };
 use alloy_primitives::{Address, KECCAK256_EMPTY, TxKind, U256};
 use evm2::{
@@ -35,6 +37,7 @@ use tempo_contracts::precompiles::{
     IAccountKeychain::SignatureType as PrecompileSignatureType, NonceError,
 };
 use tempo_precompiles::{
+    ECRECOVER_GAS,
     account_keychain::{
         AccountKeychain, AuthorizedKey, CallScope as PrecompileCallScope, KeyRestrictions,
         SelectorRule as PrecompileSelectorRule, TokenLimit,
@@ -207,9 +210,10 @@ fn calculate_key_authorization_gas(
     gas_params: &GasParams,
     spec: TempoHardfork,
 ) -> (u64, u64) {
-    // The base 21k includes one ecrecover, for the transaction's own signature. The key
-    // authorization's signature is verified on top of that, so it pays the full verification gas.
-    let sig_gas = key_auth.signature.verification_gas();
+    // All signature types pay ECRECOVER_GAS (3k) as the baseline since
+    // PrimitiveSignature::intrinsic_verification_gas assumes ecrecover is already in base 21k.
+    // For KeyAuthorization, we're doing an additional signature verification.
+    let sig_gas = ECRECOVER_GAS + account_signature_verification_gas(&key_auth.signature);
 
     let num_limits = key_auth
         .authorization
@@ -500,7 +504,7 @@ fn validate_key_authorization(
         && signed
             .signature()
             .as_keychain()
-            .is_some_and(|signature| key_auth.key_type != signature.signature.signature_type())
+            .is_some_and(|signature| key_auth.key_type != signature.signature.key_type())
     {
         return Err(TempoInvalidTransaction::KeychainValidationFailed {
             reason: "key authorization key_type does not match the keychain signature type".into(),
@@ -589,8 +593,7 @@ fn validate_key_authorization(
                         .into(),
                 });
             }
-            if key_auth.signature.signature_type() != keychain_signature.signature.signature_type()
-            {
+            if key_auth.signature.key_type() != keychain_signature.signature.key_type() {
                 return Err(TempoInvalidTransaction::KeychainValidationFailed {
                     reason: "admin-signed key authorization signature type does not match transaction key signature type".into(),
                 });
@@ -702,7 +705,7 @@ fn prepare_keychain(
         // with historical blocks during re-execution.
         let expected_signature_type = (key_authorization.is_some()
             || host.config_spec_id().is_t1())
-        .then_some(u8::from(keychain_signature.signature.signature_type()));
+        .then_some(u8::from(keychain_signature.signature.key_type()));
         let loaded = StorageCtx::enter_evm_without_tip1060_accounting(host, || {
             let mut keychain = AccountKeychain::new();
             let key = keychain
@@ -749,7 +752,7 @@ fn prepare_keychain(
             .recover_signer()
             .map_err(|_| TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed)?;
         if signer != aa.signer() {
-            let signature_type: u8 = key_authorization.signature.signature_type().into();
+            let signature_type: u8 = key_authorization.signature.key_type().into();
             let signer_is_admin = state.loaded_key.as_ref().is_some_and(|loaded| {
                 loaded.key_id == signer
                     && loaded.key.signature_type as u8 == signature_type
