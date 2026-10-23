@@ -152,18 +152,9 @@ build_tempo() {
   cd -
 }
 
-build_tempo baseline "$BASELINE_REF" ../tempo-baseline &
-PID_BASELINE=$!
-build_tempo feature "$FEATURE_REF" ../tempo-feature &
-PID_FEATURE=$!
-
-FAIL=0
-wait $PID_BASELINE || FAIL=1
-wait $PID_FEATURE || FAIL=1
-if [ $FAIL -ne 0 ]; then
-  echo "::error::One or more build tasks failed"
-  exit 1
-fi
+# Compile sequentially to keep the nightly comparison within runner memory.
+build_tempo baseline "$BASELINE_REF" ../tempo-baseline
+build_tempo feature "$FEATURE_REF" ../tempo-feature
 
 BASELINE_BIN="$(cd ../tempo-baseline && pwd)/target/profiling/tempo"
 FEATURE_BIN="$(cd ../tempo-feature && pwd)/target/profiling/tempo"

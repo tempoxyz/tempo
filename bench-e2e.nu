@@ -1669,8 +1669,7 @@ def "main e2e" [
     let baseline_tbc = (tracy-build-config $baseline_build_features $tracy)
     let feature_tbc = (tracy-build-config $feature_build_features $tracy)
     let effective_no_cache = $no_cache or ($tracy != "off")
-    # Build benchmark binaries in parallel with independent target/ directories,
-    # so cargo invocations don't collide.
+    # Compile sequentially to keep the nightly comparison within runner memory.
     mut builds = []
     if $needs_baseline {
         $builds = ($builds | append { wt: $baseline_wt, ref_name: $baseline, sha: $baseline, label: "baseline", features: $baseline_tbc.features, extra_rustflags: $baseline_tbc.extra_rustflags, bench_features: $baseline_build_features })
@@ -1678,7 +1677,7 @@ def "main e2e" [
     if $needs_feature {
         $builds = ($builds | append { wt: $feature_wt, ref_name: $feature, sha: $feature, label: "feature", features: $feature_tbc.features, extra_rustflags: $feature_tbc.extra_rustflags, bench_features: $feature_build_features })
     }
-    $builds | par-each { |b|
+    $builds | each { |b|
         if $effective_no_cache {
             build-in-worktree --no-cache --no-default-features=$no_default_features --extra-rustflags $b.extra_rustflags --bench-features $b.bench_features $b.wt $b.ref_name $profile $b.features $b.sha
         } else {
