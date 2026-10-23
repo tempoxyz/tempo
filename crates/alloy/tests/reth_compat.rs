@@ -115,8 +115,13 @@ fn simulation_rejects_invalid_claimed_approvals(
     assert!(matches!(error, EthApiError::InvalidParams(actual) if actual == message));
 }
 
-#[test]
-fn grant_simulation_signs_the_grant_with_mock_owner_approvals() {
+/// The mock grant is signed by the parent, or by the admin named as `signer`.
+#[test_case(None, Address::repeat_byte(0xaa); "parent signed")]
+#[test_case(Some(Address::repeat_byte(0xbb)), Address::repeat_byte(0xbb); "admin signed")]
+fn grant_simulation_signs_the_grant_with_mock_owner_approvals(
+    signer: Option<Address>,
+    signing_account: Address,
+) {
     let mut request = aa_request(SignatureType::Secp256k1);
     request.set_key_authorization(grant().into_signed(Signature::test_signature()));
     // An unsupported `keyData` length falls back to the default size, as for ordinary requests.
@@ -125,7 +130,10 @@ fn grant_simulation_signs_the_grant_with_mock_owner_approvals() {
         key_data: Some(Bytes::from_static(&[0, 0, 1])),
         ..approval(2)
     };
-    request.key_authorization_simulation = Some(spec(vec![approval(1), webauthn]));
+    request.key_authorization_simulation = Some(ConfigurableAccountSimulationSpec {
+        signer,
+        ..spec(vec![approval(1), webauthn])
+    });
 
     let env = request
         .try_into_tx_env(&TempoEvmEnv::default())
@@ -143,9 +151,54 @@ fn grant_simulation_signs_the_grant_with_mock_owner_approvals() {
         .signature
         .as_configurable_account()
         .expect("the grant carries the mock quorum");
-    assert_eq!(signature.account(), Address::repeat_byte(0xaa));
+    assert_eq!(signature.account(), signing_account);
     assert_eq!(signature.config(), &config());
     assert_eq!(signature.signatures().len(), 2);
+}
+
+/// `eth_simulateV1` and `eth_call` reject an inconsistent simulated role alike.
+#[test_case(
+    |request| request.set_key_type(SignatureType::ConfigurableAccount),
+    "configurable account simulation requires a configuration witness";
+    "missing witness"
+)]
+#[test_case(
+    |request| {
+        request.configurable_account_simulation = Some(spec(vec![approval(1), approval(2)]));
+        request.set_key_id(Address::repeat_byte(0xaa));
+    },
+    "a configurable delegate cannot be its own parent";
+    "own parent"
+)]
+#[test_case(
+    |request| {
+        request.configurable_account_simulation = Some(ConfigurableAccountSimulationSpec {
+            signer: Some(Address::repeat_byte(0xbb)),
+            ..spec(vec![approval(1), approval(2)])
+        });
+    },
+    "configurable account simulation signer does not match the role account";
+    "signer mismatch"
+)]
+#[test_case(
+    |request| request.key_authorization_simulation = Some(spec(vec![approval(1), approval(2)])),
+    "keyAuthorizationSimulation requires keyAuthorization";
+    "grant simulation without a grant"
+)]
+fn simulation_rejects_inconsistent_roles(
+    configure: fn(&mut TempoTransactionRequest),
+    message: &str,
+) {
+    let mut request = aa_request(SignatureType::Secp256k1);
+    configure(&mut request);
+
+    let error = TryIntoSimTx::<TempoTxEnvelope>::try_into_sim_tx(request.clone())
+        .expect_err("eth_simulateV1 rejects the role");
+    assert_eq!(error.to_string(), message);
+    let error = request
+        .try_into_tx_env(&TempoEvmEnv::default())
+        .expect_err("eth_call rejects the role");
+    assert!(matches!(error, EthApiError::InvalidParams(actual) if actual == message));
 }
 
 /// Simulated blocks skip owner cryptography, so a real configurable grant is verified first.

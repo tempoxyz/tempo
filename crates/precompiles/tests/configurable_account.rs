@@ -1,4 +1,5 @@
-//! Configurable account precompile calls through its ABI.
+//! Configurable account precompile calls through its ABI, and the keychain grants that depend on
+//! an account's configuration.
 
 use alloy::{
     primitives::{Address, B256, Bytes, address, keccak256},
@@ -13,10 +14,13 @@ use evm2::{
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
-    CONFIGURABLE_ACCOUNT_ADDRESS, ConfigurableAccountError, IConfigurableAccount,
+    AccountKeychainError, CONFIGURABLE_ACCOUNT_ADDRESS, ConfigurableAccountError,
+    IAccountKeychain::{KeyRestrictions, SignatureType},
+    IConfigurableAccount,
 };
 use tempo_precompiles::{
     Precompile,
+    account_keychain::AccountKeychain,
     configurable_account::{ConfigurableAccount, UpgradeEligibility, config, valid_account},
     input_cost,
     storage::{
@@ -653,4 +657,62 @@ fn upgrade_account_installs_a_version_one_commitment() {
         storage.get_events(CONFIGURABLE_ACCOUNT_ADDRESS),
         &[upgraded, updated]
     );
+}
+
+/// A committed configuration ends an account's direct grant authority where its code begins; an
+/// uncommitted account grants keys whatever its code.
+#[test]
+fn committed_parent_with_code_cannot_authorize_keys() {
+    let parent = Address::repeat_byte(0x11);
+    let key = Address::repeat_byte(0x22);
+    let codes = [
+        ("none", Bytes::new()),
+        ("bytecode", Bytes::from_static(&[0x00])),
+        (
+            "delegation",
+            Bytes::from_iter(
+                [0xef, 0x01, 0x00]
+                    .into_iter()
+                    .chain(Address::repeat_byte(0x33)),
+            ),
+        ),
+    ];
+    for committed in [false, true] {
+        for (kind, code) in &codes {
+            let mut storage = t14_storage();
+            StorageCtx::enter(&mut storage, || {
+                let mut keychain = AccountKeychain::new();
+                keychain.initialize().unwrap();
+                keychain.set_tx_origin(parent).unwrap();
+                if committed {
+                    seed_commitment(parent, B256::repeat_byte(1));
+                }
+                if !code.is_empty() {
+                    StorageCtx.set_code(parent, code.clone()).unwrap();
+                }
+                let result = keychain.authorize_key(
+                    parent,
+                    key,
+                    SignatureType::Secp256k1,
+                    KeyRestrictions {
+                        expiry: u64::MAX,
+                        enforceLimits: false,
+                        limits: vec![],
+                        allowAnyCalls: true,
+                        allowedCalls: vec![],
+                    },
+                    None,
+                );
+                let expected = if committed && !code.is_empty() {
+                    Err(AccountKeychainError::invalid_key_id().into())
+                } else {
+                    Ok(())
+                };
+                assert_eq!(
+                    result, expected,
+                    "committed={committed}, parent code: {kind}"
+                );
+            });
+        }
+    }
 }
