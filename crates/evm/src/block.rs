@@ -492,14 +492,14 @@ where
 
     /// Pays the beneficiary's accumulated fees in their current preferred token at block end.
     ///
-    /// T14 is a provisional activation gate for this prototype. The ordinary claim path keeps
+    /// T15 is a provisional activation gate for this prototype. The ordinary claim path keeps
     /// pause, transfer-policy and receive-policy semantics. A failed transfer leaves the ledger
     /// intact for a later block or explicit claim, rather than preventing block production.
     /// Like other implicit system calls, this adds neither a receipt nor block gas usage;
     /// its logs are not included in transaction receipts.
     fn apply_validator_fee_payout(&mut self) -> Result<(), BlockExecutionError> {
         let spec = self.evm().cfg.spec;
-        if !spec.is_t14() {
+        if !spec.is_t15() {
             return Ok(());
         }
 
@@ -2490,7 +2490,7 @@ mod tests {
         let other_validator = Address::repeat_byte(0x22);
         let user = Address::repeat_byte(0x33);
         let fee = U256::from(1_000);
-        for spec in [TempoHardfork::T13, TempoHardfork::T14] {
+        for spec in [TempoHardfork::T13, TempoHardfork::T14, TempoHardfork::T15] {
             for custom_preference in [false, true] {
                 let mut db = State::builder().with_bundle_update().build();
                 let mut executor = TestExecutorBuilder::default()
@@ -2559,7 +2559,7 @@ mod tests {
                 assert!(result.requests.is_empty());
                 assert_eq!(result.gas_used, 0);
                 StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
-                    let paid = if spec.is_t14() {
+                    let paid = if spec.is_t15() {
                         fee * U256::from(2)
                     } else {
                         U256::ZERO
@@ -2601,7 +2601,7 @@ mod tests {
         for paused in [false, true] {
             let mut db = State::builder().with_bundle_update().build();
             let mut executor = TestExecutorBuilder::default()
-                .with_spec(TempoHardfork::T14)
+                .with_spec(TempoHardfork::T15)
                 .with_epoch_length(10)
                 .build(&mut db, &chainspec);
             executor.evm_mut().block.beneficiary = validator;
@@ -2629,7 +2629,7 @@ mod tests {
             })?;
             executor.finish()?;
             let mut executor = TestExecutorBuilder::default()
-                .with_spec(TempoHardfork::T14)
+                .with_spec(TempoHardfork::T15)
                 .with_epoch_length(10)
                 .with_block_number(2)
                 .build(&mut db, &chainspec);
@@ -2690,7 +2690,7 @@ mod tests {
         let user = Address::repeat_byte(0x33);
         let mut db = State::builder().with_bundle_update().build();
         let mut executor = TestExecutorBuilder::default()
-            .with_spec(TempoHardfork::T14)
+            .with_spec(TempoHardfork::T15)
             .with_epoch_length(10)
             .build(&mut db, &chainspec);
         executor.evm_mut().block.beneficiary = validator;
@@ -2769,7 +2769,7 @@ mod tests {
 
         // An empty following block cannot pay the same fees twice.
         let mut executor = TestExecutorBuilder::default()
-            .with_spec(TempoHardfork::T14)
+            .with_spec(TempoHardfork::T15)
             .with_epoch_length(10)
             .with_block_number(2)
             .build(&mut db, &chainspec);
