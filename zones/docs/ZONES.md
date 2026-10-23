@@ -417,7 +417,7 @@ check status first.
 ### Enabling zone transfers
 
 Zone-internal TIP-20 transfers (`transfer`, `transferFrom`, and their memo variants) are
-off by default. From T14, the portal admin can opt a zone in:
+off by default. From T15, the portal admin can opt a zone in:
 
 ```bash
 export L1_RPC_URL=https://...
@@ -429,7 +429,7 @@ just set-transfers-enabled true
 
 Pass `false` to disable transfers again. A Safe admin can use
 `cargo zone-xtask set-transfers-enabled --enabled --safe-address ... --safe-output ...`;
-omit `--enabled` to create a disable proposal. Transfers require T14 on Tempo, which adds
+omit `--enabled` to create a disable proposal. Transfers require T15 on Tempo, which adds
 `setTransfersEnabled` to the portal. Zone transactions see the change once the zone has
 finalized the Tempo block that recorded it. Abdicating `AccessPolicy` freezes the current
 setting once the 30-day abdication delay has passed.
@@ -848,7 +848,7 @@ Zones inherit the Tempo L1 EVM but replace, disable, or pass through each precom
 | Precompile | Address | Zone Behavior |
 |------------|---------|---------------|
 | Standard EVM (ecrecover, SHA-256, etc.) | `0x01`–`0x0a`, `0x0100` on T1C+ | **Unchanged** — standard Ethereum precompiles inherited from Tempo's active hardfork (Prague pre-T1C, Osaka at T1C+) are available as-is. |
-| TIP-20 tokens | `0x20C0…` prefix | **Adapted** — upstream Tempo TIP-20 business logic runs over zone-local token state and exact-block L1 policy state, with zone privacy (caller-scoped reads), fixed gas for transfers, and bridge authorization for mint/burn. Transfers need the portal's T14 opt-in, revert while the token is paused on L1, and revert instead of diverting funds when a receive policy blocks them. |
+| TIP-20 tokens | `0x20C0…` prefix | **Adapted** — upstream Tempo TIP-20 business logic runs over zone-local token state and exact-block L1 policy state, with zone privacy (caller-scoped reads), fixed gas for transfers, and bridge authorization for mint/burn. Transfers need the portal's T15 opt-in, revert while the token is paused on L1, and revert instead of diverting funds when a receive policy blocks them. |
 | TIP20Factory | `0x20FC…0000` | **Disabled** — token creation is L1-owned; `ZoneInbox` directly activates bridged TIP-20 tokens during `advanceTempo`. |
 | TIP403Registry | `0x403C…0000` | **Adapted** — the upstream Tempo registry executes read-only against raw L1 storage at the exact finalized block recorded in `TempoState`. Mutating calls (`createPolicy`, `modifyPolicyWhitelist`, etc.) revert because policy state is managed on L1. |
 | ZoneFeeManager | `0xfeec…0001` | **Replaced** — no user/validator preferences or FeeAMM routing. The explicit transaction token (or portal creation-time default) is escrowed directly, accrued by beneficiary/token, and readable or claimable only by that beneficiary. |

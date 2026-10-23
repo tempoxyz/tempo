@@ -73,7 +73,7 @@ pub(crate) struct SetTransfersEnabled {
     #[command(flatten)]
     args: PortalAccessArgs,
 
-    /// Allow zone-internal TIP-20 transfers from T14. Omit to disable them.
+    /// Allow zone-internal TIP-20 transfers from T15. Omit to disable them.
     #[arg(long)]
     enabled: bool,
 }

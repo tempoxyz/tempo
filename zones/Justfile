@@ -494,7 +494,7 @@ set-gateway-mode enforced:
     cargo zone-xtask set-gateway-mode "${ARGS[@]}"
 
 [group('zone')]
-[doc('Enables or disables zone-internal TIP-20 transfers, which take effect from T14. Pass true to enable or false to disable. Requires L1_RPC_URL, L1_PORTAL_ADDRESS, and ADMIN_KEY.')]
+[doc('Enables or disables zone-internal TIP-20 transfers, which take effect from T15. Pass true to enable or false to disable. Requires L1_RPC_URL, L1_PORTAL_ADDRESS, and ADMIN_KEY.')]
 set-transfers-enabled enabled:
     #!/bin/bash
     set -euo pipefail
