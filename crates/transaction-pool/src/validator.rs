@@ -5,14 +5,14 @@ use crate::{
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 
-use alloy_consensus::{Transaction, constants::KECCAK_EMPTY, transaction::Recovered};
+use alloy_consensus::{Transaction, transaction::Recovered};
 use alloy_primitives::{Address, B256, U256};
 use evm2::{EvmFeatures, evm::DynDatabase, registry::HandlerError};
 use parking_lot::RwLock;
 use reth_chainspec::{ChainSpecProvider, EthChainSpec};
 use reth_evm::{BlockExecutorFactory, ConfigureEvm, EvmEnv as _, database::StateProviderDatabase};
 use reth_primitives_traits::{
-    Account, AccountExtension, Bytecode, SealedBlock, transaction::error::InvalidTransactionError,
+    Account, Bytecode, SealedBlock, transaction::error::InvalidTransactionError,
 };
 use reth_provider::BlockReaderIdExt;
 use reth_storage_api::{
@@ -837,13 +837,7 @@ where
             .borrow_mut()
             .get_account(address)
             .map_err(ProviderError::other)?
-            .map(|account| Account {
-                nonce: account.nonce,
-                balance: account.balance,
-                bytecode_hash: (!account.code_hash.is_zero() && account.code_hash != KECCAK_EMPTY)
-                    .then_some(account.code_hash),
-                extension: AccountExtension::from_shared(account.extension.into_shared()),
-            }))
+            .map(Account::from))
     }
 }
 

@@ -168,7 +168,6 @@ zone-node = { path = "crates/zones/node" }
 zone-p2p = { path = "crates/zones/p2p" }
 zone-payload = { path = "crates/zones/payload" }
 zone-precompiles = { path = "crates/zones/precompiles", default-features = false }
-zone-primitives = { path = "crates/zones/primitives", default-features = false }
 zone-prover = { path = "crates/zones/prover" }
 zone-rpc = { path = "crates/zones/rpc" }
 zone-sequencer = { path = "crates/zones/sequencer" }
@@ -204,7 +203,6 @@ tempo-chainspec = { path = "crates/chainspec", default-features = false }
 tempo-consensus = { path = "crates/consensus", default-features = false }
 tempo-consensus-config = { path = "crates/consensus-config", default-features = false }
 tempo-dkg-onchain-artifacts = { path = "crates/dkg-onchain-artifacts", default-features = false }
-tempo-e2e = { path = "crates/e2e" }
 tempo-faucet = { path = "crates/faucet", default-features = false }
 tempo-evm = { path = "crates/evm", default-features = false }
 tempo-eyre = { path = "crates/eyre", default-features = false }
@@ -216,6 +214,7 @@ tempo-precompiles = { path = "crates/precompiles", default-features = false }
 tempo-precompiles-macros = { path = "crates/precompiles-macros" }
 tempo-primitives = { path = "crates/primitives", default-features = false }
 tempo-contracts = { path = "crates/contracts", default-features = false, features = ["serde"] }
+zone-primitives = { path = "crates/zones/primitives", default-features = false }
 tempo-telemetry-util = { path = "crates/telemetry-util", default-features = false }
 tempo-transaction-pool = { path = "crates/transaction-pool", default-features = false }
 tempo-validator-config = { path = "crates/validator-config", default-features = false }
@@ -233,7 +232,6 @@ reth-db = { git = "https://github.com/paradigmxyz/reth", rev = "450ae6f3bb5e7e9d
 reth-discv5 = { git = "https://github.com/paradigmxyz/reth", rev = "450ae6f3bb5e7e9de8f953dd9603531f284b59b8" }
 reth-db-api = { git = "https://github.com/paradigmxyz/reth", rev = "450ae6f3bb5e7e9de8f953dd9603531f284b59b8" }
 reth-e2e-test-utils = { git = "https://github.com/paradigmxyz/reth", rev = "450ae6f3bb5e7e9de8f953dd9603531f284b59b8" }
-reth-engine-local = { git = "https://github.com/paradigmxyz/reth", rev = "450ae6f3bb5e7e9de8f953dd9603531f284b59b8" }
 reth-engine-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "450ae6f3bb5e7e9de8f953dd9603531f284b59b8" }
 reth-engine-tree = { git = "https://github.com/paradigmxyz/reth", rev = "450ae6f3bb5e7e9de8f953dd9603531f284b59b8" }
 reth-errors = { git = "https://github.com/paradigmxyz/reth", rev = "450ae6f3bb5e7e9de8f953dd9603531f284b59b8" }
@@ -273,6 +271,7 @@ reth-rpc-eth-api = { git = "https://github.com/paradigmxyz/reth", rev = "450ae6f
 reth-rpc-eth-types = { git = "https://github.com/paradigmxyz/reth", rev = "450ae6f3bb5e7e9de8f953dd9603531f284b59b8" }
 reth-rpc-server-types = { git = "https://github.com/paradigmxyz/reth", rev = "450ae6f3bb5e7e9de8f953dd9603531f284b59b8" }
 reth-stages = { git = "https://github.com/paradigmxyz/reth", rev = "450ae6f3bb5e7e9de8f953dd9603531f284b59b8" }
+reth-stages-types = { git = "https://github.com/paradigmxyz/reth", rev = "450ae6f3bb5e7e9de8f953dd9603531f284b59b8" }
 reth-static-file = { git = "https://github.com/paradigmxyz/reth", rev = "450ae6f3bb5e7e9de8f953dd9603531f284b59b8" }
 reth-static-file-types = { git = "https://github.com/paradigmxyz/reth", rev = "450ae6f3bb5e7e9de8f953dd9603531f284b59b8" }
 reth-storage-api = { git = "https://github.com/paradigmxyz/reth", rev = "450ae6f3bb5e7e9de8f953dd9603531f284b59b8" }
@@ -283,8 +282,6 @@ reth-transaction-pool = { git = "https://github.com/paradigmxyz/reth", rev = "45
 reth-trie = { git = "https://github.com/paradigmxyz/reth", rev = "450ae6f3bb5e7e9de8f953dd9603531f284b59b8", features = ["account-ext"] }
 reth-trie-common = { git = "https://github.com/paradigmxyz/reth", rev = "450ae6f3bb5e7e9de8f953dd9603531f284b59b8" }
 reth-trie-db = { git = "https://github.com/paradigmxyz/reth", rev = "450ae6f3bb5e7e9de8f953dd9603531f284b59b8", features = ["account-ext"] }
-reth-stages-types = { git = "https://github.com/paradigmxyz/reth", rev = "450ae6f3bb5e7e9de8f953dd9603531f284b59b8" }
-
 
 alloy-json-abi = { version = "1.7.3", default-features = false }
 alloy-primitives = { version = "1.7.3", default-features = false }
@@ -330,7 +327,6 @@ commonware-storage = "2026.9.0"
 commonware-utils = "2026.9.0"
 
 arbitrary = { version = "1.4", features = ["derive"] }
-async-lock = "3.4.2"
 async-trait = "0.1"
 auto_impl = "1"
 axum = "0.8.8"
@@ -345,8 +341,6 @@ dashmap = "6"
 dirs-next = "2.0.0"
 derive_more = { version = "2.1.1", default-features = false }
 
-ed25519-dalek = { version = "2", features = ["rand_core"] }
-either = "1"
 eyre = "0.6.12"
 futures = "0.3.31"
 governor = "0.10.4"
@@ -491,6 +485,7 @@ evm2-macros = { git = "https://github.com/DaniPopes/evm2", rev = "301852ff4b0cc1
 # reth-static-file = { path = "../reth/crates/static-file/static-file" }
 # reth-static-file-types = { path = "../reth/crates/static-file/types" }
 # reth-storage-api = { path = "../reth/crates/storage/storage-api" }
+# reth-storage-overlay = { path = "../reth/crates/storage/storage-overlay" }
 # reth-storage-errors = { path = "../reth/crates/storage/errors" }
 # reth-tasks = { path = "../reth/crates/tasks" }
 # reth-tokio-util = { path = "../reth/crates/tokio-util" }

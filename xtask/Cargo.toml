@@ -48,7 +48,6 @@ itertools.workspace = true
 rand_08.workspace = true
 rand.workspace = true
 rayon.workspace = true
-reth-evm.workspace = true
 reth-db.workspace = true
 reth-db-api.workspace = true
 reth-provider.workspace = true

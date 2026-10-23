@@ -14708,7 +14708,6 @@ dependencies = [
  "rayon",
  "reth-db",
  "reth-db-api",
- "reth-evm",
  "reth-network-peers",
  "reth-primitives-traits",
  "reth-provider",

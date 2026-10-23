@@ -9,8 +9,6 @@ pub fn is_valid_native_account(address: Address, hardfork: TempoHardfork) -> boo
     !address.is_zero()
         && !address.is_virtual()
         && !address.is_precompile(hardfork)
-        && !Precompiles::<BaseEvmTypes>::base(hardfork.into())
-            .addresses()
-            .contains(&address)
+        && !Precompiles::<BaseEvmTypes>::base(hardfork.into()).contains(&address)
         && address.zone_portal_id().is_none()
 }

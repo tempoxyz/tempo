@@ -42,13 +42,13 @@ impl StorageCreditsErr for HostError {
 pub trait StorageCreditsBackend {
     type Error: StorageCreditsErr;
 
-    /// Gas parameters for the active EVM2 version.
+    /// Gas parameters for the active spec.
     fn gas_params(&self) -> &GasParams;
 
-    /// Gas tracker for the active EVM2 execution context.
+    /// Gas tracker for the active execution context.
     fn gas_tracker(&mut self) -> &mut GasTracker;
 
-    /// Charges `cost` regular gas, returning out-of-gas if insufficient.
+    /// Charges `cost` regular gas, returning [`out_of_gas`](StorageCreditsErr::out_of_gas) if insufficient.
     #[inline]
     fn charge_gas(&mut self, cost: u64) -> Result<(), Self::Error> {
         let gas = self.gas_tracker();

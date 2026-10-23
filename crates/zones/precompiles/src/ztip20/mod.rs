@@ -345,15 +345,13 @@ mod tests {
             &rules,
             IRolesAuth::hasRoleCall {
                 account,
-                role: (*ISSUER_ROLE).into(),
+                role: ISSUER_ROLE,
             },
             caller,
         );
         assert_allowed(
             &rules,
-            IRolesAuth::getRoleAdminCall {
-                role: (*ISSUER_ROLE).into(),
-            },
+            IRolesAuth::getRoleAdminCall { role: ISSUER_ROLE },
             caller,
         );
     }
@@ -460,7 +458,7 @@ mod tests {
     fn role_mutations_are_disallowed() {
         let caller = Address::repeat_byte(0x11);
         let account = Address::repeat_byte(0x22);
-        let role = (*ISSUER_ROLE).into();
+        let role = ISSUER_ROLE;
         let rules = rules();
 
         assert_unauthorized(&rules, IRolesAuth::grantRoleCall { role, account }, caller);

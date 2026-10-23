@@ -643,9 +643,7 @@ mod tests {
     #[test]
     fn test_encode_precompile_result_trait_success() {
         let result: Result<u64> = Ok(42);
-        let precompile_result = result.encode_precompile_result(|val| {
-            alloy::primitives::Bytes::from(val.to_be_bytes().to_vec())
-        });
+        let precompile_result = result.encode_precompile_result(|val| val.to_be_bytes().into());
 
         assert!(precompile_result.is_ok());
     }

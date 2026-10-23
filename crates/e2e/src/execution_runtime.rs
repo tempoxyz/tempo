@@ -21,10 +21,7 @@ use commonware_cryptography::{
 };
 use commonware_runtime::Clock;
 use commonware_utils::ordered;
-use evm2::{
-    bytecode::Bytecode,
-    evm::{InMemoryDB, precompile::NoPrecompiles},
-};
+use evm2::bytecode::Bytecode;
 use eyre::{OptionExt as _, WrapErr as _};
 use futures::{StreamExt, future::BoxFuture};
 use reth_chainspec::EthChainSpec;
@@ -47,7 +44,7 @@ use tempfile::TempDir;
 use tempo_chainspec::{TempoChainSpec, TempoHardfork};
 use tempo_consensus::feed::FeedStateHandle;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
-use tempo_evm::{TempoBlockEnv, TempoEvm, TempoEvmExt, build_tempo_evm};
+use tempo_evm::genesis::{create_genesis_evm, genesis_evm_env, with_genesis_storage};
 use tempo_node::{
     TempoFullNode,
     node::TempoNode,
@@ -55,7 +52,6 @@ use tempo_node::{
 };
 use tempo_precompiles::{
     VALIDATOR_CONFIG_V2_ADDRESS,
-    storage::StorageCtx,
     validator_config_v2::{
         IValidatorConfigV2, VALIDATOR_NS_ADD, VALIDATOR_NS_ROTATE, ValidatorConfigV2,
     },
@@ -181,8 +177,8 @@ impl Builder {
         // Just remove whatever is already written into chainspec.
         genesis.alloc.remove(&VALIDATOR_CONFIG_V2_ADDRESS);
 
-        let mut evm = setup_tempo_evm(genesis.config.chain_id);
-        StorageCtx::enter_evm(&mut evm, || {
+        let mut evm = create_genesis_evm(genesis_evm_env(genesis.config.chain_id));
+        with_genesis_storage(&mut evm, || {
             let mut validator_config_v2 = ValidatorConfigV2::new();
             validator_config_v2
                 .initialize(admin())
@@ -224,8 +220,6 @@ impl Builder {
                 }
             }
         });
-        evm.state_mut().commit_transaction();
-        evm.state_mut().clear_transaction_state();
 
         let state = &evm.overlay_db().cache;
         let addresses = state
@@ -1149,18 +1143,6 @@ pub fn validator(idx: u32) -> Address {
 
 pub fn address(index: u32) -> Address {
     secret_key_to_address(MnemonicBuilder::from_phrase_nth(TEST_MNEMONIC, index).credential())
-}
-
-fn setup_tempo_evm(chain_id: u64) -> TempoEvm<'static> {
-    // The block timestamp defaults to 0 for genesis initializations.
-    build_tempo_evm(
-        tempo_chainspec::hardfork::TempoHardfork::T0,
-        chain_id,
-        TempoBlockEnv::default(),
-        InMemoryDB::default(),
-        NoPrecompiles::default(),
-        TempoEvmExt::default(),
-    )
 }
 
 fn sign_add_validator_args(

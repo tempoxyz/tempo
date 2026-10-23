@@ -3,7 +3,7 @@ use super::*;
 mod regressions;
 use crate::{
     FeeTokenResolver, ProtocolFeeContext, ProtocolFeeManager, ResolvedFeeToken, TempoBlockEnv,
-    TempoEvmExt, TempoEvmTx, TempoFeeManager, tempo_tx_registry,
+    TempoEvmExt, TempoEvmTx, TempoFeeManager, TempoStateAccess, tempo_tx_registry,
 };
 use alloy_consensus::transaction::Recovered;
 use alloy_primitives::{B256, Bytes, Signature};
@@ -559,10 +559,14 @@ fn test_get_token_balance() {
     let balance_slot = TIP20Token::from_address(token).unwrap().balances[account].slot();
     insert_storage(&mut evm, token, balance_slot, expected_balance);
 
-    let balance = StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
-        TIP20Token::from_address(token).unwrap().balances[account].read()
-    })
-    .unwrap();
+    let balance = evm
+        .get_token_balance(
+            token,
+            account,
+            TempoHardfork::Genesis,
+            StorageActions::disabled(),
+        )
+        .unwrap();
     assert_eq!(balance, expected_balance);
 }
 
@@ -1384,7 +1388,11 @@ fn test_t4_key_authorization_matches_tip1016_sstore_regular_cost() {
     let params = &evm.version().gas_params;
     let load = u64::from(params[GasId::WarmStorageReadCost])
         + u64::from(params[GasId::ColdStorageAdditionalCost]);
-    let (regular, state) = key_authorization_gas(&authorization, &evm, TempoHardfork::T4);
+    let (regular, state) = calculate_key_authorization_gas(
+        &authorization,
+        &evm.version().gas_params,
+        TempoHardfork::T4,
+    );
     assert_eq!(
         regular - ECRECOVER_GAS - load - 2_000 - call_scope_extra_gas(&authorization.authorization),
         20_000
@@ -1399,7 +1407,11 @@ fn test_t7_key_authorization_intrinsic_includes_storage_credit_value() {
     let params = &evm.version().gas_params;
     let load = u64::from(params[GasId::WarmStorageReadCost])
         + u64::from(params[GasId::ColdStorageAdditionalCost]);
-    let (regular, state) = key_authorization_gas(&authorization, &evm, TempoHardfork::T7);
+    let (regular, state) = calculate_key_authorization_gas(
+        &authorization,
+        &evm.version().gas_params,
+        TempoHardfork::T7,
+    );
     assert_eq!(params[GasId::SstoreSetWithoutLoadCost], 5_000);
     assert_eq!(
         regular - ECRECOVER_GAS - load - 2_000 - call_scope_extra_gas(&authorization.authorization),
@@ -1417,7 +1429,7 @@ fn test_translate_allowed_calls_for_precompile_preserves_empty_nested_allow_all_
                 selector_rules: Vec::new(),
             }])
             .into_signed(PrimitiveSignature::Secp256k1(Signature::test_signature()));
-    let translated = translate_allowed_calls(&empty_selectors);
+    let translated = translate_allowed_calls_for_precompile(&empty_selectors);
     assert_eq!(translated.len(), 1);
     assert!(translated[0].selectorRules.is_empty());
 
@@ -1431,7 +1443,7 @@ fn test_translate_allowed_calls_for_precompile_preserves_empty_nested_allow_all_
                 }],
             }])
             .into_signed(PrimitiveSignature::Secp256k1(Signature::test_signature()));
-    let translated = translate_allowed_calls(&empty_recipients);
+    let translated = translate_allowed_calls_for_precompile(&empty_recipients);
     assert_eq!(translated.len(), 1);
     assert_eq!(translated[0].selectorRules.len(), 1);
     assert!(translated[0].selectorRules[0].recipients.is_empty());

@@ -136,12 +136,12 @@ impl StorageCtx {
 
     /// Returns the current block number.
     pub fn block_number(&self) -> u64 {
-        self.with_block_env(|block_env| block_env.number.saturating_to())
+        self.with_block_env(|block_env| block_env.number.saturating_to::<u64>())
     }
 
     /// Executes a closure with access to the current Tempo block environment.
     pub fn with_block_env<R>(&self, f: impl FnOnce(&TempoBlockEnv) -> R) -> R {
-        Self::with_storage(|storage| f(storage.block_env()))
+        Self::with_storage(|s| f(s.block_env()))
     }
 
     /// Returns the epoch containing `height`.
@@ -565,9 +565,7 @@ impl StorageCtx {
 
     /// Checks if a contract at the given address has bytecode deployed.
     pub fn has_bytecode(&self, address: Address) -> Result<bool> {
-        self.with_account_info(address, |info| {
-            Ok(info.code_hash != alloy::primitives::KECCAK256_EMPTY)
-        })
+        self.with_account_info(address, |info| Ok(!info.is_empty_code_hash()))
     }
 }
 

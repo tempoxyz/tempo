@@ -37,7 +37,6 @@ reth-primitives-traits.workspace = true
 alloy-consensus.workspace = true
 alloy-eip7928.workspace = true
 alloy-primitives.workspace = true
-alloy-eips.workspace = true
 alloy-provider = { workspace = true, features = ["reqwest"] }
 alloy-sol-types.workspace = true
 evm2.workspace = true
@@ -47,6 +46,7 @@ thiserror.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+alloy-eips.workspace = true
 alloy-genesis.workspace = true
 alloy-rlp.workspace = true
 eyre.workspace = true

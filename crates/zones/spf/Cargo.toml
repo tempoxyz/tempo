@@ -20,8 +20,8 @@ zone-primitives = { workspace = true, features = ["std"] }
 # Tempo
 tempo-chainspec.workspace = true
 tempo-evm.workspace = true
-tempo-precompiles.workspace = true
 tempo-primitives.workspace = true
+tempo-precompiles.workspace = true
 
 # Alloy / EVM
 alloy-consensus.workspace = true
@@ -44,18 +44,18 @@ thiserror = "2"
 [features]
 default = ["serde"]
 serde = [
-	"dep:serde",
-	"alloy-primitives/serde",
-	"tempo-contracts/serde",
-	"zone-primitives/serde",
-	"alloy-consensus/serde",
-	"alloy-eips/serde",
-	"reth-primitives-traits/serde",
-	"reth-storage-api/serde",
-	"reth-trie-common/serde",
-	"tempo-chainspec/serde",
-	"tempo-precompiles/serde",
-	"tempo-primitives/serde",
-	"evm2/serde",
-	"reth-execution-types/serde"
+    "dep:serde",
+    "alloy-primitives/serde",
+    "tempo-contracts/serde",
+    "zone-primitives/serde",
+    "alloy-consensus/serde",
+    "alloy-eips/serde",
+    "reth-primitives-traits/serde",
+    "reth-storage-api/serde",
+    "reth-trie-common/serde",
+    "tempo-chainspec/serde",
+    "tempo-precompiles/serde",
+    "tempo-primitives/serde",
+    "evm2/serde",
+    "reth-execution-types/serde",
 ]

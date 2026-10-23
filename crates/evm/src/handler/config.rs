@@ -554,7 +554,7 @@ fn prepare_eip7702(
 }
 
 fn validate_no_native_value(envelope: &TempoTxEnv) -> Result<(), TempoInvalidTransaction> {
-    if envelope.transaction().value().is_zero() {
+    if envelope.value().is_zero() {
         Ok(())
     } else {
         Err(TempoInvalidTransaction::ValueTransferNotAllowed)

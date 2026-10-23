@@ -242,7 +242,6 @@ impl BestTransactionsPrewarming {
                 );
 
                 Some(Box::new(StorageActionReplay {
-                    validator_fee: result.result.ext.validator_fee,
                     result: result.result,
                     actions,
                     expiring_nonce,
