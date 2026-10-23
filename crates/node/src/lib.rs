@@ -4,8 +4,8 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub use tempo_payload_types::{
-    DEFAULT_BUILD_TIME_MULTIPLIER, Estimator, EstimatorConfig, ProposalBudget, TempoExecutionData,
-    TempoPayloadTypes,
+    DEFAULT_BUILD_TIME_MULTIPLIER, Estimator, EstimatorConfig, EstimatorSnapshot, ProposalBudget,
+    TempoExecutionData, TempoPayloadTypes,
 };
 pub use version::{init_version_metadata, version_metadata};
 

@@ -90,9 +90,10 @@ where
     pub network_identity: tempo_chainspec::NetworkIdentity,
     /// Feed state shared by the consensus and execution layers.
     pub feed_state: FeedStateHandle,
-    /// Local proposal work budget used whenever the consensus engine starts.
-    pub proposal_return_budget: Duration,
-    /// Proposal budget estimator shared by this node's consensus and execution layers.
+    /// Proposal budget estimator shared by this node's builder and consensus
+    /// engine whenever they start. Built once from the constructor's
+    /// proposal return budget with a pinned network reservation, so tests
+    /// stay deterministic.
     pub estimator: tempo_node::Estimator,
     /// Verification mode used whenever the consensus engine starts.
     pub verification_mode: VerificationMode,
@@ -122,11 +123,16 @@ where
         network_address: SocketAddr,
         chain_address: Address,
     ) -> Self {
-        let estimator = tempo_node::Estimator::new(tempo_node::EstimatorConfig::default())
-            .expect("default estimator configuration is valid");
-        execution_config.estimator = Some(estimator.clone());
         let public_key = private_key.public_key();
         let partition_prefix = uid.clone();
+        // Fixed network reservation: tests pin the return budget instead of
+        // learning it from the simulated network.
+        let estimator = tempo_node::Estimator::new(tempo_node::EstimatorConfig::fixed(
+            proposal_return_budget,
+            Duration::from_millis(50),
+        ))
+        .expect("a fixed reservation with a positive proposal return budget is valid");
+        execution_config.estimator = Some(estimator.clone());
         let execution_node_datadir = execution_runtime
             .nodes_dir()
             .join(execution_runtime::execution_node_name(&public_key));
@@ -139,7 +145,6 @@ where
             share,
             network_identity,
             feed_state,
-            proposal_return_budget,
             estimator,
             verification_mode,
             consensus_handle: None,
@@ -193,7 +198,6 @@ where
         self.share = identity_source.share;
         self.network_identity = identity_source.network_identity;
         self.feed_state = identity_source.feed_state;
-        self.proposal_return_budget = identity_source.proposal_return_budget;
         self.estimator = identity_source.estimator;
         self.execution_config.estimator = Some(self.estimator.clone());
         self.verification_mode = identity_source.verification_mode;
@@ -348,10 +352,6 @@ where
             views_to_track: 10,
             // Floor (2s nullify rebroadcast) plus one 1s proposal wait.
             inactive_time_before_leader_skip: Duration::from_secs(3),
-            proposal_budget: tempo_node::ProposalBudget::new(
-                self.proposal_return_budget + Duration::from_millis(50),
-                Duration::from_millis(50),
-            ),
             estimator: self.estimator.clone(),
             fcu_heartbeat_interval: Duration::from_secs(3),
             feed_state: self.feed_state.clone(),
