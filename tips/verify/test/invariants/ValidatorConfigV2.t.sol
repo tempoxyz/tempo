@@ -301,6 +301,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
             || selector == IValidatorConfigV2.AlreadyInitialized.selector
             || selector == IValidatorConfigV2.MigrationNotComplete.selector
             || selector == IValidatorConfigV2.InvalidMigrationIndex.selector
+            || selector == IValidatorConfigV2.InvalidIp.selector
             || selector == IValidatorConfigV2.NotIpPort.selector
             || selector == IValidatorConfigV2.NotIp.selector
             || selector == IValidatorConfigV2.InvalidSignature.selector
