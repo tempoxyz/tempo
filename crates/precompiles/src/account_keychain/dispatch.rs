@@ -66,6 +66,8 @@ impl Precompile for AccountKeychain {
                         self.burn_key_authorization_witness(sender, c)
                     }),
                     revokeKey(call) => mutate(call, msg_sender, |sender, c| self.revoke_key(sender, c)),
+                    #[schedule(since = T14)]
+                    revokeAdminKey(call) => mutate(call, msg_sender, |_, c| self.revoke_admin_key(c)),
                     updateSpendingLimit(call) => mutate(call, msg_sender, |sender, c| {
                         self.update_spending_limit(sender, c)
                     }),
@@ -121,7 +123,14 @@ mod tests {
             let selectors: Vec<_> = IAccountKeychainCalls::SELECTORS
                 .iter()
                 .copied()
-                .filter(|selector| *selector != getRemainingLimitCall::SELECTOR)
+                .filter(|selector| {
+                    // Dropped at T3 and added at T14, so unsupported at T6.
+                    ![
+                        getRemainingLimitCall::SELECTOR,
+                        IAccountKeychain::revokeAdminKeyCall::SELECTOR,
+                    ]
+                    .contains(selector)
+                })
                 .collect();
 
             let unsupported = check_selector_coverage(

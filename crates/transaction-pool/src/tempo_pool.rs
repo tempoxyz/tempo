@@ -176,7 +176,6 @@ where
             || !updates.whitelist_removals.is_empty()
             || !updates.fee_balance_changes.is_empty()
             || !updates.spending_limit_spends.is_empty()
-            || updates.admin_keys_dropped
         {
             self.client().latest().ok()
         } else {
@@ -249,7 +248,6 @@ where
         let mut unwhitelisted_count = 0;
         let mut insolvent_fee_payer_count = 0;
         let mut paused_token_count = 0;
-        let mut admin_key_count = 0;
         let has_paused_tokens = !updates.paused_tokens.is_empty();
         let has_keychain_subject_updates = updates.has_keychain_subject_updates();
         let has_key_authorization_target_updates =
@@ -269,16 +267,6 @@ where
             {
                 to_remove.push(*tx.hash());
                 paused_token_count += 1;
-                continue;
-            }
-
-            // TIP-1137: T14 drops admin keys and admin key authorizations.
-            if updates.admin_keys_dropped
-                && let Some(ref mut provider) = state_provider
-                && uses_admin_key(provider, &tx.transaction, spec)
-            {
-                to_remove.push(*tx.hash());
-                admin_key_count += 1;
                 continue;
             }
 
@@ -548,7 +536,6 @@ where
             unwhitelisted_count,
             insolvent_fee_payer_count,
             paused_token_count,
-            admin_key_count,
             "Evicting invalidated or expired transactions"
         );
         self.remove_transactions(to_remove)
@@ -1393,30 +1380,6 @@ pub(crate) fn exceeds_spending_limit(
             },
         )
         .unwrap_or_default()
-}
-
-/// Returns whether `tx` carries an admin key authorization or is signed by a stored admin key.
-fn uses_admin_key(
-    provider: &mut impl StateProvider,
-    tx: &TempoPooledTransaction,
-    spec: TempoHardfork,
-) -> bool {
-    if tx
-        .inner()
-        .as_aa()
-        .and_then(|aa| aa.tx().key_authorization.as_ref())
-        .is_some_and(|auth| auth.is_admin())
-    {
-        return true;
-    }
-
-    tx.keychain_subject().is_some_and(|subject| {
-        provider
-            .with_read_only_storage_ctx(spec, StorageActions::disabled(), || {
-                AccountKeychain::new().keys[subject.account][subject.key_id].read()
-            })
-            .is_ok_and(|key| key.is_admin)
-    })
 }
 
 /// Returns the set of policy IDs that can affect fee_payer authorization for a token.
@@ -2389,62 +2352,6 @@ mod tests {
         assert_eq!(tx_hashes(&evicted), vec![*matching.hash()]);
         assert!(pool.get(matching.hash()).is_none());
         assert!(pool.get(untouched.hash()).is_some());
-    }
-
-    #[tokio::test]
-    async fn evicts_admin_key_transactions_when_admin_keys_dropped() {
-        let sender = Address::random();
-        let admin_signer = PrivateKeySigner::random();
-        let regular_signer = PrivateKeySigner::random();
-
-        let mut admin_auth =
-            KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, Address::random());
-        admin_auth.is_admin = true;
-        let admin_auth_sig = admin_signer
-            .sign_hash_sync(&admin_auth.signature_hash())
-            .expect("key authorization signing should succeed");
-        let admin_auth = admin_auth.into_signed(PrimitiveSignature::Secp256k1(admin_auth_sig));
-
-        let admin_signed = crate::test_utils::TxBuilder::aa(sender)
-            .nonce(0)
-            .build_keychain(sender, &admin_signer);
-        let admin_authorization = crate::test_utils::TxBuilder::aa(sender)
-            .nonce(1)
-            .key_authorization(admin_auth)
-            .build();
-        let regular = crate::test_utils::TxBuilder::aa(sender)
-            .nonce(2)
-            .build_keychain(sender, &regular_signer);
-
-        let provider = create_provider_with_tip();
-        provider.add_account(sender, ExtendedAccount::new(0, U256::MAX));
-        provider
-            .setup_storage(TempoHardfork::T13, || -> TempoPrecompileResult<()> {
-                let mut keychain = AccountKeychain::new();
-                for (signer, is_admin) in [(&admin_signer, true), (&regular_signer, false)] {
-                    keychain.keys[sender][signer.address()].write(AuthorizedKey {
-                        expiry: u64::MAX,
-                        is_admin,
-                        ..Default::default()
-                    })?;
-                }
-                Ok(())
-            })
-            .unwrap();
-        let pool = create_test_pool(provider);
-        for tx in [&admin_signed, &admin_authorization, &regular] {
-            add_validated(&pool, tx.clone());
-        }
-
-        let mut updates = crate::maintain::TempoPoolUpdates::new();
-        updates.admin_keys_dropped = true;
-
-        let mut evicted = tx_hashes(&pool.evict_invalidated_transactions(&updates));
-        evicted.sort();
-        let mut expected = vec![*admin_signed.hash(), *admin_authorization.hash()];
-        expected.sort();
-        assert_eq!(evicted, expected);
-        assert!(pool.get(regular.hash()).is_some());
     }
 
     #[tokio::test]

@@ -18,8 +18,8 @@ pub use tempo_contracts::precompiles::{
         CallScope, KeyInfo, KeyRestrictions, SelectorRule, SignatureType, TokenLimit,
         burnKeyAuthorizationWitnessCall, getAllowedCallsCall, getKeyCall, getRemainingLimitCall,
         getRemainingLimitWithPeriodCall, getTransactionKeyCall,
-        isKeyAuthorizationWitnessBurnedCall, removeAllowedCallsCall, revokeKeyCall,
-        setAllowedCallsCall, updateSpendingLimitCall,
+        isKeyAuthorizationWitnessBurnedCall, removeAllowedCallsCall, revokeAdminKeyCall,
+        revokeKeyCall, setAllowedCallsCall, updateSpendingLimitCall,
     },
     authorizeKeyCall, authorizeKeyWithWitnessCall, getAllowedCallsReturn, getRemainingLimitReturn,
 };
@@ -282,7 +282,7 @@ impl AccountKeychain {
         }
 
         // Check if key already exists (key exists if expiry > 0)
-        let existing_key = self.read_key(msg_sender, key_id)?;
+        let existing_key = self.keys[msg_sender][key_id].read()?;
         if existing_key.expiry > 0 {
             return Err(AccountKeychainError::key_already_exists().into());
         }
@@ -432,19 +432,32 @@ impl AccountKeychain {
             return Err(AccountKeychainError::key_not_found().into());
         }
 
-        // Mark the key as revoked - this prevents replay attacks by ensuring
-        // the same key_id can never be re-authorized for this account.
-        // We keep is_revoked=true but clear other fields.
-        let revoked_key = AuthorizedKey {
+        self.write_revoked_key(msg_sender, call.keyId)
+    }
+
+    /// Revokes a key stored as admin on any account. T14 removes admin keys ([TIP-1137]), so
+    /// anyone may clean up the ones authorized before it.
+    ///
+    /// # Errors
+    /// - `InvalidKeyId` — the key is not a stored, unrevoked admin key
+    ///
+    /// [TIP-1137]: <https://docs.tempo.xyz/protocol/tips/tip-1137>
+    pub fn revoke_admin_key(&mut self, call: revokeAdminKeyCall) -> Result<()> {
+        if !self.keys[call.account][call.keyId].read()?.is_admin {
+            return Err(AccountKeychainError::invalid_key_id().into());
+        }
+
+        self.write_revoked_key(call.account, call.keyId)
+    }
+
+    /// Marks a key as revoked so the same key ID can never be re-authorized for this account,
+    /// preventing replay of old authorizations. Spending limits are left in place, unreachable.
+    fn write_revoked_key(&mut self, account: Address, key_id: Address) -> Result<()> {
+        self.keys[account][key_id].write(AuthorizedKey {
             is_revoked: true,
             ..Default::default()
-        };
-        self.keys[msg_sender][call.keyId].write(revoked_key)?;
-
-        // Note: We don't clear spending limits here - they become inaccessible
-
-        // Emit event
-        self.emit_event(AccountKeychainEvent::key_revoked(msg_sender, call.keyId))
+        })?;
+        self.emit_event(AccountKeychainEvent::key_revoked(account, key_id))
     }
 
     /// Updates the spending limit for a key-token pair. Can also convert an unlimited key into a
@@ -502,7 +515,7 @@ impl AccountKeychain {
 
     /// Returns key info for the given account-key pair, or a blank entry if inexistent or revoked.
     pub fn get_key(&self, call: getKeyCall) -> Result<KeyInfo> {
-        let key = self.read_key(call.account, call.keyId)?;
+        let key = self.keys[call.account][call.keyId].read()?;
 
         // Key doesn't exist if expiry == 0, or key has been revoked
         if key.expiry == 0 || key.is_revoked {
@@ -635,7 +648,7 @@ impl AccountKeychain {
         }
 
         let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
-        let key = self.read_key(call.account, call.keyId)?;
+        let key = self.keys[call.account][call.keyId].read()?;
         if key.expiry == 0 || key.is_revoked || current_timestamp >= key.expiry {
             return Ok(getAllowedCallsReturn {
                 isScoped: true,
@@ -1127,10 +1140,13 @@ impl AccountKeychain {
     /// Internal predicate for root/admin status.
     ///
     /// Warning: this returns true when `key_id == account`, because the root key
-    /// is implicitly admin even when it is not stored as an access key.
+    /// is implicitly admin even when it is not stored as an access key. On T14+ ([TIP-1137]),
+    /// only the root key is admin; stored admin keys sign until revoked but cannot manage keys.
+    ///
+    /// [TIP-1137]: <https://docs.tempo.xyz/protocol/tips/tip-1137>
     pub fn is_admin_key(&self, account: Address, key_id: Address) -> Result<bool> {
-        if key_id == account {
-            return Ok(true);
+        if key_id == account || self.storage.spec().is_t14() {
+            return Ok(key_id == account);
         }
 
         let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
@@ -1178,20 +1194,6 @@ impl AccountKeychain {
         ))
     }
 
-    /// Reads a stored key. On T14+ ([TIP-1137]), keys stored as admin read as revoked.
-    ///
-    /// [TIP-1137]: <https://docs.tempo.xyz/protocol/tips/tip-1137>
-    fn read_key(&self, account: Address, key_id: Address) -> Result<AuthorizedKey> {
-        let key = self.keys[account][key_id].read()?;
-        if key.is_admin && self.storage.spec().is_t14() {
-            return Ok(AuthorizedKey {
-                is_revoked: true,
-                ..Default::default()
-            });
-        }
-        Ok(key)
-    }
-
     /// Load and validate a key exists, is not revoked, and is not expired.
     ///
     /// Returns the key if valid, or an error if:
@@ -1204,7 +1206,7 @@ impl AccountKeychain {
         key_id: Address,
         current_timestamp: u64,
     ) -> Result<AuthorizedKey> {
-        let key = self.read_key(account, key_id)?;
+        let key = self.keys[account][key_id].read()?;
 
         if key.is_revoked {
             return Err(AccountKeychainError::key_already_revoked().into());
@@ -1301,7 +1303,7 @@ impl AccountKeychain {
             return Ok((U256::ZERO, 0));
         }
 
-        let key = self.read_key(account, key_id)?;
+        let key = self.keys[account][key_id].read()?;
 
         self.effective_limit_state_with_key(account, key_id, token, current_timestamp, &key)
     }
@@ -1913,35 +1915,51 @@ mod tests {
     }
 
     #[test]
-    fn test_t14_stored_admin_keys_are_revoked() -> eyre::Result<()> {
+    fn test_t14_admin_keys_lose_authority_and_anyone_can_revoke() -> eyre::Result<()> {
         use crate::Precompile;
 
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
         let account = Address::random();
         let admin_key = Address::random();
+        let revoke = revokeAdminKeyCall {
+            account,
+            keyId: admin_key,
+        }
+        .abi_encode();
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;
             keychain.set_tx_origin(account)?;
-            keychain.authorize_admin_key(account, admin_key, SignatureType::Secp256k1, None)
+            keychain.authorize_admin_key(account, admin_key, SignatureType::Secp256k1, None)?;
+            assert!(keychain.call(&revoke, Address::random())?.is_revert());
+            Ok::<_, eyre::Report>(())
         })?;
         storage.set_spec(TempoHardfork::T14);
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
             keychain.set_tx_origin(account)?;
-            let assert_revoked = |result: Result<()>| {
-                assert!(matches!(
-                    result,
-                    Err(TempoPrecompileError::AccountKeychainError(
-                        AccountKeychainError::KeyAlreadyRevoked(_)
-                    ))
-                ));
-            };
 
-            // Views report the key as revoked.
+            // The stored admin key no longer manages keys, and no new admin keys can be added.
             assert!(!keychain.is_admin_key(account, admin_key)?);
+            keychain.set_transaction_key(admin_key)?;
+            let new_key = authorizeKeyCall {
+                keyId: Address::random(),
+                signatureType: SignatureType::Secp256k1,
+                config: unrestricted_restrictions(),
+            };
+            assert_unauthorized_error(authorize_key(&mut keychain, account, new_key).unwrap_err());
+            let authorize_admin = IAccountKeychain::authorizeAdminKeyCall {
+                keyId: Address::random(),
+                signatureType: SignatureType::Secp256k1,
+                witness: B256::ZERO,
+            }
+            .abi_encode();
+            assert!(keychain.call(&authorize_admin, account)?.is_revert());
+
+            // Anyone can revoke it, once.
+            assert!(!keychain.call(&revoke, Address::random())?.is_revert());
             assert!(
                 keychain
                     .get_key(getKeyCall {
@@ -1950,56 +1968,7 @@ mod tests {
                     })?
                     .isRevoked
             );
-            assert!(
-                keychain
-                    .get_allowed_calls(getAllowedCallsCall {
-                        account,
-                        keyId: admin_key
-                    })?
-                    .isScoped
-            );
-            assert_revoked(
-                keychain
-                    .validate_keychain_authorization(account, admin_key, 0, None)
-                    .map(|_| ()),
-            );
-
-            // authorizeAdminKey is no longer dispatched.
-            let calldata = IAccountKeychain::authorizeAdminKeyCall {
-                keyId: Address::random(),
-                signatureType: SignatureType::Secp256k1,
-                witness: B256::ZERO,
-            }
-            .abi_encode();
-            assert!(keychain.call(&calldata, account)?.is_revert());
-
-            // The admin key cannot manage keys.
-            keychain.set_transaction_key(admin_key)?;
-            let new_key = authorizeKeyCall {
-                keyId: Address::random(),
-                signatureType: SignatureType::Secp256k1,
-                config: unrestricted_restrictions(),
-            };
-            assert_unauthorized_error(authorize_key(&mut keychain, account, new_key).unwrap_err());
-
-            // The root key cannot reuse or update it, but can revoke it.
-            keychain.set_transaction_key(Address::ZERO)?;
-            let reuse = authorizeKeyCall {
-                keyId: admin_key,
-                signatureType: SignatureType::Secp256k1,
-                config: unrestricted_restrictions(),
-            };
-            assert_revoked(authorize_key(&mut keychain, account, reuse));
-            assert_revoked(keychain.update_spending_limit(
-                account,
-                updateSpendingLimitCall {
-                    keyId: admin_key,
-                    token: DEFAULT_FEE_TOKEN,
-                    newLimit: U256::ONE,
-                },
-            ));
-            keychain.revoke_key(account, revokeKeyCall { keyId: admin_key })?;
-            assert!(keychain.keys[account][admin_key].read()?.is_revoked);
+            assert!(keychain.call(&revoke, Address::random())?.is_revert());
 
             Ok(())
         })
