@@ -1,0 +1,484 @@
+name: Zones Prepare Release
+
+# Sauron finds this run by its name: keep it in sync with the rollout plan's
+# prepare.runName ("Prepare Zones release from {sourceSha}").
+run-name: Prepare Zones release from ${{ inputs.source_sha }}
+
+# Prepares one release commit for Tempo, the Zone sequencer and the Zone prover,
+# each with its own version; leave a version empty to skip that component.
+#
+# 1. Commit the version bumps on pre-release/zones-<short sha> (commit A).
+# 2. With a prover version: build the prover images from A, record the measured
+#    image's PCRs for the hardfork in the zone verifier (commit B) and tag that
+#    exact image prover-sha-<B> as the prover's release candidate.
+# 3. Open a draft PR from the release branch. Its head is the release commit
+#    that Tempo and the sequencer are built from and every component is tagged on.
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Full commit SHA from main or a protected release/* branch
+        required: true
+        type: string
+      tempo_version:
+        description: Tempo version without the v prefix (empty skips Tempo)
+        required: false
+        type: string
+        default: ""
+      sequencer_version:
+        description: Zone sequencer version without the v prefix (empty skips the sequencer)
+        required: false
+        type: string
+        default: ""
+      prover_version:
+        description: Zone prover version without the v prefix (empty skips the prover)
+        required: false
+        type: string
+        default: ""
+      hardfork:
+        description: Hardfork the prover's PCRs are approved for, e.g. T3 (required with prover_version)
+        required: false
+        type: string
+        default: ""
+
+# Each job grants only the permissions it needs.
+permissions: {}
+
+concurrency:
+  group: zones-prepare-release-${{ inputs.source_sha }}
+  cancel-in-progress: false
+
+env:
+  # Allow Aegis to finish its 90-second Socket lookup before Cargo times out.
+  CARGO_HTTP_TIMEOUT: "180"
+  PROVER_IMAGE: ghcr.io/tempoxyz/tempo-zone-prover
+  PCRS_PATH: crates/precompiles/src/zone_verifier/pcrs.json
+
+jobs:
+  prepare:
+    name: Prepare release commit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: release-pr
+    permissions:
+      contents: write
+      id-token: write
+    outputs:
+      release_branch: ${{ steps.release.outputs.release_branch }}
+      release_commit: ${{ steps.commit.outputs.release_commit }}
+
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Validate inputs
+        id: release
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          TEMPO_VERSION: ${{ inputs.tempo_version }}
+          SEQUENCER_VERSION: ${{ inputs.sequencer_version }}
+          PROVER_VERSION: ${{ inputs.prover_version }}
+          HARDFORK: ${{ inputs.hardfork }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "::error::This workflow must be dispatched from main"
+            exit 1
+          fi
+          if [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::source_sha must be a full, lowercase 40-character commit SHA"
+            exit 1
+          fi
+
+          semver='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+          for name in TEMPO_VERSION SEQUENCER_VERSION PROVER_VERSION; do
+            value="${!name}"
+            if [[ -n "$value" && ! "$value" =~ $semver ]]; then
+              echo "::error::${name,,} must be an X.Y.Z version without a v prefix"
+              exit 1
+            fi
+          done
+          if [[ -z "$TEMPO_VERSION$SEQUENCER_VERSION$PROVER_VERSION" ]]; then
+            echo "::error::Give a version for at least one of Tempo, the sequencer and the prover"
+            exit 1
+          fi
+          if [[ -n "$PROVER_VERSION" && ! "$HARDFORK" =~ ^T[0-9A-Z]+$ ]]; then
+            echo "::error::A prover release needs the hardfork its PCRs are for, such as T3"
+            exit 1
+          fi
+
+          echo "release_branch=pre-release/zones-${SOURCE_SHA:0:7}" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the requested source commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check source, tags and branch
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          TEMPO_VERSION: ${{ inputs.tempo_version }}
+          SEQUENCER_VERSION: ${{ inputs.sequencer_version }}
+          PROVER_VERSION: ${{ inputs.prover_version }}
+          HARDFORK: ${{ inputs.hardfork }}
+          RELEASE_BRANCH: ${{ steps.release.outputs.release_branch }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$(git rev-parse HEAD)" != "$SOURCE_SHA" ]]; then
+            echo "::error::Checkout did not resolve to the requested source SHA"
+            exit 1
+          fi
+
+          # Only protected history is an approved release source: main, or a
+          # release/* branch for patch releases.
+          git fetch --no-tags origin \
+            "+refs/heads/main:refs/remotes/origin/main" \
+            "+refs/heads/release/*:refs/remotes/origin/release/*"
+          if [[ -z "$(git for-each-ref --contains "$SOURCE_SHA" --format='%(refname:short)' \
+              refs/remotes/origin/main 'refs/remotes/origin/release/*')" ]]; then
+            echo "::error::source_sha must be an ancestor of origin/main or an origin/release/* branch"
+            exit 1
+          fi
+
+          if [[ -n "$HARDFORK" ]] &&
+             ! grep -Eq "^        ${HARDFORK},$" crates/hardfork/src/lib.rs; then
+            echo "::error::$HARDFORK is not a TempoHardfork at $SOURCE_SHA"
+            exit 1
+          fi
+
+          # Never prepare a version that has already been tagged.
+          tags=()
+          [[ -z "$TEMPO_VERSION" ]] || tags+=("v$TEMPO_VERSION")
+          [[ -z "$SEQUENCER_VERSION" ]] || tags+=("zones/v$SEQUENCER_VERSION")
+          [[ -z "$PROVER_VERSION" ]] || tags+=("zones-prover/v$PROVER_VERSION")
+          for tag in "${tags[@]}"; do
+            set +e
+            git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null
+            status=$?
+            set -e
+            case "$status" in
+              0) echo "::error::Tag $tag already exists"; exit 1 ;;
+              2) ;;
+              *) echo "::error::Could not determine whether tag $tag exists"; exit 1 ;;
+            esac
+          done
+
+          # Sauron refuses a run whose branch exists; refuse it here too rather
+          # than build on a branch of unknown content.
+          set +e
+          git ls-remote --exit-code --heads origin "refs/heads/$RELEASE_BRANCH" >/dev/null
+          status=$?
+          set -e
+          case "$status" in
+            0) echo "::error::$RELEASE_BRANCH already exists; delete it to prepare again"; exit 1 ;;
+            2) ;;
+            *) echo "::error::Could not determine whether $RELEASE_BRANCH exists"; exit 1 ;;
+          esac
+
+          git switch --create "$RELEASE_BRANCH"
+
+      - name: Install Rust toolchain
+        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Update versions
+        shell: bash
+        env:
+          TEMPO_VERSION: ${{ inputs.tempo_version }}
+          SEQUENCER_VERSION: ${{ inputs.sequencer_version }}
+        run: |
+          set -euo pipefail
+
+          if [[ -n "$TEMPO_VERSION" ]]; then
+            sed -i -E \
+              "/^\[workspace\.package\]$/,/^\[/ s/^version = \"[^\"]+\"$/version = \"${TEMPO_VERSION}\"/" \
+              Cargo.toml
+          fi
+
+          # The Zone crates, the sequencer's and the prover's, share one version,
+          # which zones-release.yml checks against the zones/v tag.
+          if [[ -n "$SEQUENCER_VERSION" ]]; then
+            current="$(cargo metadata --locked --no-deps --format-version 1 |
+              jq -er '.packages[] | select(.name == "tempo-zone") | .version')"
+            if [[ "$current" == "$SEQUENCER_VERSION" ]] ||
+               [[ "$(printf '%s\n%s\n' "$current" "$SEQUENCER_VERSION" | sort -V | tail -n 1)" != "$SEQUENCER_VERSION" ]]; then
+              echo "::error::sequencer_version $SEQUENCER_VERSION must be greater than tempo-zone $current"
+              exit 1
+            fi
+            mapfile -t manifests < <(
+              grep -rlx --include=Cargo.toml "version = \"$current\"" bin crates/zones
+            )
+            sed -i "s/^version = \"$current\"$/version = \"$SEQUENCER_VERSION\"/" "${manifests[@]}"
+          fi
+
+          cargo update --workspace
+
+      - name: Verify and commit release changes
+        id: commit
+        shell: bash
+        env:
+          TEMPO_VERSION: ${{ inputs.tempo_version }}
+          SEQUENCER_VERSION: ${{ inputs.sequencer_version }}
+          PROVER_VERSION: ${{ inputs.prover_version }}
+        run: |
+          set -euo pipefail
+
+          metadata="$(cargo metadata --locked --no-deps --format-version 1)"
+          if [[ -n "$TEMPO_VERSION" ]]; then
+            jq -e --arg v "$TEMPO_VERSION" '.packages | any(.name == "tempo" and .version == $v)' <<<"$metadata"
+          fi
+          if [[ -n "$SEQUENCER_VERSION" ]]; then
+            jq -e --arg v "$SEQUENCER_VERSION" '.packages | any(.name == "tempo-zone" and .version == $v)' <<<"$metadata"
+          fi
+
+          unexpected="$(git status --porcelain=v1 --untracked-files=all |
+            grep -Ev '^ M (Cargo\.lock|(.*/)?Cargo\.toml)$' || true)"
+          if [[ -n "$unexpected" ]]; then
+            echo "::error::Release preparation changed unexpected files"
+            printf '%s\n' "$unexpected"
+            exit 1
+          fi
+          git diff --check
+
+          components=()
+          [[ -z "$TEMPO_VERSION" ]] || components+=("tempo v$TEMPO_VERSION")
+          [[ -z "$SEQUENCER_VERSION" ]] || components+=("sequencer v$SEQUENCER_VERSION")
+          [[ -z "$PROVER_VERSION" ]] || components+=("prover v$PROVER_VERSION")
+          summary="$(IFS=,; echo "${components[*]}")"
+          summary="${summary//,/, }"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # A prover-only release changes no version; the commit still marks
+          # the source the prover is built from.
+          git commit --allow-empty -am "chore(release): prepare Zones release ($summary)"
+          echo "release_commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Push release branch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_BRANCH: ${{ steps.release.outputs.release_branch }}
+        run: |
+          set -euo pipefail
+          gh auth setup-git
+          git push --force-with-lease="refs/heads/${RELEASE_BRANCH}:" origin "HEAD:refs/heads/${RELEASE_BRANCH}"
+
+  prover:
+    name: Build prover and record its PCRs
+    needs: prepare
+    if: inputs.prover_version != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    environment: release-pr
+    permissions:
+      actions: write
+      contents: write
+      packages: write
+      id-token: write
+    outputs:
+      release_commit: ${{ steps.pcrs.outputs.release_commit }}
+      image: ${{ steps.image.outputs.image }}
+
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Build the prover images from the release branch
+        id: build
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_BRANCH: ${{ needs.prepare.outputs.release_branch }}
+          BUILD_COMMIT: ${{ needs.prepare.outputs.release_commit }}
+        run: |
+          set -euo pipefail
+
+          dispatched_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          gh workflow run zones-docker.yml --repo "$GITHUB_REPOSITORY" --ref "$RELEASE_BRANCH"
+
+          run_id=""
+          for _ in $(seq 60); do
+            run_id="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow zones-docker.yml \
+              --event workflow_dispatch --commit "$BUILD_COMMIT" --limit 20 \
+              --json databaseId,createdAt \
+              --jq "[.[] | select(.createdAt >= \"$dispatched_at\")] | sort_by(.createdAt) | .[0].databaseId // empty")"
+            [[ -z "$run_id" ]] || break
+            sleep 10
+          done
+          if [[ -z "$run_id" ]]; then
+            echo "::error::The zones-docker.yml run for $BUILD_COMMIT did not start"
+            exit 1
+          fi
+          echo "Zones Docker build: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$run_id" >> "$GITHUB_STEP_SUMMARY"
+          gh run watch "$run_id" --repo "$GITHUB_REPOSITORY" --interval 60 --exit-status
+
+      - name: Log in to Container Registry
+        uses: tempoxyz/gh-actions/vendor/docker/login-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Read the measured prover image
+        id: image
+        shell: bash
+        env:
+          BUILD_COMMIT: ${{ needs.prepare.outputs.release_commit }}
+        run: |
+          set -euo pipefail
+
+          ref="$PROVER_IMAGE:sha-${BUILD_COMMIT:0:7}"
+          digest="$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}')"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "::error::$ref has no image digest: $digest"
+            exit 1
+          }
+          image="$PROVER_IMAGE@$digest"
+          docker pull --quiet --platform linux/amd64 "$image" >/dev/null
+          labels="$(docker image inspect --format '{{json .Config.Labels}}' "$image")"
+
+          revision="$(jq -r '.["org.opencontainers.image.revision"] // ""' <<<"$labels")"
+          if [[ "$revision" != "$BUILD_COMMIT" ]]; then
+            echo "::error::$image was built from '$revision', not $BUILD_COMMIT"
+            exit 1
+          fi
+
+          # The PCRs the image ships for its EIF, as the zone verifier checks them.
+          pcrs="$(jq -cS '{
+            "0": .["xyz.tempo.zone-prover.nitro.pcr0"],
+            "1": .["xyz.tempo.zone-prover.nitro.pcr1"],
+            "2": .["xyz.tempo.zone-prover.nitro.pcr2"]
+          }' <<<"$labels")"
+          jq -e 'all(.[]; type == "string" and test("^[0-9a-f]{96}$"))' <<<"$pcrs" >/dev/null || {
+            echo "::error::$image does not label PCR0, PCR1 and PCR2: $pcrs"
+            exit 1
+          }
+
+          {
+            echo "image=$image"
+            echo "pcrs=$pcrs"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Check out the release branch
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.prepare.outputs.release_commit }}
+          persist-credentials: false
+
+      - name: Commit the prover's PCRs
+        id: pcrs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_BRANCH: ${{ needs.prepare.outputs.release_branch }}
+          BUILD_COMMIT: ${{ needs.prepare.outputs.release_commit }}
+          HARDFORK: ${{ inputs.hardfork }}
+          PROVER_VERSION: ${{ inputs.prover_version }}
+          IMAGE: ${{ steps.image.outputs.image }}
+          PCRS: ${{ steps.image.outputs.pcrs }}
+        run: |
+          set -euo pipefail
+
+          jq --arg fork "$HARDFORK" \
+            --arg commit "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/commit/$BUILD_COMMIT" \
+            --arg image "$IMAGE" \
+            --argjson pcrs "$PCRS" \
+            '.[$fork] = {commit: $commit, image: $image, pcrs: $pcrs}' \
+            "$PCRS_PATH" > "$RUNNER_TEMP/pcrs.json"
+          mv "$RUNNER_TEMP/pcrs.json" "$PCRS_PATH"
+          git diff -- "$PCRS_PATH"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore(release): approve $HARDFORK PCRs of prover v$PROVER_VERSION" -- "$PCRS_PATH"
+          gh auth setup-git
+          # Fast-forward only: the branch must still be at the commit the prover was built from.
+          git push --force-with-lease="refs/heads/${RELEASE_BRANCH}:${BUILD_COMMIT}" \
+            origin "HEAD:refs/heads/${RELEASE_BRANCH}"
+          echo "release_commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Tag the measured image as the prover candidate
+        shell: bash
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+          RELEASE_COMMIT: ${{ steps.pcrs.outputs.release_commit }}
+        run: |
+          set -euo pipefail
+
+          # The release commit records these PCRs, so this exact image, not a
+          # rebuild from the release commit, is what the prover releases.
+          tag="$PROVER_IMAGE:prover-sha-${RELEASE_COMMIT:0:7}"
+          docker buildx imagetools create --tag "$tag" "$IMAGE"
+          [[ "$(docker buildx imagetools inspect "$tag" --format '{{.Manifest.Digest}}')" == "${IMAGE#*@}" ]]
+          echo "Prover candidate: \`$tag\` = \`$IMAGE\`" >> "$GITHUB_STEP_SUMMARY"
+
+  pull-request:
+    name: Open draft pull request
+    needs: [prepare, prover]
+    if: always() && needs.prepare.result == 'success' && (needs.prover.result == 'success' || needs.prover.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: release-pr
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Verify the release branch
+        id: release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_BRANCH: ${{ needs.prepare.outputs.release_branch }}
+          RELEASE_COMMIT: ${{ needs.prover.outputs.release_commit || needs.prepare.outputs.release_commit }}
+        run: |
+          set -euo pipefail
+
+          remote="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$RELEASE_BRANCH" --jq .object.sha)"
+          if [[ "$remote" != "$RELEASE_COMMIT" ]]; then
+            echo "::error::$RELEASE_BRANCH points to $remote, expected $RELEASE_COMMIT"
+            exit 1
+          fi
+
+      - name: Fetch GitHub token via STS
+        id: app-token
+        uses: tempoxyz/gh-actions/actions/github-sts@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          policy: release-pr
+
+      - name: Open draft pull request
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          RELEASE_BRANCH: ${{ needs.prepare.outputs.release_branch }}
+          RELEASE_COMMIT: ${{ needs.prover.outputs.release_commit || needs.prepare.outputs.release_commit }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          TEMPO_VERSION: ${{ inputs.tempo_version }}
+          SEQUENCER_VERSION: ${{ inputs.sequencer_version }}
+          PROVER_VERSION: ${{ inputs.prover_version }}
+          HARDFORK: ${{ inputs.hardfork }}
+          PROVER_IMAGE_DIGEST: ${{ needs.prover.outputs.image }}
+        run: |
+          set -euo pipefail
+
+          body="Prepares a Zones release from $SOURCE_SHA. Every component is tagged on $RELEASE_COMMIT."$'\n'
+          [[ -z "$TEMPO_VERSION" ]] || body+=$'\n'"- Tempo v$TEMPO_VERSION"
+          [[ -z "$SEQUENCER_VERSION" ]] || body+=$'\n'"- Zone sequencer v$SEQUENCER_VERSION"
+          [[ -z "$PROVER_VERSION" ]] || body+=$'\n'"- Zone prover v$PROVER_VERSION: $PROVER_IMAGE_DIGEST, whose PCRs this PR approves for $HARDFORK"
+
+          pr_url="$(gh pr list --repo "$GITHUB_REPOSITORY" --base main --head "$RELEASE_BRANCH" \
+            --state open --json url --jq '.[0].url // empty')"
+          if [[ -z "$pr_url" ]]; then
+            pr_url="$(gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$RELEASE_BRANCH" \
+              --draft --title "chore(release): prepare Zones release from ${SOURCE_SHA:0:7}" --body "$body")"
+          fi
+          echo "Draft pull request: $pr_url" >> "$GITHUB_STEP_SUMMARY"
