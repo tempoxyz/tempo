@@ -4,7 +4,7 @@ pub mod dispatch;
 
 use crate::{
     error::{Result, TempoPrecompileError},
-    storage::{ConfigCommitmentWriteGas, Handler},
+    storage::{ConfigCommitmentWriteGas, Handler, keccak_cost},
 };
 use alloy::primitives::{Address, B256};
 pub use tempo_chainspec::is_valid_native_account as valid_account;
@@ -15,7 +15,6 @@ use tempo_contracts::precompiles::{
 use tempo_precompiles_macros::{Storable, contract};
 use tempo_primitives::{
     TempoBlockEnv,
-    gas::keccak_gas,
     transaction::{
         ConfigurableAccountConfig, ConfigurableAccountOwner,
         configurable_account::{
@@ -209,8 +208,8 @@ pub enum UpgradeEligibility {
 ///
 /// Fails with `OutOfGas` if the cost overflows `u64`.
 pub fn initial_account_proof_gas(config: &ConfigurableAccountConfig) -> Result<u64> {
-    keccak_gas(config.account_salt_preimage_len())
-        .and_then(|salt| salt.checked_add(keccak_gas(CONFIGURABLE_ACCOUNT_CREATE2_PREIMAGE_LEN)?))
+    keccak_cost(config.account_salt_preimage_len())?
+        .checked_add(keccak_cost(CONFIGURABLE_ACCOUNT_CREATE2_PREIMAGE_LEN)?)
         .ok_or(TempoPrecompileError::OutOfGas)
 }
 
