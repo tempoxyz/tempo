@@ -34,7 +34,10 @@ use reth_transaction_pool::{
     PoolTransaction as _, TransactionPool, error::InvalidPoolTransactionError,
 };
 use serde::{Deserialize, Serialize};
-use tempo_contracts::zones::{IZoneOutbox, ZONE_OUTBOX_ADDRESS};
+use tempo_contracts::{
+    MULTICALL3_ADDRESS,
+    zones::{IZoneOutbox, ZONE_OUTBOX_ADDRESS},
+};
 use tempo_precompiles::tip20::ITIP20;
 use tempo_primitives::TempoAddressExt as _;
 use tempo_transaction_pool::transaction::TempoPooledTransaction;
@@ -44,7 +47,7 @@ use zone_l1::{FAILED_DECRYPTION, abi::DecryptionData};
 use zone_payload::{TransferAllowlist, unlisted_transfer_error};
 
 mod relay;
-pub(crate) use relay::{AllowlistRelay, apply_relayed_requests};
+pub(crate) use relay::{AllowlistRelay, apply_relayed_requests, mirror_sequencers};
 
 /// File name of the persisted allowlist inside the node data directory.
 pub(crate) const DEPOSIT_ALLOWLIST_FILE_NAME: &str = "deposit-allowlist.json";
@@ -265,6 +268,14 @@ pub(crate) struct DepositAllowlistStatus {
     /// Keccak-256 of the concatenated addresses in ascending order.
     pub(crate) list_hash: B256,
     pub(crate) count: usize,
+}
+
+impl DepositAllowlistStatus {
+    /// Orders lists by age: writes carry increasing nonces, and an uninitialized list is older
+    /// than any written one.
+    pub(crate) const fn version(&self) -> (bool, u64) {
+        (self.initialized, self.nonce)
+    }
 }
 
 /// A sequencer's allowlist and its status.
@@ -494,13 +505,18 @@ impl TransferAllowlist for DepositAllowlist {
                 .all(|address| state.addresses.contains(address))
         })
     }
+
+    fn is_written(&self) -> bool {
+        self.inner.state.read().is_some()
+    }
 }
 
 /// Copy of the sequencers' allowlist that an RPC-only node keeps to reject transfers on
 /// submission, refreshed by the relay's `mirror_sequencers` task.
 ///
 /// Until the first fetch succeeds it admits every transfer, as does a copy of an uninitialized
-/// list; the sequencers still enforce their own lists. Cloning shares the same copy.
+/// list; the sequencers still enforce their own lists. The copy only moves to newer lists. Cloning
+/// shares the same copy.
 #[derive(Debug, Clone, Default)]
 pub struct AllowlistMirror {
     inner: Arc<MirrorInner>,
@@ -524,16 +540,22 @@ impl AllowlistMirror {
             .map(|snapshot| snapshot.status)
     }
 
-    /// Install `snapshot`, returning whether its version differs from the current copy.
-    pub(crate) fn replace(&self, mut snapshot: DepositAllowlistSnapshot) -> bool {
+    /// Install `snapshot` if it is newer than the current copy, returning whether it was
+    /// installed. A sequencer that lags behind or lost its file cannot roll the copy back.
+    pub(crate) fn update(&self, mut snapshot: DepositAllowlistSnapshot) -> bool {
+        let mut current = self.inner.snapshot.write();
+        if current
+            .as_ref()
+            .is_some_and(|current| current.status.version() >= snapshot.status.version())
+        {
+            return false;
+        }
         // Lookups binary-search the addresses; sequencers send them sorted, but they arrive over
         // P2P.
         snapshot.addresses.sort_unstable();
         snapshot.addresses.dedup();
-        let mut current = self.inner.snapshot.write();
-        let changed = current.as_ref().map(|current| current.status) != Some(snapshot.status);
         *current = Some(snapshot);
-        changed
+        true
     }
 
     /// Ask the refresh task to check the sequencers now instead of at its next interval.
@@ -556,11 +578,19 @@ impl TransferAllowlist for AllowlistMirror {
                     .all(|address| snapshot.addresses.binary_search(address).is_ok())
         })
     }
+
+    fn is_written(&self) -> bool {
+        self.inner
+            .snapshot
+            .read()
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.status.initialized)
+    }
 }
 
 /// Reject a transaction whose calls transfer TIP-20 funds, or request a withdrawal with a Zone
-/// fallback recipient, between accounts `allowlist` does not both allow, or that calls
-/// `transferFrom` from an unlisted account.
+/// fallback recipient, between accounts `allowlist` does not both allow, that calls
+/// `transferFrom` from an unlisted account, or that calls Multicall3 once the list is written.
 ///
 /// This decodes the transaction's own calls so a node rejects them on submission instead of
 /// holding and forwarding transactions the leader would drop. The leader's builder still checks
@@ -572,6 +602,13 @@ impl TransferAllowlist for AllowlistMirror {
 /// tying them to the caller or an allowance: otherwise any funded account could learn whether an
 /// address is listed from whether `transferFrom(address, address, 0)` is admitted. The builder
 /// checks only the accounts funds move between, so this check is not repeated there.
+///
+/// Multicall3 is the only Zone contract that relays calls (contract creation is disabled), and
+/// its calldata does not show which transfers it makes. Admitting it would let a relayed transfer
+/// that the builder leaves out be forwarded and executed again every few seconds without paying
+/// fees. It calls as itself, so a transfer it relays moves Multicall3's funds or spends an
+/// allowance granted to it, and lands only if Multicall3 itself is listed. Rejecting it loses
+/// only calls that do not move funds, which an AA batch can make directly.
 pub(crate) fn validate_transfer_calls(
     allowlist: &dyn TransferAllowlist,
     tx: &TempoPooledTransaction,
@@ -581,6 +618,9 @@ pub(crate) fn validate_transfer_calls(
         let TxKind::Call(target) = kind else {
             return true;
         };
+        if target == MULTICALL3_ADDRESS {
+            return !allowlist.is_written();
+        }
         if target.is_tip20() {
             return match ITIP20::ITIP20Calls::abi_decode(input) {
                 Ok(ITIP20::ITIP20Calls::transfer(ITIP20::transferCall { to, .. }))
@@ -616,13 +656,16 @@ pub(crate) fn validate_transfer_calls(
 
 /// Remove pooled transactions that `allowlist` no longer admits, so this node stops forwarding
 /// them after the list changes. Returns how many were removed.
+///
+/// This scans pending and queued transactions whether or not they propagate, since the forwarder
+/// resends local transactions either way.
 pub(crate) fn evict_unlisted_transfers<P>(pool: &P, allowlist: &dyn TransferAllowlist) -> usize
 where
     P: TransactionPool<Transaction = TempoPooledTransaction>,
 {
     let unlisted = pool
-        .pooled_transactions()
-        .into_iter()
+        .all_transactions()
+        .iter()
         .filter(|tx| validate_transfer_calls(allowlist, &tx.transaction).is_err())
         .map(|tx| *tx.hash())
         .collect::<Vec<_>>();
@@ -777,10 +820,15 @@ mod tests {
     use alloy_signer::SignerSync as _;
     use alloy_signer_local::PrivateKeySigner;
     use reth_primitives_traits::Recovered;
+    use reth_transaction_pool::{
+        Pool, PoolConfig, TransactionOrigin, blobstore::InMemoryBlobStore,
+        noop::MockTransactionValidator,
+    };
     use tempo_primitives::{
         TempoTxEnvelope,
         transaction::{Call, TempoTransaction},
     };
+    use tempo_transaction_pool::ordering::TempoTipOrdering;
     use zone_l1::abi::ChaumPedersenProof;
 
     const ALICE: Address = address!("0x00000000000000000000000000000000000a11ce");
@@ -1120,8 +1168,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let allowlist = load(dir.path().join(DEPOSIT_ALLOWLIST_FILE_NAME));
         assert!(allowlist.allows_all(&[BOB]));
+        assert!(!allowlist.is_written());
 
         allowlist.replace(vec![ALICE]).unwrap();
+        assert!(allowlist.is_written());
         assert!(allowlist.allows_all(&[ALICE]));
         assert!(!allowlist.allows_all(&[BOB]));
 
@@ -1189,22 +1239,31 @@ mod tests {
         let mirror = AllowlistMirror::default();
         assert_eq!(mirror.status(), None);
         assert!(mirror.allows_all(&[CAROL]));
+        assert!(!mirror.is_written());
 
         let dir = tempfile::tempdir().unwrap();
         let allowlist = load(dir.path().join(DEPOSIT_ALLOWLIST_FILE_NAME));
-        assert!(mirror.replace(allowlist.snapshot()));
+        let uninitialized = allowlist.snapshot();
+        assert!(mirror.update(uninitialized.clone()));
         assert!(mirror.allows_all(&[CAROL]));
+        assert!(!mirror.is_written());
 
         allowlist.replace(vec![ALICE, BOB]).unwrap();
         let mut snapshot = allowlist.snapshot();
         // Lookups do not rely on the sequencer sending addresses in order.
         snapshot.addresses.reverse();
-        assert!(mirror.replace(snapshot.clone()));
+        assert!(mirror.update(snapshot.clone()));
         assert_eq!(mirror.status(), Some(allowlist.status()));
+        assert!(mirror.is_written());
         assert!(mirror.allows_all(&[ALICE]));
         assert!(mirror.allows_all(&[BOB]));
         assert!(!mirror.allows_all(&[CAROL]));
-        assert!(!mirror.replace(snapshot));
+        assert!(!mirror.update(snapshot));
+
+        // A sequencer that lags behind or lost its file cannot roll the copy back.
+        assert!(!mirror.update(uninitialized));
+        assert_eq!(mirror.status(), Some(allowlist.status()));
+        assert!(!mirror.allows_all(&[CAROL]));
     }
 
     fn call(to: Address, input: impl Into<Bytes>) -> Call {
@@ -1336,6 +1395,67 @@ mod tests {
         assert!(!admits_calls(CAROL, vec![request_withdrawal(ALICE)]));
         assert!(!admits_calls(ALICE, vec![request_withdrawal(CAROL)]));
         assert!(admits_calls(ALICE, vec![request_withdrawal(BOB)]));
+    }
+
+    #[test]
+    fn submission_rejects_multicall3_once_the_list_is_written() {
+        let multicall = call(MULTICALL3_ADDRESS, Bytes::new());
+        // Multicall3 calls as itself, so it is rejected even for a listed sender.
+        assert!(!admits_calls(ALICE, vec![multicall.clone()]));
+        assert!(!admits_calls(
+            ALICE,
+            vec![token_transfer(BOB), multicall.clone()]
+        ));
+
+        let dir = tempfile::tempdir().unwrap();
+        let allowlist = load(dir.path().join(DEPOSIT_ALLOWLIST_FILE_NAME));
+        let transaction = TempoTransaction {
+            calls: vec![multicall],
+            ..Default::default()
+        };
+        let transaction = pooled_transaction(
+            transaction
+                .into_signed(Signature::test_signature().into())
+                .into(),
+            ALICE,
+        );
+        assert!(validate_transfer_calls(&allowlist, &transaction).is_ok());
+    }
+
+    #[tokio::test]
+    async fn eviction_covers_local_transactions_that_do_not_propagate() {
+        let pool = Pool::new(
+            MockTransactionValidator::no_propagate_local(),
+            TempoTipOrdering::default(),
+            InMemoryBlobStore::default(),
+            PoolConfig::default(),
+        );
+        let transaction = TempoTransaction {
+            gas_limit: 100_000,
+            max_fee_per_gas: 2_000_000_000,
+            calls: vec![token_transfer(BOB)],
+            ..Default::default()
+        };
+        pool.add_transaction(
+            TransactionOrigin::Local,
+            pooled_transaction(
+                transaction
+                    .into_signed(Signature::test_signature().into())
+                    .into(),
+                ALICE,
+            ),
+        )
+        .await
+        .unwrap();
+        // The forwarder resends it although it is not offered for propagation.
+        assert!(pool.pooled_transactions().is_empty());
+
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(evict_unlisted_transfers(&pool, &alice_only(dir.path())), 1);
+        assert!(
+            pool.get_transactions_by_origin(TransactionOrigin::Local)
+                .is_empty()
+        );
     }
 
     #[test]

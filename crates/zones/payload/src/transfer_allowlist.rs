@@ -27,6 +27,10 @@ pub trait TransferAllowlist: fmt::Debug + Send + Sync + 'static {
     /// one. An allowlist that has never been written allows every address.
     fn allows_all(&self, addresses: &[Address]) -> bool;
 
+    /// Whether the list has been written and so restricts transfers. Until then it allows every
+    /// address.
+    fn is_written(&self) -> bool;
+
     /// Whether a TIP-20 transfer from `from` to `to` is allowed.
     ///
     /// Transfers to or from the zero address or the outbox mint, burn, or withdraw, so they are
@@ -129,6 +133,10 @@ mod tests {
         fn allows_all(&self, addresses: &[Address]) -> bool {
             addresses.iter().all(|address| self.0.contains(address))
         }
+
+        fn is_written(&self) -> bool {
+            true
+        }
     }
 
     /// Holds only ALICE, then only BOB after every lookup, as if each lookup raced a write that
@@ -144,6 +152,10 @@ mod tests {
                 ALICE
             };
             addresses.iter().all(|address| *address == listed)
+        }
+
+        fn is_written(&self) -> bool {
+            true
         }
     }
 
