@@ -112,8 +112,9 @@ impl SignatureVerifier {
         } else {
             0
         };
-        let verification_gas = configurable_account_verification_gas(signature)?
-            .checked_add(initial_proof_gas)
+        let verification_gas = signature
+            .verification_gas()
+            .and_then(|gas| gas.checked_add(initial_proof_gas))
             .ok_or(TempoPrecompileError::OutOfGas)?;
         self.storage.deduct_gas(verification_gas)?;
         if signature.account() != account || !valid_account(account, spec) || has_code {
