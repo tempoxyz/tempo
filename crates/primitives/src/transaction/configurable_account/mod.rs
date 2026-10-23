@@ -1,5 +1,5 @@
 use super::{tempo_transaction::MAX_WEBAUTHN_SIGNATURE_LENGTH, tt_signature::PrimitiveSignature};
-use crate::gas::keccak_gas;
+use crate::gas::{SECP256K1_VERIFY_GAS, keccak_gas};
 use alloc::vec::Vec;
 use alloy_eips::eip7623::{STANDARD_TOKEN_COST, tokens_in_calldata};
 use alloy_primitives::{Address, B256, Keccak256, b256, keccak256};
@@ -435,6 +435,13 @@ impl ConfigurableAccountSignature {
                 keccak_gas(CONFIGURABLE_ACCOUNT_SIGNATURE_PREIMAGE_LEN)?,
             ])
             .try_fold(0u64, u64::checked_add)
+    }
+
+    /// Verification gas this signature adds on top of the base 21k, which already covers one
+    /// secp256k1 verification. Returns `None` if the cost overflows `u64`.
+    pub fn intrinsic_verification_gas(&self) -> Option<u64> {
+        self.verification_gas()
+            .map(|gas| gas.saturating_sub(SECP256K1_VERIFY_GAS))
     }
 }
 
