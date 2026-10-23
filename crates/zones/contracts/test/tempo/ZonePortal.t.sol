@@ -2760,6 +2760,30 @@ contract ZonePortalTest is BaseTest {
         vm.stopPrank();
     }
 
+    function testFuzz_deposit_tokenSpecificRefundPolicy(bool authorized) public {
+        uint128 amount = 1000e6;
+        vm.mockCall(
+            address(pathUSD),
+            abi.encodeCall(ITIP20.transferPolicyId, ()),
+            abi.encode(type(uint64).max)
+        );
+        vm.mockCall(
+            address(registry),
+            abi.encodeCall(
+                ITIP403Registry.isTokenAuthorized,
+                (address(pathUSD), bob, ITIP403Registry.AuthRole.RECIPIENT)
+            ),
+            abi.encode(authorized)
+        );
+        vm.startPrank(alice);
+        pathUSD.approve(address(portal), amount);
+        if (!authorized) vm.expectRevert(ITIP20.PolicyForbids.selector);
+        _deposit(portal, address(pathUSD), alice, amount, bytes32("memo"), bob);
+        vm.stopPrank();
+        assertEq(portal.depositCount(), authorized ? 1 : 0);
+        assertEq(pathUSD.balanceOf(address(portal)), authorized ? amount : 0);
+    }
+
     function test_deposit_allowsCompoundPolicyMintRecipient() public {
         uint128 depositAmount = 1000e6;
 

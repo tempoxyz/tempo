@@ -22,7 +22,10 @@ fn test_tip403_registry_layout() {
         policy_records,
         policy_set,
         receive_policies,
-        token_transfer_policies
+        token_transfer_policies,
+        token_policies,
+        token_user_flags,
+        receive_sender_members
     );
     if let Err(errors) = compare_layouts(&solc_layout, &rust_layout) {
         panic_layout_mismatch("Layout", errors, &sol_path);
@@ -71,6 +74,21 @@ fn test_tip403_registry_layout() {
             compare_nested_struct_type(&solc_layout, "TokenTransferPolicy", &rust_binding)
         {
             panic_layout_mismatch("TokenTransferPolicy struct layout", errors, &sol_path);
+        }
+    }
+
+    // Verify the TIP-1145 `TokenPolicy` packs into one slot.
+    {
+        use tempo_precompiles::tip403_registry::__packing_token_policy::*;
+        let rust_policy = struct_fields!(
+            slots::TOKEN_POLICIES,
+            is_set,
+            sender,
+            recipient,
+            mint_recipient
+        );
+        if let Err(errors) = compare_nested_struct_type(&solc_layout, "TokenPolicy", &rust_policy) {
+            panic_layout_mismatch("TokenPolicy struct layout", errors, &sol_path);
         }
     }
 }

@@ -386,6 +386,10 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
             )
         );
 
+        _seedLegacyPolicyToken(_hopToken);
+        _seedLegacyPolicyToken(_userTokenWithHop);
+        _seedLegacyPolicyToken(_degenerateUserToken);
+
         vm.startPrank(admin);
         _hopToken.grantRole(_ISSUER_ROLE, admin);
         _userTokenWithHop.grantRole(_ISSUER_ROLE, admin);

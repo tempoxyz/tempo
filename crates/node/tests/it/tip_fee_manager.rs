@@ -4,7 +4,6 @@ use alloy::{
     network::ReceiptResponse,
     providers::{Provider, ProviderBuilder, WalletProvider},
     signers::{SignerSync, local::PrivateKeySigner},
-    sol_types::SolEvent,
 };
 use alloy_eips::{BlockId, Encodable2718};
 use alloy_network::EthereumWallet;
@@ -441,41 +440,33 @@ async fn test_fee_payer_transfer_whitelist_post_t1c() -> eyre::Result<()> {
         .get_receipt()
         .await?;
 
-    // Create whitelist policy on admin_token: whitelist fee_payer but NOT FeeManager
+    // Whitelist fee_payer but NOT FeeManager with the token-specific (TIP-1145) policy.
     let registry = ITIP403Registry::new(TIP403_REGISTRY_ADDRESS, provider.clone());
-    let policy_receipt = registry
-        .createPolicy(admin_addr, ITIP403Registry::PolicyType::WHITELIST)
-        .gas(1_000_000)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-
-    let policy_id = policy_receipt
-        .logs()
-        .iter()
-        .filter_map(|log| ITIP403Registry::PolicyCreated::decode_log(&log.inner).ok())
-        .next()
-        .expect("PolicyCreated event should be emitted")
-        .policyId;
-
     registry
-        .modifyPolicyWhitelist(policy_id, fee_payer_addr, true)
-        .gas(1_000_000)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-
-    let admin_token_contract = ITIP20::new(token_addr, &provider);
-    admin_token_contract
-        .changeTransferPolicyId(policy_id)
+        .addTokenMembers(
+            token_addr,
+            vec![fee_payer_addr],
+            ITIP403Registry::AuthRole::TRANSFER,
+        )
         .gas(1_000_000)
         .send()
         .await?
         .successful_receipt()
         .await
-        .wrap_err("changeTransferPolicyId should succeed")?;
+        .wrap_err("addTokenMembers should succeed")?;
+    registry
+        .setTokenPolicyModes(
+            token_addr,
+            ITIP403Registry::PolicyMode::WHITELIST,
+            ITIP403Registry::PolicyMode::WHITELIST,
+            ITIP403Registry::PolicyMode::WHITELIST,
+        )
+        .gas(1_000_000)
+        .send()
+        .await?
+        .successful_receipt()
+        .await
+        .wrap_err("setTokenPolicyModes should succeed")?;
 
     // TIP-1042 exempts the FeeManager recipient check during fee collection. The fee payer is
     // whitelisted as a sender, so the tx should go through even though FeeManager is not listed.

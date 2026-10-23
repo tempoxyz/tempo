@@ -102,6 +102,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
                 keccak256(abi.encode(compoundPid, uint256(0)))
             )
         );
+        _seedLegacyPolicyToken(initialToken);
         initialToken.grantRole(_ISSUER_ROLE, admin);
         initialToken.grantRole(_BURN_BLOCKED_ROLE, admin);
         initialToken.changeTransferPolicyId(compoundPid);
@@ -443,6 +444,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         );
         token.grantRole(_ISSUER_ROLE, admin);
         token.grantRole(_BURN_BLOCKED_ROLE, admin);
+        _seedLegacyPolicyToken(token);
         token.changeTransferPolicyId(pid);
 
         vm.stopPrank();

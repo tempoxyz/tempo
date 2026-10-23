@@ -386,6 +386,27 @@ async fn test_tip20_transfer_with_memo() -> eyre::Result<()> {
     Ok(())
 }
 
+/// Adds `accounts` to the sender and recipient lists of `token`'s TIP-1145 policy, in batches
+/// small enough for the per-transaction gas limit.
+async fn add_token_members<P: Provider>(
+    registry: &ITIP403Registry::ITIP403RegistryInstance<P>,
+    token: Address,
+    accounts: &[Address],
+) -> eyre::Result<()> {
+    for batch in accounts.chunks(10) {
+        let receipt = registry
+            .addTokenMembers(token, batch.to_vec(), ITIP403Registry::AuthRole::TRANSFER)
+            .gas_price(TEMPO_T1_BASE_FEE as u128)
+            .gas(5_000_000)
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+        eyre::ensure!(receipt.status(), "addTokenMembers failed");
+    }
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip20_blacklist() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
@@ -402,27 +423,14 @@ async fn test_tip20_blacklist() -> eyre::Result<()> {
     let token = setup_test_token(provider.clone(), admin).await?;
     let registry = ITIP403Registry::new(TIP403_REGISTRY_ADDRESS, provider.clone());
 
-    // Create a blacklist policy
-    let policy_receipt = registry
-        .createPolicy(admin, ITIP403Registry::PolicyType::BLACKLIST)
-        .gas_price(TEMPO_T1_BASE_FEE as u128)
-        .gas(1_000_000)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-
-    let policy_id = policy_receipt
-        .logs()
-        .iter()
-        .filter_map(|log| ITIP403Registry::PolicyCreated::decode_log(&log.inner).ok())
-        .next()
-        .expect("PolicyCreated event should be emitted")
-        .policyId;
-
-    // Update the token policy to the blacklist
-    token
-        .changeTransferPolicyId(policy_id)
+    // Blacklist senders and recipients with the token-specific (TIP-1145) policy.
+    registry
+        .setTokenPolicyModes(
+            *token.address(),
+            ITIP403Registry::PolicyMode::BLACKLIST,
+            ITIP403Registry::PolicyMode::BLACKLIST,
+            ITIP403Registry::PolicyMode::ALLOW,
+        )
         .gas_price(TEMPO_T1_BASE_FEE as u128)
         .gas(1_000_000)
         .send()
@@ -434,17 +442,8 @@ async fn test_tip20_blacklist() -> eyre::Result<()> {
 
     let (allowed_accounts, blacklisted_accounts) = accounts.split_at(accounts.len() / 2);
 
-    let mut pending = vec![];
-    for account in blacklisted_accounts {
-        let pending_tx = registry
-            .modifyPolicyBlacklist(policy_id, account.address(), true)
-            .gas_price(TEMPO_T1_BASE_FEE as u128)
-            .gas(1_000_000)
-            .send()
-            .await?;
-
-        pending.push(pending_tx);
-    }
+    let blacklisted: Vec<_> = blacklisted_accounts.iter().map(|a| a.address()).collect();
+    add_token_members(&registry, *token.address(), &blacklisted).await?;
 
     // Mint tokens to all accounts
     try_join_all(accounts.iter().map(|account| async {
@@ -520,27 +519,14 @@ async fn test_tip20_whitelist() -> eyre::Result<()> {
     let token = setup_test_token(provider.clone(), admin).await?;
     let registry = ITIP403Registry::new(TIP403_REGISTRY_ADDRESS, provider.clone());
 
-    // Create a whitelist policy
-    let policy_receipt = registry
-        .createPolicy(admin, ITIP403Registry::PolicyType::WHITELIST)
-        .gas_price(TEMPO_T1_BASE_FEE as u128)
-        .gas(1_000_000)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-
-    let policy_id = policy_receipt
-        .logs()
-        .iter()
-        .filter_map(|log| ITIP403Registry::PolicyCreated::decode_log(&log.inner).ok())
-        .next()
-        .expect("PolicyCreated event should be emitted")
-        .policyId;
-
-    // Update the token policy to the whitelist
-    token
-        .changeTransferPolicyId(policy_id)
+    // Whitelist senders and recipients with the token-specific (TIP-1145) policy.
+    registry
+        .setTokenPolicyModes(
+            *token.address(),
+            ITIP403Registry::PolicyMode::WHITELIST,
+            ITIP403Registry::PolicyMode::WHITELIST,
+            ITIP403Registry::PolicyMode::ALLOW,
+        )
         .gas_price(TEMPO_T1_BASE_FEE as u128)
         .gas(1_000_000)
         .send()
@@ -562,19 +548,7 @@ async fn test_tip20_whitelist() -> eyre::Result<()> {
         .collect();
 
     // Add senders and recipients to whitelist
-    let mut pending = vec![];
-    for account in whitelisted_accounts {
-        let pending_tx = registry
-            .modifyPolicyWhitelist(policy_id, account, true)
-            .gas_price(TEMPO_T1_BASE_FEE as u128)
-            .gas(1_000_000)
-            .send()
-            .await?;
-
-        pending.push(pending_tx);
-    }
-
-    try_join_all(pending.into_iter().map(|tx| tx.get_receipt())).await?;
+    add_token_members(&registry, *token.address(), &whitelisted_accounts).await?;
 
     // Mint tokens to all accounts
     try_join_all(accounts.iter().map(|account| async {

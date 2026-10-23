@@ -167,7 +167,7 @@ impl ReceivePolicyGuard {
 }
 
 /// Recovery authority for blocked inbound funds.
-#[derive(Debug, Clone, Copy, Default, Storable, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, Storable, PartialEq, Eq)]
 #[repr(u8)]
 pub(crate) enum RecoveryMode {
     #[default]

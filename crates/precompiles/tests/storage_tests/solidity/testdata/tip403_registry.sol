@@ -41,6 +41,14 @@ contract TIP403Registry {
         bool isSet;
     }
 
+    /// TIP-1145 token-specific issuer policy
+    struct TokenPolicy {
+        bool isSet;
+        uint8 sender;
+        uint8 recipient;
+        uint8 mintRecipient;
+    }
+
     // ========== Storage ==========
 
     /// Counter for policy IDs
@@ -58,4 +66,13 @@ contract TIP403Registry {
 
     /// TIP-1092 token-to-policy bindings
     mapping(address => TokenTransferPolicy) internal tokenTransferPolicies;
+
+    /// TIP-1145 token-specific issuer policies
+    mapping(address => TokenPolicy) internal tokenPolicies;
+
+    /// TIP-1145 packed issuer and receive-token memberships
+    mapping(address => mapping(address => uint8)) internal tokenUserFlags;
+
+    /// TIP-1145 receive-sender memberships
+    mapping(address => mapping(address => bool)) internal receiveSenderMembers;
 }

@@ -224,12 +224,13 @@ impl AmmLiquidityCache {
             }
         }
 
-        // Process TIP-20 quote token updates: invalidate stale entries.
+        // Process TIP-20 quote token updates: invalidate stale entries. TIP-1145 packed tokens
+        // store their quote in the control word, which shares the legacy `paused` slot.
         inner.quote_token_cache.retain(|token, _| {
-            execution_outcome
-                .account_state(token)
-                .and_then(|acc| acc.storage.get(&tip20::slots::QUOTE_TOKEN))
-                .is_none()
+            execution_outcome.account_state(token).is_none_or(|acc| {
+                !acc.storage.contains_key(&tip20::slots::QUOTE_TOKEN)
+                    && !acc.storage.contains_key(&tip20::slots::PAUSED)
+            })
         });
     }
 

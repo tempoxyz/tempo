@@ -50,6 +50,6 @@ Runs require nonzero submitted payments, full inclusion, and no reverted receipt
 For example: `derek bench preset=tip20-policy bloat=100` (E2E), or
 `nu tempo.nu bench --preset tip20-policy` (local). Compare the same preset on
 `main` and candidate changes; the policy-payment snapshots record storage actions
-and transaction gas on T13/T14, while benchmark timings use normal node caches.
+and transaction gas on T13/T14/T15, while benchmark timings use normal node caches.
 The snapshots create a fresh recipient balance and initial validator fee accrual;
 benchmark receivers already have balances from faucet funding.

@@ -106,6 +106,17 @@ macro_rules! tempo_hardfork {
             use alloy_hardforks::Hardfork;
 
             #[test]
+            fn t15_is_unscheduled_on_public_networks() {
+                assert_eq!(T15.mainnet_activation_block(), None);
+                assert_eq!(T15.mainnet_activation_timestamp(), None);
+                assert_eq!(T15.moderato_activation_block(), None);
+                assert_eq!(T15.moderato_activation_timestamp(), None);
+                for chain in [4217, 42431] {
+                    assert_ne!(TempoHardfork::from_chain_and_timestamp(chain, u64::MAX), Some(T15));
+                }
+            }
+
+            #[test]
             fn test_hardfork_name() {
                 assert_eq!(Genesis.name(), "Genesis");
                 $(assert_eq!($variant.name(), stringify!($variant));)*
@@ -246,6 +257,8 @@ tempo_hardfork!(
         ///
         /// See <https://docs.tempo.xyz/docs/protocol/upgrades/t14>.
         T14,
+        /// T15 hardfork. No public-network activation is scheduled.
+        T15,
     }
 );
 
@@ -394,6 +407,7 @@ impl TempoHardfork {
             Self::T12 => None,
             Self::T13 => None,
             Self::T14 => None,
+            Self::T15 => None,
         }
     }
 
@@ -420,6 +434,7 @@ impl TempoHardfork {
             Self::T12 => Some(MAINNET_T12_TIMESTAMP),
             Self::T13 => None,
             Self::T14 => None,
+            Self::T15 => None,
         }
     }
 
@@ -446,6 +461,7 @@ impl TempoHardfork {
             Self::T12 => None,
             Self::T13 => None,
             Self::T14 => None,
+            Self::T15 => None,
         }
     }
 
@@ -472,6 +488,7 @@ impl TempoHardfork {
             Self::T12 => Some(MODERATO_T12_TIMESTAMP),
             Self::T13 => None,
             Self::T14 => None,
+            Self::T15 => None,
         }
     }
 }

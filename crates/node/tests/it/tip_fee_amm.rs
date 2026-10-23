@@ -2,7 +2,6 @@ use crate::utils::{TestNodeBuilder, setup_test_token};
 use alloy::{
     primitives::{B256, U256},
     providers::{Provider, ProviderBuilder},
-    sol_types::SolEvent,
 };
 use alloy_eips::BlockId;
 use alloy_primitives::{Address, uint};
@@ -47,7 +46,9 @@ where
         .await?
         .get_receipt()
         .await?;
-    let event = ITIP20Factory::TokenCreated::decode_log(&receipt.logs()[1].inner).unwrap();
+    let event = receipt
+        .decoded_log::<ITIP20Factory::TokenCreated>()
+        .unwrap();
     let token = ITIP20::new(event.token, provider.clone());
 
     IRolesAuth::new(*token.address(), provider)

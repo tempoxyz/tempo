@@ -47,6 +47,8 @@ contract StablecoinDEXTest is TempoTest {
 
     function setUp() public override {
         super.setUp();
+        _seedLegacyPolicyToken(token1);
+        _seedLegacyPolicyToken(pathUSD);
 
         vm.startPrank(admin);
         token1.grantRole(_ISSUER_ROLE, admin);

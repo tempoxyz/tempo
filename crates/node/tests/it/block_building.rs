@@ -58,7 +58,11 @@ where
     let mined = node.mine([create_bytes]).await?;
 
     // Get token address from logs
-    let event = ITIP20Factory::TokenCreated::decode_log(&mined.receipts[0].logs()[1].inner)?;
+    let event = mined.receipts[0]
+        .logs()
+        .iter()
+        .find_map(|log| ITIP20Factory::TokenCreated::decode_log(&log.inner).ok())
+        .ok_or_else(|| eyre::eyre!("missing TokenCreated"))?;
     let token_addr = event.token;
 
     // Grant issuer role
