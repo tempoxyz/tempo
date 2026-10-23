@@ -263,7 +263,8 @@ pub struct ExecutionNodeConfig {
     /// The protocol is registered before the network starts because `RLPx`
     /// negotiates capabilities during the handshake.
     pub gossip: Option<tempo_node::gossip::Config>,
-    /// Proposal budget estimator shared with this node's consensus engine.
+    /// Proposal budget estimator the payload builder paces builds with, or
+    /// `None` for a private one seeded from the default multiplier.
     pub estimator: Option<tempo_node::Estimator>,
 }
 

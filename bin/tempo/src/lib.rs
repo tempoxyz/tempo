@@ -549,13 +549,6 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             url => Some(url.to_string()),
         };
 
-        // One proposal budget estimator is shared by the payload builder and
-        // the consensus engine so both pace against the same learned window.
-        // Built before the node launches, ahead of the consensus stack's own
-        // flag validation, so invalid proposal budget flags fail startup here.
-        let estimator = args
-            .consensus
-            .estimator(args.node_args.builder_build_time_multiplier)?;
         let tempo_node = overrides.apply_tempo_node({
             let node = TempoNode::new(&args.node_args, validator_key);
             match gossip_protocol_handler {
@@ -563,8 +556,13 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                 None => node,
             }
         });
-        // Applied after the mapper, which may rebuild the node, so that the
-        // builder cannot end up with a different estimator than consensus.
+        let payload_builder = tempo_node.payload_builder_builder();
+        // Validate the pacing flags even when an override supplies an estimator.
+        let estimator = args
+            .consensus
+            .estimator(payload_builder.build_time_multiplier)?;
+        let estimator = payload_builder.estimator.clone().unwrap_or(estimator);
+        // Share the overridden settings with both the payload builder and consensus.
         let tempo_node = tempo_node.with_estimator(estimator.clone());
         let executed_state = tempo_node.executed_state();
 
@@ -669,6 +667,8 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             });
         }
 
+        // The receiver is only dropped when the consensus thread has already
+        // exited, which `consensus_dead_rx` below reports.
         let _ = consensus_startup_tx.send((node, executed_state, args, gossip_transport, estimator));
 
         // TODO: emit these inside a span
