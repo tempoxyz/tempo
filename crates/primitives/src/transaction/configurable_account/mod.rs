@@ -24,10 +24,6 @@ pub const CONFIGURABLE_ACCOUNT_DOMAIN: &[u8] = b"tempo:configurable-account:acco
 /// Domain prefix for the salt of an account migrated in place (TIP-1113).
 pub const CONFIGURABLE_ACCOUNT_UPGRADE_DOMAIN: &[u8] = b"tempo:configurable-account:upgrade";
 
-/// CREATE2 preimage length: 1-byte `0xff` + 20-byte factory + 32-byte salt +
-/// 32-byte init-code hash.
-pub const CONFIGURABLE_ACCOUNT_CREATE2_PREIMAGE_LEN: usize = 1 + 20 + 32 + 32;
-
 /// Domain prefix for configurable account configuration commitments.
 pub const CONFIGURABLE_ACCOUNT_CONFIG_DOMAIN: &[u8] = b"tempo:configurable-account:config";
 
