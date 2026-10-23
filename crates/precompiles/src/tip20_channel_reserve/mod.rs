@@ -145,6 +145,9 @@ impl TIP20ChannelReserve {
     ///
     /// Payees cannot be zero or TIP-20 addresses. Virtual payees require a non-virtual operator.
     /// This prevents channels whose payee cannot receive direct payouts or submit vouchers itself.
+    ///
+    /// From T14, reverts with `RootKeyRetired` when the voucher signer has a configuration
+    /// commitment.
     pub fn open(
         &mut self,
         msg_sender: Address,
@@ -163,6 +166,12 @@ impl TIP20ChannelReserve {
         if deposit.is_zero() {
             return Err(TIP20ChannelReserveError::zero_deposit().into());
         }
+
+        self.ensure_voucher_signer_active(if call.authorizedSigner.is_zero() {
+            msg_sender
+        } else {
+            call.authorizedSigner
+        })?;
 
         let expiring_nonce_hash = self.enclosing_channel_open_context_hash()?;
         let channel_id = self.compute_channel_id_inner(
@@ -311,6 +320,9 @@ impl TIP20ChannelReserve {
     /// Adds deposit to an existing channel and cancels a pending close request.
     ///
     /// A zero top-up is allowed and only cancels a pending close request.
+    ///
+    /// From T14, a nonzero top-up reverts with `RootKeyRetired` when the voucher signer has a
+    /// configuration commitment.
     pub fn top_up(
         &mut self,
         msg_sender: Address,
@@ -331,6 +343,7 @@ impl TIP20ChannelReserve {
         }
 
         if !additional.is_zero() {
+            self.ensure_voucher_signer_active(self.expected_signer(&call.descriptor))?;
             let next_deposit = state
                 .deposit
                 .checked_add(additional)
@@ -848,7 +861,15 @@ impl TIP20ChannelReserve {
         if signer != self.expected_signer(descriptor) {
             return Err(TIP20ChannelReserveError::invalid_signature().into());
         }
-        // The signature proves the signer's root key.
+        // No retirement check: migrating must not let the payer void vouchers the payee holds.
+        Ok(())
+    }
+
+    /// Rejects a retired root key (TIP-1112) as the voucher signer for new deposit.
+    ///
+    /// Vouchers stay valid after their signer migrates, so a retired key keeps authority over
+    /// funds already in its channels but must not gain authority over new funds.
+    fn ensure_voucher_signer_active(&self, signer: Address) -> Result<()> {
         if self.storage.is_retired_root(signer)? {
             return Err(TIP20ChannelReserveError::root_key_retired(signer).into());
         }
