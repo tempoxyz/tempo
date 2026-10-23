@@ -1,7 +1,7 @@
 //! Tempo's block building and verification.
 
 use std::{
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -29,9 +29,7 @@ use futures::{FutureExt as _, StreamExt as _, channel::oneshot};
 use rand_core::Rng;
 use reth_primitives_traits::BlockBody as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
-use tempo_payload_types::{
-    TempoPayloadAttributes, ValidationLatencyEstimator, ValidationLatencyWorkload,
-};
+use tempo_payload_types::{Estimator, TempoPayloadAttributes, ValidationLatencyWorkload};
 use tempo_primitives::TempoConsensusContext;
 use tempo_telemetry_util::display_duration;
 use tracing::{Level, debug, info, instrument, warn};
@@ -65,6 +63,8 @@ pub(in crate::consensus) struct Config<TContext> {
     /// against this budget. Proposal preparation time is deducted before handing
     /// the remaining budget to the payload builder.
     pub(in crate::consensus) proposal_return_budget: Duration,
+    /// Proposal budget estimator that records local validation feedback.
+    pub(in crate::consensus) estimator: Estimator,
 
     /// The epoch strategy used by tempo, to map block heights to epochs.
     pub(in crate::consensus) epoch_strategy: FixedEpocher,
@@ -81,7 +81,7 @@ pub(crate) struct Inner {
     executor: crate::executor::Mailbox,
     dkg_manager: crate::dkg::manager::Mailbox,
     parent_state: TempoParentState,
-    validation_latency_estimator: Arc<Mutex<ValidationLatencyEstimator>>,
+    estimator: Estimator,
 
     metrics: Metrics,
 }
@@ -97,7 +97,7 @@ impl Inner {
             executor: config.executor,
             dkg_manager: config.dkg_manager,
             parent_state: config.parent_state,
-            validation_latency_estimator: Default::default(),
+            estimator: config.estimator,
             metrics: Metrics::init(&config.context),
         }
     }
@@ -188,11 +188,6 @@ impl Inner {
         let build_budget = self
             .proposal_return_budget
             .saturating_sub(propose_start.elapsed());
-        let validation_latency_estimate = self
-            .validation_latency_estimator
-            .lock()
-            .ok()
-            .and_then(|estimator| estimator.estimate());
         let attrs = TempoPayloadAttributes::new(
             Some(proposer_public_key),
             timestamp,
@@ -200,8 +195,7 @@ impl Inner {
             extra_data,
             consensus_context,
         )
-        .with_payload_build_budget(build_budget)
-        .with_validation_latency_estimate(validation_latency_estimate);
+        .with_payload_build_budget(build_budget);
 
         // Subscribe to the payload build. The executor owns the build job
         // and runs it to completion; dropping the receiver (for example
@@ -531,16 +525,14 @@ where
 
         match self.executor.verify_block(context, (*block).clone()).await {
             Ok(Some(duration)) => {
-                if let Ok(mut estimator) = self.validation_latency_estimator.lock() {
-                    estimator.observe(
-                        block.height().get(),
-                        ValidationLatencyWorkload::new(
-                            block.block().gas_used(),
-                            block.block().body().transaction_count(),
-                        ),
-                        duration,
-                    );
-                }
+                self.estimator.on_block_verified(
+                    block.height().get(),
+                    ValidationLatencyWorkload::new(
+                        block.block().gas_used(),
+                        block.block().body().transaction_count(),
+                    ),
+                    duration,
+                );
                 // The EL has checked timestamp encoding and parent ordering.
                 // Only the local clock gates voting: in deferred mode this
                 // delays certification, while notarization may happen earlier.
