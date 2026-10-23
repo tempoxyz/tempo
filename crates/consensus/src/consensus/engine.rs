@@ -84,6 +84,8 @@ pub struct Builder<TBlocker, TPeerManager> {
     /// The leader uses this window for proposal preparation, payload building,
     /// and pacing after commonware has fetched the parent.
     pub proposal_return_budget: Duration,
+    /// Proposal budget estimator that records local validation feedback.
+    pub estimator: tempo_payload_types::Estimator,
     pub fcu_heartbeat_interval: Duration,
 
     pub feed_state: crate::feed::FeedStateHandle,
@@ -305,6 +307,7 @@ where
                 executed_state: self.executed_state.clone(),
             },
             proposal_return_budget: self.proposal_return_budget,
+            estimator: self.estimator.clone(),
             epoch_strategy: epoch_strategy.clone(),
         });
         let application = application::Marshaled::new(

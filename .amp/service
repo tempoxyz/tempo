@@ -6,6 +6,12 @@ export PATH="$HOME/.foundry/bin:$HOME/.cargo/bin:$PATH"
 state="$PWD/.amp/state"
 mkdir -p "$state"
 
+# Cargo output lives where .agents/resume points it (the Archil disk), not in ./target.
+zone_bin() {
+    cargo build --locked --bin tempo-zone >&2
+    printf '%s/debug/tempo-zone' "$(cargo metadata --locked --format-version 1 --no-deps | jq -er .target_directory)"
+}
+
 wait_http() {
     local url="$1"
     for ((attempt=0; attempt<120; attempt++)); do
@@ -18,6 +24,8 @@ wait_http() {
 
 case "${1:?service name required}" in
     l1)
+        # Genesis needs the zone xtask, which can only be built once Archil is mounted.
+        [[ -s .amp/deps/l1-genesis.json ]] || bash .amp/genesis
         node .amp/runtime.mjs seed-l1
         chain_id=$(jq -er .config.chainId .amp/deps/l1-genesis.json)
         exec anvil --network tempo --hardfork t12 --chain-id "$chain_id" \
@@ -26,13 +34,14 @@ case "${1:?service name required}" in
         ;;
     zone)
         node .amp/runtime.mjs wait-rpc http://127.0.0.1:8545
+        zone=$(zone_bin)
         if [[ ! -f "$state/zone/zone.json" ]]; then
-            exec target/debug/tempo-zone dev --l1.rpc-url ws://127.0.0.1:8545 \
+            exec "$zone" dev --l1.rpc-url ws://127.0.0.1:8545 \
                 --datadir "$state/zone" --http.addr 127.0.0.1 --http.port "$PORT"
         fi
         # `dev` wipes its datadir; resume the provisioned node instead.
         node .amp/runtime.mjs validate-zone
-        exec target/debug/tempo-zone node \
+        exec "$zone" node \
             --chain "$state/zone/genesis.json" --datadir "$state/zone/node" \
             --log.file.directory "$state/zone/logs" \
             --l1.rpc-url ws://127.0.0.1:8545 \

@@ -15,8 +15,8 @@ Use a version or digest instead of `latest` in CI so protocol upgrades do not ch
 The default container starts with:
 
 - The standard development mnemonic and 10 prefunded accounts.
-- `tempo_fundAddress` configured for the four canonical TIP-20 tokens.
-- Fee AMM liquidity between AlphaUSD, BetaUSD, ThetaUSD, and pathUSD.
+- `tempo_fundAddress` configured for the five canonical TIP-20 tokens.
+- Fee AMM liquidity for AlphaUSD, BetaUSD, ThetaUSD, and OUSD against pathUSD.
 - Stablecoin DEX bid and ask liquidity at a 1:1 price for the same pairs.
 
 Bootstrap is idempotent. When `/data` is reused, existing pools and orders are preserved instead of duplicated.
@@ -27,6 +27,9 @@ Bootstrap is idempotent. When `/data` is reused, existing pools and orders are p
 | AlphaUSD | `0x20c0000000000000000000000000000000000001` |
 | BetaUSD | `0x20c0000000000000000000000000000000000002` |
 | ThetaUSD | `0x20c0000000000000000000000000000000000003` |
+| OUSD | `0x20c0000000000000000000006a37DA5C996874BE` |
+
+OUSD uses the same address as on Tempo mainnet and testnet.
 
 The deterministic mnemonic is:
 
