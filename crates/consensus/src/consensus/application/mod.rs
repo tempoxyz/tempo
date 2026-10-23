@@ -139,8 +139,12 @@ where
     type Activity = Update<B>;
 
     fn report(&mut self, activity: Self::Activity) -> Feedback {
-        // Both wrappers prune their gates on tips; only one forwards blocks so
-        // each is acknowledged once.
+        // Both wrappers prune their certification gates on tips, so both must
+        // see every tip, including the idle one.
+        //
+        // Neither wrapper uses blocks: they only forward them to `Inner`, which
+        // acknowledges them. Routing blocks through `deferred` alone is
+        // therefore fine whichever wrapper is active.
         if let Update::Tip(..) = &activity {
             self.immediate.report(activity.clone());
         }
