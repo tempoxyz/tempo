@@ -3167,6 +3167,58 @@ mod keychain {
     }
 
     #[test]
+    fn test_t14_drops_admin_key_authorizations() {
+        let (root_signer, user) = generate_keypair();
+        let (admin_signer, admin_key) = generate_keypair();
+        let child_key = Address::random();
+
+        let mut root_admin_auth =
+            KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, child_key);
+        root_admin_auth.is_admin = true;
+        let (mut evm, h) = make_evm(
+            user,
+            child_key,
+            Some(sign_key_auth(&root_signer, root_admin_auth)),
+            TempoHardfork::T14,
+            None,
+            false,
+        );
+        let result = h.validate_env(&mut evm);
+        assert!(
+            matches!(
+                &result,
+                Err(EVMError::Transaction(TempoInvalidTransaction::KeychainValidationFailed { reason }))
+                    if reason.contains("since T14")
+            ),
+            "admin key authorizations must be rejected on T14, got: {result:?}"
+        );
+
+        let access_key_auth = sign_key_auth(
+            &admin_signer,
+            KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, child_key)
+                .with_account(user),
+        );
+        let (mut evm, h) = make_evm(
+            user,
+            admin_key,
+            Some(access_key_auth),
+            TempoHardfork::T14,
+            None,
+            false,
+        );
+        let result = h.validate_env(&mut evm);
+        assert!(
+            matches!(
+                &result,
+                Err(EVMError::Transaction(
+                    TempoInvalidTransaction::AccessKeyCannotAuthorizeOtherKeys
+                ))
+            ),
+            "access keys must not authorize other keys on T14, got: {result:?}"
+        );
+    }
+
+    #[test]
     fn test_t6_admin_key_authorization_rejects_different_transaction_admin_key() {
         let (authorization_signer, authorization_admin_key) = generate_keypair();
         let (_, tx_admin_key) = generate_keypair();

@@ -91,6 +91,13 @@ pub struct TempoPoolUpdates {
     /// Pending AA transactions carrying the same `(account, witness)` key authorization are no
     /// longer executable once the account explicitly burns that witness.
     pub key_authorization_witness_burns: AddressMap<B256Set>,
+    /// Whether this update activates T14, which drops T6 admin keys ([TIP-1137]).
+    ///
+    /// Pending transactions signed by stored admin keys or carrying admin key authorizations
+    /// can no longer execute.
+    ///
+    /// [TIP-1137]: <https://docs.tempo.xyz/protocol/tips/tip-1137>
+    pub admin_keys_dropped: bool,
 }
 
 impl TempoPoolUpdates {
@@ -114,6 +121,7 @@ impl TempoPoolUpdates {
             && self.fee_balance_changes.is_empty()
             && self.spending_limit_spends.is_empty()
             && self.key_authorization_witness_burns.is_empty()
+            && !self.admin_keys_dropped
     }
 
     /// Extracts pool updates from a committed chain segment.
@@ -249,6 +257,7 @@ impl TempoPoolUpdates {
             || !self.paused_tokens.is_empty()
             || !self.fee_balance_changes.is_empty()
             || !self.key_authorization_witness_burns.is_empty()
+            || self.admin_keys_dropped
     }
 
     /// Returns true if updates may invalidate keychain-signature transactions.
@@ -489,6 +498,7 @@ where
     let mut chain_events = pool.client().canonical_state_stream();
 
     let amm_cache = pool.amm_liquidity_cache();
+    let mut prev_tip_timestamp: Option<u64> = None;
 
     // Process all maintenance operations on new block commit or reorg.
     while let Some(event) = chain_events.next().await {
@@ -539,7 +549,12 @@ where
             .record(amm_start.elapsed());
 
         // 3. Collect all block-level invalidation events
-        let updates = TempoPoolUpdates::from_chain(tip);
+        let mut updates = TempoPoolUpdates::from_chain(tip);
+        let chain_spec = pool.client().chain_spec();
+        updates.admin_keys_dropped = prev_tip_timestamp
+            .is_some_and(|ts| !chain_spec.tempo_hardfork_at(ts).is_t14())
+            && chain_spec.tempo_hardfork_at(tip_timestamp).is_t14();
+        prev_tip_timestamp = Some(tip_timestamp);
 
         let mut all_txs: Option<AllPoolTransactions<TempoPooledTransaction>> = None;
         // Reth's canonical-update handling may not have pruned mined transactions yet.
