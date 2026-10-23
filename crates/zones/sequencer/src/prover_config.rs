@@ -14,6 +14,7 @@ use eyre::{Context as _, Result, ensure};
 use reth_metrics::metrics::Gauge;
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::{TempoHardforks, hardfork::TempoHardfork};
+use tempo_precompiles::zone_verifier::APPROVED_PCRS;
 use zone_chainspec::ZoneChainSpec;
 use zone_prover::attested_transport::RemoteProverConfig;
 
@@ -55,8 +56,9 @@ impl FromStr for HardforkProverAddress {
 pub struct ProverAddresses(BTreeMap<TempoHardfork, RemoteProverConfig>);
 
 impl ProverAddresses {
-    /// Build authenticated endpoints, requiring an explicit policy for nonempty assignments and
-    /// rejecting duplicate assignments.
+    /// Build authenticated endpoints, rejecting duplicate assignments. Without a `policy`
+    /// override, each endpoint is authenticated with the verifier's compiled-in PCRs for its
+    /// hardfork, and a hardfork without approved PCRs is rejected.
     pub fn new(
         assignments: Vec<HardforkProverAddress>,
         policy: Option<&[u8]>,
@@ -64,11 +66,6 @@ impl ProverAddresses {
         if assignments.is_empty() {
             return Ok(None);
         }
-        let policy = policy.ok_or_else(|| {
-            eyre::eyre!(
-                "remote proving requires --sequencer.prover-attestation-policy; this Tempo release does not expose the verifier's PCR policy"
-            )
-        })?;
         let mut addresses = BTreeMap::new();
         for assignment in assignments {
             let HardforkProverAddress { hardfork, address } = assignment;
@@ -76,10 +73,18 @@ impl ProverAddresses {
                 !address.trim().is_empty(),
                 "prover address must not be empty"
             );
-            let prev = addresses.insert(
-                hardfork,
-                RemoteProverConfig::from_policy_json(address, policy)?,
-            );
+            let config = match policy {
+                Some(policy) => RemoteProverConfig::from_policy_json(address, policy)?,
+                None => {
+                    let pcrs = APPROVED_PCRS.at(hardfork).ok_or_else(|| {
+                        eyre::eyre!(
+                            "no approved prover PCRs for L1 hardfork {hardfork}; pass --sequencer.prover-attestation-policy"
+                        )
+                    })?;
+                    RemoteProverConfig::from_pcrs(address, pcrs)?
+                }
+            };
+            let prev = addresses.insert(hardfork, config);
             ensure!(prev.is_none(), "duplicate prover address for {hardfork}");
         }
         Ok(Some(Self(addresses)))
@@ -322,22 +327,29 @@ mod tests {
     }
 
     #[test]
-    fn remote_assignments_require_an_attestation_policy() {
+    fn assignments_without_a_policy_use_the_compiled_pcrs() {
         assert!(ProverAddresses::new(Vec::new(), None).unwrap().is_none());
+        assert!(APPROVED_PCRS.at(TempoHardfork::T13).is_some());
         for &hardfork in TempoHardfork::VARIANTS {
-            let error = ProverAddresses::new(
+            let result = ProverAddresses::new(
                 vec![HardforkProverAddress {
                     hardfork,
                     address: "prover:5000".to_owned(),
                 }],
                 None,
-            )
-            .unwrap_err();
-            assert!(
-                error
-                    .to_string()
-                    .contains("--sequencer.prover-attestation-policy")
             );
+            match APPROVED_PCRS.at(hardfork) {
+                Some(pcrs) => assert_eq!(
+                    result.unwrap().unwrap().config_for(hardfork).unwrap(),
+                    &RemoteProverConfig::from_pcrs("prover:5000".to_owned(), pcrs).unwrap()
+                ),
+                None => assert_eq!(
+                    result.unwrap_err().to_string(),
+                    format!(
+                        "no approved prover PCRs for L1 hardfork {hardfork}; pass --sequencer.prover-attestation-policy"
+                    )
+                ),
+            }
         }
     }
 
