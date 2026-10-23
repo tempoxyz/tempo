@@ -847,13 +847,12 @@ where
     DB: DynDatabase,
 {
     fn bytecode_by_hash(&self, code_hash: &B256) -> ProviderResult<Option<Bytecode>> {
-        Ok(Some(Bytecode(reth_execution_types::revm_bytecode(
-            &self
-                .db
+        Ok(Some(Bytecode(
+            self.db
                 .borrow_mut()
                 .get_code_by_hash(code_hash)
                 .map_err(ProviderError::other)?,
-        ))))
+        )))
     }
 }
 
@@ -1002,11 +1001,11 @@ mod tests {
 
         assert_eq!(
             cached.bytecode_by_hash(&code_hash).unwrap(),
-            Some(Bytecode(reth_execution_types::revm_bytecode(&bytecode)))
+            Some(Bytecode(bytecode.clone()))
         );
         assert_eq!(
             cached.bytecode_by_hash(&code_hash).unwrap(),
-            Some(Bytecode(reth_execution_types::revm_bytecode(&bytecode)))
+            Some(Bytecode(bytecode))
         );
         assert_eq!(bytecode_reads.load(Ordering::Relaxed), 1);
     }

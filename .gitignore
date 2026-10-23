@@ -16,7 +16,9 @@ profile.json.gz
 
 .DS_Store
 .idea
-.vscode
+.vscode/*
+!/.vscode/settings.json
+!/.vscode/extensions.json
 **/.env
 **/.envrc
 localnet/**
@@ -48,6 +50,8 @@ __pycache__/
 
 # Amp orb portals
 .amp/portals/*
+.amp/deps/
+.amp/state/
 # Generated only inside orbs; never copy an output identity into a project snapshot.
 /.amp/archil-output-id
 /.cargo/orb.toml
