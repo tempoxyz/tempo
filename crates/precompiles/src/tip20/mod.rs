@@ -2902,9 +2902,14 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_system_transfer_from_zone_outbox_listed_from_t14() -> eyre::Result<()> {
+    fn test_system_transfer_from_zone_outbox_listed_from_t15() -> eyre::Result<()> {
         let outbox = crate::address_registry::ZONE_OUTBOX_ADDRESS;
-        for hardfork in [TempoHardfork::T12, TempoHardfork::T13, TempoHardfork::T14] {
+        for hardfork in [
+            TempoHardfork::T12,
+            TempoHardfork::T13,
+            TempoHardfork::T14,
+            TempoHardfork::T15,
+        ] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
             let admin = Address::random();
             let from = Address::random();
@@ -2917,7 +2922,7 @@ pub(crate) mod tests {
                     .apply()?;
 
                 let result = token.system_transfer_from(outbox, from, amount);
-                if hardfork.is_t14() {
+                if hardfork.is_t15() {
                     assert!(result.is_ok());
                     assert_eq!(
                         token.balance_of(ITIP20::balanceOfCall { account: outbox })?,
@@ -2937,7 +2942,7 @@ pub(crate) mod tests {
 
     #[test]
     fn test_system_transfer_from_zone_outbox_enforces_spending_limit() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
         let admin = Address::random();
         let user = Address::random();
         let access_key = Address::random();
