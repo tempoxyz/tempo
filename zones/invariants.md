@@ -74,6 +74,7 @@ for auditors, invariant/fuzz test authors, and production monitoring.
 
 | ID | Assertion | Crit | Impact |
 |---|---|---|---|
+| `TEMPO-ZONE-WITHDRAWAL-ATTEMPT-BOUND` | From T13, each user transaction allows one decoded, non-static `requestWithdrawal` attempt; the allowance is consumed before validation or L1 policy reads and survives request or enclosing-frame reverts | 🟢 | Failure-tolerant multicalls can repeat expensive policy lookups and stall block production |
 | `TEMPO-ZONE-WITHDRAWAL-TOKEN-ENABLED` | Withdrawals can only be requested for enabled tokens | 🔴 | Users can burn unsupported assets with no corresponding portal escrow |
 | `TEMPO-ZONE-WITHDRAWAL-FALLBACK-NONZERO` | Every user withdrawal has a non-zero `zoneFallbackRecipient` | 🔴 | Failed Tempo-side withdrawals cannot return funds to the zone |
 | `TEMPO-ZONE-WITHDRAWAL-FEE-SNAPSHOT` | Withdrawal fee equals `(WITHDRAWAL_BASE_GAS + gasLimit) * tempoGasRate` at request time, with the rate bounded by the finalized admin maximum, and is burned with the amount | 🟢 | Fee changes retroactively alter user economics or underfund processing |

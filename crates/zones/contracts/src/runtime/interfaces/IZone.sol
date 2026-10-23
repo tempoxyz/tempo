@@ -1157,6 +1157,7 @@ interface IZoneOutbox {
     error TooManyWithdrawalsThisBlock();
     error InvalidRevealTo();
     error InvalidCurrentTxHash();
+    error WithdrawalAlreadyAttempted();
     error ZeroAmountWithdrawal();
     error StaticCallNotAllowed();
 
@@ -1241,6 +1242,7 @@ interface IZoneOutbox {
 
     /// @notice Request a withdrawal from the zone back to Tempo
     /// @dev Caller must approve outbox to spend amount + fee of the specified token.
+    ///      From T13, only one non-static withdrawal attempt is allowed per transaction, even if it reverts.
     ///      The token must be enabled on the portal. Withdrawals can never be disabled
     ///      for an enabled token (non-custodial guarantee).
     /// @param token The TIP-20 token to withdraw

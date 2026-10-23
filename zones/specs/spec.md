@@ -732,6 +732,8 @@ flowchart LR
 
 A user withdraws by calling `requestWithdrawal(token, to, amount, memo, gasLimit, zoneFallbackRecipient, data, revealTo)` on the `ZoneOutbox`. The user must first approve the outbox to spend `amount + fee` of the token, and `amount` must be non-zero. The token must be enabled, and the `zoneFallbackRecipient` must be non-zero but need not be a Tempo allowed account. For a plain withdrawal (`gasLimit == 0`), closed access mode requires `to` to have the `Account` role; open access mode does not. Enforced gateway mode prevents accounts with the `CallbackGateway` role from receiving plain withdrawals and requires callback targets (`gasLimit > 0`) to have that role. Open gateway mode skips both role checks.
 
+From T13, only one decoded, non-static `requestWithdrawal` attempt is allowed per user transaction, including contract calls and native transaction batches. The allowance is consumed before withdrawal validation or L1 policy reads and remains consumed even if the request or an enclosing call frame reverts. Later attempts revert with `WithdrawalAlreadyAttempted` before reading policy state; each new transaction execution starts with a fresh allowance. Before T13, multiple withdrawal attempts per transaction remain allowed.
+
 Withdrawal requests are bounded before they enter the pending queue. `gasLimit` must be less than or equal to `MAX_WITHDRAWAL_GAS_LIMIT` or the request reverts with `GasLimitTooHigh`; `data.length` must be less than or equal to `MAX_CALLBACK_DATA_SIZE` (1,024 bytes) or the request reverts with `CallbackDataTooLarge`; and `revealTo`, when non-empty, must be a valid 33-byte compressed secp256k1 public key or the request reverts with `InvalidRevealTo`. The Zone EVM supplies the current transaction hash directly to the native outbox; if it is zero, the request reverts with `InvalidCurrentTxHash`, because the transaction hash is part of the authenticated-withdrawal sender tag.
 
 The sequencer can additionally configure `maxWithdrawalsPerBlock` on the outbox. A value of `0` means unlimited. When nonzero, only that many `requestWithdrawal` calls can be accepted in a single zone block; further requests in the same block revert with `TooManyWithdrawalsThisBlock` before any token transfer or burn. The outbox tracks the last block number counted and resets the per-block counter when `block.number` changes.
@@ -841,7 +843,7 @@ Zone transactions are private, but when a withdrawal is processed on Tempo, the 
 senderTag = keccak256(abi.encodePacked(sender, txHash, fallbackNonce))
 ```
 
-The `txHash` is the hash of the `requestWithdrawal` transaction on the zone. Since zone transaction data is not published, `txHash` acts as a blinding factor known only to the sender and the sequencer. `fallbackNonce` is the public, monotonically increasing identifier already assigned to each user withdrawal. Including it prevents multiple withdrawals from the same private transaction from sharing a public tag. Internal deposit bounce-backs retain the canonical `keccak256(address(0) || bytes32(0))` tag.
+The `txHash` is the hash of the `requestWithdrawal` transaction on the zone. Since zone transaction data is not published, `txHash` acts as a blinding factor known only to the sender and the sequencer. `fallbackNonce` is the public, monotonically increasing identifier already assigned to each user withdrawal. Including it binds the public tag to that withdrawal's identifier. Internal deposit bounce-backs retain the canonical `keccak256(address(0) || bytes32(0))` tag.
 
 The sender can optionally specify a `revealTo` public key (compressed secp256k1, 33 bytes) when requesting the withdrawal. If provided, the sequencer encrypts `(sender, txHash)` to that key using ECDH and populates `encryptedSender` in the withdrawal struct. The wire format is `ephemeralPubKey (33 bytes) || nonce (12 bytes) || ciphertext (52 bytes) || tag (16 bytes)` totaling 113 bytes.
 
@@ -851,7 +853,7 @@ Unlike user-created encrypted deposits, authenticated-withdrawal sender reveals 
 withdrawalHmacKey = HMAC-SHA256(uint256_be(sequencerEncryptionPrivKey), "tempo-zone-authenticated-withdrawal-derivation-key-v1")
 ```
 
-Here, `uint256_be` is the 32-byte big-endian encoding of the private scalar. Using `withdrawalHmacKey`, the sequencer derives the ECIES ephemeral scalar deterministically from the zone id, `revealTo`, `sender`, `txHash`, and the 8-byte big-endian `fallbackNonce`, retrying with a counter if the derived value is not a valid secp256k1 scalar. It derives the AES-GCM nonce from the same context plus the resulting ephemeral public key. The same withdrawal is therefore byte-for-byte reproducible, while distinct withdrawals from one private transaction use different encryption material.
+Here, `uint256_be` is the 32-byte big-endian encoding of the private scalar. Using `withdrawalHmacKey`, the sequencer derives the ECIES ephemeral scalar deterministically from the zone id, `revealTo`, `sender`, `txHash`, and the 8-byte big-endian `fallbackNonce`, retrying with a counter if the derived value is not a valid secp256k1 scalar. It derives the AES-GCM nonce from the same context plus the resulting ephemeral public key. The same withdrawal is therefore byte-for-byte reproducible, while distinct withdrawals use different encryption material.
 
 Two disclosure modes are available:
 

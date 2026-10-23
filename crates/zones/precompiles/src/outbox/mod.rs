@@ -1,5 +1,6 @@
 //! Native `ZoneOutbox` precompile.
 //!
+#[cfg(feature = "std")]
 mod dispatch;
 #[cfg(test)]
 mod tests;

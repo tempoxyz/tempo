@@ -10,6 +10,7 @@ use crate::{
     dispatch::{mutate, view as typed_view},
     ecies::{AUTHENTICATED_WITHDRAWAL_ENCRYPTED_SIZE, COMPRESSED_PUBLIC_KEY_SIZE},
     storage::{L1State, L1StorageReader},
+    tx_context,
 };
 
 use super::{MAX_CALLBACK_DATA_SIZE, WITHDRAWAL_BASE_GAS, ZoneOutbox};
@@ -50,6 +51,7 @@ impl ZoneOutbox {
                 setTempoGasRate(call) => mutate(call, msg_sender, |sender, call| self.set_tempo_gas_rate(l1, sender, call)),
                 setMaxWithdrawalsPerBlock(call) => mutate(call, msg_sender, |sender, call| self.set_max_withdrawals_per_block(l1, sender, call)),
                 requestWithdrawal(call) => mutate(call, msg_sender, |sender, call| {
+                    tx_context::consume_withdrawal_attempt()?;
                     self.request_withdrawal(l1, sender, fee_payer, tx_hash, call)
                 }),
                 enqueueDepositBounceBack(call) => mutate(call, msg_sender, |sender, call| self.enqueue_deposit_bounce_back(sender, call)),

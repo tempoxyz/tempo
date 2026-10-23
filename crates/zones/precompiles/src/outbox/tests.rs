@@ -2,12 +2,11 @@ use super::*;
 
 use alloy_evm::precompiles::DynPrecompile;
 use alloy_primitives::{Bytes, address};
-use alloy_sol_types::{SolCall, SolInterface};
+use alloy_sol_types::{SolCall, SolError, SolInterface};
 use revm::precompile::{PrecompileHalt, PrecompileResult, PrecompileStatus};
 use tempo_contracts::zones::IZoneOutbox as ZoneOutboxAbi;
 use tempo_precompiles::{
     storage::{StorageCtx, StorageKey},
-    test_util::TIP20Setup,
     zone_factory::portal::{self, ZonePortalStorage},
 };
 use zone_primitives::constants::TEMPO_STATE_ADDRESS;
@@ -16,7 +15,8 @@ use crate::{
     create_outbox_precompile,
     tempo_state::TEMPO_BLOCK_NUMBER_SLOT,
     test_utils::{
-        MockL1Reader, TestContext, call_precompile, test_context, test_env, test_storage_provider,
+        MockL1Reader, TestContext, call_precompile, setup_outbox, test_context, test_env,
+        test_storage_provider, withdrawal_call,
     },
     tx_context,
 };
@@ -71,15 +71,7 @@ impl Harness {
                     U256::from(ANCHOR),
                 )?;
 
-                ZoneOutbox::new().initialize()?;
-                TIP20Setup::path_usd(ALICE)
-                    .with_issuer(ALICE)
-                    .with_issuer(ZONE_OUTBOX_ADDRESS)
-                    .with_mint(ALICE, U256::from(1_000_000u64))
-                    .with_mint(FEE_PAYER, U256::from(1_000_000u64))
-                    .with_approval(ALICE, ZONE_OUTBOX_ADDRESS, U256::MAX)
-                    .with_approval(FEE_PAYER, ZONE_OUTBOX_ADDRESS, U256::MAX)
-                    .apply()?;
+                setup_outbox(ALICE, [ALICE, FEE_PAYER], U256::from(1_000_000))?;
                 Ok(())
             })?;
         }
@@ -153,16 +145,10 @@ impl Harness {
         memo: B256,
         gas_limit: u64,
     ) -> PrecompileResult {
-        self.request_custom(ZoneOutboxAbi::requestWithdrawalCall {
-            token: self.token,
-            to,
-            amount,
-            memo,
-            gasLimit: gas_limit,
-            zoneFallbackRecipient: ALICE,
-            data: Bytes::new(),
-            revealTo: Bytes::new(),
-        })
+        let mut call = withdrawal_call(self.token, to, amount, ALICE);
+        call.memo = memo;
+        call.gasLimit = gas_limit;
+        self.request_custom(call)
     }
 
     fn request_custom(&mut self, call: ZoneOutboxAbi::requestWithdrawalCall) -> PrecompileResult {
@@ -344,20 +330,8 @@ fn outbox_reads_injected_l1_state_at_tempo_checkpoint() -> eyre::Result<()> {
 fn request_withdrawal_rejects_missing_transaction_hash() -> eyre::Result<()> {
     let mut harness = Harness::new()?;
     let token = harness.token;
-    let result = harness.call_without_hash(
-        ALICE,
-        ZoneOutboxAbi::requestWithdrawalCall {
-            token,
-            to: BOB,
-            amount: 1,
-            memo: B256::ZERO,
-            gasLimit: 0,
-            zoneFallbackRecipient: ALICE,
-            data: Bytes::new(),
-            revealTo: Bytes::new(),
-        }
-        .abi_encode(),
-    );
+    let result =
+        harness.call_without_hash(ALICE, withdrawal_call(token, BOB, 1, ALICE).abi_encode());
     assert_revert(result, ZoneOutboxError::invalid_current_tx_hash());
     assert!(
         harness.l1.storage_requests().is_empty(),
@@ -369,16 +343,12 @@ fn request_withdrawal_rejects_missing_transaction_hash() -> eyre::Result<()> {
 #[test]
 fn request_withdrawal_rejects_unknown_token_before_portal_read() -> eyre::Result<()> {
     let mut harness = Harness::new()?;
-    let result = harness.request_custom(ZoneOutboxAbi::requestWithdrawalCall {
-        token: address!("0x20c000000000000000000000000000000000ffff"),
-        to: BOB,
-        amount: 1,
-        memo: B256::ZERO,
-        gasLimit: 0,
-        zoneFallbackRecipient: ALICE,
-        data: Bytes::new(),
-        revealTo: Bytes::new(),
-    });
+    let result = harness.request_custom(withdrawal_call(
+        address!("0x20c000000000000000000000000000000000ffff"),
+        BOB,
+        1,
+        ALICE,
+    ));
     assert_revert(result, TIP20Error::uninitialized());
     assert!(
         harness.l1.storage_requests().is_empty(),
@@ -932,6 +902,47 @@ fn fallback_recipient_nonce_is_private_and_consumed_once_by_inbox() -> eyre::Res
     assert_revert(
         harness.call(ZONE_INBOX_ADDRESS, calldata),
         ZoneOutboxError::invalid_fallback_recipient(),
+    );
+    Ok(())
+}
+
+#[test]
+fn rejected_call_modes_do_not_consume_withdrawal_attempt() -> eyre::Result<()> {
+    let mut harness = Harness::new()?;
+    let _guard = tx_context::set_current_transaction(TX_HASH, ALICE);
+    let data = withdrawal_call(harness.token, BOB, 1, ALICE).abi_encode();
+    for (is_static, bytecode_address) in [(true, ZONE_OUTBOX_ADDRESS), (false, BOB)] {
+        let result = call_precompile(
+            &mut harness.ctx,
+            &harness.precompile,
+            ALICE,
+            &data,
+            GAS,
+            is_static,
+            bytecode_address,
+            ZONE_OUTBOX_ADDRESS,
+        )?;
+        if is_static {
+            assert_eq!(
+                result.status,
+                PrecompileStatus::Halt(PrecompileHalt::other_static(
+                    "state change during static call"
+                ))
+            );
+            assert!(result.bytes.is_empty());
+        } else {
+            assert!(result.is_revert());
+            assert_eq!(
+                result.bytes,
+                tempo_precompiles::DelegateCallNotAllowed {}.abi_encode()
+            );
+        }
+        assert!(harness.l1.storage_requests().is_empty());
+    }
+    assert!(
+        harness
+            .call_inner(ALICE, ALICE, &data, false, false)?
+            .is_success()
     );
     Ok(())
 }

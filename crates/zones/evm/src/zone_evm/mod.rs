@@ -200,8 +200,9 @@ fn map_adapter_error<E: core::error::Error + DBErrorMarker>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_evm::EvmEnv;
-    use alloy_primitives::U256;
+    use alloy_evm::{EvmEnv, EvmFactory};
+    use alloy_primitives::{TxKind, U256, bytes};
+    use alloy_sol_types::{SolCall, SolInterface};
     use revm::{
         context::{
             TxEnv,
@@ -209,17 +210,25 @@ mod tests {
             transaction::{Authorization, SignedAuthorization},
         },
         context_interface::either::Either,
-        database::EmptyDB,
+        database::{EmptyDB, InMemoryDB},
         inspector::NoOpInspector,
         primitives::AddressMap,
-        state::{Account, EvmStorageSlot},
+        state::{Account, AccountInfo, Bytecode, EvmStorageSlot},
     };
-    use tempo_precompiles::TIP403_REGISTRY_ADDRESS;
+    use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_contracts::zones::{IZoneOutbox, ZoneOutboxError, ZonePortal};
+    use tempo_precompiles::{
+        PATH_USD_ADDRESS, TIP403_REGISTRY_ADDRESS,
+        storage::{StorageCtx, StorageKey, hashmap::HashMapStorageProvider},
+        tip403_registry::{ALLOW_ALL_POLICY_ID, slots as registry_slots},
+        zone_factory::portal::{self, ZonePortalStorage},
+    };
     use tempo_primitives::transaction::{
-        RecoveredTempoAuthorization, TempoSignature, TempoSignedAuthorization,
+        Call, RecoveredTempoAuthorization, TempoSignature, TempoSignedAuthorization,
     };
     use tempo_revm::TempoBatchCallEnv;
-    use zone_precompiles::test_utils::MockL1Reader;
+    use zone_precompiles::test_utils::{MockL1Reader, setup_outbox, withdrawal_call};
+    use zone_primitives::constants::ZONE_OUTBOX_ADDRESS;
 
     fn test_evm() -> ZoneEvm<EmptyDB, NoOpInspector, MockL1Reader> {
         let db = L1OverlayDB::new(EmptyDB::default(), MockL1Reader::default(), Address::ZERO);
@@ -336,5 +345,184 @@ mod tests {
 
             assert!(matches!(result, Err(EVMError::CustomAny(_))));
         }
+    }
+
+    fn call_code(target: Address) -> Vec<u8> {
+        // CALL(target, calldata), leaving its success bit on the stack.
+        [
+            bytes!("5f5f365f5f73").as_ref(),
+            target.as_slice(),
+            &[0x5a, 0xf1],
+        ]
+        .concat()
+    }
+
+    const CALLER: Address = Address::repeat_byte(0x11);
+    const FORWARDER: Address = Address::repeat_byte(0x22);
+    const PARENT: Address = Address::repeat_byte(0x33);
+    const RECIPIENT: Address = Address::repeat_byte(0x44);
+    const SECOND_RECIPIENT: Address = Address::repeat_byte(0x55);
+    const PORTAL: Address = Address::repeat_byte(0x77);
+
+    type WithdrawalEvm = ZoneEvm<InMemoryDB, NoOpInspector, MockL1Reader>;
+
+    fn withdrawal_evm(
+        first_succeeds: bool,
+        spec: TempoHardfork,
+    ) -> eyre::Result<(WithdrawalEvm, MockL1Reader)> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+        StorageCtx::enter(&mut storage, || {
+            setup_outbox(CALLER, [CALLER, FORWARDER, PARENT], U256::from(100_000))
+        })?;
+        let mut db = InMemoryDB::default();
+        for address in [PATH_USD_ADDRESS, ZONE_OUTBOX_ADDRESS] {
+            db.insert_account_info(address, storage.get_account_info(address).unwrap().clone());
+        }
+        for (address, slot, value) in storage.into_storage() {
+            db.insert_account_storage(address, slot, value)?;
+        }
+        let reader = MockL1Reader::default();
+        reader.insert(
+            TIP403_REGISTRY_ADDRESS,
+            PATH_USD_ADDRESS.mapping_slot(registry_slots::TOKEN_TRANSFER_POLICIES),
+            0,
+            // Registry binding packs uint64 policy_id followed by bool is_set.
+            U256::from(ALLOW_ALL_POLICY_ID) | (U256::ONE << 64),
+        );
+        let portal = ZonePortalStorage::new(PORTAL);
+        for slot in [
+            portal.token_configs[PATH_USD_ADDRESS].enabled.slot(),
+            portal::slots::IS_ACCESS_ENFORCED,
+        ] {
+            reader.insert(PORTAL, slot, 0, U256::ONE);
+        }
+        if first_succeeds {
+            for recipient in [RECIPIENT, SECOND_RECIPIENT] {
+                reader.insert(
+                    PORTAL,
+                    portal.role[recipient].slot(),
+                    0,
+                    U256::from(u8::from(ZonePortal::Role::Account)),
+                );
+            }
+        }
+
+        let mut env = EvmEnv::default();
+        env.cfg_env.spec = spec;
+        let evm = crate::ZoneEvmFactory::new(reader.clone(), PORTAL).create_evm(db, env);
+        Ok((evm, reader))
+    }
+
+    fn withdrawal_tx(target: Address) -> TempoTxEnv {
+        TempoTxEnv {
+            fee_token: Some(PATH_USD_ADDRESS),
+            inner: TxEnv {
+                caller: CALLER,
+                kind: TxKind::Call(target),
+                data: withdrawal_call(PATH_USD_ADDRESS, RECIPIENT, 1, CALLER)
+                    .abi_encode()
+                    .into(),
+                gas_limit: 10_000_000,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn withdrawal_attempt_survives_contract_reverts() -> eyre::Result<()> {
+        for (first_succeeds, revert_parent) in
+            [(false, false), (false, true), (true, false), (true, true)]
+        {
+            let (mut evm, reader) = withdrawal_evm(first_succeeds, TempoHardfork::T13)?;
+            // Parent reverts with the withdrawal's success bit as evidence.
+            let parent = [
+                bytes!("365f5f37").as_ref(),
+                &call_code(ZONE_OUTBOX_ADDRESS),
+                bytes!("5f5260205ffd").as_ref(),
+            ]
+            .concat();
+            // Save first status (or parent's evidence), then return it and the retry's error.
+            let save_status = if revert_parent {
+                bytes!("5060205f6102003e")
+            } else {
+                bytes!("61020052")
+            };
+            let forwarder = [
+                bytes!("365f5f37").as_ref(),
+                &call_code(if revert_parent {
+                    PARENT
+                } else {
+                    ZONE_OUTBOX_ADDRESS
+                }),
+                save_status.as_ref(),
+                &[0x73],
+                SECOND_RECIPIENT.as_slice(),
+                bytes!("602452").as_ref(),
+                &call_code(ZONE_OUTBOX_ADDRESS),
+                bytes!("503d5f6102203e6024610200f3").as_ref(),
+            ]
+            .concat();
+            for (address, code) in [(PARENT, parent), (FORWARDER, forwarder)] {
+                evm.db_mut().insert_account_info(
+                    address,
+                    AccountInfo::from_bytecode(Bytecode::new_raw(code.into())),
+                );
+            }
+            let result = evm.transact_raw(withdrawal_tx(FORWARDER))?.result;
+            let output = result.output().unwrap();
+            // In the parent-revert case this proves the withdrawal succeeded before rollback.
+            assert_eq!(
+                U256::from_be_slice(&output[..32]),
+                U256::from(u8::from(first_succeeds))
+            );
+            assert_eq!(
+                &output[32..],
+                ZoneOutboxError::withdrawal_already_attempted().abi_encode()
+            );
+            let portal = ZonePortalStorage::new(PORTAL);
+            assert!(reader.requested(0, &portal.role[RECIPIENT]));
+            assert!(!reader.requested(0, &portal.role[SECOND_RECIPIENT]));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn native_batch_shares_one_withdrawal_allowance() -> eyre::Result<()> {
+        for spec in [TempoHardfork::T12, TempoHardfork::T13] {
+            for requests in 1..=2 {
+                let (mut evm, _) = withdrawal_evm(true, spec)?;
+                let batch_call = |input| Call {
+                    to: TxKind::Call(ZONE_OUTBOX_ADDRESS),
+                    input,
+                    value: U256::ZERO,
+                };
+                let mut calls = vec![batch_call(
+                    IZoneOutbox::WITHDRAWAL_BASE_GASCall {}.abi_encode().into(),
+                )];
+                calls.extend([RECIPIENT, SECOND_RECIPIENT][..requests].iter().map(|&to| {
+                    batch_call(
+                        withdrawal_call(PATH_USD_ADDRESS, to, 1, CALLER)
+                            .abi_encode()
+                            .into(),
+                    )
+                }));
+                let mut tx = withdrawal_tx(ZONE_OUTBOX_ADDRESS);
+                tx.tempo_tx_env = Some(Box::new(TempoBatchCallEnv {
+                    aa_calls: calls,
+                    ..Default::default()
+                }));
+                let result = evm.transact_raw(tx)?.result;
+                let limited = spec.is_t13() && requests == 2;
+                assert_eq!(result.is_success(), !limited);
+                if limited {
+                    assert_eq!(
+                        result.output().unwrap().as_ref(),
+                        ZoneOutboxError::withdrawal_already_attempted().abi_encode()
+                    );
+                }
+            }
+        }
+        Ok(())
     }
 }
