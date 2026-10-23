@@ -71,6 +71,7 @@ pub const TEST_MNEMONIC: &str = "test test test test test test test test test te
 #[derive(Default, Debug)]
 pub struct Builder {
     t12_time: Option<u64>,
+    t14_time: Option<u64>,
     epoch_length: Option<u64>,
     initial_dkg_outcome: Option<OnchainDkgOutcome>,
     validators: Option<ordered::Map<PublicKey, ConsensusNodeConfig>>,
@@ -80,6 +81,7 @@ impl Builder {
     pub fn new() -> Self {
         Self {
             t12_time: None,
+            t14_time: None,
             epoch_length: None,
             initial_dkg_outcome: None,
             validators: None,
@@ -111,9 +113,15 @@ impl Builder {
         }
     }
 
+    /// Overrides T14 activation; `None` preserves the fixture schedule.
+    pub fn with_t14_time(self, t14_time: Option<u64>) -> Self {
+        Self { t14_time, ..self }
+    }
+
     pub fn launch(self) -> eyre::Result<ExecutionRuntime> {
         let Self {
             t12_time,
+            t14_time,
             epoch_length,
             initial_dkg_outcome,
             validators,
@@ -156,6 +164,14 @@ impl Builder {
                         .remove(&format!("{}Time", fork.name().to_lowercase()));
                 }
             }
+        }
+
+        if let Some(t14_time) = t14_time {
+            genesis
+                .config
+                .extra_fields
+                .insert_value("t14Time".to_string(), t14_time)
+                .unwrap();
         }
 
         genesis.extra_data = initial_dkg_outcome.encode().into();
@@ -263,6 +279,9 @@ pub struct ExecutionNodeConfig {
     /// The protocol is registered before the network starts because `RLPx`
     /// negotiates capabilities during the handshake.
     pub gossip: Option<tempo_node::gossip::Config>,
+    /// Proposal budget estimator the payload builder paces builds with, or
+    /// `None` for a private one seeded from the default multiplier.
+    pub estimator: Option<tempo_node::Estimator>,
 }
 
 impl ExecutionNodeConfig {
@@ -278,6 +297,7 @@ impl ExecutionNodeConfig {
             feed_state: None,
             share_sparse_trie_with_payload_builder: false,
             gossip: None,
+            estimator: None,
         }
     }
 }
@@ -913,6 +933,7 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
         feed_state,
         share_sparse_trie_with_payload_builder,
         gossip,
+        estimator,
     } = config;
     let node_config = NodeConfig::new(Arc::new(chain_spec))
         .with_rpc(
@@ -935,7 +956,12 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
             c.network.discovery.disable_discovery = true;
             c.network = c.network.with_unused_ports();
             c.network.p2p_secret_key_hex = Some(secret_key);
-            // Match Tempo's engine default for nodes launched by tests.
+            // Match Tempo's engine defaults for nodes launched by tests. The
+            // persistence settings matter: marshal only counts a block as
+            // processed once reth persisted it, so reth's larger defaults
+            // would delay every height-based wait.
+            c.engine.persistence_threshold = 25;
+            c.engine.num_state_masking_blocks = 10;
             c.engine.suppress_persistence_during_build = true;
             c.engine.share_sparse_trie_with_payload_builder =
                 share_sparse_trie_with_payload_builder;
@@ -953,6 +979,10 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
     };
 
     let tempo_node = TempoNode::default().with_validator_key(validator_key);
+    let tempo_node = match estimator {
+        Some(estimator) => tempo_node.with_estimator(estimator),
+        None => tempo_node,
+    };
     let tempo_node = match gossip_protocol {
         Some(protocol) => tempo_node.with_finalization_cert_gossip(protocol),
         None => tempo_node,

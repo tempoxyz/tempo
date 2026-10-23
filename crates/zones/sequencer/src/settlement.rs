@@ -72,7 +72,7 @@ use crate::nonce_keys::SUBMIT_BATCH_NONCE_KEY;
 #[derive(Debug)]
 pub enum BatchSubmitError {
     PortalAdvanced,
-    /// The active T15-or-later portal is paused; no submission was attempted.
+    /// The active T14-or-later portal is paused; no submission was attempted.
     /// The prepared batch can be retried after the portal resumes or its pause expires.
     PortalPaused,
     PreparedAnchorInvalid(eyre::Report),
@@ -301,7 +301,7 @@ impl BatchSubmitter {
     /// Returns whether the active portal runtime blocks settlement while paused.
     pub(crate) async fn settlement_paused(&self) -> Result<bool> {
         if active_l1_hardfork(&self.l1_provider, self.chain_spec.as_ref()).await?
-            < TempoHardfork::T15
+            < TempoHardfork::T14
         {
             return Ok(false);
         }
@@ -426,9 +426,9 @@ impl BatchSubmitter {
                 current: active,
             });
         }
-        // Pre-T15 portals allow settlement while paused. Remove this gate after every supported
-        // L1 network has activated T15.
-        if active >= TempoHardfork::T15
+        // Pre-T14 portals allow settlement while paused. Remove this gate after every supported
+        // L1 network has activated T14.
+        if active >= TempoHardfork::T14
             && self
                 .portal
                 .paused()
@@ -2068,9 +2068,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn settlement_pause_starts_at_t15() {
+    async fn settlement_pause_starts_at_t14() {
         let mut genesis = tempo_chainspec::spec::DEV.inner.genesis.clone();
-        set_tempo_fork(&mut genesis, TempoHardfork::T15, 1_000);
+        set_tempo_fork(&mut genesis, TempoHardfork::T14, 1_000);
         let chain_spec = Arc::new(ZoneChainSpec {
             inner: Arc::new(tempo_chainspec::TempoChainSpec::from_genesis(genesis)),
         });

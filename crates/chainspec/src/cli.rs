@@ -112,19 +112,6 @@ mod tests {
     }
 
     #[test]
-    fn t15_can_be_scheduled_after_t14() {
-        let args = parse(&["--hardfork", "T14"]).unwrap();
-        assert_eq!(args.fork_time(T14), Some(0));
-        assert_eq!(args.fork_time(T15), None);
-        let args = parse(&["--hardfork", "T14", "--t15-time", "200"]).unwrap();
-        assert_eq!(args.fork_time(T14), Some(0));
-        assert_eq!(args.fork_time(T15), Some(200));
-        let mut config = ChainConfig::default();
-        args.write_to(&mut config);
-        assert_eq!(config.extra_fields.get("t15Time"), Some(&json!(200)));
-    }
-
-    #[test]
     fn duplicate_flags_are_rejected() {
         assert!(parse(&["--t3-time", "1", "--t3-time=2"]).is_err());
     }

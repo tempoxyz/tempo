@@ -18,7 +18,7 @@ use tempo_contracts::{
     precompiles::{INITIAL_FACTORY_OWNER, initial_zone_factory_config},
     zones::{
         T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
-        T15_ZONE_PORTAL_RUNTIME, ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS,
+        T14_ZONE_PORTAL_RUNTIME, ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS,
         ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_IMPL_ADDRESS, ZONE_PORTAL_PREFIX, ZONE_PORTAL_RUNTIME,
         ZONE_VERIFIER_ADDRESS, ZONE_VERIFIER_RUNTIME,
     },
@@ -217,7 +217,7 @@ fn install_native_zone_factory(
             vec![
                 ZONE_PORTAL_RUNTIME,
                 T13_ZONE_PORTAL_RUNTIME,
-                T15_ZONE_PORTAL_RUNTIME,
+                T14_ZONE_PORTAL_RUNTIME,
             ],
         ),
         (
@@ -306,7 +306,7 @@ mod tests {
             T13_ZONE_MESSENGER_RUNTIME,
         ]);
         assert_validates_shared_runtimes([
-            T15_ZONE_PORTAL_RUNTIME,
+            T14_ZONE_PORTAL_RUNTIME,
             T13_ZONE_VERIFIER_RUNTIME,
             T13_ZONE_MESSENGER_RUNTIME,
         ]);
