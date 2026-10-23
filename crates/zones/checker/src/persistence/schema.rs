@@ -51,6 +51,16 @@ pub(crate) enum MetaValue {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct TokenValue(pub(crate) TokenState);
 
+/// Token row written by schema v1, before `pending_forced_exit_fees` existed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct TokenValueV1 {
+    pub(crate) account_total: U256,
+    pub(crate) pending_deposits: U256,
+    pub(crate) pending_withdrawals: U256,
+    pub(crate) pending_tempo_refunds: U256,
+    pub(crate) pending_zone_refunds: U256,
+}
+
 /// Big-endian `U256` balance row, compressed without the version/bincode envelope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct AccountValue(pub(crate) U256);

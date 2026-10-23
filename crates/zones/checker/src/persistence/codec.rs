@@ -64,7 +64,11 @@ macro_rules! values {
     )+};
 }
 
-values!(super::schema::MetaValue, super::schema::TokenValue);
+values!(
+    super::schema::MetaValue,
+    super::schema::TokenValue,
+    super::schema::TokenValueV1,
+);
 
 /// Invalid durable value envelope.
 #[derive(Debug, thiserror::Error)]

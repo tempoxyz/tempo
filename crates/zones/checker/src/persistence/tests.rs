@@ -1,16 +1,21 @@
+use std::path::Path;
+
 use alloy_primitives::{Address, B256, U256};
 use reth_codecs::{Compress as _, Decompress as _};
 use reth_db::{
-    Database as _, RawKey, RawTable, RawValue,
+    Database as _, DatabaseEnv, DatabaseEnvKind, DatabaseError, RawKey, RawTable, RawValue,
+    mdbx::{DatabaseArguments, init_db_for},
     transaction::{DbTx as _, DbTxMut as _},
 };
 
 use crate::accounting::{AccountKey, BalanceChange, Effect, LiabilityKind, State, TokenState};
 
 use super::{
-    BlockRef, CandidateTransition, Checkpoint, Finding, Identity, PersistenceError, SCHEMA_VERSION,
-    Status, Store,
-    schema::{Meta, MetaKey, MetaValue, TokenValue, Tokens},
+    BlockRef, CandidateTransition, Checkpoint, Finding, Identity, Metadata, PersistenceError,
+    SCHEMA_VERSION, Status, Store,
+    schema::{
+        AccountValue, Accounts, Meta, MetaKey, MetaValue, Tables, TokenValue, TokenValueV1, Tokens,
+    },
 };
 
 fn block(number: u64, byte: u8) -> BlockRef {
@@ -149,43 +154,132 @@ fn inspect_identity_validates_schema() {
     ));
 }
 
-#[test]
-fn v1_database_fails_schema_check_before_token_decode() {
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("checker");
-    let checkpoint = Checkpoint {
-        identity: identity(),
-        zone: block(0, 10),
-        tempo: block(20, 20),
-        state: Default::default(),
-    };
-    Store::create_atomic(&path, &checkpoint).unwrap();
-
-    // A v1 `TokenState` has five `U256` fields, one fewer than the current shape.
-    let current = TokenValue(TokenState::default()).compress();
-    let field_len = (current.len() - 1) / 6;
-    let v1_row = current[..current.len() - field_len].to_vec();
-    assert!(TokenValue::decompress(&v1_row).is_err());
-
-    let (store, _) = Store::open(&path, identity()).unwrap();
-    let tx = store.db.tx_mut().unwrap();
+/// Hand-write a v1 database: v1 version row, v2-compatible metadata, and raw v1 token rows.
+fn write_v1_database(
+    path: &Path,
+    metadata: &Metadata,
+    accounts: &[(AccountKey, U256)],
+    tokens: &[(Address, Vec<u8>)],
+) {
+    let db = init_db_for::<_, Tables>(path, DatabaseArguments::default()).unwrap();
+    let tx = db.tx_mut().unwrap();
     tx.put::<Meta>(MetaKey::Version, MetaValue::Version(1))
         .unwrap();
-    tx.put::<RawTable<Tokens>>(
-        RawKey::new(Address::repeat_byte(6)),
-        RawValue::from_vec(v1_row),
+    tx.put::<Meta>(
+        MetaKey::Metadata,
+        MetaValue::Metadata(Box::new(metadata.clone())),
     )
     .unwrap();
+    for (key, value) in accounts {
+        tx.put::<Accounts>(*key, AccountValue(*value)).unwrap();
+    }
+    for (token, value) in tokens {
+        tx.put::<RawTable<Tokens>>(RawKey::new(*token), RawValue::from_vec(value.clone()))
+            .unwrap();
+    }
     tx.commit().unwrap();
+}
+
+fn read_version(path: &Path) -> Option<MetaValue> {
+    let db = DatabaseEnv::open(path, DatabaseEnvKind::RO, DatabaseArguments::default()).unwrap();
+    db.tx().unwrap().get::<Meta>(MetaKey::Version).unwrap()
+}
+
+#[test]
+fn v1_database_migrates_in_place() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("checker");
+    let funded = Address::repeat_byte(6);
+    let empty = Address::repeat_byte(7);
+    let account = AccountKey::new(funded, Address::repeat_byte(8));
+    let v1 = TokenValueV1 {
+        account_total: U256::from(100),
+        pending_deposits: U256::from(1),
+        pending_withdrawals: U256::from(2),
+        pending_tempo_refunds: U256::from(3),
+        pending_zone_refunds: U256::from(4),
+    };
+    let empty_v1 = TokenValueV1 {
+        account_total: U256::ZERO,
+        pending_deposits: U256::ZERO,
+        pending_withdrawals: U256::ZERO,
+        pending_tempo_refunds: U256::ZERO,
+        pending_zone_refunds: U256::ZERO,
+    };
+    // A diverged v1 checker must keep its finding across the upgrade.
+    let finding = Finding {
+        zone: block(2, 12),
+        summary: "balance mismatch".into(),
+    };
+    let metadata = Metadata {
+        identity: identity(),
+        verified_zone: block(1, 11),
+        imported_tempo: block(21, 21),
+        observed_zone: block(3, 13),
+        status: Status::Diverged { finding },
+    };
+    assert!(TokenValue::decompress(&v1.compress()).is_err());
+    write_v1_database(
+        &path,
+        &metadata,
+        &[(account, U256::from(100))],
+        &[(funded, v1.compress()), (empty, empty_v1.compress())],
+    );
+
+    assert_eq!(Store::inspect_identity(&path).unwrap(), identity());
+    assert_eq!(read_version(&path), Some(MetaValue::Version(1)));
+
+    let (store, migrated) = Store::open(&path, identity()).unwrap();
     drop(store);
+    assert_eq!(migrated.metadata, metadata);
+    assert_eq!(migrated.state.account(account), Some(U256::from(100)));
+    assert_eq!(
+        migrated.state.token(funded),
+        Some(TokenState {
+            account_total: U256::from(100),
+            pending_deposits: U256::from(1),
+            pending_withdrawals: U256::from(2),
+            pending_tempo_refunds: U256::from(3),
+            pending_forced_exit_fees: U256::ZERO,
+            pending_zone_refunds: U256::from(4),
+        })
+    );
+    assert_eq!(migrated.state.token(empty), Some(TokenState::default()));
+    assert_eq!(
+        read_version(&path),
+        Some(MetaValue::Version(SCHEMA_VERSION))
+    );
+    assert_eq!(Store::inspect_identity(&path).unwrap(), identity());
+
+    let (_, reopened) = Store::open(&path, identity()).unwrap();
+    assert_eq!(reopened, migrated);
+}
+
+#[test]
+fn v1_migration_failure_leaves_database_unchanged() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("checker");
+    let metadata = Metadata {
+        identity: identity(),
+        verified_zone: block(0, 10),
+        imported_tempo: block(20, 20),
+        observed_zone: block(0, 10),
+        status: Status::Verifying,
+    };
+    // A v2-shaped row has trailing bytes under the v1 decoder.
+    let malformed = TokenValue(TokenState::default()).compress();
+    write_v1_database(
+        &path,
+        &metadata,
+        &[],
+        &[(Address::repeat_byte(6), malformed)],
+    );
 
     assert!(matches!(
         Store::open(&path, identity()),
-        Err(PersistenceError::Schema {
-            expected: SCHEMA_VERSION,
-            actual: 1,
-        })
+        Err(PersistenceError::Database(DatabaseError::Decode))
     ));
+    assert_eq!(read_version(&path), Some(MetaValue::Version(1)));
 }
 
 #[test]
