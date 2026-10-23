@@ -14,7 +14,7 @@ use tempo_contracts::{
     precompiles::*,
     zones::{
         T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
-        T14_ZONE_PORTAL_RUNTIME, ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME,
+        T15_ZONE_PORTAL_RUNTIME, ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME,
         ZONE_VERIFIER_RUNTIME,
     },
 };
@@ -137,8 +137,8 @@ const T13_ZONE_RUNTIME_UPGRADE: Expectation = Expectation {
     },
 };
 
-const T14_ZONE_PORTAL_UPGRADE: Expectation = Expectation {
-    id: "t14.zone-portal-upgrade",
+const T15_ZONE_PORTAL_UPGRADE: Expectation = Expectation {
+    id: "t15.zone-portal-upgrade",
     check: |ctx, field| {
         if ctx.boundary != Boundary::PreBlock
             || field.name != "code"
@@ -151,7 +151,7 @@ const T14_ZONE_PORTAL_UPGRADE: Expectation = Expectation {
             ctx,
             ZONE_PORTAL_IMPL_ADDRESS,
             &[&ZONE_PORTAL_RUNTIME, &T13_ZONE_PORTAL_RUNTIME],
-            &T14_ZONE_PORTAL_RUNTIME,
+            &T15_ZONE_PORTAL_RUNTIME,
         )
     },
 };
@@ -188,7 +188,7 @@ fn exact_runtime_upgrade(
 /// Fork-specific checks are ordered oldest-first; baseline fee normalization is added separately.
 const REGISTRY: &[(TempoHardfork, &[Expectation])] = &[
     (TempoHardfork::T13, &[T13_ZONE_RUNTIME_UPGRADE]),
-    (TempoHardfork::T14, &[T14_ZONE_PORTAL_UPGRADE]),
+    (TempoHardfork::T15, &[T15_ZONE_PORTAL_UPGRADE]),
 ];
 
 pub(crate) fn between(
@@ -258,13 +258,13 @@ mod tests {
         };
         let upgraded = transition(None, keccak256(&T13_ZONE_PORTAL_RUNTIME));
         assert!((T13_ZONE_RUNTIME_UPGRADE.check)(&ctx(&unchanged, &upgraded), &code).is_some());
-        let upgraded = transition(None, keccak256(&T14_ZONE_PORTAL_RUNTIME));
-        assert!((T14_ZONE_PORTAL_UPGRADE.check)(&ctx(&unchanged, &upgraded), &code).is_some());
+        let upgraded = transition(None, keccak256(&T15_ZONE_PORTAL_RUNTIME));
+        assert!((T15_ZONE_PORTAL_UPGRADE.check)(&ctx(&unchanged, &upgraded), &code).is_some());
         let t13 = transition(None, keccak256(&T13_ZONE_PORTAL_RUNTIME));
-        assert!((T14_ZONE_PORTAL_UPGRADE.check)(&ctx(&t13, &upgraded), &code).is_some());
+        assert!((T15_ZONE_PORTAL_UPGRADE.check)(&ctx(&t13, &upgraded), &code).is_some());
         let unexpected_real = transition(None, keccak256("unexpected"));
         assert!(
-            (T14_ZONE_PORTAL_UPGRADE.check)(&ctx(&unexpected_real, &upgraded), &code).is_none()
+            (T15_ZONE_PORTAL_UPGRADE.check)(&ctx(&unexpected_real, &upgraded), &code).is_none()
         );
         let unexpected = transition(None, keccak256(&ZONE_PORTAL_RUNTIME));
         assert!((T13_ZONE_RUNTIME_UPGRADE.check)(&ctx(&unchanged, &unexpected), &code).is_none());
@@ -282,8 +282,10 @@ mod tests {
         assert_eq!(ids(T11, T12), [FEE_STATE.id]);
         assert_eq!(ids(T12, T13), [FEE_STATE.id, T13_ZONE_RUNTIME_UPGRADE.id]);
         assert_eq!(ids(T11, T13), ids(T12, T13));
-        assert_eq!(ids(T13, T14), [FEE_STATE.id, T14_ZONE_PORTAL_UPGRADE.id]);
-        assert_eq!(ids(T12, T14).len(), 3);
+        assert_eq!(ids(T13, T14), [FEE_STATE.id]);
+        assert_eq!(ids(T14, T15), [FEE_STATE.id, T15_ZONE_PORTAL_UPGRADE.id]);
+        assert_eq!(ids(T13, T15), [FEE_STATE.id, T15_ZONE_PORTAL_UPGRADE.id]);
+        assert_eq!(ids(T12, T15).len(), 3);
         assert_eq!(ids(T12, T12), [FEE_STATE.id]);
         assert_eq!(ids(T13, T12), [FEE_STATE.id]);
     }

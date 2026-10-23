@@ -72,7 +72,7 @@ use crate::nonce_keys::SUBMIT_BATCH_NONCE_KEY;
 #[derive(Debug)]
 pub enum BatchSubmitError {
     PortalAdvanced,
-    /// The active T14-or-later portal is paused; no submission was attempted.
+    /// The active T15-or-later portal is paused; no submission was attempted.
     /// The prepared batch can be retried after the portal resumes or its pause expires.
     PortalPaused,
     PreparedAnchorInvalid(eyre::Report),
@@ -301,7 +301,7 @@ impl BatchSubmitter {
     /// Returns whether the active portal runtime blocks settlement while paused.
     pub(crate) async fn settlement_paused(&self) -> Result<bool> {
         if active_l1_hardfork(&self.l1_provider, self.chain_spec.as_ref()).await?
-            < TempoHardfork::T14
+            < TempoHardfork::T15
         {
             return Ok(false);
         }
@@ -426,9 +426,9 @@ impl BatchSubmitter {
                 current: active,
             });
         }
-        // Pre-T14 portals allow settlement while paused. Remove this gate after every supported
-        // L1 network has activated T14.
-        if active >= TempoHardfork::T14
+        // Pre-T15 portals allow settlement while paused. Remove this gate after every supported
+        // L1 network has activated T15.
+        if active >= TempoHardfork::T15
             && self
                 .portal
                 .paused()
@@ -2065,6 +2065,42 @@ mod tests {
                 .unwrap(),
             SettlementAbi::T13
         );
+    }
+
+    #[tokio::test]
+    async fn settlement_pause_starts_at_t15() {
+        let mut genesis = tempo_chainspec::spec::DEV.inner.genesis.clone();
+        set_tempo_fork(&mut genesis, TempoHardfork::T15, 1_000);
+        let chain_spec = Arc::new(ZoneChainSpec {
+            inner: Arc::new(tempo_chainspec::TempoChainSpec::from_genesis(genesis)),
+        });
+        for (timestamp, paused) in [(999, false), (1_000, true)] {
+            let l1 = Asserter::new();
+            l1.push_success(&mock_fork_header(timestamp));
+            if paused {
+                l1.push_success(&Bytes::from(true.abi_encode()));
+            }
+            let submitter =
+                BatchSubmitter::new(Address::ZERO, mock_l1(l1.clone()), chain_spec.clone());
+            assert_eq!(submitter.settlement_paused().await.unwrap(), paused);
+            assert!(l1.read_q().is_empty());
+            if paused {
+                l1.push_success(&mock_fork_header(timestamp));
+                l1.push_success(&Bytes::from(true.abi_encode()));
+                assert!(matches!(
+                    submitter
+                        .submit_batch(
+                            &test_prepared_batch(120, 100),
+                            None,
+                            None,
+                            VerifierMode::NoProof
+                        )
+                        .await,
+                    Err(BatchSubmitError::PortalPaused)
+                ));
+                assert!(l1.read_q().is_empty());
+            }
+        }
     }
 
     #[tokio::test]

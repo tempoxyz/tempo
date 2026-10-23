@@ -27,7 +27,7 @@ use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, INITIAL_FACTORY_OWNER,
     InitialZoneFactoryAccount, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
     STORAGE_CREDITS_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
-    initial_zone_factory_state, t13_zone_factory_state, t14_zone_factory_state,
+    initial_zone_factory_state, t13_zone_factory_state, t15_zone_factory_state,
 };
 use tempo_primitives::{SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType};
 use tempo_revm::{ExecutionContext, evm::TempoContext};
@@ -279,9 +279,9 @@ where
         self.install_zone_runtimes_at_boundary([portal, verifier, messenger])
     }
 
-    /// Installs the portal runtime introduced at T14.
+    /// Installs the portal runtime introduced at T15.
     fn upgrade_zone_portal_at_boundary(&mut self) -> Result<(), BlockExecutionError> {
-        let [_, portal, _, _] = t14_zone_factory_state(INITIAL_FACTORY_OWNER);
+        let [_, portal, _, _] = t15_zone_factory_state(INITIAL_FACTORY_OWNER);
         self.install_zone_runtimes_at_boundary([portal])
     }
 
@@ -550,20 +550,20 @@ where
         }
         // Genesis supplies every runtime for forks active at genesis. Apply later upgrades in
         // order so a block crossing multiple activation times receives every runtime change.
-        let (upgrade_t13, upgrade_t14) = {
+        let (upgrade_t13, upgrade_t15) = {
             let spec = &self.inner.spec;
             let genesis = spec.genesis().timestamp;
             (
                 spec.is_t13_active_at_timestamp(timestamp)
                     && !spec.is_t13_active_at_timestamp(genesis),
-                spec.is_t14_active_at_timestamp(timestamp)
-                    && !spec.is_t14_active_at_timestamp(genesis),
+                spec.is_t15_active_at_timestamp(timestamp)
+                    && !spec.is_t15_active_at_timestamp(genesis),
             )
         };
         if upgrade_t13 {
             self.upgrade_zone_runtimes_at_boundary()?;
         }
-        if upgrade_t14 {
+        if upgrade_t15 {
             self.upgrade_zone_portal_at_boundary()?;
         }
 
@@ -775,7 +775,7 @@ mod tests {
         },
         zones::{
             T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
-            T14_ZONE_PORTAL_RUNTIME, ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME,
+            T15_ZONE_PORTAL_RUNTIME, ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME,
             ZONE_VERIFIER_RUNTIME,
         },
     };
@@ -2172,8 +2172,9 @@ mod tests {
 
     #[test]
     fn zone_runtime_upgrade_activates_at_boundaries() {
-        for (t13_activation, t14_activation, timestamp, expected_runtimes) in [
+        for (t13_activation, t14_activation, t15_activation, timestamp, expected_runtimes) in [
             (
+                u64::MAX,
                 u64::MAX,
                 u64::MAX,
                 10,
@@ -2185,6 +2186,7 @@ mod tests {
             ),
             (
                 10,
+                u64::MAX,
                 u64::MAX,
                 9,
                 [
@@ -2196,6 +2198,7 @@ mod tests {
             (
                 10,
                 u64::MAX,
+                u64::MAX,
                 10,
                 [
                     T13_ZONE_PORTAL_RUNTIME,
@@ -2205,6 +2208,7 @@ mod tests {
             ),
             (
                 10,
+                u64::MAX,
                 u64::MAX,
                 11,
                 [
@@ -2217,8 +2221,9 @@ mod tests {
                 10,
                 10,
                 10,
+                10,
                 [
-                    T14_ZONE_PORTAL_RUNTIME,
+                    T15_ZONE_PORTAL_RUNTIME,
                     T13_ZONE_VERIFIER_RUNTIME,
                     T13_ZONE_MESSENGER_RUNTIME,
                 ],
@@ -2227,15 +2232,31 @@ mod tests {
                 5,
                 10,
                 10,
+                10,
                 [
-                    T14_ZONE_PORTAL_RUNTIME,
+                    T15_ZONE_PORTAL_RUNTIME,
+                    T13_ZONE_VERIFIER_RUNTIME,
+                    T13_ZONE_MESSENGER_RUNTIME,
+                ],
+            ),
+            (
+                5,
+                7,
+                10,
+                9,
+                [
+                    T13_ZONE_PORTAL_RUNTIME,
                     T13_ZONE_VERIFIER_RUNTIME,
                     T13_ZONE_MESSENGER_RUNTIME,
                 ],
             ),
         ] {
             let mut genesis = DEV.genesis().clone();
-            for (key, activation) in [("t13Time", t13_activation), ("t14Time", t14_activation)] {
+            for (key, activation) in [
+                ("t13Time", t13_activation),
+                ("t14Time", t14_activation),
+                ("t15Time", t15_activation),
+            ] {
                 genesis
                     .config
                     .extra_fields
@@ -2245,7 +2266,9 @@ mod tests {
             let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
             let mut db = State::builder().with_bundle_update().build();
             let mut executor = TestExecutorBuilder::default()
-                .with_spec(if timestamp >= t14_activation {
+                .with_spec(if timestamp >= t15_activation {
+                    TempoHardfork::T15
+                } else if timestamp >= t14_activation {
                     TempoHardfork::T14
                 } else if timestamp >= t13_activation {
                     TempoHardfork::T13
