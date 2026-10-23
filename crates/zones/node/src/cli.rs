@@ -758,7 +758,7 @@ pub struct ZoneArgs {
 
     /// Address whose EIP-712 signatures authorize `zoneAdmin` allowlist writes. On a sequencer it
     /// applies with `--deposits.allowlist`; on an rpc_only node it enables relaying those writes
-    /// to the sequencers.
+    /// to the sequencers and rejecting transfers their list forbids.
     #[arg(
         long = "deposits.allowlist.admin",
         env = "DEPOSITS_ALLOWLIST_ADMIN",
