@@ -2435,7 +2435,7 @@ pub(crate) mod tests {
             version: 0,
             ..current_config(Address::repeat_byte(0x11))
         };
-        let account = config.derive_account(Address::repeat_byte(0x99)).unwrap();
+        let account = config.derive_account().unwrap();
         let inner_hash = B256::repeat_byte(0x24);
         let signature = TempoSignature::ConfigurableAccount(
             ConfigurableAccountSignature::try_new(
