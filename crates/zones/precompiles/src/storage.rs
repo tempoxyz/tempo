@@ -63,6 +63,10 @@ pub struct L1State<P> {
     initial_anchor: Arc<Mutex<Option<U256>>>,
     /// Tempo block number selected for the current transaction attempt.
     anchor: Arc<Mutex<Option<u64>>>,
+    /// Anchor at which every registry entry in the EVM's accepted cache was loaded, or `None` if
+    /// they may come from several anchors. Unlike the fields above, it persists across
+    /// transactions.
+    registry_cache_anchor: Arc<Mutex<Option<U256>>>,
     /// `(account, slot)` keys successfully accessed during the current transaction attempt.
     ///
     /// Used for cold/warm gas accounting. Unlike REVM's journal, this access set is not rolled back
@@ -81,6 +85,7 @@ impl<P> L1State<P> {
         Self {
             initial_anchor: Arc::new(Mutex::new(None)),
             anchor: Arc::new(Mutex::new(None)),
+            registry_cache_anchor: Arc::new(Mutex::new(None)),
             access_set: Arc::new(Mutex::new(HashSet::default())),
             provider,
             portal_address,
@@ -99,6 +104,22 @@ impl<P> L1State<P> {
         *self.initial_anchor.lock() = None;
         *self.anchor.lock() = None;
         self.access_set.lock().clear();
+    }
+
+    /// Records that the accepted EVM cache may hold registry entries for `anchor` only, and
+    /// returns whether it must drop the ones it has because they were loaded at another anchor.
+    pub fn select_registry_cache_anchor(&self, anchor: U256) -> bool {
+        self.registry_cache_anchor.lock().replace(anchor) != Some(anchor)
+    }
+
+    /// Records that a registry slot was loaded from L1 at `anchor`. A cache holding entries from
+    /// another anchor can no longer be trusted until the next
+    /// [`Self::select_registry_cache_anchor`].
+    pub fn note_registry_read(&self, anchor: u64) {
+        let mut cached = self.registry_cache_anchor.lock();
+        if *cached != Some(U256::from(anchor)) {
+            *cached = None;
+        }
     }
 
     /// Returns the committed checkpoint captured at transaction entry, if any.

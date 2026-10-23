@@ -41,12 +41,14 @@ const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(120);
 const MIN_RECEIPT_TIMEOUT: Duration = Duration::from_secs(30);
 /// Grace period kept below Docker's default 10-second stop timeout.
 const CHILD_STOP_TIMEOUT: Duration = Duration::from_secs(8);
-/// Canonical localnet tokens: pathUSD, AlphaUSD, BetaUSD, and ThetaUSD.
-const TOKENS: [Address; 4] = [
+/// Canonical localnet tokens: pathUSD, AlphaUSD, BetaUSD, ThetaUSD, and OUSD, at its mainnet and
+/// testnet address.
+const TOKENS: [Address; 5] = [
     address!("0x20c0000000000000000000000000000000000000"),
     address!("0x20c0000000000000000000000000000000000001"),
     address!("0x20c0000000000000000000000000000000000002"),
     address!("0x20c0000000000000000000000000000000000003"),
+    address!("0x20c0000000000000000000006a37DA5C996874BE"),
 ];
 
 #[derive(Debug, Parser)]
