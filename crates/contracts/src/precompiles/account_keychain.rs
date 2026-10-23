@@ -146,11 +146,6 @@ crate::sol! {
         /// @param publicKey The public key to revoke
         function revokeKey(address keyId) external;
 
-        /// Revoke a key stored as admin on any account (TIP-1137).
-        /// @dev Callable by anyone since T14. Reverts with `InvalidKeyId` unless the key is a
-        /// stored, unrevoked admin key.
-        function revokeAdminKey(address account, address keyId) external;
-
         /// Update spending limit for a key-token pair
         /// @param publicKey The public key
         /// @param token The token address
