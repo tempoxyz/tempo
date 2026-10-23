@@ -44,7 +44,7 @@ impl ZoneChainSpec {
         if let Some(parent) = tempo_chain_spec_for_l1(parent_chain_id) {
             return Self::from_genesis_with_l1(genesis, parent.as_ref());
         }
-        Ok(Self::from_explicit_genesis(genesis))
+        Self::from_explicit_genesis(genesis)
     }
 
     /// Converts a genesis configuration using an already-resolved L1 chain specification.
@@ -56,7 +56,7 @@ impl ZoneChainSpec {
     ) -> Result<Self, ZoneChainSpecError> {
         decode_l1_chain_id(genesis.config.chain_id)?;
         inherit_parent_fork_activations(&mut genesis, l1)?;
-        Ok(Self::from_explicit_genesis(genesis))
+        Self::from_explicit_genesis(genesis)
     }
 
     /// Zone identifier encoded in the genesis chain ID.
@@ -66,11 +66,10 @@ impl ZoneChainSpec {
             .1
     }
 
-    fn from_explicit_genesis(genesis: Genesis) -> Self {
-        let zone = TempoChainSpec::from_genesis(genesis);
-        Self {
-            inner: Arc::new(zone),
-        }
+    fn from_explicit_genesis(genesis: Genesis) -> Result<Self, ZoneChainSpecError> {
+        Ok(Self {
+            inner: Arc::new(TempoChainSpec::try_from_genesis(genesis)?),
+        })
     }
 }
 
@@ -234,7 +233,8 @@ pub enum ZoneChainSpecError {
     /// The zone chain ID is not a valid encoding of its parent and zone IDs.
     #[error(transparent)]
     InvalidChainId(#[from] ZoneChainIdError),
-    /// The inherited parent fork activations could not be applied to the Zone genesis.
+    /// The Zone genesis config is not a Tempo one, or its parent's fork activations could not be
+    /// applied to it.
     #[error("failed to compose Zone genesis config: {0}")]
     InvalidGenesisConfig(#[from] serde_json::Error),
 }
@@ -461,6 +461,19 @@ mod tests {
         assert!(matches!(
             ZoneChainSpec::from_genesis(genesis),
             Err(ZoneChainSpecError::InvalidChainId(_))
+        ));
+    }
+
+    #[test]
+    fn custom_genesis_rejects_an_unknown_tempo_field() {
+        let mut genesis = historical_custom_genesis();
+        genesis
+            .config
+            .extra_fields
+            .insert("epochLenght".into(), serde_json::json!(20));
+        assert!(matches!(
+            ZoneChainSpec::from_genesis(genesis),
+            Err(ZoneChainSpecError::InvalidGenesisConfig(_))
         ));
     }
 

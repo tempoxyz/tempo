@@ -4,7 +4,7 @@ use crate::{
     bootnodes::{moderato_nodes, presto_nodes},
     network_identity::NetworkIdentity,
 };
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, collections::BTreeMap, format, string::String, sync::Arc, vec::Vec};
 use alloy_eips::eip7840::BlobParams;
 use alloy_evm::eth::spec::EthExecutorSpec;
 use alloy_genesis::Genesis;
@@ -51,6 +51,9 @@ macro_rules! tempo_genesis_info {
                 // TODO: set the canonical TIP-1110 recovery factory for public networks before T14 activation
                 #[serde(skip_serializing_if = "Option::is_none")]
                 configurable_account_recovery_factory: Option<Address>,
+                /// Every other key, which no field above reads.
+                #[serde(flatten, skip_serializing)]
+                unread: BTreeMap<String, serde_json::Value>,
             }
 
             impl TempoGenesisInfo {
@@ -71,13 +74,17 @@ macro_rules! tempo_genesis_info {
 tempo_hardfork::tempo_post_genesis_hardforks!(tempo_genesis_info);
 
 impl TempoGenesisInfo {
-    /// Extract Tempo genesis info from genesis extra_fields
-    fn extract_from(genesis: &Genesis) -> Self {
-        genesis
-            .config
-            .extra_fields
-            .deserialize_as::<Self>()
-            .unwrap_or_default()
+    /// Extract Tempo genesis info from genesis extra_fields. The fields are consensus-critical yet
+    /// outside the genesis hash, so a key or value no field reads is an error, not a default.
+    fn extract_from(genesis: &Genesis) -> Result<Self, serde_json::Error> {
+        let info: Self = genesis.config.extra_fields.deserialize_as()?;
+        if !info.unread.is_empty() {
+            return Err(serde::de::Error::custom(format!(
+                "unknown keys {:?}",
+                info.unread.keys()
+            )));
+        }
+        Ok(info)
     }
 
     pub fn epoch_length(&self) -> Option<NonZeroU64> {
@@ -111,7 +118,9 @@ pub fn chain_value_parser(s: &str) -> eyre::Result<Arc<TempoChainSpec>> {
         "mainnet" => PRESTO.clone(),
         "testnet" | "moderato" => MODERATO.clone(),
         "dev" => DEV.clone(),
-        _ => TempoChainSpec::from_genesis(reth_cli::chainspec::parse_genesis(s)?).into(),
+        _ => TempoChainSpec::try_from_genesis(reth_cli::chainspec::parse_genesis(s)?)
+            .map_err(|e| eyre::eyre!("malformed Tempo genesis extra_fields: {e}"))?
+            .into(),
     })
 }
 
@@ -206,10 +215,15 @@ impl TempoChainSpec {
         TempoConsensusSpec::general_gas_limit_at(self, timestamp, gas_limit, shared_gas_limit)
     }
 
-    /// Converts the given [`Genesis`] into a [`TempoChainSpec`].
+    /// Converts the given [`Genesis`] into a [`TempoChainSpec`], panicking where
+    /// [`Self::try_from_genesis`] would return the error.
     pub fn from_genesis(genesis: Genesis) -> Self {
-        // Extract Tempo genesis info from extra_fields
-        let info = TempoGenesisInfo::extract_from(&genesis);
+        Self::try_from_genesis(genesis).expect("not a Tempo genesis")
+    }
+
+    /// Converts the given [`Genesis`] into a [`TempoChainSpec`].
+    pub fn try_from_genesis(genesis: Genesis) -> Result<Self, serde_json::Error> {
+        let info = TempoGenesisInfo::extract_from(&genesis)?;
 
         // Create base chainspec from genesis (already has ordered Ethereum hardforks)
         let mut base_spec = ChainSpec::from_genesis(genesis);
@@ -234,12 +248,12 @@ impl TempoChainSpec {
         let network_identity =
             NetworkIdentity::from_extra_data(inner.genesis_header().inner.extra_data.as_ref()).ok();
 
-        Self {
+        Ok(Self {
             inner,
             info,
             network_identity,
             default_follow_url: None,
-        }
+        })
     }
 
     /// Sets the compiled consensus network identity for this chain.
@@ -597,6 +611,56 @@ mod tests {
 
         let chainspec = super::TempoChainSpec::from_genesis(genesis);
         assert!(chainspec.network_identity.is_none());
+    }
+
+    #[test]
+    fn absent_extra_fields_are_the_default() {
+        let info = super::TempoGenesisInfo::extract_from(&genesis_with(serde_json::json!({})));
+        assert_eq!(info.unwrap(), super::TempoGenesisInfo::default());
+    }
+
+    #[test]
+    #[cfg(feature = "cli")]
+    fn a_malformed_extra_field_is_a_chain_argument_error() {
+        for epoch_length in [serde_json::json!("302400"), serde_json::json!(0)] {
+            let genesis = genesis_with(serde_json::json!({ "epochLength": epoch_length }));
+            let err = super::chain_value_parser(&serde_json::to_string(&genesis).unwrap())
+                .expect_err("a malformed epochLength must not parse");
+            assert!(
+                err.to_string()
+                    .contains("malformed Tempo genesis extra_fields")
+            );
+        }
+    }
+
+    #[test]
+    fn an_unread_key_is_refused_whatever_it_holds() {
+        for (extra, key) in [
+            (
+                serde_json::json!({ "epochLength": 20, "epochLenght": 20 }),
+                "epochLenght",
+            ),
+            (
+                serde_json::json!({ "t12Time": null, "t12Tme": null }),
+                "t12Tme",
+            ),
+            (serde_json::json!({ "t99Time": 7 }), "t99Time"),
+            (serde_json::json!({ "t99Time": null }), "t99Time"),
+        ] {
+            let err = super::TempoChainSpec::try_from_genesis(genesis_with(extra))
+                .expect_err("an unknown key must not parse");
+            assert_eq!(err.to_string(), format!("unknown keys [{key:?}]"));
+        }
+    }
+
+    /// A genesis carrying `extra` alongside the fields every genesis needs.
+    fn genesis_with(extra: serde_json::Value) -> alloy_genesis::Genesis {
+        let mut config = serde_json::json!({ "chainId": 1234 });
+        config
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        serde_json::from_value(serde_json::json!({ "config": config, "alloc": {} })).unwrap()
     }
 
     #[test]
