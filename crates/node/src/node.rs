@@ -336,6 +336,11 @@ impl TempoNode {
         self
     }
 
+    /// Returns the payload builder settings, including any node overrides.
+    pub fn payload_builder_builder(&self) -> &TempoPayloadBuilderBuilder {
+        &self.payload_builder_builder
+    }
+
     /// Maps the payload builder builder.
     pub fn map_payload_builder_builder<F>(mut self, f: F) -> Self
     where

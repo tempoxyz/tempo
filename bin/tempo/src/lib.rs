@@ -549,7 +549,6 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             url => Some(url.to_string()),
         };
 
-        let estimator = tempo_node::Estimator::new(args.node_args.builder_build_time_multiplier);
         let tempo_node = overrides.apply_tempo_node({
             let node = TempoNode::new(&args.node_args, validator_key);
             match gossip_protocol_handler {
@@ -557,8 +556,12 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                 None => node,
             }
         });
-        // Applied after the overrides, which may replace the node's estimator,
-        // so the payload builder and consensus share the same handle.
+        let payload_builder = tempo_node.payload_builder_builder();
+        let estimator = payload_builder
+            .estimator
+            .clone()
+            .unwrap_or_else(|| tempo_node::Estimator::new(payload_builder.build_time_multiplier));
+        // Share the overridden settings with both the payload builder and consensus.
         let tempo_node = tempo_node.with_estimator(estimator.clone());
         let executed_state = tempo_node.executed_state();
 
