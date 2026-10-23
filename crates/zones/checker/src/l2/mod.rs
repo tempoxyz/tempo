@@ -62,7 +62,7 @@ impl L2BlockEvidence {
 /// Collect recognized events from one canonical L2 block.
 ///
 /// `sponsored_fee_token` is the Zone default fee token that sponsors pay withdrawal fees in from
-/// T14, or `None` before T14, when sponsors paid in the withdrawal token.
+/// T15, or `None` before T15, when sponsors paid in the withdrawal token.
 pub(crate) fn collect_l2_block_evidence<T, R>(
     transactions: &[T],
     receipts: &[R],

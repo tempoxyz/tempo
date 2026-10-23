@@ -1240,10 +1240,10 @@ interface IZoneOutbox {
     function calculateWithdrawalFee(uint64 gasLimit) external view returns (uint128);
 
     /// @notice Request a withdrawal from the zone back to Tempo
-    /// @dev From T14, unless a sponsor signed the transaction, the caller approves amount + fee of
+    /// @dev From T15, unless a sponsor signed the transaction, the caller approves amount + fee of
     ///      the withdrawal token. For a sponsored transaction, the caller approves amount of the
     ///      withdrawal token and the sponsor approves fee of the Zone default fee token, captured
-    ///      from the portal's first enabled token at initialization. Before T14, the transaction's
+    ///      from the portal's first enabled token at initialization. Before T15, the transaction's
     ///      fee payer approves fee of the withdrawal token.
     ///      The token must be enabled on the portal. Withdrawals can never be disabled
     ///      for an enabled token (non-custodial guarantee).

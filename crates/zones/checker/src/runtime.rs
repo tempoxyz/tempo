@@ -287,7 +287,7 @@ struct VerificationContext<'a> {
     config: &'a CheckerConfig,
     metrics: &'a CheckerMetrics,
     latency: LatencyTracker,
-    /// Zone default fee token that sponsors pay withdrawal fees in from T14.
+    /// Zone default fee token that sponsors pay withdrawal fees in from T15.
     default_fee_token: Address,
 }
 
@@ -405,7 +405,7 @@ where
         &block.body().transactions,
         receipts,
         zone.into(),
-        spec.is_t14().then_some(context.default_fee_token),
+        spec.is_t15().then_some(context.default_fee_token),
     )
     .map_err(fail)?;
     let tempo_parent = BlockNumHash::from(prior.metadata.imported_tempo);

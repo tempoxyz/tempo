@@ -49,9 +49,9 @@ impl Harness {
         Self::with_context(test_context())
     }
 
-    /// Harness on T14, where sponsors pay withdrawal fees in the default fee token.
-    fn t14() -> eyre::Result<Self> {
-        Self::with_context(test_context_with_hardfork(TempoHardfork::T14))
+    /// Harness on T15, where sponsors pay withdrawal fees in the default fee token.
+    fn t15() -> eyre::Result<Self> {
+        Self::with_context(test_context_with_hardfork(TempoHardfork::T15))
     }
 
     fn with_context(mut ctx: TestContext) -> eyre::Result<Self> {
@@ -843,7 +843,7 @@ fn request_charges_withdrawal_fee_to_effective_fee_payer() -> eyre::Result<()> {
 #[test]
 fn sponsored_withdrawal_fee_uses_cached_default_token() -> eyre::Result<()> {
     for amount in [100, u128::MAX] {
-        let mut harness = Harness::t14()?;
+        let mut harness = Harness::t15()?;
         let withdrawal_token = harness.add_withdrawal_token(amount)?;
         let fee_token = harness.token;
         assert!(harness.set_gas_rate(2)?.is_success());
@@ -919,59 +919,61 @@ fn sponsored_withdrawal_fee_uses_cached_default_token() -> eyre::Result<()> {
 }
 
 #[test]
-fn pre_t14_fee_payer_pays_withdrawal_fee_in_withdrawal_token() -> eyre::Result<()> {
-    // Before T14, whenever the caller is not the fee payer (a sponsored transaction, or a
+fn pre_t15_fee_payer_pays_withdrawal_fee_in_withdrawal_token() -> eyre::Result<()> {
+    // Before T15, whenever the caller is not the fee payer (a sponsored transaction, or a
     // contract call in FEE_PAYER's own transaction), FEE_PAYER pays the fee in the withdrawal token.
-    for sponsored in [true, false] {
-        let mut harness = Harness::with_context(test_context_with_hardfork(TempoHardfork::T13))?;
-        let default_fee_token = harness.add_withdrawal_token(100)?;
-        let mut storage = test_storage_provider(&mut harness.ctx, u64::MAX, false);
-        StorageCtx::enter(&mut storage, || {
-            ZoneFeeManager::new().initialize(default_fee_token)
-        })?;
-        drop(storage);
-        assert!(harness.set_gas_rate(2)?.is_success());
-        let token = harness.token;
-        let sender_before = harness.token_state(token, ALICE)?;
-        let fee_payer_before = harness.token_state(token, FEE_PAYER)?;
-        let default_before = harness.token_state(default_fee_token, FEE_PAYER)?;
+    for spec in [TempoHardfork::T13, TempoHardfork::T14] {
+        for sponsored in [true, false] {
+            let mut harness = Harness::with_context(test_context_with_hardfork(spec))?;
+            let default_fee_token = harness.add_withdrawal_token(100)?;
+            let mut storage = test_storage_provider(&mut harness.ctx, u64::MAX, false);
+            StorageCtx::enter(&mut storage, || {
+                ZoneFeeManager::new().initialize(default_fee_token)
+            })?;
+            drop(storage);
+            assert!(harness.set_gas_rate(2)?.is_success());
+            let token = harness.token;
+            let sender_before = harness.token_state(token, ALICE)?;
+            let fee_payer_before = harness.token_state(token, FEE_PAYER)?;
+            let default_before = harness.token_state(default_fee_token, FEE_PAYER)?;
 
-        let call = ZoneOutboxAbi::requestWithdrawalCall {
-            token,
-            to: BOB,
-            amount: 100,
-            memo: B256::ZERO,
-            gasLimit: 0,
-            zoneFallbackRecipient: ALICE,
-            data: Bytes::new(),
-            revealTo: Bytes::new(),
+            let call = ZoneOutboxAbi::requestWithdrawalCall {
+                token,
+                to: BOB,
+                amount: 100,
+                memo: B256::ZERO,
+                gasLimit: 0,
+                zoneFallbackRecipient: ALICE,
+                data: Bytes::new(),
+                revealTo: Bytes::new(),
+            }
+            .abi_encode();
+            let output = if sponsored {
+                harness.call_with_fee_payer(ALICE, FEE_PAYER, call)?
+            } else {
+                harness.call_through_contract(FEE_PAYER, ALICE, call)?
+            };
+
+            assert!(output.is_success());
+            assert_eq!(
+                harness.token_state(token, ALICE)?.balance,
+                sender_before.balance - U256::from(100)
+            );
+            let fee_payer_after = harness.token_state(token, FEE_PAYER)?;
+            assert_eq!(
+                fee_payer_after.balance,
+                fee_payer_before.balance - U256::from(100_000)
+            );
+            assert_eq!(
+                fee_payer_after.supply,
+                fee_payer_before.supply - U256::from(100_100)
+            );
+            assert_eq!(
+                harness.token_state(default_fee_token, FEE_PAYER)?,
+                default_before
+            );
+            assert_eq!(harness.pending()?.len(), 1);
         }
-        .abi_encode();
-        let output = if sponsored {
-            harness.call_with_fee_payer(ALICE, FEE_PAYER, call)?
-        } else {
-            harness.call_through_contract(FEE_PAYER, ALICE, call)?
-        };
-
-        assert!(output.is_success());
-        assert_eq!(
-            harness.token_state(token, ALICE)?.balance,
-            sender_before.balance - U256::from(100)
-        );
-        let fee_payer_after = harness.token_state(token, FEE_PAYER)?;
-        assert_eq!(
-            fee_payer_after.balance,
-            fee_payer_before.balance - U256::from(100_000)
-        );
-        assert_eq!(
-            fee_payer_after.supply,
-            fee_payer_before.supply - U256::from(100_100)
-        );
-        assert_eq!(
-            harness.token_state(default_fee_token, FEE_PAYER)?,
-            default_before
-        );
-        assert_eq!(harness.pending()?.len(), 1);
     }
     Ok(())
 }
@@ -981,7 +983,7 @@ fn unsponsored_withdrawal_fee_does_not_depend_on_default_token() -> eyre::Result
     // ALICE withdraws directly, then as a contract called by FEE_PAYER without a sponsor. Either
     // way ALICE pays amount + fee in the withdrawal token and the paused default token is unused.
     for origin in [ALICE, FEE_PAYER] {
-        let mut harness = Harness::t14()?;
+        let mut harness = Harness::t15()?;
         let default_fee_token = harness.add_withdrawal_token(100_000)?;
         let mut storage = test_storage_provider(&mut harness.ctx, u64::MAX, false);
         StorageCtx::enter(&mut storage, || -> TempoResult<()> {
@@ -1040,7 +1042,7 @@ fn unsponsored_withdrawal_fee_does_not_depend_on_default_token() -> eyre::Result
 #[test]
 fn fee_token_failures_revert_both_burns_and_withdrawal_state() -> eyre::Result<()> {
     for insufficient_balance in [false, true] {
-        let mut harness = Harness::t14()?;
+        let mut harness = Harness::t15()?;
         let withdrawal_token = harness.add_withdrawal_token(100)?;
         let fee_token = harness.token;
         assert!(harness.set_gas_rate(2)?.is_success());
@@ -1126,7 +1128,7 @@ fn fee_token_failures_revert_both_burns_and_withdrawal_state() -> eyre::Result<(
 #[test]
 fn fee_token_pause_and_burn_authorization_revert_withdrawal() -> eyre::Result<()> {
     for paused in [true, false] {
-        let mut harness = Harness::t14()?;
+        let mut harness = Harness::t15()?;
         let withdrawal_token = harness.add_withdrawal_token(100)?;
         let fee_token = harness.token;
         assert!(harness.set_gas_rate(2)?.is_success());
@@ -1197,7 +1199,7 @@ fn zero_fee_skips_invalid_or_uninitialized_default_fee_token() -> eyre::Result<(
             TIP20Error::uninitialized(),
         ),
     ] {
-        let mut harness = Harness::t14()?;
+        let mut harness = Harness::t15()?;
         let mut storage = test_storage_provider(&mut harness.ctx, u64::MAX, false);
         StorageCtx::enter(&mut storage, || ZoneFeeManager::new().initialize(fee_token))?;
         drop(storage);

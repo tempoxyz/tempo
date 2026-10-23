@@ -184,12 +184,12 @@ impl ZoneOutbox {
         }
 
         let fee = self.calculate_fee_unchecked(call.gasLimit)?;
-        let is_t14 = self.storage.spec().is_t14();
-        // From T14, the withdrawing account pays its own fee in the withdrawal token unless a
+        let is_t15 = self.storage.spec().is_t15();
+        // From T15, the withdrawing account pays its own fee in the withdrawal token unless a
         // sponsor signed the transaction, so an unsponsored exit of an enabled token, direct or
-        // through a contract, never depends on another token. Before T14, the fee payer paid the
+        // through a contract, never depends on another token. Before T15, the fee payer paid the
         // fee in the withdrawal token.
-        let self_paid = if is_t14 {
+        let self_paid = if is_t15 {
             !tx.is_sponsored()
         } else {
             caller == tx.fee_payer
@@ -202,7 +202,7 @@ impl ZoneOutbox {
             self.transfer_and_burn(&mut zone_token, caller, total)?;
         } else {
             self.transfer_and_burn(&mut zone_token, caller, call.amount)?;
-            if is_t14 {
+            if is_t15 {
                 // Sponsors pay in the Zone default fee token, so they need not hold the
                 // withdrawal token.
                 let mut fee_token =

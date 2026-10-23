@@ -74,7 +74,7 @@ pub(crate) struct GenerateZoneGenesis {
     #[arg(long, required_unless_present = "hardfork")]
     pub(crate) l1_rpc_url: Option<String>,
 
-    /// Canonical fee token used when a zone transaction omits `fee_token`, and from T14 for
+    /// Canonical fee token used when a zone transaction omits `fee_token`, and from T15 for
     /// sponsored outbox withdrawal fees.
     #[arg(long, default_value_t = PATH_USD_ADDRESS)]
     pub(crate) default_fee_token: Address,
@@ -526,7 +526,7 @@ mod tests {
                 "--admin".to_owned(),
                 "0x1000000000000000000000000000000000000001".to_owned(),
                 "--hardfork".to_owned(),
-                "T14".to_owned(),
+                TempoHardfork::latest().to_string(),
             ];
             for (flag, timestamp) in [
                 ("--t12-time", t12),
@@ -594,7 +594,7 @@ mod tests {
                 &flag,
                 "12345",
                 "--hardfork",
-                "T14",
+                &TempoHardfork::latest().to_string(),
             ])
             .unwrap();
             let mut genesis = Genesis::default();

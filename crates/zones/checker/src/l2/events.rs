@@ -242,7 +242,7 @@ fn authenticate_receipt_withdrawals(
         }
 
         // Otherwise the principal is burned from the sender and the fee from the fee payer: in the
-        // default fee token for a sponsor from T14, or in the withdrawal token before T14.
+        // default fee token for a sponsor from T15, or in the withdrawal token before T15.
         let fee_token = sponsored_fee_token.unwrap_or(token);
         let principal_burn =
             matching_burn(&burns, &consumed, request_index, token, sender, principal);
@@ -1379,7 +1379,7 @@ mod tests {
     }
 
     #[test]
-    fn authenticates_pre_t14_sponsored_fee_only_in_withdrawal_token() {
+    fn authenticates_pre_t15_sponsored_fee_only_in_withdrawal_token() {
         let token = Address::repeat_byte(1);
         let sender = Address::repeat_byte(2);
         let fee_payer = Address::repeat_byte(3);
