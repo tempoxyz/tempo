@@ -1,0 +1,120 @@
+# Scheduled Zone Nitro regression benchmark.
+# State is stored in branch-isolated Actions artifacts for 90 days. Missing or
+# expired state uses the existing first-run baseline rules; no state PAT is needed.
+#
+# Runs nightly at 03:45 UTC with the prover on (the benchmark default). The benchmark compares the latest
+# main commit against the last commit that completed this workflow successfully.
+
+name: bench-zones-scheduled
+
+on:
+  schedule:
+    - cron: "45 3 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Force run even if no new main commit is available"
+        required: false
+        default: false
+        type: boolean
+      slack:
+        description: "Slack notification policy"
+        required: false
+        default: "never"
+        type: choice
+        options:
+          - always
+          - on-win
+          - on-error
+          - never
+
+permissions: {}
+
+jobs:
+  resolve-refs:
+    name: resolve-refs
+    # Mirror the benchmark job's gates: a skipped benchmark must not save state.
+    if: github.repository == 'tempoxyz/tempo' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      actions: read
+      contents: read
+    outputs:
+      baseline-ref: ${{ steps.refs.outputs.baseline-ref }}
+      baseline-name: ${{ steps.refs.outputs.baseline-name }}
+      feature-ref: ${{ steps.refs.outputs.feature-ref }}
+      feature-name: ${{ steps.refs.outputs.feature-name }}
+      should-skip: ${{ steps.refs.outputs.should-skip }}
+      actor: ${{ steps.refs.outputs.actor }}
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          sparse-checkout: .github/scripts
+          sparse-checkout-cone-mode: true
+
+      - name: Resolve refs
+        id: refs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          BENCH_STATE_SERIES: zones
+          INPUT_FORCE: ${{ inputs.force || 'false' }}
+        run: bash .github/scripts/bench-e2e-scheduled-refs.sh "$INPUT_FORCE" prover
+
+  bench-zones:
+    needs: resolve-refs
+    if: needs.resolve-refs.outputs.should-skip != 'true'
+    permissions:
+      contents: read
+      id-token: write
+      issues: write
+    uses: ./.github/workflows/zones-prover-benchmark.yml # zizmor: ignore[self-repository] actionlint does not support $/ references yet.
+    with:
+      actor: ${{ needs.resolve-refs.outputs.actor }}
+      baseline: ${{ needs.resolve-refs.outputs.baseline-ref }}
+      feature: ${{ needs.resolve-refs.outputs.feature-ref }}
+      baseline-name: ${{ needs.resolve-refs.outputs.baseline-name }}
+      feature-name: ${{ needs.resolve-refs.outputs.feature-name }}
+      run-type: nightly
+      slack: ${{ github.event_name == 'workflow_dispatch' && inputs.slack || 'always' }}
+    secrets:
+      SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
+      SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
+      BENCH_VICTORIAMETRICS_URL: ${{ secrets.BENCH_VICTORIAMETRICS_URL }}
+      CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
+      CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
+      CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
+
+  save-state:
+    needs: [resolve-refs, bench-zones]
+    if: success()
+    name: save-state
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Prepare benchmark state
+        env:
+          FEATURE_REF: ${{ needs.resolve-refs.outputs.feature-ref }}
+        run: |
+          [[ "$FEATURE_REF" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          mkdir -p "$RUNNER_TEMP/bench-state"
+          printf '%s\n' "$FEATURE_REF" > "$RUNNER_TEMP/bench-state/feature-ref"
+
+      - name: Save benchmark state
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bench-state-zones-prover
+          path: ${{ runner.temp }}/bench-state/feature-ref
+          retention-days: 90
+          if-no-files-found: error
+          overwrite: true

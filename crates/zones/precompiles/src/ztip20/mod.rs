@@ -57,14 +57,14 @@ pub(crate) struct TIP20Rules<P> {
 impl<P: L1StorageReader> TIP20Rules<P> {
     /// Admits a transfer-family call by `caller` that moves `from`'s funds to `to`.
     ///
-    /// Transfers require T14 and the portal admin's opt-in. They also revert when the token is
+    /// Transfers require T15 and the portal admin's opt-in. They also revert when the token is
     /// paused on Tempo L1, and when `to`'s receive policy blocks `from`. Upstream would divert
     /// receive-policy-blocked funds to `ReceivePolicyGuard`, where a recovery authority without a
     /// Zone key could never claim them.
     fn admit_transfer(&self, caller: Address, from: Address, to: Address) -> Result<CallCheck> {
         let unauthorized = || Ok(CallCheck::Revert(Unauthorized {}.abi_encode().into()));
-        if !StorageCtx::default().spec().is_t14() {
-            // Before T14, private asset movement is limited to the protocol-managed inbox and
+        if !StorageCtx::default().spec().is_t15() {
+            // Before T15, private asset movement is limited to the protocol-managed inbox and
             // outbox paths.
             return unauthorized();
         }
@@ -501,11 +501,13 @@ mod tests {
     }
 
     #[test]
-    fn transfers_require_t14_and_portal_opt_in() -> eyre::Result<()> {
+    fn transfers_require_t15_and_portal_opt_in() -> eyre::Result<()> {
         for (spec, opted_in, active) in [
             (TempoHardfork::T13, true, false),
             (TempoHardfork::T14, false, false),
-            (TempoHardfork::T14, true, true),
+            (TempoHardfork::T14, true, false),
+            (TempoHardfork::T15, false, false),
+            (TempoHardfork::T15, true, true),
         ] {
             let mut harness = PrecompileHarness::new_at(spec)?;
             harness.set_transfers_enabled(opted_in)?;
@@ -551,7 +553,7 @@ mod tests {
 
     #[test]
     fn permit2_cannot_move_funds() -> eyre::Result<()> {
-        let mut harness = PrecompileHarness::new_at(TempoHardfork::T14)?;
+        let mut harness = PrecompileHarness::new_at(TempoHardfork::T15)?;
         harness.set_transfers_enabled(true)?;
         let approve = harness.call(
             harness.alice,
@@ -586,7 +588,7 @@ mod tests {
 
     #[test]
     fn transfers_revert_while_token_is_paused_on_l1() -> eyre::Result<()> {
-        let mut harness = PrecompileHarness::new_at(TempoHardfork::T14)?;
+        let mut harness = PrecompileHarness::new_at(TempoHardfork::T15)?;
         harness.set_transfers_enabled(true)?;
         harness.l1_reader.insert(
             harness.token,
@@ -610,7 +612,7 @@ mod tests {
 
     #[test]
     fn receive_policy_blocked_transfers_revert_instead_of_diverting() -> eyre::Result<()> {
-        let mut harness = PrecompileHarness::new_at(TempoHardfork::T14)?;
+        let mut harness = PrecompileHarness::new_at(TempoHardfork::T15)?;
         harness.set_transfers_enabled(true)?;
         let virtual_recipient = {
             let mut storage = test_storage_provider(&mut harness.ctx, u64::MAX, false);
@@ -960,7 +962,7 @@ mod tests {
 
     #[test]
     fn transfer_from_insufficient_balance_does_not_reveal_the_source_balance() -> eyre::Result<()> {
-        let mut harness = PrecompileHarness::new_at(TempoHardfork::T14)?;
+        let mut harness = PrecompileHarness::new_at(TempoHardfork::T15)?;
         harness.set_transfers_enabled(true)?;
         // Craft a successful allowance return whose first four bytes collide with the upstream
         // error selector, exercising the redaction filter's revert-status guard.

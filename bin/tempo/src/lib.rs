@@ -307,6 +307,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         tempo_node::ExecutedState,
         TempoArgs,
         Option<tempo_node::gossip::TransportHandle>,
+        tempo_node::Estimator,
     )>();
     let (consensus_dead_tx, mut consensus_dead_rx) = oneshot::channel();
 
@@ -322,7 +323,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             return Ok(());
         }
 
-        let (node, executed_state, args, gossip_transport) =
+        let (node, executed_state, args, gossip_transport, estimator) =
             consensus_startup_rx.blocking_recv().wrap_err(
                 "channel closed before consensus-relevant command line args \
                 and a handle to the execution node could be received",
@@ -424,6 +425,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                     executed_state,
                     cl_feed_state_clone,
                     gossip_transport,
+                    estimator,
                 ))
             };
 
@@ -554,6 +556,13 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                 None => node,
             }
         });
+        let payload_builder = tempo_node.payload_builder_builder();
+        let estimator = payload_builder
+            .estimator
+            .clone()
+            .unwrap_or_else(|| tempo_node::Estimator::new(payload_builder.build_time_multiplier));
+        // Share the overridden settings with both the payload builder and consensus.
+        let tempo_node = tempo_node.with_estimator(estimator.clone());
         let executed_state = tempo_node.executed_state();
 
         let NodeHandle {
@@ -657,7 +666,9 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             });
         }
 
-        let _ = consensus_startup_tx.send((node, executed_state, args, gossip_transport));
+        // The receiver is only dropped when the consensus thread has already
+        // exited, which `consensus_dead_rx` below reports.
+        let _ = consensus_startup_tx.send((node, executed_state, args, gossip_transport, estimator));
 
         // TODO: emit these inside a span
         tokio::select! {

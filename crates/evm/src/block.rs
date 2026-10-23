@@ -27,7 +27,7 @@ use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, INITIAL_FACTORY_OWNER,
     InitialZoneFactoryAccount, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
     STORAGE_CREDITS_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
-    initial_zone_factory_state, t13_zone_factory_state, t14_zone_factory_state,
+    initial_zone_factory_state, t13_zone_factory_state, t15_zone_factory_state,
 };
 use tempo_primitives::{SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType};
 use tempo_revm::{ExecutionContext, evm::TempoContext};
@@ -279,9 +279,9 @@ where
         self.install_zone_runtimes_at_boundary([portal, verifier, messenger])
     }
 
-    /// Installs the T14 shared runtimes, which add the zone transfer opt-in to the portal.
-    fn upgrade_zone_runtimes_at_t14_boundary(&mut self) -> Result<(), BlockExecutionError> {
-        let [_, portal, verifier, messenger] = t14_zone_factory_state(INITIAL_FACTORY_OWNER);
+    /// Installs the T15 shared runtimes, which add the zone transfer opt-in to the portal.
+    fn upgrade_zone_runtimes_at_t15_boundary(&mut self) -> Result<(), BlockExecutionError> {
+        let [_, portal, verifier, messenger] = t15_zone_factory_state(INITIAL_FACTORY_OWNER);
         self.install_zone_runtimes_at_boundary([portal, verifier, messenger])
     }
 
@@ -516,6 +516,30 @@ where
             return Err(BlockValidationError::msg("withdrawals are not permitted").into());
         }
 
+        // Consensus rejects proposals without a consensus context, so every proposed block
+        // carries a proposer key. Resolved before any system call so reads see parent state.
+        if self.evm().cfg.spec.is_t14()
+            && let Some(proposer) = self.evm().block().proposer_public_key
+        {
+            let proposer = B256::from(proposer);
+            let expected = self
+                .evm_mut()
+                .proposer_fee_recipient(proposer)
+                .map_err(BlockExecutionError::other)?
+                .ok_or_else(|| {
+                    BlockValidationError::msg(format!(
+                        "proposer {proposer} has no ValidatorConfigV2 entry"
+                    ))
+                })?;
+            let beneficiary = self.evm().block().beneficiary;
+            if beneficiary != expected {
+                return Err(BlockValidationError::msg(format!(
+                    "block beneficiary {beneficiary} does not match proposer fee recipient {expected}"
+                ))
+                .into());
+            }
+        }
+
         if self.evm().cfg.spec.is_t13() {
             self.inner
                 .system_caller
@@ -551,15 +575,15 @@ where
         // Chains starting at a runtime-upgrade fork supply its runtime code in genesis. Preserve
         // those allocations (including locally compiled contracts on test chains). Chains that
         // activate the fork later follow the normal runtime upgrade path. Only the newest active
-        // runtime set is installed, so T13 runtimes are never reinstalled over T14 ones.
+        // runtime set is installed, so T13 runtimes are never reinstalled over T15 ones.
         let genesis_timestamp = self.inner.spec.genesis().timestamp;
-        if self.inner.spec.is_t14_active_at_timestamp(timestamp) {
+        if self.inner.spec.is_t15_active_at_timestamp(timestamp) {
             if !self
                 .inner
                 .spec
-                .is_t14_active_at_timestamp(genesis_timestamp)
+                .is_t15_active_at_timestamp(genesis_timestamp)
             {
-                self.upgrade_zone_runtimes_at_t14_boundary()?;
+                self.upgrade_zone_runtimes_at_t15_boundary()?;
             }
         } else if self.inner.spec.is_t13_active_at_timestamp(timestamp)
             && !self
@@ -747,7 +771,7 @@ mod tests {
         },
         eth::receipt_builder::ReceiptBuilder,
     };
-    use alloy_primitives::{Bytes, Log, Signature, TxKind, address, bytes::BytesMut};
+    use alloy_primitives::{Bytes, Keccak256, Log, Signature, TxKind, address, bytes::BytesMut};
     use alloy_rlp::Encodable;
     use alloy_sol_types::SolEvent as _;
     use commonware_codec::Encode as _;
@@ -767,6 +791,7 @@ mod tests {
         database::EmptyDB,
     };
     use std::{
+        collections::HashMap,
         iter::repeat_with,
         sync::{Arc, Mutex},
     };
@@ -778,11 +803,15 @@ mod tests {
         },
         zones::{
             T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
-            T14_ZONE_PORTAL_RUNTIME, ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME,
+            T15_ZONE_PORTAL_RUNTIME, ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME,
             ZONE_VERIFIER_RUNTIME,
         },
     };
     use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
+    use tempo_precompiles::{
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        validator_config_v2::{IValidatorConfigV2, VALIDATOR_NS_ADD, ValidatorConfigV2},
+    };
     use tempo_primitives::{
         SubBlockMetadata, TempoSignature, TempoTransaction, TempoTxType,
         subblock::{SubBlockVersion, TEMPO_SUBBLOCK_NONCE_KEY_PREFIX},
@@ -1081,6 +1110,100 @@ mod tests {
         assert_eq!(
             executor.finish().err().unwrap().to_string(),
             "incentive gas limit exceeded"
+        );
+    }
+
+    #[test]
+    fn test_t14_rejects_beneficiary_not_matching_proposer_fee_recipient() {
+        let chainspec = system_calls_chainspec();
+        let registered = PrivateKey::from_seed(1);
+        let registered_key = B256::from_slice(&registered.public_key());
+        let unregistered_key = B256::from_slice(&PrivateKey::from_seed(2).public_key());
+        let fee_recipient = Address::repeat_byte(0xFE);
+        let attacker = Address::repeat_byte(0xBA);
+
+        // Registers `registered` in ValidatorConfigV2 at height 0 with `fee_recipient`.
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let owner = Address::repeat_byte(0xAA);
+            let validator_address = Address::repeat_byte(0x11);
+            let (ingress, egress) = ("192.168.1.1:8000", "192.168.1.1");
+            let mut hasher = Keccak256::new();
+            hasher.update(1u64.to_be_bytes());
+            hasher.update(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
+            hasher.update(validator_address.as_slice());
+            hasher.update([ingress.len() as u8]);
+            hasher.update(ingress.as_bytes());
+            hasher.update([egress.len() as u8]);
+            hasher.update(egress.as_bytes());
+            hasher.update(fee_recipient.as_slice());
+            let signature = registered.sign(VALIDATOR_NS_ADD, hasher.finalize().as_slice());
+
+            let mut config = ValidatorConfigV2::new();
+            config.initialize(owner)?;
+            config.add_validator(
+                owner,
+                IValidatorConfigV2::addValidatorCall {
+                    validatorAddress: validator_address,
+                    publicKey: registered_key,
+                    ingress: ingress.to_string(),
+                    egress: egress.to_string(),
+                    feeRecipient: fee_recipient,
+                    signature: signature.encode().to_vec().into(),
+                },
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let mut accounts = HashMap::<Address, HashMap<U256, U256>>::new();
+        for (address, slot, value) in storage.into_storage() {
+            accounts.entry(address).or_default().insert(slot, value);
+        }
+
+        let pre_execution = |fork, proposer: B256, beneficiary| {
+            let mut db = State::builder().with_bundle_update().build();
+            for (address, storage) in &accounts {
+                db.insert_account_with_storage(
+                    *address,
+                    AccountInfo::default(),
+                    storage
+                        .iter()
+                        .map(|(slot, value)| (*slot, *value))
+                        .collect(),
+                );
+            }
+            let mut executor = TestExecutorBuilder::default()
+                .with_block_number(2)
+                .with_spec(fork)
+                .build(&mut db, &chainspec);
+            let block = &mut executor.evm_mut().ctx_mut().block;
+            block.beneficiary = beneficiary;
+            block.proposer_public_key = Some(proposer.try_into().unwrap());
+            executor
+                .apply_pre_execution_changes()
+                .map_err(|e| e.to_string())
+        };
+
+        assert_eq!(
+            pre_execution(TempoHardfork::T14, registered_key, fee_recipient),
+            Ok(())
+        );
+        assert_eq!(
+            pre_execution(TempoHardfork::T14, registered_key, attacker),
+            Err(format!(
+                "block beneficiary {attacker} does not match proposer fee recipient {fee_recipient}"
+            ))
+        );
+        // A proposer without a V2 record is rejected regardless of the beneficiary.
+        assert_eq!(
+            pre_execution(TempoHardfork::T14, unregistered_key, Address::ZERO),
+            Err(format!(
+                "proposer {unregistered_key} has no ValidatorConfigV2 entry"
+            ))
+        );
+        assert_eq!(
+            pre_execution(TempoHardfork::T13, registered_key, attacker),
+            Ok(())
         );
     }
 
@@ -2222,7 +2345,7 @@ mod tests {
             genesis
                 .config
                 .extra_fields
-                .insert("t14Time".into(), serde_json::Value::Null);
+                .insert("t15Time".into(), serde_json::Value::Null);
             let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
             let mut db = State::builder().with_bundle_update().build();
             let mut executor = TestExecutorBuilder::default()
@@ -2258,24 +2381,25 @@ mod tests {
     }
 
     #[test]
-    fn zone_runtime_upgrade_activates_at_t14() {
+    fn zone_runtime_upgrade_activates_at_t15() {
         let t13 = [
             T13_ZONE_PORTAL_RUNTIME,
             T13_ZONE_VERIFIER_RUNTIME,
             T13_ZONE_MESSENGER_RUNTIME,
         ];
-        let t14 = [
-            T14_ZONE_PORTAL_RUNTIME,
+        let t15 = [
+            T15_ZONE_PORTAL_RUNTIME,
             T13_ZONE_VERIFIER_RUNTIME,
             T13_ZONE_MESSENGER_RUNTIME,
         ];
         for (timestamp, spec, expected_runtimes) in [
-            (19, TempoHardfork::T13, t13),
-            (20, TempoHardfork::T14, t14.clone()),
-            (21, TempoHardfork::T14, t14),
+            (14, TempoHardfork::T13, t13.clone()),
+            (19, TempoHardfork::T14, t13),
+            (20, TempoHardfork::T15, t15.clone()),
+            (21, TempoHardfork::T15, t15),
         ] {
             let mut genesis = DEV.genesis().clone();
-            for (fork, activation) in [("t13Time", 10u64), ("t14Time", 20)] {
+            for (fork, activation) in [("t13Time", 10u64), ("t14Time", 15), ("t15Time", 20)] {
                 genesis
                     .config
                     .extra_fields
