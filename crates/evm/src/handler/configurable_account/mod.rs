@@ -151,7 +151,7 @@ impl TempoTxEnv {
 /// commitment, in the order sender, key authorization signer, fee payer, access key. RPC
 /// simulation skips only the sender check.
 /// Loads and warms accounts, but does not register commitments.
-/// Caller must charge both components and check fee affordability before [`verify`].
+/// Caller must charge both components.
 /// Transaction access-list and beneficiary warmth must be initialized before loading non-caller
 /// accounts.
 pub(crate) fn validate_state(
@@ -238,9 +238,10 @@ pub(crate) fn retired_authority(
     Ok(spec.is_t14() && !load_account(host, authority, spec)?.commitment.is_zero())
 }
 
-/// Verifies the owner quorum of each signed role separately. RPC simulation must validate the
-/// claimed owner quorum before constructing its mock witness; this function skips quorum recovery
-/// only in that mode.
+/// Verifies the owner quorum of each signed role separately. Sender recovery already verified and
+/// cached these, so this only rechecks transactions built without recovery. RPC simulation must
+/// validate the claimed owner quorum before constructing its mock witness; this function skips
+/// quorum recovery only in that mode.
 pub(crate) fn verify(
     context: ExecutionContext,
     aa: &TempoAaTx,
