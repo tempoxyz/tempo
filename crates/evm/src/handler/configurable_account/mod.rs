@@ -332,7 +332,7 @@ fn validate_native_roles(
     let caller = aa.signer();
     let tx = aa.tx();
     let roles = aa.native_authorizations();
-    // Context rejection must not depend on factory configuration or account reads.
+    // Context rejection must not depend on account reads.
     if roles.iter().any(Option::is_some) && !spec.is_t14() {
         return Err(ConfigurableAccountError::UnsupportedContext.into());
     }
@@ -360,7 +360,6 @@ fn validate_native_roles(
         }
         .into());
     }
-    let factory = host.block().ext.configurable_account_recovery_factory();
     let mut accounts = Vec::with_capacity(2);
     let mut extra_gas = 0;
     let mut state_gas = 0;
@@ -380,7 +379,7 @@ fn validate_native_roles(
         }
         accounts.push(address);
         signature
-            .validate_account_commitment(account.commitment, factory)
+            .validate_account_commitment(account.commitment)
             .map_err(|error| match error {
                 ConfigurableAccountStateError::CommitmentMismatch { expected, actual } => {
                     HandlerError::from(ConfigurableAccountError::ConfigurationCommitmentMismatch {
@@ -389,7 +388,6 @@ fn validate_native_roles(
                     })
                 }
                 ConfigurableAccountStateError::UnregisteredVersion { .. }
-                | ConfigurableAccountStateError::FactoryNotConfigured
                 | ConfigurableAccountStateError::InitialAccountMismatch { .. } => {
                     ConfigurableAccountError::InvalidAccount { account: address }.into()
                 }
