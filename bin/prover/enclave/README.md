@@ -190,12 +190,15 @@ not require a wall clock: certificate validity spans 2024–9999 and the client 
 timestamps and fresh nonces. Clients require an accurate wall clock. The default maximum evidence
 age is 300 seconds, with at most 300 seconds of future clock skew.
 
-Remote node proving authenticates each endpoint against the PCR0–2 tuple effective at its
-assigned L1 hardfork in Tempo's compiled-in `crates/precompiles/src/zone_verifier/pcrs.json`.
-Remote shadow proofs are also verified locally using this mapping. No PCR file or measurements
-are passed to the node at runtime; missing approved measurements stop remote proving before any
-witness is sent. The prover utils still accept `--attestation-policy` for standalone testing;
-see the [policy example](../utils/README.md). Debug-mode zero PCRs are rejected.
+Remote node proving authenticates each endpoint with the PCR0–2 measurements compiled into the
+binary for its hardfork (`crates/precompiles/src/zone_verifier/pcrs.json`), and the node refuses to
+start with an assignment for a fork that has none. `--sequencer.prover-attestation-policy`
+overrides them with an explicit allowlist for all endpoints; pin those measurements independently
+from the trusted EIF build, never from a prover response. The prover utils require
+`--attestation-policy`; see the [policy example](../utils/README.md).
+Debug-mode zero PCRs are rejected. Rebuild the EIF and distribute its trusted measurements when
+deploying this change; coordinate client/server upgrades because plaintext clients are no longer
+accepted.
 
 The host image launches the enclave in non-debug mode and exposes TCP port `5000`. It accepts
 `PROVER_EIF_PATH`, `ENCLAVE_NAME`, `ENCLAVE_CPU_COUNT`, `ENCLAVE_MEMORY_MIB`, `ENCLAVE_CID`,
@@ -215,8 +218,8 @@ the prover pods; Docker's `EXPOSE` alone does not configure scraping. See the
 Keep separate deployments of the currently approved EIF and the next hardfork's EIF. Pin each
 host image by digest, retain its commit-specific PCR measurements, and verify those measurements
 against the hardfork policy compiled into the corresponding Tempo release. Do not repoint an
-existing endpoint to a different EIF during the transition. The node authenticates each endpoint
-against the compiled PCRs for its assigned hardfork; L1 also checks batch attestations at settlement.
+existing endpoint to a different EIF during the transition. The node does not authenticate an
+endpoint's advertised release; L1 remains responsible for checking the batch attestation's PCRs.
 
 Configure the node with one exact `--sequencer.prover-address` assignment per L1 hardfork.
 For example, after both forks' measurements have been approved in Tempo, a T13/T14 transition uses:
@@ -228,11 +231,11 @@ For example, after both forks' measurements have been approved in Tempo, a T13/T
 ```
 
 The equivalent address setting is
-`SEQUENCER_PROVER_ADDRESS=T13=prover-t13:5000,T14=prover-t14:5000`.
-Publish the prover first, approve its measurements in Tempo's hardfork mapping, then build the
-node release containing that mapping. Each hardfork uses the most recent approved measurements
-at or before it, so unchanged prover images do not require duplicate PCR entries. A missing
-policy returns an error; it never falls back to another endpoint or unapproved measurements.
+`SEQUENCER_PROVER_ADDRESS=T13=prover-t13:5000,T14=prover-t14:5000`. Each endpoint is
+authenticated with its fork's compiled-in measurements. An optional
+`SEQUENCER_PROVER_ATTESTATION_POLICY` file replaces them for all endpoints, so it must include both
+deployments' independently approved measurements during an upgrade. Neither changes what the L1
+verifier accepts for settlement.
 Use the actual forks supported by the node binary; a future fork assignment requires a binary
 whose Tempo dependency recognizes it.
 Assign the same endpoint explicitly to adjacent forks when the accepted prover image is unchanged.

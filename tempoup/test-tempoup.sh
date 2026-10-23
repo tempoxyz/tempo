@@ -287,6 +287,30 @@ latest="$(RELEASES_FIXTURE="$RELEASES_FIXTURE" run_tempoup '
 [[ "$latest" == "v1.13.1" ]] || fail "anonymous latest release selection returned $latest"
 ok "anonymous release selection excludes prereleases and drafts before numeric sorting"
 
+latest="$(run_tempoup '
+    printf "%s\n" v1.16.1 tempo/v1.17.0 tempo/v1.10.0 zones/v9.0.0 tempo/v2.0.0-rc.1 |
+        select_latest_release_tag
+')"
+[[ "$latest" == "tempo/v1.17.0" ]] || fail "prefixed latest release selection returned $latest"
+ok "release selection orders v and tempo/v tags by version"
+
+resolved="$(run_tempoup '
+    gh_authenticated() { return 0; }
+    gh() { [[ "$1 $2 $3" == "release view tempo/v1.18.0" ]]; }
+    resolve_release_tag v1.18.0
+    resolve_release_tag v1.13.1
+    resolve_release_tag tempo/v1.17.0
+')"
+[[ "$resolved" == $'tempo/v1.18.0\nv1.13.1\ntempo/v1.17.0' ]] || fail "authenticated tag resolution returned $resolved"
+resolved="$(run_tempoup '
+    gh_authenticated() { return 1; }
+    curl() { [[ "$*" == *"/releases/tag/tempo/v1.18.0" ]]; }
+    resolve_release_tag v1.18.0
+    resolve_release_tag v1.13.1
+')"
+[[ "$resolved" == $'tempo/v1.18.0\nv1.13.1' ]] || fail "anonymous tag resolution returned $resolved"
+ok "a bare vN.N.N installs its tempo/ release when one exists"
+
 if output="$(run_tempoup '
     gh_authenticated() { return 1; }
     command() {

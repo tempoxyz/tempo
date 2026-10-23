@@ -83,7 +83,13 @@ if [ -n "${INPUT_REF:-}" ] || [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
   echo "::group::Resolving release tags"
   git fetch --tags --force --quiet --no-recurse-submodules origin
 
-  mapfile -t TAGS < <(git tag --list "v*.*.*" --sort=-v:refname)
+  # Order vX.Y.Z and tempo/vX.Y.Z release tags together by version, newest first.
+  mapfile -t TAGS < <(
+    git tag --list "v*.*.*" "tempo/v*.*.*" |
+      awk '{ version = $0; sub(/^tempo\//, "", version); print version "\t" $0 }' |
+      sort -t $'\t' -k1,1Vr |
+      cut -f2
+  )
   FOUND="false"
   PREVIOUS_TAG=""
   for tag in "${TAGS[@]}"; do
@@ -97,7 +103,7 @@ if [ -n "${INPUT_REF:-}" ] || [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
   done
 
   if [ "$FOUND" != "true" ]; then
-    echo "::error::Current tag $CURRENT_TAG was not found in fetched v*.*.* tags"
+    echo "::error::Current tag $CURRENT_TAG was not found in fetched v*.*.* or tempo/v*.*.* tags"
     exit 1
   fi
 

@@ -245,16 +245,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: tempoxyz/tempo-multi-region-benchmark
-          ref: f606e35d52a6e08300f90736a230f4023b46b160 # tempo-multi-region-benchmark main (#467)
+          ref: cb13071a53805d7f14ca6fe6ad92e3012a15ba7a # tempo-multi-region-benchmark main (#481)
           path: benchmark
           token: ${{ steps.benchmark-token.outputs.token }}
           persist-credentials: false
-      - name: Mint Earn read token
-        id: earn-token
-        uses: tempoxyz/gh-actions/actions/github-sts@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
-        with:
-          scope: tempoxyz/earn
-          policy: zones-read
       - name: Check out baseline Tempo with Zones
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -285,7 +279,6 @@ jobs:
           repository: tempoxyz/earn
           ref: main
           path: earn
-          token: ${{ steps.earn-token.outputs.token }}
           persist-credentials: false
       - name: Initialize Earn fixture dependencies
         working-directory: earn

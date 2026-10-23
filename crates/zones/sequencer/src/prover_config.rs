@@ -14,7 +14,9 @@ use eyre::{Context as _, Result, ensure};
 use reth_metrics::metrics::Gauge;
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::{TempoHardforks, hardfork::TempoHardfork};
+use tempo_precompiles::zone_verifier::APPROVED_PCRS;
 use zone_chainspec::ZoneChainSpec;
+use zone_prover::attested_transport::RemoteProverConfig;
 
 /// Readiness monitors endpoints for forks activating within 72 hours, inclusive.
 const PROVER_UPGRADE_LOOKAHEAD_SECS: u64 = 72 * 60 * 60;
@@ -49,14 +51,18 @@ impl FromStr for HardforkProverAddress {
     }
 }
 
-/// Remote prover endpoints. Fork routing requires an exact assignment, with no fallback.
+/// Remote prover configuration. Fork routing requires an exact assignment, with no fallback.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProverAddresses(BTreeMap<TempoHardfork, String>);
+pub struct ProverAddresses(BTreeMap<TempoHardfork, RemoteProverConfig>);
 
 impl ProverAddresses {
-    /// Build the endpoint routing table, rejecting empty addresses and duplicate assignments.
-    /// Returns `None` when no remote endpoints are configured.
-    pub fn new(assignments: Vec<HardforkProverAddress>) -> Result<Option<Self>> {
+    /// Build authenticated endpoints, rejecting duplicate assignments. Without a `policy`
+    /// override, each endpoint is authenticated with the verifier's compiled-in PCRs for its
+    /// hardfork, and a hardfork without approved PCRs is rejected.
+    pub fn new(
+        assignments: Vec<HardforkProverAddress>,
+        policy: Option<&[u8]>,
+    ) -> Result<Option<Self>> {
         if assignments.is_empty() {
             return Ok(None);
         }
@@ -67,7 +73,18 @@ impl ProverAddresses {
                 !address.trim().is_empty(),
                 "prover address must not be empty"
             );
-            let prev = addresses.insert(hardfork, address);
+            let config = match policy {
+                Some(policy) => RemoteProverConfig::from_policy_json(address, policy)?,
+                None => {
+                    let pcrs = APPROVED_PCRS.at(hardfork).ok_or_else(|| {
+                        eyre::eyre!(
+                            "no approved prover PCRs for L1 hardfork {hardfork}; pass --sequencer.prover-attestation-policy"
+                        )
+                    })?;
+                    RemoteProverConfig::from_pcrs(address, pcrs)?
+                }
+            };
+            let prev = addresses.insert(hardfork, config);
             ensure!(prev.is_none(), "duplicate prover address for {hardfork}");
         }
         Ok(Some(Self(addresses)))
@@ -87,15 +104,14 @@ impl ProverAddresses {
         &self,
         provider: &DynProvider<TempoNetwork>,
         chain_spec: &impl TempoHardforks,
-    ) -> Result<(&str, TempoHardfork)> {
+    ) -> Result<(&RemoteProverConfig, TempoHardfork)> {
         let hardfork = active_l1_hardfork(provider, chain_spec).await?;
-        Ok((self.address_for(hardfork)?, hardfork))
+        Ok((self.config_for(hardfork)?, hardfork))
     }
 
-    fn address_for(&self, hardfork: TempoHardfork) -> Result<&str> {
+    fn config_for(&self, hardfork: TempoHardfork) -> Result<&RemoteProverConfig> {
         self.0
             .get(&hardfork)
-            .map(String::as_str)
             .ok_or_else(|| eyre::eyre!("no prover configured for active L1 hardfork {hardfork}"))
     }
 
@@ -174,6 +190,11 @@ mod tests {
         (TempoHardfork::T13, TempoHardfork::T14),
     ];
 
+    fn policy() -> Vec<u8> {
+        let pcr = "11".repeat(48);
+        serde_json::to_vec(&serde_json::json!({"pcrs":{"0":[&pcr],"1":[&pcr],"2":[&pcr]}})).unwrap()
+    }
+
     fn mock_l1_header(timestamp: u64) -> serde_json::Value {
         let header = TempoHeaderResponse {
             inner: RpcHeader {
@@ -239,10 +260,12 @@ mod tests {
         for (before, after) in TRANSITIONS {
             let activation = 400_000;
             let spec = scheduled(after, activation);
-            let addresses =
-                ProverAddresses::new(vec![format!("{before}=old:5000").parse().unwrap()])
-                    .unwrap()
-                    .unwrap();
+            let addresses = ProverAddresses::new(
+                vec![format!("{before}=old:5000").parse().unwrap()],
+                Some(&policy()),
+            )
+            .unwrap()
+            .unwrap();
             let recorded = Arc::new(RecordedGauge::default());
             let gauge = Gauge::from_arc(recorded.clone());
             for now in [
@@ -292,31 +315,66 @@ mod tests {
     }
 
     fn routed(before: TempoHardfork, after: TempoHardfork) -> ProverAddresses {
-        ProverAddresses::new(vec![
-            format!("{before}=old:5000").parse().unwrap(),
-            format!("{after}=new:5000").parse().unwrap(),
-        ])
+        ProverAddresses::new(
+            vec![
+                format!("{before}=old:5000").parse().unwrap(),
+                format!("{after}=new:5000").parse().unwrap(),
+            ],
+            Some(&policy()),
+        )
         .unwrap()
         .unwrap()
     }
 
     #[test]
-    fn empty_assignments_disable_remote_proving() {
-        assert!(ProverAddresses::new(Vec::new()).unwrap().is_none());
+    fn assignments_without_a_policy_use_the_compiled_pcrs() {
+        assert!(ProverAddresses::new(Vec::new(), None).unwrap().is_none());
+        assert!(APPROVED_PCRS.at(TempoHardfork::T13).is_some());
+        for &hardfork in TempoHardfork::VARIANTS {
+            let result = ProverAddresses::new(
+                vec![HardforkProverAddress {
+                    hardfork,
+                    address: "prover:5000".to_owned(),
+                }],
+                None,
+            );
+            match APPROVED_PCRS.at(hardfork) {
+                Some(pcrs) => assert_eq!(
+                    result.unwrap().unwrap().config_for(hardfork).unwrap(),
+                    &RemoteProverConfig::from_pcrs("prover:5000".to_owned(), pcrs).unwrap()
+                ),
+                None => assert_eq!(
+                    result.unwrap_err().to_string(),
+                    format!(
+                        "no approved prover PCRs for L1 hardfork {hardfork}; pass --sequencer.prover-attestation-policy"
+                    )
+                ),
+            }
+        }
     }
 
     #[test]
     fn assignments_are_exact_and_unambiguous() {
         for (before, after) in TRANSITIONS {
             let config = routed(before, after);
-            assert_eq!(config.address_for(before).unwrap(), "old:5000");
-            assert_eq!(config.address_for(after).unwrap(), "new:5000");
-            assert!(config.address_for(TempoHardfork::T11).is_err());
+            assert_eq!(config.config_for(before).unwrap().address(), "old:5000");
+            assert_eq!(config.config_for(after).unwrap().address(), "new:5000");
+            assert!(config.config_for(TempoHardfork::T11).is_err());
             assert!(
-                ProverAddresses::new(vec![
-                    format!("{after}=a:1").parse().unwrap(),
-                    format!("{after}=b:2").parse().unwrap()
-                ])
+                ProverAddresses::new(
+                    vec![format!("{before}=old:5000").parse().unwrap()],
+                    Some(b"{}"),
+                )
+                .is_err()
+            );
+            assert!(
+                ProverAddresses::new(
+                    vec![
+                        format!("{after}=a:1").parse().unwrap(),
+                        format!("{after}=b:2").parse().unwrap()
+                    ],
+                    Some(&policy()),
+                )
                 .is_err()
             );
             for invalid in [
@@ -339,9 +397,12 @@ mod tests {
             let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
                 .connect_mocked_client(asserter.clone())
                 .erased();
-            let config = ProverAddresses::new(vec![format!("{before}=old:5000").parse().unwrap()])
-                .unwrap()
-                .unwrap();
+            let config = ProverAddresses::new(
+                vec![format!("{before}=old:5000").parse().unwrap()],
+                Some(&policy()),
+            )
+            .unwrap()
+            .unwrap();
             assert_eq!(
                 config
                     .resolve(&provider, &scheduled(after, 100_001))
@@ -379,7 +440,7 @@ mod tests {
                 ("old:5000", before),
             ] {
                 let (config, selected_fork) = config.resolve(&provider, &spec).await.unwrap();
-                assert_eq!((config, selected_fork), (address, fork));
+                assert_eq!((config.address(), selected_fork), (address, fork));
             }
             assert!(config.resolve(&provider, &spec).await.is_err());
         }

@@ -70,8 +70,8 @@ git() {
   case "$*" in
     fetch*) ;;
     'rev-parse origin/main') printf '%s\n' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ;;
-    'tag --list v*.*.* --sort=-v:refname') printf 'v2.0.0\nv1.0.0\n' ;;
-    'rev-list -n 1 v2.0.0') printf '%s\n' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ;;
+    'tag --list v*.*.* tempo/v*.*.*') printf 'v1.0.0\ntempo/v2.0.0\n' ;;
+    'rev-list -n 1 tempo/v2.0.0') printf '%s\n' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ;;
     'rev-list -n 1 v1.0.0') printf '%s\n' bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb ;;
     'rev-parse origin/main~1') printf '%s\n' bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb ;;
     'log -1 --format=%cI '* ) printf '%s\n' "$STATE_TEST_DATE" ;;
@@ -167,14 +167,14 @@ for series in replay e2e zones; do
 done
 
 # Release comparisons must never read nightly state, whether triggered by a tag
-# or a manual release ref. A state API failure must not affect either path.
+# or a manual release ref. A tempo/v tag compares against the previous v release. A state API failure must not affect either path.
 export STATE_TEST_FAILURE=list
 for release_trigger in tag manual; do
   if [[ "$release_trigger" == tag ]]; then
-    export GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v2.0.0
+    export GITHUB_REF_TYPE=tag GITHUB_REF_NAME=tempo/v2.0.0
     unset INPUT_REF
   else
-    export GITHUB_REF_TYPE=branch GITHUB_REF_NAME=main INPUT_REF=v2.0.0
+    export GITHUB_REF_TYPE=branch GITHUB_REF_NAME=main INPUT_REF=tempo/v2.0.0
   fi
   : > "$GITHUB_OUTPUT"
   bash "$scripts/bench-e2e-scheduled-refs.sh" false default > "$scratch/log" 2>&1

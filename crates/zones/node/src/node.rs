@@ -217,6 +217,8 @@ pub enum ZoneProverConfig {
         /// Remote provers routed by the live L1 hardfork. When absent, execute the SPF in
         /// this process.
         prover_addresses: Option<ProverAddresses>,
+        /// Independently approved enclave measurements for local, observational verification.
+        proof_verifier: Option<zone_prover::ShadowProofVerifier>,
     },
 }
 
@@ -231,6 +233,13 @@ impl ZoneProverConfig {
             Self::Shadow {
                 prover_addresses, ..
             } => prover_addresses.as_ref(),
+        }
+    }
+
+    const fn proof_verifier(&self) -> Option<&zone_prover::ShadowProofVerifier> {
+        match self {
+            Self::Settlement(_) => None,
+            Self::Shadow { proof_verifier, .. } => proof_verifier.as_ref(),
         }
     }
 }
@@ -896,8 +905,7 @@ where
                 chain_spec: evm_chain_spec,
                 debug_api,
                 prover_addresses: prover_config.prover_addresses().cloned(),
-                verify_proofs_locally: prover_config.is_shadow()
-                    && prover_config.prover_addresses().is_some(),
+                proof_verifier: prover_config.proof_verifier().cloned(),
             };
             match prover_config {
                 ZoneProverConfig::Settlement(_) => {

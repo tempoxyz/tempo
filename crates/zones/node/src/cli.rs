@@ -356,7 +356,16 @@ async fn configure_sequencing(
             "this node is `rpc_only` in the manifest, so --sequencer-key-file must not be provided: the shared key is never used here and is also the zone ECIES private key for encrypted deposits"
         ));
     }
-    let prover_addresses = ProverAddresses::new(args.prover_addresses.clone())?;
+    eyre::ensure!(
+        args.shadow_prover_pcrs.is_none() || (rpc_only && !should_sequence_blocks),
+        "--shadow-prover.pcrs requires an rpc_only follower; it is not a settlement policy"
+    );
+    let policy = args
+        .prover_attestation_policy
+        .as_deref()
+        .map(std::fs::read)
+        .transpose()?;
+    let prover_addresses = ProverAddresses::new(args.prover_addresses.clone(), policy.as_deref())?;
     let prover_config = if !args.enable_prover {
         None
     } else if should_sequence_blocks {
@@ -371,7 +380,10 @@ async fn configure_sequencing(
             rpc_only,
             "--sequencer.enable-prover requires a sequencer or an rpc_only P2P follower"
         );
-        Some(ZoneProverConfig::Shadow { prover_addresses })
+        Some(ZoneProverConfig::Shadow {
+            prover_addresses,
+            proof_verifier: args.shadow_prover_pcrs.clone(),
+        })
     };
 
     eyre::ensure!(
@@ -706,6 +718,26 @@ pub struct ZoneArgs {
     )]
     pub prover_addresses: Vec<HardforkProverAddress>,
 
+    /// JSON PCR allowlist that overrides the compiled-in verifier PCRs used to authenticate
+    /// remote provers.
+    #[arg(
+        long = "sequencer.prover-attestation-policy",
+        env = "SEQUENCER_PROVER_ATTESTATION_POLICY",
+        value_name = "PATH",
+        requires_all = ["enable_prover", "prover_addresses"]
+    )]
+    pub prover_attestation_policy: Option<PathBuf>,
+
+    /// Verify shadow Nitro proofs locally against independently approved PCR0, PCR1 and PCR2.
+    /// Works before T13; applies only to RPC followers and never enables settlement enforcement.
+    #[arg(
+        long = "shadow-prover.pcrs",
+        env = "SHADOW_PROVER_PCRS",
+        value_name = "PCR0,PCR1,PCR2",
+        requires = "prover_addresses"
+    )]
+    pub shadow_prover_pcrs: Option<zone_prover::ShadowProofVerifier>,
+
     /// Bounce deposits whose L1 sender is not on the allowlist persisted at
     /// `<datadir>/deposit-allowlist.json`. Until the admin first writes the list, the sequencer
     /// credits every deposit. Requires `--deposits.allowlist.admin`.
@@ -915,24 +947,41 @@ mod tests {
     }
 
     #[test]
-    fn pcr_input_flags_are_removed() {
-        for flag in [
+    fn shadow_verification_requires_remote_proving_and_complete_measurements() {
+        let common = ["tempo-zone", "--l1.rpc-url", "ws://localhost:8546"];
+        let pcr = "11".repeat(48);
+        let pcrs = format!("{pcr},{pcr},{pcr}");
+        assert!(
+            ZoneArgsParser::try_parse_from(
+                common
+                    .into_iter()
+                    .chain(["--shadow-prover.pcrs", pcrs.as_str(),])
+            )
+            .is_err()
+        );
+        let args = ZoneArgsParser::try_parse_from(common.into_iter().chain([
+            "--sequencer.enable-prover",
             "--sequencer.prover-attestation-policy",
+            "policy.json",
+            "--sequencer.prover-address",
+            "T13=localhost:5000",
             "--shadow-prover.pcrs",
-        ] {
-            let error = ZoneArgsParser::try_parse_from([
-                "tempo-zone",
-                "--l1.rpc-url",
-                "ws://localhost:8546",
+            pcrs.as_str(),
+        ]))
+        .unwrap();
+        assert!(args.zone.shadow_prover_pcrs.is_some());
+        assert!(
+            ZoneArgsParser::try_parse_from(common.into_iter().chain([
                 "--sequencer.enable-prover",
+                "--sequencer.prover-attestation-policy",
+                "policy.json",
                 "--sequencer.prover-address",
                 "T13=localhost:5000",
-                flag,
-                "unused",
-            ])
-            .unwrap_err();
-            assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
-        }
+                "--shadow-prover.pcrs",
+                "00,00,00",
+            ]))
+            .is_err()
+        );
     }
 
     #[test]
@@ -942,6 +991,8 @@ mod tests {
             "--l1.rpc-url",
             "ws://localhost:8546",
             "--sequencer.enable-prover",
+            "--sequencer.prover-attestation-policy",
+            "policy.json",
         ];
         for flags in [
             vec![
@@ -961,12 +1012,25 @@ mod tests {
                 .unwrap()
                 .zone;
             assert_eq!(args.prover_addresses.len(), 3);
+            assert!(args.prover_attestation_policy.is_some());
         }
-        let local_prover = ZoneArgsParser::try_parse_from(common.iter().copied())
-            .unwrap()
-            .zone;
+        let local_prover =
+            ZoneArgsParser::try_parse_from(common[..common.len() - 2].iter().copied())
+                .unwrap()
+                .zone;
         assert!(local_prover.enable_prover);
         assert!(local_prover.prover_addresses.is_empty());
+        assert!(local_prover.prover_attestation_policy.is_none());
+        let compiled_pcrs = ZoneArgsParser::try_parse_from(
+            common[..common.len() - 2]
+                .iter()
+                .copied()
+                .chain(["--sequencer.prover-address", "T13=new:5000"]),
+        )
+        .unwrap()
+        .zone;
+        assert_eq!(compiled_pcrs.prover_addresses.len(), 1);
+        assert!(compiled_pcrs.prover_attestation_policy.is_none());
         let error = ZoneArgsParser::try_parse_from(
             common
                 .into_iter()
@@ -1358,6 +1422,19 @@ mod tests {
     fn l1_rpc_url_accepts_websocket_schemes() {
         parse_l1_rpc_url("ws://localhost:8546").unwrap();
         parse_l1_rpc_url("wss://rpc.moderato.tempo.xyz").unwrap();
+    }
+
+    #[test]
+    fn portal_address_argument_is_rejected() {
+        let error = ZoneArgsParser::try_parse_from([
+            "tempo-zone",
+            "--l1.rpc-url",
+            "ws://localhost:8546",
+            "--l1.portal-address",
+            "0x5ad0000000000000000000000000000000000002",
+        ])
+        .unwrap_err();
+        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
     }
 
     #[test]
