@@ -540,6 +540,12 @@ fn decode_inbox(log: &Log, block: u64) -> eyre::Result<Option<ReceiptEvent>> {
             decode_event::<IZoneInbox::TokenEnabled>(log, "TokenEnabled", block)?;
             return Ok(None);
         }
+        // A forced exit's debit is accounted through its TIP-20 logs and the Outbox
+        // `ForcedWithdrawalRequested`; the result itself moves no value.
+        IZoneInbox::ForcedExitProcessed::SIGNATURE_HASH => {
+            decode_event::<IZoneInbox::ForcedExitProcessed>(log, "ForcedExitProcessed", block)?;
+            return Ok(None);
+        }
         IZoneInbox::DepositRejected::SIGNATURE_HASH => {
             eyre::bail!("unsupported DepositRejected in block {block}");
         }
@@ -1083,6 +1089,40 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("malformed TempoAdvanced"));
+    }
+
+    #[test]
+    fn forced_exit_result_is_decoded_but_not_retained() {
+        let processed = event_log(
+            ZONE_INBOX_ADDRESS,
+            IZoneInbox::ForcedExitProcessed {
+                account: Address::repeat_byte(0xaa),
+                requestId: 1,
+                nonce: U256::from(7),
+                reason: 0,
+                amount: 42,
+            },
+        );
+        let events = collect(
+            &[transaction()],
+            &[receipt(vec![anchor_log(7), processed.clone()])],
+            BlockNumHash::new(4, B256::ZERO),
+        )
+        .unwrap();
+        assert!(events.actions.is_empty());
+        assert!(events.transfers.is_empty());
+
+        let malformed = Log {
+            address: ZONE_INBOX_ADDRESS,
+            data: LogData::new_unchecked(processed.topics().to_vec(), Bytes::from(vec![0xde])),
+        };
+        let error = collect(
+            &[transaction()],
+            &[receipt(vec![anchor_log(7), malformed])],
+            BlockNumHash::new(4, B256::ZERO),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("malformed ForcedExitProcessed"));
     }
 
     #[test]

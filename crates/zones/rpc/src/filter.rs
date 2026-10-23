@@ -1,8 +1,9 @@
 //! Privacy-enforced log filtering for the zone's redacted RPC.
 //!
-//! Only whitelisted TIP-20 and receipt-recovery event logs are returned to callers. A caller must
-//! appear in an eligible indexed topic or, for `TransferBlocked`, be a stakeholder encoded in the
-//! claim receipt. This prevents users from observing other users' token activity.
+//! Only whitelisted TIP-20, receipt-recovery, and forced-exit result event logs are returned to
+//! callers. A caller must appear in an eligible indexed topic or, for `TransferBlocked`, be a
+//! stakeholder encoded in the claim receipt. This prevents users from observing other users' token
+//! activity.
 
 use alloy_consensus::TxReceipt;
 use alloy_network::ReceiptResponse;
@@ -10,7 +11,11 @@ use alloy_primitives::{Address, B256};
 use alloy_rpc_types_eth::{Filter, FilterSet, Log};
 use alloy_sol_types::SolEvent;
 use tempo_alloy::rpc::TempoTransactionReceipt;
-use tempo_contracts::precompiles::{IReceivePolicyGuard, ITIP20, RECEIVE_POLICY_GUARD_ADDRESS};
+use tempo_contracts::{
+    precompiles::{IReceivePolicyGuard, ITIP20, RECEIVE_POLICY_GUARD_ADDRESS},
+    zones::ForcedExitProcessed,
+};
+use zone_primitives::constants::ZONE_INBOX_ADDRESS;
 
 use crate::types::JsonRpcError;
 
@@ -32,14 +37,18 @@ pub const BURN_TOPIC: B256 = ITIP20::Burn::SIGNATURE_HASH;
 /// `TransferBlocked(address,address,uint64,uint256,uint8,bytes)`.
 pub const TRANSFER_BLOCKED_TOPIC: B256 = IReceivePolicyGuard::TransferBlocked::SIGNATURE_HASH;
 
+/// `ForcedExitProcessed(address,uint64,uint256,uint8,uint128)`, emitted by the Zone inbox.
+pub const FORCED_EXIT_PROCESSED_TOPIC: B256 = ForcedExitProcessed::SIGNATURE_HASH;
+
 /// All event topic hashes exposed by the redacted RPC.
-pub const WHITELISTED_TOPICS: [B256; 6] = [
+pub const WHITELISTED_TOPICS: [B256; 7] = [
     TRANSFER_TOPIC,
     APPROVAL_TOPIC,
     TRANSFER_WITH_MEMO_TOPIC,
     MINT_TOPIC,
     BURN_TOPIC,
     TRANSFER_BLOCKED_TOPIC,
+    FORCED_EXIT_PROCESSED_TOPIC,
 ];
 
 const TWO_PARTY_TOPICS: [B256; 4] = [
@@ -61,6 +70,7 @@ const CALLER_SCOPED_FILTER_ERROR: &str =
 /// - **Burn**: topic1 (from)
 /// - **TransferBlocked**: the indexed receiver, or the originator/recovery authority encoded in
 ///   the receipt
+/// - **ForcedExitProcessed**: topic1 (account), only when emitted by the Zone inbox
 pub fn is_caller_eligible(log: &Log, caller: &Address) -> bool {
     let topics = log.topics();
     let Some(topic0) = log.topic0() else {
@@ -80,6 +90,9 @@ pub fn is_caller_eligible(log: &Log, caller: &Address) -> bool {
     } else if *topic0 == MINT_TOPIC || *topic0 == BURN_TOPIC {
         // topic1 must match caller
         topics.get(1) == Some(&caller_word)
+    } else if *topic0 == FORCED_EXIT_PROCESSED_TOPIC {
+        // Any contract could emit this topic; only the inbox reports forced-exit results.
+        log.address() == ZONE_INBOX_ADDRESS && topics.get(1) == Some(&caller_word)
     } else {
         false
     }
@@ -162,7 +175,7 @@ pub fn filter_receipt_logs(mut receipt: TempoTransactionReceipt) -> TempoTransac
     receipt
 }
 
-/// Scopes a user-supplied filter to enabled zone tokens and the receive-policy guard.
+/// Scopes a user-supplied filter to enabled zone tokens, the receive-policy guard, and the inbox.
 pub fn scope_filter_addresses(
     filter: &mut Filter,
     zone_tokens: &[Address],
@@ -171,15 +184,16 @@ pub fn scope_filter_addresses(
 
     if requested_addresses.is_empty() {
         let mut allowed_addresses = zone_tokens.to_vec();
-        allowed_addresses.push(RECEIVE_POLICY_GUARD_ADDRESS);
+        allowed_addresses.extend([RECEIVE_POLICY_GUARD_ADDRESS, ZONE_INBOX_ADDRESS]);
         filter.address = FilterSet::from(allowed_addresses);
         return Ok(());
     }
 
-    if requested_addresses
-        .iter()
-        .all(|address| zone_tokens.contains(address) || *address == RECEIVE_POLICY_GUARD_ADDRESS)
-    {
+    if requested_addresses.iter().all(|address| {
+        zone_tokens.contains(address)
+            || *address == RECEIVE_POLICY_GUARD_ADDRESS
+            || *address == ZONE_INBOX_ADDRESS
+    }) {
         Ok(())
     } else {
         Err(JsonRpcError::invalid_params("invalid filter address"))
@@ -506,6 +520,43 @@ mod tests {
         let other = Address::with_last_byte(2);
         let log = make_log(Address::ZERO, vec![BURN_TOPIC, other.into_word()]);
         assert!(!is_caller_eligible(&log, &caller));
+    }
+
+    // ---------------------------------------------------------------
+    // is_caller_eligible — ForcedExitProcessed
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn forced_exit_processed_visible_only_to_account_from_inbox() {
+        let account = Address::with_last_byte(1);
+        let other = Address::with_last_byte(2);
+        let mut log = make_log(ZONE_INBOX_ADDRESS, Vec::new());
+        log.inner.data = ForcedExitProcessed {
+            account,
+            requestId: 7,
+            nonce: U256::from(3),
+            reason: 0,
+            amount: 42,
+        }
+        .encode_log_data();
+        assert!(is_log_visible(&log, &account));
+        assert!(!is_log_visible(&log, &other));
+        assert_eq!(filter_logs(vec![log.clone()], &other), Vec::new());
+
+        // The same topics from any other emitter are not a forced-exit result.
+        log.inner.address = Address::with_last_byte(0xaa);
+        assert!(!is_log_visible(&log, &account));
+    }
+
+    #[test]
+    fn scope_filter_for_caller_rejects_topic2_only_forced_exit_processed() {
+        // The account is only ever topic1, so a topic2-only filter cannot select it.
+        let caller = Address::with_last_byte(1);
+        let mut filter = Filter::default();
+        filter.topics[0] = FilterSet::from(FORCED_EXIT_PROCESSED_TOPIC);
+        filter.topics[2] = FilterSet::from(caller.into_word());
+        let err = scope_filter_for_caller(&mut filter, &caller).unwrap_err();
+        assert_eq!(err.message, CALLER_SCOPED_FILTER_ERROR);
     }
 
     // ---------------------------------------------------------------
@@ -888,13 +939,14 @@ mod tests {
         assert!(filter.address.contains(&token_a));
         assert!(filter.address.contains(&token_b));
         assert!(filter.address.contains(&RECEIVE_POLICY_GUARD_ADDRESS));
-        assert_eq!(filter.address.len(), 3);
+        assert!(filter.address.contains(&ZONE_INBOX_ADDRESS));
+        assert_eq!(filter.address.len(), 4);
     }
 
     #[test]
     fn scope_filter_addresses_allows_enabled_addresses() {
         let token = Address::with_last_byte(0xaa);
-        for address in [token, RECEIVE_POLICY_GUARD_ADDRESS] {
+        for address in [token, RECEIVE_POLICY_GUARD_ADDRESS, ZONE_INBOX_ADDRESS] {
             let mut filter = Filter {
                 address: FilterSet::from(address),
                 ..Default::default()

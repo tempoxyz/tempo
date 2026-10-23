@@ -257,8 +257,20 @@ fn maximum_metadata_token(index: u16) -> EnabledToken {
     }
 }
 
-fn failed_deposit_gas(deposits: usize, token_enablements: usize) -> eyre::Result<u64> {
+/// Gas for one `advanceTempo` of `deposits` failed mints and `token_enablements` initializations.
+/// `None` keeps the test context's default gas schedule.
+fn failed_deposit_gas(
+    deposits: usize,
+    token_enablements: usize,
+    gas_params: Option<revm::context_interface::cfg::GasParams>,
+) -> eyre::Result<u64> {
     let mut harness = Harness::new()?;
+    if let Some(gas_params) = gas_params {
+        harness.ctx.cfg.gas_params = gas_params;
+        let env = test_env(&harness.ctx);
+        harness.precompile = ZoneInbox::create(harness.l1_state.clone(), &env);
+        harness.outbox_precompile = crate::create_outbox_precompile(harness.l1_state.clone(), &env);
+    }
     let enabled_tokens = (1..=token_enablements)
         .map(|index| maximum_metadata_token(index as u16))
         .collect::<Vec<_>>();
@@ -353,7 +365,7 @@ fn max_portal_deposit_block_fits_system_gas_budget() -> eyre::Result<()> {
 
     for deposits in [640, MAX_UNPROCESSED_DEPOSITS] {
         let should_fit = deposits <= MAX_UNPROCESSED_DEPOSITS;
-        let gas_used = failed_deposit_gas(deposits, 0)?;
+        let gas_used = failed_deposit_gas(deposits, 0, None)?;
         eprintln!("{deposits} portal deposit block: {gas_used} gas");
         assert_eq!(
             gas_used <= BUFFERED_GAS_LIMIT,
@@ -368,7 +380,11 @@ fn max_portal_deposit_block_fits_system_gas_budget() -> eyre::Result<()> {
 fn max_portal_deposit_and_token_block_fits_system_gas_budget() -> eyre::Result<()> {
     const COMBINED_BUFFERED_GAS_LIMIT: u64 = 225_000_000;
 
-    let gas_used = failed_deposit_gas(MAX_UNPROCESSED_DEPOSITS, MAX_UNPROCESSED_TOKEN_ENABLEMENTS)?;
+    let gas_used = failed_deposit_gas(
+        MAX_UNPROCESSED_DEPOSITS,
+        MAX_UNPROCESSED_TOKEN_ENABLEMENTS,
+        None,
+    )?;
     eprintln!("max portal deposit and token block: {gas_used} gas");
     assert!(
         gas_used <= COMBINED_BUFFERED_GAS_LIMIT,

@@ -21,9 +21,9 @@ use alloy_primitives::{Address, B256, U256};
 use alloy_sol_types::{SolCall, SolValue, abi::AbiDecoderConfig};
 use exithatch::ForcedExitReason;
 use tempo_contracts::zones::{
-    DecryptionData, Deposit, DepositType, EnabledToken, ForcedExit, IZoneInbox, IZoneOutbox,
-    LegacyTempoAdvanced, QueuedDeposit, TempoAdvanced, WithdrawalBounceBackDeposit, ZoneInboxError,
-    ZoneInboxEvent,
+    DecryptionData, Deposit, DepositType, EnabledToken, ForcedExit, ForcedExitProcessed,
+    IZoneInbox, IZoneOutbox, LegacyTempoAdvanced, QueuedDeposit, TempoAdvanced,
+    WithdrawalBounceBackDeposit, ZoneInboxError, ZoneInboxEvent,
 };
 use tempo_precompiles::{
     PATH_USD_ADDRESS,

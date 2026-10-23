@@ -18,9 +18,14 @@ helpers. Stateful execution lives in the Zone inbox and outbox precompiles.
 2. **Execute on the Zone.** The inbox verifies the decryption witness, decrypts
    the request, and checks authorization, the admission deadline, replay, and
    applicable policies. A successful request burns the account's full liquid
-   balance at execution time and creates an ordinary withdrawal. Rejected and
-   empty requests advance the inbox without a withdrawal; fatal execution
-   errors roll back the transition.
+   balance at execution time and creates an ordinary withdrawal. If the debit
+   reverts, or uses more than its tested upper bound `FORCED_EXIT_DEBIT_GAS`,
+   it rolls back and the request is `DebitFailed`. A request that reaches a
+   Zone not yet running forced-exit rules is `NotActivated` and is not
+   decrypted. Rejected, empty, and inactive requests advance the inbox without
+   a withdrawal; fatal execution errors roll back the transition. Every
+   authenticated result emits a Zone-local `ForcedExitProcessed` event that
+   only the account can read.
 3. **Settle on L1.** The sequencer submits the inbox progress and ordinary
    withdrawal commitments through the existing quorum-attested batch path.
    There is no separate forced-withdrawal outcome array or public rejection
