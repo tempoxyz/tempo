@@ -1681,10 +1681,19 @@ def "main e2e" [
     let build_specs = $builds
     with-env { RUSTC_WRAPPER: "", CARGO_BUILD_JOBS: "8" } {
         $build_specs | each { |b|
-            if $effective_no_cache {
-                build-in-worktree --no-cache --no-default-features=$no_default_features --extra-rustflags $b.extra_rustflags --bench-features $b.bench_features $b.wt $b.ref_name $profile $b.features $b.sha
+            # Nested worktrees inherit the candidate checkout's Cargo config.
+            let compiler = if $b.label == "baseline" {
+                "rustc"
             } else {
-                build-in-worktree --no-default-features=$no_default_features $b.wt $b.ref_name $profile $b.features $b.sha
+                $"($b.wt)/.cargo/rustc-mir-move-elimination.sh" | path expand
+            }
+            print $"($b.label) compiler: ($compiler)"
+            with-env { RUSTC: $compiler } {
+                if $effective_no_cache {
+                    build-in-worktree --no-cache --no-default-features=$no_default_features --extra-rustflags $b.extra_rustflags --bench-features $b.bench_features $b.wt $b.ref_name $profile $b.features $b.sha
+                } else {
+                    build-in-worktree --no-default-features=$no_default_features $b.wt $b.ref_name $profile $b.features $b.sha
+                }
             }
         } | ignore
     }
