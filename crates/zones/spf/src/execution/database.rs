@@ -336,7 +336,48 @@ fn storage_unavailable(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reth_trie_common::EMPTY_ROOT_HASH;
+    use evm2::{PendingState, evm::StateChangeSource};
+    use reth_execution_types::{BlockState, TransactionChanges};
+    use reth_trie_common::{EMPTY_ROOT_HASH, LeafNode, Nibbles, TrieAccount, TrieNode};
+    use tempo_contracts::TempoHardfork;
+    use tempo_primitives::account::{decode_config_commitment, encode_config_commitment};
+
+    #[test]
+    fn commitment_survives_witness_execution() {
+        let address = Address::repeat_byte(0x42);
+        for commitment in [B256::ZERO, B256::repeat_byte(9)] {
+            let account = TrieAccount {
+                nonce: 7,
+                balance: U256::from(42),
+                ..Default::default()
+            }
+            .with_extension(encode_config_commitment(commitment));
+            let node = TrieNode::Leaf(LeafNode::new(
+                Nibbles::unpack(keccak256(address)),
+                alloy_rlp::encode(account),
+            ));
+            let encoded = Bytes::from(alloy_rlp::encode(node));
+            let root = keccak256(&encoded);
+            let witness = ZoneStateWitness {
+                node_pool: vec![encoded],
+                bytecodes: Vec::new(),
+            };
+            let mut database = WitnessDatabase::from_zone_state_witness(witness, root).unwrap();
+            let info = database.get_account(&address).unwrap().unwrap();
+            assert_eq!(
+                decode_config_commitment(&info.extension, TempoHardfork::T14),
+                Ok(commitment)
+            );
+            // Commit the account back through the production EVM2 -> reth bundle path.
+            let mut changes = PendingState::default();
+            changes.insert_account(address, None, Some(info));
+            let mut transaction = TransactionChanges::default();
+            changes.visit(&mut transaction).unwrap();
+            let mut block = BlockState::new();
+            block.commit(&transaction);
+            assert_eq!(database.state_root(&block.into_bundle()), Ok(root));
+        }
+    }
 
     #[test]
     fn checkpoint_requires_exact_header_rlp() {
