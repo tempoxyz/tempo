@@ -24,10 +24,13 @@ use tempo_precompiles::{
     ECRECOVER_GAS, PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, storage::ContractStorage,
     test_util::TIP20Setup, tip_fee_manager::TipFeeManager,
 };
-use tempo_primitives::transaction::{
-    Call, PrimitiveSignature, RecoveredTempoAuthorization, TempoSignature,
-    TempoSignedAuthorization,
-    tt_signature::{P256SignatureWithPreHash, WebAuthnSignature},
+use tempo_primitives::{
+    gas::P256_VERIFY_GAS,
+    transaction::{
+        Call, PrimitiveSignature, RecoveredTempoAuthorization, TempoSignature,
+        TempoSignedAuthorization,
+        tt_signature::{P256SignatureWithPreHash, WebAuthnSignature},
+    },
 };
 
 fn create_test_journal() -> Journal<InMemoryDB> {
@@ -720,8 +723,8 @@ fn test_aa_gas_p256_signature() {
     // Calculate base gas for normal tx
     let base_gas = calculate_initial_tx_gas(spec, &calldata, false, 0, 0, 0, None);
 
-    // Expected: normal tx + 5_000 (P256 verification, net of the ecrecover in the base cost)
-    let expected = base_gas.initial_total_gas() + 5_000;
+    // Expected: normal tx + P256 verification, minus the ecrecover already in the base cost
+    let expected = base_gas.initial_total_gas() + P256_VERIFY_GAS - ECRECOVER_GAS;
     assert_eq!(gas.initial_total_gas(), expected,);
 }
 
