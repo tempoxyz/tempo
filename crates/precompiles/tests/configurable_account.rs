@@ -29,8 +29,7 @@ use tempo_precompiles::{
 use tempo_primitives::{
     MasterId, TempoAddressExt, TempoBlockEnv, TempoBlockExt, UserTag,
     transaction::configurable_account::{
-        CONFIGURABLE_ACCOUNT_CREATE2_PREIMAGE_LEN, CONFIGURABLE_ACCOUNT_UPGRADE_DOMAIN,
-        MAX_CONFIGURABLE_ACCOUNT_OWNERS,
+        CONFIGURABLE_ACCOUNT_UPGRADE_DOMAIN, MAX_CONFIGURABLE_ACCOUNT_OWNERS,
     },
 };
 
@@ -49,14 +48,11 @@ impl EvmTypesHost for TestTypes {
     type Host<'a> = Evm<'a, Self>;
 }
 
-const FACTORY: Address = Address::repeat_byte(0x71);
 const OWNER: Address = Address::repeat_byte(0x22);
 const EOA: Address = Address::repeat_byte(0x33);
 
 fn t14_storage() -> HashMapStorageProvider {
-    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
-    storage.set_configurable_account_recovery_factory(FACTORY);
-    storage
+    HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14)
 }
 
 fn weighted_owners(
@@ -182,7 +178,7 @@ fn derive_account_matches_the_config_derivation() {
         let owners = weighted_owners(&[(Address::repeat_byte(0x11), 1), (OWNER, 2)]);
         assert_eq!(
             derive(salt, 2, &owners),
-            config(salt, 0, 2, &owners).derive_account(FACTORY).unwrap()
+            config(salt, 0, 2, &owners).derive_account().unwrap()
         );
         assert_ne!(derive(salt, 2, &owners), derive(salt, 1, &owners));
     });
@@ -192,13 +188,7 @@ fn derive_account_matches_the_config_derivation() {
 fn derive_account_charges_input_and_proof_hashing_gas() {
     let spec = TempoHardfork::T14;
     let version = tempo_chainspec::gas_params::version(SpecId::OSAKA, spec, false);
-    let block_env = TempoBlockEnv {
-        ext: TempoBlockExt {
-            configurable_account_recovery_factory: Some(FACTORY),
-            ..Default::default()
-        },
-        ..Default::default()
-    };
+    let block_env = TempoBlockEnv::default();
     let mut evm = Evm::<TestTypes>::new_with_execution_config(
         ExecutionConfig::for_spec_and_version(SpecId::OSAKA, version),
         SpecId::OSAKA,
@@ -216,8 +206,7 @@ fn derive_account_charges_input_and_proof_hashing_gas() {
             weighted_owners(&[(Address::repeat_byte(0x11), 1), (OWNER, 1)]),
         ] {
             let config = config(B256::ZERO, 0, 1, &owners);
-            let proof_gas = keccak(config.account_salt_preimage_len())
-                + keccak(CONFIGURABLE_ACCOUNT_CREATE2_PREIMAGE_LEN);
+            let proof_gas = keccak(config.account_preimage_len());
             assert_eq!(initial_account_proof_gas(&config).unwrap(), proof_gas);
 
             let calldata = IConfigurableAccount::deriveAccountCall {
@@ -233,7 +222,7 @@ fn derive_account_charges_input_and_proof_hashing_gas() {
             assert_eq!(
                 IConfigurableAccount::deriveAccountCall::abi_decode_returns(output.bytes())
                     .unwrap(),
-                config.derive_account(FACTORY).unwrap()
+                config.derive_account().unwrap()
             );
             assert_eq!(
                 StorageCtx.gas_used() - before,
@@ -509,54 +498,6 @@ fn config_error_precedence_through_abi() {
                 other => panic!("{case}: expected a revert, got: {other:?}"),
             }
         }
-    });
-}
-
-#[test]
-fn recovery_factory_is_only_required_to_derive_accounts() {
-    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
-    StorageCtx::enter(&mut storage, || {
-        let owners = weighted_owners(&[(OWNER, 1)]);
-        assert_eq!(commitment_of(Address::repeat_byte(0x11)), B256::ZERO);
-        assert_reverts(
-            call(
-                Address::ZERO,
-                IConfigurableAccount::deriveAccountCall {
-                    salt: B256::ZERO,
-                    threshold: 1,
-                    owners: owners.clone(),
-                },
-            ),
-            ConfigurableAccountError::invalid_config(),
-        );
-
-        let account = config(B256::ZERO, 0, 1, &owners)
-            .derive_account(FACTORY)
-            .unwrap();
-        seed_commitment(
-            account,
-            config(B256::ZERO, 0, 1, &owners).commitment().unwrap(),
-        );
-        seed_authority(account, account, UpgradeEligibility::NotSoleCall);
-        let current = IConfigurableAccount::ConfigurableAccountConfig {
-            salt: B256::ZERO,
-            version: 0,
-            threshold: 1,
-            owners: owners.clone(),
-        };
-        returns::<IConfigurableAccount::updateConfigCall>(update(account, &current, 1, &owners));
-        assert_eq!(
-            commitment_of(account),
-            config(B256::ZERO, 1, 1, &owners).commitment().unwrap()
-        );
-
-        seed_authority(EOA, EOA, UpgradeEligibility::PrimitiveRoot);
-        returns::<IConfigurableAccount::upgradeAccountCall>(upgrade(EOA, 1, &owners));
-        let salt = keccak256([CONFIGURABLE_ACCOUNT_UPGRADE_DOMAIN, EOA.as_slice()].concat());
-        assert_eq!(
-            commitment_of(EOA),
-            config(salt, 1, 1, &owners).commitment().unwrap()
-        );
     });
 }
 
