@@ -511,15 +511,21 @@ mod tests {
 
     #[test]
     fn advance_tempo_keeps_overlay_reads_on_child_anchor() {
-        check_registry_reads_after_advance(true);
+        check_registry_reads_after_advance(true, false);
     }
 
     #[test]
     fn discarded_advance_tempo_preserves_parent_registry_anchor() {
-        check_registry_reads_after_advance(false);
+        check_registry_reads_after_advance(false, false);
     }
 
-    fn check_registry_reads_after_advance(commit_advance: bool) {
+    #[test]
+    fn advance_tempo_ignores_registry_entries_cached_at_parent_anchor() {
+        check_registry_reads_after_advance(true, true);
+        check_registry_reads_after_advance(false, true);
+    }
+
+    fn check_registry_reads_after_advance(commit_advance: bool, warm_parent_cache: bool) {
         const PARENT: u64 = 0;
         const CHILD: u64 = 1;
         let portal = Address::repeat_byte(0x42);
@@ -543,8 +549,9 @@ mod tests {
         );
 
         let policy_slot = token.mapping_slot(tip403_registry_slots::TOKEN_TRANSFER_POLICIES);
-        let parent_policy = U256::from(0xaaaa);
-        let child_policy = U256::from(0xbbbb);
+        let packed_policy = |policy_id: u64| U256::from(policy_id) | (U256::ONE << 64);
+        let parent_policy = packed_policy(0xaaaa);
+        let child_policy = packed_policy(0xbbbb);
         reader.insert(TIP403_REGISTRY_ADDRESS, policy_slot, PARENT, parent_policy);
         reader.insert(TIP403_REGISTRY_ADDRESS, policy_slot, CHILD, child_policy);
 
@@ -562,6 +569,12 @@ mod tests {
             U256::from(200),
         );
 
+        let policy_id_tx = system_tx_env(
+            TIP403_REGISTRY_ADDRESS,
+            ITIP403Registry::tokenTransferPolicyIdCall { token }
+                .abi_encode()
+                .into(),
+        );
         let genesis = TempoHeader::default();
         let genesis_hash = genesis.hash_slow();
         let child = TempoHeader {
@@ -574,6 +587,10 @@ mod tests {
         };
         let mut db = InMemoryDB::default();
         db.insert_account_info(&TEMPO_STATE_ADDRESS, Default::default());
+        db.insert_account_info(
+            &token,
+            AccountInfo::default().with_code(Bytecode::new_raw(Bytes::from_static(&[0xef]))),
+        );
         db.insert_account_info(
             &TIP403_REGISTRY_ADDRESS,
             AccountInfo::default().with_code(Bytecode::new_raw(Bytes::from_static(&[0xef]))),
@@ -597,7 +614,11 @@ mod tests {
             reader.clone(),
             portal,
         );
-        let mut env = TempoEvmEnv::default();
+        // T9 initializes tokens through the registry, which `enable_tokens` then restores.
+        let mut env = TempoEvmEnv {
+            spec: TempoHardfork::T9,
+            ..Default::default()
+        };
         env.block.timestamp = U256::from(child.inner.timestamp);
         env.block.ext.timestamp_millis_part = child.timestamp_millis_part;
         let mut evm = BlockExecutorFactory::evm_with_env(&config, db, env);
@@ -612,6 +633,12 @@ mod tests {
             enabledTokens: vec![enabled_token],
         }
         .abi_encode();
+
+        if warm_parent_cache {
+            let result = evm.transact(&policy_id_tx).unwrap().discard();
+            assert!(result.status, "registry read reverted: {result:?}");
+        }
+        let reads_before_advance = reader.storage_requests().len();
 
         let tx = system_tx_env(ZONE_INBOX_ADDRESS, calldata.into());
         let executed = evm
@@ -632,7 +659,7 @@ mod tests {
             "transaction completion must clear the shared L1 anchor"
         );
 
-        let requests = reader.storage_requests();
+        let requests = reader.storage_requests()[reads_before_advance..].to_vec();
         let portal = ZonePortalStorage::new(portal);
         let child_policy_request = (TIP403_REGISTRY_ADDRESS, B256::from(policy_slot), CHILD);
         let parent_policy_request = (TIP403_REGISTRY_ADDRESS, B256::from(policy_slot), PARENT);
@@ -663,6 +690,24 @@ mod tests {
             B256::from(counter_slot),
             expected_anchor,
         )));
+
+        // The slot loaded by advanceTempo at the child anchor must be re-read at the active anchor.
+        let result = evm.transact(&policy_id_tx).unwrap().discard();
+        assert!(result.status, "registry read reverted: {result:?}");
+        let policy =
+            ITIP403Registry::tokenTransferPolicyIdCall::abi_decode_returns(&result.output).unwrap();
+        assert!(policy.isSet);
+        assert_eq!(
+            policy.policyId,
+            if commit_advance { 0xbbbb } else { 0xaaaa }
+        );
+
+        // Transactions at an unchanged anchor keep the cached registry entries.
+        let reads_before = reader.storage_requests().len();
+        for tx in [&counter_tx, &policy_id_tx] {
+            assert!(evm.transact(tx).unwrap().discard().status);
+        }
+        assert_eq!(reader.storage_requests().len(), reads_before);
     }
 
     #[test]

@@ -186,8 +186,54 @@ impl ResponseFrame {
     }
 }
 
+const ALLOWLIST_REQUEST_FRAME: u8 = 0;
+const ALLOWLIST_RESPONSE_FRAME: u8 = 1;
+/// Tag byte and request ID that precede every allowlist frame's payload.
+pub(crate) const ALLOWLIST_HEADER_LEN: usize = 1 + size_of::<u64>();
+
+/// A frame on the deposit allowlist channel. Payloads are opaque to the transport.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AllowlistFrame {
+    /// A request an RPC-only member relays to a quorum member.
+    Request { id: u64, payload: Vec<u8> },
+    /// A quorum member's answer to the request with the same ID.
+    Response { id: u64, payload: Vec<u8> },
+}
+
+impl AllowlistFrame {
+    pub(crate) fn encode(&self) -> Vec<u8> {
+        let (tag, id, payload) = match self {
+            Self::Request { id, payload } => (ALLOWLIST_REQUEST_FRAME, id, payload),
+            Self::Response { id, payload } => (ALLOWLIST_RESPONSE_FRAME, id, payload),
+        };
+        let mut encoded = Vec::with_capacity(ALLOWLIST_HEADER_LEN + payload.len());
+        encoded.push(tag);
+        encoded.extend_from_slice(&id.to_be_bytes());
+        encoded.extend_from_slice(payload);
+        encoded
+    }
+
+    pub(crate) fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        if bytes.len() < ALLOWLIST_HEADER_LEN {
+            return Err(DecodeError::TruncatedAllowlistFrame(bytes.len()));
+        }
+        let (header, payload) = bytes.split_at(ALLOWLIST_HEADER_LEN);
+        let id = u64::from_be_bytes(header[1..].try_into().expect("header holds a u64"));
+        let payload = payload.to_vec();
+        match header[0] {
+            ALLOWLIST_REQUEST_FRAME => Ok(Self::Request { id, payload }),
+            ALLOWLIST_RESPONSE_FRAME => Ok(Self::Response { id, payload }),
+            tag => Err(DecodeError::UnknownAllowlistTag(tag)),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum DecodeError {
+    #[error("allowlist frame of {0} bytes is shorter than its header")]
+    TruncatedAllowlistFrame(usize),
+    #[error("unknown allowlist frame tag {0}")]
+    UnknownAllowlistTag(u8),
     #[error("invalid capabilities announcement")]
     InvalidCapabilities,
     #[error("incorrect request length: expected {expected} bytes, got {actual}")]
@@ -215,7 +261,8 @@ mod tests {
     use alloy_primitives::B256;
 
     use super::{
-        DecodeError, EncodeError, PeerTip, RESPONSE_HEADER_LEN, RequestFrame, ResponseFrame,
+        AllowlistFrame, DecodeError, EncodeError, PeerTip, RESPONSE_HEADER_LEN, RequestFrame,
+        ResponseFrame,
     };
     use crate::network::MAX_MESSAGE_SIZE;
 
@@ -338,5 +385,37 @@ mod tests {
             ResponseFrame::decode(&encoded),
             Err(DecodeError::OversizedResponseBlock { .. })
         ));
+    }
+
+    #[test]
+    fn allowlist_frames_round_trip_and_reject_malformed_frames() {
+        for frame in [
+            AllowlistFrame::Request {
+                id: u64::MAX,
+                payload: b"{}".to_vec(),
+            },
+            AllowlistFrame::Response {
+                id: 0,
+                payload: Vec::new(),
+            },
+        ] {
+            assert_eq!(AllowlistFrame::decode(&frame.encode()), Ok(frame));
+        }
+        assert_eq!(
+            AllowlistFrame::Response {
+                id: 0x0102,
+                payload: vec![7],
+            }
+            .encode(),
+            vec![1, 0, 0, 0, 0, 0, 0, 1, 2, 7]
+        );
+        assert_eq!(
+            AllowlistFrame::decode(&[2, 0, 0, 0, 0, 0, 0, 0, 0]),
+            Err(DecodeError::UnknownAllowlistTag(2))
+        );
+        assert_eq!(
+            AllowlistFrame::decode(&[0; 8]),
+            Err(DecodeError::TruncatedAllowlistFrame(8))
+        );
     }
 }

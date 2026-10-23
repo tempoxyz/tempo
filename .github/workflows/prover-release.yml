@@ -1,0 +1,314 @@
+name: Prover Release
+
+# A prover/vX.Y.Z tag builds and publishes the tempo-zone-prover and
+# tempo-zone-prover-utils images with that version, then drafts a GitHub
+# release carrying the enclave's PCR measurements and image digest.
+#
+# Before anything is drafted, the enclave is rebuilt on Depot and on a separate
+# GitHub-hosted runner, and both must reproduce the published PCRs.
+#
+# Manual runs publish when started from a prover/vX.Y.Z tag ("Use workflow
+# from"). A dry run builds and measures the prover from any ref and publishes
+# nothing: no image tags and no release.
+
+on:
+  push:
+    tags:
+      - "prover/v*.*.*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and measure the prover without publishing images or a release"
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: prover-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: Check release ref
+    if: github.repository == 'tempoxyz/tempo'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    outputs:
+      dry_run: ${{ steps.mode.outputs.dry_run }}
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Require a prover tag unless dry running
+        id: mode
+        env:
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          if [[ "$DRY_RUN" == true ]]; then
+            echo "dry_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "$GITHUB_REF" != refs/tags/prover/v* ]]; then
+            echo "::error::Publishing runs from a prover/vX.Y.Z tag; pick it under 'Use workflow from', or set dry_run"
+            exit 1
+          fi
+          echo "dry_run=false" >> "$GITHUB_OUTPUT"
+
+  images:
+    name: Build prover images
+    needs: resolve
+    uses: ./.github/workflows/zones-docker.yml # zizmor: ignore[self-repository] actionlint does not support $/ references yet.
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    secrets: inherit # zizmor: ignore[secrets-inherit]
+    with:
+      production_image_verify_only: ${{ needs.resolve.outputs.dry_run == 'true' }}
+
+  measurements:
+    name: Read prover measurements
+    needs: images
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    outputs:
+      pcr0: ${{ steps.read.outputs.pcr0 }}
+      pcr1: ${{ steps.read.outputs.pcr1 }}
+      pcr2: ${{ steps.read.outputs.pcr2 }}
+      builder_image: ${{ steps.read.outputs.builder_image }}
+      genesis_sha256: ${{ steps.read.outputs.genesis_sha256 }}
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Download prover PCR measurements
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: tempo-zone-prover-measurements-*
+          path: measurements
+          merge-multiple: true
+
+      - name: Read measurements and build inputs
+        id: read
+        env:
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          identity=measurements/identity.json
+          [[ "$(jq -er '.sha' "$identity")" == "$COMMIT_SHA" ]] || {
+            echo "Measurements were not produced for $COMMIT_SHA" >&2
+            exit 1
+          }
+          builder_image="$(jq -er '.eif_builder_image' "$identity")"
+          [[ "$builder_image" =~ ^[a-z0-9][a-z0-9./:_-]*@sha256:[0-9a-f]{64}$ ]] || {
+            echo "EIF builder image is not digest-pinned: $builder_image" >&2
+            exit 1
+          }
+          genesis_sha256="$(jq -er '.genesis_sha256' "$identity")"
+          [[ "$genesis_sha256" =~ ^[0-9a-f]{64}$ ]]
+          {
+            for index in 0 1 2; do
+              echo "pcr$index=$(jq -er ".Measurements.PCR$index" measurements/measurements.json)"
+            done
+            echo "builder_image=$builder_image"
+            echo "genesis_sha256=$genesis_sha256"
+          } >> "$GITHUB_OUTPUT"
+
+  verify-eif:
+    name: Rebuild the prover EIF on two hosts
+    needs: measurements
+    uses: tempoxyz/gh-actions/.github/workflows/reproducible-eif-verify.yml@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+    permissions:
+      contents: read
+      packages: read
+      id-token: write
+    with:
+      ref: ${{ github.sha }}
+      build-definitions-sha: ${{ github.sha }}
+      build-definition-paths: |
+        .dockerignore
+        zones/docker/Dockerfile.reproducible
+        zones/docker/Dockerfile.prover-package
+        zones/scripts/package-prover-eif.sh
+        zones/scripts/reproducible-eif-build.sh
+      build-script: zones/scripts/reproducible-eif-build.sh
+      eif-builder-image: ${{ needs.measurements.outputs.builder_image }}
+      # Zones Docker Build's default genesis, which the images job embeds.
+      build-input-url: https://devnet-assets.tempoxyz.dev/tempo-devnet-nextfork.json
+      build-input-sha256: ${{ needs.measurements.outputs.genesis_sha256 }}
+      depot-project: 0c6tg19qsp
+      artifact-name: prover-release-eif-verification
+
+  confirm-pcrs:
+    name: Confirm reproduced PCRs
+    needs: [measurements, verify-eif]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Compare the published and reproduced PCRs
+        env:
+          MEASURED: ${{ format('{0} {1} {2}', needs.measurements.outputs.pcr0, needs.measurements.outputs.pcr1, needs.measurements.outputs.pcr2) }}
+          REPRODUCED: ${{ format('{0} {1} {2}', needs.verify-eif.outputs.pcr0, needs.verify-eif.outputs.pcr1, needs.verify-eif.outputs.pcr2) }}
+        run: |
+          set -euo pipefail
+          if [[ "$MEASURED" != "$REPRODUCED" ]]; then
+            echo "::error::Reproduced PCRs ($REPRODUCED) differ from the published image's ($MEASURED)"
+            exit 1
+          fi
+
+  dry-run-summary:
+    name: Report dry-run PCRs
+    needs: [resolve, measurements, confirm-pcrs]
+    if: needs.resolve.outputs.dry_run == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Summarize measurements
+        env:
+          PCR0: ${{ needs.measurements.outputs.pcr0 }}
+          PCR1: ${{ needs.measurements.outputs.pcr1 }}
+          PCR2: ${{ needs.measurements.outputs.pcr2 }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Prover dry run for ${GITHUB_SHA}"
+            echo
+            echo "Nothing was published. Two independent EIF builds reproduced these PCRs."
+            echo
+            echo "| PCR | Value |"
+            echo "| --- | --- |"
+            echo "| PCR0 | $PCR0 |"
+            echo "| PCR1 | $PCR1 |"
+            echo "| PCR2 | $PCR2 |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  release:
+    name: Draft prover release
+    needs: [resolve, images, confirm-pcrs]
+    if: needs.resolve.outputs.dry_run == 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: read
+      id-token: write
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Download prover PCR measurements
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: tempo-zone-prover-measurements-*
+          path: measurements
+          merge-multiple: true
+
+      - name: Log in to Container Registry
+        uses: tempoxyz/gh-actions/vendor/docker/login-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check the published image against the measurements
+        id: image
+        env:
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          tag="${GITHUB_REF#refs/tags/}"
+          version="${tag#prover/v}"
+          image="ghcr.io/tempoxyz/tempo-zone-prover:$version"
+
+          docker pull --quiet --platform linux/amd64 "$image" >/dev/null
+          digest="$(docker image inspect --format '{{index .RepoDigests 0}}' "$image")"
+          digest="${digest##*@}"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "Could not resolve the digest of $image" >&2
+            exit 1
+          }
+
+          labels="$(docker image inspect --format '{{json .Config.Labels}}' "$image")"
+          revision="$(jq -r '.["org.opencontainers.image.revision"] // ""' <<< "$labels")"
+          [[ "$revision" == "$COMMIT_SHA" ]] || {
+            echo "$image revision is '$revision', expected $COMMIT_SHA" >&2
+            exit 1
+          }
+
+          measurements=measurements/measurements.json
+          [[ "$(jq -er '.sha' measurements/identity.json)" == "$COMMIT_SHA" ]] || {
+            echo "Measurements were not produced for $COMMIT_SHA" >&2
+            exit 1
+          }
+          for index in 0 1 2; do
+            measured="$(jq -er ".Measurements.PCR$index" "$measurements")"
+            label="$(jq -r ".[\"xyz.tempo.zone-prover.nitro.pcr$index\"] // \"\"" <<< "$labels")"
+            [[ "$label" == "$measured" ]] || {
+              echo "$image PCR$index label '$label' differs from the measured $measured" >&2
+              exit 1
+            }
+          done
+
+          {
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "image=ghcr.io/tempoxyz/tempo-zone-prover@$digest"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.image.outputs.tag }}
+          VERSION: ${{ steps.image.outputs.version }}
+          IMAGE: ${{ steps.image.outputs.image }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          prerelease=""
+          if [[ "$VERSION" == *-* ]]; then
+            prerelease="--prerelease"
+          fi
+
+          # The entry has the shape of crates/precompiles/src/zone_verifier/pcrs.json.
+          entry="$(jq -n \
+            --arg commit "https://github.com/$GITHUB_REPOSITORY/commit/$COMMIT_SHA" \
+            --arg image "$IMAGE" \
+            --slurpfile measurements measurements/measurements.json \
+            '{commit: $commit, image: $image, pcrs: {
+              "0": $measurements[0].Measurements.PCR0,
+              "1": $measurements[0].Measurements.PCR1,
+              "2": $measurements[0].Measurements.PCR2
+            }}')"
+          {
+            tick=$'\x60'
+            printf 'Prover image: %s\n\n' "$tick$IMAGE$tick"
+            echo "Zone verifier PCR entry:"
+            echo
+            echo '```json'
+            echo "$entry"
+            echo '```'
+          } > notes.md
+
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "Prover v$VERSION" \
+            --latest=false \
+            --draft \
+            --notes-file notes.md \
+            $prerelease \
+            measurements/measurements.json \
+            measurements/identity.json

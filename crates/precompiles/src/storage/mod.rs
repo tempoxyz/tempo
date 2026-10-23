@@ -22,12 +22,9 @@ pub use packing::FieldLocation;
 pub use types::mapping as slots;
 
 use alloy::primitives::{Address, B256, Bytes, KECCAK256_EMPTY, LogData, Signature, U256};
-use evm2::{
-    evm::{AccountInfo, StateCheckpoint},
-    interpreter::gas::{KECCAK256, KECCAK256WORD},
-};
+use evm2::evm::{AccountInfo, StateCheckpoint};
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_primitives::{TempoBlockEnv, account::decode_config_commitment};
+use tempo_primitives::{TempoBlockEnv, account::decode_config_commitment, gas::keccak_gas};
 
 use crate::error::{Result, TempoPrecompileError};
 
@@ -311,11 +308,7 @@ pub trait ContractStorage {
 ///
 /// Fails with [`TempoPrecompileError::OutOfGas`] if the cost overflows `u64`.
 pub fn keccak_cost(len: usize) -> Result<u64> {
-    let num_words = u64::try_from(len.div_ceil(32)).map_err(|_| TempoPrecompileError::OutOfGas)?;
-    u64::from(KECCAK256WORD)
-        .checked_mul(num_words)
-        .and_then(|w| w.checked_add(u64::from(KECCAK256)))
-        .ok_or(TempoPrecompileError::OutOfGas)
+    keccak_gas(len).ok_or(TempoPrecompileError::OutOfGas)
 }
 
 /// Decodes the TIP-1108 commitment carried in `info`'s account extension under `hardfork`.
