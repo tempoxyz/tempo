@@ -1,5 +1,5 @@
 use evm2::interpreter::gas::COLD_SLOAD_COST;
-use tempo_precompiles::{ECRECOVER_GAS, signature_verifier::configurable_account_verification_gas};
+use tempo_precompiles::ECRECOVER_GAS;
 use tempo_primitives::transaction::{
     AccountSignature, ConfigurableAccountSignature, PrimitiveSignature, TempoSignature,
 };
@@ -21,11 +21,23 @@ pub(crate) fn primitive_signature_verification_gas(signature: &PrimitiveSignatur
 
 /// Verification cost beyond the baseline signature charge, without keychain processing.
 #[inline]
-pub(crate) fn account_signature_verification_gas(signature: &AccountSignature) -> u64 {
+fn account_signature_verification_gas(signature: &AccountSignature) -> u64 {
     match signature {
         AccountSignature::Primitive(signature) => primitive_signature_verification_gas(signature),
         AccountSignature::ConfigurableAccount(signature) => {
             configurable_account_signature_verification_gas(signature)
+        }
+    }
+}
+
+/// Full gas to verify an account signature, with no ecrecover baseline already covered by the
+/// transaction's own signature. Saturates to `u64::MAX` if the cost overflows.
+#[inline]
+pub(crate) fn account_signature_full_verification_gas(signature: &AccountSignature) -> u64 {
+    match signature {
+        AccountSignature::Primitive(signature) => signature.verification_gas(),
+        AccountSignature::ConfigurableAccount(signature) => {
+            signature.verification_gas().unwrap_or(u64::MAX)
         }
     }
 }
@@ -60,6 +72,7 @@ fn configurable_account_signature_verification_gas(
     signature: &ConfigurableAccountSignature,
 ) -> u64 {
     // Only a `u64` overflow fails; saturating keeps such a transaction unaffordable.
-    configurable_account_verification_gas(signature)
+    signature
+        .verification_gas()
         .map_or(u64::MAX, |gas| gas.saturating_sub(ECRECOVER_GAS))
 }
