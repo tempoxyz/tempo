@@ -497,7 +497,7 @@ impl TransferAllowlist for DepositAllowlist {
 }
 
 /// Copy of the sequencers' allowlist that an RPC-only node keeps to reject transfers on
-/// submission, refreshed by [`AllowlistRelay::mirror_sequencers`].
+/// submission, refreshed by the relay's `mirror_sequencers` task.
 ///
 /// Until the first fetch succeeds it admits every transfer, as does a copy of an uninitialized
 /// list; the sequencers still enforce their own lists. Cloning shares the same copy.
