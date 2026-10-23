@@ -515,9 +515,9 @@ impl KeychainSignature {
 
     /// Get the access key ID for Keychain signatures.
     ///
-    /// Verifies a primitive approval or returns the named configurable account delegate, caching
-    /// its ID. A configurable account ID requires account binding, state, and owner-quorum checks
-    /// by the caller.
+    /// Verifies a primitive approval or a configurable account delegate's owner quorum, caching
+    /// its ID. A configurable account ID still requires account binding and state checks by the
+    /// caller.
     ///
     /// This follows the pattern used in alloy for lazy hash computation.
     pub fn key_id(
@@ -678,13 +678,13 @@ impl AccountSignature {
         }
     }
 
-    /// Recovers a primitive signer or returns the shape-validated configurable account.
+    /// Recovers a primitive signer or verifies a configurable account's owner quorum.
     ///
-    /// A returned configurable account is untrusted until state and owner quorum are checked.
+    /// A returned configurable account is untrusted until its commitment is checked against state.
     fn recover_account(&self, digest: &B256) -> Result<Address, RecoveryError> {
         match self {
             Self::Primitive(signature) => signature.recover_signer(digest),
-            Self::ConfigurableAccount(signature) => Ok(signature.account()),
+            Self::ConfigurableAccount(signature) => signature.recover_account(*digest),
         }
     }
 
@@ -961,18 +961,17 @@ impl TempoSignature {
     /// - WebAuthn: Parses WebAuthn data, verifies P256 signature, derives address
     /// - Keychain: Validates inner signature and returns user_address
     ///
-    /// For primitive Keychain signatures, this verifies the inner signature.
-    /// A configurable account delegate only supplies its claimed ID here and requires stateful
-    /// validation.
+    /// For Keychain signatures, this verifies the inner primitive signature or configurable account
+    /// delegate quorum.
     /// The access key address is cached in the KeychainSignature for later use.
     /// Note: This pattern has a big footgun, that someone using recover_signer, cannot assume
     /// that the signature is valid for the keychain. They also need to check the access key is authorized
     /// in the keychain precompile.
     /// We cannot check this here, as we don't have access to the keychain precompile.
     ///
-    /// - Configurable account: returns the account from the shape-validated signature. Versioned
-    ///   configs remain untrusted until stateful validation matches the commitment and verifies
-    ///   owner quorum.
+    /// - Configurable account: verifies the owner quorum against the embedded config and returns the
+    ///   named account. The config remains untrusted until stateful validation matches it to the
+    ///   account's commitment or initial derivation.
     pub fn recover_signer(
         &self,
         sig_hash: &B256,
@@ -987,7 +986,7 @@ impl TempoSignature {
                 Ok(keychain_sig.user_address)
             }
             Self::ConfigurableAccount(configurable_account_sig) => {
-                Ok(configurable_account_sig.account())
+                configurable_account_sig.recover_account(*sig_hash)
             }
         }
     }
@@ -2429,27 +2428,51 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_recover_signer_configurable_account_only_recovers_account() {
+    fn test_recover_signer_configurable_account_verifies_owner_quorum() {
+        use crate::transaction::{
+            configurable_account_digest, tt_authorization::tests::generate_secp256k1_keypair,
+        };
+        use alloy_signer::SignerSync;
+
+        let (owner, owner_address) = generate_secp256k1_keypair();
         let config = ConfigurableAccountConfig {
             salt: B256::repeat_byte(0x42),
             version: 0,
-            ..current_config(Address::repeat_byte(0x11))
+            ..current_config(owner_address)
         };
         let account = config.derive_account().unwrap();
         let inner_hash = B256::repeat_byte(0x24);
-        let signature = TempoSignature::ConfigurableAccount(
-            ConfigurableAccountSignature::try_new(
-                account,
-                config,
-                vec![PrimitiveSignature::default()],
-            )
-            .unwrap(),
-        );
+        let approve =
+            |digest: B256| PrimitiveSignature::Secp256k1(owner.sign_hash_sync(&digest).unwrap());
+        let witness = |approval| {
+            ConfigurableAccountSignature::try_new(account, config.clone(), vec![approval]).unwrap()
+        };
 
-        // recover_signer returns the claimed account after stateless shape checks only; it does
-        // not verify owner approvals. Stateful owner-threshold verification is exercised by the
-        // configurable account precompile tests.
-        assert_eq!(signature.recover_signer(&inner_hash).unwrap(), account);
+        // Recovery checks the owner quorum against the embedded config, not just its shape.
+        let unsigned = TempoSignature::ConfigurableAccount(witness(PrimitiveSignature::default()));
+        assert!(unsigned.recover_signer(&inner_hash).is_err());
+
+        let direct = TempoSignature::ConfigurableAccount(witness(approve(
+            configurable_account_digest(inner_hash, account, 0),
+        )));
+        assert_eq!(direct.recover_signer(&inner_hash).unwrap(), account);
+        assert!(direct.recover_signer(&B256::repeat_byte(0x25)).is_err());
+
+        // A configurable delegate's quorum is verified under the keychain signing hash.
+        let user = Address::repeat_byte(0x77);
+        let keychain_hash = KeychainSignature::signing_hash(inner_hash, user);
+        let delegate = KeychainSignature::new(
+            user,
+            witness(approve(configurable_account_digest(
+                keychain_hash,
+                account,
+                0,
+            ))),
+        );
+        assert_eq!(delegate.key_id(&inner_hash).unwrap(), account);
+        let unsigned_delegate =
+            KeychainSignature::new(user, witness(PrimitiveSignature::default()));
+        assert!(unsigned_delegate.key_id(&inner_hash).is_err());
     }
 
     #[test]
