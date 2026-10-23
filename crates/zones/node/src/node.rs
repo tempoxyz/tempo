@@ -4,7 +4,8 @@
 //! It reuses Tempo's EVM, primitives, and pool, but with noop consensus/network/payload.
 
 use crate::{
-    ZoneEngine,
+    DepositAllowlist, DepositAllowlistAdmin, ZoneConsensus, ZoneEngine,
+    deposit_allowlist::{AllowlistRelay, DepositAllowlistApiServer as _, apply_relayed_requests},
     follower::PeerTipRegistry,
     replication::{BACKFILL_SERVE_QUEUE_CAPACITY, serve_backfill_requests},
     role::{
@@ -68,7 +69,7 @@ use tempo_contracts::zones::{
     LegacyTempoAdvanced, TempoAdvanced, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS,
     ZonePortal::{self},
 };
-use tempo_evm::{TempoInvalidTransaction, consensus::TempoConsensus};
+use tempo_evm::TempoInvalidTransaction;
 use tempo_node::{
     DEFAULT_AA_VALID_AFTER_MAX_SECS, engine::TempoEngineValidator, rpc::TempoEthApiBuilder,
 };
@@ -95,8 +96,8 @@ use zone_l1::{
     watch_portal_pause,
 };
 use zone_p2p::{
-    BackfillCommand, BackfillRequest, LeadershipSchedule, LeadershipState, P2pCommand, P2pConfig,
-    P2pNetworkId, P2pPeerId, ZoneManifest, spawn_p2p,
+    AllowlistPorts, BackfillCommand, BackfillRequest, LeadershipSchedule, LeadershipState,
+    P2pCommand, P2pConfig, P2pNetworkId, P2pPeerId, ZoneManifest, spawn_p2p,
 };
 use zone_payload::{
     DEFAULT_WITHDRAWAL_BATCH_INTERVAL_BLOCKS, WithdrawalRevealEncryptor, ZonePayloadAttributes,
@@ -201,6 +202,8 @@ pub struct ZoneSequencerAddOnsConfig {
     pub withdrawal_poll_interval: Duration,
     /// Gas and concurrency limits for withdrawal processing transactions.
     pub withdrawal_batch_limits: WithdrawalBatchLimits,
+    /// Depositor allowlist enforced while leading. `None` credits every deposit.
+    pub deposit_allowlist: Option<DepositAllowlist>,
 }
 
 /// How this node validates Zone batches with the SPF.
@@ -284,6 +287,8 @@ pub struct ZoneNode {
     prover_config: Option<ZoneProverConfig>,
     /// Optional static Zone P2P networking config.
     p2p_config: Option<P2pConfig>,
+    /// Admin whose signed allowlist writes an RPC-only node relays to the sequencers.
+    deposit_allowlist_admin: Option<DepositAllowlistAdmin>,
     /// Whether a consumer outside this builder drains the deposit queue.
     external_deposit_consumer: bool,
 }
@@ -332,8 +337,16 @@ impl ZoneNode {
             sequencer_config: None,
             prover_config: None,
             p2p_config: None,
+            deposit_allowlist_admin: None,
             external_deposit_consumer: false,
         }
+    }
+
+    /// On an RPC-only node, serve the `zoneAdmin` allowlist methods and relay writes signed by
+    /// `admin` to every sequencer. Without it, the node does not serve those methods.
+    pub fn with_deposit_allowlist_relay(mut self, admin: DepositAllowlistAdmin) -> Self {
+        self.deposit_allowlist_admin = Some(admin);
+        self
     }
 
     /// Set the redacted RPC configuration.
@@ -498,6 +511,8 @@ where
     prover_config: Option<ZoneProverConfig>,
     /// Static Zone P2P networking configuration.
     p2p_config: Option<P2pConfig>,
+    /// Admin whose signed allowlist writes an RPC-only node relays to the sequencers.
+    deposit_allowlist_admin: Option<DepositAllowlistAdmin>,
     /// Whether a consumer outside this builder drains the deposit queue.
     external_deposit_consumer: bool,
 }
@@ -529,6 +544,7 @@ where
         sequencer_config: Option<ZoneSequencerAddOnsConfig>,
         prover_config: Option<ZoneProverConfig>,
         p2p_config: Option<P2pConfig>,
+        deposit_allowlist_admin: Option<DepositAllowlistAdmin>,
         external_deposit_consumer: bool,
     ) -> Self {
         Self {
@@ -551,6 +567,7 @@ where
             sequencer_config,
             prover_config,
             p2p_config,
+            deposit_allowlist_admin,
             external_deposit_consumer,
         }
     }
@@ -568,6 +585,10 @@ struct P2PRuntime {
     role_status: SharedRoleStatus,
     peer_tips: PeerTipRegistry,
     backfill_requests_rx: Receiver<BackfillRequest>,
+    /// Deposit allowlist ports, taken when the relay or applier task starts.
+    allowlist: Option<AllowlistPorts>,
+    /// RPC-only nodes relay allowlist requests; quorum members answer them.
+    is_rpc_only: bool,
 }
 
 impl<N> NodeAddOns<N> for ZoneAddOns<N>
@@ -751,7 +772,7 @@ where
 
         // Start the Commonware network and the long-lived event router
         let sequencer_rpc_slot = Arc::new(std::sync::OnceLock::new());
-        let p2p_runtime = if let Some(config) = self.p2p_config.take() {
+        let mut p2p_runtime = if let Some(config) = self.p2p_config.take() {
             Some(
                 Self::start_p2p(
                     config.with_storage_directory(ctx.config.datadir().data_dir().join("p2p")),
@@ -801,9 +822,37 @@ where
         let debug_l1_provider = l1_provider.clone();
         let evm_chain_spec = ctx.node.evm_config().chain_spec().clone();
         let datadir = ctx.config.datadir().data_dir().to_path_buf();
+        // A sequencer serves its own allowlist; an RPC-only node configured with the admin relays
+        // each call to every sequencer over P2P.
+        let local_allowlist = self
+            .sequencer_config
+            .as_ref()
+            .and_then(|config| config.deposit_allowlist.clone());
+        let mut allowlist_rpc = local_allowlist
+            .clone()
+            .map(|allowlist| allowlist.into_rpc().remove_context());
+        if let Some(runtime) = p2p_runtime.as_mut()
+            && let Some(ports) = runtime.allowlist.take()
+        {
+            if !runtime.is_rpc_only {
+                task_executor.spawn_critical_task(
+                    "zone-deposit-allowlist-applier",
+                    apply_relayed_requests(local_allowlist, ports.requests),
+                );
+            } else if let Some(admin) = self.deposit_allowlist_admin {
+                allowlist_rpc = Some(
+                    AllowlistRelay::new(ports.client, admin, task_executor.clone())
+                        .into_rpc()
+                        .remove_context(),
+                );
+            }
+        }
         let handle = self
             .inner
             .launch_add_ons_with(ctx, move |container| {
+                if let Some(module) = allowlist_rpc {
+                    container.modules.merge_http(module)?;
+                }
                 container.modules.add_or_replace_if_module_configured(
                     reth_rpc_builder::RethRpcModule::Web3,
                     OperatorWeb3Api.into_rpc(),
@@ -919,6 +968,7 @@ where
             role_status,
             peer_tips,
             backfill_requests_rx,
+            ..
         }) = p2p_runtime
         {
             // Backfill serving is role-neutral: every role serves the same canonical
@@ -999,7 +1049,8 @@ where
                     .expect("sequencer mode configures deposit decryption keys"),
                 self.portal_address,
                 proof_collector.clone(),
-            );
+            )
+            .with_deposit_allowlist(config.deposit_allowlist.clone());
             task_executor.spawn_critical_task("zone-engine", engine.run());
 
             Self::launch_sequencer_tasks(
@@ -1275,11 +1326,12 @@ where
         let schedule = config.leadership();
         let local_ed25519_public_key = config.ed25519_public_key();
         let manifest = config.manifest().clone();
+        let is_rpc_only = config.is_rpc_only();
         let local_secp256k1_address = config.secp256k1_address();
         let individual_signer = config.block_attestation_signer();
         let (backfill_requests_tx, backfill_requests_rx) =
             tokio::sync::mpsc::channel(BACKFILL_SERVE_QUEUE_CAPACITY);
-        let (sinks, commands, backfill_commands) =
+        let (sinks, commands, backfill_commands, allowlist) =
             Self::launch_p2p_network(config, network_id, task_executor, backfill_requests_tx)?;
 
         let settlements = attestation.signer.clone().map(|signer| {
@@ -1346,6 +1398,8 @@ where
             role_status,
             peer_tips,
             backfill_requests_rx,
+            allowlist: Some(allowlist),
+            is_rpc_only,
         })
     }
 
@@ -1362,6 +1416,7 @@ where
         EventSinks,
         tokio::sync::mpsc::Sender<zone_p2p::P2pCommand>,
         tokio::sync::mpsc::Sender<BackfillCommand>,
+        AllowlistPorts,
     )> {
         let handle = spawn_p2p(config, network_id)?;
         let zone_p2p::P2pHandleParts {
@@ -1371,6 +1426,7 @@ where
             commands,
             events,
             backfill,
+            allowlist,
         } = handle.into_parts();
 
         let sinks = EventSinks::default();
@@ -1417,7 +1473,7 @@ where
                 }
             },
         );
-        Ok((sinks, commands, backfill.commands))
+        Ok((sinks, commands, backfill.commands, allowlist))
     }
 
     /// Build the leader-generation sequencer dependencies (activated only while leader).
@@ -1750,6 +1806,7 @@ where
             self.sequencer_config.clone(),
             self.prover_config.clone(),
             self.p2p_config.clone(),
+            self.deposit_allowlist_admin,
             self.external_deposit_consumer,
         )
     }
@@ -1814,7 +1871,7 @@ impl ZoneExecutorBuilder {
     }
 }
 
-/// Builds Tempo consensus from the Zone chain spec with Tempo fork activations inherited from L1.
+/// Builds Zone consensus from the Zone chain spec with Tempo fork activations inherited from L1.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct ZoneConsensusBuilder;
@@ -1829,10 +1886,10 @@ impl<Node> ConsensusBuilder<Node> for ZoneConsensusBuilder
 where
     Node: FullNodeTypes<Types = ZoneNode>,
 {
-    type Consensus = TempoConsensus<ZoneChainSpec>;
+    type Consensus = ZoneConsensus;
 
     async fn build_consensus(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::Consensus> {
-        Ok(TempoConsensus::new(ctx.chain_spec()).with_allow_equal_timestamps(true))
+        Ok(ZoneConsensus::new(ctx.chain_spec()))
     }
 }
 

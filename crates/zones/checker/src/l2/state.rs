@@ -4,10 +4,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use alloy_eips::BlockNumHash;
 use alloy_primitives::{Address, B256, U256};
-use eyre::WrapErr as _;
 use reth_storage_api::{StateProviderFactory, errors::provider::ProviderError};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{
+    error::TempoPrecompileError,
     storage::{ContractStorage, StorageActions},
     tip20::{ITIP20, TIP20Token},
 };
@@ -133,8 +133,20 @@ pub(crate) fn read_accounting_state<P: StateProviderFactory>(
                 })
                 .collect::<tempo_precompiles::Result<Vec<_>>>()
         })
-        .wrap_err_with(|| format!("failed to read accounting state for block {}", block.hash))
-        .map_err(AccountingStateError::Disable)
+        .map_err(|error| classify_read_error(error, block.hash))
+}
+
+fn classify_read_error(error: TempoPrecompileError, block: B256) -> AccountingStateError {
+    // Storage reads surface provider failures as `Fatal`, including a block being persisted
+    // and evicted from the in-memory overlay while it is being read; re-open state and retry.
+    let fatal = matches!(error, TempoPrecompileError::Fatal(_));
+    let report = eyre::Report::new(error)
+        .wrap_err(format!("failed to read accounting state for block {block}"));
+    if fatal {
+        AccountingStateError::Unavailable(report)
+    } else {
+        AccountingStateError::Disable(report)
+    }
 }
 
 fn classify_provider_error(error: ProviderError, block: B256) -> AttemptError {
@@ -170,6 +182,20 @@ mod tests {
         assert!(matches!(
             classify_provider_error(ProviderError::StateAtBlockPruned(1), block),
             AttemptError::Disable(_)
+        ));
+    }
+
+    #[test]
+    fn retries_fatal_storage_reads_and_disables_other_read_failures() {
+        let block = B256::repeat_byte(1);
+        assert!(matches!(
+            classify_read_error(TempoPrecompileError::Fatal("db".into()), block),
+            AccountingStateError::Unavailable(_)
+        ));
+
+        assert!(matches!(
+            classify_read_error(TempoPrecompileError::OutOfGas, block),
+            AccountingStateError::Disable(_)
         ));
     }
 }

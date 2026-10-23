@@ -54,7 +54,7 @@ use alloy_rlp::Encodable;
 use alloy_rpc_types_eth::Filter;
 use alloy_signer_local::PrivateKeySigner;
 use alloy_sol_types::{SolCall, SolEvent, SolValue};
-use eyre::{OptionExt as _, Result, WrapErr as _};
+use eyre::{OptionExt as _, Result, WrapErr as _, ensure};
 use futures::{StreamExt, TryStreamExt};
 use parking_lot::RwLock;
 use reth_storage_api::BlockNumReader;
@@ -62,6 +62,7 @@ use schnellru::{ByLength, LruMap};
 use tempo_alloy::{TempoNetwork, provider::ext::TempoProviderExt, rpc::TempoCallBuilderExt};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_primitives::{Block, TempoReceipt};
+use tokio::time::{Instant, sleep};
 use tracing::{info, instrument, warn};
 use zone_chainspec::ZoneChainSpec;
 use zone_prover::{ProofBundle, VerifierMode};
@@ -137,6 +138,12 @@ pub(crate) const WITHDRAWAL_RECOVERY_PAGE_SIZE: u64 = 100;
 ///
 /// Native Zone reads no longer use this limit; it remains the bound for L1 portal log recovery.
 pub(crate) const LOG_QUERY_BLOCK_CHUNK: u64 = 5_000;
+
+/// Longest wait for the L1 RPC to serve a block the Zone already imported from its L1 subscription.
+const L1_CATCH_UP_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Interval between L1 tip reads while waiting for the RPC to catch up.
+const L1_CATCH_UP_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
 /// Canonical local identity of the Zone block most recently accepted by the L1 portal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -844,14 +851,7 @@ impl BatchSubmitter {
     ///   behind the configured safety margin is used as anchor. Ancestry headers
     ///   are collected and validated for future prover integration.
     async fn resolve_batch_anchor(&self, tempo_block_number: u64) -> Result<BatchAnchor> {
-        let current_l1_block = self.l1_provider.get_block_number().await?;
-
-        if tempo_block_number > current_l1_block {
-            return Err(eyre::eyre!(
-                "tempo_block_number ({tempo_block_number}) is not yet confirmed on L1 \
-                 (tip={current_l1_block}), will retry after L1 advances"
-            ));
-        }
+        let current_l1_block = wait_for_l1_block(&self.l1_provider, tempo_block_number).await?;
 
         let gap = current_l1_block.saturating_sub(tempo_block_number);
 
@@ -914,16 +914,7 @@ impl BatchSubmitter {
             )));
         }
 
-        let current_l1_block = self
-            .l1_provider
-            .get_block_number()
-            .await
-            .map_err(|error| BatchSubmitError::Other(error.into()))?;
-        if anchor_block_number > current_l1_block {
-            return Err(BatchSubmitError::Other(eyre::eyre!(
-                "prepared L1 anchor block is ahead of the current L1 tip"
-            )));
-        }
+        let current_l1_block = wait_for_l1_block(&self.l1_provider, anchor_block_number).await?;
         if current_l1_block.saturating_sub(anchor_block_number)
             >= self.anchor_config.history_window()
         {
@@ -1225,6 +1216,29 @@ impl BatchSubmitter {
         }
 
         Ok(found)
+    }
+}
+
+/// Returns the L1 RPC tip once it reaches `block_number`.
+///
+/// The Zone builds on L1 blocks from its own subscription, so `eth_blockNumber` can trail the
+/// block a batch anchors to for a few hundred milliseconds. Errors if the RPC fails or has not
+/// reached `block_number` within `L1_CATCH_UP_TIMEOUT`.
+pub(crate) async fn wait_for_l1_block(
+    l1_provider: &DynProvider<TempoNetwork>,
+    block_number: u64,
+) -> Result<u64> {
+    let deadline = Instant::now() + L1_CATCH_UP_TIMEOUT;
+    loop {
+        let tip = l1_provider.get_block_number().await?;
+        if tip >= block_number {
+            return Ok(tip);
+        }
+        ensure!(
+            Instant::now() < deadline,
+            "L1 block {block_number} is not yet confirmed on L1 (tip={tip})"
+        );
+        sleep(L1_CATCH_UP_POLL_INTERVAL).await;
     }
 }
 
@@ -2561,22 +2575,41 @@ mod tests {
         assert!(asserter.read_q().is_empty());
     }
 
-    #[tokio::test]
-    async fn anchor_resolution_rejects_future_l1_block() {
+    #[tokio::test(start_paused = true)]
+    async fn anchor_resolution_waits_for_lagging_l1_tip() {
         let asserter = Asserter::new();
-        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
-            .connect_mocked_client(asserter.clone())
-            .erased();
-        let submitter = BatchSubmitter::new(Address::ZERO, provider, test_chain_spec());
+        let submitter =
+            BatchSubmitter::new(Address::ZERO, mock_l1(asserter.clone()), test_chain_spec());
 
+        let (header, hash) = mock_l1_header(101, B256::ZERO);
         asserter.push_success(&100_u64);
+        asserter.push_success(&101_u64);
+        asserter.push_success(&header);
+        let started = Instant::now();
+        let anchor = submitter.resolve_batch_anchor(101).await.unwrap();
+
+        assert_eq!(anchor.block_hash(), hash);
+        assert_eq!(started.elapsed(), L1_CATCH_UP_POLL_INTERVAL);
+        assert!(asserter.read_q().is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn anchor_resolution_rejects_l1_block_after_catch_up_timeout() {
+        let asserter = Asserter::new();
+        let submitter =
+            BatchSubmitter::new(Address::ZERO, mock_l1(asserter.clone()), test_chain_spec());
+
+        let polls = L1_CATCH_UP_TIMEOUT.as_millis() / L1_CATCH_UP_POLL_INTERVAL.as_millis() + 1;
+        for _ in 0..polls {
+            asserter.push_success(&100_u64);
+        }
         let err = match submitter.resolve_batch_anchor(101).await {
             Ok(_) => panic!("future L1 anchor was accepted"),
             Err(err) => err,
         };
-        assert!(
-            err.to_string()
-                .contains("tempo_block_number (101) is not yet confirmed on L1 (tip=100)")
+        assert_eq!(
+            err.to_string(),
+            "L1 block 101 is not yet confirmed on L1 (tip=100)"
         );
         assert!(asserter.read_q().is_empty());
     }

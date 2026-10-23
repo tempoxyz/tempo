@@ -40,3 +40,58 @@ For offline development or tests, `--hardfork T11` enables forks through T11 at
 timestamp zero and disables T12/T13/T14. Individual `--t*-time` flags still take
 precedence in offline mode, but cannot be combined with RPC-derived schedules.
 The bundled dev genesis regeneration recipe explicitly selects T14.
+
+- `generate-state-bloat`: generates a TIP20 binary storage dump using Tempo's
+  implementation and CLI options.
+
+## Offline Zone state bloat
+
+Generate a dump and initialize a **nonexistent** Zone database:
+
+```bash
+cargo zone-xtask generate-state-bloat --size 1 --token 0 --no-nonce-ring --out zone-state-bloat.bin \
+  --mnemonic 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about'
+cargo run --bin tempo-zone -- init-from-binary-dump \
+  --chain zone-genesis.json --datadir zone-data zone-state-bloat.bin \
+  --output-genesis bloated-genesis.json --manifest zone-state-bloat.json
+# All later init/node commands must use the generated specification:
+cargo run --bin tempo-zone -- init --chain bloated-genesis.json --datadir zone-data
+```
+
+`--no-nonce-ring` is required: the importer rejects the expiring nonce ring, which
+would commit up to 6M extra slots into the saved genesis file. The example uses a
+public test-only mnemonic distinct from the default dev mnemonic. Choose accounts not already funded in your genesis; the benchmark
+workflow generates its own private mnemonic.
+
+`--size` is the target dump size in MiB, not the resulting database size; it is
+split across every `--token`. The generator and strict dump reader come from
+Tempo. The Zone initializer merges storage into the genesis allocation **before**
+normal Reth initialization commits the header, trie, and history. It rejects
+non-TIP20 addresses, a genesis without pathUSD code, duplicate slots, conflicts
+with nonzero genesis storage, malformed dumps, and every existing datadir
+(including block zero). Output files are never overwritten. The saved chain
+specification must be used on restart; using the original genesis is rejected by
+normal genesis validation.
+
+Token `0` is pathUSD, which Zone genesis deploys. Other token IDs (for example
+`--token 0 --token 1 --token 2 --token 3`) are seeded as storage-only accounts at
+their `0x20C0…{id}` addresses and stay uninitialized until the portal admin
+enables the matching L1 token (`just enable-token <token>`). The Zone inbox then
+initializes metadata and roles without touching the seeded supply or balances.
+Enable every seeded token and wait for the Zone to process `TokenEnabled` before
+sending traffic that uses it. Genesis code for those tokens is rejected so they
+cannot become usable before the portal enables them.
+
+The manifest includes dump SHA-256, per-token and total entry counts, database
+file bytes, import time, configuration digest, genesis hash, and committed/database state roots. A full
+hashed-state traversal verifies the root independently of cached trie nodes, and
+the stores are reopened before publishing the success manifest. A failed initialization
+removes the datadir and output files it created; an interrupted one may leave them, so use
+a new disposable path when retrying.
+
+This is synthetic benchmark state: generated balances have no corresponding L1
+escrow. Use disposable local databases and keep the generated accounts separate
+from accounts used for bridge correctness checks.
+
+The importer builds genesis allocations in memory; choose a dump size that fits the
+benchmark host. It does not impose a Nitro-specific size limit.
