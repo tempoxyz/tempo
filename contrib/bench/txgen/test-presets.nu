@@ -78,4 +78,23 @@ assert equal ($zone_earn | path basename) "zone-earn-mix.yml"
 let zone_earn_weights = (txgen-workload-metadata-args zone-earn-mix $zone_earn | last | str replace "workload_mix_weights=" "" | from json)
 assert equal ($zone_earn_weights | columns | sort) [public_transfer vault_deposit vault_withdraw zone_deposit zone_withdraw]
 rm -rf $zone_earn_dir
+# Gap variants: pinned portal count, single-sender settlement, fresh payees, lane split.
+for preset in [zone-earn-hot zone-earn-serial bridge-mix-new-accounts lane-mix] {
+    let spec = (txgen-resolve-bench-spec $preset)
+    assert equal ($spec.spec_path | path basename) $"($preset).yml"
+    assert ($preset in $TXGEN_HELPER_ALWAYS_FUND_PRESETS)
+}
+assert equal (txgen-zone-count zone-earn-hot 143) 1
+assert equal (txgen-zone-count zone-earn-mix 143) 143
+let serial_dir = (mktemp -d)
+let serial = (open (txgen-prepare-public-mix-preset (txgen-resolve-bench-spec zone-earn-serial).spec_path 1000 4 2 1337 --out-dir $serial_dir))
+let serial_names = ($serial.templates | columns | where { |name| $name =~ '^(zone_withdraw|vault_deposit)_[0-9]+$' })
+assert (($serial_names | length) > 0)
+for name in $serial_names {
+    let template = ($serial.templates | get $name)
+    assert equal $template.from {pool: users, select: {index: 0}}
+    assert equal $template.expiring_nonce false
+}
+assert equal ($serial.templates.zone_deposit_0.expiring_nonce) true
+rm -rf $serial_dir
 print "Preset, policy setup, state-bloat, and workload metadata checks passed"

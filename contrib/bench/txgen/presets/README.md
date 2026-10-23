@@ -68,3 +68,11 @@ portal settlement, Earn vault and transfers), so it has the same requirements.
 `bridge-mix` deploys a bridge fixture (`bridge/`) and splits bridge payouts from a
 small operator pool and sponsored bridge deposits, for example
 `derek bench preset=bridge-mix`. Refresh the weights when the traffic changes.
+
+Gap variants: `zone-earn-hot` pins every zone operation to one portal (shared
+portal and vault state, up to the TIP-1096 deposit cap); `zone-earn-serial`
+sends zone settlement and Earn deposits from one account with ordered nonces;
+`bridge-mix-new-accounts` pays every bridge payout to a fresh address; and
+`lane-mix` splits plain transfers between the payment lane and, with a
+one-entry access list, the general lane (needs txgen template `access_list`).
+Run them at mainnet limits (`gas-limit=500M general-gas-limit=30M`) to compare.
