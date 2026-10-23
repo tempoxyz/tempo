@@ -5,18 +5,13 @@ use crate::{
     account_keychain::{AccountKeychain, AuthorizedKey},
     configurable_account::{initial_account_proof_gas, valid_account},
     error::{Result, TempoPrecompileError},
-    storage::{account_config_commitment, keccak_cost},
+    storage::account_config_commitment,
 };
-use alloy::{
-    primitives::{Address, B256, Bytes, KECCAK256_EMPTY},
-    rlp::{self, Encodable},
-};
-use evm2::interpreter::gas::STANDARD_TOKEN_COST;
+use alloy::primitives::{Address, B256, Bytes, KECCAK256_EMPTY};
 use tempo_contracts::precompiles::SignatureVerifierError;
 use tempo_precompiles_macros::contract;
 use tempo_primitives::transaction::{
-    ConfigurableAccountSignature, SignatureType,
-    configurable_account::CONFIGURABLE_ACCOUNT_SIGNATURE_DOMAIN,
+    SignatureType,
     tt_signature::{AccountSignature, KeychainSignature, PrimitiveSignature, TempoSignature},
 };
 use tracing::trace;
@@ -112,8 +107,9 @@ impl SignatureVerifier {
         } else {
             0
         };
-        let verification_gas = configurable_account_verification_gas(signature)?
-            .checked_add(initial_proof_gas)
+        let verification_gas = signature
+            .verification_gas()
+            .and_then(|gas| gas.checked_add(initial_proof_gas))
             .ok_or(TempoPrecompileError::OutOfGas)?;
         self.storage.deduct_gas(verification_gas)?;
         if signature.account() != account || !valid_account(account, spec) || has_code {
@@ -196,37 +192,6 @@ struct RecoveredKeychainKey {
     key_id: Address,
     /// Type of the inner primitive signature.
     signature_type: SignatureType,
-}
-
-/// Full configurable account verification cost for a registered account, before account access.
-/// Initial address derivation is charged separately when the stored commitment is zero.
-///
-/// Fails with `OutOfGas` if the cost overflows `u64`.
-pub fn configurable_account_verification_gas(
-    signature: &ConfigurableAccountSignature,
-) -> Result<u64> {
-    let mut witness = rlp::encode(signature.account());
-    signature.config().encode(&mut witness);
-    signature
-        .signatures()
-        .iter()
-        .map(PrimitiveSignature::verification_gas)
-        .chain([
-            calldata_gas(&witness),
-            keccak_cost(signature.config().commitment_preimage_len())?,
-            keccak_cost(CONFIGURABLE_ACCOUNT_SIGNATURE_DOMAIN.len() + 32 + 20 + 8)?,
-        ])
-        .try_fold(0u64, u64::checked_add)
-        .ok_or(TempoPrecompileError::OutOfGas)
-}
-
-/// Istanbul calldata cost of `input`: one token per zero byte, four per nonzero byte.
-fn calldata_gas(input: &[u8]) -> u64 {
-    input
-        .iter()
-        .map(|byte| if *byte == 0 { 1 } else { 4 })
-        .sum::<u64>()
-        * u64::from(STANDARD_TOKEN_COST)
 }
 
 #[cfg(test)]
