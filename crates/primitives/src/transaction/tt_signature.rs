@@ -707,6 +707,17 @@ impl AccountSignature {
         }
         Ok(signature)
     }
+
+    /// Full gas to verify the approval, without subtracting the ecrecover baseline already
+    /// covered by ordinary intrinsic gas.
+    ///
+    /// Returns `None` if the cost overflows `u64`.
+    pub fn verification_gas(&self) -> Option<u64> {
+        match self {
+            Self::Primitive(signature) => Some(signature.verification_gas()),
+            Self::ConfigurableAccount(signature) => signature.verification_gas(),
+        }
+    }
 }
 
 impl From<Signature> for AccountSignature {
