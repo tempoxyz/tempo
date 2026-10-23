@@ -24,11 +24,13 @@ use reth_revm::{
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::precompiles::{
-    ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, INITIAL_FACTORY_OWNER,
-    InitialZoneFactoryAccount, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
-    STORAGE_CREDITS_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
-    initial_zone_factory_state, t13_zone_factory_state,
+    ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, IFeeManager,
+    INITIAL_FACTORY_OWNER, InitialZoneFactoryAccount, RECEIVE_POLICY_GUARD_ADDRESS,
+    SIGNATURE_VERIFIER_ADDRESS, STORAGE_CREDITS_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS, initial_zone_factory_state,
+    t13_zone_factory_state,
 };
+use tempo_precompiles::{storage::StorageActions, tip_fee_manager::TipFeeManager};
 use tempo_primitives::{SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType};
 use tempo_revm::{ExecutionContext, evm::TempoContext};
 use tracing::trace;
@@ -487,6 +489,47 @@ where
             }
         }
     }
+
+    /// Pays the beneficiary's accumulated fees in their current preferred token at block end.
+    ///
+    /// T14 is a provisional activation gate for this prototype. The ordinary claim path keeps
+    /// pause, transfer-policy and receive-policy semantics. A failed transfer leaves the ledger
+    /// intact for a later block or explicit claim, rather than preventing block production.
+    /// Like other implicit system calls, this adds neither a receipt nor block gas usage;
+    /// its logs are not included in transaction receipts.
+    fn apply_validator_fee_payout(&mut self) -> Result<(), BlockExecutionError> {
+        let spec = self.evm().cfg.spec;
+        if !spec.is_t14() {
+            return Ok(());
+        }
+
+        let beneficiary = self.evm().block().beneficiary;
+        let token = tempo_revm::TempoStateAccess::<()>::with_read_only_storage_ctx(
+            self.evm_mut().db_mut(),
+            spec,
+            StorageActions::disabled(),
+            || TipFeeManager::new().get_validator_token(beneficiary),
+        )
+        .map_err(BlockExecutionError::other)?;
+        let calldata = IFeeManager::distributeFeesCall {
+            validator: beneficiary,
+            token,
+        }
+        .abi_encode()
+        .into();
+        let result = self
+            .evm_mut()
+            .transact_system_call(Address::ZERO, TIP_FEE_MANAGER_ADDRESS, calldata)
+            .map_err(BlockExecutionError::other)?;
+
+        // EVM reverts (including a paused token or a rejected transfer policy) must not
+        // invalidate the block. Only successful payouts are committed; database errors above
+        // still propagate. The system-call checkpoint rolls back a failed claim's ledger reset.
+        if result.result.is_success() {
+            self.evm_mut().db_mut().commit(result.state);
+        }
+        Ok(())
+    }
 }
 
 impl<'a, DB, I> BlockExecutor for TempoBlockExecutor<'a, DB, I>
@@ -652,6 +695,7 @@ where
         }
 
         self.apply_current_committee_system_call()?;
+        self.apply_validator_fee_payout()?;
 
         let amsterdam_eip8037_enabled = self.evm().cfg.enable_amsterdam_eip8037;
 
@@ -766,6 +810,12 @@ mod tests {
         },
     };
     use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
+    use tempo_precompiles::{
+        storage::{ContractStorage, Handler, StorageCtx},
+        test_util::TIP20Setup,
+        tip20::{ITIP20, TIP20Token},
+        tip403_registry::TIP403Registry,
+    };
     use tempo_primitives::{
         SubBlockMetadata, TempoSignature, TempoTransaction, TempoTxType,
         subblock::{SubBlockVersion, TEMPO_SUBBLOCK_NONCE_KEY_PREFIX},
@@ -2416,5 +2466,335 @@ mod tests {
              not block_regular_gas_used ({})",
             result.gas_used, cumulative, regular
         );
+    }
+
+    fn with_fee_payout_storage<DB, I, R>(
+        executor: &mut TempoBlockExecutor<'_, DB, I>,
+        f: impl FnOnce() -> R,
+    ) -> R
+    where
+        DB: StateDB,
+        I: Inspector<TempoContext<DB>>,
+    {
+        let result =
+            StorageCtx::enter_ctx(executor.evm_mut().ctx_mut(), StorageActions::disabled(), f);
+        let state = executor.evm_mut().ctx_mut().journaled_state.finalize();
+        executor.evm_mut().db_mut().commit(state);
+        result
+    }
+
+    #[test]
+    fn test_validator_fee_payout_activation_and_token_selection() -> eyre::Result<()> {
+        let chainspec = test_chainspec();
+        let validator = Address::repeat_byte(0x11);
+        let other_validator = Address::repeat_byte(0x22);
+        let user = Address::repeat_byte(0x33);
+        let fee = U256::from(1_000);
+        for spec in [TempoHardfork::T13, TempoHardfork::T14] {
+            for custom_preference in [false, true] {
+                let mut db = State::builder().with_bundle_update().build();
+                let mut executor = TestExecutorBuilder::default()
+                    .with_spec(spec)
+                    .with_epoch_length(10)
+                    .build(&mut db, &chainspec);
+                executor.evm_mut().block.beneficiary = validator;
+                let (token, old_token) = with_fee_payout_storage(&mut executor, || {
+                    TIP403Registry::new().initialize()?;
+                    let mut fm = TipFeeManager::new();
+                    fm.initialize()?;
+                    let default = TIP20Setup::path_usd(user)
+                        .with_issuer(user)
+                        .with_mint(user, fee * U256::from(10))
+                        .apply()?;
+                    let custom = TIP20Setup::create("Validator USD", "VUSD", user)
+                        .with_issuer(user)
+                        .with_mint(user, fee * U256::from(10))
+                        .apply()?;
+                    let (token, old_token) = if custom_preference {
+                        fm.set_validator_token(
+                            validator,
+                            IFeeManager::setValidatorTokenCall {
+                                token: custom.address(),
+                            },
+                            Address::ZERO,
+                        )?;
+                        (custom.address(), default.address())
+                    } else {
+                        (default.address(), custom.address())
+                    };
+                    // Two transactions settle before the single block-end payout.
+                    for _ in 0..2 {
+                        fm.collect_fee_pre_tx(user, token, fee, validator, false)?;
+                        assert_eq!(
+                            fm.collect_fee_post_tx(user, fee, U256::ZERO, token, validator)?,
+                            fee
+                        );
+                    }
+                    // Existing claims in another token or for another validator stay untouched.
+                    TIP20Token::from_address(old_token)?.mint(
+                        user,
+                        ITIP20::mintCall {
+                            to: TIP_FEE_MANAGER_ADDRESS,
+                            amount: fee,
+                        },
+                    )?;
+                    TIP20Token::from_address(token)?.mint(
+                        user,
+                        ITIP20::mintCall {
+                            to: TIP_FEE_MANAGER_ADDRESS,
+                            amount: fee,
+                        },
+                    )?;
+                    fm.collected_fees[validator][old_token].write(fee)?;
+                    fm.collected_fees[other_validator][token].write(fee)?;
+                    assert_eq!(
+                        TIP20Token::from_address(token)?
+                            .balance_of(ITIP20::balanceOfCall { account: validator })?,
+                        U256::ZERO
+                    );
+                    Ok::<_, eyre::Report>((token, old_token))
+                })?;
+                let (mut evm, result) = executor.finish()?;
+                assert!(result.receipts.is_empty());
+                assert!(result.requests.is_empty());
+                assert_eq!(result.gas_used, 0);
+                StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
+                    let paid = if spec.is_t14() {
+                        fee * U256::from(2)
+                    } else {
+                        U256::ZERO
+                    };
+                    let fm = TipFeeManager::new();
+                    let token = TIP20Token::from_address(token)?;
+                    assert_eq!(
+                        token.balance_of(ITIP20::balanceOfCall { account: validator })?,
+                        paid
+                    );
+                    assert_eq!(
+                        token.balance_of(ITIP20::balanceOfCall {
+                            account: TIP_FEE_MANAGER_ADDRESS
+                        })?,
+                        fee * U256::from(3) - paid
+                    );
+                    assert_eq!(
+                        fm.collected_fees[validator][token.address()].read()?,
+                        fee * U256::from(2) - paid
+                    );
+                    assert_eq!(
+                        fm.collected_fees[other_validator][token.address()].read()?,
+                        fee
+                    );
+                    assert_eq!(fm.collected_fees[validator][old_token].read()?, fee);
+                    Ok::<_, eyre::Report>(())
+                })?;
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_validator_fee_payout_revert_preserves_claim_and_retries() -> eyre::Result<()> {
+        let chainspec = test_chainspec();
+        let validator = Address::repeat_byte(0x11);
+        let user = Address::repeat_byte(0x33);
+        let fee = U256::from(1_000);
+        for paused in [false, true] {
+            let mut db = State::builder().with_bundle_update().build();
+            let mut executor = TestExecutorBuilder::default()
+                .with_spec(TempoHardfork::T14)
+                .with_epoch_length(10)
+                .build(&mut db, &chainspec);
+            executor.evm_mut().block.beneficiary = validator;
+            with_fee_payout_storage(&mut executor, || {
+                TIP403Registry::new().initialize()?;
+                TipFeeManager::new().initialize()?;
+                let mut token = TIP20Setup::path_usd(user)
+                    .with_issuer(user)
+                    .with_role(user, TIP20Token::pause_role())
+                    .with_role(user, TIP20Token::unpause_role())
+                    .with_mint(user, fee)
+                    .apply()?;
+                let mut fm = TipFeeManager::new();
+                fm.collect_fee_pre_tx(user, token.address(), fee, validator, false)?;
+                fm.collect_fee_post_tx(user, fee, U256::ZERO, token.address(), validator)?;
+                if paused {
+                    token.pause(user, ITIP20::pauseCall {})?;
+                } else {
+                    token.change_transfer_policy_id(
+                        user,
+                        ITIP20::changeTransferPolicyIdCall { newPolicyId: 0 },
+                    )?;
+                }
+                Ok::<_, eyre::Report>(())
+            })?;
+            executor.finish()?;
+            let mut executor = TestExecutorBuilder::default()
+                .with_spec(TempoHardfork::T14)
+                .with_epoch_length(10)
+                .with_block_number(2)
+                .build(&mut db, &chainspec);
+            executor.evm_mut().block.beneficiary = validator;
+            with_fee_payout_storage(&mut executor, || {
+                let mut token = TIP20Token::from_address(PATH_USD_ADDRESS)?;
+                assert_eq!(
+                    TipFeeManager::new().collected_fees[validator][PATH_USD_ADDRESS].read()?,
+                    fee
+                );
+                assert_eq!(
+                    token.balance_of(ITIP20::balanceOfCall {
+                        account: TIP_FEE_MANAGER_ADDRESS
+                    })?,
+                    fee
+                );
+                assert_eq!(
+                    token.balance_of(ITIP20::balanceOfCall { account: validator })?,
+                    U256::ZERO
+                );
+                if paused {
+                    token.unpause(user, ITIP20::unpauseCall {})?;
+                } else {
+                    token.change_transfer_policy_id(
+                        user,
+                        ITIP20::changeTransferPolicyIdCall { newPolicyId: 1 },
+                    )?;
+                }
+                Ok::<_, eyre::Report>(())
+            })?;
+            let (mut evm, _) = executor.finish()?;
+            StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
+                let token = TIP20Token::from_address(PATH_USD_ADDRESS)?;
+                assert_eq!(
+                    TipFeeManager::new().collected_fees[validator][PATH_USD_ADDRESS].read()?,
+                    U256::ZERO
+                );
+                assert_eq!(
+                    token.balance_of(ITIP20::balanceOfCall {
+                        account: TIP_FEE_MANAGER_ADDRESS
+                    })?,
+                    U256::ZERO
+                );
+                assert_eq!(
+                    token.balance_of(ITIP20::balanceOfCall { account: validator })?,
+                    fee
+                );
+                Ok::<_, eyre::Report>(())
+            })?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_validator_fee_payout_swapped_fees_and_state_hook() -> eyre::Result<()> {
+        let chainspec = test_chainspec();
+        let validator = Address::repeat_byte(0x11);
+        let user = Address::repeat_byte(0x33);
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_spec(TempoHardfork::T14)
+            .with_epoch_length(10)
+            .build(&mut db, &chainspec);
+        executor.evm_mut().block.beneficiary = validator;
+        let (token, credited) = with_fee_payout_storage(&mut executor, || {
+            TIP403Registry::new().initialize()?;
+            let mut fm = TipFeeManager::new();
+            fm.initialize()?;
+            let user_token = TIP20Setup::path_usd(user)
+                .with_issuer(user)
+                .with_mint(user, U256::from(10_000))
+                .apply()?;
+            let validator_token = TIP20Setup::create("Validator USD", "VUSD", user)
+                .with_issuer(user)
+                .with_mint(user, U256::from(1_000_000_000))
+                .apply()?;
+            fm.set_validator_token(
+                validator,
+                IFeeManager::setValidatorTokenCall {
+                    token: validator_token.address(),
+                },
+                Address::ZERO,
+            )?;
+            fm.mint(
+                user,
+                user_token.address(),
+                validator_token.address(),
+                U256::from(1_000_000_000),
+                user,
+            )?;
+            fm.collect_fee_pre_tx(
+                user,
+                user_token.address(),
+                U256::from(10_000),
+                validator,
+                false,
+            )?;
+            let credited = fm.collect_fee_post_tx(
+                user,
+                U256::from(9_000),
+                U256::from(1_000),
+                user_token.address(),
+                validator,
+            )?;
+            assert_eq!(credited, U256::from(8_973));
+            assert_eq!(
+                user_token.balance_of(ITIP20::balanceOfCall { account: user })?,
+                U256::from(1_000)
+            );
+            Ok::<_, eyre::Report>((validator_token.address(), credited))
+        })?;
+        let hook_calls = Arc::new(Mutex::new(Vec::<EvmState>::new()));
+        let hook_calls_clone = hook_calls.clone();
+        executor
+            .evm_mut()
+            .db_mut()
+            .set_state_hook(Some(Box::new(move |state: EvmState| {
+                hook_calls_clone.lock().unwrap().push(state);
+            })));
+        let receipt = TempoReceipt {
+            tx_type: TempoTxType::Legacy,
+            success: true,
+            cumulative_gas_used: 30_000,
+            logs: vec![],
+        };
+        executor.inner.receipts.push(receipt.clone());
+        executor.inner.cumulative_tx_gas_used = 30_000;
+        let (_, result) = executor.finish()?;
+        assert_eq!(result.receipts, vec![receipt]);
+        assert_eq!(result.gas_used, 30_000);
+        let calls = hook_calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].contains_key(&TIP_FEE_MANAGER_ADDRESS));
+        assert!(calls[0].contains_key(&token));
+        drop(calls);
+        db.set_state_hook(None);
+
+        // An empty following block cannot pay the same fees twice.
+        let mut executor = TestExecutorBuilder::default()
+            .with_spec(TempoHardfork::T14)
+            .with_epoch_length(10)
+            .with_block_number(2)
+            .build(&mut db, &chainspec);
+        executor.evm_mut().block.beneficiary = validator;
+        let (mut evm, result) = executor.finish()?;
+        assert!(result.receipts.is_empty());
+        StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
+            assert_eq!(
+                TipFeeManager::new().collected_fees[validator][token].read()?,
+                U256::ZERO
+            );
+            assert_eq!(
+                TIP20Token::from_address(token)?
+                    .balance_of(ITIP20::balanceOfCall { account: validator })?,
+                credited
+            );
+            // The remainder is LP liquidity, not validator fees.
+            assert_eq!(
+                TIP20Token::from_address(token)?.balance_of(ITIP20::balanceOfCall {
+                    account: TIP_FEE_MANAGER_ADDRESS
+                })?,
+                U256::from(1_000_000_000) - credited
+            );
+            Ok::<_, eyre::Report>(())
+        })?;
+        Ok(())
     }
 }
