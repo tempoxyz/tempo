@@ -294,8 +294,8 @@ fn calculate_key_authorization_gas(
     gas_params: &GasParams,
     spec: tempo_chainspec::hardfork::TempoHardfork,
 ) -> (u64, u64) {
-    // For KeyAuthorization, we're doing an additional signature verification, so the ecrecover
-    // baseline is charged on top of the base 21k.
+    // The base 21k includes one ecrecover, for the transaction's own signature. The key
+    // authorization's signature is verified on top of that, so it pays the full verification gas.
     let sig_gas = key_auth.signature.verification_gas();
 
     let num_limits = key_auth
