@@ -14,15 +14,6 @@ use tempo_primitives::transaction::{
 };
 use tracing::trace;
 
-/// Gas cost for secp256k1 signature verification.
-const SECP256K1_VERIFY_GAS: u64 = 3_000;
-
-/// Gas cost for P256 signature verification.
-const P256_VERIFY_GAS: u64 = 8_000;
-
-/// Gas cost for WebAuthn signature verification.
-const WEBAUTHN_VERIFY_GAS: u64 = 8_000;
-
 #[contract(addr = SIGNATURE_VERIFIER_ADDRESS)]
 pub struct SignatureVerifier {}
 
@@ -37,11 +28,7 @@ impl SignatureVerifier {
             .map_err(|_| SignatureVerifierError::invalid_format())?;
 
         // Charge verification gas before performing verification.
-        let verify_gas = match sig.signature_type() {
-            SignatureType::Secp256k1 => SECP256K1_VERIFY_GAS,
-            SignatureType::P256 => P256_VERIFY_GAS,
-            SignatureType::WebAuthn => WEBAUTHN_VERIFY_GAS,
-        };
+        let verify_gas = sig.base_verification_gas();
         self.storage.deduct_gas(verify_gas)?;
 
         // Verify and recover signer.
