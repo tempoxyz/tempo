@@ -4832,7 +4832,7 @@ fn check_configurable_account_verdict(
     let initial = if registered {
         0
     } else {
-        keccak_cost(signature.config().account_preimage_len()).unwrap()
+        signature.config().derivation_gas().unwrap()
     };
     let charge = access_gas + signature.verification_gas().unwrap() + initial;
 
