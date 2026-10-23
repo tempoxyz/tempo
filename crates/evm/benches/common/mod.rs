@@ -341,7 +341,7 @@ pub(crate) fn fixture_from_seeded_db(seeded: InMemoryDB) -> ExecutionFixture {
     let mut contracts = B256Map::default();
     let mut block_hashes = HashMap::default();
     for (hash, bytecode) in state_cache.contracts {
-        let bytecode = RethBytecode(reth_execution_types::revm_bytecode(&bytecode));
+        let bytecode = RethBytecode(bytecode);
         execution_cache.insert_code(hash, Some(bytecode.clone()));
         contracts.insert(hash, bytecode);
     }
