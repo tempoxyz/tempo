@@ -920,7 +920,7 @@ fn delegate_registration_gas(empty_delegate: bool) -> BlockGas {
             weight: 1,
         }],
     };
-    let delegate = config.derive_account(Address::repeat_byte(0x71)).unwrap();
+    let delegate = config.derive_account().unwrap();
     seed_account(&mut f, delegate, empty_delegate);
     let grant = KeyAuthorization::unrestricted(1, SignatureType::ConfigurableAccount, delegate);
     let approval = f.owner.sign_hash_sync(&grant.signature_hash()).unwrap();
@@ -1059,7 +1059,6 @@ fn replay_is_rejected_from_t14() {
 }
 
 fn activation_config() -> TempoEvmConfig {
-    let factory = Address::repeat_byte(0x71);
     let mut genesis = DEV.genesis().clone();
     genesis.config.chain_id = 1;
     for (field, value) in [("t12Time", 0), ("t13Time", 0), ("t14Time", 10)] {
@@ -1068,10 +1067,6 @@ fn activation_config() -> TempoEvmConfig {
             .extra_fields
             .insert(field.into(), json!(value));
     }
-    genesis
-        .config
-        .extra_fields
-        .insert("configurableAccountRecoveryFactory".into(), json!(factory));
     TempoEvmConfig::new(Arc::new(TempoChainSpec::from_genesis(genesis)))
 }
 
@@ -1118,7 +1113,7 @@ fn native_signed_parent_delegate_case(outcome: GrantOutcome, gas_price: u128) {
                 }],
             };
             let delegate = if delegate_native {
-                config.derive_account(Address::repeat_byte(0x71)).unwrap()
+                config.derive_account().unwrap()
             } else {
                 signer.address()
             };
@@ -2089,12 +2084,6 @@ fn eoa_migration_error_order() {
             &invalid_config,
         );
     }
-    // The recovery factory is only required to derive accounts: the upgrade succeeds without it.
-    let mut f = Fixture::with_parent(false);
-    f.update_block(|block| block.ext.configurable_account_recovery_factory = None);
-    let tx = f.primitive(3, vec![upgrade]);
-    let result = f.run(&tx);
-    assert_upgraded(&mut f, &result, &base);
 }
 
 #[test]
@@ -2982,9 +2971,7 @@ fn retired_root_rejects_delegated_roles() {
         threshold: 1,
         owners: owner_set(vec![unmigrated_owner.address()]),
     };
-    let unmigrated = unmigrated_config
-        .derive_account(Address::repeat_byte(0x71))
-        .unwrap();
+    let unmigrated = unmigrated_config.derive_account().unwrap();
     let tx = grant_tx(&f, 6, SignatureType::Secp256k1, unmigrated);
     let result = f.run(&tx);
     assert!(result.status, "{result:?}");
@@ -5000,14 +4987,6 @@ fn verify_configurable_account_false_cases_charge_before_they_check() {
     let label = "initial account mismatch";
     check_configurable_account_verdict(&mut f, account, &misderived, false, cold, invalid, label);
 
-    // An initial configuration needs the configured recovery factory.
-    let factory = f.evm.block().ext.configurable_account_recovery_factory;
-    f.update_block(|block| block.ext.configurable_account_recovery_factory = None);
-    assert!(factory.is_some());
-    let label = "no recovery factory";
-    check_configurable_account_verdict(&mut f, account, &valid, false, cold, invalid, label);
-    f.update_block(|block| block.ext.configurable_account_recovery_factory = factory);
-
     // An account with code is not a configurable account, however well signed.
     let label = "valid";
     check_configurable_account_verdict(&mut f, account, &valid, false, cold, Verdict::Valid, label);
@@ -5214,71 +5193,40 @@ fn configurable_account_is_rejected_where_it_cannot_sign() {
 }
 
 #[test]
-fn native_factory_activation_preserves_state() {
-    let factory = Address::repeat_byte(0x71);
+fn configurable_account_marker_is_installed_at_t14() {
     let config = activation_config();
-    for nonce in [0, 7] {
-        for code in [bytes!(""), bytes!("600000")] {
-            let mut db = InMemoryDB::default();
-            let bytecode = Bytecode::new_legacy(code.clone());
-            db.insert_account_info(
-                &factory,
-                AccountInfo::new(U256::from(42), nonce, bytecode.hash_slow(), Some(bytecode)),
-            );
-            db.insert_account_storage(&factory, &U256::from(3), &U256::from(9));
-            for (number, timestamp) in [(1, 9), (2, 10), (3, 11)] {
-                let block = TempoBlock::uncle(TempoHeader {
-                    inner: Header {
-                        number,
-                        timestamp,
-                        gas_limit: 30_000_000,
-                        base_fee_per_gas: Some(0),
-                        parent_beacon_block_root: Some(B256::ZERO),
-                        ..Default::default()
-                    },
-                    general_gas_limit: 30_000_000,
-                    ..Default::default()
-                })
-                .seal_slow();
-                let mut executor = config.executor_for_block(db.clone(), &block).unwrap();
-                assert_eq!(
-                    executor.evm().config_spec_id(),
-                    if timestamp < 10 {
-                        TempoHardfork::T13
-                    } else {
-                        TempoHardfork::T14
-                    }
-                );
-                executor.apply_pre_execution_changes().unwrap();
-                let output = executor.finish().unwrap();
-                db.commit_source(&BundleSource(&output.state));
-                let info = db.get_account(&factory).unwrap().unwrap();
-                assert_eq!(
-                    info.nonce,
-                    if timestamp < 10 { nonce } else { nonce.max(1) }
-                );
-                assert_eq!(info.balance, U256::from(42));
-                assert_eq!(
-                    db.get_code_by_hash(&info.code_hash)
-                        .unwrap()
-                        .original_bytes(),
-                    if timestamp < 10 {
-                        code.clone()
-                    } else {
-                        bytes!("ef")
-                    }
-                );
-                assert_eq!(
-                    db.get_storage(&factory, &U256::from(3)).unwrap(),
-                    U256::from(9)
-                );
-                let marker = db
-                    .get_account(&CONFIGURABLE_ACCOUNT_ADDRESS)
-                    .unwrap()
-                    .unwrap_or_default();
-                assert_eq!(marker.code_hash == KECCAK256_EMPTY, timestamp < 10);
+    let mut db = InMemoryDB::default();
+    for (number, timestamp) in [(1, 9), (2, 10), (3, 11)] {
+        let block = TempoBlock::uncle(TempoHeader {
+            inner: Header {
+                number,
+                timestamp,
+                gas_limit: 30_000_000,
+                base_fee_per_gas: Some(0),
+                parent_beacon_block_root: Some(B256::ZERO),
+                ..Default::default()
+            },
+            general_gas_limit: 30_000_000,
+            ..Default::default()
+        })
+        .seal_slow();
+        let mut executor = config.executor_for_block(db.clone(), &block).unwrap();
+        assert_eq!(
+            executor.evm().config_spec_id(),
+            if timestamp < 10 {
+                TempoHardfork::T13
+            } else {
+                TempoHardfork::T14
             }
-        }
+        );
+        executor.apply_pre_execution_changes().unwrap();
+        let output = executor.finish().unwrap();
+        db.commit_source(&BundleSource(&output.state));
+        let marker = db
+            .get_account(&CONFIGURABLE_ACCOUNT_ADDRESS)
+            .unwrap()
+            .unwrap_or_default();
+        assert_eq!(marker.code_hash == KECCAK256_EMPTY, timestamp < 10);
     }
 }
 
@@ -5356,8 +5304,8 @@ fn native_signature_verification_is_intrinsic_gas() {
         .sum();
     // V - 3,000: witness calldata, commitment K(75 + 21), digest K(96), approval 3,000 - 3,000.
     let verification = calldata + keccak(75 + 21) + keccak(96);
-    // First use: derivation K(68 + 21) + K(85), plus the 20,000 registration write.
-    let first_use = keccak(68 + 21) + keccak(85) + 20_000;
+    // First use: derivation K(68 + 21), plus the 20,000 registration write.
+    let first_use = keccak(68 + 21) + 20_000;
     assert_eq!(
         native.tx_gas_used() - primitive.tx_gas_used(),
         verification + first_use
@@ -5414,7 +5362,7 @@ fn native_threshold_above_eight_is_met_by_eight_approvals() {
             })
             .collect(),
     };
-    let account = config.derive_account(Address::repeat_byte(0x71)).unwrap();
+    let account = config.derive_account().unwrap();
     seed_account(&mut f, account, false);
     let tx = aa_tx(0, vec![f.getter()]);
     let digest = configurable_account_digest(tx.signature_hash(), account, config.version);
@@ -5527,7 +5475,7 @@ fn native_delegate_grant_is_bound_to_the_transaction() {
             weight: 1,
         }],
     };
-    let delegate = config.derive_account(Address::repeat_byte(0x71)).unwrap();
+    let delegate = config.derive_account().unwrap();
     for (label, key_id, key_type, unrelated_signer, expected) in [
         (
             "matching",
@@ -5598,7 +5546,6 @@ fn native_delegate_grant_is_bound_to_the_transaction() {
 /// it, when it names another account, or when the delegate is not an admin.
 #[test]
 fn native_admin_delegate_signs_inline_grant() {
-    let factory = Address::repeat_byte(0x71);
     let owner = signer(2);
     let config = ConfigurableAccountConfig {
         salt: B256::repeat_byte(2),
@@ -5609,7 +5556,7 @@ fn native_admin_delegate_signs_inline_grant() {
             weight: 1,
         }],
     };
-    let delegate = config.derive_account(factory).unwrap();
+    let delegate = config.derive_account().unwrap();
     let other_owner = signer(3);
     let other_config = ConfigurableAccountConfig {
         salt: B256::repeat_byte(3),
@@ -5619,7 +5566,7 @@ fn native_admin_delegate_signs_inline_grant() {
         }],
         ..config
     };
-    let other = other_config.derive_account(factory).unwrap();
+    let other = other_config.derive_account().unwrap();
     let child = signer(4).address();
     let failed = |reason: &str| TempoInvalidTransaction::KeychainValidationFailed {
         reason: reason.into(),
@@ -5810,7 +5757,7 @@ fn native_grant_delegate_access_is_charged_once() {
             weight: 1,
         }],
     };
-    let delegate = config.derive_account(Address::repeat_byte(0x71)).unwrap();
+    let delegate = config.derive_account().unwrap();
     let access_key = signer(3);
     // Gas of a transaction signed by `user`, with the grant inline or in an earlier transaction.
     let gas = |user: GrantUser, inline: bool, listed: bool| {

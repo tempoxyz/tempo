@@ -1,7 +1,6 @@
 //! Gas of the simulated configurable-account owner approvals that RPC simulation builds.
 //!
-//! The test runs a request through the production [`TempoEvmConfig`] EVM for a T14 chain with the
-//! recovery factory configured.
+//! The test runs a request through the production [`TempoEvmConfig`] EVM for a T14 chain.
 
 use std::sync::Arc;
 
@@ -14,7 +13,7 @@ use alloy::{
 use evm2::evm::InMemoryDB;
 use reth_evm::{ConfigureEvm, EvmEnvFor};
 use reth_rpc_eth_api::TryIntoTxEnv;
-use serde_json::{Value, from_str, from_value, json};
+use serde_json::from_str;
 use tempo_alloy::rpc::{
     ConfigurableAccountSimulationApproval, ConfigurableAccountSimulationSpec,
     TempoTransactionRequest,
@@ -28,14 +27,11 @@ use tempo_primitives::{
 };
 
 const CHAIN_ID: u64 = 1337;
-const FACTORY: Address = Address::repeat_byte(0x71);
 const DELEGATE: Address = Address::repeat_byte(0x44);
 
 fn evm_config() -> TempoEvmConfig {
-    let mut genesis: Value = from_str(include_str!("../assets/test-genesis.json")).unwrap();
-    genesis["config"]["configurableAccountRecoveryFactory"] = json!(FACTORY);
     TempoEvmConfig::new(Arc::new(TempoChainSpec::from_genesis(
-        from_value(genesis).unwrap(),
+        from_str(include_str!("../assets/test-genesis.json")).unwrap(),
     )))
 }
 
@@ -79,7 +75,7 @@ fn configurable_account(owner: &PrivateKeySigner) -> (ConfigurableAccountConfig,
             weight: 1,
         }],
     };
-    let account = config.derive_account(FACTORY).unwrap();
+    let account = config.derive_account().unwrap();
     (config, account)
 }
 

@@ -57,7 +57,7 @@ impl MaximumQuorums {
                     })
                     .collect(),
             };
-            let account = config.derive_account(Address::repeat_byte(0x71)).unwrap();
+            let account = config.derive_account().unwrap();
             let inner = B256::repeat_byte(role);
             let digest = configurable_account_digest(inner, account, 0);
             let approvals = keys[40..]
