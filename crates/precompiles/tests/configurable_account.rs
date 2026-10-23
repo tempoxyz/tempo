@@ -17,9 +17,7 @@ use tempo_contracts::precompiles::{
 };
 use tempo_precompiles::{
     Precompile,
-    configurable_account::{
-        ConfigurableAccount, UpgradeEligibility, config, initial_account_proof_gas, valid_account,
-    },
+    configurable_account::{ConfigurableAccount, UpgradeEligibility, config, valid_account},
     input_cost,
     storage::{
         ConfigCommitmentWriteGas, StorageCtx, evm::EvmPrecompileStorageProvider,
@@ -205,7 +203,6 @@ fn derive_account_charges_input_and_proof_hashing_gas() {
         ] {
             let config = config(B256::ZERO, 0, 1, &owners);
             let proof_gas = keccak(config.account_preimage_len());
-            assert_eq!(initial_account_proof_gas(&config).unwrap(), proof_gas);
 
             let calldata = IConfigurableAccount::deriveAccountCall {
                 salt: B256::ZERO,

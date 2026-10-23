@@ -57,7 +57,7 @@ impl ConfigurableAccount {
         // Reject an invalid configuration before charging the proof hashing gas.
         config.validate()?;
         self.storage
-            .deduct_gas(initial_account_proof_gas(&config)?)?;
+            .deduct_gas(keccak_cost(config.account_preimage_len())?)?;
         let account = config.derive_account()?;
         if !valid_account(account, self.storage.spec()) {
             return Err(ConfigurableAccountError::invalid_account().into());
@@ -190,13 +190,6 @@ pub enum UpgradeEligibility {
     NotPrimitiveRoot,
     /// The transaction is a sole call signed by a primitive root key.
     PrimitiveRoot,
-}
-
-/// Hashing cost of deriving an unregistered account from its initial configuration.
-///
-/// Fails with `OutOfGas` if the cost overflows `u64`.
-pub fn initial_account_proof_gas(config: &ConfigurableAccountConfig) -> Result<u64> {
-    keccak_cost(config.account_preimage_len())
 }
 
 /// Builds the configuration with the given `salt`, `version`, `threshold` and `owners`.
