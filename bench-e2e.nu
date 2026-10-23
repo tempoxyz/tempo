@@ -22,7 +22,8 @@ const E2E_RUNNER_METRICS_URL = "http://127.0.0.1:9100/metrics"
 const E2E_BLOAT_TMP_DIR = "/reth-bench-a/.bench-tmp/e2e-local-init"
 const TRACY_SAMPLING_HZ = 18999
 const E2E_BLOAT_FREE_MARGIN_MIB = 51200
-const E2E_BLOAT_IMPORT_WORKING_SET_MULTIPLIER = 7
+# Measured peak import working set is ~4.8x bloat per side (ETL + DB + static files + rocksdb).
+const E2E_BLOAT_IMPORT_WORKING_SET_MULTIPLIER = 5
 const E2E_DEFAULT_BLOAT = 100
 const E2E_LOCAL_RETH_ARGS = [
     "--ipcdisable"
@@ -1348,9 +1349,22 @@ def "main summarize" [
 def "main render-txgen-spec" [
     --preset: string = "default"                       # Txgen preset name or scenario expression
     --out-dir: string = ""                             # Directory for rendered scenario specs
+    --accounts: int = 1000                             # Public-mix user count
+    --tps: int = 50000                                  # Public-mix target TPS
+    --duration: int = 90                                # Public-mix duration in seconds
 ] {
     let spec = (txgen-resolve-bench-spec $preset $out_dir)
-    print $spec.spec_path
+    if $spec.scenario_id in $TXGEN_HELPER_PUBLIC_MIX_PRESETS {
+        let window_ms = ($env.TXGEN_ZONE_SETTLEMENT_WINDOW_MS? | default "3000" | into int)
+        if $window_ms < 1 or $tps < 1 or $duration < 1 {
+            error make {msg: "Public mix requires positive TPS, duration, and zone sizing window"}
+        }
+        let automatic_zones = ([1 (($tps * $window_ms / 210000) | math ceil | into int)] | math max)
+        let zones = ($env.TXGEN_ZONE_COUNT? | default $automatic_zones | into int)
+        print (txgen-prepare-public-mix-preset $spec.spec_path ($tps * $duration) $accounts $zones 1337 --out-dir $out_dir)
+    } else {
+        print $spec.spec_path
+    }
 }
 
 # Run the e2e sequence on one runner.

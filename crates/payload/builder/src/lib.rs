@@ -14,8 +14,7 @@ use reth_trie_common::ordered_root::OrderedTrieRootEncodedBuilder;
 
 use crate::{
     budget::{
-        BUILD_TIME_MULTIPLIER_SCALE, decay_build_time_multiplier, observed_build_time_multiplier,
-        payload_budget_decision, scaled_build_time_multiplier,
+        decay_build_time_multiplier, observed_build_time_multiplier, scaled_build_time_multiplier,
     },
     encode::{
         EncodedBlockTransactionList, EncodedBlockTransactionsBuilder, ExecutionBlockEncoder,
@@ -73,7 +72,9 @@ use tempo_evm::{
     StorageActionReplayError, TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess,
     TempoTxResult, evm::TempoEvm,
 };
-use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload};
+use tempo_payload_types::{
+    BuildPlan, TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload,
+};
 use tempo_precompiles::{storage::StorageActions, validator_config_v2::ValidatorConfigV2};
 use tempo_primitives::{TempoHeader, TempoReceipt, TempoTxEnvelope};
 use tempo_transaction_pool::{
@@ -292,7 +293,7 @@ where
         best_txs: impl FnOnce(BestTransactionsAttributes) -> Txs,
     ) -> Result<BuildOutcome<TempoBuiltPayload>, PayloadBuilderError>
     where
-        Txs: BestTransactions<Item = BestTransaction> + Send + 'static,
+        Txs: BestTransactions<Item = BestTransaction> + 'static,
     {
         let BuildArguments {
             cached_reads,
@@ -473,10 +474,14 @@ where
             } else {
                 PayloadTransactions::Prewarming(StateAwareBestTransactions::new(
                     BestTransactionsPrewarming::new(prewarm_ctx, raw_best_txs),
+                    hardfork.fallback_fee_tokens(),
                 ))
             }
         } else {
-            PayloadTransactions::Sequential(StateAwareBestTransactions::new(Box::new(raw_best_txs)))
+            PayloadTransactions::Sequential(StateAwareBestTransactions::new(
+                Box::new(raw_best_txs),
+                hardfork.fallback_fee_tokens(),
+            ))
         };
         self.metrics
             .pool_fetch_duration_seconds
@@ -493,28 +498,28 @@ where
         let payload_build_budget = attributes.payload_build_budget();
         let build_time_multiplier = self.build_time_multiplier();
         let validation_latency = attributes.validation_latency_estimate();
+        let build_plan = payload_build_budget
+            .map(|budget| BuildPlan::new(budget, build_time_multiplier, validation_latency));
         let block_build_stop_reason = loop {
             check_cancel!();
 
-            if let Some(build_budget) = payload_build_budget {
+            if let Some(plan) = build_plan.as_ref() {
                 let elapsed = start.elapsed();
                 let current_workload = ValidationLatencyWorkload::new(
                     cumulative_gas_used,
                     pool_transactions_included as usize,
                 );
-                let budget_decision = payload_budget_decision(
+                let budget_decision = plan.decision(
                     elapsed,
                     normal_transaction_fill_idle_elapsed,
-                    build_time_multiplier,
-                    validation_latency,
                     current_workload,
                 );
-                if budget_decision.total_reserved >= build_budget {
+                if plan.exhausted(&budget_decision) {
                     debug!(
                         target: "payload_builder",
                         ?elapsed,
                         ?normal_transaction_fill_idle_elapsed,
-                        ?build_budget,
+                        build_budget = ?plan.build_budget,
                         predicted_builder_work = ?budget_decision.predicted_builder_work,
                         predicted_validator_work = ?budget_decision.predicted_validator_work,
                         total_reserved = ?budget_decision.total_reserved,
@@ -522,8 +527,7 @@ where
                         gas_used = cumulative_gas_used,
                         transactions = pool_transactions_included,
                         estimated_rlp_block_size,
-                        build_time_multiplier = build_time_multiplier as f64
-                            / BUILD_TIME_MULTIPLIER_SCALE as f64,
+                        build_time_multiplier = plan.build_time_multiplier(),
                         "stopping pool transaction execution before payload build budget is exhausted"
                     );
                     break BlockBuildStopReason::BuildBudget;

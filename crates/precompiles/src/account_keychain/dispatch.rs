@@ -2,14 +2,27 @@
 
 use super::{AccountKeychain, KeyRestrictions, TokenLimit, authorizeKeyCall};
 use crate::{Precompile, charge_input_cost, dispatch, mutate, view};
-use alloy::{primitives::Address, sol_types::SolCall};
+use alloy::{
+    primitives::{Address, Bytes, U256},
+    sol_types::SolCall,
+};
 use revm::precompile::PrecompileResult;
-use tempo_contracts::precompiles::{AccountKeychainError, IAccountKeychain};
+use tempo_contracts::precompiles::{
+    AccountKeychainError, IAccountKeychain,
+    IAccountKeychain::{
+        SignatureType, authorizeAdminKeyCall, authorizeKey_0Call, authorizeKey_1Call,
+        authorizeKey_2Call,
+    },
+};
 
 impl Precompile for AccountKeychain {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
         if let Some(err) = charge_input_cost(&mut self.storage, calldata) {
             return err;
+        }
+
+        if self.rejects_configurable_account_type(calldata) {
+            return Ok(self.storage.revert_output(Bytes::new()));
         }
 
         dispatch!(
@@ -92,6 +105,40 @@ impl Precompile for AccountKeychain {
                 }
             }
         )
+    }
+}
+
+impl AccountKeychain {
+    // TODO: remove after T14 is active.
+    /// Whether `calldata` authorizes a ConfigurableAccount key from T11 until T14.
+    ///
+    /// From T11 the strict ABI decoder reverts on an out-of-range `signatureType`; until T14,
+    /// value 3 reverts the same way. Peeks the `signatureType` head word (second parameter of all
+    /// four calls) instead of decoding the call twice.
+    fn rejects_configurable_account_type(&self, calldata: &[u8]) -> bool {
+        let spec = self.storage.spec();
+        if !spec.is_t11() || spec.is_t14() {
+            return false;
+        }
+
+        let Some(&selector) = calldata.first_chunk::<4>() else {
+            return false;
+        };
+        if !matches!(
+            selector,
+            authorizeKey_0Call::SELECTOR
+                | authorizeKey_1Call::SELECTOR
+                | authorizeKey_2Call::SELECTOR
+                | authorizeAdminKeyCall::SELECTOR
+        ) {
+            return false;
+        }
+
+        // Too short to hold the word: the regular dispatch fails the decode and reverts.
+        let Some(signature_type) = calldata.get(36..68) else {
+            return false;
+        };
+        U256::from_be_slice(signature_type) == U256::from(SignatureType::ConfigurableAccount as u8)
     }
 }
 

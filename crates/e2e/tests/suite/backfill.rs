@@ -61,8 +61,8 @@ impl AssertJoinsLate {
             join_all(nodes.iter_mut().map(|node| node.start(&context))).await;
             connect_execution_peers(&nodes).await;
 
-            // Wait for chain to advance before starting the last node
-            while nodes[0].execution_provider().last_block_number().unwrap() < blocks_before_join {
+            // Wait for canonical execution; the persisted head can lag by a full persistence batch.
+            while nodes[0].execution_provider().best_block_number().unwrap() < blocks_before_join {
                 context.sleep(Duration::from_secs(1)).await;
             }
 
@@ -74,7 +74,7 @@ impl AssertJoinsLate {
             tracing::debug!("last node started");
 
             // Assert that last node is able to catch up and progress
-            while last.execution_provider().last_block_number().unwrap() < blocks_after_join {
+            while last.execution_provider().best_block_number().unwrap() < blocks_after_join {
                 context.sleep(Duration::from_millis(100)).await;
                 let metrics = context.to_metrics();
                 metrics.assert_no_blocked_peers();

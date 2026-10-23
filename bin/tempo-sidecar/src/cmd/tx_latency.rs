@@ -17,7 +17,7 @@ use tracing::{debug, error, warn};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
-pub struct TxLatencyArgs {
+pub(crate) struct TxLatencyArgs {
     /// RPC endpoint for the node.
     #[arg(short, long, required = true)]
     rpc_url: Url,
@@ -108,7 +108,7 @@ impl TransactionLatencyMonitor {
         self.pending.retain(|hash, seen_at| {
             if mined_txs.contains(hash) {
                 let latency_secs =
-                    Self::latency_seconds(*seen_at, header.timestamp_millis() as u128);
+                    Self::latency_seconds(*seen_at, u128::from(header.timestamp_millis()));
                 histogram!("tempo_tx_landing_latency_seconds").record(latency_secs);
                 false
             } else {
@@ -143,7 +143,7 @@ impl TransactionLatencyMonitor {
 }
 
 impl TxLatencyArgs {
-    pub async fn run(self) -> Result<()> {
+    pub(crate) async fn run(self) -> Result<()> {
         tracing_subscriber::FmtSubscriber::builder()
             .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
             .init();

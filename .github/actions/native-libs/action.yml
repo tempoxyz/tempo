@@ -1,0 +1,57 @@
+name: "Prebuilt native libraries"
+description: >-
+  Links rocksdb, snappy and jemalloc from a cached release build instead of compiling them in
+  every job. Run after the Rust toolchain is installed and before the first cargo build.
+
+inputs:
+  cargo-args:
+    description: "Package selection and features of the job's build, as passed to `cargo tree`"
+    required: false
+    default: "--workspace"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Compute native library cache key
+      id: key
+      if: runner.os == 'Linux' && runner.arch == 'X64'
+      shell: bash
+      env:
+        CARGO_ARGS: ${{ inputs.cargo-args }}
+      run: |
+        # shellcheck disable=SC2086 # CARGO_ARGS is a list of arguments
+        echo "key=$(.github/scripts/native-libs.sh key $CARGO_ARGS)" >> "$GITHUB_OUTPUT"
+
+    - name: Restore native libraries
+      id: cache
+      if: steps.key.outputs.key != ''
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: ${{ runner.temp }}/native-libs/out
+        key: native-libs-${{ runner.os }}-${{ runner.arch }}-${{ steps.key.outputs.key }}
+
+    - name: Build native libraries
+      if: steps.key.outputs.key != '' && steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        CARGO_ARGS: ${{ inputs.cargo-args }}
+        DIR: ${{ runner.temp }}/native-libs
+      run: |
+        # shellcheck disable=SC2086 # CARGO_ARGS is a list of arguments
+        .github/scripts/native-libs.sh prepare "$DIR" $CARGO_ARGS
+        # Cache an empty result too, so selections that build from source skip this step.
+        touch "$DIR/out/.prepared"
+
+    - name: Save native libraries
+      if: steps.key.outputs.key != '' && steps.cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: ${{ runner.temp }}/native-libs/out
+        key: native-libs-${{ runner.os }}-${{ runner.arch }}-${{ steps.key.outputs.key }}
+
+    - name: Use native libraries
+      if: steps.key.outputs.key != ''
+      shell: bash
+      env:
+        DIR: ${{ runner.temp }}/native-libs
+      run: .github/scripts/native-libs.sh env "$DIR"

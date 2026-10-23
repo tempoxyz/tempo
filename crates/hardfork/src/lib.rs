@@ -250,6 +250,15 @@ tempo_hardfork!(
 );
 
 impl TempoHardfork {
+    /// Returns the ordered fallback fee tokens activated by this hardfork.
+    pub const fn fallback_fee_tokens(&self) -> &'static [alloy_primitives::Address] {
+        if self.is_t13() {
+            &[constants::PATH_USD_ADDRESS, constants::OUSD_ADDRESS]
+        } else {
+            &[constants::PATH_USD_ADDRESS]
+        }
+    }
+
     /// Returns the position of this hardfork in [`Self::VARIANTS`].
     ///
     /// Useful for storing the hardfork in an atomic, see [`Self::from_variant_index`].
@@ -418,7 +427,7 @@ impl TempoHardfork {
             Self::T10 => Some(MAINNET_T10_TIMESTAMP),
             Self::T11 => Some(MAINNET_T11_TIMESTAMP),
             Self::T12 => Some(MAINNET_T12_TIMESTAMP),
-            Self::T13 => None,
+            Self::T13 => Some(MAINNET_T13_TIMESTAMP),
             Self::T14 => None,
         }
     }
@@ -470,7 +479,7 @@ impl TempoHardfork {
             Self::T10 => Some(MODERATO_T10_TIMESTAMP),
             Self::T11 => Some(MODERATO_T11_TIMESTAMP),
             Self::T12 => Some(MODERATO_T12_TIMESTAMP),
-            Self::T13 => None,
+            Self::T13 => Some(MODERATO_T13_TIMESTAMP),
             Self::T14 => None,
         }
     }

@@ -1,0 +1,63 @@
+name: Zones Docker Build (Profiling)
+
+on:
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io/tempoxyz
+
+jobs:
+  build-and-push:
+    name: Build and Push Profiling Docker Images
+    if: github.repository == 'tempoxyz/tempo'
+    runs-on: depot-ubuntu-latest-16
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: tempoxyz/gh-actions/vendor/depot/setup-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Docker metadata for tempo-zone-profiling
+        id: meta-tempo-zone
+        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          images: ${{ env.REGISTRY }}/tempo-zone
+          bake-target: tempo-zone
+          tags: |
+            type=raw,value=profiling
+            type=sha,prefix=profiling-sha-
+
+      - name: Log in to Container Registry
+        uses: tempoxyz/gh-actions/vendor/docker/login-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: shortsha
+        run: echo "shortsha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push Docker images
+        uses: tempoxyz/gh-actions/vendor/depot/bake-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          files: |
+            zones/docker/docker-bake.hcl
+            zones/docker/docker-bake-profiling.hcl
+            ${{ steps.meta-tempo-zone.outputs.bake-file }}
+          targets: tempo-zone
+          project: 0c6tg19qsp
+          push: true
+          no-cache: true
+          pull: true
+        env:
+          VERGEN_GIT_SHA: ${{ github.sha }}
+          VERGEN_GIT_SHA_SHORT: ${{ steps.shortsha.outputs.shortsha }}

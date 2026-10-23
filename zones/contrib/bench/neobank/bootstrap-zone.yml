@@ -1,0 +1,4 @@
+chain_id: ${ZONES_BENCH_EXPECTED_ZONE_CHAIN_ID}
+
+artifacts:
+  ZoneInbox: abis/neobank-zone-inbox.json
