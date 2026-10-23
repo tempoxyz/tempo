@@ -41,7 +41,6 @@ use Committed::{Account, Nobody, Signer};
 
 const HASH: B256 = B256::repeat_byte(0x42);
 const COMMITMENT: B256 = B256::repeat_byte(0x11);
-const FACTORY: Address = Address::repeat_byte(0x71);
 
 /// A signing key of one of the primitive signature types.
 enum Key {
@@ -357,7 +356,7 @@ fn verify_configurable_account_accepts_calldata_beyond_the_primitive_cap_at_t14(
         threshold: u8::try_from(signers.len()).unwrap(),
         owners,
     };
-    let account = config.derive_account(FACTORY).unwrap();
+    let account = config.derive_account().unwrap();
     let digest = configurable_account_digest(HASH, account, config.version);
     let approvals = signers.iter().map(|signer| signer.sign(digest)).collect();
     let signature = TempoSignature::ConfigurableAccount(
@@ -373,7 +372,6 @@ fn verify_configurable_account_accepts_calldata_beyond_the_primitive_cap_at_t14(
     }
     .abi_encode();
     let mut storage = HashMapStorageProvider::new_with_spec(1, T14);
-    storage.set_configurable_account_recovery_factory(FACTORY);
     let output = StorageCtx::enter(&mut storage, || {
         SignatureVerifier::new().call(&calldata, Address::ZERO)
     })
