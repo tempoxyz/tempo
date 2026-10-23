@@ -211,7 +211,7 @@ fn calculate_key_authorization_gas(
     spec: TempoHardfork,
 ) -> (u64, u64) {
     // All signature types pay ECRECOVER_GAS (3k) as the baseline since
-    // primitive_signature_verification_gas assumes ecrecover is already in base 21k.
+    // PrimitiveSignature::intrinsic_verification_gas assumes ecrecover is already in base 21k.
     // For KeyAuthorization, we're doing an additional signature verification.
     let sig_gas = ECRECOVER_GAS + account_signature_verification_gas(&key_auth.signature);
 
