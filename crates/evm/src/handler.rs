@@ -1355,9 +1355,7 @@ struct PreparedAa {
     floor_gas: u64,
     state_refund: u64,
     regular_refund: u64,
-    // Preserve the existing terminal OOG result from key authorization processing. Only `Some`
-    // when key-authorization gas is metered (T1/T1A), so later forks always reach
-    // `register_commitments`.
+    // Preserve the existing terminal OOG result from key authorization processing.
     result: Option<TxResult<TempoEvmTypes>>,
 }
 
