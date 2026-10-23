@@ -24,10 +24,10 @@ use crate::{
 use alloy_chains::Chain;
 use alloy_consensus::{BlockHeader as _, TxReceipt as _};
 use alloy_eips::{BlockHashOrNumber, BlockNumberOrTag};
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{Address, TxKind, U256};
 use alloy_provider::{DynProvider, Provider as _};
 use alloy_signer_local::PrivateKeySigner;
-use alloy_sol_types::SolEvent as _;
+use alloy_sol_types::{SolCall as _, SolEvent as _, SolInterface as _};
 use k256::SecretKey;
 use reth_chainspec::EthChainSpec;
 use reth_eth_wire_types::primitives::BasicNetworkPrimitives;
@@ -66,16 +66,17 @@ use std::{
 };
 use tempo_alloy::TempoNetwork;
 use tempo_contracts::zones::{
-    LegacyTempoAdvanced, TempoAdvanced, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS,
+    IZoneOutbox, LegacyTempoAdvanced, TempoAdvanced, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS,
     ZonePortal::{self},
 };
 use tempo_evm::TempoInvalidTransaction;
 use tempo_node::{
     DEFAULT_AA_VALID_AFTER_MAX_SECS, engine::TempoEngineValidator, rpc::TempoEthApiBuilder,
 };
-use tempo_precompiles::tip20::TIP20Token;
+use tempo_precompiles::tip20::{ITIP20, TIP20Token};
 use tempo_primitives::{
-    self as primitives, TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType,
+    self as primitives, TempoAddressExt as _, TempoHeader, TempoPrimitives, TempoTxEnvelope,
+    TempoTxType,
 };
 use tempo_transaction_pool::{
     AA2dPool, AA2dPoolConfig, TempoTransactionPool, TempoTransactionPoolExt,
@@ -100,8 +101,8 @@ use zone_p2p::{
     P2pCommand, P2pConfig, P2pNetworkId, P2pPeerId, ZoneManifest, spawn_p2p,
 };
 use zone_payload::{
-    DEFAULT_WITHDRAWAL_BATCH_INTERVAL_BLOCKS, WithdrawalRevealEncryptor, ZonePayloadAttributes,
-    ZonePayloadFactory, ZonePayloadTypes,
+    DEFAULT_WITHDRAWAL_BATCH_INTERVAL_BLOCKS, TransferAllowlist as _, WithdrawalRevealEncryptor,
+    ZonePayloadAttributes, ZonePayloadFactory, ZonePayloadTypes, unlisted_transfer_error,
 };
 use zone_primitives::constants::{decode_l1_chain_id, zone_chain_id};
 use zone_rpc::ZoneDebugApiRpcServer;
@@ -202,7 +203,8 @@ pub struct ZoneSequencerAddOnsConfig {
     pub withdrawal_poll_interval: Duration,
     /// Gas and concurrency limits for withdrawal processing transactions.
     pub withdrawal_batch_limits: WithdrawalBatchLimits,
-    /// Depositor allowlist enforced while leading. `None` credits every deposit.
+    /// Depositor and transfer allowlist enforced while leading. `None` credits every deposit and
+    /// admits every transfer.
     pub deposit_allowlist: Option<DepositAllowlist>,
 }
 
@@ -1796,11 +1798,18 @@ where
         if let Some(encryptor) = self.withdrawal_reveal_encryptor.clone() {
             payload_factory = payload_factory.with_withdrawal_reveal_encryptor(encryptor);
         }
+        let mut pool_builder = ZonePoolBuilder::new(executor_builder.enabled_tokens.clone());
+        if let Some(config) = &self.sequencer_config
+            && let Some(allowlist) = &config.deposit_allowlist
+        {
+            payload_factory = payload_factory.with_transfer_allowlist(Arc::new(allowlist.clone()));
+            // The engine names the sequencer as each block's fee recipient.
+            pool_builder = pool_builder
+                .with_transfer_allowlist(allowlist.clone(), config.sequencer_signer.address());
+        }
         ComponentsBuilder::default()
             .node_types::<N>()
-            .pool(ZonePoolBuilder::new(
-                executor_builder.enabled_tokens.clone(),
-            ))
+            .pool(pool_builder)
             .executor(executor_builder)
             .payload(BasicPayloadServiceBuilder::new(payload_factory))
             .network(NoopNetworkBuilder::<ZoneNetworkPrimitives>::default())
@@ -1957,12 +1966,29 @@ where
 #[non_exhaustive]
 pub struct ZonePoolBuilder {
     enabled_tokens: EnabledTokenRegistry,
+    /// Allowlist that transfer calls must satisfy, and the fee recipient of blocks this node
+    /// builds. `None` admits every transfer.
+    transfer_allowlist: Option<(DepositAllowlist, Address)>,
 }
 
 impl ZonePoolBuilder {
     /// Create a pool builder using the shared enabled-token registry.
     pub fn new(enabled_tokens: EnabledTokenRegistry) -> Self {
-        Self { enabled_tokens }
+        Self {
+            enabled_tokens,
+            transfer_allowlist: None,
+        }
+    }
+
+    /// Reject transactions whose calls move funds to or from accounts `allowlist` does not allow
+    /// in blocks paying fees to `fee_recipient`.
+    pub(crate) fn with_transfer_allowlist(
+        mut self,
+        allowlist: DepositAllowlist,
+        fee_recipient: Address,
+    ) -> Self {
+        self.transfer_allowlist = Some((allowlist, fee_recipient));
+        self
     }
 }
 
@@ -2002,6 +2028,55 @@ fn validate_has_enabled_token_balance(
     ))
 }
 
+/// Reject a transaction whose calls transfer TIP-20 funds, or request a withdrawal with a Zone
+/// fallback recipient, between accounts `allowlist` does not both allow.
+///
+/// This decodes the transaction's own calls so the sequencer pool rejects them on admission
+/// instead of holding transactions the leader would drop. The builder still checks executed
+/// events, which also covers list changes after admission.
+fn validate_transfer_calls(
+    allowlist: &DepositAllowlist,
+    fee_recipient: Address,
+    tx: &TempoPooledTransaction,
+) -> Result<(), InvalidPoolTransactionError> {
+    let sender = *tx.sender_ref();
+    let allowed = tx.inner().calls().all(|(kind, input)| {
+        let TxKind::Call(target) = kind else {
+            return true;
+        };
+        if target.is_tip20() {
+            return match ITIP20::ITIP20Calls::abi_decode(input) {
+                Ok(ITIP20::ITIP20Calls::transfer(ITIP20::transferCall { to, .. }))
+                | Ok(ITIP20::ITIP20Calls::transferWithMemo(ITIP20::transferWithMemoCall {
+                    to,
+                    ..
+                })) => allowlist.allows_transfer(fee_recipient, sender, to),
+                Ok(ITIP20::ITIP20Calls::transferFrom(ITIP20::transferFromCall {
+                    from,
+                    to,
+                    ..
+                }))
+                | Ok(ITIP20::ITIP20Calls::transferFromWithMemo(
+                    ITIP20::transferFromWithMemoCall { from, to, .. },
+                )) => allowlist.allows_transfer(fee_recipient, from, to),
+                _ => true,
+            };
+        }
+        if target != ZONE_OUTBOX_ADDRESS {
+            return true;
+        }
+        match IZoneOutbox::requestWithdrawalCall::abi_decode(input) {
+            Ok(call) => allowlist.allows_withdrawal_fallback(sender, call.zoneFallbackRecipient),
+            Err(_) => true,
+        }
+    });
+    if allowed {
+        Ok(())
+    } else {
+        Err(unlisted_transfer_error())
+    }
+}
+
 impl<Node> PoolBuilder<Node, ZoneEvmConfig> for ZonePoolBuilder
 where
     Node: FullNodeTypes<Types = ZoneNode>,
@@ -2036,8 +2111,13 @@ where
 
         let provider = ctx.provider().clone();
         let enabled_tokens = self.enabled_tokens;
+        let transfer_allowlist = self.transfer_allowlist;
         validator.set_additional_stateful_validation(move |_origin, tx, _account_state| {
-            validate_has_enabled_token_balance(&provider, &enabled_tokens, *tx.sender_ref())
+            validate_has_enabled_token_balance(&provider, &enabled_tokens, *tx.sender_ref())?;
+            if let Some((allowlist, fee_recipient)) = &transfer_allowlist {
+                validate_transfer_calls(allowlist, *fee_recipient, tx)?;
+            }
+            Ok(())
         });
 
         let validator =
@@ -2307,6 +2387,150 @@ mod tests {
             tempo_revm::TempoInvalidTransaction::CallsValidation(_)
         ));
         assert!(zone_evm::validate_transaction(transaction.tx_env(), &[sender]).is_ok());
+    }
+
+    const ALICE: Address = Address::repeat_byte(0xa1);
+    const BOB: Address = Address::repeat_byte(0xb0);
+    const CAROL: Address = Address::repeat_byte(0xca);
+    const FEE_RECIPIENT: Address = Address::repeat_byte(0xfe);
+
+    fn call(to: Address, input: impl Into<Bytes>) -> Call {
+        Call {
+            to: TxKind::Call(to),
+            value: U256::ZERO,
+            input: input.into(),
+        }
+    }
+
+    fn token_transfer(to: Address) -> Call {
+        call(
+            Address::new_tip20(0),
+            ITIP20::transferCall {
+                to,
+                amount: U256::ONE,
+            }
+            .abi_encode(),
+        )
+    }
+
+    fn token_transfer_from(from: Address, to: Address) -> Call {
+        call(
+            Address::new_tip20(0),
+            ITIP20::transferFromWithMemoCall {
+                from,
+                to,
+                amount: U256::ONE,
+                memo: Default::default(),
+            }
+            .abi_encode(),
+        )
+    }
+
+    fn request_withdrawal(fallback_recipient: Address) -> Call {
+        call(
+            ZONE_OUTBOX_ADDRESS,
+            IZoneOutbox::requestWithdrawalCall {
+                token: Address::new_tip20(0),
+                to: fallback_recipient,
+                amount: 1,
+                memo: Default::default(),
+                gasLimit: 0,
+                zoneFallbackRecipient: fallback_recipient,
+                data: Bytes::new(),
+                revealTo: Bytes::new(),
+            }
+            .abi_encode(),
+        )
+    }
+
+    /// An allowlist holding `addresses`, persisted in the returned directory.
+    fn listed(addresses: Vec<Address>) -> (tempfile::TempDir, DepositAllowlist) {
+        let dir = tempfile::tempdir().unwrap();
+        let allowlist = DepositAllowlist::load(
+            dir.path()
+                .join(crate::deposit_allowlist::DEPOSIT_ALLOWLIST_FILE_NAME),
+            DepositAllowlistAdmin {
+                address: Address::ZERO,
+                zone_chain_id: 1,
+            },
+        )
+        .unwrap();
+        allowlist.replace(addresses).unwrap();
+        (dir, allowlist)
+    }
+
+    /// Checks an AA transaction from `sender` against a list holding ALICE and BOB.
+    fn admits_calls(sender: Address, calls: Vec<Call>) -> bool {
+        let (_dir, allowlist) = listed(vec![ALICE, BOB]);
+        match validate_transfer_calls(&allowlist, FEE_RECIPIENT, &aa_transaction(sender, calls)) {
+            Ok(()) => true,
+            Err(err) => {
+                assert_eq!(err.to_string(), unlisted_transfer_error().to_string());
+                false
+            }
+        }
+    }
+
+    #[test]
+    fn pool_admits_transfers_only_between_listed_accounts() {
+        assert!(admits_calls(ALICE, vec![token_transfer(BOB)]));
+        assert!(!admits_calls(ALICE, vec![token_transfer(CAROL)]));
+        assert!(!admits_calls(CAROL, vec![token_transfer(ALICE)]));
+        // Any unlisted call rejects the whole batch.
+        assert!(!admits_calls(
+            ALICE,
+            vec![token_transfer(BOB), token_transfer(CAROL)]
+        ));
+        // The spender need not be listed; the owner and recipient must be.
+        assert!(admits_calls(CAROL, vec![token_transfer_from(ALICE, BOB)]));
+        assert!(!admits_calls(ALICE, vec![token_transfer_from(CAROL, BOB)]));
+        // Transfer calldata sent to a non-token contract moves no TIP-20 funds.
+        assert!(admits_calls(
+            ALICE,
+            vec![call(
+                CAROL,
+                ITIP20::transferCall {
+                    to: CAROL,
+                    amount: U256::ONE
+                }
+                .abi_encode()
+            )]
+        ));
+    }
+
+    #[test]
+    fn pool_admits_unlisted_fee_payments_and_withdrawals() {
+        assert!(admits_calls(CAROL, vec![token_transfer(FEE_RECIPIENT)]));
+        assert!(admits_calls(
+            CAROL,
+            vec![token_transfer(ZONE_OUTBOX_ADDRESS)]
+        ));
+        assert!(admits_calls(CAROL, vec![request_withdrawal(CAROL)]));
+        assert!(!admits_calls(CAROL, vec![request_withdrawal(ALICE)]));
+        assert!(!admits_calls(ALICE, vec![request_withdrawal(CAROL)]));
+        assert!(admits_calls(ALICE, vec![request_withdrawal(BOB)]));
+    }
+
+    #[test]
+    fn pool_checks_non_aa_transfers() {
+        let (_dir, allowlist) = listed(vec![ALICE]);
+        let envelope = TempoTxEnvelope::Eip1559(Signed::new_unhashed(
+            TxEip1559 {
+                to: TxKind::Call(Address::new_tip20(0)),
+                input: ITIP20::transferCall {
+                    to: BOB,
+                    amount: U256::ONE,
+                }
+                .abi_encode()
+                .into(),
+                ..Default::default()
+            },
+            Signature::test_signature(),
+        ));
+        let transaction = pooled_transaction(envelope, ALICE);
+        assert!(validate_transfer_calls(&allowlist, FEE_RECIPIENT, &transaction).is_err());
+        allowlist.set(&[BOB], true).unwrap();
+        assert!(validate_transfer_calls(&allowlist, FEE_RECIPIENT, &transaction).is_ok());
     }
 
     #[test]

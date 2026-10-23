@@ -1,9 +1,11 @@
-//! Sequencer-local allowlist of L1 depositors.
+//! Sequencer-local allowlist of L1 depositors and Zone transfer parties.
 //!
 //! When a Zone portal runs with access mode disabled, anyone can deposit on L1. The leader then
 //! bounces deposits whose L1 `sender` is not on this list by supplying zeroed decryption data,
 //! which the inbox treats as a failed decryption and refunds through the ordinary deposit
-//! bounce-back path. The check runs only where blocks are built, so it needs no hardfork.
+//! bounce-back path. Users keep the same address on L1 and the Zone, so the leader also leaves out
+//! Zone TIP-20 transfers unless both parties are listed (see [`TransferAllowlist`]). The checks
+//! run only where blocks are built, so they need no hardfork.
 //!
 //! A sequencer with no persisted list is uninitialized and credits every deposit until its first
 //! write, so enabling the allowlist does not bounce deposits before the admin fills the list.
@@ -27,6 +29,7 @@ use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 use zone_l1::{FAILED_DECRYPTION, abi::DecryptionData};
+use zone_payload::TransferAllowlist;
 
 mod relay;
 pub(crate) use relay::{AllowlistRelay, apply_relayed_requests};
@@ -273,7 +276,8 @@ pub(crate) struct SequencerAllowlistStatus {
     pub(crate) status: DepositAllowlistStatus,
 }
 
-/// Addresses whose L1 deposits the leader credits, persisted as JSON.
+/// Addresses whose L1 deposits the leader credits and that may send and receive Zone transfers,
+/// persisted as JSON.
 ///
 /// Cloning shares the same list.
 #[derive(Debug, Clone)]
@@ -467,6 +471,16 @@ impl DepositAllowlist {
         log_status(status_of(Some(&next)), "Updated deposit allowlist");
         *self.inner.state.write() = Some(next);
         Ok(())
+    }
+}
+
+impl TransferAllowlist for DepositAllowlist {
+    fn allows(&self, address: Address) -> bool {
+        self.inner
+            .state
+            .read()
+            .as_ref()
+            .is_none_or(|state| state.addresses.contains(&address))
     }
 }
 
@@ -943,6 +957,20 @@ mod tests {
             .apply_signed(sign_until(now() + max - 60))
             .unwrap();
         assert_eq!(allowlist.snapshot().addresses, vec![BOB, ALICE]);
+    }
+
+    #[test]
+    fn transfer_parties_are_restricted_once_the_list_is_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let allowlist = load(dir.path().join(DEPOSIT_ALLOWLIST_FILE_NAME));
+        assert!(allowlist.allows(BOB));
+
+        allowlist.replace(vec![ALICE]).unwrap();
+        assert!(allowlist.allows(ALICE));
+        assert!(!allowlist.allows(BOB));
+
+        allowlist.replace(Vec::new()).unwrap();
+        assert!(!allowlist.allows(ALICE));
     }
 
     #[test]
