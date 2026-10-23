@@ -19,10 +19,11 @@ use alloc::vec::Vec;
 use alloy_evm::precompiles::DynPrecompile;
 use alloy_primitives::{Address, B256, U256};
 use alloy_sol_types::{SolCall, SolValue, abi::AbiDecoderConfig};
+use exithatch::ForcedExitReason;
 use tempo_contracts::zones::{
-    DecryptionData, Deposit, DepositType, EnabledToken, ForcedExit, IZoneInbox, IZoneOutbox,
-    LegacyTempoAdvanced, QueuedDeposit, TempoAdvanced, WithdrawalBounceBackDeposit, ZoneInboxError,
-    ZoneInboxEvent,
+    DecryptionData, Deposit, DepositType, EnabledToken, ForcedExit, ForcedExitProcessed,
+    IZoneInbox, IZoneOutbox, LegacyTempoAdvanced, QueuedDeposit, TempoAdvanced,
+    WithdrawalBounceBackDeposit, ZoneInboxError, ZoneInboxEvent,
 };
 use tempo_precompiles::{
     PATH_USD_ADDRESS,
@@ -38,10 +39,12 @@ use crate::{
     ZonePrecompileError, ZoneResult, aes_gcm, chaum_pedersen,
     ecies::{ENCRYPTED_PAYLOAD_PLAINTEXT_SIZE, hkdf_info, hkdf_sha256},
     execution::NoCallRules,
+    forced_exit_storage::ForcedExitPortalStorage,
     outbox::ZoneOutbox,
     storage::{L1State, L1StorageReader},
     tempo_state::TempoState,
 };
+use forced::ForcedExitResult;
 
 /// ABI selector for the block-opening `advanceTempo` system call.
 pub const ADVANCE_TEMPO_SELECTOR: [u8; 4] = IZoneInbox::advanceTempoCall::SELECTOR;
@@ -96,14 +99,6 @@ impl ZoneInbox {
         let deposit_count = u64::try_from(call.deposits.len())
             .map_err(|_| TempoPrecompileError::under_overflow())?;
         let deposits = decode_deposits(call.deposits)?;
-        // Forced exits activate at T14, after the T13 prover transition.
-        // Reject the whole transition before anchoring L1 or changing any inbox state.
-        let has_forced_exits = deposits
-            .iter()
-            .any(|entry| matches!(entry, DecodedQueuedDeposit::ForcedExit(_)));
-        if has_forced_exits && !self.storage.spec().is_t14() {
-            return Err(ZonePrecompileError::MalformedCalldata);
-        }
 
         let mut tempo_state = TempoState::new();
 
@@ -111,13 +106,13 @@ impl ZoneInbox {
         tempo_state.finalize_checkpoints(l1, &[call.header])?;
         let tempo_block_number = tempo_state.tempo_block_number()?;
 
-        // Activation is authenticated at the imported L1 anchor, including historical replay.
-        if has_forced_exits {
-            let portal = crate::forced_exit_storage::ForcedExitPortalStorage::new(l1.portal());
-            if l1.read_l1(&portal.forced_exit_version)? != 1 {
-                return Err(ZonePrecompileError::MalformedCalldata);
-            }
-        }
+        // Forced exits run only under T14 rules with activation authenticated at the imported L1
+        // anchor, including historical replay. Otherwise each forced entry is `NotActivated`.
+        let forced_exits_live = deposits
+            .iter()
+            .any(|entry| matches!(entry, DecodedQueuedDeposit::ForcedExit(_)))
+            && self.storage.spec().is_t14()
+            && l1.read_l1(&ForcedExitPortalStorage::new(l1.portal()).forced_exit_version)? == 1;
 
         let has_token_enablements = !call.enabledTokens.is_empty();
         let enabled_token_count = call.enabledTokens.len();
@@ -188,8 +183,14 @@ impl ZoneInbox {
                         .ok_or_else(ZoneInboxError::missing_decryption_data)?;
                     // Every terminal classification consumes its entry through the common cursor
                     // update below. Fatal errors roll back the complete inbox transition.
-                    self.process_forced_exit(l1, &mut outbox, entry, decryption)
-                        .map(forced::observe)
+                    let result = if forced_exits_live {
+                        self.process_forced_exit(l1, &mut outbox, entry, decryption)?
+                    } else {
+                        // Consumed without decryption: nonce and principal stay unchanged.
+                        ForcedExitResult::Rejected(ForcedExitReason::NotActivated)
+                    };
+                    forced::observe(result);
+                    Ok(())
                 }
                 DecodedQueuedDeposit::WithdrawalBounceBack(deposit) => {
                     self.process_withdrawal_bounce_back(&mut outbox, deposit)

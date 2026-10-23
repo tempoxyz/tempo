@@ -1,20 +1,22 @@
 use super::{
-    forced::{ForcedWithdrawalError, ForcedWithdrawalRequest},
+    forced::{FORCED_EXIT_DEBIT_GAS, ForcedWithdrawalRequest},
     *,
 };
 
 use alloy_evm::precompiles::DynPrecompile;
 use alloy_primitives::{Bytes, address};
 use alloy_sol_types::{SolCall, SolEvent, SolInterface};
+use exithatch::ForcedExitReason;
 use revm::{
     context::JournalTr,
     precompile::{PrecompileHalt, PrecompileResult, PrecompileStatus},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_contracts::zones::IZoneOutbox as ZoneOutboxAbi;
+use tempo_contracts::{precompiles::ITIP403Registry, zones::IZoneOutbox as ZoneOutboxAbi};
 use tempo_precompiles::{
     storage::{StorageCtx, StorageKey},
     test_util::TIP20Setup,
+    tip403_registry::TIP403Registry,
     zone_factory::portal::{self, ZonePortalStorage},
 };
 use zone_primitives::constants::TEMPO_STATE_ADDRESS;
@@ -944,22 +946,56 @@ fn fallback_recipient_nonce_is_private_and_consumed_once_by_inbox() -> eyre::Res
 }
 
 impl Harness {
-    fn forced(&mut self, caller: Address, amount: u128) -> Result<(), ForcedWithdrawalError> {
+    fn forced(
+        &mut self,
+        caller: Address,
+        amount: u128,
+    ) -> ZoneResult<Result<(), ForcedExitReason>> {
+        self.forced_with_gas(caller, amount, u64::MAX)
+    }
+
+    fn forced_with_gas(
+        &mut self,
+        caller: Address,
+        amount: u128,
+        gas: u64,
+    ) -> ZoneResult<Result<(), ForcedExitReason>> {
         let l1 = L1State::new(self.l1.clone(), PORTAL);
-        let mut storage = test_storage_provider(&mut self.ctx, u64::MAX, false);
+        let request = self.forced_request(amount);
+        let mut storage = test_storage_provider(&mut self.ctx, gas, false);
         StorageCtx::enter(&mut storage, || {
-            ZoneOutbox::new().request_forced_withdrawal(
-                &l1,
-                caller,
-                ForcedWithdrawalRequest {
-                    private_request_hash: B256::repeat_byte(7),
-                    token: self.token,
-                    account: ALICE,
-                    recipient: BOB,
-                    amount,
-                },
-            )
+            ZoneOutbox::new().request_forced_withdrawal(&l1, caller, request)
         })
+    }
+
+    fn forced_request(&self, amount: u128) -> ForcedWithdrawalRequest {
+        ForcedWithdrawalRequest {
+            private_request_hash: B256::repeat_byte(7),
+            token: self.token,
+            account: ALICE,
+            recipient: BOB,
+            amount,
+        }
+    }
+
+    /// Run only the debit attempt with a `gas` allotment, returning its result and gas used.
+    fn try_debit(&mut self, gas: u64) -> eyre::Result<(Result<(), ForcedExitReason>, u64)> {
+        let request = self.forced_request(1_000_000);
+        let mut storage = test_storage_provider(&mut self.ctx, u64::MAX, false);
+        Ok(StorageCtx::enter(&mut storage, || {
+            let result = ZoneOutbox::new().try_debit(request, gas)?;
+            ZoneResult::Ok((result, StorageCtx.gas_used()))
+        })?)
+    }
+
+    /// Assert that a rejected or failed request left ALICE's principal and the queue untouched.
+    fn assert_not_debited(&mut self, logs_before: &[alloy_primitives::Log]) -> eyre::Result<()> {
+        assert_eq!(self.ctx.journaled_state.logs(), logs_before);
+        assert_eq!(self.balance_of(ALICE)?, U256::from(1_000_000));
+        assert_eq!(self.balance_of(ZONE_OUTBOX_ADDRESS)?, U256::ZERO);
+        assert_eq!(self.last_fallback_nonce()?, 0);
+        assert!(self.pending()?.is_empty());
+        Ok(())
     }
 }
 
@@ -1002,7 +1038,7 @@ fn forced_withdrawal_is_root_authorized_fee_free_and_finalizes_in_mixed_order() 
             token.total_supply()
         })?;
     }
-    h.forced(ZONE_INBOX_ADDRESS, 999_900).unwrap();
+    assert_eq!(h.forced(ZONE_INBOX_ADDRESS, 999_900)?, Ok(()));
     let event = h
         .ctx
         .journaled_state
@@ -1090,33 +1126,33 @@ fn forced_withdrawal_is_root_authorized_fee_free_and_finalizes_in_mixed_order() 
 }
 
 #[test]
-fn forced_withdrawal_policy_and_fatal_failures_leave_no_partial_state() -> eyre::Result<()> {
+fn forced_withdrawal_policy_and_debit_failures_leave_no_partial_state() -> eyre::Result<()> {
     let mut h = Harness::new()?;
     h.ctx.cfg.spec = TempoHardfork::T14;
-    assert!(matches!(
+    assert_eq!(
         h.forced(ALICE, 1_000_000),
-        Err(ForcedWithdrawalError::Fatal(_))
-    ));
+        Err(ZoneOutboxError::only_zone_inbox().into())
+    );
     h.set_token_enabled(false);
     assert_eq!(
-        h.forced(ZONE_INBOX_ADDRESS, 1_000_000),
-        Err(ForcedWithdrawalError::PolicyRejected)
+        h.forced(ZONE_INBOX_ADDRESS, 1_000_000)?,
+        Err(ForcedExitReason::PolicyRejected)
     );
     h.set_token_enabled(true);
     h.set_modes(true, false);
     assert_eq!(
-        h.forced(ZONE_INBOX_ADDRESS, 1_000_000),
-        Err(ForcedWithdrawalError::PolicyRejected)
+        h.forced(ZONE_INBOX_ADDRESS, 1_000_000)?,
+        Err(ForcedExitReason::PolicyRejected)
     );
     h.set_modes(false, true);
     h.set_role(BOB, Role::CallbackGateway);
     assert_eq!(
-        h.forced(ZONE_INBOX_ADDRESS, 1_000_000),
-        Err(ForcedWithdrawalError::PolicyRejected)
+        h.forced(ZONE_INBOX_ADDRESS, 1_000_000)?,
+        Err(ForcedExitReason::PolicyRejected)
     );
     h.set_modes(false, false);
-    // Force failure after transfer and burn, at fallback allocation. The debit, supply and
-    // all emitted native-token logs must be reverted by the helper's own nested checkpoint.
+    // Force a revert after transfer and burn, at fallback allocation. The debit, supply and
+    // all emitted native-token logs must be reverted by the attempt's own nested checkpoint.
     {
         let mut storage = test_storage_provider(&mut h.ctx, u64::MAX, false);
         StorageCtx::enter(&mut storage, || {
@@ -1124,10 +1160,10 @@ fn forced_withdrawal_policy_and_fatal_failures_leave_no_partial_state() -> eyre:
         })?;
     }
     let logs_before = h.ctx.journaled_state.logs().to_vec();
-    assert!(matches!(
-        h.forced(ZONE_INBOX_ADDRESS, 1_000_000),
-        Err(ForcedWithdrawalError::Fatal(_))
-    ));
+    assert_eq!(
+        h.forced(ZONE_INBOX_ADDRESS, 1_000_000)?,
+        Err(ForcedExitReason::DebitFailed)
+    );
     assert_eq!(h.ctx.journaled_state.logs(), logs_before);
     assert_eq!(h.balance_of(ALICE)?, U256::from(1_000_000));
     assert_eq!(h.balance_of(ZONE_OUTBOX_ADDRESS)?, U256::ZERO);
@@ -1186,8 +1222,8 @@ fn forced_withdrawal_enforces_native_pause_sender_and_receive_policies() -> eyre
             })?;
         }
         assert_eq!(
-            h.forced(ZONE_INBOX_ADDRESS, 1_000_000),
-            Err(ForcedWithdrawalError::PolicyRejected),
+            h.forced(ZONE_INBOX_ADDRESS, 1_000_000)?,
+            Err(ForcedExitReason::PolicyRejected),
             "policy {policy}"
         );
         assert_eq!(h.balance_of(ALICE)?, U256::from(1_000_000));
@@ -1216,9 +1252,10 @@ fn forced_withdrawal_preserves_outer_rollback() -> eyre::Result<()> {
             recipient: BOB,
             amount: 1_000_000,
         };
-        outbox
-            .request_forced_withdrawal(&l1, ZONE_INBOX_ADDRESS, request)
-            .unwrap();
+        assert_eq!(
+            outbox.request_forced_withdrawal(&l1, ZONE_INBOX_ADDRESS, request)?,
+            Ok(())
+        );
         assert_eq!(outbox.fallback_recipient(1)?, ALICE);
         // A later fatal inbox error must be able to roll back an already committed helper.
         drop(outer);
@@ -1238,80 +1275,111 @@ fn forced_withdrawal_missing_l1_state_and_out_of_gas_are_fatal() -> eyre::Result
     for missing_l1 in [false, true] {
         let mut h = Harness::new()?;
         h.ctx.cfg.spec = TempoHardfork::T14;
-        let l1 = L1State::new(
-            if missing_l1 {
-                MockL1Reader::failing_storage()
-            } else {
-                h.l1.clone()
-            },
-            PORTAL,
-        );
+        let l1 = h.l1.clone();
+        if missing_l1 {
+            h.l1 = MockL1Reader::failing_storage();
+        }
         let logs_before = h.ctx.journaled_state.logs().to_vec();
-        let mut storage =
-            test_storage_provider(&mut h.ctx, if missing_l1 { u64::MAX } else { 0 }, false);
-        let result = StorageCtx::enter(&mut storage, || {
-            ZoneOutbox::new().request_forced_withdrawal(
-                &l1,
-                ZONE_INBOX_ADDRESS,
-                ForcedWithdrawalRequest {
-                    private_request_hash: B256::repeat_byte(7),
-                    token: h.token,
-                    account: ALICE,
-                    recipient: BOB,
-                    amount: 1_000_000,
-                },
-            )
-        });
-        drop(storage);
-        assert!(
-            matches!(result, Err(ForcedWithdrawalError::Fatal(_))),
-            "{result:?}"
+        let result = h.forced_with_gas(
+            ZONE_INBOX_ADDRESS,
+            1_000_000,
+            if missing_l1 { u64::MAX } else { 0 },
         );
-        assert_eq!(h.ctx.journaled_state.logs(), logs_before);
-        assert_eq!(h.balance_of(ALICE)?, U256::from(1_000_000));
-        assert_eq!(h.last_fallback_nonce()?, 0);
-        assert!(h.pending()?.is_empty());
+        if missing_l1 {
+            assert!(
+                matches!(
+                    result,
+                    Err(ZonePrecompileError::Tempo(TempoPrecompileError::Fatal(_)))
+                ),
+                "{result:?}"
+            );
+        } else {
+            assert_eq!(result, Err(TempoPrecompileError::OutOfGas.into()));
+        }
+        h.l1 = l1;
+        h.assert_not_debited(&logs_before)?;
     }
     Ok(())
 }
 
+/// The advance must fund the whole allotment before the attempt starts. Otherwise it is out of
+/// its own budget, which aborts rather than producing `DebitFailed`.
 #[test]
-fn forced_withdrawal_rejects_before_fork_without_state_changes() -> eyre::Result<()> {
+fn forced_withdrawal_aborts_when_advance_cannot_fund_debit_allotment() -> eyre::Result<()> {
     let mut h = Harness::new()?;
-    h.ctx.cfg.spec = TempoHardfork::T13;
-    let logs_before = h.ctx.journaled_state.logs().to_vec();
-    // Missing L1 data must not be read before the activation check.
-    let l1 = L1State::new(MockL1Reader::failing_storage(), PORTAL);
-    let mut storage = test_storage_provider(&mut h.ctx, u64::MAX, false);
-    StorageCtx::enter(&mut storage, || {
-        assert_eq!(
-            ZoneOutbox::new().request_forced_withdrawal(
-                &l1,
-                ZONE_INBOX_ADDRESS,
-                ForcedWithdrawalRequest {
-                    private_request_hash: B256::repeat_byte(7),
-                    token: h.token,
-                    account: ALICE,
-                    recipient: BOB,
-                    amount: 1_000_000,
-                },
-            ),
-            Err(ForcedWithdrawalError::Fatal(
-                ZonePrecompileError::MalformedCalldata
-            ))
-        );
-    });
-    drop(storage);
-    assert_eq!(h.ctx.journaled_state.logs(), logs_before.as_slice());
-    assert_eq!(h.balance_of(ALICE)?, U256::from(1_000_000));
-    assert_eq!(h.balance_of(ZONE_OUTBOX_ADDRESS)?, U256::ZERO);
-    assert_eq!(h.last_fallback_nonce()?, 0);
-    assert!(h.pending()?.is_empty());
-    // The same funded state can execute as soon as the selected fork is active.
     h.ctx.cfg.spec = TempoHardfork::T14;
-    h.forced(ZONE_INBOX_ADDRESS, 1_000_000).unwrap();
+    let logs_before = h.ctx.journaled_state.logs().to_vec();
+    assert_eq!(
+        h.forced_with_gas(ZONE_INBOX_ADDRESS, 1_000_000, FORCED_EXIT_DEBIT_GAS),
+        Err(TempoPrecompileError::OutOfGas.into())
+    );
+    h.assert_not_debited(&logs_before)?;
+    assert_eq!(
+        h.forced_with_gas(ZONE_INBOX_ADDRESS, 1_000_000, 2 * FORCED_EXIT_DEBIT_GAS)?,
+        Ok(())
+    );
+    Ok(())
+}
+
+/// The costliest debit fits `FORCED_EXIT_DEBIT_GAS` at production T14 gas: the first forced
+/// withdrawal (empty outbox queue and fallback map), cold storage, and a compound transfer policy.
+/// An attempt that needs one more unit of gas than its bound rolls back as `DebitFailed`.
+#[test]
+fn forced_debit_worst_case_fits_its_bound_at_t14() -> eyre::Result<()> {
+    let mut h = Harness::new()?;
+    h.ctx.cfg.spec = TempoHardfork::T14;
+    h.ctx.cfg.gas_params = tempo_revm::gas_params::tempo_gas_params(TempoHardfork::T14);
+    {
+        let mut storage = test_storage_provider(&mut h.ctx, u64::MAX, false);
+        StorageCtx::enter(&mut storage, || -> TempoResult<()> {
+            let mut registry = TIP403Registry::new();
+            registry.initialize()?;
+            let mut policies = Vec::new();
+            for _ in 0..3 {
+                policies.push(registry.create_policy(
+                    ALICE,
+                    ITIP403Registry::createPolicyCall {
+                        admin: ALICE,
+                        policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                    },
+                )?);
+            }
+            let compound = registry.create_compound_policy(
+                ALICE,
+                ITIP403Registry::createCompoundPolicyCall {
+                    senderPolicyId: policies[0],
+                    recipientPolicyId: policies[1],
+                    mintRecipientPolicyId: policies[2],
+                },
+            )?;
+            TIP20Token::from_address(h.token)?.change_transfer_policy_id(
+                ALICE,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: compound,
+                },
+            )
+        })?;
+    }
+    assert!(h.pending()?.is_empty());
+    assert_eq!(h.last_fallback_nonce()?, 0);
+    // End the setup transaction so the attempt starts cold.
+    h.ctx.journaled_state.commit_tx();
+    let checkpoint = h.ctx.journaled_state.checkpoint();
+    let (result, needed) = h.try_debit(FORCED_EXIT_DEBIT_GAS)?;
+    assert_eq!(result, Ok(()));
+    eprintln!("worst-case forced debit at T14: {needed} gas");
+    assert!(
+        needed <= FORCED_EXIT_DEBIT_GAS,
+        "debit needs {needed} gas, above FORCED_EXIT_DEBIT_GAS"
+    );
+    h.ctx.journaled_state.checkpoint_revert(checkpoint);
+
+    let logs_before = h.ctx.journaled_state.logs().to_vec();
+    let (result, _) = h.try_debit(needed - 1)?;
+    assert_eq!(result, Err(ForcedExitReason::DebitFailed));
+    h.assert_not_debited(&logs_before)?;
+    assert_eq!(h.try_debit(needed)?.0, Ok(()));
     assert_eq!(h.balance_of(ALICE)?, U256::ZERO);
-    assert_eq!(h.last_fallback_nonce()?, 1);
     assert_eq!(h.pending()?.len(), 1);
     Ok(())
 }

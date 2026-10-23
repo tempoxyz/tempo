@@ -162,7 +162,9 @@ enum ForcedExitReason {
     InvalidAuthorization,
     NonceAlreadyConsumed,
     BalanceOverflow,
-    PolicyRejected
+    PolicyRejected,
+    DebitFailed,
+    NotActivated
 }
 
 /// @notice Admission identity authenticated by Zone inbox execution.
@@ -1168,6 +1170,18 @@ interface IZoneInbox {
 
     /// @notice Emitted when a TIP-20 token is enabled on the zone via advanceTempo
     event TokenEnabled(address indexed token, string name, string symbol, string currency);
+
+    /// @notice Zone-local TIP-1012 result for an authenticated forced exit. Visible only to
+    ///         `account` through authenticated RPC.
+    /// @param reason `ForcedExitReason` code.
+    /// @param amount Debited balance for an exit, otherwise 0.
+    event ForcedExitProcessed(
+        address indexed account,
+        uint64 indexed requestId,
+        uint256 nonce,
+        uint8 reason,
+        uint128 amount
+    );
 
     error InvalidTokenEnablementHash();
     error OnlySequencer();

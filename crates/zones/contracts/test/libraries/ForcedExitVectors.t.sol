@@ -98,6 +98,8 @@ contract ForcedExitVectorsTest is Test {
         assertEq(uint8(ForcedExitReason.NonceAlreadyConsumed), 3);
         assertEq(uint8(ForcedExitReason.BalanceOverflow), 4);
         assertEq(uint8(ForcedExitReason.PolicyRejected), 5);
+        assertEq(uint8(ForcedExitReason.DebitFailed), 6);
+        assertEq(uint8(ForcedExitReason.NotActivated), 7);
     }
 
 }

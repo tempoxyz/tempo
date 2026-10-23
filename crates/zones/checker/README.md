@@ -32,7 +32,9 @@ and Inbox/Outbox issuer roles.
 The accounting model also does not correlate individual L1 deposits with L2
 outcomes by deposit hash or authenticate cross-layer withdrawal batch identity.
 Those protocol events are still strictly decoded, but only value movements that
-affect the aggregate solvency model are retained. Genesis bridge cursors are
+affect the aggregate solvency model are retained. For example, the Inbox's
+`ForcedExitProcessed` result is decoded and dropped, because a forced exit's
+debit is already accounted through its TIP-20 logs and `ForcedWithdrawalRequested`. Genesis bridge cursors are
 checked only to establish the empty bootstrap baseline.
 
 It then reads affected balances and every enabled token's supply from the exact

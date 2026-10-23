@@ -146,7 +146,7 @@ On Tempo, each zone has a **portal** that locks deposited tokens. All user depos
 
 Users transact on the zone privately. Balances, transfers, and transaction history are only visible to the account holder and the sequencer nodes. The zone does not post transaction data, and data availability is entrusted to the sequencer fleet. Sequencers have full visibility into zone activity. Privacy protects against public observers on Tempo, not against sequencers.
 
-Zones rely on the following trust assumptions: the verifier must be sound for state transition integrity, the sequencers are trusted for liveness and data availability, and there is no forced inclusion or permissionless exit mechanism.
+Zones rely on the following trust assumptions: the verifier must be sound for state transition integrity, the sequencers are trusted for liveness and data availability, and there is no forced inclusion or permissionless exit mechanism. [TIP-1012](https://github.com/tempoxyz/tempo/blob/main/tips/tip-1012.md) forced exits let an account request a full-balance withdrawal through Tempo that every advance must process (see [Forced-Exit Execution](#forced-exit-execution)), but they still depend on live sequencers.
 
 When a user wants to exit, they request a withdrawal on the zone. Their tokens are burned on the zone side, and the withdrawal is added to a pending list. At the end of a batch, the sequencer finalizes all pending withdrawals into a hash chain and generates a proof covering the full batch of zone blocks. The sequencer submits this batch and proof to the portal on Tempo, which verifies the proof and queues the withdrawals. The sequencer then processes each withdrawal, releasing tokens from the portal to the recipient.
 
@@ -907,7 +907,7 @@ Admission allocates a monotonically increasing `requestId` and global `depositNu
 
 The shared inbox state transition processes forced requests in their exact position among deposits and bounce-backs. Preparation retains historical keys and supplies one decryption witness even when the ciphertext will fail authentication or canonical decoding. A host-provided rejection flag cannot decide the result.
 
-Execution authenticates the outer queue entry, including its request ID, token, and admission block/time, through the deposit queue hash chain, which must match the portal's `currentDepositQueueHash` at the imported anchor; the entry's global deposit position follows from its place in that chain. Execution also requires that the admission block does not exceed the imported anchor (checkpoint-only imports may defer an entry to a later anchor) and verifies the Chaum-Pedersen proof against the indexed historical key. Missing keys or witnesses, an invalid proof, or an admission block beyond the anchor abort the transition; they cannot become terminal rejection. With a valid proof, processing follows this precedence:
+Execution authenticates the outer queue entry, including its request ID, token, and admission block/time, through the deposit queue hash chain, which must match the portal's `currentDepositQueueHash` at the imported anchor; the entry's global deposit position follows from its place in that chain. Execution also requires that the admission block does not exceed the imported anchor (checkpoint-only imports may defer an entry to a later anchor) and verifies the Chaum-Pedersen proof against the indexed historical key. Missing keys or witnesses, an invalid proof, or an admission block beyond the anchor abort the transition; they cannot become terminal rejection. If the Zone block does not run T14 rules, or `forcedExitVersion != 1` at the imported anchor, the entry produces `Rejected(NotActivated)` instead: its decryption witness is consumed without verification, and the nonce and principal are unchanged. With a valid proof, processing follows this precedence:
 
 | Condition | Internal result | Consume fresh authorization nonce? |
 |---|---|---|
@@ -916,14 +916,17 @@ Execution authenticates the outer queue entry, including its request ID, token, 
 | `(account, nonce)` already consumed | `Rejected(NonceAlreadyConsumed)` | Already consumed |
 | Full liquid balance exceeds `uint128` | `Rejected(BalanceOverflow)` | Yes |
 | Full liquid balance is zero | `Empty` | Yes |
-| Enumerated token or recipient policy failure | `Rejected(PolicyRejected)` | Yes |
+| Token or recipient policy check fails | `Rejected(PolicyRejected)` | Yes |
+| Debit attempt reverts or exhausts `FORCED_EXIT_DEBIT_GAS` | `Rejected(DebitFailed)` | Yes |
 | Atomic debit and enqueue succeed | `Exited` | Yes |
 
 The deadline is strictly `requestedAtTime < admitBefore`, using the authenticated L1 admission timestamp, not the execution clock. Nonces are private Zone state, independent of transaction and GCM nonces, need not be sequential, and are shared across tokens for each account. A fresh valid authorization consumes its nonce before inspecting balance or policy. Balance is read at processing time, including credits from earlier inbox entries; later credits require a new authorization. Overflow is rejected without truncation, and an empty balance is handled before policy evaluation.
 
-For a nonzero representable balance, the inbox-only outbox helper checks token enablement, ordinary plain-withdrawal recipient membership/gateway policy, L1 and Zone token pauses, and native transfer/receive policies. A portal pause after admission does not reject execution. Receive-policy diversion is rejected. Root authorization replaces allowance and transaction-key spending authorization while retaining native balance, supply, rewards, and token hooks. Only enumerated policy failures are terminal; unclassified errors remain fatal.
+For every authenticated result (`NonceAlreadyConsumed`, `BalanceOverflow`, `Empty`, `PolicyRejected`, `DebitFailed`, or `Exited`), the inbox emits `ForcedExitProcessed(account, requestId, nonce, reason, amount)`, where `reason` is the `ForcedExitReason` code (`0` for both `Empty` and `Exited`) and `amount` is the debited balance for `Exited` and otherwise 0. `NotActivated`, `InvalidPayload`, and `InvalidAuthorization` emit nothing, so no one can write into an unauthenticated account's private log view. The redacted RPC shows the event only to `account`.
 
-The helper atomically transfers and burns the full balance, allocates a nonzero fallback nonce mapped privately to the debited account, and enqueues an ordinary withdrawal with zero fee, memo, and gas limit, and empty callback and encrypted-sender fields. Debit-attempt effects roll back on failure. Forced requests bypass and do not consume the ordinary `maxWithdrawalsPerBlock` counter: their mandatory workload is bounded at L1 admission.
+For a nonzero representable balance, the inbox-only outbox helper checks token enablement, ordinary plain-withdrawal recipient membership/gateway policy, L1 and Zone token pauses, and native transfer/receive policies. A portal pause after admission does not reject execution. Receive-policy diversion is rejected. Root authorization replaces allowance and transaction-key spending authorization while retaining native balance, supply, rewards, and token hooks. An error raised while evaluating a policy check also produces `PolicyRejected`. Only missing or conflicting witnesses, invariant violations, and exhaustion of the advance's own gas abort.
+
+The helper atomically transfers and burns the full balance, allocates a nonzero fallback nonce mapped privately to the debited account, and enqueues an ordinary withdrawal with zero fee, memo, and gas limit, and empty callback and encrypted-sender fields. Any revert in this debit attempt rolls it back and produces `DebitFailed`. The attempt runs only native code with no user-supplied logic, so its gas is bounded by the implementation. `FORCED_EXIT_DEBIT_GAS` is the per-exit upper bound that the admission weight assumes, enforced by tests at production gas. It is metered on the advance's gas rather than as a separate gas limit: the advance must have the full bound left, and an attempt that uses more is also rolled back as `DebitFailed`. Forced requests bypass and do not consume the ordinary `maxWithdrawalsPerBlock` counter: their mandatory workload is bounded at L1 admission.
 
 The withdrawal uses the ordinary sender-tag formula with a private per-request input:
 
@@ -1152,7 +1155,7 @@ Sequencers and operators retrieve full block data from the unrestricted RPC on p
 
 ### Event Filtering
 
-All log queries are restricted to TIP-20 events where the authenticated account is a relevant party:
+All log queries are restricted to whitelisted events where the authenticated account is a relevant party:
 
 | Event | Relevant if |
 |-------|-------------|
@@ -1161,8 +1164,9 @@ All log queries are restricted to TIP-20 events where the authenticated account 
 | `TransferWithMemo(from, to, amount, memo)` | `from == caller` OR `to == caller` |
 | `Mint(to, amount)` | `to == caller` |
 | `Burn(from, amount)` | `from == caller` |
+| `ForcedExitProcessed(account, requestId, nonce, reason, amount)` emitted by `ZoneInbox` | `account == caller` |
 
-All other events (system events, configuration events) are filtered out. The `address` filter parameter must be a zone token address or omitted. The RPC server injects topic filters to restrict indexed address parameters to the caller, then post-filters results as a final pass.
+All other events (system events, configuration events) are filtered out. The `address` filter parameter must be a zone token address, the `ReceivePolicyGuard`, the `ZoneInbox`, or omitted. The RPC server injects topic filters to restrict indexed address parameters to the caller, then post-filters results as a final pass.
 
 To avoid leaking how much activity occurred in a block, some fields of returned logs are redacted:
 
@@ -1806,7 +1810,9 @@ enum ForcedExitReason {
     InvalidAuthorization,
     NonceAlreadyConsumed,
     BalanceOverflow,
-    PolicyRejected
+    PolicyRejected,
+    DebitFailed,
+    NotActivated
 }
 
 /// @notice Admission identity authenticated by Zone inbox execution.
@@ -2307,6 +2313,13 @@ interface IZoneInbox {
     /// @notice Emitted when a recipient claims an outstanding withdrawal-bounce-back refund.
     event RefundClaimed(address indexed recipient, address indexed token, uint128 amount);
     event TokenEnabled(address indexed token, string name, string symbol, string currency);
+    event ForcedExitProcessed(
+        address indexed account,
+        uint64 indexed requestId,
+        uint256 nonce,
+        uint8 reason,
+        uint128 amount
+    );
 
     error InvalidTokenEnablementHash();
     error OnlySequencer();
@@ -2427,9 +2440,9 @@ Deployed at the same address as on Tempo. Read-only on the zone. Its read method
 
 ## Network Upgrades and Hard Fork Activation
 
-Forced-exit admission is disabled until the portal admin calls `activateForcedExits()`, which irreversibly sets `forcedExitVersion` to 1. Activation is an admin-controlled operational step, not a hard-fork gate. The admin MUST activate only after the coordinated L1 runtime and Zone execution upgrade supporting the complete request, execution, settlement, and recovery path is live. Activating earlier admits requests that Zone nodes reject as invalid transitions, stalling `advanceTempo` on the shared queue. Validate the maximum admitted mixed workload and fork-boundary behavior against the final runtime before activating.
+Forced-exit admission is disabled until the portal admin calls `activateForcedExits()`, which irreversibly sets `forcedExitVersion` to 1. Activation is an admin-controlled operational step, not a hard-fork gate. The admin MUST activate only after the coordinated L1 runtime and Zone execution upgrade supporting the complete request, execution, settlement, and recovery path is live. A Zone's fork schedule can lag L1's, because explicit or `null` Zone fork times are not inherited; a forced entry that reaches a Zone block not running T14 rules produces a terminal `NotActivated` result and never stalls `advanceTempo`, but its fee is not refunded. Operators should schedule T14 on the Zone before forced exits are activated on its portal. Validate the maximum admitted mixed workload and fork-boundary behavior against the final runtime before activating.
 
-Zones activate hard fork upgrades in lockstep with Tempo. A zone block's timestamp selects its execution rules. The node MUST NOT produce a block under new rules until the finalized Tempo chain has activated the same fork, even when the block imports an older Tempo checkpoint during catch-up.
+Zones activate hard fork upgrades in lockstep with Tempo when they inherit Tempo's fork schedule. A zone genesis with explicit or `null` fork times does not inherit later Tempo forks and can lag L1; TIP-1012 forced entries then produce `NotActivated` until the zone runs T14 rules. A zone block's timestamp selects its execution rules. The node MUST NOT produce a block under new rules until the finalized Tempo chain has activated the same fork, even when the block imports an older Tempo checkpoint during catch-up.
 
 At the T9 boundary, Tempo copies the complete runtime bytecode from hardfork-specified portal implementation, verifier, and messenger source deployments to their fixed protocol-managed addresses, equivalent to `EXTCODECOPY`. The ZoneFactory owner cannot invoke these copies or replace the installed runtimes. Any later replacement requires a Tempo hardfork and uses the same copy operation at that hardfork boundary. Replacing the portal implementation upgrades every portal proxy and therefore MUST preserve the portal storage layout.
 
