@@ -1,5 +1,5 @@
 use evm2::interpreter::gas::COLD_SLOAD_COST;
-use tempo_precompiles::{ECRECOVER_GAS, signature_verifier::configurable_account_verification_gas};
+use tempo_precompiles::ECRECOVER_GAS;
 use tempo_primitives::transaction::{
     AccountSignature, ConfigurableAccountSignature, PrimitiveSignature, TempoSignature,
 };
@@ -60,6 +60,7 @@ fn configurable_account_signature_verification_gas(
     signature: &ConfigurableAccountSignature,
 ) -> u64 {
     // Only a `u64` overflow fails; saturating keeps such a transaction unaffordable.
-    configurable_account_verification_gas(signature)
+    signature
+        .verification_gas()
         .map_or(u64::MAX, |gas| gas.saturating_sub(ECRECOVER_GAS))
 }
