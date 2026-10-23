@@ -16,7 +16,7 @@ use reth_primitives_traits::SignedTransaction;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{CONFIGURABLE_ACCOUNT_ADDRESS, IConfigurableAccount};
 use tempo_evm::{
-    TempoBlockEnv, TempoBlockExt, TempoEvm, TempoEvmConfig, TempoEvmEnv, TempoEvmTypes, TempoTxEnv,
+    TempoBlockEnv, TempoEvm, TempoEvmConfig, TempoEvmEnv, TempoEvmTypes, TempoTxEnv,
     tempo_execution_config, tempo_tx_registry,
 };
 use tempo_precompiles::{
@@ -67,7 +67,6 @@ impl Fixture {
         configure: impl FnOnce(&mut Version),
     ) -> Self {
         let owner = signer(1);
-        let factory = Address::repeat_byte(0x71);
         let config = ConfigurableAccountConfig {
             salt: B256::ZERO,
             version: 0,
@@ -78,20 +77,14 @@ impl Fixture {
             }],
         };
         let account = if configurable {
-            config.derive_account(factory).unwrap()
+            config.derive_account().unwrap()
         } else {
             owner.address()
         };
         let mut version = *tempo_execution_config(spec, CHAIN_ID).version();
         version.tx_gas_limit_cap = spec.tx_gas_limit_cap().unwrap_or(u64::MAX);
         configure(&mut version);
-        let block = TempoBlockEnv {
-            ext: TempoBlockExt {
-                configurable_account_recovery_factory: Some(factory),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+        let block = TempoBlockEnv::default();
         let mut evm = BlockExecutorFactory::evm_with_env(
             &TempoEvmConfig::moderato(),
             InMemoryDB::default(),

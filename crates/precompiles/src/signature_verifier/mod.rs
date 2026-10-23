@@ -132,13 +132,7 @@ impl SignatureVerifier {
         if signature.account() != account || !valid_account(account, spec) || has_code {
             return Ok(false);
         }
-        let factory = self
-            .storage
-            .with_block_env(|block_env| block_env.ext.configurable_account_recovery_factory());
-        if signature
-            .validate_account_commitment(commitment, factory)
-            .is_err()
-        {
+        if signature.validate_account_commitment(commitment).is_err() {
             return Ok(false);
         }
 

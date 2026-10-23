@@ -42,7 +42,6 @@ use tempo_primitives::{
     },
 };
 
-const FACTORY: Address = Address::repeat_byte(0x71);
 const OBSERVER: Address = Address::repeat_byte(0x72);
 const GAS_LIMIT: u64 = 5_000_000;
 
@@ -80,7 +79,7 @@ impl ConfigurableAccount {
                 })
                 .collect(),
         };
-        let address = config.derive_account(FACTORY).unwrap();
+        let address = config.derive_account().unwrap();
         Self {
             address,
             config,
@@ -409,7 +408,6 @@ async fn environment() -> eyre::Result<Localnet> {
     init_test_tracing();
     let mut genesis: Value = from_str(&make_genesis_at(TempoHardfork::T14))?;
     genesis["config"]["t14Time"] = json!(0);
-    genesis["config"]["configurableAccountRecoveryFactory"] = json!(FACTORY);
     // Store the getter's result in slot zero, proving visibility inside the first signed call.
     let mut code = vec![0x63];
     code.extend_from_slice(&IConfigurableAccount::getConfigCommitmentCall::SELECTOR);
