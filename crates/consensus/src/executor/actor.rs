@@ -1004,11 +1004,9 @@ where
         if block.height() <= self.local_state.finalized.0 {
             // NOTE: this block is already final on the execution layer. This
             // can happen if marshal is anchored below the EL and delivers
-            // finalized blocks the EL already knows about. In this case, it
-            // makes sense to ACK as soon as it is durable rather than wait
-            // for an FCU sweep.
-            // The execution layer confirms it is the block it finalized at
-            // this height before it is acknowledged.
+            // finalized blocks the EL already knows about. The execution layer
+            // must confirm it is the block it finalized at this height before
+            // it is queued for acknowledgement.
             let canonical = self
                 .execution_node
                 .canonical_block_hash(block.height().get())
