@@ -71,6 +71,7 @@ pub const TEST_MNEMONIC: &str = "test test test test test test test test test te
 #[derive(Default, Debug)]
 pub struct Builder {
     t12_time: Option<u64>,
+    t14_time: Option<u64>,
     epoch_length: Option<u64>,
     initial_dkg_outcome: Option<OnchainDkgOutcome>,
     validators: Option<ordered::Map<PublicKey, ConsensusNodeConfig>>,
@@ -80,6 +81,7 @@ impl Builder {
     pub fn new() -> Self {
         Self {
             t12_time: None,
+            t14_time: None,
             epoch_length: None,
             initial_dkg_outcome: None,
             validators: None,
@@ -111,9 +113,15 @@ impl Builder {
         }
     }
 
+    /// Overrides T14 activation; `None` preserves the fixture schedule.
+    pub fn with_t14_time(self, t14_time: Option<u64>) -> Self {
+        Self { t14_time, ..self }
+    }
+
     pub fn launch(self) -> eyre::Result<ExecutionRuntime> {
         let Self {
             t12_time,
+            t14_time,
             epoch_length,
             initial_dkg_outcome,
             validators,
@@ -156,6 +164,14 @@ impl Builder {
                         .remove(&format!("{}Time", fork.name().to_lowercase()));
                 }
             }
+        }
+
+        if let Some(t14_time) = t14_time {
+            genesis
+                .config
+                .extra_fields
+                .insert_value("t14Time".to_string(), t14_time)
+                .unwrap();
         }
 
         genesis.extra_data = initial_dkg_outcome.encode().into();
