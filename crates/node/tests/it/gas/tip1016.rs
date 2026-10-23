@@ -58,7 +58,7 @@ const TX_GAS_LIMIT: u64 = 5_000_000;
 /// SSTORE zero->non-zero state gas (STORAGE_CREDIT_VALUE / sstore_set_state_gas).
 const SSTORE_SET_STATE_GAS: u64 = 245_000;
 
-/// Per-tx regular gas limit cap at T14+ (EIP-7825 Osaka). The portion of a tx's
+/// Per-tx regular gas limit cap at T15+ (EIP-7825 Osaka). The portion of a tx's
 /// gas_limit above this cap becomes the TIP-1016 state-gas reservoir.
 const TX_GAS_LIMIT_CAP: u64 = 16_777_216;
 
@@ -286,7 +286,7 @@ impl Tip1016Node {
     async fn new() -> eyre::Result<Self> {
         reth_tracing::init_test_tracing();
         let setup = TestNodeBuilder::new()
-            .with_schedule(ForkSchedule::DevnetAt(tempo_chainspec::TempoHardfork::T14))
+            .with_schedule(ForkSchedule::DevnetAt(tempo_chainspec::TempoHardfork::T15))
             .build_with_node_access()
             .await?;
         let signer = test_signer(0);
@@ -1200,7 +1200,7 @@ async fn test_tip1016_batch_refunds_accumulate_across_successful_calls() -> eyre
             call(slotval, words(&[12, 0])),
         ],
     )?;
-    // 39,160 regular gas spent, with no clearing refund: T14 keeps TIP-1060's
+    // 39,160 regular gas spent, with no clearing refund: T15 keeps TIP-1060's
     // removal of the legacy EIP-3529 clearing refund (SSTORE_CLEARS_SCHEDULE
     // = 0). Clearing a slot that was NOT created in this tx mints a 245k
     // storage credit for the contract instead of refunding the sender.
@@ -1350,7 +1350,7 @@ async fn test_tip1016_batch_expiring_nonce_no_state_gas() -> eyre::Result<()> {
     Ok(())
 }
 
-/// Batch intrinsic gas: an inline KeyAuthorization on T14 charges
+/// Batch intrinsic gas: an inline KeyAuthorization on T15 charges
 /// `sstore_set_state_gas` per intended keychain write (one slot for an
 /// unrestricted key = 245k state gas), while the actual precompile writes run
 /// unmetered. Re-authorizing the same key is rejected rather than charging
@@ -1545,7 +1545,7 @@ async fn test_tip1016_batch_receipt_gas_equals_batch_tracker() -> eyre::Result<(
     Ok(())
 }
 
-/// Receipt/block accounting: gas_limit above the T14 cap (legal -- the excess
+/// Receipt/block accounting: gas_limit above the T15 cap (legal -- the excess
 /// is the state-gas reservoir). The batch spends state gas across calls from
 /// the reservoir; the unused reservoir is not billed.
 #[tokio::test(flavor = "multi_thread")]
@@ -1578,7 +1578,7 @@ async fn test_tip1016_batch_gas_limit_above_cap_reservoir_spend() -> eyre::Resul
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip1016_pool_accepts_total_gas_limit_above_block_limit() -> eyre::Result<()> {
     let mut setup = TestNodeBuilder::new()
-        .with_schedule(ForkSchedule::DevnetAt(tempo_chainspec::TempoHardfork::T14))
+        .with_schedule(ForkSchedule::DevnetAt(tempo_chainspec::TempoHardfork::T15))
         .build_with_node_access()
         .await?;
     let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
@@ -1617,7 +1617,7 @@ async fn test_tip1016_pool_accepts_total_gas_limit_above_block_limit() -> eyre::
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip1016_pool_enforces_execution_budget_with_small_blocks() -> eyre::Result<()> {
     let mut setup = TestNodeBuilder::new()
-        .with_schedule(ForkSchedule::DevnetAt(tempo_chainspec::TempoHardfork::T14))
+        .with_schedule(ForkSchedule::DevnetAt(tempo_chainspec::TempoHardfork::T15))
         .with_gas_limit("1000000")
         .build_with_node_access()
         .await?;

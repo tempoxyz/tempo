@@ -20,11 +20,12 @@ use evm2::{
     Evm, EvmFeatures, TxResult, Version,
     env::TxEnv,
     ethereum::{
-        access_list_counts, eip7702, execute_initial_frame, initial_gas_and_reservoir,
-        prepare_initial_frame, validate_block_gas_limit, validate_chain_id,
-        validate_create_initcode, validate_execution_gas_limit_cap, validate_floor_gas,
-        validate_gas_price, validate_intrinsic_gas, validate_nonce_not_overflow,
-        validate_priority_fee, validate_tx_gas_limit_cap, warm_access_list,
+        LazyAuthorization, access_list_counts, eip7702, execute_initial_frame,
+        initial_gas_and_reservoir, prepare_initial_frame, validate_block_gas_limit,
+        validate_chain_id, validate_create_initcode, validate_execution_gas_limit_cap,
+        validate_floor_gas, validate_gas_price, validate_intrinsic_gas,
+        validate_nonce_not_overflow, validate_priority_fee, validate_tx_gas_limit_cap,
+        warm_access_list, warm_base_accounts,
     },
     evm::handler::{GasSettlement, TxHandlerHooks},
     interpreter::{
@@ -270,7 +271,9 @@ fn calculate_key_authorization_gas(
 
         // TIP-1016: each storage-creating SSTORE also incurs state gas.
         let state_gas = if state_gas_enabled {
-            gas_params.get(GasId::SstoreSetState).saturating_mul(num_sstores)
+            gas_params
+                .get(GasId::SstoreSetState)
+                .saturating_mul(num_sstores)
         } else {
             0
         };
@@ -975,11 +978,10 @@ fn apply_authorization_list(
         let Ok(authority) = authorization.recover_authority() else {
             continue;
         };
-        let recovered = RecoveredAuthorization::new_unchecked(
+        let recovered = LazyAuthorization::Recovered(RecoveredAuthorization::new_unchecked(
             authorization.inner().clone(),
             RecoveredAuthority::Valid(authority),
-        )
-        .into();
+        ));
         let Some((authority, _)) = eip7702::validate_one_auth(host, chain_id, &recovered)? else {
             continue;
         };

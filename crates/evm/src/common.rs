@@ -5,7 +5,6 @@ use alloy_sol_types::SolCall;
 use core::marker::PhantomData;
 use evm2::{
     DatabaseError, Evm,
-    bytecode::Bytecode,
     evm::{AccountInfo, Database, DynDatabase},
     registry::{HandlerError, HandlerResult},
 };

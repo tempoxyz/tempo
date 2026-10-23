@@ -4,7 +4,6 @@ use alloy::{
 };
 use evm2::{
     Evm, EvmTypes,
-    bytecode::Bytecode,
     evm::{AccountInfo, precompile::PrecompileOutput},
     interpreter::GasTracker,
     precompiles::{PrecompileError, PrecompileResult},
@@ -18,8 +17,7 @@ use tempo_primitives::{TempoBlockEnv, TempoBlockExt};
 use crate::{
     error::{IntoPrecompileResult, Result, TempoPrecompileError},
     storage::{
-        ConfigCommitmentWriteGas, PrecompileStorageProvider, StorageActions,
-        StorageCheckpoint,
+        ConfigCommitmentWriteGas, PrecompileStorageProvider, StorageActions, StorageCheckpoint,
         evm::{EvmPrecompileStorageProvider, EvmStorageExt},
     },
 };

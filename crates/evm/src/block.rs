@@ -295,9 +295,7 @@ impl<'a> TempoBlockExecutor<'a> {
             evm.block().number.saturating_to::<u64>(),
         );
         let extra_data = ctx.inner.extra_data.clone();
-        let mut inner = EthBlockExecutor::new(evm, ctx.inner, chain_spec, TempoReceiptBuilder)
-            .with_block_state_gas_limit(false)
-            .with_block_gas_refunds(true);
+        let mut inner = EthBlockExecutor::new(evm, ctx.inner, chain_spec, TempoReceiptBuilder);
         inner.set_spec_id(spec_id);
         Self {
             chain_spec,
@@ -837,9 +835,29 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         let tx_hash = *original.tx_hash();
         let tx_type = original.tx_type();
         let is_payment = self.is_payment(original);
-        let inner = self
-            .inner
-            .execute_transaction_without_commit((tx_env, recovered))?;
+        let inner = if self.evm().version().feature(evm2::EvmFeatures::EIP8037) {
+            // Reth's admission check bounds state gas by the block limit. Tempo bounds only
+            // execution gas, so let the EVM execute and validate the block section below.
+            if self.evm().state().bal_builder().is_some() {
+                self.inner.set_block_access_index(BlockAccessIndex::new(
+                    self.inner.receipts.len() as u64 + 1,
+                ));
+            }
+            let result = self
+                .inner
+                .evm
+                .transact(&tx_env)
+                .map_err(map_handler_error)?
+                .detach();
+            EthTransactionResultWithState::new(
+                result,
+                tx_type,
+                original.blob_gas_used().unwrap_or_default(),
+            )
+        } else {
+            self.inner
+                .execute_transaction_without_commit((tx_env, recovered))?
+        };
 
         // TIP-1016 enabled: use block_regular_gas_used (excludes state gas) for section
         // validation, matching block gas limit semantics. TIP-1016 disabled: use tx_gas_used.
@@ -893,6 +911,13 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         f: impl FnOnce(&TxResult<TempoEvmTypes>) -> CommitChanges,
     ) -> Result<Option<GasOutput>, BlockExecutionError> {
         let (mut tx_env, recovered) = tx.into_parts();
+        if self.evm().version().feature(evm2::EvmFeatures::EIP8037) {
+            let result = self.execute_transaction_without_commit((tx_env, recovered))?;
+            if !f(result.result()).should_commit() {
+                return Ok(None);
+            }
+            return self.commit_transaction(result).map(Some);
+        }
         // Remove any prewarming-specific context that was added to the tx env.
         tx_env.inner_mut().set_expiring_nonce_idx(None);
         let execution_context = tx_env.inner().execution_context();
@@ -1016,7 +1041,12 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         &mut self,
         gas_limit: u64,
     ) -> Result<(), BlockExecutionError> {
-        self.inner.validate_transaction_gas_limit(gas_limit)
+        if self.evm().version().feature(evm2::EvmFeatures::EIP8037) {
+            // The execution and state dimensions are known only after execution.
+            Ok(())
+        } else {
+            self.inner.validate_transaction_gas_limit(gas_limit)
+        }
     }
 
     fn convert_block_access_list(
@@ -1073,6 +1103,7 @@ impl TempoBlockExecutor<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_consensus::Signed;
 
     #[test]
     fn tip1016_blocks_and_receipts_meter_different_gas_dimensions() {
@@ -1081,7 +1112,7 @@ mod tests {
         let mut db = InMemoryDB::default();
         db.insert_account_info(&caller, evm2::evm::AccountInfo::default().with_nonce(1));
         let mut executor = TestExecutorBuilder::default()
-            .with_spec(TempoHardfork::T14)
+            .with_spec(TempoHardfork::T15)
             .with_epoch_length(100)
             .with_general_gas_limit(30_000_000)
             .build(db, &chainspec);
@@ -1089,6 +1120,7 @@ mod tests {
         block.basefee = U256::ZERO;
         executor.evm_mut().set_block(block);
         executor.enable_block_access_list_builder();
+        assert!(executor.validate_transaction_gas_limit(70_000_000).is_ok());
         let mut paid = 0;
         let mut execution = 0;
         for nonce in 1..=3 {
@@ -1103,14 +1135,28 @@ mod tests {
                 },
                 Signature::test_signature(),
             ));
-            let result = executor
-                .execute_transaction_without_commit(Recovered::new_unchecked(tx, caller))
-                .unwrap();
-            assert!(result.result().status);
-            assert_eq!(result.state_gas_used(), 468_000 + 24_576 * 2_300);
-            paid += result.result().tx_gas_used();
-            execution += result.block_gas_used();
-            let gas = executor.commit_transaction(result).unwrap();
+            let gas = if nonce == 3 {
+                executor
+                    .execute_transaction_with_commit_condition(
+                        Recovered::new_unchecked(tx, caller),
+                        |result| {
+                            assert!(result.status);
+                            CommitChanges::Yes
+                        },
+                    )
+                    .unwrap()
+                    .unwrap()
+            } else {
+                let result = executor
+                    .execute_transaction_without_commit(Recovered::new_unchecked(tx, caller))
+                    .unwrap();
+                assert!(result.result().status);
+                assert_eq!(result.state_gas_used(), 468_000 + 24_576 * 2_300);
+                executor.commit_transaction(result).unwrap()
+            };
+            assert_eq!(gas.state_gas_used(), 468_000 + 24_576 * 2_300);
+            paid += gas.tx_gas_used();
+            execution += gas.regular_gas_used();
             assert_eq!(
                 gas.regular_gas_used(),
                 gas.tx_gas_used() - gas.state_gas_used()
@@ -1150,7 +1196,7 @@ mod tests {
     fn test_commit_accumulates_refund_aware_block_gas() {
         let chainspec = test_chainspec();
         let mut executor = TestExecutorBuilder::default()
-            .with_spec(TempoHardfork::T14)
+            .with_spec(TempoHardfork::T15)
             .with_epoch_length(100)
             .with_general_gas_limit(30_000_000)
             .build(InMemoryDB::default(), &chainspec);
@@ -1161,6 +1207,7 @@ mod tests {
             let gas = executor
                 .commit_transaction(TempoTxResult {
                     tx_type: TempoTxType::Legacy,
+                    tx_hash: B256::ZERO,
                     execution_context: ExecutionContext::Transaction {
                         tx_hash: B256::ZERO,
                     },
@@ -1178,10 +1225,9 @@ mod tests {
                         TempoTxType::Legacy,
                         0,
                     ),
-                    next_section: BlockSection::StartOfBlock,
+                    is_system_tx: false,
                     is_payment: false,
                     block_gas_used: 230_000,
-                    validator_fee: U256::ZERO,
                 })
                 .unwrap();
             assert_eq!(gas.tx_gas_used(), 270_000);

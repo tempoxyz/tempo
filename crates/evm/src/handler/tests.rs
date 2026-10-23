@@ -452,6 +452,7 @@ fn test_reserved_subblock_nonce_rejected() {
         TempoHardfork::T4,
         TempoHardfork::T11,
         TempoHardfork::T14,
+        TempoHardfork::T15,
     ] {
         let mut evm = test_evm(spec);
         let env = aa_env(
@@ -1360,17 +1361,13 @@ fn test_key_authorization_gas_with_limits() {
 }
 
 #[test]
-fn test_t14_key_authorization_matches_tip1016_sstore_regular_cost() {
-    let evm = test_evm(TempoHardfork::T14);
+fn test_t15_key_authorization_matches_tip1016_sstore_regular_cost() {
+    let evm = test_evm(TempoHardfork::T15);
     let authorization = key_authorization(0);
     let params = &evm.version().gas_params;
     let load = u64::from(params[GasId::WarmStorageReadCost])
         + u64::from(params[GasId::ColdStorageAdditionalCost]);
-    let (regular, state) = calculate_key_authorization_gas(
-        &authorization,
-        evm.version(),
-        TempoHardfork::T14,
-    );
+    let (regular, state) = key_authorization_gas(&authorization, &evm, TempoHardfork::T15);
     assert_eq!(
         regular - ECRECOVER_GAS - load - 2_000 - call_scope_extra_gas(&authorization.authorization),
         5_000
@@ -1383,7 +1380,7 @@ fn key_authorization_accounting_uses_eip8037_feature_not_state_price() {
     let authorization = key_authorization(2);
     // One key slot and two slots per periodic limit.
     let slots = 5;
-    for spec in [TempoHardfork::T7, TempoHardfork::T14] {
+    for spec in [TempoHardfork::T7, TempoHardfork::T14, TempoHardfork::T15] {
         let mut version = tempo_chainspec::gas_params::version(SpecId::OSAKA, spec, true);
         let (execution, _) = calculate_key_authorization_gas(&authorization, &version, spec);
 
@@ -1407,15 +1404,14 @@ fn key_authorization_accounting_uses_eip8037_feature_not_state_price() {
 }
 
 #[test]
-fn test_pre_t14_key_authorization_intrinsic_includes_storage_credit_value() {
-    for spec in [TempoHardfork::T7, TempoHardfork::T13] {
+fn test_pre_t15_key_authorization_intrinsic_includes_storage_credit_value() {
+    for spec in [TempoHardfork::T7, TempoHardfork::T13, TempoHardfork::T14] {
         let evm = test_evm(spec);
         let authorization = key_authorization(0);
         let params = &evm.version().gas_params;
         let load = u64::from(params[GasId::WarmStorageReadCost])
             + u64::from(params[GasId::ColdStorageAdditionalCost]);
-        let (regular, state) =
-            calculate_key_authorization_gas(&authorization, evm.version(), spec);
+        let (regular, state) = calculate_key_authorization_gas(&authorization, evm.version(), spec);
         assert_eq!(params[GasId::SstoreSetWithoutLoadCost], 5_000);
         assert_eq!(
             regular
@@ -3913,15 +3909,15 @@ mod keychain {
 
 #[test]
 fn test_state_gas_standard_create_tx_populates_initial_state_gas() {
-    let mut version = tempo_chainspec::gas_params::version(SpecId::OSAKA, TempoHardfork::T14, true);
+    let mut version = tempo_chainspec::gas_params::version(SpecId::OSAKA, TempoHardfork::T15, true);
     version.chain_id = 1;
     version.features.remove(EvmFeatures::BALANCE_CHECK);
     version.features.remove(EvmFeatures::BALANCE_TOP_UP);
     version.features.remove(EvmFeatures::FEE_CHARGE);
-    let config = ExecutionConfig::for_spec_and_version(TempoHardfork::T14, version);
+    let config = ExecutionConfig::for_spec_and_version(TempoHardfork::T15, version);
     let mut evm = Evm::new_with_execution_config_and_ext(
         config,
-        TempoHardfork::T14,
+        TempoHardfork::T15,
         TempoBlockEnv::default(),
         tempo_tx_registry(SpecId::OSAKA),
         InMemoryDB::default(),
@@ -3958,7 +3954,7 @@ fn test_state_gas_standard_create_tx_populates_initial_state_gas() {
 /// TIP-1016: Standard CALL tx should have zero initial_state_gas.
 #[test]
 fn test_state_gas_standard_call_tx_zero_initial_state_gas() {
-    let mut evm = test_evm(TempoHardfork::T14);
+    let mut evm = test_evm(TempoHardfork::T15);
     let env: TempoTxEnv = Recovered::new_unchecked(
         TempoTxEnvelope::Legacy(
             TxLegacy {
@@ -4012,7 +4008,7 @@ fn test_state_gas_aa_create_tx_zero_initial_state_gas() {
         secp256k1_signature(),
     );
 
-    let gas = intrinsic_gas(&test_evm(TempoHardfork::T14), aa_env.as_aa().unwrap()).unwrap();
+    let gas = intrinsic_gas(&test_evm(TempoHardfork::T15), aa_env.as_aa().unwrap()).unwrap();
 
     assert_eq!(
         gas.1, 0,
@@ -4040,15 +4036,15 @@ fn test_state_gas_aa_call_tx_zero_initial_state_gas() {
         secp256k1_signature(),
     );
 
-    let gas = intrinsic_gas(&test_evm(TempoHardfork::T14), aa_env.as_aa().unwrap()).unwrap();
+    let gas = intrinsic_gas(&test_evm(TempoHardfork::T15), aa_env.as_aa().unwrap()).unwrap();
 
     assert_eq!(gas.1, 0, "AA CALL tx should have zero initial_state_gas");
 }
 
 /// TIP-1016: A standard CREATE charges only caller state gas upfront.
 #[test]
-fn test_state_gas_validate_initial_tx_gas_create_t14() {
-    let mut evm = test_evm(TempoHardfork::T14);
+fn test_state_gas_validate_initial_tx_gas_create_t15() {
+    let mut evm = test_evm(TempoHardfork::T15);
     let env = legacy_env(TxKind::Create, Bytes::from(vec![0x60, 0x80]));
     let mut intrinsic = 0;
     let mut initial_state_gas = 0;
@@ -4068,14 +4064,14 @@ fn test_state_gas_validate_initial_tx_gas_create_t14() {
 
     assert_eq!(
         initial_state_gas, expected_state_gas,
-        "T14 CREATE tx with nonce==0 should have upfront new_account_state_gas"
+        "T15 CREATE tx with nonce==0 should have upfront new_account_state_gas"
     );
 }
 
 /// TIP-1016: When EIP-8037 is enabled, tx gas limit can exceed the cap.
 #[test]
 fn test_state_gas_tx_gas_limit_above_cap_allowed() {
-    let evm = test_evm(TempoHardfork::T14);
+    let evm = test_evm(TempoHardfork::T15);
 
     // validate_env should pass even though gas_limit > cap
     let result = evm2::ethereum::validate_tx_gas_limit_cap(evm.version(), 60_000_000);
@@ -4086,9 +4082,9 @@ fn test_state_gas_tx_gas_limit_above_cap_allowed() {
     );
 }
 
-/// TIP-1016: When EIP-8037 is disabled (pre-T14), tx gas limit above cap is rejected.
+/// TIP-1016: When EIP-8037 is disabled (pre-T15), tx gas limit above cap is rejected.
 #[test]
-fn test_state_gas_tx_gas_limit_above_cap_rejected_pre_t14() {
+fn test_state_gas_tx_gas_limit_above_cap_rejected_pre_t15() {
     let evm = test_evm_with_amsterdam(TempoHardfork::T1, false);
 
     // validate_env should reject: gas_limit > cap with state gas disabled
@@ -4099,7 +4095,7 @@ fn test_state_gas_tx_gas_limit_above_cap_rejected_pre_t14() {
     );
 }
 
-/// TIP-1016: Pre-T14 behavior unchanged. EIP-8037 is disabled and a CALL
+/// TIP-1016: Pre-T15 behavior unchanged. EIP-8037 is disabled and a CALL
 /// transaction has no initial state gas.
 #[test]
 fn test_state_gas_backward_compat_t1_no_state_gas_enabled() {
@@ -4107,7 +4103,7 @@ fn test_state_gas_backward_compat_t1_no_state_gas_enabled() {
 
     assert!(
         !evm.feature(EvmFeatures::EIP8037),
-        "Pre-T14 should NOT have EIP-8037 enabled"
+        "Pre-T15 should NOT have EIP-8037 enabled"
     );
 
     // CALL tx - no state gas in either case
@@ -4142,7 +4138,7 @@ fn test_state_gas_aa_mixed_batch_create_and_call() {
         secp256k1_signature(),
     );
 
-    let gas = intrinsic_gas(&test_evm(TempoHardfork::T14), aa_env.as_aa().unwrap()).unwrap();
+    let gas = intrinsic_gas(&test_evm(TempoHardfork::T15), aa_env.as_aa().unwrap()).unwrap();
 
     assert_eq!(
         gas.1, 0,
@@ -4177,7 +4173,7 @@ fn test_state_gas_aa_multiple_create_calls() {
         secp256k1_signature(),
     );
 
-    let gas = intrinsic_gas(&test_evm(TempoHardfork::T14), aa_env.as_aa().unwrap()).unwrap();
+    let gas = intrinsic_gas(&test_evm(TempoHardfork::T15), aa_env.as_aa().unwrap()).unwrap();
 
     assert_eq!(
         gas.1, 0,
@@ -4208,7 +4204,7 @@ fn test_state_gas_aa_auth_list_nonce_zero() {
         secp256k1_signature(),
     );
 
-    let mut evm = test_evm(TempoHardfork::T14);
+    let mut evm = test_evm(TempoHardfork::T15);
     let (regular, state, floor) = intrinsic_gas(&evm, aa_env.as_aa().unwrap()).unwrap();
 
     // State gas = per-auth state gas (225k) + nonce==0 account creation state gas (225k)
@@ -4245,7 +4241,7 @@ fn test_state_gas_aa_auth_list_nonce_zero() {
     assert_eq!(settled.tx_gas_used(), 521_048);
 }
 
-/// TIP-1016: An AA nonce-zero caller adds account state gas on T14.
+/// TIP-1016: An AA nonce-zero caller adds account state gas on T15.
 #[test]
 fn test_state_gas_aa_nonce_zero_new_account() {
     let calls = vec![Call {
@@ -4253,9 +4249,9 @@ fn test_state_gas_aa_nonce_zero_new_account() {
         value: U256::ZERO,
         input: Bytes::from(vec![1, 2, 3]),
     }];
-    let evm = test_evm(TempoHardfork::T14);
+    let evm = test_evm(TempoHardfork::T15);
     let (_, state, _) = intrinsic_with_amsterdam(
-        TempoHardfork::T14,
+        TempoHardfork::T15,
         true,
         TempoTransaction {
             nonce: 0,
@@ -4270,7 +4266,7 @@ fn test_state_gas_aa_nonce_zero_new_account() {
     assert_eq!(
         state,
         evm.version().gas_params.new_account_state_gas(),
-        "AA tx with nonce==0 should track new_account_state_gas in T14"
+        "AA tx with nonce==0 should track new_account_state_gas in T15"
     );
 }
 
@@ -4316,10 +4312,10 @@ fn test_state_gas_auth_list_zero_on_t1() {
     );
 }
 
-/// TIP-1016: A standard nonce-zero caller adds account state gas on T14.
+/// TIP-1016: A standard nonce-zero caller adds account state gas on T15.
 #[test]
-fn test_state_gas_standard_tx_nonce_zero_t14() {
-    let mut evm = test_evm(TempoHardfork::T14);
+fn test_state_gas_standard_tx_nonce_zero_t15() {
+    let mut evm = test_evm(TempoHardfork::T15);
     let env = legacy_env(TxKind::Call(Address::random()), Bytes::from(vec![1, 2, 3]));
     let mut intrinsic = 0;
     let mut initial_state_gas = 0;
@@ -4336,7 +4332,7 @@ fn test_state_gas_standard_tx_nonce_zero_t14() {
     assert_eq!(
         initial_state_gas,
         evm.version().gas_params.new_account_state_gas(),
-        "T14 standard tx with nonce==0 should track new_account_state_gas"
+        "T15 standard tx with nonce==0 should track new_account_state_gas"
     );
 }
 
@@ -4459,7 +4455,7 @@ fn test_state_gas_batch_create_accounting() {
     }
 
     for final_stop in [InstrStop::Stop, InstrStop::Revert] {
-        let mut evm = test_evm(TempoHardfork::T14);
+        let mut evm = test_evm(TempoHardfork::T15);
         evm.set_interpreter_runner(Runner {
             call_idx: AtomicUsize::new(0),
             final_stop,

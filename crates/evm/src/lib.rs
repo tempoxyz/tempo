@@ -428,12 +428,12 @@ mod tests {
         assert_eq!(evm_env.block.ext.proposer_public_key, Some(proposer));
     }
 
-    /// TIP-1016 restores the Osaka execution cap while retaining the pre-T14 cap.
+    /// TIP-1016 restores the Osaka execution cap while retaining the pre-T15 cap.
     ///
     /// [TIP-1000]: <https://docs.tempo.xyz/protocol/tips/tip-1000>
     #[test]
     fn test_evm_env_tip1016_gas_cap() {
-        // DEV activates T14 at genesis.
+        // DEV activates T15 at genesis.
         let chainspec = DEV.clone();
         let evm_config = TempoEvmConfig::new(chainspec.clone());
 
@@ -451,8 +451,8 @@ mod tests {
             ..Default::default()
         };
 
-        // Verify the production T14 environment enables TIP-1016.
-        assert!(chainspec.tempo_hardfork_at(header.timestamp()).is_t14());
+        // Verify the production T15 environment enables TIP-1016.
+        assert!(chainspec.tempo_hardfork_at(header.timestamp()).is_t15());
 
         let evm_env = evm_config.evm_env(&header).unwrap();
 
@@ -462,7 +462,8 @@ mod tests {
             "TIP-1016 restores the Osaka execution cap"
         );
         assert_eq!(TempoHardfork::T13.tx_gas_limit_cap(), Some(30_000_000));
-        assert_eq!(TempoHardfork::T14.tx_gas_limit_cap(), Some(16_777_216));
+        assert_eq!(TempoHardfork::T14.tx_gas_limit_cap(), Some(30_000_000));
+        assert_eq!(TempoHardfork::T15.tx_gas_limit_cap(), Some(16_777_216));
     }
 
     #[test]

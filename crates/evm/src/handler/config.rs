@@ -14,7 +14,6 @@ use evm2::{
     ethereum::{LazyTxEip7702, PreparedTx, eip1559, eip2930, eip7702, finalize_gas, legacy},
     evm::{DynDatabase, SystemTx, precompile::PrecompileProvider},
     handler::{GasSettlement, TxHandlerHooks},
-    interpreter::{GasTracker, InstrStop},
     registry::{HandlerError, HandlerResult, TxRegistry, TxRequest, handler},
     version::GasId,
 };
@@ -144,7 +143,7 @@ impl tempo_precompiles::storage::evm::EvmStorageExt for TempoEvmExt {
 }
 
 /// Builds an EVM2 execution config for Tempo's ERC-20 fee model, including
-/// TIP-1016's execution/state gas split from T14.
+/// TIP-1016's execution/state gas split from T15.
 pub fn tempo_execution_config(
     tempo_spec: TempoHardfork,
     chain_id: u64,
@@ -237,28 +236,15 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
         Ok(())
     }
 
-    fn apply_authorizations(
-        host: &mut Evm<'_, TempoEvmTypes>,
+    fn eip7702_auth_gas_policy(
+        host: &Evm<'_, TempoEvmTypes>,
         _envelope: &TempoTxEnv,
-        tx: &LazyTxEip7702,
-        caller: Address,
-        gas: &mut GasTracker,
-    ) -> HandlerResult<eip7702::AuthorizationResult> {
+    ) -> eip7702::AuthGasPolicy {
         if host.feature(EvmFeatures::EIP8037) {
             // TIP-1016 charges every authorization intrinsically, including redelegation.
-            let chain_id = host.version().chain_id;
-            let out_of_gas = eip7702::apply_auth_list(
-                host,
-                chain_id,
-                &tx.authorization_list,
-                &mut IntrinsicAuth,
-            )?;
-            Ok(eip7702::AuthorizationResult {
-                out_of_gas,
-                ..Default::default()
-            })
+            eip7702::AuthGasPolicy::Intrinsic
         } else {
-            eip7702::apply_authorizations(host, tx, caller, gas)
+            eip7702::AuthGasPolicy::Ethereum
         }
     }
 
@@ -642,19 +628,4 @@ pub fn tempo_tx_registry(spec_id: SpecId) -> TxRegistry<TempoEvmTypes, TxResult<
     );
 
     registry
-}
-
-/// TIP-1016 authorization costs are paid intrinsically and never refunded.
-struct IntrinsicAuth;
-
-impl eip7702::AuthAccounting for IntrinsicAuth {
-    fn rejected(&mut self) {}
-
-    fn accepted(
-        &mut self,
-        _authority: Address,
-        _auth: &eip7702::AppliedAuth,
-    ) -> Result<(), InstrStop> {
-        Ok(())
-    }
 }
