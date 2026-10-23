@@ -1623,7 +1623,7 @@ Each enabled TIP-20 token is deployed as a precompile at the same address as on 
 
 - `balanceOf` is restricted to the account owner; `allowance` is restricted to its owner or spender.
 - Transfer-family operations (`transfer`, `transferFrom`, `approve`) charge a fixed 100,000 gas.
-- `transfer`, `transferFrom`, `transferWithMemo`, and `transferFromWithMemo` revert with `Unauthorized` unless T14 is active and the zone's `ZonePortal.transfersEnabled` flag, read from finalized Tempo state at the transaction's anchor, is true. The flag defaults to false and is set by the portal admin with `setTransfersEnabled`, which `Capability.AccessPolicy` abdication freezes. They also revert with `Unauthorized` when the caller is Permit2, so Permit2 allowances and signature nonces cannot move funds. Admitted transfers follow the standard TIP-20 rules, including TIP-403 policy checks, with two zone differences:
+- `transfer`, `transferFrom`, `transferWithMemo`, and `transferFromWithMemo` revert with `Unauthorized` unless T15 is active and the zone's `ZonePortal.transfersEnabled` flag, read from finalized Tempo state at the transaction's anchor, is true. The flag defaults to false and is set by the portal admin with `setTransfersEnabled`, which `Capability.AccessPolicy` abdication freezes. They also revert with `Unauthorized` when the caller is Permit2, so Permit2 allowances and signature nonces cannot move funds. Admitted transfers follow the standard TIP-20 rules, including TIP-403 policy checks, with two zone differences:
   - They revert with `ContractPaused` while the token is paused on Tempo, read at the transaction's anchor. The zone token's own pause flag is never set, since `pause` is disabled on the zone.
   - A transfer that the recipient's TIP-1028 receive policy blocks reverts with `PolicyForbids` instead of diverting funds to `ReceivePolicyGuard`, matching deposits. The policy's recovery authority may be an address that cannot act on the zone, such as an L1 contract, and could never claim the receipt. Virtual recipients are resolved to their master before the check.
 - Whether `transferFrom` succeeds depends on the owner's balance, so an approved spender can learn `min(balance, allowance)` by simulating it. Approving a spender discloses that much of the owner's balance to it.
@@ -1980,7 +1980,7 @@ interface IZonePortal {
     function isGatewayOpen() external view returns (bool);
     function setGatewayMode(bool enforced) external; // admin-only
     function transfersEnabled() external view returns (bool);
-    function setTransfersEnabled(bool enabled) external; // admin-only, T14+
+    function setTransfersEnabled(bool enabled) external; // admin-only, T15+
     function hasRole(address account, Role role) external view returns (bool);
     function setAllowedAccount(address account, bool allowed) external; // admin-only
     function setGateway(address account, bool allowed) external; // admin-only
