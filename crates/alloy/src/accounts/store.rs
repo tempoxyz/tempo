@@ -31,8 +31,9 @@ use tempo_contracts::precompiles::ITIP20;
 use tempo_primitives::{
     SignatureType, TempoAddressExt, TempoTxEnvelope,
     transaction::{
-        AccountSignature, Call, CallScope, KeyAuthorization, KeychainSignature, PrimitiveSignature,
-        SelectorRule, SignedKeyAuthorization, TempoSignature, TempoTypedTransaction, TokenLimit,
+        AccountSignature, Call, CallScope, ConfigurableAccountSignature, KeyAuthorization,
+        KeychainSignature, PrimitiveSignature, SelectorRule, SignedKeyAuthorization,
+        TempoSignature, TempoTypedTransaction, TokenLimit,
         tt_signature::{P256SignatureWithPreHash, WebAuthnSignature},
     },
 };
@@ -334,7 +335,7 @@ impl TempoAccessKey {
             ));
         }
         if authorization.account.is_none()
-            && authorization.recover_signer().ok() != Some(self.account)
+            && authorization.recover_account().ok() != Some(self.account)
         {
             return Err(TempoAccessKeyError::InvalidAuthorization(
                 "signature does not recover the root account",
@@ -1798,7 +1799,14 @@ struct PersistedSignedKeyAuthorization {
     account: Option<Address>,
     #[serde(rename = "type")]
     key_type: PersistedKeyType,
-    signature: PersistedPrimitiveSignature,
+    signature: PersistedAuthorizationSignature,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(untagged)]
+enum PersistedAuthorizationSignature {
+    Primitive(PersistedPrimitiveSignature),
+    ConfigurableAccount(ConfigurableAccountSignature),
 }
 
 #[derive(Clone, Deserialize)]
@@ -1973,7 +1981,13 @@ impl TryFrom<PersistedSignedKeyAuthorization> for SignedKeyAuthorization {
             // placeholder when scopes follow it. Preserve that exact signed
             // wire shape. Newer TIP-1053 fields switched skipped fields to the
             // canonical optional null placeholder.
-            None if has_scopes && !has_tip1053_fields => Some(Vec::new()),
+            // Configurable account signatures never used the legacy form.
+            None if has_scopes
+                && !has_tip1053_fields
+                && matches!(&signature, PersistedAuthorizationSignature::Primitive(_)) =>
+            {
+                Some(Vec::new())
+            }
             None => None,
         };
         let allowed_calls = scopes.map(persisted_scopes_to_call_scopes).transpose()?;
@@ -1988,7 +2002,15 @@ impl TryFrom<PersistedSignedKeyAuthorization> for SignedKeyAuthorization {
             is_admin,
             account,
         };
-        Ok(authorization.into_signed(PrimitiveSignature::try_from(signature)?))
+        let signature = match signature {
+            PersistedAuthorizationSignature::Primitive(signature) => {
+                AccountSignature::Primitive(PrimitiveSignature::try_from(signature)?)
+            }
+            PersistedAuthorizationSignature::ConfigurableAccount(signature) => {
+                AccountSignature::ConfigurableAccount(signature)
+            }
+        };
+        Ok(authorization.into_signed(signature))
     }
 }
 
@@ -2267,9 +2289,7 @@ fn stored_access_key(key: &PersistedAccessKey) -> Result<TempoStoredAccessKey, T
         authorization.key_id != key.address
             || authorization.chain_id != key.chain_id
             || authorization.key_type != key_type
-            || authorization
-                .account
-                .is_some_and(|account| account != key.access)
+            || authorization_account(authorization).is_some_and(|account| account != key.access)
     }) {
         return Err(TempoAccountsError::InvalidAccessKey {
             address: key.address,
@@ -2330,15 +2350,21 @@ fn validate_stored_authorization(
             "the authorization key ID does not match the local signer",
         ));
     }
-    if authorization
-        .account
-        .is_some_and(|authorized| authorized != account)
-    {
+    if authorization_account(authorization).is_some_and(|authorized| authorized != account) {
         return Err(TempoAccountsError::InvalidAuthorization(
             "the authorization targets a different account",
         ));
     }
     Ok(())
+}
+
+/// The account an authorization names without recovering a primitive signer: its explicit
+/// account, else the account of its configurable account signature.
+fn authorization_account(authorization: &SignedKeyAuthorization) -> Option<Address> {
+    authorization.account.or(authorization
+        .signature
+        .as_configurable_account()
+        .map(ConfigurableAccountSignature::account))
 }
 
 struct EditableTempoCliStore {
@@ -2422,7 +2448,14 @@ struct WritableSignedKeyAuthorization {
     account: Option<Address>,
     #[serde(rename = "type")]
     key_type: &'static str,
-    signature: WritablePrimitiveSignature,
+    signature: WritableAuthorizationSignature,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum WritableAuthorizationSignature {
+    Primitive(WritablePrimitiveSignature),
+    ConfigurableAccount(ConfigurableAccountSignature),
 }
 
 #[derive(Serialize)]
@@ -2485,15 +2518,16 @@ fn writable_b256(value: B256) -> String {
 
 fn writable_signature(
     signature: &AccountSignature,
-) -> Result<WritablePrimitiveSignature, TempoAccountsError> {
-    // TODO: #7579 adds configurable account persistence and removes this primitive-only
-    // restriction.
-    let AccountSignature::Primitive(signature) = signature else {
-        return Err(TempoAccountsError::InvalidAuthorization(
-            "the Accounts store does not support nonprimitive authorization signatures",
-        ));
+) -> Result<WritableAuthorizationSignature, TempoAccountsError> {
+    let signature = match signature {
+        AccountSignature::Primitive(signature) => signature,
+        AccountSignature::ConfigurableAccount(signature) => {
+            return Ok(WritableAuthorizationSignature::ConfigurableAccount(
+                signature.clone(),
+            ));
+        }
     };
-    Ok(match signature {
+    Ok(WritableAuthorizationSignature::Primitive(match signature {
         PrimitiveSignature::Secp256k1(signature) => WritablePrimitiveSignature::Secp256k1 {
             signature: WritableSecpSignature {
                 r: writable_bigint(signature.r()),
@@ -2550,7 +2584,7 @@ fn writable_signature(
                 },
             }
         }
-    })
+    }))
 }
 
 fn writable_scopes(authorization: &SignedKeyAuthorization) -> Option<Vec<WritableScope>> {
@@ -3008,7 +3042,7 @@ fn select_access_key(
             continue;
         }
         if key_authorization.as_ref().is_some_and(|authorization| {
-            authorization.account.is_none() && authorization.recover_signer().ok() != Some(account)
+            authorization.account.is_none() && authorization.recover_account().ok() != Some(account)
         }) {
             continue;
         }
