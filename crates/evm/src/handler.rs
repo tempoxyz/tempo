@@ -211,7 +211,6 @@ fn calculate_key_authorization_gas(
 ) -> (u64, u64) {
     // The base 21k includes one ecrecover, for the transaction's own signature. The key
     // authorization's signature is verified on top of that, so it pays the full verification gas.
-    // Saturating on overflow keeps such a transaction unaffordable.
     let sig_gas = key_auth.signature.verification_gas().unwrap_or(u64::MAX);
 
     let num_limits = key_auth
