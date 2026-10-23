@@ -699,7 +699,7 @@ pub fn tick_to_price(tick: i16) -> u32 {
 /// - `TickOutOfBounds` — price is outside `[MIN_PRICE, MAX_PRICE]`
 pub fn price_to_tick(price: u32) -> Result<i16> {
     if !(MIN_PRICE..=MAX_PRICE).contains(&price) {
-        let invalid_tick = (price as i32 - PRICE_SCALE as i32) as i16;
+        let invalid_tick = (i64::from(price) - i64::from(PRICE_SCALE)) as i16;
         return Err(StablecoinDEXError::tick_out_of_bounds(invalid_tick).into());
     }
     Ok((price as i32 - PRICE_SCALE as i32) as i16)
@@ -875,6 +875,15 @@ mod tests {
             result.unwrap_err(),
             TempoPrecompileError::StablecoinDEX(StablecoinDEXError::TickOutOfBounds(_))
         ));
+    }
+
+    #[test]
+    fn test_price_to_tick_near_i32_min_does_not_overflow() {
+        // `price as i32` is close to `i32::MIN` here, so subtracting in i32 would overflow
+        assert_eq!(
+            price_to_tick(0x8000_0000),
+            Err(StablecoinDEXError::tick_out_of_bounds(31072).into())
+        );
     }
 
     #[test]
