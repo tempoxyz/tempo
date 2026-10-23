@@ -28,7 +28,8 @@ impl SignatureVerifier {
             .map_err(|_| SignatureVerifierError::invalid_format())?;
 
         // Charge verification gas before performing verification.
-        self.storage.deduct_gas(sig.base_verification_gas())?;
+        let verify_gas = sig.base_verification_gas();
+        self.storage.deduct_gas(verify_gas)?;
 
         // Verify and recover signer.
         sig.recover_signer(&hash)

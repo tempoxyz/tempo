@@ -1,4 +1,4 @@
-//! Signature verification gas of `tempo-primitives`, pinned to literal values.
+//! Signature verification gas of published `tempo-primitives`, pinned to literal values.
 
 use alloy_primitives::{B256, Bytes, Signature, U256};
 use tempo_primitives::{
