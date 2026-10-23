@@ -584,12 +584,21 @@ impl ExpiringNonceReplayState {
 mod tests {
     use super::*;
     use crate::{
-        TempoBlockEnv, TempoEvm, TempoEvmExt, build_tempo_evm,
+        FeePaymentError, TempoBlockEnv, TempoEvm, TempoEvmExt, TempoInvalidTransaction, TempoTxEnv,
+        build_tempo_evm,
         test_utils::{TestExecutorBuilder, test_chainspec},
     };
+    use alloy_consensus::{Signed, TxEip1559, transaction::Recovered};
     use evm2::evm::{AccountInfo, InMemoryDB, precompile::NoPrecompiles};
     use std::sync::Arc;
     use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
+    use tempo_precompiles::{
+        PATH_USD_ADDRESS,
+        storage::{StorageCtx, evm::EvmPrecompileStorageProvider},
+        test_util::TIP20Setup,
+        tip20::TIP20Token,
+    };
+    use tempo_primitives::TempoTxEnvelope;
 
     fn empty_evm(database: InMemoryDB) -> TempoEvm<'static> {
         build_tempo_evm(
@@ -876,5 +885,84 @@ mod tests {
         assert_eq!(change.original, U256::from(11));
         assert_eq!(change.current, U256::from(14));
         assert!(change.written);
+    }
+
+    #[test]
+    fn replay_rejects_fee_payer_below_max_fee_after_earlier_transaction() {
+        let spec = TempoHardfork::T12;
+        let payer = Address::repeat_byte(0x42);
+        // One TIP-20 base unit per gas.
+        let unit_price = 1_000_000_000_000;
+        let tx = TxEip1559 {
+            chain_id: 1,
+            gas_limit: 1_000_000,
+            // The max fee (2_000_000) exceeds the collected fee (1_000_000).
+            max_fee_per_gas: 2 * unit_price,
+            max_priority_fee_per_gas: unit_price,
+            to: Address::with_last_byte(4).into(),
+            ..Default::default()
+        };
+        let tx = TempoTxEnv::from(Recovered::new_unchecked(
+            TempoTxEnvelope::Eip1559(Signed::new_unchecked(
+                tx,
+                alloy_primitives::Signature::test_signature(),
+                B256::ZERO,
+            )),
+            payer,
+        ));
+        let new_evm = |balance| {
+            let mut evm = build_tempo_evm(
+                spec,
+                1,
+                TempoBlockEnv::default(),
+                InMemoryDB::default(),
+                NoPrecompiles::default(),
+                TempoEvmExt::default(),
+            );
+            let mut provider = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
+            StorageCtx::enter(&mut provider, || {
+                TIP20Setup::path_usd(payer)
+                    .with_issuer(payer)
+                    .with_mint(payer, U256::from(balance))
+                    .apply()
+            })
+            .unwrap();
+            evm
+        };
+
+        // The parent state affords the max fee, so prewarming succeeds.
+        let mut prewarm_evm = new_evm(2_100_000);
+        prewarm_evm.ext_mut().actions.enable();
+        let signer = tx.evm_tx().signer();
+        let prewarmed = prewarm_evm
+            .transact(&Recovered::new_unchecked(tx.clone(), signer))
+            .unwrap()
+            .discard();
+        assert!(prewarmed.status);
+        let actions = prewarm_evm.ext().actions.take().unwrap();
+
+        // An earlier transaction then spends 271_000: enough for this one's collected fee, but
+        // not its max fee. Fresh execution rejects it.
+        let balance = U256::from(1_829_000);
+        let error = new_evm(1_829_000)
+            .transact(&Recovered::new_unchecked(tx, signer))
+            .map(|_| ())
+            .unwrap_err();
+        assert!(matches!(
+            error.external_ref::<TempoInvalidTransaction>(),
+            Some(TempoInvalidTransaction::CollectFeePreTx(
+                FeePaymentError::InsufficientFeeTokenBalance { fee, balance: available }
+            )) if *fee == U256::from(2_000_000) && *available == balance
+        ));
+
+        // Replaying the prewarmed actions must reject it too.
+        let slot = TIP20Token::from_address_unchecked(PATH_USD_ADDRESS).balances[payer].slot();
+        let chainspec = test_chainspec();
+        let mut executor = executor_with_storage(&chainspec, PATH_USD_ADDRESS, slot, balance);
+        let error = executor.replay_actions(actions, None).unwrap_err();
+        assert_eq!(
+            StorageActionReplayError::from_block_execution_error(&error),
+            Some(StorageActionReplayError::ActionConflict)
+        );
     }
 }
