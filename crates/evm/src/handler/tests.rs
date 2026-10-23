@@ -3,7 +3,10 @@ use super::*;
 mod regressions;
 use crate::{
     FeeTokenResolver, ProtocolFeeContext, ProtocolFeeManager, ResolvedFeeToken, TempoBlockEnv,
-    TempoEvmExt, TempoEvmTx, TempoFeeManager, signature_gas::primitive_signature_verification_gas,
+    TempoEvmExt, TempoEvmTx, TempoFeeManager,
+    signature_gas::{
+        account_signature_full_verification_gas, primitive_signature_verification_gas,
+    },
     tempo_tx_registry,
 };
 use alloy_consensus::transaction::Recovered;
@@ -1385,9 +1388,10 @@ fn test_t4_key_authorization_matches_tip1016_sstore_regular_cost() {
     let params = &evm.version().gas_params;
     let load = u64::from(params[GasId::WarmStorageReadCost])
         + u64::from(params[GasId::ColdStorageAdditionalCost]);
+    let sig_gas = account_signature_full_verification_gas(&authorization.signature);
     let (regular, state) = key_authorization_gas(&authorization, &evm, TempoHardfork::T4);
     assert_eq!(
-        regular - ECRECOVER_GAS - load - 2_000 - call_scope_extra_gas(&authorization.authorization),
+        regular - sig_gas - load - 2_000 - call_scope_extra_gas(&authorization.authorization),
         20_000
     );
     assert_eq!(state, 230_000);
@@ -1400,10 +1404,11 @@ fn test_t7_key_authorization_intrinsic_includes_storage_credit_value() {
     let params = &evm.version().gas_params;
     let load = u64::from(params[GasId::WarmStorageReadCost])
         + u64::from(params[GasId::ColdStorageAdditionalCost]);
+    let sig_gas = account_signature_full_verification_gas(&authorization.signature);
     let (regular, state) = key_authorization_gas(&authorization, &evm, TempoHardfork::T7);
     assert_eq!(params[GasId::SstoreSetWithoutLoadCost], 5_000);
     assert_eq!(
-        regular - ECRECOVER_GAS - load - 2_000 - call_scope_extra_gas(&authorization.authorization),
+        regular - sig_gas - load - 2_000 - call_scope_extra_gas(&authorization.authorization),
         tempo_chainspec::constants::gas::SSTORE_CREATE_COST
     );
     assert_eq!(state, 0);
