@@ -52,7 +52,6 @@ use tempo_precompiles::{
     error::TempoPrecompileError,
     input_cost,
     nonce::NonceManager,
-    signature_verifier::configurable_account_verification_gas,
     storage::keccak_cost,
     tip20::{PERMIT_TYPEHASH, TIP20Token},
     tip20_channel_reserve::TIP20ChannelReserve,
@@ -4849,7 +4848,7 @@ fn check_configurable_account_verdict(
     } else {
         initial_account_proof_gas(signature.config()).unwrap()
     };
-    let charge = access_gas + configurable_account_verification_gas(signature).unwrap() + initial;
+    let charge = access_gas + signature.verification_gas().unwrap() + initial;
 
     let call = verify_configurable_account_call(account, CONFIGURABLE_ACCOUNT_HASH, signature);
     let zeros = call.input.iter().filter(|byte| **byte == 0).count() as u64;
@@ -4890,10 +4889,7 @@ fn verify_configurable_account_before_and_after_rotation() {
     // Unregistered: the initial configuration derives the account, and nothing is written.
     let initial =
         configurable_account_approval(account, &f.config, &f.owner, CONFIGURABLE_ACCOUNT_HASH);
-    assert_eq!(
-        configurable_account_verification_gas(&initial).unwrap(),
-        4_024
-    );
+    assert_eq!(initial.verification_gas().unwrap(), 4_024);
     let valid = Verdict::Valid;
     check_configurable_account_verdict(
         &mut f,
