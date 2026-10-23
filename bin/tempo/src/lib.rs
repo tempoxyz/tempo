@@ -36,6 +36,7 @@ mod snapshot_download;
 mod snapshot_manifest;
 pub mod tempo_cmd;
 mod utils;
+pub mod zone_checks;
 
 pub use crate::{
     cli::{TempoArgs, TempoCli, TempoRpcModuleValidator},
@@ -243,6 +244,13 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         Ok(cli) => cli,
         Err(err) => err.exit(),
     };
+
+    // Keep the JSON output free of the node CLI's stdout tracing.
+    if let Commands::Ext(tempo_cmd::TempoSubcommand::ZonePcrHistory(cmd)) = cli.command {
+        let runner =
+            CliRunner::try_default_runtime().wrap_err("failed to build PCR history runtime")?;
+        return runner.run_command_until_exit(|_| cmd.run());
+    }
 
     apply_tempo_cli_overrides(&mut cli)?;
 
