@@ -200,7 +200,16 @@ accepted.
 
 The host image launches the enclave in non-debug mode and exposes TCP port `5000`. It accepts
 `PROVER_EIF_PATH`, `ENCLAVE_NAME`, `ENCLAVE_CPU_COUNT`, `ENCLAVE_MEMORY_MIB`, `ENCLAVE_CID`,
-`PROVER_TCP_PORT`, `PROVER_VSOCK_PORT`, and `MONITOR_INTERVAL_SECONDS` as runtime configuration.
+`PROVER_TCP_PORT`, `PROVER_VSOCK_PORT`, `PROVER_METRICS_ADDR`, and `MONITOR_INTERVAL_SECONDS`
+as runtime configuration.
+
+The host launcher binds the proxy's Prometheus `/metrics` endpoint to `0.0.0.0:9100` by default;
+set `PROVER_METRICS_ADDR` to override it. Unlike the standalone proxy's loopback default, this
+allows scraping from outside the container. The endpoint has no authentication: restrict access
+to the scraper with a network policy and do not expose it through the prover's public Service.
+Kubernetes deployments also need a named metrics container port and a `VMPodScrape` selecting
+the prover pods; Docker's `EXPOSE` alone does not configure scraping. See the
+[proxy metrics reference](../vsock-proxy/README.md#metrics).
 
 ### Upgrading across an L1 hardfork
 
@@ -247,7 +256,8 @@ a fresh proof; retries reconcile portal progress before deciding to submit again
 proving also uses the live fork's endpoint to validate historical submissions.
 
 When colocating releases, use distinct `ENCLAVE_NAME`, `ENCLAVE_CID`, and `PROVER_TCP_PORT`
-settings and reserve enough Nitro CPU and memory for both. Separate hosts can use the defaults.
+settings and reserve enough Nitro CPU and memory for both. Use distinct `PROVER_METRICS_ADDR`
+ports when sharing a network namespace. Separate hosts can use the defaults.
 Retain the old deployment through the operational reorg window, then retire it after the new
 fork is stable. Retaining a deployment does not extend acceptance of its PCRs on L1.
 

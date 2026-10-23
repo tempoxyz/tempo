@@ -2,7 +2,7 @@
 # State is stored in branch-isolated Actions artifacts for 90 days. Missing or
 # expired state uses the existing first-run baseline rules; no state PAT is needed.
 #
-# Runs nightly at 02:00 UTC and on v*.*.* tag pushes for each scenario below.
+# Runs nightly at 02:00 UTC and on tempo/v*.*.* tag pushes for each scenario below.
 # Nightly runs compare the latest main commit against the
 # last commit that completed this scheduled e2e workflow successfully for the
 # same state key.
@@ -15,7 +15,7 @@ on:
     - cron: "0 2 * * *"
   push:
     tags:
-      - "v*.*.*"
+      - "tempo/v*.*.*"
   workflow_dispatch:
     inputs:
       ref:

@@ -1480,7 +1480,8 @@ fn prepare_aa(
 
     validate_execution_gas_limit_cap(request.host.version(), tx.gas_limit, intrinsic, floor_gas)?;
 
-    warm_base_accounts(request.host, caller, tx.calls[0].to);
+    request.host.state_mut().prewarm(&caller);
+    warm_base_accounts(request.host, tx.calls[0].to);
     warm_access_list(request.host, &tx.access_list);
 
     // Collect fees for the transaction.
