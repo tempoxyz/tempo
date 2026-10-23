@@ -917,6 +917,7 @@ cast code 0x5A4d000000000000000000000000000000000000 --rpc-url "$ETH_RPC_URL"
 | `--http.port` | 8546 | HTTP JSON-RPC port |
 | `--redacted-rpc.port` | 8544 | Redacted RPC server port |
 | `--redacted-rpc.max-auth-token-validity-secs` | 2592000 | Maximum auth token validity the redacted RPC accepts, in seconds. The effective limit is capped at 30 days. |
+| `--redacted-rpc.max-concurrent-simulations` | 16 | Maximum `eth_call`, `eth_estimateGas`, and `eth_fillTransaction` requests the redacted RPC runs at once across all callers. Further simulations wait in arrival order and fail with `-32009` if none finishes within two seconds. |
 
 ### Environment Variables
 
@@ -937,6 +938,7 @@ cast code 0x5A4d000000000000000000000000000000000000 --rpc-url "$ETH_RPC_URL"
 | `L1_PORTAL_ADDRESS` | For deposits | ZonePortal address (from `zone.json`) |
 | `ROUTER_BOUNCEBACK_RECIPIENT` | No | Optional controlled burner/stealth address for `demo-swap-and-deposit` routed deposit refunds |
 | `REDACTED_RPC_MAX_AUTH_TOKEN_VALIDITY_SECS` | No | Maximum auth token validity the redacted RPC accepts, in seconds. The effective limit is capped at 30 days. |
+| `REDACTED_RPC_MAX_CONCURRENT_SIMULATIONS` | No | Maximum simulation requests the redacted RPC runs at once across all callers (default 16). |
 | `WITHDRAWAL_MAX_BATCH_GAS` | No | Override the per-transaction withdrawal gas budget (maximum 20000000) |
 | `WITHDRAWAL_MAX_IN_FLIGHT_BATCHES` | No | Override the maximum number of ordered withdrawal transactions in flight |
 | `ZONE_TOKEN` | No | Default initial TIP-20 for `just create-zone` / `just deploy-zone`; defaults to `pathUSD` |

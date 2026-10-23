@@ -5067,6 +5067,7 @@ pub(crate) async fn start_zone_with_redacted_rpc() -> eyre::Result<RedactedRpcTe
         chain_id,
         max_auth_token_validity: zone_node::rpc::auth::DEFAULT_MAX_AUTH_TOKEN_VALIDITY,
         max_response_size: 160 * 1024 * 1024,
+        max_concurrent_simulations: zone_node::rpc::config::DEFAULT_MAX_CONCURRENT_SIMULATIONS,
         zone_portal: Address::ZERO,
     };
 
@@ -5109,6 +5110,7 @@ async fn start_zone_with_redacted_rpc_l1_inner() -> eyre::Result<RedactedRpcL1Te
         chain_id,
         max_auth_token_validity: zone_node::rpc::auth::DEFAULT_MAX_AUTH_TOKEN_VALIDITY,
         max_response_size: 160 * 1024 * 1024,
+        max_concurrent_simulations: zone_node::rpc::config::DEFAULT_MAX_CONCURRENT_SIMULATIONS,
         zone_portal: portal_address,
     };
 
