@@ -48,7 +48,6 @@ use tempo_evm::{
     transaction_error::{ConfigurableAccountError, FeePaymentError, RootKeyRole},
 };
 use tempo_precompiles::{
-    configurable_account::initial_account_proof_gas,
     error::TempoPrecompileError,
     input_cost,
     nonce::NonceManager,
@@ -4833,7 +4832,7 @@ fn check_configurable_account_verdict(
     let initial = if registered {
         0
     } else {
-        initial_account_proof_gas(signature.config()).unwrap()
+        keccak_cost(signature.config().account_preimage_len()).unwrap()
     };
     let charge = access_gas + signature.verification_gas().unwrap() + initial;
 
