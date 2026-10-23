@@ -549,14 +549,6 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             url => Some(url.to_string()),
         };
 
-        let estimator = tempo_node::Estimator::new(
-            tempo_node::EstimatorConfig::new(
-                args.consensus.target_block_time.into_duration(),
-                args.consensus.network_budget.into_duration(),
-            )
-            .with_build_time_multiplier(args.node_args.builder_build_time_multiplier),
-        )
-        .map_err(|reason| eyre::eyre!("invalid proposal budget flags: {reason}"))?;
         let tempo_node = overrides.apply_tempo_node({
             let node = TempoNode::new(&args.node_args, validator_key);
             match gossip_protocol_handler {
@@ -564,7 +556,19 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                 None => node,
             }
         });
-        // Apply after overrides so both consumers receive the same handle.
+        let payload_builder = tempo_node.payload_builder_builder();
+        let estimator = match payload_builder.estimator.clone() {
+            Some(estimator) => estimator,
+            None => tempo_node::Estimator::new(
+                tempo_node::EstimatorConfig::new(
+                    args.consensus.target_block_time.into_duration(),
+                    args.consensus.network_budget.into_duration(),
+                )
+                    .with_build_time_multiplier(payload_builder.build_time_multiplier),
+            )
+            .map_err(|reason| eyre::eyre!("invalid proposal budget flags: {reason}"))?,
+        };
+        // Share the overridden settings with both the payload builder and consensus.
         let tempo_node = tempo_node.with_estimator(estimator.clone());
         let executed_state = tempo_node.executed_state();
 
@@ -669,6 +673,8 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             });
         }
 
+        // The receiver is only dropped when the consensus thread has already
+        // exited, which `consensus_dead_rx` below reports.
         let _ = consensus_startup_tx.send((node, executed_state, args, gossip_transport, estimator));
 
         // TODO: emit these inside a span
