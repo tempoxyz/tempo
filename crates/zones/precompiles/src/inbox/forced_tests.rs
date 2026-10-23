@@ -768,7 +768,9 @@ fn forced_balance_boundaries_and_classification_order() -> eyre::Result<()> {
 #[test]
 fn maximum_forced_exit_workload_fits_system_gas_budget() -> eyre::Result<()> {
     const REQUESTS: u64 = 210 / 14; // ZonePortal.FORCED_EXIT_ADMISSION_WEIGHT
+    let gas_params = tempo_revm::gas_params::tempo_gas_params(TempoHardfork::T14);
     let mut h = active_harness()?;
+    h.ctx.cfg.gas_params = gas_params.clone();
     let enabled_tokens = (1..=8).map(maximum_metadata_token).collect::<Vec<_>>();
     h.set_token_enablements(&enabled_tokens);
     // Maximum-size WebAuthn roots: the largest admitted ciphertext and the most expensive
@@ -780,9 +782,12 @@ fn maximum_forced_exit_workload_fits_system_gas_budget() -> eyre::Result<()> {
         vec![ForcedExitResult::Exited { amount: 1 }; REQUESTS as usize]
     );
     assert_eq!(h.pending_withdrawals()?.len(), REQUESTS as usize);
-    // Add a separate full transition for the 20 reserved refund entries. This overcounts
-    // header/cursor work rather than hiding it.
-    let gas_bound = executed.output.gas_used + failed_deposit_gas(20, 0)?;
+    // Add a separate full transition for the 20 reserved refund entries, at the same gas
+    // schedule. This overcounts header/cursor work rather than hiding it. Also charge every
+    // request its full debit bound on top of the debit it actually ran.
+    let gas_bound = executed.output.gas_used
+        + failed_deposit_gas(20, 0, Some(gas_params))?
+        + REQUESTS * crate::outbox::FORCED_EXIT_DEBIT_GAS;
     eprintln!(
         "{REQUESTS} max-size WebAuthn forced exits + 8 token initializations + 20 refund bound: \
          {gas_bound} gas (forced transition {})",
@@ -813,6 +818,28 @@ fn maximum_forced_exit_workload_fits_system_gas_budget() -> eyre::Result<()> {
         result.gas_used
     );
     assert!(result.gas_used < 225_000_000);
+    Ok(())
+}
+
+/// Weight 14 holds because a forced exit charged its full debit bound costs less than the 14
+/// deposits its admission displaces, which keeps the deposit-only queue the worst mix.
+#[test]
+fn forced_exit_costs_less_than_the_deposits_it_displaces() -> eyre::Result<()> {
+    const DISPLACED_DEPOSITS: usize = 14; // ZonePortal.FORCED_EXIT_ADMISSION_WEIGHT
+    let gas_params = tempo_revm::gas_params::tempo_gas_params(TempoHardfork::T14);
+    let mut h = active_harness()?;
+    h.ctx.cfg.gas_params = gas_params.clone();
+    let (_, entries) = funded_requests(&mut h, 1, true)?;
+    let executed = execute_with(&mut h, entries, Vec::new(), u64::MAX)?;
+    assert_eq!(executed.results, [ForcedExitResult::Exited { amount: 1 }]);
+    let forced = executed.output.gas_used + crate::outbox::FORCED_EXIT_DEBIT_GAS;
+    let displaced = failed_deposit_gas(DISPLACED_DEPOSITS, 0, Some(gas_params))?;
+    eprintln!("1 max-size WebAuthn forced exit + debit bound: {forced} gas");
+    eprintln!("{DISPLACED_DEPOSITS} failed deposits: {displaced} gas");
+    assert!(
+        forced <= displaced,
+        "forced exit ({forced}) costs more than {DISPLACED_DEPOSITS} deposits ({displaced})"
+    );
     Ok(())
 }
 
