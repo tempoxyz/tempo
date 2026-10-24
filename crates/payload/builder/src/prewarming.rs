@@ -48,7 +48,7 @@ impl BestTransactionsPrewarming {
         };
 
         let prewarm_executor = prewarm.executor();
-        // The builder thread reads the prewarmed state, so prewarming runs in its LLC domain.
+        // The builder thread reads the prewarmed state, so the coordinator runs in its LLC domain.
         let domain = JobDomain::capture();
         prewarm
             .executor()
@@ -72,9 +72,9 @@ impl BestTransactionsPrewarming {
 
     /// Runs the coordinator side of prewarming for a payload build.
     ///
-    /// The coordinator and every prewarm job run in `domain`, the payload builder's LLC domain:
-    /// state loaded by a job in another L3 domain must cross the interconnect again when the
-    /// builder reads it.
+    /// The coordinator moves into `domain`, the payload builder's LLC domain. Prewarm jobs are
+    /// not placed: they fan out over a pool wider than one domain, and pinning each job would
+    /// crowd the pool's workers into the builder's domain.
     ///
     /// See [`BestTransactionsPrewarming`] for details.
     fn start_prewarming<Txs, Provider>(
@@ -92,7 +92,7 @@ impl BestTransactionsPrewarming {
         pool.in_place_scope(|scope| {
             let prewarm = ctx.prewarm.clone();
             scope.spawn(move |_| {
-                domain.run(|| pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx()));
+                pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
             });
 
             let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
@@ -122,14 +122,11 @@ impl BestTransactionsPrewarming {
                 }
 
                 scope.spawn(move |_| {
-                    domain.run(|| {
-                        let tx =
-                            Self::prewarm_transaction(pool, prewarm, tx, expiring_nonce_offset);
-                        if let Some(transactions_tx) = transactions_tx {
-                            let _ = transactions_tx.send(Some(tx));
-                        }
-                        let _ = commands_tx.send(BestTransactionsCommand::Advance);
-                    });
+                    let tx = Self::prewarm_transaction(pool, prewarm, tx, expiring_nonce_offset);
+                    if let Some(transactions_tx) = transactions_tx {
+                        let _ = transactions_tx.send(Some(tx));
+                    }
+                    let _ = commands_tx.send(BestTransactionsCommand::Advance);
                 });
             };
 
