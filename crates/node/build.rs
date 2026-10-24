@@ -1,6 +1,6 @@
 #![allow(missing_docs)]
 
-use smolgen::{Build, Cargo, Emitter, Git2};
+use smolgen::{Build, Cargo, Emitter, Gitcl};
 use std::{env, error::Error};
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -14,7 +14,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     emitter.add_instructions(&cargo_builder)?;
 
-    let git_builder = Git2::builder()
+    let git_builder = Gitcl::builder()
         .describe(false, true, Some("tempo/v[0-9]*"))
         .dirty(true)
         .sha(false)
@@ -32,7 +32,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     // if on a tag: tempo/v0.2.0-beta.3
     let not_on_tag = env::var("VERGEN_GIT_DESCRIBE")
         .map(|describe| {
-            !describe.starts_with("tempo/v") || describe.ends_with(&format!("-g{sha_short}"))
+            !describe.starts_with("tempo/v")
+                || describe
+                    .rsplit_once("-g")
+                    .is_some_and(|(_, hash)| sha.starts_with(hash))
         })
         .unwrap_or(true);
     let version_suffix = if is_dirty || not_on_tag { "-dev" } else { "" };

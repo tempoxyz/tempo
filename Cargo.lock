@@ -13563,9 +13563,6 @@ name = "smolgen"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9452d78a58bf7d7ccaf0b935af070b2a37660de91c767a559e0e0c2c5168cd69"
-dependencies = [
- "git2",
-]
 
 [[package]]
 name = "snap"

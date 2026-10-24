@@ -408,7 +408,7 @@ secrecy = "0.10"
 bitflags = "2.11.1"
 
 # build deps
-smolgen = { version = "0.1", features = ["build", "cargo", "emit_and_set", "git2"] }
+smolgen = { version = "0.1", features = ["build", "cargo", "emit_and_set", "gitcl"] }
 
 # [patch."https://github.com/paradigmxyz/reth"]
 # reth-basic-payload-builder = { path = "../reth/crates/payload/basic" }
