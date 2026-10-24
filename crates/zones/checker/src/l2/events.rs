@@ -213,6 +213,7 @@ impl Mint {
 fn authenticate_receipt_withdrawals(
     transaction_hash: B256,
     receipt: &[ReceiptEvent],
+    sponsored_fee_token: Option<Address>,
 ) -> eyre::Result<()> {
     let burns = receipt
         .windows(3)
@@ -234,17 +235,28 @@ fn authenticate_receipt_withdrawals(
         };
 
         let total = principal + fee;
+        // Unsponsored: one burn of principal + fee from the sender in the withdrawal token.
         if let Some(index) = matching_burn(&burns, &consumed, request_index, token, sender, total) {
             consumed[index] = true;
             continue;
         }
 
+        // Otherwise the principal is burned from the sender and the fee from the fee payer: in the
+        // default fee token for a sponsor from T15, or in the withdrawal token before T15.
+        let fee_token = sponsored_fee_token.unwrap_or(token);
         let principal_burn =
             matching_burn(&burns, &consumed, request_index, token, sender, principal);
         let fee_burn = if fee.is_zero() {
             None
         } else {
-            matching_fee_burn(&burns, &consumed, request_index, token, fee, principal_burn)
+            matching_fee_burn(
+                &burns,
+                &consumed,
+                request_index,
+                fee_token,
+                fee,
+                principal_burn,
+            )
         };
         if let (Some(principal_burn), Some(fee_burn)) = (principal_burn, fee_burn) {
             consumed[principal_burn] = true;
@@ -253,7 +265,7 @@ fn authenticate_receipt_withdrawals(
         }
 
         eyre::bail!(
-            "withdrawal in transaction {} has no matching debit and burn of {total} {token}",
+            "withdrawal in transaction {} has no matching debit and burn of principal {principal} {token} and fee {fee} {fee_token}",
             transaction_hash
         );
     }
@@ -366,6 +378,7 @@ impl EventCollector {
         transaction: &T,
         receipt: &R,
         block: u64,
+        sponsored_fee_token: Option<Address>,
     ) -> eyre::Result<()>
     where
         T: TxHashRef,
@@ -401,7 +414,7 @@ impl EventCollector {
         }
 
         authenticate_receipt_mints(transaction_hash, &events)?;
-        authenticate_receipt_withdrawals(transaction_hash, &events)?;
+        authenticate_receipt_withdrawals(transaction_hash, &events, sponsored_fee_token)?;
         for event in events {
             match event {
                 ReceiptEvent::Anchor(anchor) => {
@@ -629,7 +642,12 @@ mod tests {
         T: TxHashRef + alloy_consensus::Transaction,
         R: TxReceipt<Log = Log>,
     {
-        crate::l2::collect_l2_block_evidence(transactions, receipts, block)
+        crate::l2::collect_l2_block_evidence(
+            transactions,
+            receipts,
+            block,
+            Some(address!("20c0000000000000000000000000000000000001")),
+        )
     }
 
     fn transaction() -> alloy_consensus::Signed<TxLegacy> {
@@ -1233,8 +1251,11 @@ mod tests {
         })
     }
 
-    fn authenticate_withdrawals(events: Vec<ReceiptEvent>) -> eyre::Result<()> {
-        authenticate_receipt_withdrawals(B256::repeat_byte(1), &events)
+    fn authenticate_withdrawals(
+        events: Vec<ReceiptEvent>,
+        sponsored_fee_token: Option<Address>,
+    ) -> eyre::Result<()> {
+        authenticate_receipt_withdrawals(B256::repeat_byte(1), &events, sponsored_fee_token)
     }
 
     fn authenticate_mints(events: Vec<ReceiptEvent>) -> eyre::Result<()> {
@@ -1354,18 +1375,92 @@ mod tests {
         let sender = Address::repeat_byte(2);
         let mut events = burn(token, sender, 105);
         events.push(withdrawal(token, sender, 100, 5));
-        authenticate_withdrawals(events).unwrap();
+        authenticate_withdrawals(events, Some(Address::repeat_byte(4))).unwrap();
     }
 
     #[test]
-    fn authenticates_sponsored_withdrawal() {
+    fn authenticates_pre_t15_sponsored_fee_only_in_withdrawal_token() {
         let token = Address::repeat_byte(1);
         let sender = Address::repeat_byte(2);
         let fee_payer = Address::repeat_byte(3);
         let mut events = burn(token, sender, 100);
         events.extend(burn(token, fee_payer, 5));
         events.push(withdrawal(token, sender, 100, 5));
-        authenticate_withdrawals(events).unwrap();
+        authenticate_withdrawals(events, None).unwrap();
+
+        let default_fee_token = Address::repeat_byte(4);
+        let mut events = burn(token, sender, 100);
+        events.extend(burn(default_fee_token, fee_payer, 5));
+        events.push(withdrawal(token, sender, 100, 5));
+        let error = authenticate_withdrawals(events, None).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "withdrawal in transaction {} has no matching debit and burn of principal 100 {token} and fee 5 {token}",
+                B256::repeat_byte(1)
+            )
+        );
+    }
+
+    #[test]
+    fn authenticates_sponsored_fee_paid_in_default_token() {
+        let token = Address::repeat_byte(1);
+        let default_fee_token = Address::repeat_byte(4);
+        let sender = Address::repeat_byte(2);
+        let fee_payer = Address::repeat_byte(3);
+        let mut events = burn(token, sender, 100);
+        events.extend(burn(default_fee_token, fee_payer, 5));
+        events.push(withdrawal(token, sender, 100, 5));
+        authenticate_withdrawals(events, Some(default_fee_token)).unwrap();
+    }
+
+    #[test]
+    fn rejects_fee_burn_outside_default_token() {
+        let token = Address::repeat_byte(1);
+        let sender = Address::repeat_byte(2);
+        let default_fee_token = Address::repeat_byte(4);
+        for wrong_fee_token in [token, Address::repeat_byte(5)] {
+            let mut events = burn(token, sender, 100);
+            events.extend(burn(wrong_fee_token, Address::repeat_byte(3), 5));
+            events.push(withdrawal(token, sender, 100, 5));
+            let error = authenticate_withdrawals(events, Some(default_fee_token)).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                format!(
+                    "withdrawal in transaction {} has no matching debit and burn of principal 100 {token} and fee 5 {default_fee_token}",
+                    B256::repeat_byte(1)
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_reusing_default_token_fee_burn() {
+        let token = Address::repeat_byte(1);
+        let sender = Address::repeat_byte(2);
+        let default_fee_token = Address::repeat_byte(4);
+        let mut events = burn(token, sender, 100);
+        events.extend(burn(default_fee_token, sender, 5));
+        events.push(withdrawal(token, sender, 100, 5));
+        events.extend(burn(token, sender, 200));
+        events.push(withdrawal(token, sender, 200, 5));
+        let error = authenticate_withdrawals(events, Some(default_fee_token)).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "withdrawal in transaction {} has no matching debit and burn of principal 200 {token} and fee 5 {default_fee_token}",
+                B256::repeat_byte(1)
+            )
+        );
+    }
+
+    #[test]
+    fn authenticates_zero_fee_withdrawal_outside_default_token() {
+        let token = Address::repeat_byte(1);
+        let sender = Address::repeat_byte(2);
+        let mut events = burn(token, sender, 100);
+        events.push(withdrawal(token, sender, 100, 0));
+        authenticate_withdrawals(events, Some(Address::repeat_byte(4))).unwrap();
     }
 
     #[test]
@@ -1374,7 +1469,7 @@ mod tests {
         let sender = Address::repeat_byte(2);
         let mut events = burn(token, sender, 101);
         events.push(withdrawal(token, sender, 100, 0));
-        assert!(authenticate_withdrawals(events).is_err());
+        assert!(authenticate_withdrawals(events, Some(token)).is_err());
     }
 
     #[test]
@@ -1385,7 +1480,7 @@ mod tests {
         events.push(withdrawal(token, sender, 100, 0));
         events.extend(burn(token, sender, 205));
         events.push(withdrawal(token, sender, 200, 5));
-        authenticate_withdrawals(events).unwrap();
+        authenticate_withdrawals(events, Some(token)).unwrap();
     }
 
     #[test]
@@ -1400,7 +1495,7 @@ mod tests {
         }));
         events.push(withdrawal(token, sender, 100, 0));
 
-        authenticate_withdrawals(events).unwrap();
+        authenticate_withdrawals(events, Some(token)).unwrap();
     }
 
     #[test]
@@ -1411,7 +1506,7 @@ mod tests {
         events.push(withdrawal(token, sender, 100, 0));
         events.push(withdrawal(token, sender, 100, 0));
 
-        assert!(authenticate_withdrawals(events).is_err());
+        assert!(authenticate_withdrawals(events, Some(token)).is_err());
     }
 
     #[test]
@@ -1419,7 +1514,7 @@ mod tests {
         let token = Address::repeat_byte(1);
         let sender = Address::repeat_byte(2);
 
-        assert!(authenticate_withdrawals(burn(token, sender, 100)).is_err());
+        assert!(authenticate_withdrawals(burn(token, sender, 100), Some(token)).is_err());
     }
 
     #[test]
@@ -1429,12 +1524,12 @@ mod tests {
         let mut events = burn(token, sender, 100);
         events.remove(2);
         events.push(withdrawal(token, sender, 100, 0));
-        assert!(authenticate_withdrawals(events).is_err());
+        assert!(authenticate_withdrawals(events, Some(token)).is_err());
     }
 
     #[test]
     fn deposit_bounce_back_does_not_require_a_burn() {
         let event = withdrawal(Address::repeat_byte(1), Address::ZERO, 100, 0);
-        authenticate_withdrawals(vec![event]).unwrap();
+        authenticate_withdrawals(vec![event], Some(Address::repeat_byte(1))).unwrap();
     }
 }

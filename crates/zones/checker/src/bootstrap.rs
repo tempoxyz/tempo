@@ -31,6 +31,8 @@ const LOG_QUERY_CONCURRENCY: usize = 8;
 
 /// Authenticated Zone genesis and Portal identity, without replayed accounting state.
 pub(crate) struct Bootstrap {
+    /// Portal creation token authenticated against canonical Zone genesis.
+    pub(crate) default_fee_token: Address,
     identity: persistence::Identity,
     zone: persistence::BlockRef,
     tempo: persistence::BlockRef,
@@ -193,6 +195,7 @@ async fn finish_bootstrap(
     }
 
     Ok(Bootstrap {
+        default_fee_token: context.initial_token,
         identity: context.identity(config, creation),
         zone: context.zone,
         tempo: persistence::BlockRef::from(context.tempo),
