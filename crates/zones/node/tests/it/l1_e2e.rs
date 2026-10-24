@@ -3145,7 +3145,6 @@ async fn test_deposit_blacklisted_recipient() -> eyre::Result<()> {
 /// NOTE: The T2 hardfork must be active on L1 for compound policies and
 /// directional authorization roles to work.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "TODO: re-enable once zones allow user transfers"]
 async fn test_blacklisted_sender_transfer_rejected() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
@@ -3182,24 +3181,32 @@ async fn test_blacklisted_sender_transfer_rejected() -> eyre::Result<()> {
     let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
     zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
 
-    // --- Step 4: Deposit to Alice via the dev account ---
+    // Opt the zone into transfers so the rejection below comes from the sender blacklist.
+    let opt_in_block = l1
+        .set_transfers_enabled_on_portal(portal_address, true)
+        .await?;
+    zone.wait_for_l2_tempo_finalized(opt_in_block, L1_TIMEOUT)
+        .await?;
+
+    // --- Step 4: Deposit to Alice via the admin account ---
     // Alice is blacklisted as a sender, so she can't transfer pathUSD on L1
-    // herself. The dev account deposits on her behalf (recipient = allow-all).
+    // herself. The admin, an allowed portal account, deposits on her behalf
+    // (recipient = allow-all).
     let deposit_amount: u128 = 1_000_000; // 1 pathUSD
     {
         use tempo_contracts::{precompiles::ITIP20, zones::ZonePortal};
 
-        let dev_provider = l1.dev_provider();
-        ITIP20::new(PATH_USD_ADDRESS, &dev_provider)
+        let admin_provider = l1.admin_provider();
+        ITIP20::new(PATH_USD_ADDRESS, &admin_provider)
             .approve(portal_address, U256::MAX)
             .send()
             .await?
             .get_receipt()
             .await?;
 
-        let portal = ZonePortal::new(portal_address, &dev_provider);
+        let portal = ZonePortal::new(portal_address, &admin_provider);
         let (key_index, encrypted) = l1
-            .encrypt_deposit_for_portal(portal_address, l1.dev_address(), alice, B256::ZERO)
+            .encrypt_deposit_for_portal(portal_address, l1.admin_address(), alice, B256::ZERO)
             .await?;
         let receipt = portal
             .deposit(
@@ -3239,10 +3246,14 @@ async fn test_blacklisted_sender_transfer_rejected() -> eyre::Result<()> {
         .transfer(bob, U256::from(200_000u128))
         .from(alice)
         .call()
-        .await;
-    assert!(
-        transfer.is_err(),
-        "transfer simulation from blacklisted sender should revert"
+        .await
+        .expect_err("transfer simulation from blacklisted sender should revert");
+    assert_eq!(
+        transfer.as_revert_data().unwrap(),
+        alloy_sol_types::SolError::abi_encode(
+            &tempo_contracts::precompiles::ITIP20::PolicyForbids {}
+        ),
+        "transfer must be rejected by the sender policy"
     );
 
     // Bob should have zero balance

@@ -60,7 +60,7 @@ use reth_transaction_pool::{
     error::InvalidPoolTransactionError,
 };
 use std::{
-    num::NonZeroU32,
+    num::{NonZeroU32, NonZeroUsize},
     sync::{Arc, OnceLock},
     time::Duration,
 };
@@ -245,7 +245,7 @@ impl ZoneProverConfig {
 }
 
 /// Configuration for the Zone redacted RPC server extension.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ZoneRedactedRpcConfig {
     /// Port for RPC traffic.
     pub redacted_rpc_port: u16,
@@ -253,6 +253,19 @@ pub struct ZoneRedactedRpcConfig {
     pub zone_id: u32,
     /// Max duration for redacted RPC auth.
     pub max_auth_token_validity: Duration,
+    /// Maximum simulation requests the redacted RPC runs at once across all callers.
+    pub max_concurrent_simulations: NonZeroUsize,
+}
+
+impl Default for ZoneRedactedRpcConfig {
+    fn default() -> Self {
+        Self {
+            redacted_rpc_port: 0,
+            zone_id: 0,
+            max_auth_token_validity: Duration::ZERO,
+            max_concurrent_simulations: zone_rpc::config::DEFAULT_MAX_CONCURRENT_SIMULATIONS,
+        }
+    }
 }
 
 /// Tempo Zone node type configuration.
@@ -1650,6 +1663,7 @@ where
             chain_id,
             max_auth_token_validity: config.max_auth_token_validity,
             max_response_size,
+            max_concurrent_simulations: config.max_concurrent_simulations,
             zone_portal: portal_address,
         };
         let api: Arc<dyn ZoneRpcApi> = Arc::new(ZoneRpc::new(

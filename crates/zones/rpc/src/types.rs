@@ -152,6 +152,15 @@ impl JsonRpcError {
         }
     }
 
+    /// Simulation capacity is exhausted (-32009), matching jsonrpsee's server-busy error.
+    pub fn server_busy() -> Self {
+        Self {
+            code: -32009,
+            message: "Server is busy, try again later".to_string(),
+            data: None,
+        }
+    }
+
     /// Invalid params (-32602).
     pub fn invalid_params(msg: impl Into<String>) -> Self {
         Self {

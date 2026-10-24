@@ -137,7 +137,7 @@ where
         }
 
         if is_tip20_prefix(*address) {
-            Some(create_tip20_precompile(*address, &env))
+            Some(create_tip20_precompile(*address, l1.clone(), &env))
         } else if *address == TEMPO_STATE_ADDRESS {
             Some(TempoState::create(l1.clone(), &env))
         } else if *address == ZONE_INBOX_ADDRESS {
@@ -198,7 +198,14 @@ where
 }
 
 /// Creates upstream TIP-20 execution with zone rules and adapter-backed L1 policy reads.
-pub fn create_tip20_precompile(address: Address, env: &ZonePrecompileEnv) -> DynPrecompile {
+pub fn create_tip20_precompile<P>(
+    address: Address,
+    l1: L1State<P>,
+    env: &ZonePrecompileEnv,
+) -> DynPrecompile
+where
+    P: L1StorageReader,
+{
     // Redacts TIP20 transfer from reverts that reveal user balances to the spender.
     let redact = |mut res: revm::precompile::PrecompileOutput| {
         if res.is_revert() && res.bytes.starts_with(&TIP20InsufficientBalance::SELECTOR) {
@@ -210,7 +217,7 @@ pub fn create_tip20_precompile(address: Address, env: &ZonePrecompileEnv) -> Dyn
     execution::create_precompile(
         "TIP20Token",
         env,
-        ztip20::TIP20Rules,
+        ztip20::TIP20Rules { token: address, l1 },
         move |data, caller| {
             TIP20Token::from_address_unchecked(address)
                 .call(data, caller)

@@ -169,6 +169,12 @@ The two controls are independent and remain mutable after creation:
 | Account access | Does not enforce account membership | `closed` requires the `Account` role for deposits, refunds, and plain withdrawals; no assigned accounts denies all accounts |
 | Callback targets | Does not enforce callback roles | `enforced` requires callback targets to have the `CallbackGateway` role |
 
+Account access gates L1 addresses only: depositors, refund recipients, and withdrawal
+destinations. It does not restrict addresses on the zone. A depositor can credit any zone
+recipient, and once a zone opts into transfers (see [Enabling zone transfers](#enabling-zone-transfers))
+zone accounts can send TIP-20 transfers to any zone address. To restrict who can hold or move
+a token on the zone, use the token's TIP-403 transfer policy.
+
 Changing a mode does not clear the stored roles. To create and start a closed zone
 with enforced callback targets in one command:
 
@@ -407,6 +413,26 @@ without `--deposits.allowlist` while writes were sent. To fix drift, send a sign
 with the full list; it brings every sequencer to the same list and nonce. Re-enabling
 `--deposits.allowlist` on a sequencer resumes enforcement from its file as it was left, so
 check status first.
+
+### Enabling zone transfers
+
+Zone-internal TIP-20 transfers (`transfer`, `transferFrom`, and their memo variants) are
+off by default. From T15, the portal admin can opt a zone in:
+
+```bash
+export L1_RPC_URL=https://...
+export L1_PORTAL_ADDRESS=0x<portal>
+export ADMIN_KEY=0x<portal-admin-private-key>
+
+just set-transfers-enabled true
+```
+
+Pass `false` to disable transfers again. A Safe admin can use
+`cargo zone-xtask set-transfers-enabled --enabled --safe-address ... --safe-output ...`;
+omit `--enabled` to create a disable proposal. Transfers require T15 on Tempo, which adds
+`setTransfersEnabled` to the portal. Zone transactions see the change once the zone has
+finalized the Tempo block that recorded it. Abdicating `AccessPolicy` freezes the current
+setting once the 30-day abdication delay has passed.
 
 ### 5. Start the Zone Node
 
@@ -822,7 +848,7 @@ Zones inherit the Tempo L1 EVM but replace, disable, or pass through each precom
 | Precompile | Address | Zone Behavior |
 |------------|---------|---------------|
 | Standard EVM (ecrecover, SHA-256, etc.) | `0x01`–`0x0a`, `0x0100` on T1C+ | **Unchanged** — standard Ethereum precompiles inherited from Tempo's active hardfork (Prague pre-T1C, Osaka at T1C+) are available as-is. |
-| TIP-20 tokens | `0x20C0…` prefix | **Adapted** — upstream Tempo TIP-20 business logic runs over zone-local token state and exact-block L1 policy state, with zone privacy (caller-scoped reads), fixed gas for transfers, and bridge authorization for mint/burn. |
+| TIP-20 tokens | `0x20C0…` prefix | **Adapted** — upstream Tempo TIP-20 business logic runs over zone-local token state and exact-block L1 policy state, with zone privacy (caller-scoped reads), fixed gas for transfers, and bridge authorization for mint/burn. Transfers need the portal's T15 opt-in, revert while the token is paused on L1, and revert instead of diverting funds when a receive policy blocks them. |
 | TIP20Factory | `0x20FC…0000` | **Disabled** — token creation is L1-owned; `ZoneInbox` directly activates bridged TIP-20 tokens during `advanceTempo`. |
 | TIP403Registry | `0x403C…0000` | **Adapted** — the upstream Tempo registry executes read-only against raw L1 storage at the exact finalized block recorded in `TempoState`. Mutating calls (`createPolicy`, `modifyPolicyWhitelist`, etc.) revert because policy state is managed on L1. |
 | ZoneFeeManager | `0xfeec…0001` | **Replaced** — no user/validator preferences or FeeAMM routing. The explicit transaction token (or portal creation-time default) is escrowed directly, accrued by beneficiary/token, and readable or claimable only by that beneficiary. |
@@ -891,6 +917,7 @@ cast code 0x5A4d000000000000000000000000000000000000 --rpc-url "$ETH_RPC_URL"
 | `--http.port` | 8546 | HTTP JSON-RPC port |
 | `--redacted-rpc.port` | 8544 | Redacted RPC server port |
 | `--redacted-rpc.max-auth-token-validity-secs` | 2592000 | Maximum auth token validity the redacted RPC accepts, in seconds. The effective limit is capped at 30 days. |
+| `--redacted-rpc.max-concurrent-simulations` | 16 | Maximum `eth_call`, `eth_estimateGas`, and `eth_fillTransaction` requests the redacted RPC runs at once across all callers. Further simulations wait in arrival order and fail with `-32009` if none finishes within two seconds. |
 
 ### Environment Variables
 
@@ -911,6 +938,7 @@ cast code 0x5A4d000000000000000000000000000000000000 --rpc-url "$ETH_RPC_URL"
 | `L1_PORTAL_ADDRESS` | For deposits | ZonePortal address (from `zone.json`) |
 | `ROUTER_BOUNCEBACK_RECIPIENT` | No | Optional controlled burner/stealth address for `demo-swap-and-deposit` routed deposit refunds |
 | `REDACTED_RPC_MAX_AUTH_TOKEN_VALIDITY_SECS` | No | Maximum auth token validity the redacted RPC accepts, in seconds. The effective limit is capped at 30 days. |
+| `REDACTED_RPC_MAX_CONCURRENT_SIMULATIONS` | No | Maximum simulation requests the redacted RPC runs at once across all callers (default 16). |
 | `WITHDRAWAL_MAX_BATCH_GAS` | No | Override the per-transaction withdrawal gas budget (maximum 20000000) |
 | `WITHDRAWAL_MAX_IN_FLIGHT_BATCHES` | No | Override the maximum number of ordered withdrawal transactions in flight |
 | `ZONE_TOKEN` | No | Default initial TIP-20 for `just create-zone` / `just deploy-zone`; defaults to `pathUSD` |

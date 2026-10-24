@@ -102,8 +102,9 @@ pub trait ZoneRpcApi: Send + Sync + 'static {
     /// creating a transaction.
     ///
     /// Enforces that `from` equals the authenticated account (sets it if omitted,
-    /// rejects with `-32004` on mismatch). State/block overrides are rejected
-    /// with `-32602`.
+    /// rejects with `-32004` on mismatch). State/block overrides and blocks other
+    /// than `latest`, `pending`, `safe`, or `finalized` are rejected with `-32602`
+    /// before this is called.
     fn call(
         &self,
         request: TempoTransactionRequest,
@@ -114,8 +115,8 @@ pub trait ZoneRpcApi: Send + Sync + 'static {
 
     /// `eth_estimateGas(request, block, state_override)` — estimates gas for a transaction.
     ///
-    /// Same `from`-enforcement as [`call`](Self::call). State overrides are
-    /// rejected with `-32602`.
+    /// Same `from`-enforcement and block restriction as [`call`](Self::call).
+    /// State overrides are rejected with `-32602`.
     fn estimate_gas(
         &self,
         request: TempoTransactionRequest,
@@ -427,7 +428,7 @@ async fn handle_get_transaction_receipt(
 }
 
 /// Handle `eth_call`. Enforces `from` matches the authenticated account and
-/// rejects state overrides.
+/// rejects state overrides and historical blocks.
 async fn handle_call(
     id: Value,
     raw: &str,
@@ -447,7 +448,10 @@ async fn handle_call(
         );
     }
 
-    let block = block.map(normalize_block_id);
+    let block = match simulation_block(block) {
+        Ok(block) => block,
+        Err(error) => return JsonRpcResponse::error(id, error),
+    };
 
     api_result(
         id,
@@ -457,7 +461,7 @@ async fn handle_call(
 }
 
 /// Handle `eth_estimateGas`. Same `from`-enforcement as `eth_call`.
-/// Rejects state overrides.
+/// Rejects state overrides and historical blocks.
 async fn handle_estimate_gas(
     id: Value,
     raw: &str,
@@ -477,7 +481,10 @@ async fn handle_estimate_gas(
         );
     }
 
-    let block = block.map(normalize_block_id);
+    let block = match simulation_block(block) {
+        Ok(block) => block,
+        Err(error) => return JsonRpcResponse::error(id, error),
+    };
 
     api_result(
         id,
@@ -723,6 +730,25 @@ fn normalize_block_number(number: BlockNumberOrTag) -> BlockNumberOrTag {
         BlockNumberOrTag::Latest
     } else {
         number
+    }
+}
+
+/// Normalizes a simulation block, rejecting any block that is not `latest`, `pending`, `safe`, or
+/// `finalized`.
+///
+/// Each zone block is anchored to its own Tempo block, and L1 state is cached per Tempo block. A
+/// simulation at an arbitrary historical block would force a fresh L1 fetch for every slot it reads.
+fn simulation_block(block: Option<BlockId>) -> Result<Option<BlockId>, JsonRpcError> {
+    match block.map(normalize_block_id) {
+        None => Ok(None),
+        Some(
+            block @ BlockId::Number(
+                BlockNumberOrTag::Latest | BlockNumberOrTag::Safe | BlockNumberOrTag::Finalized,
+            ),
+        ) => Ok(Some(block)),
+        Some(_) => Err(JsonRpcError::invalid_params(
+            "simulations only accept the latest, pending, safe, or finalized block",
+        )),
     }
 }
 
@@ -1003,14 +1029,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn simulations_treat_pending_as_latest() {
+    async fn simulations_accept_only_recent_block_tags() {
         let api = MockZoneRpcApi::default();
         for method in ["eth_call", "eth_estimateGas"] {
             // The mock echoes the block it is asked to run against.
             for (requested, forwarded) in [
                 (json!("pending"), json!("latest")),
                 (json!("latest"), json!("latest")),
-                (json!("0x10"), json!("0x10")),
+                (json!("safe"), json!("safe")),
+                (json!("finalized"), json!("finalized")),
             ] {
                 let resp = dispatch(
                     &request(
@@ -1028,6 +1055,39 @@ mod tests {
                 let block: serde_json::Value =
                     serde_json::from_str(resp.result.expect("should dispatch").get()).unwrap();
                 assert_eq!(block, forwarded, "{method} at {requested}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn simulations_reject_historical_blocks() {
+        let api = MockZoneRpcApi::default();
+        for method in ["eth_call", "eth_estimateGas"] {
+            for block in [
+                json!("0x10"),
+                json!("earliest"),
+                json!({"blockHash": format!("{:#x}", B256::repeat_byte(0x33))}),
+            ] {
+                let resp = dispatch(
+                    &request(
+                        method,
+                        json!([
+                            {"to": format!("{:#x}", Address::repeat_byte(0x11)), "data": "0x"},
+                            block,
+                        ]),
+                    ),
+                    &auth(),
+                    &api,
+                )
+                .await;
+
+                assert!(resp.result.is_none(), "{method} at {block}");
+                let err = resp.error.expect("should reject historical blocks");
+                assert_eq!(err.code, -32602, "{method} at {block}");
+                assert_eq!(
+                    err.message,
+                    "simulations only accept the latest, pending, safe, or finalized block"
+                );
             }
         }
     }

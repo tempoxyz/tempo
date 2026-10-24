@@ -365,7 +365,7 @@ async fn dispatch_ws_request(
         "eth_unsubscribe" => {
             WsDispatchResult::response_only(handle_unsubscribe(req, session).await)
         }
-        _ => WsDispatchResult::response_only(dispatch_request(req, auth, state.api.as_ref()).await),
+        _ => WsDispatchResult::response_only(dispatch_request(req, auth, state).await),
     }
 }
 

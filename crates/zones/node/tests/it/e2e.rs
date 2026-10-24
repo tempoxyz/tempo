@@ -96,7 +96,6 @@ async fn test_sequencer_exposes_simulation_endpoints() -> eyre::Result<()> {
 
 /// A follower imports the leader's executed block and exposes the resulting state over RPC.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "TODO: re-enable once zones allow user transfers"]
 async fn test_p2p_follower_tracks_leader_balance() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
@@ -283,7 +282,6 @@ async fn test_p2p_follower_tracks_leader_balance() -> eyre::Result<()> {
 /// 4. The follower imports block 2 — only possible if it, too, reads policy at
 ///    height 2 and reproduces the revert, matching the leader's state root.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "TODO: re-enable once zones allow user transfers"]
 async fn test_p2p_follower_enforces_policy_change_at_anchor_block() -> eyre::Result<()> {
     use alloy_provider::ProviderBuilder;
     use tempo_chainspec::spec::TEMPO_T0_BASE_FEE;
