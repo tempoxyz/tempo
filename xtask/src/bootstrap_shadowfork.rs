@@ -21,6 +21,7 @@ use commonware_math::algebra::Random as _;
 use commonware_runtime::{Runner as _, Supervisor as _};
 use commonware_storage::metadata::{Config as MetadataConfig, Metadata};
 use commonware_utils::{NZU32, ordered};
+use evm2::evm::{AccountInfo, StateCheckpoint};
 use eyre::{Context as _, OptionExt as _, ensure, eyre};
 use rand::SeedableRng as _;
 use reth_db::{mdbx::DatabaseArguments, open_db};
@@ -35,10 +36,6 @@ use reth_primitives_traits::StorageEntry;
 use reth_provider::{
     BlockHashReader as _, HeaderProvider as _, StaticFileProviderBuilder, StaticFileSegment,
     StaticFileWriter as _,
-};
-use revm::{
-    context::{BlockEnv, journaled_state::JournalCheckpoint},
-    state::{AccountInfo, Bytecode},
 };
 use serde::Deserialize;
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -362,10 +359,7 @@ where
             tx,
             chain_id,
             block_env: TempoBlockEnv {
-                inner: BlockEnv {
-                    number: U256::from(block_number),
-                    ..Default::default()
-                },
+                number: U256::from(block_number),
                 ..Default::default()
             },
             storage_settings,
@@ -490,7 +484,7 @@ where
         &self.block_env
     }
 
-    fn set_code(&mut self, _address: Address, _code: Bytecode) -> Result<(), TempoPrecompileError> {
+    fn set_code(&mut self, _address: Address, _code: Bytes) -> Result<(), TempoPrecompileError> {
         Ok(())
     }
 
@@ -502,13 +496,6 @@ where
         let account = self.read_db_account_info(address)?;
         f(&account);
         Ok(())
-    }
-
-    fn account_code(
-        &mut self,
-        _address: Address,
-    ) -> Result<(B256, Bytecode), TempoPrecompileError> {
-        unreachable!("account_code is not used during shadow-fork bootstrap")
     }
 
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError> {
@@ -588,33 +575,29 @@ where
         false
     }
 
-    fn checkpoint(&mut self) -> JournalCheckpoint {
+    fn checkpoint(&mut self) -> StateCheckpoint {
         let idx = self.snapshots.len();
         self.snapshots
             .push((self.overlay.clone(), self.events.clone()));
-        JournalCheckpoint {
-            log_i: 0,
-            journal_i: idx,
-            selfdestructed_i: 0,
-        }
+        StateCheckpoint::new(idx, 0)
     }
 
-    fn checkpoint_commit(&mut self, checkpoint: JournalCheckpoint) {
+    fn checkpoint_commit(&mut self, checkpoint: StateCheckpoint) {
         assert_eq!(
-            checkpoint.journal_i,
+            checkpoint.journal_len(),
             self.snapshots.len() - 1,
             "out-of-order checkpoint commit",
         );
         self.snapshots.pop();
     }
 
-    fn checkpoint_revert(&mut self, checkpoint: JournalCheckpoint) {
+    fn checkpoint_revert(&mut self, checkpoint: StateCheckpoint) {
         assert_eq!(
-            checkpoint.journal_i,
+            checkpoint.journal_len(),
             self.snapshots.len() - 1,
             "out-of-order checkpoint revert",
         );
-        let (overlay, events) = self.snapshots.remove(checkpoint.journal_i);
+        let (overlay, events) = self.snapshots.remove(checkpoint.journal_len());
         self.overlay = overlay;
         self.events = events;
     }

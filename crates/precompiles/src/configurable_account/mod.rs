@@ -13,13 +13,10 @@ use tempo_contracts::precompiles::{
     IConfigurableAccount,
 };
 use tempo_precompiles_macros::{Storable, contract};
-use tempo_primitives::{
-    TempoBlockEnv,
-    transaction::{
-        ConfigurableAccountConfig, ConfigurableAccountOwner,
-        configurable_account::{
-            CONFIGURABLE_ACCOUNT_CREATE2_PREIMAGE_LEN, CONFIGURABLE_ACCOUNT_UPGRADE_DOMAIN,
-        },
+use tempo_primitives::transaction::{
+    ConfigurableAccountConfig, ConfigurableAccountOwner,
+    configurable_account::{
+        CONFIGURABLE_ACCOUNT_CREATE2_PREIMAGE_LEN, CONFIGURABLE_ACCOUNT_UPGRADE_DOMAIN,
     },
 };
 
@@ -184,7 +181,7 @@ impl ConfigurableAccount {
 
     fn factory(&self) -> Result<Address> {
         self.storage
-            .with_block_env(TempoBlockEnv::configurable_account_recovery_factory)
+            .with_block_env(|block| block.ext.configurable_account_recovery_factory())
             .ok_or_else(|| ConfigurableAccountError::invalid_config().into())
     }
 }

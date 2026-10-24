@@ -4,8 +4,10 @@ use alloy::{
     primitives::{Address, B256, Bytes, address},
     sol_types::{SolCall, SolInterface},
 };
-use alloy_evm::EvmEnv;
-use revm::{context::CfgEnv, database::InMemoryDB, precompile::PrecompileOutput, state::Bytecode};
+use evm2::{
+    bytecode::Bytecode,
+    evm::{InMemoryDB, precompile::NoPrecompiles},
+};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
     AccountKeychainError,
@@ -14,13 +16,17 @@ use tempo_contracts::precompiles::{
         authorizeKey_1Call, authorizeKey_2Call, getKeyCall,
     },
 };
-use tempo_evm::{TempoBlockEnv, evm::TempoEvm};
+use tempo_evm::{TempoEvmExt, build_tempo_evm};
 use tempo_precompiles::{
     Precompile,
     account_keychain::AccountKeychain,
-    storage::{StorageActions, StorageCtx, hashmap::HashMapStorageProvider},
+    storage::{StorageCtx, hashmap::HashMapStorageProvider},
 };
-use tempo_primitives::{MasterId, TempoAddressExt, UserTag};
+use tempo_primitives::{MasterId, TempoAddressExt, TempoBlockEnv, UserTag};
+
+mod common;
+
+use common::PrecompileOutput;
 
 const PARENT: Address = Address::repeat_byte(0x11);
 const DELEGATE: Address = Address::repeat_byte(0x22);
@@ -40,9 +46,9 @@ fn restrictions(expiry: u64) -> KeyRestrictions {
 fn keychain_call_as_parent(calldata: &[u8]) -> PrecompileOutput {
     let mut keychain = AccountKeychain::new();
     keychain.set_tx_origin(PARENT).unwrap();
-    keychain
-        .call(calldata, PARENT)
-        .expect("keychain calls never fail the frame")
+    let before = StorageCtx.gas_used();
+    let result = keychain.call(calldata, PARENT);
+    PrecompileOutput::new(result, StorageCtx.gas_used() - before)
 }
 
 /// Runs `calldata` from `PARENT` as both the sender and the transaction origin.
@@ -53,18 +59,15 @@ fn call_as_parent(storage: &mut HashMapStorageProvider, calldata: &[u8]) -> Prec
 /// Runs `calldata` from `PARENT` as both the sender and the transaction origin, on an EVM at
 /// `spec` with mainnet gas parameters, so the output carries the gas a node would charge.
 fn call_as_parent_in_evm(spec: TempoHardfork, calldata: &[u8]) -> PrecompileOutput {
-    let mut cfg = CfgEnv::<TempoHardfork>::default();
-    cfg.set_spec_and_mainnet_gas_params(spec);
-    let mut evm = TempoEvm::new(
+    let mut evm = build_tempo_evm(
+        spec,
+        1,
+        TempoBlockEnv::default(),
         InMemoryDB::default(),
-        EvmEnv {
-            cfg_env: cfg,
-            block_env: TempoBlockEnv::default(),
-        },
+        NoPrecompiles::default(),
+        TempoEvmExt::default(),
     );
-    StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
-        keychain_call_as_parent(calldata)
-    })
+    StorageCtx::enter_evm(&mut evm, || keychain_call_as_parent(calldata))
 }
 
 /// The signature and calldata of each authorization entrypoint that carries a `signatureType`.
@@ -233,15 +236,15 @@ fn delegate_grants_are_guarded_from_t14() {
                 match case {
                     DelegateCase::Bytecode => StorageCtx::enter(&mut storage, || {
                         StorageCtx
-                            .set_code(
-                                delegate,
-                                Bytecode::new_raw(Bytes::from_static(&[0x60, 0x00])),
-                            )
+                            .set_code(delegate, Bytes::from_static(&[0x60, 0x00]))
                             .unwrap()
                     }),
                     DelegateCase::Delegation => StorageCtx::enter(&mut storage, || {
                         StorageCtx
-                            .set_code(delegate, Bytecode::new_eip7702(Address::repeat_byte(0x33)))
+                            .set_code(
+                                delegate,
+                                Bytecode::new_eip7702(Address::repeat_byte(0x33)).original_bytes(),
+                            )
                             .unwrap()
                     }),
                     DelegateCase::CodeFree
