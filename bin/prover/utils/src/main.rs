@@ -25,7 +25,7 @@ use tempo_contracts::zones::{
 use tempo_primitives::{TempoHeader, TempoTxEnvelope};
 use tracing::{debug, info};
 use tracing_subscriber::EnvFilter;
-use zone_chainspec::{ZoneChainSpec, ZoneChainSpecParser};
+use zone_chainspec::ZoneChainSpec;
 use zone_precompiles::outbox;
 use zone_primitives::constants::zone_chain_id;
 use zone_prover::{
@@ -241,10 +241,10 @@ async fn generate_input(args: GenerateInputArgs) -> Result<()> {
     if args.block == Some(0.into()) {
         bail!("Zone genesis block 0 does not belong to a submitted batch");
     }
-    let chain = load_chain(&args.chain).await?;
+    let tempo_provider = connect(&args.tempo_rpc_url, "Tempo").await?;
+    let chain = load_chain(&args.chain, &tempo_provider).await?;
 
     let started = start_phase("discovery");
-    let tempo_provider = connect(&args.tempo_rpc_url, "Tempo").await?;
     let zone_provider = connect(&args.zone_rpc_url, "unrestricted Zone").await?;
     let mut discovery = discover(&tempo_provider, &zone_provider).await?;
     let spf_config = SpfConfig::new(chain);
@@ -593,9 +593,12 @@ async fn connect(url: &str, label: &str) -> Result<DynProvider<TempoNetwork>> {
         .map(Provider::erased)
 }
 
-async fn load_chain(source: &str) -> Result<Arc<ZoneChainSpec>> {
-    if source.starts_with("http://") || source.starts_with("https://") {
-        let genesis = reqwest::Client::builder()
+async fn load_chain(
+    source: &str,
+    tempo_provider: &DynProvider<TempoNetwork>,
+) -> Result<Arc<ZoneChainSpec>> {
+    let genesis = if source.starts_with("http://") || source.starts_with("https://") {
+        reqwest::Client::builder()
             .timeout(Duration::from_secs(60))
             .build()?
             .get(source)
@@ -606,11 +609,13 @@ async fn load_chain(source: &str) -> Result<Arc<ZoneChainSpec>> {
             .context("download Zone genesis JSON")?
             .json()
             .await
-            .context("decode Zone genesis JSON")?;
-        Ok(Arc::new(ZoneChainSpec::from_genesis(genesis)?))
+            .context("decode Zone genesis JSON")?
     } else {
-        <ZoneChainSpecParser as reth_cli::chainspec::ChainSpecParser>::parse(source)
-    }
+        reth_cli::chainspec::parse_genesis(source)?
+    };
+    Ok(Arc::new(
+        ZoneChainSpec::from_genesis_with_l1_rpc(genesis, tempo_provider).await?,
+    ))
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1695,10 +1700,11 @@ mod tests {
         ));
         std::fs::write(&path, serde_json::to_vec(&genesis).unwrap()).unwrap();
 
-        let chain_spec = <ZoneChainSpecParser as reth_cli::chainspec::ChainSpecParser>::parse(
-            path.to_str().unwrap(),
-        )
-        .unwrap();
+        let chain_spec =
+            <zone_chainspec::ZoneChainSpecParser as reth_cli::chainspec::ChainSpecParser>::parse(
+                path.to_str().unwrap(),
+            )
+            .unwrap();
         let config = SpfConfig::new(chain_spec);
 
         std::fs::remove_file(path).unwrap();

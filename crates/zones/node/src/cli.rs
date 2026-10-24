@@ -6,6 +6,7 @@ use alloy_primitives::Address;
 use alloy_provider::{Provider, ProviderBuilder};
 use alloy_signer_local::PrivateKeySigner;
 use clap::{Arg, ArgAction, Args, CommandFactory, FromArgMatches};
+use eyre::WrapErr as _;
 use reth_chainspec::EthChainSpec as _;
 use reth_cli_runner::CliRunner;
 use reth_ethereum::cli::{Cli, ExtendedCommand};
@@ -37,6 +38,8 @@ use zone_sequencer::{
 const MAX_LOGS_PER_RESPONSE: u64 = 1_000_000;
 const MAX_BLOCKS_PER_FILTER: u64 = 1_000_000;
 const L1_OFFLINE: &str = "l1.offline";
+/// Bound on connecting to L1 and reading its fork schedule at startup.
+const L1_FORK_SCHEDULE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Subcommands that build the CLI EVM config to execute zone blocks.
 const BLOCK_EXECUTION_SUBCOMMANDS: [&str; 3] = ["import", "re-execute", "stage"];
 
@@ -193,6 +196,22 @@ fn run_node(mut cli: ZoneNodeCli, l1_access: CliL1Access) -> eyre::Result<()> {
         if args.block_interval_ms.is_some() {
             warn!(target: "reth::cli", "--block.interval-ms is deprecated, has no effect, and will be removed in the next release");
         }
+
+        let chain = &mut builder.config_mut().chain;
+        let genesis = chain.genesis().clone();
+        *chain = Arc::new(
+            tokio::time::timeout(L1_FORK_SCHEDULE_TIMEOUT, async {
+                let l1 = ProviderBuilder::new_with_network::<TempoNetwork>()
+                    .connect(&args.l1_rpc_url)
+                    .await
+                    .wrap_err("failed connecting to the L1 RPC")?;
+                ZoneChainSpec::from_genesis_with_l1_rpc(genesis, &l1)
+                    .await
+                    .wrap_err("failed resolving the Zone fork schedule")
+            })
+            .await
+            .wrap_err("timed out resolving the Zone fork schedule")??,
+        );
 
         let zone_id = builder.config().chain.zone_id();
         validate_deprecated_zone_id(args.zone_id, zone_id)?;

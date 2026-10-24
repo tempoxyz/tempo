@@ -163,6 +163,7 @@ cli = [
   "dep:zeroize",
   "dep:zone-checker",
   "zone-chainspec/cli",
+  "zone-chainspec/l1-rpc",
 ]
 jemalloc = [
   "reth-ethereum?/jemalloc",

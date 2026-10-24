@@ -12,7 +12,7 @@ workspace = true
 
 [dependencies]
 tempo-contracts = { workspace = true, features = ["std", "serde"] }
-zone-chainspec = { workspace = true, features = ["cli"] }
+zone-chainspec = { workspace = true, features = ["cli", "l1-rpc"] }
 zone-evm.workspace = true
 zone-precompiles = { workspace = true, features = ["std"] }
 zone-primitives.workspace = true

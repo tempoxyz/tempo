@@ -38,7 +38,8 @@ impl ZoneChainSpec {
     /// Converts a genesis configuration into a Zone chain specification.
     ///
     /// Known public and local development chains inherit their parent schedule. Custom chains
-    /// use only the supplied genesis, so dependency updates cannot activate omitted forks.
+    /// use only the supplied genesis, so dependency updates cannot activate omitted forks; use
+    /// [`Self::from_genesis_with_l1_rpc`] to follow their L1 schedule instead.
     pub fn from_genesis(genesis: Genesis) -> Result<Self, ZoneChainSpecError> {
         let parent_chain_id = decode_l1_chain_id(genesis.config.chain_id)?;
         if let Some(parent) = tempo_chain_spec_for_l1(parent_chain_id) {
@@ -56,6 +57,60 @@ impl ZoneChainSpec {
     ) -> Result<Self, ZoneChainSpecError> {
         decode_l1_chain_id(genesis.config.chain_id)?;
         inherit_parent_fork_activations(&mut genesis, l1)?;
+        Ok(Self::from_explicit_genesis(genesis))
+    }
+
+    /// Converts a genesis configuration, reading a custom parent's Tempo fork schedule from L1.
+    ///
+    /// Known parents behave as in [`Self::from_genesis`] without querying `l1`. For any other
+    /// parent, the schedule `l1` reports through `tempo_forkSchedule` replaces every Tempo
+    /// activation in the genesis: scheduled forks use the L1 timestamps and all others are
+    /// disabled, so the Zone follows its L1 even where its genesis differs. Ethereum activations
+    /// keep their genesis values.
+    ///
+    /// Fails if `l1` belongs to another chain or schedules a fork this binary does not know.
+    #[cfg(feature = "l1-rpc")]
+    pub async fn from_genesis_with_l1_rpc<TProvider>(
+        mut genesis: Genesis,
+        l1: &TProvider,
+    ) -> Result<Self, ZoneChainSpecError>
+    where
+        TProvider: alloy_provider::Provider<tempo_alloy::TempoNetwork>,
+    {
+        let parent_chain_id = decode_l1_chain_id(genesis.config.chain_id)?;
+        if tempo_chain_spec_for_l1(parent_chain_id).is_some() {
+            return Self::from_genesis(genesis);
+        }
+
+        let l1_chain_id = l1.get_chain_id().await?;
+        if l1_chain_id != parent_chain_id {
+            return Err(ZoneChainSpecError::L1ChainIdMismatch {
+                l1: l1_chain_id,
+                parent: parent_chain_id,
+            });
+        }
+        let schedule = tempo_alloy::provider::TempoProviderExt::get_fork_schedule(l1).await?;
+
+        let mut activations = std::collections::BTreeMap::new();
+        for fork in schedule.schedule {
+            let Ok(hardfork) = fork.name.parse::<TempoHardfork>() else {
+                return Err(ZoneChainSpecError::UnsupportedL1Fork(fork.name));
+            };
+            if activations.insert(hardfork, fork.activation_time).is_some() {
+                return Err(ZoneChainSpecError::DuplicateL1Fork(hardfork));
+            }
+        }
+        for fork in TempoHardfork::VARIANTS {
+            if let Some(key) = fork.genesis_key() {
+                let activation = activations
+                    .get(fork)
+                    .map_or(serde_json::Value::Null, |&time| time.into());
+                genesis
+                    .config
+                    .extra_fields
+                    .insert(key.to_owned(), activation);
+            }
+        }
         Ok(Self::from_explicit_genesis(genesis))
     }
 
@@ -237,6 +292,24 @@ pub enum ZoneChainSpecError {
     /// The inherited parent fork activations could not be applied to the Zone genesis.
     #[error("failed to compose Zone genesis config: {0}")]
     InvalidGenesisConfig(#[from] serde_json::Error),
+    /// Reading the parent fork schedule from the L1 RPC failed.
+    #[cfg(feature = "l1-rpc")]
+    #[error("failed reading the L1 fork schedule: {0}")]
+    L1Rpc(#[from] alloy_transport::TransportError),
+    /// The L1 RPC belongs to another chain than the Zone's parent.
+    #[error("L1 RPC chain ID {l1} does not match zone parent chain ID {parent}")]
+    L1ChainIdMismatch {
+        /// Chain ID the L1 RPC reports.
+        l1: u64,
+        /// Parent chain ID encoded in the Zone chain ID.
+        parent: u64,
+    },
+    /// The L1 schedules a Tempo fork this binary does not know.
+    #[error("L1 schedules unsupported Tempo fork {0}; update the zone binary")]
+    UnsupportedL1Fork(String),
+    /// The L1 schedule lists a Tempo fork more than once.
+    #[error("L1 schedules Tempo fork {0} twice")]
+    DuplicateL1Fork(TempoHardfork),
 }
 
 /// Returns the Tempo chain specification whose hardfork schedule a parent uses.
@@ -375,6 +448,112 @@ mod tests {
             zone.tempo_fork_activation(TempoHardfork::T11),
             ForkCondition::Timestamp(789)
         );
+    }
+
+    #[cfg(feature = "l1-rpc")]
+    fn mocked_l1(
+        responses: &[serde_json::Value],
+    ) -> impl alloy_provider::Provider<tempo_alloy::TempoNetwork> + use<> {
+        let asserter = alloy_provider::mock::Asserter::new();
+        for response in responses {
+            asserter.push_success(response);
+        }
+        alloy_provider::ProviderBuilder::new_with_network::<tempo_alloy::TempoNetwork>()
+            .connect_mocked_client(asserter)
+    }
+
+    #[cfg(feature = "l1-rpc")]
+    fn custom_zone_genesis() -> Genesis {
+        let mut genesis = DEV.genesis().clone();
+        genesis.config.chain_id = zone_chain_id(31_318, 9).unwrap();
+        test_utils::set_tempo_fork(&mut genesis, TempoHardfork::T13, 100);
+        genesis
+    }
+
+    #[cfg(feature = "l1-rpc")]
+    #[tokio::test]
+    async fn l1_rpc_schedule_replaces_the_genesis_schedule() {
+        let from_genesis = ZoneChainSpec::from_genesis(custom_zone_genesis()).unwrap();
+        let l1 = mocked_l1(&[
+            serde_json::json!("0x7a56"),
+            serde_json::json!({ "active": "T12", "schedule": [
+                { "name": "T0", "activationTime": 0, "active": true },
+                { "name": "T12", "activationTime": 0, "active": true },
+                { "name": "T13", "activationTime": 500, "active": false }
+            ] }),
+        ]);
+        let zone = ZoneChainSpec::from_genesis_with_l1_rpc(custom_zone_genesis(), &l1)
+            .await
+            .unwrap();
+
+        assert_eq!(zone.genesis_hash(), from_genesis.genesis_hash());
+        assert_eq!(
+            zone.ethereum_fork_activation(EthereumHardfork::Osaka),
+            from_genesis.ethereum_fork_activation(EthereumHardfork::Osaka)
+        );
+        assert_eq!(
+            zone.tempo_fork_activation(TempoHardfork::T13),
+            ForkCondition::Timestamp(500)
+        );
+        assert_eq!(
+            zone.tempo_fork_activation(TempoHardfork::T11),
+            ForkCondition::Never
+        );
+        assert_eq!(zone.tempo_hardfork_at(499), TempoHardfork::T12);
+        assert_eq!(zone.tempo_hardfork_at(500), TempoHardfork::T13);
+    }
+
+    #[cfg(feature = "l1-rpc")]
+    #[tokio::test]
+    async fn l1_rpc_schedule_is_validated() {
+        let schedule =
+            |forks: serde_json::Value| serde_json::json!({ "active": "T0", "schedule": forks });
+        let cases = [
+            (
+                vec![serde_json::json!("0x1079")],
+                "L1 RPC chain ID 4217 does not match zone parent chain ID 31318",
+            ),
+            (
+                vec![
+                    serde_json::json!("0x7a56"),
+                    schedule(serde_json::json!([
+                        { "name": "T999", "activationTime": 500, "active": false }
+                    ])),
+                ],
+                "L1 schedules unsupported Tempo fork T999; update the zone binary",
+            ),
+            (
+                vec![
+                    serde_json::json!("0x7a56"),
+                    schedule(serde_json::json!([
+                        { "name": "T0", "activationTime": 0, "active": true },
+                        { "name": "T0", "activationTime": 0, "active": true }
+                    ])),
+                ],
+                "L1 schedules Tempo fork T0 twice",
+            ),
+        ];
+        for (responses, expected) in cases {
+            let error = ZoneChainSpec::from_genesis_with_l1_rpc(
+                custom_zone_genesis(),
+                &mocked_l1(&responses),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error.to_string(), expected);
+        }
+    }
+
+    #[cfg(feature = "l1-rpc")]
+    #[tokio::test]
+    async fn known_l1_does_not_query_rpc() {
+        let mut genesis = MODERATO.genesis().clone();
+        genesis.config.chain_id = zone_chain_id(MODERATO.chain_id(), 7).unwrap();
+        let zone = ZoneChainSpec::from_genesis_with_l1_rpc(genesis.clone(), &mocked_l1(&[]))
+            .await
+            .unwrap();
+
+        assert_eq!(zone, ZoneChainSpec::from_genesis(genesis).unwrap());
     }
 
     #[test]

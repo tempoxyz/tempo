@@ -32,9 +32,11 @@ If an upgrade occurs between the schedule and head reads, retry generation.
 `--l1-rpc-url` can also be combined with `--tempo-portal` to derive a pre-creation
 anchor, or with `--tempo-genesis-header-rlp` to supply the anchor explicitly.
 
-Fork settings are persisted in `genesis.json`; restarting nodes does not fetch
-a new schedule. L1 upgrades not present in the snapshot require a coordinated
-configuration update. Existing Zone databases are not modified by generation.
+Fork settings are persisted in `genesis.json`. For custom L1 chain IDs, the Zone
+node replaces the Tempo activations with the L1's `tempo_forkSchedule` at startup,
+so it follows L1 upgrades after a restart. Mainnet, Moderato, and local dev Zones use the
+compiled schedule, and L1 upgrades not present in their snapshot require a
+coordinated configuration update. Existing Zone databases are not modified by generation.
 
 For offline development or tests, `--hardfork T11` enables forks through T11 at
 timestamp zero and disables T12/T13/T14. Individual `--t*-time` flags still take
