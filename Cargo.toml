@@ -277,6 +277,7 @@ reth-revm = { git = "https://github.com/paradigmxyz/reth", rev = "aec6869ea63d5e
   "optional-checks",
 ] }
 reth-stages = { git = "https://github.com/paradigmxyz/reth", rev = "aec6869ea63d5e9884f450c4c47c28dc86b78ebd" }
+reth-stages-types = { git = "https://github.com/paradigmxyz/reth", rev = "aec6869ea63d5e9884f450c4c47c28dc86b78ebd" }
 reth-static-file = { git = "https://github.com/paradigmxyz/reth", rev = "aec6869ea63d5e9884f450c4c47c28dc86b78ebd" }
 reth-static-file-types = { git = "https://github.com/paradigmxyz/reth", rev = "aec6869ea63d5e9884f450c4c47c28dc86b78ebd" }
 reth-storage-api = { git = "https://github.com/paradigmxyz/reth", rev = "aec6869ea63d5e9884f450c4c47c28dc86b78ebd" }
@@ -412,8 +413,7 @@ secrecy = "0.10"
 bitflags = "2.11.1"
 
 # build deps
-vergen = { version = "10.0.1", features = ["build", "cargo", "emit_and_set"] }
-vergen-git2 = "10.0.1"
+smolgen = { version = "0.1", features = ["build", "cargo", "emit_and_set", "gitcl"] }
 
 [patch.crates-io]
 # LLVM 23 support is not released yet.
