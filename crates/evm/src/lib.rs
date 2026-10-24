@@ -27,6 +27,8 @@ pub use error::TempoEvmError;
 pub mod evm;
 #[cfg(feature = "genesis")]
 pub mod genesis;
+#[cfg(feature = "jit")]
+pub mod jit;
 use core::num::NonZeroU64;
 use std::{borrow::Cow, sync::Arc};
 
@@ -93,6 +95,14 @@ impl TempoEvmConfig {
             EthEvmConfig::new_with_evm_factory(chain_spec.clone(), TempoEvmFactory::default());
         Self {
             inner,
+            block_assembler: TempoBlockAssembler::new(chain_spec),
+        }
+    }
+
+    /// Creates an EVM configuration using the supplied factory.
+    pub fn new_with_evm_factory(chain_spec: Arc<TempoChainSpec>, factory: TempoEvmFactory) -> Self {
+        Self {
+            inner: EthEvmConfig::new_with_evm_factory(chain_spec.clone(), factory),
             block_assembler: TempoBlockAssembler::new(chain_spec),
         }
     }

@@ -34,6 +34,8 @@ use reth_node_ethereum as _;
 pub mod engine;
 pub mod executed_state;
 pub mod gossip;
+#[cfg(feature = "jit")]
+pub mod jit;
 pub mod node;
 pub mod rpc;
 mod shadow_replay;

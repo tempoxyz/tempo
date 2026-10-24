@@ -16,6 +16,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+revmc = { workspace = true, optional = true }
 tempo-precompiles.workspace = true
 tempo-primitives = { workspace = true, features = ["reth", "evm"] }
 tempo-contracts.workspace = true
@@ -52,6 +53,7 @@ tempo-precompiles = { workspace = true, features = ["test-utils"] }
 test-case.workspace = true
 
 [features]
+jit = ["dep:revmc"]
 reth = ["dep:reth-storage-api"]
 serde = [
 	"revm/serde",

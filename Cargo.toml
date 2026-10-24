@@ -161,6 +161,7 @@ inherits = "reproducible"
 panic = "unwind"
 
 [workspace.dependencies]
+revmc = { git = "https://github.com/paradigmxyz/revmc", rev = "75729a0f5e65d9cbc549af07e5f2fbc91b6dbd98", default-features = false, features = ["llvm-prefer-dynamic"] }
 # Zones
 zone-chainspec = { path = "crates/zones/chainspec" }
 zone-evm = { path = "crates/zones/evm" }
