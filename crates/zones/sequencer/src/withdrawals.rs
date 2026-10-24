@@ -422,6 +422,41 @@ impl WithdrawalProcessor {
         }
     }
 
+    /// Read one snapshot, including a legacy fallback for runtimes predating forced exits.
+    /// Never substitute entry counts when a forced-exit-capable portal's getter fails.
+    async fn deposit_headroom(&self) -> eyre::Result<usize> {
+        let (capacity, version, count, processed) = self
+            .provider
+            .multicall()
+            .add(self.portal.remainingDepositCapacity())
+            .add(self.portal.forcedExitVersion())
+            .add(self.portal.depositCount())
+            .add(self.portal.lastProcessedDepositNumber())
+            .try_aggregate(false)
+            .await?;
+        let capacity = match (capacity, version) {
+            (Ok(capacity), _) => {
+                eyre::ensure!(
+                    capacity <= MAX_UNPROCESSED_DEPOSITS as u64,
+                    "portal returned invalid weighted deposit capacity {capacity}"
+                );
+                capacity
+            }
+            (Err(capacity_error), Err(version_error))
+                if capacity_error.return_data.is_empty()
+                    && version_error.return_data.is_empty() =>
+            {
+                let (count, processed) = (count?, processed?);
+                let outstanding = count.checked_sub(processed).ok_or_else(|| {
+                    eyre::eyre!("portal processed deposit cursor {processed} exceeds count {count}")
+                })?;
+                (MAX_UNPROCESSED_DEPOSITS as u64).saturating_sub(outstanding)
+            }
+            (Err(error), _) => return Err(error.into()),
+        };
+        Ok(usize::try_from(capacity).expect("portal capacity fits in usize"))
+    }
+
     /// Update sequencer metrics from Tempo L1 state.
     async fn update_sequencer_metrics(&self) -> eyre::Result<()> {
         let balance = ITIP20::new(PATH_USD_ADDRESS, &self.provider)
@@ -579,21 +614,9 @@ impl WithdrawalProcessor {
                 return Ok(());
             }
 
-            let (deposit_count, last_processed_deposit_number): (u64, u64) = self
-                .provider
-                .multicall()
-                .add(self.portal.depositCount())
-                .add(self.portal.lastProcessedDepositNumber())
-                .aggregate()
-                .await?;
-            let headroom =
-                withdrawal_deposit_headroom(deposit_count, last_processed_deposit_number)?;
+            let headroom = self.deposit_headroom().await?;
             if headroom == 0 {
-                debug!(
-                    deposit_count,
-                    last_processed_deposit_number,
-                    "Portal deposit backlog leaves no withdrawal bounce-back headroom"
-                );
+                debug!("Portal deposit backlog leaves no withdrawal bounce-back headroom");
                 return Ok(());
             }
             // Public deposits cannot consume the reserved suffix. Restricting each submission to
@@ -863,24 +886,6 @@ impl WithdrawalProcessor {
             .slot_processing_duration_seconds
             .record(duration.as_secs_f64());
     }
-}
-
-/// Return the number of withdrawals that can each append one deposit without exceeding the
-/// portal's unprocessed-deposit cap. This mirrors the `processWithdrawals` preflight using a live
-/// portal snapshot; the portal revalidates the bound when the transaction executes.
-fn withdrawal_deposit_headroom(
-    deposit_count: u64,
-    last_processed_deposit_number: u64,
-) -> eyre::Result<usize> {
-    let outstanding = deposit_count.checked_sub(last_processed_deposit_number).ok_or_else(|| {
-        eyre::eyre!(
-            "portal lastProcessedDepositNumber {last_processed_deposit_number} exceeds depositCount {deposit_count}"
-        )
-    })?;
-    let maximum =
-        u64::try_from(MAX_UNPROCESSED_DEPOSITS).expect("MAX_UNPROCESSED_DEPOSITS fits in u64");
-    Ok(usize::try_from(maximum.saturating_sub(outstanding))
-        .expect("withdrawal headroom fits in usize"))
 }
 
 struct SubmitBatches<'a> {
@@ -1196,13 +1201,62 @@ mod tests {
         );
     }
 
-    #[test]
-    fn withdrawal_admission_respects_global_deposit_headroom() {
-        assert_eq!(withdrawal_deposit_headroom(0, 0).unwrap(), 230);
-        assert_eq!(withdrawal_deposit_headroom(229, 0).unwrap(), 1);
-        assert_eq!(withdrawal_deposit_headroom(230, 0).unwrap(), 0);
-        assert_eq!(withdrawal_deposit_headroom(300, 100).unwrap(), 30);
-        assert!(withdrawal_deposit_headroom(9, 10).is_err());
+    fn capacity_response(
+        capacity: Option<u64>,
+        version: Option<u64>,
+        count: u64,
+        processed: u64,
+    ) -> Bytes {
+        let values = [capacity, version, Some(count), Some(processed)]
+            .into_iter()
+            .map(|value| {
+                (
+                    value.is_some(),
+                    value.map(abi_encode_u64).unwrap_or_default(),
+                )
+            })
+            .collect::<Vec<_>>();
+        values.abi_encode().into()
+    }
+
+    #[tokio::test]
+    async fn withdrawal_admission_uses_weighted_capacity_and_supports_legacy_portals() {
+        let l1 = Asserter::new();
+        let processor = test_processor(
+            l1.clone(),
+            SharedWithdrawalStore::new(),
+            Arc::new(Notify::new()),
+        );
+        // 15 forced requests + 19 bounce-backs: 34 entries, but 229 weighted units.
+        for (capacity, count, processed) in [(20, 15, 0), (1, 34, 0), (0, 35, 0), (230, 35, 35)] {
+            l1.push_success(&capacity_response(
+                Some(capacity),
+                Some(1),
+                count,
+                processed,
+            ));
+            assert_eq!(
+                processor.deposit_headroom().await.unwrap(),
+                capacity as usize
+            );
+        }
+        // Neither selector exists on a legacy portal; entry counts remain authoritative there.
+        for (count, processed, expected) in [(0, 0, 230), (229, 0, 1), (230, 0, 0), (300, 100, 30)]
+        {
+            l1.push_success(&capacity_response(None, None, count, processed));
+            assert_eq!(processor.deposit_headroom().await.unwrap(), expected);
+        }
+        // A missing/broken getter on a forced-exit portal must not over-admit withdrawals,
+        // even when forced exits have not yet been activated.
+        for version in [0, 1] {
+            l1.push_success(&capacity_response(None, Some(version), 34, 0));
+            assert!(processor.deposit_headroom().await.is_err());
+        }
+        l1.push_success(&capacity_response(None, None, 9, 10));
+        assert!(processor.deposit_headroom().await.is_err());
+        l1.push_success(&capacity_response(Some(231), Some(1), 0, 0));
+        assert!(processor.deposit_headroom().await.is_err());
+        assert!(l1.read_q().is_empty());
     }
 
     #[test]
@@ -1562,6 +1616,30 @@ mod tests {
                 .await
                 .is_err()
         );
+        assert!(store.lock().has_batch(5));
+        assert!(l1.read_q().is_empty());
+    }
+
+    #[tokio::test]
+    async fn process_queue_waits_when_weighted_capacity_is_exhausted() {
+        let l1 = Asserter::new();
+        let withdrawals = simple_withdrawals(2);
+        l1.push_success(&abi_encode_u64(0));
+        l1.push_success(&abi_encode_multicall(vec![
+            abi_encode_u64(5),
+            abi_encode_u64(6),
+        ]));
+        l1.push_success(&abi_encode_u64(0));
+        l1.push_success(&abi_encode_b256(abi::Withdrawal::queue_hash(&withdrawals)));
+        // Only 35 entries, but all 230 weighted units are occupied.
+        l1.push_success(&capacity_response(Some(0), Some(1), 35, 0));
+        let store = SharedWithdrawalStore::new();
+        store.lock().add_batch(5, withdrawals);
+        let processor = test_processor(l1.clone(), store.clone(), Arc::new(Notify::new()));
+        processor
+            .process_queue(&sync::CancellationToken::new())
+            .await
+            .unwrap();
         assert!(store.lock().has_batch(5));
         assert!(l1.read_q().is_empty());
     }

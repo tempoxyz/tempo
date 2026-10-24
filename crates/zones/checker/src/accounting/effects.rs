@@ -91,6 +91,24 @@ fn from_tempo_events<'a>(events: impl IntoIterator<Item = &'a L1PortalEvent>) ->
                     change: BalanceChange::Credit(U256::from(amount)),
                 });
             }
+            // The payer's fee stays in the Portal as backing for the admin's fee claim.
+            L1PortalEvent::ForcedExitFeePending { token, amount } => {
+                effects.push(Effect::Liability {
+                    token,
+                    kind: LiabilityKind::ForcedExitFee,
+                    change: BalanceChange::Credit(U256::from(amount)),
+                });
+            }
+            L1PortalEvent::ForcedExitFeesClaimed { amount: 0, .. } => {}
+            L1PortalEvent::ForcedExitFeesClaimed { token, amount } => {
+                effects.push(Effect::Liability {
+                    token,
+                    kind: LiabilityKind::ForcedExitFee,
+                    change: BalanceChange::Debit(U256::from(amount)),
+                });
+            }
+            // Admission escrows no principal; the Zone debit arrives as ForcedWithdrawalRequested.
+            L1PortalEvent::ForcedExitsActivated | L1PortalEvent::ForcedExitRequested => {}
             L1PortalEvent::RefundClaimed { amount: 0, .. } => {}
             L1PortalEvent::RefundClaimed { token, amount, .. } => {
                 effects.push(Effect::Liability {
@@ -144,6 +162,9 @@ fn from_zone_actions<'a>(actions: impl Iterator<Item = &'a L2BridgeAction>) -> V
                 token,
                 principal,
                 ..
+            }
+            | L2BridgeAction::ForcedWithdrawalRequested {
+                token, principal, ..
             } => effects.push(Effect::Liability {
                 token,
                 kind: LiabilityKind::Withdrawal,
@@ -239,6 +260,25 @@ mod tests {
                     change: BalanceChange::Credit(amount),
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn forced_withdrawal_creates_principal_liability() {
+        let token = Address::repeat_byte(1);
+        let principal = U256::from(100);
+        let action = L2BridgeAction::ForcedWithdrawalRequested {
+            withdrawal_index: 1,
+            token,
+            principal,
+        };
+        assert_eq!(
+            from_zone_actions([&action].into_iter()),
+            vec![Effect::Liability {
+                token,
+                kind: LiabilityKind::Withdrawal,
+                change: BalanceChange::Credit(principal),
+            }]
         );
     }
 
@@ -404,6 +444,51 @@ mod tests {
         let token_state = state.token(token).unwrap();
         assert_eq!(token_state.pending_tempo_refunds, U256::ZERO);
         assert_eq!(token_state.liability().unwrap(), U256::ZERO);
+    }
+
+    #[test]
+    fn parked_forced_exit_fee_is_a_separate_liability_until_claimed() {
+        let token = Address::repeat_byte(1);
+        let amount = U256::from(100_000);
+        let mut state = crate::accounting::State::default();
+        state.apply(&[Effect::EnableToken(token)]).unwrap();
+
+        let pending = L1PortalEvent::ForcedExitFeePending {
+            token,
+            amount: 100_000,
+        };
+        state.apply(&from_tempo_events([&pending])).unwrap();
+        let token_state = state.token(token).unwrap();
+        assert_eq!(token_state.pending_deposits, U256::ZERO);
+        assert_eq!(token_state.pending_tempo_refunds, U256::ZERO);
+        assert_eq!(token_state.pending_forced_exit_fees, amount);
+        assert_eq!(token_state.liability().unwrap(), amount);
+
+        // A user refund claim cannot retire a parked fee.
+        let refund = L1PortalEvent::RefundClaimed {
+            token,
+            amount: 100_000,
+        };
+        assert_eq!(
+            state.clone().apply(&from_tempo_events([&refund])),
+            Err(crate::accounting::AccountingError::Underflow),
+        );
+
+        let claimed = L1PortalEvent::ForcedExitFeesClaimed {
+            token,
+            amount: 100_000,
+        };
+        state.apply(&from_tempo_events([&claimed])).unwrap();
+        let token_state = state.token(token).unwrap();
+        assert_eq!(token_state.pending_forced_exit_fees, U256::ZERO);
+        assert_eq!(token_state.liability().unwrap(), U256::ZERO);
+    }
+
+    #[test]
+    fn ignores_zero_forced_exit_fee_claims_for_unknown_tokens() {
+        let token = Address::repeat_byte(1);
+        let claimed = L1PortalEvent::ForcedExitFeesClaimed { token, amount: 0 };
+        assert!(from_tempo_events([&claimed]).is_empty());
     }
 
     #[test]

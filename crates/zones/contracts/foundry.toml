@@ -17,6 +17,7 @@ remappings = [
 via-ir = true
 dynamic_test_linking = false
 optimizer = true
+optimizer_runs = 25
 invariant = { runs = 10, depth = 50, fail_on_revert = true, show_solidity = true }
 
 [profile.fuzz500]

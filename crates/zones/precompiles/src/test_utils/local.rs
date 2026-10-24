@@ -160,7 +160,7 @@ impl EncryptedDepositFixture {
         let sender = Address::repeat_byte(0xDD);
 
         // HKDF key derivation
-        let info = crate::ecies::hkdf_info(&portal, &key_index, &eph_pub_x, &sender);
+        let info = crate::ecies::hkdf_info(&portal, &key_index, &eph_pub_x, &sender, None);
         let aes_key = crate::ecies::hkdf_sha256(&shared_secret_x, b"ecies-aes-key", &info);
 
         // Build and encrypt plaintext

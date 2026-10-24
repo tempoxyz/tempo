@@ -19,7 +19,7 @@ persist or record divergence
 ## Ghost state
 
 The checker stores an expected balance for each known `(token, account)` and
-five aggregate liability buckets per token:
+six aggregate liability buckets per token:
 
 | Bucket | Meaning |
 | --- | --- |
@@ -27,6 +27,7 @@ five aggregate liability buckets per token:
 | `pending_deposits` | Custody received on Tempo but not resolved on the Zone |
 | `pending_withdrawals` | Burned on the Zone but not resolved on Tempo |
 | `pending_tempo_refunds` | Deposit refunds parked on Tempo |
+| `pending_forced_exit_fees` | Forced-exit fees parked on Tempo for the admin |
 | `pending_zone_refunds` | Withdrawal bounce-backs returning to or parked on the Zone |
 
 Protocol activity moves value between these buckets:
@@ -41,6 +42,8 @@ Protocol activity moves value between these buckets:
 | Tempo deposit refund | Move value from pending deposits to Tempo refunds |
 | Zone withdrawal bounce-back | Move value from pending withdrawals to Zone refunds |
 | Tempo refund claim | Settle the Tempo refund through a Portal transfer |
+| Forced-exit fee parked | Increase parked forced-exit fees by the fee the Portal kept |
+| Forced-exit fee claim | Settle the parked fee through a Portal transfer |
 | Zone refund claim | Credit the Zone recipient and settle the Zone refund |
 
 ## Block verification
@@ -98,6 +101,7 @@ Portal custody >= account_total
                 + pending_deposits
                 + pending_withdrawals
                 + pending_tempo_refunds
+                + pending_forced_exit_fees
                 + pending_zone_refunds
 ```
 

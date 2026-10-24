@@ -1999,7 +1999,8 @@ where
         ctx: &BuilderContext<Node>,
         evm_config: ZoneEvmConfig,
     ) -> eyre::Result<Self::Pool> {
-        // Zone blocks have no protocol base fee, so allow zero-fee transactions into the pool.
+        // Keep pre-T15 transactions admissible across the T15 transition. The pool's current block
+        // base fee still parks transactions that are underpriced once T15 is active.
         let mut pool_config = ctx.pool_config().with_disabled_protocol_base_fee();
         pool_config.max_inflight_delegated_slot_limit = pool_config.max_account_slots;
 

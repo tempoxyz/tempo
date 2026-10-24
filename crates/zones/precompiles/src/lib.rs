@@ -65,6 +65,7 @@ mod execution;
 mod privacy;
 pub use execution::ZonePrecompileEnv;
 mod account_keychain;
+pub mod forced_exit_storage;
 pub mod inbox;
 mod nonce;
 pub mod receive_policy_guard;
