@@ -14,7 +14,7 @@ use manifest::{ReleaseBinary, ReleaseManifest, load_manifest};
 use platform::{
     check_dir_writable, executable_name, platform_binary_name, set_executable_permissions,
 };
-use skill::{install_skill, remove_skill};
+use skill::{fetch_skill, remove_skill, write_skill};
 use verify::{decode_public_key, sha256_hex, verify_signature};
 
 use minisign_verify::PublicKey;
@@ -71,9 +71,9 @@ pub(crate) struct InstallResult {
     pub(crate) description: String,
 }
 
-/// Fully resolved install plan: all paths and verification material ready.
+/// A downloaded and verified release that has not been placed yet.
 #[derive(Debug)]
-struct ResolvedInstall {
+pub(crate) struct ResolvedInstall {
     /// Version from the release manifest.
     version: String,
     /// Short description from the release manifest.
@@ -82,14 +82,8 @@ struct ResolvedInstall {
     src: Option<PathBuf>,
     /// Final destination path in `bin_dir`.
     dst: PathBuf,
-    /// Optional URL for the extension's Claude Code skill file.
-    skill_url: Option<String>,
-    /// Expected SHA-256 hex digest of the skill file.
-    skill_sha256: Option<String>,
-    /// Base64-encoded minisign signature of the skill file.
-    skill_signature: Option<String>,
-    /// Decoded public key used for signature verification.
-    public_key: PublicKey,
+    /// Verified agent skill file content, if the release ships one.
+    skill: Option<String>,
     /// Temp directory holding the download; kept alive until install completes.
     _download_dir: TempDir,
 }
@@ -115,7 +109,7 @@ impl Installer {
         dry_run: bool,
         quiet: bool,
     ) -> Result<InstallResult, InstallerError> {
-        self.install_inner(extension, source, None, dry_run, quiet)
+        self.install_inner(extension, source, dry_run, quiet)
     }
 
     /// Checks if a newer version is available without installing.
@@ -150,6 +144,21 @@ impl Installer {
         source: &InstallSource,
         installed_version: Option<&str>,
     ) -> Result<Option<InstallResult>, InstallerError> {
+        match self.prepare_update(extension, source, installed_version)? {
+            Some(resolved) => self.commit(extension, &resolved).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    /// Downloads and verifies a release newer than `installed_version`
+    /// without placing anything in `bin_dir` or the skill directories.
+    /// Returns `None` if already at the latest version.
+    pub(crate) fn prepare_update(
+        &self,
+        extension: &str,
+        source: &InstallSource,
+        installed_version: Option<&str>,
+    ) -> Result<Option<ResolvedInstall>, InstallerError> {
         let manifest_loc = source
             .manifest
             .as_ref()
@@ -163,42 +172,50 @@ impl Installer {
             return Ok(None);
         }
 
-        let result = self.install_inner(extension, source, Some(manifest), false, true)?;
-        Ok(Some(result))
+        self.ensure_dirs(false)?;
+        self.resolve_install(extension, source, Some(manifest), false, true)
+            .map(Some)
     }
 
-    /// Shared implementation for `install` and `install_if_changed`.
+    /// Places a release from [`Self::prepare_update`]: the binary, then its
+    /// skill file.
+    pub(crate) fn commit(
+        &self,
+        extension: &str,
+        resolved: &ResolvedInstall,
+    ) -> Result<InstallResult, InstallerError> {
+        self.place(extension, resolved, false, true)
+    }
+
+    /// Shared implementation for `install`: resolve, then place.
     fn install_inner(
         &self,
         extension: &str,
         source: &InstallSource,
-        manifest: Option<ReleaseManifest>,
         dry_run: bool,
         quiet: bool,
     ) -> Result<InstallResult, InstallerError> {
         self.ensure_dirs(dry_run)?;
+        let resolved = self.resolve_install(extension, source, None, dry_run, quiet)?;
+        self.place(extension, &resolved, dry_run, quiet)
+    }
 
-        let resolved = self.resolve_install(extension, source, manifest, dry_run, quiet)?;
-        let result = InstallResult {
+    /// Copies the verified binary into `bin_dir` and writes its skill file.
+    fn place(
+        &self,
+        extension: &str,
+        resolved: &ResolvedInstall,
+        dry_run: bool,
+        quiet: bool,
+    ) -> Result<InstallResult, InstallerError> {
+        self.copy_binary(resolved, dry_run, quiet)?;
+        if let Some(skill) = &resolved.skill {
+            write_skill(extension, skill, quiet);
+        }
+        Ok(InstallResult {
             version: resolved.version.clone(),
             description: resolved.description.clone(),
-        };
-        self.copy_binary(&resolved, dry_run, quiet)?;
-
-        if let Some(skill_url) = &resolved.skill_url {
-            install_skill(
-                extension,
-                &resolved.version,
-                skill_url,
-                resolved.skill_sha256.as_deref(),
-                resolved.skill_signature.as_deref(),
-                &resolved.public_key,
-                dry_run,
-                quiet,
-            );
-        }
-
-        Ok(result)
+        })
     }
 
     /// Removes an extension's binary and skill files.
@@ -209,7 +226,8 @@ impl Installer {
         Ok(())
     }
 
-    /// Fetches the manifest, downloads the binary, and verifies checksums/signatures.
+    /// Fetches the manifest, downloads the binary and skill file, and
+    /// verifies checksums/signatures.
     fn resolve_install(
         &self,
         extension: &str,
@@ -263,15 +281,28 @@ impl Installer {
         )?;
         let dst = self.bin_dir.join(executable_name(&binary));
 
+        let skill = match &manifest.skill {
+            Some(url) if dry_run => {
+                println!("dry-run: install skill from {url}");
+                None
+            }
+            Some(url) => fetch_skill(
+                extension,
+                &manifest.version,
+                url,
+                manifest.skill_sha256.as_deref(),
+                manifest.skill_signature.as_deref(),
+                &public_key_parsed,
+            ),
+            None => None,
+        };
+
         Ok(ResolvedInstall {
             version: manifest.version.clone(),
             description: manifest.description.clone().unwrap_or_default(),
             src,
             dst,
-            skill_url: manifest.skill.clone(),
-            skill_sha256: manifest.skill_sha256.clone(),
-            skill_signature: manifest.skill_signature.clone(),
-            public_key: public_key_parsed,
+            skill,
             _download_dir: download_dir,
         })
     }

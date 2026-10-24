@@ -1,19 +1,30 @@
 //! Persistent registry of installed extensions (versions, update check timestamps).
 //!
-//! NOTE: load/save is not file-locked. Concurrent `tempo` invocations may
-//! lose a write (last-writer-wins). This is acceptable today because the
-//! data is limited to `checked_at` timestamps and `installed_version`
-//! strings — the worst outcome is a redundant update check.
+//! Writers hold [`Registry::lock`] across load-modify-save, and across any
+//! install or removal whose result they record, so concurrent `tempo`
+//! invocations and background updates never interleave. A writer that
+//! cannot take the lock fails or skips; it never writes unlocked. Saves go
+//! through a unique temp file and an atomic rename, so readers never need
+//! the lock.
 
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     env, fs,
-    path::PathBuf,
+    io::Write,
+    path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 const UPDATE_CHECK_INTERVAL_SECS: u64 = 6 * 60 * 60; // 6 hours
+
+/// Exclusive advisory lock on the registry, released on drop.
+#[derive(Debug)]
+pub(crate) struct RegistryLock {
+    /// `None` only when there is no registry location at all, in which case
+    /// nothing is ever written.
+    _file: Option<fs::File>,
+}
 
 /// On-disk state for all known extensions, keyed by extension name.
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -21,6 +32,10 @@ pub(crate) struct Registry {
     /// Map from extension name (e.g. `"wallet"`) to its recorded state.
     #[serde(default)]
     pub(crate) extensions: HashMap<String, ExtensionState>,
+    /// Last [`ExtensionState::generation`] handed out. Kept across removals,
+    /// so a reinstall never reuses an earlier generation.
+    #[serde(default)]
+    generation: u64,
 }
 
 /// Persisted metadata for a single extension.
@@ -38,6 +53,15 @@ pub(crate) struct ExtensionState {
     /// Short description from the release manifest.
     #[serde(default)]
     pub(crate) description: String,
+    /// Message left by a background update check, shown and cleared on the
+    /// next invocation whose stderr is a terminal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) notice: Option<String>,
+    /// Identity of this entry: new whenever an install is recorded or the
+    /// entry is recreated, even for the same version, so a background update
+    /// can tell that the install it started from was replaced.
+    #[serde(default)]
+    pub(crate) generation: u64,
 }
 
 impl Registry {
@@ -86,13 +110,46 @@ impl Registry {
                 return;
             }
         };
-        let tmp = path.with_extension("tmp");
-        if let Err(err) = fs::write(&tmp, format!("{json}\n")) {
-            tracing::warn!("registry write failed: {}: {err}", tmp.display());
-            return;
+        let dir = path.parent().unwrap_or(Path::new("."));
+        let result = tempfile::NamedTempFile::new_in(dir).and_then(|mut tmp| {
+            tmp.write_all(format!("{json}\n").as_bytes())?;
+            tmp.persist(&path).map_err(|err| err.error)?;
+            Ok(())
+        });
+        if let Err(err) = result {
+            tracing::warn!("registry write failed: {}: {err}", path.display());
         }
-        if let Err(err) = fs::rename(&tmp, &path) {
-            tracing::warn!("registry rename failed: {}: {err}", path.display());
+    }
+
+    /// Blocks until this process holds the registry lock.
+    ///
+    /// Returns an error naming the lock file and the cause if it cannot be
+    /// opened or locked. Callers must not write the registry without it.
+    pub(crate) fn lock() -> Result<RegistryLock, String> {
+        let Some(path) = lock_path() else {
+            return Ok(RegistryLock { _file: None });
+        };
+        let file = open_lock_file(&path)?;
+        file.lock().map_err(|err| lock_error(&path, err))?;
+        Ok(RegistryLock { _file: Some(file) })
+    }
+
+    /// Like [`Self::lock`], but never waits or fails: returns `None` if the
+    /// lock is held by another process or cannot be taken at all.
+    pub(crate) fn try_lock() -> Option<RegistryLock> {
+        let Some(path) = lock_path() else {
+            return Some(RegistryLock { _file: None });
+        };
+        let file = open_lock_file(&path)
+            .inspect_err(|err| tracing::debug!("{err}"))
+            .ok()?;
+        match file.try_lock() {
+            Ok(()) => Some(RegistryLock { _file: Some(file) }),
+            Err(fs::TryLockError::WouldBlock) => None,
+            Err(fs::TryLockError::Error(err)) => {
+                tracing::debug!("{}", lock_error(&path, err));
+                None
+            }
         }
     }
 
@@ -114,6 +171,7 @@ impl Registry {
         pinned: bool,
         description: &str,
     ) {
+        let generation = self.next_generation();
         self.extensions.insert(
             extension.to_string(),
             ExtensionState {
@@ -121,13 +179,10 @@ impl Registry {
                 installed_version: version.to_string(),
                 pinned,
                 description: description.to_string(),
+                notice: None,
+                generation,
             },
         );
-    }
-
-    /// Returns `true` if the extension is pinned to a specific version.
-    pub(crate) fn is_pinned(&self, extension: &str) -> bool {
-        self.extensions.get(extension).is_some_and(|e| e.pinned)
     }
 
     /// Bumps the check timestamp without changing the recorded version.
@@ -138,6 +193,7 @@ impl Registry {
         } else {
             // No record at all — record with empty version so we don't
             // keep retrying on every launch during an outage.
+            let generation = self.next_generation();
             self.extensions.insert(
                 extension.to_string(),
                 ExtensionState {
@@ -145,10 +201,58 @@ impl Registry {
                     installed_version: String::new(),
                     pinned: false,
                     description: String::new(),
+                    notice: None,
+                    generation,
                 },
             );
         }
     }
+
+    fn next_generation(&mut self) -> u64 {
+        self.generation += 1;
+        self.generation
+    }
+
+    /// Returns `true` if a background update check left a notice to show.
+    pub(crate) fn has_notice(&self, extension: &str) -> bool {
+        self.extensions
+            .get(extension)
+            .is_some_and(|e| e.notice.is_some())
+    }
+
+    /// Stores a notice for the next interactive invocation of an extension.
+    pub(crate) fn set_notice(&mut self, extension: &str, notice: String) {
+        if let Some(ext) = self.extensions.get_mut(extension) {
+            ext.notice = Some(notice);
+        }
+    }
+
+    /// Removes and returns the pending notice for an extension.
+    pub(crate) fn take_notice(&mut self, extension: &str) -> Option<String> {
+        self.extensions.get_mut(extension)?.notice.take()
+    }
+}
+
+/// Path of the lock file next to the registry.
+fn lock_path() -> Option<PathBuf> {
+    state_path().map(|path| path.with_extension("lock"))
+}
+
+/// Opens (creating if needed) the registry lock file.
+fn open_lock_file(path: &Path) -> Result<fs::File, String> {
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path)
+        .map_err(|err| lock_error(path, err))
+}
+
+fn lock_error(path: &Path, err: impl std::fmt::Display) -> String {
+    format!("cannot lock extension registry {}: {err}", path.display())
 }
 
 fn now_secs() -> u64 {
@@ -163,7 +267,7 @@ fn now_secs() -> u64 {
 /// Uses `TEMPO_HOME/extensions.json` if set, otherwise the platform data
 /// directory via `dirs_next` (e.g. `~/Library/Application Support/tempo` on
 /// macOS, `$XDG_DATA_HOME/tempo` on Linux).
-fn state_path() -> Option<PathBuf> {
+pub(crate) fn state_path() -> Option<PathBuf> {
     if let Some(home) = env::var_os("TEMPO_HOME") {
         Some(PathBuf::from(home).join("extensions.json"))
     } else {
@@ -273,7 +377,7 @@ mod tests {
         reg.save();
         let loaded = Registry::load().unwrap();
         assert_eq!(loaded.extensions["wallet"].installed_version, "2.0.0");
-        assert!(loaded.is_pinned("wallet"));
+        assert!(loaded.extensions["wallet"].pinned);
         assert_eq!(loaded.extensions["wallet"].description, "Tempo wallet");
     }
 
@@ -321,6 +425,8 @@ mod tests {
                 installed_version: "v1.0.0".to_string(),
                 pinned: false,
                 description: String::new(),
+                notice: None,
+                generation: 0,
             },
         );
         assert!(reg.needs_update_check("wallet"));
@@ -357,29 +463,23 @@ mod tests {
     fn pinned_flag_recorded() {
         let mut reg = Registry::default();
         reg.record_check("wallet", "1.0.0", true, "");
-        assert!(reg.is_pinned("wallet"));
+        assert!(reg.extensions["wallet"].pinned);
     }
 
     #[test]
     fn not_pinned_by_default() {
         let mut reg = Registry::default();
         reg.record_check("wallet", "1.0.0", false, "");
-        assert!(!reg.is_pinned("wallet"));
-    }
-
-    #[test]
-    fn is_pinned_returns_false_for_unknown() {
-        let reg = Registry::default();
-        assert!(!reg.is_pinned("unknown"));
+        assert!(!reg.extensions["wallet"].pinned);
     }
 
     #[test]
     fn update_unpins() {
         let mut reg = Registry::default();
         reg.record_check("wallet", "1.0.0", true, "");
-        assert!(reg.is_pinned("wallet"));
+        assert!(reg.extensions["wallet"].pinned);
         reg.record_check("wallet", "2.0.0", false, "");
-        assert!(!reg.is_pinned("wallet"));
+        assert!(!reg.extensions["wallet"].pinned);
     }
 
     #[test]
@@ -388,7 +488,7 @@ mod tests {
         reg.record_check("wallet", "1.0.0", true, "");
         let json = serde_json::to_string(&reg).unwrap();
         let loaded: Registry = serde_json::from_str(&json).unwrap();
-        assert!(loaded.is_pinned("wallet"));
+        assert!(loaded.extensions["wallet"].pinned);
     }
 
     #[test]
@@ -406,9 +506,127 @@ mod tests {
     }
 
     #[test]
+    fn lock_excludes_other_holders() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let _home = TempHome::new();
+
+        let held = Registry::lock().unwrap();
+        assert!(Registry::try_lock().is_none(), "lock is exclusive");
+        drop(held);
+
+        let held = Registry::try_lock().expect("lock is free after drop");
+        assert!(Registry::try_lock().is_none(), "try_lock is exclusive too");
+        drop(held);
+    }
+
+    #[test]
+    fn unusable_lock_file_fails_lock_and_skips_try_lock() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let home = TempHome::new();
+        // A directory in place of the lock file cannot be opened for
+        // writing, even by root.
+        let lock_path = home._tmp.path().join("extensions.lock");
+        fs::create_dir(&lock_path).unwrap();
+
+        let err = Registry::lock().unwrap_err();
+        assert!(
+            err.contains(&lock_path.display().to_string()),
+            "error should name the lock file, got: {err}"
+        );
+        assert!(
+            Registry::try_lock().is_none(),
+            "try_lock skips, never unlocked"
+        );
+    }
+
+    #[test]
+    fn save_leaves_no_temp_files() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let home = TempHome::new();
+        let mut reg = Registry::default();
+        reg.record_check("wallet", "1.0.0", false, "");
+        reg.save();
+        reg.save();
+
+        let names: Vec<_> = fs::read_dir(home._tmp.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["extensions.json"]);
+    }
+
+    #[test]
+    fn generation_identifies_each_recorded_install() {
+        let mut reg = Registry::default();
+        let generation = |reg: &Registry| reg.extensions["wallet"].generation;
+
+        reg.record_check("wallet", "1.0.0", false, "");
+        let first = generation(&reg);
+        reg.touch_check("wallet");
+        assert_eq!(generation(&reg), first, "a check is not a new install");
+
+        reg.record_check("wallet", "1.0.0", false, "");
+        let reinstall = generation(&reg);
+        assert_ne!(reinstall, first, "same-version reinstall");
+
+        reg.extensions.remove("wallet");
+        reg.touch_check("wallet");
+        assert!(
+            ![first, reinstall].contains(&generation(&reg)),
+            "a recreated entry never reuses a generation"
+        );
+
+        let json = serde_json::to_string(&reg).unwrap();
+        let mut loaded: Registry = serde_json::from_str(&json).unwrap();
+        loaded.record_check("other", "1.0.0", false, "");
+        assert!(
+            loaded.extensions["other"].generation > generation(&reg),
+            "the counter survives a save and load"
+        );
+    }
+
+    #[test]
+    fn deserialize_without_generation_defaults_zero() {
+        let json = r#"{"extensions":{"wallet":{"checked_at":0,"installed_version":"1.0.0"}}}"#;
+        let mut reg: Registry = serde_json::from_str(json).unwrap();
+        assert_eq!(reg.extensions["wallet"].generation, 0);
+        reg.record_check("wallet", "1.0.0", false, "");
+        assert_eq!(reg.extensions["wallet"].generation, 1);
+    }
+
+    #[test]
+    fn notice_lifecycle() {
+        let mut reg = Registry::default();
+        reg.set_notice("wallet", "ignored".to_string());
+        assert!(!reg.has_notice("wallet"), "no notice without a record");
+
+        reg.record_check("wallet", "1.0.0", false, "");
+        reg.set_notice("wallet", "updated".to_string());
+        reg.touch_check("wallet");
+        assert!(reg.has_notice("wallet"), "touch keeps the notice");
+
+        assert_eq!(reg.take_notice("wallet").as_deref(), Some("updated"));
+        assert!(
+            reg.take_notice("wallet").is_none(),
+            "take clears the notice"
+        );
+
+        reg.set_notice("wallet", "stale".to_string());
+        reg.record_check("wallet", "2.0.0", false, "");
+        assert!(!reg.has_notice("wallet"), "a new install clears the notice");
+    }
+
+    #[test]
+    fn notice_omitted_from_json_when_absent() {
+        let mut reg = Registry::default();
+        reg.record_check("wallet", "1.0.0", false, "");
+        assert!(!serde_json::to_string(&reg).unwrap().contains("notice"));
+    }
+
+    #[test]
     fn deserialize_without_pinned_defaults_false() {
         let json = r#"{"extensions":{"wallet":{"checked_at":0,"installed_version":"1.0.0"}}}"#;
         let reg: Registry = serde_json::from_str(json).unwrap();
-        assert!(!reg.is_pinned("wallet"));
+        assert!(!reg.extensions["wallet"].pinned);
     }
 }

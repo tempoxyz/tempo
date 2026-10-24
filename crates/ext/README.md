@@ -17,7 +17,15 @@ tempo remove <extension>        →  delete binary and skill files
 
 - `launcher` — CLI entry point (clap). Routes to extension dispatch or management commands.
 - `installer` — Download, verify, and install extension binaries and skill files.
-- `registry` — Persistent registry at `$TEMPO_HOME/extensions.json` (installed versions, update check timestamps).
+- `registry` — Persistent registry at `$TEMPO_HOME/extensions.json` (installed versions, update check timestamps, pending update notices), guarded by an exclusive lock on `extensions.lock`.
+
+## Auto-update
+
+At most once every 6 hours per extension, `tempo <extension>` starts a detached background process after the extension exits. It checks the release manifest, downloads and verifies a newer version (binary and skill file), and installs it unless the extension was removed, pinned, or reinstalled (even at the same version) in the meantime. The background process records the check itself, so an invocation that is interrupted before starting it leaves the check for the next one. The invocation never waits on the update; the next one uses it. Pinned extensions are only checked, never upgraded.
+
+The background process writes nothing to the terminal. Instead it leaves a notice (e.g. `updated tempo-wallet to 1.2.0`) that is printed to stderr on the next invocation whose stderr is a terminal, so scripts and agents never see it.
+
+Set `TEMPO_EXT_NO_AUTO_UPDATE=1` to disable auto-update. It is also disabled when `TEMPO_HOME` is set. Run `tempo update` to update explicitly.
 
 ## Release Manifest
 
@@ -77,6 +85,7 @@ Binary and manifest download URLs must use `https://` or `file://`. Any other sc
 |---|---|
 | `TEMPO_EXT_BASE_URL` | Override the release manifest base URL. |
 | `TEMPO_EXT_PUBLIC_KEY` | Override the release public key (debug/test builds only). |
+| `TEMPO_EXT_NO_AUTO_UPDATE` | Disable automatic extension updates. Any non-empty value except `0` or `false`. |
 
 ## Testing
 

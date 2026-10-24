@@ -28,31 +28,21 @@ const AGENT_SKILL_DIRS: &[(&str, &str)] = &[
     (".trae", "Trae"),
 ];
 
-/// Downloads, verifies, and installs an extension's agent skill file into every
-/// detected coding assistant's skills directory.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn install_skill(
+/// Downloads and verifies an extension's agent skill file. Returns `None`,
+/// after logging why, if it cannot be fetched or fails verification.
+pub(super) fn fetch_skill(
     extension: &str,
     version: &str,
     url: &str,
     expected_sha256: Option<&str>,
     encoded_signature: Option<&str>,
     public_key: &PublicKey,
-    dry_run: bool,
-    quiet: bool,
-) {
-    let skill_dir_name = format!("tempo-{extension}");
-
-    if dry_run {
-        println!("dry-run: install skill from {url}");
-        return;
-    }
-
+) -> Option<String> {
     let content = match download_skill(url) {
         Ok(content) => content,
         Err(err) => {
             tracing::warn!("skill download failed for tempo-{extension}: {err}");
-            return;
+            return None;
         }
     };
 
@@ -60,7 +50,7 @@ pub(super) fn install_skill(
         let actual = sha256_hex(content.as_bytes());
         if actual != expected.to_lowercase() {
             tracing::warn!("skill checksum mismatch for tempo-{extension}, skipping");
-            return;
+            return None;
         }
         tracing::debug!("skill checksum ok for tempo-{extension}");
     }
@@ -78,15 +68,23 @@ pub(super) fn install_skill(
                 &[&expected_comment, &version_comment],
             ) {
                 tracing::warn!("{err}, skipping skill install");
-                return;
+                return None;
             }
             tracing::debug!("skill signature ok for tempo-{extension}");
         }
         None => {
             tracing::warn!("skill signature missing for tempo-{extension}, skipping skill install");
-            return;
+            return None;
         }
     }
+
+    Some(content)
+}
+
+/// Writes a verified skill file into every detected coding assistant's
+/// skills directory.
+pub(super) fn write_skill(extension: &str, content: &str, quiet: bool) {
+    let skill_dir_name = format!("tempo-{extension}");
 
     let home = match home_dir() {
         Some(h) => h,
@@ -106,7 +104,7 @@ pub(super) fn install_skill(
         if fs::create_dir_all(&skill_dir).is_err() {
             continue;
         }
-        if fs::write(skill_dir.join("SKILL.md"), &content).is_ok() {
+        if fs::write(skill_dir.join("SKILL.md"), content).is_ok() {
             installed_names.push(agent_name);
         }
     }
