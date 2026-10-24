@@ -1,5 +1,15 @@
 # Changelog
 
+## `tempo-chainspec@2.0.0`
+
+### Major Changes
+
+- Scheduled T13 activation on Moderato for 29 October 2026 at 15:00 UTC and mainnet for 3 November 2026 at 15:00 UTC. Updated public hardfork timestamp lookups to return the scheduled times. (by @DaniPopes, [#8645](https://github.com/tempoxyz/tempo/pull/8645))
+
+### Minor Changes
+
+- Added `TempoGenesisInfo::configurable_account_recovery_factory`, `TempoBlockEnv::configurable_account_recovery_factory` and its accessor of the same name, and `tempo_chainspec::is_valid_native_account`. (by @DaniPopes, [#8645](https://github.com/tempoxyz/tempo/pull/8645))
+
 ## `tempo-chainspec@1.16.0`
 
 ### Minor Changes

@@ -1,5 +1,13 @@
 # Changelog
 
+## `tempo-contracts@2.0.0`
+
+### Minor Changes
+
+- Added the configurable account precompile interface (`IConfigurableAccount`) and its `CONFIGURABLE_ACCOUNT_ADDRESS`. Nothing registers or calls it yet. (by @DaniPopes, [#8645](https://github.com/tempoxyz/tempo/pull/8645))
+- Added the `ConfigurableAccount` account keychain signature type (value 3). From T14, the T3+ `authorizeKey` overloads and `authorizeAdminKey` accept it for a code-free delegate other than the granting account that is not a reserved address (precompile, TIP-20, virtual or zone portal). Earlier forks keep reverting exactly as for an unknown signature type. (by @DaniPopes, [#8645](https://github.com/tempoxyz/tempo/pull/8645))
+- Added the `RootKeyRetired(address account)` error to `ITIP20` and `ITIP20ChannelReserve`. From T14, TIP-20 `permit` and channel voucher validation revert with it when the signing account has a config commitment, because a committed account no longer acts through its own root key. (by @DaniPopes, [#8645](https://github.com/tempoxyz/tempo/pull/8645))
+
 ## `tempo-contracts@1.16.0`
 
 ### Minor Changes

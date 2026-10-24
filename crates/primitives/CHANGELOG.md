@@ -1,5 +1,14 @@
 # Changelog
 
+## `tempo-primitives@2.0.0`
+
+### Minor Changes
+
+- Added `tempo_primitives::account::{encode_config_commitment, decode_config_commitment}`, the TIP-1108 account configuration commitment codec. (by @DaniPopes, [#8645](https://github.com/tempoxyz/tempo/pull/8645))
+- Added `TempoGenesisInfo::configurable_account_recovery_factory`, `TempoBlockEnv::configurable_account_recovery_factory` and its accessor of the same name, and `tempo_chainspec::is_valid_native_account`. (by @DaniPopes, [#8645](https://github.com/tempoxyz/tempo/pull/8645))
+- Added `ConfigurableAccountSignature::verify_approvals` and `ConfigurableAccountSignature::validate_account_commitment`, which check owner approvals and the account commitment without reading state, along with `ConfigurableAccountStateError`, `ConfigurableAccountQuorumError::OwnerSignatureRecoveryFailed` and `CONFIGURABLE_ACCOUNT_UPGRADE_DOMAIN`. Transaction signatures do not accept configurable account signatures yet. (by @DaniPopes, [#8645](https://github.com/tempoxyz/tempo/pull/8645))
+- Added configurable account primitives: `ConfigurableAccountOwner`, `ConfigurableAccountConfig` and `ConfigurableAccountSignature`, with their encoding, account derivation, configuration commitments and owner-quorum weight accounting. Transaction signatures do not accept them yet. Derived account addresses use a placeholder account-proxy init-code hash, `ACCOUNT_PROXY_INIT_CODE_HASH`, and will change when TIP-1110 fixes the canonical account proxy. (by @DaniPopes, [#8645](https://github.com/tempoxyz/tempo/pull/8645))
+
 ## `tempo-primitives@1.16.0`
 
 
