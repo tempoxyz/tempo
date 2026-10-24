@@ -27,7 +27,7 @@ use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, INITIAL_FACTORY_OWNER,
     InitialZoneFactoryAccount, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
     STORAGE_CREDITS_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
-    initial_zone_factory_state, t13_zone_factory_state,
+    initial_zone_factory_state, t13_zone_factory_state, t14_zone_factory_state,
 };
 use tempo_primitives::{SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType};
 use tempo_revm::{ExecutionContext, evm::TempoContext};
@@ -279,10 +279,16 @@ where
         self.install_zone_runtimes_at_boundary([portal, verifier, messenger])
     }
 
+    /// Installs the portal runtime introduced at T14.
+    fn upgrade_zone_portal_at_boundary(&mut self) -> Result<(), BlockExecutionError> {
+        let [_, portal, _, _] = t14_zone_factory_state(INITIAL_FACTORY_OWNER);
+        self.install_zone_runtimes_at_boundary([portal])
+    }
+
     /// Installs shared Zone runtimes without modifying their existing storage.
     fn install_zone_runtimes_at_boundary(
         &mut self,
-        runtimes: [InitialZoneFactoryAccount; 3],
+        runtimes: impl IntoIterator<Item = InitialZoneFactoryAccount>,
     ) -> Result<(), BlockExecutionError> {
         let db = self.inner.evm.db_mut();
         let mut state = EvmState::default();
@@ -566,16 +572,23 @@ where
         if self.inner.spec.is_t10_active_at_timestamp(timestamp) {
             self.deploy_zone_factory_at_boundary()?;
         }
-        // Chains starting at T13 supply their runtime code in genesis. Preserve those
-        // allocations (including locally compiled contracts on test chains). Chains
-        // that activate T13 later still follow the normal runtime upgrade path.
-        if self.inner.spec.is_t13_active_at_timestamp(timestamp)
-            && !self
-                .inner
-                .spec
-                .is_t13_active_at_timestamp(self.inner.spec.genesis().timestamp)
-        {
+        // Genesis supplies every runtime for forks active at genesis. Apply later upgrades in
+        // order so a block crossing multiple activation times receives every runtime change.
+        let (upgrade_t13, upgrade_t14) = {
+            let spec = &self.inner.spec;
+            let genesis = spec.genesis().timestamp;
+            (
+                spec.is_t13_active_at_timestamp(timestamp)
+                    && !spec.is_t13_active_at_timestamp(genesis),
+                spec.is_t14_active_at_timestamp(timestamp)
+                    && !spec.is_t14_active_at_timestamp(genesis),
+            )
+        };
+        if upgrade_t13 {
             self.upgrade_zone_runtimes_at_boundary()?;
+        }
+        if upgrade_t14 {
+            self.upgrade_zone_portal_at_boundary()?;
         }
 
         Ok(())
@@ -787,7 +800,8 @@ mod tests {
         },
         zones::{
             T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
-            ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
+            T14_ZONE_PORTAL_RUNTIME, ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME,
+            ZONE_VERIFIER_RUNTIME,
         },
     };
     use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -2280,9 +2294,10 @@ mod tests {
     }
 
     #[test]
-    fn zone_runtime_upgrade_activates_at_t13() {
-        for (activation, timestamp, expected_runtimes) in [
+    fn zone_runtime_upgrade_activates_at_boundaries() {
+        for (t13_activation, t14_activation, timestamp, expected_runtimes) in [
             (
+                u64::MAX,
                 u64::MAX,
                 10,
                 [
@@ -2293,6 +2308,7 @@ mod tests {
             ),
             (
                 10,
+                u64::MAX,
                 9,
                 [
                     ZONE_PORTAL_RUNTIME,
@@ -2302,6 +2318,7 @@ mod tests {
             ),
             (
                 10,
+                u64::MAX,
                 10,
                 [
                     T13_ZONE_PORTAL_RUNTIME,
@@ -2311,7 +2328,38 @@ mod tests {
             ),
             (
                 10,
+                u64::MAX,
                 11,
+                [
+                    T13_ZONE_PORTAL_RUNTIME,
+                    T13_ZONE_VERIFIER_RUNTIME,
+                    T13_ZONE_MESSENGER_RUNTIME,
+                ],
+            ),
+            (
+                10,
+                10,
+                10,
+                [
+                    T14_ZONE_PORTAL_RUNTIME,
+                    T13_ZONE_VERIFIER_RUNTIME,
+                    T13_ZONE_MESSENGER_RUNTIME,
+                ],
+            ),
+            (
+                5,
+                10,
+                10,
+                [
+                    T14_ZONE_PORTAL_RUNTIME,
+                    T13_ZONE_VERIFIER_RUNTIME,
+                    T13_ZONE_MESSENGER_RUNTIME,
+                ],
+            ),
+            (
+                5,
+                10,
+                9,
                 [
                     T13_ZONE_PORTAL_RUNTIME,
                     T13_ZONE_VERIFIER_RUNTIME,
@@ -2320,15 +2368,19 @@ mod tests {
             ),
         ] {
             let mut genesis = DEV.genesis().clone();
-            genesis
-                .config
-                .extra_fields
-                .insert_value("t13Time".into(), activation)
-                .unwrap();
+            for (key, activation) in [("t13Time", t13_activation), ("t14Time", t14_activation)] {
+                genesis
+                    .config
+                    .extra_fields
+                    .insert_value(key.into(), activation)
+                    .unwrap();
+            }
             let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
             let mut db = State::builder().with_bundle_update().build();
             let mut executor = TestExecutorBuilder::default()
-                .with_spec(if timestamp >= activation {
+                .with_spec(if timestamp >= t14_activation {
+                    TempoHardfork::T14
+                } else if timestamp >= t13_activation {
                     TempoHardfork::T13
                 } else {
                     TempoHardfork::T12
