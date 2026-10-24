@@ -9,7 +9,7 @@ use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
 use reth_evm::{Evm, EvmEnvFor};
 use reth_revm::database::StateProviderDatabase;
 use reth_storage_api::{EvmStateProviderBox, StateProvider, StateProviderFactory};
-use reth_tasks::{TaskExecutor, WorkerStatefulPool};
+use reth_tasks::{TaskExecutor, WorkerStatefulPool, affinity::JobDomain};
 use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
@@ -48,11 +48,14 @@ impl BestTransactionsPrewarming {
         };
 
         let prewarm_executor = prewarm.executor();
+        // The builder thread reads the prewarmed state, so the coordinator runs in its LLC domain.
+        let domain = JobDomain::capture();
         prewarm
             .executor()
             .spawn_blocking_named("builder-prewarm", move || {
                 Self::start_prewarming(
                     prewarm_executor,
+                    domain,
                     BestTransactionsPrewarmingContext {
                         best_txs,
                         transactions_tx,
@@ -69,14 +72,20 @@ impl BestTransactionsPrewarming {
 
     /// Runs the coordinator side of prewarming for a payload build.
     ///
+    /// The coordinator moves into `domain`, the payload builder's LLC domain. Prewarm jobs are
+    /// not placed: they fan out over a pool wider than one domain, and pinning each job would
+    /// crowd the pool's workers into the builder's domain.
+    ///
     /// See [`BestTransactionsPrewarming`] for details.
     fn start_prewarming<Txs, Provider>(
         executor: TaskExecutor,
+        domain: JobDomain,
         mut ctx: BestTransactionsPrewarmingContext<Txs, Provider>,
     ) where
         Txs: BestTransactions<Item = BestTransaction>,
         Provider: StateProviderFactory + Clone + 'static,
     {
+        domain.place();
         let stateful_pool = WorkerStatefulPool::new(executor.prewarming_pool().clone());
         let pool = &stateful_pool;
 

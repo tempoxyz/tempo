@@ -1,4 +1,11 @@
-use std::{collections::VecDeque, sync::Arc};
+use std::{
+    cell::RefCell,
+    collections::VecDeque,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
 use alloy_consensus::BlockHeader;
 use alloy_primitives::{
@@ -34,6 +41,8 @@ const LAST_SEEN_WINDOW: usize = 10;
 #[derive(Debug, Clone)]
 pub struct AmmLiquidityCache {
     inner: Arc<RwLock<AmmLiquidityCacheInner>>,
+    /// Version of `inner.unique_tokens`, changed under the write lock whenever they change.
+    tokens_version: Arc<TokensVersion>,
 }
 
 impl AmmLiquidityCache {
@@ -47,6 +56,7 @@ impl AmmLiquidityCache {
     {
         let this = Self {
             inner: Default::default(),
+            tokens_version: Default::default(),
         };
         this.repopulate(&client)?;
 
@@ -67,6 +77,11 @@ impl AmmLiquidityCache {
     where
         S: TempoStateAccess<M>,
     {
+        // Answer the common case, a fee in a recent validator's own token, without the lock.
+        if self.is_recent_validator_token(user_token) {
+            return Ok(true);
+        }
+
         let mut missing_in_cache = Vec::new();
         let hardfork;
         let generation;
@@ -175,6 +190,7 @@ impl AmmLiquidityCache {
             generation,
             ..Default::default()
         };
+        self.tokens_version.bump();
     }
 
     /// Clears all cached state and repopulates from the current canonical chain.
@@ -303,6 +319,7 @@ impl AmmLiquidityCache {
                 inner.last_seen_tokens.pop_front();
             }
             inner.unique_tokens = inner.last_seen_tokens.iter().copied().unique().collect();
+            self.tokens_version.bump();
 
             // Track the new observed validator (block producer)
             inner.last_seen_validators.push_back(beneficiary);
@@ -322,6 +339,45 @@ impl AmmLiquidityCache {
 
         Ok(())
     }
+}
+
+/// Process-wide unique version of an [`AmmLiquidityCache`]'s validator tokens, so a thread's copy
+/// can be checked against any cache without taking its lock.
+#[derive(Debug)]
+struct TokensVersion(AtomicU64);
+
+impl TokensVersion {
+    fn next() -> u64 {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    }
+
+    fn get(&self) -> u64 {
+        self.0.load(Ordering::Acquire)
+    }
+
+    /// Marks the tokens as changed. Called while holding the cache's write lock.
+    fn bump(&self) {
+        self.0.store(Self::next(), Ordering::Release);
+    }
+}
+
+impl Default for TokensVersion {
+    fn default() -> Self {
+        Self(AtomicU64::new(Self::next()))
+    }
+}
+
+/// A thread's copy of the validator tokens of the [`AmmLiquidityCache`] it last checked.
+#[derive(Default)]
+struct LocalTokens {
+    /// [`TokensVersion`] the tokens were copied at; zero before the first copy.
+    version: u64,
+    tokens: Vec<Address>,
+}
+
+thread_local! {
+    static LOCAL_TOKENS: RefCell<LocalTokens> = RefCell::new(LocalTokens::default());
 }
 
 #[derive(Debug, Default)]
@@ -395,7 +451,30 @@ impl AmmLiquidityCache {
                 updated = true;
             }
         }
+        if updated {
+            self.tokens_version.bump();
+        }
         updated
+    }
+
+    /// Returns whether `token` is one of the recent validator tokens, from this thread's copy of
+    /// them.
+    ///
+    /// The copy is refreshed only when [`TokensVersion`] changes, so the common case takes no
+    /// lock: every lock acquisition writes the lock word, whose cache line then moves between all
+    /// validation threads, which costs the most between threads in different L3 domains.
+    fn is_recent_validator_token(&self, token: Address) -> bool {
+        let version = self.tokens_version.get();
+        LOCAL_TOKENS.with_borrow_mut(|local| {
+            if local.version != version {
+                let inner = self.inner.read();
+                // Read under the lock: writers change the version while holding the write lock, so
+                // it matches the tokens copied here.
+                local.version = self.tokens_version.get();
+                local.tokens.clone_from(&inner.unique_tokens);
+            }
+            local.tokens.contains(&token)
+        })
     }
 }
 
@@ -404,6 +483,7 @@ impl AmmLiquidityCache {
     /// Creates a new [`AmmLiquidityCache`] with pre-populated unique tokens for testing.
     pub fn with_unique_tokens(unique_tokens: Vec<Address>) -> Self {
         Self {
+            tokens_version: Default::default(),
             inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
                 unique_tokens,
                 ..Default::default()
@@ -414,6 +494,7 @@ impl AmmLiquidityCache {
     /// Creates a new [`AmmLiquidityCache`] with pre-populated unique validators for testing.
     pub fn with_unique_validators(unique_validators: Vec<Address>) -> Self {
         Self {
+            tokens_version: Default::default(),
             inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
                 unique_validators,
                 ..Default::default()
@@ -435,6 +516,7 @@ mod tests {
     #[test]
     fn test_has_enough_liquidity_user_token_matches_validator_token() {
         let cache = AmmLiquidityCache {
+            tokens_version: Default::default(),
             inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
                 unique_tokens: vec![Address::repeat_byte(0x11)],
                 ..Default::default()
@@ -464,6 +546,7 @@ mod tests {
         for hardfork in [TempoHardfork::T4, TempoHardfork::T5] {
             for validator_token in [user_token, other_token] {
                 let cache = AmmLiquidityCache {
+                    tokens_version: Default::default(),
                     inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
                         hardfork,
                         unique_tokens: vec![validator_token],
@@ -490,6 +573,7 @@ mod tests {
         let validator_token = Address::repeat_byte(0x33);
 
         let cache = AmmLiquidityCache {
+            tokens_version: Default::default(),
             inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
                 unique_tokens: vec![validator_token],
                 pool_cache: {
@@ -518,6 +602,7 @@ mod tests {
         let validator_token = Address::repeat_byte(0x33);
 
         let cache = AmmLiquidityCache {
+            tokens_version: Default::default(),
             inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
                 unique_tokens: vec![validator_token],
                 pool_cache: {
@@ -543,6 +628,7 @@ mod tests {
     #[test]
     fn test_has_enough_liquidity_no_unique_tokens() {
         let cache = AmmLiquidityCache {
+            tokens_version: Default::default(),
             inner: Arc::new(RwLock::new(AmmLiquidityCacheInner::default())),
         };
 
@@ -565,6 +651,7 @@ mod tests {
         let validator = Address::repeat_byte(0x33);
 
         let cache = AmmLiquidityCache {
+            tokens_version: Default::default(),
             inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
                 hardfork: TempoHardfork::T5,
                 unique_tokens: vec![validator],
@@ -603,6 +690,7 @@ mod tests {
         let validator_token = Address::repeat_byte(0x33);
 
         let cache = AmmLiquidityCache {
+            tokens_version: Default::default(),
             inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
                 unique_tokens: vec![validator_token],
                 pool_cache: HashMap::default(),
@@ -644,6 +732,7 @@ mod tests {
         // The direct reserve is cached but too low and the quote token isn't cached, so the
         // lookup falls through to the slow path, where the provider returns zero reserves.
         let cache = AmmLiquidityCache {
+            tokens_version: Default::default(),
             inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
                 hardfork: TempoHardfork::T5,
                 unique_tokens: vec![validator_token],
@@ -682,6 +771,7 @@ mod tests {
         use tempo_primitives::TempoReceipt;
 
         let cache = AmmLiquidityCache {
+            tokens_version: Default::default(),
             inner: Arc::new(RwLock::new(AmmLiquidityCacheInner::default())),
         };
 
@@ -707,6 +797,7 @@ mod tests {
         let other_user = address!("20c0000000000000000000000000000000000099");
 
         let cache = AmmLiquidityCache {
+            tokens_version: Default::default(),
             inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
                 quote_token_cache: {
                     let mut m = AddressMap::default();
@@ -907,6 +998,7 @@ mod tests {
         let validator = Address::random();
 
         let cache = AmmLiquidityCache {
+            tokens_version: Default::default(),
             inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
                 pool_cache: {
                     let mut m = HashMap::default();
@@ -991,6 +1083,7 @@ mod tests {
         let stale_user_token = Address::random();
 
         let cache = AmmLiquidityCache {
+            tokens_version: Default::default(),
             inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
                 pool_cache: {
                     let mut m = HashMap::default();
@@ -1126,5 +1219,24 @@ mod tests {
         let cache = AmmLiquidityCache::with_unique_tokens(vec![token_a]);
         assert!(cache.track_tokens(&[token_b, token_b]));
         assert_eq!(cache.inner.read().unique_tokens.len(), 2);
+    }
+
+    #[test]
+    fn test_recent_validator_token_copy_follows_token_changes() {
+        let (token_a, token_b) = (Address::repeat_byte(0x0a), Address::repeat_byte(0x0b));
+        let cache = AmmLiquidityCache::with_unique_tokens(vec![token_a]);
+        assert!(cache.is_recent_validator_token(token_a));
+        assert!(!cache.is_recent_validator_token(token_b));
+
+        assert!(cache.track_tokens(&[token_b]));
+        assert!(cache.is_recent_validator_token(token_b));
+
+        // Another cache on the same thread never sees this cache's copy.
+        let other = AmmLiquidityCache::with_unique_tokens(vec![]);
+        assert!(!other.is_recent_validator_token(token_a));
+
+        cache.clear();
+        assert!(!cache.is_recent_validator_token(token_a));
+        assert!(!cache.is_recent_validator_token(token_b));
     }
 }
