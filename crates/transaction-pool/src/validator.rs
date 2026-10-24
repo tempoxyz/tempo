@@ -462,6 +462,24 @@ where
         })
     }
 
+    /// Runs `f` with `db` behind the read cache a validation of state at `state_tip` reads
+    /// through, taken the same way as in `validate_batch`.
+    ///
+    /// Only for the `validation_reads` benchmark, which drives the tip snapshot, thread-local
+    /// front cache and shared `StateCache` from many threads without a full validation.
+    #[cfg(feature = "bench")]
+    #[doc(hidden)]
+    pub fn with_tip_state_db<DB: DatabaseRef, R>(
+        &self,
+        state_tip: Option<B256>,
+        db: DB,
+        f: impl FnOnce(&StateCacheDb<'_, DB>) -> R,
+    ) -> R {
+        self.with_tip_cache(state_tip, |cache, local_cache, _| {
+            f(&StateCacheDb::new(cache, local_cache, db))
+        })
+    }
+
     /// Validates one transaction with the given throwaway EVM.
     ///
     /// The EVM's pool-validation hook is responsible for discarding transaction-local writes.
