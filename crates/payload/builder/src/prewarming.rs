@@ -9,7 +9,7 @@ use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
 use reth_evm::{Evm, EvmEnvFor};
 use reth_revm::database::StateProviderDatabase;
 use reth_storage_api::{EvmStateProviderBox, StateProvider, StateProviderFactory};
-use reth_tasks::{TaskExecutor, WorkerStatefulPool};
+use reth_tasks::{TaskExecutor, WorkerStatefulPool, affinity::JobDomain};
 use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
@@ -48,11 +48,14 @@ impl BestTransactionsPrewarming {
         };
 
         let prewarm_executor = prewarm.executor();
+        // The builder thread reads the prewarmed state, so prewarming runs in its LLC domain.
+        let domain = JobDomain::capture();
         prewarm
             .executor()
             .spawn_blocking_named("builder-prewarm", move || {
                 Self::start_prewarming(
                     prewarm_executor,
+                    domain,
                     BestTransactionsPrewarmingContext {
                         best_txs,
                         transactions_tx,
@@ -69,21 +72,27 @@ impl BestTransactionsPrewarming {
 
     /// Runs the coordinator side of prewarming for a payload build.
     ///
+    /// The coordinator and every prewarm job run in `domain`, the payload builder's LLC domain:
+    /// state loaded by a job in another L3 domain must cross the interconnect again when the
+    /// builder reads it.
+    ///
     /// See [`BestTransactionsPrewarming`] for details.
     fn start_prewarming<Txs, Provider>(
         executor: TaskExecutor,
+        domain: JobDomain,
         mut ctx: BestTransactionsPrewarmingContext<Txs, Provider>,
     ) where
         Txs: BestTransactions<Item = BestTransaction>,
         Provider: StateProviderFactory + Clone + 'static,
     {
+        domain.place();
         let stateful_pool = WorkerStatefulPool::new(executor.prewarming_pool().clone());
         let pool = &stateful_pool;
 
         pool.in_place_scope(|scope| {
             let prewarm = ctx.prewarm.clone();
             scope.spawn(move |_| {
-                pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
+                domain.run(|| pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx()));
             });
 
             let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
@@ -113,11 +122,14 @@ impl BestTransactionsPrewarming {
                 }
 
                 scope.spawn(move |_| {
-                    let tx = Self::prewarm_transaction(pool, prewarm, tx, expiring_nonce_offset);
-                    if let Some(transactions_tx) = transactions_tx {
-                        let _ = transactions_tx.send(Some(tx));
-                    }
-                    let _ = commands_tx.send(BestTransactionsCommand::Advance);
+                    domain.run(|| {
+                        let tx =
+                            Self::prewarm_transaction(pool, prewarm, tx, expiring_nonce_offset);
+                        if let Some(transactions_tx) = transactions_tx {
+                            let _ = transactions_tx.send(Some(tx));
+                        }
+                        let _ = commands_tx.send(BestTransactionsCommand::Advance);
+                    });
                 });
             };
 

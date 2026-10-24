@@ -1,7 +1,7 @@
 use crate::{
     AddressFilter,
     amm::AmmLiquidityCache,
-    state_cache::{StateCache, StateCacheDb},
+    state_cache::{LocalStateCache, StateCache, StateCacheDb},
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 
@@ -29,9 +29,13 @@ use revm::{
     DatabaseRef,
     context::result::{EVMError, InvalidTransaction},
 };
-use std::sync::{
-    Arc,
-    atomic::{AtomicU8, Ordering},
+use std::{
+    cell::RefCell,
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicU8, AtomicU64, Ordering},
+        mpsc,
+    },
 };
 use tempo_chainspec::{
     hardfork::{TempoHardfork, TempoHardforks},
@@ -106,11 +110,12 @@ pub struct TempoTransactionValidator<Client, EvmConfig = TempoEvmConfig> {
     minimum_fee_cap: u128,
     /// Addresses checked against transaction senders and direct call targets.
     address_filter: AddressFilter,
-    /// Cached EVM environment from the latest tip block, updated on each `on_new_head_block`.
-    cached_evm_env: RwLock<EvmEnv<TempoHardfork, TempoBlockEnv>>,
-    /// Tip hash and cache of state reads shared across validation calls, replaced on each
-    /// `on_new_head_block`.
-    cached_state: RwLock<(B256, Arc<StateCache>)>,
+    /// Tip hash, EVM environment and cache of state reads shared across validation calls,
+    /// replaced on each `on_new_head_block`.
+    tip: RwLock<Arc<TipSnapshot>>,
+    /// [`TipSnapshot::generation`] of `tip`, read without the lock so a validation can tell
+    /// whether its thread's copy of the snapshot is current.
+    tip_generation: AtomicU64,
     /// The Tempo hardfork active at the current tip, stored as an index into
     /// [`TempoHardfork::VARIANTS`] and updated on each `on_new_head_block`.
     ///
@@ -144,6 +149,7 @@ where
             .evm_env(latest_header.header())
             .expect("failed constructing EvmEnv from latest header");
         let active_hardfork = AtomicU8::new(evm_env.cfg_env.spec.variant_index());
+        let tip = TipSnapshot::new(latest_header.hash(), evm_env);
         Self {
             inner,
             aa_valid_after_max_secs,
@@ -152,8 +158,8 @@ where
             disable_fee_amm_check: false,
             minimum_fee_cap: u128::from(TEMPO_T7_BASE_FEE_FLOOR),
             address_filter: AddressFilter::default(),
-            cached_evm_env: parking_lot::RwLock::new(evm_env),
-            cached_state: RwLock::new((latest_header.hash(), Arc::new(StateCache::default()))),
+            tip_generation: AtomicU64::new(tip.generation),
+            tip: RwLock::new(tip),
             active_hardfork,
         }
     }
@@ -354,65 +360,58 @@ where
     /// Validates a batch of transactions against the same state snapshot.
     ///
     /// All transactions share one throwaway pool-validation EVM (journaled writes are discarded
-    /// after each transaction while loaded state stays warm) and the validator's tip-scoped
-    /// [`StateCache`], so repeated state reads are served from memory across transactions
-    /// and across concurrent validation calls.
+    /// after each transaction while loaded state stays warm) and, when `state_tip` is the
+    /// published tip, the validator's tip-scoped [`StateCache`], so repeated state reads are served
+    /// from memory across transactions and across concurrent validation calls.
     fn validate_batch<P: StateProvider>(
         &self,
         state_provider: P,
-        cached_state: Arc<StateCache>,
+        state_tip: Option<B256>,
         transactions: impl IntoIterator<Item = (TransactionOrigin, TempoPooledTransaction)>,
     ) -> Vec<TransactionValidationOutcome<TempoPooledTransaction>> {
-        let db = StateCacheDb::new(
-            &cached_state,
-            StateProviderDatabase::new(
-                (&state_provider as &dyn StateProvider).into_evm_state_provider(),
-            ),
-        );
-        let evm_env = self.cached_evm_env.read().clone();
+        self.with_tip_cache(state_tip, |cache, local_cache, evm_env| {
+            let db = StateCacheDb::new(
+                cache,
+                local_cache,
+                StateProviderDatabase::new(
+                    (&state_provider as &dyn StateProvider).into_evm_state_provider(),
+                ),
+            );
 
-        // Create one throwaway EVM through the configured factory for the whole batch. The
-        // capability hook owns all pool-only configuration and per-transaction cleanup while the
-        // EVM and tip-scoped state cache keep repeated reads warm.
-        let mut evm = self.inner.evm_config().pool_evm(db, evm_env);
+            // Create one throwaway EVM through the configured factory for the whole batch. The
+            // capability hook owns all pool-only configuration and per-transaction cleanup while
+            // the EVM and tip-scoped state cache keep repeated reads warm.
+            let mut evm = self.inner.evm_config().pool_evm(db, evm_env);
 
-        transactions
-            .into_iter()
-            .map(|(origin, transaction)| self.validate_one_with_evm(origin, transaction, &mut evm))
-            .collect()
+            transactions
+                .into_iter()
+                .map(|(origin, transaction)| {
+                    self.validate_one_with_evm(origin, transaction, &mut evm)
+                })
+                .collect()
+        })
     }
 
-    /// Returns the current tip's state provider and matching read cache.
+    /// Returns the current tip's state provider and the tip its state belongs to.
     ///
     /// Using one tip hash prevents a concurrent head update from pairing old state with a new cache.
-    fn latest_state_provider_and_cache(
-        &self,
-    ) -> ProviderResult<(StateProviderBox, Arc<StateCache>)> {
+    fn latest_state_provider(&self) -> ProviderResult<(StateProviderBox, Option<B256>)> {
         let tip = self.inner.client().chain_info()?.best_hash;
         let tip_provider = self.inner.client().state_by_block_hash(tip);
-        self.provider_and_cache_for_tip(tip, tip_provider)
+        self.provider_for_tip(tip, tip_provider)
     }
 
-    /// Returns the shared cache if its tip matches `tip_hash`, otherwise a fresh cache.
-    fn state_cache_for_tip(&self, tip_hash: B256) -> Arc<StateCache> {
-        let (cached_tip_hash, cached_state) = self.cached_state.read().clone();
-        if cached_tip_hash == tip_hash {
-            cached_state
-        } else {
-            Arc::new(StateCache::default())
-        }
-    }
-
-    /// Uses the tip's cache when its state provider is available.
+    /// Returns the tip's state provider and `tip` when the provider is available.
     ///
-    /// Falls back to `latest()` with a private cache because the fallback state's tip is unknown.
-    fn provider_and_cache_for_tip(
+    /// Falls back to `latest()` and no tip, which keeps it off the shared cache, because the
+    /// fallback state's tip is unknown.
+    fn provider_for_tip(
         &self,
         tip: B256,
         tip_provider: ProviderResult<StateProviderBox>,
-    ) -> ProviderResult<(StateProviderBox, Arc<StateCache>)> {
+    ) -> ProviderResult<(StateProviderBox, Option<B256>)> {
         match tip_provider {
-            Ok(provider) => Ok((provider, self.state_cache_for_tip(tip))),
+            Ok(provider) => Ok((provider, Some(tip))),
             Err(err) => {
                 tracing::debug!(
                     target: "txpool",
@@ -420,12 +419,47 @@ where
                     %tip,
                     "no state provider for tip, validating against latest state"
                 );
-                Ok((
-                    self.inner.client().latest()?,
-                    Arc::new(StateCache::default()),
-                ))
+                Ok((self.inner.client().latest()?, None))
             }
         }
+    }
+
+    /// Runs `f` with the read cache for state at `state_tip`, this thread's front cache over it,
+    /// and the published tip's EVM environment.
+    ///
+    /// The cache is the published tip's shared [`StateCache`] when `state_tip` is that tip, and a
+    /// private cache without a front cache otherwise; `None` marks state of an unknown tip.
+    ///
+    /// Each thread keeps its own reference to the published [`TipSnapshot`] and refreshes it only
+    /// when [`Self::tip_generation`] changes, so a validation writes neither the tip lock nor the
+    /// snapshot's reference count. Such writes move a cache line between all validation threads,
+    /// which costs the most between threads in different L3 domains.
+    fn with_tip_cache<R>(
+        &self,
+        state_tip: Option<B256>,
+        f: impl FnOnce(&StateCache, Option<&LocalStateCache>, EvmEnv<TempoHardfork, TempoBlockEnv>) -> R,
+    ) -> R {
+        let generation = self.tip_generation.load(Ordering::Acquire);
+        LOCAL_TIP.with_borrow_mut(|local| {
+            let local = match local {
+                Some(local) if local.snapshot.generation == generation => local,
+                local => {
+                    if let Some(stale) = local.take() {
+                        drop_in_background(stale.snapshot);
+                    }
+                    local.insert(LocalTip {
+                        snapshot: self.tip.read().clone(),
+                        cache: LocalStateCache::default(),
+                    })
+                }
+            };
+            let evm_env = local.snapshot.evm_env.clone();
+            if state_tip == Some(local.snapshot.tip_hash) {
+                f(&local.snapshot.state, Some(&local.cache), evm_env)
+            } else {
+                f(&StateCache::default(), None, evm_env)
+            }
+        })
     }
 
     /// Validates one transaction with the given throwaway EVM.
@@ -733,8 +767,8 @@ where
         origin: TransactionOrigin,
         transaction: Self::Transaction,
     ) -> TransactionValidationOutcome<Self::Transaction> {
-        let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
-            Ok(provider_and_cache) => provider_and_cache,
+        let (state_provider, state_tip) = match self.latest_state_provider() {
+            Ok(provider_and_tip) => provider_and_tip,
             Err(err) => {
                 return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
             }
@@ -742,7 +776,7 @@ where
 
         self.validate_batch(
             state_provider,
-            cached_state,
+            state_tip,
             core::iter::once((origin, transaction)),
         )
         .pop()
@@ -754,8 +788,8 @@ where
         transactions: impl IntoIterator<Item = (TransactionOrigin, Self::Transaction), IntoIter: Send>
         + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
-        let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
-            Ok(provider_and_cache) => provider_and_cache,
+        let (state_provider, state_tip) = match self.latest_state_provider() {
+            Ok(provider_and_tip) => provider_and_tip,
             Err(err) => {
                 return transactions
                     .into_iter()
@@ -766,7 +800,7 @@ where
             }
         };
 
-        self.validate_batch(state_provider, cached_state, transactions)
+        self.validate_batch(state_provider, state_tip, transactions)
     }
 
     async fn validate_transactions_with_origin(
@@ -774,8 +808,8 @@ where
         origin: TransactionOrigin,
         transactions: impl IntoIterator<Item = Self::Transaction> + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
-        let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
-            Ok(provider_and_cache) => provider_and_cache,
+        let (state_provider, state_tip) = match self.latest_state_provider() {
+            Ok(provider_and_tip) => provider_and_tip,
             Err(err) => {
                 return transactions
                     .into_iter()
@@ -788,7 +822,7 @@ where
 
         self.validate_batch(
             state_provider,
-            cached_state,
+            state_tip,
             transactions.into_iter().map(|tx| (origin, tx)),
         )
     }
@@ -804,10 +838,74 @@ where
             .expect("invalid block in on_new_head_block");
         self.active_hardfork
             .store(evm_env.cfg_env.spec.variant_index(), Ordering::Relaxed);
-        *self.cached_evm_env.write() = evm_env;
 
-        // State changed, drop all cached reads and anchor the new cache to this tip.
-        *self.cached_state.write() = (new_tip_block.hash(), Arc::new(StateCache::default()));
+        // State changed: publish an empty cache anchored to this tip with the tip's EVM environment.
+        // The retired snapshot is released outside the lock.
+        let tip = TipSnapshot::new(new_tip_block.hash(), evm_env);
+        let generation = tip.generation;
+        let retired = std::mem::replace(&mut *self.tip.write(), tip);
+        self.tip_generation.store(generation, Ordering::Release);
+        drop_in_background(retired);
+    }
+}
+
+/// The tip-scoped state every validation reads, published by `on_new_head_block`.
+#[derive(Debug)]
+struct TipSnapshot {
+    /// Process-wide unique id, so a thread's copy can be checked against any validator's tip.
+    generation: u64,
+    /// Hash of the tip block `state` is anchored to.
+    tip_hash: B256,
+    /// EVM environment of the tip block.
+    evm_env: EvmEnv<TempoHardfork, TempoBlockEnv>,
+    /// Cache of state reads at the tip, shared across validation calls.
+    state: StateCache,
+}
+
+impl TipSnapshot {
+    fn new(tip_hash: B256, evm_env: EvmEnv<TempoHardfork, TempoBlockEnv>) -> Arc<Self> {
+        static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
+        Arc::new(Self {
+            generation: NEXT_GENERATION.fetch_add(1, Ordering::Relaxed),
+            tip_hash,
+            evm_env,
+            state: StateCache::default(),
+        })
+    }
+}
+
+/// A validation thread's reference to the last [`TipSnapshot`] it validated against.
+///
+/// Held until the thread's next validation after a new tip, so an idle thread keeps one retired
+/// snapshot alive.
+struct LocalTip {
+    snapshot: Arc<TipSnapshot>,
+    /// Front cache over `snapshot.state`.
+    cache: LocalStateCache,
+}
+
+thread_local! {
+    static LOCAL_TIP: RefCell<Option<LocalTip>> = const { RefCell::new(None) };
+}
+
+/// Drops a retired [`TipSnapshot`] reference on a dedicated thread, so freeing a full
+/// [`StateCache`] delays neither the head update nor the next validation on a thread. Drops in
+/// place if the thread cannot be started.
+fn drop_in_background(snapshot: Arc<TipSnapshot>) {
+    static DROP_TX: OnceLock<Option<mpsc::Sender<Arc<TipSnapshot>>>> = OnceLock::new();
+    let drop_tx = DROP_TX.get_or_init(|| {
+        let (tx, rx) = mpsc::channel::<Arc<TipSnapshot>>();
+        std::thread::Builder::new()
+            .name("txpool-drop".to_string())
+            .spawn(move || rx.into_iter().for_each(drop))
+            .ok()
+            .map(|_| tx)
+    });
+    // Sending fails only if the drop thread is gone, which hands the snapshot back to drop here.
+    if let Some(drop_tx) = drop_tx
+        && let Err(mpsc::SendError(snapshot)) = drop_tx.send(snapshot)
+    {
+        drop(snapshot);
     }
 }
 
@@ -1166,22 +1264,71 @@ mod tests {
         }
     }
 
+    /// Publishes a tip snapshot as `on_new_head_block` does, without touching the inner validator.
+    fn publish_tip<Client, EvmConfig>(
+        validator: &TempoTransactionValidator<Client, EvmConfig>,
+        tip_hash: B256,
+    ) -> Arc<TipSnapshot> {
+        let tip = TipSnapshot::new(tip_hash, validator.tip.read().evm_env.clone());
+        *validator.tip.write() = tip.clone();
+        validator
+            .tip_generation
+            .store(tip.generation, Ordering::Release);
+        tip
+    }
+
+    /// Returns whether a validation of state at `state_tip` would use `tip`'s shared cache.
+    fn uses_tip_cache<Client, EvmConfig>(
+        validator: &TempoTransactionValidator<Client, EvmConfig>,
+        state_tip: Option<B256>,
+        tip: &TipSnapshot,
+    ) -> bool
+    where
+        Client: ChainSpecProvider<ChainSpec: EthChainSpec<Header = TempoHeader> + TempoHardforks>
+            + StateProviderFactory,
+        EvmConfig: ConfigureTempoPoolEvm,
+    {
+        validator.with_tip_cache(state_tip, |cache, local_cache, _| {
+            // Only the published tip's cache gets this thread's front cache.
+            let published = validator.tip.read().clone();
+            assert_eq!(local_cache.is_some(), std::ptr::eq(cache, &published.state));
+            std::ptr::eq(cache, &tip.state)
+        })
+    }
+
     #[test]
-    fn state_cache_for_tip_reuses_only_matching_tip_cache() {
+    fn tip_cache_used_only_for_matching_tip() {
         let tx = TxBuilder::eip1559(Address::random()).build_eip1559();
         let validator = setup_validator(&tx, 1);
-        let (shared_tip_hash, shared_cache) = validator.cached_state.read().clone();
+        let tip = validator.tip.read().clone();
+        assert!(uses_tip_cache(&validator, Some(tip.tip_hash), &tip));
 
-        let matching_cache = validator.state_cache_for_tip(shared_tip_hash);
-        assert!(Arc::ptr_eq(&matching_cache, &shared_cache));
-
-        let mismatched_tip_hash = if shared_tip_hash == B256::repeat_byte(0x42) {
+        let mismatched_tip_hash = if tip.tip_hash == B256::repeat_byte(0x42) {
             B256::repeat_byte(0x43)
         } else {
             B256::repeat_byte(0x42)
         };
-        let ephemeral_cache = validator.state_cache_for_tip(mismatched_tip_hash);
-        assert!(!Arc::ptr_eq(&ephemeral_cache, &shared_cache));
+        assert!(!uses_tip_cache(&validator, Some(mismatched_tip_hash), &tip));
+        assert!(!uses_tip_cache(&validator, None, &tip));
+    }
+
+    #[test]
+    fn new_head_block_replaces_thread_tip_cache() {
+        let tx = TxBuilder::eip1559(Address::random()).build_eip1559();
+        let validator = setup_validator(&tx, 1);
+        let old_tip = validator.tip.read().clone();
+        assert!(uses_tip_cache(&validator, Some(old_tip.tip_hash), &old_tip));
+
+        validator.on_new_head_block(&create_mock_block(2));
+        let new_tip = validator.tip.read().clone();
+
+        assert!(!Arc::ptr_eq(&old_tip, &new_tip));
+        assert!(uses_tip_cache(&validator, Some(new_tip.tip_hash), &new_tip));
+        assert!(!uses_tip_cache(
+            &validator,
+            Some(new_tip.tip_hash),
+            &old_tip
+        ));
     }
 
     #[tokio::test]
@@ -1225,12 +1372,12 @@ mod tests {
         let tx = TxBuilder::eip1559(Address::random()).build_eip1559();
         let validator = setup_validator(&tx, 1);
         let latest_hash = validator.client().chain_info().unwrap().best_hash;
-        let shared_cache = Arc::new(StateCache::default());
-        *validator.cached_state.write() = (latest_hash, shared_cache.clone());
+        let tip = publish_tip(&validator, latest_hash);
 
-        let (_, validation_cache) = validator.latest_state_provider_and_cache().unwrap();
+        let (_, state_tip) = validator.latest_state_provider().unwrap();
 
-        assert!(Arc::ptr_eq(&validation_cache, &shared_cache));
+        assert_eq!(state_tip, Some(latest_hash));
+        assert!(uses_tip_cache(&validator, state_tip, &tip));
     }
 
     #[test]
@@ -1243,12 +1390,11 @@ mod tests {
         } else {
             B256::repeat_byte(0x42)
         };
-        let shared_cache = Arc::new(StateCache::default());
-        *validator.cached_state.write() = (mismatched_tip_hash, shared_cache.clone());
+        let tip = publish_tip(&validator, mismatched_tip_hash);
 
-        let (_, validation_cache) = validator.latest_state_provider_and_cache().unwrap();
+        let (_, state_tip) = validator.latest_state_provider().unwrap();
 
-        assert!(!Arc::ptr_eq(&validation_cache, &shared_cache));
+        assert!(!uses_tip_cache(&validator, state_tip, &tip));
     }
 
     /// A head update between provider and cache lookup must keep old state out of the new cache.
@@ -1262,15 +1408,12 @@ mod tests {
 
         let provider_x = validator.client().state_by_block_hash(tip_x);
 
-        let cache_y = Arc::new(StateCache::default());
-        *validator.cached_state.write() = (tip_y, cache_y.clone());
+        let cache_y = publish_tip(&validator, tip_y);
 
-        let (_, validation_cache) = validator
-            .provider_and_cache_for_tip(tip_x, provider_x)
-            .unwrap();
+        let (_, state_tip) = validator.provider_for_tip(tip_x, provider_x).unwrap();
 
-        assert!(!Arc::ptr_eq(&validation_cache, &cache_y));
-        assert!(Arc::ptr_eq(&validator.cached_state.read().1, &cache_y));
+        assert!(!uses_tip_cache(&validator, state_tip, &cache_y));
+        assert!(Arc::ptr_eq(&validator.tip.read(), &cache_y));
     }
 
     #[test]
@@ -1278,15 +1421,15 @@ mod tests {
         let tx = TxBuilder::eip1559(Address::random()).build_eip1559();
         let validator = setup_validator(&tx, 1);
         let tip = validator.client().chain_info().unwrap().best_hash;
-        let shared_cache = Arc::new(StateCache::default());
-        *validator.cached_state.write() = (tip, shared_cache.clone());
+        let shared = publish_tip(&validator, tip);
 
         // Fallback state must not use the shared cache, even when its tag matches `tip`.
-        let (provider, validation_cache) = validator
-            .provider_and_cache_for_tip(tip, Err(ProviderError::StateForHashNotFound(tip)))
+        let (provider, state_tip) = validator
+            .provider_for_tip(tip, Err(ProviderError::StateForHashNotFound(tip)))
             .unwrap();
 
-        assert!(!Arc::ptr_eq(&validation_cache, &shared_cache));
+        assert_eq!(state_tip, None);
+        assert!(!uses_tip_cache(&validator, state_tip, &shared));
         provider.basic_account(&Address::ZERO).unwrap();
     }
 
@@ -2255,7 +2398,7 @@ mod tests {
             ] {
                 let validator = setup_validator(&transaction, current_time);
                 assert!(validator.active_hardfork().is_t7());
-                assert!(validator.cached_evm_env.read().block_env.inner.basefee > fee);
+                assert!(validator.tip.read().evm_env.block_env.inner.basefee > fee);
                 let outcome = validator
                     .validate_transaction(TransactionOrigin::External, transaction)
                     .await;

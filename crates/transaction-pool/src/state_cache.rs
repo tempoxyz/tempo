@@ -1,9 +1,15 @@
 //! Tip-scoped concurrent cache of state reads shared across transaction validations.
 
-use alloy_primitives::{Address, B256, U256, map::DefaultHashBuilder};
+use alloy_primitives::{
+    Address, B256, U256,
+    map::{AddressMap, DefaultHashBuilder, HashMap},
+};
 use dashmap::DashMap;
 use revm::{Database, DatabaseRef, bytecode::Bytecode, state::AccountInfo};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::{
+    cell::RefCell,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 /// Concurrent cache of raw state reads anchored to a specific tip.
 ///
@@ -22,11 +28,8 @@ pub(crate) struct StateCache {
     storage: DashMap<(Address, U256), U256, DefaultHashBuilder>,
     /// Cached bytecode keyed by code hash.
     contracts: DashMap<B256, Bytecode, DefaultHashBuilder>,
-    /// Approximate entry counts for cap enforcement; `DashMap::len` locks every shard and is
-    /// too expensive for the insert path. Racing inserts may overshoot the caps slightly.
-    account_count: AtomicUsize,
-    storage_count: AtomicUsize,
-    contract_count: AtomicUsize,
+    /// Approximate entry counts for cap enforcement.
+    counts: EntryCounts,
 }
 
 impl StateCache {
@@ -41,6 +44,41 @@ impl StateCache {
     const MAX_CONTRACTS: usize = 1 << 12;
 }
 
+/// Approximate entry counts of a [`StateCache`]; `DashMap::len` locks every shard and is too
+/// expensive for the insert path. Racing inserts may overshoot the caps slightly.
+///
+/// Aligned to its own cache lines: misses increment these from every validation thread, and a
+/// line shared with the map headers that every hit reads would make all other threads, including
+/// those in other L3 domains, refetch it.
+#[derive(Debug, Default)]
+#[repr(align(128))]
+struct EntryCounts {
+    accounts: AtomicUsize,
+    storage: AtomicUsize,
+    contracts: AtomicUsize,
+}
+
+/// One thread's front cache over a [`StateCache`], holding the first accounts and storage slots
+/// that thread reads through it.
+///
+/// Every validation reads the same system configuration and fee token slots. Each read from the
+/// shared [`StateCache`] takes a `DashMap` shard lock, an atomic write that moves the lock's cache
+/// line between all validation threads, and across L3 domains on hosts with several. The first
+/// validation on a thread reads those hot slots, so they land here and later reads stay in the
+/// thread's own caches. Only valid together with the [`StateCache`] it was filled from.
+#[derive(Debug, Default)]
+pub(crate) struct LocalStateCache {
+    accounts: RefCell<AddressMap<Option<AccountInfo>>>,
+    storage: RefCell<HashMap<(Address, U256), U256>>,
+}
+
+impl LocalStateCache {
+    /// Maximum number of accounts held per thread.
+    const MAX_ACCOUNTS: usize = 64;
+    /// Maximum number of storage slots held per thread.
+    const MAX_STORAGE_SLOTS: usize = 256;
+}
+
 /// A [`DatabaseRef`] adapter that serves reads from a shared [`StateCache`], falling back
 /// to the wrapped database and populating the cache on miss.
 #[derive(Debug)]
@@ -48,13 +86,53 @@ impl StateCache {
 pub struct StateCacheDb<'a, DB> {
     /// The shared read cache.
     cache: &'a StateCache,
+    /// The calling thread's front cache over `cache`, if any.
+    local: Option<&'a LocalStateCache>,
     /// The underlying database.
     db: DB,
 }
 
 impl<'a, DB> StateCacheDb<'a, DB> {
-    pub(crate) const fn new(cache: &'a StateCache, db: DB) -> Self {
-        Self { cache, db }
+    pub(crate) const fn new(
+        cache: &'a StateCache,
+        local: Option<&'a LocalStateCache>,
+        db: DB,
+    ) -> Self {
+        Self { cache, local, db }
+    }
+}
+
+impl<DB: DatabaseRef> StateCacheDb<'_, DB> {
+    /// Reads an account through the shared cache, populating it on miss.
+    fn shared_basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, DB::Error> {
+        if let Some(account) = self.cache.accounts.get(&address) {
+            return Ok(account.clone());
+        }
+        let account = self.db.basic_ref(address)?;
+        if self.cache.counts.accounts.load(Ordering::Relaxed) < StateCache::MAX_ACCOUNTS
+            && self
+                .cache
+                .accounts
+                .insert(address, account.clone())
+                .is_none()
+        {
+            self.cache.counts.accounts.fetch_add(1, Ordering::Relaxed);
+        }
+        Ok(account)
+    }
+
+    /// Reads a storage slot through the shared cache, populating it on miss.
+    fn shared_storage_ref(&self, address: Address, index: U256) -> Result<U256, DB::Error> {
+        if let Some(value) = self.cache.storage.get(&(address, index)) {
+            return Ok(*value);
+        }
+        let value = self.db.storage_ref(address, index)?;
+        if self.cache.counts.storage.load(Ordering::Relaxed) < StateCache::MAX_STORAGE_SLOTS
+            && self.cache.storage.insert((address, index), value).is_none()
+        {
+            self.cache.counts.storage.fetch_add(1, Ordering::Relaxed);
+        }
+        Ok(value)
     }
 }
 
@@ -62,18 +140,16 @@ impl<DB: DatabaseRef> DatabaseRef for StateCacheDb<'_, DB> {
     type Error = DB::Error;
 
     fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
-        if let Some(account) = self.cache.accounts.get(&address) {
+        let Some(local) = self.local else {
+            return self.shared_basic_ref(address);
+        };
+        if let Some(account) = local.accounts.borrow().get(&address) {
             return Ok(account.clone());
         }
-        let account = self.db.basic_ref(address)?;
-        if self.cache.account_count.load(Ordering::Relaxed) < StateCache::MAX_ACCOUNTS
-            && self
-                .cache
-                .accounts
-                .insert(address, account.clone())
-                .is_none()
-        {
-            self.cache.account_count.fetch_add(1, Ordering::Relaxed);
+        let account = self.shared_basic_ref(address)?;
+        let mut accounts = local.accounts.borrow_mut();
+        if accounts.len() < LocalStateCache::MAX_ACCOUNTS {
+            accounts.insert(address, account.clone());
         }
         Ok(account)
     }
@@ -83,27 +159,29 @@ impl<DB: DatabaseRef> DatabaseRef for StateCacheDb<'_, DB> {
             return Ok(code.clone());
         }
         let code = self.db.code_by_hash_ref(code_hash)?;
-        if self.cache.contract_count.load(Ordering::Relaxed) < StateCache::MAX_CONTRACTS
+        if self.cache.counts.contracts.load(Ordering::Relaxed) < StateCache::MAX_CONTRACTS
             && self
                 .cache
                 .contracts
                 .insert(code_hash, code.clone())
                 .is_none()
         {
-            self.cache.contract_count.fetch_add(1, Ordering::Relaxed);
+            self.cache.counts.contracts.fetch_add(1, Ordering::Relaxed);
         }
         Ok(code)
     }
 
     fn storage_ref(&self, address: Address, index: U256) -> Result<U256, Self::Error> {
-        if let Some(value) = self.cache.storage.get(&(address, index)) {
+        let Some(local) = self.local else {
+            return self.shared_storage_ref(address, index);
+        };
+        if let Some(value) = local.storage.borrow().get(&(address, index)) {
             return Ok(*value);
         }
-        let value = self.db.storage_ref(address, index)?;
-        if self.cache.storage_count.load(Ordering::Relaxed) < StateCache::MAX_STORAGE_SLOTS
-            && self.cache.storage.insert((address, index), value).is_none()
-        {
-            self.cache.storage_count.fetch_add(1, Ordering::Relaxed);
+        let value = self.shared_storage_ref(address, index)?;
+        let mut storage = local.storage.borrow_mut();
+        if storage.len() < LocalStateCache::MAX_STORAGE_SLOTS {
+            storage.insert((address, index), value);
         }
         Ok(value)
     }
@@ -177,16 +255,46 @@ mod tests {
         let slot = U256::from(7);
 
         {
-            let db = StateCacheDb::new(&cache, &inner);
+            let db = StateCacheDb::new(&cache, None, &inner);
             assert_eq!(db.storage_ref(address, slot).unwrap(), U256::from(42));
             assert!(db.basic_ref(address).unwrap().is_some());
         }
         assert_eq!(inner.reads.load(Ordering::Relaxed), 2);
 
         // A new adapter over the same cache serves all reads from memory.
-        let db = StateCacheDb::new(&cache, &inner);
+        let db = StateCacheDb::new(&cache, None, &inner);
         assert_eq!(db.storage_ref(address, slot).unwrap(), U256::from(42));
         assert!(db.basic_ref(address).unwrap().is_some());
         assert_eq!(inner.reads.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn local_cache_serves_repeated_reads_up_to_cap() {
+        let cache = StateCache::default();
+        let local = LocalStateCache::default();
+        let inner = CountingDb::default();
+        let address = Address::with_last_byte(1);
+
+        let db = StateCacheDb::new(&cache, Some(&local), &inner);
+        for slot in 0..=LocalStateCache::MAX_STORAGE_SLOTS {
+            assert_eq!(
+                db.storage_ref(address, U256::from(slot)).unwrap(),
+                U256::from(42)
+            );
+        }
+        assert!(db.basic_ref(address).unwrap().is_some());
+        assert_eq!(
+            local.storage.borrow().len(),
+            LocalStateCache::MAX_STORAGE_SLOTS
+        );
+        assert_eq!(local.accounts.borrow().len(), 1);
+        let reads = inner.reads.load(Ordering::Relaxed);
+
+        // An adapter over an empty shared cache still serves the thread's reads from memory.
+        let empty = StateCache::default();
+        let db = StateCacheDb::new(&empty, Some(&local), &inner);
+        assert_eq!(db.storage_ref(address, U256::ZERO).unwrap(), U256::from(42));
+        assert!(db.basic_ref(address).unwrap().is_some());
+        assert_eq!(inner.reads.load(Ordering::Relaxed), reads);
     }
 }
