@@ -1,5 +1,8 @@
 # Changelog
 
+## `tempo-alloy@2.0.0`
+
+
 ## `tempo-alloy@1.16.0`
 
 
