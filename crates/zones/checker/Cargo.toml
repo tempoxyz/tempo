@@ -64,6 +64,7 @@ alloy-consensus = { workspace = true, features = ["std"] }
 alloy-rlp.workspace = true
 alloy-rpc-types-eth.workspace = true
 reth-ethereum-primitives = { workspace = true, default-features = true }
+reth-evm-ethereum.workspace = true
 reth-primitives-traits = { workspace = true, features = ["std", "test-utils"] }
 reth-provider = { workspace = true, features = ["test-utils"] }
 serde_json = { workspace = true, default-features = true }
