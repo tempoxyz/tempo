@@ -334,8 +334,8 @@ that should bounce.
 
 | File state | Behavior while leading |
 |------------|------------------------|
-| Missing (uninitialized) | Credits every deposit. The node logs a warning at startup. |
-| Present | Credits only listed senders. A present but empty list bounces every deposit. |
+| Missing (uninitialized) | Credits every deposit and admits every transfer. The node logs a warning at startup. |
+| Present | Credits only listed senders and admits only transfers between listed accounts. A present but empty list bounces every deposit. |
 | Unreadable, or over 80,000 addresses | The node fails to start. |
 
 The node creates the file on the first write, which must be `zoneAdmin_replaceDepositAllowlist`:
@@ -343,14 +343,58 @@ an uninitialized sequencer rejects `zoneAdmin_setDepositAllowed`, because a part
 would bounce everyone else. Change the file only through the `zoneAdmin` methods,
 never by hand. Each write persists the file with an fsync before the leader uses the new list.
 
+#### Transfers between listed accounts
+
+Users keep the same address on Tempo and the zone, so the list also restricts zone TIP-20
+transfers once [transfers are enabled](#enabling-zone-transfers). A sequencer with
+`--deposits.allowlist` rejects a transaction on submission when one of its calls (including the
+calls of an AA batch) is a `transfer`, `transferFrom`, or memo variant whose `from` or `to` is not
+listed. While it leads, it also executes each pool transaction and leaves it out of the block,
+dropping it from its pool, when any TIP-20 `Transfer` it emits names an unlisted `from` or `to`.
+Submission also rejects a `transferFrom` from an unlisted caller, whatever parties it names, so
+an unlisted account cannot learn whether an address is listed from whether its transaction is
+accepted.
+
+Once the list is written, submission also rejects any call to Multicall3, the only zone contract
+that relays calls. Its calldata does not show the transfers it makes, so a relayed transfer the
+leader leaves out would otherwise be forwarded and executed again every few seconds without
+paying fees. Multicall3 calls as itself, so a transfer it relays could land only if Multicall3
+itself were listed. Read-only `eth_call`s through it are unaffected, and an AA batch replaces
+batched writes.
+
+Every RPC follower keeps an in-memory copy of the list so it can reject the same transactions
+on submission, returning `transfer sender or recipient is not allowlisted` instead of forwarding
+them. It needs no flag: reading the list needs no signature. It fetches the newest list any
+sequencer holds (by nonce) at startup, after every write it relays, and within 5 seconds of a
+write relayed through another follower, then drops pooled transactions the new list rejects. It
+holds no file. It moves back to an older list, or drops its copy once no sequencer holds a written
+list (for example after `--deposits.allowlist` is turned off), only when every sequencer answers,
+so a lagging sequencer cannot roll it back. Until it finds a written list it admits every transfer,
+and the sequencers still enforce their own lists.
+
+Removing an account from the list does not trap its funds. Fee payments and transfers to the
+outbox are exempt, so it can still withdraw. A withdrawal's `zoneFallbackRecipient` is credited
+on the zone if the withdrawal bounces on Tempo, so it must be the withdrawer, or the withdrawer
+and the fallback recipient must both be listed.
+
+Limits:
+
+- Only the leader enforces the list; followers and the prover accept any block.
+- The submission error tells a listed sender that a counterparty is not listed, so a listed
+  account can check addresses one at a time.
+- Simulations (`eth_call`, `eth_estimateGas`) do not check the list.
+- Deposit recipients are not checked, so a listed depositor can still credit an unlisted zone
+  address. That address can only withdraw.
+
 #### Flags and methods
 
 | Node | Flags |
 |------|-------|
 | Sequencer | `--deposits.allowlist --deposits.allowlist.admin <ADDRESS>` |
-| RPC follower (relay) | `--deposits.allowlist.admin <ADDRESS>` |
+| RPC follower (relay writes) | `--deposits.allowlist.admin <ADDRESS>` |
 
-Without `--deposits.allowlist`, a sequencer credits every deposit and ignores the file.
+Without `--deposits.allowlist`, a sequencer credits every deposit, admits every transfer, and
+ignores the file.
 The methods are served over HTTP JSON-RPC:
 
 | Method | Description |
@@ -432,7 +476,9 @@ Pass `false` to disable transfers again. A Safe admin can use
 omit `--enabled` to create a disable proposal. Transfers require T15 on Tempo, which adds
 `setTransfersEnabled` to the portal. Zone transactions see the change once the zone has
 finalized the Tempo block that recorded it. Abdicating `AccessPolicy` freezes the current
-setting once the 30-day abdication delay has passed.
+setting once the 30-day abdication delay has passed. Sequencers running the deposit allowlist
+also admit only transfers between listed accounts; see
+[Transfers between listed accounts](#transfers-between-listed-accounts).
 
 ### 5. Start the Zone Node
 
@@ -906,7 +952,7 @@ cast code 0x5A4d000000000000000000000000000000000000 --rpc-url "$ETH_RPC_URL"
 | `--sequencer.prover-address` | (optional) | Repeatable `HARDFORK=HOST:PORT` assignment selected by the live L1 fork; missing forks stop proving and the readiness gauge flags current/next-72-hour gaps |
 | `--sequencer.prover-attestation-policy` | (optional) | JSON PCR0–2 allowlist shared by all endpoints, overriding the PCRs compiled into the binary for each assigned fork; authenticates the transport and controls evidence freshness without changing L1 verifier policy |
 | `--shadow-prover.pcrs` | (optional) | Pin PCR0,PCR1,PCR2 (three comma-separated, nonzero 48-byte hex measurements) to authenticate remote Nitro proofs on an RPC follower |
-| `--deposits.allowlist` | false | Bounce deposits from L1 senders missing from `<datadir>/deposit-allowlist.json` while leading; see [Sequencer deposit allowlist](#sequencer-deposit-allowlist) |
+| `--deposits.allowlist` | false | Bounce deposits from L1 senders missing from `<datadir>/deposit-allowlist.json`, and reject zone transfers unless both parties are listed; see [Sequencer deposit allowlist](#sequencer-deposit-allowlist) |
 | `--deposits.allowlist.admin` | (required with `--deposits.allowlist`) | Address whose EIP-712 signatures authorize `zoneAdmin` allowlist writes; on an `rpc_only` follower, enables relaying them to the sequencers |
 | `--deposit-decryption-keys-file` | (optional) | File containing additional historical or pre-provisioned deposit decryption keys, one hex key per line |
 | `--zone.batch-interval-blocks` | 120 | Zone blocks between empty withdrawal batch boundaries / L1 submissions (~1 minute at Tempo's 500 ms block time) |
