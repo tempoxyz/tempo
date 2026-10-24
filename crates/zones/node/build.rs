@@ -2,7 +2,7 @@
 
 use std::{env, error::Error};
 
-use smolgen::{Build, Cargo, Emitter, Gitcl};
+use smolgen::{Build, Cargo, Emitter, Gitcl, Git2};
 
 fn main() -> Result<(), Box<dyn Error>> {
     let mut emitter = Emitter::default();

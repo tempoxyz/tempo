@@ -1,6 +1,7 @@
 #![allow(missing_docs)]
 
 use smolgen::{Build, Cargo, Emitter, Gitcl};
+use smolgen::{Build, Cargo, Emitter, Git2};
 use std::{env, error::Error};
 
 fn main() -> Result<(), Box<dyn Error>> {
