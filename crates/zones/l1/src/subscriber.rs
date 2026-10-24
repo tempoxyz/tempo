@@ -926,11 +926,24 @@ where
             }
             if let Some(keys) = &self.encryption_keys {
                 for rotation in &events.encryption_key_rotations {
-                    keys.apply_rotation(rotation)
-                        .map_err(L1SubscriberError::fatal_from_err(
+                    let has_private_key = keys.apply_rotation(rotation).map_err(
+                        L1SubscriberError::fatal_from_err(
                             block_number,
                             "encryption key rotation application",
-                        ))?;
+                        ),
+                    )?;
+                    // Another sequencer can register a key this node doesn't have. That only
+                    // stops this node from including deposits to it while leading.
+                    if !has_private_key {
+                        warn!(
+                            block_number,
+                            key_index = %rotation.key_index,
+                            x = %rotation.x,
+                            y_parity = rotation.y_parity,
+                            "no private decryption key configured for a registered Portal \
+                             encryption key"
+                        );
+                    }
                 }
             }
             // Publish a pause _before_ the block becomes consumable, so the engine cannot
