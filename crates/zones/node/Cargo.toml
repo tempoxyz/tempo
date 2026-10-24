@@ -104,8 +104,7 @@ zeroize = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 
 [build-dependencies]
-vergen.workspace = true
-vergen-git2.workspace = true
+smolgen.workspace = true
 
 [dev-dependencies]
 zone-chainspec = { workspace = true, features = ["test-utils"] }
