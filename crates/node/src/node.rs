@@ -937,11 +937,13 @@ where
             .estimator
             .unwrap_or_else(|| Estimator::new(self.build_time_multiplier));
         let engine_args = &ctx.config().engine;
-        let persistence_backlog_hard_limit = engine_args.persistence_backpressure_threshold()
-            + engine_args.memory_block_buffer_target();
-        let persistence_backlog_soft_limit = engine_args.persistence_threshold
-            + engine_args.num_state_masking_blocks()
-            + engine_args.memory_block_buffer_target();
+        let persistence_backlog_hard_limit = engine_args
+            .persistence_backpressure_threshold()
+            .saturating_add(engine_args.memory_block_buffer_target());
+        let persistence_backlog_soft_limit = engine_args
+            .persistence_threshold
+            .saturating_add(engine_args.num_state_masking_blocks())
+            .saturating_add(engine_args.memory_block_buffer_target());
         Ok(TempoPayloadBuilder::new(
             pool,
             ctx.provider().clone(),
