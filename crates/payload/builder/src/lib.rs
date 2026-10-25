@@ -219,13 +219,10 @@ where
         args: BuildArguments<Self::Attributes, Self::BuiltPayload>,
     ) -> Result<BuildOutcome<Self::BuiltPayload>, PayloadBuilderError> {
         let parent_hash = args.config.parent_header.hash();
-        let parent_number = args.config.parent_header.number();
         self.build_payload(args, |attributes| {
-            Ok(self.pool.best_transactions_excluding_unpruned_mined(
-                attributes,
-                parent_hash,
-                parent_number,
-            )?)
+            Ok(self
+                .pool
+                .best_transactions_excluding_unpruned_mined(attributes, parent_hash)?)
         })
     }
 

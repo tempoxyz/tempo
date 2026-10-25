@@ -32,13 +32,7 @@ use reth_transaction_pool::{
     identifier::TransactionId,
 };
 use revm::database::BundleAccount;
-use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-    time::Instant,
-};
+use std::{sync::Arc, time::Instant};
 use tempo_chainspec::hardfork::{TempoHardfork, TempoHardforks};
 use tempo_evm::TempoEvmConfig;
 use tempo_precompiles::{
@@ -54,9 +48,10 @@ use tempo_revm::TempoStateAccess;
 
 /// Maximum number of ancestor blocks scanned for transactions the pool has not pruned yet.
 ///
-/// Bounds the scan when the pool progress is unknown (before the first canonical block after
-/// startup) or when pool maintenance is stalled.
-const MAX_UNPRUNED_LOOKBACK: u64 = 16;
+/// Bounds the scan when a pool's last pruned block is not an ancestor of the parent: before the
+/// first canonical block after startup, after a reorg deeper than this, or when pool maintenance
+/// is stalled.
+const MAX_UNPRUNED_LOOKBACK: usize = 16;
 
 /// Transaction pool operations for Tempo nonce lanes.
 pub trait TempoTransactionPoolExt: TransactionPool {
@@ -78,8 +73,8 @@ pub struct TempoTransactionPool<Client, EvmConfig = TempoEvmConfig> {
     >,
     /// Minimal pool for 2D nonces (nonce_key > 0)
     aa_2d_pool: Arc<RwLock<AA2dPool>>,
-    /// Number of the last block whose mined transactions the 2D nonce pool has pruned.
-    aa_2d_pruned_block: Arc<AtomicU64>,
+    /// Hash of the last block whose mined transactions the 2D nonce pool has pruned.
+    aa_2d_pruned_block: Arc<RwLock<B256>>,
 }
 
 impl<Client, EvmConfig> TempoTransactionPool<Client, EvmConfig>
@@ -125,17 +120,16 @@ where
         self.protocol_pool.validator().validator().client()
     }
 
-    /// Updates the 2d nonce pool with the state changes of the block `block_number`.
+    /// Updates the 2d nonce pool with the state changes of the block `block_hash`.
     ///
     /// Returns mined AA transactions.
     pub(crate) fn notify_aa_pool_on_state_updates(
         &self,
-        block_number: u64,
+        block_hash: B256,
         state: &AddressMap<BundleAccount>,
     ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         let (promoted, mined, discarded) = self.aa_2d_pool.write().on_state_updates(state);
-        self.aa_2d_pruned_block
-            .store(block_number, Ordering::Release);
+        *self.aa_2d_pruned_block.write() = block_hash;
         // Note: mined transactions are notified via the vanilla pool updates
         self.protocol_pool
             .inner()
@@ -671,22 +665,23 @@ where
         &self,
         attributes: BestTransactionsAttributes,
         parent_hash: B256,
-        parent_number: u64,
     ) -> ProviderResult<
         Box<dyn BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>>,
     > {
         // Read the progress before creating the iterator, so the iterator's snapshot is at
         // least as recent as the progress.
-        let pruned = self
-            .protocol_pool
-            .block_info()
-            .last_seen_block_number
-            .min(self.aa_2d_pruned_block.load(Ordering::Acquire));
+        let protocol_pruned = self.protocol_pool.block_info().last_seen_block_hash;
+        let aa_2d_pruned = *self.aa_2d_pruned_block.read();
 
+        // Walk the parent's ancestors until both pools' last pruned blocks are reached. Tracking
+        // hashes instead of numbers also covers a pool that last pruned another fork.
         let mut mined = B256Set::default();
-        let (mut hash, mut number) = (parent_hash, parent_number);
+        let (mut protocol_reached, mut aa_2d_reached) = (false, false);
+        let mut hash = parent_hash;
         for _ in 0..MAX_UNPRUNED_LOOKBACK {
-            if number <= pruned {
+            protocol_reached |= hash == protocol_pruned;
+            aa_2d_reached |= hash == aa_2d_pruned;
+            if protocol_reached && aa_2d_reached {
                 break;
             }
             let Some(block) = self.client().block_by_hash(hash)? else {
@@ -694,7 +689,6 @@ where
             };
             mined.extend(block.body().transactions().map(|tx| *tx.tx_hash()));
             hash = block.header().parent_hash();
-            number -= 1;
         }
 
         Ok(Box::new(SkipHashesBestTransactions::new(
@@ -3127,25 +3121,38 @@ mod tests {
         let attributes = BestTransactionsAttributes::new(0, None);
 
         let mut best = pool
-            .best_transactions_excluding_unpruned_mined(attributes, parent_hash, 1)
+            .best_transactions_excluding_unpruned_mined(attributes, parent_hash)
             .unwrap();
         let yielded: B256Set = best.by_ref().map(|tx| *tx.hash()).collect();
         assert_eq!(yielded, B256Set::from_iter(child_hashes));
 
-        // Protocol pool progress alone is not enough, the 2D pool must have pruned too.
+        // A pool that last pruned another fork has not pruned the parent.
+        let other_fork = B256::random();
         pool.set_block_info(BlockInfo {
             last_seen_block_number: 1,
+            last_seen_block_hash: other_fork,
+            ..pool.block_info()
+        });
+        pool.notify_aa_pool_on_state_updates(other_fork, &Default::default());
+        let best = pool
+            .best_transactions_excluding_unpruned_mined(attributes, parent_hash)
+            .unwrap();
+        assert_eq!(best.count(), 2);
+
+        // Protocol pool progress alone is not enough, the 2D pool must have pruned too.
+        pool.set_block_info(BlockInfo {
+            last_seen_block_hash: parent_hash,
             ..pool.block_info()
         });
         let best = pool
-            .best_transactions_excluding_unpruned_mined(attributes, parent_hash, 1)
+            .best_transactions_excluding_unpruned_mined(attributes, parent_hash)
             .unwrap();
         assert_eq!(best.count(), 2);
 
         // Once both pools pruned block 1, nothing is skipped.
-        pool.notify_aa_pool_on_state_updates(1, &Default::default());
+        pool.notify_aa_pool_on_state_updates(parent_hash, &Default::default());
         let best = pool
-            .best_transactions_excluding_unpruned_mined(attributes, parent_hash, 1)
+            .best_transactions_excluding_unpruned_mined(attributes, parent_hash)
             .unwrap();
         let yielded: B256Set = best.map(|tx| *tx.hash()).collect();
         assert_eq!(
