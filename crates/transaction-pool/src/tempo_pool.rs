@@ -19,7 +19,7 @@ use parking_lot::RwLock;
 use reth_chainspec::{ChainSpecProvider, EthChainSpec};
 use reth_eth_wire_types::HandleMempoolData;
 use reth_primitives_traits::{AlloyBlockHeader, Block as _};
-use reth_provider::{ChangedAccount, ProviderResult, StateProviderFactory};
+use reth_provider::{ChangedAccount, StateProviderFactory};
 use reth_storage_api::{BlockReader, StateProvider};
 use reth_transaction_pool::{
     AddedTransactionOutcome, AllPoolTransactions, BestTransactions, BestTransactionsAttributes,
@@ -665,9 +665,7 @@ where
         &self,
         attributes: BestTransactionsAttributes,
         parent_hash: B256,
-    ) -> ProviderResult<
-        Box<dyn BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>>,
-    > {
+    ) -> Box<dyn BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>> {
         // Read the progress before creating the iterator, so the iterator's snapshot is at
         // least as recent as the progress.
         let protocol_pruned = self.protocol_pool.block_info().last_seen_block_hash;
@@ -684,17 +682,23 @@ where
             if protocol_reached && aa_2d_reached {
                 break;
             }
-            let Some(block) = self.client().block_by_hash(hash)? else {
-                break;
+            // Skipping is an optimization, so a failed lookup must not fail the build.
+            let block = match self.client().block_by_hash(hash) {
+                Ok(Some(block)) => block,
+                Ok(None) => break,
+                Err(err) => {
+                    tracing::warn!(target: "txpool", %err, %hash, "failed to read ancestor block");
+                    break;
+                }
             };
             mined.extend(block.body().transactions().map(|tx| *tx.tx_hash()));
             hash = block.header().parent_hash();
         }
 
-        Ok(Box::new(SkipHashesBestTransactions::new(
+        Box::new(SkipHashesBestTransactions::new(
             self.best_transactions_with_attributes(attributes),
             mined,
-        )))
+        ))
     }
 }
 
@@ -3120,9 +3124,7 @@ mod tests {
         }
         let attributes = BestTransactionsAttributes::new(0, None);
 
-        let mut best = pool
-            .best_transactions_excluding_unpruned_mined(attributes, parent_hash)
-            .unwrap();
+        let mut best = pool.best_transactions_excluding_unpruned_mined(attributes, parent_hash);
         let yielded: B256Set = best.by_ref().map(|tx| *tx.hash()).collect();
         assert_eq!(yielded, B256Set::from_iter(child_hashes));
 
@@ -3134,9 +3136,7 @@ mod tests {
             ..pool.block_info()
         });
         pool.notify_aa_pool_on_state_updates(other_fork, &Default::default());
-        let best = pool
-            .best_transactions_excluding_unpruned_mined(attributes, parent_hash)
-            .unwrap();
+        let best = pool.best_transactions_excluding_unpruned_mined(attributes, parent_hash);
         assert_eq!(best.count(), 2);
 
         // Protocol pool progress alone is not enough, the 2D pool must have pruned too.
@@ -3144,16 +3144,12 @@ mod tests {
             last_seen_block_hash: parent_hash,
             ..pool.block_info()
         });
-        let best = pool
-            .best_transactions_excluding_unpruned_mined(attributes, parent_hash)
-            .unwrap();
+        let best = pool.best_transactions_excluding_unpruned_mined(attributes, parent_hash);
         assert_eq!(best.count(), 2);
 
         // Once both pools pruned block 1, nothing is skipped.
         pool.notify_aa_pool_on_state_updates(parent_hash, &Default::default());
-        let best = pool
-            .best_transactions_excluding_unpruned_mined(attributes, parent_hash)
-            .unwrap();
+        let best = pool.best_transactions_excluding_unpruned_mined(attributes, parent_hash);
         let yielded: B256Set = best.map(|tx| *tx.hash()).collect();
         assert_eq!(
             yielded,

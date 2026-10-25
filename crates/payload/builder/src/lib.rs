@@ -220,9 +220,8 @@ where
     ) -> Result<BuildOutcome<Self::BuiltPayload>, PayloadBuilderError> {
         let parent_hash = args.config.parent_header.hash();
         self.build_payload(args, |attributes| {
-            Ok(self
-                .pool
-                .best_transactions_excluding_unpruned_mined(attributes, parent_hash)?)
+            self.pool
+                .best_transactions_excluding_unpruned_mined(attributes, parent_hash)
         })
     }
 
@@ -246,7 +245,7 @@ where
                 Default::default(),
                 Default::default(),
             ),
-            |_| Ok(core::iter::empty()),
+            |_| core::iter::empty(),
         )?
         .into_payload()
         .ok_or_else(|| PayloadBuilderError::MissingPayload)
@@ -270,7 +269,7 @@ where
     fn build_payload<Txs>(
         &self,
         args: BuildArguments<TempoPayloadAttributes, TempoBuiltPayload>,
-        best_txs: impl FnOnce(BestTransactionsAttributes) -> Result<Txs, PayloadBuilderError>,
+        best_txs: impl FnOnce(BestTransactionsAttributes) -> Txs,
     ) -> Result<BuildOutcome<TempoBuiltPayload>, PayloadBuilderError>
     where
         Txs: BestTransactions<Item = BestTransaction> + 'static,
@@ -436,7 +435,7 @@ where
                 .block()
                 .blob_gasprice()
                 .map(|gasprice| gasprice as u64),
-        ))?;
+        ));
         let prewarm_ctx = PrewarmingExecutionContext::new(
             self.provider.clone(),
             self.executor.clone(),
