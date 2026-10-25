@@ -436,6 +436,10 @@ jobs:
             echo selected=false >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Hold other hosts while the regression runner becomes available
+        if: steps.target.outputs.selected != 'true'
+        run: sleep 60
+
       - name: Reset workspace directory
         if: steps.target.outputs.selected == 'true'
         run: |
