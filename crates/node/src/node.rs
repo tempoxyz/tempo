@@ -940,10 +940,8 @@ where
         let persistence_backlog_hard_limit = engine_args
             .persistence_backpressure_threshold()
             .saturating_add(engine_args.memory_block_buffer_target());
-        let persistence_backlog_soft_limit = engine_args
-            .persistence_threshold
-            .saturating_add(engine_args.num_state_masking_blocks())
-            .saturating_add(engine_args.memory_block_buffer_target());
+        // EXPERIMENT: throttle disabled to bisect the Network E2E failure.
+        let persistence_backlog_soft_limit = u64::MAX;
         Ok(TempoPayloadBuilder::new(
             pool,
             ctx.provider().clone(),
