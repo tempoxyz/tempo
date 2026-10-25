@@ -13561,7 +13561,8 @@ dependencies = [
 [[package]]
 name = "smolgen"
 version = "0.1.1"
-source = "git+https://github.com/alloy-rs/smolgen?rev=1101d5c55038e15cebde8abc0061763dd61fa21f#1101d5c55038e15cebde8abc0061763dd61fa21f"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "40c9a98255db4f93af8770f11f42b5a7f345cd93b96dafe7b1ae72ef99a16386"
 
 [[package]]
 name = "snap"
