@@ -6,7 +6,9 @@ gas:
 accounts:
   users:
     mnemonic: "test test test test test test test test test test test junk"
-    range: [0, "${TXGEN_ACCOUNTS}"]
+    range:
+      - 0
+      - ${TXGEN_ACCOUNTS}
   deployer:
     mnemonic: "test test test test test test test test test test test junk"
     index: 100001

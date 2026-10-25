@@ -10,7 +10,11 @@ on:
     inputs:
       tag:
         description: "Existing Git tag to release (e.g., zones/v0.3.5)"
-        required: true
+        required: false
+        type: string
+      sha:
+        description: "Exact 40-character commit SHA on main to verify (dry-run only; omit tag). Defaults to the head of the selected ref"
+        required: false
         type: string
       dry_run:
         description: "Verify the canonical Linux x86_64 binary without publishing an image or release"
@@ -26,7 +30,7 @@ env:
   RUST_TOOLCHAIN: "1.96.0"
 
 concurrency:
-  group: zones-release-${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
+  group: zones-release-${{ inputs.sha || (inputs.tag && format('refs/tags/{0}', inputs.tag)) || (github.event_name == 'workflow_dispatch' && github.sha) || github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -45,12 +49,34 @@ jobs:
       id-token: write
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@947d9a3ccb2425a9c94d563fd721cc0e33c89e26 # 2026-10-15T00-15-06Z-947d9a3c
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
-      - name: Check out release tag
+      - name: Validate commit dry-run inputs
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_SHA: ${{ inputs.sha }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$INPUT_SHA" ]]; then
+            [[ "$DRY_RUN" == "true" && -z "$INPUT_TAG" ]] || {
+              echo "sha requires dry_run=true and an empty tag" >&2
+              exit 1
+            }
+            [[ "$INPUT_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+              echo "sha must be an exact 40-character lowercase commit SHA" >&2
+              exit 1
+            }
+          elif [[ -z "$INPUT_TAG" && "$DRY_RUN" != "true" ]]; then
+            echo "Provide a release tag, or set dry_run to verify a commit" >&2
+            exit 1
+          fi
+
+      - name: Check out release source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag) || github.ref }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && (inputs.sha || (inputs.tag && format('refs/tags/{0}', inputs.tag)) || github.sha) || github.ref }}
           fetch-depth: 0
           persist-credentials: false
           submodules: false
@@ -60,32 +86,44 @@ jobs:
         shell: bash
         env:
           INPUT_TAG: ${{ inputs.tag }}
+          INPUT_SHA: ${{ inputs.sha }}
         run: |
           set -euo pipefail
 
-          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
-            version="$INPUT_TAG"
-          else
-            version="${GITHUB_REF#refs/tags/}"
-          fi
-          tag="$version"
-          [[ "$tag" =~ ^zones/v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]] || {
-            echo "Expected a Zones release tag: zones/vX.Y.Z[-prerelease]" >&2
-            exit 1
-          }
-          version="${tag#zones/}"
           commit_sha="$(git rev-parse HEAD)"
           short_sha="$(git rev-parse --short=7 HEAD)"
           source_date_epoch="$(git show -s --format=%ct HEAD)"
 
-          [[ -n "$version" ]] || {
-            echo "Release version is empty" >&2
-            exit 1
-          }
-          git check-ref-format --allow-onelevel "refs/tags/$tag" || {
-            echo "Release version is not a valid tag name: $version" >&2
-            exit 1
-          }
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && -z "$INPUT_TAG" ]]; then
+            # Commit dry run: the requested SHA, or the head of the dispatched ref.
+            expected_sha="${INPUT_SHA:-$GITHUB_SHA}"
+            [[ "$commit_sha" == "$expected_sha" ]] || {
+              echo "Checked-out commit does not match requested SHA" >&2
+              exit 1
+            }
+            tag=""
+            version="sha-$short_sha"
+          else
+            if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+              tag="$INPUT_TAG"
+            else
+              tag="${GITHUB_REF#refs/tags/}"
+            fi
+            [[ "$tag" =~ ^zones/v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]] || {
+              echo "Expected a Zones release tag: zones/vX.Y.Z[-prerelease]" >&2
+              exit 1
+            }
+            version="${tag#zones/}"
+            tag_commit="$(git rev-parse --verify "refs/tags/$tag^{commit}")" || {
+              echo "Release tag does not resolve to a commit: $version" >&2
+              exit 1
+            }
+            [[ "$tag_commit" == "$commit_sha" ]] || {
+              echo "Release tag $tag resolves to $tag_commit, not $commit_sha" >&2
+              exit 1
+            }
+          fi
+
           [[ "$commit_sha" =~ ^[0-9a-f]{40}$ ]] || {
             echo "Resolved ref is not a full commit SHA: $commit_sha" >&2
             exit 1
@@ -94,26 +132,36 @@ jobs:
             echo "Invalid SOURCE_DATE_EPOCH: $source_date_epoch" >&2
             exit 1
           }
-          tag_commit="$(git rev-parse --verify "refs/tags/$tag^{commit}")" || {
-            echo "Release tag does not resolve to a commit: $version" >&2
-            exit 1
-          }
-          [[ "$tag_commit" == "$commit_sha" ]] || {
-            echo "Release tag $tag resolves to $tag_commit, not $commit_sha" >&2
-            exit 1
-          }
-
-          # A manual dispatch runs the workflow from main but checks out the
-          # selected tag. Reject tag code that has not reached protected main
-          # before OIDC-enabled build jobs execute scripts from that checkout.
+          # Reject source that has not reached protected main before OIDC-enabled
+          # build jobs execute scripts from that checkout.
           git show-ref --verify --quiet refs/remotes/origin/main || {
             echo "Protected main was not fetched" >&2
             exit 1
           }
-          git merge-base --is-ancestor "$commit_sha" refs/remotes/origin/main || {
-            echo "Release tag $tag does not point to a commit on main" >&2
-            exit 1
-          }
+          if ! git merge-base --is-ancestor "$commit_sha" refs/remotes/origin/main; then
+            # Prepare Zones Release tags the commit on its pre-release branch,
+            # which a squash merge keeps off main. Accept it only as one commit
+            # on main that changes nothing but Zones version lines.
+            read -r -a ancestry <<< "$(git rev-list --parents -n 1 "$commit_sha")"
+            parent="${ancestry[1]:-}"
+            # Without rename detection a moved file shows as a deletion and an
+            # addition, so only in-place edits of regular allowlisted files pass.
+            changed_files="$(git diff --no-renames --raw --no-abbrev "$parent" "$commit_sha" || true)"
+            unexpected_files="$(
+              printf '%s\n' "$changed_files" | grep -v '^$' |
+                grep -Ev $'^:100644 100644 [0-9a-f]{40} [0-9a-f]{40} M\t(Cargo\\.lock|bin/tempo-zone/Cargo\\.toml|crates/zones/[^/]+/Cargo\\.toml)$' || true
+            )"
+            unexpected_lines="$(
+              git diff --no-renames -U0 "$parent" "$commit_sha" | grep -E '^[+-]' |
+                grep -Ev '^(\+\+\+|---) ' | grep -Ev '^[+-]version = "[^"]+"$' || true
+            )"
+            if [[ "${#ancestry[@]}" -ne 2 ]] ||
+               ! git merge-base --is-ancestor "$parent" refs/remotes/origin/main ||
+               [[ -z "$changed_files" || -n "$unexpected_files" || -n "$unexpected_lines" ]]; then
+              echo "Release source $commit_sha is not a commit on main or a Zones version bump on one" >&2
+              exit 1
+            fi
+          fi
 
           {
             echo "tag=$tag"
@@ -133,7 +181,7 @@ jobs:
       id-token: write
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@947d9a3ccb2425a9c94d563fd721cc0e33c89e26 # 2026-10-15T00-15-06Z-947d9a3c
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
       - name: Check out resolved commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -142,11 +190,9 @@ jobs:
           persist-credentials: false
           submodules: recursive
 
-      - uses: tempoxyz/gh-actions/actions/setup-rust-build@947d9a3ccb2425a9c94d563fd721cc0e33c89e26 # 2026-10-15T00-15-06Z-947d9a3c
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
-          mold: "false"
-          sccache: "false"
 
       - name: Verify crate version matches tag
         # Check that the Cargo version starts with the tag, so Cargo version
@@ -173,7 +219,7 @@ jobs:
       asset_artifact_id: ${{ steps.upload.outputs.artifact-id }}
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@947d9a3ccb2425a9c94d563fd721cc0e33c89e26 # 2026-10-15T00-15-06Z-947d9a3c
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
       - name: Check out resolved commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -230,7 +276,7 @@ jobs:
   rebuild-linux-x86_64-release:
     name: Clean rebuild canonical Linux x86_64 binary
     needs: resolve-release
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-latest-16
     permissions:
       contents: read
       id-token: write
@@ -238,7 +284,7 @@ jobs:
       binary_sha256: ${{ steps.hash.outputs.sha256 }}
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@947d9a3ccb2425a9c94d563fd721cc0e33c89e26 # 2026-10-15T00-15-06Z-947d9a3c
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
       - name: Check out resolved commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -286,7 +332,7 @@ jobs:
       manifest_artifact_id: ${{ steps.manifest.outputs.artifact-id }}
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@947d9a3ccb2425a9c94d563fd721cc0e33c89e26 # 2026-10-15T00-15-06Z-947d9a3c
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
       - name: Download canonical Linux x86_64 release assets
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -486,7 +532,7 @@ jobs:
       id-token: write
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@947d9a3ccb2425a9c94d563fd721cc0e33c89e26 # 2026-10-15T00-15-06Z-947d9a3c
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
       - name: Check out resolved commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -496,12 +542,14 @@ jobs:
           submodules: recursive
 
       - name: Install Rust toolchain
-        uses: tempoxyz/gh-actions/actions/setup-rust-build@947d9a3ccb2425a9c94d563fd721cc0e33c89e26 # 2026-10-15T00-15-06Z-947d9a3c
+        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: ${{ matrix.platform.target }}
-          mold: ${{ runner.os == 'Linux' }}
-          sccache: "false"
+
+      - name: Install mold linker
+        if: runner.os == 'Linux'
+        uses: tempoxyz/gh-actions/actions/setup-mold@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
       - name: Build binary
         env:
@@ -558,7 +606,7 @@ jobs:
       contents: write
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@947d9a3ccb2425a9c94d563fd721cc0e33c89e26 # 2026-10-15T00-15-06Z-947d9a3c
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
       # This is necessary for generating the changelog. It has to come before
       # downloading artifacts or else checkout deletes the artifacts.

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Restore the last successful benchmark commit from an Actions artifact.
-# Usage: bench-state.sh owner/repo replay|e2e state-key
+# Usage: bench-state.sh owner/repo replay|e2e|zones state-key
 # Requires GH_TOKEN with actions:read. State is scoped to GITHUB_REF_NAME (main
 # outside Actions). Missing/expired state bootstraps; API/corruption errors fail.
 set -euo pipefail
@@ -12,8 +12,8 @@ case "$series" in
   replay)
     case "$key" in mainnet|testnet) ;; *) echo "Invalid replay chain: $key" >&2; exit 1 ;; esac
     ;;
-  e2e)
-    [[ "$key" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "Invalid e2e state key: $key" >&2; exit 1; }
+  e2e|zones)
+    [[ "$key" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "Invalid $series state key: $key" >&2; exit 1; }
     key=${key,,}
     ;;
   *) echo "Invalid benchmark series: $series" >&2; exit 1 ;;

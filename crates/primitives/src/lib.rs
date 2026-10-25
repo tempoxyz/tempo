@@ -9,6 +9,7 @@ pub use alloy_consensus::Header;
 mod address;
 pub use address::{MasterId, TempoAddressExt, UserTag, is_tip20_prefix};
 pub mod ed25519;
+pub mod gas;
 
 #[cfg(feature = "evm")]
 mod block;
@@ -29,6 +30,8 @@ pub mod subblock;
 pub use subblock::{SubBlockMetadata, SubBlockVersion};
 
 extern crate alloc;
+
+pub mod account;
 
 use once_cell as _;
 
