@@ -26,6 +26,7 @@ use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
     is_better_payload,
 };
+use reth_chain_state::CanonicalInMemoryState;
 use reth_chainspec::{ChainSpecProvider, EthereumHardforks};
 use reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE;
 use reth_engine_tree::tree::{
@@ -66,8 +67,9 @@ use tempo_evm::{
 };
 use tempo_payload_types::{
     Estimator, TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload,
+    throttle_build_budget,
 };
-use tempo_primitives::{TempoHeader, TempoReceipt, TempoTxEnvelope};
+use tempo_primitives::{TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope};
 use tempo_transaction_pool::{
     StateAwareBestTransactions, TempoTransactionPool, best::BestTransaction,
     transaction::TempoPoolTransactionError,
@@ -136,6 +138,8 @@ pub struct TempoPayloadBuilder<Provider> {
     /// One [`tempo_payload_types::BuildPlan`] is taken from it per paced build,
     /// and the finished build's replayable work is reported back to it.
     estimator: Estimator,
+    /// Engine canonical chain whose in-memory block count is the persistence backlog.
+    canonical_in_memory_state: CanonicalInMemoryState<TempoPrimitives>,
 }
 
 /// Runtime settings for the Tempo payload builder.
@@ -155,6 +159,12 @@ pub struct TempoPayloadBuilderConfig {
     pub skip_state_root: bool,
     /// Whether to enable speculative parallel payload-builder planning.
     pub enable_parallel: bool,
+    /// Persistence backlog (in-memory canonical block count) above which the
+    /// paced build budget starts to shrink.
+    pub persistence_backlog_soft_limit: u64,
+    /// Persistence backlog at which reth stops taking engine messages, and the
+    /// paced build budget reaches zero.
+    pub persistence_backlog_hard_limit: u64,
 }
 
 impl TempoPayloadBuilderConfig {
@@ -189,6 +199,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
         evm_config: TempoEvmConfig,
         config: TempoPayloadBuilderConfig,
         estimator: Estimator,
+        canonical_in_memory_state: CanonicalInMemoryState<TempoPrimitives>,
     ) -> Self {
         Self {
             pool,
@@ -199,6 +210,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             metrics: TempoPayloadBuilderMetrics::default(),
             cache_metrics: CachedStateMetrics::zeroed(CachedStateMetricsSource::Builder),
             estimator,
+            canonical_in_memory_state,
         }
     }
 }
@@ -469,7 +481,30 @@ where
         // Consensus builds carry a remaining proposal budget. When present, the
         // builder stops pool tx execution before projected proposer and validator
         // work would consume that window.
-        let payload_build_budget = attributes.payload_build_budget();
+        let mut persistence_throttled = false;
+        let payload_build_budget = attributes.payload_build_budget().map(|build_budget| {
+            // Pack fewer transactions as the engine's persistence backlog nears the
+            // point where reth stops taking engine messages.
+            let persistence_backlog =
+                self.canonical_in_memory_state.canonical_chain().count() as u64;
+            let throttled_budget = throttle_build_budget(
+                build_budget,
+                persistence_backlog,
+                self.config.persistence_backlog_soft_limit,
+                self.config.persistence_backlog_hard_limit,
+            );
+            persistence_throttled = throttled_budget < build_budget;
+            if persistence_throttled {
+                debug!(
+                    target: "payload_builder",
+                    persistence_backlog,
+                    ?build_budget,
+                    ?throttled_budget,
+                    "throttled payload build budget for persistence backlog"
+                );
+            }
+            throttled_budget
+        });
         // Snapshot the shared estimator once so every stop decision in this
         // build uses the same multiplier and validation feedback.
         let build_plan =
@@ -936,7 +971,9 @@ where
 
         let elapsed = start.elapsed();
         let validation_work_duration = elapsed.saturating_sub(normal_transaction_fill_idle_elapsed);
-        if payload_build_budget.is_some() {
+        // A throttled build stops early, so its finish-to-cutoff work ratio would
+        // inflate the shared multiplier for the builds after the backlog clears.
+        if payload_build_budget.is_some() && !persistence_throttled {
             self.estimator
                 .on_build_finished(validation_work_duration, validation_work_at_tx_cutoff);
         }
