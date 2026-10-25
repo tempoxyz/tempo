@@ -29,6 +29,14 @@ jobs:
           for pid in "${pids[@]}"; do
             sudo ps -o pid,ppid,user,lstart,comm -p "$pid" || true
             sudo readlink "/proc/$pid/exe" || true
+            sudo readlink "/proc/$pid/cwd" || true
+            sudo readlink "/proc/$pid/fd/1" "/proc/$pid/fd/2" || true
+            # Show script paths only; other arguments may contain credentials.
+            sudo cat "/proc/$pid/cmdline" | while IFS= read -r -d '' arg; do
+              case "$arg" in
+                /*.js|/*.mjs|/*.cjs) printf 'Node script: %s\n' "$arg" ;;
+              esac
+            done
             sudo cat "/proc/$pid/cgroup" || true
           done
           # Keep each slot occupied briefly so the matrix samples different hosts.
