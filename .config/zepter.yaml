@@ -20,6 +20,12 @@ workflows:
         # PublicKey serializes via B256, not ed25519-consensus's serde impl.
         # Propagating would also break no_std (ed25519-consensus/serde pulls serde/std).
         "--ignore-missing-propagate=tempo-primitives/serde:ed25519-consensus/serde",
+        # tempo-contracts/serde derives serde on ~1,100 generated bindings and costs about a third of its
+        # build. Crates that serialize binding types enable it directly.
+        "--ignore-missing-propagate=tempo-chainspec/serde:tempo-contracts/serde",
+        "--ignore-missing-propagate=tempo-precompiles/serde:tempo-contracts/serde",
+        "--ignore-missing-propagate=tempo-primitives/serde:tempo-contracts/serde",
+        "--ignore-missing-propagate=tempo-revm/serde:tempo-contracts/serde",
         # Auxiliary flags:
         "--offline",
         "--locked",

@@ -121,7 +121,6 @@ serde = [
 	"rand/serde",
 	"tracing-subscriber/serde",
 	"revm?/serde",
-	"tempo-contracts/serde",
 ]
 evm = ["dep:alloy-evm", "dep:revm"]
 reth-codec = [
