@@ -683,7 +683,10 @@ jobs:
           forge build --root crates/zones/contracts --no-lint
           mkdir -p crates/zones/contracts/benchmark-out
           cp -a crates/zones/contracts/out/. crates/zones/contracts/benchmark-out/
-          forge build \
+          # Earn may compile with its own wrapper (solar-solc), given absolutely and to Earn only.
+          earn_env=()
+          if [[ -x "$EARN_ROOT/solar-solc" ]]; then earn_env=(FOUNDRY_SOLC="$EARN_ROOT/solar-solc"); fi
+          env ${earn_env[@]+"${earn_env[@]}"} forge build \
             --root "$EARN_ROOT" \
             --skip test \
             --skip script \
