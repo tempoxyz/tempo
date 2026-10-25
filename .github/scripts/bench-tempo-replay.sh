@@ -230,6 +230,19 @@ else
   echo "Snapshot is up-to-date (hash: ${REMOTE_HASH:0:16}…)"
 fi
 
+# Extract each range once, outside the measured replay. Streaming from the
+# public RPC for every arm can exhaust its quota and interrupt a comparison.
+source .github/scripts/bench-tempo-extract.sh
+mkdir -p "$BENCH_WORK_DIR/inputs"
+WARMUP_BLOCKS_FILE="$BENCH_WORK_DIR/inputs/warmup.jsonl"
+MEASURED_BLOCKS_FILE="$BENCH_WORK_DIR/inputs/measured.jsonl"
+if [ "$WARMUP" -gt 0 ]; then
+  extract_replay_blocks "$(( SNAPSHOT_BLOCK + 1 ))" \
+    "$(( SNAPSHOT_BLOCK + WARMUP ))" "$WARMUP_BLOCKS_FILE"
+fi
+extract_replay_blocks "$(( SNAPSHOT_BLOCK + WARMUP + 1 ))" \
+  "$(( SNAPSHOT_BLOCK + WARMUP + BLOCKS ))" "$MEASURED_BLOCKS_FILE"
+
 # ============================================================================
 # Single run function
 # ============================================================================
@@ -414,8 +427,7 @@ run_single() {
   if [ "$WARMUP" -gt 0 ]; then
     local warmup_to=$(( from_block + WARMUP - 1 ))
     echo "Running warmup ($WARMUP blocks: $from_block..$warmup_to)..."
-    "$TXGEN_TEMPO_BIN" extract --rpc "$REPLAY_RPC_URL" --from "$from_block" --to "$warmup_to" \
-      | "$TXGEN_BENCH_BIN" send-blocks \
+    "$TXGEN_BENCH_BIN" send-blocks --input "$WARMUP_BLOCKS_FILE" \
         --engine http://127.0.0.1:8551 \
         --jwt-secret "$DATADIR/jwt.hex" 2>&1 | sed -u "s/^/[bench] /"
     from_block=$(( warmup_to + 1 ))
@@ -433,8 +445,7 @@ run_single() {
     victoriametrics_report=(--report "victoriametrics:$BENCH_VICTORIAMETRICS_URL")
   fi
 
-  "$TXGEN_TEMPO_BIN" extract --rpc "$REPLAY_RPC_URL" --from "$from_block" --to "$bench_to" \
-    | "$TXGEN_BENCH_BIN" send-blocks \
+  "$TXGEN_BENCH_BIN" send-blocks --input "$MEASURED_BLOCKS_FILE" \
       --engine http://127.0.0.1:8551 \
       --jwt-secret "$DATADIR/jwt.hex" \
       --metrics-url http://localhost:9001 \

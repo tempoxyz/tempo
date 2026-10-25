@@ -1862,3 +1862,8 @@ def "main e2e" [
         exit $e2e_exit
     }
 }
+
+# Also callable from CI when the benchmark exits before its normal cleanup.
+def "main cleanup" [] {
+    cleanup-local-e2e-processes
+}
