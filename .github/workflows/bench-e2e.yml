@@ -440,6 +440,29 @@ jobs:
         if: steps.target.outputs.selected != 'true'
         run: sleep 60
 
+      - name: Inspect sccache listener
+        if: steps.target.outputs.selected == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          listeners=$(sudo ss -H -ltnp 'sport = :4226')
+          printf '%s\n' "$listeners"
+          mapfile -t pids < <(printf '%s\n' "$listeners" | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u)
+          for pid in "${pids[@]}"; do
+            sudo ps -o pid,ppid,user,lstart,comm -p "$pid" || true
+            executable=$(sudo readlink "/proc/$pid/exe")
+            printf 'Executable: %s\n' "$executable"
+            sudo readlink "/proc/$pid/cwd" || true
+            if [[ "$executable" == */sccache ]]; then
+              "$executable" --version
+            fi
+            sudo cat "/proc/$pid/cmdline" | while IFS= read -r -d '' arg; do
+              case "$arg" in
+                /*.js|/*.mjs|/*.cjs) printf 'Node script: %s\n' "$arg" ;;
+              esac
+            done
+          done
+
       - name: Reset workspace directory
         if: steps.target.outputs.selected == 'true'
         run: |
