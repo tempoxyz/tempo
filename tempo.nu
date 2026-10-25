@@ -1362,7 +1362,12 @@ def generate-summary [
         } else {
             $raw_metric_samples
         }
-        let first_scrape_ms = if ($metric_samples | is-empty) { 0 } else { $metric_samples | get unix_ms | into int | math min }
+        let first_scrape_ms_by_node = (
+            $metric_samples
+                | group-by { |sample| $sample.labels | get -o node | default "" }
+                | items { |node, node_samples| [$node ($node_samples | get unix_ms | into int | math min)] }
+                | into record
+        )
         let optional_counter_metric_values = { |metric: string, scale: float|
             do $optional_counter_values (do $counter_delta_values $metric_samples $metric $scale) $label $metric
         }
@@ -1377,7 +1382,7 @@ def generate-summary [
                 $builder_pool_tx_skip_samples
                     | where { |sample| ($sample.labels | get -o reason | default "") == $reason }
             )
-            counter-delta-total $samples "reth_tempo_payload_builder_pool_transactions_skipped_total" $first_scrape_ms
+            counter-delta-total $samples "reth_tempo_payload_builder_pool_transactions_skipped_total" $first_scrape_ms_by_node
         }
         let builder_invalid_tx_skips = do $builder_pool_tx_skips_for_reason "invalid_tx"
         let builder_nonce_too_low_skips = do $builder_pool_tx_skips_for_reason "nonce_too_low"
@@ -1387,7 +1392,7 @@ def generate-summary [
                 $builder_stop_samples
                     | where { |sample| ($sample.labels | get -o reason | default "") == $reason }
             )
-            counter-delta-total $samples "reth_tempo_payload_builder_block_build_stop_total" $first_scrape_ms
+            counter-delta-total $samples "reth_tempo_payload_builder_block_build_stop_total" $first_scrape_ms_by_node
         }
         let builder_stop_rlp_size = do $builder_stops_for_reason "rlp_block_size_limit"
         let builder_stop_gas_limit = do $builder_stops_for_reason "gas_limit"

@@ -1,6 +1,7 @@
 # Total increase of a counter across all of its series. A series first seen after
-# `first_scrape_ms` was exported at its first increment, so it counts from 0.
-def counter-delta-total [samples: list<any>, metric: string, first_scrape_ms: int] {
+# its node's first scrape (`first_scrape_ms_by_node`) was exported at its first
+# increment, so it counts from 0.
+def counter-delta-total [samples: list<any>, metric: string, first_scrape_ms_by_node: record] {
     let deltas = (
         $samples
             | where name == $metric
@@ -17,7 +18,8 @@ def counter-delta-total [samples: list<any>, metric: string, first_scrape_ms: in
                 } else {
                     let first = ($points | first)
                     let last = ($points | last)
-                    let start = if ($first.unix_ms | into int) > $first_scrape_ms { 0.0 } else { $first.value }
+                    let node = ($first.labels | get -o node | default "")
+                    let start = if ($first.unix_ms | into int) > ($first_scrape_ms_by_node | get $node) { 0.0 } else { $first.value }
                     let delta = ($last.value - $start)
                     if $delta >= 0 { $delta } else { $last.value }
                 }
