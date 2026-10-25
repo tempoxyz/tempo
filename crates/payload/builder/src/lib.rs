@@ -47,12 +47,12 @@ use reth_revm::{
     db::states::bundle_state::BundleRetention,
 };
 use reth_storage_api::{
-    EvmStateProvider, HashedPostStateProvider, StateProvider, StateProviderFactory,
+    BlockReader, EvmStateProvider, HashedPostStateProvider, StateProvider, StateProviderFactory,
     StateRootProvider,
 };
 use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
-    BestTransactions, BestTransactionsAttributes, PoolTransaction, TransactionPool,
+    BestTransactions, BestTransactionsAttributes, PoolTransaction,
     error::InvalidPoolTransactionError,
 };
 use std::{
@@ -205,8 +205,11 @@ impl<Provider> TempoPayloadBuilder<Provider> {
 
 impl<Provider> PayloadBuilder for TempoPayloadBuilder<Provider>
 where
-    Provider:
-        StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + Clone + 'static,
+    Provider: StateProviderFactory
+        + BlockReader<Block = tempo_primitives::Block>
+        + ChainSpecProvider<ChainSpec = TempoChainSpec>
+        + Clone
+        + 'static,
 {
     type Attributes = TempoPayloadAttributes;
     type BuiltPayload = TempoBuiltPayload;
@@ -215,8 +218,14 @@ where
         &self,
         args: BuildArguments<Self::Attributes, Self::BuiltPayload>,
     ) -> Result<BuildOutcome<Self::BuiltPayload>, PayloadBuilderError> {
+        let parent_hash = args.config.parent_header.hash();
+        let parent_number = args.config.parent_header.number();
         self.build_payload(args, |attributes| {
-            self.pool.best_transactions_with_attributes(attributes)
+            Ok(self.pool.best_transactions_excluding_unpruned_mined(
+                attributes,
+                parent_hash,
+                parent_number,
+            )?)
         })
     }
 
@@ -240,7 +249,7 @@ where
                 Default::default(),
                 Default::default(),
             ),
-            |_| core::iter::empty(),
+            |_| Ok(core::iter::empty()),
         )?
         .into_payload()
         .ok_or_else(|| PayloadBuilderError::MissingPayload)
@@ -264,7 +273,7 @@ where
     fn build_payload<Txs>(
         &self,
         args: BuildArguments<TempoPayloadAttributes, TempoBuiltPayload>,
-        best_txs: impl FnOnce(BestTransactionsAttributes) -> Txs,
+        best_txs: impl FnOnce(BestTransactionsAttributes) -> Result<Txs, PayloadBuilderError>,
     ) -> Result<BuildOutcome<TempoBuiltPayload>, PayloadBuilderError>
     where
         Txs: BestTransactions<Item = BestTransaction> + 'static,
@@ -430,7 +439,7 @@ where
                 .block()
                 .blob_gasprice()
                 .map(|gasprice| gasprice as u64),
-        ));
+        ))?;
         let prewarm_ctx = PrewarmingExecutionContext::new(
             self.provider.clone(),
             self.executor.clone(),
