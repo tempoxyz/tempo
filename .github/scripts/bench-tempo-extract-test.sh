@@ -11,14 +11,18 @@ export TXGEN_TEMPO_BIN=fake_txgen
 
 sleep() { :; }
 fake_txgen() {
-  local output="" attempt=0
+  local output="" attempt=0 buffer_size=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --buffer-size) [ "$2" = 1 ]; shift ;;
+      --buffer-size) buffer_size="$2"; shift ;;
       --output) output="$2"; shift ;;
     esac
     shift
   done
+  if [ "$buffer_size" != 1 ]; then
+    echo 'Expected serial extraction with --buffer-size 1' >&2
+    exit 1
+  fi
   if [ -f "$EXTRACT_TEST_DIR/attempt" ]; then
     attempt=$(cat "$EXTRACT_TEST_DIR/attempt")
   fi
