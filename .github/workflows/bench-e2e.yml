@@ -38,6 +38,23 @@ jobs:
               esac
             done
             sudo cat "/proc/$pid/cgroup" || true
+            if [[ "$RUNNER_NAME" == ghr-euw-03 && "$pid" == 3163591 ]]; then
+              expected=/opt/actions-runner/_work/_actions/tempoxyz/gh-actions/e813067e922303348ee5aad965f745803cc24f1f/actions/aegis/token-server.cjs
+              ppid=$(sudo ps -o ppid= -p "$pid")
+              [[ "${ppid//[[:space:]]/}" == 1 ]]
+              [[ "$(sudo readlink "/proc/$pid/exe")" == /opt/actions-runner/externals.2.337.0/node24/bin/node ]]
+              [[ "$(sudo readlink "/proc/$pid/cwd")" == '/opt/actions-runner/_work/tempo/tempo (deleted)' ]]
+              sudo cat "/proc/$pid/cmdline" | tr '\0' '\n' | grep -Fx -- "$expected" >/dev/null
+              sudo kill -TERM "$pid"
+              for attempt in {1..10}; do
+                if [[ -z "$(sudo ss -H -ltnp 'sport = :9001')" ]]; then
+                  echo 'Removed the identified October 6 orphan; port 9001 is free'
+                  break
+                fi
+                sleep 1
+              done
+              [[ -z "$(sudo ss -H -ltnp 'sport = :9001')" ]]
+            fi
           done
           # Keep each slot occupied briefly so the matrix samples different hosts.
           sleep 30
