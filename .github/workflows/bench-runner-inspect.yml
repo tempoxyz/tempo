@@ -1,0 +1,35 @@
+name: Inspect benchmark listeners
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  inspect:
+    strategy:
+      fail-fast: false
+      matrix:
+        slot: [1, 2, 3, 4, 5, 6]
+    runs-on: [self-hosted, Linux, X64, bare-metal-dual-schelk]
+    timeout-minutes: 5
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+      - name: Inspect benchmark listeners
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Runner: $RUNNER_NAME"
+          listeners=$(sudo ss -H -ltnp 'sport = :9001')
+          printf '%s\n' "$listeners"
+          mapfile -t pids < <(printf '%s\n' "$listeners" | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u)
+          for pid in "${pids[@]}"; do
+            sudo ps -o pid,ppid,user,lstart,comm -p "$pid" || true
+            sudo readlink "/proc/$pid/exe" || true
+            sudo cat "/proc/$pid/cgroup" || true
+          done
+          # Keep each slot occupied briefly so the matrix samples different hosts.
+          sleep 30
