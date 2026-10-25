@@ -1,6 +1,7 @@
 ---
+tempo-alloy: patch
 tempo-primitives: patch
 tempo-chainspec: patch
 ---
 
-The `serde` features of `tempo-primitives` and `tempo-chainspec` no longer enable `tempo-contracts/serde`. Enable `tempo-contracts/serde` directly to serialize the generated contract bindings.
+The `tempo-contracts` bindings no longer implement `Serialize` and `Deserialize` unless `tempo-contracts/serde` is enabled. `tempo-alloy`, `tempo-primitives` and `tempo-chainspec` no longer enable it, including through their `serde` features.
