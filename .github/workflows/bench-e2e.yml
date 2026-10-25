@@ -38,6 +38,21 @@ jobs:
               esac
             done
             sudo cat "/proc/$pid/cgroup" || true
+            if [[ "$RUNNER_NAME" == ghr-euw-03 && ( "$pid" == 3040777 || "$pid" == 202536 ) ]]; then
+              if [[ "$pid" == 3040777 ]]; then
+                revision=e813067e922303348ee5aad965f745803cc24f1f
+              else
+                revision=947d9a3ccb2425a9c94d563fd721cc0e33c89e26
+              fi
+              expected="/opt/actions-runner/_work/_actions/tempoxyz/gh-actions/$revision/actions/aegis/token-server.cjs"
+              ppid=$(sudo ps -o ppid= -p "$pid")
+              [[ "${ppid//[[:space:]]/}" == 1 ]]
+              [[ "$(sudo readlink "/proc/$pid/exe")" == /opt/actions-runner/externals.2.337.0/node24/bin/node ]]
+              [[ "$(sudo readlink "/proc/$pid/cwd")" == '/opt/actions-runner/_work/tempo/tempo (deleted)' ]]
+              sudo cat "/proc/$pid/cmdline" | tr '\0' '\n' | grep -Fx -- "$expected" >/dev/null
+              sudo kill -TERM "$pid"
+              echo "Removed identified legacy orphan PID $pid"
+            fi
 
           done
           # Keep each slot occupied briefly so the matrix samples different hosts.
