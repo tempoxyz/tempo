@@ -8,7 +8,7 @@ use crate::utils::{ForkSchedule, SingleNodeSetup, TestNodeBuilder};
 use alloy::{
     consensus::{BlockHeader, Transaction},
     network::{EthereumWallet, ReceiptResponse},
-    primitives::{Address, B256, Bytes, Signature, U256},
+    primitives::{Address, B256, Bytes, Signature, TxKind, U256},
     providers::{Provider, ProviderBuilder},
     signers::{SignerSync, local::PrivateKeySigner},
     sol_types::SolCall,
@@ -19,7 +19,7 @@ use reth_ethereum::network::{NetworkSyncUpdater, SyncState};
 use reth_node_api::BuiltPayload;
 use reth_primitives_traits::transaction::TxHashRef;
 use reth_transaction_pool::TransactionPool;
-use tempo_alloy::{TempoNetwork, provider::TempoProviderBuilderExt};
+use tempo_alloy::{TempoNetwork, provider::TempoProviderBuilderExt, rpc::TempoTransactionReceipt};
 use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
 use tempo_contracts::precompiles::{
     DEFAULT_FEE_TOKEN,
@@ -36,14 +36,108 @@ use tempo_precompiles::{
 use tempo_primitives::{
     TempoTransaction, TempoTxEnvelope,
     transaction::{
-        KeyAuthorization, SignedKeyAuthorization,
+        KeyAuthorization, SignedKeyAuthorization, TEMPO_EXPIRING_NONCE_KEY,
         tempo_transaction::Call,
         tt_signature::{KeychainSignature, PrimitiveSignature, TempoSignature, WebAuthnSignature},
         tt_signed::AASigned,
     },
 };
 
-use super::helpers::*;
+use super::{helpers::*, types::TestEnv};
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_aa_create_receipts_use_account_nonce() -> eyre::Result<()> {
+    let mut env = Localnet::with_schedule(ForkSchedule::DevnetAt(TempoHardfork::T12)).await?;
+    let signer = PrivateKeySigner::random();
+    let sender = signer.address();
+    env.fund_account(sender).await?;
+    env.bump_protocol_nonce(&signer, sender, 1).await?;
+    let valid_before = nonzero_timestamp(env.current_block_timestamp().await? + 20);
+    // Return a 32-byte runtime containing 42 in the last byte.
+    let init_code =
+        Bytes::from_static(&[0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3]);
+    let mut transactions = Vec::new();
+    for (nonce_key, nonce, success) in [
+        (U256::from(7), 0, true),
+        (TEMPO_EXPIRING_NONCE_KEY, 42, true),
+        (TEMPO_EXPIRING_NONCE_KEY, 43, false),
+    ] {
+        let trailing_call = if success {
+            Call {
+                to: Address::random().into(),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            }
+        } else {
+            // Roll back the preceding CREATE by attempting to transfer more than the balance.
+            create_transfer_call(DEFAULT_FEE_TOKEN, Address::random(), U256::MAX)
+        };
+        let mut tx = create_basic_aa_tx(
+            env.chain_id,
+            nonce,
+            vec![
+                Call {
+                    to: TxKind::Create,
+                    value: U256::ZERO,
+                    input: init_code.clone(),
+                },
+                trailing_call,
+            ],
+            2_000_000,
+        );
+        tx.nonce_key = nonce_key;
+        if nonce_key == TEMPO_EXPIRING_NONCE_KEY {
+            tx.valid_before = Some(valid_before);
+        }
+        let signature = sign_aa_tx_secp256k1(&tx, &signer)?;
+        let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
+        transactions.push((*envelope.tx_hash(), success));
+        env.setup
+            .node
+            .rpc
+            .inject_tx(envelope.encoded_2718().into())
+            .await?;
+    }
+    env.setup.node.advance_block().await?;
+
+    let mut receipts = Vec::new();
+    for (hash, success) in transactions {
+        let receipt: TempoTransactionReceipt = env
+            .provider
+            .raw_request("eth_getTransactionReceipt".into(), [hash])
+            .await?;
+        assert_eq!(receipt.inner.inner.receipt.success, success);
+        receipts.push(receipt);
+    }
+    receipts.sort_by_key(|receipt| receipt.transaction_index);
+    let block_hash = receipts[0].block_hash.unwrap();
+    let block_receipts: Vec<TempoTransactionReceipt> = env
+        .provider
+        .raw_request("eth_getBlockReceipts".into(), [block_hash])
+        .await?;
+    let mut nonce = 1;
+    let mut expected_code = [0u8; 32];
+    expected_code[31] = 42;
+    for receipt in receipts {
+        assert_eq!(receipt.block_hash, Some(block_hash));
+        let expected_address = if receipt.inner.inner.receipt.success {
+            let address = sender.create(nonce);
+            nonce += 1;
+            assert_eq!(
+                env.provider.get_code_at(address).await?.as_ref(),
+                &expected_code
+            );
+            Some(address)
+        } else {
+            None
+        };
+        assert_eq!(receipt.contract_address, expected_address);
+        let block_receipt = &block_receipts[receipt.transaction_index.unwrap() as usize];
+        assert_eq!(block_receipt.transaction_hash, receipt.transaction_hash);
+        assert_eq!(block_receipt.contract_address, expected_address);
+    }
+    Ok(())
+}
 
 fn test_secp256k1_access_key_signature() -> TempoSignature {
     TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()))

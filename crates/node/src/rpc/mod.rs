@@ -4,6 +4,7 @@ pub mod error;
 pub mod eth_ext;
 pub mod fork_schedule;
 pub mod operator;
+mod receipt;
 pub mod simulate;
 pub mod token;
 
@@ -50,9 +51,8 @@ use reth_rpc::{DynRpcConverter, eth::EthApi};
 use reth_rpc_eth_api::{
     EthApiTypes, RpcConverter, RpcNodeCore, RpcNodeCoreExt,
     helpers::{
-        Call, EthApiSpec, EthBlocks, EthCall, EthFees, EthState, EthSubscriptions, EthTransactions,
-        LoadBlock, LoadFee, LoadPendingBlock, LoadReceipt, LoadState, LoadTransaction,
-        SpawnBlocking, Trace,
+        Call, EthApiSpec, EthCall, EthFees, EthState, EthSubscriptions, EthTransactions, LoadBlock,
+        LoadFee, LoadPendingBlock, LoadState, LoadTransaction, SpawnBlocking, Trace,
         bal::GetBlockAccessList,
         estimate::EstimateCall,
         pending_block::{BuildPendingEnv, PendingEnvBuilder},
@@ -455,8 +455,6 @@ where
 impl<N> EstimateCall for TempoEthApi<N> where N: TempoEthApiBounds {}
 impl<N> EthSubscriptions for TempoEthApi<N> where N: TempoEthApiBounds {}
 impl<N> LoadBlock for TempoEthApi<N> where N: TempoEthApiBounds {}
-impl<N> LoadReceipt for TempoEthApi<N> where N: TempoEthApiBounds {}
-impl<N> EthBlocks for TempoEthApi<N> where N: TempoEthApiBounds {}
 impl<N> LoadTransaction for TempoEthApi<N> where N: TempoEthApiBounds {}
 
 impl<N> EthTransactions for TempoEthApi<N>
