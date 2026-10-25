@@ -113,6 +113,26 @@ impl BuildPlan {
     }
 }
 
+/// Shrinks `build_budget` as the engine's in-memory canonical block count,
+/// `persistence_backlog`, climbs from `soft_limit` to `hard_limit`.
+///
+/// The budget scales linearly from its full value at `soft_limit` to zero at
+/// `hard_limit`, where reth stops taking engine messages until a persistence
+/// save lands. Throttling is off when `soft_limit >= hard_limit`.
+pub fn throttle_build_budget(
+    build_budget: Duration,
+    persistence_backlog: u64,
+    soft_limit: u64,
+    hard_limit: u64,
+) -> Duration {
+    if persistence_backlog <= soft_limit || soft_limit >= hard_limit {
+        return build_budget;
+    }
+    let remaining = u128::from(hard_limit.saturating_sub(persistence_backlog));
+    let span = u128::from(hard_limit - soft_limit);
+    Duration::from_nanos_u128(build_budget.as_nanos() * remaining / span)
+}
+
 fn scaled_duration(elapsed: Duration, multiplier: u64) -> Duration {
     Duration::from_nanos(
         (elapsed.as_nanos().saturating_mul(u128::from(multiplier))
@@ -133,6 +153,22 @@ mod tests {
         let mut estimator = ValidationLatencyEstimator::default();
         estimator.observe(1, workload, elapsed);
         estimator.estimate()
+    }
+
+    #[test]
+    fn throttle_build_budget_scales_between_limits() {
+        let budget = Duration::from_millis(600);
+
+        assert_eq!(throttle_build_budget(budget, 0, 40, 55), budget);
+        assert_eq!(throttle_build_budget(budget, 40, 40, 55), budget);
+        assert_eq!(
+            throttle_build_budget(budget, 50, 40, 55),
+            Duration::from_millis(200)
+        );
+        assert_eq!(throttle_build_budget(budget, 55, 40, 55), Duration::ZERO);
+        assert_eq!(throttle_build_budget(budget, 70, 40, 55), Duration::ZERO);
+        assert_eq!(throttle_build_budget(budget, 70, 55, 55), budget);
+        assert_eq!(throttle_build_budget(budget, 70, 60, 55), budget);
     }
 
     #[test]
