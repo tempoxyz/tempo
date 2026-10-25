@@ -276,3 +276,4 @@ async fn instantiate_network(
 
     Ok(lookup::Network::new(context.child("network"), cfg))
 }
+

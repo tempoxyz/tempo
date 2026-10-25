@@ -29,7 +29,6 @@ tempo-revm.workspace = true
 
 thiserror.workspace = true
 
-reth-chain-state.workspace = true
 reth-chainspec.workspace = true
 reth-errors.workspace = true
 reth-ethereum = { workspace = true, features = ["node", "rpc"] }

@@ -13,7 +13,7 @@ pub use attrs::TempoPayloadAttributes;
 pub(crate) use budget::ValidationLatencyEstimator;
 pub use budget::{ValidationLatencyEstimate, ValidationLatencyWorkload};
 pub(crate) use build_plan::BUILD_TIME_MULTIPLIER_SCALE;
-pub use build_plan::{BuildPlan, PayloadBudgetDecision, throttle_build_budget};
+pub use build_plan::{BuildPlan, PayloadBudgetDecision};
 pub use estimator::{DEFAULT_BUILD_TIME_MULTIPLIER, Estimator};
 use std::{
     sync::{Arc, OnceLock},

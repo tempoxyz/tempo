@@ -11,7 +11,6 @@ use crate::{
     },
 };
 use alloy_primitives::B256;
-use reth_chain_state::CanonicalInMemoryState;
 use reth_chainspec::{ChainKind, EthChainSpec, Hardforks, NamedChain};
 use reth_ethereum::network::{NetworkHandle, PeersInfo as _, primitives::BasicNetworkPrimitives};
 use reth_node_api::{
@@ -30,7 +29,7 @@ use reth_node_builder::{
     },
 };
 use reth_primitives_traits::SealedHeader;
-use reth_provider::providers::{BlockchainProvider, ProviderFactoryBuilder, ProviderNodeTypes};
+use reth_provider::providers::ProviderFactoryBuilder;
 use reth_rpc_builder::{Identity, RethRpcModule};
 use reth_rpc_eth_api::{
     RpcNodeCore,
@@ -294,7 +293,7 @@ impl TempoNode {
         TempoConsensusBuilder,
     >
     where
-        Node: TempoFullNodeTypes,
+        Node: FullNodeTypes<Types = Self>,
     {
         ComponentsBuilder::default()
             .node_types::<Node>()
@@ -376,29 +375,8 @@ impl NodeTypes for TempoNode {
     type Payload = TempoPayloadTypes;
 }
 
-/// [`FullNodeTypes`] of a [`TempoNode`] whose provider is reth's [`BlockchainProvider`], which
-/// exposes the engine's [`CanonicalInMemoryState`].
-pub trait TempoFullNodeTypes: FullNodeTypes<Types = TempoNode> {
-    /// Returns a handle to the engine's in-memory canonical chain.
-    fn canonical_in_memory_state(
-        provider: &Self::Provider,
-    ) -> CanonicalInMemoryState<TempoPrimitives>;
-}
-
-impl<Node, N> TempoFullNodeTypes for Node
-where
-    Node: FullNodeTypes<Types = TempoNode, Provider = BlockchainProvider<N>>,
-    N: ProviderNodeTypes<Primitives = TempoPrimitives>,
-{
-    fn canonical_in_memory_state(
-        provider: &Self::Provider,
-    ) -> CanonicalInMemoryState<TempoPrimitives> {
-        provider.canonical_in_memory_state()
-    }
-}
-
 #[derive(Debug)]
-pub struct TempoAddOns<N: TempoFullNodeTypes> {
+pub struct TempoAddOns<N: FullNodeTypes<Types = TempoNode>> {
     #[allow(clippy::type_complexity)]
     inner: RpcAddOns<
         NodeAdapter<N>,
@@ -413,7 +391,7 @@ pub struct TempoAddOns<N: TempoFullNodeTypes> {
 
 impl<N> TempoAddOns<N>
 where
-    N: TempoFullNodeTypes,
+    N: FullNodeTypes<Types = TempoNode>,
 {
     /// Creates a new instance from the inner `RpcAddOns`.
     ///
@@ -435,7 +413,7 @@ where
 
 impl<N> NodeAddOns<NodeAdapter<N>> for TempoAddOns<N>
 where
-    N: TempoFullNodeTypes,
+    N: FullNodeTypes<Types = TempoNode>,
 {
     type Handle = RpcHandle<NodeAdapter<N>, TempoEthApi<NodeAdapter<N>>>;
 
@@ -482,7 +460,7 @@ where
 
 impl<N> RethRpcAddOns<NodeAdapter<N>> for TempoAddOns<N>
 where
-    N: TempoFullNodeTypes,
+    N: FullNodeTypes<Types = TempoNode>,
 {
     type EthApi = TempoEthApi<NodeAdapter<N>>;
 
@@ -493,7 +471,7 @@ where
 
 impl<N> EngineValidatorAddOn<NodeAdapter<N>> for TempoAddOns<N>
 where
-    N: TempoFullNodeTypes,
+    N: FullNodeTypes<Types = TempoNode>,
 {
     type ValidatorBuilder = TempoEngineTreeValidatorBuilder;
 
@@ -504,7 +482,7 @@ where
 
 impl<N> Node<N> for TempoNode
 where
-    N: TempoFullNodeTypes,
+    N: FullNodeTypes<Types = Self>,
 {
     type ComponentsBuilder = ComponentsBuilder<
         N,
@@ -530,7 +508,7 @@ where
     }
 }
 
-impl<N: FullNodeComponents<Types = Self> + TempoFullNodeTypes> DebugNode<N> for TempoNode {
+impl<N: FullNodeComponents<Types = Self>> DebugNode<N> for TempoNode {
     type RpcBlock =
         alloy_rpc_types_eth::Block<alloy_rpc_types_eth::Transaction<TempoTxEnvelope>, TempoHeader>;
 
@@ -914,7 +892,7 @@ impl Default for TempoPayloadBuilderBuilder {
 impl<Node> PayloadBuilderBuilder<Node, TempoTransactionPool<Node::Provider>, TempoEvmConfig>
     for TempoPayloadBuilderBuilder
 where
-    Node: TempoFullNodeTypes,
+    Node: FullNodeTypes<Types = TempoNode>,
 {
     type PayloadBuilder = TempoPayloadBuilder<Node::Provider>;
 
@@ -936,12 +914,6 @@ where
         let estimator = self
             .estimator
             .unwrap_or_else(|| Estimator::new(self.build_time_multiplier));
-        let engine_args = &ctx.config().engine;
-        let persistence_backlog_hard_limit = engine_args
-            .persistence_backpressure_threshold()
-            .saturating_add(engine_args.memory_block_buffer_target());
-        // EXPERIMENT: throttle disabled to bisect the Network E2E failure.
-        let persistence_backlog_soft_limit = u64::MAX;
         Ok(TempoPayloadBuilder::new(
             pool,
             ctx.provider().clone(),
@@ -954,11 +926,8 @@ where
                 enable_prewarming: self.enable_prewarming,
                 skip_state_root: ctx.config().tree_config().skip_state_root(),
                 enable_parallel: self.enable_parallel,
-                persistence_backlog_soft_limit,
-                persistence_backlog_hard_limit,
             },
             estimator,
-            Node::canonical_in_memory_state(ctx.provider()),
         ))
     }
 }
