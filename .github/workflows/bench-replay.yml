@@ -381,6 +381,9 @@ jobs:
             });
 
       - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          # rustc 1.99.1 crashes with SIGILL compiling bin/tempo with target-cpu=native; match bench-e2e.
+          toolchain: 1.98.1
       - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         continue-on-error: true
 
