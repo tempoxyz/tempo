@@ -522,9 +522,10 @@ jobs:
           persist-credentials: false
 
       - name: Initialize Earn public dependencies
-        working-directory: earn
-        # PropAMM is private and only needed by Earn's integration tests.
-        run: git submodule update --init lib/forge-std lib/openzeppelin-contracts
+        # Sets EARN_ROOT to Earn's Foundry project, at the checkout root or in its earn/ directory.
+        run: |
+          root="$(bash .github/scripts/prepare-earn-checkout.sh earn)"
+          echo "EARN_ROOT=$root" >> "$GITHUB_ENV"
 
       - name: Prepare persistent topology control path
         env:
@@ -586,6 +587,7 @@ jobs:
         with:
           path: |
             earn/cache
+            earn/earn/cache
             crates/zones/contracts/cache
             crates/zones/contracts/out
             crates/zones/contracts/benchmark-out
@@ -682,7 +684,7 @@ jobs:
           mkdir -p crates/zones/contracts/benchmark-out
           cp -a crates/zones/contracts/out/. crates/zones/contracts/benchmark-out/
           forge build \
-            --root earn \
+            --root "$EARN_ROOT" \
             --skip test \
             --skip script \
             --no-lint \
