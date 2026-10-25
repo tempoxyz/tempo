@@ -294,7 +294,7 @@ impl TempoNode {
         TempoConsensusBuilder,
     >
     where
-        Node: TempoFullNodeTypes,
+        Node: TempoBlockchainNode,
     {
         ComponentsBuilder::default()
             .node_types::<Node>()
@@ -378,14 +378,14 @@ impl NodeTypes for TempoNode {
 
 /// [`FullNodeTypes`] of a [`TempoNode`] whose provider is reth's [`BlockchainProvider`], which
 /// exposes the engine's [`CanonicalInMemoryState`].
-pub trait TempoFullNodeTypes: FullNodeTypes<Types = TempoNode> {
+pub trait TempoBlockchainNode: FullNodeTypes<Types = TempoNode> {
     /// Returns a handle to the engine's in-memory canonical chain.
     fn canonical_in_memory_state(
         provider: &Self::Provider,
     ) -> CanonicalInMemoryState<TempoPrimitives>;
 }
 
-impl<Node, N> TempoFullNodeTypes for Node
+impl<Node, N> TempoBlockchainNode for Node
 where
     Node: FullNodeTypes<Types = TempoNode, Provider = BlockchainProvider<N>>,
     N: ProviderNodeTypes<Primitives = TempoPrimitives>,
@@ -398,7 +398,7 @@ where
 }
 
 #[derive(Debug)]
-pub struct TempoAddOns<N: TempoFullNodeTypes> {
+pub struct TempoAddOns<N: TempoBlockchainNode> {
     #[allow(clippy::type_complexity)]
     inner: RpcAddOns<
         NodeAdapter<N>,
@@ -413,7 +413,7 @@ pub struct TempoAddOns<N: TempoFullNodeTypes> {
 
 impl<N> TempoAddOns<N>
 where
-    N: TempoFullNodeTypes,
+    N: TempoBlockchainNode,
 {
     /// Creates a new instance from the inner `RpcAddOns`.
     ///
@@ -435,7 +435,7 @@ where
 
 impl<N> NodeAddOns<NodeAdapter<N>> for TempoAddOns<N>
 where
-    N: TempoFullNodeTypes,
+    N: TempoBlockchainNode,
 {
     type Handle = RpcHandle<NodeAdapter<N>, TempoEthApi<NodeAdapter<N>>>;
 
@@ -482,7 +482,7 @@ where
 
 impl<N> RethRpcAddOns<NodeAdapter<N>> for TempoAddOns<N>
 where
-    N: TempoFullNodeTypes,
+    N: TempoBlockchainNode,
 {
     type EthApi = TempoEthApi<NodeAdapter<N>>;
 
@@ -493,7 +493,7 @@ where
 
 impl<N> EngineValidatorAddOn<NodeAdapter<N>> for TempoAddOns<N>
 where
-    N: TempoFullNodeTypes,
+    N: TempoBlockchainNode,
 {
     type ValidatorBuilder = TempoEngineTreeValidatorBuilder;
 
@@ -504,7 +504,7 @@ where
 
 impl<N> Node<N> for TempoNode
 where
-    N: TempoFullNodeTypes,
+    N: TempoBlockchainNode,
 {
     type ComponentsBuilder = ComponentsBuilder<
         N,
@@ -530,7 +530,7 @@ where
     }
 }
 
-impl<N: FullNodeComponents<Types = Self> + TempoFullNodeTypes> DebugNode<N> for TempoNode {
+impl<N: FullNodeComponents<Types = Self> + TempoBlockchainNode> DebugNode<N> for TempoNode {
     type RpcBlock =
         alloy_rpc_types_eth::Block<alloy_rpc_types_eth::Transaction<TempoTxEnvelope>, TempoHeader>;
 
@@ -914,7 +914,7 @@ impl Default for TempoPayloadBuilderBuilder {
 impl<Node> PayloadBuilderBuilder<Node, TempoTransactionPool<Node::Provider>, TempoEvmConfig>
     for TempoPayloadBuilderBuilder
 where
-    Node: TempoFullNodeTypes,
+    Node: TempoBlockchainNode,
 {
     type PayloadBuilder = TempoPayloadBuilder<Node::Provider>;
 
@@ -940,10 +940,16 @@ where
         let persistence_backlog_hard_limit = engine_args
             .persistence_backpressure_threshold()
             .saturating_add(engine_args.memory_block_buffer_target());
-        let persistence_backlog_soft_limit = engine_args
-            .persistence_threshold
-            .saturating_add(engine_args.num_state_masking_blocks())
-            .saturating_add(engine_args.memory_block_buffer_target());
+        // Immediate persistence (threshold 0) leaves no backlog to throttle on, but the
+        // block under construction still counts as one in memory block.
+        let persistence_backlog_soft_limit = if engine_args.persistence_threshold == 0 {
+            persistence_backlog_hard_limit
+        } else {
+            engine_args
+                .persistence_threshold
+                .saturating_add(engine_args.num_state_masking_blocks())
+                .saturating_add(engine_args.memory_block_buffer_target())
+        };
         Ok(TempoPayloadBuilder::new(
             pool,
             ctx.provider().clone(),

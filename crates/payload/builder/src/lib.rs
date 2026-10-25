@@ -481,8 +481,8 @@ where
         // Consensus builds carry a remaining proposal budget. When present, the
         // builder stops pool tx execution before projected proposer and validator
         // work would consume that window.
-        let mut persistence_throttled = false;
-        let payload_build_budget = attributes.payload_build_budget().map(|build_budget| {
+        let unthrottled_build_budget = attributes.payload_build_budget();
+        let payload_build_budget = unthrottled_build_budget.map(|build_budget| {
             // Pack fewer transactions as the engine's persistence backlog nears the
             // point where reth stops taking engine messages.
             let persistence_backlog =
@@ -493,8 +493,7 @@ where
                 self.config.persistence_backlog_soft_limit,
                 self.config.persistence_backlog_hard_limit,
             );
-            persistence_throttled = throttled_budget < build_budget;
-            if persistence_throttled {
+            if throttled_budget < build_budget {
                 debug!(
                     target: "payload_builder",
                     persistence_backlog,
@@ -505,6 +504,7 @@ where
             }
             throttled_budget
         });
+        let persistence_throttled = payload_build_budget < unthrottled_build_budget;
         // Snapshot the shared estimator once so every stop decision in this
         // build uses the same multiplier and validation feedback.
         let build_plan =
