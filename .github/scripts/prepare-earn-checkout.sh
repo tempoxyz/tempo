@@ -11,7 +11,9 @@ set -euo pipefail
 checkout="$(cd "${1:?usage: $0 <earn checkout>}" && pwd)"
 
 if [[ -f "$checkout/earn/foundry.toml" ]]; then
-  (cd "$checkout" && bash scripts/solidity-deps.sh earn) >&2
+  # Also builds Earn's pinned solar with cargo when earn/solar.lock exists. Jobs may set
+  # RUSTC_WRAPPER to an sccache that is not installed yet, so build without it.
+  (cd "$checkout" && RUSTC_WRAPPER= bash scripts/solidity-deps.sh earn) >&2
   echo "$checkout/earn"
 else
   # PropAMM is private and only needed by Earn's integration tests.
