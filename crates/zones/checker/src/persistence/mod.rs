@@ -8,20 +8,26 @@ mod tests;
 
 use std::{fs, path::Path, sync::Arc};
 
+use alloy_primitives::U256;
+use reth_codecs::Decompress as _;
 use reth_db::{
-    Database, DatabaseEnv, DatabaseEnvKind,
+    Database, DatabaseEnv, DatabaseEnvKind, DatabaseError, RawTable,
     cursor::DbCursorRO,
     is_database_empty,
     mdbx::{DatabaseArguments, init_db_for},
     transaction::{DbTx, DbTxMut},
 };
 
-use crate::accounting::{AccountingError, ChangedRows, Effect, State};
+use crate::accounting::{AccountingError, ChangedRows, Effect, State, TokenState};
 
 pub(crate) use model::{AppliedStatus, BlockRef, Checkpoint, Finding, Identity, Metadata, Status};
-use schema::{AccountValue, Accounts, Meta, MetaKey, MetaValue, Tables, TokenValue, Tokens};
+use schema::{
+    AccountValue, Accounts, Meta, MetaKey, MetaValue, Tables, TokenValue, TokenValueV1, Tokens,
+};
 
 const SCHEMA_VERSION: u32 = 2;
+/// Older schema that `Store::open` upgrades in place.
+const V1_SCHEMA_VERSION: u32 = 1;
 
 /// Loaded durable accounting state and its exact coordinates.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,10 +82,19 @@ pub(crate) struct Store {
 
 impl Store {
     /// Read the identity bound to an existing checker database.
+    ///
+    /// Accepts v1 databases unchanged, since their metadata shape matches v2 and
+    /// `Store::open` migrates them.
     pub(crate) fn inspect_identity(path: &Path) -> Result<Identity, PersistenceError> {
         let db = DatabaseEnv::open(path, DatabaseEnvKind::RO, DatabaseArguments::default())?;
         let tx = db.tx()?;
-        validate_schema(&tx)?;
+        let version = read_version(&tx)?;
+        if version != SCHEMA_VERSION && version != V1_SCHEMA_VERSION {
+            return Err(PersistenceError::Schema {
+                expected: SCHEMA_VERSION,
+                actual: version,
+            });
+        }
         let identity = read_metadata(&tx)?.identity;
         tx.commit()?;
         Ok(identity)
@@ -171,7 +186,7 @@ impl Store {
         ))
     }
 
-    /// Open and validate an existing checker database.
+    /// Open and validate an existing checker database, migrating a v1 database in place.
     pub(crate) fn open(
         path: &Path,
         identity: Identity,
@@ -181,8 +196,43 @@ impl Store {
             db: Arc::new(db),
             identity,
         };
+        store.migrate_v1()?;
         let snapshot = store.load()?;
         Ok((store, snapshot))
+    }
+
+    /// Atomically rewrite v1 token rows in the v2 shape and bump the schema version.
+    ///
+    /// Leaves any other version untouched for `validate_schema` to judge. Rebuilding
+    /// instead would discard a persisted divergence finding.
+    fn migrate_v1(&self) -> Result<(), PersistenceError> {
+        let tx = self.db.tx_mut()?;
+        if read_version(&tx)? != V1_SCHEMA_VERSION {
+            return Ok(());
+        }
+        let mut tokens = Vec::new();
+        let mut cursor = tx.cursor_read::<RawTable<Tokens>>()?;
+        let mut row = cursor.first()?;
+        while let Some((token, value)) = row {
+            let value = TokenValueV1::decompress(value.raw_value()).map_err(DatabaseError::from)?;
+            tokens.push((token.key()?, value));
+            row = cursor.next()?;
+        }
+        for (token, value) in tokens {
+            let state = TokenState {
+                account_total: value.account_total,
+                pending_deposits: value.pending_deposits,
+                pending_withdrawals: value.pending_withdrawals,
+                pending_tempo_refunds: value.pending_tempo_refunds,
+                // Exact: v1 databases were only written against Portals without forced exits.
+                pending_forced_exit_fees: U256::ZERO,
+                pending_zone_refunds: value.pending_zone_refunds,
+            };
+            tx.put::<Tokens>(token, TokenValue(state))?;
+        }
+        tx.put::<Meta>(MetaKey::Version, MetaValue::Version(SCHEMA_VERSION))?;
+        tx.commit()?;
+        Ok(())
     }
 
     /// Load the active row state directly without replaying retained deltas.
@@ -326,15 +376,17 @@ impl Store {
     }
 }
 
+fn read_version<T: DbTx>(tx: &T) -> Result<u32, PersistenceError> {
+    match tx.get::<Meta>(MetaKey::Version)? {
+        Some(MetaValue::Version(version)) => Ok(version),
+        _ => Err(PersistenceError::Invalid(
+            "schema version is missing".into(),
+        )),
+    }
+}
+
 fn validate_schema<T: DbTx>(tx: &T) -> Result<(), PersistenceError> {
-    let version = match tx.get::<Meta>(MetaKey::Version)? {
-        Some(MetaValue::Version(version)) => version,
-        _ => {
-            return Err(PersistenceError::Invalid(
-                "schema version is missing".into(),
-            ));
-        }
-    };
+    let version = read_version(tx)?;
     if version != SCHEMA_VERSION {
         return Err(PersistenceError::Schema {
             expected: SCHEMA_VERSION,
