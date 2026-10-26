@@ -17,10 +17,12 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      pull-requests: read
       statuses: write
       id-token: write
     outputs:
       required: ${{ steps.decision.outputs.required }}
+      draft: ${{ steps.target.outputs.draft }}
       # Missing detector output is not proof that image inputs are unchanged.
       images_required: ${{ steps.paths.outputs.changes == '' || contains(fromJSON(steps.paths.outputs.changes || '[]'), 'images') }}
       sha: ${{ steps.target.outputs.sha }}
@@ -32,10 +34,18 @@ jobs:
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ && "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
           echo "sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
           echo "base=$BASE_SHA" >> "$GITHUB_OUTPUT"
+          # Re-runs reuse the original event payload, so read the live draft state.
+          draft=false
+          if [[ -n "$PR_NUMBER" ]]; then
+            draft="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq .draft)"
+          fi
+          echo "draft=$draft" >> "$GITHUB_OUTPUT"
       - name: Mark network tests pending
         env:
           GH_TOKEN: ${{ github.token }}
@@ -74,7 +84,7 @@ jobs:
         id: decision
         if: steps.paths.outcome == 'success' && steps.reth.outcome == 'success'
         env:
-          REQUIRED: ${{ !github.event.pull_request.draft && (contains(fromJSON(steps.paths.outputs.changes || '[]'), 'consensus') || steps.reth.outputs.changed == 'true') }}
+          REQUIRED: ${{ steps.target.outputs.draft != 'true' && (contains(fromJSON(steps.paths.outputs.changes || '[]'), 'consensus') || steps.reth.outputs.changed == 'true') }}
           SAME_REPO: ${{ !github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository }}
         run: |
           if [[ "$REQUIRED" == true && "$SAME_REPO" != true ]]; then
@@ -154,12 +164,13 @@ jobs:
           DETECT_RESULT: ${{ needs.detect.result }}
           REQUIRED: ${{ needs.detect.outputs.required }}
           SUBMIT_RESULT: ${{ steps.submit.outcome }}
+          DRAFT: ${{ needs.detect.outputs.draft }}
         with:
           script: |
             if (process.env.SUBMIT_RESULT === 'success') return; // Argo owns the result now.
             // Network skip is independent of Docker; a failed build still fails its own job/run.
             const skipped = process.env.DETECT_RESULT === 'success' && process.env.REQUIRED === 'false';
-            const skipReason = context.payload.pull_request?.draft ? 'Draft PR; waiting for review' : 'No relevant changes';
+            const skipReason = process.env.DRAFT === 'true' ? 'Draft PR; waiting for review' : 'No relevant changes';
             const owner = `${context.runId}-${process.env.GITHUB_RUN_ATTEMPT}`;
             for await (const page of github.paginate.iterator(github.rest.repos.listCommitStatusesForRef, {
               ...context.repo, ref: process.env.SHA, per_page: 100,
