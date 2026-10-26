@@ -59,6 +59,29 @@ impl ZoneChainSpec {
         Ok(Self::from_explicit_genesis(genesis))
     }
 
+    /// Converts a genesis configuration using the Tempo fork schedule its L1 reports.
+    ///
+    /// Used for parents whose schedule is not compiled into this binary, such as devnets. Tempo
+    /// forks the genesis leaves out activate at the reported times, explicit genesis activations
+    /// take precedence, and forks the schedule omits stay inactive.
+    pub fn from_genesis_with_l1_schedule(
+        mut genesis: Genesis,
+        schedule: impl IntoIterator<Item = (TempoHardfork, u64)>,
+    ) -> Result<Self, ZoneChainSpecError> {
+        decode_l1_chain_id(genesis.config.chain_id)?;
+        for (fork, time) in schedule {
+            if let Some(key) = fork.genesis_key()
+                && !genesis.config.extra_fields.contains_key(key)
+            {
+                genesis
+                    .config
+                    .extra_fields
+                    .insert(key.to_owned(), serde_json::Value::from(time));
+            }
+        }
+        Ok(Self::from_explicit_genesis(genesis))
+    }
+
     /// Zone identifier encoded in the genesis chain ID.
     pub fn zone_id(&self) -> u32 {
         decode_zone_chain_id(self.inner.genesis().config.chain_id)
@@ -223,8 +246,17 @@ impl reth_cli::chainspec::ChainSpecParser for ZoneChainSpecParser {
     const SUPPORTED_CHAINS: &'static [&'static str] = &[];
 
     fn parse(s: &str) -> eyre::Result<std::sync::Arc<Self::ChainSpec>> {
-        let genesis = reth_cli::chainspec::parse_genesis(s)?;
-        Ok(Arc::new(ZoneChainSpec::from_genesis(genesis)?))
+        Ok(Arc::new(ZoneChainSpec::from_genesis(Self::parse_genesis(
+            s,
+        )?)?))
+    }
+}
+
+#[cfg(feature = "cli")]
+impl ZoneChainSpecParser {
+    /// Parses a `--chain` value (a path or inline JSON) into the raw Zone genesis.
+    pub fn parse_genesis(s: &str) -> eyre::Result<Genesis> {
+        reth_cli::chainspec::parse_genesis(s)
     }
 }
 
@@ -248,6 +280,14 @@ pub fn tempo_chain_spec_for_l1(chain_id: u64) -> Option<Arc<TempoChainSpec>> {
         1_337 | 31_337 => Some(DEV.clone()),
         _ => None,
     })
+}
+
+/// Returns whether this binary compiles in the Tempo hardfork schedule of the parent chain.
+///
+/// Only mainnet and testnet qualify. Zone nodes on other parents read the schedule from their
+/// L1's `tempo_forkSchedule` at startup.
+pub fn has_compiled_l1_schedule(chain_id: u64) -> bool {
+    chainspec_from_chain_id(chain_id).is_some()
 }
 
 #[cfg(test)]
@@ -485,5 +525,31 @@ mod tests {
             .extra_fields
             .insert("t13Time".into(), serde_json::Value::Null);
         genesis
+    }
+
+    #[test]
+    fn l1_schedule_fills_missing_forks_and_keeps_explicit_ones() {
+        let mut genesis = DEV.genesis().clone();
+        genesis.config.chain_id = zone_chain_id(31_318, 4).unwrap();
+        for &fork in TempoHardfork::VARIANTS {
+            if let Some(key) = fork.genesis_key() {
+                genesis.config.extra_fields.remove(key);
+            }
+        }
+        genesis
+            .config
+            .extra_fields
+            .insert("t12Time".into(), serde_json::json!(500));
+        let schedule = TempoHardfork::VARIANTS
+            .iter()
+            .copied()
+            .filter(|&fork| fork != TempoHardfork::Genesis && fork <= TempoHardfork::T12)
+            .map(|fork| (fork, if fork == TempoHardfork::T12 { 300 } else { 0 }));
+        let zone = ZoneChainSpec::from_genesis_with_l1_schedule(genesis, schedule).unwrap();
+
+        assert_eq!(zone.tempo_hardfork_at(0), TempoHardfork::T11);
+        assert_eq!(zone.tempo_hardfork_at(300), TempoHardfork::T11);
+        assert_eq!(zone.tempo_hardfork_at(500), TempoHardfork::T12);
+        assert_eq!(zone.tempo_hardfork_at(u64::MAX), TempoHardfork::T12);
     }
 }

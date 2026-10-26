@@ -11,14 +11,16 @@ use reth_cli_runner::CliRunner;
 use reth_ethereum::cli::{Cli, ExtendedCommand};
 use reth_rpc_server_types::DefaultRpcModuleValidator;
 use reth_tracing::tracing::{info, warn};
-use tempo_alloy::TempoNetwork;
+use tempo_alloy::{TempoNetwork, provider::TempoProviderExt as _};
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::zone_factory::portal_address;
 use zeroize::Zeroizing;
-use zone_chainspec::{ZoneChainSpec, ZoneChainSpecParser};
+use zone_chainspec::{ZoneChainSpec, ZoneChainSpecParser, has_compiled_l1_schedule};
 use zone_evm::ZoneEvmConfig;
 use zone_l1::state::{L1StateCache, L1StateProvider, L1StateProviderConfig};
 use zone_p2p::{MAX_TRANSACTION_MESSAGE_SIZE, P2pConfig, Role};
 use zone_payload::DEFAULT_WITHDRAWAL_BATCH_INTERVAL_BLOCKS;
+use zone_primitives::constants::decode_l1_chain_id;
 
 use crate::{
     DepositAllowlist, ZoneConsensus, ZoneNode, ZoneProverConfig, ZoneRedactedRpcConfig,
@@ -53,6 +55,9 @@ pub enum ZoneCli {
         cli: Box<ZoneNodeCli>,
         /// How the parsed subcommand reads L1 state while executing zone blocks.
         l1_access: CliL1Access,
+        /// Raw `--chain` value of the `node` subcommand, kept to rebuild its chain spec from the
+        /// L1 fork schedule.
+        node_chain: Option<String>,
     },
     Dev(Box<DevCommand>),
 }
@@ -147,9 +152,15 @@ impl ZoneCli {
             }
             _ => CliL1Access::Unused,
         };
+        let node_chain = matches
+            .subcommand_matches("node")
+            .and_then(|node| node.get_raw("chain"))
+            .and_then(|mut values| values.next())
+            .map(|value| value.to_string_lossy().into_owned());
         Cli::from_arg_matches(&matches).map(|cli| Self::Node {
             cli: Box::new(cli),
             l1_access,
+            node_chain,
         })
     }
 
@@ -159,10 +170,89 @@ impl ZoneCli {
     /// background tasks, and blocks until exit.
     pub fn run(self) -> eyre::Result<()> {
         match self {
-            Self::Node { cli, l1_access } => run_node(*cli, l1_access),
+            Self::Node {
+                mut cli,
+                l1_access,
+                node_chain,
+            } => {
+                resolve_node_chain_spec(&mut cli, node_chain.as_deref())?;
+                run_node(*cli, l1_access)
+            }
             Self::Dev(command) => (*command).run(),
         }
     }
+}
+
+/// Rebuilds the `node` chain spec from the L1's `tempo_forkSchedule`.
+///
+/// Zones follow their parent's Tempo fork schedule. Mainnet and testnet schedules are compiled
+/// into the binary; for any other parent (devnets, localnets) the node reads the schedule from
+/// its L1 once at startup. Explicit fork fields in the Zone genesis still take precedence.
+fn resolve_node_chain_spec(cli: &mut ZoneNodeCli, node_chain: Option<&str>) -> eyre::Result<()> {
+    let (Some(command), Some(node_chain)) = (cli.as_node_command_mut(), node_chain) else {
+        return Ok(());
+    };
+    let genesis = ZoneChainSpecParser::parse_genesis(node_chain)?;
+    let parent_chain_id = decode_l1_chain_id(genesis.config.chain_id)?;
+    if has_compiled_l1_schedule(parent_chain_id) {
+        return Ok(());
+    }
+
+    let l1_rpc_url = command.ext.l1_rpc_url.clone();
+    let schedule = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(async {
+            tokio::time::timeout(
+                Duration::from_secs(30),
+                fetch_l1_fork_schedule(&l1_rpc_url, parent_chain_id),
+            )
+            .await
+            .map_err(|_| eyre::eyre!("timed out reading the L1 fork schedule"))?
+        })?;
+    info!(
+        target: "reth::cli",
+        parent_chain_id,
+        ?schedule,
+        "Using the L1 Tempo fork schedule from tempo_forkSchedule"
+    );
+    command.chain = Arc::new(ZoneChainSpec::from_genesis_with_l1_schedule(
+        genesis, schedule,
+    )?);
+    Ok(())
+}
+
+/// Reads the Tempo fork activations an L1 reports through `tempo_forkSchedule`.
+async fn fetch_l1_fork_schedule(
+    l1_rpc_url: &str,
+    parent_chain_id: u64,
+) -> eyre::Result<Vec<(TempoHardfork, u64)>> {
+    let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+        .connect(l1_rpc_url)
+        .await
+        .map_err(|error| eyre::eyre!("failed connecting to the L1 RPC: {error}"))?;
+    let chain_id = provider.get_chain_id().await?;
+    eyre::ensure!(
+        chain_id == parent_chain_id,
+        "L1 RPC chain ID {chain_id} does not match the zone's parent chain ID {parent_chain_id}"
+    );
+    let schedule = provider
+        .get_fork_schedule()
+        .await
+        .map_err(|error| eyre::eyre!("failed reading tempo_forkSchedule from the L1: {error}"))?;
+    schedule
+        .schedule
+        .into_iter()
+        .map(|entry| {
+            let fork = entry.name.parse::<TempoHardfork>().map_err(|_| {
+                eyre::eyre!(
+                    "L1 schedules unsupported Tempo fork {}; update the zone binary",
+                    entry.name
+                )
+            })?;
+            Ok((fork, entry.activation_time))
+        })
+        .collect()
 }
 
 /// Main entry point for the `node` command.
