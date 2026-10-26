@@ -1087,6 +1087,7 @@ where
         sequencer.config.sequencer_signer.address(),
         context.encryption_keys.clone(),
         context.portal_address,
+        sequencer.proof_collector.clone(),
     )
     .with_production_permit(ProductionPermit::new(
         context.schedule.clone(),

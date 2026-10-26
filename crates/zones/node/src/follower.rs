@@ -657,14 +657,15 @@ where
             eyre::bail!("execution engine rejected peer block {block_number} ({hash}): {status:?}");
         }
 
-        // Supplied witnesses are queued for persistence without waiting. Plain blocks, and
-        // witnesses the queue drops, are collected locally by the background collector.
+        // Supplied witnesses are persisted directly, which waits only on the local disk. The
+        // background collector collects plain blocks locally.
         if let Some(collector) = &self.context.proof_collector
             && let Some(proof) = peer_block.block.witness
         {
             collector
-                .offer_received(proof)
-                .wrap_err_with(|| format!("queue witness for Zone block {block_number}"))?;
+                .persist_received(proof)
+                .await
+                .wrap_err_with(|| format!("persist witness for Zone block {block_number}"))?;
         }
 
         // 5. Forkchoice

@@ -7,6 +7,7 @@ use futures::{StreamExt as _, stream::BoxStream};
 use reth_chain_state::PersistedBlockSubscriptions;
 use reth_primitives_traits::SealedBlock;
 use reth_storage_api::{BlockNumReader, BlockReader, StateProviderFactory};
+use std::time::Duration;
 use tempo_primitives::Block;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync;
@@ -14,6 +15,9 @@ use tracing::debug;
 use zone_l1::TempoStateExt as _;
 use zone_p2p::{BackfillCommand, BackfillRequest, EncodedBlock, P2pCommand, P2pEvent, PeerTip};
 use zone_sequencer::{ProofCollectorHandle, SettlementManager, StoredBlockProof};
+
+/// How long the leader waits for a just-persisted block's witness before broadcasting it plain.
+const BROADCAST_WITNESS_WAIT: Duration = Duration::from_millis(500);
 
 /// A decoded block and the optional witness supplied by its peer.
 #[derive(Debug, PartialEq, Eq)]
@@ -306,7 +310,30 @@ where
                 "persisted zone block hash does not match notification at height {number}: expected={expected}, actual={hash}"
             );
         }
+        // The background collector may not have reached a just-persisted block yet. Ask for it
+        // and wait briefly, so followers usually get the witness instead of collecting it.
+        if let Some(proofs) = proofs
+            && proofs.get(number, hash).is_none()
+        {
+            match tokio::time::timeout(
+                BROADCAST_WITNESS_WAIT,
+                proofs.collect_and_persist(number, hash),
+            )
+            .await
+            {
+                Ok(Ok(_)) => {}
+                Ok(Err(err)) => {
+                    debug!(target: "zone::p2p", number, %err, "Witness collection failed; broadcasting plain block");
+                }
+                Err(_) => {
+                    debug!(target: "zone::p2p", number, "Witness not ready; broadcasting plain block");
+                }
+            }
+        }
         let block = encode_block_with_witness(block.encoded, number, hash, proofs)?;
+        if proofs.is_some() && block.witness.is_none() {
+            metrics::counter!("zone_p2p_broadcast_without_witness_total").increment(1);
+        }
         commands
             .send(P2pCommand::BroadcastBlock(block))
             .await

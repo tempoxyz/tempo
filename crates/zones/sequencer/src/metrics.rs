@@ -17,11 +17,10 @@ pub(crate) struct SequencerMetrics {
 #[derive(Metrics, Clone)]
 #[metrics(scope = "tempo_zone_proof_collector")]
 pub(crate) struct ProofCollectorMetrics {
-    /// Canonical Zone blocks the current background pass has yet to check for a durable
-    /// witness; 0 once caught up. Stays raised while collection keeps failing.
+    /// Canonical Zone blocks after the last contiguous persisted witness; 0 once caught up.
     pub(crate) lag_blocks: Gauge,
-    /// Received peer witnesses dropped because the collector queue was full.
-    pub(crate) received_dropped_total: Counter,
+    /// Blocks whose witness collection failed in the last background pass.
+    pub(crate) failed_blocks: Gauge,
 }
 
 /// Metrics emitted by the prover.

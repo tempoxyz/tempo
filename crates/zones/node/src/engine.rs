@@ -54,7 +54,7 @@ use std::{
 use tempo_chainspec::spec::TempoHardforks as _;
 use tempo_primitives::TempoHeader;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::deposit_allowlist::DepositAllowlist;
 use zone_chainspec::ZoneChainSpec;
@@ -63,6 +63,11 @@ use zone_l1::{
 };
 use zone_p2p::{LeadershipSchedule, P2pPeerId};
 use zone_payload::{TempoImport, ZonePayloadAttributes, ZonePayloadTypes};
+use zone_sequencer::ProofCollectorHandle;
+
+/// Unwitnessed canonical blocks at which production pauses. Zone blocks roughly track L1 blocks,
+/// so this stays well inside the 256-block L1 RPC proof window and leaves time to collect them.
+const MAX_WITNESS_LAG_BLOCKS: u64 = 64;
 
 /// Local block production permit backed by the effective leadership schedule.
 ///
@@ -131,7 +136,8 @@ trait AvailableBlockDrain {
     /// `None` authorizes production; `Some(exit)` halts the drain with that reason.
     fn apply_permit(&self, block: &mut Self::Block) -> Option<EngineExit>;
 
-    /// Returns whether a finalized Portal pause currently forbids producing another block.
+    /// Returns whether production must wait: a finalized Portal pause, or witness collection
+    /// lagging too far behind the head.
     fn production_paused(&self) -> bool;
 
     /// Completes and consumes one block.
@@ -205,6 +211,8 @@ pub struct ZoneEngine {
     portal_address: Address,
     /// Optional per-anchor leadership permit. `None` runs the legacy single-sequencer mode.
     production_permit: Option<ProductionPermit>,
+    /// Background witness collector whose lag bounds production. `None` without proving.
+    proof_collector: Option<ProofCollectorHandle>,
     /// Depositors whose L1 deposits are credited. `None` credits every deposit.
     deposit_allowlist: Option<DepositAllowlist>,
 }
@@ -220,6 +228,7 @@ impl ZoneEngine {
         fee_recipient: Address,
         encryption_keys: EncryptionKeyRing,
         portal_address: Address,
+        proof_collector: Option<ProofCollectorHandle>,
     ) -> Self {
         Self {
             chain_spec,
@@ -232,6 +241,7 @@ impl ZoneEngine {
             encryption_keys,
             portal_address,
             production_permit: None,
+            proof_collector,
             deposit_allowlist: None,
         }
     }
@@ -445,8 +455,8 @@ impl ZoneEngine {
             eyre::bail!("Invalid payload for block {block_number}");
         }
 
-        // Witnesses are collected in the background: settlement waits for them, block production
-        // does not, so a slow or lagging L1 RPC never stalls the zone.
+        // Witnesses are collected in the background, so a slow L1 RPC slows settlement rather than
+        // every block. `production_paused` bounds how far collection may fall behind.
         if checkpoint_only {
             self.deposit_queue.defer_through(l1_num_hash)?;
         } else {
@@ -519,7 +529,19 @@ impl AvailableBlockDrain for ZoneEngine {
     }
 
     fn production_paused(&self) -> bool {
-        self.l1_block_tracker.portal_paused()
+        if self.l1_block_tracker.portal_paused() {
+            return true;
+        }
+        let Some(collector) = &self.proof_collector else {
+            return false;
+        };
+        let lag = collector.witness_lag(self.last_header.number());
+        if lag < MAX_WITNESS_LAG_BLOCKS {
+            return false;
+        }
+        metrics::counter!("zone_engine_witness_backpressure_total").increment(1);
+        warn!(target: "zone::engine", lag, "Pausing block production until witness collection catches up");
+        true
     }
 
     async fn advance_one(&mut self, block: Self::Block) -> eyre::Result<()> {
