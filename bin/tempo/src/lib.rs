@@ -557,14 +557,16 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             }
         });
         let payload_builder = tempo_node.payload_builder_builder();
-        let estimator = match payload_builder.estimator.clone() {
-            Some(estimator) => estimator,
-            None => tempo_node::Estimator::new(
-                tempo_node::EstimatorConfig::default()
-                    .with_build_time_multiplier(payload_builder.build_time_multiplier),
+        let estimator = payload_builder
+            .estimator
+            .clone()
+            .map_or_else(
+                || tempo_node::Estimator::new(tempo_node::EstimatorConfig {
+                    build_time_multiplier: payload_builder.build_time_multiplier,
+                }),
+                Ok,
             )
-            .map_err(|reason| eyre::eyre!("invalid proposal budget flags: {reason}"))?,
-        };
+            .map_err(|reason| eyre::eyre!("invalid proposal budget flags: {reason}"))?;
         // Share the overridden settings with both the payload builder and consensus.
         let tempo_node = tempo_node.with_estimator(estimator.clone());
         let executed_state = tempo_node.executed_state();

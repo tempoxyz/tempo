@@ -52,12 +52,6 @@ impl Default for EstimatorConfig {
 }
 
 impl EstimatorConfig {
-    /// Sets the initial build multiplier, validated when an estimator is constructed.
-    pub fn with_build_time_multiplier(mut self, multiplier: f64) -> Self {
-        self.build_time_multiplier = multiplier;
-        self
-    }
-
     /// Rejects multipliers outside the learned range, from 1.0 to 1.7 inclusive.
     pub fn validate(&self) -> Result<(), String> {
         if !self.build_time_multiplier.is_finite()

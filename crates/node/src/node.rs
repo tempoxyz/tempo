@@ -915,15 +915,19 @@ where
             _ => None,
         });
 
-        let estimator = match self.estimator {
-            Some(estimator) => estimator,
-            None => Estimator::new(
-                EstimatorConfig::default().with_build_time_multiplier(self.build_time_multiplier),
+        let estimator = self
+            .estimator
+            .map_or_else(
+                || {
+                    Estimator::new(EstimatorConfig {
+                        build_time_multiplier: self.build_time_multiplier,
+                    })
+                },
+                Ok,
             )
             .map_err(|reason| {
                 eyre::eyre!("invalid payload builder build time multiplier: {reason}")
-            })?,
-        };
+            })?;
         Ok(TempoPayloadBuilder::new(
             pool,
             ctx.provider().clone(),
@@ -951,9 +955,10 @@ fn parse_build_time_multiplier(value: &str) -> Result<f64, String> {
     let multiplier = value
         .parse::<f64>()
         .map_err(|error| format!("invalid build time multiplier `{value}`: {error}"))?;
-    EstimatorConfig::default()
-        .with_build_time_multiplier(multiplier)
-        .validate()?;
+    EstimatorConfig {
+        build_time_multiplier: multiplier,
+    }
+    .validate()?;
     Ok(multiplier)
 }
 
