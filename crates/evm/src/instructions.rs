@@ -147,7 +147,7 @@ mod tests {
         evm::{AccountInfo, InMemoryDB, StateChangeSource, precompile::NoPrecompiles},
         interpreter::MessageExt,
     };
-    use reth_execution_types::{BlockState, TransactionChanges, native_account};
+    use reth_execution_types::{BlockState, TransactionChanges};
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_precompiles::{STORAGE_CREDITS_ADDRESS, storage_credits::StorageCredits};
     use tempo_primitives::TempoTxEnvelope;
@@ -236,14 +236,8 @@ mod tests {
             Some(U256::from(new_value)),
         );
         let account = bundle.account(&STORAGE_CREDITS_ADDRESS).unwrap();
-        assert_eq!(
-            native_account(account.info.as_ref().unwrap()),
-            credit_account
-        );
-        assert_eq!(
-            native_account(account.original_info.as_ref().unwrap()),
-            credit_account,
-        );
+        assert_eq!(account.info.as_ref().unwrap(), &credit_account);
+        assert_eq!(account.original_info.as_ref().unwrap(), &credit_account);
     }
 
     #[test]

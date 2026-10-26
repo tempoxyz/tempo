@@ -1,0 +1,18 @@
+# zone-earn-mix with zone settlement and Earn deposits sent from one account with
+# ordered nonces, as a single sequencer and rewards funder do on mainnet. Measures
+# the per-sender ceiling that zone-earn-mix hides by spreading load across users.
+# The helper rewrites those templates; other templates keep their users and
+# expiring nonces. Same weights as zone-earn-mix.
+include: zone-earn-mix.yml
+
+mix:
+  - template: zone_withdraw
+    weight: 35
+  - template: vault_deposit
+    weight: 57
+  - template: vault_withdraw
+    weight: 4
+  - template: zone_deposit
+    weight: 2
+  - template: public_transfer
+    weight: 2

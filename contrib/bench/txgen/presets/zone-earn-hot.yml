@@ -1,0 +1,18 @@
+# zone-earn-mix with every zone operation on one portal, to measure contention on
+# shared portal and Earn vault state (the vault is already shared). The helper pins
+# the portal count to 1 instead of sizing it by TPS (TXGEN_ZONE_COUNT still overrides).
+# Deposits beyond the portal's outstanding-deposit cap (TIP-1096) are expected to
+# fail; report them alongside throughput. Same weights as zone-earn-mix.
+include: zone-earn-mix.yml
+
+mix:
+  - template: zone_withdraw
+    weight: 35
+  - template: vault_deposit
+    weight: 57
+  - template: vault_withdraw
+    weight: 4
+  - template: zone_deposit
+    weight: 2
+  - template: public_transfer
+    weight: 2

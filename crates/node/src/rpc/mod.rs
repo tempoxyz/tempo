@@ -8,6 +8,7 @@ pub mod simulate;
 pub mod token;
 
 pub use admin::{TempoAdminApi, TempoAdminApiServer};
+use alloy::consensus::Transaction;
 use alloy_eips::BlockId;
 use alloy_primitives::B256;
 use alloy_rpc_types_eth::{Log, ReceiptWithBloom, state::EvmOverrides};
@@ -394,9 +395,8 @@ where
             }
             Err(error) => return Err(ProviderError::other(error).into()),
         };
-        let gas_price = tx_env
-            .evm_tx()
-            .effective_gas_price(Some(evm_env.block.basefee.to()));
+        // The handler checks the balance against `gas_limit * max_fee_per_gas`.
+        let gas_price = Transaction::max_fee_per_gas(tx_env.inner());
 
         Ok(fee_token_balance
             // multiply by the scaling factor
