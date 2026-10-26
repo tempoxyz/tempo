@@ -197,13 +197,16 @@ jobs:
 
   save-state:
     needs: [resolve-refs, bench-e2e]
+    # Each scenario saves its baseline when its own leg passed, so one failing leg
+    # doesn't hold back the others (the matrix result is the aggregate).
     if: |
-      always() &&
+      !cancelled() &&
       needs.resolve-refs.outputs.has-nightly-benchmarks == 'true' &&
-      needs.bench-e2e.result == 'success'
+      needs.bench-e2e.result != 'skipped'
     name: save-state (${{ matrix.state_key }})
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       id-token: write
     strategy:
       fail-fast: false
@@ -212,7 +215,19 @@ jobs:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
+      - name: Check this scenario's benchmark passed
+        id: leg
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JOB_NAME: bench-e2e (${{ matrix.preset }}, ${{ matrix.feature_name }}) / bench-e2e
+        run: |
+          conclusion="$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?filter=latest" \
+            --paginate --jq '.jobs[] | select(.name == env.JOB_NAME) | .conclusion' | head -n 1)"
+          echo "$JOB_NAME: ${conclusion:-missing}"
+          echo "passed=$([ "$conclusion" = success ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
       - name: Prepare benchmark state
+        if: steps.leg.outputs.passed == 'true'
         env:
           FEATURE_REF: ${{ matrix.feature_ref }}
         run: |
@@ -221,6 +236,7 @@ jobs:
           printf '%s\n' "$FEATURE_REF" > "$RUNNER_TEMP/bench-state/feature-ref"
 
       - name: Save benchmark state
+        if: steps.leg.outputs.passed == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: bench-state-e2e-${{ matrix.state_key }}
