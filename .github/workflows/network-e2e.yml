@@ -118,6 +118,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      pull-requests: read
       statuses: write
       id-token: write
     steps:
@@ -169,8 +170,14 @@ jobs:
           script: |
             if (process.env.SUBMIT_RESULT === 'success') return; // Argo owns the result now.
             // Network skip is independent of Docker; a failed build still fails its own job/run.
-            const skipped = process.env.DETECT_RESULT === 'success' && process.env.REQUIRED === 'false';
-            const skipReason = process.env.DRAFT === 'true' ? 'Draft PR; waiting for review' : 'No relevant changes';
+            let skipped = process.env.DETECT_RESULT === 'success' && process.env.REQUIRED === 'false';
+            let reason = !skipped ? 'Build or dispatch failed'
+              : process.env.DRAFT === 'true' ? 'Draft PR; waiting for review' : 'No relevant changes';
+            // A dispatch-only re-run keeps detect's draft snapshot; never skip a PR that has since left draft.
+            if (skipped && process.env.DRAFT === 'true') {
+              const { data: pr } = await github.rest.pulls.get({ ...context.repo, pull_number: context.payload.pull_request.number });
+              if (!pr.draft) [skipped, reason] = [false, 'PR left draft; re-run all jobs'];
+            }
             const owner = `${context.runId}-${process.env.GITHUB_RUN_ATTEMPT}`;
             for await (const page of github.paginate.iterator(github.rest.repos.listCommitStatusesForRef, {
               ...context.repo, ref: process.env.SHA, per_page: 100,
@@ -183,7 +190,7 @@ jobs:
             await github.rest.repos.createCommitStatus({
               ...context.repo, sha: process.env.SHA, context: 'Tempo Network E2E',
               state: skipped ? 'success' : 'failure',
-              description: `${owner}: ${skipped ? skipReason : 'Build or dispatch failed'}`,
+              description: `${owner}: ${reason}`,
               target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}/attempts/${process.env.GITHUB_RUN_ATTEMPT}`,
             });
             if (!skipped) core.setFailed('Network E2E could not be started');
