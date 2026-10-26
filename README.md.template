@@ -93,8 +93,6 @@ We provide three different installation paths: installing a pre-built binary, bu
 
 See the [Tempo documentation](https://docs.tempo.xyz/guide/node) for instructions on how to install and run Tempo.
 
-Certified followers keep a local record of network identities observed in finalized boundary blocks so they can restart after an observed rotation. A fresh startup relies on the configured network identity; startup and snapshot recovery do not add identities to the local record.
-
 ### As a developer
 
 Tempo has several SDKs to help you get started building on Tempo:
