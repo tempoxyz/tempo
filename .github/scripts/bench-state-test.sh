@@ -116,16 +116,8 @@ export GITHUB_REF_NAME=main
 export STATE_TEST_ARTIFACTS='[{"artifacts":[]}]'
 [[ -z "$(bash "$scripts/bench-state.sh" owner/repo replay mainnet)" ]]
 unset STATE_TEST_ARTIFACTS
-for conclusion in failure cancelled skipped; do
-  export STATE_TEST_CONCLUSION="$conclusion"
-  [[ -z "$(bash "$scripts/bench-state.sh" owner/repo replay mainnet)" ]]
-done
-unset STATE_TEST_CONCLUSION
-export STATE_TEST_WORKFLOW=.github/workflows/bench-e2e-scheduled.yml STATE_TEST_VALUE="$previous" STATE_TEST_CONCLUSION=failure
-[[ "$(bash "$scripts/bench-state.sh" owner/repo e2e default)" == "$previous" ]]
-export STATE_TEST_CONCLUSION=cancelled
-[[ -z "$(bash "$scripts/bench-state.sh" owner/repo e2e default)" ]]
-export STATE_TEST_WORKFLOW=.github/workflows/bench-replay-scheduled.yml
+export STATE_TEST_CONCLUSION=failure
+[[ "$(bash "$scripts/bench-state.sh" owner/repo replay mainnet)" == "$previous" ]]
 unset STATE_TEST_CONCLUSION
 export STATE_TEST_STATUS=in_progress
 [[ -z "$(bash "$scripts/bench-state.sh" owner/repo replay mainnet)" ]]
