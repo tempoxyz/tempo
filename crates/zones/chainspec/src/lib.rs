@@ -16,7 +16,7 @@ use std::{fmt::Display, sync::Arc};
 use tempo_chainspec::{
     TempoChainSpec, TempoConsensusSpec,
     hardfork::TempoHardfork,
-    spec::{DEV, TempoHardforks, chainspec_from_chain_id},
+    spec::{TempoHardforks, chainspec_from_chain_id},
 };
 use tempo_primitives::TempoHeader;
 use zone_primitives::constants::{ZoneChainIdError, decode_l1_chain_id, decode_zone_chain_id};
@@ -37,7 +37,7 @@ pub struct ZoneChainSpec {
 impl ZoneChainSpec {
     /// Converts a genesis configuration into a Zone chain specification.
     ///
-    /// Known public and local development chains inherit their parent schedule. Custom chains
+    /// Known public chains inherit their parent schedule. Development and custom chains
     /// use only the supplied genesis, so dependency updates cannot activate omitted forks.
     pub fn from_genesis(genesis: Genesis) -> Result<Self, ZoneChainSpecError> {
         let parent_chain_id = decode_l1_chain_id(genesis.config.chain_id)?;
@@ -241,13 +241,10 @@ pub enum ZoneChainSpecError {
 
 /// Returns the Tempo chain specification whose hardfork schedule a parent uses.
 ///
-/// Local development chains 1337 and 31337 use the Tempo DEV schedule. Custom chains
-/// have no implicit parent schedule; `ZONE_L1_DEV_CHAIN_IDS` is no longer used.
+/// Only mainnet and testnet have an implicit parent schedule. Development and custom
+/// chains require an explicitly supplied L1 specification or use their genesis schedule.
 pub fn tempo_chain_spec_for_l1(chain_id: u64) -> Option<Arc<TempoChainSpec>> {
-    chainspec_from_chain_id(chain_id).or_else(|| match chain_id {
-        1_337 | 31_337 => Some(DEV.clone()),
-        _ => None,
-    })
+    chainspec_from_chain_id(chain_id)
 }
 
 #[cfg(test)]
@@ -462,6 +459,21 @@ mod tests {
             ZoneChainSpec::from_genesis(genesis),
             Err(ZoneChainSpecError::InvalidChainId(_))
         ));
+    }
+
+    #[test]
+    fn dev_genesis_preserves_null_and_missing_fork_caps() {
+        for parent_chain_id in [1337, 31337] {
+            let mut genesis = historical_custom_genesis();
+            genesis.config.chain_id = zone_chain_id(parent_chain_id, 11).unwrap();
+            let expected = TempoChainSpec::from_genesis(genesis.clone());
+            let zone = ZoneChainSpec::from_genesis(genesis.clone()).unwrap();
+
+            assert!(tempo_chain_spec_for_l1(parent_chain_id).is_none());
+            assert_eq!(zone.genesis(), &genesis);
+            assert_eq!(zone.genesis_hash(), expected.genesis_hash());
+            assert_eq!(zone.tempo_hardfork_at(u64::MAX), TempoHardfork::T11);
+        }
     }
 
     fn historical_custom_genesis() -> Genesis {

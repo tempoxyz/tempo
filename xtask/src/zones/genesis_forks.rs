@@ -6,7 +6,9 @@ use eyre::{WrapErr as _, ensure, eyre};
 use serde_json::Value;
 use std::{collections::BTreeMap, time::Duration};
 use tempo_alloy::{TempoNetwork, rpc::ForkSchedule};
-use tempo_chainspec::{cli::TempoHardforkArgs, hardfork::TempoHardfork};
+use tempo_chainspec::{
+    cli::TempoHardforkArgs, hardfork::TempoHardfork, spec::chainspec_from_chain_id,
+};
 use tokio::time::timeout;
 use zone_primitives::constants::decode_l1_chain_id;
 
@@ -110,10 +112,14 @@ impl ResolvedForks {
                     config
                         .extra_fields
                         .insert(key.to_owned(), Value::from(time));
-                } else if self.parent_chain_id.is_none() {
+                } else if self
+                    .parent_chain_id
+                    .and_then(chainspec_from_chain_id)
+                    .is_none()
+                {
                     config.extra_fields.insert(key.to_owned(), Value::Null);
                 } else {
-                    // Unscheduled RPC forks must remain eligible for parent inheritance.
+                    // Public parents provide authoritative schedules on later binary upgrades.
                     config.extra_fields.remove(key);
                 }
             }
@@ -155,6 +161,9 @@ mod tests {
     use alloy::{providers::ProviderBuilder, transports::mock::Asserter};
     use serde_json::json;
     use tempo_alloy::rpc::ForkInfo;
+    use tempo_chainspec::spec::{DEV, TempoHardforks};
+    use zone_chainspec::ZoneChainSpec;
+    use zone_primitives::constants::zone_chain_id;
 
     fn schedule() -> ForkSchedule {
         serde_json::from_value(json!({ "active": "T11", "schedule": [
@@ -212,22 +221,42 @@ mod tests {
 
     #[test]
     fn rpc_genesis_omits_unscheduled_forks() {
-        let forks = ResolvedForks::from_schedule(4217, 100, schedule()).unwrap();
-        let mut config = ChainConfig::default();
-        config
-            .extra_fields
-            .insert("t13Time".to_owned(), Value::Null);
-        forks.write_to(&mut config);
+        for parent_chain_id in [4217, 42431] {
+            let forks = ResolvedForks::from_schedule(parent_chain_id, 100, schedule()).unwrap();
+            let mut config = ChainConfig::default();
+            config
+                .extra_fields
+                .insert("t13Time".to_owned(), Value::Null);
+            forks.write_to(&mut config);
 
-        assert_eq!(config.extra_fields["t0Time"], json!(10));
-        assert_eq!(config.extra_fields["t11Time"], json!(20));
-        assert_eq!(config.extra_fields["t12Time"], json!(200));
-        for &fork in TempoHardfork::VARIANTS {
-            if let Some(key) = fork.genesis_key()
-                && !forks.activations.contains_key(&fork)
-            {
-                assert!(!config.extra_fields.contains_key(key), "{key}");
+            assert_eq!(config.extra_fields["t0Time"], json!(10));
+            assert_eq!(config.extra_fields["t11Time"], json!(20));
+            assert_eq!(config.extra_fields["t12Time"], json!(200));
+            for &fork in TempoHardfork::VARIANTS {
+                if let Some(key) = fork.genesis_key()
+                    && !forks.activations.contains_key(&fork)
+                {
+                    assert!(!config.extra_fields.contains_key(key), "{key}");
+                }
             }
+        }
+    }
+
+    #[test]
+    fn rpc_genesis_preserves_dev_and_custom_fork_caps() {
+        for parent_chain_id in [1337, 31337, 31318] {
+            let forks = ResolvedForks::from_schedule(parent_chain_id, 100, schedule()).unwrap();
+            let mut genesis = DEV.inner.genesis.clone();
+            genesis.config.chain_id = zone_chain_id(parent_chain_id, 3).unwrap();
+            forks.write_to(&mut genesis.config);
+
+            assert_eq!(genesis.config.extra_fields["t12Time"], json!(200));
+            assert_eq!(genesis.config.extra_fields["t13Time"], Value::Null);
+            assert_eq!(genesis.config.extra_fields["t14Time"], Value::Null);
+            let zone = ZoneChainSpec::from_genesis(genesis).unwrap();
+            assert_eq!(zone.tempo_hardfork_at(199), TempoHardfork::T11);
+            assert_eq!(zone.tempo_hardfork_at(200), TempoHardfork::T12);
+            assert_eq!(zone.tempo_hardfork_at(u64::MAX), TempoHardfork::T12);
         }
     }
 }

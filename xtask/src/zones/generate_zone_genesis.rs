@@ -765,8 +765,14 @@ mod tests {
             ] {
                 assert_eq!(genesis.config.extra_fields[key], expected);
             }
-            assert!(!genesis.config.extra_fields.contains_key("t13Time"));
-            assert!(!genesis.config.extra_fields.contains_key("t14Time"));
+            assert_eq!(
+                genesis.config.extra_fields["t13Time"],
+                serde_json::Value::Null
+            );
+            assert_eq!(
+                genesis.config.extra_fields["t14Time"],
+                serde_json::Value::Null
+            );
             let spec = ZoneChainSpec::from_genesis(genesis).unwrap();
             for (timestamp, expected) in activations {
                 assert_eq!(spec.tempo_hardfork_at(timestamp), expected);

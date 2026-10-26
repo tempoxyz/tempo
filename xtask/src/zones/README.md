@@ -22,7 +22,9 @@ default.
 RPC mode reads `eth_chainId`, `tempo_forkSchedule`, and the latest L1 header. The
 RPC chain ID must match the parent encoded in the Zone chain ID. Genesis preserves
 activation timestamps, including scheduled future upgrades, and omits unscheduled
-forks so known parent chains can supply their activation times on later node upgrades.
+forks only for mainnet and testnet, whose compiled schedules supply activation
+times on later node upgrades. Development and custom parents keep unscheduled
+forks explicitly `null`; chain IDs 1337 and 31337 do not imply the bundled DEV schedule.
 The latest L1 head is used only to validate the reported schedule. The genesis
 timestamp comes from the anchor header, and the initialization EVM uses the fork
 active at that timestamp. With the same anchor, schedule, and generation parameters,
@@ -34,7 +36,7 @@ anchor, or with `--tempo-genesis-header-rlp` to supply the anchor explicitly.
 
 Scheduled fork settings are persisted in `genesis.json`; restarting nodes does not
 fetch a new schedule. Unscheduled forks can inherit the compiled parent schedule
-when it becomes available. Custom L1 chains without a compiled parent schedule
+when it becomes available for mainnet or testnet. Development and custom L1 chains
 still require a coordinated configuration update. Existing Zone databases are not
 modified by generation.
 
