@@ -56,7 +56,7 @@ COPY --from=prover-eif /tempo-zone-prover.eif /opt/tempo-zone-prover/tempo-zone-
 COPY --chmod=0755 zones/scripts/run-prover-host.sh /opt/tempo-zone-prover/run-prover-host.sh
 RUN test -x /opt/tempo-zone-prover/run-prover-host.sh
 
-EXPOSE 5000
+EXPOSE 5000 9100
 
 USER ${PROVER_UID}:${PROVER_GID}
 

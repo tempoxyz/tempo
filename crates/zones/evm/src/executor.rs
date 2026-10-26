@@ -214,7 +214,14 @@ where
             return Err(BlockValidationError::msg("withdrawals are not permitted").into());
         }
 
-        self.inner.apply_pre_execution_changes()
+        if self.inner.evm.cfg_env().spec.is_t13() {
+            // TIP-1119: Zones explicitly select history storage and omit Ethereum system calls.
+            self.inner
+                .system_caller
+                .apply_blockhashes_contract_call(self.inner.ctx.parent_hash, &mut self.inner.evm)
+        } else {
+            self.inner.apply_pre_execution_changes()
+        }
     }
 
     fn execute_transaction_without_commit(
@@ -295,7 +302,24 @@ where
             .into());
         }
 
-        self.inner.finish()
+        if !self.inner.evm.cfg_env().spec.is_t13() {
+            return self.inner.finish();
+        }
+
+        let gas_used = if self.inner.evm.cfg_env().enable_amsterdam_eip8037 {
+            self.inner.max_block_gas_used()
+        } else {
+            self.inner.cumulative_tx_gas_used
+        };
+
+        // TIP-1119: omit Ethereum requests, rewards, and balance increments.
+        let result = BlockExecutionResult {
+            receipts: self.inner.receipts,
+            requests: Default::default(),
+            gas_used,
+            blob_gas_used: self.inner.blob_gas_used,
+        };
+        Ok((self.inner.evm, result))
     }
 
     fn evm_mut(&mut self) -> &mut Self::Evm {
@@ -313,18 +337,32 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        ADVANCE_TEMPO_SELECTOR, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS, ZoneBlockExecutor,
-        ZoneBlockPhase, ZoneTransactionKind,
-    };
+    use super::*;
 
     use alloy_consensus::{Header, Sealable as _, Signed, TxLegacy};
-    use alloy_evm::{EvmEnv, EvmFactory, block::BlockExecutor, eth::EthBlockExecutionCtx};
+    use alloy_eips::{
+        eip2935::{HISTORY_STORAGE_ADDRESS, HISTORY_STORAGE_CODE},
+        eip4788::BEACON_ROOTS_ADDRESS,
+        eip7002::WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS,
+        eip7251::CONSOLIDATION_REQUEST_PREDEPLOY_ADDRESS,
+    };
+    use alloy_evm::{
+        EvmEnv, EvmFactory,
+        block::system_calls::{
+            BUILDER_DEPOSIT_REQUEST_PREDEPLOY_ADDRESS, BUILDER_EXIT_REQUEST_PREDEPLOY_ADDRESS,
+        },
+        eth::EthBlockExecutionCtx,
+    };
     use alloy_primitives::{Address, B256, Bytes, Log, Signature, U256};
     use alloy_sol_types::{SolCall, SolEvent};
-    use reth_chainspec::EthChainSpec as _;
+    use reth_chainspec::{EthChainSpec as _, EthereumHardfork, ForkCondition};
     use reth_primitives_traits::Recovered;
-    use revm::database::InMemoryDB;
+    use revm::{
+        Database as _,
+        database::InMemoryDB,
+        state::{AccountInfo, Bytecode},
+    };
+    use std::sync::Arc;
     use tempo_chainspec::{hardfork::TempoHardfork, spec::DEV};
     use tempo_contracts::zones::{
         ChaumPedersenProof, DecryptionData, IZoneInbox, IZoneOutbox, LegacyTempoAdvanced,
@@ -1120,5 +1158,114 @@ mod tests {
 
             Ok(())
         })
+    }
+
+    #[test]
+    fn system_calls_activation_selects_history_only() {
+        let mut genesis = DEV.genesis().clone();
+        genesis.config.chain_id = zone_chain_id(DEV.chain_id(), 2).unwrap();
+        let mut chain_spec = ZoneChainSpec::from_genesis(genesis).unwrap();
+        Arc::make_mut(&mut chain_spec.inner)
+            .inner
+            .hardforks
+            .insert(EthereumHardfork::Amsterdam, ForkCondition::Timestamp(0));
+        let excluded = [
+            BEACON_ROOTS_ADDRESS,
+            WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS,
+            CONSOLIDATION_REQUEST_PREDEPLOY_ADDRESS,
+            BUILDER_DEPOSIT_REQUEST_PREDEPLOY_ADDRESS,
+            BUILDER_EXIT_REQUEST_PREDEPLOY_ADDRESS,
+        ];
+        for block_number in [0, 1] {
+            for (fork, has_code) in [
+                (TempoHardfork::T12, true),
+                (TempoHardfork::T13, false),
+                (TempoHardfork::T13, true),
+            ] {
+                let mut db = InMemoryDB::default();
+                if has_code {
+                    // Every excluded contract writes slot zero if automatically called.
+                    let marker = Bytecode::new_legacy(alloy_primitives::bytes!("600160005500"));
+                    for address in excluded {
+                        db.insert_account_info(
+                            address,
+                            AccountInfo::default().with_code(marker.clone()),
+                        );
+                    }
+                    db.insert_account_info(
+                        HISTORY_STORAGE_ADDRESS,
+                        AccountInfo::default()
+                            .with_code(Bytecode::new_legacy(HISTORY_STORAGE_CODE.clone())),
+                    );
+                }
+                let factory = ZoneEvmFactory::new(MockL1Reader::default(), Address::ZERO);
+                let mut env = EvmEnv::<TempoHardfork, TempoBlockEnv>::default();
+                env.block_env.inner.number = U256::from(block_number);
+                env.cfg_env.spec = fork;
+                env.cfg_env.enable_amsterdam_eip8037 = has_code;
+                let evm = factory.create_evm(&mut db, env);
+                let ctx = TempoBlockExecutionCtx {
+                    inner: EthBlockExecutionCtx {
+                        parent_hash: B256::repeat_byte(0x42),
+                        parent_beacon_block_root: has_code.then_some(B256::ZERO),
+                        ommers: &[],
+                        withdrawals: None,
+                        extra_data: Bytes::new(),
+                        tx_count_hint: None,
+                        slot_number: None,
+                    },
+                    general_gas_limit: 0,
+                    shared_gas_limit: 0,
+                    consensus_context: None,
+                };
+                let mut executor = ZoneBlockExecutor::new(evm, ctx, &chain_spec);
+                executor.apply_pre_execution_changes().unwrap();
+                // Isolate automatic system calls from the required opening transaction.
+                executor.phase = ZoneBlockPhase::Executing;
+                let receipt = TempoReceipt {
+                    tx_type: TempoTxType::Legacy,
+                    success: true,
+                    cumulative_gas_used: 21_000,
+                    // Malformed Ethereum deposit logs must remain ordinary receipt logs.
+                    logs: if has_code {
+                        vec![]
+                    } else {
+                        vec![Log::new_unchecked(
+                            chain_spec.deposit_contract().unwrap().address,
+                            vec![alloy_evm::eth::eip6110::DepositEvent::SIGNATURE_HASH],
+                            Bytes::new(),
+                        )]
+                    },
+                };
+                executor.inner.receipts.push(receipt.clone());
+                executor.inner.cumulative_tx_gas_used = 21_000;
+                executor.inner.block_regular_gas_used = 22_000;
+                executor.inner.block_state_gas_used = 23_000;
+                executor.inner.blob_gas_used = 131_072;
+                let (evm, result) = executor.finish().unwrap();
+                drop(evm);
+                assert_eq!(result.receipts, vec![receipt]);
+                assert!(result.requests.is_empty());
+                assert_eq!(result.gas_used, if has_code { 23_000 } else { 21_000 });
+                assert_eq!(result.blob_gas_used, 131_072);
+                assert_eq!(
+                    db.storage(HISTORY_STORAGE_ADDRESS, U256::ZERO).unwrap(),
+                    if has_code && block_number > 0 {
+                        U256::from_be_bytes([0x42; 32])
+                    } else {
+                        U256::ZERO
+                    },
+                );
+                for address in excluded {
+                    assert_eq!(
+                        db.storage(address, U256::ZERO).unwrap(),
+                        U256::from(u64::from(
+                            !fork.is_t13() && (address != BEACON_ROOTS_ADDRESS || block_number > 0),
+                        )),
+                        "{address} at {fork:?}, block {block_number}"
+                    );
+                }
+            }
+        }
     }
 }

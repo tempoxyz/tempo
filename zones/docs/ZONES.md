@@ -314,6 +314,100 @@ and reads the resulting mode or role back from the portal. Safe proposal mode st
 simulation and file creation, so verify the resulting role or mode after the Safe executes
 the imported transaction.
 
+### Sequencer deposit allowlist
+
+With portal access mode off, anyone can deposit on L1. A sequencer started with
+`--deposits.allowlist` bounces deposits whose L1 sender is not on its local allowlist while it
+leads: the deposit fails decryption and refunds to its `tempoRefundRecipient`, minus the bounce-back
+fee. The check runs only on the leader, so each sequencer enforces its own copy of the list.
+
+Each sequencer stores its list in `<datadir>/deposit-allowlist.json`. The file is the whole
+state, and consensus does not replicate it. Manage it as carefully as the sequencer key: a
+missing, stale, or diverged file bounces deposits that should be credited, or credits deposits
+that should bounce.
+
+| File state | Behavior while leading |
+|------------|------------------------|
+| Missing (uninitialized) | Credits every deposit. The node logs a warning at startup. |
+| Present | Credits only listed senders. A present but empty list bounces every deposit. |
+| Unreadable, or over 80,000 addresses | The node fails to start. |
+
+The node creates the file on the first write, which must be `zoneAdmin_replaceDepositAllowlist`:
+an uninitialized sequencer rejects `zoneAdmin_setDepositAllowed`, because a partial first list
+would bounce everyone else. Change the file only through the `zoneAdmin` methods,
+never by hand. Each write persists the file with an fsync before the leader uses the new list.
+
+#### Flags and methods
+
+| Node | Flags |
+|------|-------|
+| Sequencer | `--deposits.allowlist --deposits.allowlist.admin <ADDRESS>` |
+| RPC follower (relay) | `--deposits.allowlist.admin <ADDRESS>` |
+
+Without `--deposits.allowlist`, a sequencer credits every deposit and ignores the file.
+The methods are served over HTTP JSON-RPC:
+
+| Method | Description |
+|--------|-------------|
+| `zoneAdmin_setDepositAllowed(addresses, allowed, nonce, deadline, signature)` | Add (`allowed = true`) or remove senders |
+| `zoneAdmin_replaceDepositAllowlist(addresses, nonce, deadline, signature)` | Replace the whole list |
+| `zoneAdmin_getDepositAllowlist()` | `{initialized, nonce, listHash, count, addresses}`. Through a relay, fails if the sequencers differ. |
+| `zoneAdmin_getDepositAllowlistStatus()` | `{sequencer, initialized, nonce, listHash, count}` for each sequencer through a relay; a sequencer reports only itself, without `sequencer` |
+
+Writes carry an EIP-712 signature from the admin address. The domain is
+`{name: "TempoZoneDepositAllowlist", version: "1", chainId: <zone chain id>}`, and the structs are
+`SetDepositAllowed(address[] addresses,bool allowed,uint64 nonce,uint64 deadline)` and
+`ReplaceDepositAllowlist(address[] addresses,uint64 nonce,uint64 deadline)`. Each nonce must
+exceed the last applied nonce; gaps are allowed, so Unix milliseconds work. The deadline is in
+Unix seconds, at most 10 minutes ahead.
+
+An RPC follower relays each write to every sequencer. The call succeeds only after every
+sequencer acknowledges. If it fails, the sequencers that already applied the write keep it, so
+retry the same signed write: sequencers that already applied it acknowledge it without applying it
+again. Each RPC follower relays one write at a time and answers `Busy` to a write sent while
+another is in flight, but writes sent through different followers can still reach sequencers in
+different orders, so send writes one at a time and wait for each to succeed before sending the
+next.
+`listHash` is the keccak-256 of the addresses concatenated in ascending order. Sequencers with the
+same `initialized`, `nonce`, and `listHash` hold the same list.
+
+#### Enabling the allowlist on a zone
+
+1. Keep portal access mode on, so deposits still need an L1 account role.
+2. Upgrade every sequencer and RPC follower to a release with the allowlist. Do not call the
+   methods while versions are mixed: a node that does not know the relay channel disconnects
+   the peer that uses it.
+3. Restart the sequencers with `--deposits.allowlist --deposits.allowlist.admin <ADDRESS>`, and
+   the relaying RPC followers with `--deposits.allowlist.admin <ADDRESS>`. The lists are
+   uninitialized, so the sequencers keep crediting every deposit.
+4. Send a signed `zoneAdmin_replaceDepositAllowlist` with the full list.
+5. Call `zoneAdmin_getDepositAllowlistStatus` and confirm that every sequencer reports
+   `initialized: true` with the same `nonce` and `listHash`.
+6. Turn access mode off with `just set-access-mode false`. From here on, the allowlist alone
+   decides who can deposit.
+
+#### Adding, replacing, or restoring a sequencer
+
+Once access mode is off, an uninitialized sequencer credits every deposit while it leads, and
+a sequencer restored with an old file enforces an old list. Nothing monitors for this, so treat
+the file as part of every sequencer change: if a sequencer fails irreparably and its datadir is
+replaced, bring `deposit-allowlist.json` over with it. Before such a sequencer joins the leader
+rotation:
+
+1. Copy `deposit-allowlist.json` from a healthy sequencer into its datadir. The file holds no
+   node-specific data, and copying the nonce keeps old writes from being replayed.
+2. Start it, then confirm with `zoneAdmin_getDepositAllowlistStatus` that it matches the others.
+
+If no healthy copy is available, start the node and immediately send a signed
+`zoneAdmin_replaceDepositAllowlist` with a new nonce. Until that write lands, the node credits
+everyone while it leads.
+
+Status also detects drift after a failed write, a restored backup, or a sequencer that ran
+without `--deposits.allowlist` while writes were sent. To fix drift, send a signed replace
+with the full list; it brings every sequencer to the same list and nonce. Re-enabling
+`--deposits.allowlist` on a sequencer resumes enforcement from its file as it was left, so
+check status first.
+
 ### 5. Start the Zone Node
 
 ```bash
@@ -779,14 +873,15 @@ cast code 0x5A4d000000000000000000000000000000000000 --rpc-url "$ETH_RPC_URL"
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--l1.rpc-url` | (required) | Certified Tempo follower WebSocket RPC URL |
-| `--l1.portal-address` | (from zone.json) | ZonePortal contract on L1 |
 | `--zone.id` | (deprecated) | Optional compatibility check against the zone ID encoded in the genesis chain ID. |
 | `--sequencer` | false | Enable sequencer mode for block production and withdrawal batch submission |
 | `--sequencer-key-file` | (required for sequencing) | Owner-readable file or FIFO containing the sequencer private key |
 | `--sequencer.enable-prover` | false | Run detached SPF validation; supported by sequencers and `rpc_only` P2P followers |
 | `--sequencer.prover-address` | (optional) | Repeatable `HARDFORK=HOST:PORT` assignment selected by the live L1 fork; missing forks stop proving and the readiness gauge flags current/next-72-hour gaps |
-| `--sequencer.prover-attestation-policy` | (required for remote proving) | JSON PCR0–2 allowlist shared by all endpoints; authenticates the transport and controls evidence freshness without changing L1 verifier policy |
+| `--sequencer.prover-attestation-policy` | (optional) | JSON PCR0–2 allowlist shared by all endpoints, overriding the PCRs compiled into the binary for each assigned fork; authenticates the transport and controls evidence freshness without changing L1 verifier policy |
 | `--shadow-prover.pcrs` | (optional) | Pin PCR0,PCR1,PCR2 (three comma-separated, nonzero 48-byte hex measurements) to authenticate remote Nitro proofs on an RPC follower |
+| `--deposits.allowlist` | false | Bounce deposits from L1 senders missing from `<datadir>/deposit-allowlist.json` while leading; see [Sequencer deposit allowlist](#sequencer-deposit-allowlist) |
+| `--deposits.allowlist.admin` | (required with `--deposits.allowlist`) | Address whose EIP-712 signatures authorize `zoneAdmin` allowlist writes; on an `rpc_only` follower, enables relaying them to the sequencers |
 | `--deposit-decryption-keys-file` | (optional) | File containing additional historical or pre-provisioned deposit decryption keys, one hex key per line |
 | `--zone.batch-interval-blocks` | 120 | Zone blocks between empty withdrawal batch boundaries / L1 submissions (~1 minute at Tempo's 500 ms block time) |
 | `--zone.poll-interval-secs` | 1 | Fallback interval for reconciling the canonical Zone head when no native notification arrives |
@@ -806,8 +901,10 @@ cast code 0x5A4d000000000000000000000000000000000000 --rpc-url "$ETH_RPC_URL"
 | `SEQUENCER_KEY_FILE` | For sequencing | Owner-readable file or FIFO containing the sequencer private key |
 | `SEQUENCER_ENABLE_PROVER` | No | Enable detached SPF validation, including on an `rpc_only` P2P follower |
 | `SEQUENCER_PROVER_ADDRESS` | No | Comma-separated `HARDFORK=HOST:PORT` assignments; see the [prover upgrade runbook](../bin/prover/enclave/README.md#upgrading-across-an-l1-hardfork) |
-| `SEQUENCER_PROVER_ATTESTATION_POLICY` | For remote proving | JSON PCR0–2 allowlist and evidence-freshness policy path shared by the configured endpoints |
+| `SEQUENCER_PROVER_ATTESTATION_POLICY` | No | JSON PCR0–2 allowlist and evidence-freshness policy path overriding the compiled-in PCRs for the configured endpoints |
 | `SHADOW_PROVER_PCRS` | No | Three comma-separated 48-byte enclave measurements for local shadow verification |
+| `DEPOSITS_ALLOWLIST` | No | Same as `--deposits.allowlist` |
+| `DEPOSITS_ALLOWLIST_ADMIN` | With `DEPOSITS_ALLOWLIST` | Same as `--deposits.allowlist.admin` |
 | `DEPOSIT_DECRYPTION_KEYS_FILE` | During encryption-key rotation | Additional historical or pre-provisioned deposit decryption keys, one hex key per line |
 | `ADMIN_KEY` | For portal governance | Portal admin private key for `enableToken` / deposit pause controls. `SEQUENCER_KEY` only works for legacy zones where admin == sequencer. |
 | `PRIVATE_KEY` | For transactions | Key for L1 transactions (deposits, approvals) |

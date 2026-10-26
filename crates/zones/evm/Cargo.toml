@@ -1,7 +1,7 @@
 [package]
 name = "zone-evm"
 description = "Tempo Zone EVM configuration and block execution"
-version = "0.3.5"
+version = "0.3.7"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -48,6 +48,7 @@ thiserror.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+alloy-eips.workspace = true
 alloy-genesis.workspace = true
 alloy-rlp.workspace = true
 eyre.workspace = true

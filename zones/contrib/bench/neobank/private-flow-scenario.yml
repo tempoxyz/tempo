@@ -68,7 +68,7 @@ scenario:
         sender_address: { var: account.address }
         recipient: { var: account.address }
         input_token: "${ZONES_BENCH_DLUSD}"
-        fee_token: "${ZONES_BENCH_DLUSD}"
+        fee_token: "${ZONES_BENCH_JOURNEY_ZONE_FEE_TOKEN}"
         amount: ${ZONES_BENCH_WITHDRAWAL_AMOUNT}
         min_vault_assets: ${ZONES_BENCH_WITHDRAWAL_AMOUNT}
         min_vault_shares: ${ZONES_BENCH_WITHDRAWAL_AMOUNT}
@@ -84,7 +84,7 @@ scenario:
         sender_address: { var: account.address }
         recipient: { var: account.address }
         output_token: "${ZONES_BENCH_DLUSD}"
-        fee_token: "${ZONES_BENCH_DLUSD}"
+        fee_token: "${ZONES_BENCH_JOURNEY_ZONE_FEE_TOKEN}"
         amount: { var: earn_deposit.zone_return.processed.args.amount }
         min_vault_assets: ${ZONES_BENCH_WITHDRAWAL_AMOUNT}
         min_output_amount: ${ZONES_BENCH_WITHDRAWAL_AMOUNT}
@@ -104,7 +104,7 @@ scenario:
         template: offramp
         with:
           from: { var: account.ref }
-          fee_token: "${ZONES_BENCH_DLUSD}"
+          fee_token: "${ZONES_BENCH_JOURNEY_ZONE_FEE_TOKEN}"
           call:
             args:
               - "${ZONES_BENCH_DLUSD}"
@@ -141,8 +141,35 @@ scenario:
       timeout: 45s
       save: offramp_result
 
+    # The sequencer finalizes a withdrawal batch in the Zone block holding its requests,
+    # so the first BatchFinalized from that block carries this withdrawal's batch index.
+    - id: offramp_batch
+      depends_on: [offramp_result]
+      wait_log:
+        chain: zone
+        from_block: { var: offramp_result.block_number }
+        address: "${ZONES_BENCH_OUTBOX}"
+        abi: ZoneOutbox
+        event: BatchFinalized
+        max_block_range: 1000
+      save: offramp_batch
+
+    # submitBatch settles each Zone batch on L1 under the same index, after proving.
+    - id: offramp_settled
+      depends_on: [l1_before_offramp, offramp_result, offramp_batch]
+      wait_log:
+        chain: l1
+        from_block: { var: l1_before_offramp.block_number }
+        address: "${L1_PORTAL_ADDRESS}"
+        abi: ZonePortal
+        event: BatchSubmitted
+        where:
+          withdrawalBatchIndex: { var: offramp_batch.args.withdrawalBatchIndex }
+        max_block_range: 1000
+      save: offramp_settled
+
     - id: offramp_processed
-      depends_on: [l1_before_offramp, offramp, offramp_result]
+      depends_on: [l1_before_offramp, offramp, offramp_result, offramp_settled]
       wait_log:
         chain: l1
         from_block: { var: l1_before_offramp.block_number }
