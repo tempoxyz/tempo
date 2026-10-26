@@ -521,10 +521,6 @@ jobs:
           path: earn
           persist-credentials: false
 
-      - name: Initialize Earn public dependencies
-        working-directory: earn
-        # PropAMM is private and only needed by Earn's integration tests.
-        run: git submodule update --init lib/forge-std lib/openzeppelin-contracts
 
       - name: Prepare persistent topology control path
         env:
@@ -560,6 +556,18 @@ jobs:
       - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           toolchain: 1.98.0
+      - name: Restore Earn's solar compiler
+        # Present when Earn compiles with solar (earn/solar.lock); solidity-deps.sh builds it with cargo.
+        if: ${{ hashFiles('earn/earn/solar.lock') != '' }}
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: earn/.solar
+          key: earn-solar-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('earn/earn/solar.lock') }}
+      - name: Initialize Earn public dependencies
+        # Sets EARN_ROOT to Earn's Foundry project, at the checkout root or in its earn/ directory.
+        run: |
+          root="$(bash .github/scripts/prepare-earn-checkout.sh earn)"
+          echo "EARN_ROOT=$root" >> "$GITHUB_ENV"
       - uses: tempoxyz/gh-actions/actions/setup-mold@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
       - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
@@ -586,6 +594,7 @@ jobs:
         with:
           path: |
             earn/cache
+            earn/earn/cache
             crates/zones/contracts/cache
             crates/zones/contracts/out
             crates/zones/contracts/benchmark-out
@@ -681,8 +690,11 @@ jobs:
           forge build --root crates/zones/contracts --no-lint
           mkdir -p crates/zones/contracts/benchmark-out
           cp -a crates/zones/contracts/out/. crates/zones/contracts/benchmark-out/
-          forge build \
-            --root earn \
+          # Earn may compile with its own wrapper (solar-solc), given absolutely and to Earn only.
+          earn_env=()
+          if [[ -x "$EARN_ROOT/solar-solc" ]]; then earn_env=(FOUNDRY_SOLC="$EARN_ROOT/solar-solc"); fi
+          env ${earn_env[@]+"${earn_env[@]}"} forge build \
+            --root "$EARN_ROOT" \
             --skip test \
             --skip script \
             --no-lint \

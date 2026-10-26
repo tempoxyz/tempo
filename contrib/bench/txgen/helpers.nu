@@ -6,7 +6,13 @@ const TXGEN_HELPER_PRESETS_DIR = "contrib/bench/txgen/presets"
 const TXGEN_HELPER_TIP20_PIECES_DIR = "contrib/bench/txgen/presets/tip20"
 const TXGEN_HELPER_TIP20_SCENARIO_PRESETS = ["default" "public" "tip20"]
 const TXGEN_HELPER_ALWAYS_FUND_PRESETS = [
+    "zone-earn-mix"
+    "zone-earn-hot"
+    "zone-earn-serial"
+    "zone-portal-hot"
     "dex"
+    "bridge-mix"
+    "bridge-mix-new-accounts"
     "neobank-deposit"
     "neobank-swap"
     "neobank-withdraw"
@@ -18,7 +24,11 @@ const TXGEN_HELPER_ALWAYS_FUND_PRESETS = [
     "zone-portal-throughput"
 ]
 # Presets composed by txgen-prepare-public-mix-preset from the public-mix fixtures.
-const TXGEN_HELPER_PUBLIC_MIX_PRESETS = ["public-mix" "vault-throughput" "zone-portal-throughput"]
+const TXGEN_HELPER_PUBLIC_MIX_PRESETS = ["public-mix" "vault-throughput" "zone-portal-throughput" "zone-earn-mix" "zone-earn-hot" "zone-earn-serial" "zone-portal-hot"]
+# Presets that pin the zone portal count instead of sizing it by TPS (TXGEN_ZONE_COUNT still overrides).
+const TXGEN_HELPER_PRESET_ZONE_COUNTS = {"zone-earn-hot": 1, "zone-portal-hot": 1}
+# Presets whose zone settlement and Earn deposits come from one sender with ordered nonces.
+const TXGEN_HELPER_SINGLE_SENDER_PRESETS = ["zone-earn-serial"]
 const TXGEN_HELPER_EXISTING_RECIPIENTS_START = 10000
 const TXGEN_HELPER_KEYCHAIN_ACCESS_KEYS_START = 100000
 const TXGEN_HELPER_KEYCHAIN_AUTHORIZE_SETUP_GAS_LIMIT = 20000000
@@ -623,6 +633,26 @@ def txgen-fund-accounts [txgen_bin: string, spec_path: string, rpc_url: string] 
     txgen-wait-for-txpool-drain $rpc_url $TXGEN_HELPER_FUND_DRAIN_TIMEOUT_SECS
 }
 
+# Portal count: TXGEN_ZONE_COUNT, else the preset's pinned count, else the TPS-sized default.
+def txgen-zone-count [preset_name: string, automatic: int] {
+    let pinned = ($TXGEN_HELPER_PRESET_ZONE_COUNTS | get -o $preset_name)
+    $env.TXGEN_ZONE_COUNT? | default ($pinned | default $automatic) | into int
+}
+
+# Sends zone settlement and Earn deposits from users[0] with ordered nonces.
+def txgen-single-sender-templates [templates: record] {
+    $templates | items { |name, template|
+        let serial = ($name =~ '^(zone_withdraw|vault_deposit)_[0-9]+$')
+        let value = if $serial {
+            $template
+                | upsert from {pool: users, select: {index: 0}}
+                | upsert expiring_nonce false
+                | reject -o valid_for_secs nonce
+        } else { $template }
+        {name: $name, value: $value}
+    } | transpose -r -d
+}
+
 def txgen-prepare-zones-preset [spec_path: string, count: int, accounts: int, zones: int, mode: string] {
     if $mode not-in [mixed deposit withdraw] { error make {msg: "TXGEN_ZONE_MODE must be mixed, deposit, or withdraw"} }
     let spec = (open $spec_path)
@@ -831,6 +861,10 @@ def txgen-prepare-public-mix-preset [spec_path: string, count: int, accounts: in
         | items { |name, template|
             {name: $name, value: ($template | upsert expiring_nonce true | upsert valid_for_secs 25)}
         } | transpose -r -d)
+    let preset_name = ($spec_path | path basename | str replace --regex '\.yml$' '')
+    let templates = if $preset_name in $TXGEN_HELPER_SINGLE_SENDER_PRESETS {
+        txgen-single-sender-templates $templates
+    } else { $templates }
     {include: $spec_path, accounts: {users: {range: [0 $accounts]}},
         setup: {steps: ($vault_setup | append $users | append $zone_spec.setup.steps)},
         templates: $templates,
@@ -904,7 +938,7 @@ def txgen-run-preset-pipeline [
         let window_ms = ($env.TXGEN_ZONE_SETTLEMENT_WINDOW_MS? | default "3000" | into int)
         if $window_ms < 1 { error make { msg: "TXGEN_ZONE_SETTLEMENT_WINDOW_MS must be positive" } }
         let automatic_zones = ([1 (($tps * $window_ms / 210000) | math ceil | into int)] | math max)
-        let zones = ($env.TXGEN_ZONE_COUNT? | default $automatic_zones | into int)
+        let zones = (txgen-zone-count $preset_name $automatic_zones)
         if $zones < 1 { error make { msg: "TXGEN_ZONE_COUNT must be positive" } }
         $zone_metadata = ["-m" $"zone_count=($zones)" "-m" $"zone_sizing_window_ms=($window_ms)"]
         print $"  Zones: ($zones), users: ($accounts), sizing window: ($window_ms)ms, capacity: 210 deposits/portal"

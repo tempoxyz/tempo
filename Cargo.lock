@@ -3678,8 +3678,8 @@ dependencies = [
  "compression-core",
  "flate2",
  "memchr",
- "zstd 0.14.0",
- "zstd-safe 8.0.0",
+ "zstd 0.14.3",
+ "zstd-safe 8.2.0",
 ]
 
 [[package]]
@@ -4042,9 +4042,9 @@ dependencies = [
 
 [[package]]
 name = "crypto-bigint"
-version = "0.7.5"
+version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a52aa3fcda4e6302a9f48734f234d35d4721b96f8fe07d073f07ce9df4f0271"
+checksum = "6bb08299a6046833a879ace115697f12fd2bd6c8d3e93c909ffc9e0738e7cae0"
 dependencies = [
  "cpubits",
  "ctutils",
@@ -4095,9 +4095,9 @@ dependencies = [
 
 [[package]]
 name = "ctutils"
-version = "0.4.4"
+version = "0.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "12218662ccac37d9714f2191252553d67585b97df8c839cbe49e0bde278dc865"
+checksum = "38d28fb6aa7dd680b3ffd1a3e64e115c177bdba63c0ae7f9cd48129ff05c4fa0"
 dependencies = [
  "cmov",
  "subtle",
@@ -4254,7 +4254,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c54e03a951783e8b327515db3f2a2fd0e3bed362a96b066f341ce66ed49b4ead"
 dependencies = [
  "data-encoding",
- "syn 3.0.6",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -4697,7 +4697,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9d65aa39b3a5c1c9c1b745c9a019234bb7a21b77abcb4f4d266d706e2d577d65"
 dependencies = [
  "base16ct 1.0.0",
- "crypto-bigint 0.7.5",
+ "crypto-bigint 0.7.6",
  "crypto-common 0.2.2",
  "digest 0.11.3",
  "ff 0.14.0",
@@ -4876,7 +4876,7 @@ dependencies = [
 
 [[package]]
 name = "exithatch"
-version = "0.3.7"
+version = "0.4.0"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
@@ -7048,6 +7048,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "libfuzzer-sys"
+version = "0.4.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a9fd2f41a1cba099f79a0b6b6c35656cf7c03351a7bae8ff0f28f25270f929d2"
+dependencies = [
+ "arbitrary",
+ "cc",
+]
+
+[[package]]
 name = "libgit2-sys"
 version = "0.18.8+1.9.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8649,7 +8659,7 @@ version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c555a6e4eb7d4e158fcb028c835c3b8642206ddc279b5c6b202ef9a8bdb592f4"
 dependencies = [
- "crypto-bigint 0.7.5",
+ "crypto-bigint 0.7.6",
  "crypto-common 0.2.2",
  "ff 0.14.0",
  "rand_core 0.10.1",
@@ -12524,7 +12534,7 @@ version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4a459cddafb3fe76b31fd8f1108007566c40301feb64dc7b54656eb7388172b"
 dependencies = [
- "crypto-bigint 0.7.5",
+ "crypto-bigint 0.7.6",
  "hmac 0.13.0",
 ]
 
@@ -13570,6 +13580,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "smolgen"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "40c9a98255db4f93af8770f11f42b5a7f345cd93b96dafe7b1ae72ef99a16386"
+
+[[package]]
 name = "snap"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13903,7 +13919,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
@@ -13911,7 +13927,7 @@ dependencies = [
 
 [[package]]
 name = "tempo"
-version = "1.16.1"
+version = "1.17.0"
 dependencies = [
  "alloy",
  "alloy-consensus",
@@ -14001,7 +14017,7 @@ dependencies = [
  "tracing",
  "tracy-client",
  "url",
- "zstd 0.13.3",
+ "zstd 0.14.3",
 ]
 
 [[package]]
@@ -14080,7 +14096,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-consensus"
-version = "1.16.1"
+version = "1.17.0"
 dependencies = [
  "age",
  "alloy-consensus",
@@ -14130,6 +14146,7 @@ dependencies = [
  "reth-node-core",
  "reth-primitives-traits",
  "reth-provider",
+ "reth-stages-types",
  "tempfile",
  "tempo-alloy",
  "tempo-chainspec",
@@ -14151,7 +14168,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-consensus-config"
-version = "1.16.1"
+version = "1.17.0"
 dependencies = [
  "age",
  "commonware-codec",
@@ -14185,7 +14202,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-dkg-onchain-artifacts"
-version = "1.16.1"
+version = "1.17.0"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -14199,7 +14216,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-e2e"
-version = "1.16.1"
+version = "1.17.0"
 dependencies = [
  "alloy",
  "alloy-evm",
@@ -14253,7 +14270,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-evm"
-version = "1.16.1"
+version = "1.17.0"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -14268,13 +14285,10 @@ dependencies = [
  "codspeed-criterion-compat",
  "commonware-codec",
  "commonware-cryptography",
- "commonware-math",
- "commonware-utils",
  "derive_more",
  "eyre",
  "indexmap 2.14.2",
  "insta",
- "rand 0.10.3",
  "rayon",
  "reth-chainspec",
  "reth-consensus",
@@ -14304,7 +14318,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-ext"
-version = "1.16.1"
+version = "1.17.0"
 dependencies = [
  "clap",
  "dirs-next",
@@ -14323,7 +14337,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-eyre"
-version = "1.16.1"
+version = "1.17.0"
 dependencies = [
  "eyre",
  "indenter",
@@ -14331,7 +14345,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-faucet"
-version = "1.16.1"
+version = "1.17.0"
 dependencies = [
  "alloy",
  "async-trait",
@@ -14340,6 +14354,44 @@ dependencies = [
  "reth-rpc-server-types",
  "tempo-alloy",
  "tempo-precompiles",
+]
+
+[[package]]
+name = "tempo-fuzz-harness"
+version = "1.17.0"
+dependencies = [
+ "alloy-consensus",
+ "alloy-eips",
+ "alloy-evm",
+ "alloy-primitives",
+ "alloy-rlp",
+ "alloy-sol-types",
+ "bincode",
+ "codspeed-criterion-compat",
+ "commonware-codec",
+ "reth-chainspec",
+ "reth-consensus",
+ "reth-evm",
+ "reth-primitives-traits",
+ "reth-trie-common",
+ "revm",
+ "tempo-chainspec",
+ "tempo-contracts",
+ "tempo-dkg-onchain-artifacts",
+ "tempo-evm",
+ "tempo-fuzz-types",
+ "tempo-precompiles",
+ "tempo-primitives",
+]
+
+[[package]]
+name = "tempo-fuzz-types"
+version = "1.17.0"
+dependencies = [
+ "alloy-primitives",
+ "revm",
+ "serde",
+ "tempo-hardfork",
 ]
 
 [[package]]
@@ -14357,7 +14409,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-nitro-attestation"
-version = "1.16.1"
+version = "1.17.0"
 dependencies = [
  "arrayvec",
  "aws-lc-rs",
@@ -14371,8 +14423,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tempo-nitro-attestation-fuzz"
+version = "0.0.0"
+dependencies = [
+ "libfuzzer-sys",
+ "rustls-pki-types",
+ "rustls-webpki",
+ "sha2 0.10.9",
+ "tempo-nitro-attestation",
+ "x509-parser",
+]
+
+[[package]]
 name = "tempo-node"
-version = "1.16.1"
+version = "1.17.0"
 dependencies = [
  "alloy",
  "alloy-eips",
@@ -14431,6 +14495,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "smolgen",
  "sysinfo 0.38.4",
  "tempo-alloy",
  "tempo-chainspec",
@@ -14447,13 +14512,11 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "url",
- "vergen",
- "vergen-git2",
 ]
 
 [[package]]
 name = "tempo-node-launcher"
-version = "1.16.1"
+version = "1.17.0"
 dependencies = [
  "eyre",
  "futures",
@@ -14464,7 +14527,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-payload-builder"
-version = "1.16.1"
+version = "1.17.0"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -14501,7 +14564,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-payload-types"
-version = "1.16.1"
+version = "1.17.0"
 dependencies = [
  "alloy-eips",
  "alloy-primitives",
@@ -14521,7 +14584,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-precompiles"
-version = "1.16.1"
+version = "1.17.0"
 dependencies = [
  "alloy",
  "alloy-evm",
@@ -14564,7 +14627,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-precompiles-macros"
-version = "1.16.1"
+version = "1.17.0"
 dependencies = [
  "alloy",
  "proc-macro2",
@@ -14613,7 +14676,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-revm"
-version = "1.16.1"
+version = "1.17.0"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -14645,7 +14708,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-sidecar"
-version = "1.16.1"
+version = "1.17.0"
 dependencies = [
  "alloy",
  "clap",
@@ -14670,7 +14733,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-state-bloat"
-version = "1.16.1"
+version = "1.17.0"
 dependencies = [
  "alloy",
  "alloy-primitives",
@@ -14700,7 +14763,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-telemetry-util"
-version = "1.16.1"
+version = "1.17.0"
 dependencies = [
  "eyre",
  "jiff",
@@ -14709,7 +14772,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-transaction-pool"
-version = "1.16.1"
+version = "1.17.0"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -14752,7 +14815,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-validator-config"
-version = "1.16.1"
+version = "1.17.0"
 dependencies = [
  "alloy-primitives",
  "commonware-codec",
@@ -14780,7 +14843,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-xtask"
-version = "1.16.1"
+version = "1.17.0"
 dependencies = [
  "alloy",
  "alloy-consensus",
@@ -14846,7 +14909,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-zone"
-version = "0.3.7"
+version = "0.4.0"
 dependencies = [
  "alloy-primitives",
  "reth-cli-util",
@@ -15171,9 +15234,9 @@ dependencies = [
 
 [[package]]
 name = "tokio"
-version = "1.53.2"
+version = "1.53.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e95f91fcc7a621e8b030f6aa23c71fe9838ae2fb4d8118b75602a328f5144044"
+checksum = "ce3335fa71841cda333a58d7615b03901380ecf09d59b3296d21f8bbac0dde4e"
 dependencies = [
  "bytes",
  "libc",
@@ -16955,7 +17018,7 @@ checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 
 [[package]]
 name = "zone-chainspec"
-version = "0.3.7"
+version = "0.4.0"
 dependencies = [
  "alloy-eips",
  "alloy-evm",
@@ -16974,7 +17037,7 @@ dependencies = [
 
 [[package]]
 name = "zone-checker"
-version = "0.3.7"
+version = "0.4.0"
 dependencies = [
  "alloy-consensus",
  "alloy-contract",
@@ -17021,7 +17084,7 @@ dependencies = [
 
 [[package]]
 name = "zone-evm"
-version = "0.3.7"
+version = "0.4.0"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -17056,7 +17119,7 @@ dependencies = [
 
 [[package]]
 name = "zone-l1"
-version = "0.3.7"
+version = "0.4.0"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -17097,7 +17160,7 @@ dependencies = [
 
 [[package]]
 name = "zone-node"
-version = "0.3.7"
+version = "0.4.0"
 dependencies = [
  "alloy",
  "alloy-chains",
@@ -17167,6 +17230,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "smolgen",
  "tempfile",
  "tempo-alloy",
  "tempo-chainspec",
@@ -17185,8 +17249,6 @@ dependencies = [
  "tokio-util",
  "tracing",
  "url",
- "vergen",
- "vergen-git2",
  "zeroize",
  "zone-chainspec",
  "zone-checker",
@@ -17205,7 +17267,7 @@ dependencies = [
 
 [[package]]
 name = "zone-p2p"
-version = "0.3.7"
+version = "0.4.0"
 dependencies = [
  "alloy-primitives",
  "alloy-signer-local",
@@ -17230,7 +17292,7 @@ dependencies = [
 
 [[package]]
 name = "zone-payload"
-version = "0.3.7"
+version = "0.4.0"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -17272,7 +17334,7 @@ dependencies = [
 
 [[package]]
 name = "zone-precompiles"
-version = "0.3.7"
+version = "0.4.0"
 dependencies = [
  "aes-gcm",
  "alloy",
@@ -17305,7 +17367,7 @@ dependencies = [
 
 [[package]]
 name = "zone-primitives"
-version = "0.3.7"
+version = "0.4.0"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
@@ -17317,7 +17379,7 @@ dependencies = [
 
 [[package]]
 name = "zone-prover"
-version = "0.3.7"
+version = "0.4.0"
 dependencies = [
  "alloy-consensus",
  "alloy-primitives",
@@ -17348,7 +17410,7 @@ dependencies = [
 
 [[package]]
 name = "zone-rpc"
-version = "0.3.7"
+version = "0.4.0"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -17386,7 +17448,7 @@ dependencies = [
 
 [[package]]
 name = "zone-sequencer"
-version = "0.3.7"
+version = "0.4.0"
 dependencies = [
  "alloy-chains",
  "alloy-consensus",
@@ -17437,7 +17499,7 @@ dependencies = [
 
 [[package]]
 name = "zone-spf"
-version = "0.3.7"
+version = "0.4.0"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -17477,11 +17539,11 @@ dependencies = [
 
 [[package]]
 name = "zstd"
-version = "0.14.0"
+version = "0.14.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf06bd8162af0734b344780deb55b42a2429ae430870d13fcc12f238e880fe6e"
+checksum = "db3ae9bf90af6e40197bef767eeefc46ad6397420fe873830bd85e5fbbfb3c70"
 dependencies = [
- "zstd-safe 8.0.0",
+ "zstd-safe 8.2.0",
 ]
 
 [[package]]
@@ -17495,18 +17557,18 @@ dependencies = [
 
 [[package]]
 name = "zstd-safe"
-version = "8.0.0"
+version = "8.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae42c0555055784c70058d19ba8e275528e8a99a706684868ace5da4e716a4ab"
+checksum = "ded520f16b29e1a9b771c722221b2b0a0398c2316d9bb3c42b458a5414d7434b"
 dependencies = [
  "zstd-sys",
 ]
 
 [[package]]
 name = "zstd-sys"
-version = "2.1.0+zstd.1.5.7"
+version = "2.1.2+zstd.1.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ef0a8027ec3ee71300ab3bcbcd0393f434aa72b91ca6d635a39941deae8eea0"
+checksum = "481ada9c543b2323cbb7bbdbb5249177fbf0188ed959ed2c15e4b22421c84ed3"
 dependencies = [
  "cc",
  "pkg-config",
