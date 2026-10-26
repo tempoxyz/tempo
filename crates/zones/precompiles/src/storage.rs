@@ -8,9 +8,15 @@ use alloc::{
 use core::fmt;
 
 use alloy_primitives::{Address, B256, U256, map::HashSet};
-use evm2::{AnyError, precompiles::PrecompileError};
+use evm2::{
+    AnyError,
+    interpreter::gas::{
+        COLD_SLOAD_COST as EVM2_COLD_SLOAD_COST,
+        WARM_STORAGE_READ_COST as EVM2_WARM_STORAGE_READ_COST,
+    },
+    precompiles::PrecompileError,
+};
 use parking_lot::Mutex;
-use revm::interpreter::gas::{COLD_SLOAD_COST, WARM_STORAGE_READ_COST};
 use tempo_precompiles::{
     error::TempoPrecompileError, storage::vec::VecHandler,
     zone_factory::ZonePortalStorage as ZonePortal,
@@ -18,6 +24,9 @@ use tempo_precompiles::{
 use thiserror::Error;
 
 use crate::tempo_state::TempoState;
+
+const COLD_SLOAD_COST: u64 = EVM2_COLD_SLOAD_COST as u64;
+const WARM_STORAGE_READ_COST: u64 = EVM2_WARM_STORAGE_READ_COST as u64;
 
 pub(crate) use tempo_precompiles::storage::*;
 

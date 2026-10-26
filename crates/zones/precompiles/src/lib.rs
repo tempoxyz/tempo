@@ -202,7 +202,9 @@ where
         message: &Message<T>,
         gas: &mut GasTracker,
     ) -> Option<PrecompileResult> {
-        let address = message.code_address;
+        // Dispatch on the requested callee like evm2's membership check; see
+        // `TempoPrecompiles::execute`.
+        let address = message.call_target;
         if let Some(result) = self.base.execute(evm, message, gas) {
             return Some(result);
         }

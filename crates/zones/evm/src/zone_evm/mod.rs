@@ -76,7 +76,9 @@ impl<L1: L1StorageReader> ZoneTxHandler<L1> {
         // Anchor-changing transactions switch anchors mid-transaction, and a cache hit skips
         // `L1OverlayDB`, which would hide the switch: they always start from an empty cache.
         let changes_anchor = matches!(
-            ZoneTransactionKind::classify(request.envelope.transaction()),
+            ZoneTransactionKind::classify(request.envelope.evm_tx().is_system_tx(), || {
+                request.envelope.evm_tx().calls()
+            }),
             ZoneTransactionKind::AdvanceTempo | ZoneTransactionKind::AdvanceTempoHeaders
         );
         if self.l1.select_registry_cache_anchor(initial_anchor) || changes_anchor {

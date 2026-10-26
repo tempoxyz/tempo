@@ -1360,7 +1360,7 @@ def "main render-txgen-spec" [
             error make {msg: "Public mix requires positive TPS, duration, and zone sizing window"}
         }
         let automatic_zones = ([1 (($tps * $window_ms / 210000) | math ceil | into int)] | math max)
-        let zones = ($env.TXGEN_ZONE_COUNT? | default $automatic_zones | into int)
+        let zones = (txgen-zone-count $spec.scenario_id $automatic_zones)
         print (txgen-prepare-public-mix-preset $spec.spec_path ($tps * $duration) $accounts $zones 1337 --out-dir $out_dir)
     } else {
         print $spec.spec_path

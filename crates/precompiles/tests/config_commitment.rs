@@ -390,8 +390,8 @@ fn invalid_write_reverts_without_data() {
     assert!(!error.is_system_error());
     assert_eq!(error.selector(), [0u8; 4]);
 
-    match error.into_precompile_result() {
-        Err(PrecompileError::Revert(bytes)) => assert_eq!(bytes, Bytes::new()),
-        other => panic!("expected an empty revert, got: {other:?}"),
-    }
+    let Err(PrecompileError::Revert(bytes)) = error.into_precompile_result() else {
+        panic!("expected a revert");
+    };
+    assert_eq!(bytes, Bytes::new());
 }

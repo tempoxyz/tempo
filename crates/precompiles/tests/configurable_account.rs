@@ -4,47 +4,29 @@ use alloy::{
     primitives::{Address, B256, Bytes, address, keccak256},
     sol_types::{SolCall, SolEvent, SolInterface},
 };
-use evm2::{
-    BaseEvmConfigSelector, Evm, EvmTypesHost, ExecutionConfig, SpecId,
-    evm::{InMemoryDB, precompile::NoPrecompiles},
-    interpreter::gas::{KECCAK256, KECCAK256WORD},
-    precompiles::{PrecompileError, PrecompileResult},
-    registry::TxRegistry,
-};
+use evm2::evm::{InMemoryDB, precompile::NoPrecompiles};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
     CONFIGURABLE_ACCOUNT_ADDRESS, ConfigurableAccountError, IConfigurableAccount,
 };
+use tempo_evm::{TempoEvmExt, build_tempo_evm};
 use tempo_precompiles::{
     Precompile,
     configurable_account::{ConfigurableAccount, UpgradeEligibility, config, valid_account},
     input_cost,
-    storage::{
-        ConfigCommitmentWriteGas, StorageCtx, evm::EvmPrecompileStorageProvider,
-        hashmap::HashMapStorageProvider,
-    },
+    storage::{ConfigCommitmentWriteGas, StorageCtx, hashmap::HashMapStorageProvider},
 };
 use tempo_primitives::{
-    MasterId, TempoAddressExt, TempoBlockEnv, TempoBlockExt, UserTag,
+    MasterId, TempoAddressExt, TempoBlockEnv, UserTag,
+    gas::keccak_gas,
     transaction::configurable_account::{
         CONFIGURABLE_ACCOUNT_UPGRADE_DOMAIN, MAX_CONFIGURABLE_ACCOUNT_OWNERS,
     },
 };
 
-struct TestTypes;
+mod common;
 
-impl EvmTypesHost for TestTypes {
-    type ConfigSelector = BaseEvmConfigSelector;
-    type SpecId = SpecId;
-    type Tx = ();
-    type EvmExt = ();
-    type MessageExt = ();
-    type MessageResultExt = ();
-    type TxEnvExt = ();
-    type TxResultExt = ();
-    type BlockEnvExt = TempoBlockExt;
-    type Host<'a> = Evm<'a, Self>;
-}
+use common::{PrecompileOutput, PrecompileStatus};
 
 const OWNER: Address = Address::repeat_byte(0x22);
 const EOA: Address = Address::repeat_byte(0x33);
@@ -62,23 +44,25 @@ fn weighted_owners(
         .collect()
 }
 
-fn call(sender: Address, call: impl SolCall) -> PrecompileResult {
-    ConfigurableAccount::new().call(&call.abi_encode(), sender)
+fn call(sender: Address, call: impl SolCall) -> PrecompileOutput {
+    let before = StorageCtx.gas_used();
+    let result = ConfigurableAccount::new().call(&call.abi_encode(), sender);
+    PrecompileOutput::new(result, StorageCtx.gas_used() - before)
 }
 
-fn returns<C: SolCall>(result: PrecompileResult) -> C::Return {
-    let output = result.unwrap_or_else(|error| panic!("{error:?}"));
-    C::abi_decode_returns(output.bytes()).unwrap()
+fn returns<C: SolCall>(output: PrecompileOutput) -> C::Return {
+    assert_eq!(output.status, PrecompileStatus::Success, "{output:?}");
+    C::abi_decode_returns(&output.bytes).unwrap()
 }
 
 #[track_caller]
-fn assert_reverts(result: PrecompileResult, expected: ConfigurableAccountError) {
-    match result {
-        Err(PrecompileError::Revert(bytes)) => {
-            assert_eq!(bytes, Bytes::from(expected.abi_encode()), "{expected:?}")
-        }
-        other => panic!("expected {expected:?} revert, got: {other:?}"),
-    }
+fn assert_reverts(output: PrecompileOutput, expected: ConfigurableAccountError) {
+    assert_eq!(output.status, PrecompileStatus::Revert, "{expected:?}");
+    assert_eq!(
+        output.bytes,
+        Bytes::from(expected.abi_encode()),
+        "{expected:?}"
+    );
 }
 
 fn derive(
@@ -108,7 +92,7 @@ fn update(
     current: &IConfigurableAccount::ConfigurableAccountConfig,
     threshold: u8,
     owners: &[IConfigurableAccount::ConfigurableAccountOwner],
-) -> PrecompileResult {
+) -> PrecompileOutput {
     call(
         sender,
         IConfigurableAccount::updateConfigCall {
@@ -123,7 +107,7 @@ fn upgrade(
     sender: Address,
     threshold: u8,
     owners: &[IConfigurableAccount::ConfigurableAccountOwner],
-) -> PrecompileResult {
+) -> PrecompileOutput {
     call(
         sender,
         IConfigurableAccount::upgradeAccountCall {
@@ -184,21 +168,16 @@ fn derive_account_matches_the_config_derivation() {
 
 #[test]
 fn derive_account_charges_input_and_proof_hashing_gas() {
-    let spec = TempoHardfork::T14;
-    let version = tempo_chainspec::gas_params::version(SpecId::OSAKA, spec, false);
-    let block_env = TempoBlockEnv::default();
-    let mut evm = Evm::<TestTypes>::new_with_execution_config(
-        ExecutionConfig::for_spec_and_version(SpecId::OSAKA, version),
-        SpecId::OSAKA,
-        block_env,
-        TxRegistry::new(),
+    let mut evm = build_tempo_evm(
+        TempoHardfork::T14,
+        1,
+        TempoBlockEnv::default(),
         InMemoryDB::default(),
         NoPrecompiles::default(),
+        TempoEvmExt::default(),
     );
-    let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
-    StorageCtx::enter(&mut storage, || {
-        let keccak =
-            |len: usize| u64::from(KECCAK256) + u64::from(KECCAK256WORD) * len.div_ceil(32) as u64;
+    StorageCtx::enter_evm(&mut evm, || {
+        let keccak = |len: usize| keccak_gas(len).unwrap();
         for owners in [
             weighted_owners(&[(OWNER, 1)]),
             weighted_owners(&[(Address::repeat_byte(0x11), 1), (OWNER, 1)]),
@@ -235,10 +214,9 @@ fn derive_account_charges_input_and_proof_hashing_gas() {
         }
         .abi_encode();
         let before = StorageCtx.gas_used();
-        assert_reverts(
-            ConfigurableAccount::new().call(&calldata, Address::ZERO),
-            ConfigurableAccountError::invalid_threshold(),
-        );
+        let output =
+            PrecompileOutput::new(ConfigurableAccount::new().call(&calldata, Address::ZERO), 0);
+        assert_reverts(output, ConfigurableAccountError::invalid_threshold());
         assert_eq!(
             StorageCtx.gas_used() - before,
             input_cost(TempoHardfork::T14, calldata.len()).unwrap()
@@ -488,12 +466,12 @@ fn config_error_precedence_through_abi() {
                     )
                     .collect(),
             };
-            match ConfigurableAccount::new().call(&call.abi_encode(), Address::ZERO) {
-                Err(PrecompileError::Revert(bytes)) => {
-                    assert_eq!(bytes, Bytes::from(expected.abi_encode()), "{case}")
-                }
-                other => panic!("{case}: expected a revert, got: {other:?}"),
-            }
+            let result = PrecompileOutput::new(
+                ConfigurableAccount::new().call(&call.abi_encode(), Address::ZERO),
+                0,
+            );
+            assert_eq!(result.status, PrecompileStatus::Revert, "{case}");
+            assert_eq!(result.bytes, expected.abi_encode(), "{case}");
         }
     });
 }
@@ -512,14 +490,15 @@ fn mutating_calls_reject_static_context() {
             threshold: 1,
             owners: owners.clone(),
         };
-        for result in [
+        for output in [
             update(account, &current, 1, &owners),
             upgrade(EOA, 1, &owners),
         ] {
             assert!(
-                matches!(result, Err(PrecompileError::Halt(_))),
-                "{result:?}"
+                matches!(output.status, PrecompileStatus::Halt(_)),
+                "{output:?}"
             );
+            assert!(output.bytes.is_empty());
         }
     });
 }

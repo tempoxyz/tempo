@@ -21,7 +21,7 @@ pub mod packing;
 pub use packing::FieldLocation;
 pub use types::mapping as slots;
 
-use alloy::primitives::{Address, B256, Bytes, KECCAK256_EMPTY, LogData, Signature, U256};
+use alloy::primitives::{Address, B256, Bytes, LogData, Signature, U256};
 use evm2::evm::{AccountInfo, StateCheckpoint};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_primitives::{TempoBlockEnv, account::decode_config_commitment, gas::keccak_gas};
@@ -310,7 +310,7 @@ pub trait ContractStorage {
     /// Returns true if the contract has been initialized (has bytecode deployed).
     fn is_initialized(&self) -> Result<bool> {
         self.storage()
-            .with_account_info(self.address(), |info| Ok(info.code_hash != KECCAK256_EMPTY))
+            .with_account_info(self.address(), |info| Ok(!info.is_empty_code_hash()))
     }
 }
 

@@ -10,15 +10,15 @@ crates/commonware-node-config/ @joshieDo @SuperFluffy @hamdiallam
 crates/consensus/ @joshieDo @SuperFluffy @hamdiallam
 crates/contracts/ @0xrusowsky @0xKitsune @klkvr @mattsse @legion2002
 crates/e2e/ @joshieDo @SuperFluffy @hamdiallam
-crates/evm/ @0xKitsune @klkvr @mattsse
+crates/evm/ @0xKitsune @klkvr @mattsse @rakita
 crates/eyre/ @SuperFluffy
 crates/faucet/ @klkvr @mattsse
+crates/hardfork/ @klkvr @mattsse @rakita @0xKitsune
 crates/node/ @0xKitsune @klkvr @mattsse
 crates/payload/ @0xKitsune @klkvr @mattsse
 crates/precompiles/ @0xrusowsky @0xKitsune @klkvr @mattsse @legion2002
 crates/precompiles-macros/ @0xrusowsky @mattsse
 crates/primitives/ @klkvr @mattsse
-crates/revm/ @klkvr @mattsse @rakita @0xKitsune
 crates/telemetry-util/ @SuperFluffy
 crates/transaction-pool/ @0xKitsune @klkvr @mattsse
 tips/ @legion2002 @0xKitsune @danrobinson @dankrad @jenpaff @horsefacts @0xalpharush @samczsun
@@ -28,7 +28,7 @@ bin/tempo-zone/ @0xKitsune @mattsse @klkvr
 bin/prover/ @rkrasiuk @shekhirin
 crates/zones/chainspec/ @0xrusowsky @0xKitsune @klkvr @mattsse
 crates/zones/contracts/ @0xrusowsky @0xKitsune @klkvr @mattsse @legion2002 @0xalpharush
-crates/zones/evm/ @0xrusowsky @klkvr @0xKitsune
+crates/zones/evm/ @0xrusowsky @klkvr @0xKitsune @rakita
 crates/zones/l1/ @0xKitsune @mattsse @klkvr @0xrusowsky @adityapk00
 crates/zones/node/ @mattsse @0xKitsune @klkvr @0xrusowsky @adityapk00 @legion2002
 crates/zones/p2p/ @adityapk00 @legion2002 @klkvr
