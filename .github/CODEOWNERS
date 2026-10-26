@@ -41,7 +41,7 @@ crates/validator-config/ @joshieDo @SuperFluffy @hamdiallam
 tips/ @legion2002 @0xKitsune @danrobinson @dankrad @jenpaff @horsefacts @0xalpharush
 
 # Zones (imported from tempoxyz/zones)
-zones/ @rkrasiuk @shekhirin
+/zones/ @rkrasiuk @shekhirin
 bin/tempo-zone/ @0xKitsune @mattsse @klkvr @rkrasiuk
 bin/prover/ @rkrasiuk @shekhirin
 crates/zones/chainspec/ @0xrusowsky @0xKitsune @klkvr @mattsse
