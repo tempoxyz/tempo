@@ -10,12 +10,12 @@
 
 use alloy_primitives::Address;
 use alloy_sol_types::{SolCall, SolError, SolInterface};
+pub use tempo_contracts::zones::InsufficientBalance;
+use tempo_contracts::zones::Unauthorized;
 use tempo_precompiles::{
     dispatch::abi_decoder_config_for_spec,
     tip20::{IRolesAuth, ITIP20},
 };
-pub use tempo_contracts::zones::InsufficientBalance;
-use tempo_contracts::zones::Unauthorized;
 
 use crate::{
     execution::{CallCheck, CallRules},
@@ -153,7 +153,10 @@ mod tests {
     use alloy_sol_types::{SolCall, SolError, SolInterface};
     use revm::precompile::PrecompileResult;
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::{TIP20Error, UnknownFunctionSelector};
+    use tempo_contracts::{
+        precompiles::{TIP20Error, UnknownFunctionSelector},
+        zones::Unauthorized,
+    };
     use tempo_precompiles::{
         PATH_USD_ADDRESS, Precompile,
         storage::{Handler, StorageCtx},
@@ -164,7 +167,6 @@ mod tests {
         },
         zone_factory::ZonePortalStorage as ZonePortal,
     };
-    use tempo_contracts::zones::Unauthorized;
     use zone_primitives::constants::{ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS};
 
     use crate::{
@@ -498,8 +500,9 @@ mod tests {
             let mut portal = ZonePortal::new(PORTAL_ADDRESS);
             portal.role[harness.sequencer]
                 .write(u8::from(tempo_contracts::zones::ZonePortal::Role::None))?;
-            portal.role[next_sequencer]
-                .write(u8::from(tempo_contracts::zones::ZonePortal::Role::Sequencer))
+            portal.role[next_sequencer].write(u8::from(
+                tempo_contracts::zones::ZonePortal::Role::Sequencer,
+            ))
         })?;
 
         assert!(

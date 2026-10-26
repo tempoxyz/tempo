@@ -18,10 +18,10 @@
 //!
 //! ## Policy/token precompiles
 //!
-//! - **NonceManager** ([`nonce`]) — upstream 2D nonces with account-scoped read rules.
-//! - **AccountKeychain** ([`account_keychain`]) — upstream key management with account-scoped
+//! - **NonceManager** (`nonce`) — upstream 2D nonces with account-scoped read rules.
+//! - **AccountKeychain** (`account_keychain`) — upstream key management with account-scoped
 //!   read rules.
-//! - **StorageCredits** ([`storage_credits`]) — upstream storage-credit accounting with
+//! - **StorageCredits** (`storage_credits`) — upstream storage-credit accounting with
 //!   account-scoped read rules.
 //! - **Zone Inbox** ([`inbox`]) — advances Tempo state and processes the deposit queue.
 //! - **TIP-403 Registry** ([`tip403_proxy`]) — upstream registry over finalized L1 state.
@@ -93,6 +93,9 @@ use alloy_primitives::Address;
 use alloy_sol_types::SolError;
 use revm::{context::CfgEnv, handler::EthPrecompiles, primitives::hardfork::SpecId};
 use tempo_chainspec::hardfork::TempoHardfork;
+#[cfg(feature = "std")]
+use tempo_contracts::zones::ZONE_OUTBOX_ADDRESS;
+use tempo_contracts::zones::{TEMPO_STATE_ADDRESS, ZONE_INBOX_ADDRESS};
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, NONCE_PRECOMPILE_ADDRESS, Precompile as _,
     RECEIVE_POLICY_GUARD_ADDRESS, STORAGE_CREDITS_ADDRESS,
@@ -104,9 +107,6 @@ use tempo_precompiles::{
     tip20::{ITIP20::InsufficientBalance as TIP20InsufficientBalance, TIP20Token, is_tip20_prefix},
     tip403_registry::TIP403Registry,
 };
-#[cfg(feature = "std")]
-use tempo_contracts::zones::ZONE_OUTBOX_ADDRESS;
-use tempo_contracts::zones::{TEMPO_STATE_ADDRESS, ZONE_INBOX_ADDRESS};
 
 /// Returns every precompile that is available to a Zone EVM.
 ///

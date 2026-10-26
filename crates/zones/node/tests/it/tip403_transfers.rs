@@ -12,10 +12,12 @@
 use alloy::primitives::{B256, U256, address};
 use alloy_provider::{Provider, ProviderBuilder};
 use tempo_chainspec::spec::TEMPO_T0_BASE_FEE;
-use tempo_contracts::precompiles::ITIP20;
+use tempo_contracts::{
+    precompiles::ITIP20,
+    zones::{IZoneOutbox, ZONE_OUTBOX_ADDRESS},
+};
 use tempo_node::rpc::NATIVE_BALANCE_PLACEHOLDER;
 use tempo_precompiles::PATH_USD_ADDRESS;
-use tempo_contracts::zones::{IZoneOutbox, ZONE_OUTBOX_ADDRESS};
 
 use crate::utils::{
     DEFAULT_TIMEOUT, TIP20_TX_GAS, WITHDRAWAL_TX_GAS, approve_outbox, l1_dev_signer,
@@ -65,14 +67,14 @@ async fn test_deposit_then_transfer() -> eyre::Result<()> {
 
     let estimated_gas = tip20
         .transfer(bob, U256::from(transfer_amount))
-        .gas_price(TEMPO_T0_BASE_FEE as u128)
+        .gas_price(u128::from(TEMPO_T0_BASE_FEE))
         .estimate_gas()
         .await?;
     assert!(estimated_gas > 0, "transfer gas estimate should be nonzero");
 
     let pending = tip20
         .transfer(bob, U256::from(transfer_amount))
-        .gas_price(TEMPO_T0_BASE_FEE as u128)
+        .gas_price(u128::from(TEMPO_T0_BASE_FEE))
         .send()
         .await?;
 
@@ -165,7 +167,7 @@ async fn test_deposit_then_request_withdrawal() -> eyre::Result<()> {
             alloy_primitives::Bytes::new(),
             alloy_primitives::Bytes::new(),
         )
-        .gas_price(TEMPO_T0_BASE_FEE as u128)
+        .gas_price(u128::from(TEMPO_T0_BASE_FEE))
         .send()
         .await?;
     fixture.inject_empty_block(zone.deposit_queue());
@@ -236,7 +238,7 @@ async fn test_sequential_transfers() -> eyre::Result<()> {
 
     let pending = tip20_alice
         .transfer(bob, U256::from(alice_to_bob))
-        .gas_price(TEMPO_T0_BASE_FEE as u128)
+        .gas_price(u128::from(TEMPO_T0_BASE_FEE))
         .gas(TIP20_TX_GAS)
         .send()
         .await?;
@@ -265,7 +267,7 @@ async fn test_sequential_transfers() -> eyre::Result<()> {
 
     let pending = tip20_bob
         .transfer(charlie, U256::from(bob_to_charlie))
-        .gas_price(TEMPO_T0_BASE_FEE as u128)
+        .gas_price(u128::from(TEMPO_T0_BASE_FEE))
         .gas(TIP20_TX_GAS)
         .send()
         .await?;
@@ -350,7 +352,7 @@ async fn test_transfer_emits_events() -> eyre::Result<()> {
 
     let pending = tip20
         .transfer(bob, U256::from(transfer_amount))
-        .gas_price(TEMPO_T0_BASE_FEE as u128)
+        .gas_price(u128::from(TEMPO_T0_BASE_FEE))
         .gas(TIP20_TX_GAS)
         .send()
         .await?;
@@ -418,7 +420,7 @@ async fn test_transfer_with_memo() -> eyre::Result<()> {
 
     let pending = tip20
         .transferWithMemo(bob, U256::from(transfer_amount), memo)
-        .gas_price(TEMPO_T0_BASE_FEE as u128)
+        .gas_price(u128::from(TEMPO_T0_BASE_FEE))
         .gas(TIP20_TX_GAS)
         .send()
         .await?;

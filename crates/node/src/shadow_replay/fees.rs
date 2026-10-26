@@ -72,7 +72,9 @@ impl RecordingFeeManager {
                 | StorageAction::Sinc(_, key, ..)
                 | StorageAction::Sdec(_, key, ..)
                 | StorageAction::FeeAmmSwap(key, ..) => key,
-                StorageAction::Sload(..) | StorageAction::FeeAmmLiquidityCheck(..) => return false,
+                StorageAction::Sload(..)
+                | StorageAction::FeeTokenBalanceCheck(..)
+                | StorageAction::FeeAmmLiquidityCheck(..) => return false,
             };
             writes.slots.insert((action.address(), *slot));
             true
@@ -98,7 +100,9 @@ pub(super) fn post_fee_slot_change(
             | StorageAction::Sinc(_, key, ..)
             | StorageAction::Sdec(_, key, ..)
             | StorageAction::FeeAmmSwap(key, ..) => *key,
-            StorageAction::Sload(..) | StorageAction::FeeAmmLiquidityCheck(..) => continue,
+            StorageAction::Sload(..)
+            | StorageAction::FeeTokenBalanceCheck(..)
+            | StorageAction::FeeAmmLiquidityCheck(..) => continue,
         };
         if action.address() != address || key != slot {
             continue;
@@ -113,7 +117,9 @@ pub(super) fn post_fee_slot_change(
                     .ok()?;
                 (before, pool.encode_to_slot().ok()?)
             }
-            StorageAction::Sload(..) | StorageAction::FeeAmmLiquidityCheck(..) => continue,
+            StorageAction::Sload(..)
+            | StorageAction::FeeTokenBalanceCheck(..)
+            | StorageAction::FeeAmmLiquidityCheck(..) => continue,
         };
         let initial = match change {
             Some((initial, current)) if current == before => initial,

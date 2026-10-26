@@ -5,8 +5,7 @@ use crate::utils::{
     sign_webauthn_signature,
 };
 use alloy_primitives::Address;
-use p256::ecdsa::SigningKey as P256SigningKey;
-use rand::thread_rng;
+use p256::{ecdsa::SigningKey as P256SigningKey, elliptic_curve::rand_core::OsRng};
 use tempo_primitives::transaction::tt_signature::TempoSignature;
 use zone_node::rpc::auth::{AuthorizationToken, build_token_fields};
 
@@ -184,7 +183,7 @@ fn tempo_signature_rejects_wrong_secp256k1_lengths() {
 
 #[test]
 fn tempo_signature_roundtrip_p256_from_token_bytes() {
-    let signing_key = P256SigningKey::random(&mut thread_rng());
+    let signing_key = P256SigningKey::random(&mut OsRng);
     let now = now_secs();
     let (fields, digest) = build_token_fields(1, 2, now, now + 600);
     let expected = sign_p256_signature(digest, &signing_key)
@@ -203,7 +202,7 @@ fn tempo_signature_roundtrip_p256_from_token_bytes() {
 
 #[test]
 fn tempo_signature_roundtrip_webauthn_from_token_bytes() {
-    let signing_key = P256SigningKey::random(&mut thread_rng());
+    let signing_key = P256SigningKey::random(&mut OsRng);
     let now = now_secs();
     let (fields, digest) = build_token_fields(1, 2, now, now + 600);
     let signature =
@@ -220,7 +219,7 @@ fn tempo_signature_roundtrip_webauthn_from_token_bytes() {
 
 #[test]
 fn tempo_signature_roundtrip_keychain_v1_from_token_bytes() {
-    let signing_key = P256SigningKey::random(&mut thread_rng());
+    let signing_key = P256SigningKey::random(&mut OsRng);
     let root_account = Address::repeat_byte(0x44);
     let now = now_secs();
     let (fields, digest) = build_token_fields(1, 2, now, now + 600);
@@ -242,7 +241,7 @@ fn tempo_signature_roundtrip_keychain_v1_from_token_bytes() {
 
 #[test]
 fn tempo_signature_roundtrip_keychain_v2_from_token_bytes() {
-    let signing_key = P256SigningKey::random(&mut thread_rng());
+    let signing_key = P256SigningKey::random(&mut OsRng);
     let root_account = Address::repeat_byte(0x55);
     let now = now_secs();
     let (fields, digest) = build_token_fields(1, 2, now, now + 600);

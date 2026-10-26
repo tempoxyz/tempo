@@ -5,8 +5,10 @@ use alloy_primitives::{B256, Bytes, U256, address, keccak256};
 use alloy_sol_types::{SolCall, SolError, SolValue};
 use revm::precompile::PrecompileResult;
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_contracts::precompiles::UnknownFunctionSelector;
-use tempo_contracts::zones::{MAX_UNPROCESSED_DEPOSITS, MAX_UNPROCESSED_TOKEN_ENABLEMENTS};
+use tempo_contracts::{
+    precompiles::UnknownFunctionSelector,
+    zones::{MAX_UNPROCESSED_DEPOSITS, MAX_UNPROCESSED_TOKEN_ENABLEMENTS},
+};
 use tempo_precompiles::{
     PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, TIP403_REGISTRY_ADDRESS,
     receive_policy_guard::ReceivePolicyGuard,
@@ -1043,6 +1045,25 @@ fn refund_reads_are_limited_to_owner_and_active_sequencer() -> eyre::Result<()> 
 }
 
 #[test]
+fn claim_refund_zero_amount_is_gated_by_t13() -> eyre::Result<()> {
+    for (hardfork, expected) in [
+        (TempoHardfork::T12, 0u128.abi_encode()),
+        (TempoHardfork::T13, IZoneInbox::NoRefund {}.abi_encode()),
+    ] {
+        let output = Harness::new_with_hardfork(hardfork)?.call(
+            BOB,
+            IZoneInbox::claimRefundCall {
+                token: PATH_USD_ADDRESS,
+            }
+            .abi_encode(),
+        )?;
+        assert_eq!(output.is_revert(), hardfork.is_t13());
+        assert_eq!(output.bytes, expected);
+    }
+    Ok(())
+}
+
+#[test]
 fn claim_refund_clears_balance_and_mints_to_caller() -> eyre::Result<()> {
     let mut harness = Harness::new()?;
     {
@@ -1065,6 +1086,15 @@ fn claim_refund_clears_balance_and_mints_to_caller() -> eyre::Result<()> {
         444
     );
     assert_eq!(harness.balance(PATH_USD_ADDRESS, BOB)?, U256::from(444));
+    let repeated = harness.call(
+        BOB,
+        IZoneInbox::claimRefundCall {
+            token: PATH_USD_ADDRESS,
+        }
+        .abi_encode(),
+    )?;
+    assert!(repeated.is_revert());
+    assert_eq!(repeated.bytes, IZoneInbox::NoRefund {}.abi_encode());
     let mut storage = test_storage_provider(&mut harness.ctx, u64::MAX, false);
     StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
         assert_eq!(
@@ -1161,5 +1191,80 @@ fn withdrawal_bounce_back_consumes_fallback_nonce() -> eyre::Result<()> {
     assert_eq!(harness.balance(PATH_USD_ADDRESS, BOB)?, U256::from(321));
     assert!(harness.pending_withdrawals()?.is_empty());
     assert_eq!(harness.fallback_recipient(nonce)?, Address::ZERO);
+    Ok(())
+}
+
+#[test]
+fn bridged_credits_use_recipient_policy_from_t13() -> eyre::Result<()> {
+    for (hardfork, recipient_allowed, authorized) in [
+        (TempoHardfork::T12, true, false),
+        (TempoHardfork::T12, false, true),
+        (TempoHardfork::T13, true, true),
+        (TempoHardfork::T13, false, false),
+    ] {
+        let mut harness = Harness::new_with_hardfork(hardfork)?;
+        let mut storage = test_storage_provider(&mut harness.ctx, u64::MAX, false);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let (recipient, mint_recipient) = if recipient_allowed {
+                (ALLOW_ALL_POLICY_ID, REJECT_ALL_POLICY_ID)
+            } else {
+                (REJECT_ALL_POLICY_ID, ALLOW_ALL_POLICY_ID)
+            };
+            let policy = TIP403Registry::new().create_compound_policy(
+                ALICE,
+                ITIP403Registry::createCompoundPolicyCall {
+                    senderPolicyId: REJECT_ALL_POLICY_ID,
+                    recipientPolicyId: recipient,
+                    mintRecipientPolicyId: mint_recipient,
+                },
+            )?;
+            let mut token = TIP20Token::from_address(PATH_USD_ADDRESS)?;
+            token.change_transfer_policy_id(
+                ALICE,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: policy,
+                },
+            )?;
+
+            let credited = U256::from(if authorized { 100 } else { 0 });
+            let balance = |account| token.balance_of(ITIP20::balanceOfCall { account });
+            let mut inbox = ZoneInbox::new();
+            assert_eq!(inbox.try_mint(PATH_USD_ADDRESS, ALICE, 100)?, authorized);
+            assert_eq!(balance(ALICE)?, credited);
+
+            let mut outbox = ZoneOutbox::new();
+            outbox.seed_fallback_recipient(7, BOB)?;
+            inbox.process_withdrawal_bounce_back(
+                &mut outbox,
+                WithdrawalBounceBackDeposit {
+                    token: PATH_USD_ADDRESS,
+                    to: Address::left_padding_from(&7u64.to_be_bytes()),
+                    amount: 100,
+                },
+            )?;
+            assert_eq!(outbox.fallback_recipient(7)?, Address::ZERO);
+            assert_eq!(balance(BOB)?, credited);
+            assert_eq!(
+                inbox.withdrawal_bounce_backs[PATH_USD_ADDRESS][BOB].read()?,
+                if authorized { 0 } else { 100 }
+            );
+
+            inbox.withdrawal_bounce_backs[PATH_USD_ADDRESS][BOB].write(100)?;
+            if authorized {
+                assert_eq!(inbox.claim_refund(BOB, PATH_USD_ADDRESS)?, 100);
+            } else {
+                assert!(inbox.claim_refund(BOB, PATH_USD_ADDRESS).is_err());
+            }
+            assert_eq!(balance(BOB)?, credited + credited);
+            assert_eq!(
+                inbox.withdrawal_bounce_backs[PATH_USD_ADDRESS][BOB].read()?,
+                if authorized { 0 } else { 100 }
+            );
+            assert_eq!(balance(RECEIVE_POLICY_GUARD_ADDRESS)?, U256::ZERO);
+            Ok(())
+        })?;
+        drop(storage);
+        assert!(harness.pending_withdrawals()?.is_empty());
+    }
     Ok(())
 }

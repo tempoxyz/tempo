@@ -21,19 +21,19 @@ use alloc::vec::Vec;
 use alloy_evm::precompiles::DynPrecompile;
 use alloy_primitives::{Address, B256, U256};
 use alloy_sol_types::{SolCall, SolValue, abi::AbiDecoderConfig};
-use tempo_precompiles::{
-    PATH_USD_ADDRESS,
-    error::TempoPrecompileError,
-    storage::{Handler, Mapping, Slot, StorageCtx},
-    tip20::{ISSUER_ROLE, ITIP20, TIP20Error, TIP20Token},
-    tip403_registry::TIP403Registry,
-};
-use tempo_precompiles_macros::contract;
 use tempo_contracts::zones::{
     DecryptionData, Deposit, DepositType, EnabledToken, IZoneInbox, IZoneOutbox,
     LegacyTempoAdvanced, QueuedDeposit, TempoAdvanced, WithdrawalBounceBackDeposit, ZoneInboxError,
     ZoneInboxEvent,
 };
+use tempo_precompiles::{
+    PATH_USD_ADDRESS,
+    error::TempoPrecompileError,
+    storage::{Handler, Mapping, Slot, StorageCtx},
+    tip20::{ISSUER_ROLE, ITIP20, TIP20Error, TIP20Token},
+    tip403_registry::{AuthRole, TIP403Registry},
+};
+use tempo_precompiles_macros::contract;
 use zone_primitives::constants::{ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS};
 
 use crate::{
@@ -337,6 +337,7 @@ impl ZoneInbox {
 
     /// Mint with Solidity `try/catch` semantics: ordinary reverts are caught while fatal and
     /// out-of-gas failures abort the outer Inbox call.
+    /// +T13: Bridged assets use TIP-403 `Recipient` authorization rather than `MintRecipient`.
     fn try_mint(&mut self, token: Address, to: Address, amount: u128) -> ZoneResult<bool> {
         let ensure_logic_err = |err: TempoPrecompileError| {
             if err.is_system_error() {
@@ -359,11 +360,16 @@ impl ZoneInbox {
         let checkpoint = self.storage.checkpoint();
         let success = TIP20Token::from_address(token)
             .and_then(|mut token| {
-                token.mint(
+                token.mint_with_role(
                     ZONE_INBOX_ADDRESS,
                     ITIP20::mintCall {
                         to,
                         amount: U256::from(amount),
+                    },
+                    if self.storage.spec().is_t13() {
+                        AuthRole::recipient()
+                    } else {
+                        AuthRole::mint_recipient()
                     },
                 )
             })
@@ -379,6 +385,9 @@ impl ZoneInbox {
 
     fn claim_refund(&mut self, caller: Address, token: Address) -> ZoneResult<u128> {
         let amount = self.withdrawal_bounce_backs[token][caller].read()?;
+        if self.storage.spec().is_t13() && amount == 0 {
+            return Err(ZoneInboxError::no_refund().into());
+        }
         if !self.try_mint(token, caller, amount)? {
             return Err(TempoPrecompileError::from(TIP20Error::policy_forbids()).into());
         }

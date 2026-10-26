@@ -2,8 +2,7 @@
 
 use std::{env, error::Error};
 
-use vergen::{Build, Cargo, Emitter};
-use vergen_git2::Git2;
+use smolgen::{Build, Cargo, Emitter, Gitcl};
 
 fn main() -> Result<(), Box<dyn Error>> {
     let mut emitter = Emitter::default();
@@ -14,21 +13,29 @@ fn main() -> Result<(), Box<dyn Error>> {
     let cargo_builder = Cargo::builder().features(true).target_triple(true).build();
     emitter.add_instructions(&cargo_builder)?;
 
-    let git_builder = Git2::builder()
-        .describe(false, true, None)
+    // Tracking the git HEAD reruns this script, and rebuilds everything above this crate, on every
+    // commit and checkout. Debug builds skip it and keep the SHA from the last run of this script.
+    // Release profiles keep tracking HEAD, so their version always matches the checkout.
+    let git_builder = Gitcl::builder()
+        .describe(false, true, Some("zones/v[0-9]*"))
         .dirty(true)
         .sha(false)
+        .rerun_on_head_change(env::var("PROFILE")? != "debug")
         .build();
     emitter.add_instructions(&git_builder)?;
 
     emitter.emit_and_set()?;
-    let sha = env::var("VERGEN_GIT_SHA").or_else(|_| env::var("ZONE_GIT_SHA"))?;
-    println!("cargo:rustc-env=VERGEN_GIT_SHA={sha}");
+    let sha = env::var("VERGEN_GIT_SHA")?;
     let sha_short = &sha[0..7];
 
     let is_dirty = env::var("VERGEN_GIT_DIRTY").is_ok_and(|dirty| dirty == "true");
     let not_on_tag = env::var("VERGEN_GIT_DESCRIBE")
-        .map(|describe| describe.ends_with(&format!("-g{sha_short}")))
+        .map(|describe| {
+            !describe.starts_with("zones/v")
+                || describe
+                    .rsplit_once("-g")
+                    .is_some_and(|(_, hash)| sha.starts_with(hash))
+        })
         .unwrap_or(true);
     let version_suffix = if is_dirty || not_on_tag { "-dev" } else { "" };
     println!("cargo:rustc-env=RETH_VERSION_SUFFIX={version_suffix}");

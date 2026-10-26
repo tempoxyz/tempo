@@ -16,27 +16,21 @@ updates:
         patterns: ["*"]
         update-types: ["minor", "patch"]
     cooldown:
-      default-days: 7
-  - package-ecosystem: "cargo"
+      # Buffer the scanner's seven-day minimum: Dependabot reads date-only tag metadata.
+      default-days: 8
+  - package-ecosystem: "docker"
     directory: "/"
-    allow:
-      - dependency-type: "all"
     schedule:
       interval: "weekly"
     labels:
       - "A-dependencies"
     commit-message:
-      prefix: "chore(deps)"
+      prefix: "chore(docker)"
     open-pull-requests-limit: 1
-    groups:
-      cargo-weekly:
-        applies-to: "version-updates"
-        patterns: ["*"]
-        update-types: ["minor", "patch"]
     cooldown:
       default-days: 7
   - package-ecosystem: "docker"
-    directory: "/"
+    directory: "/zones/docker"
     schedule:
       interval: "weekly"
     labels:

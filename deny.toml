@@ -11,6 +11,24 @@ ignore = [
   # https://rustsec.org/advisories/RUSTSEC-2026-0173 proc-macro-error2 is unmaintained
   # and is pulled in transitively by upstream crates with no safe upgrade available.
   "RUSTSEC-2026-0173",
+  # https://rustsec.org/advisories/RUSTSEC-2026-0374 basic-toml is unmaintained and is pulled
+  # in by age through i18n-embed with no safe upgrade available.
+  "RUSTSEC-2026-0374",
+  # https://rustsec.org/advisories/RUSTSEC-2026-0387 crypto-bigint timing variability,
+  # patched in 0.7.6 but elliptic-curve 0.13 (k256/p256/p384) still requires 0.5.x.
+  "RUSTSEC-2026-0387",
+  # serde_cbor is unmaintained and is pulled in by aws-nitro-enclaves-nsm-api.
+  # Preserve the Zones exception until upstream replaces it:
+  # https://github.com/aws/aws-nitro-enclaves-nsm-api/issues/19
+  "RUSTSEC-2021-0127",
+  # zstd 0.13 / zstd-safe 7 advisories, patched only in zstd 0.14.3 / zstd-safe 8.2.0;
+  # commonware-storage and reth still require zstd 0.13.
+  # https://rustsec.org/advisories/RUSTSEC-2026-0391
+  "RUSTSEC-2026-0391",
+  # https://rustsec.org/advisories/RUSTSEC-2026-0398
+  "RUSTSEC-2026-0398",
+  # https://rustsec.org/advisories/RUSTSEC-2026-0403
+  "RUSTSEC-2026-0403",
 ]
 
 # This section is considered when running `cargo deny check bans`.
@@ -69,6 +87,8 @@ exceptions = [
   { allow = ["MPL-2.0"], name = "bitmaps" },
   { allow = ["MPL-2.0"], name = "imbl" },
   { allow = ["MPL-2.0"], name = "imbl-sized-chunks" },
+  # Fuzzing only: libFuzzer is bundled under NCSA (crates/nitro-attestation/fuzz).
+  { allow = ["NCSA"], name = "libfuzzer-sys" },
 ]
 
 [[licenses.clarify]]
