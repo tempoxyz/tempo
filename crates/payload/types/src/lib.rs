@@ -14,7 +14,7 @@ pub(crate) use budget::ValidationLatencyEstimator;
 pub use budget::{ValidationLatencyEstimate, ValidationLatencyWorkload};
 pub(crate) use build_plan::BUILD_TIME_MULTIPLIER_SCALE;
 pub use build_plan::{BuildPlan, PayloadBudgetDecision};
-pub use estimator::{DEFAULT_BUILD_TIME_MULTIPLIER, Estimator};
+pub use estimator::{DEFAULT_BUILD_TIME_MULTIPLIER, Estimator, EstimatorConfig, FinishedBuild};
 use std::{
     sync::{Arc, OnceLock},
     time::Duration,

@@ -122,7 +122,8 @@ where
         network_address: SocketAddr,
         chain_address: Address,
     ) -> Self {
-        let estimator = tempo_node::Estimator::new(tempo_node::DEFAULT_BUILD_TIME_MULTIPLIER);
+        let estimator = tempo_node::Estimator::new(tempo_node::EstimatorConfig::default())
+            .expect("default estimator configuration is valid");
         execution_config.estimator = Some(estimator.clone());
         let public_key = private_key.public_key();
         let partition_prefix = uid.clone();
