@@ -31,7 +31,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=cargo-
     cargo build --profile ${RUST_PROFILE} \
         --bin tempo --features "${RUST_FEATURES},localnet,custom-pcrs"
 
-FROM debian:bookworm-slim@sha256:4724b8cc51e33e398f0e2e15e18d5ec2851ff0c2280647e1310bc1642182655d AS base
+FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8 AS base
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
