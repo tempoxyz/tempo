@@ -1,4 +1,6 @@
-use crate::utils::{PendingTransactionBuilderExt, TestNodeBuilder, setup_test_token};
+use crate::utils::{
+    PendingTransactionBuilderExt, TestNodeBuilder, make_genesis_at, setup_test_token,
+};
 use alloy::{
     consensus::Transaction,
     network::ReceiptResponse,
@@ -13,6 +15,7 @@ use alloy_rpc_types_eth::TransactionRequest;
 use eyre::WrapErr;
 use reth_e2e_test_utils::{receipt::PendingTransactionExt, wallet::test_signer};
 use tempo_alloy::rpc::TempoTransactionReceipt;
+use tempo_chainspec::TempoHardfork;
 use tempo_contracts::precompiles::{
     IFeeManager, ITIP20, ITIP403Registry,
     ITIPFeeAMM::{self},
@@ -124,7 +127,10 @@ async fn test_tip1115_estimate_and_pay_with_ousd_fallback() -> eyre::Result<()> 
 async fn test_set_user_token() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let setup = TestNodeBuilder::new()
+        .with_genesis(make_genesis_at(TempoHardfork::T14))
+        .build_http_only()
+        .await?;
     let http_url = setup.http_url;
 
     let wallet = test_signer(0);

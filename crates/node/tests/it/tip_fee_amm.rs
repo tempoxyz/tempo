@@ -1,4 +1,4 @@
-use crate::utils::{TestNodeBuilder, setup_test_token};
+use crate::utils::{TestNodeBuilder, make_genesis_at, setup_test_token};
 use alloy::{
     primitives::{B256, U256},
     providers::{Provider, ProviderBuilder},
@@ -10,7 +10,7 @@ use reth_e2e_test_utils::{
     receipt::{PendingTransactionExt, await_successful_receipts},
     wallet::test_signer,
 };
-use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
+use tempo_chainspec::{TempoHardfork, spec::TEMPO_T1_BASE_FEE};
 use tempo_contracts::precompiles::{
     IFeeManager, IRolesAuth,
     ITIP20::{self, ITIP20Instance},
@@ -418,13 +418,21 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
     Ok(())
 }
 
-#[test_case(false ; "no_direct_pool")]
-#[test_case(true ; "insufficient_direct_pool")]
+#[test_case(TempoHardfork::T14, false ; "t14_no_direct_pool")]
+#[test_case(TempoHardfork::T14, true ; "t14_insufficient_direct_pool")]
+#[test_case(TempoHardfork::T15, false ; "t15_no_direct_pool")]
+#[test_case(TempoHardfork::T15, true ; "t15_insufficient_direct_pool")]
 #[tokio::test(flavor = "multi_thread")]
-async fn test_transact_two_hop_fee_route(direct_pool_exists: bool) -> eyre::Result<()> {
+async fn test_transact_two_hop_fee_route(
+    fork: TempoHardfork,
+    direct_pool_exists: bool,
+) -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let setup = TestNodeBuilder::new()
+        .with_genesis(make_genesis_at(fork))
+        .build_http_only()
+        .await?;
     let http_url = setup.http_url;
 
     let user_wallet = test_signer(1);
@@ -516,6 +524,8 @@ async fn test_transact_two_hop_fee_route(direct_pool_exists: bool) -> eyre::Resu
         .call()
         .await?;
 
+    let validator_balance_before = validator_token.balanceOf(validator_address).call().await?;
+
     let transfer_token = ITIP20::new(DEFAULT_FEE_TOKEN, provider.clone());
     let receipt = transfer_token
         .transfer(Address::random(), U256::ONE)
@@ -533,7 +543,15 @@ async fn test_transact_two_hop_fee_route(direct_pool_exists: bool) -> eyre::Resu
         .collectedFees(validator_address, *validator_token.address())
         .call()
         .await?;
-    assert_eq!(collected_after - collected_before, out2);
+    let validator_balance_after = validator_token.balanceOf(validator_address).call().await?;
+    if fork.is_t15() {
+        assert_eq!(collected_before, U256::ZERO);
+        assert_eq!(collected_after, U256::ZERO);
+        assert_eq!(validator_balance_after - validator_balance_before, out2);
+    } else {
+        assert_eq!(collected_after - collected_before, out2);
+        assert_eq!(validator_balance_after, validator_balance_before);
+    }
 
     let direct_after = fee_amm
         .getPool(*user_token.address(), *validator_token.address())
