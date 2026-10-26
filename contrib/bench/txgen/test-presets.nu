@@ -79,12 +79,13 @@ let zone_earn_weights = (txgen-workload-metadata-args zone-earn-mix $zone_earn |
 assert equal ($zone_earn_weights | columns | sort) [public_transfer vault_deposit vault_withdraw zone_deposit zone_withdraw]
 rm -rf $zone_earn_dir
 # Gap variants: pinned portal count, single-sender settlement, fresh payees.
-for preset in [zone-earn-hot zone-earn-serial bridge-mix-new-accounts] {
+for preset in [zone-earn-hot zone-earn-serial zone-portal-hot bridge-mix-new-accounts] {
     let spec = (txgen-resolve-bench-spec $preset)
     assert equal ($spec.spec_path | path basename) $"($preset).yml"
     assert ($preset in $TXGEN_HELPER_ALWAYS_FUND_PRESETS)
 }
 assert equal (txgen-zone-count zone-earn-hot 143) 1
+assert equal (txgen-zone-count zone-portal-hot 143) 1
 assert equal (txgen-zone-count zone-earn-mix 143) 143
 let serial_dir = (mktemp -d)
 let serial = (open (txgen-prepare-public-mix-preset (txgen-resolve-bench-spec zone-earn-serial).spec_path 1000 4 2 1337 --out-dir $serial_dir))

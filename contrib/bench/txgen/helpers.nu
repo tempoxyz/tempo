@@ -9,6 +9,7 @@ const TXGEN_HELPER_ALWAYS_FUND_PRESETS = [
     "zone-earn-mix"
     "zone-earn-hot"
     "zone-earn-serial"
+    "zone-portal-hot"
     "dex"
     "bridge-mix"
     "bridge-mix-new-accounts"
@@ -23,9 +24,9 @@ const TXGEN_HELPER_ALWAYS_FUND_PRESETS = [
     "zone-portal-throughput"
 ]
 # Presets composed by txgen-prepare-public-mix-preset from the public-mix fixtures.
-const TXGEN_HELPER_PUBLIC_MIX_PRESETS = ["public-mix" "vault-throughput" "zone-portal-throughput" "zone-earn-mix" "zone-earn-hot" "zone-earn-serial"]
+const TXGEN_HELPER_PUBLIC_MIX_PRESETS = ["public-mix" "vault-throughput" "zone-portal-throughput" "zone-earn-mix" "zone-earn-hot" "zone-earn-serial" "zone-portal-hot"]
 # Presets that pin the zone portal count instead of sizing it by TPS (TXGEN_ZONE_COUNT still overrides).
-const TXGEN_HELPER_PRESET_ZONE_COUNTS = {"zone-earn-hot": 1}
+const TXGEN_HELPER_PRESET_ZONE_COUNTS = {"zone-earn-hot": 1, "zone-portal-hot": 1}
 # Presets whose zone settlement and Earn deposits come from one sender with ordered nonces.
 const TXGEN_HELPER_SINGLE_SENDER_PRESETS = ["zone-earn-serial"]
 const TXGEN_HELPER_EXISTING_RECIPIENTS_START = 10000
