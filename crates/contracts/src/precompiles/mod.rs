@@ -39,6 +39,9 @@ pub use zone_verifier::*;
 use alloy_primitives::{Address, address};
 use tempo_hardfork::TempoHardfork;
 
+/// Zone outbox precompile, deployed only on Tempo Zones (not a Tempo L1 system precompile).
+pub const ZONE_OUTBOX_ADDRESS: Address = address!("0x1c00000000000000000000000000000000000002");
+
 pub const TIP_FEE_MANAGER_ADDRESS: Address = address!("0xfeec000000000000000000000000000000000000");
 pub const PATH_USD_ADDRESS: Address = address!("0x20C0000000000000000000000000000000000000");
 pub const DEFAULT_FEE_TOKEN: Address = PATH_USD_ADDRESS;
@@ -62,8 +65,6 @@ pub const RECEIVE_POLICY_GUARD_ADDRESS: Address =
 pub const STORAGE_CREDITS_ADDRESS: Address = address!("0x1060000000000000000000000000000000000000");
 pub const CURRENT_COMMITTEE_ADDRESS: Address =
     address!("0xC077E00000000000000000000000000000000000");
-/// Zone outbox precompile, deployed only on Tempo Zones (not a Tempo L1 system precompile).
-pub const ZONE_OUTBOX_ADDRESS: Address = address!("0x1c00000000000000000000000000000000000002");
 
 /// Fixed system precompile addresses and corresponding activation hardfork
 pub const SYSTEM_PRECOMPILES: &[(Address, TempoHardfork)] = &[
