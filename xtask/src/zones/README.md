@@ -20,12 +20,20 @@ explicit offline `--hardfork <fork>` cap; there is no implicit all-forks-at-gene
 default.
 
 RPC mode reads `eth_chainId`, `tempo_forkSchedule`, and the latest L1 header. The
-RPC chain ID must match the parent encoded in the Zone chain ID. Genesis preserves
-activation timestamps, including scheduled future upgrades, and omits unscheduled
-forks only for mainnet and testnet, whose compiled schedules supply activation
-times on later node upgrades. Development and custom parents keep unscheduled
-forks explicitly `null`, so the bundled DEV schedule for chain IDs 1337 and 31337
-cannot activate forks the L1 did not report.
+RPC chain ID must match the parent encoded in the Zone chain ID.
+
+On mainnet and testnet parents, genesis omits every Tempo fork field, so the Zone
+follows the parent schedule compiled into the node, including forks a later binary
+release schedules. Generation fails if the reported schedule disagrees with the
+compiled one; update the zone binary first. Explicit numeric or `null` fork fields
+in a Zone genesis still override the parent schedule.
+
+On development and custom parents, genesis writes the reported activation
+timestamps, including scheduled future upgrades, and `null` for unscheduled forks,
+so the bundled DEV schedule for chain IDs 1337 and 31337 cannot activate forks the
+L1 did not report. Restarting nodes does not fetch a new schedule; later L1
+upgrades need a coordinated genesis update.
+
 The latest L1 head is used only to validate the reported schedule. The genesis
 timestamp comes from the anchor header, and the initialization EVM uses the fork
 active at that timestamp. With the same anchor, schedule, and generation parameters,
@@ -34,12 +42,7 @@ unsupported forks, inconsistent schedules, or fork overrides abort generation.
 If an upgrade occurs between the schedule and head reads, retry generation.
 `--l1-rpc-url` can also be combined with `--tempo-portal` to derive a pre-creation
 anchor, or with `--tempo-genesis-header-rlp` to supply the anchor explicitly.
-
-Scheduled fork settings are persisted in `genesis.json`; restarting nodes does not
-fetch a new schedule. Unscheduled forks can inherit the compiled parent schedule
-when it becomes available for mainnet or testnet. Development and custom L1 chains
-still require a coordinated configuration update. Existing Zone databases are not
-modified by generation.
+Existing Zone databases are not modified by generation.
 
 For offline development or tests, `--hardfork T11` enables forks through T11 at
 timestamp zero and disables T12/T13/T14. Individual `--t*-time` flags still take
