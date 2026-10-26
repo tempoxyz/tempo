@@ -11,9 +11,22 @@ set -euo pipefail
 checkout="$(cd "${1:?usage: $0 <earn checkout>}" && pwd)"
 
 if [[ -f "$checkout/earn/foundry.toml" ]]; then
-  # Also builds Earn's pinned solar with cargo when earn/solar.lock exists. Jobs may set
-  # RUSTC_WRAPPER to an sccache that is not installed yet, so build without it.
-  (cd "$checkout" && RUSTC_WRAPPER= bash scripts/solidity-deps.sh earn) >&2
+  # Also builds Earn's pinned solar with cargo when earn/solar.lock exists. Build it with none of the
+  # job's Rust settings: RUSTC_WRAPPER may name an sccache that is not installed yet, linker flags
+  # may name a mold that is not installed, and RUSTFLAGS such as target-cpu=native would make the
+  # shared solar cache non-portable across runners.
+  (
+    cd "$checkout"
+    for name in $(compgen -e); do
+      case "$name" in
+        RUSTC_WRAPPER | RUSTC_WORKSPACE_WRAPPER | RUSTFLAGS | RUSTDOCFLAGS | CARGO_ENCODED_RUSTFLAGS | \
+          CARGO_BUILD_RUSTFLAGS | CARGO_BUILD_RUSTC_WRAPPER | CARGO_TARGET_*_RUSTFLAGS | CARGO_TARGET_*_LINKER)
+          unset "$name"
+          ;;
+      esac
+    done
+    bash scripts/solidity-deps.sh earn
+  ) >&2
   echo "$checkout/earn"
 else
   # PropAMM is private and only needed by Earn's integration tests.
