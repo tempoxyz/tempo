@@ -35,7 +35,13 @@ class DockerBuilderTests(unittest.TestCase):
         cls.context.mkdir()
         cls.archive = Path(cls.tmp.name) / 'image.tar'
         cls.fixture = 'zones-builder-test:' + Path(cls.tmp.name).name
-        cls.addClassCleanup(cls.docker, 'image', 'rm', '-f', cls.fixture, check=False)
+        cls.result_image = cls.fixture + '-result'
+        cls.addClassCleanup(cls.docker, 'image', 'rm', '-f', cls.fixture,
+                            cls.result_image, check=False)
+        # The classic image store requires loading before saving; containerd can
+        # export directly, avoiding unnecessary (and potentially flaky) unpacking.
+        status = json.loads(cls.docker('info', '--format', '{{json .DriverStatus}}').stdout)
+        cls.direct_export = ['driver-type', 'io.containerd.snapshotter.v1'] in (status or [])
         source = (ROOT / 'zones/docker/Dockerfile').read_text()
         base = re.search(r'^FROM (debian:\S+)', source, re.M).group(1)
         # Reject unexpected binaries, so visiting the other compile branch fails.
@@ -72,24 +78,28 @@ RUN for cmd in apt-get curl forge jq; do cp /usr/local/bin/cargo /usr/local/bin/
 ENV SCCACHE_DIR=/sccache
 WORKDIR /app
 ''')
-        cls.docker('build', '--provenance=false', '-f', str(fixture_dockerfile), '-t', cls.fixture, str(cls.context))
+        cls.docker('build', '--network=none', '--provenance=false', '-f', str(fixture_dockerfile), '-t', cls.fixture, str(cls.context))
         (cls.context / 'Dockerfile').write_text(re.sub(
             r'^FROM debian:\S+', f'FROM {cls.fixture}', source, flags=re.M))
         (cls.context / 'crates/zones/contracts').mkdir(parents=True)
 
     def build(self, binary, profile=None, sha='fixture-sha'):
         (self.context / 'expected-binary').write_text(binary)
-        args = ['build', '--provenance=false', '--no-cache', '--progress=plain', '--target', binary,
+        args = ['build', '--network=none', '--provenance=false', '--no-cache', '--progress=plain', '--target', binary,
                 '--build-arg', f'CHEF_IMAGE={self.fixture}',
                 '--build-arg', f'VERGEN_GIT_SHA={sha}',
-                '--build-arg', 'EXTRA_RUSTFLAGS=-C debuginfo=1',
-                '--output', f'type=docker,dest={self.archive}']
+                '--build-arg', 'EXTRA_RUSTFLAGS=-C debuginfo=1']
+        args += (['--output', f'type=docker,dest={self.archive}'] if self.direct_export
+                 else ['-t', self.result_image])
         if profile:
             args += ['--build-arg', f'RUST_PROFILE={profile}']
-        return self.docker(*args, str(self.context), check=False)
+        result = self.docker(*args, str(self.context), check=False)
+        if result.returncode == 0 and not self.direct_export:
+            self.docker('image', 'save', '-o', str(self.archive), self.result_image)
+        return result
 
     def read_image(self):
-        # Inspect the exported image directly: no daemon unpacking or running fixtures.
+        # Inspect the exported image without running fixture containers.
         # Keep only our fixture files; never extract an image filesystem onto the host.
         files = {}
         with tarfile.open(self.archive) as image:
