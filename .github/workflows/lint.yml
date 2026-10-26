@@ -48,7 +48,7 @@ jobs:
               - '*.toml'
               - '{.cargo,.config,.github/actions}/**'
               - '.github/scripts/{native-libs.sh,check_no_std.sh,warn_flaky_e2e.py,test_warn_flaky_e2e.py}'
-              - '.github/workflows/{test,lint}.yml'
+              - '.github/workflows/{test,lint,bench}.yml'
 
   clippy:
     name: clippy
