@@ -35,7 +35,7 @@
 //! A failed build or payload leaves the block in the queue for retry.
 //!
 //! Witnesses for produced blocks are collected in the background by the proof collector, so slow
-//! L1 proofs do not stall production. Production pauses only once [`MAX_UNWITNESSED_BLOCKS`]
+//! L1 proofs do not stall production. Production pauses only once `MAX_UNWITNESSED_BLOCKS`
 //! blocks are waiting for witnesses.
 //!
 //! The zone assumes **instant finality** — head, safe, and finalized all point
