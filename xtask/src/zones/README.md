@@ -23,8 +23,9 @@ RPC mode reads `eth_chainId`, `tempo_forkSchedule`, and the latest L1 header. Th
 RPC chain ID must match the parent encoded in the Zone chain ID. Genesis preserves
 activation timestamps, including scheduled future upgrades, and omits unscheduled
 forks only for mainnet and testnet, whose compiled schedules supply activation
-times on later node upgrades. Development and custom parents keep unscheduled
-forks explicitly `null`; chain IDs 1337 and 31337 do not imply the bundled DEV schedule.
+times on later node upgrades. Development and custom parents defer unscheduled
+forks to timestamp `u64::MAX`, so the bundled DEV schedule for chain IDs 1337 and
+31337 cannot activate forks the L1 did not report.
 The latest L1 head is used only to validate the reported schedule. The genesis
 timestamp comes from the anchor header, and the initialization EVM uses the fork
 active at that timestamp. With the same anchor, schedule, and generation parameters,
@@ -45,11 +46,11 @@ Existing Zone databases are not modified by generation. Inheriting a previously
 disabled fork can change historical execution rules; validate replay and proving
 before deploying this behavior to an existing Zone.
 
-For offline tests on development and custom L1 chains, `--hardfork T11` enables
-forks through T11 at timestamp zero and disables T12/T13/T14. Individual `--t*-time`
-flags still take precedence in offline mode, but cannot be combined with
-RPC-derived schedules. On public parents, use explicit numeric timestamps to defer
-later forks instead of `null`, which requests inheritance.
+For offline development or tests, `--hardfork T11` enables forks through T11 at
+timestamp zero and defers T12/T13/T14 to timestamp `u64::MAX`, which parent
+inheritance preserves on every parent. Individual `--t*-time` flags still take
+precedence in offline mode, but cannot be combined with RPC-derived schedules.
+A `null` activation requests inheritance from a resolved parent.
 The bundled dev genesis regeneration recipe explicitly selects T14.
 
 - `generate-state-bloat`: generates a TIP20 binary storage dump using Tempo's

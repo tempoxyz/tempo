@@ -62,7 +62,8 @@ impl TempoHardforkArgs {
     }
 
     /// Writes every post-Genesis hardfork activation into `config`, using `null` for disabled
-    /// forks so they cannot be inherited from a parent chain. Other fields are left untouched.
+    /// forks. Zone genesis on a resolved parent inherits `null` activations, so Zone tooling
+    /// defers disabled forks with `u64::MAX` instead. Other fields are left untouched.
     pub fn write_to(&self, config: &mut ChainConfig) {
         for &fork in TempoHardfork::VARIANTS {
             if let Some(key) = fork.genesis_key() {

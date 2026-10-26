@@ -671,7 +671,10 @@ mod tests {
             );
             for &fork in TempoHardfork::VARIANTS {
                 if fork > delayed {
-                    assert_eq!(config[fork.genesis_key().unwrap()], serde_json::Value::Null);
+                    assert_eq!(
+                        config[fork.genesis_key().unwrap()],
+                        serde_json::json!(u64::MAX)
+                    );
                 }
             }
             let spec = ZoneChainSpec::from_genesis(genesis).unwrap();
@@ -680,7 +683,7 @@ mod tests {
                 (50, active),
                 (activation - 1, active),
                 (activation, delayed),
-                (u64::MAX, delayed),
+                (u64::MAX - 1, delayed),
             ] {
                 let evm = setup_zone_evm(1337, 30_000_000, &forks, timestamp).unwrap();
                 assert_eq!(evm.ctx().cfg.spec, expected);
@@ -706,7 +709,7 @@ mod tests {
             (50, TempoHardfork::T11),
             (100, TempoHardfork::T11),
             (200, TempoHardfork::T12),
-            (u64::MAX, TempoHardfork::T12),
+            (u64::MAX - 1, TempoHardfork::T12),
         ];
 
         // Advancing the head, even across a scheduled fork, must not change genesis.
@@ -767,11 +770,11 @@ mod tests {
             }
             assert_eq!(
                 genesis.config.extra_fields["t13Time"],
-                serde_json::Value::Null
+                serde_json::json!(u64::MAX)
             );
             assert_eq!(
                 genesis.config.extra_fields["t14Time"],
-                serde_json::Value::Null
+                serde_json::json!(u64::MAX)
             );
             let spec = ZoneChainSpec::from_genesis(genesis).unwrap();
             for (timestamp, expected) in activations {

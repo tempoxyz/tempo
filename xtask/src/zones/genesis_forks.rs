@@ -117,7 +117,11 @@ impl ResolvedForks {
                     .and_then(chainspec_from_chain_id)
                     .is_none()
                 {
-                    config.extra_fields.insert(key.to_owned(), Value::Null);
+                    // Zone chainspecs inherit null activations from resolved parents, so
+                    // disabled forks use a numeric deferral that inheritance preserves.
+                    config
+                        .extra_fields
+                        .insert(key.to_owned(), Value::from(u64::MAX));
                 } else {
                     // Public parents provide authoritative schedules on later binary upgrades.
                     config.extra_fields.remove(key);
@@ -251,12 +255,29 @@ mod tests {
             forks.write_to(&mut genesis.config);
 
             assert_eq!(genesis.config.extra_fields["t12Time"], json!(200));
-            assert_eq!(genesis.config.extra_fields["t13Time"], Value::Null);
-            assert_eq!(genesis.config.extra_fields["t14Time"], Value::Null);
+            assert_eq!(genesis.config.extra_fields["t13Time"], json!(u64::MAX));
+            assert_eq!(genesis.config.extra_fields["t14Time"], json!(u64::MAX));
             let zone = ZoneChainSpec::from_genesis(genesis).unwrap();
             assert_eq!(zone.tempo_hardfork_at(199), TempoHardfork::T11);
             assert_eq!(zone.tempo_hardfork_at(200), TempoHardfork::T12);
-            assert_eq!(zone.tempo_hardfork_at(u64::MAX), TempoHardfork::T12);
+            assert_eq!(zone.tempo_hardfork_at(u64::MAX - 1), TempoHardfork::T12);
+        }
+    }
+
+    #[test]
+    fn offline_caps_survive_public_and_dev_parent_inheritance() {
+        let args = TempoHardforkArgs {
+            hardfork: Some(TempoHardfork::T11),
+            ..Default::default()
+        };
+        let forks = ResolvedForks::offline(&args).unwrap();
+        for parent_chain_id in [4217, 42431, 1337, 31337] {
+            let mut genesis = DEV.inner.genesis.clone();
+            genesis.config.chain_id = zone_chain_id(parent_chain_id, 3).unwrap();
+            forks.write_to(&mut genesis.config);
+
+            let zone = ZoneChainSpec::from_genesis(genesis).unwrap();
+            assert_eq!(zone.tempo_hardfork_at(u64::MAX - 1), TempoHardfork::T11);
         }
     }
 }
