@@ -53,6 +53,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
 
     /// @dev Ghost variables for tracking rounding exploitation attempts
     uint256 private _totalMintBurnCycles;
+    uint256 private _totalMintBurnCyclesWithUserLeg;
     uint256 private _totalSmallRebalanceSwaps;
     uint256 private _ghostRebalanceInputSum;
     uint256 private _ghostRebalanceOutputSum;
@@ -813,10 +814,11 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         (address userToken, address validatorToken) = _selectTokenPair(pairSeed);
         address actor = _selectAuthorizedActor(actorSeed, validatorToken);
 
-        amount = bound(amount, 1, 100_000);
+        amount = bound(amount, 1, 10_000_000_000);
         _ensureFunds(actor, ITIP20(validatorToken), amount);
 
-        uint256 actorBalBefore = ITIP20(validatorToken).balanceOf(actor);
+        uint256 validatorBefore = ITIP20(validatorToken).balanceOf(actor);
+        uint256 userBefore = ITIP20(userToken).balanceOf(actor);
 
         vm.startPrank(actor);
         try amm.mint(userToken, validatorToken, amount, actor) returns (uint256 liquidity) {
@@ -826,11 +828,22 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
                 ) {
                     _totalMintBurnCycles++;
 
-                    uint256 actorBalAfter = ITIP20(validatorToken).balanceOf(actor);
-                    // TEMPO-AMM17: Mint/burn cycle should not profit the actor
-                    assertTrue(
-                        actorBalAfter <= actorBalBefore,
-                        "TEMPO-AMM17: Actor should not profit from mint/burn cycle"
+                    uint256 validatorAfter = ITIP20(validatorToken).balanceOf(actor);
+                    uint256 userReceived = ITIP20(userToken).balanceOf(actor) - userBefore;
+                    if (userReceived > 0) _totalMintBurnCyclesWithUserLeg++;
+
+                    // TEMPO-AMM17: A mint/burn cycle nets out to a validator->user swap, so it may
+                    // return user tokens, but never at a better price than rebalanceSwap. The
+                    // floor in mint's denominator can save the minter rebalanceSwap's +1 unit.
+                    assertGe(
+                        validatorBefore,
+                        validatorAfter,
+                        "TEMPO-AMM17: Mint/burn cycle returned more validator tokens than deposited"
+                    );
+                    assertGe(
+                        validatorBefore - validatorAfter,
+                        userReceived * N / SCALE,
+                        "TEMPO-AMM17: Mint/burn cycle beat the rebalance rate"
                     );
                 } catch (bytes memory reason) {
                     _assertKnownError(reason);
