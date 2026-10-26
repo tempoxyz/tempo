@@ -14337,7 +14337,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-fuzz-harness"
-version = "1.16.1"
+version = "1.17.0"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -14365,7 +14365,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-fuzz-types"
-version = "1.16.1"
+version = "1.17.0"
 dependencies = [
  "alloy-primitives",
  "revm",
