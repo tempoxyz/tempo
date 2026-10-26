@@ -122,4 +122,3 @@ fuzz_target!(|document: &[u8]| {
         );
     }
 });
-

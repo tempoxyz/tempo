@@ -140,7 +140,6 @@ jobs:
       BASELINE_ZONES_ROOT: ${{ github.workspace }}/baseline-zones
       FEATURE_ZONES_ROOT: ${{ github.workspace }}/feature-zones
       BENCH_TEMPO_ROOT: ${{ github.workspace }}/tempo
-      BENCH_EARN_ROOT: ${{ github.workspace }}/earn
       BENCH_PR: ${{ inputs.pr }}
       BENCH_ACTOR: ${{ inputs.actor || github.actor }}
       BENCH_COMMENT_ID: ${{ inputs.comment-id }}
@@ -280,12 +279,21 @@ jobs:
           ref: main
           path: earn
           persist-credentials: false
-      - name: Initialize Earn fixture dependencies
-        working-directory: earn
-        run: git submodule update --init lib/forge-std lib/openzeppelin-contracts
       - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           toolchain: stable
+      - name: Restore Earn's solar compiler
+        # Present when Earn compiles with solar (earn/solar.lock); solidity-deps.sh builds it with cargo.
+        if: ${{ hashFiles('earn/earn/solar.lock') != '' }}
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: earn/.solar
+          key: earn-solar-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('earn/earn/solar.lock') }}
+      - name: Initialize Earn fixture dependencies
+        # Sets BENCH_EARN_ROOT to Earn's Foundry project, at the checkout root or in its earn/ directory.
+        run: |
+          root="$(bash .github/scripts/prepare-earn-checkout.sh earn)"
+          echo "BENCH_EARN_ROOT=$root" >> "$GITHUB_ENV"
       - uses: tempoxyz/gh-actions/actions/setup-mold@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
       - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
