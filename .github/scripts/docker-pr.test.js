@@ -87,7 +87,7 @@ for (const event of ['pull_request', 'merge_group', 'fork']) {
     const outputs = {};
     const summary = { addHeading() { return this; }, addTable() { return this; }, async write() {} };
     const result = vm.runInNewContext(`(async () => {${script}\n})()`, {
-      process: { env: { PR_NUMBER: '', BRANCH_NAME: 'feature' } },
+      process: { env: { PR_NUMBER: '', BRANCH_NAME: 'feature', BUILD_TAG: 'build-42-1' } },
       context: { payload, sha: merge, repo: { owner: 'tempoxyz', repo: 'tempo' } },
       core: { setOutput: (key, value) => { outputs[key] = value; }, summary },
     });
@@ -98,6 +98,7 @@ for (const event of ['pull_request', 'merge_group', 'fork']) {
       const expected = event === 'pull_request' ? head : merge;
       assert.equal(outputs.sha, expected);
       assert.equal(outputs.short_sha, expected.slice(0, 7));
+      assert.equal(outputs.image_tag, 'build-42-1');
       assert.equal(outputs.revision_label, event === 'pull_request' ? `org.opencontainers.image.revision=${head}` : '');
     }
   });

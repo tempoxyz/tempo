@@ -39,8 +39,6 @@ jobs:
           version: "0.12.16"
           enable-cache: false
       - name: Test Zones workflow helpers
-        env:
-          RUN_DOCKER_TESTS: '1'
         run: uv run --no-project --with pyyaml python -m unittest discover -s .github/scripts -p 'test_zones_*.py'
       - name: Test CI helpers
         run: |
