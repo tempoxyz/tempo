@@ -106,11 +106,16 @@ impl ResolvedForks {
     pub(crate) fn write_to(&self, config: &mut ChainConfig) {
         for &fork in TempoHardfork::VARIANTS {
             if let Some(key) = fork.genesis_key() {
-                let value = self
-                    .activations
-                    .get(&fork)
-                    .map_or(Value::Null, |&time| Value::from(time));
-                config.extra_fields.insert(key.to_owned(), value);
+                if let Some(&time) = self.activations.get(&fork) {
+                    config
+                        .extra_fields
+                        .insert(key.to_owned(), Value::from(time));
+                } else if self.parent_chain_id.is_none() {
+                    config.extra_fields.insert(key.to_owned(), Value::Null);
+                } else {
+                    // Unscheduled RPC forks must remain eligible for parent inheritance.
+                    config.extra_fields.remove(key);
+                }
             }
         }
     }
@@ -203,5 +208,26 @@ mod tests {
             ..Default::default()
         };
         assert!(resolve_l1_forks(&provider, &args).await.is_err());
+    }
+
+    #[test]
+    fn rpc_genesis_omits_unscheduled_forks() {
+        let forks = ResolvedForks::from_schedule(4217, 100, schedule()).unwrap();
+        let mut config = ChainConfig::default();
+        config
+            .extra_fields
+            .insert("t13Time".to_owned(), Value::Null);
+        forks.write_to(&mut config);
+
+        assert_eq!(config.extra_fields["t0Time"], json!(10));
+        assert_eq!(config.extra_fields["t11Time"], json!(20));
+        assert_eq!(config.extra_fields["t12Time"], json!(200));
+        for &fork in TempoHardfork::VARIANTS {
+            if let Some(key) = fork.genesis_key()
+                && !forks.activations.contains_key(&fork)
+            {
+                assert!(!config.extra_fields.contains_key(key), "{key}");
+            }
+        }
     }
 }

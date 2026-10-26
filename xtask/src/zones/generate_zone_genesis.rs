@@ -692,7 +692,7 @@ mod tests {
 
     #[tokio::test]
     async fn generated_genesis_is_independent_of_l1_head() {
-        let chain_id = zone_primitives::constants::zone_chain_id(4217, 3)
+        let chain_id = zone_primitives::constants::zone_chain_id(31_318, 3)
             .unwrap()
             .to_string();
         let mut anchor = TempoHeader::default();
@@ -713,7 +713,7 @@ mod tests {
         for head_timestamp in [100, 150, 300] {
             let output = tempfile::tempdir().unwrap();
             let asserter = Asserter::new();
-            asserter.push_success(&"0x1079");
+            asserter.push_success(&"0x7a56");
             asserter.push_success(&serde_json::json!({
                 "active": if head_timestamp < 200 { "T11" } else { "T12" },
                 "schedule": [
@@ -762,11 +762,11 @@ mod tests {
             for (key, expected) in [
                 ("t11Time", serde_json::json!(20)),
                 ("t12Time", serde_json::json!(200)),
-                ("t13Time", serde_json::Value::Null),
-                ("t14Time", serde_json::Value::Null),
             ] {
                 assert_eq!(genesis.config.extra_fields[key], expected);
             }
+            assert!(!genesis.config.extra_fields.contains_key("t13Time"));
+            assert!(!genesis.config.extra_fields.contains_key("t14Time"));
             let spec = ZoneChainSpec::from_genesis(genesis).unwrap();
             for (timestamp, expected) in activations {
                 assert_eq!(spec.tempo_hardfork_at(timestamp), expected);
