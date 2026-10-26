@@ -18,7 +18,7 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use tempo_alloy::TempoNetwork;
 use tempo_contracts::zones::ZonePortal;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tracing::{error, info};
 use zone_rpc::{ZoneDebugApi, types::ZoneExecutionWitness};
 
@@ -27,6 +27,9 @@ use crate::ZoneSequencerProvider;
 // Persisted files survive upgrades; reject incompatible witness formats explicitly.
 const FORMAT_VERSION: u32 = 1;
 const FALLBACK_POLL_INTERVAL: Duration = Duration::from_secs(1);
+/// Canonical blocks whose witnesses are collected concurrently. Collection is bound by L1 proof
+/// latency, so a slow L1 RPC must not serialize the backlog one round trip at a time.
+const COLLECTION_CONCURRENCY: usize = 8;
 /// Finalized blocks retained for a lagging shadow prover before falling back to RPC witnesses.
 const MAX_SHADOW_RETENTION_BLOCKS: u64 = 10_000;
 
@@ -134,6 +137,22 @@ impl ProofCollectorHandle {
         Ok(())
     }
 
+    /// Wait until block `number` has a retained witness or is covered by finalized settlement.
+    ///
+    /// Witnesses are keyed by height; callers that need a specific block check its hash with
+    /// [`Self::get`]. Never returns if collection for `number` never succeeds, so callers race it
+    /// against their shutdown signal.
+    pub async fn wait_until_witnessed(&self, number: u64) {
+        // Subscribing before the check means any insert or prune after it wakes this wait.
+        let mut changed = self.store.changed.subscribe();
+        while !self.store.is_witnessed(number) {
+            changed
+                .changed()
+                .await
+                .expect("the proof store owns the sender");
+        }
+    }
+
     /// Allow pruning of finalized witnesses through a completed shadow proving job.
     pub fn mark_shadow_proven(&self, through: u64) {
         let mut state = self.store.state.write();
@@ -219,14 +238,30 @@ impl<P: ZoneSequencerProvider> ProofCollector<P> {
         .expect("proof pruning task panicked")?;
 
         let start = self.store.state.read().pruned_through.saturating_add(1);
+        let mut missing = Vec::new();
         for number in start..=head {
             let block_hash = self
                 .provider
                 .block_hash(number)?
                 .ok_or_eyre(format!("canonical Zone block {number} has no hash"))?;
             if !self.store.contains(number, block_hash) {
-                self.collect_and_persist(number, block_hash).await?;
+                missing.push((number, block_hash));
             }
+        }
+        // Persist in height order so the retained witnesses stay a contiguous prefix.
+        let mut collected =
+            futures::stream::iter(missing)
+                .map(|(number, block_hash)| async move {
+                    (number, self.collect_block(block_hash).await)
+                })
+                .buffered(COLLECTION_CONCURRENCY);
+        while let Some((number, proof)) = collected.next().await {
+            let proof = proof?;
+            ensure!(
+                proof.witness.block_number == number,
+                "witness height does not match Zone block {number}"
+            );
+            self.persist(proof).await?;
         }
         Ok(())
     }
@@ -349,6 +384,8 @@ impl std::fmt::Debug for ProofCollectorConfig {
 struct ProofStore {
     directory: PathBuf,
     state: RwLock<ProofStoreState>,
+    /// Signalled after every insert and prune, for [`ProofCollectorHandle::wait_until_witnessed`].
+    changed: watch::Sender<()>,
 }
 
 impl ProofStore {
@@ -396,6 +433,7 @@ impl ProofStore {
                 shadow_proven_through: None,
                 proofs,
             }),
+            changed: watch::Sender::new(()),
         })
     }
 
@@ -439,7 +477,13 @@ impl ProofStore {
             .write()
             .proofs
             .insert(proof.witness.block_number, Arc::new(proof));
+        self.changed.send_replace(());
         Ok(())
+    }
+
+    fn is_witnessed(&self, number: u64) -> bool {
+        let state = self.state.read();
+        number <= state.pruned_through || state.proofs.contains_key(&number)
     }
 
     fn contains(&self, number: u64, hash: B256) -> bool {
@@ -476,6 +520,7 @@ impl ProofStore {
             state.pruned_through = state.pruned_through.max(through);
             state.pruned_through
         };
+        self.changed.send_replace(());
         self.remove_files(..=through)
     }
 
@@ -840,6 +885,43 @@ mod tests {
         assert!(!directory.path().join(loaded.file_name()).exists());
         store.prune_through(0).unwrap();
         assert_eq!(store.state.read().pruned_through, 1);
+    }
+
+    #[tokio::test]
+    async fn witness_wait_resolves_on_insert_or_settlement() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(ProofStore::open(directory.path().to_path_buf(), 0).unwrap());
+        let (requests, _) = mpsc::channel(1);
+        let handle = ProofCollectorHandle {
+            store: store.clone(),
+            requests,
+        };
+
+        let collected = handle.wait_until_witnessed(1);
+        tokio::pin!(collected);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut collected)
+                .await
+                .is_err(),
+            "block 1 has no witness yet"
+        );
+        store.insert(proof(1, B256::repeat_byte(1))).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), collected)
+            .await
+            .expect("insert wakes the wait");
+
+        let settled = handle.wait_until_witnessed(3);
+        tokio::pin!(settled);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut settled)
+                .await
+                .is_err(),
+            "block 3 is neither collected nor settled"
+        );
+        store.prune_through(3).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), settled)
+            .await
+            .expect("settlement wakes the wait");
     }
 
     #[tokio::test]

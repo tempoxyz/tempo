@@ -2060,12 +2060,11 @@ async fn sync_classifies_corrupt_recognized_portal_log_as_fatal() {
     assert_eq!(subscriber.block_tracker.latest(), None);
 }
 
-#[tokio::test]
-async fn sync_fails_fatally_when_finalized_batch_observer_is_closed() {
-    let mut subscriber = test_subscriber(9);
-    let (sender, receiver) = tokio::sync::mpsc::channel(1);
-    drop(receiver);
-    subscriber.finalized_batch_submissions = Some(sender);
+/// Sync L1 block 10 carrying `submissions` finalized batch logs into `subscriber`'s observer.
+async fn sync_finalized_batches(
+    subscriber: &mut L1Subscriber<MockEthProvider>,
+    submissions: usize,
+) -> Result<u64, L1SubscriberError> {
     let portal = subscriber.config.portal_address;
     let event = crate::abi::LegacyBatchSubmitted {
         withdrawalBatchIndex: 7,
@@ -2082,7 +2081,7 @@ async fn sync_fails_fatally_when_finalized_batch_observer_is_closed() {
         },
         ..Default::default()
     };
-    let receipt = make_receipt_with_logs(10, B256::ZERO, vec![log]);
+    let receipt = make_receipt_with_logs(10, B256::ZERO, vec![log; submissions]);
     let mut header_10 = make_test_header(10);
     header_10.inner.receipts_root = calculate_test_receipts_root(std::slice::from_ref(&receipt));
     header_10.inner.logs_bloom = *receipt.inner.inner.bloom_ref();
@@ -2091,11 +2090,22 @@ async fn sync_fails_fatally_when_finalized_batch_observer_is_closed() {
     let l1_provider =
         ProviderBuilder::new_with_network::<TempoNetwork>().connect_mocked_client(asserter.clone());
     asserter.push_success(&Some(header_response(header_10.clone())));
-    asserter.push_success(&Some(header_response(header_10)));
+    asserter.push_success(&Some(header_response(header_10.clone())));
     asserter.push_success(&Some(vec![receipt]));
+    // Refreshed finalized head after the block is processed.
+    asserter.push_success(&Some(header_response(header_10)));
 
-    let err = subscriber
-        .sync_to_finalized(&l1_provider, 10)
+    subscriber.sync_to_finalized(&l1_provider, 10).await
+}
+
+#[tokio::test]
+async fn sync_fails_fatally_when_finalized_batch_observer_is_closed() {
+    let mut subscriber = test_subscriber(9);
+    let (sender, receiver) = tokio::sync::mpsc::channel(1);
+    drop(receiver);
+    subscriber.finalized_batch_submissions = Some(sender);
+
+    let err = sync_finalized_batches(&mut subscriber, 1)
         .await
         .unwrap_err();
     assert!(matches!(
@@ -2106,6 +2116,25 @@ async fn sync_fails_fatally_when_finalized_batch_observer_is_closed() {
             ..
         }
     ));
+}
+
+#[tokio::test]
+async fn sync_drops_submissions_when_finalized_batch_observer_is_full() {
+    let mut subscriber = test_subscriber(9);
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+    subscriber.finalized_batch_submissions = Some(sender);
+
+    sync_finalized_batches(&mut subscriber, 2).await.unwrap();
+
+    assert_eq!(
+        subscriber.block_tracker.latest().map(|block| block.number),
+        Some(10)
+    );
+    assert_eq!(receiver.try_recv().unwrap().log_index, 0);
+    assert!(
+        receiver.try_recv().is_err(),
+        "the second submission is dropped"
+    );
 }
 
 #[test]

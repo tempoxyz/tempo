@@ -24,16 +24,19 @@
 //!                                │                  ZoneEngine
 //!                                │               5. resolve payload
 //!                                │               6. newPayload
-//!                                │               7. persist proofs (file + directory sync)
-//!                                │               8. FCU (update head)
+//!                                │               7. FCU (update head)
 //!                                │                       │
 //!                                ◄── confirm ◄───────────┘
 //! ```
 //!
 //! The deposit queue uses a **peek / confirm** pattern: the engine peeks at
 //! the next L1 block, wraps it into [`ZonePayloadAttributes`], and only
-//! confirms (removes) the block after proof persistence and canonical forkchoice succeed.
-//! A failed build, proof write, or forkchoice leaves the block in the queue for retry.
+//! confirms (removes) the block after `newPayload` succeeds and before canonical forkchoice.
+//! A failed build or payload leaves the block in the queue for retry.
+//!
+//! Witnesses for produced blocks are collected in the background by the proof collector, so slow
+//! L1 proofs do not stall production. Production pauses only once [`MAX_UNWITNESSED_BLOCKS`]
+//! blocks are waiting for witnesses.
 //!
 //! The zone assumes **instant finality** — head, safe, and finalized all point
 //! to the same block.
@@ -41,7 +44,7 @@
 use alloy_consensus::BlockHeader as _;
 use alloy_primitives::{Address, B256};
 use alloy_rpc_types_engine::{ForkchoiceState, PayloadAttributes as EthPayloadAttributes};
-use eyre::{OptionExt, WrapErr as _};
+use eyre::OptionExt;
 use reth_chainspec::EthereumHardforks;
 use reth_node_builder::ConsensusEngineHandle;
 use reth_payload_builder::PayloadBuilderHandle;
@@ -64,6 +67,13 @@ use zone_l1::{
 use zone_p2p::{LeadershipSchedule, P2pPeerId};
 use zone_payload::{TempoImport, ZonePayloadAttributes, ZonePayloadTypes};
 use zone_sequencer::ProofCollectorHandle;
+
+/// Produced blocks allowed to wait for their witnesses before production pauses.
+///
+/// Broadcast waits for each block's witness, so this also bounds how far followers can trail the
+/// leader. It stays well inside the L1 RPC proof window (256 blocks by default): a backlog past
+/// that window can never be collected.
+pub(crate) const MAX_UNWITNESSED_BLOCKS: u64 = 128;
 
 /// Local block production permit backed by the effective leadership schedule.
 ///
@@ -210,7 +220,7 @@ pub struct ZoneEngine {
     portal_address: Address,
     /// Optional per-anchor leadership permit. `None` runs the legacy single-sequencer mode.
     production_permit: Option<ProductionPermit>,
-    /// Proof WAL writer invoked after execution and before canonicalization.
+    /// Background witness collector; production waits on it only past [`MAX_UNWITNESSED_BLOCKS`].
     proof_collector: Option<ProofCollectorHandle>,
     /// Depositors whose L1 deposits are credited. `None` credits every deposit.
     deposit_allowlist: Option<DepositAllowlist>,
@@ -352,7 +362,8 @@ impl ZoneEngine {
     /// Wraps the given L1 block into [`ZonePayloadAttributes`], sends FCU
     /// with those attributes, waits for the payload to be built, then submits
     /// via `newPayload`. Only confirms (removes) the L1 block from the
-    /// deposit queue after witness persistence and canonicalization succeed.
+    /// deposit queue after `newPayload` succeeds. Waits first if the block
+    /// [`MAX_UNWITNESSED_BLOCKS`] below it still has no witness.
     async fn advance(
         &mut self,
         available: AvailableTempoImport,
@@ -363,6 +374,18 @@ impl ZoneEngine {
             checkpoint_headers,
             wall_clock_timestamp_millis,
         } = available;
+        if let Some(collector) = &self.proof_collector
+            && let Some(oldest) = self
+                .last_header
+                .number()
+                .checked_add(1)
+                .and_then(|next| next.checked_sub(MAX_UNWITNESSED_BLOCKS))
+        {
+            stop.run_until_cancelled(collector.wait_until_witnessed(oldest))
+                .await
+                .ok_or_eyre("engine stopped while waiting for witness collection")?;
+        }
+
         let checkpoint_only = !checkpoint_headers.is_empty();
         let final_header = checkpoint_headers.last().unwrap_or(&l1_block.header);
         let l1_num_hash = final_header.num_hash();
@@ -458,16 +481,6 @@ impl ZoneEngine {
             eyre::bail!("Invalid payload for block {block_number}");
         }
 
-        if let Some(collector) = &self.proof_collector {
-            stop.run_until_cancelled(collector.collect_and_persist(block_number, header.hash()))
-                .await
-                .ok_or_else(|| eyre::eyre!("engine stopped while waiting for witness persistence"))?
-                .wrap_err_with(|| {
-                    format!("collect proofs before canonicalizing Zone block {block_number}")
-                })?;
-        }
-
-        // Consume the L1 input only after witness persistence succeeds.
         if checkpoint_only {
             self.deposit_queue.defer_through(l1_num_hash)?;
         } else {
