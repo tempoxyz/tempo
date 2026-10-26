@@ -18,7 +18,6 @@ use eyre::WrapErr as _;
 use reth_chainspec::ChainSpecProvider;
 use reth_exex::ExExContext;
 use reth_node_api::{FullNodeComponents, NodeTypes};
-use reth_storage_api::{BlockNumReader, StateProviderFactory};
 use tempo_chainspec::spec::TempoHardforks;
 use tempo_primitives::TempoPrimitives;
 
@@ -129,7 +128,6 @@ impl CheckerExEx {
     pub async fn run<Node>(self, mut ctx: ExExContext<Node>) -> eyre::Result<()>
     where
         Node: FullNodeComponents<Types: NodeTypes<Primitives = TempoPrimitives>>,
-        Node::Provider: BlockNumReader + ChainSpecProvider + StateProviderFactory,
         <Node::Provider as ChainSpecProvider>::ChainSpec: TempoHardforks,
     {
         runtime::run(self.config, &mut ctx).await

@@ -2,7 +2,7 @@
 # State is stored in branch-isolated Actions artifacts for 90 days. Missing or
 # expired state uses the existing first-run baseline rules; no state PAT is needed.
 #
-# Runs nightly at 02:00 UTC and on v*.*.* tag pushes for each scenario below.
+# Runs nightly at 02:00 UTC and on tempo/v*.*.* tag pushes for each scenario below.
 # Nightly runs compare the latest main commit against the
 # last commit that completed this scheduled e2e workflow successfully for the
 # same state key.
@@ -15,7 +15,7 @@ on:
     - cron: "0 2 * * *"
   push:
     tags:
-      - "v*.*.*"
+      - "tempo/v*.*.*"
   workflow_dispatch:
     inputs:
       ref:
@@ -52,7 +52,7 @@ jobs:
       has-nightly-benchmarks: ${{ steps.refs.outputs.has-nightly-benchmarks }}
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -157,7 +157,7 @@ jobs:
     needs: resolve-refs
     if: needs.resolve-refs.outputs.has-benchmarks == 'true'
     name: bench-e2e (${{ matrix.preset }}, ${{ matrix.feature_name }})
-    uses: ./.github/workflows/bench-e2e.yml
+    uses: ./.github/workflows/bench-e2e.yml # zizmor: ignore[self-repository] actionlint does not support $/ references yet.
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.resolve-refs.outputs.bench-matrix) }}
@@ -205,7 +205,7 @@ jobs:
       matrix: ${{ fromJSON(needs.resolve-refs.outputs.save-matrix) }}
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
       - name: Prepare benchmark state
         env:

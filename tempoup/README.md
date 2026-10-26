@@ -24,6 +24,15 @@ tempoup --help           # Show help
 - **macOS**: Apple Silicon (arm64)
 - **Windows**: x86_64, arm64
 
+## Install Dependencies
+
+tempoup needs `curl` and `sha256sum` or `shasum`. It verifies each release with
+GitHub attestations when `gh` is authenticated, and falls back to GPG
+signatures otherwise, so it also needs an authenticated `gh` or `gpg`.
+
+Without an authenticated `gh`, `tempoup` needs `jq` to select the latest
+release. Pass a version with `tempoup -i <VERSION>` to skip release selection.
+
 ## Runtime Dependencies
 
 On macOS, tempoup installs the `libusb` runtime dependency with Homebrew when

@@ -20,8 +20,8 @@ use k256::{
         sec1::{FromEncodedPoint, ToEncodedPoint},
     },
 };
-use tempo_precompiles::storage::StorageCtx;
 use tempo_contracts::zones::ChaumPedersenProof;
+use tempo_precompiles::storage::StorageCtx;
 
 /// Gas cost for Chaum-Pedersen proof verification (two EC muls + hashing).
 const CP_VERIFY_GAS: u64 = 6_000;
@@ -127,7 +127,7 @@ pub(crate) fn challenge_hash(
 mod tests {
     use super::*;
     use alloy_primitives::B256;
-    use k256::elliptic_curve::{Field, PrimeField};
+    use k256::elliptic_curve::{Field, PrimeField, rand_core::OsRng};
 
     fn proof(s: [u8; 32], c: [u8; 32]) -> ChaumPedersenProof {
         ChaumPedersenProof {
@@ -149,7 +149,7 @@ mod tests {
 
     #[test]
     fn test_chaum_pedersen_valid_proof() {
-        let mut rng = rand::thread_rng();
+        let mut rng = OsRng;
         let priv_seq = Scalar::random(&mut rng);
         let pub_seq = (ProjectivePoint::GENERATOR * priv_seq).to_affine();
 
@@ -185,7 +185,7 @@ mod tests {
 
     #[test]
     fn test_chaum_pedersen_invalid_proof() {
-        let mut rng = rand::thread_rng();
+        let mut rng = OsRng;
         let priv_seq = Scalar::random(&mut rng);
         let pub_seq = (ProjectivePoint::GENERATOR * priv_seq).to_affine();
 
@@ -223,7 +223,7 @@ mod tests {
 
     #[test]
     fn test_chaum_pedersen_tampered_s() {
-        let mut rng = rand::thread_rng();
+        let mut rng = OsRng;
         let priv_seq = Scalar::random(&mut rng);
         let pub_seq = (ProjectivePoint::GENERATOR * priv_seq).to_affine();
         let eph_priv = Scalar::random(&mut rng);
@@ -256,7 +256,7 @@ mod tests {
 
     #[test]
     fn test_chaum_pedersen_tampered_c() {
-        let mut rng = rand::thread_rng();
+        let mut rng = OsRng;
         let priv_seq = Scalar::random(&mut rng);
         let pub_seq = (ProjectivePoint::GENERATOR * priv_seq).to_affine();
         let eph_priv = Scalar::random(&mut rng);
@@ -289,7 +289,7 @@ mod tests {
 
     #[test]
     fn test_chaum_pedersen_wrong_shared_secret_parity() {
-        let mut rng = rand::thread_rng();
+        let mut rng = OsRng;
         let priv_seq = Scalar::random(&mut rng);
         let pub_seq = (ProjectivePoint::GENERATOR * priv_seq).to_affine();
         let eph_priv = Scalar::random(&mut rng);
@@ -323,7 +323,7 @@ mod tests {
 
     #[test]
     fn test_chaum_pedersen_wrong_ephemeral_parity() {
-        let mut rng = rand::thread_rng();
+        let mut rng = OsRng;
         let priv_seq = Scalar::random(&mut rng);
         let pub_seq = (ProjectivePoint::GENERATOR * priv_seq).to_affine();
         let eph_priv = Scalar::random(&mut rng);
@@ -357,7 +357,7 @@ mod tests {
 
     #[test]
     fn test_chaum_pedersen_identity_r1_r2() {
-        let mut rng = rand::thread_rng();
+        let mut rng = OsRng;
         let priv_seq = Scalar::random(&mut rng);
         let pub_seq = (ProjectivePoint::GENERATOR * priv_seq).to_affine();
         let eph_priv = Scalar::random(&mut rng);

@@ -5,7 +5,7 @@ use reqwest::Url;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
-pub struct SyntheticLoadArgs {
+pub(crate) struct SyntheticLoadArgs {
     #[arg(
         short,
         long,
@@ -30,7 +30,7 @@ pub struct SyntheticLoadArgs {
 }
 
 impl SyntheticLoadArgs {
-    pub async fn run(&self) -> eyre::Result<()> {
+    pub(crate) async fn run(&self) -> eyre::Result<()> {
         tracing_subscriber::FmtSubscriber::builder()
             .with_env_filter(EnvFilter::from_default_env())
             .init();

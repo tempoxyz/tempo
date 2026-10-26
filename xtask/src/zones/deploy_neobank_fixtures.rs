@@ -2,7 +2,7 @@
 
 use alloy::{
     network::{TransactionBuilder, primitives::ReceiptResponse},
-    primitives::{Address, Uint, keccak256},
+    primitives::{Address, B256, Uint, keccak256},
     providers::{Provider, ProviderBuilder},
     rpc::types::TransactionRequest,
     signers::local::PrivateKeySigner,
@@ -17,8 +17,10 @@ use tempo_alloy::{
     provider::TempoProviderBuilderExt as _,
     rpc::{TempoCallBuilderExt as _, TempoTransactionRequest},
 };
-use tempo_contracts::precompiles::{IRolesAuth, ITIP20, ITIP20Factory};
-use tempo_contracts::zones::{ZonePortal, ZonePortal::Role as PortalRole};
+use tempo_contracts::{
+    precompiles::{IRolesAuth, ITIP20},
+    zones::{ZonePortal, ZonePortal::Role as PortalRole},
+};
 use tempo_precompiles::TIP20_FACTORY_ADDRESS;
 
 use crate::zone_utils::{check, parse_private_key};
@@ -76,16 +78,27 @@ alloy::sol! {
         function initializeEarnVault(address earnVault) external;
     }
 
+    /// Earn's public test-only stand-in for the DirectPropAMM par pool behind the router.
     #[sol(rpc)]
-    interface DemoTokenAuthority {
-        function MINT_RATE_LIMIT_SETTER_ROLE() external view returns (bytes32);
-        function UNWRAPPER_ROLE() external view returns (bytes32);
-        function BRIDGE_ECOSYSTEM_CONTRACT_ROLE() external view returns (bytes32);
-        function RESERVE_LEDGER_TOKEN() external view returns (address);
-        function setTxnMintLimit(address stablecoinContract, uint256 mintTxnLimit) external;
-        function getStablecoinTxnMintLimit(address stablecoinContract) external view returns (uint256);
-        function mintBridgeEcosystem(address stablecoinContract, address to, uint256 amount) external;
-        function getReserveStore(address stablecoinContract) external view returns (address);
+    interface DemoParPool {
+        function setTakerAllowed(address taker, bool allowed) external;
+        function setRecipientAllowed(address recipient, bool allowed) external;
+    }
+
+    #[sol(rpc)]
+    interface EarnRouterPoolView {
+        function pool() external view returns (address);
+        function customerId() external view returns (bytes32);
+        function liquidityStatus()
+            external
+            view
+            returns (
+                bool paused,
+                bool admitted,
+                bool atPar,
+                uint256 depositLiquidity,
+                uint256 redeemLiquidity
+            );
     }
 
     contract FixtureSimple4626Vault {
@@ -96,12 +109,18 @@ alloy::sol! {
         constructor(address vault_, address owner_, string nameOverride_, string symbolOverride_);
     }
 
-    contract FixtureDemoTokenAuthority {
-        constructor(address reserveToken_, address administrator_);
+    contract FixtureDemoParPool {
+        constructor(address baseToken_, address quoteToken_, address owner_);
     }
 
     contract FixtureSingleZoneEarnRouter {
-        constructor(uint32 allowedZoneId_, address earnVault_, address privateAsset_, address tokenAuthority_);
+        constructor(
+            uint32 allowedZoneId_,
+            address earnVault_,
+            address privateAsset_,
+            address pool_,
+            bytes32 customerId_
+        );
     }
 
     contract FixtureEarnFactoryConstructor {
@@ -118,21 +137,10 @@ alloy::sol! {
 }
 
 const DEFAULT_DEPLOYMENT_GAS_LIMIT: u64 = 30_000_000;
+// The router's pool rounding route and trade-memo customer; the demo pool accepts any nonzero ID.
+const ROUTER_CUSTOMER_ID: B256 = B256::with_last_byte(0xBE);
 // Tempo's transaction pool rejects AA transactions containing more than 32 calls.
 const MAX_PORTAL_ROLE_CALLS_PER_TX: usize = 32;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum, serde::Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub(crate) enum SwapMechanism {
-    #[default]
-    DirectSwap,
-}
-
-impl SwapMechanism {
-    fn as_str(self) -> &'static str {
-        "direct-swap"
-    }
-}
 
 #[derive(Debug, clap::Parser)]
 pub(crate) struct DeployNeobankFixtures {
@@ -172,18 +180,9 @@ pub(crate) struct DeployNeobankFixtures {
     #[arg(long)]
     allowed_accounts_file: PathBuf,
 
-    /// Untimed per-side liquidity seeded into the selected swap mechanism.
+    /// Untimed per-side inventory seeded into the router's par pool.
     #[arg(long, default_value_t = 10_000_000_000_u128)]
     liquidity: u128,
-
-    /// L1 swap implementation exercised by the EarnRouter.
-    #[arg(
-        long,
-        env = "ZONES_BENCH_SWAP_MECHANISM",
-        value_enum,
-        default_value_t = SwapMechanism::DirectSwap
-    )]
-    swap_mechanism: SwapMechanism,
 }
 
 #[derive(Serialize)]
@@ -197,13 +196,12 @@ struct FixtureMetadata {
     private_asset: String,
     earn_token: String,
     earn_share: String,
-    swap_mechanism: SwapMechanism,
     route_swapper: Option<String>,
     route_override: bool,
-    token_authority: String,
+    par_pool: String,
+    customer_id: String,
     tip20_handler: Option<String>,
     auth_registry: Option<String>,
-    reserve_ledger: Option<String>,
     liquidity: u128,
     earn_fixture_revision: String,
     vault: String,
@@ -219,13 +217,6 @@ struct FixtureMetadata {
     rewards: String,
     gateway: String,
     bridge_wallet: String,
-}
-
-#[derive(Default)]
-struct SwapSetup {
-    route_swapper: Option<Address>,
-    token_authority: Option<Address>,
-    reserve_ledger: Option<Address>,
 }
 
 impl DeployNeobankFixtures {
@@ -298,11 +289,11 @@ impl DeployNeobankFixtures {
             "ZonePortal gateway enforcement must remain disabled until fixture roles are configured"
         );
 
-        let mut swap_setup = configure_token_authority(
+        let par_pool = deploy_par_pool(
             &deployer_provider,
             &self.specs_out,
             deployer_address,
-            self.dlusd,
+            self.private_asset,
             self.pathusd,
             self.liquidity,
         )
@@ -419,9 +410,6 @@ impl DeployNeobankFixtures {
             .wrap_err("failed waiting for canonical ERC4626 engine initialization")?;
         check(&receipt, "initialize canonical ERC4626 engine")?;
 
-        let token_authority = swap_setup
-            .token_authority
-            .ok_or_else(|| eyre!("token-authority setup did not return an authority address"))?;
         let earn_router = deploy(
             &deployer_provider,
             with_constructor(
@@ -433,21 +421,22 @@ impl DeployNeobankFixtures {
                     allowedZoneId_: zone_id,
                     earnVault_: earn_vault,
                     privateAsset_: self.private_asset,
-                    tokenAuthority_: token_authority,
+                    pool_: par_pool,
+                    customerId_: ROUTER_CUSTOMER_ID,
                 }
                 .abi_encode(),
             ),
             "SingleZoneEarnRouter",
         )
         .await?;
-        grant_authority_unwrapper(
+        admit_router_on_par_pool(
             &deployer_provider,
-            token_authority,
+            par_pool,
             earn_router,
             self.pathusd,
+            self.liquidity,
         )
         .await?;
-        swap_setup.route_swapper = Some(earn_router);
 
         let contribution_controller = deploy(
             &deployer_provider,
@@ -511,13 +500,12 @@ impl DeployNeobankFixtures {
             private_asset: self.private_asset.to_string(),
             earn_token: earn_share.to_string(),
             earn_share: earn_share.to_string(),
-            swap_mechanism: self.swap_mechanism,
-            route_swapper: swap_setup.route_swapper.map(|address| address.to_string()),
-            route_override: swap_setup.route_swapper.is_some(),
-            token_authority: token_authority.to_string(),
+            route_swapper: Some(earn_router.to_string()),
+            route_override: true,
+            par_pool: par_pool.to_string(),
+            customer_id: ROUTER_CUSTOMER_ID.to_string(),
             tip20_handler: None,
             auth_registry: None,
-            reserve_ledger: swap_setup.reserve_ledger.map(|address| address.to_string()),
             liquidity: self.liquidity,
             earn_fixture_revision: self.earn_revision.clone(),
             vault: vault.to_string(),
@@ -539,11 +527,8 @@ impl DeployNeobankFixtures {
         fs::write(&self.output, serde_json::to_string_pretty(&metadata)?)
             .wrap_err_with(|| format!("failed writing {}", self.output.display()))?;
         println!("Private-Zone benchmark fixtures deployed");
-        println!("  Swap mechanism: {}", self.swap_mechanism.as_str());
-        if let Some(route_swapper) = swap_setup.route_swapper {
-            println!("  Route swapper:   {route_swapper}");
-        }
         println!("  Earn router:             {earn_router}");
+        println!("  Par pool:                {par_pool}");
         println!("  Earn vault:              {earn_vault}");
         println!("  Earn share:              {earn_share}");
         println!("  Earn fees:               {earn_fees}");
@@ -766,178 +751,135 @@ fn validate_earn_revision(revision: &str) -> eyre::Result<()> {
     Ok(())
 }
 
-async fn configure_token_authority<P: Provider<TempoNetwork>>(
+/// Deploys Earn's public par pool for the private asset and pathUSD and seeds both sides.
+async fn deploy_par_pool<P: Provider<TempoNetwork>>(
     provider: &P,
     specs_out: &std::path::Path,
     deployer: Address,
-    dlusd: Address,
+    private_asset: Address,
     pathusd: Address,
     liquidity: u128,
-) -> eyre::Result<SwapSetup> {
-    let reserve_ledger = create_reserve_ledger(provider, deployer, pathusd).await?;
-    let authority = deploy(
+) -> eyre::Result<Address> {
+    let pool = deploy(
         provider,
         with_constructor(
-            load_bytecode(specs_out, "DemoTokenAuthority.sol/DemoTokenAuthority")?,
-            FixtureDemoTokenAuthority::constructorCall {
-                reserveToken_: reserve_ledger,
-                administrator_: deployer,
+            load_bytecode(specs_out, "DemoParPool.sol/DemoParPool")?,
+            FixtureDemoParPool::constructorCall {
+                baseToken_: private_asset,
+                quoteToken_: pathusd,
+                owner_: deployer,
             }
             .abi_encode(),
         ),
-        "Earn DemoTokenAuthority",
+        "Earn DemoParPool",
     )
     .await?;
 
-    for (token, label) in [
-        (dlusd, "DLUSD"),
-        (pathusd, "pathUSD"),
-        (reserve_ledger, "reserve ledger"),
-    ] {
+    let inventory = Uint::<256, 4>::from(liquidity);
+    for (token, label) in [(private_asset, "private asset"), (pathusd, "pathUSD")] {
         let issuer_role = ITIP20::new(token, provider)
             .ISSUER_ROLE()
             .call()
             .await
             .wrap_err_with(|| format!("failed querying {label} issuer role"))?;
-        let receipt = IRolesAuth::new(token, provider)
-            .grantRole(issuer_role, authority)
-            .fee_token(pathusd)
-            .send()
+        let roles = IRolesAuth::new(token, provider);
+        if !roles
+            .hasRole(deployer, issuer_role)
+            .call()
             .await
-            .wrap_err_with(|| format!("failed granting token authority {label} issuer role"))?
-            .get_receipt()
-            .await
-            .wrap_err_with(|| format!("failed waiting for token authority {label} issuer role"))?;
-        check(
-            &receipt,
-            &format!("grant token authority {label} issuer role"),
-        )?;
-    }
-
-    let authority_contract = DemoTokenAuthority::new(authority, provider);
-    let ecosystem_role = authority_contract
-        .BRIDGE_ECOSYSTEM_CONTRACT_ROLE()
-        .call()
-        .await
-        .wrap_err("failed querying token authority ecosystem role")?;
-    let receipt = IRolesAuth::new(authority, provider)
-        .grantRole(ecosystem_role, deployer)
-        .fee_token(pathusd)
-        .send()
-        .await
-        .wrap_err("failed granting deployer token authority ecosystem role")?
-        .get_receipt()
-        .await
-        .wrap_err("failed waiting for deployer token authority ecosystem role")?;
-    check(&receipt, "grant deployer token authority ecosystem role")?;
-
-    let reserve_capacity = Uint::<256, 4>::from(liquidity);
-    for (token, label) in [(dlusd, "DLUSD"), (pathusd, "pathUSD")] {
-        let receipt = authority_contract
-            .setTxnMintLimit(token, reserve_capacity)
-            .fee_token(pathusd)
-            .send()
-            .await
-            .wrap_err_with(|| format!("failed setting {label} token authority mint limit"))?
-            .get_receipt()
-            .await
-            .wrap_err_with(|| {
-                format!("failed waiting to set {label} token authority mint limit")
-            })?;
-        check(&receipt, &format!("set {label} token authority mint limit"))?;
-        let receipt = authority_contract
-            .mintBridgeEcosystem(token, deployer, reserve_capacity)
-            .fee_token(pathusd)
-            .send()
-            .await
-            .wrap_err_with(|| format!("failed seeding the {label} token authority reserve"))?
-            .get_receipt()
-            .await
-            .wrap_err_with(|| {
-                format!("failed waiting to seed the {label} token authority reserve")
-            })?;
-        check(&receipt, &format!("seed {label} token authority reserve"))?;
-        ensure!(
-            !authority_contract
-                .getReserveStore(token)
-                .call()
+            .wrap_err_with(|| format!("failed querying deployer {label} issuer role"))?
+        {
+            let receipt = roles
+                .grantRole(issuer_role, deployer)
+                .fee_token(pathusd)
+                .send()
                 .await
-                .wrap_err_with(|| {
-                    format!("failed querying the {label} token authority reserve store")
-                })?
-                .is_zero(),
-            "{label} token authority reserve store was not created"
-        );
+                .wrap_err_with(|| format!("failed granting deployer {label} issuer role"))?
+                .get_receipt()
+                .await
+                .wrap_err_with(|| format!("failed waiting for deployer {label} issuer role"))?;
+            check(&receipt, &format!("grant deployer {label} issuer role"))?;
+        }
+        let receipt = ITIP20::new(token, provider)
+            .mint(pool, inventory)
+            .fee_token(pathusd)
+            .send()
+            .await
+            .wrap_err_with(|| format!("failed seeding {label} par pool inventory"))?
+            .get_receipt()
+            .await
+            .wrap_err_with(|| format!("failed waiting to seed {label} par pool inventory"))?;
+        check(&receipt, &format!("seed {label} par pool inventory"))?;
     }
-
-    Ok(SwapSetup {
-        token_authority: Some(authority),
-        reserve_ledger: Some(reserve_ledger),
-        ..SwapSetup::default()
-    })
+    Ok(pool)
 }
 
-async fn grant_authority_unwrapper<P: Provider<TempoNetwork>>(
+/// Admits the router as the par pool's taker and recipient, then checks the router's own view.
+async fn admit_router_on_par_pool<P: Provider<TempoNetwork>>(
     provider: &P,
-    authority: Address,
+    pool: Address,
     router: Address,
     pathusd: Address,
+    liquidity: u128,
 ) -> eyre::Result<()> {
-    let role = DemoTokenAuthority::new(authority, provider)
-        .UNWRAPPER_ROLE()
-        .call()
-        .await
-        .wrap_err("failed querying token authority unwrapper role")?;
-    let receipt = IRolesAuth::new(authority, provider)
-        .grantRole(role, router)
+    let pool_contract = DemoParPool::new(pool, provider);
+    let receipt = pool_contract
+        .setTakerAllowed(router, true)
         .fee_token(pathusd)
         .send()
         .await
-        .wrap_err("failed granting EarnRouter token authority unwrapper role")?
+        .wrap_err("failed admitting EarnRouter as par pool taker")?
         .get_receipt()
         .await
-        .wrap_err("failed waiting to grant EarnRouter token authority unwrapper role")?;
-    check(&receipt, "grant EarnRouter token authority unwrapper role")
+        .wrap_err("failed waiting to admit EarnRouter as par pool taker")?;
+    check(&receipt, "admit EarnRouter as par pool taker")?;
+    let receipt = pool_contract
+        .setRecipientAllowed(router, true)
+        .fee_token(pathusd)
+        .send()
+        .await
+        .wrap_err("failed admitting EarnRouter as par pool recipient")?
+        .get_receipt()
+        .await
+        .wrap_err("failed waiting to admit EarnRouter as par pool recipient")?;
+    check(&receipt, "admit EarnRouter as par pool recipient")?;
+
+    let router_view = EarnRouterPoolView::new(router, provider);
+    ensure!(
+        router_view
+            .pool()
+            .call()
+            .await
+            .wrap_err("failed querying EarnRouter pool")?
+            == pool,
+        "EarnRouter is not bound to the deployed par pool"
+    );
+    let status = router_view
+        .liquidityStatus()
+        .call()
+        .await
+        .wrap_err("failed querying EarnRouter liquidity status")?;
+    let inventory = Uint::<256, 4>::from(liquidity);
+    ensure!(
+        !status.paused && status.admitted && status.atPar,
+        "par pool is not ready for EarnRouter: paused={}, admitted={}, atPar={}",
+        status.paused,
+        status.admitted,
+        status.atPar
+    );
+    ensure!(
+        status.depositLiquidity == inventory && status.redeemLiquidity == inventory,
+        "par pool inventory does not match --liquidity: deposit={}, redeem={}",
+        status.depositLiquidity,
+        status.redeemLiquidity
+    );
+    Ok(())
 }
 
 fn signer_from_env(name: &str) -> eyre::Result<PrivateKeySigner> {
     let key =
         std::env::var(name).wrap_err_with(|| format!("{name} must be set in the environment"))?;
     parse_private_key(&key).wrap_err_with(|| format!("{name} is not a valid private key"))
-}
-
-async fn create_reserve_ledger<P: Provider<TempoNetwork>>(
-    provider: &P,
-    owner: Address,
-    fee_token: Address,
-) -> eyre::Result<Address> {
-    let factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, provider);
-    let salt = keccak256("zones-neobank-benchmark-bridge-reserve");
-    let token = factory
-        .getTokenAddress(owner, salt)
-        .call()
-        .await
-        .wrap_err("failed computing Bridge reserve ledger address")?;
-    let receipt = factory
-        .createToken_0(
-            "Neobank benchmark Bridge reserve".to_owned(),
-            "nbBRL".to_owned(),
-            "USD".to_owned(),
-            fee_token,
-            owner,
-            salt,
-        )
-        .fee_token(fee_token)
-        .send()
-        .await
-        .wrap_err("failed creating Bridge reserve ledger")?
-        .get_receipt()
-        .await
-        .wrap_err("failed waiting for Bridge reserve ledger creation")?;
-    check(&receipt, "create Bridge reserve ledger")?;
-    ensure!(!token.is_zero(), "Bridge reserve ledger address is zero");
-    println!("Created Bridge reserve ledger: {token}");
-    Ok(token)
 }
 
 async fn deploy<P: Provider<TempoNetwork>>(

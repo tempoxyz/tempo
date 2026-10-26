@@ -10,7 +10,7 @@ use alloy_evm::{
         inspector::NoOpInspector,
     },
 };
-use alloy_primitives::{Address, Bytes, TxKind};
+use alloy_primitives::{Address, B256, Bytes, TxKind};
 use reth_revm::{
     InspectSystemCallEvm, MainContext,
     context::{
@@ -24,9 +24,14 @@ use std::{
     rc::Rc,
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_precompiles::{storage::StorageAction, storage_credits::NonCreditableSlots};
+use tempo_precompiles::{
+    error::TempoPrecompileError,
+    storage::{StorageAction, StorageActions},
+    storage_credits::NonCreditableSlots,
+    validator_config_v2::{ValidatorConfigV2, ValidatorConfigV2Error},
+};
 use tempo_revm::{
-    ProtocolFeeManager, TempoInvalidTransaction, TempoTxEnv, ValidationContext,
+    ProtocolFeeManager, TempoInvalidTransaction, TempoStateAccess, TempoTxEnv, ValidationContext,
     evm::{PrecompilesBuilder, TempoContext},
     handler::TempoEvmHandler,
 };
@@ -141,6 +146,44 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         &mut self.inner
     }
 
+    /// Resolves the fee recipient registered for `proposer` in `ValidatorConfigV2`.
+    ///
+    /// Returns `None` before T2, when V2 is not initialized as of the parent block, or when
+    /// `proposer` has no V2 record. A registered zero fee recipient is returned as
+    /// `Some(Address::ZERO)`, which burns the fees. Reads bypass the journal,
+    /// so this must be called before any changes of the current block are committed to see the
+    /// parent state.
+    pub fn proposer_fee_recipient(
+        &mut self,
+        proposer: B256,
+    ) -> Result<Option<Address>, TempoPrecompileError> {
+        let ctx = self.ctx_mut();
+        if !ctx.cfg.spec.is_t2() {
+            return Ok(None);
+        }
+        let parent_number = ctx.block.number.saturating_to::<u64>().saturating_sub(1);
+
+        // Read-only access keeps the slots out of the journal so gas accounting is unaffected.
+        ctx.journaled_state.database.with_read_only_storage_ctx(
+            ctx.cfg.spec,
+            StorageActions::disabled(),
+            || {
+                let config = ValidatorConfigV2::default();
+                if !config.is_initialized()? || config.get_initialized_at_height()? > parent_number
+                {
+                    return Ok(None);
+                }
+                match config.validator_by_public_key(proposer) {
+                    Ok(v) => Ok(Some(v.feeRecipient)),
+                    Err(TempoPrecompileError::ValidatorConfigV2Error(
+                        ValidatorConfigV2Error::ValidatorNotFound(_),
+                    )) => Ok(None),
+                    Err(err) => Err(err),
+                }
+            },
+        )
+    }
+
     /// Returns the validator-credited fee amount (post-feeAMM haircut) recorded by the most
     /// recent `collectFeePostTx`. Reset per-tx in the handler's `validate_env`.
     pub fn validator_fee(&self) -> alloy_primitives::U256 {
@@ -240,7 +283,6 @@ where
 
 impl<DB: Database, I> Deref for TempoEvm<DB, I>
 where
-    DB: Database,
     I: Inspector<TempoContext<DB>>,
 {
     type Target = TempoContext<DB>;
@@ -253,7 +295,6 @@ where
 
 impl<DB: Database, I> DerefMut for TempoEvm<DB, I>
 where
-    DB: Database,
     I: Inspector<TempoContext<DB>>,
 {
     #[inline]
@@ -395,7 +436,7 @@ mod tests {
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageAction, StorageActions, StorageCtx, StorageKey},
         storage_credits::StorageCredits,
-        test_util::TIP20Setup,
+        test_util::{TIP20Setup, set_empty_compound_transfer_policy, set_empty_receive_policies},
         tip_fee_manager::{
             IFeeManager, TipFeeManager,
             amm::{Pool, PoolKey, compute_amount_out},
@@ -1150,6 +1191,21 @@ mod tests {
                     let key = (address, slot);
                     storage_state.apply_sload_value(key, value, "SLOAD", hardfork);
                 }
+                StorageAction::FeeTokenBalanceCheck(
+                    address,
+                    slot,
+                    balance,
+                    required,
+                    sufficient,
+                ) => {
+                    let current = storage_state.apply_sload_value(
+                        (address, slot),
+                        balance,
+                        "FeeTokenBalanceCheck",
+                        hardfork,
+                    );
+                    assert_eq!(current >= required, sufficient);
+                }
                 StorageAction::Sstore(address, slot, sload_value, value) => {
                     let key = (address, slot);
                     storage_state.apply_sload_value(key, sload_value, "SSTORE", hardfork);
@@ -1264,6 +1320,13 @@ mod tests {
                         labels.slot(address, slot)
                     )
                 }
+                StorageAction::FeeTokenBalanceCheck(address, slot, balance, required, sufficient) => {
+                    format!(
+                        "FeeTokenBalanceCheck({}, {}, {balance}, {required}, {sufficient})",
+                        labels.address(address),
+                        labels.slot(address, slot)
+                    )
+                }
                 StorageAction::Sstore(address, slot, sload_value, value) => {
                     format!(
                         "Sstore({}, {}, {sload_value}, {value})",
@@ -1331,9 +1394,12 @@ mod tests {
 
     #[test]
     fn test_tip20_full_evm_storage_actions() {
-        for hardfork in TempoHardfork::VARIANTS {
-            // skip pre-T5 hardforks to avoid clutter
-            if !hardfork.is_t5() {
+        for (hardfork, with_policies) in TempoHardfork::VARIANTS
+            .iter()
+            .flat_map(|hardfork| [(hardfork, false), (hardfork, true)])
+        {
+            // Keep the existing cases since T5 and compare policy-heavy payments across T14.
+            if !hardfork.is_t5() || (with_policies && !hardfork.is_t13()) {
                 continue;
             }
 
@@ -1410,6 +1476,15 @@ mod tests {
                         }
                         .encode_to_slot()?,
                     )?;
+
+                    if with_policies {
+                        // Separate compound policies keep fee checks from warming the
+                        // payment token's policy. Empty blacklists still read every list.
+                        for address in [PATH_USD_ADDRESS, fee_token.address()] {
+                            set_empty_compound_transfer_policy(sender, address)?;
+                        }
+                        set_empty_receive_policies(sender, &[recipient])?;
+                    }
 
                     Ok::<(Address, Address), tempo_precompiles::error::TempoPrecompileError>((
                         fee_token.address(),
@@ -1537,6 +1612,12 @@ mod tests {
                     ExecutionResult::Success { .. },
                     "hardfork: {hardfork:?}"
                 );
+                if with_policies {
+                    insta::assert_snapshot!(
+                        format!("policy_payment_gas_{}", hardfork.name()),
+                        result.result.tx_gas_used()
+                    );
+                }
                 let actions = evm
                     .take_actions()
                     .expect("storage action recording should be enabled");
@@ -1545,6 +1626,26 @@ mod tests {
                 Ok(snapshot_storage_actions(&actions, &labels))
             };
 
+            if with_policies {
+                let snapshot = IndexMap::from([(
+                    "policy_payment",
+                    run_transfer(
+                        &mut evm,
+                        sender,
+                        recipient,
+                        transfer_amount,
+                        0,
+                        U256::ZERO,
+                        fee_token,
+                    )
+                    .unwrap(),
+                )]);
+                insta::assert_yaml_snapshot!(
+                    format!("policy_payment_{}", hardfork.name()),
+                    snapshot
+                );
+                continue;
+            }
             let snapshot = IndexMap::from([
                 // TIP-20 transfer with sequential protocol nonce and a fee token that requires going through feeAMM to pay fees.
                 (

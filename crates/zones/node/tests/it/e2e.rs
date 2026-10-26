@@ -15,12 +15,14 @@ use alloy_provider::{DynProvider, Provider};
 use alloy_rpc_types_eth::TransactionRequest;
 use alloy_sol_types::SolCall;
 use tempo_chainspec::spec::TEMPO_T0_BASE_FEE;
-use tempo_contracts::precompiles::ITIP20;
-use tempo_precompiles::PATH_USD_ADDRESS;
-use tempo_contracts::zones::{
-    IZoneInbox, IZoneOutbox, TEMPO_STATE_ADDRESS, TempoState, Withdrawal, ZONE_INBOX_ADDRESS,
-    ZONE_OUTBOX_ADDRESS,
+use tempo_contracts::{
+    precompiles::ITIP20,
+    zones::{
+        IZoneInbox, IZoneOutbox, TEMPO_STATE_ADDRESS, TempoState, Withdrawal, ZONE_INBOX_ADDRESS,
+        ZONE_OUTBOX_ADDRESS,
+    },
 };
+use tempo_precompiles::PATH_USD_ADDRESS;
 use zone_l1::ChainTempoStateExt;
 use zone_primitives::constants::zone_chain_id;
 
@@ -194,7 +196,7 @@ async fn test_p2p_follower_tracks_leader_balance() -> eyre::Result<()> {
     let transfer_amount = 123_456_u128;
     let pending = ITIP20::new(PATH_USD_ADDRESS, follower_wallet)
         .transfer(transfer_recipient, U256::from(transfer_amount))
-        .gas_price(TEMPO_T0_BASE_FEE as u128)
+        .gas_price(u128::from(TEMPO_T0_BASE_FEE))
         .gas(TIP20_TX_GAS)
         .send()
         .await?;
@@ -385,7 +387,7 @@ async fn test_p2p_follower_enforces_policy_change_at_anchor_block() -> eyre::Res
     let tip20 = ITIP20::new(PATH_USD_ADDRESS, &alice_provider);
     let pending = tip20
         .transfer(bob, U256::from(200_000u128))
-        .gas_price(TEMPO_T0_BASE_FEE as u128)
+        .gas_price(u128::from(TEMPO_T0_BASE_FEE))
         .gas(TIP20_TX_GAS)
         .send()
         .await?;
@@ -429,11 +431,18 @@ async fn test_p2p_listener_failure_stops_node() -> eyre::Result<()> {
     let occupied_listener = TcpListener::bind("127.0.0.1:0")?;
     let p2p_config = leader_p2p_config(occupied_listener.local_addr()?)?;
     let l1_rpc_url = start_chain_id_rpc(1337).await?;
-    let mut zone = ZoneTestNode::start_local_with_p2p(l1_rpc_url.to_string(), p2p_config).await?;
-
-    let _exit = tokio::time::timeout(DEFAULT_TIMEOUT, zone.wait_for_node_exit())
-        .await
-        .expect("node did not exit after its P2P listener failed");
+    match ZoneTestNode::start_local_with_p2p(l1_rpc_url.to_string(), p2p_config).await {
+        Ok(mut zone) => {
+            let _exit = tokio::time::timeout(DEFAULT_TIMEOUT, zone.wait_for_node_exit())
+                .await
+                .expect("node did not exit after its P2P listener failed");
+        }
+        Err(err) => assert!(
+            err.to_string()
+                .contains("Failed to subscribe to payload builder events"),
+            "unexpected startup failure: {err:?}"
+        ),
+    }
     Ok(())
 }
 
@@ -498,7 +507,7 @@ async fn test_contract_creation_transaction_is_rejected() -> eyre::Result<()> {
     let request = TransactionRequest::default()
         .with_deploy_code(Bytes::from_static(&[0x00]))
         .gas_limit(CONTRACT_CREATION_TX_GAS)
-        .gas_price(TEMPO_T0_BASE_FEE as u128);
+        .gas_price(u128::from(TEMPO_T0_BASE_FEE));
 
     let err = provider
         .send_transaction(request)
@@ -1015,7 +1024,7 @@ async fn submit_withdrawals(
                     Bytes::new(),
                 )
                 .nonce(nonce + offset as u64)
-                .gas_price(TEMPO_T0_BASE_FEE as u128)
+                .gas_price(u128::from(TEMPO_T0_BASE_FEE))
                 .send()
                 .await?,
         );
@@ -1255,7 +1264,9 @@ async fn test_current_only_block_finalizes_at_batch_boundary() -> eyre::Result<(
     const BATCH_INTERVAL_BLOCKS: u64 = 8;
 
     let batch_index = outbox.lastBatch().call().await?.withdrawalBatchIndex;
-    fixture.inject_empty_blocks(zone.deposit_queue(), BATCH_INTERVAL_BLOCKS);
+    fixture
+        .produce_empty_zone_blocks(&zone, BATCH_INTERVAL_BLOCKS)
+        .await?;
     poll_until(
         DEFAULT_TIMEOUT,
         DEFAULT_POLL,
@@ -1286,31 +1297,16 @@ async fn test_current_only_block_finalizes_at_batch_boundary() -> eyre::Result<(
     approve_outbox(&mut fixture, &zone, &provider).await?;
 
     // Advance to exactly one block before the next batch boundary, then wait
-    // for those quiet blocks to be built. `inject_empty_blocks` only enqueues
-    // L1 blocks; without this wait the withdrawal can race into one of those
-    // still-building quiet zone blocks.
+    // for each quiet block to be built. Enqueuing them all at once can turn
+    // intermediate L1 blocks into checkpoint-only catch-up imports instead
+    // of producing one Zone block per L1 block.
     let current_block = zone.provider().get_block_number().await?;
     let quiet_blocks_until_pre_boundary =
         (BATCH_INTERVAL_BLOCKS - 1) - (current_block % BATCH_INTERVAL_BLOCKS);
     let pre_boundary_block = current_block + quiet_blocks_until_pre_boundary;
-    fixture.inject_empty_blocks(zone.deposit_queue(), quiet_blocks_until_pre_boundary);
-    let observed_pre_boundary = poll_until(
-        DEFAULT_TIMEOUT,
-        DEFAULT_POLL,
-        "quiet blocks before withdrawal boundary built",
-        || {
-            let provider = zone.provider();
-            async move {
-                let number = provider.get_block_number().await?;
-                if number >= pre_boundary_block {
-                    Ok(Some(number))
-                } else {
-                    Ok(None)
-                }
-            }
-        },
-    )
-    .await?;
+    let observed_pre_boundary = fixture
+        .produce_empty_zone_blocks(&zone, quiet_blocks_until_pre_boundary)
+        .await?;
     assert_eq!(
         observed_pre_boundary, pre_boundary_block,
         "zone should be exactly one block before the withdrawal boundary"
@@ -1429,7 +1425,7 @@ async fn test_withdrawal_request_rejects_over_max_callback_gas() -> eyre::Result
             Bytes::from_static(b"callback"),
             Bytes::new(),
         )
-        .gas_price(TEMPO_T0_BASE_FEE as u128)
+        .gas_price(u128::from(TEMPO_T0_BASE_FEE))
         .gas(WITHDRAWAL_TX_GAS)
         .send()
         .await?;

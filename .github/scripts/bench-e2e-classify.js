@@ -265,7 +265,33 @@ function buildMarkdown(summary) {
     if (section.title === 'Builder') appendBuilderDetails(lines, summary);
     lines.push('');
   }
+  appendPersistence(lines, summary);
   return lines.join('\n');
+}
+
+const PERSISTENCE_ROWS = [
+  ['Durable Writes [MB/s]', 'disk_write_mb_s', 1],
+  ['Blocks Persisted [/s]', 'blocks_persisted_s', 2],
+  ['Persistence Busy [%]', 'persist_busy_pct', 1],
+  ['Save Batch Mean [ms]', 'persist_batch_ms', 0],
+  ['Max Unpersisted [blocks]', 'unpersisted_max_blocks', 0],
+  ['Backpressure Stall [s]', 'backpressure_stall_s', 2],
+];
+
+// Informational: how fast state reaches disk and how far persistence falls behind the chain.
+function appendPersistence(lines, summary) {
+  const base = summary.results.baseline.persistence;
+  const feature = summary.results.feature.persistence;
+  if (!base && !feature) return;
+  lines.push('## Persistence', '');
+  lines.push('| Metric | Baseline | Feature | Delta |');
+  lines.push('|--------|----------|---------|-------|');
+  for (const [label, field, precision] of PERSISTENCE_ROWS) {
+    const b = base?.[field];
+    const f = feature?.[field];
+    lines.push(`| ${label} | ${fmtVal(b, precision)} | ${fmtVal(f, precision)} | ${fmtInfoChange(b, f)} |`);
+  }
+  lines.push('');
 }
 
 function main(resultsDir = process.argv[2]) {
@@ -303,4 +329,4 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { main };
+module.exports = { main, rng };
