@@ -106,6 +106,7 @@ assert equal ($card_mix | length) 18
 assert ($card_mix | all { |name| $name | str starts-with "vault_withdraw_" })
 let shard = ($card.templates | get vault_withdraw_0)
 assert equal ($shard | get -o sponsor) null
+assert equal $shard.nonce {uniform: [0 9223372036854775807]}
 assert equal ($shard.calls | last | get function) transfer
 assert equal ($shard.calls | last | get args | first) $TXGEN_HELPER_CARD_SETTLEMENT_ACCOUNT
 rm -rf $card_dir

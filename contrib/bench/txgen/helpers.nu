@@ -659,7 +659,8 @@ def txgen-single-sender-templates [templates: record] {
 }
 
 # Keeps the first card shard senders' vault redemptions, unsponsored, each followed by
-# a transfer of the proceeds to one settlement account.
+# a transfer of the proceeds to one settlement account. Each gets a random TIP-1106
+# nonce discriminator so a sender's otherwise identical redemptions stay distinct.
 def txgen-card-settlement [templates: record, mix: list<any>] {
     let shard = { |name: string|
         let parsed = ($name | parse --regex '^vault_withdraw_(?<index>[0-9]+)$')
@@ -674,7 +675,7 @@ def txgen-card-settlement [templates: record, mix: list<any>] {
     {
         templates: ($templates | items { |name, template|
             let value = if (do $shard $name) {
-                $template | reject -o sponsor | upsert calls ($template.calls | append $forward)
+                $template | reject -o sponsor | upsert nonce {uniform: [0 9223372036854775807]} | upsert calls ($template.calls | append $forward)
             } else { $template }
             {name: $name, value: $value}
         } | transpose -r -d)
