@@ -164,6 +164,15 @@ for series in replay e2e zones; do
   done
 done
 
+export STATE_TEST_VALUE="$previous"
+for path in bench-zones-scheduled zones-benchmark; do
+  export STATE_TEST_PATH=".github/workflows/$path.yml"
+  [[ "$(bash "$scripts/bench-state.sh" owner/repo zones prover)" == "$previous" ]]
+  [[ -z "$(bash "$scripts/bench-state.sh" owner/repo e2e default)" ]]
+done
+unset STATE_TEST_PATH
+echo 'PASS: Zones baseline survives workflow rename without accepting L1 state'
+
 # Release comparisons must never read nightly state, whether triggered by a tag
 # or a manual release ref. A tempo/v tag compares against the previous v release. A state API failure must not affect either path.
 export STATE_TEST_FAILURE=list

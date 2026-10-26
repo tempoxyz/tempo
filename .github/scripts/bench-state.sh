@@ -37,8 +37,9 @@ while IFS=$'\t' read -r artifact_id run_id; do
   run=$(gh api "repos/$repo/actions/runs/$run_id")
   # Save jobs only upload state for a benchmark that passed, so the run's overall
   # conclusion doesn't matter: another e2e scenario may have failed.
-  if ! jq -e --arg branch "$branch" --arg workflow "$workflow" '
-    .path == $workflow and .head_branch == $branch and .status == "completed"
+  if ! jq -e --arg branch "$branch" --arg workflow "$workflow" --arg series "$series" '
+    (.path == $workflow or ($series == "zones" and .path == ".github/workflows/zones-benchmark.yml"))
+    and .head_branch == $branch and .status == "completed"
     and (.event == "schedule" or .event == "workflow_dispatch")
   ' <<< "$run" >/dev/null; then
     continue
