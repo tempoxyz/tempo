@@ -1,7 +1,5 @@
 ---
-tempo-chainspec: minor
-tempo-precompiles: minor
 tempo-primitives: minor
 ---
 
-Derived configurable account addresses from the hash of their initial configuration instead of CREATE2 through a recovery factory, and removed the factory from the genesis info and the block environment.
+Derived configurable account addresses as the last 20 bytes of the keccak of the initial configuration (TIP-1110), and added `ConfigurableAccountConfig::derivation_gas` for the gas of that hash.
