@@ -1,12 +1,13 @@
 use std::{
     fs, io,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     time::Instant,
 };
 
 use clap::{ArgMatches, FromArgMatches, Parser};
 use eyre::{Context as _, OptionExt, ensure};
 use futures::TryStreamExt;
+use reth_chainspec::EthChainSpec as _;
 use reth_cli_commands::download::{
     DownloadCommand, DownloadPlanArchive,
     manifest::{OutputFileChecksum, SnapshotManifest},
@@ -16,7 +17,7 @@ use tempo_chainspec::spec::TempoChainSpecParser;
 use tempo_telemetry_util::display_duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio_util::io::StreamReader;
-use tracing::info;
+use tracing::{error, info};
 use url::Url;
 
 use crate::snapshot_manifest::{TEMPO_CONSENSUS_MANIFEST_KEY, TempoConsensusManifest};
@@ -74,11 +75,21 @@ pub(crate) fn run_with_runner(matches: &ArgMatches, runner: CliRunner) -> eyre::
         info!("running execution layer download...");
 
         let start = Instant::now();
-        let prepared = args
-            .inner
-            .execute::<tempo_node::node::TempoNode>()
-            .await
-            .wrap_err("execution layer download failed")?;
+        let consensus_dir = args.consensus_datadir.unwrap_or_else(|| {
+            let environment = args.inner.env();
+            environment
+                .datadir
+                .clone()
+                .resolve_datadir(environment.chain.chain())
+                .data_dir()
+                .join("consensus")
+        });
+        // Execution archives are unpacked at the datadir root, so they must not
+        // supply local consensus metadata either.
+        let mut preserved = PreservedConsensus::new(&consensus_dir)?;
+        let execution_result = args.inner.execute::<tempo_node::node::TempoNode>().await;
+        preserved.restore()?;
+        let prepared = execution_result.wrap_err("execution layer download failed")?;
 
         info!(
             "execution layer download finished in {}",
@@ -92,15 +103,79 @@ pub(crate) fn run_with_runner(matches: &ArgMatches, runner: CliRunner) -> eyre::
         let prepared = prepared.ok_or_eyre(
             "consensus snapshots require a modular execution layer snapshot manifest",
         )?;
-        let consensus_dir = args
-            .consensus_datadir
-            .unwrap_or_else(|| prepared.data_dir.join("consensus"));
-
         let loaded_consensus = load_consensus_manifest(&prepared.manifest)?;
         install_consensus_archive(&consensus_dir, &loaded_consensus, force).await?;
 
         Ok(())
     })
+}
+
+/// Keeps local consensus state outside the execution archive's extraction target.
+struct PreservedConsensus {
+    path: PathBuf,
+    backup: Option<tempfile::TempDir>,
+    existed: bool,
+}
+
+impl PreservedConsensus {
+    fn new(path: &Path) -> eyre::Result<Self> {
+        let parent = path
+            .parent()
+            .ok_or_eyre("consensus directory has no parent")?;
+        fs::create_dir_all(parent)?;
+        let backup = tempfile::Builder::new()
+            .prefix(".tempo-local-consensus-")
+            .tempdir_in(parent)?;
+        let existed = match path.symlink_metadata() {
+            Ok(metadata) => {
+                ensure!(
+                    !metadata.file_type().is_symlink(),
+                    "consensus directory must not be a symlink during snapshot download"
+                );
+                true
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+            Err(error) => return Err(error).wrap_err("failed inspecting local consensus state"),
+        };
+        if existed {
+            fs::rename(path, backup.path().join("consensus"))
+                .wrap_err("failed preserving local consensus state")?;
+        }
+        Ok(Self {
+            path: path.to_path_buf(),
+            backup: Some(backup),
+            existed,
+        })
+    }
+
+    fn restore(&mut self) -> eyre::Result<()> {
+        let Some(backup) = &self.backup else {
+            return Ok(());
+        };
+        match self.path.symlink_metadata() {
+            Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(&self.path)?,
+            Ok(_) => fs::remove_file(&self.path)?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error).wrap_err("failed inspecting imported consensus state"),
+        }
+        if self.existed {
+            fs::rename(backup.path().join("consensus"), &self.path)
+                .wrap_err("failed restoring local consensus state")?;
+        }
+        self.backup.take();
+        Ok(())
+    }
+}
+
+impl Drop for PreservedConsensus {
+    fn drop(&mut self) {
+        if let Err(error) = self.restore() {
+            if let Some(backup) = self.backup.take() {
+                let path = backup.keep();
+                error!(%error, path = %path.display(), "failed restoring local consensus state; backup retained");
+            }
+        }
+    }
 }
 
 struct LoadedConsensusManifest {
@@ -331,14 +406,61 @@ fn extract_zstd_tar_archive(
     let decoder = zstd::stream::read::Decoder::new(file)?;
     let mut archive = tar::Archive::new(decoder);
     archive.set_overwrite(overwrite);
-    // `Archive::unpack` delegates each member to `Entry::unpack_in`, which skips
-    // paths that would escape `target_dir` and validates link targets.
-    archive.unpack(target_dir).wrap_err_with(|| {
-        format!(
-            "failed to extract consensus archive into {}",
-            target_dir.display()
-        )
-    })
+    for entry in archive
+        .entries()
+        .wrap_err("failed reading consensus archive entries")?
+    {
+        let mut entry = entry.wrap_err("failed reading consensus archive entry")?;
+        let path = entry
+            .path()
+            .wrap_err("invalid consensus archive path")?
+            .into_owned();
+        let kind = entry.header().entry_type();
+        ensure!(
+            kind.is_file() || kind.is_dir(),
+            "consensus snapshot links and special files are not allowed"
+        );
+        if kind.is_dir()
+            && path
+                .components()
+                .all(|component| component == Component::CurDir)
+        {
+            continue;
+        }
+        validate_consensus_archive_path(&path)?;
+        ensure!(
+            entry
+                .unpack_in(target_dir)
+                .wrap_err("failed extracting consensus archive entry")?,
+            "consensus archive entry escapes target directory"
+        );
+    }
+    Ok(())
+}
+
+fn validate_consensus_archive_path(path: &Path) -> eyre::Result<()> {
+    let mut components = path
+        .components()
+        .filter(|component| *component != Component::CurDir);
+    let Some(Component::Normal(partition)) = components.next() else {
+        eyre::bail!("invalid consensus snapshot path: {}", path.display());
+    };
+    ensure!(
+        partition.to_str().is_some_and(|name| {
+            tempo_consensus::storage::snapshot::is_snapshot_storage_partition(
+                tempo_consensus::PARTITION_PREFIX,
+                name,
+            )
+        }),
+        "unexpected consensus snapshot partition: {}",
+        partition.display()
+    );
+    ensure!(
+        components.all(|component| matches!(component, Component::Normal(_))),
+        "invalid consensus snapshot path: {}",
+        path.display()
+    );
+    Ok(())
 }
 
 fn verify_consensus_output_files(
@@ -351,6 +473,7 @@ fn verify_consensus_output_files(
     );
 
     for expected in output_files {
+        validate_consensus_archive_path(Path::new(&expected.path))?;
         let output_path = consensus_dir.join(&expected.path);
         let metadata = fs::metadata(&output_path).wrap_err_with(|| {
             format!(
@@ -614,11 +737,113 @@ mod tests {
         let consensus_dir = parent.path().join("consensus");
         fs::create_dir_all(consensus_dir.join("nested")).unwrap();
         fs::write(consensus_dir.join("nested").join("stale"), b"stale").unwrap();
+        let authentication = consensus_dir.join("engine_driver_states_metadata");
+        fs::create_dir(&authentication).unwrap();
+        fs::write(authentication.join("left"), b"trusted").unwrap();
 
         prepare_consensus_directory(&consensus_dir, true).unwrap();
 
         assert!(consensus_dir.is_dir());
         assert!(fs::read_dir(&consensus_dir).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn execution_snapshot_cannot_replace_local_consensus_state() {
+        for existed in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let consensus = root.path().join("consensus");
+            if existed {
+                fs::create_dir(&consensus).unwrap();
+                fs::write(consensus.join("trusted"), b"local").unwrap();
+            }
+            {
+                let _preserved = PreservedConsensus::new(&consensus).unwrap();
+                fs::create_dir(&consensus).unwrap();
+                fs::write(consensus.join("injected"), b"untrusted").unwrap();
+            }
+            assert!(!consensus.join("injected").exists());
+            if existed {
+                assert_eq!(fs::read(consensus.join("trusted")).unwrap(), b"local");
+            } else {
+                assert!(!consensus.exists());
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn execution_snapshot_preservation_rejects_a_symlinked_consensus_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("target");
+        fs::create_dir(&target).unwrap();
+        let consensus = root.path().join("consensus");
+        std::os::unix::fs::symlink(&target, &consensus).unwrap();
+        let error = PreservedConsensus::new(&consensus).err().unwrap();
+        assert_eq!(
+            error.to_string(),
+            "consensus directory must not be a symlink during snapshot download"
+        );
+        assert!(
+            consensus
+                .symlink_metadata()
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[test]
+    fn snapshot_cannot_install_or_overwrite_local_authentication() {
+        for force in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let name = "engine_driver_states_metadata";
+            let record = root.path().join(name);
+            fs::create_dir(&record).unwrap();
+            fs::write(record.join("left"), b"trusted").unwrap();
+            let encoder = zstd::Encoder::new(Vec::new(), 0).unwrap();
+            let mut builder = tar::Builder::new(encoder);
+            let mut header = tar::Header::new_gnu();
+            header.set_size(3);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, format!("{name}/left"), &mut &b"bad"[..])
+                .unwrap();
+            let archive = builder.into_inner().unwrap().finish().unwrap();
+            let file = write_test_archive(&archive);
+            let error = extract_zstd_tar_archive(file.path(), root.path(), force).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                format!("unexpected consensus snapshot partition: {name}")
+            );
+            assert_eq!(fs::read(record.join("left")).unwrap(), b"trusted");
+        }
+    }
+
+    #[test]
+    fn snapshot_rejects_links_into_local_authentication() {
+        let root = tempfile::tempdir().unwrap();
+        let encoder = zstd::Encoder::new(Vec::new(), 0).unwrap();
+        let mut builder = tar::Builder::new(encoder);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(0);
+        header.set_entry_type(tar::EntryType::Symlink);
+        header
+            .set_link_name("../engine_driver_states_metadata")
+            .unwrap();
+        header.set_cksum();
+        builder
+            .append_data(
+                &mut header,
+                "engine-finalized-blocks-prunable-key/link",
+                &mut &b""[..],
+            )
+            .unwrap();
+        let file = write_test_archive(&builder.into_inner().unwrap().finish().unwrap());
+        let error = extract_zstd_tar_archive(file.path(), root.path(), true).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "consensus snapshot links and special files are not allowed"
+        );
     }
 
     #[test]
@@ -635,7 +860,7 @@ mod tests {
     }
 
     #[test]
-    fn extract_zstd_tar_archive_accepts_new_partition_names() {
+    fn extract_zstd_tar_archive_rejects_non_snapshot_partitions() {
         let source = tempfile::tempdir().unwrap();
         let target = tempfile::tempdir().unwrap();
         let partition_name = "new-storage-partition";
@@ -651,12 +876,13 @@ mod tests {
         let archive = encoder.finish().unwrap();
         let archive_file = write_test_archive(&archive);
 
-        extract_zstd_tar_archive(archive_file.path(), target.path(), false).unwrap();
-
+        let error =
+            extract_zstd_tar_archive(archive_file.path(), target.path(), false).unwrap_err();
         assert_eq!(
-            fs::read(target.path().join(partition_name).join("00")).unwrap(),
-            b"abc"
+            error.to_string(),
+            "unexpected consensus snapshot partition: new-storage-partition"
         );
+        assert!(!target.path().join(partition_name).exists());
     }
 
     #[test]
@@ -670,7 +896,11 @@ mod tests {
         header.set_size(3);
         header.set_cksum();
         builder
-            .append_data(&mut header, "partition/00", &mut &b"abc"[..])
+            .append_data(
+                &mut header,
+                "engine-finalized-blocks-prunable-key/00",
+                &mut &b"abc"[..],
+            )
             .unwrap();
 
         builder.finish().unwrap();
@@ -681,7 +911,13 @@ mod tests {
         extract_zstd_tar_archive(archive_file.path(), target.path(), false).unwrap();
 
         assert_eq!(
-            fs::read(target.path().join("partition").join("00")).unwrap(),
+            fs::read(
+                target
+                    .path()
+                    .join("engine-finalized-blocks-prunable-key")
+                    .join("00")
+            )
+            .unwrap(),
             b"abc"
         );
     }
@@ -689,12 +925,12 @@ mod tests {
     #[test]
     fn extract_zstd_tar_archive_allows_existing_directories() {
         let target = tempfile::tempdir().unwrap();
-        let existing = target.path().join("partition");
+        let existing = target.path().join("engine-finalized-blocks-prunable-key");
         fs::create_dir_all(&existing).unwrap();
         fs::write(existing.join("old"), b"old").unwrap();
 
         let source = tempfile::tempdir().unwrap();
-        let partition = source.path().join("partition");
+        let partition = source.path().join("engine-finalized-blocks-prunable-key");
         fs::create_dir_all(&partition).unwrap();
         fs::write(partition.join("00"), b"new").unwrap();
 
@@ -714,7 +950,9 @@ mod tests {
     #[test]
     fn extract_zstd_tar_archive_refuses_to_overwrite_existing_file() {
         let target = tempfile::tempdir().unwrap();
-        let existing = target.path().join("00");
+        let partition = target.path().join("engine-finalized-blocks-prunable-key");
+        fs::create_dir_all(&partition).unwrap();
+        let existing = partition.join("00");
         fs::write(&existing, b"old").unwrap();
 
         let encoder = zstd::Encoder::new(Vec::new(), 0).unwrap();
@@ -723,7 +961,11 @@ mod tests {
         header.set_size(3);
         header.set_cksum();
         builder
-            .append_data(&mut header, "00", &mut &b"new"[..])
+            .append_data(
+                &mut header,
+                "engine-finalized-blocks-prunable-key/00",
+                &mut &b"new"[..],
+            )
             .unwrap();
         builder.finish().unwrap();
         let encoder = builder.into_inner().unwrap();
@@ -737,7 +979,9 @@ mod tests {
     #[test]
     fn extract_zstd_tar_archive_overwrites_existing_file_when_forced() {
         let target = tempfile::tempdir().unwrap();
-        let existing = target.path().join("00");
+        let partition = target.path().join("engine-finalized-blocks-prunable-key");
+        fs::create_dir_all(&partition).unwrap();
+        let existing = partition.join("00");
         fs::write(&existing, b"old").unwrap();
 
         let encoder = zstd::Encoder::new(Vec::new(), 0).unwrap();
@@ -746,7 +990,11 @@ mod tests {
         header.set_size(3);
         header.set_cksum();
         builder
-            .append_data(&mut header, "00", &mut &b"new"[..])
+            .append_data(
+                &mut header,
+                "engine-finalized-blocks-prunable-key/00",
+                &mut &b"new"[..],
+            )
             .unwrap();
         builder.finish().unwrap();
         let encoder = builder.into_inner().unwrap();

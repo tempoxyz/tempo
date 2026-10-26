@@ -13,11 +13,7 @@
 use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 
 use commonware_broadcast::buffered;
-use commonware_consensus::{
-    Reporters,
-    simplex::scheme::bls12381_threshold::vrf::Scheme,
-    types::{Epoch, FixedEpocher},
-};
+use commonware_consensus::{Reporters, types::FixedEpocher};
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_runtime::{
     BufferPooler, Clock, ContextCell, Handle, Metrics, Pacer, Spawner, Storage,
@@ -106,12 +102,6 @@ impl<TUpstream> Config<TUpstream> {
             + 'static,
     {
         let scheme_provider = SchemeProvider::new();
-        // Pin the binary's identity before marshal or any actor registers an epoch scheme.
-        scheme_provider.register(
-            Epoch::new(self.network_identity.from_epoch),
-            Scheme::certificate_verifier(crate::config::NAMESPACE, self.network_identity.identity),
-        );
-
         let page_cache_ref = CacheRef::from_pooler(
             &context,
             storage::BUFFER_POOL_PAGE_SIZE,
@@ -124,7 +114,8 @@ impl<TUpstream> Config<TUpstream> {
             actor: marshal_actor,
             mailbox: marshal_mailbox,
             finalized_floor: last_finalized_height,
-            ..
+            finalized_tip,
+            finalized_tip_certificate,
         } = alias::marshal::init(
             context.child("marshal"),
             page_cache_ref,
@@ -203,10 +194,14 @@ impl<TUpstream> Config<TUpstream> {
                 scheme_provider: scheme_provider.clone(),
                 network_identity: self.network_identity,
                 last_finalized_height,
+                finalized_tip: finalized_tip_certificate
+                    .map(|certificate| (finalized_tip.1, certificate)),
+                partition_prefix: format!("{}_driver", self.partition_prefix),
                 marshal: marshal_mailbox.clone(),
                 epoch_strategy: epoch_strategy.clone(),
             },
         )
+        .await
         .wrap_err("failed initializing driver actor")?;
 
         let (gossip_actor, gossip_mailbox) = self

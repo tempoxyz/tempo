@@ -11,33 +11,30 @@ use rand_core::CryptoRng;
 use tempo_chainspec::NetworkIdentity;
 use tracing::{info, instrument};
 
-use super::state::State;
 use crate::{config::NAMESPACE, epoch::SchemeProvider, gossip::Certificate};
 
+/// Select the newest configured or persisted identity, authenticate the tip, and register its schemes.
+/// Returns the selected identity. Historical tips are accepted with the future identity pinned.
 #[instrument(skip_all, err)]
-pub(super) fn verify_finalized_tip(
+pub(crate) fn verify_finalized_tip(
     rng: &mut impl CryptoRng,
     configured_identity: &NetworkIdentity,
-    persisted: Option<&State>,
+    persisted: Option<&NetworkIdentity>,
     tip: Option<(Height, &Certificate)>,
     finalized_floor: Height,
     scheme_provider: &SchemeProvider,
-) -> eyre::Result<()> {
+) -> eyre::Result<NetworkIdentity> {
     let mut trusted = configured_identity.clone();
-    if let Some(state) = persisted {
-        let identity = *state.output.public().public();
-        if state.epoch.get() == configured_identity.from_epoch {
+    if let Some(persisted) = persisted {
+        if persisted.from_epoch == configured_identity.from_epoch {
             assert_eq!(
-                identity, configured_identity.identity,
+                persisted.identity, configured_identity.identity,
                 "persisted DKG network identity differs from the configured identity in epoch `{}`",
-                state.epoch,
+                persisted.from_epoch,
             );
         }
-        if state.epoch.get() > configured_identity.from_epoch {
-            trusted = NetworkIdentity {
-                from_epoch: state.epoch.get(),
-                identity,
-            };
+        if persisted.from_epoch > configured_identity.from_epoch {
+            trusted = persisted.clone();
         }
     }
 
@@ -91,5 +88,5 @@ pub(super) fn verify_finalized_tip(
     }
     // Pin the trusted identity even when the tip predates it or startup is at genesis.
     scheme_provider.register(Epoch::new(trusted.from_epoch), scheme);
-    Ok(())
+    Ok(trusted)
 }
