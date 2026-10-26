@@ -27,8 +27,8 @@ pub(crate) fn verify_finalized_tip(
     let mut trusted = configured_identity.clone();
     if let Some(persisted) = persisted {
         if persisted.from_epoch == configured_identity.from_epoch {
-            assert_eq!(
-                persisted.identity, configured_identity.identity,
+            ensure!(
+                persisted.identity == configured_identity.identity,
                 "persisted DKG network identity differs from the configured identity in epoch `{}`",
                 persisted.from_epoch,
             );
@@ -40,16 +40,10 @@ pub(crate) fn verify_finalized_tip(
 
     let scheme = Scheme::<PublicKey, _>::certificate_verifier(NAMESPACE, trusted.identity);
     if let Some((height, certificate)) = tip {
-        ensure!(
-            !height.is_zero(),
-            "genesis must not have a finalization certificate"
-        );
-        ensure!(
-            height >= finalized_floor,
-            "finalized tip is below the finalized floor"
-        );
-        let cert_epoch = certificate.proposal.round.epoch();
+        ensure!(!height.is_zero(), "genesis must not have a certificate");
+        ensure!(height >= finalized_floor, "tip is below the floor");
 
+        let cert_epoch = certificate.proposal.round.epoch();
         if cert_epoch.get() < trusted.from_epoch {
             // A rotation's outgoing boundary certificate can precede the latest
             // persisted DKG identity. This means historical certs are trusted

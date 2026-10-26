@@ -328,19 +328,23 @@ fn startup_rejects_epoch_tampering_at_or_after_identity_epoch() {
 }
 
 #[test]
-#[should_panic(expected = "persisted DKG network identity differs from the configured identity")]
 fn startup_rejects_conflicting_persisted_identity_even_for_a_historical_tip() {
     Runner::default().start(|mut context| async move {
         let configured_fixture = dkg_fixture(&mut context, Epoch::new(3));
         let local = dkg_fixture(&mut context, Epoch::new(3));
         let state = identity(&local);
-        let _ = verify_finalized_tip(
+        let error = verify_finalized_tip(
             &mut context,
             &identity(&configured_fixture),
             Some(&state),
             None,
             Height::zero(),
             &SchemeProvider::new(),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "persisted DKG network identity differs from the configured identity in epoch `3`"
         );
     });
 }
