@@ -19,10 +19,10 @@ use serde::{Deserialize, Serialize};
 use tempo_alloy::TempoNetwork;
 use tempo_contracts::zones::ZonePortal;
 use tokio::sync::{mpsc, oneshot};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use zone_rpc::{ZoneDebugApi, types::ZoneExecutionWitness};
 
-use crate::ZoneSequencerProvider;
+use crate::{ZoneSequencerProvider, metrics::ProofCollectorMetrics};
 
 // Persisted files survive upgrades; reject incompatible witness formats explicitly.
 const FORMAT_VERSION: u32 = 1;
@@ -50,15 +50,18 @@ pub async fn create_proof_collector<P: ZoneSequencerProvider>(
         store.state.write().shadow_proven_through = Some(finalized_zone_height);
     }
     let (requests_tx, requests_rx) = mpsc::channel(16);
+    let metrics = ProofCollectorMetrics::default();
     let collector = ProofCollector {
         config,
         provider,
         store: store.clone(),
         requests: requests_rx,
+        metrics: metrics.clone(),
     };
     let handle = ProofCollectorHandle {
         store,
         requests: requests_tx,
+        metrics,
     };
     Ok((handle, collector.run()))
 }
@@ -68,10 +71,11 @@ pub async fn create_proof_collector<P: ZoneSequencerProvider>(
 pub struct ProofCollectorHandle {
     store: Arc<ProofStore>,
     requests: mpsc::Sender<ProofRequest>,
+    metrics: ProofCollectorMetrics,
 }
 
 impl ProofCollectorHandle {
-    /// Collect one executed block before it becomes canonical.
+    /// Collect and persist one block's witness, waiting until it is durable.
     ///
     /// Returns `None` for blocks already covered by finalized settlement. Otherwise the
     /// returned witness's file and directory have both been synced.
@@ -96,42 +100,24 @@ impl ProofCollectorHandle {
             .context("proof collector stopped before persistence")?
     }
 
-    /// Persist a received witness without recollecting it. The caller must bind its metadata
-    /// to the imported block; this does not validate witness contents or completeness.
-    pub async fn persist_received(&self, proof: StoredBlockProof) -> Result<()> {
+    /// Queue a received witness for persistence without waiting, so block import never blocks
+    /// on the collector. The caller must bind its metadata to the imported block; this does not
+    /// validate witness contents or completeness. When the queue is full the witness is dropped
+    /// and background collection recollects it. Errors if the format is unsupported or the
+    /// collector stopped.
+    pub fn offer_received(&self, proof: StoredBlockProof) -> Result<()> {
         proof.validate()?;
-        let (response, result) = oneshot::channel();
-        self.requests
-            .send(ProofRequest::Persist {
-                proof: Box::new(proof),
-                response,
-            })
-            .await
-            .context("proof collector stopped")?;
-        result
-            .await
-            .context("proof collector stopped before persistence")?
-    }
-
-    /// Whether an imported block still needs a durable witness for future settlement.
-    pub fn requires_witness(&self, number: u64) -> bool {
-        number > self.store.state.read().pruned_through
-    }
-
-    /// Fill any restart or upgrade gaps before allowing a proving node to advance.
-    pub async fn collect_canonical_tail<P: ZoneSequencerProvider>(
-        &self,
-        provider: &P,
-    ) -> Result<()> {
-        let start = self.store.state.read().pruned_through.saturating_add(1);
-        let head = provider.best_block_number()?;
-        for number in start..=head {
-            let hash = provider
-                .block_hash(number)?
-                .ok_or_eyre(format!("canonical Zone block {number} has no hash"))?;
-            self.collect_and_persist(number, hash).await?;
+        match self
+            .requests
+            .try_send(ProofRequest::Persist(Box::new(proof)))
+        {
+            Ok(()) => Ok(()),
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                self.metrics.received_dropped_total.increment(1);
+                Ok(())
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => bail!("proof collector stopped"),
         }
-        Ok(())
     }
 
     /// Allow pruning of finalized witnesses through a completed shadow proving job.
@@ -161,6 +147,7 @@ struct ProofCollector<P> {
     provider: P,
     store: Arc<ProofStore>,
     requests: mpsc::Receiver<ProofRequest>,
+    metrics: ProofCollectorMetrics,
 }
 
 impl<P: ZoneSequencerProvider> ProofCollector<P> {
@@ -179,16 +166,7 @@ impl<P: ZoneSequencerProvider> ProofCollector<P> {
                     let Some(request) = request else {
                         return;
                     };
-                    match request {
-                        ProofRequest::Collect { number, hash, response } => {
-                            let result = self.collect_and_persist(number, hash).await;
-                            let _ = response.send(result);
-                        }
-                        ProofRequest::Persist { proof, response } => {
-                            let result = self.persist(*proof).await.map(|_| ());
-                            let _ = response.send(result);
-                        }
-                    }
+                    self.handle_request(request).await;
                     continue;
                 }
                 _ = fallback.tick() => {}
@@ -205,7 +183,26 @@ impl<P: ZoneSequencerProvider> ProofCollector<P> {
         }
     }
 
-    async fn prune_and_collect(&self) -> Result<()> {
+    async fn handle_request(&self, request: ProofRequest) {
+        match request {
+            ProofRequest::Collect {
+                number,
+                hash,
+                response,
+            } => {
+                let result = self.collect_and_persist(number, hash).await;
+                let _ = response.send(result);
+            }
+            ProofRequest::Persist(proof) => {
+                let number = proof.witness.block_number;
+                if let Err(error) = self.persist(*proof).await {
+                    warn!(target: "zone::sequencer::proofs", zone_block = number, error = ?error, "Failed to persist received witness; it will be collected locally");
+                }
+            }
+        }
+    }
+
+    async fn prune_and_collect(&mut self) -> Result<()> {
         let finalized_zone_height = self.config.finalized_zone_height().await?;
         let store = self.store.clone();
         let provider = self.provider.clone();
@@ -220,6 +217,11 @@ impl<P: ZoneSequencerProvider> ProofCollector<P> {
 
         let start = self.store.state.read().pruned_through.saturating_add(1);
         for number in start..=head {
+            // Serve queued requests between blocks so a lagging pass never holds them back.
+            while let Ok(request) = self.requests.try_recv() {
+                self.handle_request(request).await;
+            }
+            self.metrics.lag_blocks.set((head - number + 1) as f64);
             let block_hash = self
                 .provider
                 .block_hash(number)?
@@ -228,6 +230,7 @@ impl<P: ZoneSequencerProvider> ProofCollector<P> {
                 self.collect_and_persist(number, block_hash).await?;
             }
         }
+        self.metrics.lag_blocks.set(0.0);
         Ok(())
     }
 
@@ -553,10 +556,7 @@ enum ProofRequest {
         hash: B256,
         response: oneshot::Sender<Result<Option<Arc<StoredBlockProof>>>>,
     },
-    Persist {
-        proof: Box<StoredBlockProof>,
-        response: oneshot::Sender<Result<()>>,
-    },
+    Persist(Box<StoredBlockProof>),
 }
 
 fn sync_directory(directory: &Path) -> Result<()> {
@@ -627,6 +627,7 @@ mod tests {
             provider: MockEthProvider::<TempoPrimitives>::new(),
             store: store.clone(),
             requests,
+            metrics: ProofCollectorMetrics::default(),
         };
         // Historical state for settled backfill is deliberately unavailable from the stub.
         assert!(
@@ -831,6 +832,7 @@ mod tests {
         let handle = ProofCollectorHandle {
             store: store.clone(),
             requests,
+            metrics: ProofCollectorMetrics::default(),
         };
         assert!(handle.get(1, B256::repeat_byte(2)).is_none());
         let loaded = handle.get(1, hash).unwrap();
@@ -848,7 +850,11 @@ mod tests {
             let directory = tempfile::tempdir().unwrap();
             let store = Arc::new(ProofStore::open(directory.path().to_path_buf(), 0).unwrap());
             let (requests, mut receiver) = mpsc::channel::<ProofRequest>(1);
-            let handle = ProofCollectorHandle { store, requests };
+            let handle = ProofCollectorHandle {
+                store,
+                requests,
+                metrics: ProofCollectorMetrics::default(),
+            };
             let waiter = handle.collect_and_persist(1, B256::ZERO);
             tokio::pin!(waiter);
             let responder = async {
@@ -899,5 +905,45 @@ mod tests {
                 ),
             }
         }
+    }
+
+    #[test]
+    fn offered_witness_never_waits_for_the_collector() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(ProofStore::open(directory.path().to_path_buf(), 0).unwrap());
+        let (requests, mut receiver) = mpsc::channel::<ProofRequest>(1);
+        let handle = ProofCollectorHandle {
+            store,
+            requests,
+            metrics: ProofCollectorMetrics::default(),
+        };
+        let mut unsupported = proof(1, B256::repeat_byte(1));
+        unsupported.format_version = FORMAT_VERSION + 1;
+        assert_eq!(
+            handle.offer_received(unsupported).unwrap_err().to_string(),
+            format!("unsupported proof format version {}", FORMAT_VERSION + 1)
+        );
+
+        handle
+            .offer_received(proof(1, B256::repeat_byte(1)))
+            .unwrap();
+        // A full queue drops the witness instead of blocking block import.
+        handle
+            .offer_received(proof(2, B256::repeat_byte(2)))
+            .unwrap();
+        let Ok(ProofRequest::Persist(queued)) = receiver.try_recv() else {
+            panic!("expected the first witness to be queued");
+        };
+        assert_eq!(queued.witness.block_number, 1);
+        assert!(receiver.try_recv().is_err());
+
+        drop(receiver);
+        assert_eq!(
+            handle
+                .offer_received(proof(3, B256::repeat_byte(3)))
+                .unwrap_err()
+                .to_string(),
+            "proof collector stopped"
+        );
     }
 }

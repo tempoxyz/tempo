@@ -189,7 +189,7 @@ pub(crate) struct FollowerBlockSyncContext<P> {
     pub(crate) attestation: AttestationContext,
     pub(crate) schedule: LeadershipSchedule,
     pub(crate) peer_tips: PeerTipRegistry,
-    /// Required for unsettled imports on nodes that may later produce settlement proofs.
+    /// Receives peer witnesses on nodes that may later produce settlement proofs.
     pub(crate) proof_collector: Option<zone_sequencer::ProofCollectorHandle>,
 }
 
@@ -657,24 +657,14 @@ where
             eyre::bail!("execution engine rejected peer block {block_number} ({hash}): {status:?}");
         }
 
-        // Peers without a stored witness still send plain blocks. Preserve local collection
-        // for them; supplied witnesses are persisted directly. Both paths precede canonicalization.
-        if let Some(collector) = &self.context.proof_collector {
-            self.stop
-                .run_until_cancelled(async {
-                    match peer_block.block.witness {
-                        Some(proof) => collector.persist_received(proof).await,
-                        None => collector
-                            .collect_and_persist(block_number, hash)
-                            .await
-                            .map(|_| ()),
-                    }
-                })
-                .await
-                .ok_or_else(|| eyre::eyre!("follower stopped while persisting peer witness"))?
-                .wrap_err_with(|| {
-                    format!("persist witness before importing Zone block {block_number}")
-                })?;
+        // Supplied witnesses are queued for persistence without waiting. Plain blocks, and
+        // witnesses the queue drops, are collected locally by the background collector.
+        if let Some(collector) = &self.context.proof_collector
+            && let Some(proof) = peer_block.block.witness
+        {
+            collector
+                .offer_received(proof)
+                .wrap_err_with(|| format!("queue witness for Zone block {block_number}"))?;
         }
 
         // 5. Forkchoice

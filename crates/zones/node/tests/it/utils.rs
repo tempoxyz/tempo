@@ -1512,7 +1512,6 @@ impl ZoneTestNode {
                 sequencer_signer.address(),
                 deposit_decryption_keys,
                 portal_address,
-                None,
             )
             .with_deposit_allowlist(deposit_allowlist);
             node_handle
@@ -3913,8 +3912,7 @@ pub(crate) async fn start_real_p2p_cluster_with_active_nodes(
     .cluster)
 }
 
-/// Start a real-L1 cluster whose nodes run settlement proving, so every node persists witnesses
-/// before canonicalization.
+/// Start a real-L1 cluster whose nodes run settlement proving, so every node persists witnesses.
 ///
 /// No prover listens on the routed endpoint: every proof fails fast and settlement falls back to
 /// the `NoProof` verifier.

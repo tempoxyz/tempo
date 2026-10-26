@@ -323,16 +323,9 @@ fn encode_block_with_witness(
     hash: B256,
     proofs: Option<&ProofCollectorHandle>,
 ) -> eyre::Result<EncodedBlock> {
-    let witness = if let Some(proofs) = proofs {
-        let witness = proofs.get(number, hash);
-        eyre::ensure!(
-            witness.is_some() || !proofs.requires_witness(number),
-            "unsettled block {number} has no retained witness to replicate"
-        );
-        witness
-    } else {
-        None
-    };
+    // A witness the background collector has not persisted yet goes out as a plain block; the
+    // receiver collects it locally.
+    let witness = proofs.and_then(|proofs| proofs.get(number, hash));
     let witness = witness.as_deref().map(minicbor_serde::to_vec).transpose()?;
     Ok(EncodedBlock { block, witness })
 }
