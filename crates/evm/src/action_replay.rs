@@ -109,6 +109,20 @@ where
                 StorageAction::Sload(address, key, value) => {
                     let _ = self.replay_state.sload_exact(db, address, key, value)?;
                 }
+                StorageAction::FeeTokenBalanceCheck(
+                    address,
+                    key,
+                    sload_value,
+                    required,
+                    sufficient,
+                ) => {
+                    let balance =
+                        self.replay_state
+                            .sload_current_or(db, address, key, sload_value)?;
+                    if (balance >= required) != sufficient {
+                        return Err(StorageActionReplayError::ActionConflict.into());
+                    }
+                }
                 StorageAction::Sstore(address, key, sload_value, value) => {
                     self.replay_state
                         .sstore_exact(db, address, key, sload_value, value)?;
@@ -597,6 +611,89 @@ mod tests {
             [(slot, value)].into_iter().collect(),
         );
         db
+    }
+
+    #[test]
+    fn fee_token_balance_check_replays_only_when_affordability_is_unchanged() {
+        use crate::test_utils::{TestExecutorBuilder, test_chainspec};
+
+        let token = Address::repeat_byte(0x42);
+        let slot = U256::from(7);
+        let chainspec = test_chainspec();
+        for (observed, current, sufficient, succeeds) in [
+            (100, 80, true, true),
+            (100, 120, true, true),
+            (100, 50, true, true),
+            (100, 49, true, false),
+            (20, 49, false, true),
+            (20, 0, false, true),
+            (20, 50, false, false),
+        ] {
+            let mut db = state_with_storage(token, slot, U256::from(current));
+            let mut executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
+            let mut actions = vec![StorageAction::FeeTokenBalanceCheck(
+                token,
+                slot,
+                U256::from(observed),
+                U256::from(50),
+                sufficient,
+            )];
+            if sufficient {
+                actions.push(StorageAction::Sdec(
+                    token,
+                    slot,
+                    U256::from(observed),
+                    U256::from(10),
+                ));
+            }
+            let result = executor.replay_actions(actions, None);
+            if succeeds {
+                let state = result.unwrap();
+                if sufficient {
+                    let value = &state[&token].storage[&slot];
+                    assert_eq!(value.original_value(), U256::from(current));
+                    assert_eq!(
+                        value.present_value(),
+                        U256::from(current - if sufficient { 10 } else { 0 })
+                    );
+                } else {
+                    assert!(!state.contains_key(&token));
+                }
+            } else {
+                assert_eq!(
+                    StorageActionReplayError::from_block_execution_error(&result.unwrap_err()),
+                    Some(StorageActionReplayError::ActionConflict)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fee_token_balance_check_does_not_relax_later_exact_reads() {
+        use crate::test_utils::{TestExecutorBuilder, test_chainspec};
+
+        let token = Address::repeat_byte(0x42);
+        let slot = U256::from(7);
+        let mut db = state_with_storage(token, slot, U256::from(80));
+        let chainspec = test_chainspec();
+        let mut executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
+        let result = executor.replay_actions(
+            [
+                StorageAction::FeeTokenBalanceCheck(
+                    token,
+                    slot,
+                    U256::from(100),
+                    U256::from(50),
+                    true,
+                ),
+                StorageAction::Sload(token, slot, U256::from(100)),
+            ],
+            None,
+        );
+        assert_eq!(
+            StorageActionReplayError::from_block_execution_error(&result.unwrap_err()),
+            Some(StorageActionReplayError::ActionConflict)
+        );
     }
 
     #[test]

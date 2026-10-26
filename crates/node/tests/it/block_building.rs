@@ -1,4 +1,4 @@
-use crate::utils::{TestNodeBuilder, t1_account};
+use crate::utils::{TestNode, TestNodeBuilder, t1_account};
 use alloy::{
     consensus::Transaction,
     primitives::{Address, B256, U256, aliases::U96},
@@ -11,7 +11,6 @@ use reth_node_api::BuiltPayload;
 use tempo_contracts::precompiles::{
     IFeeManager, IRolesAuth, ITIP20, ITIP20ChannelReserve, ITIP20Factory, ITIPFeeAMM,
 };
-use tempo_node::node::TempoNode;
 use tempo_precompiles::{
     PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
     TIP20_FACTORY_ADDRESS, tip_fee_manager::amm::compute_amount_out, tip20::ISSUER_ROLE,
@@ -20,7 +19,7 @@ use tempo_primitives::{TempoTxEnvelope, transaction::calc_gas_balance_spending};
 
 /// Helper to setup a test token by manually injecting transactions and advancing blocks
 async fn setup_token_manual<P>(
-    node: &mut reth_e2e_test_utils::NodeHelperType<TempoNode>,
+    node: &mut TestNode,
     provider: &P,
     sender: &mut TestAccount,
 ) -> eyre::Result<ITIP20::ITIP20Instance<P>>
@@ -31,7 +30,7 @@ where
 }
 
 async fn setup_token_manual_with_quote<P>(
-    node: &mut reth_e2e_test_utils::NodeHelperType<TempoNode>,
+    node: &mut TestNode,
     provider: &P,
     sender: &mut TestAccount,
     quote_token: Address,
@@ -86,7 +85,7 @@ fn extract_user_txs(all_transactions: Vec<TempoTxEnvelope>) -> Vec<TempoTxEnvelo
 
 /// Helper to inject non-payment transactions from multiple wallets
 async fn inject_non_payment_txs(
-    node: &mut reth_e2e_test_utils::NodeHelperType<TempoNode>,
+    node: &mut TestNode,
     chain_id: u64,
     count: usize,
     start_index: u32,
@@ -98,14 +97,14 @@ async fn inject_non_payment_txs(
             .to(Address::ZERO)
             .gas_limit(2_000_000)
             .await;
-        node.rpc.inject_tx(tx_bytes).await?;
+        node.inject_tx(tx_bytes).await?;
     }
     Ok(())
 }
 
 /// Helper to inject payment transactions from a single sender
 async fn inject_payment_txs_from_sender<P>(
-    node: &mut reth_e2e_test_utils::NodeHelperType<TempoNode>,
+    node: &mut TestNode,
     sender: &mut TestAccount,
     token: &ITIP20::ITIP20Instance<P>,
     count: usize,
@@ -119,7 +118,7 @@ where
             .into_transaction_request()
             .gas_limit(1_000_000);
         let tx_bytes = sender.sign_tx_bytes(tx).await;
-        node.rpc.inject_tx(tx_bytes).await?;
+        node.inject_tx(tx_bytes).await?;
     }
     Ok(())
 }
@@ -132,9 +131,7 @@ fn count_transaction_types(transactions: &[TempoTxEnvelope]) -> (usize, usize) {
 
 /// Advances the node until the pool has no pending transactions, returning the user transactions
 /// of the built blocks.
-async fn drained_user_txs(
-    node: &mut reth_e2e_test_utils::NodeHelperType<TempoNode>,
-) -> eyre::Result<Vec<TempoTxEnvelope>> {
+async fn drained_user_txs(node: &mut TestNode) -> eyre::Result<Vec<TempoTxEnvelope>> {
     Ok(node
         .advance_until_pool_drained()
         .await?
@@ -565,7 +562,7 @@ async fn test_payload_fees_account_for_amm_haircut() -> eyre::Result<()> {
 
 /// Fund `user` with PATH_USD.
 async fn fund_path_usd(
-    node: &mut reth_e2e_test_utils::NodeHelperType<TempoNode>,
+    node: &mut TestNode,
     funder: &mut TestAccount,
     user: Address,
 ) -> eyre::Result<()> {
@@ -601,7 +598,7 @@ fn descriptor_from(
 /// `open` is committed in its own block so subsequent calls find the channel; only `topUp` and
 /// `requestClose` remain in the pool for the caller to drain/count.
 async fn inject_reserve_payment_txs(
-    node: &mut reth_e2e_test_utils::NodeHelperType<TempoNode>,
+    node: &mut TestNode,
     sender: &mut TestAccount,
 ) -> eyre::Result<()> {
     let reserve = ITIP20ChannelReserve::new(TIP20_CHANNEL_RESERVE_ADDRESS, node.rpc_provider());
@@ -639,13 +636,13 @@ async fn inject_reserve_payment_txs(
                 .into_transaction_request(),
         )
         .await;
-    node.rpc.inject_tx(top_up_tx).await?;
+    node.inject_tx(top_up_tx).await?;
 
     // requestClose (payment)
     let request_close_tx = sender
         .sign_tx_bytes(reserve.requestClose(desc).into_transaction_request())
         .await;
-    node.rpc.inject_tx(request_close_tx).await?;
+    node.inject_tx(request_close_tx).await?;
 
     Ok(())
 }

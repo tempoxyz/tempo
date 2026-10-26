@@ -1088,6 +1088,7 @@ interface IZoneInbox {
     error InvalidWithdrawalBounceBack();
     error MissingDecryptionData();
     error ExtraDecryptionData();
+    error NoRefund();
     error InvalidSharedSecretProof();
     error Unauthorized();
 
