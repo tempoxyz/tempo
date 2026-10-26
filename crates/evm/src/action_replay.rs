@@ -36,7 +36,6 @@ impl TempoBlockExecutor<'_> {
             result,
             mut actions,
             expiring_nonce,
-            validator_fee,
         } = replay;
         self.replay_state.reset_tx_changes();
 
@@ -78,7 +77,6 @@ impl TempoBlockExecutor<'_> {
             is_system_tx,
             self.is_payment(original),
             block_gas_used,
-            validator_fee,
         );
         result_closure(&result);
 
@@ -309,8 +307,6 @@ pub struct StorageActionReplay {
     pub actions: Vec<StorageAction>,
     /// Semantic replay data for expiring nonce transactions.
     pub expiring_nonce: Option<ExpiringNonceReplay>,
-    /// Validator-credited fee amount
-    pub validator_fee: U256,
 }
 
 /// Replay data for expiring nonce transactions.

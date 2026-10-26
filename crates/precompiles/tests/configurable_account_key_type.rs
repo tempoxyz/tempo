@@ -5,10 +5,8 @@ use alloy::{
     sol_types::{SolCall, SolInterface},
 };
 use evm2::{
-    BaseEvmConfigSelector, Evm, EvmTypesHost, ExecutionConfig, SpecId,
+    bytecode::Bytecode,
     evm::{InMemoryDB, precompile::NoPrecompiles},
-    precompiles::{PrecompileError, PrecompileResult},
-    registry::TxRegistry,
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
@@ -18,27 +16,17 @@ use tempo_contracts::precompiles::{
         authorizeKey_1Call, authorizeKey_2Call, getKeyCall,
     },
 };
+use tempo_evm::{TempoEvmExt, build_tempo_evm};
 use tempo_precompiles::{
     Precompile,
     account_keychain::AccountKeychain,
-    storage::{StorageCtx, evm::EvmPrecompileStorageProvider, hashmap::HashMapStorageProvider},
+    storage::{StorageCtx, hashmap::HashMapStorageProvider},
 };
-use tempo_primitives::{MasterId, TempoAddressExt, TempoBlockEnv, TempoBlockExt, UserTag};
+use tempo_primitives::{MasterId, TempoAddressExt, TempoBlockEnv, UserTag};
 
-struct TestTypes;
+mod common;
 
-impl EvmTypesHost for TestTypes {
-    type ConfigSelector = BaseEvmConfigSelector;
-    type SpecId = SpecId;
-    type Tx = ();
-    type EvmExt = ();
-    type MessageExt = ();
-    type MessageResultExt = ();
-    type TxEnvExt = ();
-    type TxResultExt = ();
-    type BlockEnvExt = TempoBlockExt;
-    type Host<'a> = Evm<'a, Self>;
-}
+use common::PrecompileOutput;
 
 const PARENT: Address = Address::repeat_byte(0x11);
 const DELEGATE: Address = Address::repeat_byte(0x22);
@@ -53,47 +41,33 @@ fn restrictions(expiry: u64) -> KeyRestrictions {
     }
 }
 
-/// The revert output of `result`, or `None` when the call succeeded. Any other failure fails
-/// the test: keychain calls only succeed or revert.
-#[track_caller]
-fn revert_output(result: &PrecompileResult) -> Option<&Bytes> {
-    match result {
-        Ok(_) => None,
-        Err(PrecompileError::Revert(bytes)) => Some(bytes),
-        Err(error) => panic!("keychain calls never fail the frame: {error:?}"),
-    }
-}
-
 /// Runs `calldata` from `PARENT` as both the sender and the transaction origin, in the entered
 /// storage context.
-fn keychain_call_as_parent(calldata: &[u8]) -> PrecompileResult {
+fn keychain_call_as_parent(calldata: &[u8]) -> PrecompileOutput {
     let mut keychain = AccountKeychain::new();
     keychain.set_tx_origin(PARENT).unwrap();
-    keychain.call(calldata, PARENT)
+    let before = StorageCtx.gas_used();
+    let result = keychain.call(calldata, PARENT);
+    PrecompileOutput::new(result, StorageCtx.gas_used() - before)
 }
 
 /// Runs `calldata` from `PARENT` as both the sender and the transaction origin.
-fn call_as_parent(storage: &mut HashMapStorageProvider, calldata: &[u8]) -> PrecompileResult {
+fn call_as_parent(storage: &mut HashMapStorageProvider, calldata: &[u8]) -> PrecompileOutput {
     StorageCtx::enter(storage, || keychain_call_as_parent(calldata))
 }
 
 /// Runs `calldata` from `PARENT` as both the sender and the transaction origin, on an EVM at
-/// `spec` with mainnet gas parameters. Returns the result and the gas the call charged.
-fn call_as_parent_in_evm(spec: TempoHardfork, calldata: &[u8]) -> (PrecompileResult, u64) {
-    let version = tempo_chainspec::gas_params::version(SpecId::OSAKA, spec, false);
-    let mut evm = Evm::<TestTypes>::new_with_execution_config(
-        ExecutionConfig::for_spec_and_version(SpecId::OSAKA, version),
-        SpecId::OSAKA,
+/// `spec` with mainnet gas parameters, so the output carries the gas a node would charge.
+fn call_as_parent_in_evm(spec: TempoHardfork, calldata: &[u8]) -> PrecompileOutput {
+    let mut evm = build_tempo_evm(
+        spec,
+        1,
         TempoBlockEnv::default(),
-        TxRegistry::new(),
         InMemoryDB::default(),
         NoPrecompiles::default(),
+        TempoEvmExt::default(),
     );
-    let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
-    StorageCtx::enter(&mut storage, || {
-        let result = keychain_call_as_parent(calldata);
-        (result, StorageCtx.gas_used())
-    })
+    StorageCtx::enter_evm(&mut evm, || keychain_call_as_parent(calldata))
 }
 
 /// The signature and calldata of each authorization entrypoint that carries a `signatureType`.
@@ -179,16 +153,11 @@ fn key_type_reverts_like_an_unknown_type_before_t14() {
                         calldata[67] = signature_type;
                         call_as_parent_in_evm(spec, &calldata)
                     };
-                    let (configurable, configurable_gas) = run(configurable_type);
-                    let (unknown, unknown_gas) = run(unknown_type);
-                    assert!(revert_output(&unknown).is_some(), "{case}");
-                    assert!(unknown_gas > 0, "{case}");
-                    assert_eq!(
-                        revert_output(&configurable),
-                        revert_output(&unknown),
-                        "{case}"
-                    );
-                    assert_eq!(configurable_gas, unknown_gas, "{case}");
+                    let configurable = run(configurable_type);
+                    let unknown = run(unknown_type);
+                    assert!(unknown.is_revert(), "{case}");
+                    assert!(unknown.gas_used > 0, "{case}");
+                    assert_eq!(configurable, unknown, "{case}");
                 }
             }
         }
@@ -215,22 +184,13 @@ fn truncated_authorization_reverts_empty_between_t11_and_t14() {
                 truncated[67] = signature_type;
                 call_as_parent_in_evm(spec, &truncated)
             };
-            let (configurable, configurable_gas) = run(configurable_type);
-            let (unknown, unknown_gas) = run(unknown_type);
-            assert_eq!(revert_output(&configurable), Some(&Bytes::new()), "{case}");
-            assert_eq!(
-                revert_output(&configurable),
-                revert_output(&unknown),
-                "{case}"
-            );
-            assert_eq!(configurable_gas, unknown_gas, "{case}");
+            let configurable = run(configurable_type);
+            let unknown = run(unknown_type);
+            assert!(configurable.is_revert(), "{case}");
+            assert!(configurable.bytes.is_empty(), "{case}");
+            assert_eq!(configurable, unknown, "{case}");
         }
     }
-}
-
-/// The code of an EIP-7702 delegation to `target`.
-fn eip7702_delegation(target: Address) -> Bytes {
-    [&[0xef, 0x01, 0x00], target.as_slice()].concat().into()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -281,7 +241,10 @@ fn delegate_grants_are_guarded_from_t14() {
                     }),
                     DelegateCase::Delegation => StorageCtx::enter(&mut storage, || {
                         StorageCtx
-                            .set_code(delegate, eip7702_delegation(Address::repeat_byte(0x33)))
+                            .set_code(
+                                delegate,
+                                Bytecode::new_eip7702(Address::repeat_byte(0x33)).original_bytes(),
+                            )
                             .unwrap()
                     }),
                     DelegateCase::CodeFree
@@ -292,7 +255,7 @@ fn delegate_grants_are_guarded_from_t14() {
                 let output = call_as_parent(&mut storage, calldata);
                 let granted = spec.is_t14() && case == DelegateCase::CodeFree;
                 assert_eq!(
-                    revert_output(&output).is_none(),
+                    !output.is_revert(),
                     granted,
                     "{spec}, {entrypoint}, {case:?}"
                 );
@@ -302,9 +265,9 @@ fn delegate_grants_are_guarded_from_t14() {
                         keyId: delegate,
                     }
                     .abi_encode();
-                    let output = call_as_parent(&mut storage, &get_key)
-                        .unwrap_or_else(|error| panic!("{spec}, {entrypoint}: {error:?}"));
-                    let key = getKeyCall::abi_decode_returns(output.bytes()).unwrap();
+                    let output = call_as_parent(&mut storage, &get_key);
+                    assert!(!output.is_revert(), "{spec}, {entrypoint}");
+                    let key = getKeyCall::abi_decode_returns(&output.bytes).unwrap();
                     assert_eq!(
                         key.signatureType,
                         SignatureType::ConfigurableAccount,
@@ -313,8 +276,7 @@ fn delegate_grants_are_guarded_from_t14() {
                 } else {
                     if spec.is_t14() {
                         assert_eq!(
-                            AccountKeychainError::abi_decode(revert_output(&output).unwrap())
-                                .unwrap(),
+                            AccountKeychainError::abi_decode(&output.bytes).unwrap(),
                             AccountKeychainError::invalid_key_id(),
                             "{spec}, {entrypoint}, {case:?}"
                         );
@@ -342,7 +304,7 @@ fn stored_key_type_is_checked_on_use() {
         config: restrictions(u64::MAX),
     }
     .abi_encode();
-    assert!(revert_output(&call_as_parent(&mut storage, &grant)).is_none());
+    assert!(!call_as_parent(&mut storage, &grant).is_revert());
 
     let validate = |storage: &mut HashMapStorageProvider, expected_sig_type| {
         StorageCtx::enter(storage, || {
@@ -385,8 +347,9 @@ fn admin_self_grants_are_rejected() {
             }
             .abi_encode();
             let output = call_as_parent(&mut storage, &grant);
+            assert!(output.is_revert(), "{spec}, {signature_type:?}");
             assert_eq!(
-                AccountKeychainError::abi_decode(revert_output(&output).unwrap()).unwrap(),
+                AccountKeychainError::abi_decode(&output.bytes).unwrap(),
                 AccountKeychainError::invalid_key_id(),
                 "{spec}, {signature_type:?}"
             );

@@ -6,7 +6,7 @@ use crate::{
     error::{Result, TempoPrecompileError},
     storage::{ConfigCommitmentWriteGas, Handler},
 };
-use alloy::primitives::{Address, B256, KECCAK256_EMPTY};
+use alloy::primitives::{Address, B256};
 pub use tempo_chainspec::is_valid_native_account as valid_account;
 use tempo_contracts::precompiles::{
     CONFIGURABLE_ACCOUNT_ADDRESS, ConfigurableAccountError, ConfigurableAccountEvent,
@@ -148,7 +148,7 @@ impl ConfigurableAccount {
         }
         let has_code = self
             .storage
-            .with_account_info(sender, |info| Ok(info.code_hash != KECCAK256_EMPTY))?;
+            .with_account_info(sender, |info| Ok(!info.is_empty_code_hash()))?;
         let commitment = self.storage.config_commitment(sender)?;
         if has_code {
             return Err(ConfigurableAccountError::account_has_code().into());

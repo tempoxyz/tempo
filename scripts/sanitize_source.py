@@ -115,6 +115,7 @@ def sanitize_primitives(prim_dir):
     delete_lines(lib_rs, r'^#\[cfg\(not\(feature = "reth"\)\)\]\n', expected=1)
 
     _delete_cfg_gated_block(lib_rs, '#[cfg(feature = "evm")]', expected=2)
+    _delete_cfg_gated_block(lib_rs, '#[cfg(feature = "rpc")]', expected=1)
 
     # ── Struct-level derive/test attributes (directory-wide scan) ──────────
     # Scan all .rs files for reth-specific cfg_attr patterns instead of
@@ -284,7 +285,7 @@ def sanitize_chainspec(chainspec_dir):
     """Strip reth-gated code from tempo-chainspec source files."""
     lib_rs = f"{chainspec_dir}/src/lib.rs"
 
-    _delete_cfg_gated_block(lib_rs, '#[cfg(feature = "evm")]', expected=1)
+    _delete_cfg_gated_block(lib_rs, '#[cfg(feature = "evm")]', expected=3)
 
     # Delete #![cfg_attr(all(not(test), feature = "reth"), warn(unused_crate_dependencies))]
     delete_lines(lib_rs, r'^#!\[cfg_attr\(all\(not\(test\), feature = "reth"\), warn\(unused_crate_dependencies\)\)\]\n', expected=1)

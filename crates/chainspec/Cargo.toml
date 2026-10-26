@@ -30,13 +30,13 @@ alloy-genesis.workspace = true
 once_cell.workspace = true
 alloy-primitives.workspace = true
 alloy-eips.workspace = true
+evm2 = { workspace = true, optional = true }
 eyre = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 paste.workspace = true
 commonware-codec = { workspace = true, optional = true }
 commonware-cryptography = { workspace = true, optional = true }
-evm2 = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempo-contracts.workspace = true
@@ -60,9 +60,9 @@ std = [
 ]
 serde = [
     "tempo-hardfork/serde",
-    "evm2?/serde",
     "alloy-eips/serde",
     "alloy-primitives/serde",
+    "evm2?/serde",
     "tempo-contracts/serde",
     "tempo-primitives/serde"
 ]

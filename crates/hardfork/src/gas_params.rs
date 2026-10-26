@@ -6,23 +6,44 @@ use crate::{
 };
 use evm2::{EvmFeatures, SpecId, Version, version::GasId};
 
+// TIP-1000 total gas costs (used by T1)
 const CONTRACT_CREATE_COST: u32 = 500_000;
 const NEW_ACCOUNT_COST: u32 = 250_000;
 const CODE_DEPOSIT_COST_T1: u32 = 1_000;
 const EIP7702_PER_EMPTY_ACCOUNT_COST_T1: u32 = 12_500;
 
+// TIP-1060 (T7): the SSTORE gas function charges only the 5,000-gas residual
+// (`SSTORE_SET_COST`) on a clean creation (`original == present == 0`). The
+// remaining 245,000-gas creditable portion of the TIP-1000 creation cost is
+// governed by the storage-credit hook (see `sstore_storage_credits`), so it is
+// no longer charged through the SSTORE gas function.
+
+// TIP-1016 regular gas (computational overhead) — matches pre-TIP-1000 EVM costs.
+// These values are "at least the pre-TIP-1000 (standard EVM) cost" per spec invariant 15.
+//
+// For SSTORE: EVM2 decomposes the cost as SstoreStatic(WARM_STORAGE_READ=100) +
+// SstoreSetWithoutLoadCost(20,000), with the cold-slot surcharge applied separately.
 const AMSTERDAM_SSTORE_SET_REGULAR: u32 = 20_000;
 const AMSTERDAM_NEW_ACCOUNT_REGULAR: u32 = 25_000;
 const AMSTERDAM_CREATE_REGULAR: u32 = 32_000;
 const AMSTERDAM_CODE_DEPOSIT_REGULAR: u32 = 200;
 
-const AMSTERDAM_SSTORE_SET_STATE: u32 = SSTORE_CREATE_COST as u32 - AMSTERDAM_SSTORE_SET_REGULAR;
-const AMSTERDAM_NEW_ACCOUNT_STATE: u32 = NEW_ACCOUNT_COST - AMSTERDAM_NEW_ACCOUNT_REGULAR;
-const AMSTERDAM_CREATE_STATE: u32 = CONTRACT_CREATE_COST - AMSTERDAM_CREATE_REGULAR;
+// TIP-1016 state gas (permanent storage burden)
+const AMSTERDAM_SSTORE_SET_STATE: u32 = SSTORE_CREATE_COST as u32 - AMSTERDAM_SSTORE_SET_REGULAR; // 230,000
+const AMSTERDAM_NEW_ACCOUNT_STATE: u32 = NEW_ACCOUNT_COST - AMSTERDAM_NEW_ACCOUNT_REGULAR; // 225,000
+const AMSTERDAM_CREATE_STATE: u32 = CONTRACT_CREATE_COST - AMSTERDAM_CREATE_REGULAR; // 468,000
 const AMSTERDAM_CODE_DEPOSIT_STATE: u32 = 2_300;
-const AMSTERDAM_SSTORE_SET_REFUND: u32 = AMSTERDAM_SSTORE_SET_STATE + 17_800;
+
+// TIP-1016 SSTORE set refund for 0→X→0 restoration (combined state + regular).
+// Spec: state_gas(230,000) + regular(GAS_STORAGE_UPDATE - GAS_COLD_SLOAD - GAS_WARM_ACCESS)
+//      = 230,000 + (20,000 - 2,100 - 100) = 247,800
+const AMSTERDAM_SSTORE_SET_REFUND: u32 = AMSTERDAM_SSTORE_SET_STATE + 17_800; // 230,000 + 17,800 = 247,800
 
 /// Applies Tempo's hardfork-specific features and gas parameters to an EVM2 version.
+///
+/// `amsterdam_eip8037_enabled` gates the TIP-1016 regular/state gas split. When `false` on T1+,
+/// TIP-1000 (T1) costs are used, so TIP-1016 can be deferred independently of the T4 hardfork
+/// activation.
 pub fn configure_version(
     mut version: Version,
     spec: TempoHardfork,
@@ -57,8 +78,10 @@ pub fn version(spec_id: SpecId, spec: TempoHardfork, amsterdam_eip8037_enabled: 
     configure_version(Version::new(spec_id), spec, amsterdam_eip8037_enabled)
 }
 
+/// Applies the T1+ TIP-1000 costs, with no state gas split.
 fn apply_t1(version: &mut Version) {
     let gas = &mut version.gas_params;
+    // TIP-1000: All storage creation costs in regular gas (no state gas split).
     gas[GasId::SstoreSetWithoutLoadCost] = SSTORE_CREATE_COST as u32;
     gas[GasId::TxCreateCost] = CONTRACT_CREATE_COST;
     gas[GasId::Create] = CONTRACT_CREATE_COST;
@@ -66,31 +89,61 @@ fn apply_t1(version: &mut Version) {
     gas[GasId::NewAccountCostForSelfdestruct] = NEW_ACCOUNT_COST;
     gas[GasId::CodeDepositCost] = CODE_DEPOSIT_COST_T1;
     gas[GasId::TxEip7702PerEmptyAccountCost] = EIP7702_PER_EMPTY_ACCOUNT_COST_T1;
+    // Auth refund is disabled post-T1.
     gas[GasId::TxEip7702AuthRefund] = 0;
 }
 
+/// Applies the TIP-1060 SSTORE overrides on top of the T1 costs.
+///
+/// EVM2 charges the residual through `sstore_dynamic_gas` under the same
+/// `original == present == 0` condition as the upstream storage-set cost, so a
+/// dirty recreation (`x→0→y`) is charged neither the residual nor the base
+/// set cost. The 245k creditable portion is charged (or covered by a credit) by
+/// the storage-credit hook in `sstore_storage_credits`.
 fn apply_t7(version: &mut Version) {
     let gas = &mut version.gas_params;
+    // SSTORE (zero -> non-zero): only the 5k residual; the 245k creditable portion is governed
+    // by the TIP-1060 storage-credit hook (T1 charged the full `SSTORE_CREATE_COST` here).
     gas[GasId::SstoreSetWithoutLoadCost] = SSTORE_SET_COST as u32;
+    // Restore (non-zero -> zero) refund must not exceed the T7 residual. Important with
+    // TIP-1060 because the refund cap is removed. Otherwise, 0→x→0 could be refund-positive.
     gas[GasId::SstoreSetRefund] = SSTORE_SET_COST as u32;
+    // TIP-1060: SSTORE_CLEARS_SCHEDULE = 0. The nonzero-to-zero clear is now handled by storage
+    // credit minting, so the legacy clearing refund is removed. Restore-to-original-nonzero
+    // refunds (SstoreResetRefund) remain at their upstream reset refund.
     gas[GasId::SstoreClearingSlotRefund] = 0;
 }
 
+/// Applies the TIP-1016 regular/state split of the storage creation costs.
 fn apply_amsterdam(version: &mut Version) {
     let gas = &mut version.gas_params;
+    // TIP-1016: Split storage creation costs into regular gas + state gas.
+    // Regular gas (computational overhead) = at least pre-TIP-1000 EVM cost.
+    // State gas (permanent storage burden) = total - regular.
+    // SSTORE (zero -> non-zero): 20k regular + 230k state
     gas[GasId::SstoreSetWithoutLoadCost] = AMSTERDAM_SSTORE_SET_REGULAR;
     gas[GasId::SstoreSetState] = AMSTERDAM_SSTORE_SET_STATE;
     gas[GasId::SstoreSetRefund] = AMSTERDAM_SSTORE_SET_REFUND;
+    // Contract metadata (CREATE base): 32k regular + 468k state
     gas[GasId::TxCreateCost] = AMSTERDAM_CREATE_REGULAR;
     gas[GasId::Create] = AMSTERDAM_CREATE_REGULAR;
     gas[GasId::CreateState] = AMSTERDAM_CREATE_STATE;
+    // Account creation: 25k regular + 225k state
     gas[GasId::NewAccountCost] = AMSTERDAM_NEW_ACCOUNT_REGULAR;
     gas[GasId::NewAccountState] = AMSTERDAM_NEW_ACCOUNT_STATE;
     gas[GasId::NewAccountCostForSelfdestruct] = AMSTERDAM_NEW_ACCOUNT_REGULAR;
+    // Code deposit: 200 regular + 2,300 state per byte
     gas[GasId::CodeDepositCost] = AMSTERDAM_CODE_DEPOSIT_REGULAR;
     gas[GasId::CodeDepositState] = AMSTERDAM_CODE_DEPOSIT_STATE;
+    // EIP-7702 delegation: 25k regular + 225k state = 250k per auth
     gas[GasId::TxEip7702PerEmptyAccountCost] = AMSTERDAM_NEW_ACCOUNT_REGULAR;
+    // Auth refund is disabled post-T1.
     gas[GasId::TxEip7702AuthRefund] = 0;
+    // For each auth EVM2 charges NewAccountState + TxEip7702PerAuthState state gas.
+    //
+    // Per TIP-1016, we only need 225k unconditional state gas charge (another 250k is charged only
+    // if nonce is zero). Thus, we are zeroing the bytecode cost so that only NewAccountState
+    // (225k) is charged.
     gas[GasId::TxEip7702PerAuthState] = 0;
 }
 
@@ -334,5 +387,45 @@ mod tests {
             250_000,
             "EIP-7702 per auth total must be 250,000"
         );
+    }
+
+    /// Every hardfork's gas schedule: Ethereum values before T1, the TIP-1000 creation costs from
+    /// T1 and the TIP-1060 SSTORE residual and uncapped refunds from T7.
+    #[test]
+    fn test_gas_params_per_hardfork() {
+        for &spec in TempoHardfork::VARIANTS {
+            let gas = version(SpecId::OSAKA, spec, false).gas_params;
+            let case = format!("{spec}");
+
+            // Unchanged by Tempo.
+            assert_eq!(gas[GasId::ColdStorageCost], 2_100, "{case}");
+            assert_eq!(gas[GasId::ColdAccountAdditionalCost], 2_500, "{case}");
+            assert_eq!(gas[GasId::ColdStorageAdditionalCost], 2_000, "{case}");
+            assert_eq!(gas[GasId::WarmStorageReadCost], 100, "{case}");
+            assert_eq!(gas[GasId::SstoreResetWithoutColdLoadCost], 2_800, "{case}");
+            assert_eq!(gas[GasId::SstoreResetRefund], 2_800, "{case}");
+
+            let (set, set_refund, clear_refund, create, new_account, code_deposit, auth_refund) =
+                if spec.is_t7() {
+                    (5_000, 5_000, 0, 500_000, 250_000, 1_000, 0)
+                } else if spec.is_t1() {
+                    (250_000, 19_900, 4_800, 500_000, 250_000, 1_000, 0)
+                } else {
+                    (19_900, 19_900, 4_800, 32_000, 25_000, 200, 12_500)
+                };
+            assert_eq!(gas[GasId::SstoreSetWithoutLoadCost], set, "{case}");
+            assert_eq!(gas[GasId::SstoreSetRefund], set_refund, "{case}");
+            assert_eq!(gas[GasId::SstoreClearingSlotRefund], clear_refund, "{case}");
+            assert_eq!(gas[GasId::Create], create, "{case}");
+            assert_eq!(gas[GasId::TxCreateCost], create, "{case}");
+            assert_eq!(gas[GasId::NewAccountCost], new_account, "{case}");
+            assert_eq!(gas[GasId::CodeDepositCost], code_deposit, "{case}");
+            assert_eq!(gas[GasId::TxEip7702AuthRefund], auth_refund, "{case}");
+            assert_eq!(
+                gas[GasId::MaxRefundQuotient],
+                if spec.is_t7() { 1 } else { 5 },
+                "{case}"
+            );
+        }
     }
 }

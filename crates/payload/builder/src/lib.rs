@@ -1070,13 +1070,7 @@ fn maybe_override_fee_recipient<DB: Database>(
         return;
     };
     // T14+ executors reject blocks whose beneficiary differs from this resolution.
-    // We are using the database as a read-only storage context to avoid modifying the journal state.
-    // Reading slots here might be dangerous because they would end up being warmed and might affect gas accounting.
-    match db.proposer_fee_recipient(
-        evm_env.spec,
-        evm_env.block.number.saturating_to::<u64>(),
-        *public_key,
-    ) {
+    match db.proposer_fee_recipient(evm_env.spec, evm_env.block.number, *public_key) {
         Ok(Some(fee_recipient)) => {
             debug!(%fee_recipient, "resolved fee recipient from contract");
             evm_env.block.beneficiary = fee_recipient;

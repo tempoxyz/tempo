@@ -6,10 +6,9 @@ use evm2::{
         precompile::{NoPrecompiles, PrecompileProvider},
     },
     interpreter::{GasTracker, Message, MessageKind},
-    precompiles::{PrecompileError as Evm2PrecompileError, PrecompileHalt as Evm2PrecompileHalt},
+    precompiles::{PrecompileError, PrecompileHalt},
 };
 use k256::{AffinePoint, ProjectivePoint, Scalar, elliptic_curve::ops::Reduce};
-use revm::precompile::{PrecompileError, PrecompileHalt, PrecompileOutput, PrecompileResult};
 use std::{cell::RefCell, rc::Rc};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_evm::{TempoEvmExt, TempoEvmTypes, tempo_tx_registry};
@@ -92,7 +91,7 @@ pub(crate) fn test_precompiles(
 }
 
 impl TestContext {
-    fn sync(&mut self) {
+    pub(crate) fn sync(&mut self) {
         let version = tempo_chainspec::gas_params::version(SpecId::OSAKA, self.cfg.spec, false);
         self.evm.set_block_and_execution_config(
             self.block,
@@ -115,6 +114,38 @@ impl TestContext {
     pub(crate) fn evm(&mut self) -> &mut Evm<'static, TempoEvmTypes> {
         self.sync();
         &mut self.evm
+    }
+}
+
+/// Result of a test precompile call. Reverts and halts are outputs; only fatal errors are `Err`.
+pub(crate) type PrecompileResult = Result<PrecompileOutput, PrecompileError>;
+
+/// How a test precompile call ended.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum PrecompileStatus {
+    Success,
+    Revert,
+    Halt(PrecompileHalt),
+}
+
+/// Outcome of a test precompile call together with its gas accounting.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PrecompileOutput {
+    pub gas_used: u64,
+    pub gas_refunded: i64,
+    pub state_gas_used: i64,
+    pub bytes: Bytes,
+    pub reservoir: u64,
+    pub status: PrecompileStatus,
+}
+
+impl PrecompileOutput {
+    pub(crate) const fn is_success(&self) -> bool {
+        matches!(self.status, PrecompileStatus::Success)
+    }
+
+    pub(crate) const fn is_revert(&self) -> bool {
+        matches!(self.status, PrecompileStatus::Revert)
     }
 }
 
@@ -142,6 +173,7 @@ pub(crate) fn call_precompile(
         input: Bytes::copy_from_slice(data),
         value: U256::ZERO,
         destination: target,
+        call_target: bytecode_address,
         code_address: bytecode_address,
         ..Default::default()
     };
@@ -151,26 +183,22 @@ pub(crate) fn call_precompile(
         .expect("test precompile must be registered");
     let gas_used = gas_tracker.spent();
     let gas_refunded = gas_tracker.refunded();
+    let state_gas_used = gas_tracker.state_gas_spent();
     let reservoir = gas_tracker.reservoir();
-    match result {
-        Ok(output) => {
-            let mut output = PrecompileOutput::new(gas_used, output.into_bytes(), reservoir);
-            output.gas_refunded = gas_refunded;
-            Ok(output)
-        }
-        Err(Evm2PrecompileError::Revert(bytes)) => {
-            Ok(PrecompileOutput::revert(gas_used, bytes, reservoir))
-        }
-        Err(Evm2PrecompileError::Halt(Evm2PrecompileHalt::OutOfGas)) => {
-            Ok(PrecompileOutput::halt(PrecompileHalt::OutOfGas, reservoir))
-        }
-        Err(Evm2PrecompileError::Halt(reason)) => Ok(PrecompileOutput::halt(
-            PrecompileHalt::other(reason.to_string()),
-            reservoir,
-        )),
-        Err(Evm2PrecompileError::Database(error)) => Err(PrecompileError::Fatal(error.to_string())),
-        Err(Evm2PrecompileError::Fatal(error)) => Err(PrecompileError::Fatal(error.to_string())),
-    }
+    let (bytes, status) = match result {
+        Ok(output) => (output.into_bytes(), PrecompileStatus::Success),
+        Err(PrecompileError::Revert(bytes)) => (bytes, PrecompileStatus::Revert),
+        Err(PrecompileError::Halt(halt)) => (Bytes::new(), PrecompileStatus::Halt(halt)),
+        Err(error) => return Err(error),
+    };
+    Ok(PrecompileOutput {
+        gas_used,
+        gas_refunded,
+        state_gas_used,
+        bytes,
+        reservoir,
+        status,
+    })
 }
 
 /// Assert that the Chaum-Pedersen proof inside a [`DecryptedDeposit`] is valid.
