@@ -5,9 +5,9 @@ const vm = require('node:vm');
 const { test } = require('node:test');
 
 // PyYAML is also used by the adjacent workflow regression tests.
-const [docker, network] = JSON.parse(execFileSync('python3', ['-c',
+const [docker, network, zones] = JSON.parse(execFileSync('python3', ['-c',
   'import json,sys,yaml; print(json.dumps([yaml.safe_load(open(p)) for p in sys.argv[1:]]))',
-  ...['docker', 'network-e2e'].map(name => path.join(__dirname, `../workflows/${name}.yml`)),
+  ...['docker', 'network-e2e', 'zones-docker'].map(name => path.join(__dirname, `../workflows/${name}.yml`)),
 ], { encoding: 'utf8' }));
 const step = (job, id) => job.steps.find(s => s.id === id);
 const decision = step(network.jobs.detect, 'decision');
@@ -18,18 +18,20 @@ const report = network.jobs.dispatch.steps.at(-1);
 // missing-property value and implicit success() unless a status function exists.
 function evaluate(expression, context, cancelled = false, success = true) {
   const source = expression.replace(/^\$\{\{\s*|\s*\}\}$/g, '')
-    .replace(/\b(?:github|needs|steps|inputs)(?:\.[\w-]+)+/g, key =>
+    .replace(/\b(?:github|needs|steps|inputs|env)(?:\.[\w-]+)+/g, key =>
       JSON.stringify(key.split('.').reduce((v, k) => v?.[k], context) ?? ''));
   return vm.runInNewContext(source, {
     cancelled: () => cancelled, always: () => true, success: () => success,
     contains: (values, value) => values.includes(value), fromJSON: JSON.parse,
+    format: (template, ...values) => template.replace(/\{(\d+)\}/g, (_, i) => values[i]),
   });
 }
+function shouldRun(job, context, cancelled = false, success = true) {
+  return (/\b(?:always|cancelled|success|failure)\(/.test(job.if) || success) &&
+    evaluate(job.if, context, cancelled, success);
+}
 function shouldBuild(context, cancelled = false) {
-  const condition = network.jobs.build.if;
-  const success = context.needs.detect.result === 'success';
-  return (/\b(?:always|cancelled|success|failure)\(/.test(condition) || success) &&
-    evaluate(condition, context, cancelled, success);
+  return shouldRun(network.jobs.build, context, cancelled, context.needs.detect.result === 'success');
 }
 function fixture(event, required, detect = 'success', build = 'success', images = 'true') {
   return { github: { event_name: event, repository: 'tempoxyz/tempo', event: {} },
@@ -79,6 +81,37 @@ test('queue skips only confirmed image-irrelevant changes, never required networ
   for (const changes of ['["images"]', '["consensus","images"]', '["consensus"]', '[]', '', undefined]) {
     const context = { steps: { paths: { outputs: { changes } } } };
     assert.equal(evaluate(network.jobs.detect.outputs.images_required, context), !changes || JSON.parse(changes).includes('images'));
+  }
+});
+
+test('Zones queue builds survive missing or failed detection without bypassing other gates', () => {
+  const roots = ['resolve-production-build-inputs', 'eif-toolchain'];
+  for (const event of ['merge_group', 'pull_request', 'push', 'schedule', 'workflow_dispatch', 'workflow_call']) {
+    const context = { github: { event_name: event, repository: 'tempoxyz/tempo',
+      ref: 'refs/heads/main', event: {} }, inputs: {}, needs: {}, steps: {} };
+    for (const changes of ['["images"]', '[]', '', undefined]) {
+      context.steps.paths = { outputs: { changes } };
+      assert.equal(evaluate(zones.jobs['detect-changes'].outputs.required, context),
+        event !== 'merge_group' || !changes || JSON.parse(changes).includes('images'));
+    }
+    for (const result of ['success', 'failure', 'skipped']) for (const required of ['true', 'false', '', undefined]) {
+      context.needs['detect-changes'] = { result, outputs: { required } };
+      const expected = event === 'merge_group' ? result !== 'success' || required !== 'false' :
+        result === 'success' && required === 'true';
+      for (const id of roots) {
+        assert.equal(shouldRun(zones.jobs[id], context, false, result === 'success'), expected,
+          `${id}: ${event}/${result}/${required}`);
+        assert.equal(shouldRun(zones.jobs[id], context, true, result === 'success'), false);
+        context.needs[id] = { result: expected ? 'success' : 'skipped' };
+      }
+      // A failed ancestor must not implicitly skip the candidate build either.
+      assert.equal(shouldRun(zones.jobs['build-and-push'], context, false, result === 'success' && expected), expected);
+    }
+  }
+  for (const repository of ['tempoxyz/tempo', 'fork/tempo']) for (const draft of [false, true]) {
+    const context = { github: { event_name: 'pull_request', repository, event: { pull_request: { draft } } },
+      inputs: {}, needs: { 'detect-changes': { result: 'success', outputs: { required: 'true' } } } };
+    for (const id of roots) assert.equal(shouldRun(zones.jobs[id], context), repository === 'tempoxyz/tempo' && !draft);
   }
 });
 
@@ -168,7 +201,11 @@ test('skips, dispatch failures, and stale attempts preserve status ownership', a
 test('all images share the captured build-attempt tag, including dispatch-only reruns', async () => {
   const build = docker.jobs['build-and-push'];
   const source = step(build, 'source');
-  assert.equal(source.env.BUILD_TAG, 'build-${{ github.run_id }}-${{ github.run_attempt }}');
+  for (const event of ['merge_group', 'pull_request_target', 'push', 'schedule', 'workflow_dispatch']) {
+    const context = { github: { event_name: event, run_id: 42, run_attempt: 1 } };
+    assert.equal(evaluate(source.env.BUILD_TAG, context),
+      ['merge_group', 'pull_request_target'].includes(event) ? 'build-42-1' : '');
+  }
   const outputs = {};
   const summary = { addHeading() { return this; }, addTable() { return this; }, async write() {} };
   await vm.runInNewContext(`(async () => {${source.with.script}\n})()`, {
@@ -177,12 +214,21 @@ test('all images share the captured build-attempt tag, including dispatch-only r
     core: { summary, setOutput: (key, value) => { outputs[key] = value; } },
   });
   assert.equal(outputs.image_tag, 'build-42-1');
-  assert.equal(build.outputs.tempo_image_tag, '${{ steps.source.outputs.image_tag }}');
+  for (const tag of ['build-42-1', '']) {
+    assert.equal(evaluate(build.outputs.tempo_image_tag, { steps: {
+      source: { outputs: { image_tag: tag } }, 'meta-tempo': { outputs: { version: 'sha-aaaaaaa' } },
+    } }), tag || 'sha-aaaaaaa');
+  }
   assert.equal(docker.true.workflow_call.outputs.tempo_image_tag.value,
     '${{ jobs.build-and-push.outputs.tempo_image_tag }}');
   assert.equal(submit.env.IMAGE_TAG, '${{ needs.build.outputs.tempo_image_tag }}');
   for (const image of ['tempo', 'tempo-devnet', 'tempo-localnet', 'tempo-sidecar', 'tempo-xtask']) {
-    assert.ok(step(build, `meta-${image}`).with.tags.includes('type=raw,value=${{ steps.source.outputs.image_tag }},priority=50'));
+    const tag = step(build, `meta-${image}`).with.tags.split('\n').find(line => line.includes('value=${{ steps.source.outputs.image_tag }}'));
+    assert.ok(tag);
+    for (const value of ['build-42-1', '']) {
+      const context = { steps: { source: { outputs: { image_tag: value } } } };
+      assert.equal(evaluate(tag.split('enable=')[1], context), value !== '');
+    }
   }
   // The network run may now be attempt 2, but its successful build is still attempt 1.
   const context = fixture('merge_group', true);
@@ -195,4 +241,45 @@ test('all images share the captured build-attempt tag, including dispatch-only r
   }
   assert.ok(submit.run.includes('--arg tag "$IMAGE_TAG"'));
   assert.ok(submit.run.includes('tag:$tag'));
+});
+
+// Expand only GitHub expressions, preserving quoted metadata-action templates.
+function interpolate(text, context) {
+  return text.replace(/\$\{\{((?:'[^']*'|[^'])+?)\}\}/g, (_, expression) => evaluate(expression, context));
+}
+
+test('/docker reports retain the exact tag set and digest references', () => {
+  const { validateImages, render } = require('./docker-pr-status');
+  const build = docker.jobs['build-and-push'];
+  const sha = 'a'.repeat(40), digest = `sha256:${'b'.repeat(64)}`;
+  for (const mode of ['', 'nightly']) {
+    const context = { github: { event_name: 'workflow_dispatch', run_id: 42, run_attempt: 1,
+      ref_type: 'branch', event: { inputs: { nightly: String(mode === 'nightly') } } },
+      inputs: { pr_number: '7' }, env: { REGISTRY: 'ghcr.io/tempoxyz' },
+      steps: { source: { outputs: { sha, short_sha: sha.slice(0, 7) } } } };
+    context.steps.source.outputs.image_tag = interpolate(step(build, 'source').env.BUILD_TAG, context);
+    const metadata = {}, reportEnv = { SOURCE_SHA: sha, RUNNER_TEMP: '/unused' };
+    for (const name of ['tempo', 'tempo-devnet', 'tempo-localnet', 'tempo-sidecar', 'tempo-xtask']) {
+      const meta = step(build, `meta-${name}`).with;
+      const tags = meta.tags.trim().split('\n').flatMap(line => {
+        const fields = Object.fromEntries(interpolate(line, context).split(',').map(field => field.split('=')));
+        if (fields.enable === 'false') return [];
+        assert.equal(fields.type, 'raw', 'PR dispatches must disable schedule/semver/edge tags');
+        return [fields.value];
+      });
+      const refs = interpolate(meta.images, context).trim().split('\n').flatMap(image => tags.map(tag => `${image}:${tag}`));
+      reportEnv[`${name.toUpperCase().replaceAll('-', '_')}_TAGS`] = refs.join('\n');
+      metadata[name] = { 'containerimage.digest': digest };
+    }
+    reportEnv.BUILD_METADATA = JSON.stringify(metadata);
+    let artifact;
+    vm.runInNewContext(step(build, 'image-report').with.script, {
+      process: { env: reportEnv }, require: name => name === 'node:fs' ?
+        { writeFileSync: (_, body) => { artifact = JSON.parse(body); } } : require(name),
+    });
+    const status = { id: 42, attempt: 1, number: 7, mode, status: 'completed', conclusion: 'success' };
+    const body = render(status, validateImages(artifact, status));
+    assert.ok(body.includes(`ghcr.io/tempoxyz/tempo@${digest}`));
+    for (const image of artifact.images) for (const tag of image.tags) assert.ok(body.includes(tag));
+  }
 });

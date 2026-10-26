@@ -122,7 +122,8 @@ jobs:
       contents: read
       id-token: write
     outputs:
-      required: ${{ github.event_name != 'merge_group' || contains(fromJSON(steps.paths.outputs.changes || '[]'), 'images') }}
+      # Missing output is not proof that the merge group has no image changes.
+      required: ${{ github.event_name != 'merge_group' || steps.paths.outputs.changes == '' || contains(fromJSON(steps.paths.outputs.changes || '[]'), 'images') }}
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
@@ -195,7 +196,10 @@ jobs:
     name: Resolve production Docker build inputs
     needs: detect-changes
     if: >-
-      needs.detect-changes.outputs.required == 'true' &&
+      !cancelled() &&
+      ((github.event_name == 'merge_group' &&
+        (needs.detect-changes.result != 'success' || needs.detect-changes.outputs.required != 'false')) ||
+       (needs.detect-changes.result == 'success' && needs.detect-changes.outputs.required == 'true')) &&
       github.repository == 'tempoxyz/tempo' &&
       github.event.pull_request.draft != true &&
       ((github.event_name != 'workflow_dispatch' ||
@@ -285,7 +289,10 @@ jobs:
     name: Resolve trusted EIF toolchain
     needs: detect-changes
     if: >-
-      needs.detect-changes.outputs.required == 'true' &&
+      !cancelled() &&
+      ((github.event_name == 'merge_group' &&
+        (needs.detect-changes.result != 'success' || needs.detect-changes.outputs.required != 'false')) ||
+       (needs.detect-changes.result == 'success' && needs.detect-changes.outputs.required == 'true')) &&
       github.repository == 'tempoxyz/tempo' &&
       github.event.pull_request.draft != true &&
       (github.repository == 'tempoxyz/tempo' &&
