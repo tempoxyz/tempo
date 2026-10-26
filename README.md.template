@@ -93,7 +93,7 @@ We provide three different installation paths: installing a pre-built binary, bu
 
 See the [Tempo documentation](https://docs.tempo.xyz/guide/node) for instructions on how to install and run Tempo.
 
-Certified followers keep a local authentication record of observed network identities across restarts. This record contains no signing shares and is excluded from snapshots. A snapshot tip at or after the trusted identity's epoch must verify against that identity; an older tip may bootstrap with the future identity pinned until its epoch is reached. A rotation that occurred while the follower was offline requires an updated configured network identity.
+Certified followers keep a local record of network identities observed in finalized boundary blocks so they can restart after an observed rotation. A fresh startup relies on the configured network identity; startup and snapshot recovery do not add identities to the local record.
 
 ### As a developer
 
