@@ -2148,11 +2148,11 @@ mod tests {
     }
 
     #[test]
-    fn resolves_only_public_tempo_l1_specs() {
+    fn resolves_public_and_local_tempo_l1_specs() {
         assert_eq!(tempo_chain_spec_for_l1(4217).unwrap().chain_id(), 4217);
         assert_eq!(tempo_chain_spec_for_l1(42431).unwrap().chain_id(), 42431);
-        assert!(tempo_chain_spec_for_l1(1337).is_none());
-        assert!(tempo_chain_spec_for_l1(31337).is_none());
+        assert_eq!(tempo_chain_spec_for_l1(1337).unwrap().chain_id(), 1337);
+        assert_eq!(tempo_chain_spec_for_l1(31337).unwrap().chain_id(), 1337);
         assert!(tempo_chain_spec_for_l1(999_999).is_none());
 
         assert!(tempo_chain_spec_for_l1(31318).is_none());

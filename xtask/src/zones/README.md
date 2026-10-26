@@ -24,7 +24,8 @@ RPC chain ID must match the parent encoded in the Zone chain ID. Genesis preserv
 activation timestamps, including scheduled future upgrades, and omits unscheduled
 forks only for mainnet and testnet, whose compiled schedules supply activation
 times on later node upgrades. Development and custom parents keep unscheduled
-forks explicitly `null`; chain IDs 1337 and 31337 do not imply the bundled DEV schedule.
+forks explicitly `null`, so the bundled DEV schedule for chain IDs 1337 and 31337
+cannot activate forks the L1 did not report.
 The latest L1 head is used only to validate the reported schedule. The genesis
 timestamp comes from the anchor header, and the initialization EVM uses the fork
 active at that timestamp. With the same anchor, schedule, and generation parameters,
