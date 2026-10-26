@@ -190,10 +190,12 @@ not require a wall clock: certificate validity spans 2024–9999 and the client 
 timestamps and fresh nonces. Clients require an accurate wall clock. The default maximum evidence
 age is 300 seconds, with at most 300 seconds of future clock skew.
 
-Remote node proving requires an explicit `--sequencer.prover-attestation-policy` PCR0–2 allowlist
-because the pinned Tempo release does not expose the native verifier's compiled policy. Pin these
-measurements independently from the trusted EIF build, never from a prover response. The prover
-utils likewise require `--attestation-policy`; see the [policy example](../utils/README.md).
+Remote node proving authenticates each endpoint with the PCR0–2 measurements compiled into the
+binary for its hardfork (`crates/precompiles/src/zone_verifier/pcrs.json`), and the node refuses to
+start with an assignment for a fork that has none. `--sequencer.prover-attestation-policy`
+overrides them with an explicit allowlist for all endpoints; pin those measurements independently
+from the trusted EIF build, never from a prover response. The prover utils require
+`--attestation-policy`; see the [policy example](../utils/README.md).
 Debug-mode zero PCRs are rejected. Rebuild the EIF and distribute its trusted measurements when
 deploying this change; coordinate client/server upgrades because plaintext clients are no longer
 accepted.
@@ -224,17 +226,16 @@ For example, after both forks' measurements have been approved in Tempo, a T13/T
 
 ```sh
 --sequencer.enable-prover \
---sequencer.prover-attestation-policy prover-attestation-policy.json \
 --sequencer.prover-address T13=prover-t13:5000 \
 --sequencer.prover-address T14=prover-t14:5000
 ```
 
 The equivalent address setting is
-`SEQUENCER_PROVER_ADDRESS=T13=prover-t13:5000,T14=prover-t14:5000`, with
-`SEQUENCER_PROVER_ATTESTATION_POLICY=prover-attestation-policy.json`. The policy file is required
-for all remote endpoints; the node refuses to start without it rather than send witnesses without
-authentication. Include both deployments' independently approved measurements during an upgrade.
-This transport policy does not change what the L1 verifier accepts for settlement.
+`SEQUENCER_PROVER_ADDRESS=T13=prover-t13:5000,T14=prover-t14:5000`. Each endpoint is
+authenticated with its fork's compiled-in measurements. An optional
+`SEQUENCER_PROVER_ATTESTATION_POLICY` file replaces them for all endpoints, so it must include both
+deployments' independently approved measurements during an upgrade. Neither changes what the L1
+verifier accepts for settlement.
 Use the actual forks supported by the node binary; a future fork assignment requires a binary
 whose Tempo dependency recognizes it.
 Assign the same endpoint explicitly to adjacent forks when the accepted prover image is unchanged.

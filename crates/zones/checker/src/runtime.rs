@@ -56,7 +56,7 @@ where
         ),
         Err(error) => tracing::error!(
             target: "zone::checker",
-            %error,
+            error = %format_args!("{error:#}"),
             "checker disabled; Zone execution continues"
         ),
     }
@@ -451,6 +451,7 @@ where
                     zone_hash = %zone.hash,
                     attempt = state_attempts,
                     max_attempts = MAX_STATE_ATTEMPTS,
+                    error = %format_args!("{error:#}"),
                     "checker local state unavailable; retrying"
                 );
                 tokio::time::sleep(RETRY_DELAY).await;

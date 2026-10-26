@@ -24,11 +24,10 @@ pub use types::mapping as slots;
 use alloy::primitives::{Address, B256, LogData, Signature, U256};
 use revm::{
     context::journaled_state::JournalCheckpoint,
-    interpreter::gas::{KECCAK256, KECCAK256WORD},
     state::{AccountInfo, Bytecode},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_primitives::TempoBlockEnv;
+use tempo_primitives::{TempoBlockEnv, gas::keccak_gas};
 
 use crate::error::{Result, TempoPrecompileError};
 
@@ -322,9 +321,5 @@ pub trait ContractStorage {
 ///
 /// Fails with [`TempoPrecompileError::OutOfGas`] if the cost overflows `u64`.
 pub fn keccak_cost(len: usize) -> Result<u64> {
-    let num_words = u64::try_from(len.div_ceil(32)).map_err(|_| TempoPrecompileError::OutOfGas)?;
-    KECCAK256WORD
-        .checked_mul(num_words)
-        .and_then(|w| w.checked_add(KECCAK256))
-        .ok_or(TempoPrecompileError::OutOfGas)
+    keccak_gas(len).ok_or(TempoPrecompileError::OutOfGas)
 }
