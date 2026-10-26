@@ -10,7 +10,7 @@ on:
       - "rc/*"
     tags:
       - "tempo/v*.*.*"
-  merge_group:
+  # Merge-group builds are orchestrated once by network-e2e.yml.
   workflow_dispatch:
     inputs:
       request_id:
@@ -28,7 +28,7 @@ on:
   workflow_call:
     outputs:
       tempo_image_tag:
-        description: Image tag published by this build attempt
+        description: Unique image tag published by this build attempt
         value: ${{ jobs.build-and-push.outputs.tempo_image_tag }}
   # We're building nightly only once a day to let the rollout cook for 24h without interruptions
   schedule:
@@ -47,7 +47,7 @@ jobs:
   build-and-push:
     name: Build and Push Docker Images
     outputs:
-      tempo_image_tag: ${{ steps.meta-tempo.outputs.version }}
+      tempo_image_tag: ${{ steps.source.outputs.image_tag }}
     if: ${{ (github.event_name != 'schedule' || github.repository == 'tempoxyz/tempo') && !(github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository != 'tempoxyz/tempo') }}
     runs-on: depot-ubuntu-latest-16
     permissions:
@@ -64,6 +64,7 @@ jobs:
         id: source
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
+          BUILD_TAG: build-${{ github.run_id }}-${{ github.run_attempt }}
           PR_NUMBER: ${{ inputs.pr_number }}
           BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
         with:
@@ -97,6 +98,8 @@ jobs:
                 throw new Error('PR head did not resolve to a commit SHA');
               }
             }
+            // Capture the attempt here: dispatch-only reruns must reuse this build's tag.
+            core.setOutput('image_tag', process.env.BUILD_TAG);
             core.setOutput('sha', sha);
             core.setOutput('short_sha', sha.slice(0, 7));
             core.setOutput('branch', branch);
@@ -170,6 +173,7 @@ jobs:
             type=raw,value=latest,enable=${{ inputs.pr_number == '' && '{{is_default_branch}}' || 'false' }}
             type=edge,branch=main,enable=${{ inputs.pr_number == '' }}
             type=raw,value=sha-${{ steps.source.outputs.short_sha }},priority=100
+            type=raw,value=${{ steps.source.outputs.image_tag }},priority=50
             type=raw,value=pr-${{ inputs.pr_number }},enable=${{ inputs.pr_number != '' }}
 
       - name: Docker metadata for tempo-devnet
@@ -193,6 +197,7 @@ jobs:
             type=raw,value=latest,enable=${{ inputs.pr_number == '' && '{{is_default_branch}}' || 'false' }}
             type=edge,branch=main,enable=${{ inputs.pr_number == '' }}
             type=raw,value=sha-${{ steps.source.outputs.short_sha }},priority=100
+            type=raw,value=${{ steps.source.outputs.image_tag }},priority=50
             type=raw,value=pr-${{ inputs.pr_number }},enable=${{ inputs.pr_number != '' }}
 
       - name: Docker metadata for tempo-localnet
@@ -216,6 +221,7 @@ jobs:
             type=raw,value=latest,enable=${{ inputs.pr_number == '' && '{{is_default_branch}}' || 'false' }}
             type=edge,branch=main,enable=${{ inputs.pr_number == '' }}
             type=raw,value=sha-${{ steps.source.outputs.short_sha }},priority=100
+            type=raw,value=${{ steps.source.outputs.image_tag }},priority=50
             type=raw,value=pr-${{ inputs.pr_number }},enable=${{ inputs.pr_number != '' }}
 
       - name: Docker metadata for tempo-sidecar
@@ -239,6 +245,7 @@ jobs:
             type=raw,value=latest,enable=${{ inputs.pr_number == '' && '{{is_default_branch}}' || 'false' }}
             type=edge,branch=main,enable=${{ inputs.pr_number == '' }}
             type=raw,value=sha-${{ steps.source.outputs.short_sha }},priority=100
+            type=raw,value=${{ steps.source.outputs.image_tag }},priority=50
             type=raw,value=pr-${{ inputs.pr_number }},enable=${{ inputs.pr_number != '' }}
 
       - name: Docker metadata for tempo-xtask
@@ -262,6 +269,7 @@ jobs:
             type=raw,value=latest,enable=${{ inputs.pr_number == '' && '{{is_default_branch}}' || 'false' }}
             type=edge,branch=main,enable=${{ inputs.pr_number == '' }}
             type=raw,value=sha-${{ steps.source.outputs.short_sha }},priority=100
+            type=raw,value=${{ steps.source.outputs.image_tag }},priority=50
             type=raw,value=pr-${{ inputs.pr_number }},enable=${{ inputs.pr_number != '' }}
 
       - name: Log in to Container Registry

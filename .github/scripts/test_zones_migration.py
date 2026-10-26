@@ -70,6 +70,35 @@ class ProverPathTests(unittest.TestCase):
         self.assertFalse(any(fnmatch.fnmatchcase('docs/README.md', pattern) for pattern in patterns))
 
 
+class ZonesDockerPathTests(unittest.TestCase):
+    def test_pr_and_batched_merge_filters_skip_tests_but_keep_runtime_inputs(self):
+        workflow = yaml.safe_load((ROOT / '.github/workflows/zones-docker.yml').read_text())
+        # PyYAML reads GitHub Actions' unquoted `on` key as YAML 1.1's True.
+        triggers = workflow[True]
+        detect = workflow['jobs']['detect-changes']
+        self.assertEqual(detect['permissions'], {'contents': 'read', 'id-token': 'write'})
+        step = next(s for s in detect['steps'] if s.get('id') == 'paths')
+        patterns = yaml.safe_load(step['with']['filters'])['images']
+        self.assertEqual(patterns, triggers['pull_request']['paths'])
+        tests = ['crates/node/tests/it/main.rs', 'crates/zones/node/tests/it/main.rs']
+        cases = [(tests, False), (tests + ['docs/README.md'], False)]
+        for path in ('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml',
+                     'mainnet-network-identity.json', 'testnet-network-identity.json', '.gitmodules',
+                     'crates/node/Cargo.toml', 'crates/zones/node/build.rs',
+                     'crates/evm/src/lib.rs', 'crates/zones/node/src/lib.rs',
+                     'bin/tempo-zone/src/main.rs', 'xtask/src/zones/mod.rs',
+                     'zones/docker/Dockerfile', 'zones/scripts/package-prover-eif.sh',
+                     '.github/workflows/zones-docker.yml'):
+            cases.append((tests + [path], True))
+        for files, expected in cases:
+            with self.subTest(files=files):
+                matched = any(any(fnmatch.fnmatchcase(f, p) for p in patterns if not p.startswith('!'))
+                              and not any(fnmatch.fnmatchcase(f, p[1:]) for p in patterns if p.startswith('!'))
+                              for f in files)
+                self.assertEqual(matched, expected)
+        self.assertTrue(any(fnmatch.fnmatchcase(tests[0], p) for p in triggers['push']['paths']))
+
+
 class DockerIgnoreTests(unittest.TestCase):
     def test_all_dockerfiles_use_the_same_context_filter(self):
         dockerfiles = sorted((ROOT / 'zones/docker').glob('Dockerfile*'))

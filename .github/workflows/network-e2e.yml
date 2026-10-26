@@ -21,6 +21,8 @@ jobs:
       id-token: write
     outputs:
       required: ${{ steps.decision.outputs.required }}
+      # Missing detector output is not proof that image inputs are unchanged.
+      images_required: ${{ steps.paths.outputs.changes == '' || contains(fromJSON(steps.paths.outputs.changes || '[]'), 'images') }}
       sha: ${{ steps.target.outputs.sha }}
     steps:
       - name: Secure runner
@@ -43,7 +45,7 @@ jobs:
             -f state=pending -f context='Tempo Network E2E' \
             -f description="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT: Checking changes" \
             -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" --silent
-      - name: Detect consensus changes
+      - name: Detect network and image changes
         id: paths
         uses: tempoxyz/gh-actions/actions/changed-paths@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
@@ -52,6 +54,15 @@ jobs:
           filters: |
             consensus:
               - 'crates/consensus/**'
+            # Default to building unknown inputs; exclude only audited non-image paths.
+            images:
+              - '**'
+              - '!docs/**'
+              - '!contrib/**'
+              - '!localnet/**'
+              - '!tips/*.md'
+              - '!crates/node/tests/it/**'
+              - '!crates/zones/node/tests/**'
       - name: Detect Reth revision changes
         id: reth
         uses: tempoxyz/gh-actions/actions/cargo-dependency-changes@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
@@ -74,7 +85,12 @@ jobs:
 
   build:
     needs: detect
-    if: needs.detect.outputs.required == 'true'
+    # Skip only positively irrelevant queue changes; network tests always need their image.
+    if: >-
+      ${{ !cancelled() &&
+          ((github.event_name == 'merge_group' &&
+            (needs.detect.result != 'success' || needs.detect.outputs.images_required != 'false')) ||
+           (needs.detect.result == 'success' && needs.detect.outputs.required == 'true')) }}
     permissions:
       actions: read
       contents: read
@@ -117,6 +133,8 @@ jobs:
           IMAGE_TAG: ${{ needs.build.outputs.tempo_image_tag }}
         run: |
           set -euo pipefail
+          # Never dispatch with an empty, mutable, or independently reconstructed tag.
+          [[ "$IMAGE_TAG" =~ ^build-[0-9]+-[0-9]+$ ]]
           trap 'rm -f "$RUNNER_TEMP/network-e2e.key" "$RUNNER_TEMP/network-e2e.crt"' EXIT
           umask 077
           printf '%s' "$EVENTS_KEY" > "$RUNNER_TEMP/network-e2e.key"
@@ -139,6 +157,7 @@ jobs:
         with:
           script: |
             if (process.env.SUBMIT_RESULT === 'success') return; // Argo owns the result now.
+            // Network skip is independent of Docker; a failed build still fails its own job/run.
             const skipped = process.env.DETECT_RESULT === 'success' && process.env.REQUIRED === 'false';
             const skipReason = context.payload.pull_request?.draft ? 'Draft PR; waiting for review' : 'No relevant changes';
             const owner = `${context.runId}-${process.env.GITHUB_RUN_ATTEMPT}`;
