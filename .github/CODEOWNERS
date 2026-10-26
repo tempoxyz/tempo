@@ -20,7 +20,7 @@ crates/contracts/ @0xrusowsky @0xKitsune @klkvr @mattsse @legion2002
 crates/dkg-onchain-artifacts/ @joshieDo @SuperFluffy @hamdiallam
 crates/e2e/ @joshieDo @SuperFluffy @hamdiallam @pepyakin
 crates/evm/ @0xKitsune @klkvr @mattsse @shekhirin
-crates/ext/ @0xKitsune @Zygimantass @SuperFluffy
+crates/ext/ @Zygimantass @SuperFluffy
 crates/eyre/ @SuperFluffy
 crates/faucet/ @klkvr @mattsse
 crates/fuzz-harness/ @0xrusowsky
