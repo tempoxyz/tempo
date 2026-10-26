@@ -405,7 +405,7 @@ rayon = "1.11"
 url = "2.5"
 test-case = "3"
 zeroize = "1"
-zstd = "0.13.3"
+zstd = "0.14.3"
 age = { version = "0.11", default-features = false }
 secrecy = "0.10"
 bitflags = "2.11.1"
