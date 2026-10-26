@@ -1,7 +1,7 @@
 # Zone Nitro benchmark job.
 #
 # Called by bench.yml for `derek bench zones [prover=true|false]` and by
-# bench-zones-scheduled.yml for nightlies. Compares a baseline and a feature Tempo
+# zones-benchmark.yml for nightlies. Compares a baseline and a feature Tempo
 # revision on AWS with the prover on (NitroV1) or off (NoProof) in both phases.
 
 name: Zones Nitro prover benchmark

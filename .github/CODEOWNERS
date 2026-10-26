@@ -8,7 +8,6 @@
 /examples/ @klkvr @mattsse
 
 bin/tempo @0xKitsune @klkvr @Zygimantass @SuperFluffy
-bin/tempo-sidecar @Zygimantass
 contrib/ @Zygimantass @shekhirin
 scripts/ @0xKitsune
 xtask/ @0xKitsune @Zygimantass @SuperFluffy @joshieDo

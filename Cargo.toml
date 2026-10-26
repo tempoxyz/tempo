@@ -13,7 +13,6 @@ publish = false
 [workspace]
 members = [
   "bin/tempo",
-  "bin/tempo-sidecar",
   "crates/alloy",
   "crates/chainspec",
   "crates/consensus",
