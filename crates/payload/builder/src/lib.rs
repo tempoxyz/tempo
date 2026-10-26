@@ -65,7 +65,8 @@ use tempo_evm::{
     evm::TempoEvm,
 };
 use tempo_payload_types::{
-    Estimator, FinishedBuild, TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload,
+    Estimator, TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload,
+    estimator::FinishedBuild,
 };
 use tempo_primitives::{TempoHeader, TempoReceipt, TempoTxEnvelope};
 use tempo_transaction_pool::{
@@ -502,7 +503,7 @@ where
                         gas_used = cumulative_gas_used,
                         transactions = pool_transactions_included,
                         estimated_rlp_block_size,
-                        build_time_multiplier = plan.build_time_multiplier(),
+                        build_time_multiplier = %plan.build_time_multiplier(),
                         dry_finish = ?plan.dry_finish(),
                         "stopping pool transaction execution before payload build budget is exhausted"
                     );
@@ -940,11 +941,11 @@ where
         if payload_build_budget.is_some() {
             self.estimator.on_build_finished(
                 Instant::now(),
-                FinishedBuild {
-                    work_at_tx_cutoff: validation_work_at_tx_cutoff,
-                    total_work: validation_work_duration,
-                    idle: normal_transaction_fill_idle_elapsed,
-                },
+                FinishedBuild::new(
+                    validation_work_at_tx_cutoff,
+                    validation_work_duration,
+                    normal_transaction_fill_idle_elapsed,
+                ),
             );
         }
         if is_osaka && estimated_rlp_block_size > MAX_RLP_BLOCK_SIZE {

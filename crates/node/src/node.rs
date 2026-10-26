@@ -11,7 +11,6 @@ use crate::{
     },
 };
 use alloy_primitives::B256;
-use eyre::WrapErr as _;
 use reth_chainspec::{ChainKind, EthChainSpec, Hardforks, NamedChain};
 use reth_ethereum::network::{NetworkHandle, PeersInfo as _, primitives::BasicNetworkPrimitives};
 use reth_node_api::{
@@ -48,8 +47,8 @@ use tempo_chainspec::{TempoConsensusSpec, hardfork::TempoHardfork, spec::TempoCh
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_payload_builder::{TempoPayloadBuilder, TempoPayloadBuilderConfig};
 use tempo_payload_types::{
-    DEFAULT_BUILD_TIME_MULTIPLIER, Estimator, EstimatorConfig, EstimatorConfigError,
-    TempoPayloadAttributes,
+    Estimator, TempoPayloadAttributes,
+    estimator::{self, BuildTimeMultiplier},
 };
 use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType};
 use tempo_transaction_pool::{
@@ -122,12 +121,8 @@ pub struct TempoNodeArgs {
     /// five minutes without a paced build. Higher values stop pool transaction
     /// execution earlier to leave more room for `builder_finish`. Must be
     /// between 1.0 and 1.7.
-    #[arg(
-        long = "builder.build-time-multiplier",
-        default_value_t = DEFAULT_BUILD_TIME_MULTIPLIER,
-        value_parser = parse_build_time_multiplier
-    )]
-    pub builder_build_time_multiplier: f64,
+    #[arg(long = "builder.build-time-multiplier", default_value_t)]
+    pub builder_build_time_multiplier: BuildTimeMultiplier,
 
     /// Replay canonical blocks under the latest compiled hardfork, or an explicit HARDFORK.
     #[arg(
@@ -151,7 +146,7 @@ impl Default for TempoNodeArgs {
             builder_enable_prewarming: true,
             builder_parallel: false,
             engine_disable_execution_cache_sharing_with_builder: false,
-            builder_build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
+            builder_build_time_multiplier: BuildTimeMultiplier::default(),
             shadow_replay: None,
         }
     }
@@ -878,7 +873,7 @@ pub struct TempoPayloadBuilderBuilder {
     /// at transaction cutoff.
     ///
     /// Only used when no `estimator` is provided.
-    pub build_time_multiplier: f64,
+    pub build_time_multiplier: BuildTimeMultiplier,
     /// Proposal budget estimator the payload builder paces builds with, or
     /// `None` for a private one seeded from `build_time_multiplier`.
     pub estimator: Option<Estimator>,
@@ -890,7 +885,7 @@ impl Default for TempoPayloadBuilderBuilder {
             state_provider_metrics: false,
             enable_prewarming: true,
             enable_parallel: false,
-            build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
+            build_time_multiplier: BuildTimeMultiplier::default(),
             estimator: None,
         }
     }
@@ -899,13 +894,12 @@ impl Default for TempoPayloadBuilderBuilder {
 impl TempoPayloadBuilderBuilder {
     /// Returns [`Self::estimator`], or a new estimator seeded from
     /// [`Self::build_time_multiplier`] when none is set.
-    pub fn resolve_estimator(&self) -> Result<Estimator, EstimatorConfigError> {
-        match &self.estimator {
-            Some(estimator) => Ok(estimator.clone()),
-            None => Estimator::new(EstimatorConfig {
+    pub fn resolve_estimator(&self) -> Estimator {
+        self.estimator.clone().unwrap_or_else(|| {
+            Estimator::new(estimator::Config {
                 build_time_multiplier: self.build_time_multiplier,
-            }),
-        }
+            })
+        })
     }
 }
 
@@ -931,9 +925,7 @@ where
             _ => None,
         });
 
-        let estimator = self
-            .resolve_estimator()
-            .wrap_err("invalid payload builder estimator configuration")?;
+        let estimator = self.resolve_estimator();
         Ok(TempoPayloadBuilder::new(
             pool,
             ctx.provider().clone(),
@@ -950,19 +942,6 @@ where
             estimator,
         ))
     }
-}
-
-/// Parses `--builder.build-time-multiplier`, rejecting values
-/// [`EstimatorConfig::validate`] rejects.
-fn parse_build_time_multiplier(
-    value: &str,
-) -> Result<f64, Box<dyn std::error::Error + Send + Sync>> {
-    let multiplier = value.parse::<f64>()?;
-    EstimatorConfig {
-        build_time_multiplier: multiplier,
-    }
-    .validate()?;
-    Ok(multiplier)
 }
 
 /// Parses `value` as an address list, falling back to reading it as a file.
@@ -998,7 +977,7 @@ mod tests {
         }
         let args =
             Args::try_parse_from(["tempo", "--builder.build-time-multiplier", "1.7"]).unwrap();
-        assert_eq!(args.node.builder_build_time_multiplier, 1.7);
+        assert_eq!(args.node.builder_build_time_multiplier.get(), 1.7);
 
         for value in ["0.9", "1.8", "NaN", "inf", "fast"] {
             let error = Args::try_parse_from(["tempo", "--builder.build-time-multiplier", value])

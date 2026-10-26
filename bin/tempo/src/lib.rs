@@ -556,10 +556,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                 None => node,
             }
         });
-        let estimator = tempo_node
-            .payload_builder_builder()
-            .resolve_estimator()
-            .wrap_err("invalid proposal budget estimator configuration")?;
+        let estimator = tempo_node.payload_builder_builder().resolve_estimator();
         // Share the overridden settings with both the payload builder and consensus.
         let tempo_node = tempo_node.with_estimator(estimator.clone());
         let executed_state = tempo_node.executed_state();
@@ -1190,7 +1187,10 @@ mod tests {
             node_cmd.ext.consensus.network_budget.into_duration(),
             Duration::from_millis(50)
         );
-        assert_eq!(node_cmd.ext.node_args.builder_build_time_multiplier, 1.15);
+        assert_eq!(
+            node_cmd.ext.node_args.builder_build_time_multiplier,
+            tempo_node::estimator::BuildTimeMultiplier::default()
+        );
 
         let mut cli = TempoCli::try_parse_from([
             "tempo",
