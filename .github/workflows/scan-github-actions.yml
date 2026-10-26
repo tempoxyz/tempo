@@ -47,7 +47,6 @@ jobs:
           node --test .github/scripts/bench-multi-region-refs.test.js
           node --test .github/scripts/docker-pr.test.js
           node --test .github/scripts/docker-pr-status.test.js
-          uv run --no-project --with pyyaml node --test .github/scripts/network-e2e.test.js
           node --test .github/scripts/bench-nightly-failure.test.js
 
   scan:

@@ -70,7 +70,7 @@ class ProverPathTests(unittest.TestCase):
         self.assertFalse(any(fnmatch.fnmatchcase('docs/README.md', pattern) for pattern in patterns))
 
 
-class DockerPathTests(unittest.TestCase):
+class DockerWorkflowTests(unittest.TestCase):
     def test_image_filters_skip_test_only_batches_but_keep_runtime_inputs(self):
         tests = ['crates/node/tests/it/main.rs', 'crates/zones/node/tests/it/main.rs']
         common = ['Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml',
@@ -101,6 +101,24 @@ class DockerPathTests(unittest.TestCase):
                                   and not any(fnmatch.fnmatchcase(f, p[1:]) for p in patterns if p.startswith('!'))
                                   for f in files)
                     self.assertEqual(matched, expected)
+
+    def test_failed_detection_keeps_queue_builds_enabled(self):
+        # Pin the safety guard that regressed, rather than emulate GitHub's evaluator.
+        for name, detector, output, consumers in (
+            ('network-e2e', 'detect', 'images_required', ['build']),
+            ('zones-docker', 'detect-changes', 'required',
+             ['resolve-production-build-inputs', 'eif-toolchain']),
+        ):
+            jobs = yaml.safe_load((ROOT / f'.github/workflows/{name}.yml').read_text())['jobs']
+            self.assertIn("steps.paths.outputs.changes == '' ||", jobs[detector]['outputs'][output])
+            fallback = ("!cancelled() && ((github.event_name == 'merge_group' && "
+                        f"(needs.{detector}.result != 'success' || needs.{detector}.outputs.{output} != 'false')) ||")
+            for consumer in consumers:
+                with self.subTest(workflow=name, job=consumer):
+                    guard = ' '.join(jobs[consumer]['if'].split()).removeprefix('${{ ')
+                    self.assertTrue(guard.startswith(fallback), guard)
+            if name == 'zones-docker':
+                self.assertIn('!cancelled()', jobs['build-and-push']['if'])
 
 
 class DockerIgnoreTests(unittest.TestCase):
