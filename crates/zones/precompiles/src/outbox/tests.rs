@@ -2,7 +2,7 @@ use super::*;
 
 use alloy_primitives::{Bytes, address};
 use alloy_sol_types::{SolCall, SolInterface};
-use revm::precompile::{PrecompileHalt, PrecompileResult, PrecompileStatus};
+use evm2::precompiles::PrecompileHalt;
 use tempo_contracts::zones::IZoneOutbox as ZoneOutboxAbi;
 use tempo_precompiles::{
     storage::{StorageCtx, StorageKey},
@@ -14,8 +14,8 @@ use zone_primitives::constants::TEMPO_STATE_ADDRESS;
 use crate::{
     tempo_state::TEMPO_BLOCK_NUMBER_SLOT,
     test_utils::{
-        MockL1Reader, TestContext, TestPrecompiles, call_precompile, test_context,
-        test_precompiles, test_storage_provider,
+        MockL1Reader, PrecompileResult, PrecompileStatus, TestContext, TestPrecompiles,
+        call_precompile, test_context, test_precompiles, test_storage_provider,
     },
     tx_context,
 };
@@ -874,8 +874,8 @@ fn static_mutation_halts_without_changing_state() -> eyre::Result<()> {
     )?;
     assert_eq!(
         output.status,
-        PrecompileStatus::Halt(PrecompileHalt::other_static(
-            "state change during static call"
+        PrecompileStatus::Halt(PrecompileHalt::Other(
+            "state change during static call".into()
         ))
     );
     assert!(output.bytes.is_empty());
@@ -915,8 +915,8 @@ fn fallback_recipient_nonce_is_private_and_consumed_once_by_inbox() -> eyre::Res
     let output = harness.call_static(ZONE_INBOX_ADDRESS, &calldata)?;
     assert_eq!(
         output.status,
-        PrecompileStatus::Halt(PrecompileHalt::other_static(
-            "state change during static call"
+        PrecompileStatus::Halt(PrecompileHalt::Other(
+            "state change during static call".into()
         ))
     );
     assert!(output.bytes.is_empty());

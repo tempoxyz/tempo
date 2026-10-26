@@ -4836,13 +4836,16 @@ fn test_fee_fallback_does_not_replace_inferred_token() -> eyre::Result<()> {
 fn test_fee_fallback_validation_reports_token_source() -> eyre::Result<()> {
     let (mut fallback, payer, tokens) =
         create_fee_fallback_evm(TempoHardfork::T13, [2_000_000, 2_000_000], 0)?;
-    let result = fallback.transact_commit(fee_fallback_tx(
-        payer,
-        IDENTITY_PRECOMPILE,
-        Bytes::new(),
-        FEE_FALLBACK_GAS_PRICE,
-    ))?;
-    assert!(result.status);
+    assert!(
+        fallback
+            .transact_commit(fee_fallback_tx(
+                payer,
+                IDENTITY_PRECOMPILE,
+                Bytes::new(),
+                FEE_FALLBACK_GAS_PRICE,
+            ))?
+            .status
+    );
     assert_eq!(
         fallback.ext().resolved_fee_token,
         Some(ResolvedFeeToken::Fallback(tokens[0]))
@@ -4854,13 +4857,16 @@ fn test_fee_fallback_validation_reports_token_source() -> eyre::Result<()> {
         TipFeeManager::new()
             .set_user_token(payer, IFeeManager::setUserTokenCall { token: tokens[0] })
     })?;
-    let result = preferred.transact_commit(fee_fallback_tx(
-        payer,
-        IDENTITY_PRECOMPILE,
-        Bytes::new(),
-        FEE_FALLBACK_GAS_PRICE,
-    ))?;
-    assert!(result.status);
+    assert!(
+        preferred
+            .transact_commit(fee_fallback_tx(
+                payer,
+                IDENTITY_PRECOMPILE,
+                Bytes::new(),
+                FEE_FALLBACK_GAS_PRICE,
+            ))?
+            .status
+    );
     assert_eq!(
         preferred.ext().resolved_fee_token,
         Some(ResolvedFeeToken::Selected(tokens[0]))

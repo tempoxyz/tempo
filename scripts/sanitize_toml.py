@@ -422,6 +422,7 @@ def main():
             lambda n: n in (
                 'commonware-codec',
                 'commonware-cryptography',
+                'evm2',
                 'eyre',
                 'tempo-dkg-onchain-artifacts',
             ),

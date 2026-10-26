@@ -130,9 +130,7 @@ fn grant_simulation_signs_the_grant_with_mock_owner_approvals() {
     let env = request
         .try_into_tx_env(&TempoEvmEnv::default())
         .expect("a valid claimed quorum converts");
-    let TempoTxEnvelope::AA(tx) = env.inner().transaction() else {
-        panic!("AA expected");
-    };
+    let tx = env.as_aa().expect("AA expected");
     let signed = tx
         .tx()
         .key_authorization
