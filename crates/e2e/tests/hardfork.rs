@@ -6,12 +6,12 @@ use alloy_primitives::Sealable as _;
 use commonware_consensus::types::{Epoch, Epocher as _, FixedEpocher};
 use commonware_macros::test_traced;
 use commonware_runtime::{
-    Runner as _,
+    Clock as _, Runner as _,
     deterministic::{Config, Runner},
 };
 use commonware_utils::NZU64;
 use futures::future::join_all;
-use reth_ethereum::provider::BlockReader as _;
+use reth_ethereum::provider::{BlockNumReader as _, BlockReader as _};
 use tempo_e2e::{
     Setup,
     metrics::{MetricsExt as _, wait_for_height, wait_for_metrics},
@@ -37,12 +37,13 @@ fn verification_switches_to_deferred_at_t14() {
         let epocher = FixedEpocher::new(NZU64!(EPOCH_LENGTH));
         let boundary = epocher.last(Epoch::zero()).unwrap().get();
 
-        join_all(
-            validators
-                .iter()
-                .map(|node| wait_for_height(&context, node, 4)),
-        )
-        .await;
+        // Marshal's processed height trails execution by a persistence batch,
+        // which can span several epochs, so wait on the executed chain.
+        for node in &validators {
+            while node.execution_provider().best_block_number().unwrap() < 4 {
+                context.sleep(Duration::from_millis(100)).await;
+            }
+        }
         for node in &validators {
             let metrics = context.to_metrics().for_scope(node);
             // All proposals are post-T14, but epoch zero uses the genesis timestamp.
@@ -56,9 +57,9 @@ fn verification_switches_to_deferred_at_t14() {
                     .value::<u64>("application_build_duration_count")
                     .is_some()
             );
-            let height = metrics.latest_consensus_height().unwrap();
-            assert!(height < boundary);
             let provider = node.execution_provider();
+            let height = provider.best_block_number().unwrap();
+            assert!(height < boundary);
             assert!(
                 provider
                     .block_by_number(height)

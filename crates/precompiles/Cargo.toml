@@ -58,6 +58,7 @@ serde_json.workspace = true
 sha2 = { workspace = true, features = ["oid"] }
 x509-cert = { version = "=0.2.5", features = ["builder"] }
 tempo-alloy.workspace = true
+tempo-evm.workspace = true
 
 [build-dependencies]
 serde.workspace = true

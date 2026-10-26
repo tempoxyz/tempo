@@ -5,7 +5,7 @@ use alloy_sol_types::SolCall;
 use core::marker::PhantomData;
 use evm2::{
     DatabaseError, Evm,
-    evm::{AccountExtension, AccountInfo, Database, DynDatabase, StateCheckpoint},
+    evm::{AccountInfo, Database, DynDatabase, StateCheckpoint},
     registry::{HandlerError, HandlerResult},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -218,16 +218,16 @@ pub trait TempoStateAccess<M = ()> {
         })
     }
 
-    /// Resolves the fee recipient registered for `proposer` in `ValidatorConfigV2` for the block
-    /// at `block_number`.
+    /// Resolves the fee recipient registered for `proposer` in `ValidatorConfigV2`.
     ///
     /// Returns `None` before T2, when V2 is not initialized as of the parent block, or when
     /// `proposer` has no V2 record. A registered zero fee recipient is returned as
-    /// `Some(Address::ZERO)`, which burns the fees.
+    /// `Some(Address::ZERO)`, which burns the fees. Reads bypass the journal, so this must be
+    /// called before any changes of the current block are committed to see the parent state.
     fn proposer_fee_recipient(
         &mut self,
         spec: TempoHardfork,
-        block_number: u64,
+        block_number: U256,
         proposer: B256,
     ) -> TempoResult<Option<Address>>
     where
@@ -236,8 +236,9 @@ pub trait TempoStateAccess<M = ()> {
         if !spec.is_t2() {
             return Ok(None);
         }
-        let parent_number = block_number.saturating_sub(1);
+        let parent_number = block_number.saturating_to::<u64>().saturating_sub(1);
 
+        // Read-only access keeps the slots out of the journal so gas accounting is unaffected.
         self.with_read_only_storage_ctx(spec, StorageActions::disabled(), || {
             let config = ValidatorConfigV2::default();
             if !config.is_initialized()? || config.get_initialized_at_height()? > parent_number {
@@ -304,14 +305,7 @@ impl<T: reth_storage_api::StateProvider> TempoStateAccess<((), (), ())> for T {
     fn basic(&mut self, address: Address) -> Result<AccountInfo, DatabaseError> {
         self.basic_account(&address)
             .map(Option::unwrap_or_default)
-            .map(|account| AccountInfo {
-                balance: account.balance,
-                nonce: account.nonce,
-                code_hash: account.get_bytecode_hash(),
-                code: None,
-                extension: AccountExtension::from_shared(account.extension.into_shared()),
-                _non_exhaustive: (),
-            })
+            .map(Into::into)
             .map_err(|error| DatabaseError::new(error, true))
     }
 

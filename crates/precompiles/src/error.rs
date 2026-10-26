@@ -181,10 +181,10 @@ impl From<TempoPrecompileError> for HandlerError {
             | TempoPrecompileError::CurrentCommitteeError(_)
             | TempoPrecompileError::ZoneFactoryError(_)
             | TempoPrecompileError::ConfigurableAccountError(_)
+            | TempoPrecompileError::InvalidConfigCommitmentWrite
             | TempoPrecompileError::OutOfGas
             | TempoPrecompileError::StaticCallNotAllowed
-            | TempoPrecompileError::UnknownFunctionSelector(_)
-            | TempoPrecompileError::InvalidConfigCommitmentWrite) => Self::external(error),
+            | TempoPrecompileError::UnknownFunctionSelector(_)) => Self::external(error),
         }
     }
 }
@@ -525,6 +525,24 @@ mod tests {
     }
 
     #[test]
+    fn storage_failures_stay_fatal_handler_errors() {
+        let database = DatabaseError::new(core::fmt::Error, true);
+        assert!(matches!(
+            HandlerError::from(TempoPrecompileError::Database(database)),
+            HandlerError::Database(_)
+        ));
+        assert!(matches!(
+            HandlerError::from(TempoPrecompileError::Fatal("db".into())),
+            HandlerError::Fatal(_)
+        ));
+        // Protocol failures stay transaction-level errors.
+        assert!(matches!(
+            HandlerError::from(TempoPrecompileError::OutOfGas),
+            HandlerError::External(_)
+        ));
+    }
+
+    #[test]
     fn test_add_errors_to_registry_populates_registry() {
         let mut registry: TempoPrecompileErrorRegistry = HashMap::new();
 
@@ -625,9 +643,7 @@ mod tests {
     #[test]
     fn test_encode_precompile_result_trait_success() {
         let result: Result<u64> = Ok(42);
-        let precompile_result = result.encode_precompile_result(|val| {
-            alloy::primitives::Bytes::from(val.to_be_bytes().to_vec())
-        });
+        let precompile_result = result.encode_precompile_result(|val| val.to_be_bytes().into());
 
         assert!(precompile_result.is_ok());
     }

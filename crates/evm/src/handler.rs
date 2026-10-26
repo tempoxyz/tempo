@@ -24,7 +24,10 @@ use evm2::{
         validate_priority_fee, validate_tx_gas_limit_cap, warm_access_list, warm_base_accounts,
     },
     evm::handler::{GasSettlement, TxHandlerHooks},
-    interpreter::{GasTracker, InstrStop, MessageResult},
+    interpreter::{
+        GasTracker, InstrStop, MessageResult,
+        gas::{COLD_SLOAD_COST, WARM_SSTORE_RESET},
+    },
     precompiles::PrecompileError,
     registry::{HandlerError, HandlerResult, TxRequest},
     version::{GasId, GasParams},
@@ -46,9 +49,6 @@ use tempo_precompiles::{
 use tempo_primitives::transaction::{
     SignedKeyAuthorization, TEMPO_EXPIRING_NONCE_KEY, validate_calls,
 };
-
-const COLD_SLOAD_COST: u64 = 2_100;
-const WARM_SSTORE_RESET: u64 = 2_900;
 
 /// Base gas for KeyAuthorization (22k storage + 5k buffer), signature gas added at runtime
 const KEY_AUTH_BASE_GAS: u64 = 27_000;
@@ -80,7 +80,7 @@ const KEY_AUTH_EXTRA_EVENT_BUFFER: u64 = 1_500;
 /// - No permanent state growth, so the 20k penalty doesn't apply
 ///
 /// Total: 2*2100 + 100 + 3*2900 = 13,000 gas
-const EXPIRING_NONCE_GAS: u64 = 2 * COLD_SLOAD_COST + 100 + 3 * WARM_SSTORE_RESET;
+const EXPIRING_NONCE_GAS: u64 = 2 * COLD_SLOAD_COST as u64 + 100 + 3 * WARM_SSTORE_RESET as u64;
 
 /// Counts the scope storage rows that pay the dynamic SSTORE-set path for the active spec.
 ///
@@ -275,15 +275,6 @@ fn calculate_key_authorization_gas(
             0,
         )
     }
-}
-
-#[cfg(test)]
-fn key_authorization_gas(
-    authorization: &tempo_primitives::transaction::SignedKeyAuthorization,
-    host: &Evm<'_, TempoEvmTypes>,
-    spec: TempoHardfork,
-) -> (u64, u64) {
-    calculate_key_authorization_gas(authorization, &host.version().gas_params, spec)
 }
 
 /// Calculates intrinsic gas for an AA transaction batch using EVM2 gas parameters.
@@ -1618,11 +1609,6 @@ fn execute_aa(
             result,
         },
     )
-}
-
-#[cfg(test)]
-fn translate_allowed_calls(authorization: &SignedKeyAuthorization) -> Vec<PrecompileCallScope> {
-    translate_allowed_calls_for_precompile(authorization)
 }
 
 #[cfg(test)]

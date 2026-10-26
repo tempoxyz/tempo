@@ -2,35 +2,16 @@
 
 use alloy_primitives::{Address, B256, Bytes};
 use evm2::{
-    BaseEvmConfigSelector, Evm, EvmTypesHost, ExecutionConfig, SpecId,
     evm::{InMemoryDB, precompile::NoPrecompiles},
     precompiles::PrecompileError,
-    registry::TxRegistry,
 };
 use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_evm::{TempoEvmExt, build_tempo_evm};
 use tempo_precompiles::{
     error::TempoPrecompileError,
-    storage::{
-        ConfigCommitmentWriteGas, StorageCtx, evm::EvmPrecompileStorageProvider,
-        hashmap::HashMapStorageProvider,
-    },
+    storage::{ConfigCommitmentWriteGas, StorageCtx, hashmap::HashMapStorageProvider},
 };
-use tempo_primitives::{TempoBlockEnv, TempoBlockExt};
-
-struct TestTypes;
-
-impl EvmTypesHost for TestTypes {
-    type ConfigSelector = BaseEvmConfigSelector;
-    type SpecId = SpecId;
-    type Tx = ();
-    type EvmExt = ();
-    type MessageExt = ();
-    type MessageResultExt = ();
-    type TxEnvExt = ();
-    type TxResultExt = ();
-    type BlockEnvExt = TempoBlockExt;
-    type Host<'a> = Evm<'a, Self>;
-}
+use tempo_primitives::TempoBlockEnv;
 
 const ACCOUNT: Address = Address::repeat_byte(1);
 const INITIAL: B256 = B256::repeat_byte(2);
@@ -165,18 +146,15 @@ fn checkpoint_revert_restores_commitment() {
 
 #[test]
 fn evm_storage_reads_zero_and_rejects_writes() {
-    let spec = TempoHardfork::T14;
-    let version = tempo_chainspec::gas_params::version(SpecId::OSAKA, spec, false);
-    let mut evm = Evm::<TestTypes>::new_with_execution_config(
-        ExecutionConfig::for_spec_and_version(SpecId::OSAKA, version),
-        SpecId::OSAKA,
+    let mut evm = build_tempo_evm(
+        TempoHardfork::T14,
+        1,
         TempoBlockEnv::default(),
-        TxRegistry::new(),
         InMemoryDB::default(),
         NoPrecompiles::default(),
+        TempoEvmExt::default(),
     );
-    let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
-    StorageCtx::enter(&mut storage, || {
+    StorageCtx::enter_evm(&mut evm, || {
         let mut ctx = StorageCtx;
         let before = ctx.gas_used();
         ctx.with_account_info(Address::repeat_byte(9), |_| Ok(()))
@@ -214,8 +192,8 @@ fn invalid_write_reverts_without_data() {
     assert!(!error.is_system_error());
     assert_eq!(error.selector(), [0u8; 4]);
 
-    match error.into_precompile_result() {
-        Err(PrecompileError::Revert(bytes)) => assert_eq!(bytes, Bytes::new()),
-        other => panic!("expected an empty revert, got: {other:?}"),
-    }
+    let Err(PrecompileError::Revert(bytes)) = error.into_precompile_result() else {
+        panic!("expected a revert");
+    };
+    assert_eq!(bytes, Bytes::new());
 }

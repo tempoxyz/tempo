@@ -7,10 +7,7 @@ use alloy_primitives::{Address, B256, U256};
 use evm2::{
     DatabaseError, JournalEntry, PendingState,
     bytecode::Bytecode,
-    evm::{
-        AccountChangeRef, AccountInfo, DynDatabase, State, StateChangeSink, StateChangeSource,
-        StorageChange,
-    },
+    evm::{AccountChangeRef, AccountInfo, DynDatabase, State, StateChangeSink, StorageChange},
 };
 use thiserror::Error;
 use zone_precompiles::{
@@ -109,7 +106,11 @@ pub(crate) fn validate_journal(state: &State<'_>) -> Result<(), ZoneDbError> {
 }
 
 pub(crate) fn validate_pending_state(state: &PendingState) -> Result<(), ZoneDbError> {
-    state.visit(&mut L1WriteGuard)
+    // Only the registry account can fail the guard; skip visiting every other account's storage.
+    state
+        .account_changes()
+        .find(|changes| changes.address == TIP403_REGISTRY_ADDRESS)
+        .map_or(Ok(()), |changes| changes.visit(&mut L1WriteGuard))
 }
 
 struct L1WriteGuard;
@@ -195,7 +196,7 @@ pub enum ZoneDbError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use evm2::evm::InMemoryDB;
+    use evm2::evm::{InMemoryDB, StateChangeSource};
     use reth_execution_types::{BlockState, BundleSource, TransactionChanges};
     use zone_precompiles::{
         storage::L1StateError, tempo_state::TEMPO_BLOCK_NUMBER_SLOT,
