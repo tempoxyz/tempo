@@ -17,10 +17,10 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=zones-
     --mount=type=cache,target=$SCCACHE_DIR,sharing=locked,id=zones-${TARGETARCH}-${RUST_PROFILE}-${CACHE_FAMILY}-sccache \
     RUSTFLAGS="-C link-arg=-fuse-ld=mold ${EXTRA_RUSTFLAGS}" \
     cargo build --locked --profile ${RUST_PROFILE} \
-        --bin tempo-zone --features "jemalloc" \
+        -p tempo-zone --bin tempo-zone --features "jemalloc" \
     && RUSTFLAGS="-C link-arg=-fuse-ld=mold ${EXTRA_RUSTFLAGS}" \
     cargo build --locked --profile ${RUST_PROFILE} \
-        --bin tempo-zone-xtask \
+        -p tempo-xtask --bin tempo-zone-xtask \
     && if [ -n "$VERGEN_GIT_SHA" ]; then \
          /app/target/${RUST_PROFILE}/tempo-zone --version | grep -F "$VERGEN_GIT_SHA"; \
        fi

@@ -24,7 +24,7 @@ reth-node-core.workspace = true
 alloy-primitives.workspace = true
 
 # tls
-rustls = { version = "0.23", features = ["aws-lc-rs"] }
+rustls = { workspace = true, features = ["aws_lc_rs"] }
 
 [[bin]]
 name = "tempo-zone"

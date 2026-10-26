@@ -62,7 +62,12 @@ jobs:
         env:
           BINARY: ${{ matrix.binary }}
           PROFILE: ${{ inputs.profile || 'dev' }}
-        run: cargo build --locked --bin "$BINARY" --profile "$PROFILE"
+        run: |
+          package="$BINARY"
+          if [ "$BINARY" = "tempo-zone-xtask" ]; then
+            package=tempo-xtask
+          fi
+          cargo build --locked -p "$package" --bin "$BINARY" --profile "$PROFILE"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         id: binary_upload
         with:

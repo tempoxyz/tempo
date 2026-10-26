@@ -45,7 +45,7 @@ ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} \
     RUSTFLAGS="-C symbol-mangling-version=v0 -C strip=none -C link-arg=-Wl,--build-id=none -C link-arg=-fuse-ld=mold -C metadata= --remap-path-prefix /app=. --remap-path-prefix /usr/local/cargo/registry=/registry --remap-path-prefix /usr/local/rustup=/rustup"
 
 FROM reproducible-builder-base AS builder
-RUN cargo build --locked --bin tempo-zone \
+RUN cargo build --locked -p tempo-zone --bin tempo-zone \
         --features jemalloc \
         --profile zones-reproducible \
         --target x86_64-unknown-linux-gnu
@@ -54,7 +54,7 @@ FROM scratch AS artifacts
 COPY --from=builder /app/target/x86_64-unknown-linux-gnu/zones-reproducible/tempo-zone /tempo-zone
 
 FROM reproducible-builder-base AS prover-builder
-RUN cargo build --locked --bin tempo-zone-prover-enclave \
+RUN cargo build --locked -p tempo-zone-prover-enclave --bin tempo-zone-prover-enclave \
         --profile zones-reproducible \
         --target x86_64-unknown-linux-gnu
 

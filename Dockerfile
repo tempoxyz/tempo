@@ -11,16 +11,17 @@ ARG EXTRA_RUSTFLAGS=""
 
 COPY . .
 
-# Build ALL binaries in one pass - they share compiled artifacts
+# Build packages separately so tooling features do not affect the node binaries.
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=cargo-registry-${TARGETARCH} \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked,id=cargo-git-${TARGETARCH} \
     --mount=type=cache,target=$SCCACHE_DIR,sharing=locked,id=sccache-${TARGETARCH} \
     RUSTFLAGS="-C link-arg=-fuse-ld=mold ${EXTRA_RUSTFLAGS}" \
-    cargo build --profile ${RUST_PROFILE} \
-        --bin tempo --features "${RUST_FEATURES},localnet" \
-        --bin tempo-localnet --features "${RUST_FEATURES},localnet" \
-        --bin tempo-sidecar \
-        --bin tempo-xtask
+    cargo build --locked --profile ${RUST_PROFILE} -p tempo \
+        --bin tempo --bin tempo-localnet --features "${RUST_FEATURES},localnet" \
+    && RUSTFLAGS="-C link-arg=-fuse-ld=mold ${EXTRA_RUSTFLAGS}" \
+    cargo build --locked --profile ${RUST_PROFILE} -p tempo-sidecar --bin tempo-sidecar \
+    && RUSTFLAGS="-C link-arg=-fuse-ld=mold ${EXTRA_RUSTFLAGS}" \
+    cargo build --locked --profile ${RUST_PROFILE} -p tempo-xtask --bin tempo-xtask
 
 # Reuse the regular build artifacts, enabling custom PCRs only for the devnet binary.
 FROM builder AS devnet-builder
@@ -28,7 +29,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=cargo-
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked,id=cargo-git-${TARGETARCH} \
     --mount=type=cache,target=$SCCACHE_DIR,sharing=locked,id=sccache-${TARGETARCH} \
     RUSTFLAGS="-C link-arg=-fuse-ld=mold ${EXTRA_RUSTFLAGS}" \
-    cargo build --profile ${RUST_PROFILE} \
+    cargo build --locked --profile ${RUST_PROFILE} -p tempo \
         --bin tempo --features "${RUST_FEATURES},localnet,custom-pcrs"
 
 FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8 AS base

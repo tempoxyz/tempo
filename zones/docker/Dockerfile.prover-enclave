@@ -15,7 +15,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=zones-
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked,id=zones-${TARGETARCH}-${RUST_PROFILE}-${CACHE_FAMILY}-git \
     --mount=type=cache,target=$SCCACHE_DIR,sharing=locked,id=zones-${TARGETARCH}-${RUST_PROFILE}-${CACHE_FAMILY}-sccache \
     RUSTFLAGS="-C link-arg=-fuse-ld=mold" \
-    cargo build --locked --profile ${RUST_PROFILE} --bin tempo-zone-prover-enclave \
+    cargo build --locked --profile ${RUST_PROFILE} -p tempo-zone-prover-enclave --bin tempo-zone-prover-enclave \
     && /app/target/${RUST_PROFILE}/tempo-zone-prover-enclave --help >/dev/null
 
 # CI can export just the executable and package it with genesis afterward.
