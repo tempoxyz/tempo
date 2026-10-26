@@ -3,9 +3,9 @@
 use alloy_genesis::Genesis;
 use tempo_chainspec::hardfork::TempoHardfork;
 
-/// Activates earlier Tempo forks at genesis, schedules `fork`, and disables all later forks.
+/// Activates earlier Tempo forks at genesis, schedules `fork`, and defers all later forks.
 ///
-/// Later forks use explicit nulls so Zone parent-schedule inheritance cannot re-enable them.
+/// Later forks use timestamp `u64::MAX` so parent inheritance preserves their deferral.
 /// Allocations and non-Tempo fork settings are preserved.
 pub fn set_tempo_fork(genesis: &mut Genesis, fork: TempoHardfork, activation: u64) {
     for &candidate in TempoHardfork::VARIANTS {
@@ -17,7 +17,7 @@ pub fn set_tempo_fork(genesis: &mut Genesis, fork: TempoHardfork, activation: u6
         } else if candidate == fork {
             serde_json::json!(activation)
         } else {
-            serde_json::Value::Null
+            serde_json::json!(u64::MAX)
         };
         genesis.config.extra_fields.insert(
             format!("{}Time", candidate.to_string().to_lowercase()),
@@ -58,7 +58,7 @@ mod tests {
                 (0, before),
                 (999, before),
                 (1_000, after),
-                (u64::MAX, after),
+                (u64::MAX - 1, after),
             ] {
                 assert_eq!(tempo.tempo_hardfork_at(timestamp), expected);
                 assert_eq!(zone.tempo_hardfork_at(timestamp), expected);

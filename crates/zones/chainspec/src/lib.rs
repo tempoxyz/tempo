@@ -26,7 +26,7 @@ pub mod test_utils;
 
 /// Chain specification for a Tempo Zone.
 ///
-/// Zones use the underlying Tempo and Ethereum hardfork schedule, inheriting missing
+/// Zones use the underlying Tempo and Ethereum hardfork schedule, inheriting missing or null
 /// activations when their parent Tempo chain is known.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ZoneChainSpec {
@@ -74,11 +74,11 @@ impl ZoneChainSpec {
     }
 }
 
-/// Fills missing fork activation fields in the Zone genesis from its parent.
+/// Fills missing or null fork activation fields in the Zone genesis from its parent.
 ///
 /// Chain config serializes Ethereum and Tempo activations as camelCase `*Block` and `*Time`
 /// fields. Composing them before constructing the chain spec ensures that its cached genesis
-/// header is built with the inherited activations. Explicit Zone activations take precedence.
+/// header is built with the inherited activations. Explicit numeric Zone activations take precedence.
 fn inherit_parent_fork_activations(
     zone_genesis: &mut Genesis,
     l1: &TempoChainSpec,
@@ -96,6 +96,11 @@ fn inherit_parent_fork_activations(
         if name.ends_with("Block") || name.ends_with("Time") {
             zone_fields
                 .entry(name.clone())
+                .and_modify(|activation| {
+                    if activation.is_null() {
+                        activation.clone_from(value);
+                    }
+                })
                 .or_insert_with(|| value.clone());
         }
     }
@@ -250,10 +255,11 @@ pub fn tempo_chain_spec_for_l1(chain_id: u64) -> Option<Arc<TempoChainSpec>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempo_chainspec::spec::{DEV, MODERATO, PRESTO};
+    use zone_primitives::constants::zone_chain_id;
+
     #[cfg(feature = "cli")]
     use reth_cli::chainspec::ChainSpecParser;
-    use tempo_chainspec::spec::{DEV, MODERATO};
-    use zone_primitives::constants::zone_chain_id;
 
     fn dev_zone_spec(zone_id: u32) -> ZoneChainSpec {
         let mut genesis = DEV.genesis().clone();
@@ -473,6 +479,67 @@ mod tests {
             assert_eq!(zone.genesis(), &genesis);
             assert_eq!(zone.genesis_hash(), expected.genesis_hash());
             assert_eq!(zone.tempo_hardfork_at(u64::MAX), TempoHardfork::T11);
+        }
+    }
+
+    #[test]
+    fn genesis_inherits_null_parent_hardforks() {
+        for parent in [&*PRESTO, &*MODERATO] {
+            let mut genesis = parent.genesis().clone();
+            genesis.config.chain_id = zone_chain_id(parent.chain_id(), 3).unwrap();
+            for &fork in TempoHardfork::VARIANTS {
+                if let Some(key) = fork.genesis_key() {
+                    genesis
+                        .config
+                        .extra_fields
+                        .insert(key.to_owned(), serde_json::Value::Null);
+                }
+            }
+            let raw = TempoChainSpec::from_genesis(genesis.clone());
+            let zone = ZoneChainSpec::from_genesis(genesis).unwrap();
+
+            assert_eq!(zone.genesis_hash(), raw.genesis_hash());
+            for &fork in TempoHardfork::VARIANTS {
+                assert_eq!(
+                    zone.tempo_fork_activation(fork),
+                    parent.tempo_fork_activation(fork)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn null_forks_follow_resolved_custom_parent_schedule() {
+        for parent_chain_id in [1337, 31337, 31318] {
+            let mut genesis = historical_custom_genesis();
+            genesis.config.chain_id = zone_chain_id(parent_chain_id, 11).unwrap();
+            let mut l1_genesis = genesis.clone();
+            l1_genesis.config.chain_id = parent_chain_id;
+            l1_genesis
+                .config
+                .extra_fields
+                .insert("t12Time".into(), serde_json::json!(1_000));
+            let parent = TempoChainSpec::from_genesis(l1_genesis);
+            genesis
+                .config
+                .extra_fields
+                .insert("t11Time".into(), serde_json::json!(123));
+            let zone = ZoneChainSpec::from_genesis_with_l1(genesis, &parent).unwrap();
+
+            assert_eq!(
+                zone.tempo_fork_activation(TempoHardfork::T11),
+                ForkCondition::Timestamp(123)
+            );
+            assert_eq!(zone.tempo_hardfork_at(999), TempoHardfork::T11);
+            assert_eq!(zone.tempo_hardfork_at(1_000), TempoHardfork::T12);
+            assert_eq!(
+                zone.tempo_fork_activation(TempoHardfork::T13),
+                ForkCondition::Never
+            );
+            assert_eq!(
+                zone.tempo_fork_activation(TempoHardfork::T14),
+                ForkCondition::Never
+            );
         }
     }
 

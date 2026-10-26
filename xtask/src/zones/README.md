@@ -35,14 +35,21 @@ If an upgrade occurs between the schedule and head reads, retry generation.
 anchor, or with `--tempo-genesis-header-rlp` to supply the anchor explicitly.
 
 Scheduled fork settings are persisted in `genesis.json`; restarting nodes does not
-fetch a new schedule. Unscheduled forks can inherit the compiled parent schedule
-when it becomes available for mainnet or testnet. Development and custom L1 chains
-still require a coordinated configuration update. Existing Zone databases are not
-modified by generation.
+fetch a new schedule over RPC. Missing or explicitly `null` fork activations inherit
+the compiled parent schedule for mainnet and testnet, including schedules added
+by a binary upgrade; explicit numeric timestamps remain overrides. The same
+inheritance applies when an L1 chainspec is supplied explicitly. Development and
+custom L1 chains without a resolved parent still use their genesis schedule and
+require a coordinated configuration update.
+Existing Zone databases are not modified by generation. Inheriting a previously
+disabled fork can change historical execution rules; validate replay and proving
+before deploying this behavior to an existing Zone.
 
-For offline development or tests, `--hardfork T11` enables forks through T11 at
-timestamp zero and disables T12/T13/T14. Individual `--t*-time` flags still take
-precedence in offline mode, but cannot be combined with RPC-derived schedules.
+For offline tests on development and custom L1 chains, `--hardfork T11` enables
+forks through T11 at timestamp zero and disables T12/T13/T14. Individual `--t*-time`
+flags still take precedence in offline mode, but cannot be combined with
+RPC-derived schedules. On public parents, use explicit numeric timestamps to defer
+later forks instead of `null`, which requests inheritance.
 The bundled dev genesis regeneration recipe explicitly selects T14.
 
 - `generate-state-bloat`: generates a TIP20 binary storage dump using Tempo's
