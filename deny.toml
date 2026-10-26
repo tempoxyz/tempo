@@ -21,6 +21,14 @@ ignore = [
   # Preserve the Zones exception until upstream replaces it:
   # https://github.com/aws/aws-nitro-enclaves-nsm-api/issues/19
   "RUSTSEC-2021-0127",
+  # zstd 0.13 / zstd-safe 7 advisories, patched only in zstd 0.14.3 / zstd-safe 8.2.0;
+  # commonware-storage and reth still require zstd 0.13.
+  # https://rustsec.org/advisories/RUSTSEC-2026-0391
+  "RUSTSEC-2026-0391",
+  # https://rustsec.org/advisories/RUSTSEC-2026-0398
+  "RUSTSEC-2026-0398",
+  # https://rustsec.org/advisories/RUSTSEC-2026-0403
+  "RUSTSEC-2026-0403",
 ]
 
 # This section is considered when running `cargo deny check bans`.
