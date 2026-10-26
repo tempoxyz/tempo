@@ -114,6 +114,11 @@ strip = "symbols"
 panic = "unwind"
 codegen-units = 16
 
+# Keep symbols in the fuzz target so libFuzzer and sanitizer stack traces are readable.
+[profile.release.package.tempo-nitro-attestation-fuzz]
+debug = "line-tables-only"
+strip = "none"
+
 # Use the `--profile profiling` flag to show symbols in release mode.
 # e.g. `cargo build --profile profiling`
 [profile.profiling]
