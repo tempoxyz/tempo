@@ -20,6 +20,10 @@ case "$series" in
 esac
 name="bench-state-$series-$key"
 workflow=".github/workflows/bench-$series-scheduled.yml"
+# e2e saves each scenario only when its own matrix leg passed, so a run that
+# failed on another scenario still holds a valid baseline for this one.
+conclusions='["success"]'
+[[ "$series" != e2e ]] || conclusions='["success","failure"]'
 branch=${GITHUB_REF_NAME:-main}
 
 # Filter before downloading: dispatches on test branches must not change main's
@@ -35,9 +39,9 @@ candidates=$(jq -r --arg name "$name" --arg branch "$branch" '
 while IFS=$'\t' read -r artifact_id run_id; do
   [[ -n "$artifact_id" ]] || continue
   run=$(gh api "repos/$repo/actions/runs/$run_id")
-  if ! jq -e --arg branch "$branch" --arg workflow "$workflow" '
+  if ! jq -e --arg branch "$branch" --arg workflow "$workflow" --argjson conclusions "$conclusions" '
     .path == $workflow and .head_branch == $branch
-    and .status == "completed" and .conclusion == "success"
+    and .status == "completed" and (.conclusion | IN($conclusions[]))
     and (.event == "schedule" or .event == "workflow_dispatch")
   ' <<< "$run" >/dev/null; then
     continue
