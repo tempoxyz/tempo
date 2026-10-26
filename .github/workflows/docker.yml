@@ -64,7 +64,7 @@ jobs:
         id: source
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
-          BUILD_TAG: ${{ (github.event_name == 'merge_group' || github.event_name == 'pull_request_target') && format('build-{0}-{1}', github.run_id, github.run_attempt) || '' }}
+          BUILD_TAG: ${{ (github.event_name == 'merge_group' || github.event_name == 'pull_request_target') && format('network-e2e-{0}-{1}', github.run_id, github.run_attempt) || '' }}
           PR_NUMBER: ${{ inputs.pr_number }}
           BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
         with:
@@ -407,9 +407,10 @@ jobs:
             exit 1
           fi
 
+      # Network E2E dispatches its own suite; the generic event starts three others.
       - name: Publish event (sha tag)
         id: publish-sha-event
-        if: ${{ github.repository == 'tempoxyz/tempo' && github.event_name != 'merge_group' && github.event_name != 'pull_request' }}
+        if: ${{ github.repository == 'tempoxyz/tempo' && github.event_name != 'merge_group' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' }}
         shell: bash
         env:
           EVENTS_KEY: ${{ secrets.EVENTS_KEY }}
