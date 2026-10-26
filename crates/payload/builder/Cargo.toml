@@ -23,6 +23,7 @@ tempo-transaction-pool.workspace = true
 tempo-payload-types.workspace = true
 
 reth-basic-payload-builder.workspace = true
+reth-chain-state.workspace = true
 reth-chainspec.workspace = true
 reth-consensus-common.workspace = true
 reth-engine-tree.workspace = true
