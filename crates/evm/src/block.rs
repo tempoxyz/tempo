@@ -759,14 +759,7 @@ mod tests {
     use alloy_rlp::Encodable;
     use alloy_sol_types::SolEvent as _;
     use commonware_codec::Encode as _;
-    use commonware_cryptography::{
-        Signer,
-        bls12381::{dkg::feldman_desmedt as dkg, primitives::sharing::Mode},
-        ed25519::PrivateKey,
-    };
-    use commonware_math::algebra::Random as _;
-    use commonware_utils::{N3f1, TryFromIterator as _, ordered};
-    use rand::SeedableRng as _;
+    use commonware_cryptography::{Signer, ed25519::PrivateKey};
     use reth_chainspec::{EthChainSpec, EthereumHardfork, ForkCondition};
     use reth_revm::{State, state::AccountInfo};
     use revm::{
@@ -776,7 +769,6 @@ mod tests {
     };
     use std::{
         collections::HashMap,
-        iter::repeat_with,
         sync::{Arc, Mutex},
     };
     use tempo_chainspec::{TempoChainSpec, TempoHardfork, spec::DEV};
@@ -990,7 +982,7 @@ mod tests {
         let mut db = State::builder().with_bundle_update().build();
         let mut previous_keys = Vec::new();
         for epoch in [1, 2] {
-            let outcome = create_dkg_outcome(epoch, 3);
+            let outcome = OnchainDkgOutcome::dealt(epoch, 3);
             let expected_keys = outcome
                 .players()
                 .iter()
@@ -1250,26 +1242,6 @@ mod tests {
             input: Bytes::new(),
         };
         TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, Signature::test_signature()))
-    }
-
-    fn create_dkg_outcome(epoch: u64, players: usize) -> OnchainDkgOutcome {
-        let mut rng = rand::rngs::StdRng::seed_from_u64(epoch);
-        let mut player_keys = repeat_with(|| PrivateKey::random(&mut rng))
-            .take(players)
-            .collect::<Vec<_>>();
-        player_keys.sort_by_key(|key| key.public_key());
-
-        let player_set =
-            ordered::Set::try_from_iter(player_keys.iter().map(|key| key.public_key())).unwrap();
-        let (output, shares) =
-            dkg::deal::<_, _, N3f1>(&mut rng, Mode::NonZeroCounter, player_set).unwrap();
-
-        OnchainDkgOutcome {
-            epoch,
-            output,
-            next_players: shares.keys().clone(),
-            is_next_full_dkg: false,
-        }
     }
 
     fn read_current_committee<DB, I>(
@@ -1642,7 +1614,7 @@ mod tests {
     fn test_current_committee_system_call_writes_boundary_outcome() {
         let chainspec = test_chainspec();
         let mut db = State::builder().with_bundle_update().build();
-        let outcome = create_dkg_outcome(42, 3);
+        let outcome = OnchainDkgOutcome::dealt(42, 3);
         let expected_public_keys = outcome
             .players()
             .iter()

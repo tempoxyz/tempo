@@ -27,6 +27,8 @@ members = [
   "crates/hardfork",
   "crates/e2e",
   "crates/faucet",
+  "crates/fuzz-harness",
+  "crates/fuzz-types",
   "crates/node",
   "crates/node-launcher",
   "crates/nitro-attestation",
@@ -204,6 +206,7 @@ tempo-consensus = { path = "crates/consensus", default-features = false }
 tempo-consensus-config = { path = "crates/consensus-config", default-features = false }
 tempo-dkg-onchain-artifacts = { path = "crates/dkg-onchain-artifacts", default-features = false }
 tempo-faucet = { path = "crates/faucet", default-features = false }
+tempo-fuzz-types = { path = "crates/fuzz-types", default-features = false }
 tempo-evm = { path = "crates/evm", default-features = false }
 tempo-eyre = { path = "crates/eyre", default-features = false }
 tempo-hardfork = { path = "crates/hardfork", default-features = false }
@@ -272,6 +275,7 @@ reth-rpc-eth-api = { git = "https://github.com/paradigmxyz/reth", rev = "f6041ad
 reth-rpc-eth-types = { git = "https://github.com/paradigmxyz/reth", rev = "f6041ad" }
 reth-rpc-server-types = { git = "https://github.com/paradigmxyz/reth", rev = "f6041ad" }
 reth-stages = { git = "https://github.com/paradigmxyz/reth", rev = "f6041ad" }
+reth-stages-types = { git = "https://github.com/paradigmxyz/reth", rev = "f6041ad" }
 reth-static-file = { git = "https://github.com/paradigmxyz/reth", rev = "f6041ad" }
 reth-static-file-types = { git = "https://github.com/paradigmxyz/reth", rev = "f6041ad" }
 reth-storage-api = { git = "https://github.com/paradigmxyz/reth", rev = "f6041ad" }
@@ -407,8 +411,7 @@ secrecy = "0.10"
 bitflags = "2.11.1"
 
 # build deps
-vergen = { version = "10.0.1", features = ["build", "cargo", "emit_and_set"] }
-vergen-git2 = "10.0.1"
+smolgen = { version = "0.1.1", features = ["build", "cargo", "emit_and_set", "gitcl"] }
 
 # [patch."https://github.com/paradigmxyz/reth"]
 # reth-basic-payload-builder = { path = "../reth/crates/payload/basic" }

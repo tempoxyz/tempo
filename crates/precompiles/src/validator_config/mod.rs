@@ -11,7 +11,7 @@ use tempo_precompiles_macros::{Storable, contract};
 
 use crate::{
     error::{Result, TempoPrecompileError},
-    ip_validation::ensure_address_is_ip_port,
+    ip::ensure_address_is_ip_port,
     storage::{Handler, Mapping},
 };
 use alloy::primitives::{Address, B256};

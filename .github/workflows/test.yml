@@ -31,8 +31,38 @@ env:
   TEMPO_DEVNET_RPC_URL: ${{ secrets.TEMPO_DEVNET_RPC_URL }}
 
 jobs:
+  changes:
+    name: Check Rust changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: read
+    outputs:
+      rust: ${{ contains(fromJSON(steps.filter.outputs.changes), 'rust') }}
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - uses: tempoxyz/gh-actions/actions/changed-paths@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        id: filter
+        with:
+          # Run the Rust jobs when Rust sources, manifests, Cargo.lock or their CI config change.
+          filters: |
+            rust:
+              - '{bin,crates,examples,scripts,xtask,tips/verify}/**'
+              - 'Cargo.lock'
+              - '*-network-identity.json'
+              - '*.toml'
+              - '{.cargo,.config,.github/actions}/**'
+              - '.github/scripts/{native-libs.sh,check_no_std.sh,warn_flaky_e2e.py,test_warn_flaky_e2e.py}'
+              - '.github/workflows/{test,lint,bench}.yml'
+
   zones-artifacts:
     name: Build Zones test artifacts
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: depot-ubuntu-latest-16
     timeout-minutes: 30
     permissions:
@@ -92,6 +122,8 @@ jobs:
 
   genesis:
     name: Genesis generation
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: depot-ubuntu-latest-4
     timeout-minutes: 30
     permissions:
@@ -132,7 +164,8 @@ jobs:
 
   test:
     name: test (${{ matrix.partition }}/2)
-    needs: zones-artifacts
+    if: needs.changes.outputs.rust == 'true'
+    needs: [changes, zones-artifacts]
     runs-on: depot-ubuntu-latest-32
     timeout-minutes: 30
     permissions:
@@ -172,6 +205,8 @@ jobs:
 
   e2e:
     name: e2e (${{ matrix.partition }}/4)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: depot-ubuntu-latest-32
     timeout-minutes: 30
     permissions:
@@ -229,6 +264,8 @@ jobs:
 
   cli:
     name: CLI smoke tests
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: depot-ubuntu-latest-4
     timeout-minutes: 30
     permissions:
@@ -282,6 +319,8 @@ jobs:
 
   msrv:
     name: MSRV
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: depot-ubuntu-latest-4
     timeout-minutes: 30
     permissions:
@@ -316,6 +355,7 @@ jobs:
     permissions:
       id-token: write
     needs:
+      - changes
       - test
       - e2e
       - cli
@@ -329,4 +369,5 @@ jobs:
       - name: Decide whether the needed jobs succeeded or failed
         uses: tempoxyz/gh-actions/actions/check-needs@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
+          allowed-skips: ${{ needs.changes.outputs.rust != 'true' && 'genesis,test,e2e,cli,msrv' || '' }}
           jobs: ${{ toJSON(needs) }}
