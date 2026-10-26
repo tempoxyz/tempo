@@ -102,12 +102,6 @@ pub async fn run_consensus_stack(
     let broadcaster = network.register(BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT);
     let marshal = network.register(MARSHAL_CHANNEL_IDENT, backfill_quota);
     let dkg = network.register(DKG_CHANNEL_IDENT, DKG_LIMIT);
-    let target_block_time = config.target_block_time.into_duration();
-    let proposal_budget = tempo_payload_types::ProposalBudget::new(
-        target_block_time,
-        config.network_budget.into_duration(),
-    );
-
     let consensus_engine = crate::consensus::engine::Builder {
         network_identity,
         execution_node: Some(execution_node),
@@ -135,7 +129,6 @@ pub async fn run_consensus_stack(
         time_for_peer_response: config.wait_for_peer_response.into_duration(),
         views_to_track: config.views_to_track,
         inactive_time_before_leader_skip: config.inactive_time_before_leader_skip.into_duration(),
-        proposal_budget,
         estimator,
         fcu_heartbeat_interval: config.fcu_heartbeat_interval.into_duration(),
 

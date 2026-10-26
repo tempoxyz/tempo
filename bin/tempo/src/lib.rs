@@ -560,7 +560,10 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         let estimator = match payload_builder.estimator.clone() {
             Some(estimator) => estimator,
             None => tempo_node::Estimator::new(
-                tempo_node::EstimatorConfig::default()
+                tempo_node::EstimatorConfig::new(
+                    args.consensus.target_block_time.into_duration(),
+                    args.consensus.network_budget.into_duration(),
+                )
                     .with_build_time_multiplier(payload_builder.build_time_multiplier),
             )
             .map_err(|reason| eyre::eyre!("invalid proposal budget flags: {reason}"))?,
