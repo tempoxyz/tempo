@@ -352,6 +352,13 @@ for (const mode of ['', 'nightly', 'profiling']) {
     assert.ok(!step.includes('always()'));
     const script = step.split('          script: |\n')[1].split('\n').map(line => line.replace(/^ {12}/, '')).join('\n');
     const expected = images(mode);
+    if (mode !== 'profiling') {
+      // Extra build-* tags broke the strict /docker image report contract.
+      assert.ok(yaml.includes("BUILD_TAG: ${{ (github.event_name == 'merge_group' || github.event_name == 'pull_request_target') && format('build-{0}-{1}', github.run_id, github.run_attempt) || '' }}"));
+      const attemptTags = yaml.split('\n').filter(line => line.includes('type=raw,value=${{ steps.source.outputs.image_tag }}'));
+      assert.equal(attemptTags.length, expected.images.length);
+      for (const line of attemptTags) assert.ok(line.endsWith(",enable=${{ steps.source.outputs.image_tag != '' }}"));
+    }
     const env = { SOURCE_SHA: sha, RUNNER_TEMP: '/tmp/report-fixture', BUILD_METADATA: JSON.stringify(
       Object.fromEntries(expected.images.map(image => [image.name, { 'containerimage.digest': image.digest }]))),
     };

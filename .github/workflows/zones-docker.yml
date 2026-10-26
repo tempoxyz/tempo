@@ -22,9 +22,14 @@ on:
     paths:
       - 'Cargo.toml'
       - 'Cargo.lock'
+      - '*-network-identity.json'
+      - '.gitmodules'
       - 'rust-toolchain.toml'
       - '.cargo/**'
       - 'crates/**'
+      # Integration tests do not change the packaged binaries.
+      - '!crates/node/tests/**'
+      - '!crates/zones/node/tests/**'
       - 'bin/**'
       - 'xtask/**'
       - 'zones/docker/**'
@@ -109,6 +114,44 @@ env:
   TEMPO_DEVNET_GENESIS_URL: ${{ inputs.tempo_genesis_url || 'https://devnet-assets.tempoxyz.dev/tempo-devnet-nextfork.json' }}
 
 jobs:
+  detect-changes:
+    name: Detect Zones image changes
+    if: github.repository == 'tempoxyz/tempo' && github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      # Missing output is not proof that the merge group has no image changes.
+      required: ${{ github.event_name != 'merge_group' || steps.paths.outputs.changes == '' || contains(fromJSON(steps.paths.outputs.changes || '[]'), 'images') }}
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+      - name: Detect merge-group image inputs
+        id: paths
+        if: github.event_name == 'merge_group'
+        uses: tempoxyz/gh-actions/actions/changed-paths@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          # Compare the whole group, not any single PR in a batched merge.
+          base: ${{ github.event.merge_group.base_sha }}
+          head: ${{ github.event.merge_group.head_sha }}
+          filters: |
+            images:
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '*-network-identity.json'
+              - '.gitmodules'
+              - 'rust-toolchain.toml'
+              - '.cargo/**'
+              - 'crates/**'
+              - '!crates/node/tests/**'
+              - '!crates/zones/node/tests/**'
+              - 'bin/**'
+              - 'xtask/**'
+              - 'zones/docker/**'
+              - 'zones/scripts/**'
+              - '.github/workflows/zones-docker*.yml'
+
   validate-verification-dispatch:
     name: Validate verification dispatch
     if: >-
@@ -151,7 +194,12 @@ jobs:
 
   resolve-production-build-inputs:
     name: Resolve production Docker build inputs
+    needs: detect-changes
     if: >-
+      !cancelled() &&
+      ((github.event_name == 'merge_group' &&
+        (needs.detect-changes.result != 'success' || needs.detect-changes.outputs.required != 'false')) ||
+       (needs.detect-changes.result == 'success' && needs.detect-changes.outputs.required == 'true')) &&
       github.repository == 'tempoxyz/tempo' &&
       github.event.pull_request.draft != true &&
       ((github.event_name != 'workflow_dispatch' ||
@@ -239,7 +287,12 @@ jobs:
 
   eif-toolchain:
     name: Resolve trusted EIF toolchain
+    needs: detect-changes
     if: >-
+      !cancelled() &&
+      ((github.event_name == 'merge_group' &&
+        (needs.detect-changes.result != 'success' || needs.detect-changes.outputs.required != 'false')) ||
+       (needs.detect-changes.result == 'success' && needs.detect-changes.outputs.required == 'true')) &&
       github.repository == 'tempoxyz/tempo' &&
       github.event.pull_request.draft != true &&
       (github.repository == 'tempoxyz/tempo' &&
