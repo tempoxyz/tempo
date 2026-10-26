@@ -810,16 +810,17 @@ mod tests {
         },
     };
     use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
-    use tempo_precompiles::{
-        storage::{ContractStorage, Handler, StorageCtx},
-        test_util::TIP20Setup,
-        tip20::{ITIP20, TIP20Token},
-        tip403_registry::TIP403Registry,
-    };
     use tempo_primitives::{
         SubBlockMetadata, TempoSignature, TempoTransaction, TempoTxType,
         subblock::{SubBlockVersion, TEMPO_SUBBLOCK_NONCE_KEY_PREFIX},
         transaction::{Call, envelope::TEMPO_SYSTEM_TX_SIGNATURE},
+    };
+
+    use tempo_precompiles::{
+        storage::{self, ContractStorage, Handler},
+        test_util::TIP20Setup,
+        tip20::{ITIP20, TIP20Token},
+        tip403_registry::TIP403Registry,
     };
 
     fn system_calls_chainspec() -> Arc<TempoChainSpec> {
@@ -2476,8 +2477,11 @@ mod tests {
         DB: StateDB,
         I: Inspector<TempoContext<DB>>,
     {
-        let result =
-            StorageCtx::enter_ctx(executor.evm_mut().ctx_mut(), StorageActions::disabled(), f);
+        let result = storage::StorageCtx::enter_ctx(
+            executor.evm_mut().ctx_mut(),
+            StorageActions::disabled(),
+            f,
+        );
         let state = executor.evm_mut().ctx_mut().journaled_state.finalize();
         executor.evm_mut().db_mut().commit(state);
         result
@@ -2558,7 +2562,7 @@ mod tests {
                 assert!(result.receipts.is_empty());
                 assert!(result.requests.is_empty());
                 assert_eq!(result.gas_used, 0);
-                StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
+                storage::StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
                     let paid = if spec.is_t15() {
                         fee * U256::from(2)
                     } else {
@@ -2661,7 +2665,7 @@ mod tests {
                 Ok::<_, eyre::Report>(())
             })?;
             let (mut evm, _) = executor.finish()?;
-            StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
+            storage::StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
                 let token = TIP20Token::from_address(PATH_USD_ADDRESS)?;
                 assert_eq!(
                     TipFeeManager::new().collected_fees[validator][PATH_USD_ADDRESS].read()?,
@@ -2776,7 +2780,7 @@ mod tests {
         executor.evm_mut().block.beneficiary = validator;
         let (mut evm, result) = executor.finish()?;
         assert!(result.receipts.is_empty());
-        StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
+        storage::StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
             assert_eq!(
                 TipFeeManager::new().collected_fees[validator][token].read()?,
                 U256::ZERO
