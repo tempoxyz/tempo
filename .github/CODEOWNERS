@@ -32,7 +32,7 @@ crates/node-launcher/ @mattsse
 crates/payload/ @0xKitsune @klkvr @mattsse @shekhirin
 crates/precompiles/ @0xrusowsky @0xKitsune @klkvr @mattsse @legion2002 @joshieDo
 crates/precompiles-macros/ @0xrusowsky @mattsse
-crates/primitives/ @klkvr @mattsse @joshieDo
+crates/primitives/ @klkvr @mattsse @joshieDo @0xrusowsky
 crates/revm/ @klkvr @mattsse @rakita @0xKitsune
 crates/state-bloat/ @mattsse @klkvr
 crates/telemetry-util/ @SuperFluffy
