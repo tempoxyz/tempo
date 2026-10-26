@@ -196,14 +196,13 @@ mod tests {
     use super::*;
 
     use crate::test_utils::{
-        MockL1Reader, TestContext, TestPrecompiles, call_precompile, test_context,
-        test_context_with_hardfork, test_precompiles, test_storage_provider,
+        MockL1Reader, PrecompileResult, TestContext, TestPrecompiles, call_precompile,
+        test_context, test_context_with_hardfork, test_precompiles, test_storage_provider,
     };
     use alloc::{vec, vec::Vec};
     use alloy_consensus::Sealable as _;
     use alloy_primitives::address;
     use alloy_sol_types::SolCall;
-    use revm::precompile::PrecompileResult;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::zones::{finalizeTempoCall, legacyFinalizeTempoCall};
     use tempo_precompiles::storage::StorageCtx;

@@ -67,7 +67,6 @@ mod tests {
 
     use alloy_primitives::{B256, Bytes, U256};
     use alloy_sol_types::SolValue;
-    use revm::precompile::{PrecompileOutput, PrecompileResult};
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{IReceivePolicyGuard::InboundKind, ITIP20, ITIP403Registry};
     use tempo_precompiles::{
@@ -80,8 +79,8 @@ mod tests {
     };
 
     use crate::test_utils::{
-        TestContext, TestPrecompiles, call_precompile, test_context, test_precompiles,
-        test_storage_provider,
+        PrecompileOutput, PrecompileResult, TestContext, TestPrecompiles, call_precompile,
+        test_context, test_precompiles, test_storage_provider,
     };
 
     const ADMIN: Address = Address::with_last_byte(0xa1);

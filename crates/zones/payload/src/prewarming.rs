@@ -5,7 +5,6 @@
 
 use crate::builder::build_advance_tempo_tx_owned;
 use alloy_primitives::B256;
-use evm2::evm::{CacheDB, Db};
 use reth_evm::{
     BlockExecutor as _, ConfigureEvm, database::StateProviderDatabase, execute::BlockBuilder,
 };
@@ -83,10 +82,9 @@ where
                 .state_by_block_hash(self.parent_hash)?
                 .into_evm_state_provider(),
         );
-        let mut db = CacheDB::new(Db::new(state));
 
         let mut worker = self.evm_config.builder_for_next_block(
-            &mut db,
+            state,
             &self.parent_header,
             self.next_block_env_attributes.clone(),
         )?;

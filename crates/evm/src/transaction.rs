@@ -178,7 +178,7 @@ impl TempoEvmTx {
             Self::Legacy { transaction, .. } => transaction.gas_limit(),
             Self::Eip2930(transaction) => transaction.gas_limit(),
             Self::Eip1559(transaction) => transaction.gas_limit(),
-            Self::Eip7702(transaction) => transaction.gas_limit,
+            Self::Eip7702(transaction) => transaction.gas_limit(),
             Self::AA(transaction) => transaction.gas_limit(),
         }
     }
@@ -189,13 +189,7 @@ impl TempoEvmTx {
             Self::Legacy { transaction, .. } => transaction.effective_gas_price(base_fee),
             Self::Eip2930(transaction) => transaction.effective_gas_price(base_fee),
             Self::Eip1559(transaction) => transaction.effective_gas_price(base_fee),
-            Self::Eip7702(transaction) => {
-                base_fee.map_or(transaction.max_fee_per_gas, |base_fee| {
-                    transaction.max_fee_per_gas.min(
-                        u128::from(base_fee).saturating_add(transaction.max_priority_fee_per_gas),
-                    )
-                })
-            }
+            Self::Eip7702(transaction) => transaction.effective_gas_price(base_fee),
             Self::AA(transaction) => transaction.effective_gas_price(base_fee),
         }
     }
@@ -280,13 +274,13 @@ impl From<Recovered<TempoTxEnvelope>> for TempoEvmTx {
     }
 }
 
-/// Cached EVM2 transaction plus the original recovered Tempo envelope.
+/// Cached EVM2 transaction plus the identity of the signed transaction it came from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TempoTxEnv {
     evm_tx: TempoEvmTx,
-    recovered: Arc<Recovered<TempoTxEnvelope>>,
     execution_context: ExecutionContext,
-    unique_tx_identifier_override: Option<B256>,
+    tx_hash: B256,
+    unique_tx_identifier: B256,
     fee_payer_override: Option<Address>,
 }
 
@@ -294,39 +288,16 @@ impl TempoTxEnv {
     /// Creates an RPC simulation environment from Reth's normalized Ethereum transaction.
     pub fn from_recovered_eth(transaction: RecoveredTxEnvelope) -> Option<Self> {
         let (transaction, signer) = transaction.into_parts();
-        let (evm_tx, recovered) = match transaction {
+        let signature = Signature::test_signature();
+        let envelope = match transaction {
             EthTxEnvelope::Legacy(transaction) => {
-                let envelope = TempoTxEnvelope::Legacy(Signed::new_unhashed(
-                    transaction.clone(),
-                    Signature::test_signature(),
-                ));
-                (
-                    TempoEvmTx::Legacy {
-                        transaction: Recovered::new_unchecked(transaction, signer),
-                        is_system: false,
-                    },
-                    Recovered::new_unchecked(envelope, signer),
-                )
+                TempoTxEnvelope::Legacy(Signed::new_unhashed(transaction, signature))
             }
             EthTxEnvelope::Eip2930(transaction) => {
-                let envelope = TempoTxEnvelope::Eip2930(Signed::new_unhashed(
-                    transaction.clone(),
-                    Signature::test_signature(),
-                ));
-                (
-                    TempoEvmTx::Eip2930(Recovered::new_unchecked(transaction, signer)),
-                    Recovered::new_unchecked(envelope, signer),
-                )
+                TempoTxEnvelope::Eip2930(Signed::new_unhashed(transaction, signature))
             }
             EthTxEnvelope::Eip1559(transaction) => {
-                let envelope = TempoTxEnvelope::Eip1559(Signed::new_unhashed(
-                    transaction.clone(),
-                    Signature::test_signature(),
-                ));
-                (
-                    TempoEvmTx::Eip1559(Recovered::new_unchecked(transaction, signer)),
-                    Recovered::new_unchecked(envelope, signer),
-                )
+                TempoTxEnvelope::Eip1559(Signed::new_unhashed(transaction, signature))
             }
             EthTxEnvelope::Eip4844(_) => return None,
             EthTxEnvelope::Eip7702(transaction) => {
@@ -346,31 +317,29 @@ impl TempoTxEnv {
                             .iter()
                             .map(|authorization| {
                                 authorization.as_signed().cloned().unwrap_or_else(|| {
-                                    authorization
-                                        .inner()
-                                        .clone()
-                                        .into_signed(Signature::test_signature())
+                                    authorization.inner().clone().into_signed(signature)
                                 })
                             })
                             .collect(),
                         input: transaction_env.input.clone(),
                     },
-                    Signature::test_signature(),
+                    signature,
                 ));
-                (
-                    TempoEvmTx::Eip7702(Recovered::new_unchecked(transaction, signer)),
-                    Recovered::new_unchecked(envelope, signer),
-                )
+                // Keep the recovered authorizations: re-recovering the placeholder signatures
+                // above would yield wrong authorities.
+                return Some(Self {
+                    evm_tx: TempoEvmTx::Eip7702(Recovered::new_unchecked(transaction, signer)),
+                    execution_context: ExecutionContext::Simulation,
+                    tx_hash: *envelope.tx_hash(),
+                    unique_tx_identifier: envelope.unique_tx_identifier(signer),
+                    fee_payer_override: None,
+                });
             }
         };
 
-        Some(Self {
-            evm_tx,
-            recovered: Arc::new(recovered),
-            execution_context: ExecutionContext::Simulation,
-            unique_tx_identifier_override: None,
-            fee_payer_override: None,
-        })
+        let mut env = Self::from(Recovered::new_unchecked(envelope, signer));
+        env.execution_context = ExecutionContext::Simulation;
+        Some(env)
     }
 
     /// Returns the transaction consumed by EVM2.
@@ -415,19 +384,9 @@ impl TempoTxEnv {
         self.evm_tx.as_aa()
     }
 
-    /// Returns the original recovered Tempo transaction.
-    pub fn recovered(&self) -> &Recovered<TempoTxEnvelope> {
-        &self.recovered
-    }
-
-    /// Returns the original transaction envelope.
-    pub fn transaction(&self) -> &TempoTxEnvelope {
-        self.recovered.inner()
-    }
-
     /// Returns the original transaction hash.
-    pub fn tx_hash(&self) -> B256 {
-        *self.recovered.inner().tx_hash()
+    pub const fn tx_hash(&self) -> B256 {
+        self.tx_hash
     }
 
     /// Returns whether this environment represents a signed transaction or an RPC simulation.
@@ -436,16 +395,12 @@ impl TempoTxEnv {
     }
 
     /// Returns the sender-scoped identifier used by replay-sensitive protocol features.
-    pub fn unique_tx_identifier(&self) -> B256 {
-        self.unique_tx_identifier_override.unwrap_or_else(|| {
-            self.recovered
-                .inner()
-                .unique_tx_identifier(self.recovered.signer())
-        })
+    pub const fn unique_tx_identifier(&self) -> B256 {
+        self.unique_tx_identifier
     }
 
     /// Returns the hash used to derive TIP-20 channel reserve identifiers.
-    pub fn channel_open_context_hash(&self) -> B256 {
+    pub const fn channel_open_context_hash(&self) -> B256 {
         self.unique_tx_identifier()
     }
 
@@ -464,7 +419,7 @@ impl TempoTxEnv {
         key_id: Option<Address>,
     ) -> Self {
         self.execution_context = ExecutionContext::Simulation;
-        self.unique_tx_identifier_override = Some(unique_tx_identifier);
+        self.unique_tx_identifier = unique_tx_identifier;
         self.fee_payer_override = fee_payer;
         if let TempoEvmTx::AA(transaction) = &mut self.evm_tx {
             transaction.set_override_key_id(key_id);
@@ -492,16 +447,29 @@ impl Typed2718 for TempoTxEnv {
     }
 }
 
+/// Delegates to the transaction inside each [`TempoEvmTx`] variant.
+macro_rules! delegate {
+    ($tx:expr, $inner:ident => $expr:expr) => {
+        match $tx {
+            TempoEvmTx::Legacy {
+                transaction: $inner,
+                ..
+            } => $expr,
+            TempoEvmTx::Eip2930($inner) => $expr,
+            TempoEvmTx::Eip1559($inner) => $expr,
+            TempoEvmTx::Eip7702($inner) => $expr,
+            TempoEvmTx::AA($inner) => $expr,
+        }
+    };
+}
+
 impl Transaction for TempoTxEnv {
     fn chain_id(&self) -> Option<u64> {
-        match &self.evm_tx {
-            TempoEvmTx::Eip2930(tx) => Some(tx.inner().chain_id),
-            _ => self.transaction().chain_id(),
-        }
+        delegate!(&self.evm_tx, tx => tx.inner().chain_id())
     }
 
     fn nonce(&self) -> u64 {
-        self.transaction().nonce()
+        delegate!(&self.evm_tx, tx => tx.inner().nonce())
     }
 
     fn gas_limit(&self) -> u64 {
@@ -509,76 +477,71 @@ impl Transaction for TempoTxEnv {
     }
 
     fn gas_price(&self) -> Option<u128> {
-        self.transaction().gas_price()
+        delegate!(&self.evm_tx, tx => tx.inner().gas_price())
     }
 
     fn max_fee_per_gas(&self) -> u128 {
-        self.transaction().max_fee_per_gas()
+        delegate!(&self.evm_tx, tx => tx.inner().max_fee_per_gas())
     }
 
     fn max_priority_fee_per_gas(&self) -> Option<u128> {
-        self.transaction().max_priority_fee_per_gas()
+        delegate!(&self.evm_tx, tx => tx.inner().max_priority_fee_per_gas())
     }
 
     fn max_fee_per_blob_gas(&self) -> Option<u128> {
-        self.transaction().max_fee_per_blob_gas()
+        delegate!(&self.evm_tx, tx => tx.inner().max_fee_per_blob_gas())
     }
 
     fn priority_fee_or_price(&self) -> u128 {
-        self.transaction().priority_fee_or_price()
+        delegate!(&self.evm_tx, tx => tx.inner().priority_fee_or_price())
     }
 
     fn effective_gas_price(&self, base_fee: Option<u64>) -> u128 {
-        self.transaction().effective_gas_price(base_fee)
+        self.evm_tx.effective_gas_price(base_fee)
     }
 
     fn is_dynamic_fee(&self) -> bool {
-        self.transaction().is_dynamic_fee()
+        delegate!(&self.evm_tx, tx => tx.inner().is_dynamic_fee())
     }
 
     fn kind(&self) -> TxKind {
-        self.transaction().kind()
+        delegate!(&self.evm_tx, tx => tx.inner().kind())
     }
 
     fn is_create(&self) -> bool {
-        self.transaction().is_create()
+        delegate!(&self.evm_tx, tx => tx.inner().is_create())
     }
 
     fn value(&self) -> alloy_primitives::U256 {
-        self.transaction().value()
+        delegate!(&self.evm_tx, tx => tx.inner().value())
     }
 
     fn input(&self) -> &Bytes {
-        self.transaction().input()
+        delegate!(&self.evm_tx, tx => tx.inner().input())
     }
 
     fn access_list(&self) -> Option<&alloy_eips::eip2930::AccessList> {
-        match &self.evm_tx {
-            TempoEvmTx::Legacy { .. } => None,
-            TempoEvmTx::Eip2930(tx) => Some(&tx.inner().access_list),
-            TempoEvmTx::Eip1559(tx) => Some(&tx.inner().access_list),
-            TempoEvmTx::Eip7702(tx) => Some(&tx.inner().access_list),
-            TempoEvmTx::AA(tx) => Some(&tx.inner().tx().access_list),
-        }
+        delegate!(&self.evm_tx, tx => tx.inner().access_list())
     }
 
     fn blob_versioned_hashes(&self) -> Option<&[B256]> {
-        self.transaction().blob_versioned_hashes()
+        delegate!(&self.evm_tx, tx => tx.inner().blob_versioned_hashes())
     }
 
     fn authorization_list(&self) -> Option<&[alloy_eips::eip7702::SignedAuthorization]> {
-        self.transaction().authorization_list()
+        delegate!(&self.evm_tx, tx => tx.inner().authorization_list())
     }
 }
 
 impl From<Recovered<TempoTxEnvelope>> for TempoTxEnv {
     fn from(recovered: Recovered<TempoTxEnvelope>) -> Self {
         let tx_hash = *recovered.inner().tx_hash();
+        let unique_tx_identifier = recovered.inner().unique_tx_identifier(recovered.signer());
         Self {
-            evm_tx: recovered.clone().into(),
-            recovered: Arc::new(recovered),
+            evm_tx: recovered.into(),
             execution_context: ExecutionContext::Transaction { tx_hash },
-            unique_tx_identifier_override: None,
+            tx_hash,
+            unique_tx_identifier,
             fee_payer_override: None,
         }
     }
@@ -1253,7 +1216,6 @@ mod tests {
             assert_eq!(probe.evm_tx().fee_payer().unwrap(), sponsor.address());
             assert_eq!(probe.tx_hash(), hash);
             assert_eq!(probe.unique_tx_identifier(), identifier);
-            assert_eq!(probe.recovered(), env.recovered());
             assert_ne!(
                 probe
                     .as_aa()
@@ -1301,7 +1263,6 @@ mod tests {
         assert_eq!(probe.kind(), original.kind());
         assert_eq!(probe.input(), original.input());
         assert_eq!(probe.evm_tx().signer(), SIGNER);
-        assert_eq!(probe.recovered(), original.recovered());
         assert_eq!(original.gas_limit(), 100_000);
         assert_eq!(original.access_list(), None);
     }

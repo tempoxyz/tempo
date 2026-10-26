@@ -426,36 +426,6 @@ mod tests {
     }
 
     #[test]
-    fn simulation_normalization_preserves_request_fee_semantics() {
-        let mut evm_env = TempoEvmEnv::default();
-        evm_env.block.basefee = U256::from(10);
-        let mut request = TransactionRequest {
-            max_fee_per_gas: Some(100),
-            max_priority_fee_per_gas: Some(2),
-            ..Default::default()
-        };
-        let fees = reth_rpc_convert::normalize_transaction_request(&mut request, &evm_env)
-            .expect("valid simulation fees");
-        assert_eq!(fees.gas_price, U256::from(12));
-        assert_eq!(request.max_fee_per_gas, Some(100));
-        assert_eq!(request.to, None);
-
-        let normalized = request.clone();
-        let fees_again = reth_rpc_convert::normalize_transaction_request(&mut request, &evm_env)
-            .expect("normalization is idempotent");
-        assert_eq!(request, normalized);
-        assert_eq!(fees_again.gas_price, fees.gas_price);
-
-        request.gas_price = Some(7);
-        let conflicting = request.clone();
-        assert!(reth_rpc_convert::normalize_transaction_request(&mut request, &evm_env).is_err());
-        assert_eq!(
-            request, conflicting,
-            "invalid fees must not partly normalize the request"
-        );
-    }
-
-    #[test]
     fn test_estimate_gas_when_calls_set() {
         let existing_call = Call {
             to: TxKind::Call(Address::repeat_byte(0x11)),
@@ -475,7 +445,7 @@ mod tests {
                 ..Default::default()
             },
             calls: vec![existing_call],
-            nonce_key: Some(U256::ZERO),
+            nonce_key: Some(alloy_primitives::U256::ZERO),
             ..Default::default()
         };
 
@@ -695,6 +665,8 @@ mod tests {
 
     #[test]
     fn test_aa_roundtrip_via_tx_env() {
+        use alloy_primitives::U256;
+
         let calls = vec![
             Call {
                 to: Address::repeat_byte(0x11).into(),
@@ -780,7 +752,7 @@ mod tests {
         };
 
         let fee_token = address!("0x20c0000000000000000000000000000000000000");
-        let nonce_key = U256::from(42);
+        let nonce_key = alloy_primitives::U256::from(42);
 
         let req = TempoTransactionRequest {
             inner: TransactionRequest {
