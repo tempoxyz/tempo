@@ -19,7 +19,6 @@ use commonware_runtime::{
     BufferPooler, Clock, ContextCell, Handle, Metrics, Network, Spawner, Storage,
     buffer::paged::CacheRef, spawn_cell,
 };
-use commonware_utils::NZUsize;
 use eyre::{OptionExt as _, WrapErr as _, ensure};
 use rand_core::{CryptoRng, Rng};
 use tempo_node::TempoFullNode;
@@ -41,8 +40,6 @@ use super::block::Block;
 /// To better support peers near tip during network instability, we multiply
 /// the consensus activity timeout by this factor.
 const SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER: u64 = 10;
-// Ensure the marshal delivers blocks sequentially.
-const MAX_PENDING_ACKS: NonZeroUsize = NZUsize!(1);
 
 /// Settings for [`Engine`].
 ///
@@ -156,6 +153,25 @@ where
 
         let scheme_provider = SchemeProvider::new();
 
+        // The executor acknowledges finalized blocks only once the execution
+        // layer durably persisted them, which reth does in batches. Reth holds
+        // up to `persistence_backpressure_threshold + memory_block_buffer_target`
+        // unpersisted canonical blocks in memory before it stops processing
+        // engine requests, so marshal may dispatch as many unacknowledged
+        // blocks. Acknowledgements cannot stall with the queue full: reth's
+        // config validation requires this depth to exceed
+        // `persistence_threshold`, which must be crossed for reth to persist
+        // at all, and that in turn to exceed
+        // `memory_block_buffer_target + num_state_masking_blocks`, by which
+        // the durable frontier trails the head after a persistence run.
+        let engine_args = &execution_node.config.engine;
+        let max_pending_acks = engine_args
+            .persistence_backpressure_threshold()
+            .checked_add(engine_args.memory_block_buffer_target())
+            .and_then(|acks| usize::try_from(acks).ok())
+            .and_then(NonZeroUsize::new)
+            .ok_or_eyre("execution layer persistence settings yield no valid marshal ack depth")?;
+
         let alias::marshal::Initialized {
             actor: marshal,
             mailbox: marshal_mailbox,
@@ -173,7 +189,7 @@ where
                     self.views_to_track
                         .saturating_mul(SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER),
                 ),
-                max_pending_acks: MAX_PENDING_ACKS,
+                max_pending_acks,
                 finalized_blocks_retention: self.finalized_blocks_retention,
                 epoch_strategy: epoch_strategy.clone(),
                 scheme_provider: scheme_provider.clone(),

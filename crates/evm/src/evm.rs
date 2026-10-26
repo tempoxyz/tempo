@@ -68,14 +68,6 @@ impl reth_evm_ethereum::EvmFactory for TempoEvmFactory {
         spec.into()
     }
 
-    fn execution_config(
-        &self,
-        spec: Self::SpecId,
-        version: evm2::Version,
-    ) -> evm2::ExecutionConfig<Self::Types> {
-        evm2::ExecutionConfig::for_spec_and_version(spec, version)
-    }
-
     fn tx_registry(
         &self,
         spec: Self::SpecId,

@@ -151,7 +151,6 @@ mod tests {
     use alloy::primitives::{Address, B256, Bytes, U256, address};
     use alloy_sol_types::{SolCall, SolError, SolInterface};
     use evm2::precompiles::PrecompileError;
-    use revm::precompile::PrecompileResult;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::{
         precompiles::{TIP20Error, UnknownFunctionSelector},
@@ -172,8 +171,8 @@ mod tests {
     use crate::{
         TempoState,
         test_utils::{
-            MockL1Reader, TestContext, TestPrecompiles, call_precompile, test_context,
-            test_precompiles, test_storage_provider,
+            MockL1Reader, PrecompileResult, TestContext, TestPrecompiles, call_precompile,
+            test_context, test_precompiles, test_storage_provider,
         },
     };
 
@@ -346,15 +345,13 @@ mod tests {
             &rules,
             IRolesAuth::hasRoleCall {
                 account,
-                role: (*ISSUER_ROLE).into(),
+                role: ISSUER_ROLE,
             },
             caller,
         );
         assert_allowed(
             &rules,
-            IRolesAuth::getRoleAdminCall {
-                role: (*ISSUER_ROLE).into(),
-            },
+            IRolesAuth::getRoleAdminCall { role: ISSUER_ROLE },
             caller,
         );
     }
@@ -461,7 +458,7 @@ mod tests {
     fn role_mutations_are_disallowed() {
         let caller = Address::repeat_byte(0x11);
         let account = Address::repeat_byte(0x22);
-        let role = (*ISSUER_ROLE).into();
+        let role = ISSUER_ROLE;
         let rules = rules();
 
         assert_unauthorized(&rules, IRolesAuth::grantRoleCall { role, account }, caller);

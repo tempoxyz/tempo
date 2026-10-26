@@ -44,8 +44,8 @@ use reth_provider::{
 use reth_static_file_types::{ChangesetOffset, SegmentHeader};
 use reth_storage_api::{DBProvider, StateRootProvider};
 use reth_trie::{HashedPostState, HashedStorage, hashed_cursor::zero_destroyed_account_storage};
+use reth_trie_common::bundle_state::{AccountStatus, BundleAccount};
 use reth_trie_db::DatabaseHashedCursorFactory;
-use revm::database::{AccountStatus, BundleAccount};
 use tempo_chainspec::spec::TempoChainSpecParser;
 use tempo_contracts::precompiles::VALIDATOR_CONFIG_V2_ADDRESS;
 use tracing::{info, warn};
