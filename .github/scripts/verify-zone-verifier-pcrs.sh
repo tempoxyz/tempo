@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Verify every zone verifier PCR entry against the prover image it names.
 # Usage: verify-zone-verifier-pcrs.sh [path/to/pcrs.json]
-# Requires docker, jq and GH_TOKEN with read access to tempoxyz/zones. For each entry:
-# - the commit exists on tempoxyz/zones main and is the image's OCI revision;
+# Requires docker, jq and GH_TOKEN with read access to tempoxyz/tempo. For each entry:
+# - the commit exists on tempoxyz/tempo main and is the image's OCI revision;
 # - the image's own nitro-cli measures its EIF with the entry's PCRs;
 # - the image's Nitro PCR labels match both the entry and the measured EIF.
 # Field formats are enforced at compile time by crates/precompiles/build.rs.
@@ -27,10 +27,10 @@ while read -r -u 3 fork; do
   echo "::group::$fork: $image"
 
   # `behind` or `identical` means the commit is an ancestor of main.
-  status=$(gh api "repos/tempoxyz/zones/compare/main...$sha" --jq .status 2>/dev/null || echo missing)
+  status=$(gh api "repos/tempoxyz/tempo/compare/main...$sha" --jq .status 2>/dev/null || echo missing)
   case "$status" in
     behind | identical) ;;
-    *) fail "commit $sha is not on tempoxyz/zones main (compare status: $status)" ;;
+    *) fail "commit $sha is not on tempoxyz/tempo main (compare status: $status)" ;;
   esac
 
   docker pull --quiet --platform linux/amd64 "$image" >/dev/null
@@ -38,7 +38,7 @@ while read -r -u 3 fork; do
   revision=$(jq -r '.["org.opencontainers.image.revision"] // ""' <<<"$labels")
   source=$(jq -r '.["org.opencontainers.image.source"] // ""' <<<"$labels")
   [[ "$revision" == "$sha" ]] || fail "image revision is '$revision', expected $sha"
-  [[ "$source" == https://github.com/tempoxyz/zones ]] || fail "image source is '$source'"
+  [[ "$source" == https://github.com/tempoxyz/tempo ]] || fail "image source is '$source'"
   label_pcrs=$(jq -cS --argjson indexes "$indexes" \
     '. as $l | $indexes | map({key: ., value: $l["xyz.tempo.zone-prover.nitro.pcr\(.)"]}) | from_entries' <<<"$labels")
   [[ "$label_pcrs" == "$expected" ]] || fail "image PCR labels $label_pcrs differ from $expected"

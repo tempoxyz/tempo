@@ -1,0 +1,146 @@
+{
+  "abi": [
+    {
+      "type": "constructor",
+      "inputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "function",
+      "name": "depositWithId",
+      "inputs": [
+        {
+          "name": "token",
+          "type": "address",
+          "internalType": "address"
+        },
+        {
+          "name": "amount",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "commitmentId",
+          "type": "bytes32",
+          "internalType": "bytes32"
+        }
+      ],
+      "outputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "function",
+      "name": "operators",
+      "inputs": [
+        {
+          "name": "",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "",
+          "type": "bool",
+          "internalType": "bool"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "setOperator",
+      "inputs": [
+        {
+          "name": "operator",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "outputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "function",
+      "name": "withdrawV2",
+      "inputs": [
+        {
+          "name": "token",
+          "type": "address",
+          "internalType": "address"
+        },
+        {
+          "name": "recipient",
+          "type": "address",
+          "internalType": "address"
+        },
+        {
+          "name": "amount",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "outputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "event",
+      "name": "BridgedDeposit",
+      "inputs": [
+        {
+          "name": "user",
+          "type": "address",
+          "indexed": false,
+          "internalType": "address"
+        },
+        {
+          "name": "token",
+          "type": "address",
+          "indexed": false,
+          "internalType": "address"
+        },
+        {
+          "name": "amount",
+          "type": "uint256",
+          "indexed": false,
+          "internalType": "uint256"
+        },
+        {
+          "name": "commitmentId",
+          "type": "bytes32",
+          "indexed": false,
+          "internalType": "bytes32"
+        }
+      ],
+      "anonymous": false
+    },
+    {
+      "type": "event",
+      "name": "BridgedWithdrawal",
+      "inputs": [
+        {
+          "name": "token",
+          "type": "address",
+          "indexed": false,
+          "internalType": "address"
+        },
+        {
+          "name": "recipient",
+          "type": "address",
+          "indexed": false,
+          "internalType": "address"
+        },
+        {
+          "name": "amount",
+          "type": "uint256",
+          "indexed": false,
+          "internalType": "uint256"
+        }
+      ],
+      "anonymous": false
+    }
+  ],
+  "bytecode": {
+    "object": "0x6080604052348015600e575f5ffd5b50466105391460635760405162461bcd60e51b815260206004820152601460248201527f62656e63686d61726b20636861696e206f6e6c79000000000000000000000000604482015260640160405180910390fd5b335f908152602081905260409020805460ff19166001179055610479806100895f395ff3fe608060405234801561000f575f5ffd5b506004361061004a575f3560e01c806313e7c9d81461004e578063800b170e146100845780639c66c25d14610099578063b3ab15fb146100ac575b5f5ffd5b61007061005c36600461039a565b5f6020819052908152604090205460ff1681565b604051901515815260200160405180910390f35b6100976100923660046103ba565b6100bf565b005b6100976100a73660046103ea565b6101cc565b6100976100ba36600461039a565b61030f565b6040516323b872dd60e01b8152336004820152306024820152604481018390526001600160a01b038416906323b872dd906064016020604051808303815f875af115801561010f573d5f5f3e3d5ffd5b505050506040513d601f19601f820116820180604052508101906101339190610424565b6101765760405162461bcd60e51b815260206004820152600f60248201526e1d1c985b9cd9995c8819985a5b1959608a1b60448201526064015b60405180910390fd5b604080513381526001600160a01b0385166020820152908101839052606081018290527fafd8075a3b864f5ad644cf5cd8d52f1a8fa085e0242eac1c5002000682049e2b906080015b60405180910390a1505050565b335f9081526020819052604090205460ff166102195760405162461bcd60e51b815260206004820152600c60248201526b3737ba1037b832b930ba37b960a11b604482015260640161016d565b60405163a9059cbb60e01b81526001600160a01b0383811660048301526024820183905284169063a9059cbb906044016020604051808303815f875af1158015610265573d5f5f3e3d5ffd5b505050506040513d601f19601f820116820180604052508101906102899190610424565b6102c75760405162461bcd60e51b815260206004820152600f60248201526e1d1c985b9cd9995c8819985a5b1959608a1b604482015260640161016d565b604080516001600160a01b038086168252841660208201529081018290527f569c5f8e82fc7840c8b469ffbc65786b0c4d9d78ed3c39a45962abd40002715d906060016101bf565b335f9081526020819052604090205460ff1661035c5760405162461bcd60e51b815260206004820152600c60248201526b3737ba1037b832b930ba37b960a11b604482015260640161016d565b6001600160a01b03165f908152602081905260409020805460ff19166001179055565b80356001600160a01b0381168114610395575f5ffd5b919050565b5f602082840312156103aa575f5ffd5b6103b38261037f565b9392505050565b5f5f5f606084860312156103cc575f5ffd5b6103d58461037f565b95602085013595506040909401359392505050565b5f5f5f606084860312156103fc575f5ffd5b6104058461037f565b92506104136020850161037f565b929592945050506040919091013590565b5f60208284031215610434575f5ffd5b815180151581146103b3575f5ffdfea26469706673582212206ad07c85f1a882aa7d521526484b1156e8d8f20b3e53bf9f18c1a0e73b7c47df64736f6c634300081e0033"
+  }
+}

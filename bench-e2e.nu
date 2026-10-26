@@ -1354,13 +1354,13 @@ def "main render-txgen-spec" [
     --duration: int = 90                                # Public-mix duration in seconds
 ] {
     let spec = (txgen-resolve-bench-spec $preset $out_dir)
-    if $spec.scenario_id == "public-mix" {
+    if $spec.scenario_id in $TXGEN_HELPER_PUBLIC_MIX_PRESETS {
         let window_ms = ($env.TXGEN_ZONE_SETTLEMENT_WINDOW_MS? | default "3000" | into int)
         if $window_ms < 1 or $tps < 1 or $duration < 1 {
             error make {msg: "Public mix requires positive TPS, duration, and zone sizing window"}
         }
         let automatic_zones = ([1 (($tps * $window_ms / 210000) | math ceil | into int)] | math max)
-        let zones = ($env.TXGEN_ZONE_COUNT? | default $automatic_zones | into int)
+        let zones = (txgen-zone-count $spec.scenario_id $automatic_zones)
         print (txgen-prepare-public-mix-preset $spec.spec_path ($tps * $duration) $accounts $zones 1337 --out-dir $out_dir)
     } else {
         print $spec.spec_path

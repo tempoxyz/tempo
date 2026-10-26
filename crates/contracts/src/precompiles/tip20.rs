@@ -181,6 +181,7 @@ crate::sol! {
         error InvalidSignature();
         error LogoURITooLong();
         error InvalidLogoURI();
+        error RootKeyRetired(address account);
     }
 }
 
