@@ -13,7 +13,6 @@ use alloy::{
 use alloy_eips::{Decodable2718, Encodable2718};
 use alloy_primitives::TxKind;
 use reth_primitives_traits::transaction::TxHashRef;
-use reth_revm::context_interface::cfg::gas::COLD_ACCOUNT_ACCESS_COST;
 use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
 use tempo_node::rpc::TempoTransactionRequest;
 use tempo_primitives::{

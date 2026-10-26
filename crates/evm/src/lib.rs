@@ -112,13 +112,13 @@ impl TempoEvmConfig {
         self
     }
 
-    /// Returns the chain spec
     /// Uses the supplied EVM factory for execution and custom precompile construction.
     pub fn with_evm_factory(mut self, factory: TempoEvmFactory) -> Self {
         self.evm_factory = factory;
         self
     }
 
+    /// Returns the chain spec
     pub const fn chain_spec(&self) -> &Arc<TempoChainSpec> {
         &self.chain_spec
     }

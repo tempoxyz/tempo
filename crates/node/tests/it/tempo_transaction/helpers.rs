@@ -17,7 +17,6 @@ use alloy::{
 use alloy_primitives::TxKind;
 use core::num::NonZeroU64;
 use eyre::WrapErr;
-use reth_revm::context_interface::cfg::gas::COLD_ACCOUNT_ACCESS_COST;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
 use tempo_node::rpc::TempoTransactionRequest;
@@ -36,6 +35,10 @@ use tempo_primitives::{
 };
 
 use super::types::*;
+
+/// Gas of one cold account access.
+pub(crate) const COLD_ACCOUNT_ACCESS_COST: u64 =
+    evm2::interpreter::gas::COLD_ACCOUNT_ACCESS_COST as u64;
 
 pub(crate) fn nonzero_timestamp(timestamp: u64) -> NonZeroU64 {
     NonZeroU64::new(timestamp).expect("test timestamp must be non-zero")

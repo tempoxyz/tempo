@@ -103,7 +103,7 @@ pub(crate) fn execute_precompile<T>(
 where
     T: EvmTypes<BlockEnvExt = tempo_primitives::TempoBlockExt>,
 {
-    if message.destination != message.code_address {
+    if message.destination != message.call_target {
         return Err(PrecompileError::Revert(
             SolError::abi_encode(&DelegateCallNotAllowed {}).into(),
         ));
@@ -229,6 +229,7 @@ mod tests {
             caller,
             input: Bytes::copy_from_slice(data),
             destination: target,
+            call_target: target,
             code_address: target,
             ..Default::default()
         };

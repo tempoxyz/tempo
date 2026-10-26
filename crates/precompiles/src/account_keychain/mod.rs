@@ -33,7 +33,7 @@ use crate::{
     storage::{Handler, Mapping, Set, StorageCtx, account_config_commitment},
     tip20_factory::TIP20Factory,
 };
-use alloy::primitives::{Address, B256, FixedBytes, KECCAK256_EMPTY, TxKind, U256, keccak256};
+use alloy::primitives::{Address, B256, FixedBytes, TxKind, U256, keccak256};
 use tempo_precompiles_macros::{Storable, contract};
 
 /// Allowed TIP-20 selectors for recipient-constrained rules.
@@ -272,7 +272,7 @@ impl AccountKeychain {
             let spec = self.storage.spec();
             let invalid_parent = StorageCtx::with_warm_caller_info(msg_sender, |info| {
                 let commitment = account_config_commitment(info, spec)?;
-                Ok(!commitment.is_zero() && info.code_hash != KECCAK256_EMPTY)
+                Ok(!commitment.is_zero() && !info.is_empty_code_hash())
             })?;
             if invalid_parent {
                 return Err(AccountKeychainError::invalid_key_id().into());
@@ -295,7 +295,7 @@ impl AccountKeychain {
             if !valid_account(key_id, self.storage.spec())
                 || self
                     .storage
-                    .with_account_info(key_id, |info| Ok(info.code_hash != KECCAK256_EMPTY))?
+                    .with_account_info(key_id, |info| Ok(!info.is_empty_code_hash()))?
             {
                 return Err(AccountKeychainError::invalid_key_id().into());
             }

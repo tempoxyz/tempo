@@ -113,7 +113,7 @@ mod tests {
     use reth_execution_types::BlockExecutionResult;
     use reth_primitives_traits::SealedHeader;
     use reth_storage_api::noop::NoopProvider;
-    use revm::database::BundleState;
+    use reth_trie_common::bundle_state::BundleState;
     use tempo_chainspec::spec::MODERATO;
     use tempo_primitives::{
         TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope, TempoTxType,

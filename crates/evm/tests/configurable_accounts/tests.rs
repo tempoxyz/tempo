@@ -1041,7 +1041,6 @@ fn replay_is_rejected_from_t14() {
                 result: result.clone(),
                 actions: vec![],
                 expiring_nonce: None,
-                validator_fee: U256::ZERO,
             },
             |_| {},
         );

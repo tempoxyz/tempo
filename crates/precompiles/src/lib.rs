@@ -66,7 +66,7 @@ use alloy::{primitives::Address, sol, sol_types::SolError};
 use evm2::precompiles::PrecompileHalt;
 use evm2::{
     Evm, EvmTypes, EvmTypesHost, Precompiles as BasePrecompiles, SpecId,
-    evm::precompile::PrecompileProvider,
+    evm::{PrewarmSet, precompile::PrecompileProvider},
     interpreter::{GasTracker, Message, MessageKind},
     precompiles::{MovePrecompileError, PrecompileError, PrecompileId, PrecompileResult},
 };
@@ -192,14 +192,6 @@ impl<T: EvmTypesHost> TempoPrecompiles<T> {
         }
     }
 
-    #[inline]
-    fn contains_tempo(&self, address: &Address) -> bool {
-        address.is_tip20()
-            || SYSTEM_PRECOMPILES
-                .iter()
-                .any(|(candidate, activation)| candidate == address && self.spec >= *activation)
-    }
-
     fn call_tempo(&self, address: Address, calldata: &[u8], caller: Address) -> PrecompileResult {
         if address.is_tip20() {
             TIP20Token::from_address(address)
@@ -260,12 +252,16 @@ where
         self.base.addresses()
     }
 
+    fn warm_addresses(&self, warm: &mut PrewarmSet) {
+        self.base.warm_addresses(warm);
+    }
+
     fn precompile_ids(&self) -> Vec<(Address, PrecompileId)> {
         self.base.precompile_ids()
     }
 
     fn contains(&self, address: &Address) -> bool {
-        self.base.contains(address) || self.contains_tempo(address)
+        self.base.contains(address) || address.is_precompile(self.spec)
     }
 
     fn execute(
@@ -274,13 +270,17 @@ where
         message: &Message<T>,
         gas: &mut GasTracker,
     ) -> Option<PrecompileResult> {
-        if let Some(result) = self.base.execute(evm, message, gas) {
-            return Some(result);
+        // `contains` checks short addresses without hashing, so Tempo calls skip the map lookup.
+        if self.base.contains(&message.call_target) {
+            return self.base.execute(evm, message, gas);
         }
-        if !self.contains_tempo(&message.code_address) {
+        // Dispatch on the requested callee like evm2's membership check: code stored at a
+        // precompile address, such as EIP-7702 delegation code from a state override, never
+        // replaces the native precompile.
+        if !message.call_target.is_precompile(self.spec) {
             return None;
         }
-        if message.destination != message.code_address {
+        if message.destination != message.call_target {
             return Some(Err(PrecompileError::Revert(
                 DelegateCallNotAllowed {}.abi_encode().into(),
             )));
@@ -291,7 +291,7 @@ where
             .with_actions(self.actions.clone())
             .with_non_creditable_slots(self.non_creditable_slots.clone());
         Some(StorageCtx::enter(&mut storage, || {
-            self.call_tempo(message.code_address, &message.input, message.caller)
+            self.call_tempo(message.call_target, &message.input, message.caller)
         }))
     }
 }
@@ -418,6 +418,7 @@ mod tests {
             kind,
             gas_limit: 1_000_000,
             destination,
+            call_target: code_address,
             code_address,
             input: calldata,
             caller,
@@ -428,6 +429,45 @@ mod tests {
             .execute(evm, &message, &mut gas)
             .expect("Tempo precompile must be registered");
         (result, gas)
+    }
+
+    #[test]
+    fn test_precompile_dispatches_on_call_target_over_delegation_code() {
+        // Delegation code on a precompile address, which a state override can set, does not
+        // replace the precompile: dispatch uses the called address.
+        let delegate = Address::repeat_byte(0xd1);
+        let mut evm = test_evm(TempoHardfork::T3, true);
+        let mut precompiles = test_tempo_precompiles(TempoHardfork::T3);
+        let message = Message::<TestTypes> {
+            gas_limit: 1_000_000,
+            destination: PATH_USD_ADDRESS,
+            call_target: PATH_USD_ADDRESS,
+            code_address: delegate,
+            code: Bytecode::new_eip7702(delegate),
+            input: Bytes::new(),
+            ..Default::default()
+        };
+        assert!(precompiles.contains(&message.call_target));
+        let mut gas = GasTracker::new(message.gas_limit);
+        let result = precompiles
+            .execute(&mut evm, &message, &mut gas)
+            .expect("the precompile at the called address must run");
+        assert!(matches!(result, Err(PrecompileError::Revert(_))));
+
+        // A delegatecall to it is still rejected.
+        let message = Message::<TestTypes> {
+            kind: MessageKind::DelegateCall,
+            destination: Address::repeat_byte(0xca),
+            ..message
+        };
+        let mut gas = GasTracker::new(message.gas_limit);
+        let result = precompiles.execute(&mut evm, &message, &mut gas).unwrap();
+        match result {
+            Err(PrecompileError::Revert(output)) => {
+                DelegateCallNotAllowed::abi_decode(&output).unwrap();
+            }
+            other => panic!("expected DelegateCallNotAllowed, got {other:?}"),
+        }
     }
 
     #[test]
@@ -465,6 +505,7 @@ mod tests {
                 .0
             };
 
+            // Static calls into mutating functions should fail
             for calldata in [
                 ITIP20::transferCall {
                     to: Address::random(),
@@ -491,6 +532,7 @@ mod tests {
                 }
             }
 
+            // Static calls into view functions should succeed
             let result = call_static(
                 ITIP20::balanceOfCall {
                     account: Address::random(),
@@ -570,7 +612,8 @@ mod tests {
         let decoded = tempo_contracts::precompiles::UnknownFunctionSelector::abi_decode(&unknown)
             .expect("T1: expected UnknownFunctionSelector error");
         assert_eq!(decoded.selector.as_slice(), &[0xAA, 0xAA, 0xAA, 0xAA]);
-        // Verify gas is tracked for both cases (unknown selector may cost slightly more due `INPUT_PER_WORD_COST`)
+        // Verify gas is tracked for both cases (unknown selector may cost slightly more due to its
+        // input length).
         assert!(unknown_gas.spent() >= empty_gas.spent());
 
         // Pre-T1 (T0): invalid calldata should return a halted output

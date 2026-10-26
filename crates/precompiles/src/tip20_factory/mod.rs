@@ -73,9 +73,8 @@ impl TIP20Factory {
             return Ok(false);
         }
         // Check if the token has code deployed (non-empty code hash)
-        self.storage.with_account_info(token, |info| {
-            Ok(info.code_hash != alloy::primitives::KECCAK256_EMPTY)
-        })
+        self.storage
+            .with_account_info(token, |info| Ok(!info.is_empty_code_hash()))
     }
 
     /// Deploys a new TIP-20 token at a deterministic address derived from `sender` and `salt`.

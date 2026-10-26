@@ -7,7 +7,7 @@ use super::{
 use alloy::consensus::BlockHeader as _;
 use alloy_primitives::{Address, U256};
 use reth_primitives_traits::RecoveredBlock;
-use reth_revm::db::{TransitionAccount, TransitionState};
+use reth_trie_common::bundle_state::{TransitionAccount, TransitionState};
 use std::{collections::BTreeMap, fmt::Debug};
 use tempo_primitives::Block;
 
@@ -263,13 +263,10 @@ impl<'a, T> Comparison<'a, T> {
 pub(super) struct AccountDelta<'a>(pub(super) Option<&'a TransitionAccount>);
 
 impl<'a> AccountDelta<'a> {
-    pub(super) fn info<T: Eq>(
-        self,
-        get: impl Fn(&reth_revm::state::AccountInfo) -> T,
-    ) -> Option<(T, T)> {
+    pub(super) fn info<T: Eq>(self, get: impl Fn(&evm2::evm::AccountInfo) -> T) -> Option<(T, T)> {
         let account = self.0?;
         // Also compare initial values on creation and final values on destruction.
-        let default = reth_revm::state::AccountInfo::default();
+        let default = evm2::evm::AccountInfo::default();
         Self::changed(
             get(account.previous_info.as_ref().unwrap_or(&default)),
             get(account.info.as_ref().unwrap_or(&default)),

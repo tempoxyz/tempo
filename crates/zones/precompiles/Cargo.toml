@@ -30,9 +30,6 @@ alloy-rlp = { workspace = true, default-features = false }
 alloy-sol-types = { workspace = true, default-features = false }
 evm2 = { workspace = true, default-features = false }
 
-# revm
-revm = { workspace = true, default-features = false }
-
 # crypto
 aes-gcm = { version = "0.10.3", default-features = false, features = ["aes", "alloc"] }
 k256 = { version = "0.13.4", default-features = false, features = ["arithmetic", "ecdh"] }
@@ -68,7 +65,6 @@ std = [
     "alloy-rlp/std",
     "alloy-sol-types/std",
     "evm2/std",
-    "revm/std",
     "aes-gcm/std",
     "k256/std",
     "sha2/std",
