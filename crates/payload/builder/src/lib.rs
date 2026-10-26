@@ -471,7 +471,7 @@ where
         // work would consume that window.
         let payload_build_budget = attributes.payload_build_budget();
         // Snapshot the shared estimator once so every stop decision in this
-        // build uses the same multiplier and validation feedback.
+        // build uses the same multiplier, dry build finish and validation feedback.
         let build_plan = payload_build_budget
             .map(|build_budget| self.estimator.build_plan(Instant::now(), build_budget));
         let validation_latency = build_plan.and_then(|plan| plan.validation_latency());
@@ -503,7 +503,7 @@ where
                         transactions = pool_transactions_included,
                         estimated_rlp_block_size,
                         build_time_multiplier = plan.build_time_multiplier(),
-                        dry_build_finish = ?plan.dry_finish(),
+                        dry_finish = ?plan.dry_finish(),
                         "stopping pool transaction execution before payload build budget is exhausted"
                     );
                     break BlockBuildStopReason::BuildBudget;

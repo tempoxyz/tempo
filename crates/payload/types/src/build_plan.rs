@@ -9,15 +9,15 @@ pub(crate) const BUILD_TIME_MULTIPLIER_SCALE: u64 = 1_000_000;
 
 /// Point-in-time inputs for one payload build's stop decision.
 ///
-/// Reusing a plan keeps the same multiplier and validation feedback for every
-/// decision within that build.
+/// Reusing a plan keeps the same multiplier, dry build finish and validation
+/// feedback for every decision within that build.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BuildPlan {
     /// Remaining proposal budget handed to this build.
     pub build_budget: Duration,
-    pub(crate) multiplier_scaled: u64,
-    pub(crate) dry_finish: Duration,
-    pub(crate) validation_latency: Option<ValidationLatencyEstimate>,
+    multiplier_scaled: u64,
+    dry_finish: Duration,
+    validation_latency: Option<ValidationLatencyEstimate>,
 }
 
 /// Projected total duration of a build and its validation, including elapsed time.
@@ -35,26 +35,25 @@ pub struct PayloadBudgetDecision {
 }
 
 impl BuildPlan {
-    /// Creates a plan from a fixed-point multiplier and validation feedback.
+    /// Creates a plan from a fixed-point multiplier, a dry build finish and
+    /// validation feedback.
     ///
     /// `multiplier_scaled` uses [`BUILD_TIME_MULTIPLIER_SCALE`] units per 1.0:
     /// `1_350_000` projects 135 ms of total replayable build work, including
-    /// finalization, from 100 ms of work performed so far.
+    /// finalization, from 100 ms of work performed so far. It must be at least
+    /// [`BUILD_TIME_MULTIPLIER_SCALE`], or the plan would project less work than
+    /// has already been performed. `dry_finish` is the least builder work left
+    /// once the build has waited for transactions.
     /// `build_budget` includes time already elapsed in the build. If
     /// `validation_latency` is `None` or cannot estimate the current workload,
     /// validation reserves the full projected builder work.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `multiplier_scaled` is below [`BUILD_TIME_MULTIPLIER_SCALE`],
-    /// which would project less work than has already been performed.
-    #[cfg(test)]
     pub(crate) fn new(
         build_budget: Duration,
         multiplier_scaled: u64,
+        dry_finish: Duration,
         validation_latency: Option<ValidationLatencyEstimate>,
     ) -> Self {
-        assert!(
+        debug_assert!(
             multiplier_scaled >= BUILD_TIME_MULTIPLIER_SCALE,
             "build time multiplier must be >= 1.0"
         );
@@ -62,7 +61,7 @@ impl BuildPlan {
         Self {
             build_budget,
             multiplier_scaled,
-            dry_finish: Duration::ZERO,
+            dry_finish,
             validation_latency,
         }
     }
@@ -72,7 +71,8 @@ impl BuildPlan {
         self.multiplier_scaled as f64 / BUILD_TIME_MULTIPLIER_SCALE as f64
     }
 
-    /// The finish reserved after this build has waited for transactions.
+    /// The least builder work reserved after the work done so far once this
+    /// build has waited for transactions; zero before any dry build finished.
     pub fn dry_finish(&self) -> Duration {
         self.dry_finish
     }
@@ -86,8 +86,9 @@ impl BuildPlan {
     ///
     /// `elapsed` is wall-clock time spent in the builder so far, `idle_elapsed` the
     /// part of it spent waiting for transactions, which validators do not replay.
-    /// Builder work is projected with the multiplier, with a fixed finish floor
-    /// after waiting for transactions. Validator feedback is capped at that projection.
+    /// Builder work is projected with the multiplier, and once the build has
+    /// waited for transactions, is at least the work so far plus the dry build
+    /// finish. Validator feedback is capped at that projection.
     /// Absent or unusable feedback falls back to the builder projection. The total
     /// includes work already performed, with proposer idle time counted once.
     pub fn decision(
@@ -148,7 +149,7 @@ mod tests {
 
     #[test]
     fn payload_budget_accounts_for_leader_idle_once() {
-        let decision = BuildPlan::new(Duration::MAX, 1_350_000, None).decision(
+        let decision = BuildPlan::new(Duration::MAX, 1_350_000, Duration::ZERO, None).decision(
             Duration::from_millis(100),
             Duration::ZERO,
             ValidationLatencyWorkload::default(),
@@ -160,7 +161,7 @@ mod tests {
         );
         assert_eq!(decision.total_reserved, Duration::from_millis(270));
 
-        let decision = BuildPlan::new(Duration::MAX, 1_350_000, None).decision(
+        let decision = BuildPlan::new(Duration::MAX, 1_350_000, Duration::ZERO, None).decision(
             Duration::from_millis(350),
             Duration::from_millis(250),
             ValidationLatencyWorkload::default(),
@@ -177,11 +178,8 @@ mod tests {
     fn payload_budget_uses_validator_feedback_when_available() {
         let workload = ValidationLatencyWorkload::new(100, 0);
         let validation_latency = validation_latency_estimate(workload, Duration::from_millis(80));
-        let decision = BuildPlan::new(Duration::MAX, 1_350_000, validation_latency).decision(
-            Duration::from_millis(100),
-            Duration::ZERO,
-            workload,
-        );
+        let decision = BuildPlan::new(Duration::MAX, 1_350_000, Duration::ZERO, validation_latency)
+            .decision(Duration::from_millis(100), Duration::ZERO, workload);
 
         assert_eq!(decision.predicted_builder_work, Duration::from_millis(135));
         assert_eq!(decision.predicted_validator_work, Duration::from_millis(80));
@@ -194,16 +192,39 @@ mod tests {
             ValidationLatencyWorkload::new(100, 10),
             Duration::from_millis(100),
         );
-        let decision = BuildPlan::new(Duration::MAX, 1_350_000, validation_latency).decision(
-            Duration::from_millis(100),
-            Duration::ZERO,
-            ValidationLatencyWorkload::new(200, 10),
-        );
+        let decision = BuildPlan::new(Duration::MAX, 1_350_000, Duration::ZERO, validation_latency)
+            .decision(
+                Duration::from_millis(100),
+                Duration::ZERO,
+                ValidationLatencyWorkload::new(200, 10),
+            );
 
         assert_eq!(
             decision.predicted_validator_work,
             Duration::from_millis(135)
         );
         assert_eq!(decision.total_reserved, Duration::from_millis(270));
+    }
+
+    #[test]
+    fn payload_budget_reserves_dry_finish_after_waiting() {
+        let plan = BuildPlan::new(Duration::MAX, 1_150_000, Duration::from_millis(30), None);
+
+        // A build that never waited only projects with the multiplier.
+        let decision = plan.decision(
+            Duration::from_millis(100),
+            Duration::ZERO,
+            ValidationLatencyWorkload::default(),
+        );
+        assert_eq!(decision.predicted_builder_work, Duration::from_millis(115));
+
+        // After waiting, at least the dry build finish follows the work so far.
+        let decision = plan.decision(
+            Duration::from_millis(110),
+            Duration::from_millis(100),
+            ValidationLatencyWorkload::default(),
+        );
+        assert_eq!(decision.predicted_builder_work, Duration::from_millis(40));
+        assert_eq!(decision.total_reserved, Duration::from_millis(180));
     }
 }

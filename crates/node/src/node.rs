@@ -11,6 +11,7 @@ use crate::{
     },
 };
 use alloy_primitives::B256;
+use eyre::WrapErr as _;
 use reth_chainspec::{ChainKind, EthChainSpec, Hardforks, NamedChain};
 use reth_ethereum::network::{NetworkHandle, PeersInfo as _, primitives::BasicNetworkPrimitives};
 use reth_node_api::{
@@ -47,7 +48,8 @@ use tempo_chainspec::{TempoConsensusSpec, hardfork::TempoHardfork, spec::TempoCh
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_payload_builder::{TempoPayloadBuilder, TempoPayloadBuilderConfig};
 use tempo_payload_types::{
-    DEFAULT_BUILD_TIME_MULTIPLIER, Estimator, EstimatorConfig, TempoPayloadAttributes,
+    DEFAULT_BUILD_TIME_MULTIPLIER, Estimator, EstimatorConfig, EstimatorConfigError,
+    TempoPayloadAttributes,
 };
 use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType};
 use tempo_transaction_pool::{
@@ -116,9 +118,10 @@ pub struct TempoNodeArgs {
     /// Initial estimate of total replayable payload build work divided by work
     /// at transaction cutoff.
     ///
-    /// The builder updates this at runtime. Higher values stop pool transaction
+    /// The builder learns the ratio at runtime and returns to this value after
+    /// five minutes without a paced build. Higher values stop pool transaction
     /// execution earlier to leave more room for `builder_finish`. Must be
-    /// between 1.0 and 1.7, the range the builder learns it in.
+    /// between 1.0 and 1.7.
     #[arg(
         long = "builder.build-time-multiplier",
         default_value_t = DEFAULT_BUILD_TIME_MULTIPLIER,
@@ -893,6 +896,19 @@ impl Default for TempoPayloadBuilderBuilder {
     }
 }
 
+impl TempoPayloadBuilderBuilder {
+    /// Returns [`Self::estimator`], or a new estimator seeded from
+    /// [`Self::build_time_multiplier`] when none is set.
+    pub fn resolve_estimator(&self) -> Result<Estimator, EstimatorConfigError> {
+        match &self.estimator {
+            Some(estimator) => Ok(estimator.clone()),
+            None => Estimator::new(EstimatorConfig {
+                build_time_multiplier: self.build_time_multiplier,
+            }),
+        }
+    }
+}
+
 impl<Node> PayloadBuilderBuilder<Node, TempoTransactionPool<Node::Provider>, TempoEvmConfig>
     for TempoPayloadBuilderBuilder
 where
@@ -916,18 +932,8 @@ where
         });
 
         let estimator = self
-            .estimator
-            .map_or_else(
-                || {
-                    Estimator::new(EstimatorConfig {
-                        build_time_multiplier: self.build_time_multiplier,
-                    })
-                },
-                Ok,
-            )
-            .map_err(|reason| {
-                eyre::eyre!("invalid payload builder build time multiplier: {reason}")
-            })?;
+            .resolve_estimator()
+            .wrap_err("invalid payload builder estimator configuration")?;
         Ok(TempoPayloadBuilder::new(
             pool,
             ctx.provider().clone(),
@@ -946,15 +952,12 @@ where
     }
 }
 
-/// Parses `--builder.build-time-multiplier`, rejecting values the estimator
-/// would reject.
-///
-/// Validating here rejects a bad value at parse time, with an error that
-/// names the flag, before anything builds an estimator from it.
-fn parse_build_time_multiplier(value: &str) -> Result<f64, String> {
-    let multiplier = value
-        .parse::<f64>()
-        .map_err(|error| format!("invalid build time multiplier `{value}`: {error}"))?;
+/// Parses `--builder.build-time-multiplier`, rejecting values
+/// [`EstimatorConfig::validate`] rejects.
+fn parse_build_time_multiplier(
+    value: &str,
+) -> Result<f64, Box<dyn std::error::Error + Send + Sync>> {
+    let multiplier = value.parse::<f64>()?;
     EstimatorConfig {
         build_time_multiplier: multiplier,
     }
@@ -985,6 +988,25 @@ mod tests {
     use super::*;
     use alloy_primitives::Address;
     use clap::Parser;
+
+    #[test]
+    fn build_time_multiplier_cli_rejects_values_outside_learned_range() {
+        #[derive(Parser)]
+        struct Args {
+            #[command(flatten)]
+            node: TempoNodeArgs,
+        }
+        let args =
+            Args::try_parse_from(["tempo", "--builder.build-time-multiplier", "1.7"]).unwrap();
+        assert_eq!(args.node.builder_build_time_multiplier, 1.7);
+
+        for value in ["0.9", "1.8", "NaN", "inf", "fast"] {
+            let error = Args::try_parse_from(["tempo", "--builder.build-time-multiplier", value])
+                .err()
+                .expect("value is rejected");
+            assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+        }
+    }
 
     #[test]
     fn lane_limit_cli_reaches_pool_builder() {

@@ -14511,6 +14511,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempo-primitives",
+ "thiserror 2.0.21",
  "tracing",
 ]
 
