@@ -123,17 +123,6 @@ impl Default for EstimatorConfig {
 }
 
 impl EstimatorConfig {
-    /// Creates a configuration for the given block time and network floor,
-    /// with the network cap and build multiplier at their defaults.
-    pub fn new(target_block_time: Duration, network_budget: Duration) -> Self {
-        Self {
-            target_block_time,
-            network_budget,
-            network_budget_max: Self::default_network_budget_max(target_block_time, network_budget),
-            ..Self::default()
-        }
-    }
-
     /// The network reservation cap used when none is configured: the floor plus
     /// half the initial proposal window, at most [`DEFAULT_NETWORK_BUDGET_MAX`] and
     /// never below the floor, so it stays below the target whenever the floor does.
@@ -202,11 +191,19 @@ impl EstimatorConfig {
                 self.network_reserve_percentile
             ));
         }
-        if !self.build_time_multiplier.is_finite()
-            || !(1.0..=1.7).contains(&self.build_time_multiplier)
-        {
+        if !(self.build_time_multiplier.is_finite() && self.build_time_multiplier >= 1.0) {
             return Err(format!(
-                "build time multiplier ({}) must be finite and between 1.0 and 1.7",
+                "build time multiplier ({}) must be finite and at least 1.0",
+                self.build_time_multiplier
+            ));
+        }
+        // The multiplier is never learned above its cap.
+        let max_build_time_multiplier =
+            MAX_BUILD_TIME_MULTIPLIER_SCALED as f64 / BUILD_TIME_MULTIPLIER_SCALE as f64;
+        if self.build_time_multiplier > max_build_time_multiplier {
+            return Err(format!(
+                "build time multiplier ({}) must be at most {max_build_time_multiplier}, \
+                 the largest multiplier the estimator learns",
                 self.build_time_multiplier
             ));
         }
