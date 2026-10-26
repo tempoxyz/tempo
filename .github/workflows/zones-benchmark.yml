@@ -1,9 +1,7 @@
 name: Zones benchmark
 
+# Manual only: the Zones nightly is bench-zones-scheduled.yml, with the prover on.
 on:
-  schedule:
-    - cron: "45 2 * * *"
-
   workflow_dispatch:
     inputs:
       preset:

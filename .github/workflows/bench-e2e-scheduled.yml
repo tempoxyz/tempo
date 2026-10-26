@@ -73,6 +73,8 @@ jobs:
             # Keep a distinct state key for each benchmark series.
             '{"preset":"default","state_key":"default","token_count":"4"}'
             '{"preset":"tip20:recipient=existing,fee-token=any_tip20","state_key":"tip20-existing-any","token_count":"4"}'
+            # Saturates L1 with zone portal deposits and withdrawals, so it lifts the general gas cap too.
+            '{"preset":"zone-portal-throughput","state_key":"zone-portal-throughput","token_count":"4","general_gas_limit":"1000000000000"}'
           )
           bench_entries=()
           save_entries=()
@@ -88,6 +90,7 @@ jobs:
             preset="$(jq -r '.preset' <<< "$scenario")"
             state_key="$(jq -r '.state_key' <<< "$scenario")"
             token_count="$(jq -r '.token_count' <<< "$scenario")"
+            general_gas_limit="$(jq -r '.general_gas_limit // ""' <<< "$scenario")"
             out="$(mktemp)"
             GITHUB_OUTPUT="$out" bash .github/scripts/bench-e2e-scheduled-refs.sh "$INPUT_FORCE" "$state_key"
 
@@ -115,7 +118,8 @@ jobs:
                 --arg run_type "$run_type" \
                 --arg token_count "$token_count" \
                 --arg state_key "$state_key" \
-                '{preset:$preset, state_key:$state_key, actor:$actor, baseline_ref:$baseline_ref, feature_ref:$feature_ref, baseline_name:$baseline_name, feature_name:$feature_name, run_type:$run_type, token_count:$token_count}')"
+                --arg general_gas_limit "$general_gas_limit" \
+                '{preset:$preset, state_key:$state_key, actor:$actor, baseline_ref:$baseline_ref, feature_ref:$feature_ref, baseline_name:$baseline_name, feature_name:$feature_name, run_type:$run_type, token_count:$token_count, general_gas_limit:$general_gas_limit}')"
               bench_entries+=("$entry")
               if [ "$run_type" = "nightly" ]; then
                 save_entries+=("$entry")
@@ -172,6 +176,7 @@ jobs:
       feature-name: ${{ matrix.feature_name }}
       preset: ${{ matrix.preset }}
       token-count: ${{ matrix.token_count }}
+      general-gas-limit: ${{ matrix.general_gas_limit }}
       duration: "600"
       tps: "50000"
       run-type: ${{ matrix.run_type }}
