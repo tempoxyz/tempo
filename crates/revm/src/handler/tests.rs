@@ -1,8 +1,7 @@
 use super::*;
 use crate::{
     FeeTokenResolver, ProtocolFeeManager, TempoBlockEnv, TempoFeeManager, TempoTxEnv,
-    evm::TempoEvm, gas_params::tempo_gas_params, signature_gas::P256_VERIFY_GAS,
-    tx::TempoBatchCallEnv,
+    evm::TempoEvm, gas_params::tempo_gas_params, tx::TempoBatchCallEnv,
 };
 use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
 use proptest::prelude::*;
@@ -21,13 +20,16 @@ use revm::{
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, ITIPFeeAMM};
 use tempo_precompiles::{
-    PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, storage::ContractStorage, test_util::TIP20Setup,
-    tip_fee_manager::TipFeeManager,
+    ECRECOVER_GAS, PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, storage::ContractStorage,
+    test_util::TIP20Setup, tip_fee_manager::TipFeeManager,
 };
-use tempo_primitives::transaction::{
-    Call, PrimitiveSignature, RecoveredTempoAuthorization, TempoSignature,
-    TempoSignedAuthorization,
-    tt_signature::{P256SignatureWithPreHash, WebAuthnSignature},
+use tempo_primitives::{
+    gas::P256_VERIFY_GAS,
+    transaction::{
+        Call, PrimitiveSignature, RecoveredTempoAuthorization, TempoSignature,
+        TempoSignedAuthorization,
+        tt_signature::{P256SignatureWithPreHash, WebAuthnSignature},
+    },
 };
 
 fn create_test_journal() -> Journal<InMemoryDB> {
@@ -720,8 +722,8 @@ fn test_aa_gas_p256_signature() {
     // Calculate base gas for normal tx
     let base_gas = calculate_initial_tx_gas(spec, &calldata, false, 0, 0, 0, None);
 
-    // Expected: normal tx + P256_VERIFY_GAS
-    let expected = base_gas.initial_total_gas() + P256_VERIFY_GAS;
+    // Expected: normal tx + P256 verification, minus the ecrecover already in the base cost
+    let expected = base_gas.initial_total_gas() + P256_VERIFY_GAS - ECRECOVER_GAS;
     assert_eq!(gas.initial_total_gas(), expected,);
 }
 
@@ -1282,7 +1284,7 @@ fn test_t4_key_authorization_matches_tip1016_sstore_regular_cost() {
     // TIP-1016 is opt-in via amsterdam_eip8037; manually enable for this test.
     let gas_params = crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
 
-    let sig_gas = ECRECOVER_GAS + primitive_signature_verification_gas(&key_auth.signature);
+    let sig_gas = key_auth.signature.verification_gas();
     let sload = gas_params.warm_storage_read_cost() + gas_params.cold_storage_additional_cost();
     let scope_extra_gas = call_scope_extra_gas(&key_auth.authorization);
     let (regular_gas, state_gas) =
@@ -1304,7 +1306,7 @@ fn test_t7_key_authorization_intrinsic_includes_storage_credit_value() {
         ));
 
     let gas_params = crate::gas_params::tempo_gas_params(TempoHardfork::T7);
-    let sig_gas = ECRECOVER_GAS + primitive_signature_verification_gas(&key_auth.signature);
+    let sig_gas = key_auth.signature.verification_gas();
     let sload = gas_params.warm_storage_read_cost() + gas_params.cold_storage_additional_cost();
     let scope_extra_gas = call_scope_extra_gas(&key_auth.authorization);
     let (regular_gas, state_gas) =
@@ -2197,9 +2199,9 @@ proptest! {
             webauthn_data: Bytes::from(vec![0u8; webauthn_data_len]),
         });
 
-        let secp_gas = primitive_signature_verification_gas(&secp_sig);
-        let p256_gas = primitive_signature_verification_gas(&p256_sig);
-        let webauthn_gas = primitive_signature_verification_gas(&webauthn_sig);
+        let secp_gas = secp_sig.intrinsic_verification_gas();
+        let p256_gas = p256_sig.intrinsic_verification_gas();
+        let webauthn_gas = webauthn_sig.intrinsic_verification_gas();
 
         prop_assert!(secp_gas <= p256_gas, "secp256k1 should be <= p256");
         prop_assert!(p256_gas <= webauthn_gas, "p256 should be <= webauthn");

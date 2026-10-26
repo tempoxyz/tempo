@@ -9,6 +9,7 @@
 # Usage: bench-e2e-scheduled-refs.sh <force> [state-key]
 #   force - "true" to run even if no new main commit is available
 #   state-key - key used to scope persisted nightly state
+# BENCH_STATE_SERIES selects the scheduled workflow whose state is read (default: e2e).
 #
 # Outputs (via GITHUB_OUTPUT):
 #   baseline-ref
@@ -27,6 +28,7 @@ set -euo pipefail
 FORCE="${1:-false}"
 STATE_KEY="${2:-${BENCH_E2E_STATE_KEY:-${BENCH_E2E_PRESET:-default}}}"
 REPO="${GITHUB_REPOSITORY:-tempoxyz/tempo}"
+SERIES="${BENCH_STATE_SERIES:-e2e}"
 
 if [[ ! "$STATE_KEY" =~ ^[A-Za-z0-9_-]+$ ]]; then
   echo "::error::Invalid benchmark state key: $STATE_KEY"
@@ -81,7 +83,13 @@ if [ -n "${INPUT_REF:-}" ] || [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
   echo "::group::Resolving release tags"
   git fetch --tags --force --quiet --no-recurse-submodules origin
 
-  mapfile -t TAGS < <(git tag --list "v*.*.*" --sort=-v:refname)
+  # Order vX.Y.Z and tempo/vX.Y.Z release tags together by version, newest first.
+  mapfile -t TAGS < <(
+    git tag --list "v*.*.*" "tempo/v*.*.*" |
+      awk '{ version = $0; sub(/^tempo\//, "", version); print version "\t" $0 }' |
+      sort -t $'\t' -k1,1Vr |
+      cut -f2
+  )
   FOUND="false"
   PREVIOUS_TAG=""
   for tag in "${TAGS[@]}"; do
@@ -95,7 +103,7 @@ if [ -n "${INPUT_REF:-}" ] || [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
   done
 
   if [ "$FOUND" != "true" ]; then
-    echo "::error::Current tag $CURRENT_TAG was not found in fetched v*.*.* tags"
+    echo "::error::Current tag $CURRENT_TAG was not found in fetched v*.*.* or tempo/v*.*.* tags"
     exit 1
   fi
 
@@ -120,7 +128,7 @@ if [ -n "${INPUT_REF:-}" ] || [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
 fi
 
 RUN_TYPE="nightly"
-ACTOR="e2e-nightly"
+ACTOR="$SERIES-nightly"
 
 echo "::group::Resolving latest main commit"
 git fetch --force --quiet --no-recurse-submodules origin main
@@ -130,9 +138,9 @@ echo "Latest main commit: $FEATURE_REF"
 echo "Committed at: $CREATED_AT"
 echo "::endgroup::"
 
-echo "::group::Reading persisted e2e state"
-LAST_FEATURE_REF=$(bash "$(dirname "$0")/bench-state.sh" "$REPO" e2e "$STATE_KEY")
-echo "Previous e2e feature ref for $STATE_KEY: ${LAST_FEATURE_REF:-none}"
+echo "::group::Reading persisted $SERIES state"
+LAST_FEATURE_REF=$(bash "$(dirname "$0")/bench-state.sh" "$REPO" "$SERIES" "$STATE_KEY")
+echo "Previous $SERIES feature ref for $STATE_KEY: ${LAST_FEATURE_REF:-none}"
 echo "::endgroup::"
 
 echo "::group::Resolving refs"
@@ -140,14 +148,14 @@ BASELINE_REF="$FEATURE_REF"
 
 if [ -z "$LAST_FEATURE_REF" ]; then
   BASELINE_REF="$FEATURE_REF"
-  echo "First run; benchmarking main against itself to establish e2e state"
+  echo "First run; benchmarking main against itself to establish $SERIES state"
 elif [ "$LAST_FEATURE_REF" = "$FEATURE_REF" ]; then
   BASELINE_REF="$LAST_FEATURE_REF"
   if [ "$FORCE" = "true" ] || [ "$FORCE" = "--force" ]; then
     echo "No new main commit, but force=true; running anyway"
   else
     SHOULD_SKIP="true"
-    echo "No new main commit since last successful e2e run; skipping"
+    echo "No new main commit since last successful $SERIES run; skipping"
   fi
 else
   BASELINE_REF="$LAST_FEATURE_REF"

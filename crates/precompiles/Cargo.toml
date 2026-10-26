@@ -116,6 +116,10 @@ required-features = ["test-utils"]
 name = "signature_verifier"
 required-features = ["test-utils"]
 
+[[test]]
+name = "configurable_account_key_type"
+required-features = ["test-utils"]
+
 [[bench]]
 name = "tempo_precompiles"
 harness = false
