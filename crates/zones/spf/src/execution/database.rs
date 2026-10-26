@@ -8,14 +8,10 @@ use alloy_primitives::{
     Address, B256, Bytes, U256, keccak256,
     map::{AddressMap, B256Map, U256Map},
 };
-use evm2::{
-    bytecode::Bytecode,
-    evm::{AccountExtension, AccountInfo},
-};
+use evm2::{bytecode::Bytecode, evm::AccountInfo};
 use reth_evm::Database;
-use reth_execution_types::native_account;
-use reth_trie_common::{HashedPostState, KeccakKeyHasher};
-use revm::database::BundleState;
+use reth_primitives_traits::Account;
+use reth_trie_common::{HashedPostState, KeccakKeyHasher, bundle_state::BundleState};
 use tempo_primitives::TempoHeader;
 use zone_precompiles::{L1StateError, L1StorageReader};
 
@@ -101,8 +97,7 @@ impl WitnessDatabase {
 
         // Keep database read caches coherent with the newly advanced trie.
         for (address, account) in bundle_state.state() {
-            self.accounts
-                .insert(*address, account.info.as_ref().map(native_account));
+            self.accounts.insert(*address, account.info.clone());
 
             if account.status.is_storage_known() {
                 self.storage.remove(address);
@@ -126,14 +121,10 @@ impl Database for WitnessDatabase {
             return Ok(account.clone());
         }
 
-        let account = self.state.account(*address)?.map(|account| AccountInfo {
-            balance: account.balance,
-            nonce: account.nonce,
-            code_hash: account.code_hash,
-            code: None,
-            extension: AccountExtension::from_shared(account.extension.into_shared()),
-            _non_exhaustive: (),
-        });
+        let account = self
+            .state
+            .account(*address)?
+            .map(|account| Account::from(account).into());
         self.accounts.insert(*address, account.clone());
         Ok(account)
     }
