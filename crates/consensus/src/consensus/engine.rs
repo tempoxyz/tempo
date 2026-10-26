@@ -79,7 +79,11 @@ pub struct Builder<TBlocker, TPeerManager> {
     /// Leader inactivity window after which a view is skipped early. Must
     /// exceed `time_to_collect_notarizations` and `time_to_retry_nullify_broadcast`.
     pub inactive_time_before_leader_skip: Duration,
-    /// Build and validation feedback shared with the payload builder.
+    /// Shared proposal budget estimator.
+    ///
+    /// Owns the target block time, the learned network reservation and the
+    /// validation and build feedback. The payload builder must be given the
+    /// same handle so both sides pace the same proposal window.
     pub estimator: tempo_payload_types::Estimator,
     pub fcu_heartbeat_interval: Duration,
 

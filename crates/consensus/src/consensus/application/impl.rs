@@ -1,7 +1,7 @@
 //! Tempo's block building and verification.
 
 use std::{
-    sync::Arc,
+    sync::{Arc, atomic::AtomicU64},
     time::{Duration, Instant},
 };
 
@@ -21,7 +21,7 @@ use commonware_cryptography::{
 };
 use commonware_runtime::{
     Clock, Spawner,
-    telemetry::metrics::{Counter, MetricsExt as _},
+    telemetry::metrics::{Counter, MetricsExt as _, Registered},
 };
 use commonware_utils::{Acknowledgement as _, SystemTimeExt as _};
 use eyre::{OptionExt as _, WrapErr as _, ensure, eyre};
@@ -29,7 +29,9 @@ use futures::{FutureExt as _, StreamExt as _, channel::oneshot};
 use rand_core::Rng;
 use reth_primitives_traits::BlockBody as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
-use tempo_payload_types::{Estimator, TempoPayloadAttributes, ValidationLatencyWorkload};
+use tempo_payload_types::{
+    Estimator, EstimatorSnapshot, TempoPayloadAttributes, ValidationLatencyWorkload,
+};
 use tempo_primitives::TempoConsensusContext;
 use tempo_telemetry_util::display_duration;
 use tracing::{Level, debug, info, instrument, warn};
@@ -254,6 +256,9 @@ impl Inner {
         let overran = proposal_budget.overran(spent);
         debug!(
             proposal.digest = %proposal.digest(),
+            return_budget = %display_duration(proposal_budget.return_budget),
+            network_reserve = %display_duration(proposal_budget.network_reserve),
+            preparation = %display_duration(window_opened.saturating_duration_since(propose_start)),
             proposal_elapsed = %display_duration(proposal_elapsed),
             build_time = %display_duration(payload_build_elapsed),
             payload_validation_work = %display_duration(payload_validation_work_elapsed),
@@ -287,6 +292,8 @@ impl Inner {
                 proposal_budget.return_budget,
             );
         }
+        self.metrics
+            .observe_estimator(&self.estimator.snapshot(returned_at));
 
         Ok(proposal)
     }
@@ -620,6 +627,8 @@ impl Reporter for Inner {
                     ctx.view,
                     block.timestamp_millis(),
                 );
+                self.metrics
+                    .observe_estimator(&self.estimator.snapshot(now));
             }
             ack.acknowledge();
         }
@@ -639,7 +648,25 @@ async fn wait_until_timestamp(runtime: &impl Clock, timestamp: u64) {
 #[derive(Clone)]
 struct Metrics {
     parent_ahead_of_local_time: Counter,
+    /// Network reservation the most recent own proposal subtracted from the
+    /// target block time.
+    estimator_network_reserve_seconds: FloatGauge,
+    /// Learned network time before clamping, zero while the window holds no
+    /// completed proposal. The reservation moves toward it, clamped, by at
+    /// most one bounded step per own proposal.
+    estimator_network_observed_seconds: FloatGauge,
+    /// Proposal return budget of the most recent own proposal.
+    estimator_proposal_return_budget_seconds: FloatGauge,
+    /// Recent P90 execution-layer validation time.
+    estimator_validation_latency_p90_seconds: FloatGauge,
+    /// Build time multiplier in use.
+    estimator_build_time_multiplier: FloatGauge,
+    /// Finish a build reserves once its pool ran dry.
+    estimator_dry_build_finish_seconds: FloatGauge,
 }
+
+/// A gauge that holds a fractional value, such as seconds or a ratio.
+type FloatGauge = Registered<prometheus_client::metrics::gauge::Gauge<f64, AtomicU64>>;
 
 impl Metrics {
     fn init<TContext: commonware_runtime::Metrics>(context: &TContext) -> Self {
@@ -647,10 +674,55 @@ impl Metrics {
             "parent_ahead_of_local_time",
             "number of times the parent block timestamp was ahead of local time when proposing",
         );
+        let float_gauge = |name: &str, help: &str| -> FloatGauge {
+            context.register(name, help, Default::default())
+        };
 
         Self {
             parent_ahead_of_local_time,
+            estimator_network_reserve_seconds: float_gauge(
+                "estimator_network_reserve_seconds",
+                "time reserved after the proposal window for propagation and votes",
+            ),
+            estimator_network_observed_seconds: float_gauge(
+                "estimator_network_observed_seconds",
+                "learned time after the proposal window before clamping",
+            ),
+            estimator_proposal_return_budget_seconds: float_gauge(
+                "estimator_proposal_return_budget_seconds",
+                "local proposal return budget of the most recent own proposal",
+            ),
+            estimator_validation_latency_p90_seconds: float_gauge(
+                "estimator_validation_latency_p90_seconds",
+                "recent p90 execution-layer block validation time",
+            ),
+            estimator_build_time_multiplier: float_gauge(
+                "estimator_build_time_multiplier",
+                "payload build time multiplier in use",
+            ),
+            estimator_dry_build_finish_seconds: float_gauge(
+                "estimator_dry_build_finish_seconds",
+                "finish reserved by payload builds whose pool ran dry",
+            ),
         }
+    }
+
+    fn observe_estimator(&self, snapshot: &EstimatorSnapshot) {
+        self.estimator_network_reserve_seconds
+            .set(snapshot.network_reserve.as_secs_f64());
+        self.estimator_network_observed_seconds
+            .set(snapshot.network_observed.map_or(0.0, |d| d.as_secs_f64()));
+        self.estimator_proposal_return_budget_seconds
+            .set(snapshot.proposal_return_budget.as_secs_f64());
+        self.estimator_validation_latency_p90_seconds.set(
+            snapshot
+                .validation_latency_p90
+                .map_or(0.0, |d| d.as_secs_f64()),
+        );
+        self.estimator_build_time_multiplier
+            .set(snapshot.build_time_multiplier);
+        self.estimator_dry_build_finish_seconds
+            .set(snapshot.dry_build_finish.as_secs_f64());
     }
 }
 

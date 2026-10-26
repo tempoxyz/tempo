@@ -1,4 +1,48 @@
-//! Shared build-time and validation feedback for paced payloads.
+//! Proposal budget estimator shared by consensus and the payload builder.
+//!
+//! Before a proposer stops adding transactions it has to reserve time for
+//! three things: its own replayable build work, including the finish (state
+//! root, block assembly) after the transaction cutoff; the validators replaying
+//! the block; and the network, from shipping the proposal to the next leader
+//! starting on top of it. The [`Estimator`] owns all three estimates so that
+//! consensus and the builder read one picture, and so that the whole model can
+//! be driven by a simulated block sequence in tests. Marshal persistence is not
+//! modelled: it runs concurrently with voting and gates finalization, not the
+//! next block.
+//!
+//! The estimator is pure bookkeeping. Callers feed observations through the
+//! `on_*` hooks and take decisions through [`Estimator::start_proposal`] and
+//! [`Estimator::build_plan`], passing the clock explicitly. Starting a proposal
+//! also moves the network reservation one bounded step, so it is called exactly
+//! once per own proposal; [`Estimator::snapshot`] reads without moving anything.
+//!
+//! # Clocks
+//!
+//! `now: Instant` is a monotonic clock used only to age state: window samples
+//! and own proposals still waiting for their child expire by it, and every read
+//! drops expired samples first. The value of a network sample comes from
+//! wall-clock unix milliseconds instead: when this node opened its proposal
+//! window (the clock reading its header timestamp is taken from) and the header
+//! timestamp the next leader set on the child. Both must come from the clock
+//! header timestamps use, so a sample is only as accurate as the validators'
+//! clock synchronisation.
+//!
+//! # Robustness
+//!
+//! Every learned quantity is a percentile over a bounded window of recent
+//! samples, and no estimate takes its percentile as is: each follows it by at
+//! most one capped step per observation, in both directions, because the
+//! percentile of a sparse window is its maximum and samples aging out can leave
+//! an outlier behind. One slow finish or one slow successor therefore costs the
+//! next proposal one step, while a sustained change still takes over within a
+//! few observations. Builds whose pool ran dry stay out of the multiplier's
+//! window and teach a separate dry build finish instead, see `BuildTimeTracker`.
+//!
+//! The build time and network windows learn from this node's own proposals
+//! only, so they are bounded by count and age: 16 samples each, with ttls long
+//! enough that the count is what binds on Tempo's committee sizes. Validation
+//! latency feedback learns from every verified block and is bounded by count
+//! alone.
 
 use std::{
     collections::VecDeque,
@@ -6,6 +50,8 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
+
+use tracing::debug;
 
 use crate::{
     BUILD_TIME_MULTIPLIER_SCALE, BuildPlan, ProposalBudget, ValidationLatencyEstimator,
@@ -254,6 +300,13 @@ impl Estimator {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    fn state_at(&self, now: Instant) -> std::sync::MutexGuard<'_, State> {
+        let mut state = self.state();
+        state.build_time.prune(now);
+        state.network.prune(now);
+        state
+    }
+
     /// Records successful local execution-layer verification, keyed by height.
     pub fn on_block_verified(
         &self,
@@ -266,9 +319,7 @@ impl Estimator {
 
     /// Snapshots feedback once for a paced payload build, expiring stale build samples.
     pub fn build_plan(&self, now: Instant, build_budget: Duration) -> BuildPlan {
-        let mut state = self.state();
-        state.build_time.prune(now);
-        state.network.prune(now);
+        let state = self.state_at(now);
         BuildPlan {
             build_budget,
             multiplier_scaled: state.build_time.multiplier_scaled(),
@@ -277,12 +328,45 @@ impl Estimator {
         }
     }
 
-    /// Records completed build work, separating dry finishes from busy-build ratios.
+    /// Records the replayable work of a finished consensus payload build.
+    ///
+    /// A build that never waited for transactions teaches the multiplier, the ratio
+    /// of its total over its cutoff work. A dry build, one that waited
+    /// ([`FinishedBuild::idle`] is not zero), teaches the dry build finish instead:
+    /// its near-empty block's finish is mostly fixed cost that a ratio would carry
+    /// over to full blocks, see [`BuildPlan::decision`].
     pub fn on_build_finished(&self, now: Instant, build: FinishedBuild) {
-        self.state().build_time.observe(now, build);
+        let mut state = self.state();
+        match state.build_time.observe(now, build) {
+            Some(BuildSample::Ratio(observed)) => debug!(
+                observed_multiplier = observed as f64 / BUILD_TIME_MULTIPLIER_SCALE as f64,
+                build_time_multiplier = state.build_time.multiplier_scaled() as f64
+                    / BUILD_TIME_MULTIPLIER_SCALE as f64,
+                samples = state.build_time.multiplier.samples.len(),
+                "recorded build time multiplier sample"
+            ),
+            Some(BuildSample::DryFinish(finish)) => debug!(
+                ?finish,
+                dry_build_finish = ?state.build_time.dry_finish(),
+                samples = state.build_time.dry_finish.samples.len(),
+                "recorded dry build finish sample"
+            ),
+            None => {}
+        }
     }
 
-    /// Records a proposal that met its budget; clocks use header timestamp milliseconds.
+    /// Records that this node returned a proposal to consensus, opening the network
+    /// sample that the block built on top of it completes through
+    /// [`Self::on_child_block_built`].
+    ///
+    /// `window_opened_unix_ms` is the clock reading this node took its header
+    /// timestamp from, before any clamp to the parent's, and `return_budget` the
+    /// window the proposal was paced from it with. The sample is
+    /// `child_timestamp_ms - window_opened_unix_ms - return_budget`: this node's
+    /// own block time minus its return budget. `returned_unix_ms` is when the
+    /// proposal left this node; no honest successor stamps a child before it. Both
+    /// timestamps must come from the clock header timestamps use. A proposal that
+    /// [overran](ProposalBudget::overran) its return budget must not be recorded.
     pub fn on_proposal_returned(
         &self,
         now: Instant,
@@ -303,7 +387,38 @@ impl Estimator {
         );
     }
 
-    /// Completes pending samples from finalized children only.
+    /// Records the header timestamp of a block built on top of `parent`, completing
+    /// the network sample [`Self::on_proposal_returned`] opened for it.
+    ///
+    /// `parent` is the child's `(epoch, parent_view)` from its consensus context.
+    /// Parents this node did not propose are ignored, so every finalized block can
+    /// be fed, the node's own included. Feed finalized blocks only: a pending
+    /// proposal completes with the first child reported for it, which must not be
+    /// one that was verified but never certified. Only the timestamps decide the
+    /// sample, so the finalization lag does not change it as long as it stays
+    /// within the pending proposal's 10 s.
+    ///
+    /// No sample is taken for a child that:
+    ///
+    /// - builds on a pending proposal this node no longer holds: returned more than
+    ///   10 s earlier or pushed out by 8 newer ones, which happens after a
+    ///   nullified view or a successor building on an ancestor;
+    /// - is not in the view right after its parent's: the chain waited on a leader
+    ///   timeout, not on propagation;
+    /// - is the first block of an epoch, which names the boundary block by its view
+    ///   in the new epoch and so matches no pending proposal;
+    /// - was stamped before the parent left this node, or more than 5 s after the
+    ///   parent's window closed: clock skew, a backdated timestamp or a stall
+    ///   unrelated to propagation.
+    ///
+    /// A successor chooses its header timestamp, so a byzantine one can report a
+    /// faster network for the one sample it is the successor of. With fewer than a
+    /// third of the validators byzantine the window's 75th percentile stays at or
+    /// above about the 62nd percentile of the honest samples, and the reservation
+    /// never drops below the configured floor.
+    ///
+    /// The sample moves the reservation's target; the reservation follows it with
+    /// the next own proposal, see [`Self::start_proposal`].
     pub fn on_child_block_built(
         &self,
         now: Instant,
@@ -311,9 +426,22 @@ impl Estimator {
         child_view: u64,
         child_timestamp_ms: u64,
     ) {
-        self.state()
-            .network
-            .child_built(now, parent, child_view, child_timestamp_ms);
+        let mut state = self.state();
+        if let Some(network) =
+            state
+                .network
+                .child_built(now, parent, child_view, child_timestamp_ms)
+        {
+            debug!(
+                epoch = parent.0,
+                view = parent.1,
+                ?network,
+                network_target = ?state.network.target(),
+                network_reserve = ?state.network.reserve(),
+                samples = state.network.samples.len(),
+                "recorded network sample"
+            );
+        }
     }
 
     /// Advances the reservation once per own proposal, including failed builds.
@@ -324,12 +452,37 @@ impl Estimator {
             .with_overrun_tolerance(self.inner.config.return_budget_overrun_tolerance)
     }
 
-    /// Counts completed samples after expiring stale network observations.
+    /// The build time multiplier in use at `now`. Only finished builds move it;
+    /// once every build in the window has expired it is the configured initial
+    /// multiplier again.
+    pub fn build_time_multiplier(&self, now: Instant) -> f64 {
+        self.state_at(now).build_time.multiplier_scaled() as f64
+            / BUILD_TIME_MULTIPLIER_SCALE as f64
+    }
+
+    /// Everything the estimator believes at `now`, after dropping samples
+    /// older than their window's ttl.
+    ///
+    /// Taking a snapshot does not move the network reservation: the
+    /// reservation and return budget it reports are the ones the most recent
+    /// own proposal used.
     pub fn snapshot(&self, now: Instant) -> EstimatorSnapshot {
-        let mut state = self.state();
-        state.network.prune(now);
+        let state = self.state_at(now);
+        let budget =
+            ProposalBudget::new(self.inner.config.target_block_time, state.network.reserve());
         EstimatorSnapshot {
+            validation_latency_p90: state.validation.estimate().map(|e| e.elapsed()),
+            build_time_multiplier: state.build_time.multiplier_scaled() as f64
+                / BUILD_TIME_MULTIPLIER_SCALE as f64,
+            build_time_samples: state.build_time.multiplier.samples.len(),
+            dry_build_finish: state.build_time.dry_finish(),
+            dry_build_samples: state.build_time.dry_finish.samples.len(),
+            network_observed: state.network.observed(),
+            network_last_sample: state.network.last_sample(),
+            network_reserve: budget.network_reserve,
             network_samples: state.network.samples.len(),
+            pending_proposals: state.network.pending.len(),
+            proposal_return_budget: budget.return_budget,
         }
     }
 }
@@ -476,6 +629,16 @@ struct BuildTimeTracker {
     dry_finish: BoundedFollower,
 }
 
+/// What a finished build taught the [`BuildTimeTracker`].
+#[derive(Clone, Copy, Debug)]
+enum BuildSample {
+    /// The ratio of total over cutoff work of a build that never waited, in
+    /// fixed point.
+    Ratio(u64),
+    /// The finish duration of a dry build.
+    DryFinish(Duration),
+}
+
 impl BuildTimeTracker {
     /// Starts at the configured initial multiplier and without a dry build
     /// finish.
@@ -498,18 +661,15 @@ impl BuildTimeTracker {
     }
 
     /// Records a finished build. Returns what it taught, if anything.
-    fn observe(&mut self, now: Instant, build: FinishedBuild) {
+    fn observe(&mut self, now: Instant, build: FinishedBuild) -> Option<BuildSample> {
         if !build.idle.is_zero() {
             let finish = build.total_work.saturating_sub(build.work_at_tx_cutoff);
             self.dry_finish.observe(now, nanos(finish));
-            return;
+            return Some(BuildSample::DryFinish(finish));
         }
-        let Some(observed) =
-            observed_build_time_multiplier(build.total_work, build.work_at_tx_cutoff)
-        else {
-            return;
-        };
+        let observed = observed_build_time_multiplier(build.total_work, build.work_at_tx_cutoff)?;
         self.multiplier.observe(now, observed);
+        Some(BuildSample::Ratio(observed))
     }
 
     fn multiplier_scaled(&self) -> u64 {
@@ -584,11 +744,35 @@ impl BoundedFollower {
     }
 }
 
-/// Completed network observations, exposed for deterministic e2e checks.
-#[derive(Clone, Copy, Debug)]
+/// Everything the estimator currently believes, for logs and metrics.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EstimatorSnapshot {
-    /// Number of retained finalized-child network samples.
+    /// Recent P90 execution-layer validation time, if observed.
+    pub validation_latency_p90: Option<Duration>,
+    /// Build time multiplier in use.
+    pub build_time_multiplier: f64,
+    /// Number of finished builds in the multiplier's window, which holds no
+    /// dry build.
+    pub build_time_samples: usize,
+    /// Finish a build that waited for transactions reserves.
+    pub dry_build_finish: Duration,
+    /// Number of dry builds the dry build finish is derived from.
+    pub dry_build_samples: usize,
+    /// Learned network time before clamping, if the window holds a completed
+    /// proposal: the window percentile, under fast rise lifted to the smaller of
+    /// the two newest samples. Clamped, this is the reservation's target.
+    pub network_observed: Option<Duration>,
+    /// Newest network sample in the window.
+    pub network_last_sample: Option<Duration>,
+    /// Network reservation the most recent own proposal used, or the floor
+    /// before the first one.
+    pub network_reserve: Duration,
+    /// Number of completed proposals in the window.
     pub network_samples: usize,
+    /// Own proposals still waiting for the block built on top of them.
+    pub pending_proposals: usize,
+    /// Proposal return budget derived from the network reservation.
+    pub proposal_return_budget: Duration,
 }
 
 /// Bounded network reservation learned from finalized successors.
@@ -671,6 +855,11 @@ impl NetworkTracker {
         Some(Duration::from_nanos(observed))
     }
 
+    /// The newest sample in the window.
+    fn last_sample(&self) -> Option<Duration> {
+        self.samples.newest().next().map(Duration::from_nanos)
+    }
+
     fn target(&self) -> Duration {
         self.observed()
             .map_or(self.floor, |observed| observed.clamp(self.floor, self.cap))
@@ -679,6 +868,9 @@ impl NetworkTracker {
     fn reserve_for_proposal(&mut self, now: Instant) -> Duration {
         self.prune(now);
         self.applied = step_toward(self.applied, self.target(), NETWORK_RESERVE_MAX_STEP);
+        self.applied
+    }
+    fn reserve(&self) -> Duration {
         self.applied
     }
 }
@@ -715,7 +907,7 @@ mod tests {
         );
         let now = Instant::now();
         let mut tracker = BuildTimeTracker::new(DEFAULT_BUILD_TIME_MULTIPLIER);
-        tracker.observe(
+        let observed = tracker.observe(
             now,
             FinishedBuild {
                 total_work: Duration::from_millis(250),
@@ -723,6 +915,10 @@ mod tests {
                 idle: Duration::ZERO,
             },
         );
+        assert!(matches!(
+            observed,
+            Some(BuildSample::Ratio(MAX_BUILD_TIME_MULTIPLIER_SCALED))
+        ));
         assert_eq!(tracker.multiplier_scaled(), 1_300_000);
     }
 
