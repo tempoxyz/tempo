@@ -603,9 +603,13 @@ jobs:
             tempo-zone-xtask.output=type=docker,dest=${{ runner.temp }}/candidate-images/tempo-zone-xtask.tar
             tempo-zone-prover-utils.tags=tempo-zone-prover-utils:candidate
             tempo-zone-prover-utils.output=type=docker,dest=${{ runner.temp }}/candidate-images/tempo-zone-prover-utils.tar
-          # Private registry cache layers can retain expired BuildKit client
-          # sessions across runs. Build fresh layers instead of importing them.
-          no-cache: true
+            tempo-zone.args.ZONES_SCCACHE=${{ github.event_name == 'pull_request' && '1' || '0' }}
+            tempo-zone-prover-compiled.args.ZONES_SCCACHE=${{ github.event_name == 'pull_request' && '1' || '0' }}
+          # Pull request candidates publish nothing, so they reuse Depot's layer
+          # cache and cache mounts, including sccache for the reproducible
+          # binaries. Every other build stays fresh, so nothing a PR wrote can
+          # reach a published image. (no-cache also starts cache mounts empty.)
+          no-cache: ${{ github.event_name != 'pull_request' }}
           pull: true
         env:
           VERGEN_GIT_SHA: ${{ github.sha }}
@@ -732,7 +736,7 @@ jobs:
             tempo-zone-prover.args.NITRO_PCR1=${{ steps.prover_measurements.outputs.pcr1 }}
             tempo-zone-prover.args.NITRO_PCR2=${{ steps.prover_measurements.outputs.pcr2 }}
           project: 0c6tg19qsp
-          no-cache: true
+          no-cache: ${{ github.event_name != 'pull_request' }}
           pull: true
 
       - name: Upload candidate image archives
