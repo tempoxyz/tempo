@@ -7037,6 +7037,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "libfuzzer-sys"
+version = "0.4.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a9fd2f41a1cba099f79a0b6b6c35656cf7c03351a7bae8ff0f28f25270f929d2"
+dependencies = [
+ "arbitrary",
+ "cc",
+]
+
+[[package]]
 name = "libgit2-sys"
 version = "0.18.8+1.9.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -14399,6 +14409,18 @@ dependencies = [
  "serde",
  "serde_with",
  "x509-cert",
+]
+
+[[package]]
+name = "tempo-nitro-attestation-fuzz"
+version = "0.0.0"
+dependencies = [
+ "libfuzzer-sys",
+ "rustls-pki-types",
+ "rustls-webpki",
+ "sha2 0.10.9",
+ "tempo-nitro-attestation",
+ "x509-parser",
 ]
 
 [[package]]
