@@ -18,6 +18,7 @@ on:
       - 'zones/scripts/**'
       - '.github/workflows/zones-docker*.yml'
   pull_request:
+    types: [opened, reopened, synchronize, ready_for_review, converted_to_draft]
     paths:
       - 'Cargo.toml'
       - 'Cargo.lock'
@@ -97,6 +98,11 @@ on:
 permissions:
   contents: read
 
+# Only automatic PR builds supersede one another; publication runs stay independent.
+concurrency:
+  group: zones-docker-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   REGISTRY: ghcr.io/tempoxyz
   STAGING_REPOSITORY: ghcr.io/tempoxyz/tempo-zone-staging
@@ -147,6 +153,7 @@ jobs:
     name: Resolve production Docker build inputs
     if: >-
       github.repository == 'tempoxyz/tempo' &&
+      github.event.pull_request.draft != true &&
       ((github.event_name != 'workflow_dispatch' ||
       (inputs.reproducible_verify != true && inputs.reproducible_eif_verify != true)) &&
       (github.repository == 'tempoxyz/tempo' ||
@@ -234,6 +241,7 @@ jobs:
     name: Resolve trusted EIF toolchain
     if: >-
       github.repository == 'tempoxyz/tempo' &&
+      github.event.pull_request.draft != true &&
       (github.repository == 'tempoxyz/tempo' &&
       ((github.event_name == 'workflow_dispatch' && inputs.reproducible_eif_verify == true &&
       inputs.reproducible_verify != true && github.ref == 'refs/heads/main') ||
@@ -341,7 +349,7 @@ jobs:
       - resolve-production-build-inputs
     if: >-
       github.repository == 'tempoxyz/tempo' &&
-      (always() &&
+      (!cancelled() &&
       (needs.resolve-production-build-inputs.result == 'success' &&
       (needs.eif-toolchain.result == 'success' ||
       (github.repository != 'tempoxyz/tempo' && needs.eif-toolchain.result == 'skipped'))) &&

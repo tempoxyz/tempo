@@ -3,7 +3,7 @@ name: Tempo Network E2E
 on:
   # Detection reads PR data through pinned actions; fork code is never executed.
   pull_request_target: # zizmor: ignore[dangerous-triggers]
-    types: [opened, reopened, synchronize, ready_for_review]
+    types: [opened, reopened, synchronize, ready_for_review, converted_to_draft]
   merge_group:
 
 permissions: {}
@@ -63,7 +63,7 @@ jobs:
         id: decision
         if: steps.paths.outcome == 'success' && steps.reth.outcome == 'success'
         env:
-          REQUIRED: ${{ contains(fromJSON(steps.paths.outputs.changes || '[]'), 'consensus') || steps.reth.outputs.changed == 'true' }}
+          REQUIRED: ${{ !github.event.pull_request.draft && (contains(fromJSON(steps.paths.outputs.changes || '[]'), 'consensus') || steps.reth.outputs.changed == 'true') }}
           SAME_REPO: ${{ !github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository }}
         run: |
           if [[ "$REQUIRED" == true && "$SAME_REPO" != true ]]; then
@@ -140,6 +140,7 @@ jobs:
           script: |
             if (process.env.SUBMIT_RESULT === 'success') return; // Argo owns the result now.
             const skipped = process.env.DETECT_RESULT === 'success' && process.env.REQUIRED === 'false';
+            const skipReason = context.payload.pull_request?.draft ? 'Draft PR; waiting for review' : 'No relevant changes';
             const owner = `${context.runId}-${process.env.GITHUB_RUN_ATTEMPT}`;
             for await (const page of github.paginate.iterator(github.rest.repos.listCommitStatusesForRef, {
               ...context.repo, ref: process.env.SHA, per_page: 100,
@@ -152,7 +153,7 @@ jobs:
             await github.rest.repos.createCommitStatus({
               ...context.repo, sha: process.env.SHA, context: 'Tempo Network E2E',
               state: skipped ? 'success' : 'failure',
-              description: `${owner}: ${skipped ? 'No relevant changes' : 'Build or dispatch failed'}`,
+              description: `${owner}: ${skipped ? skipReason : 'Build or dispatch failed'}`,
               target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}/attempts/${process.env.GITHUB_RUN_ATTEMPT}`,
             });
             if (!skipped) core.setFailed('Network E2E could not be started');
