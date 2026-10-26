@@ -218,29 +218,6 @@ jobs:
             type=raw,value=sha-${{ steps.source.outputs.short_sha }},priority=100
             type=raw,value=pr-${{ inputs.pr_number }},enable=${{ inputs.pr_number != '' }}
 
-      - name: Docker metadata for tempo-sidecar
-        id: meta-tempo-sidecar
-        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
-        with:
-          images: |
-            ${{ env.REGISTRY }}/tempo-sidecar
-            docker.io/tempoxyz/tempo-sidecar
-          bake-target: tempo-sidecar
-          labels: |
-            ${{ steps.docker-labels.outputs.value }}
-            ${{ steps.source.outputs.revision_label }}
-          tags: |
-            type=schedule,pattern=nightly,enable=${{ inputs.pr_number == '' }}
-            type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
-            type=semver,pattern={{version}},value=${{ steps.release-tag.outputs.version }},enable=${{ inputs.pr_number == '' }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ steps.release-tag.outputs.version }},enable=${{ inputs.pr_number == '' }}
-            type=semver,pattern={{major}},value=${{ steps.release-tag.outputs.version }},enable=${{ inputs.pr_number == '' }}
-            type=raw,value=stable,enable=${{ inputs.pr_number == '' && github.ref_type == 'tag' }}
-            type=raw,value=latest,enable=${{ inputs.pr_number == '' && '{{is_default_branch}}' || 'false' }}
-            type=edge,branch=main,enable=${{ inputs.pr_number == '' }}
-            type=raw,value=sha-${{ steps.source.outputs.short_sha }},priority=100
-            type=raw,value=pr-${{ inputs.pr_number }},enable=${{ inputs.pr_number != '' }}
-
       - name: Docker metadata for tempo-xtask
         id: meta-tempo-xtask
         uses: tempoxyz/gh-actions/vendor/docker/metadata-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
@@ -286,7 +263,6 @@ jobs:
             ${{ steps.meta-tempo.outputs.bake-file }}
             ${{ steps.meta-tempo-devnet.outputs.bake-file }}
             ${{ steps.meta-tempo-localnet.outputs.bake-file }}
-            ${{ steps.meta-tempo-sidecar.outputs.bake-file }}
             ${{ steps.meta-tempo-xtask.outputs.bake-file }}
           targets: ${{ ((inputs.pr_number == '' && github.event_name == 'schedule') || github.event.inputs.nightly == 'true') && 'nightly' || 'default' }}
           project: 0c6tg19qsp
@@ -308,14 +284,13 @@ jobs:
           TEMPO_TAGS: ${{ steps.meta-tempo.outputs.tags }}
           TEMPO_DEVNET_TAGS: ${{ steps.meta-tempo-devnet.outputs.tags }}
           TEMPO_LOCALNET_TAGS: ${{ steps.meta-tempo-localnet.outputs.tags }}
-          TEMPO_SIDECAR_TAGS: ${{ steps.meta-tempo-sidecar.outputs.tags }}
           TEMPO_XTASK_TAGS: ${{ steps.meta-tempo-xtask.outputs.tags }}
         with:
           script: |
             const fs = require('node:fs');
             const path = require('node:path');
             const metadata = JSON.parse(process.env.BUILD_METADATA || '{}');
-            const images = ['tempo', 'tempo-devnet', 'tempo-localnet', 'tempo-sidecar', 'tempo-xtask'].map(name => ({
+            const images = ['tempo', 'tempo-devnet', 'tempo-localnet', 'tempo-xtask'].map(name => ({
               name,
               tags: (process.env[`${name.toUpperCase().replaceAll('-', '_')}_TAGS`] || '').split('\n').filter(Boolean),
               digest: metadata[name]?.['containerimage.digest'] || '',
@@ -343,7 +318,6 @@ jobs:
           TEMPO_TAGS: ${{ steps.meta-tempo.outputs.tags }}
           TEMPO_DEVNET_TAGS: ${{ steps.meta-tempo-devnet.outputs.tags }}
           TEMPO_LOCALNET_TAGS: ${{ steps.meta-tempo-localnet.outputs.tags }}
-          TEMPO_SIDECAR_TAGS: ${{ steps.meta-tempo-sidecar.outputs.tags }}
           TEMPO_XTASK_TAGS: ${{ steps.meta-tempo-xtask.outputs.tags }}
           BUILD_METADATA: ${{ steps.build-and-push.outputs.metadata }}
         run: |
@@ -371,7 +345,7 @@ jobs:
           # cosign signs digests, not tags: every tag of a repository shares one
           # signature, so sign each repository's digest once, all concurrently.
           refs=()
-          for target in tempo tempo-devnet tempo-localnet tempo-sidecar tempo-xtask; do
+          for target in tempo tempo-devnet tempo-localnet tempo-xtask; do
             tags_var="${target^^}_TAGS"
             tags_var="${tags_var//-/_}"
             digest="$(jq -r --arg target "$target" '.[$target]["containerimage.digest"] // empty' <<< "$BUILD_METADATA")"
@@ -479,7 +453,6 @@ jobs:
           TEMPO_TAGS: ${{ steps.meta-tempo.outputs.tags }}
           TEMPO_DEVNET_TAGS: ${{ steps.meta-tempo-devnet.outputs.tags }}
           TEMPO_LOCALNET_TAGS: ${{ steps.meta-tempo-localnet.outputs.tags }}
-          TEMPO_SIDECAR_TAGS: ${{ steps.meta-tempo-sidecar.outputs.tags }}
           TEMPO_XTASK_TAGS: ${{ steps.meta-tempo-xtask.outputs.tags }}
           SHORT_SHA: ${{ steps.source.outputs.short_sha }}
           COMMIT_SHA: ${{ steps.source.outputs.sha }}
@@ -551,7 +524,6 @@ jobs:
           summarize_image "tempo" "${{ github.server_url }}/orgs/tempoxyz/packages/container/package/tempo" "$TEMPO_TAGS" "tempo"
           summarize_image "tempo-devnet" "${{ github.server_url }}/orgs/tempoxyz/packages/container/package/tempo-devnet" "$TEMPO_DEVNET_TAGS" "tempo-devnet"
           summarize_image "tempo-localnet" "${{ github.server_url }}/orgs/tempoxyz/packages/container/package/tempo-localnet" "$TEMPO_LOCALNET_TAGS" "tempo-localnet"
-          summarize_image "tempo-sidecar" "${{ github.server_url }}/orgs/tempoxyz/packages/container/package/tempo-sidecar" "$TEMPO_SIDECAR_TAGS" "tempo-sidecar"
           summarize_image "tempo-xtask" "${{ github.server_url }}/orgs/tempoxyz/packages/container/package/tempo-xtask" "$TEMPO_XTASK_TAGS" "tempo-xtask"
 
           {
