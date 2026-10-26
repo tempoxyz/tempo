@@ -5,7 +5,7 @@
 # Runs nightly at 03:45 UTC with the prover on (the benchmark default). The benchmark compares the latest
 # main commit against the last commit that completed this workflow successfully.
 
-name: zones-benchmarks
+name: zone-benchmarks
 
 on:
   schedule:
