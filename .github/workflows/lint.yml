@@ -45,6 +45,7 @@ jobs:
             rust:
               - '{bin,crates,examples,scripts,xtask,tips/verify}/**'
               - 'Cargo.lock'
+              - '*-network-identity.json'
               - '*.toml'
               - '{.cargo,.config,.github/actions}/**'
               - '.github/scripts/{native-libs.sh,check_no_std.sh,warn_flaky_e2e.py,test_warn_flaky_e2e.py}'
