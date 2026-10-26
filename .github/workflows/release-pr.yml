@@ -80,8 +80,12 @@ jobs:
           post-version-command: cargo update -w
           github-token: ${{ steps.app-token.outputs.token }}
 
+      # Also run when the changelogs step failed partway, or on a rerun that
+      # only creates missing releases (published is then false): releases it
+      # already created must not stay Latest. Editing a tag without a release
+      # or an already demoted release is a no-op.
       - name: Demote non-v* releases from latest
-        if: steps.changelogs.outputs.published == 'true'
+        if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
