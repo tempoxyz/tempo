@@ -45,7 +45,7 @@ templates:
   card_spend:
     type: tempo
     from: {pool: users, select: random}
-    gas_limit: 300000
+    gas_limit: 1000000  # first transfer creates the sink balance slot
     fee_token: "0x20c0000000000000000000000000000000000000"
     expiring_nonce: true
     nonce: { uniform: [0, 18446744073709551615] } # TIP-1106, requires T12+
@@ -60,7 +60,7 @@ templates:
   cash_out:
     type: tempo
     from: {pool: users, select: random}
-    gas_limit: 300000
+    gas_limit: 1000000  # first transfer creates the sink balance slot
     fee_token: "0x20c0000000000000000000000000000000000000"
     expiring_nonce: true
     nonce: { uniform: [0, 18446744073709551615] } # TIP-1106, requires T12+

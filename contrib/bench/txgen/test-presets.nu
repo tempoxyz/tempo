@@ -127,6 +127,32 @@ let neobank_weights = (txgen-workload-metadata-args neobank-generic $neobank_pat
 assert equal ($neobank_weights | columns | sort) [account_first_receive card_settlement card_spend cash_out public_transfer public_transfer_memo vault_deposit vault_withdraw zone_deposit zone_withdraw]
 assert equal ($neobank_weights.card_settlement * 5) ($neobank_weights.account_first_receive * 12)
 rm -rf $neobank_dir
+# Batch payouts: a 16-sender treasury pays 32 recipients per transaction (the txpool's
+# call limit); reward batches stop at 16 Earn deposits to fit the transaction gas cap.
+let batch_dir = (mktemp -d)
+let batch_spec = (txgen-resolve-bench-spec batch-payout)
+assert ("batch-payout" in $TXGEN_HELPER_PUBLIC_MIX_PRESETS)
+assert ("batch-payout" in $TXGEN_HELPER_ALWAYS_FUND_PRESETS)
+let batch_path = (txgen-prepare-public-mix-preset $batch_spec.spec_path 1000 40 2 1337 --out-dir $batch_dir)
+let batch = (open $batch_path)
+assert equal ($batch.mix | get template) [payroll_existing payroll_new reward_distribution]
+assert equal ($batch.templates.payroll_existing.calls | length) 32
+assert equal $batch.templates.payroll_existing.gas_limit 1140000
+assert equal ($batch.templates.payroll_new.calls | length) 32
+assert equal ($batch.templates.payroll_new.calls | get args | uniq) [[random 1]]
+let reward = $batch.templates.reward_distribution
+assert equal ($reward.calls | length) 17
+assert equal ($reward.calls.0.args.1) 16000000
+assert ($reward.gas_limit <= $TXGEN_HELPER_TX_GAS_LIMIT_CAP)
+let batch_weights = (txgen-workload-metadata-args batch-payout $batch_path | last | str replace "workload_mix_weights=" "" | from json)
+assert equal ($batch_weights | columns | sort) [payroll_existing payroll_new reward_distribution]
+with-env {TXGEN_BATCH_PAYOUT_RECIPIENTS: "8"} {
+    let small = (open (txgen-prepare-public-mix-preset $batch_spec.spec_path 1000 40 2 1337 --out-dir $batch_dir))
+    assert equal ($small.templates.payroll_new.calls | length) 8
+    assert equal ($small.templates.payroll_new.gas_limit) 2740000
+    assert equal ($small.templates.reward_distribution.calls | length) 9
+}
+rm -rf $batch_dir
 # The access-key mix authorises keys in setup and inline, and pays one merchant account.
 let access_spec = (txgen-resolve-bench-spec access-key-mix)
 assert equal $access_spec.kind static
