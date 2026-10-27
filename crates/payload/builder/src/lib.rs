@@ -66,6 +66,7 @@ use tempo_evm::{
 };
 use tempo_payload_types::{
     Estimator, TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload,
+    estimator::FinishedBuild,
 };
 use tempo_primitives::{TempoHeader, TempoReceipt, TempoTxEnvelope};
 use tempo_transaction_pool::{
@@ -471,9 +472,9 @@ where
         // work would consume that window.
         let payload_build_budget = attributes.payload_build_budget();
         // Snapshot the shared estimator once so every stop decision in this
-        // build uses the same multiplier and validation feedback.
-        let build_plan =
-            payload_build_budget.map(|build_budget| self.estimator.build_plan(build_budget));
+        // build uses the same multiplier, dry build finish and validation feedback.
+        let build_plan = payload_build_budget
+            .map(|build_budget| self.estimator.build_plan(Instant::now(), build_budget));
         let validation_latency = build_plan.and_then(|plan| plan.validation_latency());
         let block_build_stop_reason = loop {
             check_cancel!();
@@ -502,7 +503,8 @@ where
                         gas_used = cumulative_gas_used,
                         transactions = pool_transactions_included,
                         estimated_rlp_block_size,
-                        build_time_multiplier = plan.build_time_multiplier(),
+                        build_time_multiplier = %plan.build_time_multiplier(),
+                        dry_finish = ?plan.dry_finish(),
                         "stopping pool transaction execution before payload build budget is exhausted"
                     );
                     break BlockBuildStopReason::BuildBudget;
@@ -937,8 +939,14 @@ where
         let elapsed = start.elapsed();
         let validation_work_duration = elapsed.saturating_sub(normal_transaction_fill_idle_elapsed);
         if payload_build_budget.is_some() {
-            self.estimator
-                .on_build_finished(validation_work_duration, validation_work_at_tx_cutoff);
+            self.estimator.on_build_finished(
+                Instant::now(),
+                FinishedBuild::new(
+                    validation_work_at_tx_cutoff,
+                    validation_work_duration,
+                    normal_transaction_fill_idle_elapsed,
+                ),
+            );
         }
         if is_osaka && estimated_rlp_block_size > MAX_RLP_BLOCK_SIZE {
             return Err(PayloadBuilderError::other(ConsensusError::BlockTooLarge {

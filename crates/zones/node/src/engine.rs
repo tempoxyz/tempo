@@ -471,7 +471,7 @@ impl ZoneEngine {
             })?;
         }
 
-        // Consume the L1 input only after witness persistence succeeds (or, before T14, is skipped).
+        // Consume the L1 input only after witness persistence succeeds (or, before T15, is skipped).
         if checkpoint_only {
             self.deposit_queue.defer_through(l1_num_hash)?;
         } else {

@@ -2,7 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const repository = 'tempoxyz/tempo';
-const imageNames = ['tempo', 'tempo-localnet', 'tempo-sidecar', 'tempo-xtask'];
+const imageNames = ['tempo', 'tempo-localnet', 'tempo-xtask'];
 const marker = id => `<!-- tempo-docker-run:${id} -->`;
 const requestMarker = id => `<!-- tempo-docker-request:${id} -->`;
 

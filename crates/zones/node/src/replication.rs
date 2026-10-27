@@ -329,7 +329,7 @@ fn encode_block_with_witness(
 ) -> eyre::Result<EncodedBlock> {
     let witness = if let Some(proofs) = proofs {
         let witness = proofs.get(number, hash);
-        // Pre-T14 blocks may become canonical without a witness; peers collect it themselves.
+        // Pre-T15 blocks may become canonical without a witness; peers collect it themselves.
         eyre::ensure!(
             witness.is_some()
                 || !proofs.requires_witness(number)

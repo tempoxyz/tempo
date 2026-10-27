@@ -18,14 +18,15 @@ use tempo_primitives::TempoBlockEnv;
 
 use crate::state::{Db, PreStateDb};
 
-/// Appends to `failures` each invariant `db` breaks, at `scope`. `env` is the block's environment.
-/// Only contracts for which `selected` holds are checked, e.g. those whose state changed, as no
-/// other contract's invariants can have broken.
+/// Appends to `failures` each invariant `db` breaks, at `scope`, over the accounts `db` holds;
+/// `holders` are summed as balance holders too, but never checked as contracts. `env` is the block's environment. Only contracts for which `selected` holds are
+/// checked, e.g. those whose state changed, as no other contract's invariants can have broken.
 pub(crate) fn check(
     db: &Db,
     env: &EvmEnv<TempoHardfork, TempoBlockEnv>,
     scope: &InvariantScope,
     selected: impl Fn(&Address) -> bool,
+    holders: &[Address],
     failures: &mut Vec<InvariantFailure>,
 ) {
     let pre_state = &db.database.0;
@@ -38,9 +39,12 @@ pub(crate) fn check(
         .map(|(address, _)| *address)
         .collect();
     accounts.sort_unstable();
+    let mut all_holders: Vec<Address> = accounts.iter().chain(holders).copied().collect();
+    all_holders.sort_unstable();
+    all_holders.dedup();
 
     let mut views = Views(TempoEvm::new(WrapDatabaseRef(db), env.clone()));
-    for (id, message) in tip20::check(&mut views, &accounts, selected) {
+    for (id, message) in tip20::check(&mut views, &accounts, &all_holders, selected) {
         failures.push(InvariantFailure {
             id: id.to_string(),
             message,
