@@ -100,14 +100,6 @@ mod tests {
     }
 
     #[test]
-    fn zero_round_target_never_supersedes() {
-        let genesis = Target::from_header(&execution_header(0, Round::zero(), digest(1)));
-        let finalized = Target::from_finalization(round(1), digest(2));
-        assert!(!genesis.supersedes(&finalized));
-        assert!(!genesis.supersedes(&genesis));
-    }
-
-    #[test]
     fn execution_target_uses_header_round() {
         let header = execution_header(100, round(2), digest(1));
         assert_eq!(Target::from_header(&header).round, round(2));

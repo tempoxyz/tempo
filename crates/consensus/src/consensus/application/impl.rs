@@ -320,10 +320,7 @@ impl Inner {
         let round = context.round;
         let proposer = &context.leader;
 
-        // Commonware's Deferred wrapper already checks the embedded consensus
-        // context, but Inline (immediate mode) does not, so we must check it here.
         let ctx = block.header().consensus_context;
-
         let expected_ctx = TempoConsensusContext {
             epoch: round.epoch().get(),
             view: round.view().get(),
@@ -331,6 +328,8 @@ impl Inner {
             proposer: crate::utils::public_key_to_tempo_primitive(proposer),
         };
 
+        // Commonware's Deferred wrapper already checks the embedded consensus
+        // context, but Inline (immediate mode) does not, so we must check it here.
         ensure!(
             ctx == expected_ctx,
             "mismatch in consensus context for block `{}`. expected `{expected_ctx:?}`. got `{ctx:?}`",
