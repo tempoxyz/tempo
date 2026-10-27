@@ -1,7 +1,5 @@
-// Zones latency significance: resample measured journeys without synthetic jitter.
-// Score only non-degenerate 95% bootstrap intervals excluding zero; no extra floor.
-// This estimates within-run sampling uncertainty, not run-to-run environment variation.
-// Below MIN_JOURNEYS there are too few tail observations for a verdict.
+// Within-run temporal bootstrap: no synthetic jitter or effect-size floor.
+// Does not estimate run-to-run environment variation.
 const fs = require('fs');
 const path = require('path');
 const { rng } = require('./bench-e2e-classify');
@@ -16,12 +14,11 @@ const EDGES = {
 };
 
 // txgen's nearest-rank percentile, so the tested p95 is the report's.
-const p95 = sorted => sorted[Math.min(Math.floor(sorted.length * 0.95), sorted.length - 1)];
+const p95 = sorted => sorted[Math.floor(sorted.length * 0.95)];
 // txgen's primary milestone: a step's last protocol milestone, else its command finish.
 const offset = step => step.milestones?.at(-1)?.run_offset_ms ?? step.finished_offset_ms;
 
-// Per-journey latencies rebuilt from txgen's lifecycle traces the way it aggregates
-// "dependency" edges; null if a latency is missing or invalid.
+// Rebuild txgen dependency-edge latencies; null if any sample is invalid.
 function samples(instances, edge) {
   const values = instances.map(instance => {
     if (!edge) return instance.client_observed_e2e_latency_ms;
@@ -31,9 +28,8 @@ function samples(instances, edge) {
   return values.every(Number.isFinite) ? values : null;
 }
 
-// Keep contemporaneous journeys together. One median journey duration per window
-// captures local shared-load/block-timing effects without another benchmark setup.
-// This is a temporal-cluster approximation, not a guarantee of independence.
+// Group starts by median journey duration to approximate shared timing/load.
+// Adjacent windows are not guaranteed independent.
 function temporalGroups(instances) {
   if (!instances.every(i => Number.isFinite(i.started_at_unix_ms) &&
       Number.isFinite(i.finished_at_unix_ms) && i.finished_at_unix_ms > i.started_at_unix_ms)) return null;
@@ -59,8 +55,7 @@ function resampler(values, groups, rand) {
   };
 }
 
-// Use interval endpoints: discrete/asymmetric bootstrap intervals need not be
-// centred on the observed change. A collapsed interval cannot establish certainty.
+// Intervals may be asymmetric; collapsed intervals cannot establish certainty.
 function sig(baseline, feature, groups, rand) {
   const [b, f] = [baseline, feature].map((values, i) => resampler(values, groups[i], rand));
   const diffs = Float64Array.from({ length: 10000 }, () => f() - b()).sort();

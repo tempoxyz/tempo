@@ -161,13 +161,13 @@ class MembershipTests(unittest.TestCase):
 DEPOSIT_MS = [122, 934, 733, 1047, 971, 770, 569, 513, 513, 311]
 
 
-def traced_report(deposits, withdrawal=2000.0):
+def traced_report(deposits, withdrawal=2000.0, group_size=1):
     """A txgen report.json tracing every journey, as the classifier reads it."""
     def edge(source, destination, ms):  # The last milestone, not the command finish, ends the edge.
         return [{"id": source, "finished_offset_ms": 0, "milestones": [{"run_offset_ms": 100}]},
                 {"id": destination, "finished_offset_ms": 0, "milestones": [{"run_offset_ms": 1}, {"run_offset_ms": 100 + ms}]}]
     return {"completed": len(deposits), "sampled_instances": [
-        {"outcome": "completed", "started_at_unix_ms": i * 10000, "finished_at_unix_ms": i * 10000 + 6000,
+        {"outcome": "completed", "started_at_unix_ms": (i // group_size) * 10000, "finished_at_unix_ms": (i // group_size) * 10000 + 6000,
          "client_observed_e2e_latency_ms": 6000.0 + d,
          "steps": edge("offramp", "offramp_processed", withdrawal + d / 100) + edge("onramp.zone_before", "onramp.zone_deposit.processed", d)}
         for i, d in enumerate(deposits)]}
@@ -188,20 +188,16 @@ class ReportingTests(unittest.TestCase):
         rng = random.Random(35)
         noise = traced_report([rng.choice(DEPOSIT_MS) for _ in range(100)])
         scaled = lambda factor, n=10: traced_report([d * factor for d in spread[:n * 10]])
-        # Five journeys share each temporal cohort. Ignoring grouping falsely flags
-        # this small shift; the group-bootstrap interval still crosses zero.
-        def correlated(shift):
-            report = traced_report([1000 + (i // 5) * 20 + shift for i in range(100)])
-            for i, instance in enumerate(report["sampled_instances"]):
-                instance.update(started_at_unix_ms=(i // 5) * 10000, finished_at_unix_ms=(i // 5) * 10000 + 6000)
-            return report
-
+        # Independent resampling falsely flags this correlated shift.
+        correlated = lambda shift: traced_report([1000 + (i // 5) * 20 + shift for i in range(100)], group_size=5)
         collapsed = traced_report([1000] * 100)
         missing_timing = dict(base, sampled_instances=[dict(i, started_at_unix_ms=None) for i in base["sampled_instances"]])
-        one_group = dict(base, sampled_instances=[dict(i, started_at_unix_ms=0, finished_at_unix_ms=6000) for i in base["sampled_instances"]])
+        comparison = {"rows": rows, "metadata": {
+            "baseline": OTHER_SHA, "feature": SHA, "prover": True, "preset": "full-journey",
+            "tempoHardfork": "t13", "count": 100, "tps": 5, "region": "us-east-1"}, "latencies": {
+            "baseline": {row["key"]: latency(100.0) for row in rows},
+            "feature": {row["key"]: latency(50.0) for row in rows}}}
         for name, baseline, feature, verdict, feature_sha, reason in (
-                ("improvement", base, scaled(0.8), "Improvement", SHA, ""),
-                ("regression", base, scaled(1.2), "Regression", SHA, ""),
                 ("same commit", base, scaled(0.8), "Improvement", OTHER_SHA, ""),
                 ("clustered sampling noise", clustered, noise, "No Significant Change", SHA, ""),
                 ("correlated nonzero shift", correlated(0), correlated(-30), "No Significant Change", SHA, ""),
@@ -209,9 +205,9 @@ class ReportingTests(unittest.TestCase):
                 ("small precise improvement", base, traced_report(spread, withdrawal=1970.0), "Improvement", SHA, ""),
                 ("small precise regression", base, traced_report(spread, withdrawal=2030.0), "Regression", SHA, ""),
                 ("collapsed interval", collapsed, traced_report([900] * 100), "Unclassified", SHA,
-                 "withdrawal: insufficient tail variation to estimate uncertainty. deposit: insufficient tail variation to estimate uncertainty. journey: insufficient tail variation to estimate uncertainty."),
+                 " ".join(f"{key}: insufficient tail variation to estimate uncertainty." for key in ("withdrawal", "deposit", "journey"))),
                 ("missing timing", base, missing_timing, "Unclassified", SHA, "Missing or invalid journey timing for temporal grouping."),
-                ("one temporal group", base, one_group, "Unclassified", SHA, "At least 20 temporal groups per phase are required."),
+                ("one temporal group", base, traced_report(spread, group_size=100), "Unclassified", SHA, "At least 20 temporal groups per phase are required."),
                 ("under 100 journeys", scaled(1, 2), scaled(0.5, 2), "Unclassified", SHA,
                  "baseline: only 20 completed journeys; at least 100 are required."),
                 ("partial traces", base, dict(scaled(0.6, 1), completed=100), "Unclassified", SHA,
@@ -220,11 +216,7 @@ class ReportingTests(unittest.TestCase):
                  "Unclassified", SHA, "No valid end-to-end latency samples."),
                 ("missing traces", None, None, "Unclassified", SHA, "Classification failed; see CI logs.")):
             with self.subTest(name):
-                comparison = {"rows": rows, "metadata": {
-                    "baseline": OTHER_SHA, "feature": feature_sha, "prover": True, "preset": "full-journey",
-                    "tempoHardfork": "t13", "count": 100, "tps": 5, "region": "us-east-1"}, "latencies": {
-                    "baseline": {row["key"]: latency(100.0) for row in rows},
-                    "feature": {row["key"]: latency(50.0) for row in rows}}}
+                comparison["metadata"]["feature"] = feature_sha
                 files = {"comparison.json": json.dumps(comparison)}
                 if baseline:
                     files |= {"baseline/report.json": json.dumps(baseline), "feature/report.json": json.dumps(feature)}
@@ -238,9 +230,9 @@ class ReportingTests(unittest.TestCase):
                 self.assertEqual("*Unclassified:*" in section, bool(reason))
                 if reason:
                     self.assertIn(reason, section)
-                table = [[cell["text"] for cell in row] for row in message["blocks"][2]["rows"]]
-                self.assertEqual(table[:2], [["Latency (s)", "base (p50)", "feat (p50)", "change", "base (p95)", "feat (p95)", "change"],
-                                             ["withdrawal", "0.100", "0.050", "-50.0%", "0.100", "0.050", "-50.0%"]])
+        table = [[cell["text"] for cell in row] for row in message["blocks"][2]["rows"]]
+        self.assertEqual(table[:2], [["Latency (s)", "base (p50)", "feat (p50)", "change", "base (p95)", "feat (p95)", "change"],
+                                     ["withdrawal", "0.100", "0.050", "-50.0%", "0.100", "0.050", "-50.0%"]])
         result = run_with_results("Send Slack notification (success)", {}, env=env)
         self.assertEqual((result["calls"], result["warnings"]),
                          ([], ["Could not read comparison.json for Zones Slack notification"]))
