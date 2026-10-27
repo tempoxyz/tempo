@@ -34,7 +34,7 @@ const FALLBACK_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const MAX_SHADOW_RETENTION_BLOCKS: u64 = 10_000;
 /// Bound on collecting a pre-T14 block's witness before importing the block without it.
 // TODO: remove after T14
-const OPTIONAL_WITNESS_TIMEOUT: Duration = Duration::from_secs(2);
+const OPTIONAL_WITNESS_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Load unsettled witnesses and return the proof collector handle and worker future.
 pub async fn create_proof_collector<P: ZoneSequencerProvider>(
