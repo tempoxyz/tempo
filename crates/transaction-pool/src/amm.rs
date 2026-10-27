@@ -436,7 +436,7 @@ mod tests {
     fn test_has_enough_liquidity_user_token_matches_validator_token() {
         let cache = AmmLiquidityCache {
             inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
-                unique_tokens: vec![address!("1111111111111111111111111111111111111111")],
+                unique_tokens: vec![Address::repeat_byte(0x11)],
                 ..Default::default()
             })),
         };
@@ -444,7 +444,7 @@ mod tests {
         let provider = create_mock_provider();
         let state = provider.latest().unwrap();
 
-        let user_token = address!("1111111111111111111111111111111111111111");
+        let user_token = Address::repeat_byte(0x11);
         let result = cache.has_enough_liquidity(user_token, U256::from(100), &state);
 
         assert!(result.is_ok());
@@ -456,8 +456,8 @@ mod tests {
 
     #[test]
     fn test_has_enough_liquidity_overflow_only_rejected_when_swap_needed() {
-        let user_token = address!("1111111111111111111111111111111111111111");
-        let other_token = address!("2222222222222222222222222222222222222222");
+        let user_token = Address::repeat_byte(0x11);
+        let other_token = Address::repeat_byte(0x22);
         let provider = create_mock_provider();
         let state = provider.latest().unwrap();
 
@@ -486,8 +486,8 @@ mod tests {
 
     #[test]
     fn test_has_enough_liquidity_cached_pool_sufficient() {
-        let user_token = address!("2222222222222222222222222222222222222222");
-        let validator_token = address!("3333333333333333333333333333333333333333");
+        let user_token = Address::repeat_byte(0x22);
+        let validator_token = Address::repeat_byte(0x33);
 
         let cache = AmmLiquidityCache {
             inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
@@ -514,8 +514,8 @@ mod tests {
 
     #[test]
     fn test_has_enough_liquidity_cached_pool_insufficient() {
-        let user_token = address!("2222222222222222222222222222222222222222");
-        let validator_token = address!("3333333333333333333333333333333333333333");
+        let user_token = Address::repeat_byte(0x22);
+        let validator_token = Address::repeat_byte(0x33);
 
         let cache = AmmLiquidityCache {
             inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
@@ -549,7 +549,7 @@ mod tests {
         let provider = create_mock_provider();
         let state = provider.latest().unwrap();
 
-        let user_token = address!("1111111111111111111111111111111111111111");
+        let user_token = Address::repeat_byte(0x11);
         let result = cache.has_enough_liquidity(user_token, U256::from(1000), &state);
         assert!(result.is_ok());
         assert!(
@@ -560,9 +560,9 @@ mod tests {
 
     #[test]
     fn test_has_enough_liquidity_two_hop_cached() {
-        let user = address!("1111111111111111111111111111111111111111");
-        let hop = address!("2222222222222222222222222222222222222222");
-        let validator = address!("3333333333333333333333333333333333333333");
+        let user = Address::repeat_byte(0x11);
+        let hop = Address::repeat_byte(0x22);
+        let validator = Address::repeat_byte(0x33);
 
         let cache = AmmLiquidityCache {
             inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
@@ -599,8 +599,8 @@ mod tests {
 
     #[test]
     fn test_has_enough_liquidity_cache_miss_insufficient() {
-        let user_token = address!("2222222222222222222222222222222222222222");
-        let validator_token = address!("3333333333333333333333333333333333333333");
+        let user_token = Address::repeat_byte(0x22);
+        let validator_token = Address::repeat_byte(0x33);
 
         let cache = AmmLiquidityCache {
             inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
@@ -649,7 +649,7 @@ mod tests {
                 unique_tokens: vec![validator_token],
                 pool_cache: {
                     let mut m = HashMap::default();
-                    m.insert((user_token, validator_token), U256::from(1));
+                    m.insert((user_token, validator_token), U256::ONE);
                     m
                 },
                 ..Default::default()
@@ -667,7 +667,7 @@ mod tests {
                 .read()
                 .pool_cache
                 .get(&(user_token, validator_token)),
-            Some(&U256::from(1)),
+            Some(&U256::ONE),
             "slow path must not overwrite a cached reserve",
         );
     }
@@ -761,13 +761,13 @@ mod tests {
         let mut inner = AmmLiquidityCacheInner::default();
 
         for i in 0..LAST_SEEN_WINDOW {
-            let token = Address::new([i as u8; 20]);
+            let token = Address::repeat_byte(i as u8);
             inner.last_seen_tokens.push_back(token);
         }
 
         assert_eq!(inner.last_seen_tokens.len(), LAST_SEEN_WINDOW);
 
-        let new_token = Address::new([0xFF; 20]);
+        let new_token = Address::repeat_byte(0xFF);
         inner.last_seen_tokens.push_back(new_token);
         if inner.last_seen_tokens.len() > LAST_SEEN_WINDOW {
             inner.last_seen_tokens.pop_front();
@@ -775,7 +775,10 @@ mod tests {
 
         assert_eq!(inner.last_seen_tokens.len(), LAST_SEEN_WINDOW);
         assert_eq!(inner.last_seen_tokens.back(), Some(&new_token));
-        assert_eq!(inner.last_seen_tokens.front(), Some(&Address::new([1; 20])));
+        assert_eq!(
+            inner.last_seen_tokens.front(),
+            Some(&Address::repeat_byte(1))
+        );
     }
 
     #[test]
@@ -783,13 +786,13 @@ mod tests {
         let mut inner = AmmLiquidityCacheInner::default();
 
         for i in 0..LAST_SEEN_WINDOW {
-            let validator = Address::new([i as u8; 20]);
+            let validator = Address::repeat_byte(i as u8);
             inner.last_seen_validators.push_back(validator);
         }
 
         assert_eq!(inner.last_seen_validators.len(), LAST_SEEN_WINDOW);
 
-        let new_validator = Address::new([0xFF; 20]);
+        let new_validator = Address::repeat_byte(0xFF);
         inner.last_seen_validators.push_back(new_validator);
         if inner.last_seen_validators.len() > LAST_SEEN_WINDOW {
             inner.last_seen_validators.pop_front();
@@ -799,7 +802,7 @@ mod tests {
         assert_eq!(inner.last_seen_validators.back(), Some(&new_validator));
         assert_eq!(
             inner.last_seen_validators.front(),
-            Some(&Address::new([1; 20]))
+            Some(&Address::repeat_byte(1))
         );
 
         inner.unique_validators = inner
@@ -815,8 +818,8 @@ mod tests {
     fn test_unique_tokens_deduplication() {
         let mut inner = AmmLiquidityCacheInner::default();
 
-        let token_a = address!("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
-        let token_b = address!("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB");
+        let token_a = Address::repeat_byte(0xaa);
+        let token_b = Address::repeat_byte(0xbb);
 
         inner.last_seen_tokens.push_back(token_a);
         inner.last_seen_tokens.push_back(token_b);
@@ -838,8 +841,8 @@ mod tests {
     fn test_cache_insert_and_lookup() {
         let mut inner = AmmLiquidityCacheInner::default();
 
-        let user_token = address!("1111111111111111111111111111111111111111");
-        let validator_token = address!("2222222222222222222222222222222222222222");
+        let user_token = Address::repeat_byte(0x11);
+        let validator_token = Address::repeat_byte(0x22);
         let reserve = U256::from(5000);
 
         inner
@@ -856,8 +859,8 @@ mod tests {
     fn test_slot_to_pool_mapping() {
         let mut inner = AmmLiquidityCacheInner::default();
 
-        let user_token = address!("1111111111111111111111111111111111111111");
-        let validator_token = address!("2222222222222222222222222222222222222222");
+        let user_token = Address::repeat_byte(0x11);
+        let validator_token = Address::repeat_byte(0x22);
         let slot = U256::from(12345);
 
         inner
@@ -874,8 +877,8 @@ mod tests {
     fn test_validator_preferences_mapping() {
         let mut inner = AmmLiquidityCacheInner::default();
 
-        let validator = address!("3333333333333333333333333333333333333333");
-        let fee_token = address!("4444444444444444444444444444444444444444");
+        let validator = Address::repeat_byte(0x33);
+        let fee_token = Address::repeat_byte(0x44);
 
         inner.validator_preferences.insert(validator, fee_token);
 
@@ -889,7 +892,7 @@ mod tests {
     fn test_slot_to_validator_mapping() {
         let mut inner = AmmLiquidityCacheInner::default();
 
-        let validator = address!("3333333333333333333333333333333333333333");
+        let validator = Address::repeat_byte(0x33);
         let slot = U256::from(67890);
 
         inner.slot_to_validator.insert(slot, validator);
@@ -917,7 +920,7 @@ mod tests {
                 },
                 slot_to_pool: {
                     let mut m = U256Map::default();
-                    m.insert(U256::from(1), (user_token, validator_token));
+                    m.insert(U256::ONE, (user_token, validator_token));
                     m
                 },
                 last_seen_tokens: VecDeque::from(vec![validator_token]),
@@ -1079,7 +1082,7 @@ mod tests {
 
     #[test]
     fn test_is_active_validator() {
-        let active = address!("1111111111111111111111111111111111111111");
+        let active = Address::repeat_byte(0x11);
         let inactive = address!("DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF");
 
         let cases = [
@@ -1101,8 +1104,8 @@ mod tests {
 
     #[test]
     fn test_track_tokens() {
-        let token_a = address!("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
-        let token_b = address!("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB");
+        let token_a = Address::repeat_byte(0xaa);
+        let token_b = Address::repeat_byte(0xbb);
 
         // Empty slice is a no-op
         let cache = AmmLiquidityCache::with_unique_tokens(vec![]);

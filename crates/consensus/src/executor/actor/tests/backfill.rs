@@ -337,6 +337,49 @@ fn snapshot_restore_replays_below_execution_finality_without_forkchoice_updates(
 }
 
 #[test_traced]
+fn snapshot_restore_replays_more_than_a_forkchoice_batch_below_execution_finality() {
+    deterministic::Runner::default().start(|context| async move {
+        // The floor sits more than a forkchoice batch below the execution
+        // layer's finality. Every re-delivery counts toward the batch while
+        // its forkchoice update is skipped as stale; the skipped updates
+        // must not keep the batch full and starve later re-deliveries.
+        let execution = FakeExecution::new();
+        let mut blocks = Vec::new();
+        let mut parent = GENESIS;
+        for height in 1..=11 {
+            let block = make_block(height, height, parent);
+            parent = block.digest();
+            execution.seed_canonical_block(&block);
+            blocks.push(block);
+        }
+        let tip = parent;
+        execution.set_finalized(11, tip);
+
+        let mut h = Harness::builder()
+            .execution(execution)
+            .harness_options(HarnessOptions {
+                finalized_floor: 1,
+                finalized_tip: (round(11), 11, tip),
+                ..Default::default()
+            })
+            .start(&context);
+
+        for block in blocks {
+            h.deliver_finalized(block)
+                .await
+                .expect("every re-delivered block should be acknowledged");
+        }
+        assert_eq!(
+            h.execution.fcus(),
+            vec![(tip, tip, false); 2],
+            "only the startup probe and the update at the execution layer's \
+            finality may be submitted",
+        );
+        assert_eq!(h.execution.finalized(), Some((11, tip)));
+    });
+}
+
+#[test_traced]
 fn invalid_payload_fails_startup_backfill() {
     deterministic::Runner::default().start(|context| async move {
         let b1 = make_block(1, 1, GENESIS);

@@ -26,6 +26,7 @@ zstd.workspace = true
 tempo-ext.workspace = true
 tempo-eyre.workspace = true
 tempo-node = { workspace = true, features = ["default"] }
+tempo-node-launcher.workspace = true
 tempo-consensus.workspace = true
 tempo-consensus-config.workspace = true
 tempo-precompiles.workspace = true
@@ -34,6 +35,7 @@ tempo-chainspec = { workspace = true, features = ["default"] }
 tempo-evm.workspace = true
 tempo-faucet.workspace = true
 tempo-telemetry-util.workspace = true
+tempo-state-bloat.workspace = true
 
 alloy = { workspace = true, default-features = false, features = [
 	"network",
@@ -68,6 +70,7 @@ commonware-math.workspace = true
 commonware-runtime = { workspace = true, features = ["external"] }
 commonware-utils.workspace = true
 futures = { workspace = true, features = ["executor"] }
+parking_lot.workspace = true
 rand.workspace = true
 reth-chainspec.workspace = true
 reth-cli.workspace = true
@@ -87,7 +90,6 @@ rustls.workspace = true
 reth-codecs.workspace = true
 reth-db.workspace = true
 reth-db-api.workspace = true
-reth-etl.workspace = true
 reth-ethereum = { workspace = true, features = ["full", "cli", "network"] }
 reth-ethereum-cli.workspace = true
 reth-metrics.workspace = true
@@ -120,6 +122,9 @@ tracy-client = { workspace = true, optional = true }
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.30.1", features = ["signal"], optional = true }
 
+[dev-dependencies]
+jsonrpsee.workspace = true
+
 [[bin]]
 name = "tempo"
 path = "src/main.rs"
@@ -132,9 +137,9 @@ required-features = ["localnet"]
 [features]
 default = ["asm-keccak", "jemalloc", "otlp", "keccak-cache-global"]
 
-localnet = ["dep:nix"]
+dst = ["tempo-precompiles/dst", "reth-db/dst", "reth-trie/dst"]
 
-bal = ["tempo-consensus/bal", "tempo-node/bal"]
+localnet = ["dep:nix"]
 
 asm-keccak = [
 	"alloy/asm-keccak",
@@ -223,3 +228,5 @@ min-trace-logs = [
 	"tempo-node/min-trace-logs",
 ]
 trie-debug = ["tempo-node/trie-debug"]
+# Devnet-only: accept zone verifier PCRs via `--zone-verifier.custom-pcrs`.
+custom-pcrs = ["tempo-precompiles/custom-pcrs"]

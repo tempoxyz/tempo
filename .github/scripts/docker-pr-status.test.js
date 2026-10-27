@@ -13,7 +13,7 @@ const context = {
 };
 const status = { id: 456, attempt: 1, number: 123, mode: '', status: 'completed', conclusion: 'success' };
 function images(mode = '') {
-  const names = mode === 'profiling' ? ['tempo'] : ['tempo', 'tempo-localnet', 'tempo-sidecar', 'tempo-xtask'];
+  const names = mode === 'profiling' ? ['tempo'] : ['tempo', 'tempo-devnet', 'tempo-localnet', 'tempo-xtask'];
   const registries = mode === 'profiling' ? ['ghcr.io'] : ['ghcr.io', 'docker.io'];
   const prefix = mode === 'profiling' ? 'profiling-' : '';
   const tags = [`${prefix}pr-123`, `${prefix}sha-${sha.slice(0, 7)}`, ...(mode === 'nightly' ? ['nightly'] : [])];
@@ -154,6 +154,31 @@ test('failed post-push signing still reports the push and overall failure separa
   const body = render({ ...status, conclusion: 'failure' }, images());
   assert.match(body, /\*\*failure\*\*/);
   assert.match(body, /successful push step/);
+});
+
+for (const mode of ['', 'nightly']) {
+  test(`${mode || 'regular'} builds report the optional devnet image`, () => {
+    const data = images(mode);
+    const devnet = data.images.find(image => image.name === 'tempo-devnet');
+    const body = render({ ...status, mode }, data);
+    assert.ok(body.includes(`ghcr.io/tempoxyz/tempo-devnet@${digest}`));
+    for (const tag of devnet.tags) assert.ok(body.includes(tag));
+
+    devnet.tags[0] = 'ghcr.io/tempoxyz/tempo:latest';
+    assert.throws(() => validateImages(data, { ...status, mode }));
+  });
+
+  test(`${mode || 'regular'} builds still accept legacy image reports`, () => {
+    const data = images(mode);
+    data.images = data.images.filter(image => image.name !== 'tempo-devnet');
+    assert.doesNotThrow(() => validateImages(data, { ...status, mode }));
+  });
+}
+
+test('profiling builds reject an unexpected devnet image', () => {
+  const data = images('profiling');
+  data.images.push({ ...data.images[0], name: 'tempo-devnet' });
+  assert.throws(() => validateImages(data, { ...status, mode: 'profiling' }));
 });
 
 for (const [name, change] of [
@@ -327,6 +352,15 @@ for (const mode of ['', 'nightly', 'profiling']) {
     assert.ok(!step.includes('always()'));
     const script = step.split('          script: |\n')[1].split('\n').map(line => line.replace(/^ {12}/, '')).join('\n');
     const expected = images(mode);
+    if (mode !== 'profiling') {
+      // Extra per-attempt tags broke the strict /docker image report contract.
+      assert.ok(yaml.includes("BUILD_TAG: ${{ (github.event_name == 'merge_group' || github.event_name == 'pull_request_target') && format('network-e2e-{0}-{1}', github.run_id, github.run_attempt) || '' }}"));
+      const publish = yaml.split('      - name: Publish event (sha tag)\n')[1].split('        shell:')[0];
+      assert.ok(publish.includes("github.event_name != 'pull_request_target'"));
+      const attemptTags = yaml.split('\n').filter(line => line.includes('type=raw,value=${{ steps.source.outputs.image_tag }}'));
+      assert.equal(attemptTags.length, expected.images.length);
+      for (const line of attemptTags) assert.ok(line.endsWith(",enable=${{ steps.source.outputs.image_tag != '' }}"));
+    }
     const env = { SOURCE_SHA: sha, RUNNER_TEMP: '/tmp/report-fixture', BUILD_METADATA: JSON.stringify(
       Object.fromEntries(expected.images.map(image => [image.name, { 'containerimage.digest': image.digest }]))),
     };

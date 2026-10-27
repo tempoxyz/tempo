@@ -20,16 +20,17 @@ use crate::{
     storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
     tip20::{self, ITIP20, TIP20Token},
     tip20_factory::{self, TIP20Factory},
+    tip403_registry::{ITIP403Registry, PolicyType, TIP403Registry},
 };
 use alloy::{
-    primitives::{Address, B256, U256, address, hex_literal::hex},
+    primitives::{Address, B256, U256, address, fixed_bytes, hex_literal::hex},
     sol_types::SolError,
 };
 use revm::precompile::PrecompileError;
 #[cfg(any(test, feature = "test-utils"))]
 use tempo_contracts::precompiles::TIP20Error;
 use tempo_contracts::precompiles::{TIP20_FACTORY_ADDRESS, UnknownFunctionSelector};
-use tempo_primitives::{MasterId, TempoAddressExt, UserTag};
+use tempo_primitives::{MasterId, TempoAddressExt};
 
 /// Checks that all selectors in an interface have dispatch handlers.
 ///
@@ -416,6 +417,46 @@ fn get_tip20_admin(token: Address) -> Option<Address> {
     None
 }
 
+fn create_empty_blacklist(registry: &mut TIP403Registry, admin: Address) -> Result<u64> {
+    registry.create_policy(
+        admin,
+        ITIP403Registry::createPolicyCall {
+            admin,
+            policyType: PolicyType::BLACKLIST,
+        },
+    )
+}
+
+pub fn set_empty_compound_transfer_policy(admin: Address, token: Address) -> Result<u64> {
+    let mut registry = TIP403Registry::new();
+    let call = ITIP403Registry::createCompoundPolicyCall {
+        senderPolicyId: create_empty_blacklist(&mut registry, admin)?,
+        recipientPolicyId: create_empty_blacklist(&mut registry, admin)?,
+        mintRecipientPolicyId: create_empty_blacklist(&mut registry, admin)?,
+    };
+    let policy_id = registry.create_compound_policy(admin, call)?;
+    TIP20Token::from_address(token)?.change_transfer_policy_id(
+        admin,
+        ITIP20::changeTransferPolicyIdCall {
+            newPolicyId: policy_id,
+        },
+    )?;
+    Ok(policy_id)
+}
+
+pub fn set_empty_receive_policies(admin: Address, accounts: &[Address]) -> Result<()> {
+    let mut registry = TIP403Registry::new();
+    let call = ITIP403Registry::setReceivePolicyCall {
+        senderPolicyId: create_empty_blacklist(&mut registry, admin)?,
+        tokenFilterId: create_empty_blacklist(&mut registry, admin)?,
+        recoveryAuthority: Address::ZERO,
+    };
+    for account in accounts {
+        registry.set_receive_policy(*account, call.clone())?;
+    }
+    Ok(())
+}
+
 /// Test helper function for constructing EVM words from hex string literals.
 ///
 /// Takes an array of hex strings (with or without "0x" prefix), concatenates
@@ -480,6 +521,6 @@ pub fn register_virtual_master(registry: &mut AddressRegistry) -> Result<(Master
             salt: VIRTUAL_SALT.into(),
         },
     )?;
-    let virtual_addr = Address::new_virtual(master_id, UserTag::new(hex!("010203040506")));
+    let virtual_addr = Address::new_virtual(master_id, fixed_bytes!("010203040506"));
     Ok((master_id, virtual_addr))
 }

@@ -3,20 +3,14 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-mod budget;
 mod encode;
 mod metrics;
 mod prewarming;
 
-pub use budget::DEFAULT_BUILD_TIME_MULTIPLIER;
 use crossbeam_channel::Sender;
 use reth_trie_common::ordered_root::OrderedTrieRootEncodedBuilder;
 
 use crate::{
-    budget::{
-        BUILD_TIME_MULTIPLIER_SCALE, decay_build_time_multiplier, observed_build_time_multiplier,
-        payload_budget_decision, scaled_build_time_multiplier,
-    },
     encode::{
         EncodedBlockTransactionList, EncodedBlockTransactionsBuilder, ExecutionBlockEncoder,
         block_transaction_length,
@@ -25,9 +19,8 @@ use crate::{
     prewarming::{BestTransactionsPrewarming, PrewarmedTransaction, PrewarmingExecutionContext},
 };
 use alloy_consensus::{BlockHeader as _, TxReceipt};
-use alloy_eip7928::bal::Bal;
 use alloy_eips::{eip1559::calculate_block_gas_limit, eip2718::Encodable2718};
-use alloy_primitives::{Address, B256, Bloom, Bytes, U256, keccak256};
+use alloy_primitives::{Address, B256, Bloom, U256};
 use alloy_rlp::Encodable;
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
@@ -41,7 +34,7 @@ use reth_engine_tree::tree::{
 };
 use reth_errors::{ConsensusError, ProviderError};
 use reth_evm::{
-    ConfigureEvm, Database, Evm, NextBlockEnvAttributes, OnStateHook,
+    ConfigureEvm, Database, Evm, NextBlockEnvAttributes,
     block::{BlockExecutionError, BlockExecutor, BlockValidationError},
     execute::BlockAssemblerInput,
 };
@@ -51,7 +44,7 @@ use reth_payload_primitives::BuiltPayloadExecutedBlock;
 use reth_primitives_traits::{RecoveredBlock, transaction::error::InvalidTransactionError};
 use reth_revm::{
     State, context::Block, database::StateProviderDatabase,
-    db::states::bundle_state::BundleRetention, state::EvmState,
+    db::states::bundle_state::BundleRetention,
 };
 use reth_storage_api::{
     EvmStateProvider, HashedPostStateProvider, StateProvider, StateProviderFactory,
@@ -63,27 +56,25 @@ use reth_transaction_pool::{
     error::InvalidPoolTransactionError,
 };
 use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-        mpsc,
-    },
+    sync::Arc,
     time::{Duration, Instant},
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_evm::{
-    StorageActionReplayError, TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess,
-    TempoTxResult, evm::TempoEvm,
+    StorageActionReplayError, TempoEvmConfig, TempoNextBlockEnvAttributes, TempoTxResult,
+    evm::TempoEvm,
 };
-use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload};
-use tempo_precompiles::{storage::StorageActions, validator_config_v2::ValidatorConfigV2};
+use tempo_payload_types::{
+    Estimator, TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload,
+    estimator::FinishedBuild,
+};
 use tempo_primitives::{TempoHeader, TempoReceipt, TempoTxEnvelope};
 use tempo_transaction_pool::{
     StateAwareBestTransactions, TempoTransactionPool, best::BestTransaction,
     transaction::TempoPoolTransactionError,
 };
 use tokio::sync::oneshot;
-use tracing::{Level, debug, debug_span, info, instrument, trace, warn};
+use tracing::{Level, Span, debug, debug_span, info, instrument, trace, warn};
 
 /// Conservative estimate for non-transaction execution block RLP bytes.
 ///
@@ -141,13 +132,11 @@ pub struct TempoPayloadBuilder<Provider> {
     evm_config: TempoEvmConfig,
     metrics: TempoPayloadBuilderMetrics,
     cache_metrics: CachedStateMetrics,
-    /// Whether to include block access lists in built execution payloads.
-    enable_bal: bool,
-    /// Learned estimate of total replayable build work divided by work at tx cutoff.
+    /// Proposal budget estimator that paces builds with a `payload_build_budget`.
     ///
-    /// This lets the builder reserve time for non-interruptible
-    /// `builder_finish` without a fixed duration.
-    build_time_multiplier: Arc<AtomicU64>,
+    /// One [`tempo_payload_types::BuildPlan`] is taken from it per paced build,
+    /// and the finished build's replayable work is reported back to it.
+    estimator: Estimator,
 }
 
 /// Runtime settings for the Tempo payload builder.
@@ -167,12 +156,6 @@ pub struct TempoPayloadBuilderConfig {
     pub skip_state_root: bool,
     /// Whether to enable speculative parallel payload-builder planning.
     pub enable_parallel: bool,
-    /// Initial estimate of total replayable build work divided by work at tx cutoff.
-    ///
-    /// `1.0` means no finish-work headroom beyond observed work so far. Values
-    /// above `1.0` stop transaction execution earlier to leave room for
-    /// `builder_finish`, which validators also repeat.
-    pub build_time_multiplier: f64,
 }
 
 impl TempoPayloadBuilderConfig {
@@ -195,12 +178,18 @@ impl TempoPayloadBuilderConfig {
 }
 
 impl<Provider> TempoPayloadBuilder<Provider> {
+    /// Creates a builder that paces builds with a `payload_build_budget` using
+    /// `estimator`.
+    ///
+    /// Stop decisions only account for the validation feedback recorded on
+    /// `estimator`, so share a handle with whatever records it.
     pub fn new(
         pool: TempoTransactionPool<Provider>,
         provider: Provider,
         executor: TaskExecutor,
         evm_config: TempoEvmConfig,
         config: TempoPayloadBuilderConfig,
+        estimator: Estimator,
     ) -> Self {
         Self {
             pool,
@@ -210,26 +199,8 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             evm_config,
             metrics: TempoPayloadBuilderMetrics::default(),
             cache_metrics: CachedStateMetrics::zeroed(CachedStateMetricsSource::Builder),
-            enable_bal: cfg!(feature = "bal"),
-            build_time_multiplier: Arc::new(AtomicU64::new(scaled_build_time_multiplier(
-                config.build_time_multiplier,
-            ))),
+            estimator,
         }
-    }
-
-    fn build_time_multiplier(&self) -> u64 {
-        self.build_time_multiplier.load(Ordering::Relaxed)
-    }
-
-    fn update_build_time_multiplier(&self, total_work: Duration, work_at_tx_cutoff: Duration) {
-        let Some(observed) = observed_build_time_multiplier(total_work, work_at_tx_cutoff) else {
-            return;
-        };
-        let _ = self.build_time_multiplier.try_update(
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-            |current| Some(decay_build_time_multiplier(current, observed)),
-        );
     }
 }
 
@@ -297,7 +268,7 @@ where
         best_txs: impl FnOnce(BestTransactionsAttributes) -> Txs,
     ) -> Result<BuildOutcome<TempoBuiltPayload>, PayloadBuilderError>
     where
-        Txs: BestTransactions<Item = BestTransaction> + Send + 'static,
+        Txs: BestTransactions<Item = BestTransaction> + 'static,
     {
         let BuildArguments {
             cached_reads,
@@ -427,34 +398,17 @@ where
         // validator config contract, if available.
         maybe_override_fee_recipient(&mut executor, &attributes);
 
-        let bal_task_handle = if self.enable_bal {
-            let bal_task_handle = self.spawn_bal_task(
-                state_root_handle
-                    .as_mut()
-                    .map(|handle| handle.take_state_hook()),
-            );
+        if let Some(handle) = state_root_handle.as_mut() {
             executor
                 .evm_mut()
                 .db_mut()
-                .set_state_hook(Some(Box::new(bal_task_handle.state_hook())));
-            Some(bal_task_handle)
-        } else {
-            if let Some(handle) = state_root_handle.as_mut() {
-                executor
-                    .evm_mut()
-                    .db_mut()
-                    .set_state_hook(Some(Box::new(handle.take_state_hook())));
-            }
-            None
-        };
+                .set_state_hook(Some(Box::new(handle.take_state_hook())));
+        }
 
         executor.apply_pre_execution_changes().map_err(|err| {
             warn!(%err, "failed to apply pre-execution changes");
             PayloadBuilderError::Internal(err.into())
         })?;
-        if let Some(bal_task_handle) = &bal_task_handle {
-            bal_task_handle.bump_bal_index();
-        }
 
         check_cancel!();
 
@@ -495,10 +449,14 @@ where
             } else {
                 PayloadTransactions::Prewarming(StateAwareBestTransactions::new(
                     BestTransactionsPrewarming::new(prewarm_ctx, raw_best_txs),
+                    hardfork.fallback_fee_tokens(),
                 ))
             }
         } else {
-            PayloadTransactions::Sequential(StateAwareBestTransactions::new(Box::new(raw_best_txs)))
+            PayloadTransactions::Sequential(StateAwareBestTransactions::new(
+                Box::new(raw_best_txs),
+                hardfork.fallback_fee_tokens(),
+            ))
         };
         self.metrics
             .pool_fetch_duration_seconds
@@ -513,30 +471,31 @@ where
         // builder stops pool tx execution before projected proposer and validator
         // work would consume that window.
         let payload_build_budget = attributes.payload_build_budget();
-        let build_time_multiplier = self.build_time_multiplier();
-        let validation_latency = attributes.validation_latency_estimate();
+        // Snapshot the shared estimator once so every stop decision in this
+        // build uses the same multiplier, dry build finish and validation feedback.
+        let build_plan = payload_build_budget
+            .map(|build_budget| self.estimator.build_plan(Instant::now(), build_budget));
+        let validation_latency = build_plan.and_then(|plan| plan.validation_latency());
         let block_build_stop_reason = loop {
             check_cancel!();
 
-            if let Some(build_budget) = payload_build_budget {
+            if let Some(plan) = build_plan.as_ref() {
                 let elapsed = start.elapsed();
                 let current_workload = ValidationLatencyWorkload::new(
                     cumulative_gas_used,
                     pool_transactions_included as usize,
                 );
-                let budget_decision = payload_budget_decision(
+                let budget_decision = plan.decision(
                     elapsed,
                     normal_transaction_fill_idle_elapsed,
-                    build_time_multiplier,
-                    validation_latency,
                     current_workload,
                 );
-                if budget_decision.total_reserved >= build_budget {
+                if plan.exhausted(&budget_decision) {
                     debug!(
                         target: "payload_builder",
                         ?elapsed,
                         ?normal_transaction_fill_idle_elapsed,
-                        ?build_budget,
+                        build_budget = ?plan.build_budget,
                         predicted_builder_work = ?budget_decision.predicted_builder_work,
                         predicted_validator_work = ?budget_decision.predicted_validator_work,
                         total_reserved = ?budget_decision.total_reserved,
@@ -544,8 +503,8 @@ where
                         gas_used = cumulative_gas_used,
                         transactions = pool_transactions_included,
                         estimated_rlp_block_size,
-                        build_time_multiplier = build_time_multiplier as f64
-                            / BUILD_TIME_MULTIPLIER_SCALE as f64,
+                        build_time_multiplier = %plan.build_time_multiplier(),
+                        dry_finish = ?plan.dry_finish(),
                         "stopping pool transaction execution before payload build budget is exhausted"
                     );
                     break BlockBuildStopReason::BuildBudget;
@@ -657,7 +616,6 @@ where
                     tx.transaction.executable(),
                     *replay,
                     result_closure,
-                    bal_task_handle.is_some(),
                 )
             } else {
                 executor.invalidate_expiring_nonce_cache();
@@ -723,9 +681,6 @@ where
             }
 
             trace!("Transaction executed");
-            if let Some(bal_task_handle) = &bal_task_handle {
-                bal_task_handle.bump_bal_index();
-            }
 
             pool_transactions_included += 1;
             estimated_rlp_block_size += tx_rlp_length;
@@ -799,9 +754,6 @@ where
         // before the transitions are merged, letting the trie finalization overlap with it.
         db.set_state_hook(None);
 
-        // Drop the BAL task sender to trigger finalization.
-        let bal_rx = bal_task_handle.map(|handle| handle.into_bal_rx());
-
         // merge all transitions into bundle state before deriving the hashed post-state
         db.merge_transitions(BundleRetention::Reverts);
 
@@ -860,13 +812,6 @@ where
             }
             .unzip();
 
-        let (block_access_list, block_access_list_hash) = if let Some(bal_rx) = bal_rx {
-            let (bal, bal_hash) = bal_rx.blocking_recv().map_err(PayloadBuilderError::other)?;
-            (Some(bal), Some(bal_hash))
-        } else {
-            (None, None)
-        };
-
         let (state_root, trie_updates) = if self.config.skip_state_root {
             (parent_header.state_root(), Arc::new(Default::default()))
         } else if let Some(outcome) = state_root_outcome {
@@ -900,7 +845,7 @@ where
                 &db.bundle_state,
                 &finish_provider,
                 state_root,
-                block_access_list_hash,
+                None,
             ),
             Some(transactions_root),
             Some(receipts_root),
@@ -994,9 +939,13 @@ where
         let elapsed = start.elapsed();
         let validation_work_duration = elapsed.saturating_sub(normal_transaction_fill_idle_elapsed);
         if payload_build_budget.is_some() {
-            self.update_build_time_multiplier(
-                validation_work_duration,
-                validation_work_at_tx_cutoff,
+            self.estimator.on_build_finished(
+                Instant::now(),
+                FinishedBuild::new(
+                    validation_work_at_tx_cutoff,
+                    validation_work_duration,
+                    normal_transaction_fill_idle_elapsed,
+                ),
             );
         }
         if is_osaka && estimated_rlp_block_size > MAX_RLP_BLOCK_SIZE {
@@ -1005,8 +954,6 @@ where
                 max_rlp_length: MAX_RLP_BLOCK_SIZE,
             }));
         }
-        let recorded_block_size_bytes =
-            estimated_rlp_block_size + block_access_list.as_ref().map_or(0, Encodable::length);
         let final_workload = ValidationLatencyWorkload::new(gas_used, total_transactions);
         let validation_latency_duration = validation_latency
             .and_then(|estimate| estimate.estimate(final_workload))
@@ -1018,10 +965,10 @@ where
         self.metrics.gas_per_second_last.set(gas_per_second);
         self.metrics
             .rlp_block_size_bytes
-            .record(recorded_block_size_bytes as f64);
+            .record(estimated_rlp_block_size as f64);
         self.metrics
             .rlp_block_size_bytes_last
-            .set(recorded_block_size_bytes as f64);
+            .set(estimated_rlp_block_size as f64);
 
         info!(
             parent_hash = ?block.parent_hash(),
@@ -1076,7 +1023,6 @@ where
 
         let payload = TempoBuiltPayload::new(
             eth_payload,
-            block_access_list,
             Some(executed_block),
             validation_work_duration,
             validation_latency_duration,
@@ -1099,9 +1045,13 @@ where
         let (transactions_tx, transactions_rx) =
             crossbeam_channel::unbounded::<(BestTransaction, TempoReceipt)>();
         let (result_tx, result_rx) = oneshot::channel();
+        let parent = Span::current();
 
         self.executor
-            .spawn_blocking_named("builder-roots-task", || {
+            .spawn_blocking_named("builder-roots-task", move || {
+                let _span =
+                    debug_span!(target: "payload_builder", parent: &parent, "builder_roots")
+                        .entered();
                 let mut transactions = Vec::new();
                 let mut senders = Vec::new();
 
@@ -1142,68 +1092,6 @@ where
 
         (transactions_tx, result_rx)
     }
-
-    fn spawn_bal_task(&self, mut state_root_task_hook: Option<impl OnStateHook>) -> BalTaskHandle {
-        let (task_tx, task_rx) = mpsc::channel::<BalMessage>();
-        let (bal_tx, bal_rx) = oneshot::channel();
-        self.executor.spawn_blocking_named("builder-bal-task", || {
-            let mut bal_state =
-                reth_revm::database_interface::bal::BalState::new().with_bal_builder();
-            for msg in task_rx {
-                match msg {
-                    BalMessage::BumpIndex => {
-                        bal_state.bump_bal_index();
-                    }
-                    BalMessage::State(state) => {
-                        bal_state.commit(&state);
-                        if let Some(state_root_task_hook) = &mut state_root_task_hook {
-                            state_root_task_hook.on_state(state);
-                        }
-                    }
-                }
-            }
-
-            drop(state_root_task_hook);
-            let bal: Bal = bal_state.take_built_alloy_bal().unwrap().into();
-            let mut encoded = Vec::new();
-            bal.encode(&mut encoded);
-            let bal_hash = keccak256(&encoded);
-
-            let _ = bal_tx.send((encoded.into(), bal_hash));
-        });
-
-        BalTaskHandle {
-            msg_tx: task_tx,
-            bal_rx,
-        }
-    }
-}
-
-struct BalTaskHandle {
-    msg_tx: mpsc::Sender<BalMessage>,
-    bal_rx: oneshot::Receiver<(Bytes, B256)>,
-}
-
-impl BalTaskHandle {
-    fn state_hook(&self) -> impl OnStateHook {
-        let msg_tx = self.msg_tx.clone();
-        move |state: EvmState| {
-            let _ = msg_tx.send(BalMessage::State(state));
-        }
-    }
-
-    fn bump_bal_index(&self) {
-        let _ = self.msg_tx.send(BalMessage::BumpIndex);
-    }
-
-    fn into_bal_rx(self) -> oneshot::Receiver<(Bytes, B256)> {
-        self.bal_rx
-    }
-}
-
-enum BalMessage {
-    State(EvmState),
-    BumpIndex,
 }
 
 /// Overrides the block's fee recipient (beneficiary) with the value from the
@@ -1216,39 +1104,8 @@ fn maybe_override_fee_recipient<DB: Database>(
     let Some(public_key) = attributes.proposer_public_key() else {
         return;
     };
-    let ctx = executor.evm_mut().ctx_mut();
-    if !ctx.cfg.spec.is_t2() {
-        return;
-    }
-
-    // We are using the database as a read-only storage context to avoid modifying the journal state.
-    // Reading slots here might be dangerous because they would end up being warmed and might affect gas accounting.
-    match ctx.journaled_state.database.with_read_only_storage_ctx(
-        ctx.cfg.spec,
-        StorageActions::disabled(),
-        || -> Result<Option<Address>, PayloadBuilderError> {
-            let parent_number = ctx.block.number.saturating_to::<u64>() - 1;
-
-            let config = ValidatorConfigV2::default();
-            if !config
-                .is_initialized()
-                .map_err(PayloadBuilderError::other)?
-            {
-                return Ok(None);
-            }
-            let init_height = config
-                .get_initialized_at_height()
-                .map_err(PayloadBuilderError::other)?;
-            if init_height > parent_number {
-                return Ok(None);
-            }
-            let on_chain = config
-                .validator_by_public_key(*public_key)
-                .map(|v| v.feeRecipient)
-                .map_err(PayloadBuilderError::other)?;
-            Ok((!on_chain.is_zero()).then_some(on_chain))
-        },
-    ) {
+    // T14+ executors reject blocks whose beneficiary differs from this resolution.
+    match executor.evm_mut().proposer_fee_recipient(*public_key) {
         Ok(Some(fee_recipient)) => {
             debug!(%fee_recipient, "resolved fee recipient from contract");
             executor.evm_mut().ctx_mut().block.beneficiary = fee_recipient;

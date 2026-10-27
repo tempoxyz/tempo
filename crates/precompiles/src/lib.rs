@@ -10,10 +10,11 @@ pub mod storage;
 pub mod dispatch;
 pub use dispatch::*;
 
-pub(crate) mod ip_validation;
+pub(crate) mod ip;
 
 pub mod account_keychain;
 pub mod address_registry;
+pub mod configurable_account;
 pub mod current_committee;
 pub mod nonce;
 pub mod receive_policy_guard;
@@ -468,12 +469,15 @@ mod tests {
     };
     use revm::{
         context::{ContextTr, TxEnv},
-        database::{CacheDB, EmptyDB},
+        database::InMemoryDB,
         state::{AccountInfo, Bytecode},
     };
     use tempo_contracts::{
         precompiles::{ITIP20, IZoneVerifier, UnknownFunctionSelector},
-        zones::T13_ZONE_VERIFIER_RUNTIME,
+        zones::{
+            BlockTransition, DepositQueueTransition, T13_ZONE_VERIFIER_RUNTIME,
+            TokenEnablementTransition,
+        },
     };
     use tempo_evm::{TempoBlockEnv, TempoEvmFactory};
     use tempo_revm::TempoTxEnv;
@@ -493,7 +497,7 @@ mod tests {
             TIP20Token::from_address(PATH_USD_ADDRESS).expect("PATH_USD_ADDRESS is valid")
         });
 
-        let db = CacheDB::new(EmptyDB::new());
+        let db = InMemoryDB::default();
         let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
         let block = evm.block.clone();
         let tx = TxEnv::default();
@@ -536,7 +540,7 @@ mod tests {
             });
 
             let call_static = |calldata: Bytes| {
-                let mut db = CacheDB::new(EmptyDB::new());
+                let mut db = InMemoryDB::default();
                 db.insert_account_info(
                     PATH_USD_ADDRESS,
                     AccountInfo {
@@ -616,7 +620,7 @@ mod tests {
         let token_address = PATH_USD_ADDRESS;
 
         // NO bytecode set -- token is uninitialized, early revert before dispatch_call
-        let db = CacheDB::new(EmptyDB::new());
+        let db = InMemoryDB::default();
         let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
         let block = evm.block.clone();
         let evm_internals = EvmInternals::new(evm.journal_mut(), &block, &cfg, &tx);
@@ -665,7 +669,7 @@ mod tests {
                 TIP20Token::from_address(PATH_USD_ADDRESS).expect("PATH_USD_ADDRESS is valid")
             });
 
-            let mut db = CacheDB::new(EmptyDB::new());
+            let mut db = InMemoryDB::default();
             db.insert_account_info(
                 PATH_USD_ADDRESS,
                 AccountInfo {
@@ -737,7 +741,7 @@ mod tests {
                 TIP20Token::from_address(PATH_USD_ADDRESS).expect("PATH_USD_ADDRESS is valid")
             });
 
-            let mut db = CacheDB::new(EmptyDB::new());
+            let mut db = InMemoryDB::default();
             db.insert_account_info(
                 PATH_USD_ADDRESS,
                 AccountInfo {
@@ -804,7 +808,7 @@ mod tests {
             TIP20Token::from_address(PATH_USD_ADDRESS).expect("PATH_USD_ADDRESS is valid")
         });
 
-        let db = CacheDB::new(EmptyDB::new());
+        let db = InMemoryDB::default();
         let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
 
         // Set up TIP20 token state: initialize pathUSD and mint tokens to sender
@@ -862,7 +866,7 @@ mod tests {
                 crate::storage::evm::EvmPrecompileStorageProvider::new_max_gas(internals, &cfg);
             crate::storage::StorageCtx::enter(&mut provider, || {
                 crate::test_util::TIP20Setup::path_usd(sender)
-                    .with_mint(recipient, U256::from(1))
+                    .with_mint(recipient, U256::ONE)
                     .apply()
             })
             .expect("TIP20 setup should succeed");
@@ -916,7 +920,7 @@ mod tests {
             TIP20Token::from_address(PATH_USD_ADDRESS).expect("PATH_USD_ADDRESS is valid")
         });
 
-        let db = CacheDB::new(EmptyDB::new());
+        let db = InMemoryDB::default();
         let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
 
         // Set up TIP20 token state: initialize pathUSD and mint tokens to sender
@@ -1233,17 +1237,17 @@ mod tests {
             anchorBlockHash: B256::ZERO,
             expectedWithdrawalBatchIndex: 0,
             nextZoneHeight: U256::ZERO,
-            blockTransition: IZoneVerifier::BlockTransition {
+            blockTransition: BlockTransition {
                 prevBlockHash: B256::ZERO,
                 nextBlockHash: B256::ZERO,
             },
-            depositQueueTransition: IZoneVerifier::DepositQueueTransition {
+            depositQueueTransition: DepositQueueTransition {
                 prevProcessedHash: B256::ZERO,
                 nextProcessedHash: B256::ZERO,
                 prevDepositNumber: 0,
                 nextDepositNumber: 0,
             },
-            tokenEnablementTransition: IZoneVerifier::TokenEnablementTransition {
+            tokenEnablementTransition: TokenEnablementTransition {
                 prevProcessedTokenCount: 0,
                 nextProcessedTokenCount: 0,
             },
@@ -1258,7 +1262,7 @@ mod tests {
             cfg.set_spec_and_mainnet_gas_params(spec);
             // Use a runtime with the matching ABI to isolate the native dispatch boundary.
             let code = Bytecode::new_legacy(T13_ZONE_VERIFIER_RUNTIME);
-            let mut db = CacheDB::new(EmptyDB::new());
+            let mut db = InMemoryDB::default();
             db.insert_account_info(
                 ZONE_VERIFIER_ADDRESS,
                 AccountInfo {

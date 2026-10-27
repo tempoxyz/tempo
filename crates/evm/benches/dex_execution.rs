@@ -9,18 +9,15 @@ mod common;
 
 use alloy_consensus::transaction::Recovered;
 use alloy_evm::{Evm, EvmFactory};
-use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
-use alloy_sol_types::{SolCall, SolValue};
+use alloy_primitives::{Address, B256, Bytes, U256};
+use alloy_sol_types::SolCall;
 use common::{
     DEFAULT_ACCOUNT_COUNT, DEFAULT_BLOCK_TIMESTAMP, execute_txs, fixture_from_seeded_db,
     hardfork_bench_cases, txgen_signers,
 };
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
-use reth_revm::DatabaseCommit;
-use revm::{
-    context::JournalTr,
-    database::{CacheDB, EmptyDB},
-};
+use reth_revm::{DatabaseCommit, db::InMemoryDB};
+use revm::context::JournalTr;
 use std::{hint::black_box, sync::Arc};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
 use tempo_contracts::precompiles::{IStablecoinDEX, ITIP20, tip20_factory::createTokenCall};
@@ -33,10 +30,10 @@ use tempo_precompiles::{
     storage::{StorageActions, StorageCtx},
     tip_fee_manager::TipFeeManager,
     tip20::{ISSUER_ROLE, TIP20Token},
-    tip20_factory::TIP20Factory,
+    tip20_factory::{TIP20Factory, compute_tip20_address},
     tip403_registry::TIP403Registry,
 };
-use tempo_primitives::{TempoAddressExt, TempoTxEnvelope};
+use tempo_primitives::TempoTxEnvelope;
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
@@ -58,9 +55,9 @@ fn seed_dex_cache_db(
     participants: &[Address],
     block_timestamp: u64,
     hardfork: TempoHardfork,
-) -> CacheDB<EmptyDB> {
+) -> InMemoryDB {
     let mut evm = TempoEvmFactory::default().create_evm(
-        CacheDB::new(EmptyDB::default()),
+        InMemoryDB::default(),
         common::bench_env(hardfork, block_timestamp),
     );
     let admin = participants
@@ -150,10 +147,7 @@ fn sign_dex_calls(
     use alloy_signer::SignerSync;
     use common::{CHAIN_ID, DEFAULT_BLOCK_TIMESTAMP, TXGEN_FEE_PER_GAS};
     use std::num::NonZeroU64;
-    use tempo_primitives::{
-        AASigned, TempoSignature, TempoTransaction,
-        transaction::{PrimitiveSignature, TEMPO_EXPIRING_NONCE_KEY},
-    };
+    use tempo_primitives::{TempoTransaction, transaction::TEMPO_EXPIRING_NONCE_KEY};
 
     let tx = TempoTransaction {
         chain_id: CHAIN_ID,
@@ -174,22 +168,11 @@ fn sign_dex_calls(
     let signature = signer
         .sign_hash_sync(&tx.signature_hash())
         .expect("failed to sign generated DEX transaction");
-    let signed = AASigned::new_unhashed(
-        tx,
-        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
-    );
+    let signed = tx.into_signed(signature.into());
 
     TempoTxEnvelope::from(signed)
         .try_into_recovered()
         .expect("generated DEX benchmark transaction should recover")
-}
-
-fn compute_tip20_address(sender: Address, salt: B256) -> Address {
-    let hash = keccak256((sender, salt).abi_encode());
-    let mut address_bytes = [0u8; 20];
-    address_bytes[..12].copy_from_slice(&Address::TIP20_PREFIX);
-    address_bytes[12..].copy_from_slice(&hash[..8]);
-    Address::from(address_bytes)
 }
 
 fn dex_bench_workloads() -> Vec<DexBenchWorkload> {
@@ -199,7 +182,7 @@ fn dex_bench_workloads() -> Vec<DexBenchWorkload> {
         .first()
         .copied()
         .unwrap_or_else(|| Address::repeat_byte(0x01));
-    let base_token = compute_tip20_address(admin, DEX_BASE_TOKEN_SALT);
+    let (base_token, _) = compute_tip20_address(admin, DEX_BASE_TOKEN_SALT);
     let quote_token = PATH_USD_ADDRESS;
     let amount = DEX_ORDER_AMOUNT;
     let fill = amount / 4;

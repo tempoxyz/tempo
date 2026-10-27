@@ -157,10 +157,7 @@ impl<TUpstream> Config<TUpstream> {
             .wrap_err("failed to obtain devp2p block client")?;
         let block_network = FullBlockClient::new(
             network_client,
-            Arc::new(TempoConsensus::new_with_bal_hashes(
-                self.execution_node.chain_spec(),
-                cfg!(feature = "bal"),
-            )),
+            Arc::new(TempoConsensus::new(self.execution_node.chain_spec())),
         );
 
         let (resolver, resolver_rx) = resolver::try_init(

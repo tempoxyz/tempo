@@ -1,5 +1,5 @@
-<br>
-<br>
+<!-- Generated from README.md.template and the network identity JSON files.
+Edit the template or JSON files, then run: uv run --no-project python scripts/generate_readme.py -->
 
 <p align="center">
   <a href="https://tempo.xyz">
@@ -10,14 +10,13 @@
   </a>
 </p>
 
-<br>
-<br>
-
 # Tempo
 
 [![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://codspeed.io/tempoxyz/tempo?utm_source=badge)
 
 The blockchain for payments at scale.
+
+Tempo nodes use published [network identities](#network-identities) to verify consensus finalisation and authenticate snapshots.
 
 [Tempo](https://docs.tempo.xyz/) is a blockchain designed specifically for stablecoin payments. Its architecture focuses on high throughput, low cost, and features that financial institutions, payment service providers, and fintech platforms expect from modern payment infrastructure.
 
@@ -109,6 +108,13 @@ For local development and CI, run the [bootstrapped localnet container](./docs/l
 docker run --rm -p 127.0.0.1:8545:8545 ghcr.io/tempoxyz/tempo-localnet:latest
 ```
 
+For prover E2E devnets, `ghcr.io/tempoxyz/tempo-devnet` (also on Docker Hub)
+contains the Tempo L1 binary built with `custom-pcrs`. It is published alongside
+the regular images with matching tags, including `sha-<short-sha>` and `nightly`.
+Pass the prover measurements using `--zone-verifier.custom-pcrs` or
+`TEMPO_ZONE_VERIFIER_CUSTOM_PCRS`; this variant refuses to start on mainnet and
+Moderato. The regular images keep the compiled-in PCR policy.
+
 Want to contribute?
 
 First, clone the repository:
@@ -153,6 +159,24 @@ just localnet
 ## Contributing
 
 Our contributor guidelines can be found in [`CONTRIBUTING.md`](https://github.com/tempoxyz/tempo?tab=contributing-ov-file).
+
+## Network identities
+
+These BLS threshold public keys are built into Tempo nodes and used by both follow/RPC nodes and validators to verify consensus finalisation certificates, including those used to authenticate snapshots.
+
+**[Mainnet](./mainnet-network-identity.json) — from epoch 2042**
+
+```text
+0x8627d33753b0d90a8eae75363d6b393ab9204076545b3af6caf831903e4bedde4374f1106551b481fb5ea35e59d51c92165c963881c718216e3e4570a307c08885af55c274f19488f709afe021ca3d9e567138ab097860d9146e895407bea182
+```
+
+**[Testnet (Moderato)](./testnet-network-identity.json) — from epoch 1747**
+
+```text
+0x967ae1a6d3ddbe5cb0fe5e6fc58e74249787b4a277619b549fed6609d04660540dd2449cd7174def35e40f544e5ad72d15d064191a205ed6e0c49619c68f975108b614d0d51def9a8416a10a07c4193bea0cbbc4252ec1b33f21095a5d7aa590
+```
+
+See the [network identity loader](./crates/chainspec/src/network_identity.rs) for how these files are loaded. To override them, see [How do I override the network identity?](https://tempo.xyz/developers/docs/guide/node/validator-troubleshooting#my-node-fails-to-start-finalized-tip-certificate-failed-verification-against-the-trusted-network-identity).
 
 ## Security
 

@@ -7,12 +7,20 @@ use commonware_consensus::types::Height;
 use parking_lot::RwLock;
 use std::sync::{Arc, OnceLock};
 use tempo_node::rpc::consensus::{
-    CertifiedBlock, ConsensusFeed, ConsensusState, Event, Query, types::Response,
+    CertifiedBlock, ConsensusFeed, ConsensusState, Event, Query, SharedEvent, types::Response,
 };
 use tokio::sync::broadcast;
 use tracing::{Level, instrument};
 
-const BROADCAST_CHANNEL_SIZE: usize = 1024;
+/// Capacity in finalized blocks (one event per block); at ~2 blocks/s this is about a minute.
+/// tokio rounds it up to the next power of two, so keep it one. The ring only fills while a
+/// subscriber's RPC sink is backpressured, because each subscription task forwards an event
+/// before receiving the next and jsonrpsee already buffers up to 1024 messages per connection.
+/// tokio drops a slot's value only after every receiver has read it, so a subscriber that stops
+/// reading keeps up to this many full blocks alive. A lagged receiver resumes at the oldest
+/// retained slot, so this also bounds how stale its replay is. Subscribers skip on lag; clients
+/// that need every block can backfill with `consensus_getFinalization`.
+const BROADCAST_CHANNEL_SIZE: usize = 128;
 
 /// Internal shared state for the feed.
 pub(super) struct FeedState {
@@ -29,7 +37,7 @@ pub(super) struct FeedState {
 pub struct FeedStateHandle {
     state: Arc<RwLock<FeedState>>,
     marshal: Arc<OnceLock<marshal::Mailbox>>,
-    events_tx: broadcast::Sender<Event>,
+    events_tx: broadcast::Sender<Arc<SharedEvent>>,
 }
 
 impl FeedStateHandle {
@@ -57,7 +65,9 @@ impl FeedStateHandle {
     pub(crate) fn publish_certified(&self, block: CertifiedBlock, seen: u64) -> usize {
         self.state.write().latest_finalized = Some(block.clone());
         let subscribers = self.events_tx.receiver_count();
-        let _ = self.events_tx.send(Event::Finalized { block, seen });
+        let _ = self
+            .events_tx
+            .send(SharedEvent::new(Event::Finalized { block, seen }));
         subscribers
     }
 
@@ -129,7 +139,7 @@ impl ConsensusFeed for FeedStateHandle {
         }
     }
 
-    async fn subscribe(&self) -> Option<broadcast::Receiver<Event>> {
+    async fn subscribe(&self) -> Option<broadcast::Receiver<Arc<SharedEvent>>> {
         Some(self.events_tx.subscribe())
     }
 }

@@ -4,10 +4,10 @@
 //! accepts it.
 
 use super::analysis::{AccountDelta, Field};
-use crate::shadow_replay::{Boundary, Evidence, ObservedTx, TxOutcome, fees::post_fee_slot_change};
+use crate::shadow_replay::{Boundary, Evidence, ObservedTx, fees::post_fee_slot_change};
 use alloy::{
     consensus::Transaction as _,
-    primitives::{Address, B256, KECCAK256_EMPTY, TxKind, U256, address, keccak256},
+    primitives::{B256, KECCAK256_EMPTY, U256, keccak256},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::{
@@ -17,13 +17,8 @@ use tempo_contracts::{
         ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
     },
 };
-use tempo_precompiles::{
-    abi_decoder_config_for_spec, storage::StorageAction, storage_credits::StorageCredits,
-    tip_fee_manager::amm::compute_amount_out,
-};
-use tempo_primitives::{
-    TempoAddressExt as _, TempoTxEnvelope, transaction::calc_gas_balance_spending,
-};
+use tempo_precompiles::{storage::StorageAction, tip_fee_manager::amm::compute_amount_out};
+use tempo_primitives::{TempoTxEnvelope, transaction::calc_gas_balance_spending};
 
 #[derive(Debug)]
 pub(crate) struct Expectation {
@@ -60,18 +55,9 @@ impl Context<'_> {
         let (shadow_hash, shadow_amount) = (shadow.fee_normalized?, shadow.fee.post_tx_transfer?.3);
         let price = self.tx?.effective_gas_price(self.base_fee);
         (real.fee.log_ranges == shadow.fee.log_ranges
-            && real_amount == calc_gas_balance_spending(real.gas_used, price)
-            && shadow_amount == calc_gas_balance_spending(shadow.gas_used, price))
+            && real_amount == calc_gas_balance_spending(real.gas.tx_gas_used(), price)
+            && shadow_amount == calc_gas_balance_spending(shadow.gas.tx_gas_used(), price))
         .then_some((real_hash, shadow_hash))
-    }
-
-    /// Borrows all top-level calls (including AA subcalls) from the canonical transaction.
-    /// Internal EVM calls are not present in the transaction envelope.
-    fn call(&self) -> impl Iterator<Item = (TxKind, &[u8])> + '_ {
-        self.tx
-            .into_iter()
-            .flat_map(TempoTxEnvelope::calls)
-            .map(|(kind, input)| (kind, input.as_ref()))
     }
 }
 
@@ -133,113 +119,6 @@ const FEE_STATE: Expectation = Expectation {
     },
 };
 
-/// Storage accepted by a precompile-scoped expectation, including its TIP-1060 credit balance.
-fn precompile_storage(field: &Field, precompile: Address) -> bool {
-    field.name == "storage"
-        && (field.address == Some(precompile)
-            || (field.address == Some(STORAGE_CREDITS_ADDRESS)
-                && field.slot == Some(StorageCredits::slot(precompile))))
-}
-
-/// Returns whether T11 rejects `calldata` for the Tempo precompile at `address` only because of
-/// trailing bytes, which T12 accepts per TIP-1116.
-fn rejects_only_trailing_bytes(to: Address, calldata: &[u8]) -> bool {
-    fn check<C: alloy::sol_types::SolInterface>(calldata: &[u8]) -> Option<bool> {
-        let decodes =
-            |spec| C::abi_decode_with_config(calldata, abi_decoder_config_for_spec(spec)).is_ok();
-        C::valid_selector(*calldata.first_chunk::<4>()?)
-            .then(|| decodes(TempoHardfork::T12) && !decodes(TempoHardfork::T11))
-    }
-
-    // Mirrors the interfaces routed by each precompile's `dispatch!`.
-    match to {
-        TIP20_FACTORY_ADDRESS => check::<ITIP20Factory::ITIP20FactoryCalls>(calldata),
-        TIP20_CHANNEL_RESERVE_ADDRESS => {
-            check::<ITIP20ChannelReserve::ITIP20ChannelReserveCalls>(calldata)
-        }
-        ADDRESS_REGISTRY_ADDRESS => check::<IAddressRegistry::IAddressRegistryCalls>(calldata),
-        TIP403_REGISTRY_ADDRESS => check::<ITIP403Registry::ITIP403RegistryCalls>(calldata),
-        TIP_FEE_MANAGER_ADDRESS => check::<IFeeManager::IFeeManagerCalls>(calldata)
-            .or_else(|| check::<ITIPFeeAMM::ITIPFeeAMMCalls>(calldata)),
-        STABLECOIN_DEX_ADDRESS => check::<IStablecoinDEX::IStablecoinDEXCalls>(calldata),
-        NONCE_PRECOMPILE_ADDRESS => check::<INonce::INonceCalls>(calldata),
-        VALIDATOR_CONFIG_ADDRESS => check::<IValidatorConfig::IValidatorConfigCalls>(calldata),
-        ACCOUNT_KEYCHAIN_ADDRESS => check::<IAccountKeychain::IAccountKeychainCalls>(calldata),
-        VALIDATOR_CONFIG_V2_ADDRESS => {
-            check::<IValidatorConfigV2::IValidatorConfigV2Calls>(calldata)
-        }
-        SIGNATURE_VERIFIER_ADDRESS => {
-            check::<ISignatureVerifier::ISignatureVerifierCalls>(calldata)
-        }
-        RECEIVE_POLICY_GUARD_ADDRESS => {
-            check::<IReceivePolicyGuard::IReceivePolicyGuardCalls>(calldata)
-        }
-        STORAGE_CREDITS_ADDRESS => check::<IStorageCredits::IStorageCreditsCalls>(calldata),
-        CURRENT_COMMITTEE_ADDRESS => check::<ICurrentCommittee::ICurrentCommitteeCalls>(calldata),
-        ZONE_FACTORY_ADDRESS => check::<IZoneFactory::IZoneFactoryCalls>(calldata),
-        address if address.is_tip20() => check::<ITIP20::ITIP20Calls>(calldata)
-            .or_else(|| check::<IRolesAuth::IRolesAuthCalls>(calldata)),
-        _ => None,
-    }
-    .unwrap_or(false)
-}
-
-/// Accepts the effects of a direct precompile call that T11 rejected only for trailing bytes.
-const T12_ALLOW_PRECOMPILE_ABI_SUFFIX: Expectation = Expectation {
-    id: "t12.allow-abi-suffix",
-    check: |ctx, field| {
-        if !ctx.call().any(|(kind, calldata)| {
-            kind.to()
-                .is_some_and(|to| rejects_only_trailing_bytes(*to, calldata))
-        }) {
-            return None;
-        }
-
-        // After T11's empty-revert rejection, accept any T12 effect except tx invalidation.
-        let (real, _) = ctx.observed_txs()?;
-        (real.outcome == TxOutcome::Revert
-            && real.output_hash == KECCAK256_EMPTY
-            && field.name != "execution")
-            .then_some(())
-    },
-};
-
-const T12_TIP20_CHANNEL: Expectation = Expectation {
-    id: "t12.tip20-channel-reserve",
-    check: |ctx, field| {
-        if !precompile_storage(field, TIP20_CHANNEL_RESERVE_ADDRESS) {
-            return None;
-        }
-
-        let is_related = ctx
-            .call()
-            .any(|(kind, _)| matches!(kind.to(), Some(&TIP20_CHANNEL_RESERVE_ADDRESS)));
-
-        is_related.then_some(())?;
-        ctx.observed_txs().map(|_| ())
-    },
-};
-
-// LiFiDiamond swaps can call the DEX internally.
-const LIFI_DIAMOND: Address = address!("2cacae8e22418e65dcf7651c67aebe6288eb8243");
-
-const T12_STABLECOIN_DEX: Expectation = Expectation {
-    id: "t12.stablecoin-dex",
-    check: |ctx, field| {
-        if !precompile_storage(field, STABLECOIN_DEX_ADDRESS) {
-            return None;
-        }
-
-        let is_related = ctx.call().any(|(kind, _)| {
-            kind.to()
-                .is_some_and(|to| matches!(to, &STABLECOIN_DEX_ADDRESS | &LIFI_DIAMOND))
-        });
-
-        is_related.then_some(())?;
-        ctx.observed_txs().map(|_| ())
-    },
-};
-
 const T13_ZONE_RUNTIME_UPGRADE: Expectation = Expectation {
     id: "t13.zone-runtime-upgrade",
     check: |ctx, field| {
@@ -277,23 +156,14 @@ const T13_ZONE_RUNTIME_UPGRADE: Expectation = Expectation {
 };
 
 /// Fork-specific checks are ordered oldest-first; baseline fee normalization is added separately.
-const REGISTRY: &[(TempoHardfork, &[Expectation])] = &[
-    (
-        TempoHardfork::T12,
-        &[
-            T12_ALLOW_PRECOMPILE_ABI_SUFFIX,
-            T12_TIP20_CHANNEL,
-            T12_STABLECOIN_DEX,
-        ],
-    ),
-    (TempoHardfork::T13, &[T13_ZONE_RUNTIME_UPGRADE]),
-];
+const REGISTRY: &[(TempoHardfork, &[Expectation])] =
+    &[(TempoHardfork::T13, &[T13_ZONE_RUNTIME_UPGRADE])];
 
 pub(crate) fn between(
     canonical: TempoHardfork,
     candidate: TempoHardfork,
 ) -> Vec<&'static Expectation> {
-    // Gas-derived fee differences can occur for any fork pair, not just when T12 is new.
+    // Gas-derived fee differences can occur for any fork pair.
     std::iter::once(&FEE_STATE)
         .chain(
             REGISTRY
@@ -307,19 +177,17 @@ pub(crate) fn between(
 #[cfg(test)]
 mod tests {
     use super::{
-        super::{Block, RecoveredBlock, ReplayOutcome, TransitionState},
+        super::{Block, RecoveredBlock, ReplayOutcome, TransitionState, TxOutcome},
         *,
     };
     use crate::shadow_replay::analysis::{MAX_SAMPLES, Report};
-    use alloy::primitives::Signature;
+    use alloy::primitives::{Address, Signature};
     use reth_revm::{
+        context::result::ResultGas,
         db::states::{StorageSlot, TransitionAccount},
         state::AccountInfo,
     };
-    use tempo_primitives::{
-        TempoTransaction,
-        transaction::{AASigned, Call, PrimitiveSignature, TempoSignature},
-    };
+    use tempo_primitives::{TempoTransaction, transaction::Call};
 
     #[test]
     fn accepts_exact_bytecode_upgrades() {
@@ -371,19 +239,9 @@ mod tests {
                 .map(|rule| rule.id)
                 .collect::<Vec<_>>()
         };
-        assert_eq!(
-            ids(T11, T12),
-            [
-                FEE_STATE.id,
-                T12_ALLOW_PRECOMPILE_ABI_SUFFIX.id,
-                T12_TIP20_CHANNEL.id,
-                T12_STABLECOIN_DEX.id,
-            ]
-        );
+        assert_eq!(ids(T11, T12), [FEE_STATE.id]);
         assert_eq!(ids(T12, T13), [FEE_STATE.id, T13_ZONE_RUNTIME_UPGRADE.id]);
-        let mut combined = ids(T11, T12);
-        combined.extend(ids(T12, T13).into_iter().skip(1)); // baseline runs only once
-        assert_eq!(ids(T11, T13), combined);
+        assert_eq!(ids(T11, T13), ids(T12, T13));
         assert_eq!(ids(T12, T12), [FEE_STATE.id]);
         assert_eq!(ids(T13, T12), [FEE_STATE.id]);
     }
@@ -405,7 +263,7 @@ mod tests {
                 .map(|&gas_used| {
                     Ok(ObservedTx {
                         outcome: TxOutcome::Success,
-                        gas_used,
+                        gas: ResultGas::default().with_total_gas_spent(gas_used),
                         ..Default::default()
                     })
                 })
@@ -470,15 +328,14 @@ mod tests {
     }
 
     fn signed_tx(calls: Vec<Call>) -> TempoTxEnvelope {
-        AASigned::new_unhashed(
-            TempoTransaction {
-                max_priority_fee_per_gas: 1_000_000_000_000,
-                max_fee_per_gas: 1_000_000_000_000,
-                calls,
-                ..Default::default()
-            },
-            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature())),
-        )
+        TempoTransaction {
+            max_priority_fee_per_gas: 1_000_000_000_000,
+            max_fee_per_gas: 1_000_000_000_000,
+            gas_limit: 35_212,
+            calls,
+            ..Default::default()
+        }
+        .into_signed(Signature::test_signature().into())
         .into()
     }
 

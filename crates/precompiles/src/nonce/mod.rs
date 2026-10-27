@@ -149,7 +149,7 @@ impl NonceManager {
         // 4. If there's an existing entry, check if it's expired (can be evicted)
         // Safety check: buffer is sized so entries should always be expired, but verify
         // in case TPS exceeds expectations.
-        if old_hash != B256::ZERO {
+        if !old_hash.is_zero() {
             let old_expiry = self.expiring_nonce_seen[old_hash].read()?;
             if old_expiry != 0 && old_expiry > now {
                 // Entry is still valid, cannot evict - buffer is full
@@ -173,13 +173,13 @@ impl NonceManager {
 
 #[cfg(test)]
 mod tests {
+
     use crate::{
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
     };
 
     use super::*;
-    use alloy::primitives::address;
     use tempo_chainspec::hardfork::TempoHardfork;
 
     #[test]
@@ -198,7 +198,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mgr = NonceManager::new();
 
-            let account = address!("0x1111111111111111111111111111111111111111");
+            let account = Address::repeat_byte(0x11);
             let nonce = mgr.get_nonce(INonce::getNonceCall {
                 account,
                 nonceKey: U256::from(5),
@@ -215,7 +215,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mgr = NonceManager::new();
 
-            let account = address!("0x1111111111111111111111111111111111111111");
+            let account = Address::repeat_byte(0x11);
             let result = mgr.get_nonce(INonce::getNonceCall {
                 account,
                 nonceKey: U256::ZERO,
@@ -235,7 +235,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut mgr = NonceManager::new();
 
-            let account = address!("0x1111111111111111111111111111111111111111");
+            let account = Address::repeat_byte(0x11);
             let nonce_key = U256::from(5);
 
             let new_nonce = mgr.increment_nonce(account, nonce_key)?;
@@ -267,8 +267,8 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut mgr = NonceManager::new();
 
-            let account1 = address!("0x1111111111111111111111111111111111111111");
-            let account2 = address!("0x2222222222222222222222222222222222222222");
+            let account1 = Address::repeat_byte(0x11);
+            let account2 = Address::repeat_byte(0x22);
             let nonce_key = U256::from(5);
 
             for _ in 0..10 {

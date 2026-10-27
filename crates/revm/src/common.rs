@@ -443,7 +443,11 @@ mod tests {
     use crate::{FeeTokenResolver, TempoFeeManager};
     use alloy_primitives::{address, uint};
     use alloy_sol_types::SolCall;
-    use revm::{context::TxEnv, database::EmptyDB, interpreter::instructions::utility::IntoU256};
+    use revm::{
+        context::TxEnv,
+        database::{EmptyDB, InMemoryDB},
+        interpreter::instructions::utility::IntoU256,
+    };
     use tempo_contracts::precompiles::{
         DEFAULT_FEE_TOKEN, IFeeManager, IStablecoinDEX, STABLECOIN_DEX_ADDRESS,
     };
@@ -514,7 +518,7 @@ mod tests {
         let user_token = Address::random();
 
         // Set user stored token preference in the FeeManager
-        let mut db = revm::database::CacheDB::new(EmptyDB::default());
+        let mut db = InMemoryDB::default();
         let user_slot = TipFeeManager::new().user_tokens[caller].slot();
         db.insert_account_storage(TIP_FEE_MANAGER_ADDRESS, user_slot, user_token.into_u256())
             .unwrap();
@@ -656,7 +660,7 @@ mod tests {
         let expected_balance = U256::from(1000u64);
 
         // Set up CacheDB with balance
-        let mut db = revm::database::CacheDB::new(EmptyDB::default());
+        let mut db = InMemoryDB::default();
         let balance_slot = TIP20Token::from_address(token_address)?.balances[account].slot();
         db.insert_account_storage(token_address, balance_slot, expected_balance)?;
 
@@ -701,7 +705,7 @@ mod tests {
     #[test]
     fn test_is_fee_token_paused() -> eyre::Result<()> {
         let token_address = PATH_USD_ADDRESS;
-        let mut db = revm::database::CacheDB::new(EmptyDB::default());
+        let mut db = InMemoryDB::default();
 
         // Default (unpaused) returns false
         assert!(!db.is_fee_token_paused(
@@ -711,7 +715,7 @@ mod tests {
         )?);
 
         // Set paused=true
-        db.insert_account_storage(token_address, tip20_slots::PAUSED, U256::from(1))?;
+        db.insert_account_storage(token_address, tip20_slots::PAUSED, U256::ONE)?;
         assert!(db.is_fee_token_paused(
             TempoHardfork::Genesis,
             token_address,
@@ -750,7 +754,7 @@ mod tests {
         ];
 
         for (currency_value, expected, label) in cases {
-            let mut db = revm::database::CacheDB::new(EmptyDB::default());
+            let mut db = InMemoryDB::default();
             db.insert_account_storage(fee_token, tip20_slots::CURRENCY, *currency_value)?;
 
             let is_usd = db.is_tip20_usd(
@@ -767,7 +771,7 @@ mod tests {
     #[test]
     fn test_tip20_currency_for_error_does_not_read_long_currency() -> eyre::Result<()> {
         let fee_token = PATH_USD_ADDRESS;
-        let mut db = revm::database::CacheDB::new(EmptyDB::default());
+        let mut db = InMemoryDB::default();
         let len = 1024usize;
 
         db.insert_account_storage(fee_token, tip20_slots::CURRENCY, U256::from(len * 2 + 1))?;

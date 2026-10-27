@@ -14,18 +14,15 @@ use alloy::{
     sol_types::SolCall,
     transports::{RpcError, TransportErrorKind},
 };
-use alloy_eips::Encodable2718;
 use alloy_primitives::TxKind;
 use core::num::NonZeroU64;
-use reth_node_api::BuiltPayload;
-use reth_primitives_traits::transaction::TxHashRef;
-use reth_transaction_pool::TransactionPool;
+use eyre::WrapErr;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
 use tempo_node::rpc::TempoTransactionRequest;
 use tempo_precompiles::tip20::ITIP20::{self, transferCall};
 use tempo_primitives::{
-    SignatureType, TempoTransaction, TempoTxEnvelope,
+    SignatureType, TempoTransaction,
     transaction::{
         CallScope, KeyAuthorization, SelectorRule, SignedKeyAuthorization,
         TEMPO_EXPIRING_NONCE_KEY, TokenLimit,
@@ -161,24 +158,6 @@ mod legacy_compat {
     }
 }
 
-/// Polls until the pool no longer contains the given tx hash, or returns error after timeout.
-pub(super) async fn wait_until_pool_not_contains(
-    pool: &impl TransactionPool,
-    tx_hash: &alloy::primitives::B256,
-    label: &str,
-) -> eyre::Result<()> {
-    let timeout = std::time::Duration::from_secs(10);
-    let interval = std::time::Duration::from_millis(10);
-    let start = std::time::Instant::now();
-    while pool.contains(tx_hash) {
-        if start.elapsed() > timeout {
-            eyre::bail!("Timed out waiting for tx {tx_hash} to leave pool ({label})");
-        }
-        tokio::time::sleep(interval).await;
-    }
-    Ok(())
-}
-
 /// Fixed funding amount: 500 tokens (6 decimals).
 /// Deterministic to ensure test reproducibility.
 pub(crate) fn rand_funding_amount() -> U256 {
@@ -227,38 +206,25 @@ pub(super) async fn fund_address_with(
         ..Default::default()
     };
 
-    // Sign and send the funding transaction
+    // Sign and mine the funding transaction
     let signature = funder_signer.sign_hash_sync(&funding_tx.signature_hash())?;
-    let funding_envelope: TempoTxEnvelope = funding_tx.into_signed(signature.into()).into();
-    let mut encoded_funding = Vec::new();
-    funding_envelope.encode_2718(&mut encoded_funding);
-
-    let expected_hash = *funding_envelope.tx_hash();
-    let funding_hash = setup.node.rpc.inject_tx(encoded_funding.into()).await?;
+    let funding_tx = funding_tx.into_signed(signature.into());
+    let expected_hash = *funding_tx.hash();
+    let mined = setup
+        .node
+        .mine_signed([funding_tx])
+        .await
+        .wrap_err_with(|| format!("funding {recipient} failed, funder may be out of tokens"))?;
     assert_eq!(
-        funding_hash, expected_hash,
-        "inject_tx hash should match envelope hash"
-    );
-    let funding_payload = setup.node.advance_block().await?;
-
-    let raw: Option<serde_json::Value> = provider
-        .raw_request("eth_getTransactionReceipt".into(), [funding_hash])
-        .await?;
-    let receipt =
-        raw.ok_or_else(|| eyre::eyre!("Funding tx receipt not found for {funding_hash}"))?;
-    let status = receipt["status"]
-        .as_str()
-        .ok_or_else(|| eyre::eyre!("Funding receipt missing status field"))?;
-    eyre::ensure!(
-        status == "0x1",
-        "Funding tx reverted (status {status}) for {recipient} — funder may be out of tokens"
+        mined.receipts[0].transaction_hash, expected_hash,
+        "mined tx hash should match envelope hash"
     );
 
     println!(
         "✓ Funded {} with {} tokens in block {}",
         recipient,
         amount,
-        funding_payload.block().inner.number
+        mined.block().inner.number
     );
 
     Ok(())
@@ -509,23 +475,6 @@ fn create_key_authorization_inner(
     Ok(key_auth.into_signed(PrimitiveSignature::Secp256k1(root_auth_signature)))
 }
 
-/// Helper to submit and mine an AA transaction
-pub(super) async fn submit_and_mine_aa_tx(
-    setup: &mut SingleNodeSetup,
-    tx: TempoTransaction,
-    signature: TempoSignature,
-) -> eyre::Result<B256> {
-    let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
-    let tx_hash = *envelope.tx_hash();
-    setup
-        .node
-        .rpc
-        .inject_tx(envelope.encoded_2718().into())
-        .await?;
-    setup.node.advance_block().await?;
-    Ok(tx_hash)
-}
-
 /// Authorize an access key on an account: creates the key authorization, wraps it
 /// in a tx signed by the root key, submits and mines it.
 pub(super) async fn authorize_access_key(
@@ -553,7 +502,7 @@ pub(super) async fn authorize_access_key(
     );
     tx.key_authorization = Some(auth);
     let sig = sign_aa_tx_secp256k1(&tx, root_signer)?;
-    submit_and_mine_aa_tx(setup, tx, sig).await?;
+    setup.node.mine_signed([tx.into_signed(sig)]).await?;
     Ok(())
 }
 
@@ -731,11 +680,7 @@ pub(crate) fn create_mock_p256_sig(pub_key_x: B256, pub_key_y: B256) -> TempoSig
 
 /// Helper to create a mock secp256k1 signature for key authorization
 pub(crate) fn create_mock_secp256k1_sig() -> TempoSignature {
-    TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::new(
-        U256::ZERO,
-        U256::ZERO,
-        false,
-    )))
+    Signature::new(U256::ZERO, U256::ZERO, false).into()
 }
 
 /// Helper to create a mock WebAuthn signature for key authorization
@@ -820,9 +765,7 @@ pub(crate) fn sign_aa_tx_secp256k1(
 ) -> eyre::Result<TempoSignature> {
     let sig_hash = tx.signature_hash();
     let signature = signer.sign_hash_sync(&sig_hash)?;
-    Ok(TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-        signature,
-    )))
+    Ok(signature.into())
 }
 
 /// Helper to sign AA transaction with P256 key (with pre-hash)
@@ -874,25 +817,6 @@ pub(crate) fn sign_aa_tx_webauthn(
 
 // ===== Assertion Helper Functions =====
 
-/// Helper to fetch a transaction receipt and assert its status.
-/// Use `expected_success = true` to assert status == "0x1", `false` for "0x0".
-pub(super) async fn assert_receipt_status(
-    provider: &impl Provider,
-    tx_hash: B256,
-    expected_success: bool,
-) -> eyre::Result<()> {
-    let raw: Option<serde_json::Value> = provider
-        .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
-        .await?;
-    let receipt = raw.ok_or_else(|| eyre::eyre!("Transaction receipt not found for {tx_hash}"))?;
-    let status = receipt["status"]
-        .as_str()
-        .ok_or_else(|| eyre::eyre!("Receipt missing status field"))?;
-    let expected = if expected_success { "0x1" } else { "0x0" };
-    assert_eq!(status, expected, "Receipt status mismatch for {tx_hash}");
-    Ok(())
-}
-
 pub(crate) async fn configure_fee_payer_context(
     provider: &impl Provider,
     tx: &mut TempoTransaction,
@@ -906,10 +830,9 @@ pub(crate) async fn configure_fee_payer_context(
 
     let fee_payer_addr = fee_payer_signer.address();
     let token = tx.fee_token.unwrap_or(DEFAULT_FEE_TOKEN);
-    let balance_before = ITIP20::new(token, provider)
-        .balanceOf(fee_payer_addr)
-        .call()
-        .await?;
+    // Callers fund the fee payer right before this.
+    let balance_before =
+        settled_balance(provider, token, fee_payer_addr, |bal| !bal.is_zero()).await?;
     sign_fee_payer(tx, signer_addr, fee_payer_signer)?;
 
     Ok(Some(FeePayerContext {
@@ -919,6 +842,42 @@ pub(crate) async fn configure_fee_payer_context(
     }))
 }
 
+/// Runs `read`, re-running it for up to 5s until `settled` holds, and returns the last value.
+///
+/// A live RPC endpoint can serve the read from a backend that has not imported the
+/// block of the receipt the caller just saw.
+pub(crate) async fn settled<T, Fut>(
+    mut read: impl FnMut() -> Fut,
+    settled: impl Fn(&T) -> bool,
+) -> eyre::Result<T>
+where
+    Fut: Future<Output = eyre::Result<T>>,
+{
+    let mut value = read().await?;
+    for _ in 0..20 {
+        if settled(&value) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        value = read().await?;
+    }
+    Ok(value)
+}
+
+pub(crate) async fn settled_balance(
+    provider: &impl Provider,
+    token: Address,
+    who: Address,
+    done: impl Fn(U256) -> bool,
+) -> eyre::Result<U256> {
+    let token = ITIP20::new(token, provider);
+    settled(
+        || async { Ok(token.balanceOf(who).call().await?) },
+        |bal| done(*bal),
+    )
+    .await
+}
+
 pub(crate) async fn assert_token_balance(
     provider: &impl Provider,
     token: Address,
@@ -926,7 +885,7 @@ pub(crate) async fn assert_token_balance(
     expected: U256,
     msg: &str,
 ) -> eyre::Result<()> {
-    let bal = ITIP20::new(token, provider).balanceOf(who).call().await?;
+    let bal = settled_balance(provider, token, who, |bal| bal == expected).await?;
     assert_eq!(bal, expected, "{msg}");
     Ok(())
 }
@@ -984,10 +943,10 @@ pub(crate) async fn assert_fee_payer_spent(
 
     let expected_cost = calc_gas_balance_spending(gas_used, effective_gas_price);
 
-    let balance_after = ITIP20::new(fee_payer.token, provider)
-        .balanceOf(fee_payer.addr)
-        .call()
-        .await?;
+    let balance_after = settled_balance(provider, fee_payer.token, fee_payer.addr, |bal| {
+        bal != fee_payer.balance_before
+    })
+    .await?;
     let actual_spent = fee_payer
         .balance_before
         .checked_sub(balance_after)

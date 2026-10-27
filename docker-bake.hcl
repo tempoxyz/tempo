@@ -7,11 +7,11 @@ variable "VERGEN_GIT_SHA_SHORT" {
 }
 
 group "default" {
-  targets = ["tempo", "tempo-localnet", "tempo-sidecar", "tempo-xtask"]
+  targets = ["tempo", "tempo-devnet", "tempo-localnet", "tempo-xtask"]
 }
 
 group "nightly" {
-  targets = ["tempo", "tempo-localnet", "tempo-sidecar", "tempo-xtask"]
+  targets = ["tempo", "tempo-devnet", "tempo-localnet", "tempo-xtask"]
 }
 
 target "docker-metadata" {}
@@ -48,14 +48,14 @@ target "tempo" {
   target = "tempo"
 }
 
+target "tempo-devnet" {
+  inherits = ["_common", "docker-metadata"]
+  target = "tempo-devnet"
+}
+
 target "tempo-localnet" {
   inherits = ["_common", "docker-metadata"]
   target = "tempo-localnet"
-}
-
-target "tempo-sidecar" {
-  inherits = ["_common", "docker-metadata"]
-  target = "tempo-sidecar"
 }
 
 target "tempo-xtask" {

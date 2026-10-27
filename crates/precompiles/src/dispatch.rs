@@ -297,7 +297,7 @@ mod tests {
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
     };
     use alloy::{
-        primitives::U256,
+        primitives::{B256, U256},
         sol_types::{SolCall, SolError},
     };
     use revm::precompile::{PrecompileError, PrecompileHalt, PrecompileStatus};
@@ -338,7 +338,7 @@ mod tests {
     #[test]
     fn trailing_bytes_are_allowed_from_t12() -> eyre::Result<()> {
         let canonical = ITestMemoryDispatch::setValuesCall {
-            values: vec![U256::from(1), U256::from(2)],
+            values: vec![U256::ONE, U256::from(2)],
         }
         .abi_encode();
 
@@ -379,7 +379,7 @@ mod tests {
 
             // Allowing a suffix must not permit gaps inside the encoding.
             let mut gapped = canonical.clone();
-            gapped[4..36].copy_from_slice(&U256::from(64).to_be_bytes::<32>());
+            gapped[4..36].copy_from_slice(B256::with_last_byte(64).as_slice());
             gapped.splice(36..36, [0u8; 32]);
             assert_eq!(
                 ITestMemoryDispatch::setValuesCall::abi_decode_with_config(&gapped, config).is_ok(),
@@ -400,7 +400,7 @@ mod tests {
 
     #[test]
     fn generic_helpers_encode_success_outputs() -> eyre::Result<()> {
-        let target = U256::from(1);
+        let target = U256::ONE;
         let output = typed::view(
             ITestDispatch::getCall {
                 value: U256::from(41),
@@ -483,7 +483,7 @@ mod tests {
     #[test]
     fn dispatch_limits_abi_decoder_memory() -> eyre::Result<()> {
         let mut calldata = ITestMemoryDispatch::setValuesCall::SELECTOR.to_vec();
-        calldata.extend(U256::from(32).to_be_bytes::<32>());
+        calldata.extend(B256::with_last_byte(32).0);
         calldata.extend(U256::from(ABI_DECODER_MEMORY_LIMIT as u64).to_be_bytes::<32>());
 
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);

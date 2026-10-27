@@ -1,0 +1,49 @@
+[
+  {
+    "type": "function",
+    "name": "fund",
+    "stateMutability": "nonpayable",
+    "inputs": [
+      {
+        "name": "funder",
+        "type": "address"
+      },
+      {
+        "name": "requestedAssets",
+        "type": "uint256"
+      },
+      {
+        "name": "maxEarnShareSupply",
+        "type": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "fundedAssets",
+        "type": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "event",
+    "name": "Funded",
+    "anonymous": false,
+    "inputs": [
+      {
+        "name": "funder",
+        "type": "address",
+        "indexed": true
+      },
+      {
+        "name": "requestedAssets",
+        "type": "uint256",
+        "indexed": false
+      },
+      {
+        "name": "fundedAssets",
+        "type": "uint256",
+        "indexed": false
+      }
+    ]
+  }
+]

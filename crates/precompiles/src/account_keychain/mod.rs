@@ -27,6 +27,7 @@ use tempo_primitives::TempoAddressExt;
 
 use crate::{
     ACCOUNT_KEYCHAIN_ADDRESS,
+    configurable_account::valid_account,
     error::Result,
     has_duplicates_metered,
     storage::{Handler, Mapping, Set},
@@ -81,6 +82,7 @@ pub enum StoredSignatureType {
     Secp256k1,
     P256,
     WebAuthn,
+    ConfigurableAccount,
 }
 
 impl TryFrom<SignatureType> for StoredSignatureType {
@@ -91,6 +93,7 @@ impl TryFrom<SignatureType> for StoredSignatureType {
             SignatureType::Secp256k1 => Ok(Self::Secp256k1),
             SignatureType::P256 => Ok(Self::P256),
             SignatureType::WebAuthn => Ok(Self::WebAuthn),
+            SignatureType::ConfigurableAccount => Ok(Self::ConfigurableAccount),
             _ => Err(AccountKeychainError::invalid_signature_type().into()),
         }
     }
@@ -102,6 +105,7 @@ impl From<StoredSignatureType> for SignatureType {
             StoredSignatureType::Secp256k1 => Self::Secp256k1,
             StoredSignatureType::P256 => Self::P256,
             StoredSignatureType::WebAuthn => Self::WebAuthn,
+            StoredSignatureType::ConfigurableAccount => Self::ConfigurableAccount,
         }
     }
 }
@@ -239,7 +243,9 @@ impl AccountKeychain {
     /// - `ExpiryInPast` — expiry must be in the future (enforced since T0)
     /// - `KeyAlreadyExists` — a key with this ID is already registered
     /// - `KeyAlreadyRevoked` — revoked keys cannot be re-authorized
-    /// - `InvalidSignatureType` — must be Secp256k1, P256, or WebAuthn
+    /// - `InvalidKeyId` — from T14, a ConfigurableAccount `keyId` that is the caller, has code or
+    ///   is a reserved address (precompile, TIP-20, virtual or zone portal)
+    /// - `InvalidSignatureType` — unsupported type, including ConfigurableAccount before T14
     pub fn authorize_key(
         &mut self,
         msg_sender: Address,
@@ -265,12 +271,24 @@ impl AccountKeychain {
         let is_t3 = self.storage.spec().is_t3();
 
         // Validate inputs
-        if key_id == Address::ZERO {
+        if key_id.is_zero() {
             return Err(AccountKeychainError::zero_public_key().into());
         }
+        let is_delegate_grant =
+            signature_type == SignatureType::ConfigurableAccount && self.storage.spec().is_t14();
         // Admin keys are explicit access-key rows; the root key remains implicit.
-        if is_admin && key_id == msg_sender {
+        if (is_admin || is_delegate_grant) && key_id == msg_sender {
             return Err(AccountKeychainError::invalid_key_id().into());
+        }
+        if is_delegate_grant {
+            // Naming a delegate does not register it or require a configuration witness.
+            if !valid_account(key_id, self.storage.spec())
+                || self
+                    .storage
+                    .with_account_info(key_id, |info| Ok(!info.is_empty_code_hash()))?
+            {
+                return Err(AccountKeychainError::invalid_key_id().into());
+            }
         }
 
         // T0+: Expiry must be in the future (also catches expiry == 0 which means "key doesn't exist")
@@ -293,6 +311,8 @@ impl AccountKeychain {
         }
 
         let signature_type = StoredSignatureType::try_from(signature_type)?;
+        // Before T14, ConfigurableAccount fails at the same point as an unsupported type.
+        self.ensure_signature_type_active(signature_type)?;
 
         // TIP-1011 fields are hardfork-gated at T3, so reject them before mutating state.
         let allowed_call_configs = if is_t3 {
@@ -797,7 +817,7 @@ impl AccountKeychain {
         to: &TxKind,
         input: &[u8],
     ) -> Result<()> {
-        if key_id == Address::ZERO || !self.storage.spec().is_t3() {
+        if key_id.is_zero() || !self.storage.spec().is_t3() {
             return Ok(());
         }
 
@@ -1128,8 +1148,11 @@ impl AccountKeychain {
     ///
     /// Warning: this returns true when `key_id == account`, because the root key
     /// is implicitly admin even when it is not stored as an access key.
+    ///
+    /// From T14 the root key of an account with a nonzero configuration commitment (TIP-1112) is
+    /// not, and the keychain never stores it as an admin key, so this returns false for it.
     pub fn is_admin_key(&self, account: Address, key_id: Address) -> Result<bool> {
-        if key_id == account {
+        if key_id == account && !self.storage.is_retired_root(account)? {
             return Ok(true);
         }
 
@@ -1141,16 +1164,6 @@ impl AccountKeychain {
         };
 
         Ok(key.is_admin)
-    }
-
-    /// Internal predicate for active key status.
-    pub fn is_active_key(&self, account: Address, key_id: Address) -> Result<bool> {
-        let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
-        match self.load_active_key(account, key_id, current_timestamp) {
-            Ok(_) => Ok(true),
-            Err(err) if err.is_system_error() => Err(err),
-            Err(_) => Ok(false),
-        }
     }
 
     fn ensure_key_authorization_witness_not_burned(
@@ -1214,7 +1227,8 @@ impl AccountKeychain {
     /// * `key_id` - The key identifier to validate
     /// * `current_timestamp` - Current block timestamp for expiry check
     /// * `expected_sig_type` - The signature type from the actual signature (0=Secp256k1, 1=P256,
-    ///   2=WebAuthn). Pass `None` to skip validation (for backward compatibility pre-T1).
+    ///   2=WebAuthn, 3=ConfigurableAccount). Pass `None` to skip validation (for backward
+    ///   compatibility pre-T1).
     ///
     /// # Errors
     /// - `KeyAlreadyRevoked` — the key has been permanently revoked
@@ -1358,7 +1372,7 @@ impl AccountKeychain {
         amount: U256,
     ) -> Result<()> {
         // If using main key (zero address), no spending limits apply
-        if key_id == Address::ZERO {
+        if key_id.is_zero() {
             return Ok(());
         }
 
@@ -1448,7 +1462,7 @@ impl AccountKeychain {
     ) -> Result<()> {
         let transaction_key = self.transaction_key.t_read()?;
 
-        if transaction_key == Address::ZERO {
+        if transaction_key.is_zero() {
             return Ok(());
         }
 
@@ -1522,7 +1536,7 @@ impl AccountKeychain {
         let transaction_key = self.transaction_key.t_read()?;
 
         // If using main key (Address::ZERO), no spending limits apply
-        if transaction_key == Address::ZERO {
+        if transaction_key.is_zero() {
             return Ok(());
         }
 
@@ -1557,7 +1571,7 @@ impl AccountKeychain {
         let transaction_key = self.transaction_key.t_read()?;
 
         // If using main key (Address::ZERO), no spending limits apply
-        if transaction_key == Address::ZERO {
+        if transaction_key.is_zero() {
             return Ok(());
         }
 
@@ -1579,6 +1593,16 @@ impl AccountKeychain {
 
         // Verify and update spending limits for this access key
         self.verify_and_update_spending(account, transaction_key, token, approval_increase)
+    }
+
+    /// Rejects the ConfigurableAccount signature type before T14.
+    fn ensure_signature_type_active(&self, signature_type: StoredSignatureType) -> Result<()> {
+        if signature_type == StoredSignatureType::ConfigurableAccount
+            && !self.storage.spec().is_t14()
+        {
+            return Err(AccountKeychainError::invalid_signature_type().into());
+        }
+        Ok(())
     }
 }
 
@@ -1955,7 +1979,7 @@ mod tests {
                         updateSpendingLimitCall {
                             keyId: admin_key,
                             token,
-                            newLimit: U256::from(1),
+                            newLimit: U256::ONE,
                         },
                     )
                     .expect_err("admin keys cannot receive spending limits"),
@@ -1996,7 +2020,7 @@ mod tests {
                         updateSpendingLimitCall {
                             keyId: account,
                             token,
-                            newLimit: U256::from(1),
+                            newLimit: U256::ONE,
                         },
                     )
                     .expect_err("missing self-key row cannot receive spending limits"),
@@ -2042,7 +2066,7 @@ mod tests {
                 updateSpendingLimitCall {
                     keyId: account,
                     token,
-                    newLimit: U256::from(1),
+                    newLimit: U256::ONE,
                 },
             )?;
             assert_eq!(
@@ -2051,7 +2075,7 @@ mod tests {
                     keyId: account,
                     token,
                 })?,
-                U256::from(1)
+                U256::ONE
             );
 
             keychain.set_allowed_calls(
@@ -3207,7 +3231,7 @@ mod tests {
             );
 
             // Test 4: Alice cannot exceed her spending limit
-            let exceed_result = keychain.authorize_transfer(eoa_alice, token, U256::from(1));
+            let exceed_result = keychain.authorize_transfer(eoa_alice, token, U256::ONE);
             assert!(
                 exceed_result.is_err(),
                 "Should fail when Alice tries to exceed spending limit"
@@ -4270,7 +4294,7 @@ mod tests {
         let invalid_key_id = Address::random();
         let valid_key_id = Address::random();
         let token = Address::random();
-        let oversized_limit = U256::from(u128::MAX) + U256::from(1u8);
+        let oversized_limit = U256::from(u128::MAX) + U256::ONE;
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();

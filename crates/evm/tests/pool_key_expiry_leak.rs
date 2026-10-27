@@ -10,7 +10,7 @@ use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_evm::{TempoBlockEnv, TempoPoolValidationEvm, evm::TempoEvm};
 use tempo_precompiles::PATH_USD_ADDRESS;
 use tempo_primitives::{
-    SignatureType, TempoSignature,
+    SignatureType,
     transaction::{Call, KeyAuthorization, PrimitiveSignature},
 };
 use tempo_revm::{TempoBatchCallEnv, TempoTxEnv, gas_params::tempo_gas_params_with_amsterdam};
@@ -50,9 +50,7 @@ fn rejected_pool_transaction_does_not_leak_key_expiry() {
         },
         fee_token: Some(PATH_USD_ADDRESS),
         tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
-            signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-                root.sign_hash_sync(&B256::ZERO).unwrap(),
-            )),
+            signature: root.sign_hash_sync(&B256::ZERO).unwrap().into(),
             aa_calls: vec![Call {
                 to: TxKind::Call(Address::repeat_byte(0x44)),
                 value: U256::ZERO,

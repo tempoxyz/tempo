@@ -9,6 +9,8 @@ extern crate alloc;
 
 #[cfg(feature = "reth")]
 mod bootnodes;
+#[cfg(feature = "cli")]
+pub mod cli;
 #[cfg(feature = "reth")]
 mod network_identity;
 #[cfg(feature = "reth")]
@@ -17,6 +19,11 @@ pub mod spec;
 pub use network_identity::NetworkIdentity;
 #[cfg(feature = "reth")]
 pub use spec::{TempoChainSpec, TempoConsensusSpec, TempoHardforks};
+
+#[cfg(feature = "evm")]
+mod native_account;
+#[cfg(feature = "evm")]
+pub use native_account::is_valid_native_account;
 
 pub use tempo_hardfork::{TempoHardfork, constants};
 

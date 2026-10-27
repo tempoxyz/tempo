@@ -1,17 +1,16 @@
-use crate::utils::{TEST_MNEMONIC, TestNodeBuilder};
+use crate::utils::TestNodeBuilder;
 use alloy::{
     network::ReceiptResponse,
     primitives::{Address, B256, U256, aliases::U96},
     providers::{Provider, ProviderBuilder},
-    signers::{
-        SignerSync,
-        local::{MnemonicBuilder, PrivateKeySigner},
-    },
+    signers::{SignerSync, local::PrivateKeySigner},
     sol_types::SolEvent,
 };
 use alloy_eips::BlockNumberOrTag;
-use alloy_primitives::Bytes;
 use alloy_rpc_types_eth::TransactionRequest;
+use eyre::WrapErr;
+use futures::TryFutureExt;
+use reth_e2e_test_utils::{receipt::PendingTransactionExt, wallet::test_signer};
 use tempo_chainspec::{constants::gas::TEMPO_T7_BASE_FEE_FLOOR, spec::TEMPO_T1_BASE_FEE};
 use tempo_contracts::precompiles::{IFeeManager, ITIP20, ITIP20ChannelReserve};
 use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS};
@@ -43,16 +42,14 @@ async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet = test_signer(0);
     let caller = wallet.address();
     let provider = ProviderBuilder::new()
         .wallet(wallet)
         .connect_http(http_url.clone());
 
     // Create another wallet for sending different transactions
-    let wallet2 = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-        .index(1)?
-        .build()?;
+    let wallet2 = test_signer(1);
     let caller2 = wallet2.address();
     let provider2 = ProviderBuilder::new()
         .wallet(wallet2)
@@ -102,9 +99,8 @@ async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
     let mut providers = vec![];
 
     for i in 0..num_accounts {
-        let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-            .index(i as u32 + 2)? // Start from index 2 (0 and 1 are already used)
-            .build()?;
+        // Start from index 2 (0 and 1 are already used)
+        let wallet = test_signer(i as u32 + 2);
         let address = wallet.address();
         let provider = ProviderBuilder::new()
             .wallet(wallet)
@@ -151,13 +147,11 @@ async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
         let pending_txs = futures::future::try_join_all(batch_futures).await?;
 
         // Collect receipts
-        let receipt_futures = pending_txs.into_iter().map(|tx| tx.get_receipt());
-        let batch_receipts = futures::future::try_join_all(receipt_futures).await?;
-
-        for receipt in batch_receipts {
-            assert!(receipt.status(), "Non-payment tx should succeed");
-            non_payment_receipts.push(receipt);
-        }
+        let receipt_futures = pending_txs.into_iter().map(|tx| tx.successful_receipt());
+        let batch_receipts = futures::future::try_join_all(receipt_futures)
+            .await
+            .wrap_err("Non-payment tx should succeed")?;
+        non_payment_receipts.extend(batch_receipts);
 
         println!(
             "Batch {} complete: {} total transactions sent",
@@ -295,29 +289,23 @@ async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
         .await?;
 
         // Collect receipts
-        let non_payment_receipt_futures =
-            non_payment_pending.into_iter().map(|tx| tx.get_receipt());
-        let payment_receipt_futures = payment_pending.into_iter().map(|tx| tx.get_receipt());
+        let non_payment_receipt_futures = non_payment_pending
+            .into_iter()
+            .map(|tx| tx.successful_receipt());
+        let payment_receipt_futures = payment_pending
+            .into_iter()
+            .map(|tx| tx.successful_receipt());
 
         let (batch_non_payment_receipts, batch_payment_receipts) = futures::future::try_join(
-            futures::future::try_join_all(non_payment_receipt_futures),
-            futures::future::try_join_all(payment_receipt_futures),
+            futures::future::try_join_all(non_payment_receipt_futures)
+                .map_err(|err| err.wrap_err("Continued non-payment tx should succeed")),
+            futures::future::try_join_all(payment_receipt_futures)
+                .map_err(|err| err.wrap_err("Payment tx should succeed despite continued load")),
         )
         .await?;
 
-        // Verify all succeeded and collect
-        for receipt in batch_non_payment_receipts {
-            assert!(receipt.status(), "Continued non-payment tx should succeed");
-            continued_non_payment_receipts.push(receipt);
-        }
-
-        for receipt in batch_payment_receipts {
-            assert!(
-                receipt.status(),
-                "Payment tx should succeed despite continued load"
-            );
-            payment_receipts.push(receipt);
-        }
+        continued_non_payment_receipts.extend(batch_non_payment_receipts);
+        payment_receipts.extend(batch_payment_receipts);
 
         println!(
             "  Mixed batch {} complete: {} non-payment, {} payment transactions",
@@ -442,9 +430,7 @@ async fn test_payment_lane_ordering() -> eyre::Result<()> {
     const NUM_ACCOUNTS: usize = 10;
 
     for i in 0..NUM_ACCOUNTS {
-        let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-            .index(i as u32)?
-            .build()?;
+        let wallet = test_signer(i as u32);
         let provider = ProviderBuilder::new()
             .wallet(wallet.clone())
             .connect_http(http_url.clone());
@@ -567,7 +553,7 @@ async fn test_payment_lane_gas_limits() -> eyre::Result<()> {
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet = test_signer(0);
     let caller = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
@@ -594,8 +580,10 @@ async fn test_payment_lane_gas_limits() -> eyre::Result<()> {
             .value(U256::ZERO);
 
         let pending_tx = provider.send_transaction(tx).await?;
-        let receipt = pending_tx.get_receipt().await?;
-        assert!(receipt.status(), "High-gas non-payment tx should succeed");
+        let receipt = pending_tx
+            .successful_receipt()
+            .await
+            .wrap_err("High-gas non-payment tx should succeed")?;
         non_payment_gas_used += receipt.gas_used;
         println!(
             "Non-payment tx {} used {} gas, total: {}",
@@ -607,7 +595,7 @@ async fn test_payment_lane_gas_limits() -> eyre::Result<()> {
     println!("\nSending payment transactions (should succeed despite non-payment gas usage)...");
     for i in 0..3 {
         // Send valid TIP20 transfer transactions
-        let transfer_tx = token.transfer(caller, U256::from(1));
+        let transfer_tx = token.transfer(caller, U256::ONE);
         let tx = transfer_tx
             .into_transaction_request()
             .from(caller)
@@ -615,11 +603,10 @@ async fn test_payment_lane_gas_limits() -> eyre::Result<()> {
             .gas_limit(2_000_000);
 
         let pending_tx = provider.send_transaction(tx).await?;
-        let receipt = pending_tx.get_receipt().await?;
-        assert!(
-            receipt.status(),
-            "Payment tx should succeed even with high non-payment gas usage"
-        );
+        let receipt = pending_tx
+            .successful_receipt()
+            .await
+            .wrap_err("Payment tx should succeed even with high non-payment gas usage")?;
         println!("Payment tx {} succeeded, used {} gas", i, receipt.gas_used);
     }
 
@@ -635,7 +622,7 @@ async fn test_payment_lane_gas_limits_channel_reserve() -> eyre::Result<()> {
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let url = setup.http_url;
 
-    let funder = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let funder = test_signer(0);
     let funder_provider = ProviderBuilder::new()
         .wallet(funder.clone())
         .connect_http(url.clone());
@@ -663,12 +650,11 @@ async fn test_payment_lane_gas_limits_channel_reserve() -> eyre::Result<()> {
             .gas_price(TEMPO_T1_BASE_FEE as u128)
             .gas_limit(2_000_000)
             .value(U256::ZERO);
-        let r = funder_provider
+        funder_provider
             .send_transaction(tx)
             .await?
-            .get_receipt()
+            .successful_receipt()
             .await?;
-        assert!(r.status());
     }
 
     let reserve = ITIP20ChannelReserve::new(TIP20_CHANNEL_RESERVE_ADDRESS, payer_provider.clone());
@@ -688,9 +674,9 @@ async fn test_payment_lane_gas_limits_channel_reserve() -> eyre::Result<()> {
         .max_priority_fee_per_gas(0)
         .send()
         .await?
-        .get_receipt()
-        .await?;
-    assert!(open_r.status(), "reserve open should succeed");
+        .successful_receipt()
+        .await
+        .wrap_err("reserve open should succeed")?;
 
     let opened = open_r
         .inner
@@ -716,9 +702,9 @@ async fn test_payment_lane_gas_limits_channel_reserve() -> eyre::Result<()> {
         .max_priority_fee_per_gas(0)
         .send()
         .await?
-        .get_receipt()
-        .await?;
-    assert!(topup_r.status(), "reserve topUp should succeed");
+        .successful_receipt()
+        .await
+        .wrap_err("reserve topUp should succeed")?;
 
     // settle (payment, requires voucher signature)
     let settle_amount = U96::from(200u64);
@@ -728,15 +714,15 @@ async fn test_payment_lane_gas_limits_channel_reserve() -> eyre::Result<()> {
         .await?;
     let sig = payer.sign_hash_sync(&digest)?;
     let settle_r = reserve
-        .settle(desc, settle_amount, Bytes::copy_from_slice(&sig.as_bytes()))
+        .settle(desc, settle_amount, sig.as_bytes().into())
         .gas(5_000_000)
         .max_fee_per_gas(TEMPO_T1_BASE_FEE as u128)
         .max_priority_fee_per_gas(0)
         .send()
         .await?
-        .get_receipt()
-        .await?;
-    assert!(settle_r.status(), "reserve settle should succeed");
+        .successful_receipt()
+        .await
+        .wrap_err("reserve settle should succeed")?;
 
     // These reserve calls use a high gas limit. With zero priority fee, they should pay the block
     // base fee.

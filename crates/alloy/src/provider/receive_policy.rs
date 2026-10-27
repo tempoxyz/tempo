@@ -104,7 +104,7 @@ pub fn is_invalid_recovery_authority(authority: Address) -> bool {
 
 /// Validate a raw receive-policy recovery authority.
 pub fn validate_recovery_authority(authority: Address) -> Result<(), ReceivePolicyError> {
-    if authority != Address::ZERO && is_invalid_recovery_authority(authority) {
+    if !authority.is_zero() && is_invalid_recovery_authority(authority) {
         return Err(ReceivePolicyError::InvalidRecoveryAuthority(authority));
     }
     Ok(())
@@ -195,13 +195,14 @@ fn receive_policy_guard_call(call: impl SolCall) -> Call {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
-    use alloy_primitives::{Bytes, LogData, address, b256, bytes, uint};
+    use alloy_primitives::{B256, Bytes, LogData, address, bytes, uint};
     use tempo_contracts::precompiles::IReceivePolicyGuard::TransferBlocked;
 
     #[test]
     fn set_receive_policy_encodes_registry_call() {
-        let recovery = address!("0x1111111111111111111111111111111111111111");
+        let recovery = Address::repeat_byte(0x11);
         let call = set_receive_policy(7, 9, recovery);
 
         assert_eq!(call.to, TxKind::Call(TIP403_REGISTRY_ADDRESS));
@@ -216,7 +217,7 @@ mod tests {
 
     #[test]
     fn typed_receive_policy_encodes_recovery_authority() {
-        let receiver = address!("0x1111111111111111111111111111111111111111");
+        let receiver = Address::repeat_byte(0x11);
 
         let originator =
             set_receive_policy_for_receiver(7, 9, receiver, RecoveryAuthority::Originator)
@@ -232,7 +233,7 @@ mod tests {
             .expect("decode setReceivePolicy");
         assert_eq!(decoded.recoveryAuthority, receiver);
 
-        let third_party = address!("0x2222222222222222222222222222222222222222");
+        let third_party = Address::repeat_byte(0x22);
         let third_party_recovery = set_receive_policy_for_receiver(
             7,
             9,
@@ -247,7 +248,7 @@ mod tests {
 
     #[test]
     fn typed_receive_policy_rejects_unclaimable_authorities() {
-        let receiver = address!("0x1111111111111111111111111111111111111111");
+        let receiver = Address::repeat_byte(0x11);
 
         for &(authority, _) in SYSTEM_PRECOMPILES {
             let err = set_receive_policy_for_receiver(
@@ -285,7 +286,7 @@ mod tests {
 
     #[test]
     fn claim_and_burn_target_the_guard() {
-        let to = address!("0x2222222222222222222222222222222222222222");
+        let to = Address::repeat_byte(0x22);
         let receipt = bytes!("0xdeadbeef");
 
         let claim = claim_blocked_receipt(to, receipt.clone());
@@ -303,7 +304,7 @@ mod tests {
     #[test]
     fn blocked_transfer_round_trips_from_log() {
         let token = address!("0x20c0000000000000000000000000000000000001");
-        let receiver = address!("0x3333333333333333333333333333333333333333");
+        let receiver = Address::repeat_byte(0x33);
         let receipt = bytes!("0xc0ffee");
 
         let event = TransferBlocked {
@@ -338,12 +339,7 @@ mod tests {
     fn from_log_ignores_unrelated_logs() {
         let log = Log {
             address: RECEIVE_POLICY_GUARD_ADDRESS,
-            data: LogData::new_unchecked(
-                vec![b256!(
-                    "0x1111111111111111111111111111111111111111111111111111111111111111"
-                )],
-                Bytes::new(),
-            ),
+            data: LogData::new_unchecked(vec![B256::repeat_byte(0x11)], Bytes::new()),
         };
         assert!(BlockedTransfer::from_log(&log).is_none());
     }
@@ -352,14 +348,14 @@ mod tests {
     fn from_log_ignores_transfer_blocked_from_other_address() {
         let event = TransferBlocked {
             token: address!("0x20c0000000000000000000000000000000000001"),
-            receiver: address!("0x3333333333333333333333333333333333333333"),
+            receiver: Address::repeat_byte(0x33),
             blockedNonce: 1,
             amount: uint!(5_U256),
             receiptVersion: 1,
             receipt: bytes!("0xabcd"),
         };
         let log = Log {
-            address: address!("0x4444444444444444444444444444444444444444"),
+            address: Address::repeat_byte(0x44),
             data: event.encode_log_data(),
         };
 
@@ -369,7 +365,7 @@ mod tests {
     #[test]
     fn from_logs_collects_only_blocked_transfers() {
         let token = address!("0x20c0000000000000000000000000000000000001");
-        let receiver = address!("0x3333333333333333333333333333333333333333");
+        let receiver = Address::repeat_byte(0x33);
         let event = TransferBlocked {
             token,
             receiver,
@@ -384,12 +380,7 @@ mod tests {
         };
         let unrelated = Log {
             address: RECEIVE_POLICY_GUARD_ADDRESS,
-            data: LogData::new_unchecked(
-                vec![b256!(
-                    "0x2222222222222222222222222222222222222222222222222222222222222222"
-                )],
-                Bytes::new(),
-            ),
+            data: LogData::new_unchecked(vec![B256::repeat_byte(0x22)], Bytes::new()),
         };
 
         let found = BlockedTransfer::from_logs([&blocked, &unrelated]);

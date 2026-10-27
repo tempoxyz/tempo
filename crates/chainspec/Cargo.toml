@@ -2,7 +2,7 @@
 name = "tempo-chainspec"
 description = "Tempo hardfork configuration and chain specification helpers"
 
-version = "1.11.0"
+version = "1.16.0"
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
@@ -26,6 +26,7 @@ reth-network-peers = { workspace = true, optional = true }
 tempo-dkg-onchain-artifacts = { workspace = true, optional = true }
 
 alloy-evm = { workspace = true, optional = true }
+clap = { workspace = true, optional = true }
 alloy-genesis.workspace = true
 once_cell.workspace = true
 alloy-primitives.workspace = true
@@ -38,6 +39,7 @@ commonware-codec = { workspace = true, optional = true }
 commonware-cryptography = { workspace = true, optional = true }
 
 [dev-dependencies]
+tempo-contracts.workspace = true
 
 [features]
 default = ["std", "serde", "reth", "cli"]
@@ -53,12 +55,14 @@ std = [
     "reth-network-peers?/std",
     "serde/std",
     "serde_json/std",
+    "tempo-contracts/std",
     "tempo-primitives/std",
 ]
 serde = [
     "tempo-hardfork/serde",
     "alloy-eips/serde",
     "alloy-primitives/serde",
+    "tempo-contracts/serde",
     "tempo-primitives/serde"
 ]
 evm = ["dep:alloy-evm", "tempo-hardfork/evm", "tempo-primitives/evm"]
@@ -73,4 +77,10 @@ reth = [
     "dep:tempo-dkg-onchain-artifacts",
     "tempo-primitives/reth",
 ]
-cli = ["reth", "dep:reth-cli", "dep:eyre", "tempo-primitives/reth-codec"]
+cli = [
+    "reth",
+    "dep:clap",
+    "dep:reth-cli",
+    "dep:eyre",
+    "tempo-primitives/reth-codec",
+]

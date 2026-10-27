@@ -609,54 +609,6 @@ mod rlp {
         }
     }
 
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-        use proptest::prelude::*;
-        use proptest_arbitrary_interop::arb;
-
-        proptest! {
-            #[test]
-            fn proptest_key_authorization_borrowed_rlp_matches_owned(
-                mut authorization in arb::<KeyAuthorization>(),
-                limits_state in 0..3u8,
-                calls_state in 0..3u8,
-            ) {
-                // Exercise omitted and explicitly empty lists independently of later fields.
-                match limits_state {
-                    0 => authorization.limits = None,
-                    1 => authorization.limits = Some(Vec::new()),
-                    _ => {}
-                }
-                match calls_state {
-                    0 => authorization.allowed_calls = None,
-                    1 => authorization.allowed_calls = Some(Vec::new()),
-                    _ => {}
-                }
-                let owned = KeyAuthorizationWire {
-                    chain_id: authorization.chain_id,
-                    key_type: authorization.key_type,
-                    key_id: authorization.key_id,
-                    expiry: authorization.expiry,
-                    limits: authorization.limits.clone(),
-                    allowed_calls: authorization.allowed_calls.clone(),
-                    witness: authorization.witness,
-                    is_admin: authorization.is_admin.then_some(NonZeroU64::MIN),
-                    account: authorization.account,
-                };
-                let encoded = alloy_rlp::encode(&authorization);
-                prop_assert_eq!(authorization.length(), encoded.len());
-                prop_assert_eq!(owned.length(), encoded.len());
-                prop_assert_eq!(&encoded, &alloy_rlp::encode(&owned));
-
-                let mut input = encoded.as_slice();
-                let decoded = KeyAuthorization::decode(&mut input)?;
-                prop_assert_eq!(decoded, authorization);
-                prop_assert!(input.is_empty());
-            }
-        }
-    }
-
     #[derive(
         Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable,
     )]
@@ -705,6 +657,54 @@ mod rlp {
 
         fn length(&self) -> usize {
             TokenLimitWire::from(self).length()
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use proptest::prelude::*;
+        use proptest_arbitrary_interop::arb;
+
+        proptest! {
+            #[test]
+            fn proptest_key_authorization_borrowed_rlp_matches_owned(
+                mut authorization in arb::<KeyAuthorization>(),
+                limits_state in 0..3u8,
+                calls_state in 0..3u8,
+            ) {
+                // Exercise omitted and explicitly empty lists independently of later fields.
+                match limits_state {
+                    0 => authorization.limits = None,
+                    1 => authorization.limits = Some(Vec::new()),
+                    _ => {}
+                }
+                match calls_state {
+                    0 => authorization.allowed_calls = None,
+                    1 => authorization.allowed_calls = Some(Vec::new()),
+                    _ => {}
+                }
+                let owned = KeyAuthorizationWire {
+                    chain_id: authorization.chain_id,
+                    key_type: authorization.key_type,
+                    key_id: authorization.key_id,
+                    expiry: authorization.expiry,
+                    limits: authorization.limits.clone(),
+                    allowed_calls: authorization.allowed_calls.clone(),
+                    witness: authorization.witness,
+                    is_admin: authorization.is_admin.then_some(NonZeroU64::MIN),
+                    account: authorization.account,
+                };
+                let encoded = alloy_rlp::encode(&authorization);
+                prop_assert_eq!(authorization.length(), encoded.len());
+                prop_assert_eq!(owned.length(), encoded.len());
+                prop_assert_eq!(&encoded, &alloy_rlp::encode(&owned));
+
+                let mut input = encoded.as_slice();
+                let decoded = KeyAuthorization::decode(&mut input)?;
+                prop_assert_eq!(decoded, authorization);
+                prop_assert!(input.is_empty());
+            }
         }
     }
 }
@@ -1549,8 +1549,9 @@ mod tests {
 
 #[cfg(all(test, feature = "reth-codec"))]
 mod compact_tests {
+
     use super::*;
-    use alloy_primitives::{address, hex};
+    use alloy_primitives::hex;
     use reth_codecs::Compact;
 
     /// Ensures backwards compatibility of compact bitflags.
@@ -1565,7 +1566,7 @@ mod compact_tests {
     #[test]
     fn token_limit_compact_roundtrip() {
         let token_limit = TokenLimit {
-            token: address!("0x0000000000000000000000000000000000000042"),
+            token: Address::with_last_byte(0x42),
             limit: U256::from(1_000_000u64),
             period: 86400,
         };

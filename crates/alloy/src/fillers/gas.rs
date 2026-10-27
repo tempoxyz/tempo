@@ -155,7 +155,7 @@ where
             key_id,
         }));
     }
-    if key.keyId == Address::ZERO {
+    if key.keyId.is_zero() {
         return Ok(Some(Some(authorization.clone())));
     }
     if key.keyId != key_id {
@@ -262,10 +262,7 @@ mod tests {
                 ..Default::default()
             };
 
-            assert!(matches!(
-                filler.status(&request),
-                FillerControlFlow::Finished
-            ));
+            assert!(filler.status(&request).is_finished());
         }
     }
 
@@ -277,19 +274,13 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(matches!(
-            filler.status(&request),
-            FillerControlFlow::Missing(_)
-        ));
+        assert!(filler.status(&request).is_missing());
 
         request.set_chain_id(4217);
-        assert!(matches!(
-            filler.status(&request),
-            FillerControlFlow::Missing(_)
-        ));
+        assert!(filler.status(&request).is_missing());
 
         request.set_from(Address::repeat_byte(0x11));
-        assert!(matches!(filler.status(&request), FillerControlFlow::Ready));
+        assert!(filler.status(&request).is_ready());
     }
 
     #[test]

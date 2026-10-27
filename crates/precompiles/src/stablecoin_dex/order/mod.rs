@@ -322,12 +322,11 @@ impl From<Order> for IStablecoinDEX::Order {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use alloy::primitives::{address, b256};
 
-    const TEST_MAKER: Address = address!("0x1111111111111111111111111111111111111111");
-    const TEST_BOOK_KEY: B256 =
-        b256!("0x0000000000000000000000000000000000000000000000000000000000000001");
+    use super::*;
+
+    const TEST_MAKER: Address = Address::repeat_byte(0x11);
+    const TEST_BOOK_KEY: B256 = B256::with_last_byte(1);
 
     #[test]
     fn test_new_bid_order() {

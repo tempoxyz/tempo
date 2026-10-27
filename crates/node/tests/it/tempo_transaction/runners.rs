@@ -55,7 +55,7 @@ pub(super) async fn run_raw_send_matrix<E: TestEnv>(env: &mut E) -> eyre::Result
     // fund_account returns rand_funding_amount() ∈ [1M, 1000M], so all amounts
     // must stay well below 1M to avoid insufficient-balance reverts.
     let spending_limit = U256::from(100_000u64);
-    let transfer_over = spending_limit + U256::from(1u64);
+    let transfer_over = spending_limit + U256::ONE;
     let transfer_under = spending_limit / U256::from(2);
     let transfer_small = U256::from(50_000u64);
     let keyauth_expected = ExpectedOutcome::Rejection;
@@ -224,7 +224,7 @@ fn gas_estimation_cases() -> Vec<GasCase> {
             name: "webauthn",
             auth: AuthKind::KeyType {
                 key_type: SignatureType::WebAuthn,
-                key_data: Some(Bytes::from(116u16.to_be_bytes().to_vec())),
+                key_data: Some(116u16.to_be_bytes().into()),
             },
             noop_expected: ExpectedGasDiff::GreaterThan("p256::noop".into()),
         },
@@ -867,10 +867,7 @@ async fn submit_expecting<E: TestEnv>(
             } else {
                 env.submit_tx(envelope.encoded_2718(), tx_hash).await?
             };
-            let status = receipt["status"]
-                .as_str()
-                .map(|s| s == "0x1")
-                .unwrap_or(false);
+            let status = receipt["status"].as_str().is_some_and(|s| s == "0x1");
             assert!(status, "Transaction should succeed");
             if let Some(ctx) = fee_payer_ctx {
                 assert_fee_payer_spent(env.provider(), ctx, &receipt).await?;
@@ -884,10 +881,7 @@ async fn submit_expecting<E: TestEnv>(
             let receipt = env
                 .submit_tx_unchecked(envelope.encoded_2718(), tx_hash)
                 .await?;
-            let status = receipt["status"]
-                .as_str()
-                .map(|s| s == "0x1")
-                .unwrap_or(false);
+            let status = receipt["status"].as_str().is_some_and(|s| s == "0x1");
             assert!(!status, "Transaction should revert (status 0x0)");
         }
     }
@@ -1207,7 +1201,11 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
             .await?;
 
             if matches!(test_case.expected, ExpectedOutcome::Revert) {
-                let nonce_after = env.provider().get_transaction_count(root_addr).await?;
+                let nonce_after = settled(
+                    || async { Ok(env.provider().get_transaction_count(root_addr).await?) },
+                    |nonce| *nonce > nonce_before,
+                )
+                .await?;
                 assert_eq!(
                     nonce_after,
                     nonce_before + 1,
@@ -1866,8 +1864,12 @@ pub(super) async fn run_fill_sign_send<E: TestEnv>(
         let tx_hash = submit_expecting(env, envelope, test_case.expected, false, None).await?;
 
         if matches!(test_case.expected, ExpectedOutcome::Success) {
-            let final_protocol_nonce = env.provider().get_transaction_count(signer_addr).await?;
             let should_increment = matches!(test_case.nonce_mode, NonceMode::Protocol);
+            let final_protocol_nonce = settled(
+                || async { Ok(env.provider().get_transaction_count(signer_addr).await?) },
+                |nonce| !should_increment || *nonce > initial_protocol_nonce,
+            )
+            .await?;
             if should_increment {
                 assert_eq!(final_protocol_nonce, initial_protocol_nonce + 1);
             } else {
@@ -2006,10 +2008,7 @@ pub(super) async fn run_authorization_list_scenario<E: TestEnv>(env: &mut E) -> 
     let auth1_addr = auth1_signer.address();
     let (auth1, sig_hash1) = build_authorization(chain_id, delegate_address);
     let sig1 = auth1_signer.sign_hash_sync(&sig_hash1)?;
-    let auth1_signed = TempoSignedAuthorization::new_unchecked(
-        auth1,
-        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(sig1)),
-    );
+    let auth1_signed = TempoSignedAuthorization::new_unchecked(auth1, sig1.into());
 
     // Authority 2: P256
     let (auth2_key, pub2_x, pub2_y, auth2_addr) = generate_p256_access_key();
@@ -2064,17 +2063,24 @@ pub(super) async fn run_authorization_list_scenario<E: TestEnv>(env: &mut E) -> 
     assert_eq!(receipt["status"].as_str(), Some("0x1"));
 
     // Verify AFTER state: delegation code
-    let auth1_code_after = env.provider().get_code_at(auth1_addr).await?;
+    let provider = env.provider();
+    let code_after = |addr| {
+        settled(
+            move || async move { Ok(provider.get_code_at(addr).await?) },
+            |code: &Bytes| !code.is_empty(),
+        )
+    };
+    let auth1_code_after = code_after(auth1_addr).await?;
     verify_delegation_code(
         &auth1_code_after,
         delegate_address,
         "Authority 1 (Secp256k1)",
     );
 
-    let auth2_code_after = env.provider().get_code_at(auth2_addr).await?;
+    let auth2_code_after = code_after(auth2_addr).await?;
     verify_delegation_code(&auth2_code_after, delegate_address, "Authority 2 (P256)");
 
-    let auth3_code_after = env.provider().get_code_at(auth3_addr).await?;
+    let auth3_code_after = code_after(auth3_addr).await?;
     verify_delegation_code(
         &auth3_code_after,
         delegate_address,
@@ -2163,7 +2169,11 @@ pub(super) async fn run_keychain_auth_list_skipped_scenario<E: TestEnv>(
         status, "0x1",
         "Keychain-auth-list tx should succeed (auth skipped, not rejected)"
     );
-    let sender_nonce_after = env.provider().get_transaction_count(sender_addr).await?;
+    let sender_nonce_after = settled(
+        || async { Ok(env.provider().get_transaction_count(sender_addr).await?) },
+        |nonce| *nonce > sender_nonce_before,
+    )
+    .await?;
     assert_eq!(
         sender_nonce_after,
         sender_nonce_before + 1,
@@ -2313,15 +2323,8 @@ pub(super) async fn run_keychain_expiry_scenario<E: TestEnv>(env: &mut E) -> eyr
     .await?;
     println!("  ✓ Short-expiry key works before expiry");
 
-    // Advance time past expiry (on testnet, blocks are ~2s so we may need many iterations)
-    let mut new_ts = env.current_block_timestamp().await?;
-    for _ in 0..30 {
-        if new_ts >= short_expiry {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        new_ts = env.current_block_timestamp().await?;
-    }
+    // Advance time past expiry
+    let new_ts = env.wait_for_block_timestamp(short_expiry).await?;
     assert!(new_ts >= short_expiry, "Should be past expiry");
 
     // Use expired key (should be rejected)
@@ -2764,7 +2767,11 @@ pub(super) async fn run_create_contract_address_scenario<E: TestEnv>(
         "Contract address should be computed from nonce {nonce}"
     );
 
-    let deployed_code = env.provider().get_code_at(actual_contract_address).await?;
+    let deployed_code = settled(
+        || async { Ok(env.provider().get_code_at(actual_contract_address).await?) },
+        |code| !code.is_empty(),
+    )
+    .await?;
     assert!(!deployed_code.is_empty(), "Contract should be deployed");
 
     let mut expected_code = [0u8; 32];

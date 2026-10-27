@@ -47,7 +47,7 @@ fn verification_selects_only_its_parent_even_when_the_candidate_is_invalid() {
 
             let candidate = make_block(2, 2, parent_digest);
             let candidate_digest = candidate.digest();
-            let is_valid = matches!(status, PayloadStatusEnum::Valid);
+            let is_valid = status.is_valid();
             h.execution.script_new_payload(candidate_digest, Ok(status));
             let verdict = h.verify(round(2), candidate).await.unwrap();
             assert_eq!(verdict.is_some(), is_valid);

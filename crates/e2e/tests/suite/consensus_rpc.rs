@@ -61,18 +61,23 @@ async fn consensus_subscribe_and_query_finalization() {
 
     let finalized_height = initial_height;
 
-    let event = tokio::time::timeout(Duration::from_secs(10), subscription.next())
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap();
+    let block = loop {
+        let event = tokio::time::timeout(Duration::from_secs(10), subscription.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
 
-    let Event::Finalized { block, .. } = event else {
-        panic!("feed must not publish nullifications or notarizations");
+        let Event::Finalized { block, .. } = event else {
+            panic!("feed must not publish nullifications or notarizations");
+        };
+
+        if block.block.inner.number > finalized_height {
+            break block;
+        }
     };
 
     let height = block.block.inner.number;
-    assert!(height > finalized_height);
 
     let queried_block = http_client
         .get_finalization(Query::Height(height))

@@ -609,7 +609,7 @@ mod tests {
     fn peer(seed: u8) -> ValidatorFixture {
         let private_key = PrivateKey::from_seed(u64::from(seed));
         let public_key = private_key.public_key();
-        let validator_address = AlloyAddress::from([seed; 20]);
+        let validator_address = AlloyAddress::repeat_byte(seed);
         let egress_ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, seed));
         let ingress_socket = SocketAddr::new(egress_ip, 8000 + u16::from(seed));
         let p2p_address = Address::Asymmetric {
@@ -659,7 +659,7 @@ mod tests {
         validators: &[ValidatorFixture],
     ) -> eyre::Result<TestExecutionNode> {
         let mut storage = HashMapStorageProvider::new(1);
-        let owner = AlloyAddress::from([0xAA; 20]);
+        let owner = AlloyAddress::repeat_byte(0xAA);
 
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             let mut config = ValidatorConfigV2::new();

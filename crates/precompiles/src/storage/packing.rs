@@ -784,7 +784,7 @@ mod tests {
 
     #[test]
     fn test_mixed_type_packing() {
-        let addr = Address::from([0x11; 20]);
+        let addr = Address::repeat_byte(0x11);
         let number: u8 = 0x2a;
 
         let expected = gen_word_from(&[
@@ -884,11 +884,8 @@ mod tests {
 
             // Field in slot 1 (u128 is 16 bytes, packable)
             let amount: u128 = 0xdeadbeef;
-            let mut amount_slot = Slot::<u128>::new_with_ctx(
-                struct_base + U256::from(1),
-                LayoutCtx::packed(0),
-                address,
-            );
+            let mut amount_slot =
+                Slot::<u128>::new_with_ctx(struct_base + U256::ONE, LayoutCtx::packed(0), address);
             amount_slot.write(amount)?;
             assert_eq!(amount_slot.read()?, amount);
 

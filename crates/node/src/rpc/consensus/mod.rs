@@ -17,7 +17,7 @@ use jsonrpsee::{
     types::{ErrorObject, error::INTERNAL_ERROR_CODE},
 };
 
-pub use types::{CertifiedBlock, ConsensusFeed, ConsensusState, Event, Query};
+pub use types::{CertifiedBlock, ConsensusFeed, ConsensusState, Event, Query, SharedEvent};
 
 /// Custom error codes for the consensus RPC.
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -122,7 +122,7 @@ impl<I: ConsensusFeed> TempoConsensusApiServer for TempoConsensusRpc<I> {
                         let msg = jsonrpsee::SubscriptionMessage::new(
                             sink.method_name(),
                             sink.subscription_id().clone(),
-                            &event,
+                            &event.json().await,
                         )
                         .expect("Event should be serializable");
                         if sink.send(msg).await.is_err() {

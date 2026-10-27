@@ -62,8 +62,14 @@ tempo-evm = { workspace = true, features = ["engine"] }
 tempo-alloy.workspace = true
 tempo-revm.workspace = true
 
+[build-dependencies]
+serde.workspace = true
+serde_json = { workspace = true, features = ["std"] }
+thiserror.workspace = true
+
 [features]
 default = ["rpc"]
+dst = []
 test-utils = [
     "alloy/getrandom",
     "dep:alloy-json-abi",
@@ -87,9 +93,31 @@ serde = [
 	"rand_08/serde",
 	"tempo-revm/serde"
 ]
+# Devnet-only: allow `ZoneVerifier::verify` to use PCRs supplied at startup.
+custom-pcrs = []
 
 [[test]]
 name = "storage"
+required-features = ["test-utils"]
+
+[[test]]
+name = "config_commitment"
+required-features = ["test-utils"]
+
+[[test]]
+name = "configurable_account"
+required-features = ["test-utils"]
+
+[[test]]
+name = "root_key_retired"
+required-features = ["test-utils"]
+
+[[test]]
+name = "signature_verifier"
+required-features = ["test-utils"]
+
+[[test]]
+name = "configurable_account_key_type"
 required-features = ["test-utils"]
 
 [[bench]]

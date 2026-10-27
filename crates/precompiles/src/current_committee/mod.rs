@@ -32,7 +32,7 @@ impl CurrentCommittee {
         msg_sender: Address,
         call: ICurrentCommittee::setCommitteeMembersCall,
     ) -> Result<()> {
-        if msg_sender != Address::ZERO {
+        if !msg_sender.is_zero() {
             return Err(CurrentCommitteeError::unauthorized().into());
         }
 

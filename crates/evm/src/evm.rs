@@ -10,7 +10,7 @@ use alloy_evm::{
         inspector::NoOpInspector,
     },
 };
-use alloy_primitives::{Address, Bytes, TxKind};
+use alloy_primitives::{Address, B256, Bytes, TxKind};
 use reth_revm::{
     InspectSystemCallEvm, MainContext,
     context::{
@@ -24,9 +24,15 @@ use std::{
     rc::Rc,
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_precompiles::{storage::StorageAction, storage_credits::NonCreditableSlots};
+use tempo_precompiles::{
+    error::TempoPrecompileError,
+    storage::{StorageAction, StorageActions},
+    storage_credits::NonCreditableSlots,
+    validator_config_v2::{ValidatorConfigV2, ValidatorConfigV2Error},
+};
 use tempo_revm::{
-    ProtocolFeeManager, TempoInvalidTransaction, TempoTxEnv, ValidationContext, evm::TempoContext,
+    ProtocolFeeManager, TempoInvalidTransaction, TempoStateAccess, TempoTxEnv, ValidationContext,
+    evm::{PrecompilesBuilder, TempoContext},
     handler::TempoEvmHandler,
 };
 
@@ -79,6 +85,17 @@ pub struct TempoEvm<DB: Database, I = NoOpInspector> {
 impl<DB: Database> TempoEvm<DB> {
     /// Create a new [`TempoEvm`] instance.
     pub fn new(db: DB, input: EvmEnv<TempoHardfork, TempoBlockEnv>) -> Self {
+        Self::new_with_precompiles(db, input, |ctx, actions, non_creditable_slots| {
+            tempo_precompiles::tempo_precompiles(&ctx.cfg, actions, non_creditable_slots)
+        })
+    }
+
+    /// See [`tempo_revm::TempoEvm::new_with_precompiles`].
+    pub fn new_with_precompiles(
+        db: DB,
+        input: EvmEnv<TempoHardfork, TempoBlockEnv>,
+        builder: PrecompilesBuilder<DB>,
+    ) -> Self {
         // TIP-1016 (EIP-8037 state gas split) is gated by `cfg_env.enable_amsterdam_eip8037`
         // and is independent of the T4 hardfork. The caller is responsible for setting the
         // flag on the input `EvmEnv`; here we pass it through unchanged.
@@ -89,7 +106,7 @@ impl<DB: Database> TempoEvm<DB> {
             .with_tx(Default::default());
 
         Self {
-            inner: tempo_revm::TempoEvm::new(ctx, NoOpInspector {}),
+            inner: tempo_revm::TempoEvm::new_with_precompiles(ctx, NoOpInspector {}, builder),
             inspect: false,
         }
     }
@@ -127,6 +144,44 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     /// Provides a mutable reference to the inner [`tempo_revm::TempoEvm`].
     pub fn inner_mut(&mut self) -> &mut tempo_revm::TempoEvm<DB, I> {
         &mut self.inner
+    }
+
+    /// Resolves the fee recipient registered for `proposer` in `ValidatorConfigV2`.
+    ///
+    /// Returns `None` before T2, when V2 is not initialized as of the parent block, or when
+    /// `proposer` has no V2 record. A registered zero fee recipient is returned as
+    /// `Some(Address::ZERO)`, which burns the fees. Reads bypass the journal,
+    /// so this must be called before any changes of the current block are committed to see the
+    /// parent state.
+    pub fn proposer_fee_recipient(
+        &mut self,
+        proposer: B256,
+    ) -> Result<Option<Address>, TempoPrecompileError> {
+        let ctx = self.ctx_mut();
+        if !ctx.cfg.spec.is_t2() {
+            return Ok(None);
+        }
+        let parent_number = ctx.block.number.saturating_to::<u64>().saturating_sub(1);
+
+        // Read-only access keeps the slots out of the journal so gas accounting is unaffected.
+        ctx.journaled_state.database.with_read_only_storage_ctx(
+            ctx.cfg.spec,
+            StorageActions::disabled(),
+            || {
+                let config = ValidatorConfigV2::default();
+                if !config.is_initialized()? || config.get_initialized_at_height()? > parent_number
+                {
+                    return Ok(None);
+                }
+                match config.validator_by_public_key(proposer) {
+                    Ok(v) => Ok(Some(v.feeRecipient)),
+                    Err(TempoPrecompileError::ValidatorConfigV2Error(
+                        ValidatorConfigV2Error::ValidatorNotFound(_),
+                    )) => Ok(None),
+                    Err(err) => Err(err),
+                }
+            },
+        )
     }
 
     /// Returns the validator-credited fee amount (post-feeAMM haircut) recorded by the most
@@ -228,7 +283,6 @@ where
 
 impl<DB: Database, I> Deref for TempoEvm<DB, I>
 where
-    DB: Database,
     I: Inspector<TempoContext<DB>>,
 {
     type Target = TempoContext<DB>;
@@ -241,7 +295,6 @@ where
 
 impl<DB: Database, I> DerefMut for TempoEvm<DB, I>
 where
-    DB: Database,
     I: Inspector<TempoContext<DB>>,
 {
     #[inline]
@@ -361,7 +414,7 @@ mod tests {
         DatabaseCommit, DatabaseRef,
         bytecode::opcode,
         context::{BlockEnv, CfgEnv, JournalTr, TxEnv, result::HaltReason},
-        database::{EmptyDB, in_memory_db::CacheDB},
+        database::{EmptyDB, InMemoryDB},
         state::{AccountInfo, Bytecode, EvmState},
     };
     use std::{assert_matches, collections::BTreeMap};
@@ -370,7 +423,12 @@ mod tests {
         precompiles::{
             IZoneFactory, ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS,
         },
-        zones::{ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME},
+        zones::{
+            BlockTransition, DepositQueueTransition,
+            SwapAndDepositRouter as TestWithdrawalReceiver, ZONE_MESSENGER_RUNTIME,
+            ZONE_PORTAL_RUNTIME, ZoneMessenger as IZoneMessenger, ZonePortal as IZonePortal,
+            legacySubmitBatchCall,
+        },
     };
     use tempo_precompiles::{
         NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS,
@@ -378,7 +436,7 @@ mod tests {
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageAction, StorageActions, StorageCtx, StorageKey},
         storage_credits::StorageCredits,
-        test_util::TIP20Setup,
+        test_util::{TIP20Setup, set_empty_compound_transfer_policy, set_empty_receive_policies},
         tip_fee_manager::{
             IFeeManager, TipFeeManager,
             amm::{Pool, PoolKey, compute_amount_out},
@@ -395,85 +453,6 @@ mod tests {
     use tempo_revm::{TempoBatchCallEnv, gas_params::tempo_gas_params_with_amsterdam};
 
     use super::*;
-
-    alloy_sol_types::sol! {
-        enum TestZonePortalRole {
-            None,
-            Sequencer,
-            Account,
-            CallbackGateway,
-            PauseGuardian
-        }
-
-        enum TestZonePortalCapability {
-            PausePortal,
-            AccessPolicy
-        }
-
-        struct TestBlockTransition {
-            bytes32 prevBlockHash;
-            bytes32 nextBlockHash;
-        }
-
-        struct TestDepositQueueTransition {
-            bytes32 prevProcessedHash;
-            bytes32 nextProcessedHash;
-            uint64 prevDepositNumber;
-            uint64 nextDepositNumber;
-        }
-
-        interface TestZonePortal {
-            error InvalidProof();
-
-            function enableToken(address token) external;
-            function tokenEnablementHash() external view returns (bytes32);
-            function hasRole(address account, TestZonePortalRole role) external view returns (bool);
-            function isSequencer(address account) external view returns (bool);
-            function setAllowedAccount(address account, bool allowed) external;
-            function paused() external view returns (bool);
-            function pauseExpiry() external view returns (uint64);
-            function abdicationEffectiveAt(TestZonePortalCapability capability)
-                external
-                view
-                returns (uint64);
-            function pause() external;
-            function resume() external;
-            function submitBatch(
-                uint64 tempoBlockNumber,
-                uint64 recentTempoBlockNumber,
-                TestBlockTransition calldata blockTransition,
-                TestDepositQueueTransition calldata depositQueueTransition,
-                bytes32 withdrawalQueueHash,
-                bytes calldata verifierConfig,
-                bytes calldata proof,
-                uint256 nextZoneHeight,
-                bytes[] calldata signatures
-            ) external;
-        }
-
-        interface TestZoneMessenger {
-            function relayMessage(
-                uint32 zoneId,
-                address token,
-                bytes32 senderTag,
-                address target,
-                uint128 amount,
-                uint64 gasLimit,
-                bytes calldata data
-            ) external;
-        }
-
-        interface TestWithdrawalReceiver {
-            function onWithdrawalReceived(
-                uint32 zoneId,
-                address portal,
-                bytes32 senderTag,
-                address token,
-                uint128 amount,
-                bytes calldata data
-            ) external returns (bytes4);
-        }
-    }
 
     fn runtime_returning_selector(selector: [u8; 4]) -> Bytecode {
         const SELECTOR_SHIFT_BITS: u8 = 224;
@@ -495,7 +474,7 @@ mod tests {
         Bytecode::new_legacy(code.into())
     }
 
-    fn initialize_zone_factory(db: &mut CacheDB<EmptyDB>, owner: Address) {
+    fn initialize_zone_factory(db: &mut InMemoryDB, owner: Address) {
         let code = Bytecode::new_legacy([0xef].into());
         db.insert_account_info(
             ZONE_FACTORY_ADDRESS,
@@ -505,7 +484,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let factory_config = U256::from(1) | (U256::from_be_slice(owner.as_slice()) << u32::BITS);
+        let factory_config = U256::ONE | (U256::from_be_slice(owner.as_slice()) << u32::BITS);
         db.insert_account_storage(ZONE_FACTORY_ADDRESS, U256::ZERO, factory_config)
             .unwrap();
     }
@@ -609,7 +588,7 @@ mod tests {
 
     #[test]
     fn test_transact_raw_system_tx_failed() {
-        let mut cache_db = CacheDB::new(EmptyDB::default());
+        let mut cache_db = InMemoryDB::default();
         // Deploy a contract that always reverts: PUSH1 0x00 PUSH1 0x00 REVERT (0x60006000fd)
         let revert_code = Bytes::from_static(&[0x60, 0x00, 0x60, 0x00, 0xfd]);
         let contract_addr = Address::repeat_byte(0xaa);
@@ -672,7 +651,7 @@ mod tests {
         let logic_runtime = Bytecode::new_legacy(Bytes::from_static(&[
             0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3,
         ]));
-        let mut db = CacheDB::new(EmptyDB::default());
+        let mut db = InMemoryDB::default();
         db.insert_account_info(
             ZONE_PORTAL_IMPL_ADDRESS,
             AccountInfo {
@@ -748,7 +727,7 @@ mod tests {
         let admin = Address::repeat_byte(0x22);
         let sequencer = Address::repeat_byte(0x33);
         let portal_runtime = Bytecode::new_legacy(tempo_contracts::zones::ZONE_PORTAL_RUNTIME);
-        let mut db = CacheDB::new(EmptyDB::default());
+        let mut db = InMemoryDB::default();
         db.insert_account_info(
             ZONE_PORTAL_IMPL_ADDRESS,
             AccountInfo {
@@ -809,7 +788,7 @@ mod tests {
             .transact_system_call(
                 Address::ZERO,
                 created.portal,
-                TestZonePortal::isSequencerCall { account: sequencer }
+                IZonePortal::isSequencerCall { account: sequencer }
                     .abi_encode()
                     .into(),
             )
@@ -821,14 +800,14 @@ mod tests {
             } => output,
             result => panic!("isSequencer failed: {result:?}"),
         };
-        assert!(TestZonePortal::isSequencerCall::abi_decode_returns(&output).unwrap());
+        assert!(IZonePortal::isSequencerCall::abi_decode_returns(&output).unwrap());
 
         let account = Address::repeat_byte(0x55);
         let set_account = evm
             .transact_system_call(
                 admin,
                 created.portal,
-                TestZonePortal::setAllowedAccountCall {
+                IZonePortal::setAllowedAccountCall {
                     account,
                     allowed: true,
                 }
@@ -847,9 +826,9 @@ mod tests {
             .transact_system_call(
                 Address::ZERO,
                 created.portal,
-                TestZonePortal::hasRoleCall {
+                IZonePortal::hasRoleCall {
                     account,
-                    role: TestZonePortalRole::Account,
+                    role: IZonePortal::Role::Account,
                 }
                 .abi_encode()
                 .into(),
@@ -862,13 +841,13 @@ mod tests {
             } => output,
             result => panic!("hasRole failed: {result:?}"),
         };
-        assert!(TestZonePortal::hasRoleCall::abi_decode_returns(&output).unwrap());
+        assert!(IZonePortal::hasRoleCall::abi_decode_returns(&output).unwrap());
 
         for call in [
-            TestZonePortal::pausedCall {}.abi_encode(),
-            TestZonePortal::pauseExpiryCall {}.abi_encode(),
-            TestZonePortal::abdicationEffectiveAtCall {
-                capability: TestZonePortalCapability::PausePortal,
+            IZonePortal::pausedCall {}.abi_encode(),
+            IZonePortal::pauseExpiryCall {}.abi_encode(),
+            IZonePortal::abdicationEffectiveAtCall {
+                capability: IZonePortal::Capability::PausePortal,
             }
             .abi_encode(),
         ] {
@@ -889,7 +868,7 @@ mod tests {
             .transact_system_call(
                 sequencer,
                 created.portal,
-                TestZonePortal::pauseCall {}.abi_encode().into(),
+                IZonePortal::pauseCall {}.abi_encode().into(),
             )
             .unwrap();
         assert!(
@@ -903,14 +882,14 @@ mod tests {
             .transact_system_call(
                 sequencer,
                 created.portal,
-                TestZonePortal::submitBatchCall {
+                legacySubmitBatchCall {
                     tempoBlockNumber: 0,
                     recentTempoBlockNumber: 0,
-                    blockTransition: TestBlockTransition {
+                    blockTransition: BlockTransition {
                         prevBlockHash: B256::repeat_byte(1),
                         nextBlockHash: B256::ZERO,
                     },
-                    depositQueueTransition: TestDepositQueueTransition {
+                    depositQueueTransition: DepositQueueTransition {
                         prevProcessedHash: B256::ZERO,
                         nextProcessedHash: B256::ZERO,
                         prevDepositNumber: 0,
@@ -928,7 +907,7 @@ mod tests {
             .unwrap();
         match submit.result {
             ExecutionResult::Revert { output, .. } => {
-                assert_eq!(output.as_ref(), TestZonePortal::InvalidProof::SELECTOR)
+                assert_eq!(output.as_ref(), IZonePortal::InvalidProof::SELECTOR)
             }
             result => panic!("paused submitBatch should reach proof validation: {result:?}"),
         }
@@ -937,7 +916,7 @@ mod tests {
             .transact_system_call(
                 admin,
                 created.portal,
-                TestZonePortal::resumeCall {}.abi_encode().into(),
+                IZonePortal::resumeCall {}.abi_encode().into(),
             )
             .unwrap();
         assert!(
@@ -951,7 +930,7 @@ mod tests {
             .transact_system_call(
                 Address::ZERO,
                 created.portal,
-                TestZonePortal::pausedCall {}.abi_encode().into(),
+                IZonePortal::pausedCall {}.abi_encode().into(),
             )
             .unwrap();
         let output = match paused.result {
@@ -967,7 +946,7 @@ mod tests {
             .transact_system_call(
                 admin,
                 created.portal,
-                TestZonePortal::enableTokenCall {
+                IZonePortal::enableTokenCall {
                     token: second_token,
                 }
                 .abi_encode()
@@ -985,9 +964,7 @@ mod tests {
             .transact_system_call(
                 Address::ZERO,
                 created.portal,
-                TestZonePortal::tokenEnablementHashCall {}
-                    .abi_encode()
-                    .into(),
+                IZonePortal::tokenEnablementHashCall {}.abi_encode().into(),
             )
             .unwrap();
         let output = match commitment.result {
@@ -997,7 +974,7 @@ mod tests {
             } => output,
             result => panic!("tokenEnablementHash failed: {result:?}"),
         };
-        let actual = TestZonePortal::tokenEnablementHashCall::abi_decode_returns(&output).unwrap();
+        let actual = IZonePortal::tokenEnablementHashCall::abi_decode_returns(&output).unwrap();
         let initial = keccak256(
             (B256::ZERO, PATH_USD_ADDRESS, "pathUSD", "pathUSD", "USD").abi_encode_params(),
         );
@@ -1012,7 +989,7 @@ mod tests {
         let admin = Address::repeat_byte(0x22);
         let sequencer = Address::repeat_byte(0x33);
         let gateway = Address::repeat_byte(0x44);
-        let mut db = CacheDB::new(EmptyDB::default());
+        let mut db = InMemoryDB::default();
         for (address, runtime) in [
             (ZONE_PORTAL_IMPL_ADDRESS, ZONE_PORTAL_RUNTIME),
             (ZONE_MESSENGER_ADDRESS, ZONE_MESSENGER_RUNTIME),
@@ -1085,7 +1062,7 @@ mod tests {
             .transact_system_call(
                 created.portal,
                 ZONE_MESSENGER_ADDRESS,
-                TestZoneMessenger::relayMessageCall {
+                IZoneMessenger::relayMessageCall {
                     zoneId: created.zoneId,
                     token: PATH_USD_ADDRESS,
                     senderTag: B256::ZERO,
@@ -1112,7 +1089,7 @@ mod tests {
         let sequencer = Address::repeat_byte(0x33);
         let mut env = evm_env_with_spec(TempoHardfork::T10);
         env.block_env.basefee = 0;
-        let mut db = CacheDB::new(EmptyDB::default());
+        let mut db = InMemoryDB::default();
         initialize_zone_factory(&mut db, owner);
         let mut evm = TempoEvm::new(db, env);
 
@@ -1213,6 +1190,21 @@ mod tests {
                 StorageAction::Sload(address, slot, value) => {
                     let key = (address, slot);
                     storage_state.apply_sload_value(key, value, "SLOAD", hardfork);
+                }
+                StorageAction::FeeTokenBalanceCheck(
+                    address,
+                    slot,
+                    balance,
+                    required,
+                    sufficient,
+                ) => {
+                    let current = storage_state.apply_sload_value(
+                        (address, slot),
+                        balance,
+                        "FeeTokenBalanceCheck",
+                        hardfork,
+                    );
+                    assert_eq!(current >= required, sufficient);
                 }
                 StorageAction::Sstore(address, slot, sload_value, value) => {
                     let key = (address, slot);
@@ -1328,6 +1320,13 @@ mod tests {
                         labels.slot(address, slot)
                     )
                 }
+                StorageAction::FeeTokenBalanceCheck(address, slot, balance, required, sufficient) => {
+                    format!(
+                        "FeeTokenBalanceCheck({}, {}, {balance}, {required}, {sufficient})",
+                        labels.address(address),
+                        labels.slot(address, slot)
+                    )
+                }
                 StorageAction::Sstore(address, slot, sload_value, value) => {
                     format!(
                         "Sstore({}, {}, {sload_value}, {value})",
@@ -1395,9 +1394,12 @@ mod tests {
 
     #[test]
     fn test_tip20_full_evm_storage_actions() {
-        for hardfork in TempoHardfork::VARIANTS {
-            // skip pre-T5 hardforks to avoid clutter
-            if !hardfork.is_t5() {
+        for (hardfork, with_policies) in TempoHardfork::VARIANTS
+            .iter()
+            .flat_map(|hardfork| [(hardfork, false), (hardfork, true)])
+        {
+            // Keep the existing cases since T5 and compare policy-heavy payments across T14.
+            if !hardfork.is_t5() || (with_policies && !hardfork.is_t13()) {
                 continue;
             }
 
@@ -1412,7 +1414,7 @@ mod tests {
             let amm_liquidity = U256::from(amm_liquidity_reserve);
 
             let mut evm = TempoEvm::new(
-                CacheDB::new(EmptyDB::default()),
+                InMemoryDB::default(),
                 EvmEnv {
                     block_env: TempoBlockEnv {
                         inner: BlockEnv {
@@ -1474,6 +1476,15 @@ mod tests {
                         }
                         .encode_to_slot()?,
                     )?;
+
+                    if with_policies {
+                        // Separate compound policies keep fee checks from warming the
+                        // payment token's policy. Empty blacklists still read every list.
+                        for address in [PATH_USD_ADDRESS, fee_token.address()] {
+                            set_empty_compound_transfer_policy(sender, address)?;
+                        }
+                        set_empty_receive_policies(sender, &[recipient])?;
+                    }
 
                     Ok::<(Address, Address), tempo_precompiles::error::TempoPrecompileError>((
                         fee_token.address(),
@@ -1562,7 +1573,7 @@ mod tests {
                 ]),
             };
 
-            let run_transfer = |evm: &mut TempoEvm<CacheDB<EmptyDB>>,
+            let run_transfer = |evm: &mut TempoEvm<InMemoryDB>,
                                 caller: Address,
                                 to: Address,
                                 amount: U256,
@@ -1601,6 +1612,12 @@ mod tests {
                     ExecutionResult::Success { .. },
                     "hardfork: {hardfork:?}"
                 );
+                if with_policies {
+                    insta::assert_snapshot!(
+                        format!("policy_payment_gas_{}", hardfork.name()),
+                        result.result.tx_gas_used()
+                    );
+                }
                 let actions = evm
                     .take_actions()
                     .expect("storage action recording should be enabled");
@@ -1609,6 +1626,26 @@ mod tests {
                 Ok(snapshot_storage_actions(&actions, &labels))
             };
 
+            if with_policies {
+                let snapshot = IndexMap::from([(
+                    "policy_payment",
+                    run_transfer(
+                        &mut evm,
+                        sender,
+                        recipient,
+                        transfer_amount,
+                        0,
+                        U256::ZERO,
+                        fee_token,
+                    )
+                    .unwrap(),
+                )]);
+                insta::assert_yaml_snapshot!(
+                    format!("policy_payment_{}", hardfork.name()),
+                    snapshot
+                );
+                continue;
+            }
             let snapshot = IndexMap::from([
                 // TIP-20 transfer with sequential protocol nonce and a fee token that requires going through feeAMM to pay fees.
                 (

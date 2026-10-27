@@ -3,9 +3,9 @@ use std::collections::BTreeMap;
 use alloy::{
     primitives::{Address, B256, Bytes, U256},
     providers::{Provider, ProviderBuilder},
-    signers::local::{MnemonicBuilder, PrivateKeySigner},
     sol_types::SolEvent,
 };
+use reth_e2e_test_utils::{receipt::await_successful_receipts, wallet::test_signer};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
     IRolesAuth, IStablecoinDEX, IStorageCredits,
@@ -20,7 +20,7 @@ use tempo_precompiles::{
 };
 use test_case::test_case;
 
-use crate::utils::{TEST_MNEMONIC, TestNodeBuilder, await_receipts, make_genesis_at};
+use crate::utils::{TestNodeBuilder, make_genesis_at};
 
 const USER_COUNT: usize = 16;
 
@@ -42,12 +42,6 @@ fn under_overflow_revert() -> Bytes {
         .into_precompile_result(0, 0)
         .unwrap()
         .bytes
-}
-
-fn signer(index: u32) -> eyre::Result<PrivateKeySigner> {
-    Ok(MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(index)?
-        .build()?)
 }
 
 async fn approve<P: Provider + Clone>(
@@ -131,15 +125,14 @@ async fn test_stablecoin_dex_order_gas_snapshots(hardfork: TempoHardfork) -> eyr
         .await?;
     let http_url = setup.http_url;
 
-    let signers = (0..=USER_COUNT as u32)
-        .map(signer)
-        .collect::<eyre::Result<Vec<_>>>()?;
+    let signers = (0..=USER_COUNT as u32).map(test_signer).collect::<Vec<_>>();
     let providers = signers
         .iter()
         .map(|signer| {
             ProviderBuilder::new()
                 .wallet(signer.clone())
                 .connect_http(http_url.clone())
+                .erased()
         })
         .collect::<Vec<_>>();
 
@@ -157,7 +150,7 @@ async fn test_stablecoin_dex_order_gas_snapshots(hardfork: TempoHardfork) -> eyr
         pending.push(base.mint(account, mint_amount).send().await?);
         pending.push(quote.mint(account, mint_amount).send().await?);
     }
-    await_receipts(&mut pending).await?;
+    await_successful_receipts(pending).await?;
 
     for provider in providers.iter().skip(1) {
         approve(provider.clone(), base_addr, STABLECOIN_DEX_ADDRESS).await?;
@@ -196,73 +189,83 @@ async fn test_stablecoin_dex_order_gas_snapshots(hardfork: TempoHardfork) -> eyr
         }};
     }
 
+    // Box each recording step to keep the lifecycle test's polling stack frame small.
     macro_rules! record_tx {
-        ($name:literal, $call:expr, $message:literal) => {{
-            let pooled_before = pooled_credits!();
-            let receipt = $call.send_sync().await?;
-            assert!(receipt.status(), $message);
-            let pooled_after = pooled_credits!();
-            gas.insert(
-                $name,
-                DexGasRow {
-                    gas: receipt.gas_used,
-                    storage_credits: "n/a".to_string(),
-                    pooled_storage_credits: format!(
-                        "DEX TIP-1060: {pooled_before} -> {pooled_after}"
-                    ),
-                },
-            );
-            receipt
-        }};
+        ($name:literal, $call:expr, $message:literal) => {
+            Box::pin(async {
+                let pooled_before = pooled_credits!();
+                let receipt = $call.send_sync().await?;
+                assert!(receipt.status(), $message);
+                let pooled_after = pooled_credits!();
+                gas.insert(
+                    $name,
+                    DexGasRow {
+                        gas: receipt.gas_used,
+                        storage_credits: "n/a".to_string(),
+                        pooled_storage_credits: format!(
+                            "DEX TIP-1060: {pooled_before} -> {pooled_after}"
+                        ),
+                    },
+                );
+                Ok::<_, eyre::Report>(receipt)
+            })
+            .await?
+        };
     }
 
     macro_rules! record_tx_with_credits {
-        ($name:literal, $credit_user:expr, $call:expr, $message:literal) => {{
-            let before = credits!($credit_user);
-            let pooled_before = pooled_credits!();
-            let receipt = $call.send_sync().await?;
-            assert!(receipt.status(), $message);
-            let after = credits!($credit_user);
-            let pooled_after = pooled_credits!();
-            gas.insert(
-                $name,
-                DexGasRow {
-                    gas: receipt.gas_used,
-                    storage_credits: format!("user{}: {before} -> {after}", $credit_user),
-                    pooled_storage_credits: format!(
-                        "DEX TIP-1060: {pooled_before} -> {pooled_after}"
-                    ),
-                },
-            );
-            receipt
-        }};
+        ($name:literal, $credit_user:expr, $call:expr, $message:literal) => {
+            Box::pin(async {
+                let before = credits!($credit_user);
+                let pooled_before = pooled_credits!();
+                let receipt = $call.send_sync().await?;
+                assert!(receipt.status(), $message);
+                let after = credits!($credit_user);
+                let pooled_after = pooled_credits!();
+                gas.insert(
+                    $name,
+                    DexGasRow {
+                        gas: receipt.gas_used,
+                        storage_credits: format!("user{}: {before} -> {after}", $credit_user),
+                        pooled_storage_credits: format!(
+                            "DEX TIP-1060: {pooled_before} -> {pooled_after}"
+                        ),
+                    },
+                );
+                Ok::<_, eyre::Report>(receipt)
+            })
+            .await?
+        };
     }
 
     macro_rules! record_tx_with_cross_user_credits {
-        ($name:literal, $credit_user:expr, $owner:expr, $call:expr, $message:literal) => {{
-            let before = credits!($credit_user);
-            let owner_before = credits!($owner);
-            let pooled_before = pooled_credits!();
-            let receipt = $call.send_sync().await?;
-            assert!(receipt.status(), $message);
-            let after = credits!($credit_user);
-            let owner_after = credits!($owner);
-            let pooled_after = pooled_credits!();
-            gas.insert(
-                $name,
-                DexGasRow {
-                    gas: receipt.gas_used,
-                    storage_credits: format!(
-                        "user{}: {before} -> {after}; user{}: {owner_before} -> {owner_after}",
-                        $credit_user, $owner
-                    ),
-                    pooled_storage_credits: format!(
-                        "DEX TIP-1060: {pooled_before} -> {pooled_after}"
-                    ),
-                },
-            );
-            receipt
-        }};
+        ($name:literal, $credit_user:expr, $owner:expr, $call:expr, $message:literal) => {
+            Box::pin(async {
+                let before = credits!($credit_user);
+                let owner_before = credits!($owner);
+                let pooled_before = pooled_credits!();
+                let receipt = $call.send_sync().await?;
+                assert!(receipt.status(), $message);
+                let after = credits!($credit_user);
+                let owner_after = credits!($owner);
+                let pooled_after = pooled_credits!();
+                gas.insert(
+                    $name,
+                    DexGasRow {
+                        gas: receipt.gas_used,
+                        storage_credits: format!(
+                            "user{}: {before} -> {after}; user{}: {owner_before} -> {owner_after}",
+                            $credit_user, $owner
+                        ),
+                        pooled_storage_credits: format!(
+                            "DEX TIP-1060: {pooled_before} -> {pooled_after}"
+                        ),
+                    },
+                );
+                Ok::<_, eyre::Report>(receipt)
+            })
+            .await?
+        };
     }
 
     macro_rules! send_tx {
@@ -503,7 +506,7 @@ async fn test_stablecoin_dex_revert_gas_snapshots(hardfork: TempoHardfork) -> ey
         builder
     };
     let setup = builder.build_http_only().await?;
-    let signers = (0..=6).map(signer).collect::<eyre::Result<Vec<_>>>()?;
+    let signers = (0..=6).map(test_signer).collect::<Vec<_>>();
     let providers = signers
         .iter()
         .map(|signer| {

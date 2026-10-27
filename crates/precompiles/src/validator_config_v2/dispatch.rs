@@ -210,7 +210,7 @@ mod tests {
 
             let add_call = IValidatorConfigV2::addValidatorCall {
                 validatorAddress: validator_addr,
-                publicKey: FixedBytes::<32>::from([0x42; 32]),
+                publicKey: FixedBytes::<32>::repeat_byte(0x42),
                 ingress: "192.168.1.1:8000".to_string(),
                 egress: "192.168.1.1".to_string(),
                 feeRecipient: validator_addr,

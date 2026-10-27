@@ -12,10 +12,7 @@ use alloy_primitives::{
 use reth_evm::block::InternalBlockExecutionError;
 use reth_revm::{
     Database as _, Inspector, State,
-    context::{
-        Transaction as _,
-        result::{ExecutionResult, HaltReason},
-    },
+    context::result::{ExecutionResult, HaltReason},
     state::{Account, EvmState, EvmStorageSlot, TransactionId},
 };
 use tempo_precompiles::{
@@ -39,7 +36,6 @@ where
         tx: impl ExecutableTx<Self>,
         replay: StorageActionReplay,
         result_closure: impl FnOnce(&TempoTxResult),
-        commit_reads: bool,
     ) -> Result<(), BlockExecutionError> {
         let (tx_env, recovered) = tx.into_parts();
 
@@ -57,12 +53,7 @@ where
         }
 
         let state = self
-            .replay_actions(
-                tx_env.caller(),
-                actions.drain(..),
-                commit_reads,
-                expiring_nonce,
-            )
+            .replay_actions(actions.drain(..), expiring_nonce)
             .inspect_err(|_| {
                 self.replay_state.reset_tx_changes();
             })?;
@@ -97,9 +88,7 @@ where
 
     fn replay_actions(
         &mut self,
-        sender: Address,
         actions: impl IntoIterator<Item = StorageAction>,
-        commit_reads: bool,
         expiring_nonce: Option<ExpiringNonceReplay>,
     ) -> Result<EvmState, BlockExecutionError> {
         let block_timestamp = self.inner.evm.block().timestamp.to::<u64>();
@@ -119,6 +108,20 @@ where
             match action {
                 StorageAction::Sload(address, key, value) => {
                     let _ = self.replay_state.sload_exact(db, address, key, value)?;
+                }
+                StorageAction::FeeTokenBalanceCheck(
+                    address,
+                    key,
+                    sload_value,
+                    required,
+                    sufficient,
+                ) => {
+                    let balance =
+                        self.replay_state
+                            .sload_current_or(db, address, key, sload_value)?;
+                    if (balance >= required) != sufficient {
+                        return Err(StorageActionReplayError::ActionConflict.into());
+                    }
                 }
                 StorageAction::Sstore(address, key, sload_value, value) => {
                     self.replay_state
@@ -183,19 +186,9 @@ where
 
         let mut state = EvmState::default();
 
-        if commit_reads {
-            let account = db
-                .basic(sender)
-                .map_err(BlockExecutionError::other)?
-                .unwrap_or_default();
-            let mut account = Account::from(account);
-            account.mark_touch();
-            state.insert(sender, account);
-        }
-
         for (address, slots) in self.replay_state.tx_changes.iter() {
             for (slot, change) in slots {
-                if !change.written && !commit_reads {
+                if !change.written {
                     continue;
                 }
 
@@ -606,7 +599,7 @@ impl ExpiringNonceReplayState {
 mod tests {
     use super::*;
     use revm::{
-        database::{CacheDB, EmptyDB},
+        database::{EmptyDB, InMemoryDB},
         state::AccountInfo,
     };
 
@@ -618,6 +611,89 @@ mod tests {
             [(slot, value)].into_iter().collect(),
         );
         db
+    }
+
+    #[test]
+    fn fee_token_balance_check_replays_only_when_affordability_is_unchanged() {
+        use crate::test_utils::{TestExecutorBuilder, test_chainspec};
+
+        let token = Address::repeat_byte(0x42);
+        let slot = U256::from(7);
+        let chainspec = test_chainspec();
+        for (observed, current, sufficient, succeeds) in [
+            (100, 80, true, true),
+            (100, 120, true, true),
+            (100, 50, true, true),
+            (100, 49, true, false),
+            (20, 49, false, true),
+            (20, 0, false, true),
+            (20, 50, false, false),
+        ] {
+            let mut db = state_with_storage(token, slot, U256::from(current));
+            let mut executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
+            let mut actions = vec![StorageAction::FeeTokenBalanceCheck(
+                token,
+                slot,
+                U256::from(observed),
+                U256::from(50),
+                sufficient,
+            )];
+            if sufficient {
+                actions.push(StorageAction::Sdec(
+                    token,
+                    slot,
+                    U256::from(observed),
+                    U256::from(10),
+                ));
+            }
+            let result = executor.replay_actions(actions, None);
+            if succeeds {
+                let state = result.unwrap();
+                if sufficient {
+                    let value = &state[&token].storage[&slot];
+                    assert_eq!(value.original_value(), U256::from(current));
+                    assert_eq!(
+                        value.present_value(),
+                        U256::from(current - if sufficient { 10 } else { 0 })
+                    );
+                } else {
+                    assert!(!state.contains_key(&token));
+                }
+            } else {
+                assert_eq!(
+                    StorageActionReplayError::from_block_execution_error(&result.unwrap_err()),
+                    Some(StorageActionReplayError::ActionConflict)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fee_token_balance_check_does_not_relax_later_exact_reads() {
+        use crate::test_utils::{TestExecutorBuilder, test_chainspec};
+
+        let token = Address::repeat_byte(0x42);
+        let slot = U256::from(7);
+        let mut db = state_with_storage(token, slot, U256::from(80));
+        let chainspec = test_chainspec();
+        let mut executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
+        let result = executor.replay_actions(
+            [
+                StorageAction::FeeTokenBalanceCheck(
+                    token,
+                    slot,
+                    U256::from(100),
+                    U256::from(50),
+                    true,
+                ),
+                StorageAction::Sload(token, slot, U256::from(100)),
+            ],
+            None,
+        );
+        assert_eq!(
+            StorageActionReplayError::from_block_execution_error(&result.unwrap_err()),
+            Some(StorageActionReplayError::ActionConflict)
+        );
     }
 
     #[test]
@@ -640,7 +716,7 @@ mod tests {
     fn recorded_sload_uses_recorded_value_when_slot_is_not_cached() {
         let address = Address::repeat_byte(0x42);
         let slot = U256::from(7);
-        let mut cache_db = CacheDB::new(EmptyDB::default());
+        let mut cache_db = InMemoryDB::default();
         cache_db.insert_account_info(
             address,
             AccountInfo {
@@ -674,7 +750,7 @@ mod tests {
     fn current_sload_uses_recorded_value_when_slot_is_not_cached() {
         let address = Address::repeat_byte(0x42);
         let slot = U256::from(7);
-        let mut cache_db = CacheDB::new(EmptyDB::default());
+        let mut cache_db = InMemoryDB::default();
         cache_db.insert_account_info(
             address,
             AccountInfo {

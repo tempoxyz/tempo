@@ -25,7 +25,7 @@ fn test_mixed_slot_allocation() {
 
     StorageCtx::enter(&mut storage, || {
         // Set all fields
-        mixed.field_a.write(U256::from(1)).unwrap();
+        mixed.field_a.write(U256::ONE).unwrap();
         mixed.field_b.write(U256::from(2)).unwrap();
         mixed.field_c.write(U256::from(3)).unwrap();
         mixed.field_d.write(U256::from(4)).unwrap();
@@ -34,7 +34,7 @@ fn test_mixed_slot_allocation() {
         mixed.field_e[addr_at].write(U256::from(5)).unwrap();
 
         // Verify values
-        assert_eq!(mixed.field_a.read().unwrap(), U256::from(1));
+        assert_eq!(mixed.field_a.read().unwrap(), U256::ONE);
         assert_eq!(mixed.field_b.read().unwrap(), U256::from(2));
         assert_eq!(mixed.field_c.read().unwrap(), U256::from(3));
         assert_eq!(mixed.field_d.read().unwrap(), U256::from(4));
@@ -138,7 +138,7 @@ fn test_base_slots() {
         assert_eq!(layout.field_g.slot(), U256::from(51));
 
         // Verify slots module
-        assert_eq!(slots::FIELD_A, U256::from(0));
+        assert_eq!(slots::FIELD_A, U256::ZERO);
         assert_eq!(slots::FIELD_B, U256::from(100));
         assert_eq!(slots::FIELD_C, U256::from(101));
         assert_eq!(slots::FIELD_D, U256::from(200));
@@ -189,7 +189,7 @@ fn test_base_slot_with_regular_slot() {
         assert_eq!(layout.field_e.slot(), U256::from(102));
 
         // Verify slots module
-        assert_eq!(slots::FIELD_A, U256::from(0));
+        assert_eq!(slots::FIELD_A, U256::ZERO);
         assert_eq!(slots::FIELD_B, U256::from(100));
         assert_eq!(slots::FIELD_C, U256::from(101));
         assert_eq!(slots::FIELD_D, U256::from(50));
@@ -229,9 +229,12 @@ fn test_string_literal_slots() {
 }
 
 #[test]
-#[should_panic(expected = "Storage slot collision")]
+#[cfg_attr(
+    all(debug_assertions, not(feature = "dst")),
+    should_panic(expected = "Storage slot collision")
+)]
 fn test_collision_same_slot() {
-    // Two fields with identical slot assignments should panic in debug builds
+    // Colliding layouts panic only when collision checks are enabled.
     #[contract]
     pub struct Layout {
         #[slot(5)]
@@ -245,9 +248,11 @@ fn test_collision_same_slot() {
 }
 
 #[test]
-#[should_panic(expected = "Storage slot collision")]
+#[cfg_attr(
+    all(debug_assertions, not(feature = "dst")),
+    should_panic(expected = "Storage slot collision")
+)]
 fn test_collision_overlapping_slots_manual() {
-    // A multi-slot field overlapping with another field should panic in debug builds
     #[contract]
     pub struct Layout {
         #[slot(5)]
@@ -261,9 +266,11 @@ fn test_collision_overlapping_slots_manual() {
 }
 
 #[test]
-#[should_panic(expected = "Storage slot collision")]
+#[cfg_attr(
+    all(debug_assertions, not(feature = "dst")),
+    should_panic(expected = "Storage slot collision")
+)]
 fn test_collision_overlapping_slots_auto() {
-    // A multi-slot field overlapping with another field should panic in debug builds
     #[contract]
     pub struct Layout {
         pub large_field: [U256; 3], // occupies slots 0,1,2
@@ -303,8 +310,11 @@ fn test_no_collision_when_using_manual_slot_with_packing() {
 }
 
 #[test]
-#[should_panic(
-    expected = "Storage slot collision: field `c` (slot 1, offset 0) overlaps with field `d` (slot 1, offset 0)"
+#[cfg_attr(
+    all(debug_assertions, not(feature = "dst")),
+    should_panic(
+        expected = "Storage slot collision: field `c` (slot 1, offset 0) overlaps with field `d` (slot 1, offset 0)"
+    )
 )]
 fn test_collision_when_using_base_slot() {
     #[contract]

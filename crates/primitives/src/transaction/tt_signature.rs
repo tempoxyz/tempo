@@ -1,7 +1,9 @@
 use super::tempo_transaction::{
     MAX_WEBAUTHN_SIGNATURE_LENGTH, P256_SIGNATURE_LENGTH, SECP256K1_SIGNATURE_LENGTH, SignatureType,
 };
+use crate::gas::{P256_VERIFY_GAS, SECP256K1_VERIFY_GAS, WEBAUTHN_VERIFY_GAS};
 use alloc::vec::Vec;
+use alloy_eips::eip7623::{STANDARD_TOKEN_COST, tokens_in_calldata};
 use alloy_primitives::{Address, B256, Bytes, Signature, U256, keccak256, uint};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use sha2::{Digest, Sha256};
@@ -42,7 +44,7 @@ pub fn normalize_p256_s(s_bytes: &[u8]) -> Result<B256, &'static str> {
         return Err("P256 s value out of range");
     }
     let normalized_s = if s > P256N_HALF { P256_ORDER - s } else { s };
-    Ok(B256::from(normalized_s.to_be_bytes::<32>()))
+    Ok(B256::from(normalized_s))
 }
 
 /// Signature type identifiers
@@ -337,6 +339,39 @@ impl PrimitiveSignature {
                 ))
             }
         }
+    }
+
+    /// Gas to verify the signature itself, excluding any calldata cost.
+    pub const fn base_verification_gas(&self) -> u64 {
+        match self {
+            Self::Secp256k1(_) => SECP256K1_VERIFY_GAS,
+            Self::P256(_) => P256_VERIFY_GAS,
+            Self::WebAuthn(_) => WEBAUTHN_VERIFY_GAS,
+        }
+    }
+
+    /// Full gas to verify the signature: [`Self::base_verification_gas`] plus, for `WebAuthn`,
+    /// the calldata cost of `webauthn_data`.
+    ///
+    /// This does not subtract the ecrecover baseline already covered by ordinary intrinsic gas.
+    pub fn verification_gas(&self) -> u64 {
+        match self {
+            Self::Secp256k1(_) | Self::P256(_) => self.base_verification_gas(),
+            Self::WebAuthn(sig) => {
+                self.base_verification_gas()
+                    + tokens_in_calldata(&sig.webauthn_data) * STANDARD_TOKEN_COST
+            }
+        }
+    }
+
+    /// Verification gas a transaction signature adds on top of the base 21k, which already
+    /// covers one secp256k1 verification:
+    /// - Secp256k1: 0
+    /// - P256: 5000
+    /// - WebAuthn: 5000 + calldata cost of `webauthn_data`
+    pub fn intrinsic_verification_gas(&self) -> u64 {
+        // Every signature type costs at least a secp256k1 verification, so this cannot underflow.
+        self.verification_gas() - SECP256K1_VERIFY_GAS
     }
 }
 
@@ -1024,7 +1059,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::hex;
+    use alloy_primitives::{b256, hex};
     use alloy_rlp::{Decodable, Encodable};
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use p256::{
@@ -1091,7 +1126,7 @@ mod tests {
         #[test]
         fn p256_address_matches_hash_and_truncate(x in any::<[u8; 32]>(), y in any::<[u8; 32]>()) {
             let hash = keccak256([x, y].concat());
-            prop_assert_eq!(derive_p256_address(&B256::from(x), &B256::from(y)), Address::from_slice(&hash[12..]));
+            prop_assert_eq!(derive_p256_address(&B256::from(x), &B256::from(y)), Address::from_word(hash));
         }
 
         #[test]
@@ -1191,7 +1226,7 @@ mod tests {
                     Some(SIGNATURE_TYPE_KEYCHAIN),
                 ),
                 (
-                    TempoSignature::Keychain(KeychainSignature::new(user, primitive.clone())),
+                    TempoSignature::Keychain(KeychainSignature::new(user, primitive)),
                     Some(SIGNATURE_TYPE_KEYCHAIN_V2),
                 ),
             ] {
@@ -1211,7 +1246,7 @@ mod tests {
     #[test]
     fn test_p256_high_s_normalization() {
         // s < P256N_HALF → unchanged
-        let low_s = U256::from(1u64);
+        let low_s = U256::ONE;
         let low_s_bytes: [u8; 32] = low_s.to_be_bytes();
         assert_eq!(
             U256::from_be_slice(normalize_p256_s(&low_s_bytes).unwrap().as_slice()),
@@ -1228,7 +1263,7 @@ mod tests {
         );
 
         // s == P256N_HALF + 1 → normalized to P256_ORDER - s
-        let high_s = P256N_HALF + U256::from(1u64);
+        let high_s = P256N_HALF + U256::ONE;
         let high_s_bytes: [u8; 32] = high_s.to_be_bytes();
         assert_eq!(
             U256::from_be_slice(normalize_p256_s(&high_s_bytes).unwrap().as_slice()),
@@ -1237,11 +1272,11 @@ mod tests {
         );
 
         // s == P256_ORDER - 1 → normalized to 1
-        let max_s = P256_ORDER - U256::from(1u64);
+        let max_s = P256_ORDER - U256::ONE;
         let max_s_bytes: [u8; 32] = max_s.to_be_bytes();
         assert_eq!(
             U256::from_be_slice(normalize_p256_s(&max_s_bytes).unwrap().as_slice()),
-            U256::from(1u64),
+            U256::ONE,
             "s == P256_ORDER - 1 should normalize to 1"
         );
 
@@ -1260,7 +1295,7 @@ mod tests {
         );
 
         // s == P256_ORDER + 1 → rejected
-        let over_bytes: [u8; 32] = (P256_ORDER + U256::from(1u64)).to_be_bytes();
+        let over_bytes: [u8; 32] = (P256_ORDER + U256::ONE).to_be_bytes();
         assert!(
             normalize_p256_s(&over_bytes).is_err(),
             "s > P256_ORDER should be rejected"
@@ -1489,10 +1524,8 @@ mod tests {
 
     #[test]
     fn test_p256_address_derivation() {
-        let pub_key_x =
-            hex!("1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef").into();
-        let pub_key_y =
-            hex!("fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321").into();
+        let pub_key_x = b256!("1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef");
+        let pub_key_y = b256!("fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321");
 
         let addr1 = derive_p256_address(&pub_key_x, &pub_key_y);
         let addr2 = derive_p256_address(&pub_key_x, &pub_key_y);
@@ -1507,10 +1540,8 @@ mod tests {
     #[test]
     fn test_p256_address_derivation_deterministic() {
         // Test that address derivation is deterministic
-        let pub_key_x =
-            hex!("1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef").into();
-        let pub_key_y =
-            hex!("fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321").into();
+        let pub_key_x = b256!("1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef");
+        let pub_key_y = b256!("fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321");
 
         let addr1 = derive_p256_address(&pub_key_x, &pub_key_y);
         let addr2 = derive_p256_address(&pub_key_x, &pub_key_y);
@@ -1521,15 +1552,11 @@ mod tests {
     #[test]
     fn test_p256_address_different_keys_different_addresses() {
         // Different keys should produce different addresses
-        let pub_key_x1 =
-            hex!("1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef").into();
-        let pub_key_y1 =
-            hex!("fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321").into();
+        let pub_key_x1 = b256!("1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef");
+        let pub_key_y1 = b256!("fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321");
 
-        let pub_key_x2 =
-            hex!("fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321").into();
-        let pub_key_y2 =
-            hex!("1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef").into();
+        let pub_key_x2 = b256!("fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321");
+        let pub_key_y2 = b256!("1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef");
 
         let addr1 = derive_p256_address(&pub_key_x1, &pub_key_y1);
         let addr2 = derive_p256_address(&pub_key_x2, &pub_key_y2);
@@ -1681,7 +1708,7 @@ mod tests {
             alloy_primitives::U256::from_be_slice(&s_bytes),
             false,
         );
-        let secp256k1_sig = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(sig));
+        let secp256k1_sig = TempoSignature::from(sig);
 
         let json = serde_json::to_string(&secp256k1_sig).unwrap();
         let decoded: TempoSignature = serde_json::from_str(&json).unwrap();
@@ -1690,10 +1717,10 @@ mod tests {
         // Test P256
         let p256_sig =
             TempoSignature::Primitive(PrimitiveSignature::P256(P256SignatureWithPreHash {
-                r: B256::from([1u8; 32]),
-                s: B256::from([2u8; 32]),
-                pub_key_x: B256::from([3u8; 32]),
-                pub_key_y: B256::from([4u8; 32]),
+                r: B256::repeat_byte(1u8),
+                s: B256::repeat_byte(2u8),
+                pub_key_x: B256::repeat_byte(3u8),
+                pub_key_y: B256::repeat_byte(4u8),
                 pre_hash: true,
             }));
 
@@ -1718,10 +1745,10 @@ mod tests {
         // Test WebAuthn
         let webauthn_sig =
             TempoSignature::Primitive(PrimitiveSignature::WebAuthn(WebAuthnSignature {
-                r: B256::from([5u8; 32]),
-                s: B256::from([6u8; 32]),
-                pub_key_x: B256::from([7u8; 32]),
-                pub_key_y: B256::from([8u8; 32]),
+                r: B256::repeat_byte(5u8),
+                s: B256::repeat_byte(6u8),
+                pub_key_x: B256::repeat_byte(7u8),
+                pub_key_y: B256::repeat_byte(8u8),
                 webauthn_data: Bytes::from(vec![9u8; 50]),
             }));
 
@@ -1771,7 +1798,7 @@ mod tests {
         let (signing_key, pub_key_x, pub_key_y) = generate_p256_keypair();
         let expected_address = derive_p256_address(&pub_key_x, &pub_key_y);
 
-        let sig_hash = B256::from([0xAA; 32]);
+        let sig_hash = B256::repeat_byte(0xAA);
         let (r, s) = sign_p256_normalized(&signing_key, &sig_hash);
 
         let p256_sig =
@@ -1796,7 +1823,7 @@ mod tests {
         let expected_address = derive_p256_address(&pub_key_x, &pub_key_y);
 
         // For pre_hash=true, signature is over sha256(sig_hash)
-        let sig_hash = B256::from([0xBB; 32]);
+        let sig_hash = B256::repeat_byte(0xBB);
         let prehashed = B256::from_slice(Sha256::digest(sig_hash).as_ref());
         let (r, s) = sign_p256_normalized(&signing_key, &prehashed);
 
@@ -1819,7 +1846,7 @@ mod tests {
     #[test]
     fn test_recover_signer_p256_high_s_rejected() {
         let (signing_key, pub_key_x, pub_key_y) = generate_p256_keypair();
-        let sig_hash = B256::from([0xCD; 32]);
+        let sig_hash = B256::repeat_byte(0xCD);
         let signature: p256::ecdsa::Signature =
             signing_key.sign_prehash(sig_hash.as_slice()).unwrap();
         let sig_bytes = signature.to_bytes();
@@ -1834,7 +1861,7 @@ mod tests {
         let p256_sig =
             TempoSignature::Primitive(PrimitiveSignature::P256(P256SignatureWithPreHash {
                 r,
-                s: B256::from(high_s.to_be_bytes::<32>()),
+                s: B256::from(high_s),
                 pub_key_x,
                 pub_key_y,
                 pre_hash: false,
@@ -1851,7 +1878,7 @@ mod tests {
         let (signing_key, pub_key_x, pub_key_y) = generate_p256_keypair();
         let expected_address = derive_p256_address(&pub_key_x, &pub_key_y);
 
-        let tx_hash = B256::from([0xCC; 32]);
+        let tx_hash = B256::repeat_byte(0xCC);
         let webauthn_data = build_webauthn_data(0x01, None, &tx_hash);
 
         let message_hash = verify_webauthn_data_internal(&webauthn_data, &tx_hash).unwrap();
@@ -1877,7 +1904,7 @@ mod tests {
     #[test]
     fn test_recover_signer_webauthn_invalid_payload_rejected() {
         let (signing_key, pub_key_x, pub_key_y) = generate_p256_keypair();
-        let tx_hash = B256::from([0xEF; 32]);
+        let tx_hash = B256::repeat_byte(0xEF);
         let (r, s) = sign_p256_normalized(&signing_key, &B256::ZERO);
 
         let invalid_webauthn_sig =
@@ -1903,7 +1930,7 @@ mod tests {
         let user_address = Address::repeat_byte(0xDD);
 
         // V1: inner signature signs sig_hash directly
-        let sig_hash = B256::from([0x22; 32]);
+        let sig_hash = B256::repeat_byte(0x22);
         let inner_sig = sign_hash(&signing_key, &sig_hash);
 
         let keychain_sig = TempoSignature::Keychain(KeychainSignature::new_v1(
@@ -1941,7 +1968,7 @@ mod tests {
         let user_address = Address::repeat_byte(0xDD);
 
         // V2: inner signature signs keccak256(0x04 || sig_hash || user_address)
-        let sig_hash = B256::from([0x22; 32]);
+        let sig_hash = B256::repeat_byte(0x22);
         let mut buf = [0u8; 53]; // 1 + 32 + 20
         buf[0] = SIGNATURE_TYPE_KEYCHAIN_V2;
         buf[1..33].copy_from_slice(sig_hash.as_slice());
@@ -1985,7 +2012,7 @@ mod tests {
         let user_b = Address::repeat_byte(0xBB);
 
         // Sign for user_a with V2
-        let sig_hash = B256::from([0x22; 32]);
+        let sig_hash = B256::repeat_byte(0x22);
         let effective_hash = KeychainSignature::signing_hash(sig_hash, user_a);
         let inner_sig = sign_hash(&signing_key, &effective_hash);
 
@@ -2020,8 +2047,8 @@ mod tests {
 
     #[test]
     fn test_signing_hash_properties() {
-        let hash_a = B256::from([0x11; 32]);
-        let hash_b = B256::from([0x22; 32]);
+        let hash_a = B256::repeat_byte(0x11);
+        let hash_b = B256::repeat_byte(0x22);
         let addr_a = Address::repeat_byte(0xAA);
         let addr_b = Address::repeat_byte(0xBB);
 
@@ -2046,7 +2073,7 @@ mod tests {
 
     #[test]
     fn test_webauthn_rejects_challenge_injection() {
-        let (tx_hash, attack_hash) = (B256::from([0xAA; 32]), B256::from([0xFF; 32]));
+        let (tx_hash, attack_hash) = (B256::repeat_byte(0xAA), B256::repeat_byte(0xFF));
         let (challenge, attack_challenge) = (
             URL_SAFE_NO_PAD.encode(tx_hash.as_slice()),
             URL_SAFE_NO_PAD.encode(attack_hash.as_slice()),
@@ -2109,10 +2136,10 @@ mod tests {
         let addr = Address::repeat_byte(0x01);
         let sig_a = PrimitiveSignature::Secp256k1(Signature::test_signature());
         let sig_b = PrimitiveSignature::P256(P256SignatureWithPreHash {
-            r: B256::from([1u8; 32]),
-            s: B256::from([2u8; 32]),
-            pub_key_x: B256::from([3u8; 32]),
-            pub_key_y: B256::from([4u8; 32]),
+            r: B256::repeat_byte(1u8),
+            s: B256::repeat_byte(2u8),
+            pub_key_x: B256::repeat_byte(3u8),
+            pub_key_y: B256::repeat_byte(4u8),
             pre_hash: false,
         });
         let a = KeychainSignature::new(addr, sig_a);
@@ -2174,8 +2201,7 @@ mod tests {
 
     #[test]
     fn test_is_keychain_returns_false_for_primitive() {
-        let sig =
-            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+        let sig = TempoSignature::from(Signature::test_signature());
         assert!(!sig.is_keychain());
     }
 
@@ -2269,8 +2295,9 @@ mod tests {
 
 #[cfg(all(test, feature = "reth-codec"))]
 mod compact_tests {
+
     use super::*;
-    use alloy_primitives::{b256, bytes, hex};
+    use alloy_primitives::{bytes, hex};
     use reth_codecs::Compact;
 
     /// Ensures backwards compatibility of compact bitflags.
@@ -2289,10 +2316,10 @@ mod compact_tests {
     #[test]
     fn p256_signature_compact_roundtrip() {
         let sig = P256SignatureWithPreHash {
-            r: b256!("0x1111111111111111111111111111111111111111111111111111111111111111"),
-            s: b256!("0x2222222222222222222222222222222222222222222222222222222222222222"),
-            pub_key_x: b256!("0x3333333333333333333333333333333333333333333333333333333333333333"),
-            pub_key_y: b256!("0x4444444444444444444444444444444444444444444444444444444444444444"),
+            r: B256::repeat_byte(0x11),
+            s: B256::repeat_byte(0x22),
+            pub_key_x: B256::repeat_byte(0x33),
+            pub_key_y: B256::repeat_byte(0x44),
             pre_hash: true,
         };
 
@@ -2315,10 +2342,10 @@ mod compact_tests {
     #[test]
     fn webauthn_signature_compact_roundtrip() {
         let sig = WebAuthnSignature {
-            r: b256!("0x1111111111111111111111111111111111111111111111111111111111111111"),
-            s: b256!("0x2222222222222222222222222222222222222222222222222222222222222222"),
-            pub_key_x: b256!("0x3333333333333333333333333333333333333333333333333333333333333333"),
-            pub_key_y: b256!("0x4444444444444444444444444444444444444444444444444444444444444444"),
+            r: B256::repeat_byte(0x11),
+            s: B256::repeat_byte(0x22),
+            pub_key_x: B256::repeat_byte(0x33),
+            pub_key_y: B256::repeat_byte(0x44),
             webauthn_data: bytes!("aabbccdd"),
         };
 

@@ -1,18 +1,17 @@
-use crate::utils::{TestNodeBuilder, setup_test_token};
+use crate::utils::{PendingTransactionBuilderExt, TestNodeBuilder, setup_test_token};
 use alloy::{
     consensus::Transaction,
     network::ReceiptResponse,
     providers::{Provider, ProviderBuilder, WalletProvider},
-    signers::{
-        SignerSync,
-        local::{MnemonicBuilder, PrivateKeySigner},
-    },
+    signers::{SignerSync, local::PrivateKeySigner},
     sol_types::SolEvent,
 };
 use alloy_eips::{BlockId, Encodable2718};
-use alloy_network::{AnyReceiptEnvelope, EthereumWallet};
+use alloy_network::EthereumWallet;
 use alloy_primitives::{Address, Signature, U256, address};
 use alloy_rpc_types_eth::TransactionRequest;
+use eyre::WrapErr;
+use reth_e2e_test_utils::{receipt::PendingTransactionExt, wallet::test_signer};
 use tempo_alloy::rpc::TempoTransactionReceipt;
 use tempo_contracts::precompiles::{
     IFeeManager, ITIP20, ITIP403Registry,
@@ -25,13 +24,110 @@ use tempo_primitives::{
 };
 
 #[tokio::test(flavor = "multi_thread")]
+async fn test_tip1115_estimate_and_pay_with_ousd_fallback() -> eyre::Result<()> {
+    use tempo_contracts::precompiles::OUSD_ADDRESS;
+    use tempo_precompiles::tip20::slots;
+
+    tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        let mut genesis: serde_json::Value = serde_json::from_str(&crate::utils::make_genesis_at(
+            tempo_chainspec::hardfork::TempoHardfork::T13,
+        ))?;
+        // Give OUSD the existing test token's funded accounts and roles.
+        let mut ousd = genesis["alloc"][format!("{PATH_USD_ADDRESS:#x}")].clone();
+        ousd["storage"][format!("{:#066x}", U256::from(slots::QUOTE_TOKEN))] =
+            format!("{:#066x}", U256::from_be_slice(PATH_USD_ADDRESS.as_slice())).into();
+        genesis["alloc"][format!("{OUSD_ADDRESS:#x}")] = ousd;
+        let setup = TestNodeBuilder::new()
+            .with_genesis(serde_json::to_string(&genesis)?)
+            .build_http_only()
+            .await?;
+        let provider = ProviderBuilder::new()
+            .wallet(test_signer(0))
+            .connect_http(setup.http_url.clone());
+        ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, &provider)
+            .mint(
+                OUSD_ADDRESS,
+                PATH_USD_ADDRESS,
+                U256::from(1_000_000),
+                provider.default_signer_address(),
+            )
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+        let signer = PrivateKeySigner::random();
+        let payer = signer.address();
+        let balance = U256::from(20_000);
+        ITIP20::new(OUSD_ADDRESS, &provider)
+            .transfer(payer, balance)
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+        assert!(
+            IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &provider)
+                .userTokens(payer)
+                .call()
+                .await?
+                .is_zero()
+        );
+        assert_eq!(
+            ITIP20::new(PATH_USD_ADDRESS, &provider)
+                .balanceOf(payer)
+                .call()
+                .await?,
+            U256::ZERO
+        );
+
+        let provider = ProviderBuilder::new()
+            .wallet(signer)
+            .connect_http(setup.http_url);
+        let request = TransactionRequest::default()
+            .from(payer)
+            .to(Address::repeat_byte(0x71))
+            .max_fee_per_gas(20_000_000_000)
+            .max_priority_fee_per_gas(0);
+        // The payer can afford 1M gas, but not estimation's initial block gas limit.
+        let gas = provider.estimate_gas(request.clone()).await?;
+        assert!(gas > 0 && gas <= 1_000_000);
+        let hash = provider
+            .send_transaction(request.gas_limit(gas))
+            .await?
+            .watch()
+            .await?;
+        let receipt = provider
+            .raw_request::<_, TempoTransactionReceipt>("eth_getTransactionReceipt".into(), (hash,))
+            .await?;
+        assert!(receipt.status());
+        assert_eq!(receipt.fee_token, Some(OUSD_ADDRESS));
+        assert_eq!(receipt.fee_payer, payer);
+        let remaining = ITIP20::new(OUSD_ADDRESS, &provider)
+            .balanceOf(payer)
+            .call()
+            .await?;
+        let actual_fee = calc_gas_balance_spending(receipt.gas_used, receipt.effective_gas_price());
+        assert_eq!(remaining, balance - actual_fee);
+        assert_eq!(
+            ITIP20::new(PATH_USD_ADDRESS, &provider)
+                .balanceOf(payer)
+                .call()
+                .await?,
+            U256::ZERO
+        );
+        Ok::<_, eyre::Report>(())
+    })
+    .await??;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn test_set_user_token() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet = test_signer(0);
     let user_address = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
@@ -80,8 +176,7 @@ async fn test_set_user_token() -> eyre::Result<()> {
         )
         .send()
         .await?;
-    let receipt = pending_tx.get_receipt().await?;
-    assert!(receipt.status());
+    let receipt = pending_tx.successful_receipt().await?;
 
     let expected_cost = calc_gas_balance_spending(receipt.gas_used, receipt.effective_gas_price);
 
@@ -108,13 +203,12 @@ async fn test_set_user_token() -> eyre::Result<()> {
     // Validator receives all accumulated fees, not just from this tx
     assert!(validator_balance_after > validator_balance_before);
 
-    let set_receipt = fee_manager
+    fee_manager
         .setUserToken(*user_token.address())
         .send()
         .await?
-        .get_receipt()
+        .successful_receipt()
         .await?;
-    assert!(set_receipt.status());
 
     let current_token = fee_manager.userTokens(user_address).call().await?;
     assert_eq!(current_token, *user_token.address());
@@ -139,8 +233,7 @@ async fn test_set_user_token() -> eyre::Result<()> {
         .send_transaction(TransactionRequest::default().to(Address::random()))
         .await?;
     let tx_hash = *pending_tx.tx_hash();
-    let receipt = pending_tx.get_receipt().await?;
-    assert!(receipt.status());
+    let receipt = pending_tx.successful_receipt().await?;
 
     // Verify fee was paid in user_token (max_fee deducted from user)
     let user_balance_after = user_token.balanceOf(user_address).call().await?;
@@ -172,13 +265,12 @@ async fn test_set_user_token() -> eyre::Result<()> {
     assert!(validator_balance_after > validator_balance_before);
 
     // Ensure that the user can set the fee token back to pathUSD
-    let set_receipt = fee_manager
+    fee_manager
         .setUserToken(PATH_USD_ADDRESS)
         .send()
         .await?
-        .get_receipt()
+        .successful_receipt()
         .await?;
-    assert!(set_receipt.status());
 
     let current_token = fee_manager.userTokens(user_address).call().await?;
     assert_eq!(current_token, PATH_USD_ADDRESS);
@@ -193,7 +285,7 @@ async fn test_set_validator_token() -> eyre::Result<()> {
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet = test_signer(0);
     let validator_address = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
@@ -206,13 +298,12 @@ async fn test_set_validator_token() -> eyre::Result<()> {
         .await?;
     assert_eq!(initial_token, PATH_USD_ADDRESS);
 
-    let set_receipt = fee_manager
+    fee_manager
         .setValidatorToken(*validator_token.address())
         .send()
         .await?
-        .get_receipt()
+        .successful_receipt()
         .await?;
-    assert!(set_receipt.status());
 
     let current_token = fee_manager
         .validatorTokens(validator_address)
@@ -230,10 +321,7 @@ async fn test_fee_token_tx() -> eyre::Result<()> {
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
-    let signers = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-        .into_iter()
-        .take(2)
-        .collect::<Result<Vec<_>, _>>()?;
+    let signers = (0..2).map(test_signer).collect::<Vec<_>>();
 
     let mut wallet = EthereumWallet::new(signers[0].clone());
     wallet.register_signer(signers[1].clone());
@@ -276,40 +364,32 @@ async fn test_fee_token_tx() -> eyre::Result<()> {
     );
 
     for signer in &signers {
-        assert!(
-            user_token
-                .mint(signer.address(), U256::from(1e18))
-                .send()
-                .await?
-                .get_receipt()
-                .await?
-                .status()
-        );
-    }
-
-    assert!(
-        fee_amm
-            .mint(
-                *user_token.address(),
-                PATH_USD_ADDRESS,
-                U256::from(1e18),
-                signers[1].address(),
-            )
-            .from(signers[1].address())
+        user_token
+            .mint(signer.address(), U256::from(1e18))
             .send()
             .await?
-            .get_receipt()
-            .await?
-            .status()
-    );
+            .successful_receipt()
+            .await?;
+    }
 
-    let tx_hash = send_fee_token_tx().await?.watch().await?;
-    let receipt = provider
-        .client()
-        .request::<_, AnyReceiptEnvelope>("eth_getTransactionReceipt", (tx_hash,))
+    fee_amm
+        .mint(
+            *user_token.address(),
+            PATH_USD_ADDRESS,
+            U256::from(1e18),
+            signers[1].address(),
+        )
+        .from(signers[1].address())
+        .send()
+        .await?
+        .successful_receipt()
         .await?;
 
-    assert!(receipt.status());
+    send_fee_token_tx()
+        .await?
+        .into_tempo()
+        .successful_receipt()
+        .await?;
 
     Ok(())
 }
@@ -321,7 +401,7 @@ async fn test_fee_payer_tx() -> eyre::Result<()> {
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
-    let fee_payer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let fee_payer = test_signer(0);
     let user = PrivateKeySigner::random();
 
     let provider = ProviderBuilder::new().connect_http(http_url);
@@ -380,17 +460,12 @@ async fn test_fee_payer_tx() -> eyre::Result<()> {
         .call()
         .await?;
 
-    let tx_hash = provider
+    let receipt = provider
         .send_raw_transaction(&tx.encoded_2718())
         .await?
-        .watch()
+        .into_tempo()
+        .successful_receipt()
         .await?;
-
-    let receipt = provider
-        .raw_request::<_, TempoTransactionReceipt>("eth_getTransactionReceipt".into(), (tx_hash,))
-        .await?;
-
-    assert!(receipt.status());
 
     let balance_after = ITIP20::new(fee_payer_token, &provider)
         .balanceOf(fee_payer.address())
@@ -411,11 +486,9 @@ async fn test_fee_payer_transfer_whitelist_post_t1c() -> eyre::Result<()> {
 
     let setup = TestNodeBuilder::new().build_http_only().await?;
 
-    let admin = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let admin = test_signer(0);
     let admin_addr = admin.address();
-    let fee_payer_signer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-        .index(1)?
-        .build()?;
+    let fee_payer_signer = test_signer(1);
     let fee_payer_addr = fee_payer_signer.address();
     let provider = ProviderBuilder::new()
         .wallet(admin.clone())
@@ -493,26 +566,25 @@ async fn test_fee_payer_transfer_whitelist_post_t1c() -> eyre::Result<()> {
         .await?;
 
     let admin_token_contract = ITIP20::new(token_addr, &provider);
-    let receipt = admin_token_contract
+    admin_token_contract
         .changeTransferPolicyId(policy_id)
         .gas(1_000_000)
         .send()
         .await?
-        .get_receipt()
-        .await?;
-    assert!(receipt.status(), "changeTransferPolicyId should succeed");
+        .successful_receipt()
+        .await
+        .wrap_err("changeTransferPolicyId should succeed")?;
 
     // TIP-1042 exempts the FeeManager recipient check during fee collection. The fee payer is
     // whitelisted as a sender, so the tx should go through even though FeeManager is not listed.
     let tx = TransactionRequest::default()
         .to(Address::ZERO)
         .value(U256::ZERO);
-    let receipt = fee_payer_provider
+    fee_payer_provider
         .send_transaction(tx)
         .await?
-        .get_receipt()
+        .successful_receipt()
         .await?;
-    assert!(receipt.status());
 
     Ok(())
 }

@@ -3,6 +3,7 @@ use alloy::{
     providers::Provider,
     sol_types::SolEvent,
 };
+use reth_e2e_test_utils::wallet::test_signer;
 use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
 use tempo_contracts::precompiles::{
     IAddressRegistry, ITIP20, ITIP403Registry, ITIPFeeAMM, TIP_FEE_MANAGER_ADDRESS,
@@ -16,7 +17,6 @@ use test_case::test_case;
 
 use super::helpers::{
     GAS_LIMIT, GasSnapshot, TempoCalls, TempoTxSender, fixed_signer, print_gas_snapshot,
-    test_signer,
 };
 use crate::{
     gas::helpers::Receipt,
@@ -159,29 +159,6 @@ fn join_name<const N: usize>(parts: [String; N]) -> String {
         .join("::")
 }
 
-async fn create_whitelist_policy<P: Provider + Clone>(
-    provider: P,
-    admin: Address,
-    accounts: Vec<Address>,
-    admin_nonce: &mut u64,
-) -> eyre::Result<u64> {
-    let receipt = ITIP403Registry::new(TIP403_REGISTRY_ADDRESS, provider)
-        .createPolicyWithAccounts(admin, ITIP403Registry::PolicyType::WHITELIST, accounts)
-        .nonce(*admin_nonce)
-        .gas(GAS_LIMIT)
-        .gas_price(TEMPO_T1_BASE_FEE as u128)
-        .send_sync()
-        .await?;
-    *admin_nonce += 1;
-    Ok(receipt
-        .logs()
-        .iter()
-        .filter_map(|log| ITIP403Registry::PolicyCreated::decode_log(&log.inner).ok())
-        .next()
-        .expect("PolicyCreated event should be emitted")
-        .policyId)
-}
-
 async fn register_virtual_master<P: Provider + Clone>(
     provider: P,
     admin_nonce: &mut u64,
@@ -211,6 +188,9 @@ struct TransferGasEnv<P> {
     virtual_master_id: Option<FixedBytes<4>>,
     reward_sender: TempoTxSender<P>,
     reward_recipient: Address,
+    /// Whether the token still uses a case's whitelist policy. The next case
+    /// resets it in its funding transaction.
+    custom_policy_active: bool,
 }
 
 impl<P: Provider + Clone> TransferGasEnv<P> {
@@ -218,14 +198,10 @@ impl<P: Provider + Clone> TransferGasEnv<P> {
         self.admin.address()
     }
 
-    fn user(&mut self) -> eyre::Result<TempoTxSender<P>> {
-        let signer = test_signer(self.next_user)?;
+    fn user(&mut self) -> TempoTxSender<P> {
+        let signer = test_signer(self.next_user);
         self.next_user += 1;
-        Ok(TempoTxSender::with_zero_nonce(
-            self.admin.provider.clone(),
-            self.admin.chain_id,
-            signer,
-        ))
+        TempoTxSender::with_zero_nonce(self.admin.provider.clone(), self.admin.chain_id, signer)
     }
 
     async fn set_reward_recipient(
@@ -285,13 +261,14 @@ impl<P: Provider + Clone> TransferGasEnv<P> {
                 self.token_addr,
                 ITIP20::transferCall {
                     to: self.reward_recipient,
-                    amount: U256::from(1),
+                    amount: U256::ONE,
                 },
             )
             .await?;
         Ok(())
     }
 
+    /// Creates a whitelist policy and switches the token to it in one transaction.
     async fn whitelist(&mut self, accounts: &[Address]) -> eyre::Result<Receipt> {
         let accounts = accounts
             .iter()
@@ -302,15 +279,19 @@ impl<P: Provider + Clone> TransferGasEnv<P> {
                 TIP_FEE_MANAGER_ADDRESS,
             ])
             .collect::<Vec<_>>();
-        let policy_id = create_whitelist_policy(
-            self.admin.provider.clone(),
-            self.admin_address(),
+        let create = ITIP403Registry::createPolicyWithAccountsCall {
+            admin: self.admin_address(),
+            policyType: ITIP403Registry::PolicyType::WHITELIST,
             accounts,
-            &mut self.admin.nonce,
-        )
-        .await?;
+        };
+        let policy_id = ITIP403Registry::new(TIP403_REGISTRY_ADDRESS, self.admin.provider.clone())
+            .createPolicyWithAccounts(create.admin, create.policyType, create.accounts.clone())
+            .from(self.admin_address())
+            .call()
+            .await?;
 
-        TempoCalls::new()
+        let receipt = TempoCalls::new()
+            .push(TIP403_REGISTRY_ADDRESS, create)
             .push(
                 self.token_addr,
                 ITIP20::changeTransferPolicyIdCall {
@@ -318,17 +299,9 @@ impl<P: Provider + Clone> TransferGasEnv<P> {
                 },
             )
             .send(&mut self.admin)
-            .await
-    }
-
-    async fn reset_policy(&mut self) -> eyre::Result<Receipt> {
-        TempoCalls::new()
-            .push(
-                self.token_addr,
-                ITIP20::changeTransferPolicyIdCall { newPolicyId: 1 },
-            )
-            .send(&mut self.admin)
-            .await
+            .await?;
+        self.custom_policy_active = true;
+        Ok(receipt)
     }
 
     async fn virtual_recipient(&mut self, case_index: usize) -> eyre::Result<Address> {
@@ -389,11 +362,9 @@ impl<P: Provider + Clone> TransferGasEnv<P> {
         case_index: usize,
         scenario: TransferScenario,
     ) -> eyre::Result<Receipt> {
-        self.reset_policy().await?;
-
-        let mut sender = self.user()?;
+        let mut sender = self.user();
         let mut recipient = match scenario.recipient {
-            RecipientKind::Direct { .. } => Some(self.user()?),
+            RecipientKind::Direct { .. } => Some(self.user()),
             RecipientKind::Virtual => None,
         };
         let mut funded_accounts = vec![(sender.address(), scenario.sender_balance())];
@@ -401,7 +372,14 @@ impl<P: Provider + Clone> TransferGasEnv<P> {
             funded_accounts.push((recipient.address(), U256::from(MINT_AMOUNT)));
         }
         let token_addr = self.token_addr;
-        TempoCalls::new()
+        let mut funding = TempoCalls::new();
+        if std::mem::take(&mut self.custom_policy_active) {
+            funding = funding.push(
+                token_addr,
+                ITIP20::changeTransferPolicyIdCall { newPolicyId: 1 },
+            );
+        }
+        funding
             .extend(funded_accounts.iter().copied(), |(to, amount)| {
                 (token_addr, ITIP20::mintCall { to, amount })
             })
@@ -458,13 +436,8 @@ impl<P: Provider + Clone> TransferGasEnv<P> {
             self.whitelist(&accounts).await?;
         }
 
-        let transfer_result = self
-            .transfer(gas, name, &mut sender, to, scenario.amount())
-            .await;
-        if scenario.custom_policy {
-            self.reset_policy().await?;
-        }
-        transfer_result
+        self.transfer(gas, name, &mut sender, to, scenario.amount())
+            .await
     }
 }
 
@@ -576,7 +549,7 @@ async fn test_tip20_transfer_gas_snapshots(hardfork: TempoHardfork) -> eyre::Res
         .with_instant_mining()
         .build_http_only()
         .await?;
-    let mut admin = TempoTxSender::connect(setup.http_url.clone(), test_signer(0)?).await?;
+    let mut admin = TempoTxSender::connect(setup.http_url.clone(), test_signer(0)).await?;
     let token = setup_test_token(admin.provider.clone(), admin.address()).await?;
     admin.sync_nonce().await?;
     let token_addr = *token.address();
@@ -620,6 +593,7 @@ async fn test_tip20_transfer_gas_snapshots(hardfork: TempoHardfork) -> eyre::Res
         virtual_master_id: None,
         reward_sender,
         reward_recipient,
+        custom_policy_active: false,
     };
     env.prepare_reward_delta_hook().await?;
 
@@ -647,7 +621,7 @@ async fn test_tip20_transfer_with_memo_t0_gas_snapshot() -> eyre::Result<()> {
         .with_genesis(make_genesis_at(TempoHardfork::T0))
         .build_http_only()
         .await?;
-    let mut sender = TempoTxSender::connect(setup.http_url, test_signer(0)?).await?;
+    let mut sender = TempoTxSender::connect(setup.http_url, test_signer(0)).await?;
     let token = setup_test_token(sender.provider.clone(), sender.address()).await?;
     sender.sync_nonce().await?;
 

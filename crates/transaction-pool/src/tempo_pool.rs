@@ -659,8 +659,6 @@ where
     EvmConfig: ConfigureTempoPoolEvm,
     Client: StateProviderFactory
         + ChainSpecProvider<ChainSpec: EthChainSpec<Header = TempoHeader> + TempoHardforks>
-        + Send
-        + Sync
         + 'static,
     TempoPooledTransaction: reth_transaction_pool::EthPoolTransaction,
 {
@@ -1321,7 +1319,12 @@ where
     }
 
     fn on_canonical_state_change(&self, update: CanonicalStateUpdate<'_, Self::Block>) {
-        self.protocol_pool.on_canonical_state_change(update)
+        // Keep the AA 2D pool's base fee in sync with the protocol pool. Reth only calls
+        // `set_block_info` at startup and after deep reorgs, so without this the 2D pool would
+        // keep ordering its eviction sets against a stale base fee once the fee starts moving.
+        let pending_basefee = update.pending_block_base_fee;
+        self.protocol_pool.on_canonical_state_change(update);
+        self.aa_2d_pool.write().set_base_fee(pending_basefee);
     }
 
     fn update_accounts(&self, accounts: Vec<ChangedAccount>) {
@@ -1499,6 +1502,7 @@ mod tests {
         Block, TempoHeader, TempoPrimitives, TempoTxEnvelope,
         transaction::{KeyAuthorization, PrimitiveSignature, SignatureType},
     };
+    use tempo_revm::ResolvedFeeToken;
 
     fn provider_with_spending_limit(
         account: Address,
@@ -1728,10 +1732,48 @@ mod tests {
     }
 
     #[test]
+    fn canonical_state_change_refreshes_aa_2d_base_fee() {
+        use reth_primitives_traits::SealedBlock;
+        use reth_transaction_pool::PoolUpdateKind;
+
+        let pool = create_test_pool(create_provider_with_tip());
+        let initial_base_fee = pool.aa_2d_pool.read().base_fee();
+
+        let new_tip = SealedBlock::seal_slow(Block {
+            header: TempoHeader {
+                inner: Header {
+                    gas_limit: TEMPO_T1_TX_GAS_LIMIT_CAP,
+                    base_fee_per_gas: Some(initial_base_fee),
+                    excess_blob_gas: Some(0),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            body: Default::default(),
+        });
+        let pending_block_base_fee = initial_base_fee + 1_000;
+
+        pool.on_canonical_state_change(CanonicalStateUpdate {
+            new_tip: &new_tip,
+            pending_block_base_fee,
+            pending_block_blob_fee: None,
+            changed_accounts: Vec::new(),
+            mined_transactions: Vec::new(),
+            update_kind: PoolUpdateKind::Commit,
+        });
+
+        assert_eq!(pool.aa_2d_pool.read().base_fee(), pending_block_base_fee);
+        assert_eq!(
+            pool.protocol_pool.block_info().pending_basefee,
+            pending_block_base_fee
+        );
+    }
+
+    #[test]
     fn pool_size_includes_aa_2d_transaction_counts_and_bytes() {
         let pool = create_test_pool(create_provider_with_tip());
         let tx = crate::test_utils::TxBuilder::aa(Address::random())
-            .nonce_key(U256::from(1))
+            .nonce_key(U256::ONE)
             .build();
         let tx_size = reth_primitives_traits::InMemorySize::size(&tx);
 
@@ -1756,16 +1798,16 @@ mod tests {
         let protocol_queued = crate::test_utils::TxBuilder::aa(sender).nonce(2).build();
         // 2D lane (nonce_key = 1): same shape, lives only in the AA 2D pool.
         let aa_2d_pending = crate::test_utils::TxBuilder::aa(sender)
-            .nonce_key(U256::from(1))
+            .nonce_key(U256::ONE)
             .nonce(0)
             .build();
         let aa_2d_queued = crate::test_utils::TxBuilder::aa(sender)
-            .nonce_key(U256::from(1))
+            .nonce_key(U256::ONE)
             .nonce(2)
             .build();
         // Another sender's queued 2D transaction must not leak into `sender`'s results.
         let other_aa_2d_queued = crate::test_utils::TxBuilder::aa(other)
-            .nonce_key(U256::from(1))
+            .nonce_key(U256::ONE)
             .nonce(2)
             .build();
 
@@ -1952,7 +1994,7 @@ mod tests {
             sender,
             key_id,
             fee_token,
-            pooled.fee_token_cost() - U256::from(1_u64),
+            pooled.fee_token_cost() - U256::ONE,
         );
         let pool = create_test_pool(provider);
         add_validated(&pool, pooled.clone());
@@ -2020,7 +2062,7 @@ mod tests {
             },
         );
 
-        let initial_balance = pooled.fee_token_cost() + U256::from(1_u64);
+        let initial_balance = pooled.fee_token_cost() + U256::ONE;
         set_fee_token_balance(&provider, PATH_USD_ADDRESS, fee_payer, initial_balance);
 
         let inner =
@@ -2045,7 +2087,7 @@ mod tests {
         );
         let pool = TempoTransactionPool::new(protocol_pool, AA2dPool::new(Default::default()));
 
-        pooled.set_resolved_fee_token(PATH_USD_ADDRESS);
+        pooled.set_resolved_fee_token(ResolvedFeeToken::Selected(PATH_USD_ADDRESS));
         let validated = TransactionValidationOutcome::Valid {
             balance: *pooled.cost(),
             state_nonce: pooled.nonce(),
@@ -2064,7 +2106,7 @@ mod tests {
             &provider,
             PATH_USD_ADDRESS,
             fee_payer,
-            pooled.fee_token_cost() - U256::from(1_u64),
+            pooled.fee_token_cost() - U256::ONE,
         );
 
         let mut updates = crate::maintain::TempoPoolUpdates::new();
@@ -2087,7 +2129,7 @@ mod tests {
         let pooled = crate::test_utils::TxBuilder::aa(sender).build();
 
         assert_eq!(pooled.inner().fee_token(), None);
-        pooled.set_resolved_fee_token(resolved_fee_token);
+        pooled.set_resolved_fee_token(ResolvedFeeToken::Selected(resolved_fee_token));
 
         let provider = MockEthProvider::<TempoPrimitives>::new()
             .with_chain_spec(std::sync::Arc::unwrap_or_clone(MODERATO.clone()));
@@ -2126,7 +2168,7 @@ mod tests {
         let pooled = crate::test_utils::TxBuilder::aa(sender).build();
 
         assert_eq!(pooled.inner().fee_token(), None);
-        pooled.set_resolved_fee_token(resolved_fee_token);
+        pooled.set_resolved_fee_token(ResolvedFeeToken::Selected(resolved_fee_token));
 
         let provider = MockEthProvider::<TempoPrimitives>::new()
             .with_chain_spec(std::sync::Arc::unwrap_or_clone(MODERATO.clone()));
@@ -2165,7 +2207,7 @@ mod tests {
         let pooled = crate::test_utils::TxBuilder::aa(sender).build();
 
         assert_eq!(pooled.inner().fee_token(), None);
-        pooled.set_resolved_fee_token(resolved_fee_token);
+        pooled.set_resolved_fee_token(ResolvedFeeToken::Selected(resolved_fee_token));
 
         let provider = MockEthProvider::<TempoPrimitives>::new()
             .with_chain_spec(std::sync::Arc::unwrap_or_clone(MODERATO.clone()));
@@ -2867,7 +2909,7 @@ mod tests {
         assert!(exceeds_spending_limit(
             &mut provider.latest().unwrap(),
             &subject,
-            alloy_primitives::U256::from(1),
+            U256::ONE,
             0,
             TempoHardfork::default(),
         ));
@@ -2903,7 +2945,7 @@ mod tests {
         assert!(!exceeds_spending_limit(
             &mut provider.latest().unwrap(),
             &subject,
-            alloy_primitives::U256::from(1),
+            U256::ONE,
             0,
             TempoHardfork::default(),
         ));

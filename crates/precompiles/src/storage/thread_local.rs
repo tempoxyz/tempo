@@ -16,7 +16,10 @@ use tempo_primitives::TempoBlockEnv;
 use crate::{
     Precompile,
     error::{IntoPrecompileResult, Result, TempoPrecompileError},
-    storage::{PrecompileStorageProvider, StorageActions, evm::EvmPrecompileStorageProvider},
+    storage::{
+        ConfigCommitmentWriteGas, PrecompileStorageProvider, StorageActions,
+        evm::EvmPrecompileStorageProvider,
+    },
 };
 
 scoped_thread_local!(static STORAGE: RefCell<&mut dyn PrecompileStorageProvider>);
@@ -341,6 +344,28 @@ impl StorageCtx {
     pub fn error_result(&self, error: impl IntoPrecompileResult) -> PrecompileResult {
         error.into_precompile_result(self.gas_used(), self.reservoir())
     }
+
+    /// Reads the account commitment with normal account-access gas.
+    pub fn config_commitment(&self, address: Address) -> Result<B256> {
+        Self::try_with_storage(|s| s.config_commitment(address))
+    }
+
+    /// Writes an authorized commitment using the provider's account journal.
+    pub fn set_config_commitment(
+        &mut self,
+        address: Address,
+        commitment: B256,
+        gas: ConfigCommitmentWriteGas,
+    ) -> Result<()> {
+        Self::try_with_storage(|s| s.set_config_commitment(address, commitment, gas))
+    }
+
+    /// Returns whether `address` is a retired root key (TIP-1112): from T14, an address with a
+    /// nonzero configuration commitment no longer acts through its own key. Reads the commitment
+    /// at call time, so a migration earlier in the block counts.
+    pub fn is_retired_root(&self, address: Address) -> Result<bool> {
+        Ok(self.spec().is_t14() && !self.config_commitment(address)?.is_zero())
+    }
 }
 
 /// RAII guard for atomic state mutation batching.
@@ -615,7 +640,7 @@ mod tests {
     fn test_checkpoint_commit_and_revert() {
         let mut storage = t1c_storage();
         let addr = Address::ZERO;
-        let key = U256::from(1);
+        let key = U256::ONE;
 
         StorageCtx::enter(&mut storage, || {
             let mut ctx = StorageCtx;
@@ -630,7 +655,7 @@ mod tests {
             // drop reverts state
             {
                 let _guard = ctx.checkpoint();
-                ctx.sstore(addr, key, U256::from(1)).unwrap();
+                ctx.sstore(addr, key, U256::ONE).unwrap();
             }
             assert_eq!(ctx.sload(addr, key).unwrap(), U256::from(99));
         });
@@ -640,7 +665,7 @@ mod tests {
     fn test_nested_checkpoints_lifo() {
         let mut storage = t1c_storage();
         let addr = Address::ZERO;
-        let key = U256::from(1);
+        let key = U256::ONE;
 
         StorageCtx::enter(&mut storage, || {
             let mut ctx = StorageCtx;
@@ -687,7 +712,7 @@ mod tests {
     fn test_checkpoint_noop_pre_t1c() {
         let mut storage = HashMapStorageProvider::new(1); // default = T0
         let addr = Address::ZERO;
-        let key = U256::from(1);
+        let key = U256::ONE;
 
         StorageCtx::enter(&mut storage, || {
             let mut ctx = StorageCtx;

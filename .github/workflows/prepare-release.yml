@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       source_sha:
-        description: Full commit SHA from the protected main branch
+        description: Full commit SHA from main or a protected release/* branch
         required: true
         type: string
       version:
@@ -37,7 +37,7 @@ jobs:
 
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
       - name: Validate inputs
         id: release
@@ -88,11 +88,18 @@ jobs:
           fi
 
           # A valid Git commit is not necessarily an approved release source.
-          # Require it to be part of the protected main branch's history.
+          # Require it to be part of a protected branch's history: main for
+          # regular releases, or a release/* branch for patch releases that
+          # backport fixes onto an earlier release.
           git fetch --no-tags origin \
-            "+refs/heads/main:refs/remotes/origin/main"
-          if ! git merge-base --is-ancestor "$SOURCE_SHA" refs/remotes/origin/main; then
-            echo "::error::source_sha must be an ancestor of origin/main"
+            "+refs/heads/main:refs/remotes/origin/main" \
+            "+refs/heads/release/*:refs/remotes/origin/release/*"
+          source_branches="$(
+            git for-each-ref --contains "$SOURCE_SHA" --format='%(refname:short)' \
+              refs/remotes/origin/main 'refs/remotes/origin/release/*'
+          )"
+          if [[ -z "$source_branches" ]]; then
+            echo "::error::source_sha must be an ancestor of origin/main or an origin/release/* branch"
             exit 1
           fi
 
@@ -111,16 +118,17 @@ jobs:
             exit 1
           fi
 
-          # Never prepare a version which has already been tagged.
+          # Never prepare a version which has already been tagged, with or
+          # without the tempo/ prefix.
           set +e
           git ls-remote --exit-code --tags origin \
-            "refs/tags/v${VERSION}" >/dev/null
+            "refs/tags/v${VERSION}" "refs/tags/tempo/v${VERSION}" >/dev/null
           tag_status=$?
           set -e
 
           case "$tag_status" in
             0)
-              echo "::error::Tag v${VERSION} already exists"
+              echo "::error::Tag v${VERSION} or tempo/v${VERSION} already exists"
               exit 1
               ;;
             2)
@@ -186,7 +194,7 @@ jobs:
           echo "existing_commit=${existing_commit}" >> "$GITHUB_OUTPUT"
 
       - name: Install Rust toolchain
-        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
       - name: Update workspace version
         shell: bash
@@ -322,7 +330,7 @@ jobs:
 
       - name: Fetch GitHub token via STS
         id: app-token
-        uses: tempoxyz/gh-actions/actions/github-sts@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+        uses: tempoxyz/gh-actions/actions/github-sts@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           policy: release-pr
 

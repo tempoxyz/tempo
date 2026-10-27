@@ -34,7 +34,7 @@ fn test_struct_storage() {
         assert_eq!(layout.block.field3.slot(), U256::from(12));
 
         // Verify slots module
-        assert_eq!(slots::FIELD_A, U256::from(0));
+        assert_eq!(slots::FIELD_A, U256::ZERO);
         assert_eq!(slots::BLOCK, U256::from(10));
         assert_eq!(slots::FIELD_B, U256::ONE);
         assert_eq!(slots::ADDRESS_MAPPING, U256::from(2));
@@ -311,12 +311,12 @@ fn test_struct_overwrite_cleans_dyn_field_tails() -> error::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
         StorageCtx::enter(&mut storage, || {
             let mut handler = DynStringRecord::handle(base_slot, LayoutCtx::FULL, address);
-            let inbound_slot = base_slot + U256::from(1);
+            let inbound_slot = base_slot + U256::ONE;
             let outbound_slot = base_slot + U256::from(2);
 
             // Initial: long strings in both dynamic fields.
             handler.write(DynStringRecord {
-                static_a: U256::from(1),
+                static_a: U256::ONE,
                 inbound: "x".repeat(100), // 4 tail chunks
                 outbound: "y".repeat(80), // 3 tail chunks
                 static_b: 42,

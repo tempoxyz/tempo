@@ -266,10 +266,6 @@ pub(crate) fn make_genesis_at(last_active: TempoHardfork) -> String {
     serde_json::to_string(&genesis).expect("genesis must serialize")
 }
 
-/// Standard test mnemonic phrase used across integration tests
-pub(crate) const TEST_MNEMONIC: &str =
-    "test test test test test test test test test test test junk";
-
 use alloy::{
     network::Ethereum,
     primitives::Address,
@@ -278,28 +274,35 @@ use alloy::{
     sol_types::SolEvent,
     transports::http::reqwest::Url,
 };
-use alloy_primitives::B256;
-use alloy_rpc_types_engine::PayloadAttributes;
+use alloy_eips::Encodable2718;
+use alloy_primitives::{B256, Bytes};
 use eyre::WrapErr;
-use reth_e2e_test_utils::E2ETestSetupExt;
-use reth_ethereum::tasks::Runtime;
-use reth_node_api::FullNodeComponents;
-use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle, rpc::RethRpcAddOns};
-use reth_node_core::args::RpcServerArgs;
+use reth_e2e_test_utils::{
+    E2ETestSetupBuilder,
+    node::MinedBlock,
+    wallet::{TestAccount, Wallet},
+};
 use reth_rpc_builder::RpcModuleSelection;
-use std::{sync::Arc, time::Duration};
+use std::{
+    ops::{Deref, DerefMut},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
 use tempo_alloy::{TempoNetwork, rpc::TempoTransactionReceipt};
 use tempo_chainspec::{
     hardfork::{TempoHardfork, TempoHardforks},
-    spec::TempoChainSpec,
+    spec::{TEMPO_T1_BASE_FEE, TempoChainSpec},
 };
 use tempo_contracts::precompiles::{
     IRolesAuth,
     ITIP20::{self, ITIP20Instance},
     ITIP20Factory,
 };
-use tempo_node::node::TempoNode;
-use tempo_payload_types::TempoPayloadAttributes;
+use tempo_node::{node::TempoNode, rpc::error::TempoEthApiError};
+use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
 use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, tip20::ISSUER_ROLE};
 
 /// Creates a test TIP20 token with issuer role granted to the caller
@@ -351,18 +354,96 @@ pub(crate) enum NodeSource {
     LocalNode(String),
 }
 
-/// Type alias for a local test node and task manager
-pub(crate) type LocalTestNode = (Box<dyn TestNodeHandle>, Runtime);
+/// A local test node, kept alive for the duration of a test.
+pub(crate) type LocalTestNode = reth_e2e_test_utils::NodeHelperType<TempoNode>;
 
-/// Trait wrapper around NodeHandle to simplify function return types
-pub(crate) trait TestNodeHandle: Send {}
+pub(crate) type TestMinedBlock = MinedBlock<TempoBuiltPayload, TempoTransactionReceipt>;
 
-/// Generic [`TestNodeHandle`] implementation for NodeHandle
-impl<Node, AddOns> TestNodeHandle for NodeHandle<Node, AddOns>
-where
-    Node: FullNodeComponents,
-    AddOns: RethRpcAddOns<Node>,
-{
+pub(crate) struct TestNode(LocalTestNode);
+
+impl TestNode {
+    pub(crate) fn into_inner(self) -> LocalTestNode {
+        self.0
+    }
+
+    pub(crate) async fn mine(
+        &mut self,
+        txs: impl IntoIterator<Item = Bytes>,
+    ) -> eyre::Result<TestMinedBlock> {
+        self.0.mine(txs).await
+    }
+
+    pub(crate) async fn mine_signed<T: Encodable2718>(
+        &mut self,
+        txs: impl IntoIterator<Item = T>,
+    ) -> eyre::Result<TestMinedBlock> {
+        self.0.mine_signed(txs).await
+    }
+
+    pub(crate) async fn mine_pooled(
+        &mut self,
+        hashes: impl IntoIterator<Item = B256>,
+    ) -> eyre::Result<TestMinedBlock> {
+        self.0.mine_pooled(hashes).await
+    }
+
+    pub(crate) async fn inject_and_advance(
+        &mut self,
+        raw_tx: Bytes,
+    ) -> eyre::Result<(B256, TempoBuiltPayload)> {
+        self.0.inject_and_advance(raw_tx).await
+    }
+
+    pub(crate) async fn advance_until_receipt(
+        &mut self,
+        hash: B256,
+    ) -> eyre::Result<TempoTransactionReceipt> {
+        self.0.advance_until_receipt(hash).await
+    }
+
+    pub(crate) async fn inject_tx(&self, raw_tx: Bytes) -> Result<B256, TempoEthApiError> {
+        self.0.rpc.inject_tx(raw_tx).await
+    }
+
+    pub(crate) async fn transaction_receipt(
+        &self,
+        hash: B256,
+    ) -> Result<Option<TempoTransactionReceipt>, TempoEthApiError> {
+        self.0.rpc.transaction_receipt(hash).await
+    }
+}
+
+impl From<LocalTestNode> for TestNode {
+    fn from(node: LocalTestNode) -> Self {
+        Self(node)
+    }
+}
+
+impl Deref for TestNode {
+    type Target = LocalTestNode;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for TestNode {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+/// Returns the harness setup for `num_nodes` Tempo nodes on `chain_spec`.
+///
+/// The nodes build their payloads with [`TempoPayloadAttributes::new`] for the payload timestamp,
+/// without a proposer key, consensus context or extra data.
+pub(crate) fn tempo_test_setup(
+    num_nodes: usize,
+    chain_spec: Arc<TempoChainSpec>,
+) -> E2ETestSetupBuilder<TempoNode> {
+    E2ETestSetupBuilder::new_with_attributes_generator(num_nodes, chain_spec, |timestamp| {
+        TempoPayloadAttributes::new(None, timestamp, 0, Bytes::new(), None)
+    })
 }
 
 /// Set up a test node from the provided source configuration
@@ -390,10 +471,20 @@ pub(crate) async fn setup_test_node(
 pub(crate) trait PendingTransactionBuilderExt {
     /// Poll the receipt using Tempo's AA-compatible receipt type.
     async fn get_tempo_receipt(self) -> eyre::Result<TempoTransactionReceipt>;
+
+    /// Moves the pending transaction onto [`TempoNetwork`], so its receipt is decoded as Tempo's
+    /// AA-compatible receipt type.
+    fn into_tempo(self) -> PendingTransactionBuilder<TempoNetwork>;
 }
 
 impl PendingTransactionBuilderExt for PendingTransactionBuilder<Ethereum> {
     async fn get_tempo_receipt(self) -> eyre::Result<TempoTransactionReceipt> {
+        // get_receipt also polls independently of the heartbeat for one confirmation,
+        // so it can recover when the heartbeat misses the block containing the transaction.
+        Ok(self.into_tempo().get_receipt().await?)
+    }
+
+    fn into_tempo(self) -> PendingTransactionBuilder<TempoNetwork> {
         let (provider, config) = self.split();
         let client = RpcClient::new(
             provider.client().transport().clone(),
@@ -401,35 +492,24 @@ impl PendingTransactionBuilderExt for PendingTransactionBuilder<Ethereum> {
         )
         .with_poll_interval(provider.client().poll_interval());
         let provider = RootProvider::<TempoNetwork>::new(client);
-        // get_receipt also polls independently of the heartbeat for one confirmation,
-        // so it can recover when the heartbeat misses the block containing the transaction.
-        Ok(PendingTransactionBuilder::from_config(provider, config)
-            .get_receipt()
-            .await?)
+        PendingTransactionBuilder::from_config(provider, config)
     }
 }
 
-pub(crate) async fn await_receipts(
-    pending_txs: &mut Vec<PendingTransactionBuilder<Ethereum>>,
-) -> eyre::Result<()> {
-    for (i, tx) in pending_txs.drain(..).enumerate() {
-        let receipt = tx.get_receipt().await?;
-        assert!(
-            receipt.status(),
-            "tx {} failed: hash={:?}, gas_used={}",
-            i,
-            receipt.transaction_hash,
-            receipt.gas_used
-        );
-    }
-
-    Ok(())
+/// Returns test account `index` of `wallet`, which signs transactions that set no fees with
+/// [`TEMPO_T1_BASE_FEE`] as max fee and max priority fee per gas, and transactions that set no gas
+/// limit with a 5M gas limit.
+pub(crate) fn t1_account(wallet: &Wallet, index: u32) -> TestAccount {
+    wallet
+        .account(index)
+        .with_fees(TEMPO_T1_BASE_FEE as u128, TEMPO_T1_BASE_FEE as u128)
+        .with_gas_limit(5_000_000)
 }
 
 /// Result type for single node setup
 pub(crate) struct SingleNodeSetup {
     /// The node handle for direct manipulation (inject_tx, advance_block, etc.)
-    pub node: reth_e2e_test_utils::NodeHelperType<TempoNode>,
+    pub node: TestNode,
     /// Latest Tempo hardfork active at genesis (timestamp 0).
     pub hardfork: TempoHardfork,
 }
@@ -437,14 +517,14 @@ pub(crate) struct SingleNodeSetup {
 /// Result type for multi-node setup
 pub(crate) struct MultiNodeSetup {
     /// Node handles for direct manipulation
-    pub nodes: Vec<reth_e2e_test_utils::NodeHelperType<TempoNode>>,
+    pub nodes: Vec<TestNode>,
 }
 
 /// Result type for HTTP-only setup (no direct node access)
 pub(crate) struct HttpOnlySetup {
     /// HTTP RPC URL for provider connections
     pub http_url: Url,
-    /// Optional local node and task manager (None if using external RPC)
+    /// Optional local node (None if using external RPC)
     pub local_node: Option<LocalTestNode>,
 }
 
@@ -453,10 +533,9 @@ pub(crate) struct TestNodeBuilder {
     genesis_content: String,
     custom_gas_limit: Option<String>,
     node_count: usize,
-    is_dev: bool,
     block_time: Option<Duration>,
+    first_block_timestamp: Option<u64>,
     external_rpc: Option<Url>,
-    custom_validator: Option<Address>,
     dynamic_validator: Option<Arc<std::sync::Mutex<Address>>>,
     schedule: ForkSchedule,
 }
@@ -468,10 +547,9 @@ impl TestNodeBuilder {
             genesis_content: include_str!("../assets/test-genesis.json").to_string(),
             custom_gas_limit: None,
             node_count: 1,
-            is_dev: true,
             block_time: Some(Duration::from_millis(100)),
+            first_block_timestamp: None,
             external_rpc: None,
-            custom_validator: None,
             dynamic_validator: None,
             schedule: ForkSchedule::Devnet,
         }
@@ -492,6 +570,11 @@ impl TestNodeBuilder {
     /// Mine HTTP-only test blocks as soon as transactions arrive, without an interval timer.
     pub(crate) fn with_instant_mining(mut self) -> Self {
         self.block_time = None;
+        self
+    }
+
+    pub(crate) fn with_block_timestamps_from(mut self, first: u64) -> Self {
+        self.first_block_timestamp = Some(first);
         self
     }
 
@@ -539,15 +622,15 @@ impl TestNodeBuilder {
         let chain_spec = self.build_chain_spec()?;
         let hardfork = chain_spec.tempo_hardfork_at(0);
 
-        let (mut nodes, _wallet) = TempoNode::test_setup(1, Arc::new(chain_spec))
-            .with_dev_mode(self.is_dev)
-            .with_attributes_generator(default_attributes_generator)
-            .build()
+        let (node, _wallet) = tempo_test_setup(1, Arc::new(chain_spec))
+            .with_dev_mode(true)
+            .build_single()
             .await?;
 
-        let node = nodes.remove(0);
-
-        Ok(SingleNodeSetup { node, hardfork })
+        Ok(SingleNodeSetup {
+            node: node.into(),
+            hardfork,
+        })
     }
 
     /// Build multiple nodes with direct access
@@ -566,13 +649,14 @@ impl TestNodeBuilder {
 
         let chain_spec = self.build_chain_spec()?;
 
-        let (nodes, _wallet) = TempoNode::test_setup(self.node_count, Arc::new(chain_spec))
-            .with_dev_mode(self.is_dev)
-            .with_attributes_generator(default_attributes_generator)
+        let (nodes, _wallet) = tempo_test_setup(self.node_count, Arc::new(chain_spec))
+            .with_dev_mode(true)
             .build()
             .await?;
 
-        Ok(MultiNodeSetup { nodes })
+        Ok(MultiNodeSetup {
+            nodes: nodes.into_iter().map(Into::into).collect(),
+        })
     }
 
     /// Build HTTP-only setup
@@ -592,30 +676,17 @@ impl TestNodeBuilder {
             });
         }
 
-        let runtime = Runtime::test();
         let chain_spec = self.build_chain_spec()?;
-        let static_validator = self
-            .custom_validator
-            .unwrap_or(chain_spec.inner.genesis.coinbase);
+        let static_validator = chain_spec.inner.genesis.coinbase;
         let dynamic_validator = self.dynamic_validator.clone();
+        let next_timestamp = self.first_block_timestamp.map(AtomicU64::new);
 
-        let mut node_config = NodeConfig::new(Arc::new(chain_spec))
-            .with_unused_ports()
-            .dev()
-            .with_rpc(
-                RpcServerArgs::default()
-                    .with_unused_ports()
-                    .with_http()
-                    .with_http_api(http_api),
-            );
-        node_config.txpool.max_account_slots = usize::MAX;
-        node_config.dev.block_time = self.block_time;
-
-        let node_handle = NodeBuilder::new(node_config.clone())
-            .testing_node(runtime.clone())
-            .node(TempoNode::default())
-            .launch_with_debug_capabilities()
-            .map_debug_payload_attributes(move |mut attributes| {
+        let (node, _wallet) = tempo_test_setup(1, Arc::new(chain_spec))
+            .with_dev_mining(self.block_time)
+            .map_dev_payload_attributes(move |mut attributes| {
+                if let Some(next) = &next_timestamp {
+                    attributes.timestamp = next.fetch_add(1, Ordering::Relaxed);
+                }
                 let validator = dynamic_validator
                     .as_ref()
                     .map(|v| *v.lock().unwrap())
@@ -623,19 +694,17 @@ impl TestNodeBuilder {
                 attributes.suggested_fee_recipient = validator;
                 attributes
             })
+            .with_rpc_modifier(move |rpc| rpc.with_http_api(http_api.clone()))
+            .with_node_config_modifier(|mut config| {
+                config.txpool.max_account_slots = usize::MAX;
+                config
+            })
+            .build_single()
             .await?;
 
-        let http_url = node_handle
-            .node
-            .rpc_server_handle()
-            .http_url()
-            .unwrap()
-            .parse()
-            .unwrap();
-
         Ok(HttpOnlySetup {
-            http_url,
-            local_node: Some((Box::new(node_handle), runtime)),
+            http_url: node.rpc_url(),
+            local_node: Some(node),
         })
     }
 
@@ -652,18 +721,4 @@ impl TestNodeBuilder {
             genesis,
         )?))
     }
-}
-
-/// Default attributes generator for payload building
-fn default_attributes_generator(timestamp: u64) -> TempoPayloadAttributes {
-    PayloadAttributes {
-        timestamp,
-        prev_randao: alloy::primitives::B256::ZERO,
-        suggested_fee_recipient: alloy::primitives::Address::ZERO,
-        withdrawals: Some(vec![]),
-        parent_beacon_block_root: Some(alloy::primitives::B256::ZERO),
-        slot_number: None,
-        target_gas_limit: None,
-    }
-    .into()
 }

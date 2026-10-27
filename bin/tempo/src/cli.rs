@@ -96,6 +96,21 @@ pub struct TempoArgs {
     #[command(flatten)]
     #[cfg(feature = "pyroscope")]
     pub(crate) pyroscope_args: PyroscopeArgs,
+
+    /// Replace the compiled-in zone verifier PCR policy. DEVNET ONLY.
+    ///
+    /// Parses the measurements from:
+    /// - `PCR0,PCR1,PCR2` (effective from genesis)
+    /// - `;`-separated `HARDFORK=PCR0,PCR1,PCR2` entries
+    ///
+    /// Rejected on mainnet and Moderato.
+    #[cfg(feature = "custom-pcrs")]
+    #[arg(
+        long = "zone-verifier.custom-pcrs",
+        value_name = "PCRS",
+        env = "TEMPO_ZONE_VERIFIER_CUSTOM_PCRS"
+    )]
+    pub(crate) custom_pcrs: Option<tempo_precompiles::zone_verifier::PcrPolicy>,
 }
 
 impl TempoArgs {

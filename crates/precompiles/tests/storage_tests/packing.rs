@@ -237,7 +237,7 @@ fn test_unit_enum_storage_roundtrip_and_packing() {
         assert!(stored_enabled);
         assert_eq!(stored_other_status, 1);
 
-        let mut enum_slot = Slot::<PackedStatus>::new(base_slot + U256::from(1), address);
+        let mut enum_slot = Slot::<PackedStatus>::new(base_slot + U256::ONE, address);
         enum_slot.write(PackedStatus::Active).unwrap();
         assert_eq!(enum_slot.read().unwrap(), PackedStatus::Active);
 
@@ -453,7 +453,7 @@ fn test_packed_two_slot_contents() {
         // Write the struct to storage
         PackedTwo::handle(base_slot, LayoutCtx::FULL, address)
             .write(PackedTwo {
-                addr: Address::from([0x12; 20]),
+                addr: Address::repeat_byte(0x12),
                 count: 0x1234567890ABCDEF,
             })
             .unwrap();
@@ -556,10 +556,10 @@ fn test_partially_packed_slot_contents() {
         let base_slot = U256::random();
 
         let value = PartiallyPacked {
-            addr1: Address::from([0xAA; 20]),
+            addr1: Address::repeat_byte(0xAA),
             flag: true,
             value: U256::from(0x123456789ABCDEF0u64),
-            addr2: Address::from([0xBB; 20]),
+            addr2: Address::repeat_byte(0xBB),
         };
 
         PartiallyPacked::handle(base_slot, LayoutCtx::FULL, address)
@@ -652,10 +652,10 @@ fn test_delete_zeros_all_slots() {
         let base_slot = U256::random();
 
         let value = PartiallyPacked {
-            addr1: Address::from([0xAA; 20]),
+            addr1: Address::repeat_byte(0xAA),
             flag: true,
             value: U256::from(0x123456789ABCDEF0u64),
-            addr2: Address::from([0xBB; 20]),
+            addr2: Address::repeat_byte(0xBB),
         };
 
         // Store the value (uses 3 slots)
@@ -750,7 +750,7 @@ fn test_slot_boundary_at_32_bytes() {
 #[test]
 fn test_fixed_bytes_to_word_alignment() {
     // FixedBytes<11> should be right-aligned at bytes[21..32] (32 - 11 = 21)
-    let value = FixedBytes::<11>::from([0xAA; 11]);
+    let value = FixedBytes::<11>::repeat_byte(0xAA);
     let word = value.to_word();
     let bytes = word.to_be_bytes::<32>();
 
@@ -780,7 +780,7 @@ fn test_fixed_bytes_packing_roundtrip() {
 #[test]
 fn test_fixed_bytes_multi_field_packing() {
     let fb4 = FixedBytes::<4>::from([0x11, 0x22, 0x33, 0x44]);
-    let fb8 = FixedBytes::<8>::from([0xAA; 8]);
+    let fb8 = FixedBytes::<8>::repeat_byte(0xAA);
 
     // Pack fb4 at offset 0, fb8 at offset 4
     let mut slot = U256::ZERO;
@@ -813,7 +813,7 @@ fn test_t4_store_packed_struct_skips_sload() -> eyre::Result<()> {
     let address = Address::random();
 
     let packed = PackedTwo {
-        addr: Address::from([0x11; 20]),
+        addr: Address::repeat_byte(0x11),
         count: 0x1234567890ABCDEF,
     };
 
@@ -887,7 +887,7 @@ fn test_t4_struct_store_preserves_neighbor_slots() -> eyre::Result<()> {
         let original = Rule4Test {
             before: 0x42,
             nested: PackedTwo {
-                addr: Address::from([0xAA; 20]),
+                addr: Address::repeat_byte(0xAA),
                 count: 0x1111111111111111,
             },
             after: 0xFF,
@@ -905,7 +905,7 @@ fn test_t4_struct_store_preserves_neighbor_slots() -> eyre::Result<()> {
             before: 0x42, // same
             nested: PackedTwo {
                 // different
-                addr: Address::from([0xBB; 20]),
+                addr: Address::repeat_byte(0xBB),
                 count: 0x2222222222222222,
             },
             after: 0xFF, // same
@@ -954,7 +954,7 @@ fn test_t4_store_multi_slot_packed_skips_sload() -> eyre::Result<()> {
     StorageCtx::enter(&mut storage, || {
         // Pre-fill both slots with garbage
         U256::handle(base_slot, LayoutCtx::FULL, address).write(garbage)?;
-        U256::handle(base_slot + U256::from(1), LayoutCtx::FULL, address).write(garbage)?;
+        U256::handle(base_slot + U256::ONE, LayoutCtx::FULL, address).write(garbage)?;
         StorageCtx.reset_counters();
 
         Rule3TestPartial::handle(base_slot, LayoutCtx::FULL, address).write(value.clone())?;
@@ -968,7 +968,7 @@ fn test_t4_store_multi_slot_packed_skips_sload() -> eyre::Result<()> {
         assert_eq!(StorageCtx.counter_sstore(), 2);
 
         // Slot 1 unused bytes (31 bytes unused) should retain garbage from the SLOAD
-        let slot1 = U256::handle(base_slot + U256::from(1), LayoutCtx::FULL, address).read()?;
+        let slot1 = U256::handle(base_slot + U256::ONE, LayoutCtx::FULL, address).read()?;
         assert_ne!(
             slot1,
             U256::from(0x42u8),
@@ -983,7 +983,7 @@ fn test_t4_store_multi_slot_packed_skips_sload() -> eyre::Result<()> {
     StorageCtx::enter(&mut storage, || {
         // Pre-fill both slots with garbage
         U256::handle(base_slot, LayoutCtx::FULL, address).write(garbage)?;
-        U256::handle(base_slot + U256::from(1), LayoutCtx::FULL, address).write(garbage)?;
+        U256::handle(base_slot + U256::ONE, LayoutCtx::FULL, address).write(garbage)?;
         StorageCtx.reset_counters();
 
         Rule3TestPartial::handle(base_slot, LayoutCtx::FULL, address).write(value)?;
@@ -997,7 +997,7 @@ fn test_t4_store_multi_slot_packed_skips_sload() -> eyre::Result<()> {
         assert_eq!(StorageCtx.counter_sstore(), 2);
 
         // Slot 1 unused bytes should be zero — proves SLOAD was skipped
-        let slot1 = U256::handle(base_slot + U256::from(1), LayoutCtx::FULL, address).read()?;
+        let slot1 = U256::handle(base_slot + U256::ONE, LayoutCtx::FULL, address).read()?;
         assert_eq!(
             slot1,
             U256::from(0x42u8),
@@ -1024,25 +1024,25 @@ fn test_t4_multi_slot_packed_preserves_neighbor_slots() -> eyre::Result<()> {
             start_time: 0x2222222222222222,
             end_time: 0x3333333333333333,
             nonce: 0x4444444444444444,
-            owner: Address::from([0xAA; 20]),
+            owner: Address::repeat_byte(0xAA),
             active: true,
         };
         PackedThreeSlot::handle(base_slot, LayoutCtx::FULL, address).write(original)?;
 
         // Snapshot all three slot values
         let slot0 = U256::handle(base_slot, LayoutCtx::FULL, address).read()?;
-        let slot1 = U256::handle(base_slot + U256::from(1), LayoutCtx::FULL, address).read()?;
+        let slot1 = U256::handle(base_slot + U256::ONE, LayoutCtx::FULL, address).read()?;
         let slot2 = U256::handle(base_slot + U256::from(2), LayoutCtx::FULL, address).read()?;
 
         // Overwrite with different packed fields in slots 1 and 2
         let updated = PackedThreeSlot {
-            value: U256::from(0xDEAD_u64),    // slot 0, same
-            timestamp: 0xAAAAAAAAAAAAAAAA,    // slot 1, different
-            start_time: 0xBBBBBBBBBBBBBBBB,   // slot 1, different
-            end_time: 0xCCCCCCCCCCCCCCCC,     // slot 1, different
-            nonce: 0xDDDDDDDDDDDDDDDD,        // slot 1, different
-            owner: Address::from([0xBB; 20]), // slot 2, different
-            active: false,                    // slot 2, different
+            value: U256::from(0xDEAD_u64),     // slot 0, same
+            timestamp: 0xAAAAAAAAAAAAAAAA,     // slot 1, different
+            start_time: 0xBBBBBBBBBBBBBBBB,    // slot 1, different
+            end_time: 0xCCCCCCCCCCCCCCCC,      // slot 1, different
+            nonce: 0xDDDDDDDDDDDDDDDD,         // slot 1, different
+            owner: Address::repeat_byte(0xBB), // slot 2, different
+            active: false,                     // slot 2, different
         };
         PackedThreeSlot::handle(base_slot, LayoutCtx::FULL, address).write(updated)?;
 
@@ -1051,8 +1051,7 @@ fn test_t4_multi_slot_packed_preserves_neighbor_slots() -> eyre::Result<()> {
         assert_eq!(slot0_after, slot0, "slot 0 should be unchanged");
 
         // Slots 1 and 2 should be updated (not equal to original snapshots)
-        let slot1_after =
-            U256::handle(base_slot + U256::from(1), LayoutCtx::FULL, address).read()?;
+        let slot1_after = U256::handle(base_slot + U256::ONE, LayoutCtx::FULL, address).read()?;
         let slot2_after =
             U256::handle(base_slot + U256::from(2), LayoutCtx::FULL, address).read()?;
         assert_ne!(slot1_after, slot1, "slot 1 should be updated");
@@ -1065,7 +1064,7 @@ fn test_t4_multi_slot_packed_preserves_neighbor_slots() -> eyre::Result<()> {
         assert_eq!(loaded.start_time, 0xBBBBBBBBBBBBBBBB);
         assert_eq!(loaded.end_time, 0xCCCCCCCCCCCCCCCC);
         assert_eq!(loaded.nonce, 0xDDDDDDDDDDDDDDDD);
-        assert_eq!(loaded.owner, Address::from([0xBB; 20]));
+        assert_eq!(loaded.owner, Address::repeat_byte(0xBB));
         assert!(!loaded.active);
 
         Ok(())

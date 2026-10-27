@@ -41,6 +41,7 @@ use reth_provider::{
     CanonStateSubscriptions, ChainSpecProvider, StateProvider, StateProviderFactory,
 };
 use reth_revm::{
+    context::result::ResultGas,
     database::StateProviderDatabase,
     database_interface::bal::BalState,
     db::{CacheState, State, TransitionState, states::CacheAccount},
@@ -155,8 +156,6 @@ where
     P: StateProviderFactory
         + ChainSpecProvider<ChainSpec = TempoChainSpec>
         + CanonStateSubscriptions<Primitives = TempoPrimitives>
-        + Send
-        + Sync
         + 'static,
 {
     /// Spawns the replay task. Lagged notifications are reported rather than backfilled.
@@ -235,7 +234,7 @@ where
     }
 }
 
-impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
+impl<P: StateProviderFactory> ShadowReplayer<P> {
     /// Replays a canonical block under both rule sets.
     /// IMPORTANT: An error means the control arm can't be trusted. Callers must treat it as fatal.
     pub fn replay(
@@ -554,8 +553,8 @@ enum TxOutcome {
 struct ObservedTx {
     /// Whether execution succeeded, reverted, or halted.
     outcome: TxOutcome,
-    /// Gas consumed by the transaction for its receipt and fee charge.
-    gas_used: u64,
+    /// Execution gas accounting for receipt validation, fee charges, and headroom checks.
+    gas: ResultGas,
     /// Hash of the unmodified ordered logs, used to validate canonical receipts.
     receipt_logs_hash: B256,
     /// Hash of the transaction's output bytes (empty when there is no output).
@@ -579,7 +578,7 @@ impl ObservedTx {
                 reth_revm::context::result::ExecutionResult::Revert { .. } => TxOutcome::Revert,
                 reth_revm::context::result::ExecutionResult::Halt { .. } => TxOutcome::Halt,
             },
-            gas_used: execution.tx_gas_used(),
+            gas: *execution.gas(),
             receipt_logs_hash: hash_logs(logs),
             output_hash: keccak256(execution.output().map_or(&[][..], |x| x)),
             fee_normalized,
@@ -643,7 +642,7 @@ fn matches_receipts(txs: &[TxEvidence], receipts: &[TempoReceipt]) -> bool {
         let gas_used = receipt.cumulative_gas_used - previous_gas;
         previous_gas = receipt.cumulative_gas_used;
         (tx.outcome == TxOutcome::Success) == receipt.success
-            && tx.gas_used == gas_used
+            && tx.gas.tx_gas_used() == gas_used
             && tx.receipt_logs_hash == hash_logs(&receipt.logs)
     })
 }
@@ -808,7 +807,7 @@ mod tests {
         let address = Address::ZERO;
         let created_address = Address::repeat_byte(1);
         let destroyed_address = Address::repeat_byte(2);
-        let slot = U256::from(1);
+        let slot = U256::ONE;
         let original = AccountInfo {
             balance: U256::from(10),
             ..Default::default()
@@ -821,7 +820,7 @@ mod tests {
         );
         account.mark_touch();
         let mut created = Account::new_not_existing(TransactionId::ZERO);
-        created.info.balance = U256::from(1);
+        created.info.balance = U256::ONE;
         created.mark_touch();
         created.mark_created();
         let mut destroyed = Account::from(original.clone());

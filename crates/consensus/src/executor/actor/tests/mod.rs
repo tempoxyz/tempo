@@ -96,7 +96,7 @@ fn delivered_finalized_tip_tracks_its_own_round() {
 }
 
 #[test]
-fn delivery_count_resets_only_after_a_successful_forkchoice_response() {
+fn delivery_count_resets_only_after_a_submitted_or_skipped_forkchoice_response() {
     deterministic::Runner::default().start(|context| async move {
         let parent = make_block(1, 1, GENESIS);
         let digest = parent.digest();
@@ -135,7 +135,8 @@ fn delivery_count_resets_only_after_a_successful_forkchoice_response() {
         assert_eq!(execution.fcus(), vec![(digest, digest, false); 2]);
 
         // Execution finality advances beyond the actor's tracked state.
-        // A build still delivers its parent, but its FCU is skipped.
+        // A build still delivers its parent, but its FCU is skipped. The
+        // skip settles the deliveries: a forced FCU would be skipped too.
         let tip = make_block(2, 2, digest);
         execution.seed_canonical_block(&tip);
         execution.set_finalized(2, tip.digest());
@@ -160,7 +161,7 @@ fn delivery_count_resets_only_after_a_successful_forkchoice_response() {
         assert!(build.await.is_err());
         assert_eq!(execution.new_payloads(), vec![digest]);
         assert_eq!(execution.fcus(), vec![(digest, digest, false); 2]);
-        assert_eq!(actor.deliveries_since_forkchoice, 4);
+        assert_eq!(actor.deliveries_since_forkchoice, 0);
     });
 }
 
