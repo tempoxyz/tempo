@@ -79,7 +79,7 @@ let zone_earn_weights = (txgen-workload-metadata-args zone-earn-mix $zone_earn |
 assert equal ($zone_earn_weights | columns | sort) [public_transfer vault_deposit vault_withdraw zone_deposit zone_withdraw]
 rm -rf $zone_earn_dir
 # Gap variants: pinned portal count, single-sender settlement, fresh payees.
-for preset in [zone-earn-hot zone-earn-serial zone-portal-hot bridge-mix-new-accounts] {
+for preset in [zone-earn-hot zone-earn-serial zone-portal-hot bridge-mix-new-accounts card-settlement] {
     let spec = (txgen-resolve-bench-spec $preset)
     assert equal ($spec.spec_path | path basename) $"($preset).yml"
     assert ($preset in $TXGEN_HELPER_ALWAYS_FUND_PRESETS)
@@ -98,4 +98,16 @@ for name in $serial_names {
 }
 assert equal ($serial.templates.zone_deposit_0.expiring_nonce) true
 rm -rf $serial_dir
+# Card settlement keeps 18 unsponsored shard senders that forward redemptions.
+let card_dir = (mktemp -d)
+let card = (open (txgen-prepare-public-mix-preset (txgen-resolve-bench-spec card-settlement).spec_path 1000 40 2 1337 --out-dir $card_dir))
+let card_mix = ($card.mix | get template)
+assert equal ($card_mix | length) 18
+assert ($card_mix | all { |name| $name | str starts-with "vault_withdraw_" })
+let shard = ($card.templates | get vault_withdraw_0)
+assert equal ($shard | get -o sponsor) null
+assert equal $shard.nonce {uniform: [0 9223372036854775807]}
+assert equal ($shard.calls | last | get function) transfer
+assert equal ($shard.calls | last | get args | first) $TXGEN_HELPER_CARD_SETTLEMENT_ACCOUNT
+rm -rf $card_dir
 print "Preset, policy setup, state-bloat, and workload metadata checks passed"

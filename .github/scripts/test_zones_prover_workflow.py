@@ -184,16 +184,20 @@ class ReportingTests(unittest.TestCase):
         rng = random.Random(35)  # A draw an unsmoothed bootstrap flags as a change.
         noise = traced_report([rng.choice(DEPOSIT_MS) for _ in range(100)])
         scaled = lambda factor, n=10: traced_report([d * factor for d in DEPOSIT_MS * n])
-        for name, baseline, feature, verdict, feature_sha in (
-                ("improvement", base, scaled(0.8), "Improvement", SHA),
-                ("regression", base, scaled(1.2), "Regression", SHA),
-                ("same commit", base, scaled(0.8), "Improvement", OTHER_SHA),
-                ("clustered noise", base, noise, "No Significant Change", SHA),
-                ("within floor", base, traced_report(DEPOSIT_MS * 10, withdrawal=1970.0), "No Significant Change", SHA),
-                ("tight row beyond floor", base, traced_report(DEPOSIT_MS * 10, withdrawal=1900.0), "Improvement", SHA),
-                ("under 100 journeys", scaled(1, 2), scaled(0.5, 2), "Unclassified", SHA),
-                ("partial traces", base, dict(scaled(0.6), completed=200), "Unclassified", SHA),
-                ("missing traces", None, None, "Unclassified", SHA)):
+        for name, baseline, feature, verdict, feature_sha, reason in (
+                ("improvement", base, scaled(0.8), "Improvement", SHA, ""),
+                ("regression", base, scaled(1.2), "Regression", SHA, ""),
+                ("same commit", base, scaled(0.8), "Improvement", OTHER_SHA, ""),
+                ("clustered noise", base, noise, "No Significant Change", SHA, ""),
+                ("within floor", base, traced_report(DEPOSIT_MS * 10, withdrawal=1970.0), "No Significant Change", SHA, ""),
+                ("tight row beyond floor", base, traced_report(DEPOSIT_MS * 10, withdrawal=1900.0), "Improvement", SHA, ""),
+                ("under 100 journeys", scaled(1, 2), scaled(0.5, 2), "Unclassified", SHA,
+                 "baseline: only 20 completed journeys; at least 100 are required."),
+                ("partial traces", base, dict(scaled(0.6, 1), completed=100), "Unclassified", SHA,
+                 "feature: retained 10 of 100 completed journey traces; all are required."),
+                ("invalid latencies", base, {"completed": 100, "sampled_instances": [{"outcome": "completed", "steps": []}] * 100},
+                 "Unclassified", SHA, "No valid end-to-end latency samples."),
+                ("missing traces", None, None, "Unclassified", SHA, "Classification failed; see CI logs.")):
             with self.subTest(name):
                 comparison = {"rows": rows, "metadata": {
                     "baseline": OTHER_SHA, "feature": feature_sha, "prover": True, "preset": "full-journey",
@@ -209,6 +213,10 @@ class ReportingTests(unittest.TestCase):
                 self.assertEqual(message["channel"] == "CHANNEL", verdict == "Improvement" and feature_sha == SHA)
                 self.assertIn(verdict, message["blocks"][0]["text"]["text"])
                 self.assertEqual(len(result["warnings"]), baseline is None)
+                section = message["blocks"][1]["text"]["text"]
+                self.assertEqual("*Unclassified:*" in section, bool(reason))
+                if reason:
+                    self.assertIn(reason, section)
                 table = [[cell["text"] for cell in row] for row in message["blocks"][2]["rows"]]
                 self.assertEqual(table[:2], [["Latency (s)", "base (p50)", "feat (p50)", "change", "base (p95)", "feat (p95)", "change"],
                                              ["withdrawal", "0.100", "0.050", "-50.0%", "0.100", "0.050", "-50.0%"]])

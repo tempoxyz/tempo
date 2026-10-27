@@ -16,6 +16,3 @@ cargo install cargo-fuzz
 cd crates/nitro-attestation
 cargo +nightly fuzz run parse_attestation -- -max_len=24577
 ```
-
-The package is excluded from the root workspace so it keeps its fuzz-only dependency graph and
-build settings isolated from node releases.

@@ -10,6 +10,7 @@ const TXGEN_HELPER_ALWAYS_FUND_PRESETS = [
     "zone-earn-hot"
     "zone-earn-serial"
     "zone-portal-hot"
+    "card-settlement"
     "dex"
     "bridge-mix"
     "bridge-mix-new-accounts"
@@ -24,11 +25,15 @@ const TXGEN_HELPER_ALWAYS_FUND_PRESETS = [
     "zone-portal-throughput"
 ]
 # Presets composed by txgen-prepare-public-mix-preset from the public-mix fixtures.
-const TXGEN_HELPER_PUBLIC_MIX_PRESETS = ["public-mix" "vault-throughput" "zone-portal-throughput" "zone-earn-mix" "zone-earn-hot" "zone-earn-serial" "zone-portal-hot"]
+const TXGEN_HELPER_PUBLIC_MIX_PRESETS = ["public-mix" "vault-throughput" "zone-portal-throughput" "zone-earn-mix" "zone-earn-hot" "zone-earn-serial" "zone-portal-hot" "card-settlement"]
 # Presets that pin the zone portal count instead of sizing it by TPS (TXGEN_ZONE_COUNT still overrides).
 const TXGEN_HELPER_PRESET_ZONE_COUNTS = {"zone-earn-hot": 1, "zone-portal-hot": 1}
 # Presets whose zone settlement and Earn deposits come from one sender with ordered nonces.
 const TXGEN_HELPER_SINGLE_SENDER_PRESETS = ["zone-earn-serial"]
+# Card settlement: a small pool of shard senders redeem vault shares and forward proceeds.
+const TXGEN_HELPER_CARD_SETTLEMENT_PRESETS = ["card-settlement"]
+const TXGEN_HELPER_CARD_SETTLEMENT_SENDERS = 18
+const TXGEN_HELPER_CARD_SETTLEMENT_ACCOUNT = "0x000000000000000000000000000000000000ca4d"
 const TXGEN_HELPER_EXISTING_RECIPIENTS_START = 10000
 const TXGEN_HELPER_KEYCHAIN_ACCESS_KEYS_START = 100000
 const TXGEN_HELPER_KEYCHAIN_AUTHORIZE_SETUP_GAS_LIMIT = 20000000
@@ -653,6 +658,34 @@ def txgen-single-sender-templates [templates: record] {
     } | transpose -r -d
 }
 
+# Keeps the first card shard senders' vault redemptions, unsponsored, each followed by
+# a transfer of the proceeds to one settlement account. Each gets a random TIP-1106
+# nonce discriminator so a sender's otherwise identical redemptions stay distinct.
+def txgen-card-settlement [templates: record, mix: list<any>] {
+    let shard = { |name: string|
+        let parsed = ($name | parse --regex '^vault_withdraw_(?<index>[0-9]+)$')
+        ($parsed | length) > 0 and (($parsed | first).index | into int) < $TXGEN_HELPER_CARD_SETTLEMENT_SENDERS
+    }
+    let forward = {
+        to: "0x20c0000000000000000000000000000000000000"
+        abi: ERC20
+        function: transfer
+        args: [$TXGEN_HELPER_CARD_SETTLEMENT_ACCOUNT 1]
+    }
+    {
+        templates: ($templates | items { |name, template|
+            let value = if (do $shard $name) {
+                $template | reject -o sponsor | upsert nonce {uniform: [0 9223372036854775807]} | upsert calls ($template.calls | append $forward)
+            } else { $template }
+            {name: $name, value: $value}
+        } | transpose -r -d)
+        mix: ($mix | where { |entry|
+            let name = ($entry | get -o template | default "")
+            not ($name | str starts-with "vault_withdraw_") or (do $shard $name)
+        })
+    }
+}
+
 def txgen-prepare-zones-preset [spec_path: string, count: int, accounts: int, zones: int, mode: string] {
     if $mode not-in [mixed deposit withdraw] { error make {msg: "TXGEN_ZONE_MODE must be mixed, deposit, or withdraw"} }
     let spec = (open $spec_path)
@@ -865,6 +898,11 @@ def txgen-prepare-public-mix-preset [spec_path: string, count: int, accounts: in
     let templates = if $preset_name in $TXGEN_HELPER_SINGLE_SENDER_PRESETS {
         txgen-single-sender-templates $templates
     } else { $templates }
+    let card = if $preset_name in $TXGEN_HELPER_CARD_SETTLEMENT_PRESETS {
+        txgen-card-settlement $templates $mix
+    } else { {templates: $templates, mix: $mix} }
+    let templates = $card.templates
+    let mix = $card.mix
     {include: $spec_path, accounts: {users: {range: [0 $accounts]}},
         setup: {steps: ($vault_setup | append $users | append $zone_spec.setup.steps)},
         templates: $templates,

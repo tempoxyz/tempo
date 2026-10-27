@@ -22,10 +22,8 @@ const p95 = sorted => sorted[Math.min(Math.floor(sorted.length * 0.95), sorted.l
 const offset = step => step.milestones?.at(-1)?.run_offset_ms ?? step.finished_offset_ms;
 
 // Per-journey latencies rebuilt from txgen's lifecycle traces the way it aggregates
-// "dependency" edges; null unless every journey was traced (a partial trace is the earliest).
-function samples(report, edge) {
-  const instances = (report.sampled_instances || []).filter(i => i.outcome === 'completed');
-  if (instances.length < MIN_JOURNEYS || instances.length !== report.completed) return null;
+// "dependency" edges; null if a latency is missing or invalid.
+function samples(instances, edge) {
   const values = instances.map(instance => {
     if (!edge) return instance.client_observed_e2e_latency_ms;
     const [source, destination] = edge.map(id => instance.steps.find(step => step.id === id));
@@ -60,15 +58,26 @@ function sig(baseline, feature, rand) {
 }
 
 function classify(rows, workDir) {
-  const [baseline, feature] = ['baseline', 'feature'].map(phase =>
-    JSON.parse(fs.readFileSync(path.join(workDir, phase, 'report.json'), 'utf8')));
-  const rand = rng(42);
   const changes = {};
+  const traces = [];
+  for (const phase of ['baseline', 'feature']) {
+    const report = JSON.parse(fs.readFileSync(path.join(workDir, phase, 'report.json'), 'utf8'));
+    if (!Number.isInteger(report.completed) || report.completed < 0) throw new Error(`${phase}: invalid completed count`);
+    const instances = (report.sampled_instances || []).filter(i => i.outcome === 'completed');
+    if (instances.length !== report.completed) {
+      return { changes, reason: `${phase}: retained ${instances.length} of ${report.completed} completed journey traces; all are required.` };
+    }
+    if (instances.length < MIN_JOURNEYS) {
+      return { changes, reason: `${phase}: only ${report.completed} completed journeys; at least ${MIN_JOURNEYS} are required.` };
+    }
+    traces.push(instances);
+  }
+  const rand = rng(42);
   for (const { key, end_to_end: endToEnd } of rows) {
-    const [b, f] = [baseline, feature].map(report => endToEnd && key in EDGES && samples(report, EDGES[key]));
+    const [b, f] = traces.map(instances => endToEnd && key in EDGES && samples(instances, EDGES[key]));
     if (b && f) changes[key] = { sig: sig(b, f, rand) };
   }
-  return changes;
+  return { changes, reason: Object.keys(changes).length ? '' : 'No valid end-to-end latency samples.' };
 }
 
 module.exports = { classify };

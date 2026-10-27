@@ -74,4 +74,6 @@ portal and vault state, up to the TIP-1096 deposit cap); `zone-earn-serial`
 sends zone settlement and Earn deposits from one account with ordered nonces;
 `bridge-mix-new-accounts` pays every bridge payout to a fresh address; and
 `zone-portal-hot` puts all zone portal deposits and withdrawals on one portal.
+`card-settlement` models card-program settlement: 18 unsponsored shard senders
+redeem vault shares and forward the proceeds to one settlement account.
 Run them at mainnet limits (`gas-limit=500M general-gas-limit=30M`) to compare.
