@@ -147,8 +147,9 @@ impl Ledger {
         }
         if self.supply_cap != other.supply_cap {
             out.push(format!(
-                "supplyCap: {:?} -> {:?}",
-                self.supply_cap, other.supply_cap
+                "supplyCap: {} -> {}",
+                cap(self.supply_cap),
+                cap(other.supply_cap)
             ));
         }
         out.join(", ")
@@ -164,12 +165,36 @@ pub fn decode_transfer(log: &LogData) -> Option<Transfer> {
         .flatten()
 }
 
+/// A supply cap as text, `?` when nothing answered it.
+fn cap(cap: Option<U256>) -> String {
+    cap.map_or_else(|| "?".to_string(), |cap| cap.to_string())
+}
+
 /// Reads `token`'s supply, supply cap and the balances of `accounts`, in one
-/// batch of view calls.
+/// batch of view calls. Every view must answer.
 pub fn observe<V: Views>(
     views: &mut V,
     token: Address,
     accounts: &[Address],
+) -> Result<Ledger, ObserveError<V::Error>> {
+    read(views, token, accounts, false)
+}
+
+/// Like [`observe`], over a partial state: a supply cap or balance nothing answers is left out.
+/// The supply must still answer.
+pub fn observe_partial<V: Views>(
+    views: &mut V,
+    token: Address,
+    accounts: &[Address],
+) -> Result<Ledger, ObserveError<V::Error>> {
+    read(views, token, accounts, true)
+}
+
+fn read<V: Views>(
+    views: &mut V,
+    token: Address,
+    accounts: &[Address],
+    partial: bool,
 ) -> Result<Ledger, ObserveError<V::Error>> {
     let calls: Vec<(Address, Bytes)> = [
         ITIP20::totalSupplyCall {}.abi_encode(),
@@ -185,11 +210,14 @@ pub fn observe<V: Views>(
     .collect();
     let mut outputs = views.call(&calls).map_err(ObserveError::Views)?.into_iter();
     let supply = decode::<ITIP20::totalSupplyCall, _>(token, outputs.next())?;
-    let supply_cap = answered(decode::<ITIP20::supplyCapCall, _>(token, outputs.next()))?;
+    let supply_cap = answered(
+        decode::<ITIP20::supplyCapCall, _>(token, outputs.next()),
+        partial,
+    )?;
     let mut balances = BTreeMap::new();
     for &account in accounts {
         let balance = decode::<ITIP20::balanceOfCall, _>(token, outputs.next());
-        if let Some(balance) = answered(balance)? {
+        if let Some(balance) = answered(balance, partial)? {
             balances.insert(account, balance);
         }
     }
@@ -201,11 +229,14 @@ pub fn observe<V: Views>(
     })
 }
 
-/// `Ok(None)` for a view nothing answered, such as one reading outside a partial state.
-fn answered<T, E>(read: Result<T, ObserveError<E>>) -> Result<Option<T>, ObserveError<E>> {
+/// §Ok(None)§ for a view nothing answered, if §partial§.
+fn answered<T, E>(
+    read: Result<T, ObserveError<E>>,
+    partial: bool,
+) -> Result<Option<T>, ObserveError<E>> {
     match read {
         Ok(value) => Ok(Some(value)),
-        Err(err) if err.is_not_answered() => Ok(None),
+        Err(err) if partial && err.is_not_answered() => Ok(None),
         Err(err) => Err(err),
     }
 }

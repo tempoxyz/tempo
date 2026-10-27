@@ -70,7 +70,7 @@ pub(crate) fn check(
     }
 
     for &token in tokens.iter().filter(|token| selected(token)) {
-        let ledger = tip20::observe(&mut views, token, &all_holders);
+        let ledger = tip20::observe_partial(&mut views, token, &all_holders);
         if let Some(ledger) = observed(&mut step, TIP20_VIEW, format!("token={token}"), ledger) {
             step.run(tip20::CHECKS, &ledger);
         }
