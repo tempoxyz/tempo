@@ -38,7 +38,7 @@ const TXGEN_HELPER_CARD_SETTLEMENT_SENDERS = 18
 const TXGEN_HELPER_CARD_SETTLEMENT_ACCOUNT = "0x000000000000000000000000000000000000ca4d"
 # Batch payouts: recipients per transaction by preset (TXGEN_BATCH_PAYOUT_RECIPIENTS overrides),
 # within the txpool's 32 calls per Tempo transaction and the 30M transaction gas cap.
-const TXGEN_HELPER_BATCH_PAYOUT_RECIPIENTS = {"batch-payout": 32}
+const TXGEN_HELPER_BATCH_PAYOUT_RECIPIENTS = {"batch-payout": 32, "neobank-generic": 32}
 const TXGEN_HELPER_BATCH_PAYOUT_BASE_GAS = 500000
 const TXGEN_HELPER_MAX_AA_CALLS = 32
 const TXGEN_HELPER_TX_GAS_LIMIT_CAP = 30000000
@@ -964,8 +964,14 @@ def txgen-prepare-public-mix-preset [spec_path: string, count: int, accounts: in
         if $result.exit_code != 0 { error make {msg: $"Failed to read dex setup: ($result.stderr)"} }
         $result.stdout | from json
     } else { [] }
+    # Delegated-key payments need access-key-mix.yml's per-user keychain setup.
+    let keychain_setup = if ($spec.mix | any { |entry| ($entry | get -o template | default "") | str starts-with "keychain_" }) {
+        let result = (^uv run --no-project --with yq==3.4.3 yq -c '.setup.steps' ($presets | path join access-key-mix.yml) | complete)
+        if $result.exit_code != 0 { error make {msg: $"Failed to read access-key setup: ($result.stderr)"} }
+        $result.stdout | from json
+    } else { [] }
     {include: $spec_path, accounts: {users: {range: [0 $accounts]}},
-        setup: {steps: ($vault_setup | append $users | append $zone_spec.setup.steps | append $dex_setup)},
+        setup: {steps: ($vault_setup | append $users | append $zone_spec.setup.steps | append $dex_setup | append $keychain_setup)},
         templates: $templates,
         mix: $mix} | to yaml | save -f $output
     $output
