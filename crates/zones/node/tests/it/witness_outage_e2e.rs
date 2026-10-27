@@ -30,17 +30,26 @@ async fn pre_t15_zone_produces_and_settles_without_witnesses() -> eyre::Result<(
     let height = leader.provider().get_block_number().await?;
     cluster.wait_all_at(height, TIMEOUT).await?;
     cluster.assert_same_block(height).await?;
-    let settled = settled_zone_height(&cluster).await?;
-    let mut unwitnessed = 0;
-    for number in settled + 1..=height {
-        if !has_witness(leader, number).await? {
-            unwitnessed += 1;
-        }
-    }
-    eyre::ensure!(
-        unwitnessed > 0,
-        "every block in ({settled}, {height}] has a witness although the L1 serves no proofs"
-    );
+    // NoProof settlement can pass `height` before this check runs, and settled witnesses are
+    // pruned, so look for an unwitnessed block in the leader's unsettled tail instead.
+    poll_until(
+        TIMEOUT,
+        POLL,
+        "an unsettled leader block without a witness",
+        || async {
+            let head = leader.provider().get_block_number().await?;
+            let mut unwitnessed = Vec::new();
+            for number in settled_zone_height(&cluster).await? + 1..=head {
+                if !has_witness(leader, number).await? {
+                    unwitnessed.push(number);
+                }
+            }
+            // A block settled since its check may have lost its witness to pruning.
+            let settled = settled_zone_height(&cluster).await?;
+            Ok(unwitnessed.into_iter().find(|&number| number > settled))
+        },
+    )
+    .await?;
 
     // Blocks without witnesses settle with the NoProof verifier.
     poll_until(
