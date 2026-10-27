@@ -925,7 +925,11 @@ jobs:
             exit 1
           fi
           case "$ALLOCATOR_BENCH_CONFIG" in
-            default) ;;
+            default)
+              if ! git grep -q -e 'commonware-allocator.workspace' -e 'mimalloc.workspace' "$FEATURE_REF" -- bin/tempo/Cargo.toml; then
+                BENCH_FEATURE_FEATURES=jemalloc
+              fi
+              ;;
             purge) BENCH_FEATURE_FEATURES="mimalloc-purge" ;;
             reserve) BENCH_FEATURE_FEATURES="mimalloc-reserve" ;;
             prefault) BENCH_FEATURE_FEATURES="mimalloc-prefault" ;;
