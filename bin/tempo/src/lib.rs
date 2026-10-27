@@ -54,13 +54,13 @@ use alloy_genesis::Genesis;
 use alloy_primitives::{Address, B256};
 use alloy_signer_local::MnemonicBuilder;
 use clap::{CommandFactory, FromArgMatches};
+use commonware_allocator as _;
 use commonware_runtime::{Runner, Supervisor as _};
 use eyre::{OptionExt, WrapErr as _};
 use futures::{
     FutureExt as _,
     future::{Either, FusedFuture as _},
 };
-use mimalloc as _;
 use reth_cli_runner::CliRunner;
 use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands};
 use reth_network_api::Peers;

@@ -3228,11 +3228,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e96ef599ff4c2ec1608c9b5b3527ae76be6b48cfc71dc9c89910105febc3ec91"
 dependencies = [
  "cfg-if",
- "commonware-macros",
+ "commonware-macros 2026.9.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "commonware-runtime",
  "crossbeam-queue",
  "futures-util",
  "parking_lot",
+]
+
+[[package]]
+name = "commonware-allocator"
+version = "2026.9.0"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=15aa24343a190a42bcc823e3f60ad354966e64d7#15aa24343a190a42bcc823e3f60ad354966e64d7"
+dependencies = [
+ "cc",
+ "commonware-macros 2026.9.0 (git+https://github.com/commonwarexyz/monorepo?rev=15aa24343a190a42bcc823e3f60ad354966e64d7)",
+ "libc",
 ]
 
 [[package]]
@@ -3244,7 +3254,7 @@ dependencies = [
  "commonware-actor",
  "commonware-codec",
  "commonware-cryptography",
- "commonware-macros",
+ "commonware-macros 2026.9.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "commonware-p2p",
  "commonware-runtime",
  "commonware-utils",
@@ -3263,7 +3273,7 @@ dependencies = [
  "cfg-if",
  "commonware-codec-macros",
  "commonware-conformance",
- "commonware-macros",
+ "commonware-macros 2026.9.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "paste",
  "rand_chacha 0.10.0",
  "rand_core 0.10.1",
@@ -3291,7 +3301,7 @@ dependencies = [
  "bytes",
  "commonware-codec",
  "commonware-cryptography",
- "commonware-macros",
+ "commonware-macros 2026.9.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "commonware-math",
  "commonware-parallel",
  "commonware-storage",
@@ -3309,7 +3319,7 @@ checksum = "1125e27828ae3d9074bb1f1559ac22de6ce0c848ebac8c0f222ab42d1ef64efc"
 dependencies = [
  "commonware-conformance-macros",
  "commonware-formatting",
- "commonware-macros",
+ "commonware-macros 2026.9.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "futures",
  "serde",
  "sha2 0.11.0",
@@ -3341,7 +3351,7 @@ dependencies = [
  "commonware-coding",
  "commonware-cryptography",
  "commonware-formatting",
- "commonware-macros",
+ "commonware-macros 2026.9.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "commonware-math",
  "commonware-p2p",
  "commonware-parallel",
@@ -3375,7 +3385,7 @@ dependencies = [
  "chacha20poly1305 0.11.0",
  "commonware-codec",
  "commonware-formatting",
- "commonware-macros",
+ "commonware-macros 2026.9.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "commonware-math",
  "commonware-parallel",
  "commonware-utils",
@@ -3407,7 +3417,7 @@ version = "2026.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7cdfc3a5a45f024571d9abce2bdb5a52081f9f017e61b80e2bff89856361ceee"
 dependencies = [
- "commonware-macros",
+ "commonware-macros 2026.9.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "const-hex",
 ]
 
@@ -3419,7 +3429,7 @@ checksum = "0d0fbc4a20cba4987e31206b6b34b1f8809816408f1cffb874dff4dffc4fa2b0"
 dependencies = [
  "arbitrary",
  "commonware-formatting",
- "commonware-macros",
+ "commonware-macros 2026.9.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "rand 0.10.3",
  "rand_chacha 0.10.0",
  "rand_core 0.10.1",
@@ -3431,7 +3441,16 @@ version = "2026.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3058bc70420515d6e92d99510ec2b2a2e1d029a6aced44d243c05ce8d60c6493"
 dependencies = [
- "commonware-macros-impl",
+ "commonware-macros-impl 2026.9.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "tokio",
+]
+
+[[package]]
+name = "commonware-macros"
+version = "2026.9.0"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=15aa24343a190a42bcc823e3f60ad354966e64d7#15aa24343a190a42bcc823e3f60ad354966e64d7"
+dependencies = [
+ "commonware-macros-impl 2026.9.0 (git+https://github.com/commonwarexyz/monorepo?rev=15aa24343a190a42bcc823e3f60ad354966e64d7)",
  "tokio",
 ]
 
@@ -3440,6 +3459,18 @@ name = "commonware-macros-impl"
 version = "2026.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbcf77c39d7486af7394b1d1c4d268d08a5763036b813a2e6aba2ee825b5bd45"
+dependencies = [
+ "proc-macro-crate",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+ "toml 1.1.6+spec-1.1.0",
+]
+
+[[package]]
+name = "commonware-macros-impl"
+version = "2026.9.0"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=15aa24343a190a42bcc823e3f60ad354966e64d7#15aa24343a190a42bcc823e3f60ad354966e64d7"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -3458,7 +3489,7 @@ dependencies = [
  "bytes",
  "commonware-codec",
  "commonware-invariants",
- "commonware-macros",
+ "commonware-macros 2026.9.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "commonware-parallel",
  "commonware-utils",
  "rand_core 0.10.1",
@@ -3473,7 +3504,7 @@ dependencies = [
  "commonware-actor",
  "commonware-codec",
  "commonware-cryptography",
- "commonware-macros",
+ "commonware-macros 2026.9.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "commonware-parallel",
  "commonware-runtime",
  "commonware-stream",
@@ -3498,7 +3529,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "10bae95b6d977699c212691a996805e241936d8f958c73a1ebff0190376d1260"
 dependencies = [
  "cfg-if",
- "commonware-macros",
+ "commonware-macros 2026.9.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "dashmap",
  "futures",
  "rayon",
@@ -3514,7 +3545,7 @@ dependencies = [
  "commonware-actor",
  "commonware-codec",
  "commonware-cryptography",
- "commonware-macros",
+ "commonware-macros 2026.9.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "commonware-p2p",
  "commonware-runtime",
  "commonware-stream",
@@ -3539,7 +3570,7 @@ dependencies = [
  "commonware-codec",
  "commonware-cryptography",
  "commonware-formatting",
- "commonware-macros",
+ "commonware-macros 2026.9.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "commonware-parallel",
  "commonware-runtime-macros",
  "commonware-utils",
@@ -3592,7 +3623,7 @@ dependencies = [
  "commonware-codec",
  "commonware-cryptography",
  "commonware-formatting",
- "commonware-macros",
+ "commonware-macros 2026.9.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "commonware-parallel",
  "commonware-runtime",
  "commonware-utils",
@@ -3614,7 +3645,7 @@ dependencies = [
  "commonware-codec",
  "commonware-cryptography",
  "commonware-formatting",
- "commonware-macros",
+ "commonware-macros 2026.9.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "commonware-runtime",
  "commonware-utils",
  "futures",
@@ -3635,7 +3666,7 @@ dependencies = [
  "bytes",
  "commonware-codec",
  "commonware-formatting",
- "commonware-macros",
+ "commonware-macros 2026.9.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "futures",
  "getrandom 0.2.17",
  "getrandom 0.3.4",
@@ -7051,15 +7082,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
-name = "libmimalloc-sys"
-version = "0.1.49"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a45a52f43e1c16f667ccfe4dd8c85b7f7c204fd5e3bf46c5b0db9a5c3c0b8e9"
-dependencies = [
- "cc",
-]
-
-[[package]]
 name = "libp2p-identity"
 version = "0.2.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7427,15 +7449,6 @@ dependencies = [
  "rand_xoshiro",
  "rapidhash",
  "sketches-ddsketch",
-]
-
-[[package]]
-name = "mimalloc"
-version = "0.1.52"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d4139bb28d14ad1facf21d5eb8825051b326e172d216b39f6d31df53cc97862"
-dependencies = [
- "libmimalloc-sys",
 ]
 
 [[package]]
@@ -13865,6 +13878,7 @@ dependencies = [
  "base64 0.22.1",
  "blake3",
  "clap",
+ "commonware-allocator",
  "commonware-codec",
  "commonware-consensus",
  "commonware-cryptography",
@@ -13875,7 +13889,6 @@ dependencies = [
  "futures",
  "jiff",
  "jsonrpsee",
- "mimalloc",
  "nix 0.30.1",
  "opentelemetry-otlp",
  "parking_lot",
@@ -14035,7 +14048,7 @@ dependencies = [
  "commonware-codec",
  "commonware-consensus",
  "commonware-cryptography",
- "commonware-macros",
+ "commonware-macros 2026.9.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "commonware-math",
  "commonware-p2p",
  "commonware-parallel",
@@ -14146,7 +14159,7 @@ dependencies = [
  "commonware-codec",
  "commonware-consensus",
  "commonware-cryptography",
- "commonware-macros",
+ "commonware-macros 2026.9.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "commonware-math",
  "commonware-p2p",
  "commonware-parallel",
