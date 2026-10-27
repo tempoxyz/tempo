@@ -15,43 +15,8 @@ use alloy_primitives::{Address, B256, Bytes, U256};
 use alloy_sol_types::{SolCall, sol};
 
 use crate::tip20::ITIP20;
-use invariants_core::{check, ensure};
 
-use crate::{Check, Checked, ObserveError, Views, decode};
-
-pub const DEX_CUSTODY: &str = "TEMPO-DEX10";
-
-pub const CHECKS: &[Check<Books>] = &[
-    // The DEX holds, of each token, at least its users' internal balances of it plus its live
-    // orders' escrow in it.
-    check! {
-        id: DEX_CUSTODY,
-        over: |books: &Books| books.holdings.keys(),
-        judge: |b, token| {
-            let token = **token;
-            let held = b.holdings[&token];
-            let internal: U256 = b
-                .internal
-                .iter()
-                .filter(|((_, t), _)| *t == token)
-                .map(|(_, v)| *v)
-                .sum();
-            let orders: Vec<&Escrow> = b.escrow.iter().filter(|e| e.token == token).collect();
-            let escrowed: U256 = orders.iter().map(|e| e.amount).sum();
-            let owed = internal + escrowed;
-            ensure!(
-                owed <= held,
-                "holds {held}, owes {owed} (internal balances {internal}, escrow of {} live orders {escrowed}); short {}",
-                orders.len(),
-                owed - held
-            )
-        },
-    },
-];
-
-impl Checked for Books {
-    const CHECKS: &'static [Check<Self>] = CHECKS;
-}
+use crate::{ObserveError, Views, decode};
 
 sol! {
     #[derive(Debug, PartialEq, Eq)]
@@ -87,6 +52,10 @@ sol! {
 }
 
 pub use IStablecoinDex::{OrderCancelled, OrderFilled, OrderFlipped, OrderPlaced};
+
+mod checks;
+
+pub use checks::{CHECKS, DEX_CUSTODY};
 
 /// The DEX's price scale: a tick's price is `PRICE_SCALE + tick`.
 pub const PRICE_SCALE: u32 = 100_000;
@@ -148,7 +117,7 @@ pub fn observe<V: Views>(
     let mut live = Vec::new();
     for output in outputs.into_iter().flatten() {
         let order = decode::<IStablecoinDex::getOrderCall, _>(dex, Some(Some(output)))?;
-        if order.maker != Address::ZERO {
+        if !order.maker.is_zero() {
             live.push(order);
         }
     }
@@ -175,7 +144,7 @@ pub fn observe<V: Views>(
     all.extend(book.values().flat_map(|b| [b.base, b.quote]));
     all.sort();
     all.dedup();
-    let mut calls: Vec<(Address, Bytes)> = Vec::new();
+    let mut calls: Vec<(Address, Bytes)> = Vec::with_capacity(all.len() * (1 + users.len()));
     for &token in &all {
         let c = ITIP20::balanceOfCall { account: dex };
         calls.push((token, c.abi_encode().into()));

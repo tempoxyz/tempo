@@ -10,7 +10,7 @@ use alloy_evm::{
     Evm as _, EvmEnv,
     block::{BlockExecutionError, BlockExecutor, TxResult as _},
 };
-use alloy_primitives::Address;
+use alloy_primitives::{Address, Log};
 use invariants_core::Report;
 use reth_consensus::{Consensus as _, HeaderValidator as _};
 use reth_evm::ConfigureEvm;
@@ -177,6 +177,7 @@ fn broken_start(
         &InvariantScope::Execution,
         |address| listed.accounts.contains_key(address),
         &holders,
+        None,
         &mut failures,
         &mut Report::default(),
     );
@@ -331,7 +332,7 @@ where
         executor,
         &env,
         InvariantScope::Block { block_index },
-        false,
+        None,
         changes,
         &mut outputs.invariant_failures,
         &mut outputs.invariant_report,
@@ -370,11 +371,12 @@ where
             block_index,
             tx_index,
         };
+        let logs = &outputs.receipts.last().expect("pushed above").logs;
         let tx_changes = step(
             executor,
             &env,
             scope,
-            true,
+            Some(logs),
             changes,
             &mut outputs.invariant_failures,
             &mut outputs.invariant_report,
@@ -384,13 +386,14 @@ where
     Ok(())
 }
 
-/// Ends an execution step: applies its transitions to `changes`, checks invariants at `scope` (only
-/// for contracts the step changed, if `changed_only`), and returns the step's changes.
+/// Ends an execution step: applies its transitions to `changes`, checks invariants at `scope`, and
+/// returns the step's changes. A transaction's step, given its `tx_logs`, is checked only for the
+/// contracts it changed, and also on what it did.
 fn step<'db, E>(
     executor: &mut E,
     env: &EvmEnv<TempoHardfork, TempoBlockEnv>,
     scope: InvariantScope,
-    changed_only: bool,
+    tx_logs: Option<&[Log]>,
     changes: &mut BundleState,
     failures: &mut Vec<InvariantFailure>,
     report: &mut Report,
@@ -401,8 +404,13 @@ where
     let db: &mut Db = executor.evm_mut().db_mut();
     let step = state::drain(db);
     let step_changes = state::transition_changes(&step, &db.cache.contracts);
-    let selected = |contract: &Address| !changed_only || step.transitions.contains_key(contract);
-    invariants::check(db, env, &scope, selected, &[], failures, report);
+    let selected =
+        |contract: &Address| tx_logs.is_none() || step.transitions.contains_key(contract);
+    let effects = tx_logs.map(|logs| invariants::StepEffects {
+        transitions: &step,
+        logs,
+    });
+    invariants::check(db, env, &scope, selected, &[], effects, failures, report);
     changes.apply_transitions_and_create_reverts(step, BundleRetention::PlainState);
     step_changes
 }

@@ -8,16 +8,23 @@
 //! node at a block hash. Invariant IDs follow the Tempo fuzz harness's
 //! `TEMPO-<AREA>-<NAME>` scheme, though not every ID exists in the harness.
 
+use alloy_primitives::U256;
+use invariants_core::decode;
+pub use invariants_core::{
+    AnyCheck, Check, Checked, ObserveError, Report, Step, StepChecked, Verdict, Views, Violation,
+    complete, view,
+};
+
 pub mod dex;
 pub mod fee_amm;
 pub mod keychain;
 pub mod receive_policy;
 pub mod tip20;
 
-use invariants_core::decode;
-pub use invariants_core::{
-    AnyCheck, Check, Checked, ObserveError, Report, Verdict, Views, Violation, complete, view,
-};
+/// `value` as text, `missing` when there is none.
+fn or_text(value: Option<U256>, missing: &str) -> String {
+    value.map_or_else(|| missing.to_string(), |value| value.to_string())
+}
 
 /// Every Tempo check, whatever its context.
 pub fn all() -> impl Iterator<Item = &'static dyn AnyCheck> {
@@ -27,7 +34,7 @@ pub fn all() -> impl Iterator<Item = &'static dyn AnyCheck> {
         checks.iter().map(|check| check as &dyn AnyCheck)
     }
     erased(tip20::CHECKS)
-        .chain(erased(tip20::TRANSITION_CHECKS))
+        .chain(erased(tip20::STEP_CHECKS))
         .chain(erased(fee_amm::CHECKS))
         .chain(erased(dex::CHECKS))
         .chain(erased(keychain::CHECKS))

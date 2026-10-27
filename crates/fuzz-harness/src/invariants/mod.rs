@@ -1,21 +1,25 @@
-//! Protocol invariants checked on state after a block's pre-execution changes and each transaction.
+//! Protocol invariants checked on state after a block's pre-execution changes and each transaction,
+//! and on what each transaction changed.
 //!
 //! A check reads state only through view calls, over the accounts the state holds. On an exact
 //! pre-state those are the accounts execution touched, so a check asserts only what holds for any
 //! subset of accounts, and a view that reads a key the pre-state lacks answers nothing rather than
 //! failing.
 
-use std::fmt::Display;
+use std::fmt::{Debug, Display};
 
 use alloy_evm::{Evm as _, EvmEnv};
-use alloy_primitives::{Address, Bytes};
-use invariants_core::{ObserveError, Report, Violation};
-use revm::database_interface::WrapDatabaseRef;
+use alloy_primitives::{Address, B256, Bytes, Log, U256};
+use invariants_core::{ObserveError, Report, SlotChange, Step, Views, Violation};
+use revm::{
+    DatabaseRef, bytecode::Bytecode, database::TransitionState,
+    database_interface::WrapDatabaseRef, state::AccountInfo,
+};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS};
 use tempo_evm::evm::TempoEvm;
 use tempo_fuzz_types::{InvariantFailure, InvariantScope};
-use tempo_invariants::{dex, fee_amm, tip20};
+use tempo_invariants::{all, dex, fee_amm, tip20};
 use tempo_primitives::{TempoBlockEnv, is_tip20_prefix};
 
 use crate::state::{Db, PreStateDb};
@@ -27,17 +31,26 @@ const FEE_VIEW: &str = "TEMPO-FEE-VIEW";
 /// The DEX's views answer.
 const DEX_VIEW: &str = "TEMPO-DEX-VIEW";
 
+/// What a transaction step did: its state transitions, not yet applied to the bundle, and its logs.
+pub(crate) struct StepEffects<'a> {
+    pub(crate) transitions: &'a TransitionState,
+    pub(crate) logs: &'a [Log],
+}
+
 /// Appends to `failures` each invariant `db` breaks, at `scope`, over the accounts `db` holds,
 /// and adds how many subjects each judged, was armed for and found broken to `report`; `holders`
 /// are read as balance holders too, but never checked as contracts. `env` is the block's
 /// environment. Only contracts for which `selected` holds are checked, e.g. those whose state
-/// changed, as no other contract's invariants can have broken.
+/// changed, as no other contract's invariants can have broken. With `effects`, a token's step
+/// checks also run on its ledger before the step against its ledger after it.
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn check(
     db: &Db,
     env: &EvmEnv<TempoHardfork, TempoBlockEnv>,
     scope: &InvariantScope,
     selected: impl Fn(&Address) -> bool,
     holders: &[Address],
+    effects: Option<StepEffects<'_>>,
     failures: &mut Vec<InvariantFailure>,
     report: &mut Report,
 ) {
@@ -51,7 +64,20 @@ pub(crate) fn check(
         .map(|(address, _)| *address)
         .collect();
     accounts.sort_unstable();
-    let mut all_holders: Vec<Address> = accounts.iter().chain(holders).copied().collect();
+    // A step's own logs name holders its transitions touched only through a token's storage,
+    // such as a transfer's recipient.
+    let logged = effects
+        .iter()
+        .flat_map(|effects| effects.logs)
+        .flat_map(|log| log.topics())
+        .filter(|topic| topic[..12] == [0; 12])
+        .map(|topic| Address::from_word(*topic));
+    let mut all_holders: Vec<Address> = accounts
+        .iter()
+        .chain(holders)
+        .copied()
+        .chain(logged)
+        .collect();
     all_holders.sort_unstable();
     all_holders.dedup();
     let tokens: Vec<Address> = accounts
@@ -60,18 +86,36 @@ pub(crate) fn check(
         .filter(|account| is_tip20_prefix(*account))
         .collect();
 
-    let mut views = Views(TempoEvm::new(WrapDatabaseRef(db), env.clone()));
+    let mut views = EvmViews::new(db, env, pre_state);
     let mut step = Report::default();
-    step.register_any(tempo_invariants::all());
+    step.register_any(all());
     for id in [TIP20_VIEW, FEE_VIEW, DEX_VIEW] {
         step.counts.entry(id).or_default();
     }
 
     for &token in tokens.iter().filter(|token| selected(token)) {
-        let ledger = tip20::observe_partial(&mut views, token, &all_holders);
-        if let Some(ledger) = observed(&mut step, TIP20_VIEW, format!("token={token}"), ledger) {
-            step.run_any(tempo_invariants::all(), &ledger);
-        }
+        let post = tip20::observe_partial(&mut views, token, &all_holders);
+        let Some(post) = observed(&mut step, TIP20_VIEW, format!("token={token}"), post) else {
+            continue;
+        };
+        step.run_any(all(), &post);
+        let Some(effects) = &effects else {
+            continue;
+        };
+        let before = PreView {
+            db,
+            transitions: effects.transitions,
+        };
+        let pre = tip20::observe_partial(
+            &mut EvmViews::new(before, env, pre_state),
+            token,
+            &all_holders,
+        );
+        let subject = format!("token={token} before the step");
+        let Some(pre) = observed(&mut step, TIP20_VIEW, subject, pre) else {
+            continue;
+        };
+        step.run_any(all(), &ledger_step(pre, post, effects));
     }
     if selected(&TIP_FEE_MANAGER_ADDRESS) {
         let pairs: Vec<(Address, Address)> = tokens
@@ -88,7 +132,7 @@ pub(crate) fn check(
             &all_holders,
         );
         if let Some(books) = observed(&mut step, FEE_VIEW, TIP_FEE_MANAGER_ADDRESS, books) {
-            step.run_any(tempo_invariants::all(), &books);
+            step.run_any(all(), &books);
         }
     }
     if selected(&STABLECOIN_DEX_ADDRESS) {
@@ -100,7 +144,7 @@ pub(crate) fn check(
             &[],
         );
         if let Some(books) = observed(&mut step, DEX_VIEW, STABLECOIN_DEX_ADDRESS, books) {
-            step.run_any(tempo_invariants::all(), &books);
+            step.run_any(all(), &books);
         }
     }
 
@@ -142,12 +186,94 @@ fn observed<T>(
     }
 }
 
-/// Read-only calls against the state being checked.
-struct Views<'a>(TempoEvm<WrapDatabaseRef<&'a Db>>);
+/// A token's step from `pre` to `post`, over the accounts both read, as `effects` made it.
+fn ledger_step(
+    mut pre: tip20::Ledger,
+    mut post: tip20::Ledger,
+    effects: &StepEffects<'_>,
+) -> Step<tip20::Ledger> {
+    pre.balances
+        .retain(|account, _| post.balances.contains_key(account));
+    post.balances
+        .retain(|account, _| pre.balances.contains_key(account));
+    let token = post.token;
+    let changes = effects
+        .transitions
+        .transitions
+        .get(&token)
+        .into_iter()
+        .flat_map(|account| &account.storage)
+        .filter(|(_, slot)| slot.is_changed())
+        .map(|(slot, value)| SlotChange {
+            address: token,
+            slot: *slot,
+            before: value.original_value(),
+            after: value.present_value(),
+        })
+        .collect();
+    Step {
+        pre,
+        post,
+        changes,
+        logs: effects.logs.to_vec(),
+        tx: (),
+    }
+}
 
-impl Views<'_> {
+/// The state before a step: `db` with the step's `transitions` undone.
+#[derive(Debug)]
+struct PreView<'a> {
+    db: &'a Db,
+    transitions: &'a TransitionState,
+}
+
+impl DatabaseRef for PreView<'_> {
+    type Error = <Db as DatabaseRef>::Error;
+
+    fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
+        match self.transitions.transitions.get(&address) {
+            Some(account) => Ok(account.previous_info.clone()),
+            None => self.db.basic_ref(address),
+        }
+    }
+
+    fn code_by_hash_ref(&self, code_hash: B256) -> Result<Bytecode, Self::Error> {
+        self.db.code_by_hash_ref(code_hash)
+    }
+
+    fn storage_ref(&self, address: Address, slot: U256) -> Result<U256, Self::Error> {
+        if let Some(account) = self.transitions.transitions.get(&address) {
+            if let Some(value) = account.storage.get(&slot) {
+                return Ok(value.original_value());
+            }
+            if account.previous_info.is_none() {
+                return Ok(U256::ZERO);
+            }
+        }
+        self.db.storage_ref(address, slot)
+    }
+
+    fn block_hash_ref(&self, number: u64) -> Result<B256, Self::Error> {
+        self.db.block_hash_ref(number)
+    }
+}
+
+/// Read-only calls against the state `D` holds, noting reads the seeded pre-state misses.
+struct EvmViews<'a, D: DatabaseRef + Debug> {
+    evm: TempoEvm<WrapDatabaseRef<D>>,
+    pre_state: &'a PreStateDb,
+}
+
+impl<'a, D: DatabaseRef + Debug> EvmViews<'a, D> {
+    fn new(db: D, env: &EvmEnv<TempoHardfork, TempoBlockEnv>, pre_state: &'a PreStateDb) -> Self {
+        Self {
+            evm: TempoEvm::new(WrapDatabaseRef(db), env.clone()),
+            pre_state,
+        }
+    }
+
     fn pre_state(&self) -> &PreStateDb {
-        &self.0.components().0.0.database.0
+        self.pre_state
     }
 
     /// `input`'s output from `target`. `Ok(None)` when nothing answers: `target` has no code, or
@@ -159,7 +285,7 @@ impl Views<'_> {
             .unwrap_or_default();
         self.pre_state().restore_missed(false);
         let result = self
-            .0
+            .evm
             .transact_system_call(Address::ZERO, target, input.clone());
         if self.pre_state().missed() {
             return Ok(None);
@@ -174,7 +300,7 @@ impl Views<'_> {
     }
 }
 
-impl invariants_core::Views for Views<'_> {
+impl<D: DatabaseRef + Debug> Views for EvmViews<'_, D> {
     type Error = String;
 
     fn call(&mut self, calls: &[(Address, Bytes)]) -> Result<Vec<Option<Bytes>>, String> {

@@ -1,93 +1,15 @@
 //! TIP-20: a token's supply, its supply cap, and the balances of a known set
 //! of accounts, alone and against the `Transfer` events that changed them.
 //!
-//! The accounts need not be every holder, so [`Ledger`] and [`Transition`]
+//! The accounts need not be every holder, so [`CHECKS`] and [`STEP_CHECKS`]
 //! assert only what holds for any subset of them.
 
-use std::{collections::BTreeMap, fmt};
+use std::collections::BTreeMap;
 
 use alloy_primitives::{Address, Bytes, LogData, U256};
 use alloy_sol_types::{SolCall, SolEvent, sol};
 
-use invariants_core::{check, ensure};
-
-use crate::{Check, Checked, ObserveError, Verdict, Views, decode};
-
-pub const SUPPLY_CAP: &str = "TEMPO-TIP20-SUPPLY-CAP";
-pub const BALANCE_SUM: &str = "TEMPO-TIP20-BALANCE-SUM";
-pub const TRANSFER_EVENTS: &str = "TEMPO-TIP20-TRANSFER-EVENTS";
-
-impl fmt::Display for Ledger {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "token={}", self.token)
-    }
-}
-
-/// A token's supply and the balances read of it.
-pub const CHECKS: &[Check<Ledger>] = &[
-    // A zero cap is not exempt: minting checks the cap with no exception, and `setSupplyCap`
-    // rejects a cap below the supply.
-    check! {
-        id: SUPPLY_CAP,
-        judge: |l: &Ledger| {
-            let cap = l.supply_cap?;
-            ensure!(l.supply <= cap, "totalSupply {} exceeds supplyCap {cap}", l.supply)
-        },
-    },
-    // The balances read may be any subset of the holders, so their sum is a lower bound.
-    check! {
-        id: BALANCE_SUM,
-        judge: |l: &Ledger| {
-            let sum = l.balance_sum();
-            ensure!(
-                sum.is_some_and(|sum| sum <= l.supply),
-                "balances sum to {}, totalSupply {}: {:?}",
-                sum.map_or_else(|| "more than 2^256".to_string(), |sum| sum.to_string()),
-                l.supply,
-                l.balances
-            )
-        },
-    },
-];
-
-/// A token's ledger before and after `transfers`.
-pub struct Transition {
-    pub pre: Ledger,
-    pub post: Ledger,
-    pub transfers: Vec<Transfer>,
-}
-
-impl fmt::Display for Transition {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.post.fmt(f)
-    }
-}
-
-/// Each observed balance moves by exactly the transfers into and out of it, never going
-/// negative, and the supply by the mints (from the zero address) and burns (to it). A transfer
-/// between an observed and an unobserved account moves only the observed side.
-impl Checked for Ledger {
-    const CHECKS: &'static [Check<Self>] = CHECKS;
-}
-
-pub const TRANSITION_CHECKS: &[Check<Transition>] = &[check! {
-    id: TRANSFER_EVENTS,
-    judge: |t: &Transition| {
-        let detail = match apply(&t.pre, &t.transfers) {
-            // `Transfer` events say nothing of the cap.
-            Ok(want) if want.balances == t.post.balances && want.supply == t.post.supply => {
-                return Some(Verdict::Holds);
-            }
-            Ok(want) => format!("expected -> read: {}", want.diff(&t.post)),
-            Err(e) => format!("on the earlier balances: {e}"),
-        };
-        Some(Verdict::Broken(format!("{} transfers; {detail}", t.transfers.len())))
-    },
-}];
-
-impl Checked for Transition {
-    const CHECKS: &'static [Check<Self>] = TRANSITION_CHECKS;
-}
+use crate::{ObserveError, Views, decode, or_text};
 
 sol! {
     #[derive(Debug, PartialEq, Eq)]
@@ -100,6 +22,10 @@ sol! {
 }
 
 pub use ITIP20::Transfer;
+
+mod checks;
+
+pub use checks::{BALANCE_SUM, CHECKS, STEP_CHECKS, SUPPLY_CAP, TRANSFER_EVENTS};
 
 /// A token's state, as its views report it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -136,8 +62,8 @@ impl Ledger {
         if self.supply_cap != other.supply_cap {
             out.push(format!(
                 "supplyCap: {} -> {}",
-                cap(self.supply_cap),
-                cap(other.supply_cap)
+                or_text(self.supply_cap, "?"),
+                or_text(other.supply_cap, "?")
             ));
         }
         out.join(", ")
@@ -151,11 +77,6 @@ pub fn decode_transfer(log: &LogData) -> Option<Transfer> {
     (log.data.len() == 32)
         .then(|| Transfer::decode_log_data(log).ok())
         .flatten()
-}
-
-/// A supply cap as text, `?` when nothing answered it.
-fn cap(cap: Option<U256>) -> String {
-    cap.map_or_else(|| "?".to_string(), |cap| cap.to_string())
 }
 
 /// Reads `token`'s supply, supply cap and the balances of `accounts`, in one
@@ -234,7 +155,7 @@ fn answered<T, E>(
 fn apply(ledger: &Ledger, transfers: &[Transfer]) -> Result<Ledger, String> {
     let mut next = ledger.clone();
     for t in transfers {
-        if t.from == Address::ZERO {
+        if t.from.is_zero() {
             next.supply = next.supply.checked_add(t.amount).ok_or_else(|| {
                 format!("minting {} overflows the supply {}", t.amount, next.supply)
             })?;
@@ -243,7 +164,7 @@ fn apply(ledger: &Ledger, transfers: &[Transfer]) -> Result<Ledger, String> {
                 .checked_sub(t.amount)
                 .ok_or_else(|| format!("{} spends {} of {balance}", t.from, t.amount))?;
         }
-        if t.to == Address::ZERO {
+        if t.to.is_zero() {
             next.supply = next.supply.checked_sub(t.amount).ok_or_else(|| {
                 format!("burning {} exceeds the supply {}", t.amount, next.supply)
             })?;
