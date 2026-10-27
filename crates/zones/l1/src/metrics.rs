@@ -27,6 +27,9 @@ pub(crate) struct L1SubscriberMetrics {
     /// Number of user deposit events observed on L1.
     pub deposit_events: Counter,
 
+    /// Number of forced-request admissions observed on L1.
+    pub forced_exit_events: Counter,
+
     /// Number of `TokenEnabled` events observed on L1.
     pub token_enabled_events: Counter,
 

@@ -1,7 +1,7 @@
 //! `IZoneInbox` — Zone L2 system contract interface (0x1c00...0001).
 
 pub use IZoneInbox::{
-    ChaumPedersenProof, DecryptionData, DepositType, EnabledToken,
+    ChaumPedersenProof, DecryptionData, DepositType, EnabledToken, ForcedExitProcessed,
     IZoneInboxErrors as ZoneInboxError, IZoneInboxEvents as ZoneInboxEvent, QueuedDeposit,
     TempoAdvanced_0 as LegacyTempoAdvanced, TempoAdvanced_1 as TempoAdvanced,
     WithdrawalBounceBackDeposit,
@@ -36,6 +36,8 @@ crate::sol! {
             WithdrawalBounceBack,
             /// User deposit with an encrypted recipient and memo.
             Deposit,
+            /// Root-authorized full-balance withdrawal request.
+            ForcedExit,
         }
 
         /// A user deposit or internal withdrawal bounce-back passed to `advanceTempo`.
@@ -111,6 +113,16 @@ crate::sol! {
 
         /// Emitted when a TIP-20 token is enabled on the zone via advanceTempo.
         event TokenEnabled(address indexed token, string name, string symbol, string currency);
+
+        /// Zone-local TIP-1012 result for an authenticated forced exit. `reason` is the
+        /// `ForcedExitReason` code; `amount` is the debited balance for `Exited`, otherwise 0.
+        event ForcedExitProcessed(
+            address indexed account,
+            uint64 indexed requestId,
+            uint256 nonce,
+            uint8 reason,
+            uint128 amount
+        );
 
         error OnlySequencer();
         error InvalidDepositQueueHash();

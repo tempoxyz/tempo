@@ -385,8 +385,10 @@ impl ZoneEngine {
                 portal_work
                     .iter()
                     .flat_map(|block| &block.events.deposits)
+                    // One entry per decryption, so forced exits keep their slot but are exempt.
                     .filter_map(|deposit| match deposit {
-                        L1Deposit::Deposit(deposit) => Some(deposit.sender),
+                        L1Deposit::Deposit(deposit) => Some(Some(deposit.sender)),
+                        L1Deposit::ForcedExit(_) => Some(None),
                         L1Deposit::WithdrawalBounceBack(_) => None,
                     })
                     .collect::<Vec<_>>()

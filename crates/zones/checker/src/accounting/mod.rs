@@ -31,6 +31,8 @@ pub(crate) struct TokenState {
     pub(crate) pending_withdrawals: U256,
     /// Liability from refunds parked on Tempo.
     pub(crate) pending_tempo_refunds: U256,
+    /// Liability from forced-exit fees parked on Tempo for the admin credited at admission.
+    pub(crate) pending_forced_exit_fees: U256,
     /// Liability from withdrawal bounce-backs queued to or parked on the Zone.
     pub(crate) pending_zone_refunds: U256,
 }
@@ -42,6 +44,7 @@ impl TokenState {
             .checked_add(self.pending_deposits)
             .and_then(|value| value.checked_add(self.pending_withdrawals))
             .and_then(|value| value.checked_add(self.pending_tempo_refunds))
+            .and_then(|value| value.checked_add(self.pending_forced_exit_fees))
             .and_then(|value| value.checked_add(self.pending_zone_refunds))
             .ok_or(AccountingError::Overflow)
     }
@@ -69,6 +72,7 @@ pub(crate) enum LiabilityKind {
     Deposit,
     Withdrawal,
     TempoRefund,
+    ForcedExitFee,
     ZoneRefund,
 }
 
@@ -78,6 +82,7 @@ impl LiabilityKind {
             Self::Deposit => &mut state.pending_deposits,
             Self::Withdrawal => &mut state.pending_withdrawals,
             Self::TempoRefund => &mut state.pending_tempo_refunds,
+            Self::ForcedExitFee => &mut state.pending_forced_exit_fees,
             Self::ZoneRefund => &mut state.pending_zone_refunds,
         }
     }

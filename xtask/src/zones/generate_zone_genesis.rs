@@ -525,7 +525,7 @@ mod tests {
                 "--admin".to_owned(),
                 "0x1000000000000000000000000000000000000001".to_owned(),
                 "--hardfork".to_owned(),
-                "T14".to_owned(),
+                TempoHardfork::latest().to_string(),
             ];
             for (flag, timestamp) in [
                 ("--t12-time", t12),
@@ -593,7 +593,7 @@ mod tests {
                 &flag,
                 "12345",
                 "--hardfork",
-                "T14",
+                &TempoHardfork::latest().to_string(),
             ])
             .unwrap();
             let mut genesis = Genesis::default();

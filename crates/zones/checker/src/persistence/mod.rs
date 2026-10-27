@@ -21,7 +21,7 @@ use crate::accounting::{AccountingError, ChangedRows, Effect, State};
 pub(crate) use model::{AppliedStatus, BlockRef, Checkpoint, Finding, Identity, Metadata, Status};
 use schema::{AccountValue, Accounts, Meta, MetaKey, MetaValue, Tables, TokenValue, Tokens};
 
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 
 /// Loaded durable accounting state and its exact coordinates.
 #[derive(Debug, Clone, PartialEq, Eq)]

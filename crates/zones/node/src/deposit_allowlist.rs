@@ -418,12 +418,13 @@ impl DepositAllowlist {
     /// Replace the decryption data of every deposit whose sender is not allowed. An
     /// uninitialized list allows every sender.
     ///
-    /// `senders` holds the L1 sender of each user deposit in queue order; `prepare_many` emits
-    /// exactly one entry in `decryptions` per user deposit in the same order. Returns the number
-    /// of rejected deposits.
+    /// `senders` holds one entry per encrypted queue entry in queue order: the L1 sender of a user
+    /// deposit, or `None` for a forced exit, which the allowlist never rejects. `prepare_many`
+    /// emits exactly one entry in `decryptions` per encrypted queue entry in the same order.
+    /// Returns the number of rejected deposits.
     pub fn reject_unlisted(
         &self,
-        senders: &[Address],
+        senders: &[Option<Address>],
         decryptions: &mut [DecryptionData],
     ) -> eyre::Result<usize> {
         ensure!(
@@ -438,7 +439,7 @@ impl DepositAllowlist {
         };
         let mut rejected = 0;
         for (sender, decryption) in senders.iter().zip(decryptions) {
-            if !state.addresses.contains(sender) {
+            if sender.is_some_and(|sender| !state.addresses.contains(&sender)) {
                 *decryption = FAILED_DECRYPTION;
                 rejected += 1;
             }
@@ -706,7 +707,9 @@ mod tests {
         // An uninitialized list credits every sender.
         let mut decryptions = vec![valid_decryption()];
         assert_eq!(
-            allowlist.reject_unlisted(&[BOB], &mut decryptions).unwrap(),
+            allowlist
+                .reject_unlisted(&[Some(BOB)], &mut decryptions)
+                .unwrap(),
             0
         );
         assert_eq!(decryptions, vec![valid_decryption()]);
@@ -782,7 +785,7 @@ mod tests {
             let mut decryptions = vec![valid_decryption()];
             assert_eq!(
                 allowlist
-                    .reject_unlisted(&[ALICE], &mut decryptions)
+                    .reject_unlisted(&[Some(ALICE)], &mut decryptions)
                     .unwrap(),
                 1
             );
@@ -982,7 +985,7 @@ mod tests {
         let mut decryptions = vec![valid.clone(), valid.clone(), valid.clone()];
 
         let rejected = allowlist
-            .reject_unlisted(&[ALICE, BOB, ALICE], &mut decryptions)
+            .reject_unlisted(&[Some(ALICE), Some(BOB), Some(ALICE)], &mut decryptions)
             .unwrap();
 
         assert_eq!(rejected, 1);
@@ -992,11 +995,29 @@ mod tests {
     }
 
     #[test]
+    fn reject_unlisted_never_rejects_forced_exits() {
+        let dir = tempfile::tempdir().unwrap();
+        let allowlist = alice_only(dir.path());
+        let valid = valid_decryption();
+        let mut decryptions = vec![valid.clone(), valid.clone()];
+
+        let rejected = allowlist
+            .reject_unlisted(&[None, Some(BOB)], &mut decryptions)
+            .unwrap();
+
+        assert_eq!(rejected, 1);
+        assert_eq!(decryptions[0], valid);
+        assert_eq!(decryptions[1], FAILED_DECRYPTION);
+    }
+
+    #[test]
     fn reject_unlisted_requires_one_decryption_per_sender() {
         let dir = tempfile::tempdir().unwrap();
         let allowlist = alice_only(dir.path());
 
-        let err = allowlist.reject_unlisted(&[ALICE], &mut []).unwrap_err();
+        let err = allowlist
+            .reject_unlisted(&[Some(ALICE)], &mut [])
+            .unwrap_err();
         assert_eq!(err.to_string(), "1 deposit senders but 0 decryptions");
     }
 }

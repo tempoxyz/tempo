@@ -4877,6 +4877,17 @@ dependencies = [
 [[package]]
 name = "exithatch"
 version = "0.4.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-sol-types",
+ "k256",
+ "p256 0.13.2",
+ "proptest",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempo-contracts",
+ "tempo-primitives",
+]
 
 [[package]]
 name = "eyre"
@@ -14738,10 +14749,13 @@ dependencies = [
  "commonware-storage",
  "commonware-utils",
  "const-hex",
+ "exithatch",
  "eyre",
  "futures",
  "indicatif",
  "itertools 0.14.0",
+ "jsonrpsee",
+ "k256",
  "rand 0.10.3",
  "rand 0.8.8",
  "rayon",
@@ -16991,6 +17005,7 @@ dependencies = [
  "alloy-transport",
  "const-hex",
  "derive_more",
+ "exithatch",
  "eyre",
  "futures",
  "k256",
@@ -17042,6 +17057,7 @@ dependencies = [
  "commonware-codec",
  "commonware-cryptography",
  "const-hex",
+ "exithatch",
  "eyre",
  "futures",
  "jsonrpsee",
@@ -17199,11 +17215,15 @@ dependencies = [
  "alloy-primitives",
  "alloy-rlp",
  "alloy-sol-types",
+ "const-hex",
  "derive_more",
+ "exithatch",
  "eyre",
  "k256",
  "paste",
+ "proptest",
  "rand 0.10.3",
+ "rand 0.8.8",
  "revm",
  "serde",
  "sha2 0.10.9",
@@ -17212,6 +17232,7 @@ dependencies = [
  "tempo-precompiles",
  "tempo-precompiles-macros",
  "tempo-primitives",
+ "tempo-revm",
  "thiserror 2.0.21",
  "zone-primitives",
 ]

@@ -63,6 +63,7 @@ tokio.workspace = true
 
 tempo-alloy.workspace = true
 
+exithatch = { workspace = true, features = ["std"] }
 zone-primitives.workspace = true
 zone-precompiles = { workspace = true, features = ["std"] }
 zone-p2p.workspace = true
@@ -76,7 +77,11 @@ toml.workspace = true
 zeroize.workspace = true
 rustls = { version = "0.23", features = ["aws-lc-rs"] }
 
+# crypto (for encryption key registration)
+k256.workspace = true
+
 [dev-dependencies]
+jsonrpsee.workspace = true
 zone-chainspec.workspace = true
 tempfile.workspace = true
 

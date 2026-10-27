@@ -96,16 +96,18 @@ library EncryptedDepositLib {
                     UNIFIED DEPOSIT QUEUE PROCESSING
 //////////////////////////////////////////////////////////////*/
 
-/// @dev The deposit queue contains user deposits and internal withdrawal bounce-backs
-///      in a single ordered sequence. The sequencer must provide decryption data
-///      for encrypted deposits when processing the queue on the zone.
+/// @dev The deposit queue contains user deposits, internal withdrawal bounce-backs, and
+///      forced-exit requests in a single ordered sequence. The sequencer must provide
+///      decryption data for encrypted deposits and forced-exit requests when processing
+///      the queue on the zone.
 ///
 ///      Queue hash chain includes type discriminator:
 ///      - WithdrawalBounceBack: keccak256(abi.encode(DepositType.WithdrawalBounceBack, bounceBack, prevHash))
 ///      - Deposit:              keccak256(abi.encode(DepositType.Deposit, deposit, prevHash))
+///      - ForcedExit:           keccak256(abi.encode(DepositType.ForcedExit, forcedExit, prevHash))
 ///
-///      The zone's advanceTempo() processes deposits in order. For encrypted deposits,
-///      the sequencer provides the ECDH shared secret and proof; the zone decrypts
-///      (to, memo) from the ciphertext onchain.
+///      The zone's advanceTempo() processes entries in order. For each encrypted entry,
+///      the sequencer provides the ECDH shared secret and proof; the zone decrypts the
+///      payload onchain.
 ///
 ///      Types QueuedDeposit and DecryptionData are defined in IZone.sol.
