@@ -108,7 +108,7 @@ impl ResolvedForks {
     /// RPC-resolved schedules write no fork fields: Zone nodes read their L1's
     /// `tempo_forkSchedule` at startup and ignore Tempo fork fields in genesis, so later L1
     /// upgrades need no genesis change. Offline caps are written explicitly, with `null` for
-    /// disabled forks, for offline tools that execute from genesis alone.
+    /// disabled forks, for tools that execute from genesis alone (`--l1.offline`).
     pub(crate) fn write_to(&self, config: &mut ChainConfig) {
         for &fork in TempoHardfork::VARIANTS {
             if let Some(key) = fork.genesis_key() {
