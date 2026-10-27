@@ -127,22 +127,19 @@ fn network_storage_failures_panic_and_allow_recovery() {
                         .accepted()
                 );
                 context.sleep(Duration::from_millis(1)).await;
-                if index == 1 {
+                if index > 0 {
                     let blocker = harness.blocker.clone();
                     let timer = context.child("penalty_wait");
                     context
                         .timeout(Duration::from_secs(1), async move {
-                            while blocker.peers().is_empty() {
+                            while blocker.peers().len() < index {
                                 timer.sleep(Duration::from_millis(1)).await;
                             }
                         })
                         .await
-                        .expect("invalid private share must penalize its sender");
+                        .expect("invalid private share or ACK must penalize its sender");
                 }
-                assert_eq!(
-                    harness.blocker.peers(),
-                    vec![keys[1].public_key(); usize::from(index >= 1)]
-                );
+                assert_eq!(harness.blocker.peers(), vec![keys[1].public_key(); index]);
                 let mailbox = harness.mailbox().clone();
                 let epoch = state.epoch;
                 assert!(
@@ -151,7 +148,7 @@ fn network_storage_failures_panic_and_allow_recovery() {
                             mailbox.get_dealer_log(epoch).await
                         })
                         .await
-                        .expect("invalid network messages must not starve dealer-log requests")
+                        .expect("actor must remain responsive after invalid network messages")
                         .unwrap()
                         .is_none()
                 );
@@ -176,7 +173,7 @@ fn network_storage_failures_panic_and_allow_recovery() {
                 })
                 .await
                 .expect("a network storage failure must panic immediately");
-            assert_eq!(harness.blocker.peers(), vec![keys[1].public_key()]);
+            assert_eq!(harness.blocker.peers(), vec![keys[1].public_key(); 2]);
             assert!(
                 receiver.recv().now_or_never().is_none(),
                 "a dealing must be persisted before its ACK is sent",
@@ -225,10 +222,76 @@ fn network_storage_failures_panic_and_allow_recovery() {
                 Message::read_cfg(&mut ack, &NZU32!(2)).unwrap(),
                 Message::Ack(_)
             ));
-            assert_eq!(harness.blocker.peers(), vec![keys[1].public_key()]);
+            assert_eq!(harness.blocker.peers(), vec![keys[1].public_key(); 2]);
             harness.stop().await;
         });
     }
+}
+
+#[test]
+fn duplicate_and_late_acks_do_not_penalize_peers() {
+    Runner::default().start(|mut context| async move {
+        let (state, keys, _) = dkg_state(&mut context, Epoch::new(1), 3, true);
+        let round = Round::from_state(&state, crate::config::NAMESPACE, true);
+        let mut harness = Harness::builder(context.child("actor"), "duplicate_and_late_acks")
+            .initial_state(state.clone())
+            .identity(keys[0].clone())
+            .build()
+            .await;
+        let (mut actor, _mailbox) = harness.init().await.unwrap();
+        let mut storage = actor
+            .storage
+            .take()
+            .unwrap()
+            .init_verified(state.clone())
+            .await;
+        let mut dealer = storage
+            .create_dealer_for_round(keys[0].clone(), round.clone(), state.share, state.seed)
+            .unwrap()
+            .unwrap();
+        let (_, public, private) = dealer
+            .shares_to_distribute()
+            .find(|(player, _, _)| player == &keys[1].public_key())
+            .unwrap();
+        let ack = dkg::Player::new(round.info().clone(), keys[1].clone())
+            .unwrap()
+            .dealer_message::<N3f1>(keys[0].public_key(), public, private)
+            .unwrap()
+            .unwrap();
+        let message = Message::Ack(ack).encode();
+        let mut sender = harness.sender().clone();
+        actor
+            .handle_network_msg(
+                &round,
+                &mut sender,
+                &mut storage,
+                Some(&mut dealer),
+                None,
+                keys[1].public_key(),
+                message.clone().into(),
+            )
+            .await
+            .unwrap();
+
+        for (late, player) in [(false, keys[1].public_key()), (true, keys[2].public_key())] {
+            if late {
+                dealer.finalize();
+            }
+            actor
+                .handle_network_msg(
+                    &round,
+                    &mut sender,
+                    &mut storage,
+                    Some(&mut dealer),
+                    None,
+                    player,
+                    message.clone().into(),
+                )
+                .await
+                .unwrap();
+            assert!(harness.blocker.peers().is_empty());
+        }
+    });
 }
 
 #[test]

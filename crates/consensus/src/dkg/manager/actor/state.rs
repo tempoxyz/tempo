@@ -941,9 +941,10 @@ impl Dealer {
         }
     }
 
-    /// Handle an incoming ack from a player, persisting it before returning success.
+    /// Handle an incoming ack from a player, persisting it if accepted.
     ///
-    /// Returns protocol validation errors. Storage write failures panic.
+    /// Returns protocol validation errors; duplicate and late ACKs are ignored.
+    /// Storage write failures panic.
     pub(super) async fn receive_ack<TContext>(
         &mut self,
         storage: &mut Storage<TContext>,
@@ -955,10 +956,10 @@ impl Dealer {
         TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
     {
         if !self.unsent.contains_key(&player) {
-            bail!("already received an ack from `{player}`");
+            return Ok(());
         }
         let Some(dealer) = &mut self.dealer else {
-            bail!("dealer was already finalized, dropping ack of player `{player}`");
+            return Ok(());
         };
         dealer
             .receive_player_ack(player.clone(), ack.clone())

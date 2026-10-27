@@ -422,6 +422,26 @@ where
                     }
                 }
 
+                network_msg = round_receiver.recv().fuse() => {
+                    match network_msg {
+                        Ok((sender, message)) => {
+                            // Protocol errors are logged by the handler; write failures panic.
+                            let _ = self.handle_network_msg(
+                                &round,
+                                &mut round_sender,
+                                storage,
+                                dealer_state.as_mut(),
+                                player_state.as_mut(),
+                                sender,
+                                message,
+                            ).await;
+                        }
+                        Err(err) => {
+                            break Err(err).wrap_err("network p2p subchannel closed")
+                        }
+                    }
+                }
+
                 msg = self.mailbox.next() => {
                     let Some(msg) = msg else {
                         break Err(eyre!("all instances of the DKG actor's mailbox are dropped"));
@@ -490,26 +510,6 @@ where
                                 &round,
                                 verify,
                             );
-                        }
-                    }
-                }
-
-                network_msg = round_receiver.recv().fuse() => {
-                    match network_msg {
-                        Ok((sender, message)) => {
-                            // Protocol errors are logged by the handler; write failures panic.
-                            let _ = self.handle_network_msg(
-                                &round,
-                                &mut round_sender,
-                                storage,
-                                dealer_state.as_mut(),
-                                player_state.as_mut(),
-                                sender,
-                                message,
-                            ).await;
-                        }
-                        Err(err) => {
-                            break Err(err).wrap_err("network p2p subchannel closed")
                         }
                     }
                 }
@@ -973,7 +973,7 @@ where
                         .inspect_err(|error| {
                             commonware_p2p::block!(self.config.blocker, from.clone(), %error, "invalid DKG dealing");
                         })
-                        .wrap_err("invalid dealing!")?;
+                        .wrap_err("invalid DKG dealing")?;
 
                     let sent = round_channel.send(
                         Recipients::One(from.clone()),
@@ -1002,9 +1002,12 @@ where
                     info!("received an ACK");
                     self.metrics.acks_received.metric().inc();
                     dealer_state
-                        .receive_ack(storage, round.epoch(), from, ack)
+                        .receive_ack(storage, round.epoch(), from.clone(), ack)
                         .await
-                        .wrap_err("failed to process ACK")?;
+                        .inspect_err(|error| {
+                            commonware_p2p::block!(self.config.blocker, from.clone(), %error, "invalid DKG acknowledgement");
+                        })
+                        .wrap_err("invalid DKG acknowledgement")?;
                 } else {
                     info!("received an ACK, but we are not a dealer");
                 }
