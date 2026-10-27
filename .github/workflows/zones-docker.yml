@@ -349,7 +349,9 @@ jobs:
       (inputs.reproducible_verify != true && inputs.reproducible_eif_verify != true)) &&
       (github.repository == 'tempoxyz/tempo' ||
       (github.event_name != 'schedule' && github.event_name != 'push')))
-    runs-on: depot-ubuntu-latest-16
+    # Compilation runs on the Depot builders; this runner only waits on bake
+    # and packages the EIF, so it needs few cores.
+    runs-on: depot-ubuntu-latest-4
     permissions:
       contents: read
       packages: read

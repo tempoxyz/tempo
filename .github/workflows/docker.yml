@@ -49,7 +49,8 @@ jobs:
     outputs:
       tempo_image_tag: ${{ steps.meta-tempo.outputs.version }}
     if: ${{ (github.event_name != 'schedule' || github.repository == 'tempoxyz/tempo') && !(github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository != 'tempoxyz/tempo') }}
-    runs-on: depot-ubuntu-latest-16
+    # Compilation runs on the Depot builders; this runner only waits on bake.
+    runs-on: depot-ubuntu-latest-4
     permissions:
       actions: read
       contents: read
