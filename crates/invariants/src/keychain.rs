@@ -10,67 +10,6 @@ use invariants_core::{check, ensure};
 
 use crate::{Check, ObserveError, Views, Violation, judge, view};
 
-sol! {
-    #[derive(Debug, PartialEq, Eq)]
-    interface IAccountKeychain {
-        enum SignatureType { Secp256k1, P256, WebAuthn }
-        struct KeyInfo {
-            SignatureType signatureType;
-            address keyId;
-            uint64 expiry;
-            bool enforceLimits;
-            bool isRevoked;
-        }
-        function getKey(address account, address keyId) external view returns (KeyInfo memory);
-        function getRemainingLimitWithPeriod(address account, address keyId, address token)
-            external view returns (uint256 remaining, uint64 periodEnd);
-        function isAdminKey(address account, address keyId) external view returns (bool);
-    }
-}
-
-pub use IAccountKeychain::{
-    KeyInfo, getKeyCall, getRemainingLimitWithPeriodCall, getRemainingLimitWithPeriodReturn,
-    isAdminKeyCall,
-};
-
-/// An access key and its remaining limit for one token, as the keychain
-/// reports them.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Key {
-    pub info: KeyInfo,
-    pub limit: getRemainingLimitWithPeriodReturn,
-}
-
-/// Reads `account`'s access key `key` and its remaining limit for `token`
-/// from the keychain at `keychain`.
-pub fn observe<V: Views>(
-    views: &mut V,
-    keychain: Address,
-    account: Address,
-    key: Address,
-    token: Address,
-) -> Result<Key, ObserveError<V::Error>> {
-    Ok(Key {
-        info: view(
-            views,
-            keychain,
-            getKeyCall {
-                account,
-                keyId: key,
-            },
-        )?,
-        limit: view(
-            views,
-            keychain,
-            getRemainingLimitWithPeriodCall {
-                account,
-                keyId: key,
-                token,
-            },
-        )?,
-    })
-}
-
 pub const REVOKED: &str = "TEMPO-KEYCHAIN-REVOKED-KEY-SPENDS";
 pub const EXPIRED: &str = "TEMPO-KEYCHAIN-EXPIRED-KEY-SPENDS";
 pub const SPEND_LIMIT: &str = "TEMPO-KEYCHAIN-SPEND-LIMIT";
@@ -147,4 +86,65 @@ pub fn check_spend(key: &Key, timestamp: u64, limit_updated: bool, amount: U256)
             amount,
         },
     )
+}
+
+sol! {
+    #[derive(Debug, PartialEq, Eq)]
+    interface IAccountKeychain {
+        enum SignatureType { Secp256k1, P256, WebAuthn }
+        struct KeyInfo {
+            SignatureType signatureType;
+            address keyId;
+            uint64 expiry;
+            bool enforceLimits;
+            bool isRevoked;
+        }
+        function getKey(address account, address keyId) external view returns (KeyInfo memory);
+        function getRemainingLimitWithPeriod(address account, address keyId, address token)
+            external view returns (uint256 remaining, uint64 periodEnd);
+        function isAdminKey(address account, address keyId) external view returns (bool);
+    }
+}
+
+pub use IAccountKeychain::{
+    KeyInfo, getKeyCall, getRemainingLimitWithPeriodCall, getRemainingLimitWithPeriodReturn,
+    isAdminKeyCall,
+};
+
+/// An access key and its remaining limit for one token, as the keychain
+/// reports them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Key {
+    pub info: KeyInfo,
+    pub limit: getRemainingLimitWithPeriodReturn,
+}
+
+/// Reads `account`'s access key `key` and its remaining limit for `token`
+/// from the keychain at `keychain`.
+pub fn observe<V: Views>(
+    views: &mut V,
+    keychain: Address,
+    account: Address,
+    key: Address,
+    token: Address,
+) -> Result<Key, ObserveError<V::Error>> {
+    Ok(Key {
+        info: view(
+            views,
+            keychain,
+            getKeyCall {
+                account,
+                keyId: key,
+            },
+        )?,
+        limit: view(
+            views,
+            keychain,
+            getRemainingLimitWithPeriodCall {
+                account,
+                keyId: key,
+                token,
+            },
+        )?,
+    })
 }

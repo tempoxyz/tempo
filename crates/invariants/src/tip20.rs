@@ -13,6 +13,94 @@ use invariants_core::{check, ensure};
 
 use crate::{Check, ObserveError, Verdict, Views, Violation, decode, judge};
 
+pub const SUPPLY_CAP: &str = "TEMPO-TIP20-SUPPLY-CAP";
+pub const BALANCE_SUM: &str = "TEMPO-TIP20-BALANCE-SUM";
+pub const TRANSFER_EVENTS: &str = "TEMPO-TIP20-TRANSFER-EVENTS";
+
+impl fmt::Display for Ledger {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "token={}", self.token)
+    }
+}
+
+/// A token's supply and the balances read of it.
+pub static CHECKS: &[Check<Ledger>] = &[
+    // A zero cap is not exempt: minting checks the cap with no exception, and `setSupplyCap`
+    // rejects a cap below the supply.
+    check! {
+        id: SUPPLY_CAP,
+        over: |ledger: &Ledger| [ledger],
+        judge: |_, l| {
+            let cap = l.supply_cap?;
+            ensure!(l.supply <= cap, "totalSupply {} exceeds supplyCap {cap}", l.supply)
+        },
+    },
+    // The balances read may be any subset of the holders, so their sum is a lower bound.
+    check! {
+        id: BALANCE_SUM,
+        over: |ledger: &Ledger| [ledger],
+        judge: |_, l| {
+            let sum = l.balance_sum();
+            ensure!(
+                sum.is_some_and(|sum| sum <= l.supply),
+                "balances sum to {}, totalSupply {}: {:?}",
+                sum.map_or_else(|| "more than 2^256".to_string(), |sum| sum.to_string()),
+                l.supply,
+                l.balances
+            )
+        },
+    },
+];
+
+/// The violations of [`CHECKS`] in `ledger`.
+pub fn check(ledger: &Ledger) -> Vec<Violation> {
+    judge(CHECKS, ledger)
+}
+
+/// A token's ledger before and after `transfers`.
+pub struct Transition {
+    pub pre: Ledger,
+    pub post: Ledger,
+    pub transfers: Vec<Transfer>,
+}
+
+impl fmt::Display for Transition {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.post.fmt(f)
+    }
+}
+
+/// Each observed balance moves by exactly the transfers into and out of it, never going
+/// negative, and the supply by the mints (from the zero address) and burns (to it). A transfer
+/// between an observed and an unobserved account moves only the observed side.
+pub static TRANSITION_CHECKS: &[Check<Transition>] = &[check! {
+    id: TRANSFER_EVENTS,
+    over: |transition: &Transition| [transition],
+    judge: |_, t| {
+        let detail = match apply(&t.pre, &t.transfers) {
+            // `Transfer` events say nothing of the cap.
+            Ok(want) if want.balances == t.post.balances && want.supply == t.post.supply => {
+                return Some(Verdict::Holds);
+            }
+            Ok(want) => format!("expected -> read: {}", want.diff(&t.post)),
+            Err(e) => format!("on the earlier balances: {e}"),
+        };
+        Some(Verdict::Broken(format!("{} transfers; {detail}", t.transfers.len())))
+    },
+}];
+
+/// The violations of [`TRANSITION_CHECKS`] from `pre` to `post` through `transfers`, in order.
+pub fn check_transfers(pre: &Ledger, post: &Ledger, transfers: &[Transfer]) -> Vec<Violation> {
+    judge(
+        TRANSITION_CHECKS,
+        &Transition {
+            pre: pre.clone(),
+            post: post.clone(),
+            transfers: transfers.to_vec(),
+        },
+    )
+}
+
 sol! {
     #[derive(Debug, PartialEq, Eq)]
     interface ITIP20 {
@@ -120,94 +208,6 @@ fn answered<T, E>(read: Result<T, ObserveError<E>>) -> Result<Option<T>, Observe
         Err(err) if err.is_not_answered() => Ok(None),
         Err(err) => Err(err),
     }
-}
-
-pub const SUPPLY_CAP: &str = "TEMPO-TIP20-SUPPLY-CAP";
-pub const BALANCE_SUM: &str = "TEMPO-TIP20-BALANCE-SUM";
-pub const TRANSFER_EVENTS: &str = "TEMPO-TIP20-TRANSFER-EVENTS";
-
-impl fmt::Display for Ledger {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "token={}", self.token)
-    }
-}
-
-/// A token's supply and the balances read of it.
-pub static CHECKS: &[Check<Ledger>] = &[
-    // A zero cap is not exempt: minting checks the cap with no exception, and `setSupplyCap`
-    // rejects a cap below the supply.
-    check! {
-        id: SUPPLY_CAP,
-        over: |ledger: &Ledger| [ledger],
-        judge: |_, l| {
-            let cap = l.supply_cap?;
-            ensure!(l.supply <= cap, "totalSupply {} exceeds supplyCap {cap}", l.supply)
-        },
-    },
-    // The balances read may be any subset of the holders, so their sum is a lower bound.
-    check! {
-        id: BALANCE_SUM,
-        over: |ledger: &Ledger| [ledger],
-        judge: |_, l| {
-            let sum = l.balance_sum();
-            ensure!(
-                sum.is_some_and(|sum| sum <= l.supply),
-                "balances sum to {}, totalSupply {}: {:?}",
-                sum.map_or_else(|| "more than 2^256".to_string(), |sum| sum.to_string()),
-                l.supply,
-                l.balances
-            )
-        },
-    },
-];
-
-/// The violations of [`CHECKS`] in `ledger`.
-pub fn check(ledger: &Ledger) -> Vec<Violation> {
-    judge(CHECKS, ledger)
-}
-
-/// A token's ledger before and after `transfers`.
-pub struct Transition {
-    pub pre: Ledger,
-    pub post: Ledger,
-    pub transfers: Vec<Transfer>,
-}
-
-impl fmt::Display for Transition {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.post.fmt(f)
-    }
-}
-
-/// Each observed balance moves by exactly the transfers into and out of it, never going
-/// negative, and the supply by the mints (from the zero address) and burns (to it). A transfer
-/// between an observed and an unobserved account moves only the observed side.
-pub static TRANSITION_CHECKS: &[Check<Transition>] = &[check! {
-    id: TRANSFER_EVENTS,
-    over: |transition: &Transition| [transition],
-    judge: |_, t| {
-        let detail = match apply(&t.pre, &t.transfers) {
-            // `Transfer` events say nothing of the cap.
-            Ok(want) if want.balances == t.post.balances && want.supply == t.post.supply => {
-                return Some(Verdict::Holds);
-            }
-            Ok(want) => format!("expected -> read: {}", want.diff(&t.post)),
-            Err(e) => format!("on the earlier balances: {e}"),
-        };
-        Some(Verdict::Broken(format!("{} transfers; {detail}", t.transfers.len())))
-    },
-}];
-
-/// The violations of [`TRANSITION_CHECKS`] from `pre` to `post` through `transfers`, in order.
-pub fn check_transfers(pre: &Ledger, post: &Ledger, transfers: &[Transfer]) -> Vec<Violation> {
-    judge(
-        TRANSITION_CHECKS,
-        &Transition {
-            pre: pre.clone(),
-            post: post.clone(),
-            transfers: transfers.to_vec(),
-        },
-    )
 }
 
 /// `ledger` after `transfers`, or `Err` if a balance or the supply would

@@ -19,6 +19,41 @@ use invariants_core::{check, ensure};
 
 use crate::{Check, ObserveError, Views, Violation, decode, judge};
 
+pub const DEX_CUSTODY: &str = "TEMPO-DEX10";
+
+pub static CHECKS: &[Check<Books>] = &[
+    // The DEX holds, of each token, at least its users' internal balances of it plus its live
+    // orders' escrow in it.
+    check! {
+        id: DEX_CUSTODY,
+        over: |books: &Books| books.holdings.keys(),
+        judge: |b, token| {
+            let token = **token;
+            let held = b.holdings[&token];
+            let internal: U256 = b
+                .internal
+                .iter()
+                .filter(|((_, t), _)| *t == token)
+                .map(|(_, v)| *v)
+                .sum();
+            let orders: Vec<&Escrow> = b.escrow.iter().filter(|e| e.token == token).collect();
+            let escrowed: U256 = orders.iter().map(|e| e.amount).sum();
+            let owed = internal + escrowed;
+            ensure!(
+                owed <= held,
+                "holds {held}, owes {owed} (internal balances {internal}, escrow of {} live orders {escrowed}); short {}",
+                orders.len(),
+                owed - held
+            )
+        },
+    },
+];
+
+/// The violations of [`CHECKS`] in `books`.
+pub fn check(books: &Books) -> Vec<Violation> {
+    judge(CHECKS, books)
+}
+
 sol! {
     #[derive(Debug, PartialEq, Eq)]
     #[allow(clippy::too_many_arguments)]
@@ -191,39 +226,4 @@ pub fn observe<V: Views>(
         internal,
         escrow,
     })
-}
-
-pub const DEX_CUSTODY: &str = "TEMPO-DEX10";
-
-pub static CHECKS: &[Check<Books>] = &[
-    // The DEX holds, of each token, at least its users' internal balances of it plus its live
-    // orders' escrow in it.
-    check! {
-        id: DEX_CUSTODY,
-        over: |books: &Books| books.holdings.keys(),
-        judge: |b, token| {
-            let token = **token;
-            let held = b.holdings[&token];
-            let internal: U256 = b
-                .internal
-                .iter()
-                .filter(|((_, t), _)| *t == token)
-                .map(|(_, v)| *v)
-                .sum();
-            let orders: Vec<&Escrow> = b.escrow.iter().filter(|e| e.token == token).collect();
-            let escrowed: U256 = orders.iter().map(|e| e.amount).sum();
-            let owed = internal + escrowed;
-            ensure!(
-                owed <= held,
-                "holds {held}, owes {owed} (internal balances {internal}, escrow of {} live orders {escrowed}); short {}",
-                orders.len(),
-                owed - held
-            )
-        },
-    },
-];
-
-/// The violations of [`CHECKS`] in `books`.
-pub fn check(books: &Books) -> Vec<Violation> {
-    judge(CHECKS, books)
 }

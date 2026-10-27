@@ -10,46 +10,6 @@ use invariants_core::check;
 
 use crate::{Check, Verdict, Violation, judge};
 
-sol! {
-    // `ReceiptClaimed`'s generated constructor takes its 11 fields.
-    #[allow(clippy::too_many_arguments)]
-    #[derive(Debug, PartialEq, Eq)]
-    interface IReceivePolicyGuard {
-        event ReceiptClaimed(
-            address indexed token,
-            address indexed receiver,
-            uint64 indexed blockedNonce,
-            uint64 blockedAt,
-            uint8 receiptVersion,
-            address originator,
-            address recipient,
-            address recoveryAuthority,
-            address caller,
-            address to,
-            uint256 amount
-        );
-    }
-}
-
-pub use IReceivePolicyGuard::ReceiptClaimed;
-
-/// Who signed a policy update for its account.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Signer {
-    Root,
-    /// An access key that was an admin key at the block.
-    Admin,
-    /// Any other access key.
-    Access(Address),
-}
-
-/// The recovery authority an account last named, and who signed that.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AuthoritySet {
-    pub authority: Address,
-    pub signer: Signer,
-}
-
 pub const CLAIM_AUTHORITY: &str = "TEMPO-RECEIVE-POLICY-CLAIM-AUTHORITY";
 
 /// A claim, judged against
@@ -104,4 +64,44 @@ pub fn check_claim(claim: &ReceiptClaimed, set: Option<&AuthoritySet>) -> Option
     )
     .into_iter()
     .next()
+}
+
+sol! {
+    // `ReceiptClaimed`'s generated constructor takes its 11 fields.
+    #[allow(clippy::too_many_arguments)]
+    #[derive(Debug, PartialEq, Eq)]
+    interface IReceivePolicyGuard {
+        event ReceiptClaimed(
+            address indexed token,
+            address indexed receiver,
+            uint64 indexed blockedNonce,
+            uint64 blockedAt,
+            uint8 receiptVersion,
+            address originator,
+            address recipient,
+            address recoveryAuthority,
+            address caller,
+            address to,
+            uint256 amount
+        );
+    }
+}
+
+pub use IReceivePolicyGuard::ReceiptClaimed;
+
+/// Who signed a policy update for its account.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Signer {
+    Root,
+    /// An access key that was an admin key at the block.
+    Admin,
+    /// Any other access key.
+    Access(Address),
+}
+
+/// The recovery authority an account last named, and who signed that.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AuthoritySet {
+    pub authority: Address,
+    pub signer: Signer,
 }
