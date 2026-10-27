@@ -207,6 +207,12 @@ mod tests {
                     "withdrawals": null
                 },
                 "header": {
+                    "consensusContext": {
+                        "epoch": 0,
+                        "view": 0,
+                        "parentView": 0,
+                        "proposer": "0x0000000000000000000000000000000000000000000000000000000000000000"
+                    },
                     "difficulty": "0x0",
                     "extraData": "0x",
                     "gasLimit": "0x0",
