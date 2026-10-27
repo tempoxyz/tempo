@@ -66,7 +66,6 @@ where
         provider,
         store: store.clone(),
         requests: requests_rx,
-        chain_spec: chain_spec.clone(),
     };
     let handle = ProofCollectorHandle {
         store,
@@ -219,10 +218,12 @@ struct ProofCollector<P> {
     provider: P,
     store: Arc<ProofStore>,
     requests: mpsc::Receiver<ProofRequest>,
-    chain_spec: Arc<ZoneChainSpec>,
 }
 
-impl<P: ZoneSequencerProvider> ProofCollector<P> {
+impl<P> ProofCollector<P>
+where
+    P: ZoneSequencerProvider + ChainSpecProvider<ChainSpec = ZoneChainSpec>,
+{
     async fn run(mut self) {
         info!(
             target: "zone::sequencer::proofs",
@@ -277,6 +278,7 @@ impl<P: ZoneSequencerProvider> ProofCollector<P> {
         .await
         .expect("proof pruning task panicked")?;
 
+        let chain_spec = self.provider.chain_spec();
         let start = self.store.state.read().pruned_through.saturating_add(1);
         for number in start..=head {
             let header = self
@@ -285,10 +287,7 @@ impl<P: ZoneSequencerProvider> ProofCollector<P> {
                 .ok_or_eyre(format!("canonical Zone block {number} has no header"))?;
             // A pre-T15 block imported without a witness settles with NoProof. Retrying it here
             // would keep loading a failing L1 RPC and hold the collector that imports wait on.
-            if !self
-                .chain_spec
-                .is_t15_active_at_timestamp(header.timestamp())
-            {
+            if !chain_spec.is_t15_active_at_timestamp(header.timestamp()) {
                 continue;
             }
             if !self.store.contains(number, header.hash()) {
@@ -691,10 +690,10 @@ mod tests {
                     .erased(),
                 retain_for_shadow_proving: false,
             },
-            provider: MockEthProvider::<TempoPrimitives>::new(),
+            provider: MockEthProvider::<TempoPrimitives>::new()
+                .with_chain_spec((*t15_chain_spec(0)).clone()),
             store: store.clone(),
             requests,
-            chain_spec: t15_chain_spec(0),
         };
         // Historical state for settled backfill is deliberately unavailable from the stub.
         assert!(
@@ -1017,7 +1016,8 @@ mod tests {
         use reth_provider::test_utils::MockEthProvider;
         use tempo_primitives::{TempoHeader, TempoPrimitives};
 
-        let provider = MockEthProvider::<TempoPrimitives>::new();
+        let provider = MockEthProvider::<TempoPrimitives>::new()
+            .with_chain_spec((*t15_chain_spec(1_000)).clone());
         let mut hashes = Vec::new();
         for (number, timestamp) in [(1, 999), (2, 1_000)] {
             let header = TempoHeader {
@@ -1053,7 +1053,6 @@ mod tests {
             provider,
             store: store.clone(),
             requests,
-            chain_spec: t15_chain_spec(1_000),
         };
 
         collector.prune_and_collect().await.unwrap();
