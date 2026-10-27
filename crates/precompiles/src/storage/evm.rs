@@ -665,7 +665,8 @@ where
                 None => (B256::ZERO, true),
             }
         };
-        self.deduct_gas(gas.dynamic_cost(previous)?)?;
+        self.deduct_gas(gas.dynamic_cost(previous, &self.version.gas_params)?)?;
+        self.deduct_state_gas(gas.state_cost(previous, &self.version.gas_params))?;
         // The write makes an empty account permanent; an intrinsic write was priced with the
         // transaction, creation included.
         if creates_account && gas == ConfigCommitmentWriteGas::Precompile {

@@ -21,10 +21,7 @@ use tempo_precompiles::{
     CONFIGURABLE_ACCOUNT_ADDRESS,
     configurable_account::{ConfigurableAccount, UpgradeEligibility, valid_account},
     error::TempoPrecompileError,
-    storage::{
-        CONFIG_COMMITMENT_REGISTRATION_GAS, ConfigCommitmentWriteGas, StorageCtx,
-        account_config_commitment,
-    },
+    storage::{ConfigCommitmentWriteGas, StorageCtx, account_config_commitment},
 };
 use tempo_primitives::transaction::{
     ConfigurableAccountSignature, ConfigurableAccountStateError, KeychainSignature, SignatureType,
@@ -396,7 +393,10 @@ fn validate_native_roles(
                 .derivation_gas()
                 .ok_or(TempoPrecompileError::OutOfGas)?;
             if first {
-                extra_gas += CONFIG_COMMITMENT_REGISTRATION_GAS;
+                let gas = &host.version().gas_params;
+                // TIP-1108 prices the commitment write like account creation (TIP-1016).
+                extra_gas += u64::from(gas.get(GasId::NewAccountCost));
+                state_gas += gas.new_account_state_gas();
                 // The sender's creation is free here only when another TIP-1000 charge pays it:
                 // the nonce-zero charge of a protocol-nonce transaction, or the first-call CREATE
                 // charge of a 2D or expiring nonce key.
@@ -407,7 +407,6 @@ fn validate_native_roles(
                 let sender_creation_paid = address == caller
                     && (pays_nonce_zero_account_gas || pays_first_call_create_account_gas);
                 if account.is_empty && !sender_creation_paid {
-                    let gas = &host.version().gas_params;
                     extra_gas += u64::from(gas.get(GasId::NewAccountCost));
                     state_gas += gas.new_account_state_gas();
                 }
