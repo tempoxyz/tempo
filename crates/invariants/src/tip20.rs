@@ -1,7 +1,7 @@
 //! TIP-20: a token's supply, its supply cap, and the balances of a known set
 //! of accounts, alone and against the `Transfer` events that changed them.
 //!
-//! The accounts need not be every holder, so [`check`] and [`check_transfers`]
+//! The accounts need not be every holder, so [`Ledger`] and [`Transition`]
 //! assert only what holds for any subset of them.
 
 use std::{collections::BTreeMap, fmt};

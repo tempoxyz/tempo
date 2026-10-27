@@ -109,4 +109,5 @@ unknown-git = "deny"
 allow-git = [
   "https://github.com/paradigmxyz/reth",
   "https://github.com/sigp/discv5",
+  "https://github.com/tempoxyz/invariants-core",
 ]
