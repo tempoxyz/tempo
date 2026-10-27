@@ -86,3 +86,12 @@ redemptions as `card-settlement`, next to ordinary vault withdrawals), cash card
 spend and cash-out transfers into single accounts, and first payments to fresh
 addresses. Customer-shaped presets are flavors of this shape. For example:
 `derek bench preset=neobank-generic gas-limit=500M general-gas-limit=30M`.
+
+`batch-payout` models payroll fan-out and reward distribution: a 16-sender treasury
+pool with expiring nonces pays 32 recipients per Tempo transaction (the txpool's call
+limit; `TXGEN_BATCH_PAYOUT_RECIPIENTS` lowers it), as payroll to existing state-bloat
+accounts, payroll to fresh addresses, and per-recipient Earn deposits. The helper
+repeats each template's payout call and sizes its gas limit to the batch. Earn deposits
+need ~1.75M gas limit each, so reward batches stop at 16 recipients and fit about once
+per block in the general lane. It reuses the public-mix fixtures. For example:
+`derek bench preset=batch-payout gas-limit=500M general-gas-limit=30M`.

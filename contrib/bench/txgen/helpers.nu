@@ -12,6 +12,7 @@ const TXGEN_HELPER_ALWAYS_FUND_PRESETS = [
     "zone-portal-hot"
     "card-settlement"
     "neobank-generic"
+    "batch-payout"
     "dex"
     "bridge-mix"
     "bridge-mix-new-accounts"
@@ -26,7 +27,7 @@ const TXGEN_HELPER_ALWAYS_FUND_PRESETS = [
     "zone-portal-throughput"
 ]
 # Presets composed by txgen-prepare-public-mix-preset from the public-mix fixtures.
-const TXGEN_HELPER_PUBLIC_MIX_PRESETS = ["public-mix" "vault-throughput" "zone-portal-throughput" "zone-earn-mix" "zone-earn-hot" "zone-earn-serial" "zone-portal-hot" "card-settlement" "neobank-generic"]
+const TXGEN_HELPER_PUBLIC_MIX_PRESETS = ["public-mix" "vault-throughput" "zone-portal-throughput" "zone-earn-mix" "zone-earn-hot" "zone-earn-serial" "zone-portal-hot" "card-settlement" "neobank-generic" "batch-payout"]
 # Presets that pin the zone portal count instead of sizing it by TPS (TXGEN_ZONE_COUNT still overrides).
 const TXGEN_HELPER_PRESET_ZONE_COUNTS = {"zone-earn-hot": 1, "zone-portal-hot": 1}
 # Presets whose zone settlement and Earn deposits come from one sender with ordered nonces.
@@ -35,6 +36,12 @@ const TXGEN_HELPER_SINGLE_SENDER_PRESETS = ["zone-earn-serial"]
 const TXGEN_HELPER_CARD_SETTLEMENT_PRESETS = ["card-settlement"]
 const TXGEN_HELPER_CARD_SETTLEMENT_SENDERS = 18
 const TXGEN_HELPER_CARD_SETTLEMENT_ACCOUNT = "0x000000000000000000000000000000000000ca4d"
+# Batch payouts: recipients per transaction by preset (TXGEN_BATCH_PAYOUT_RECIPIENTS overrides),
+# within the txpool's 32 calls per Tempo transaction and the 30M transaction gas cap.
+const TXGEN_HELPER_BATCH_PAYOUT_RECIPIENTS = {"batch-payout": 32}
+const TXGEN_HELPER_BATCH_PAYOUT_BASE_GAS = 500000
+const TXGEN_HELPER_MAX_AA_CALLS = 32
+const TXGEN_HELPER_TX_GAS_LIMIT_CAP = 30000000
 const TXGEN_HELPER_EXISTING_RECIPIENTS_START = 10000
 const TXGEN_HELPER_KEYCHAIN_ACCESS_KEYS_START = 100000
 const TXGEN_HELPER_KEYCHAIN_AUTHORIZE_SETUP_GAS_LIMIT = 20000000
@@ -625,7 +632,8 @@ def txgen-fund-accounts [txgen_bin: string, spec_path: string, rpc_url: string] 
         error make { msg: $"failed to list txgen addresses for ($spec_path): ($result.stderr | str trim)" }
     }
 
-    let addresses = ($result.stdout | str trim | split row " " | where { |addr| $addr != "" })
+    # Pools may share accounts (batch-payout treasury); fund each address once.
+    let addresses = ($result.stdout | str trim | split row " " | where { |addr| $addr != "" } | uniq)
     if ($addresses | is-empty) {
         error make { msg: $"txgen spec produced no addresses: ($spec_path)" }
     }
@@ -670,6 +678,28 @@ def txgen-card-settlement-template [template: record] {
         args: [$TXGEN_HELPER_CARD_SETTLEMENT_ACCOUNT 1]
     }
     $template | reject -o sponsor | upsert nonce {uniform: [0 9223372036854775807]} | upsert calls ($template.calls | append $forward)
+}
+
+# Repeats each batch-payout template's last call once per recipient, scales its
+# approvals to cover every recipient and sizes gas_limit (a per-recipient budget) to
+# the batch. A template whose batch would pass the call or gas cap gets the most
+# recipients that fit.
+def txgen-batch-payout-templates [presets_dir: string, recipients: int] {
+    if $recipients < 1 { error make {msg: "TXGEN_BATCH_PAYOUT_RECIPIENTS must be positive"} }
+    let result = (^uv run --no-project --with yq==3.4.3 yq -c '.templates' ($presets_dir | path join batch-payout.yml) | complete)
+    if $result.exit_code != 0 { error make {msg: $"Failed to read batch-payout templates: ($result.stderr)"} }
+    $result.stdout | from json | items { |name, template|
+        let gas_fit = (($TXGEN_HELPER_TX_GAS_LIMIT_CAP - $TXGEN_HELPER_BATCH_PAYOUT_BASE_GAS) // $template.gas_limit)
+        let call_fit = $TXGEN_HELPER_MAX_AA_CALLS - ($template.calls | length) + 1
+        let count = ([$recipients $gas_fit $call_fit] | math min)
+        let payout = ($template.calls | last)
+        let approvals = ($template.calls | drop 1 | each { |call|
+            if $call.function == approve { $call | update args.1 ($call.args.1 * $count) } else { $call }
+        })
+        {name: $name, value: ($template
+            | update gas_limit ($template.gas_limit * $count + $TXGEN_HELPER_BATCH_PAYOUT_BASE_GAS)
+            | update calls ($approvals | append (1..$count | each { $payout })))}
+    } | transpose -r -d
 }
 
 def txgen-card-settlement [templates: record, mix: list<any>] {
@@ -912,6 +942,11 @@ def txgen-prepare-public-mix-preset [spec_path: string, count: int, accounts: in
     let preset_name = ($spec_path | path basename | str replace --regex '\.yml$' '')
     let templates = if $preset_name in $TXGEN_HELPER_SINGLE_SENDER_PRESETS {
         txgen-single-sender-templates $templates
+    } else { $templates }
+    let batch_recipients = ($TXGEN_HELPER_BATCH_PAYOUT_RECIPIENTS | get -o $preset_name)
+    let templates = if $batch_recipients != null {
+        let recipients = ($env.TXGEN_BATCH_PAYOUT_RECIPIENTS? | default $batch_recipients | into int)
+        $templates | merge (txgen-batch-payout-templates $presets $recipients)
     } else { $templates }
     let templates = ($mix
         | where { |entry| ($entry | get -o template | default "") | str starts-with "card_settlement_" }
