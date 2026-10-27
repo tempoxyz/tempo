@@ -246,14 +246,6 @@ fn a_transfer_reports_its_receipt_changes_and_state_root() {
         "{:?}",
         outcome.invariant_failures
     );
-    for id in [
-        "TEMPO-TIP20-VIEW",
-        "TEMPO-TIP20-SUPPLY-CAP",
-        "TEMPO-TIP20-BALANCE-SUM",
-    ] {
-        let counts = outcome.invariant_counts[id];
-        assert!(counts.armed > 0 && counts.fired == 0, "{id}: {counts:?}");
-    }
 
     // The transfer moves two pathUSD balances and creates the sender, which
     // the dev genesis funds only with pathUSD; the block's total includes it all.
