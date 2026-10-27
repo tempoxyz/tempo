@@ -4,7 +4,10 @@ use crate::{
     ordering::TempoTipOrdering, transaction::TempoPooledTransaction,
     tt_2d_pool::BestAA2dTransactions,
 };
-use alloy_primitives::{Address, U256, map::HashMap};
+use alloy_primitives::{
+    Address, U256,
+    map::{B256Set, HashMap},
+};
 use reth_evm::block::TxResult;
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_transaction_pool::{
@@ -129,6 +132,52 @@ impl BestTransactions for MergeBestTransactions {
     fn set_skip_blobs(&mut self, skip_blobs: bool) {
         self.protocol_pool.set_skip_blobs(skip_blobs);
         self.aa_2d_pool.set_skip_blobs(skip_blobs);
+    }
+}
+
+/// A [`BestTransactions`] wrapper that skips transactions with the given hashes.
+///
+/// Unlike [`BestTransactions::filter_transactions`], skipped transactions are not marked
+/// invalid, so their descendants stay available.
+pub(crate) struct SkipHashesBestTransactions<I> {
+    inner: I,
+    hashes: B256Set,
+}
+
+impl<I> SkipHashesBestTransactions<I> {
+    /// Wraps `inner`, skipping every transaction whose hash is in `hashes`.
+    pub(crate) fn new(inner: I, hashes: B256Set) -> Self {
+        Self { inner, hashes }
+    }
+}
+
+impl<I> Iterator for SkipHashesBestTransactions<I>
+where
+    I: BestTransactions<Item = BestTransaction>,
+{
+    type Item = BestTransaction;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner
+            .by_ref()
+            .find(|tx| !self.hashes.contains(tx.hash()))
+    }
+}
+
+impl<I> BestTransactions for SkipHashesBestTransactions<I>
+where
+    I: BestTransactions<Item = BestTransaction>,
+{
+    fn mark_invalid(&mut self, transaction: &Self::Item, kind: InvalidPoolTransactionError) {
+        self.inner.mark_invalid(transaction, kind);
+    }
+
+    fn no_updates(&mut self) {
+        self.inner.no_updates();
+    }
+
+    fn set_skip_blobs(&mut self, skip_blobs: bool) {
+        self.inner.set_skip_blobs(skip_blobs);
     }
 }
 

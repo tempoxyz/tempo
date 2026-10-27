@@ -47,12 +47,12 @@ use reth_revm::{
     db::states::bundle_state::BundleRetention,
 };
 use reth_storage_api::{
-    EvmStateProvider, HashedPostStateProvider, StateProvider, StateProviderFactory,
+    BlockReader, EvmStateProvider, HashedPostStateProvider, StateProvider, StateProviderFactory,
     StateRootProvider,
 };
 use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
-    BestTransactions, BestTransactionsAttributes, PoolTransaction, TransactionPool,
+    BestTransactions, BestTransactionsAttributes, PoolTransaction,
     error::InvalidPoolTransactionError,
 };
 use std::{
@@ -206,8 +206,11 @@ impl<Provider> TempoPayloadBuilder<Provider> {
 
 impl<Provider> PayloadBuilder for TempoPayloadBuilder<Provider>
 where
-    Provider:
-        StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + Clone + 'static,
+    Provider: StateProviderFactory
+        + BlockReader<Block = tempo_primitives::Block>
+        + ChainSpecProvider<ChainSpec = TempoChainSpec>
+        + Clone
+        + 'static,
 {
     type Attributes = TempoPayloadAttributes;
     type BuiltPayload = TempoBuiltPayload;
@@ -216,8 +219,10 @@ where
         &self,
         args: BuildArguments<Self::Attributes, Self::BuiltPayload>,
     ) -> Result<BuildOutcome<Self::BuiltPayload>, PayloadBuilderError> {
+        let parent_hash = args.config.parent_header.hash();
         self.build_payload(args, |attributes| {
-            self.pool.best_transactions_with_attributes(attributes)
+            self.pool
+                .best_transactions_excluding_unpruned_mined(attributes, parent_hash)
         })
     }
 

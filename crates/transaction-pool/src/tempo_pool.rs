@@ -4,22 +4,23 @@
 
 use crate::{
     amm::AmmLiquidityCache,
-    best::MergeBestTransactions,
+    best::{MergeBestTransactions, SkipHashesBestTransactions},
     ordering::TempoTipOrdering,
     transaction::TempoPooledTransaction,
     tt_2d_pool::AA2dPool,
     validator::{ConfigureTempoPoolEvm, TempoTransactionValidator},
 };
-use alloy_consensus::Transaction;
+use alloy_consensus::{Transaction, transaction::TxHashRef};
 use alloy_primitives::{
     Address, B256, TxHash, U256,
-    map::{AddressMap, AddressSet, Entry, HashMap},
+    map::{AddressMap, AddressSet, B256Set, Entry, HashMap},
 };
 use parking_lot::RwLock;
 use reth_chainspec::{ChainSpecProvider, EthChainSpec};
 use reth_eth_wire_types::HandleMempoolData;
+use reth_primitives_traits::{AlloyBlockHeader, Block as _};
 use reth_provider::{ChangedAccount, StateProviderFactory};
-use reth_storage_api::StateProvider;
+use reth_storage_api::{BlockReader, StateProvider};
 use reth_transaction_pool::{
     AddedTransactionOutcome, AllPoolTransactions, BestTransactions, BestTransactionsAttributes,
     BlockInfo, CanonicalStateUpdate, GetPooledTransactionLimit, NewBlobSidecar, Pool, PoolResult,
@@ -45,6 +46,13 @@ use tempo_precompiles::{
 use tempo_primitives::{Block, TempoHeader};
 use tempo_revm::TempoStateAccess;
 
+/// Maximum number of ancestor blocks scanned for transactions the pool has not pruned yet.
+///
+/// Bounds the scan when a pool's last pruned block is not an ancestor of the parent: before the
+/// first canonical block after startup, after a reorg deeper than this, or when pool maintenance
+/// is stalled.
+const MAX_UNPRUNED_LOOKBACK: usize = 16;
+
 /// Transaction pool operations for Tempo nonce lanes.
 pub trait TempoTransactionPoolExt: TransactionPool {
     /// Returns pending transactions in the address's sequential 2D nonce lane.
@@ -65,6 +73,8 @@ pub struct TempoTransactionPool<Client, EvmConfig = TempoEvmConfig> {
     >,
     /// Minimal pool for 2D nonces (nonce_key > 0)
     aa_2d_pool: Arc<RwLock<AA2dPool>>,
+    /// Hash of the last block whose mined transactions the 2D nonce pool has pruned.
+    aa_2d_pruned_block: Arc<RwLock<B256>>,
 }
 
 impl<Client, EvmConfig> TempoTransactionPool<Client, EvmConfig>
@@ -86,6 +96,7 @@ where
         Self {
             protocol_pool,
             aa_2d_pool: Arc::new(RwLock::new(aa_2d_pool)),
+            aa_2d_pruned_block: Arc::default(),
         }
     }
 }
@@ -109,14 +120,16 @@ where
         self.protocol_pool.validator().validator().client()
     }
 
-    /// Updates the 2d nonce pool with the given state changes.
+    /// Updates the 2d nonce pool with the state changes of the block `block_hash`.
     ///
     /// Returns mined AA transactions.
     pub(crate) fn notify_aa_pool_on_state_updates(
         &self,
+        block_hash: B256,
         state: &AddressMap<BundleAccount>,
     ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         let (promoted, mined, discarded) = self.aa_2d_pool.write().on_state_updates(state);
+        *self.aa_2d_pruned_block.write() = block_hash;
         // Note: mined transactions are notified via the vanilla pool updates
         self.protocol_pool
             .inner()
@@ -633,12 +646,69 @@ where
     }
 }
 
+impl<Client, EvmConfig> TempoTransactionPool<Client, EvmConfig>
+where
+    Client: StateProviderFactory
+        + BlockReader<Block = Block>
+        + ChainSpecProvider<ChainSpec: EthChainSpec<Header = TempoHeader> + TempoHardforks>
+        + 'static,
+    EvmConfig: ConfigureTempoPoolEvm,
+{
+    /// Like [`TransactionPool::best_transactions_with_attributes`], but skips transactions mined
+    /// in the ancestors of the block `parent_hash` that the pool has not pruned yet.
+    ///
+    /// Pool pruning runs asynchronously after a block is committed, so a payload built right
+    /// after it would otherwise execute the parent's transactions again, fail, and mark them
+    /// (and their descendants) invalid. Skipped transactions are not marked invalid, so their
+    /// descendants stay available.
+    pub fn best_transactions_excluding_unpruned_mined(
+        &self,
+        attributes: BestTransactionsAttributes,
+        parent_hash: B256,
+    ) -> Box<dyn BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>> {
+        // Read the progress before creating the iterator, so the iterator's snapshot is at
+        // least as recent as the progress.
+        let protocol_pruned = self.protocol_pool.block_info().last_seen_block_hash;
+        let aa_2d_pruned = *self.aa_2d_pruned_block.read();
+
+        // Walk the parent's ancestors until both pools' last pruned blocks are reached. Tracking
+        // hashes instead of numbers also covers a pool that last pruned another fork.
+        let mut mined = B256Set::default();
+        let (mut protocol_reached, mut aa_2d_reached) = (false, false);
+        let mut hash = parent_hash;
+        for _ in 0..MAX_UNPRUNED_LOOKBACK {
+            protocol_reached |= hash == protocol_pruned;
+            aa_2d_reached |= hash == aa_2d_pruned;
+            if protocol_reached && aa_2d_reached {
+                break;
+            }
+            // Skipping is an optimization, so a failed lookup must not fail the build.
+            let block = match self.client().block_by_hash(hash) {
+                Ok(Some(block)) => block,
+                Ok(None) => break,
+                Err(err) => {
+                    tracing::warn!(target: "txpool", %err, %hash, "failed to read ancestor block");
+                    break;
+                }
+            };
+            mined.extend(block.body().transactions().map(|tx| *tx.tx_hash()));
+            hash = block.header().parent_hash();
+        }
+
+        Box::new(SkipHashesBestTransactions::new(
+            self.best_transactions_with_attributes(attributes),
+            mined,
+        ))
+    }
+}
+
 // Manual Clone implementation
 impl<Client, EvmConfig> Clone for TempoTransactionPool<Client, EvmConfig> {
     fn clone(&self) -> Self {
         Self {
             protocol_pool: self.protocol_pool.clone(),
             aa_2d_pool: Arc::clone(&self.aa_2d_pool),
+            aa_2d_pruned_block: Arc::clone(&self.aa_2d_pruned_block),
         }
     }
 }
@@ -2989,5 +3059,101 @@ mod tests {
             10,
             TempoHardfork::T3,
         ));
+    }
+
+    /// Adds `pooled` as valid against an account state nonce of zero.
+    fn add_validated_at_state_nonce_zero(
+        pool: &TempoTransactionPool<MockEthProvider<TempoPrimitives, TempoChainSpec>>,
+        pooled: TempoPooledTransaction,
+    ) {
+        let validated = TransactionValidationOutcome::Valid {
+            balance: *pooled.cost(),
+            state_nonce: 0,
+            bytecode_hash: None,
+            transaction: ValidTransaction::new(pooled, None),
+            propagate: true,
+            authorities: None,
+        };
+        pool.add_validated_transaction(TransactionOrigin::External, validated)
+            .expect("transaction should be admitted");
+    }
+
+    #[test]
+    fn best_transactions_skip_unpruned_mined_without_invalidating_descendants() {
+        let provider = create_provider_with_tip();
+        let pool = create_test_pool(provider.clone());
+        let sender = Address::random();
+
+        // A protocol-lane and a 2D-lane transaction, each with a pending descendant.
+        let mined_protocol = crate::test_utils::TxBuilder::aa(sender).nonce(0).build();
+        let mined_2d = crate::test_utils::TxBuilder::aa(sender)
+            .nonce_key(U256::ONE)
+            .nonce(0)
+            .build();
+        let child_protocol = crate::test_utils::TxBuilder::aa(sender).nonce(1).build();
+        let child_2d = crate::test_utils::TxBuilder::aa(sender)
+            .nonce_key(U256::ONE)
+            .nonce(1)
+            .build();
+        let mined_hashes = [*mined_protocol.hash(), *mined_2d.hash()];
+        let child_hashes = [*child_protocol.hash(), *child_2d.hash()];
+
+        // Block 1 contains the first two transactions, but the pool has not pruned them.
+        let parent_hash = B256::random();
+        provider.add_block(
+            parent_hash,
+            Block {
+                header: TempoHeader {
+                    inner: Header {
+                        number: 1,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                body: alloy_consensus::BlockBody {
+                    transactions: vec![
+                        mined_protocol.inner().inner().clone(),
+                        mined_2d.inner().inner().clone(),
+                    ],
+                    ..Default::default()
+                },
+            },
+        );
+        for tx in [mined_protocol, mined_2d, child_protocol, child_2d] {
+            add_validated_at_state_nonce_zero(&pool, tx);
+        }
+        let attributes = BestTransactionsAttributes::new(0, None);
+
+        let mut best = pool.best_transactions_excluding_unpruned_mined(attributes, parent_hash);
+        let yielded: B256Set = best.by_ref().map(|tx| *tx.hash()).collect();
+        assert_eq!(yielded, B256Set::from_iter(child_hashes));
+
+        // A pool that last pruned another fork has not pruned the parent.
+        let other_fork = B256::random();
+        pool.set_block_info(BlockInfo {
+            last_seen_block_number: 1,
+            last_seen_block_hash: other_fork,
+            ..pool.block_info()
+        });
+        pool.notify_aa_pool_on_state_updates(other_fork, &Default::default());
+        let best = pool.best_transactions_excluding_unpruned_mined(attributes, parent_hash);
+        assert_eq!(best.count(), 2);
+
+        // Protocol pool progress alone is not enough, the 2D pool must have pruned too.
+        pool.set_block_info(BlockInfo {
+            last_seen_block_hash: parent_hash,
+            ..pool.block_info()
+        });
+        let best = pool.best_transactions_excluding_unpruned_mined(attributes, parent_hash);
+        assert_eq!(best.count(), 2);
+
+        // Once both pools pruned block 1, nothing is skipped.
+        pool.notify_aa_pool_on_state_updates(parent_hash, &Default::default());
+        let best = pool.best_transactions_excluding_unpruned_mined(attributes, parent_hash);
+        let yielded: B256Set = best.map(|tx| *tx.hash()).collect();
+        assert_eq!(
+            yielded,
+            B256Set::from_iter(mined_hashes.into_iter().chain(child_hashes))
+        );
     }
 }
