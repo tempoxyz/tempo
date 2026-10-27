@@ -60,6 +60,7 @@ use futures::{
     FutureExt as _,
     future::{Either, FusedFuture as _},
 };
+use mimalloc as _;
 use reth_cli_runner::CliRunner;
 use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands};
 use reth_network_api::Peers;
