@@ -22,14 +22,11 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{error, info, warn};
 use zone_rpc::{ZoneDebugApi, types::ZoneExecutionWitness};
 
-use crate::{ZoneSequencerProvider, metrics::ProofCollectorMetrics};
+use crate::ZoneSequencerProvider;
 
 // Persisted files survive upgrades; reject incompatible witness formats explicitly.
 const FORMAT_VERSION: u32 = 1;
 const FALLBACK_POLL_INTERVAL: Duration = Duration::from_secs(1);
-/// Canonical blocks whose witnesses are collected concurrently. Collection is bound by L1 proof
-/// latency, so a slow L1 RPC must not serialize the backlog one round trip at a time.
-const COLLECTION_CONCURRENCY: usize = 8;
 /// Finalized blocks retained for a lagging shadow prover before falling back to RPC witnesses.
 const MAX_SHADOW_RETENTION_BLOCKS: u64 = 10_000;
 
@@ -58,7 +55,6 @@ pub async fn create_proof_collector<P: ZoneSequencerProvider>(
         provider,
         store: store.clone(),
         requests: requests_rx,
-        metrics: ProofCollectorMetrics::default(),
     };
     let handle = ProofCollectorHandle {
         store,
@@ -144,7 +140,6 @@ struct ProofCollector<P> {
     provider: P,
     store: Arc<ProofStore>,
     requests: mpsc::Receiver<ProofRequest>,
-    metrics: ProofCollectorMetrics,
 }
 
 impl<P: ZoneSequencerProvider> ProofCollector<P> {
@@ -201,53 +196,22 @@ impl<P: ZoneSequencerProvider> ProofCollector<P> {
         let store = self.store.clone();
         let provider = self.provider.clone();
         let head = tokio::task::spawn_blocking(move || {
-            store.prune_through(finalized_zone_height)?;
+            store
+                .prune_through(finalized_zone_height)
+                .unwrap_or_else(|error| panic!("failed to prune block proofs: {error:#}"));
             Ok::<_, eyre::Report>(provider.best_block_number()?)
         })
         .await
         .expect("proof pruning task panicked")?;
 
         let start = self.store.state.read().pruned_through.saturating_add(1);
-        let mut missing = Vec::new();
         for number in start..=head {
             let block_hash = self
                 .provider
                 .block_hash(number)?
                 .ok_or_eyre(format!("canonical Zone block {number} has no hash"))?;
             if !self.store.contains(number, block_hash) {
-                missing.push((number, block_hash));
-            }
-        }
-        self.metrics.unwitnessed_blocks.set(missing.len() as f64);
-        let mut collected = futures::stream::iter(missing)
-            .map(|(number, block_hash)| async move {
-                let result = async {
-                    let proof = self.collect_block(block_hash).await?;
-                    ensure!(
-                        proof.witness.block_number == number,
-                        "witness height does not match Zone block {number}"
-                    );
-                    self.persist(proof).await
-                }
-                .await;
-                (number, result)
-            })
-            .buffered(COLLECTION_CONCURRENCY);
-        while let Some((number, result)) = collected.next().await {
-            match result {
-                Ok(_) => self.metrics.unwitnessed_blocks.decrement(1.0),
-                // Witnesses are best-effort: a block that cannot be witnessed, such as one past
-                // the L1 proof window, must not hold back the blocks after it. It is retried on
-                // the next pass, and settlement collects any witness still missing.
-                Err(error) => {
-                    self.metrics.witness_failures_total.increment(1);
-                    warn!(
-                        target: "zone::sequencer::proofs",
-                        zone_block = number,
-                        error = ?error,
-                        "Failed to collect block witness; skipping"
-                    );
-                }
+                self.collect_and_persist(number, block_hash).await?;
             }
         }
         Ok(())
@@ -610,7 +574,6 @@ mod tests {
         }
     }
 
-    /// Serves its witness for its own block and fails every other block.
     struct StubDebugApi(ZoneExecutionWitness);
 
     #[jsonrpsee::core::async_trait]
@@ -619,15 +582,8 @@ mod tests {
             &self,
             block: alloy_eips::BlockId,
         ) -> jsonrpsee::core::RpcResult<ZoneExecutionWitness> {
-            if block == self.0.block_hash.into() {
-                Ok(self.0.clone())
-            } else {
-                Err(jsonrpsee::types::ErrorObject::owned(
-                    -32000,
-                    "state outside the proof window",
-                    None::<()>,
-                ))
-            }
+            assert_eq!(block, self.0.block_hash.into());
+            Ok(self.0.clone())
         }
     }
 
@@ -655,7 +611,6 @@ mod tests {
             provider: MockEthProvider::<TempoPrimitives>::new(),
             store: store.clone(),
             requests,
-            metrics: ProofCollectorMetrics::default(),
         };
         // Historical state for settled backfill is deliberately unavailable from the stub.
         assert!(
@@ -684,49 +639,6 @@ mod tests {
         store.prune_through(2).unwrap();
         // The collection response owns the input even if pruning runs before the caller resumes.
         assert_eq!(*retained, expected);
-    }
-
-    #[tokio::test]
-    async fn collection_pass_skips_blocks_it_cannot_witness() {
-        use alloy_primitives::U256;
-        use alloy_provider::{Provider as _, ProviderBuilder};
-        use alloy_transport::mock::Asserter;
-        use reth_provider::test_utils::MockEthProvider;
-        use tempo_primitives::{TempoHeader, TempoPrimitives};
-
-        let directory = tempfile::tempdir().unwrap();
-        let unprovable = B256::repeat_byte(1);
-        let expected = proof(2, B256::repeat_byte(2));
-        let provider = MockEthProvider::<TempoPrimitives>::new();
-        for (number, hash) in [(1, unprovable), (2, expected.witness.block_hash)] {
-            let mut header = TempoHeader::default();
-            header.inner.number = number;
-            provider.add_header(hash, header);
-        }
-        let asserter = Asserter::new();
-        // Finalized Zone height read by the pass before collecting.
-        asserter.push_success(&Bytes::from(U256::ZERO.to_be_bytes::<32>()));
-        let store = Arc::new(ProofStore::open(directory.path().to_path_buf(), 0).unwrap());
-        let (_, requests) = mpsc::channel(1);
-        let collector = ProofCollector {
-            config: ProofCollectorConfig {
-                directory: directory.path().to_path_buf(),
-                debug_api: Arc::new(StubDebugApi(expected.witness.clone())),
-                portal_address: Address::ZERO,
-                l1_provider: ProviderBuilder::new_with_network::<TempoNetwork>()
-                    .connect_mocked_client(asserter)
-                    .erased(),
-                retain_for_shadow_proving: false,
-            },
-            provider,
-            store: store.clone(),
-            requests,
-            metrics: ProofCollectorMetrics::default(),
-        };
-
-        collector.prune_and_collect().await.unwrap();
-        assert!(!store.contains(1, unprovable));
-        assert!(store.contains(2, expected.witness.block_hash));
     }
 
     #[test]
