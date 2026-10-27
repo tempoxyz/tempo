@@ -8,7 +8,7 @@ use alloy_sol_types::sol;
 
 use invariants_core::check;
 
-use super::{Check, Verdict, Violation, judge};
+use crate::{Check, Verdict, Violation, judge};
 
 sol! {
     // `ReceiptClaimed`'s generated constructor takes its 11 fields.

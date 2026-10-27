@@ -5,23 +5,17 @@
 //! subset of accounts, and a view that reads a key the pre-state lacks answers nothing rather than
 //! failing.
 
-pub mod dex;
-pub mod fee_amm;
-pub mod keychain;
-pub mod receive_policy;
-pub mod tip20;
-
 use std::fmt::Display;
 
 use alloy_evm::{Evm as _, EvmEnv};
 use alloy_primitives::{Address, Bytes};
-use invariants_core::decode;
-pub use invariants_core::{Check, ObserveError, Report, Verdict, Views, Violation, complete, view};
+use invariants_core::{ObserveError, Report, Violation};
 use revm::database_interface::WrapDatabaseRef;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS};
 use tempo_evm::evm::TempoEvm;
 use tempo_fuzz_types::{InvariantFailure, InvariantScope};
+use tempo_invariants::{dex, fee_amm, tip20};
 use tempo_primitives::{TempoBlockEnv, is_tip20_prefix};
 
 use crate::state::{Db, PreStateDb};
@@ -66,7 +60,7 @@ pub(crate) fn check(
         .filter(|account| is_tip20_prefix(*account))
         .collect();
 
-    let mut views = EvmViews(TempoEvm::new(WrapDatabaseRef(db), env.clone()));
+    let mut views = Views(TempoEvm::new(WrapDatabaseRef(db), env.clone()));
     let mut step = Report::default();
     step.register(tip20::CHECKS);
     step.register(fee_amm::CHECKS);
@@ -150,17 +144,10 @@ fn observed<T>(
     }
 }
 
-/// The violations `checks` find in `ctx`.
-pub fn judge<C: ?Sized>(checks: &[Check<C>], ctx: &C) -> Vec<Violation> {
-    let mut report = Report::default();
-    report.run(checks, ctx);
-    report.violations
-}
-
 /// Read-only calls against the state being checked.
-struct EvmViews<'a>(TempoEvm<WrapDatabaseRef<&'a Db>>);
+struct Views<'a>(TempoEvm<WrapDatabaseRef<&'a Db>>);
 
-impl EvmViews<'_> {
+impl Views<'_> {
     fn pre_state(&self) -> &PreStateDb {
         &self.0.components().0.0.database.0
     }
@@ -189,7 +176,7 @@ impl EvmViews<'_> {
     }
 }
 
-impl Views for EvmViews<'_> {
+impl invariants_core::Views for Views<'_> {
     type Error = String;
 
     fn call(&mut self, calls: &[(Address, Bytes)]) -> Result<Vec<Option<Bytes>>, String> {

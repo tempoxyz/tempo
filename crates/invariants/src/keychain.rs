@@ -8,7 +8,7 @@ use alloy_sol_types::sol;
 
 use invariants_core::{check, ensure};
 
-use super::{Check, ObserveError, Views, Violation, judge, view};
+use crate::{Check, ObserveError, Views, Violation, judge, view};
 
 sol! {
     #[derive(Debug, PartialEq, Eq)]

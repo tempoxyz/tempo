@@ -7,7 +7,7 @@
 
 mod chain;
 mod execute;
-pub mod invariants;
+mod invariants;
 mod state;
 
 use bincode::Options as _;
