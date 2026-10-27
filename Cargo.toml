@@ -414,6 +414,8 @@ age = { version = "0.11", default-features = false }
 secrecy = "0.10"
 bitflags = "2.11.1"
 
+mimalloc = { version = "=0.1.52", default-features = false, features = ["override"] }
+
 # build deps
 smolgen = { version = "0.1.1", features = ["build", "cargo", "emit_and_set", "gitcl"] }
 

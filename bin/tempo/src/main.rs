@@ -1,7 +1,7 @@
 //! Binary entrypoint for the Tempo node.
 
 #[global_allocator]
-static ALLOC: reth_cli_util::allocator::Allocator = reth_cli_util::allocator::new_allocator();
+static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 /// Compile-time jemalloc configuration for heap profiling.
 ///
