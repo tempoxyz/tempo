@@ -54,8 +54,8 @@ impl ConfigCommitmentWriteGas {
     }
 
     /// Regular gas charged once the previous commitment is known, on top of
-    /// [`Self::static_cost`]. A first write is priced like account creation (TIP-1016), since the
-    /// commitment is permanent account state; its state gas is [`Self::state_cost`].
+    /// [`Self::static_cost`]. A first write is priced like account creation, since the commitment
+    /// is permanent account state; its state gas is [`Self::state_cost`].
     fn dynamic_cost(self, previous: B256, gas: &GasParams) -> Result<u64> {
         match self {
             Self::Intrinsic if previous.is_zero() => Ok(0),
