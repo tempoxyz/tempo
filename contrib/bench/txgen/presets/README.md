@@ -86,3 +86,11 @@ redemptions as `card-settlement`, next to ordinary vault withdrawals), cash card
 spend and cash-out transfers into single accounts, and first payments to fresh
 addresses. Customer-shaped presets are flavors of this shape. For example:
 `derek bench preset=neobank-generic gas-limit=500M general-gas-limit=30M`.
+
+`access-key-mix` covers the Account and Spend access-key flows: transfers that
+authorise a new key inline (creation and rotation), and payments signed by keys
+authorised in setup, split between pulls into one merchant settlement account
+(subscriptions, issuer card pulls) and agent spend to random users. The file lists
+the gas shares and the gaps: rotation does not revoke the old key yet, because
+txgen has no revoke flow. It needs funded users (nonzero state bloat), for example
+`derek bench preset=access-key-mix gas-limit=500M general-gas-limit=30M`.

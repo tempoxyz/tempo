@@ -43,7 +43,7 @@ if (kind === 'txgen-tempo') {
     const bench = path.join(directory, 'txgen-bench');
     fs.symlinkSync(mock, tempo);
     fs.symlinkSync(mock, bench);
-    for (const [preset, extraArgs] of [['tip20', ''], ['mix', ''], ['dex', '--gas-weighted-mix'], ['mpp', '']]) {
+    for (const [preset, extraArgs] of [['tip20', ''], ['mix', ''], ['dex', '--gas-weighted-mix'], ['mpp', ''], ['access-key-mix', '']]) {
       const callsPath = path.join(directory, `${preset}.calls`);
       const report = path.join(directory, `${preset}.json`);
       const spec = path.join(__dirname, 'presets', `${preset}.yml`);

@@ -127,4 +127,19 @@ let neobank_weights = (txgen-workload-metadata-args neobank-generic $neobank_pat
 assert equal ($neobank_weights | columns | sort) [account_first_receive card_settlement card_spend cash_out public_transfer public_transfer_memo vault_deposit vault_withdraw zone_deposit zone_withdraw]
 assert equal ($neobank_weights.card_settlement * 5) ($neobank_weights.account_first_receive * 12)
 rm -rf $neobank_dir
+# The access-key mix authorises keys in setup and inline, and pays one merchant account.
+let access_spec = (txgen-resolve-bench-spec access-key-mix)
+assert equal $access_spec.kind static
+assert equal $access_spec.requires_keychain_setup true
+assert equal (txgen-workload-metadata-args access-key-mix $access_spec.spec_path) ["-m" "workload_mix_weighting=gas"]
+let access = (^uv run --no-project --with yq==3.4.3 yq -c '{mix, templates}' $access_spec.spec_path | from json)
+assert equal ($access.mix | get weight | math sum) 100
+assert equal ($access.mix | get template | sort) [access_key_create access_key_rotate keychain_agent_spend keychain_merchant_pull]
+for name in [access_key_create access_key_rotate] {
+    assert equal ($access.templates | get $name | get auth.mode) key_authorization
+}
+for name in [keychain_merchant_pull keychain_agent_spend] {
+    assert equal ($access.templates | get $name | get auth.access_key.from_setup) authorize_keychain_users
+}
+assert equal ($access.templates.keychain_merchant_pull.call.args | first) "0x0000000000000000000000000000000000005e77"
 print "Preset, policy setup, state-bloat, and workload metadata checks passed"
