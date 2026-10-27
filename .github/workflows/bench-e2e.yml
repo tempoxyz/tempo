@@ -878,7 +878,7 @@ jobs:
             const s = require('./.github/scripts/bench-update-status.js');
             await s({github, context, status: 'Running benchmark...'});
 
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - uses: tempoxyz/gh-actions/vendor/astral-sh/setup-uv@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
       - name: Start allocator memory sampling
         run: |
