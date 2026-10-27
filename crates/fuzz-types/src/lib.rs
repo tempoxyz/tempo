@@ -206,9 +206,8 @@ pub struct TempoBlockchainInput {
 /// The state blocks execute on.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub enum PreState {
-    /// The dev genesis allocation plus these accounts. One at a genesis address overlays it: its
-    /// balance and nonce, its code unless empty, and its slots over the genesis ones. Anything else
-    /// reads as empty.
+    /// The dev genesis allocation plus these accounts. One at a genesis address replaces it whole: its
+    /// code and slots are only the ones given. Anything else reads as empty.
     Genesis(StateInput),
     /// Exactly this state, e.g. a block's pre-state taken from a node, and the block hashes
     /// `BLOCKHASH` may read. Reading anything it does not hold fails the input with

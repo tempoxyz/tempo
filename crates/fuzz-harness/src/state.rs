@@ -129,21 +129,16 @@ static GENESIS: LazyLock<CacheState> = LazyLock::new(|| {
     cache
 });
 
-/// `pre_state` as a database. A genesis pre-state's account at a genesis address overlays it (see
-/// [`overlay`]). `InvalidInput` if an account's code starts with the EIP-7702 prefix `0xef01` but is
-/// not a valid delegation.
+/// `pre_state` as a database. A genesis pre-state's account at a genesis address replaces it whole.
+/// `InvalidInput` if an account's code starts with the EIP-7702 prefix `0xef01` but is not a valid
+/// delegation.
 pub(crate) fn seed(pre_state: &PreState) -> Result<Db, ErrorClass> {
     let (state, mut cache, exact) = match pre_state {
         PreState::Genesis(state) => (state, GENESIS.clone(), false),
         PreState::Exact { state, .. } => (state, CacheState::new(), true),
     };
     for (address, account) in &state.accounts {
-        // An exact pre-state's cache starts empty, so only genesis accounts are overlaid.
-        let genesis = cache.accounts.get(address).and_then(|a| a.account.as_ref());
-        match genesis.map(|genesis| overlay(genesis, account, &cache.contracts)) {
-            Some(overlaid) => insert(&mut cache, *address, &overlaid)?,
-            None => insert(&mut cache, *address, account)?,
-        }
+        insert(&mut cache, *address, account)?;
     }
     let mut db = State::builder()
         .with_database(WrapDatabaseRef(PreStateDb {
@@ -158,28 +153,6 @@ pub(crate) fn seed(pre_state: &PreState) -> Result<Db, ErrorClass> {
             .extend(block_hashes.iter().map(|(n, h)| (*n, *h)));
     }
     Ok(db)
-}
-
-/// `account` over the genesis account `genesis`: its balance and nonce, its code unless empty, and
-/// its slots over the genesis ones. Fuzz inputs set balances and other slots of protocol contracts
-/// (pathUSD, the TIP-403 registry, the fee manager) without restating their whole storage.
-fn overlay(
-    genesis: &PlainAccount,
-    account: &AccountInput,
-    contracts: &B256Map<Bytecode>,
-) -> AccountInput {
-    let mut storage: BTreeMap<_, _> = genesis.storage.iter().map(|(k, v)| (*k, *v)).collect();
-    storage.extend(&account.storage);
-    AccountInput {
-        balance: account.balance,
-        nonce: account.nonce,
-        code: if account.code.is_empty() {
-            code(&genesis.info, contracts)
-        } else {
-            account.code.clone()
-        },
-        storage,
-    }
 }
 
 /// Whether `account` holds nothing: an extractor lists the slots a block read even for an account
