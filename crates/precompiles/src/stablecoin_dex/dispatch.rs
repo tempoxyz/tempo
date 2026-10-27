@@ -96,6 +96,11 @@ impl Precompile for StablecoinDEX {
                         preserve_storage_credits(self.address)?;
                         self.set_book_index(c.index)
                     }),
+
+                    #[schedule(since = T14)]
+                    getTickLiquidity(call) => view(call, |c| {
+                        self.get_tick_liquidity(c.base, c.tick, c.isBid, c.startOrderId, c.maxOrders)
+                    }),
                 }
             }
         )
@@ -113,10 +118,12 @@ mod tests {
     };
     use alloy::{
         primitives::{Address, U256},
-        sol_types::{SolCall, SolValue},
+        sol_types::{SolCall, SolError, SolValue},
     };
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::IStablecoinDEX::IStablecoinDEXCalls;
+    use tempo_contracts::precompiles::{
+        IStablecoinDEX::IStablecoinDEXCalls, UnknownFunctionSelector,
+    };
 
     /// Setup a basic exchange with tokens and liquidity for swap tests
     fn setup_exchange_with_liquidity() -> eyre::Result<(StablecoinDEX, Address, Address, Address)> {
@@ -465,8 +472,38 @@ mod tests {
     }
 
     #[test]
+    fn test_get_tick_liquidity_gated_behind_t14() -> eyre::Result<()> {
+        for (spec, active) in [(TempoHardfork::T13, false), (TempoHardfork::T14, true)] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            StorageCtx::enter(&mut storage, || {
+                let (mut exchange, base, _, _) = setup_exchange_with_liquidity()?;
+                let calldata = IStablecoinDEX::getTickLiquidityCall {
+                    base,
+                    tick: 0,
+                    isBid: true,
+                    startOrderId: 0,
+                    maxOrders: 10,
+                }
+                .abi_encode();
+                let result = exchange.call(&calldata, Address::ZERO)?;
+                if active {
+                    let page =
+                        IStablecoinDEX::getTickLiquidityCall::abi_decode_returns(&result.bytes)?;
+                    assert_eq!(page.liquidity, MIN_ORDER_AMOUNT);
+                    assert_eq!(page.nextOrderId, 0);
+                } else {
+                    assert!(result.is_revert());
+                    assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
+                }
+                Ok::<_, eyre::Report>(())
+            })?;
+        }
+        Ok(())
+    }
+
+    #[test]
     fn stablecoin_dex_test_selector_coverage() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
 
