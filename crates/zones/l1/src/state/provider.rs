@@ -185,8 +185,8 @@ impl L1StateProvider {
     /// precompile error.
     ///
     /// During an RPC simulation or cache prewarming (any origin but [`ExecutionOrigin::Canonical`])
-    /// it makes one attempt limited to [`NON_CANONICAL_FETCH_TIMEOUT`] and returns an error if that
-    /// fails, since retrying would only hold an RPC permit or a prewarming thread.
+    /// it makes one attempt limited to 5s and returns an error if that fails, since retrying would
+    /// only hold an RPC permit or a prewarming thread.
     ///
     /// # Panics
     ///
