@@ -1,20 +1,23 @@
 [package]
 name = "tempo-nitro-attestation-fuzz"
 version = "0.0.0"
-publish = false
-edition = "2024"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
 
 [package.metadata]
 cargo-fuzz = true
 
-[workspace]
+[lints]
+workspace = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
 rustls-pki-types = "1.14"
 rustls-webpki = "0.103"
-sha2 = { version = "0.10", default-features = false }
-tempo-nitro-attestation = { path = ".." }
+sha2.workspace = true
+tempo-nitro-attestation.workspace = true
 x509-parser = "0.18"
 
 [[bin]]
@@ -23,4 +26,3 @@ path = "fuzz_targets/parse_attestation.rs"
 test = false
 doc = false
 bench = false
-

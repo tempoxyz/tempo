@@ -19,7 +19,6 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=cargo-
     cargo build --profile ${RUST_PROFILE} \
         --bin tempo --features "${RUST_FEATURES},localnet" \
         --bin tempo-localnet --features "${RUST_FEATURES},localnet" \
-        --bin tempo-sidecar \
         --bin tempo-xtask
 
 # Reuse the regular build artifacts, enabling custom PCRs only for the devnet binary.
@@ -31,7 +30,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=cargo-
     cargo build --profile ${RUST_PROFILE} \
         --bin tempo --features "${RUST_FEATURES},localnet,custom-pcrs"
 
-FROM debian:bookworm-slim@sha256:4724b8cc51e33e398f0e2e15e18d5ec2851ff0c2280647e1310bc1642182655d AS base
+FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8 AS base
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -60,12 +59,6 @@ EXPOSE 8545
 VOLUME ["/data"]
 HEALTHCHECK --interval=2s --timeout=2s --start-period=120s --retries=5 CMD ["/usr/local/bin/tempo-localnet", "--health"]
 ENTRYPOINT ["/usr/local/bin/tempo-localnet"]
-
-# tempo-sidecar
-FROM base AS tempo-sidecar
-ARG RUST_PROFILE=profiling
-COPY --from=builder /app/target/${RUST_PROFILE}/tempo-sidecar /usr/local/bin/tempo-sidecar
-ENTRYPOINT ["/usr/local/bin/tempo-sidecar"]
 
 # tempo-xtask
 FROM base AS tempo-xtask

@@ -60,18 +60,16 @@ alloy-signer-local = { workspace = true, features = ["mnemonic"] }
 alloy-signer.workspace = true
 alloy-sol-types.workspace = true
 commonware-cryptography.workspace = true
-commonware-math.workspace = true
-commonware-utils.workspace = true
 criterion.workspace = true
 eyre.workspace = true
 indexmap.workspace = true
 insta.workspace = true
-rand.workspace = true
 reth-execution-cache.workspace = true
 reth-storage-api.workspace = true
 reth-trie.workspace = true
 revm.workspace = true
 serde_json.workspace = true
+tempo-dkg-onchain-artifacts = { workspace = true, features = ["test-utils"] }
 tempo-precompiles = { workspace = true, features = ["test-utils"] }
 tempo-primitives = { workspace = true, features = ["arbitrary", "test-utils"] }
 tikv-jemallocator = "0.6.1"

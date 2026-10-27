@@ -39,6 +39,13 @@ Reports resolve aliases to the concrete scenario and record the selected preset.
 The original alias is retained separately as `requested_preset`; workload category
 metadata describes the mix without changing historical transfer-only labels.
 
+`zone-portal-throughput` and `vault-throughput` isolate one public-mix workload for
+L1 saturation runs: they include `public-mix.yml`, run its full fixture setup, and
+select only zone portal deposits/withdrawals or vault deposits/withdrawals (50/50).
+Zone operations settle synthetically on chain 1337; Zone journey latency is measured
+by `derek bench zones` instead. Raise both gas limits to saturate, for example
+`derek bench preset=zone-portal-throughput bloat=100 gas-limit=1T general-gas-limit=1T`.
+
 `tip20-policy` isolates the successful policy-heavy payment case: pathUSD transfers
 to configured receivers in a disjoint account pool, paid in AlphaUSD through the FeeAMM, with protocol nonces.
 It requires at least two selected tokens. Setup installs distinct blacklist leaves
@@ -53,3 +60,20 @@ For example: `derek bench preset=tip20-policy bloat=100` (E2E), or
 and transaction gas on T13/T14, while benchmark timings use normal node caches.
 The snapshots create a fresh recipient balance and initial validator fee accrual;
 benchmark receivers already have balances from faucet funding.
+
+`zone-earn-mix` and `bridge-mix` model live customer traffic shapes, with gas-share
+weights taken from mainnet; each file lists its window, the mainnet shares and
+what it does not model. `zone-earn-mix` reuses the public-mix fixtures (zone
+portal settlement, Earn vault and transfers), so it has the same requirements.
+`bridge-mix` deploys a bridge fixture (`bridge/`) and splits bridge payouts from a
+small operator pool and sponsored bridge deposits, for example
+`derek bench preset=bridge-mix`. Refresh the weights when the traffic changes.
+
+Gap variants: `zone-earn-hot` pins every zone operation to one portal (shared
+portal and vault state, up to the TIP-1096 deposit cap); `zone-earn-serial`
+sends zone settlement and Earn deposits from one account with ordered nonces;
+`bridge-mix-new-accounts` pays every bridge payout to a fresh address; and
+`zone-portal-hot` puts all zone portal deposits and withdrawals on one portal.
+`card-settlement` models card-program settlement: 18 unsponsored shard senders
+redeem vault shares and forward the proceeds to one settlement account.
+Run them at mainnet limits (`gas-limit=500M general-gas-limit=30M`) to compare.

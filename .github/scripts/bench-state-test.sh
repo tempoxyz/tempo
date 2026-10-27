@@ -70,8 +70,8 @@ git() {
   case "$*" in
     fetch*) ;;
     'rev-parse origin/main') printf '%s\n' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ;;
-    'tag --list v*.*.* --sort=-v:refname') printf 'v2.0.0\nv1.0.0\n' ;;
-    'rev-list -n 1 v2.0.0') printf '%s\n' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ;;
+    'tag --list v*.*.* tempo/v*.*.*') printf 'v1.0.0\ntempo/v2.0.0\n' ;;
+    'rev-list -n 1 tempo/v2.0.0') printf '%s\n' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ;;
     'rev-list -n 1 v1.0.0') printf '%s\n' bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb ;;
     'rev-parse origin/main~1') printf '%s\n' bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb ;;
     'log -1 --format=%cI '* ) printf '%s\n' "$STATE_TEST_DATE" ;;
@@ -116,10 +116,8 @@ export GITHUB_REF_NAME=main
 export STATE_TEST_ARTIFACTS='[{"artifacts":[]}]'
 [[ -z "$(bash "$scripts/bench-state.sh" owner/repo replay mainnet)" ]]
 unset STATE_TEST_ARTIFACTS
-for conclusion in failure cancelled skipped; do
-  export STATE_TEST_CONCLUSION="$conclusion"
-  [[ -z "$(bash "$scripts/bench-state.sh" owner/repo replay mainnet)" ]]
-done
+export STATE_TEST_CONCLUSION=failure
+[[ "$(bash "$scripts/bench-state.sh" owner/repo replay mainnet)" == "$previous" ]]
 unset STATE_TEST_CONCLUSION
 export STATE_TEST_STATUS=in_progress
 [[ -z "$(bash "$scripts/bench-state.sh" owner/repo replay mainnet)" ]]
@@ -132,12 +130,16 @@ export STATE_TEST_EVENT=pull_request
 unset STATE_TEST_EVENT
 echo 'PASS: pagination, newest state, expiry, branch/mode/fork/workflow/event isolation, and run outcomes'
 
-for series in replay e2e; do
-  export STATE_TEST_WORKFLOW=".github/workflows/bench-$series-scheduled.yml"
-  if [[ "$series" == replay ]]; then keys=(mainnet testnet); else keys=(default tip20-existing-any); fi
+for series in replay e2e zones; do
+  export STATE_TEST_WORKFLOW=".github/workflows/bench-$series-scheduled.yml" BENCH_STATE_SERIES="$series"
+  resolver="$scripts/bench-$series-scheduled-refs.sh"
+  case "$series" in
+    replay) keys=(mainnet testnet) ;;
+    e2e) keys=(default tip20-existing-any) ;;
+    zones) keys=(prover); resolver="$scripts/bench-e2e-scheduled-refs.sh" ;;
+  esac
   for key in "${keys[@]}"; do
     export BENCH_REPLAY_CHAIN="$key"
-    resolver="$scripts/bench-$series-scheduled-refs.sh"
     for value in "" "$feature" "$previous"; do
       export STATE_TEST_VALUE="$value"
       : > "$GITHUB_OUTPUT"
@@ -149,6 +151,7 @@ for series in replay e2e; do
       fi
       baseline="${value:-$feature}"
       grep -q "^baseline-ref=$baseline$" "$GITHUB_OUTPUT"
+      [[ "$series" != zones ]] || grep -q '^actor=zones-nightly$' "$GITHUB_OUTPUT"
     done
     export STATE_TEST_VALUE="$feature"
     : > "$GITHUB_OUTPUT"
@@ -161,15 +164,24 @@ for series in replay e2e; do
   done
 done
 
+export STATE_TEST_VALUE="$previous"
+for path in bench-zones-scheduled zones-benchmark; do
+  export STATE_TEST_PATH=".github/workflows/$path.yml"
+  [[ "$(bash "$scripts/bench-state.sh" owner/repo zones prover)" == "$previous" ]]
+  [[ -z "$(bash "$scripts/bench-state.sh" owner/repo e2e default)" ]]
+done
+unset STATE_TEST_PATH
+echo 'PASS: Zones baseline survives workflow rename without accepting L1 state'
+
 # Release comparisons must never read nightly state, whether triggered by a tag
-# or a manual release ref. A state API failure must not affect either path.
+# or a manual release ref. A tempo/v tag compares against the previous v release. A state API failure must not affect either path.
 export STATE_TEST_FAILURE=list
 for release_trigger in tag manual; do
   if [[ "$release_trigger" == tag ]]; then
-    export GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v2.0.0
+    export GITHUB_REF_TYPE=tag GITHUB_REF_NAME=tempo/v2.0.0
     unset INPUT_REF
   else
-    export GITHUB_REF_TYPE=branch GITHUB_REF_NAME=main INPUT_REF=v2.0.0
+    export GITHUB_REF_TYPE=branch GITHUB_REF_NAME=main INPUT_REF=tempo/v2.0.0
   fi
   : > "$GITHUB_OUTPUT"
   bash "$scripts/bench-e2e-scheduled-refs.sh" false default > "$scratch/log" 2>&1

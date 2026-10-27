@@ -61,13 +61,13 @@ use std::{
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_evm::{
-    StorageActionReplayError, TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess,
-    TempoTxResult, evm::TempoEvm,
+    StorageActionReplayError, TempoEvmConfig, TempoNextBlockEnvAttributes, TempoTxResult,
+    evm::TempoEvm,
 };
 use tempo_payload_types::{
-    Estimator, FinishedBuild, TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload,
+    Estimator, TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload,
+    estimator::FinishedBuild,
 };
-use tempo_precompiles::{storage::StorageActions, validator_config_v2::ValidatorConfigV2};
 use tempo_primitives::{TempoHeader, TempoReceipt, TempoTxEnvelope};
 use tempo_transaction_pool::{
     StateAwareBestTransactions, TempoTransactionPool, best::BestTransaction,
@@ -472,7 +472,7 @@ where
         // work would consume that window.
         let payload_build_budget = attributes.payload_build_budget();
         // Snapshot the shared estimator once so every stop decision in this
-        // build uses the same multiplier and validation feedback.
+        // build uses the same multiplier, dry build finish and validation feedback.
         let build_plan = payload_build_budget
             .map(|build_budget| self.estimator.build_plan(Instant::now(), build_budget));
         let validation_latency = build_plan.and_then(|plan| plan.validation_latency());
@@ -503,8 +503,8 @@ where
                         gas_used = cumulative_gas_used,
                         transactions = pool_transactions_included,
                         estimated_rlp_block_size,
-                        build_time_multiplier = plan.build_time_multiplier(),
-                        dry_build_finish = ?plan.dry_finish(),
+                        build_time_multiplier = %plan.build_time_multiplier(),
+                        dry_finish = ?plan.dry_finish(),
                         "stopping pool transaction execution before payload build budget is exhausted"
                     );
                     break BlockBuildStopReason::BuildBudget;
@@ -941,11 +941,11 @@ where
         if payload_build_budget.is_some() {
             self.estimator.on_build_finished(
                 Instant::now(),
-                FinishedBuild {
-                    work_at_tx_cutoff: validation_work_at_tx_cutoff,
-                    total_work: validation_work_duration,
-                    idle: normal_transaction_fill_idle_elapsed,
-                },
+                FinishedBuild::new(
+                    validation_work_at_tx_cutoff,
+                    validation_work_duration,
+                    normal_transaction_fill_idle_elapsed,
+                ),
             );
         }
         if is_osaka && estimated_rlp_block_size > MAX_RLP_BLOCK_SIZE {
@@ -1104,39 +1104,8 @@ fn maybe_override_fee_recipient<DB: Database>(
     let Some(public_key) = attributes.proposer_public_key() else {
         return;
     };
-    let ctx = executor.evm_mut().ctx_mut();
-    if !ctx.cfg.spec.is_t2() {
-        return;
-    }
-
-    // We are using the database as a read-only storage context to avoid modifying the journal state.
-    // Reading slots here might be dangerous because they would end up being warmed and might affect gas accounting.
-    match ctx.journaled_state.database.with_read_only_storage_ctx(
-        ctx.cfg.spec,
-        StorageActions::disabled(),
-        || -> Result<Option<Address>, PayloadBuilderError> {
-            let parent_number = ctx.block.number.saturating_to::<u64>() - 1;
-
-            let config = ValidatorConfigV2::default();
-            if !config
-                .is_initialized()
-                .map_err(PayloadBuilderError::other)?
-            {
-                return Ok(None);
-            }
-            let init_height = config
-                .get_initialized_at_height()
-                .map_err(PayloadBuilderError::other)?;
-            if init_height > parent_number {
-                return Ok(None);
-            }
-            let on_chain = config
-                .validator_by_public_key(*public_key)
-                .map(|v| v.feeRecipient)
-                .map_err(PayloadBuilderError::other)?;
-            Ok((!on_chain.is_zero()).then_some(on_chain))
-        },
-    ) {
+    // T14+ executors reject blocks whose beneficiary differs from this resolution.
+    match executor.evm_mut().proposer_fee_recipient(*public_key) {
         Ok(Some(fee_recipient)) => {
             debug!(%fee_recipient, "resolved fee recipient from contract");
             executor.evm_mut().ctx_mut().block.beneficiary = fee_recipient;

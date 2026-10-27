@@ -5,17 +5,14 @@
 
 mod attrs;
 mod budget;
-mod build_plan;
-mod estimator;
+pub mod estimator;
 mod proposal_budget;
 
 use alloy_primitives::Bytes;
 pub use attrs::TempoPayloadAttributes;
 pub(crate) use budget::ValidationLatencyEstimator;
 pub use budget::{ValidationLatencyEstimate, ValidationLatencyWorkload};
-pub(crate) use build_plan::BUILD_TIME_MULTIPLIER_SCALE;
-pub use build_plan::{BuildPlan, PayloadBudgetDecision};
-pub use estimator::{DEFAULT_BUILD_TIME_MULTIPLIER, Estimator, EstimatorConfig, FinishedBuild};
+pub use estimator::{BuildPlan, Estimator, PayloadBudgetDecision};
 pub use proposal_budget::ProposalBudget;
 use std::{
     sync::{Arc, OnceLock},
