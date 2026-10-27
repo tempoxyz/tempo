@@ -28,7 +28,9 @@ pub enum ErrorClass {
     #[default]
     None = 0,
     /// The input contradicts itself or this harness's contract, e.g. a decreasing hardfork
-    /// schedule, senders that do not match the transactions, or blocks out of timestamp order.
+    /// schedule, senders that do not match the transactions, blocks out of timestamp order, or a
+    /// pre-state that already breaks an invariant (reported in `invariant_failures` at
+    /// [`InvariantScope::Execution`]).
     InvalidInput = 1,
     /// A transaction or header does not decode, or has trailing bytes.
     RlpDecode = 2,

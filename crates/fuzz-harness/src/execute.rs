@@ -115,8 +115,35 @@ fn execute(
         }
     };
 
-    let pre = db.cache.clone();
     let evm_config = TempoEvmConfig::new(Arc::clone(&spec));
+    // A pre-state that already breaks an invariant is not a reachable state, so nothing executed on
+    // it is a finding: the input is invalid, and its failures are reported at `Execution` scope.
+    // Only the accounts it lists can break one.
+    let Ok(env) = evm_config.evm_env(blocks[0].header()) else {
+        return TempoExecutionOutcome {
+            error: ErrorClass::Rejected,
+            ..Default::default()
+        };
+    };
+    let (PreState::Genesis(listed) | PreState::Exact { state: listed, .. }) = pre_state;
+    let mut invariant_failures = Vec::new();
+    let listed = |address: &Address| listed.accounts.contains_key(address);
+    invariants::check(
+        &db,
+        &env,
+        &InvariantScope::Execution,
+        listed,
+        &mut invariant_failures,
+    );
+    if !invariant_failures.is_empty() {
+        return TempoExecutionOutcome {
+            error: ErrorClass::InvalidInput,
+            invariant_failures,
+            ..Default::default()
+        };
+    }
+
+    let pre = db.cache.clone();
     let consensus = TempoConsensus::new(spec);
     let mut outcome = TempoExecutionOutcome::default();
     let applied = execute_blocks(&evm_config, &consensus, &mut db, &blocks, &mut outcome);
