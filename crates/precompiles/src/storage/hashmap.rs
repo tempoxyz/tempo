@@ -11,6 +11,7 @@ use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_primitives::{TempoBlockEnv, account::encode_config_commitment};
 
 use crate::{
+    configurable_account::CONFIGURABLE_ACCOUNT_CODE,
     error::TempoPrecompileError,
     storage::{
         ConfigCommitmentWriteGas, PrecompileStorageProvider, SstoreTransitionFlags,
@@ -305,8 +306,11 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         self.deduct_gas(gas.static_cost())?;
         let previous = self.config_commitment(address)?;
         self.deduct_gas(gas.dynamic_cost(previous)?)?;
-        self.accounts.entry(address).or_default().extension =
-            AccountExtension::from(encode_config_commitment(commitment));
+        let account = self.accounts.entry(address).or_default();
+        if previous.is_zero() {
+            account.set_code(Bytecode::new_raw(CONFIGURABLE_ACCOUNT_CODE));
+        }
+        account.extension = AccountExtension::from(encode_config_commitment(commitment));
         Ok(())
     }
 

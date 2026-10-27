@@ -46,7 +46,7 @@ impl Precompile for SignatureVerifier {
                     }),
                     #[schedule(since = T14)]
                     verifyConfigurableAccount(call) => view(call, |c| {
-                        self.verify_configurable_account(c.account, c.hash, &c.signature)
+                        self.verify_configurable_account(c.account, c.hash, &c.signature, false)
                     }),
                 }
             }

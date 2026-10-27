@@ -27,13 +27,13 @@ use tempo_primitives::TempoAddressExt;
 
 use crate::{
     ACCOUNT_KEYCHAIN_ADDRESS,
-    configurable_account::valid_account,
+    configurable_account::{valid_account, valid_account_code},
     error::Result,
     has_duplicates_metered,
     storage::{Handler, Mapping, Set, StorageCtx, account_config_commitment},
     tip20_factory::TIP20Factory,
 };
-use alloy::primitives::{Address, B256, FixedBytes, KECCAK256_EMPTY, TxKind, U256, keccak256};
+use alloy::primitives::{Address, B256, FixedBytes, TxKind, U256, keccak256};
 use tempo_precompiles_macros::{Storable, contract};
 
 /// Allowed TIP-20 selectors for recipient-constrained rules.
@@ -243,8 +243,8 @@ impl AccountKeychain {
     /// - `ExpiryInPast` — expiry must be in the future (enforced since T0)
     /// - `KeyAlreadyExists` — a key with this ID is already registered
     /// - `KeyAlreadyRevoked` — revoked keys cannot be re-authorized
-    /// - `InvalidKeyId` — from T14, a ConfigurableAccount `keyId` that is the caller, has code or
-    ///   is a reserved address (precompile, TIP-20, virtual or zone portal)
+    /// - `InvalidKeyId` — from T14, a ConfigurableAccount `keyId` that is the caller, has
+    ///   incompatible code or is reserved (precompile, TIP-20, virtual or zone portal)
     /// - `InvalidSignatureType` — unsupported type, including ConfigurableAccount before T14
     pub fn authorize_key(
         &mut self,
@@ -272,7 +272,7 @@ impl AccountKeychain {
             let spec = self.storage.spec();
             let invalid_parent = StorageCtx::with_warm_caller_info(msg_sender, |info| {
                 let commitment = account_config_commitment(info, spec)?;
-                Ok(!commitment.is_zero() && info.code_hash != KECCAK256_EMPTY)
+                Ok(!commitment.is_zero() && !valid_account_code(info.code_hash, commitment))
             })?;
             if invalid_parent {
                 return Err(AccountKeychainError::invalid_key_id().into());
@@ -291,11 +291,15 @@ impl AccountKeychain {
             return Err(AccountKeychainError::invalid_key_id().into());
         }
         if is_delegate_grant {
+            let spec = self.storage.spec();
             // Naming a delegate does not register it or require a configuration witness.
             if !valid_account(key_id, self.storage.spec())
-                || self
-                    .storage
-                    .with_account_info(key_id, |info| Ok(info.code_hash != KECCAK256_EMPTY))?
+                || self.storage.with_account_info(key_id, |info| {
+                    Ok(!valid_account_code(
+                        info.code_hash,
+                        account_config_commitment(info, spec)?,
+                    ))
+                })?
             {
                 return Err(AccountKeychainError::invalid_key_id().into());
             }
