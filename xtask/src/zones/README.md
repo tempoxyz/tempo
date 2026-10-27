@@ -24,9 +24,8 @@ RPC chain ID must match the parent encoded in the Zone chain ID. The schedule on
 validates the anchor and picks the fork for the initialization EVM; genesis writes
 no Tempo fork fields. Zone nodes read `tempo_forkSchedule` from `--l1.rpc-url`
 once at startup and ignore Tempo fork fields in genesis, so L1 upgrades need no
-genesis change, only a node restart. `import`, `stage` and `re-execute` read the same
-schedule over `L1_HTTP_RPC_URL`; with `--l1.offline` they execute from the genesis
-schedule.
+genesis change, only a node restart. Offline tools (`import`, `stage`,
+`re-execute`) still execute from the genesis schedule.
 The genesis timestamp comes from the anchor header. With the same anchor and
 generation parameters, regeneration produces identical genesis even as the L1 head
 advances. RPC failures, unsupported forks, inconsistent schedules, or fork overrides

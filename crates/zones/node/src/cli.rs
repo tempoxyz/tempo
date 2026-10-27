@@ -167,29 +167,6 @@ impl ZoneCli {
     }
 }
 
-/// Returns `chain` with the Tempo fork schedule its L1 reports through `tempo_forkSchedule`.
-///
-/// Zones follow their L1's schedule; Tempo fork fields in the Zone genesis are ignored.
-async fn resolve_chain_spec_from_l1(
-    chain: &ZoneChainSpec,
-    l1_rpc_url: &str,
-) -> eyre::Result<ZoneChainSpec> {
-    let parent_chain_id = decode_l1_chain_id(chain.chain_id())?;
-    let schedule = tokio::time::timeout(
-        Duration::from_secs(30),
-        fetch_l1_fork_schedule(l1_rpc_url, parent_chain_id),
-    )
-    .await
-    .map_err(|_| eyre::eyre!("timed out reading the L1 fork schedule"))??;
-    info!(
-        target: "reth::cli",
-        parent_chain_id,
-        ?schedule,
-        "Using the L1 Tempo fork schedule from tempo_forkSchedule"
-    );
-    Ok(chain.with_l1_fork_schedule(schedule)?)
-}
-
 /// Reads the Tempo fork activations an L1 reports through `tempo_forkSchedule`.
 async fn fetch_l1_fork_schedule(
     l1_rpc_url: &str,
@@ -228,7 +205,7 @@ fn run_node(mut cli: ZoneNodeCli, l1_access: CliL1Access) -> eyre::Result<()> {
     prepend_log_filter(&mut cli.logs.log_stdout_filter, ZONE_LOG_FILTER_DIRECTIVES);
     prepend_log_filter(&mut cli.logs.log_file_filter, ZONE_LOG_FILTER_DIRECTIVES);
 
-    let l1_rpc_url: Option<url::Url> = match std::env::var("L1_HTTP_RPC_URL") {
+    let l1_rpc_url = match std::env::var("L1_HTTP_RPC_URL") {
         Ok(url) if !url.is_empty() => {
             let url = url
                 .parse()
@@ -240,37 +217,34 @@ fn run_node(mut cli: ZoneNodeCli, l1_access: CliL1Access) -> eyre::Result<()> {
     };
     validate_l1_access(l1_access, l1_rpc_url.is_some())?;
 
-    // Block-executing subcommands follow the same L1 fork schedule as the node. Their chain spec
-    // is resolved before a runtime exists, so the schedule is read on the runner they then use.
-    let mut runner = None;
-    let mut l1_chain_spec = None;
-    if let (CliL1Access::Rpc, Some(l1_rpc_url), Some(chain)) =
-        (l1_access, &l1_rpc_url, cli.command.chain_spec())
-    {
-        let cli_runner = CliRunner::try_default_runtime()?;
-        let chain = cli_runner.block_on(resolve_chain_spec_from_l1(chain, l1_rpc_url.as_str()))?;
-        l1_chain_spec = Some(Arc::new(chain));
-        runner = Some(cli_runner);
-    }
-
     let components = move |spec: Arc<ZoneChainSpec>| {
-        let spec = l1_chain_spec.clone().unwrap_or(spec);
         let evm_config = cli_evm_config(spec.clone(), l1_rpc_url.clone());
         (evm_config, ZoneConsensus::new(spec))
     };
 
-    let mut app = cli.configure();
-    if let Some(runner) = runner {
-        app.set_runner(runner);
-    }
-    app.run_with_components::<ZoneNode>(components, async move |mut builder, args| {
+    cli.run_with_components::<ZoneNode>(components, async move |mut builder, args| {
         info!(target: "reth::cli", "Launching Tempo Zone node");
 
         if args.block_interval_ms.is_some() {
             warn!(target: "reth::cli", "--block.interval-ms is deprecated, has no effect, and will be removed in the next release");
         }
 
-        let chain = resolve_chain_spec_from_l1(&builder.config().chain, &args.l1_rpc_url).await?;
+        // Zones follow the Tempo fork schedule their L1 reports, read once at startup; Tempo fork
+        // fields in the Zone genesis are ignored.
+        let parent_chain_id = decode_l1_chain_id(builder.config().chain.chain_id())?;
+        let schedule = tokio::time::timeout(
+            Duration::from_secs(30),
+            fetch_l1_fork_schedule(&args.l1_rpc_url, parent_chain_id),
+        )
+        .await
+        .map_err(|_| eyre::eyre!("timed out reading the L1 fork schedule"))??;
+        info!(
+            target: "reth::cli",
+            parent_chain_id,
+            ?schedule,
+            "Using the L1 Tempo fork schedule from tempo_forkSchedule"
+        );
+        let chain = builder.config().chain.with_l1_fork_schedule(schedule)?;
         builder.config_mut().chain = Arc::new(chain);
 
         let zone_id = builder.config().chain.zone_id();
