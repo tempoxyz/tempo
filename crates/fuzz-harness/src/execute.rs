@@ -245,10 +245,11 @@ pub(crate) fn execute_blocks(
                     .invariant_failures
                     .extend(outputs.invariant_failures);
                 for (id, counts) in outputs.invariant_report.counts {
-                    let total = outcome.invariant_counts.entry(id.to_string()).or_default();
-                    total.evaluated += counts.evaluated;
-                    total.armed += counts.armed;
-                    total.fired += counts.fired;
+                    outcome
+                        .invariant_counts
+                        .entry(id.into())
+                        .or_default()
+                        .add(counts);
                 }
             }
             Err(error) => {

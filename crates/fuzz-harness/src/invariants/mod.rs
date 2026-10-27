@@ -47,19 +47,19 @@ pub(crate) fn check(
     all_holders.dedup();
 
     let mut views = Views(TempoEvm::new(WrapDatabaseRef(db), env.clone()));
+    let tokens = tip20::Tokens(
+        accounts
+            .iter()
+            .filter(|account| is_tip20_prefix(**account) && selected(account))
+            .filter_map(|&token| tip20::observe(&mut views, token, &all_holders))
+            .collect(),
+    );
     let mut step = Report::default();
     step.register(tip20::CHECKS);
-    let tokens = accounts
-        .iter()
-        .filter(|account| is_tip20_prefix(**account) && selected(account));
-    for &token in tokens {
-        if let Some(token) = tip20::observe(&mut views, token, &all_holders) {
-            step.run(tip20::CHECKS, &token);
-        }
-    }
+    step.run(tip20::CHECKS, &tokens);
     failures.extend(step.violations.drain(..).map(|violation| InvariantFailure {
         id: violation.id.to_string(),
-        message: violation.detail,
+        message: format!("{} {}", violation.subject, violation.detail),
         scope: scope.clone(),
     }));
     report.merge(step);

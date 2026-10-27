@@ -211,7 +211,7 @@ tempo-consensus-config = { path = "crates/consensus-config", default-features = 
 tempo-dkg-onchain-artifacts = { path = "crates/dkg-onchain-artifacts", default-features = false }
 tempo-faucet = { path = "crates/faucet", default-features = false }
 tempo-fuzz-types = { path = "crates/fuzz-types", default-features = false }
-invariants-core = { git = "https://github.com/tempoxyz/invariants-core", rev = "534c9860365d33e0dc97d84614bd250425510028" }
+invariants-core = { git = "https://github.com/tempoxyz/invariants-core", rev = "36634c61b5a486d2f12064d86c428aa4a5c31996" }
 tempo-evm = { path = "crates/evm", default-features = false }
 tempo-eyre = { path = "crates/eyre", default-features = false }
 tempo-hardfork = { path = "crates/hardfork", default-features = false }

@@ -1,22 +1,23 @@
-//! TIP-20 supply invariants.
+//! TIP-20 supply invariants, judged per token.
+
+use std::fmt;
 
 use alloy_primitives::{Address, U256};
 use alloy_sol_types::SolCall;
-use invariants_core::{Check, Layer, ObserveError, Views, view, view_many};
+use invariants_core::{Check, ObserveError, Verdict, Views, check, ensure, view, view_many};
 use tempo_contracts::precompiles::ITIP20;
 
-/// A token's supply, cap and the sum of the balances read, or why they could not be read.
-pub(super) struct Token {
-    token: Address,
-    read: Result<Ledger, String>,
-}
+/// The tokens a step's state holds, as their views report them.
+pub(super) struct Tokens(pub(super) Vec<Token>);
 
-struct Ledger {
-    supply: U256,
-    /// `None` when the pre-state cannot answer it.
+pub(super) struct Token {
+    address: Address,
+    /// `None` when a view failed: `error` says which.
+    supply: Option<U256>,
+    /// `None` when the pre-state cannot answer it or a view failed.
     cap: Option<U256>,
-    /// `Err` when a balance view failed; the supply and cap are still judged.
-    balances: Result<Balances, String>,
+    balances: Option<Balances>,
+    error: Option<String>,
 }
 
 enum Balances {
@@ -25,104 +26,83 @@ enum Balances {
     Overflow(Address),
 }
 
-pub(super) static CHECKS: &[Check<Token>] = &[
+impl fmt::Display for Token {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "token={}", self.address)
+    }
+}
+
+pub(super) static CHECKS: &[Check<Tokens>] = &[
     // A token's views answer.
-    Check {
+    check! {
         id: "TEMPO-TIP20-VIEW",
-        layer: Layer::State,
-        run: |t, p| match &t.read {
-            Err(error)
-            | Ok(Ledger {
-                balances: Err(error),
-                ..
-            }) => p.fail(format!("token={} {error}", t.token)),
-            Ok(_) => {}
-        },
+        over: |tokens: &Tokens| &tokens.0,
+        judge: |_, t| Some(match &t.error {
+            Some(error) => Verdict::Broken(error.clone()),
+            None => Verdict::Holds,
+        }),
     },
     // A zero cap is not exempt: minting checks the cap without exception, and setSupplyCap
     // rejects a cap below the supply.
-    Check {
+    check! {
         id: "TEMPO-TIP20-SUPPLY-CAP",
-        layer: Layer::State,
-        run: |t, p| {
-            let Ok(Ledger {
-                supply,
-                cap: Some(cap),
-                ..
-            }) = &t.read
-            else {
-                p.when(false);
-                return;
-            };
-            p.ensure(supply <= cap, || {
-                format!("token={} total_supply={supply} supply_cap={cap}", t.token)
-            });
+        over: |tokens: &Tokens| &tokens.0,
+        judge: |_, t| {
+            let (supply, cap) = (t.supply?, t.cap?);
+            ensure!(supply <= cap, "total_supply={supply} supply_cap={cap}")
         },
     },
     // The balances read sum to at most the supply, without overflow. They may be any subset of
     // the holders, so the sum is a lower bound.
-    Check {
+    check! {
         id: "TEMPO-TIP20-BALANCE-SUM",
-        layer: Layer::State,
-        run: |t, p| {
-            let Ok(Ledger {
-                supply,
-                balances: Ok(balances),
-                ..
-            }) = &t.read
-            else {
-                p.when(false);
-                return;
-            };
-            match balances {
-                Balances::Overflow(account) => p.fail(format!(
-                    "token={} balances overflow at account={account}",
-                    t.token
-                )),
-                Balances::Sum(sum) => {
-                    p.ensure(sum <= supply, || {
-                        format!("token={} balances={sum} total_supply={supply}", t.token)
-                    });
+        over: |tokens: &Tokens| &tokens.0,
+        judge: |_, t| {
+            let supply = t.supply?;
+            match t.balances.as_ref()? {
+                Balances::Overflow(account) => {
+                    Some(Verdict::Broken(format!("balances overflow at account={account}")))
                 }
+                Balances::Sum(sum) => ensure!(*sum <= supply, "balances={sum} total_supply={supply}"),
             }
         },
     },
 ];
 
-/// `token`'s ledger over `holders`, or `None` when the pre-state cannot answer its supply. A
-/// balance nobody answers for is left out.
+/// `token` over `holders`, or `None` when the pre-state cannot answer its supply. A balance
+/// nobody answers for is left out.
 pub(super) fn observe<V: Views<Error = String>>(
     views: &mut V,
-    token: Address,
+    address: Address,
     holders: &[Address],
 ) -> Option<Token> {
-    let read = read(views, token, holders).transpose()?;
-    Some(Token { token, read })
+    let mut token = Token {
+        address,
+        supply: None,
+        cap: None,
+        balances: None,
+        error: None,
+    };
+    match view(views, address, ITIP20::totalSupplyCall {}) {
+        Ok(supply) => token.supply = Some(supply),
+        Err(err) if err.is_not_answered() => return None,
+        Err(err) => {
+            token.error = Some(failed::<ITIP20::totalSupplyCall>(err));
+            return Some(token);
+        }
+    }
+    match view(views, address, ITIP20::supplyCapCall {}) {
+        Ok(cap) => token.cap = Some(cap),
+        Err(err) if err.is_not_answered() => {}
+        Err(err) => token.error = Some(failed::<ITIP20::supplyCapCall>(err)),
+    }
+    match balances(views, address, holders) {
+        Ok(balances) => token.balances = Some(balances),
+        Err(error) => token.error = token.error.or(Some(error)),
+    }
+    Some(token)
 }
 
-fn read<V: Views<Error = String>>(
-    views: &mut V,
-    token: Address,
-    holders: &[Address],
-) -> Result<Option<Ledger>, String> {
-    let supply = match view(views, token, ITIP20::totalSupplyCall {}) {
-        Ok(supply) => supply,
-        Err(err) if err.is_not_answered() => return Ok(None),
-        Err(err) => return Err(failed::<ITIP20::totalSupplyCall>(err)),
-    };
-    let cap = match view(views, token, ITIP20::supplyCapCall {}) {
-        Ok(cap) => Some(cap),
-        Err(err) if err.is_not_answered() => None,
-        Err(err) => return Err(failed::<ITIP20::supplyCapCall>(err)),
-    };
-    Ok(Some(Ledger {
-        supply,
-        cap,
-        balances: balances(views, token, holders),
-    }))
-}
-
-/// The sum of `holders`' balances of `token`, leaving out those nobody answers for.
 fn balances<V: Views<Error = String>>(
     views: &mut V,
     token: Address,
