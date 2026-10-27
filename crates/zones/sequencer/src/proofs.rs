@@ -9,17 +9,21 @@ use std::{
     time::Duration,
 };
 
+use alloy_consensus::BlockHeader as _;
 use alloy_primitives::{Address, B256};
 use alloy_provider::DynProvider;
 use alloy_rpc_types_eth::BlockId;
 use eyre::{Context as _, OptionExt as _, Result, bail, ensure};
 use futures::StreamExt as _;
 use parking_lot::RwLock;
+use reth_chainspec::ChainSpecProvider;
 use serde::{Deserialize, Serialize};
 use tempo_alloy::TempoNetwork;
+use tempo_chainspec::spec::TempoHardforks as _;
 use tempo_contracts::zones::ZonePortal;
 use tokio::sync::{mpsc, oneshot};
-use tracing::{error, info};
+use tracing::{error, info, warn};
+use zone_chainspec::ZoneChainSpec;
 use zone_rpc::{ZoneDebugApi, types::ZoneExecutionWitness};
 
 use crate::ZoneSequencerProvider;
@@ -29,15 +33,22 @@ const FORMAT_VERSION: u32 = 1;
 const FALLBACK_POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// Finalized blocks retained for a lagging shadow prover before falling back to RPC witnesses.
 const MAX_SHADOW_RETENTION_BLOCKS: u64 = 10_000;
+/// Bound on collecting a pre-T15 block's witness before importing the block without it.
+// TODO: remove after T15
+const OPTIONAL_WITNESS_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Load unsettled witnesses and return the proof collector handle and worker future.
-pub async fn create_proof_collector<P: ZoneSequencerProvider>(
+pub async fn create_proof_collector<P>(
     config: ProofCollectorConfig,
     provider: P,
 ) -> Result<(
     ProofCollectorHandle,
     impl Future<Output = ()> + Send + 'static,
-)> {
+)>
+where
+    P: ZoneSequencerProvider + ChainSpecProvider<ChainSpec = ZoneChainSpec>,
+{
+    let chain_spec = provider.chain_spec();
     let directory = config.directory.clone();
     let finalized_zone_height = config.finalized_zone_height().await?;
     let store = Arc::new(
@@ -59,6 +70,7 @@ pub async fn create_proof_collector<P: ZoneSequencerProvider>(
     let handle = ProofCollectorHandle {
         store,
         requests: requests_tx,
+        chain_spec,
     };
     Ok((handle, collector.run()))
 }
@@ -68,6 +80,7 @@ pub async fn create_proof_collector<P: ZoneSequencerProvider>(
 pub struct ProofCollectorHandle {
     store: Arc<ProofStore>,
     requests: mpsc::Sender<ProofRequest>,
+    chain_spec: Arc<ZoneChainSpec>,
 }
 
 impl ProofCollectorHandle {
@@ -113,12 +126,54 @@ impl ProofCollectorHandle {
             .context("proof collector stopped before persistence")?
     }
 
+    /// Collect an executed block's witness before it becomes canonical.
+    ///
+    /// From T15 (by the block's `timestamp`) this waits for collection and returns its error, so
+    /// a block whose witness cannot be collected never becomes canonical. Before T15 a batch
+    /// without witnesses settles with the `NoProof` verifier, so collection is bounded by
+    /// `OPTIONAL_WITNESS_TIMEOUT` and a failure is logged and counted instead of returned.
+    pub async fn collect_for_import(&self, number: u64, hash: B256, timestamp: u64) -> Result<()> {
+        if self.witness_mandatory(timestamp) {
+            return self.collect_and_persist(number, hash).await.map(|_| ());
+        }
+        let error = match tokio::time::timeout(
+            OPTIONAL_WITNESS_TIMEOUT,
+            self.collect_and_persist(number, hash),
+        )
+        .await
+        {
+            Ok(Ok(_)) => return Ok(()),
+            Ok(Err(error)) => error,
+            Err(elapsed) => eyre::Report::new(elapsed),
+        };
+        metrics::counter!("zone_witness_collection_skipped_total").increment(1);
+        warn!(
+            target: "zone::sequencer::proofs",
+            number,
+            %hash,
+            error = ?error,
+            "Importing Zone block without a witness; its batch can only settle with NoProof"
+        );
+        Ok(())
+    }
+
     /// Whether an imported block still needs a durable witness for future settlement.
     pub fn requires_witness(&self, number: u64) -> bool {
         number > self.store.state.read().pruned_through
     }
 
+    /// Whether a block with this `timestamp` must not become canonical without its witness.
+    ///
+    /// Settlement has no `NoProof` fallback from T15, so a missing witness must stall the chain.
+    ///
+    /// NOTE: can be removed once T15 is active, since every new block then requires a witness.
+    pub fn witness_mandatory(&self, timestamp: u64) -> bool {
+        self.chain_spec.is_t15_active_at_timestamp(timestamp)
+    }
+
     /// Fill any restart or upgrade gaps before allowing a proving node to advance.
+    ///
+    /// Pre-T15 blocks are left to background collection, since they may lack a witness.
     pub async fn collect_canonical_tail<P: ZoneSequencerProvider>(
         &self,
         provider: &P,
@@ -126,10 +181,12 @@ impl ProofCollectorHandle {
         let start = self.store.state.read().pruned_through.saturating_add(1);
         let head = provider.best_block_number()?;
         for number in start..=head {
-            let hash = provider
-                .block_hash(number)?
-                .ok_or_eyre(format!("canonical Zone block {number} has no hash"))?;
-            self.collect_and_persist(number, hash).await?;
+            let header = provider
+                .sealed_header(number)?
+                .ok_or_eyre(format!("canonical Zone block {number} has no header"))?;
+            if self.witness_mandatory(header.timestamp()) {
+                self.collect_and_persist(number, header.hash()).await?;
+            }
         }
         Ok(())
     }
@@ -831,6 +888,7 @@ mod tests {
         let handle = ProofCollectorHandle {
             store: store.clone(),
             requests,
+            chain_spec: t15_chain_spec(u64::MAX),
         };
         assert!(handle.get(1, B256::repeat_byte(2)).is_none());
         let loaded = handle.get(1, hash).unwrap();
@@ -848,7 +906,11 @@ mod tests {
             let directory = tempfile::tempdir().unwrap();
             let store = Arc::new(ProofStore::open(directory.path().to_path_buf(), 0).unwrap());
             let (requests, mut receiver) = mpsc::channel::<ProofRequest>(1);
-            let handle = ProofCollectorHandle { store, requests };
+            let handle = ProofCollectorHandle {
+                store,
+                requests,
+                chain_spec: t15_chain_spec(u64::MAX),
+            };
             let waiter = handle.collect_and_persist(1, B256::ZERO);
             tokio::pin!(waiter);
             let responder = async {
@@ -899,5 +961,40 @@ mod tests {
                 ),
             }
         }
+    }
+
+    fn t15_chain_spec(activation: u64) -> Arc<ZoneChainSpec> {
+        let mut genesis = tempo_chainspec::spec::DEV.inner.genesis.clone();
+        zone_chainspec::test_utils::set_tempo_fork(
+            &mut genesis,
+            tempo_chainspec::hardfork::TempoHardfork::T15,
+            activation,
+        );
+        Arc::new(ZoneChainSpec {
+            inner: Arc::new(tempo_chainspec::TempoChainSpec::from_genesis(genesis)),
+        })
+    }
+
+    #[tokio::test]
+    async fn import_collection_failure_is_fatal_only_from_t15() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(ProofStore::open(directory.path().to_path_buf(), 0).unwrap());
+        // A stopped collector fails every request.
+        let (requests, _) = mpsc::channel(1);
+        let handle = ProofCollectorHandle {
+            store,
+            requests,
+            chain_spec: t15_chain_spec(1_000),
+        };
+
+        handle
+            .collect_for_import(1, B256::repeat_byte(1), 999)
+            .await
+            .expect("a pre-T15 block is imported without its witness");
+        let error = handle
+            .collect_for_import(1, B256::repeat_byte(1), 1_000)
+            .await
+            .unwrap_err();
+        assert_eq!(error.to_string(), "proof collector stopped");
     }
 }
