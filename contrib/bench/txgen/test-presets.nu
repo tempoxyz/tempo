@@ -124,7 +124,8 @@ assert equal ($neobank.mix | get template | where { |name| $name | str starts-wi
 assert equal ($neobank.templates.card_settlement_0.calls | last | get args | first) $TXGEN_HELPER_CARD_SETTLEMENT_ACCOUNT
 assert equal ($neobank.templates.vault_withdraw_0.calls | length) (($neobank.templates.card_settlement_0.calls | length) - 1)
 let neobank_weights = (txgen-workload-metadata-args neobank-generic $neobank_path | last | str replace "workload_mix_weights=" "" | from json)
-assert equal ($neobank_weights | columns | sort) [account_first_receive card_settlement card_spend cash_out public_transfer public_transfer_memo vault_deposit vault_withdraw zone_deposit zone_withdraw]
+assert equal ($neobank_weights | columns | sort) [account_first_receive card_refund card_settlement card_spend cash_out dex_swap public_transfer public_transfer_memo vault_deposit vault_withdraw zone_deposit zone_withdraw]
 assert equal ($neobank_weights.card_settlement * 5) ($neobank_weights.account_first_receive * 12)
+assert equal ($neobank.setup.steps | where id =~ "^dex_wall_" | length) 6
 rm -rf $neobank_dir
 print "Preset, policy setup, state-bloat, and workload metadata checks passed"
