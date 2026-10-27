@@ -16,5 +16,20 @@ pub mod tip20;
 
 use invariants_core::decode;
 pub use invariants_core::{
-    Check, Checked, ObserveError, Report, Verdict, Views, Violation, complete, view,
+    AnyCheck, Check, Checked, ObserveError, Report, Verdict, Views, Violation, complete, view,
 };
+
+/// Every Tempo check, whatever its context.
+pub fn all() -> impl Iterator<Item = &'static dyn AnyCheck> {
+    fn erased<C: 'static>(
+        checks: &'static [Check<C>],
+    ) -> impl Iterator<Item = &'static dyn AnyCheck> {
+        checks.iter().map(|check| check as &dyn AnyCheck)
+    }
+    erased(tip20::CHECKS)
+        .chain(erased(tip20::TRANSITION_CHECKS))
+        .chain(erased(fee_amm::CHECKS))
+        .chain(erased(dex::CHECKS))
+        .chain(erased(keychain::CHECKS))
+        .chain(erased(receive_policy::CHECKS))
+}

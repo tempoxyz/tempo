@@ -62,9 +62,7 @@ pub(crate) fn check(
 
     let mut views = Views(TempoEvm::new(WrapDatabaseRef(db), env.clone()));
     let mut step = Report::default();
-    step.register(tip20::CHECKS);
-    step.register(fee_amm::CHECKS);
-    step.register(dex::CHECKS);
+    step.register_any(tempo_invariants::all());
     for id in [TIP20_VIEW, FEE_VIEW, DEX_VIEW] {
         step.counts.entry(id).or_default();
     }
@@ -72,7 +70,7 @@ pub(crate) fn check(
     for &token in tokens.iter().filter(|token| selected(token)) {
         let ledger = tip20::observe_partial(&mut views, token, &all_holders);
         if let Some(ledger) = observed(&mut step, TIP20_VIEW, format!("token={token}"), ledger) {
-            step.run(tip20::CHECKS, &ledger);
+            step.run_any(tempo_invariants::all(), &ledger);
         }
     }
     if selected(&TIP_FEE_MANAGER_ADDRESS) {
@@ -90,7 +88,7 @@ pub(crate) fn check(
             &all_holders,
         );
         if let Some(books) = observed(&mut step, FEE_VIEW, TIP_FEE_MANAGER_ADDRESS, books) {
-            step.run(fee_amm::CHECKS, &books);
+            step.run_any(tempo_invariants::all(), &books);
         }
     }
     if selected(&STABLECOIN_DEX_ADDRESS) {
@@ -102,7 +100,7 @@ pub(crate) fn check(
             &[],
         );
         if let Some(books) = observed(&mut step, DEX_VIEW, STABLECOIN_DEX_ADDRESS, books) {
-            step.run(dex::CHECKS, &books);
+            step.run_any(tempo_invariants::all(), &books);
         }
     }
 

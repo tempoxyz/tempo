@@ -29,8 +29,7 @@ pub const CHECKS: &[Check<Ledger>] = &[
     // rejects a cap below the supply.
     check! {
         id: SUPPLY_CAP,
-        over: |ledger: &Ledger| [ledger],
-        judge: |_, l| {
+        judge: |l: &Ledger| {
             let cap = l.supply_cap?;
             ensure!(l.supply <= cap, "totalSupply {} exceeds supplyCap {cap}", l.supply)
         },
@@ -38,8 +37,7 @@ pub const CHECKS: &[Check<Ledger>] = &[
     // The balances read may be any subset of the holders, so their sum is a lower bound.
     check! {
         id: BALANCE_SUM,
-        over: |ledger: &Ledger| [ledger],
-        judge: |_, l| {
+        judge: |l: &Ledger| {
             let sum = l.balance_sum();
             ensure!(
                 sum.is_some_and(|sum| sum <= l.supply),
@@ -74,8 +72,7 @@ impl Checked for Ledger {
 
 pub const TRANSITION_CHECKS: &[Check<Transition>] = &[check! {
     id: TRANSFER_EVENTS,
-    over: |transition: &Transition| [transition],
-    judge: |_, t| {
+    judge: |t: &Transition| {
         let detail = match apply(&t.pre, &t.transfers) {
             // `Transfer` events say nothing of the cap.
             Ok(want) if want.balances == t.post.balances && want.supply == t.post.supply => {

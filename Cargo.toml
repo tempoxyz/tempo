@@ -213,7 +213,7 @@ tempo-dkg-onchain-artifacts = { path = "crates/dkg-onchain-artifacts", default-f
 tempo-faucet = { path = "crates/faucet", default-features = false }
 tempo-fuzz-types = { path = "crates/fuzz-types", default-features = false }
 tempo-invariants = { path = "crates/invariants" }
-invariants-core = { git = "https://github.com/tempoxyz/invariants-core", rev = "ce120c04e6e2ea1eaab2aef4db39886ab9bc6665" }
+invariants-core = { git = "https://github.com/tempoxyz/invariants-core", rev = "51297f4d026251b1ec4f7b025f314174736c5452" }
 tempo-evm = { path = "crates/evm", default-features = false }
 tempo-eyre = { path = "crates/eyre", default-features = false }
 tempo-hardfork = { path = "crates/hardfork", default-features = false }

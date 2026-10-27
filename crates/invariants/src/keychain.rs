@@ -37,13 +37,11 @@ impl fmt::Display for Spend {
 pub const CHECKS: &[Check<Spend>] = &[
     check! {
         id: REVOKED,
-        over: |spend: &Spend| [spend],
-        judge: |_, s| ensure!(!s.key.info.isRevoked, "the key was revoked at the parent state"),
+        judge: |s: &Spend| ensure!(!s.key.info.isRevoked, "the key was revoked at the parent state"),
     },
     check! {
         id: EXPIRED,
-        over: |spend: &Spend| [spend],
-        judge: |_, s| {
+        judge: |s: &Spend| {
             let info = &s.key.info;
             if info.isRevoked || info.keyId.is_zero() {
                 return None;
@@ -58,8 +56,7 @@ pub const CHECKS: &[Check<Spend>] = &[
     },
     check! {
         id: SPEND_LIMIT,
-        over: |spend: &Spend| [spend],
-        judge: |_, s| {
+        judge: |s: &Spend| {
             let (info, limit) = (&s.key.info, &s.key.limit);
             let refilled = limit.periodEnd != 0 && s.timestamp >= limit.periodEnd;
             if info.keyId.is_zero() || !info.enforceLimits || s.limit_updated || refilled {

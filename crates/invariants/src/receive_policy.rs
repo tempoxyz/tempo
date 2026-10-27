@@ -35,8 +35,7 @@ impl fmt::Display for Claim {
 
 pub const CHECKS: &[Check<Claim>] = &[check! {
     id: CLAIM_AUTHORITY,
-    over: |claim: &Claim| [claim],
-    judge: |_, c| {
+    judge: |c: &Claim| {
         let claim = &c.claim;
         let (receiver, authority) = (claim.receiver, claim.recoveryAuthority);
         if [receiver, claim.recipient, claim.originator].contains(&claim.to) || authority == receiver {
