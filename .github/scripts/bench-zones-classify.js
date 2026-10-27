@@ -1,5 +1,5 @@
 // Zones latency significance: resample measured journeys without synthetic jitter.
-// An end-to-end row counts when its p95 change clears the bootstrap uncertainty, with no extra floor.
+// Score only non-degenerate 95% bootstrap intervals excluding zero; no extra floor.
 // This estimates within-run sampling uncertainty, not run-to-run environment variation.
 // Below MIN_JOURNEYS there are too few tail observations for a verdict.
 const fs = require('fs');
@@ -7,6 +7,7 @@ const path = require('path');
 const { rng } = require('./bench-e2e-classify');
 
 const MIN_JOURNEYS = 100;
+const MIN_GROUPS = 20;
 // End-to-end rows of the controller's LATENCY_ROWS; null is the whole client-observed journey.
 const EDGES = {
   withdrawal: ['offramp', 'offramp_processed'],
@@ -30,25 +31,42 @@ function samples(instances, edge) {
   return values.every(Number.isFinite) ? values : null;
 }
 
-function resampler(values, rand) {
-  const sample = new Float64Array(values.length);
+// Keep contemporaneous journeys together. One median journey duration per window
+// captures local shared-load/block-timing effects without another benchmark setup.
+// This is a temporal-cluster approximation, not a guarantee of independence.
+function temporalGroups(instances) {
+  if (!instances.every(i => Number.isFinite(i.started_at_unix_ms) &&
+      Number.isFinite(i.finished_at_unix_ms) && i.finished_at_unix_ms > i.started_at_unix_ms)) return null;
+  const durations = instances.map(i => i.finished_at_unix_ms - i.started_at_unix_ms).sort((a, b) => a - b);
+  const width = durations[Math.floor(durations.length / 2)];
+  const start = Math.min(...instances.map(i => i.started_at_unix_ms));
+  const groups = new Map();
+  instances.forEach((i, index) => {
+    const key = Math.floor((i.started_at_unix_ms - start) / width);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(index);
+  });
+  return [...groups.values()];
+}
+
+function resampler(values, groups, rand) {
   return () => {
-    for (let j = 0; j < values.length; j += 1) {
-      sample[j] = values[Math.floor(rand() * values.length)];
+    const sample = [];
+    for (let j = 0; j < groups.length; j += 1) {
+      for (const index of groups[Math.floor(rand() * groups.length)]) sample.push(values[index]);
     }
-    return p95(sample.sort());
+    return p95(sample.sort((a, b) => a - b));
   };
 }
 
-// Lower is better: 'good' when the p95 drop exceeds bootstrap uncertainty, 'bad' for a rise.
-function sig(baseline, feature, rand) {
-  const base = p95(Float64Array.from(baseline).sort());
-  if (!(base > 0)) return 'neutral';
-  const pct = (p95(Float64Array.from(feature).sort()) / base - 1) * 100;
-  const [b, f] = [resampler(baseline, rand), resampler(feature, rand)];
+// Use interval endpoints: discrete/asymmetric bootstrap intervals need not be
+// centred on the observed change. A collapsed interval cannot establish certainty.
+function sig(baseline, feature, groups, rand) {
+  const [b, f] = [baseline, feature].map((values, i) => resampler(values, groups[i], rand));
   const diffs = Float64Array.from({ length: 10000 }, () => f() - b()).sort();
-  const ciPct = (diffs[9750] - diffs[250]) / 2 / base * 100;
-  return Math.abs(pct) > ciPct ? (pct < 0 ? 'good' : 'bad') : 'neutral';
+  const [low, high] = [diffs[250], diffs[9750]];
+  if (low === high) return null;
+  return high < 0 ? 'good' : low > 0 ? 'bad' : 'neutral';
 }
 
 function classify(rows, workDir) {
@@ -66,12 +84,22 @@ function classify(rows, workDir) {
     }
     traces.push(instances);
   }
+  const groups = traces.map(temporalGroups);
+  if (groups.some(g => !g)) return { changes, reason: 'Missing or invalid journey timing for temporal grouping.' };
+  if (groups.some(g => g.length < MIN_GROUPS)) {
+    return { changes, reason: `At least ${MIN_GROUPS} temporal groups per phase are required.` };
+  }
+  const reasons = [];
   const rand = rng(42);
   for (const { key, end_to_end: endToEnd } of rows) {
     const [b, f] = traces.map(instances => endToEnd && key in EDGES && samples(instances, EDGES[key]));
-    if (b && f) changes[key] = { sig: sig(b, f, rand) };
+    if (b && f) {
+      const verdict = sig(b, f, groups, rand);
+      if (verdict) changes[key] = { sig: verdict };
+      else reasons.push(`${key}: insufficient tail variation to estimate uncertainty.`);
+    }
   }
-  return { changes, reason: Object.keys(changes).length ? '' : 'No valid end-to-end latency samples.' };
+  return { changes, reason: reasons.join(' ') || (Object.keys(changes).length ? '' : 'No valid end-to-end latency samples.') };
 }
 
 module.exports = { classify };

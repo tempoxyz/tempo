@@ -167,9 +167,10 @@ def traced_report(deposits, withdrawal=2000.0):
         return [{"id": source, "finished_offset_ms": 0, "milestones": [{"run_offset_ms": 100}]},
                 {"id": destination, "finished_offset_ms": 0, "milestones": [{"run_offset_ms": 1}, {"run_offset_ms": 100 + ms}]}]
     return {"completed": len(deposits), "sampled_instances": [
-        {"outcome": "completed", "client_observed_e2e_latency_ms": 6000.0 + d,
-         "steps": edge("offramp", "offramp_processed", withdrawal) + edge("onramp.zone_before", "onramp.zone_deposit.processed", d)}
-        for d in deposits]}
+        {"outcome": "completed", "started_at_unix_ms": i * 10000, "finished_at_unix_ms": i * 10000 + 6000,
+         "client_observed_e2e_latency_ms": 6000.0 + d,
+         "steps": edge("offramp", "offramp_processed", withdrawal + d / 100) + edge("onramp.zone_before", "onramp.zone_deposit.processed", d)}
+        for i, d in enumerate(deposits)]}
 
 
 class ReportingTests(unittest.TestCase):
@@ -180,25 +181,42 @@ class ReportingTests(unittest.TestCase):
                "GITHUB_WORKSPACE": str(ROOT)}
         rows = [{"key": key, "label": key, "end_to_end": key != "sub_leg"} for key in ("withdrawal", "deposit", "journey", "sub_leg")]
         latency = lambda ms: {"p50_ms": ms, "p95_ms": ms}
-        base = traced_report(DEPOSIT_MS * 10)
-        # A same-distribution draw with fewer upper-cluster samples. The empirical
-        # bootstrap flags its p95 drop: retain this known false-positive example.
+        spread = [d + i / 10 for i, d in enumerate(DEPOSIT_MS * 10)]
+        base = traced_report(spread)
+        clustered = traced_report(DEPOSIT_MS * 10)
+        # A nonzero p95 shift from the same distribution must not trigger a ping.
         rng = random.Random(35)
         noise = traced_report([rng.choice(DEPOSIT_MS) for _ in range(100)])
-        scaled = lambda factor, n=10: traced_report([d * factor for d in DEPOSIT_MS * n])
+        scaled = lambda factor, n=10: traced_report([d * factor for d in spread[:n * 10]])
+        # Five journeys share each temporal cohort. Ignoring grouping falsely flags
+        # this small shift; the group-bootstrap interval still crosses zero.
+        def correlated(shift):
+            report = traced_report([1000 + (i // 5) * 20 + shift for i in range(100)])
+            for i, instance in enumerate(report["sampled_instances"]):
+                instance.update(started_at_unix_ms=(i // 5) * 10000, finished_at_unix_ms=(i // 5) * 10000 + 6000)
+            return report
+
+        collapsed = traced_report([1000] * 100)
+        missing_timing = dict(base, sampled_instances=[dict(i, started_at_unix_ms=None) for i in base["sampled_instances"]])
+        one_group = dict(base, sampled_instances=[dict(i, started_at_unix_ms=0, finished_at_unix_ms=6000) for i in base["sampled_instances"]])
         for name, baseline, feature, verdict, feature_sha, reason in (
                 ("improvement", base, scaled(0.8), "Improvement", SHA, ""),
                 ("regression", base, scaled(1.2), "Regression", SHA, ""),
                 ("same commit", base, scaled(0.8), "Improvement", OTHER_SHA, ""),
-                ("clustered sampling false positive", base, noise, "Improvement", SHA, ""),
+                ("clustered sampling noise", clustered, noise, "No Significant Change", SHA, ""),
+                ("correlated nonzero shift", correlated(0), correlated(-30), "No Significant Change", SHA, ""),
                 ("identical samples", base, base, "No Significant Change", SHA, ""),
-                ("small precise improvement", base, traced_report(DEPOSIT_MS * 10, withdrawal=1970.0), "Improvement", SHA, ""),
-                ("small precise regression", base, traced_report(DEPOSIT_MS * 10, withdrawal=2030.0), "Regression", SHA, ""),
+                ("small precise improvement", base, traced_report(spread, withdrawal=1970.0), "Improvement", SHA, ""),
+                ("small precise regression", base, traced_report(spread, withdrawal=2030.0), "Regression", SHA, ""),
+                ("collapsed interval", collapsed, traced_report([900] * 100), "Unclassified", SHA,
+                 "withdrawal: insufficient tail variation to estimate uncertainty. deposit: insufficient tail variation to estimate uncertainty. journey: insufficient tail variation to estimate uncertainty."),
+                ("missing timing", base, missing_timing, "Unclassified", SHA, "Missing or invalid journey timing for temporal grouping."),
+                ("one temporal group", base, one_group, "Unclassified", SHA, "At least 20 temporal groups per phase are required."),
                 ("under 100 journeys", scaled(1, 2), scaled(0.5, 2), "Unclassified", SHA,
                  "baseline: only 20 completed journeys; at least 100 are required."),
                 ("partial traces", base, dict(scaled(0.6, 1), completed=100), "Unclassified", SHA,
                  "feature: retained 10 of 100 completed journey traces; all are required."),
-                ("invalid latencies", base, {"completed": 100, "sampled_instances": [{"outcome": "completed", "steps": []}] * 100},
+                ("invalid latencies", base, {"completed": 100, "sampled_instances": [dict(i, steps=[], client_observed_e2e_latency_ms=None) for i in base["sampled_instances"]]},
                  "Unclassified", SHA, "No valid end-to-end latency samples."),
                 ("missing traces", None, None, "Unclassified", SHA, "Classification failed; see CI logs.")):
             with self.subTest(name):
