@@ -129,7 +129,7 @@ tempo-payload-types.workspace = true
 tempo-precompiles = { workspace = true, features = ["test-utils"] }
 tempo-revm.workspace = true
 tempfile.workspace = true
-tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "test-util"] }
 tokio-tungstenite.workspace = true
 zone-spf.workspace = true
 url = "2"

@@ -4,6 +4,7 @@ use reth_metrics::{
     Metrics,
     metrics::{Counter, Gauge, Histogram},
 };
+use zone_precompiles::tx_context::ExecutionOrigin;
 
 /// Metrics emitted by the L1 subscriber / deposit ingestion pipeline.
 #[derive(Metrics, Clone)]
@@ -41,4 +42,41 @@ pub(crate) struct L1SubscriberMetrics {
 
     /// Number of reconnect attempts after the subscriber exits or errors.
     pub reconnects: Counter,
+}
+
+/// Metrics for Tempo L1 storage reads made during Zone execution, labelled by `origin`.
+#[derive(Metrics, Clone)]
+#[metrics(scope = "tempo_zone_l1_state")]
+pub(crate) struct L1StateMetrics {
+    /// Number of L1 storage reads that missed the cache and were fetched over RPC.
+    pub cache_misses: Counter,
+}
+
+/// [`L1StateMetrics`] for each [`ExecutionOrigin`], so prewarming misses can be told apart from
+/// the canonical misses they are meant to prevent.
+#[derive(Debug, Clone)]
+pub(crate) struct L1StateMetricsByOrigin {
+    canonical: L1StateMetrics,
+    prewarming: L1StateMetrics,
+    simulation: L1StateMetrics,
+}
+
+impl L1StateMetricsByOrigin {
+    pub(crate) fn new() -> Self {
+        let labelled = |origin| L1StateMetrics::new_with_labels(&[("origin", origin)]);
+        Self {
+            canonical: labelled("canonical"),
+            prewarming: labelled("prewarming"),
+            simulation: labelled("simulation"),
+        }
+    }
+
+    pub(crate) fn record_cache_miss(&self, origin: ExecutionOrigin) {
+        let metrics = match origin {
+            ExecutionOrigin::Canonical => &self.canonical,
+            ExecutionOrigin::Prewarming => &self.prewarming,
+            ExecutionOrigin::Simulation => &self.simulation,
+        };
+        metrics.cache_misses.increment(1);
+    }
 }

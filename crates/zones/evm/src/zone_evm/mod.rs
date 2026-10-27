@@ -147,12 +147,28 @@ where
         tx: Self::Tx,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         validate_transaction(&tx, CONTRACT_DEPLOYER_ALLOWLIST)?;
-        let tx_hash = match tx.execution_context() {
-            ExecutionContext::Transaction { tx_hash } => tx_hash,
-            ExecutionContext::Simulation => B256::repeat_byte(0xff),
+        let cfg = self.cfg_env();
+        let (tx_hash, origin) = match tx.execution_context() {
+            ExecutionContext::Simulation => (
+                B256::repeat_byte(0xff),
+                tx_context::ExecutionOrigin::Simulation,
+            ),
+            // Only prewarming (the zone builder's and reth's engine prewarming) disables both
+            // checks, so a transaction funded or sequenced by an earlier one still executes.
+            ExecutionContext::Transaction { tx_hash }
+                if cfg.disable_nonce_check && cfg.disable_balance_check =>
+            {
+                (tx_hash, tx_context::ExecutionOrigin::Prewarming)
+            }
+            ExecutionContext::Transaction { tx_hash } => {
+                (tx_hash, tx_context::ExecutionOrigin::Canonical)
+            }
         };
-        let _tx_context_guard =
-            tx_context::set_current_transaction(tx_hash, tx.fee_payer().unwrap_or(tx.caller));
+        let _tx_context_guard = tx_context::set_current_transaction(
+            tx_hash,
+            tx.fee_payer().unwrap_or(tx.caller),
+            origin,
+        );
         self.execute_and_sanitize(|evm| evm.transact_raw(tx))
     }
 
@@ -200,8 +216,9 @@ fn map_adapter_error<E: core::error::Error + DBErrorMarker>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_evm::EvmEnv;
+    use alloy_evm::{EvmEnv, EvmFactory as _};
     use alloy_primitives::U256;
+    use alloy_sol_types::SolCall as _;
     use revm::{
         context::{
             TxEnv,
@@ -214,12 +231,75 @@ mod tests {
         primitives::AddressMap,
         state::{Account, EvmStorageSlot},
     };
+    use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, ITIP403Registry};
     use tempo_precompiles::TIP403_REGISTRY_ADDRESS;
     use tempo_primitives::transaction::{
         RecoveredTempoAuthorization, TempoSignature, TempoSignedAuthorization,
     };
     use tempo_revm::TempoBatchCallEnv;
-    use zone_precompiles::test_utils::MockL1Reader;
+    use zone_precompiles::{test_utils::MockL1Reader, tx_context::ExecutionOrigin};
+
+    /// L1 reader that records the execution origin of each read.
+    #[derive(Clone, Default)]
+    struct OriginReader(std::sync::Arc<std::sync::Mutex<Vec<ExecutionOrigin>>>);
+
+    impl L1StorageReader for OriginReader {
+        fn read_l1_storage(
+            &self,
+            _account: Address,
+            _slot: B256,
+            _block_number: u64,
+        ) -> Result<B256, zone_precompiles::L1StateError> {
+            self.0.lock().unwrap().push(tx_context::execution_origin());
+            Ok(B256::ZERO)
+        }
+    }
+
+    #[test]
+    fn l1_reads_know_the_execution_origin() {
+        let signed = ExecutionContext::Transaction {
+            tx_hash: B256::repeat_byte(0x01),
+        };
+        let mut prewarming_env = EvmEnv::default();
+        prewarming_env.cfg_env.disable_nonce_check = true;
+        prewarming_env.cfg_env.disable_balance_check = true;
+        for (execution_context, evm_env, origin) in [
+            (
+                ExecutionContext::Simulation,
+                EvmEnv::default(),
+                ExecutionOrigin::Simulation,
+            ),
+            (signed, EvmEnv::default(), ExecutionOrigin::Canonical),
+            (signed, prewarming_env, ExecutionOrigin::Prewarming),
+        ] {
+            let reader = OriginReader::default();
+            let mut evm = crate::ZoneEvmFactory::new(reader.clone(), Address::ZERO)
+                .create_evm(EmptyDB::default(), evm_env);
+            let tx = TempoTxEnv {
+                inner: TxEnv {
+                    kind: TIP403_REGISTRY_ADDRESS.into(),
+                    data: ITIP403Registry::policyExistsCall { policyId: 2 }
+                        .abi_encode()
+                        .into(),
+                    gas_limit: 1_000_000,
+                    ..Default::default()
+                },
+                fee_token: Some(DEFAULT_FEE_TOKEN),
+                execution_context,
+                ..Default::default()
+            };
+
+            evm.transact(tx).expect("registry call must execute");
+            let reads = reader.0.lock().unwrap().clone();
+            assert!(!reads.is_empty(), "the registry call must read L1");
+            assert!(reads.iter().all(|&read| read == origin), "{reads:?}");
+            assert_eq!(
+                tx_context::execution_origin(),
+                ExecutionOrigin::Canonical,
+                "the context must clear after execution"
+            );
+        }
+    }
 
     fn test_evm() -> ZoneEvm<EmptyDB, NoOpInspector, MockL1Reader> {
         let db = L1OverlayDB::new(EmptyDB::default(), MockL1Reader::default(), Address::ZERO);
