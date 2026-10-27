@@ -56,7 +56,7 @@ pub(in crate::consensus) struct Config<TContext> {
     /// post-state of its parent.
     pub(in crate::consensus) parent_state: TempoParentState,
 
-    /// Fixed proposal window, opened at the header stamp and capped by preparation.
+    /// Proposal pacing allowance from the header stamp, capped by preparation.
     pub(in crate::consensus) proposal_budget: ProposalBudget,
     /// Proposal budget estimator that records local validation feedback.
     pub(in crate::consensus) estimator: Estimator,
@@ -70,7 +70,7 @@ pub(in crate::consensus) struct Config<TContext> {
 pub(crate) struct Inner {
     public_key: PublicKey,
     epoch_strategy: FixedEpocher,
-    /// Fixed proposal window after reserving network propagation time.
+    /// Proposal pacing allowance after reserving network propagation time.
     proposal_budget: ProposalBudget,
 
     executor: crate::executor::Mailbox,
@@ -162,7 +162,7 @@ impl Inner {
         };
 
         // Start monotonic pacing alongside the wall-clock header stamp.
-        let window_opened = runtime.pacing_now();
+        let pacing_started = runtime.pacing_now();
         let preparation_elapsed = runtime.pacing_elapsed(propose_start);
 
         // Use current timestamp but make sure that if parent's timestamp is in the future, we account for that.
@@ -183,9 +183,9 @@ impl Inner {
 
         let proposer_public_key = crate::utils::public_key_to_b256(&self.public_key);
         // Cap the pacing allowance, not the duration of required build work.
-        let window_duration = self.proposal_budget.window_duration(preparation_elapsed);
-        let window_elapsed = runtime.pacing_elapsed(window_opened);
-        let build_budget = window_duration.saturating_sub(window_elapsed);
+        let pacing_allowance = self.proposal_budget.pacing_allowance(preparation_elapsed);
+        let pacing_elapsed = runtime.pacing_elapsed(pacing_started);
+        let build_budget = pacing_allowance.saturating_sub(pacing_elapsed);
         let attrs = TempoPayloadAttributes::new(
             Some(proposer_public_key),
             timestamp,
@@ -225,22 +225,22 @@ impl Inner {
             block,
             execution_block_encoded,
         );
-        let window_elapsed = runtime.pacing_elapsed(window_opened);
+        let pacing_elapsed = runtime.pacing_elapsed(pacing_started);
         // Pace proposal return from the header stamp. Validators still need
         // to repeat replayable build work, so leave room for it before
         // returning the proposal.
-        let return_window = window_duration.saturating_sub(validation_latency_elapsed);
-        let return_delay = return_window.saturating_sub(window_elapsed);
+        let return_after = pacing_allowance.saturating_sub(validation_latency_elapsed);
+        let return_delay = return_after.saturating_sub(pacing_elapsed);
         debug!(
             proposal.digest = %proposal.digest(),
-            window_elapsed = %display_duration(window_elapsed),
+            pacing_elapsed = %display_duration(pacing_elapsed),
             build_time = %display_duration(payload_build_elapsed),
             payload_validation_work = %display_duration(payload_validation_work_elapsed),
             validation_latency_time = %display_duration(validation_latency_elapsed),
             return_time = %display_duration(return_delay),
             "sleeping before returning proposal"
         );
-        runtime.sleep_remaining(window_opened, return_window).await;
+        runtime.sleep_remaining(pacing_started, return_after).await;
 
         Ok(proposal)
     }

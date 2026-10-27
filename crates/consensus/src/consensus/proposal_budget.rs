@@ -10,7 +10,7 @@ use std::time::Duration;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ProposalBudget {
     target_block_time: Duration,
-    header_window: Duration,
+    post_header_allowance: Duration,
 }
 
 impl ProposalBudget {
@@ -21,13 +21,13 @@ impl ProposalBudget {
     pub fn new(target_block_time: Duration, network_budget: Duration) -> Self {
         Self {
             target_block_time,
-            header_window: target_block_time.saturating_sub(network_budget),
+            post_header_allowance: target_block_time.saturating_sub(network_budget),
         }
     }
 
     /// Returns the allowance after monotonically measured preparation.
-    pub(crate) fn window_duration(&self, preparation: Duration) -> Duration {
-        self.header_window
+    pub(crate) fn pacing_allowance(&self, preparation: Duration) -> Duration {
+        self.post_header_allowance
             .min(self.target_block_time.saturating_sub(preparation))
     }
 }
@@ -39,7 +39,7 @@ mod tests {
     use commonware_runtime::{Clock as _, Runner as _, deterministic};
 
     #[test]
-    fn preparation_caps_the_header_window() {
+    fn preparation_caps_the_post_header_allowance() {
         let budget = ProposalBudget::new(Duration::from_millis(500), Duration::from_millis(50));
         for (preparation, expected) in [
             (0, 450),
@@ -50,20 +50,20 @@ mod tests {
             (600, 0),
         ] {
             assert_eq!(
-                budget.window_duration(Duration::from_millis(preparation)),
+                budget.pacing_allowance(Duration::from_millis(preparation)),
                 Duration::from_millis(expected),
             );
         }
     }
 
     #[test]
-    fn exhausted_network_allowance_leaves_no_window() {
+    fn exhausted_network_budget_leaves_no_pacing_allowance() {
         for (target, network) in [(500, 500), (500, 600), (0, 0)] {
             let budget = ProposalBudget::new(
                 Duration::from_millis(target),
                 Duration::from_millis(network),
             );
-            assert_eq!(budget.window_duration(Duration::ZERO), Duration::ZERO);
+            assert_eq!(budget.pacing_allowance(Duration::ZERO), Duration::ZERO);
         }
     }
 
@@ -74,7 +74,7 @@ mod tests {
             let started = context.pacing_now();
             context.sleep(Duration::from_millis(600)).await;
             assert_eq!(
-                budget.window_duration(context.pacing_elapsed(started)),
+                budget.pacing_allowance(context.pacing_elapsed(started)),
                 Duration::ZERO
             );
         });
