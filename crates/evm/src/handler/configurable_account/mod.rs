@@ -393,7 +393,7 @@ fn validate_native_roles(
             extra_gas += initial_account_proof_gas(signature.config())?;
             if first {
                 let gas = &host.version().gas_params;
-                // TIP-1108 prices the commitment write like account creation (TIP-1016).
+                // TIP-1108 prices the commitment write like account creation.
                 extra_gas += u64::from(gas.get(GasId::NewAccountCost));
                 state_gas += gas.new_account_state_gas();
                 // The sender's creation is free here only when another TIP-1000 charge pays it:
