@@ -79,7 +79,8 @@ templates:
               cond: { var: base_to_quote }
               then: "0x20c0000000000000000000000000000000000000"
               else: { var: base_token }
-          - uniform: [40000000, 180000000]
+          # 1-5 tokens per swap, so dex.yml's 10,000-token walls last ~2,000 swaps per side.
+          - uniform: [1000000, 5000000]
           - 0
   account_first_receive:
     type: tempo
