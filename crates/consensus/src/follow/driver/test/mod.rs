@@ -568,6 +568,39 @@ fn boundary_update_registers_its_scheme() {
 }
 
 #[test_traced]
+fn boundary_with_a_future_outcome_epoch_halts_without_persisting_an_identity() {
+    deterministic::Runner::new(deterministic::Config::default().with_catch_panics(true)).start(
+        |mut context| async move {
+            let rig = start_rig(&mut context).await;
+            let forged = dkg_fixture(&mut context, Epoch::new(1000));
+            let boundary = FixedEpocher::new(EPOCH_LENGTH).last(Epoch::zero()).unwrap();
+            let (ack, waiter) = Exact::handle();
+            let _ = rig.mailbox.to_marshal_reporter().report(Update::Block(
+                make_block(boundary.get(), Some(&forged.outcome)).into(),
+                ack,
+            ));
+
+            let result = context
+                .timeout(Duration::from_secs(1), rig.handle)
+                .await
+                .unwrap();
+            assert!(matches!(result, Err(commonware_runtime::Error::Exited)));
+            assert!(
+                context
+                    .timeout(Duration::from_secs(1), waiter)
+                    .await
+                    .unwrap()
+                    .is_err()
+            );
+            let state = super::state::State::init(context.child("restart_state"), "test")
+                .await
+                .unwrap();
+            assert_eq!(state.identity(), None);
+        },
+    );
+}
+
+#[test_traced]
 fn observed_boundary_is_durable_before_acknowledgement() {
     deterministic::Runner::default().start(|mut context| async move {
         let rig = start_rig(&mut context).await;

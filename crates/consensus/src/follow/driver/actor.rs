@@ -419,6 +419,13 @@ where
                 .decode_dkg_outcome_and_register_boundary(block.header().extra_data().as_ref())
                 .expect("boundary blocks must contain DKG outcomes");
 
+            // Prevent an outcome from advancing the persisted trust anchor to an arbitrary epoch.
+            assert_eq!(
+                onchain_outcome.epoch(),
+                epoch_info.epoch().next(),
+                "boundary outcome must describe the next epoch",
+            );
+
             let configured_identity = &self.config.network_identity;
             if onchain_outcome.epoch >= configured_identity.from_epoch
                 && configured_identity.identity != *onchain_outcome.network_identity()
