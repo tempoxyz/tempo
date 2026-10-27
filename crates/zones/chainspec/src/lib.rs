@@ -59,16 +59,15 @@ impl ZoneChainSpec {
         Ok(Self::from_explicit_genesis(genesis))
     }
 
-    /// Converts a genesis configuration using the Tempo fork schedule its L1 reports.
+    /// Returns this chain specification with the Tempo fork schedule its L1 reports.
     ///
-    /// The schedule replaces every Tempo fork field in the genesis: scheduled forks activate at
-    /// the reported times and all others are disabled. Ethereum activations keep their genesis
-    /// values.
-    pub fn from_genesis_with_l1_schedule(
-        mut genesis: Genesis,
+    /// The schedule replaces every Tempo fork activation: scheduled forks activate at the
+    /// reported times and all others are disabled. Ethereum activations are kept.
+    pub fn with_l1_fork_schedule(
+        &self,
         schedule: impl IntoIterator<Item = (TempoHardfork, u64)>,
     ) -> Result<Self, ZoneChainSpecError> {
-        decode_l1_chain_id(genesis.config.chain_id)?;
+        let mut genesis = self.inner.genesis().clone();
         let schedule: std::collections::HashMap<_, _> = schedule.into_iter().collect();
         for fork in TempoHardfork::VARIANTS {
             if let Some(key) = fork.genesis_key() {
@@ -529,7 +528,10 @@ mod tests {
             .copied()
             .filter(|&fork| fork != TempoHardfork::Genesis && fork <= TempoHardfork::T12)
             .map(|fork| (fork, if fork == TempoHardfork::T12 { 300 } else { 0 }));
-        let zone = ZoneChainSpec::from_genesis_with_l1_schedule(genesis, schedule).unwrap();
+        let zone = ZoneChainSpec::from_genesis(genesis)
+            .unwrap()
+            .with_l1_fork_schedule(schedule)
+            .unwrap();
 
         assert_eq!(zone.tempo_hardfork_at(299), TempoHardfork::T11);
         assert_eq!(zone.tempo_hardfork_at(300), TempoHardfork::T12);

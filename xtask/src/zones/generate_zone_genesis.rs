@@ -765,15 +765,14 @@ mod tests {
                 }
             }
             // Nodes on this parent take the reported schedule from the L1.
-            let spec = ZoneChainSpec::from_genesis_with_l1_schedule(
-                genesis,
-                [
+            let spec = ZoneChainSpec::from_genesis(genesis)
+                .unwrap()
+                .with_l1_fork_schedule([
                     (TempoHardfork::T0, 10),
                     (TempoHardfork::T11, 20),
                     (TempoHardfork::T12, 200),
-                ],
-            )
-            .unwrap();
+                ])
+                .unwrap();
             for (timestamp, expected) in activations {
                 assert_eq!(spec.tempo_hardfork_at(timestamp), expected);
             }

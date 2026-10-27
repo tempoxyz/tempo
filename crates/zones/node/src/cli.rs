@@ -244,10 +244,8 @@ fn run_node(mut cli: ZoneNodeCli, l1_access: CliL1Access) -> eyre::Result<()> {
             ?schedule,
             "Using the L1 Tempo fork schedule from tempo_forkSchedule"
         );
-        let genesis = builder.config().chain.genesis().clone();
-        builder.config_mut().chain = Arc::new(ZoneChainSpec::from_genesis_with_l1_schedule(
-            genesis, schedule,
-        )?);
+        let chain = builder.config().chain.with_l1_fork_schedule(schedule)?;
+        builder.config_mut().chain = Arc::new(chain);
 
         let zone_id = builder.config().chain.zone_id();
         validate_deprecated_zone_id(args.zone_id, zone_id)?;
