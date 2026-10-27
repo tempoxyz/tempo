@@ -228,6 +228,28 @@ fn trie_root(state: &StateInput) -> B256 {
 }
 
 #[test]
+fn a_genesis_pre_state_overlays_genesis_accounts() {
+    // Only the supply cap is listed: pathUSD keeps its code and every other genesis slot, so the
+    // sender's genesis balance still pays for the transfer.
+    let cap = U256::from(u128::MAX);
+    let listed = AccountInput {
+        storage: BTreeMap::from([(SUPPLY_CAP, cap)]),
+        ..Default::default()
+    };
+    let outcome = run(
+        PreState::Genesis(one_account(PATH_USD_ADDRESS, listed)),
+        vec![transfer_block()],
+    );
+
+    assert_eq!(outcome.error, ErrorClass::None);
+    assert_eq!(outcome.receipts[0].outcome, TxOutcome::Success);
+    // The same block on the plain genesis leaves the same state, but for the listed slot.
+    let mut expected = run(genesis(), vec![transfer_block()]).final_state;
+    path_usd(&mut expected).storage.insert(SUPPLY_CAP, cap);
+    assert_eq!(outcome.final_state, expected);
+}
+
+#[test]
 fn a_transfer_reports_its_receipt_changes_and_state_root() {
     let outcome = run(genesis(), vec![transfer_block()]);
 
@@ -571,7 +593,6 @@ fn bad_inputs_are_classified_rather_than_executed() {
         chain_id: 1337,
         ..Default::default()
     };
-    let overriding = one_account(PATH_USD_ADDRESS, path_usd(&mut genesis_state()).clone());
     let bad_code = one_account(
         RECIPIENT,
         AccountInput {
@@ -598,7 +619,6 @@ fn bad_inputs_are_classified_rather_than_executed() {
             vec![
                 ("time reversal", on_blocks(vec![late, t4_block(vec![])])),
                 ("T3 after T4", on_chain(t3_after_t4)),
-                ("genesis override", on_pre(PreState::Genesis(overriding))),
                 ("7702, genesis", on_pre(PreState::Genesis(bad_code.clone()))),
                 ("7702, exact", on_pre(exact(bad_code))),
                 ("extra sender", on_blocks(vec![extra_sender])),
