@@ -66,16 +66,7 @@ impl HeaderValidator<TempoHeader> for ZoneConsensus {
         header: &SealedHeader<TempoHeader>,
         parent: &SealedHeader<TempoHeader>,
     ) -> Result<(), ConsensusError> {
-        self.inner.validate_header_against_parent(header, parent)?;
-
-        if header.inner.gas_limit != parent.inner.gas_limit {
-            return Err(ConsensusError::other(Error::GasLimit {
-                expected: parent.inner.gas_limit,
-                actual: header.inner.gas_limit,
-            }));
-        }
-
-        Ok(())
+        self.inner.validate_header_against_parent(header, parent)
     }
 }
 
@@ -139,8 +130,6 @@ enum Error {
         expected: Option<B256>,
         actual: Option<B256>,
     },
-    #[error("zone header gas limit must equal its parent's {expected}, got {actual}")]
-    GasLimit { expected: u64, actual: u64 },
 }
 
 #[cfg(test)]
@@ -250,28 +239,6 @@ mod tests {
                 expected: Some(B256::ZERO),
                 actual: parent_beacon_block_root,
             },
-        );
-    }
-
-    #[test]
-    fn rejects_gas_limit_that_differs_from_the_parent() {
-        let (consensus, parent, mut header) = fixture();
-        header.inner.gas_limit += 1;
-        let header = SealedHeader::seal_slow(header);
-
-        consensus
-            .inner
-            .validate_header_against_parent(&header, &parent)
-            .unwrap();
-        let error = consensus
-            .validate_header_against_parent(&header, &parent)
-            .unwrap_err();
-        assert_eq!(
-            error.downcast_other_ref(),
-            Some(&Error::GasLimit {
-                expected: parent.inner.gas_limit,
-                actual: parent.inner.gas_limit + 1,
-            })
         );
     }
 }

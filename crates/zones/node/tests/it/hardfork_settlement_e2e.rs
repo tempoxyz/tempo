@@ -535,6 +535,7 @@ async fn recovery_witness(
             timestamp: block.header.timestamp(),
             timestamp_millis_part: block.header.timestamp_millis_part,
             beneficiary: block.header.beneficiary(),
+            gas_limit: block.header.gas_limit(),
             tempo_import: import,
             finalize_withdrawal_batch_count: finalization,
             finalize_withdrawal_batch_encrypted_senders: vec![],

@@ -993,6 +993,7 @@ fn extract_zone_block(block: &RecoveredBlock<Block>) -> Result<ZoneBlock> {
         timestamp: header.timestamp(),
         timestamp_millis_part: header.timestamp_millis_part,
         beneficiary: header.beneficiary(),
+        gas_limit: header.gas_limit(),
         tempo_import,
         finalize_withdrawal_batch_count: finalize_count,
         finalize_withdrawal_batch_encrypted_senders: finalize_encrypted_senders,
@@ -1571,6 +1572,7 @@ mod tests {
             timestamp: 0,
             timestamp_millis_part: 0,
             beneficiary: alloy_primitives::Address::ZERO,
+            gas_limit: 30_000_000,
             tempo_import: TempoImport::Full {
                 header_rlp: Bytes::new(),
                 deposits: Vec::new(),

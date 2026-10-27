@@ -32,6 +32,7 @@ alloy-primitives.workspace = true
 alloy-rlp.workspace = true
 alloy-sol-types.workspace = true
 reth-chainspec = { workspace = true, default-features = true }
+reth-consensus-common.workspace = true
 reth-evm.workspace = true
 reth-primitives-traits.workspace = true
 reth-storage-api.workspace = true

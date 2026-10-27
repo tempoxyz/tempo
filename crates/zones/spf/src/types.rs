@@ -143,6 +143,8 @@ pub struct ZoneBlock {
     pub timestamp: u64,
     pub timestamp_millis_part: u64,
     pub beneficiary: Address,
+    /// Maximum gas available to this block.
+    pub gas_limit: u64,
     pub tempo_import: TempoImport,
     /// Withdrawal count passed to finalization in this block, if any.
     pub finalize_withdrawal_batch_count: Option<U256>,

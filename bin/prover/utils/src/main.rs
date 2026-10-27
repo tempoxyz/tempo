@@ -1133,6 +1133,7 @@ fn extract_block(block: RpcBlock) -> Result<ExtractedBlock> {
             timestamp: header.timestamp(),
             timestamp_millis_part: header.timestamp_millis_part,
             beneficiary: header.beneficiary(),
+            gas_limit: header.gas_limit(),
             tempo_import,
             finalize_withdrawal_batch_count: finalize_count,
             finalize_withdrawal_batch_encrypted_senders: finalize_encrypted_senders,

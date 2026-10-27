@@ -100,7 +100,7 @@ pub(crate) fn execute_zone_block(
         });
     }
 
-    let attributes = next_block_env_attributes(evm_config.chain_spec(), parent, block)?;
+    let attributes = next_block_env_attributes(evm_config.chain_spec(), block)?;
     let env = evm_config
         .next_evm_env(parent, &attributes)
         .map_err(|_| Error::EvmEnvironment)?;
@@ -179,17 +179,14 @@ pub(crate) fn execute_zone_block(
 /// payload builder.
 pub(crate) fn next_block_env_attributes(
     chain_spec: &zone_chainspec::ZoneChainSpec,
-    parent: &TempoHeader,
     block: &ZoneBlock,
 ) -> Result<TempoNextBlockEnvAttributes, Error> {
-    let block_gas_limit = parent.inner.gas_limit;
-
     Ok(TempoNextBlockEnvAttributes {
         inner: NextBlockEnvAttributes {
             timestamp: block.timestamp,
             suggested_fee_recipient: block.beneficiary,
             prev_randao: B256::ZERO,
-            gas_limit: block_gas_limit,
+            gas_limit: block.gas_limit,
             parent_beacon_block_root: chain_spec
                 .is_cancun_active_at_timestamp(block.timestamp)
                 .then_some(B256::ZERO),
