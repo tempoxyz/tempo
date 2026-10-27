@@ -657,21 +657,17 @@ where
             eyre::bail!("execution engine rejected peer block {block_number} ({hash}): {status:?}");
         }
 
-        // Witnesses are best-effort: persist a supplied one, and leave a missing or unwritable one
-        // to the background collector rather than delaying import.
+        // Witnesses are best-effort: queue a supplied one, and leave a missing or dropped one to
+        // the background collector rather than delaying import.
         if let Some(collector) = &self.context.proof_collector
             && let Some(proof) = peer_block.block.witness
-            && let Err(error) = self
-                .stop
-                .run_until_cancelled(collector.persist_received(proof))
-                .await
-                .ok_or_eyre("follower stopped while persisting peer witness")?
+            && let Err(error) = collector.persist_received(proof)
         {
             tracing::warn!(
                 target: "zone::p2p",
                 zone_block = block_number,
                 error = ?error,
-                "Failed to persist peer witness; importing without it"
+                "Failed to queue peer witness; importing without it"
             );
         }
 

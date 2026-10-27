@@ -14,7 +14,7 @@ use alloy_provider::DynProvider;
 use alloy_rpc_types_eth::BlockId;
 use eyre::{Context as _, OptionExt as _, Result, bail, ensure};
 use futures::StreamExt as _;
-use parking_lot::{Mutex, RwLock};
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use tempo_alloy::TempoNetwork;
 use tempo_contracts::zones::ZonePortal;
@@ -100,18 +100,21 @@ impl ProofCollectorHandle {
             .context("proof collector stopped before persistence")?
     }
 
-    /// Persist a received witness without recollecting it. The caller must bind its metadata
-    /// to the imported block; this does not validate witness contents or completeness.
+    /// Queue a received witness for persistence without recollecting it. The caller must bind its
+    /// metadata to the imported block; this does not validate witness contents or completeness.
     ///
-    /// Writes the store directly rather than queueing behind the collector, so a slow collection
-    /// pass never delays block import.
-    pub async fn persist_received(&self, proof: StoredBlockProof) -> Result<()> {
+    /// Never waits, so a slow collection pass cannot delay block import: when the collector's
+    /// queue is full the witness is dropped and the background pass collects it from L1 instead.
+    pub fn persist_received(&self, proof: StoredBlockProof) -> Result<()> {
         proof.validate()?;
-        let store = self.store.clone();
-        tokio::task::spawn_blocking(move || store.persist(proof))
-            .await
-            .context("proof persistence task panicked")?
-            .map(|_| ())
+        self.requests
+            .try_send(ProofRequest::Persist {
+                proof: Box::new(proof),
+            })
+            .map_err(|error| match error {
+                mpsc::error::TrySendError::Full(_) => eyre::eyre!("proof collector queue is full"),
+                mpsc::error::TrySendError::Closed(_) => eyre::eyre!("proof collector stopped"),
+            })
     }
 
     /// Allow pruning of finalized witnesses through a completed shadow proving job.
@@ -164,6 +167,17 @@ impl<P: ZoneSequencerProvider> ProofCollector<P> {
                         ProofRequest::Collect { number, hash, response } => {
                             let result = self.collect_and_persist(number, hash).await;
                             let _ = response.send(result);
+                        }
+                        ProofRequest::Persist { proof } => {
+                            let number = proof.witness.block_number;
+                            if let Err(error) = self.persist(*proof).await {
+                                warn!(
+                                    target: "zone::sequencer::proofs",
+                                    zone_block = number,
+                                    error = ?error,
+                                    "Failed to persist received witness"
+                                );
+                            }
                         }
                     }
                     continue;
@@ -268,13 +282,21 @@ impl<P: ZoneSequencerProvider> ProofCollector<P> {
     async fn persist(&self, proof: StoredBlockProof) -> Result<Option<Arc<StoredBlockProof>>> {
         let number = proof.witness.block_number;
         let block_hash = proof.witness.block_hash;
-        let store = self.store.clone();
-        let Some(proof) = tokio::task::spawn_blocking(move || store.persist(proof))
-            .await
-            .context("proof persistence task panicked")??
-        else {
+        if number <= self.store.state.read().pruned_through {
             return Ok(None);
-        };
+        }
+        // Retrying an already persisted witness must not unlink its durable file first.
+        if self.store.contains(number, block_hash) {
+            return Ok(self.store.state.read().proofs.get(&number).cloned());
+        }
+        let store = self.store.clone();
+        let proof = tokio::task::spawn_blocking(move || {
+            store.remove_files(number..=number)?;
+            store.insert(proof)?;
+            Ok::<_, eyre::Report>(store.state.read().proofs[&number].clone())
+        })
+        .await
+        .context("proof persistence task panicked")??;
         info!(
             target: "zone::sequencer::proofs",
             zone_block = number,
@@ -343,13 +365,11 @@ impl std::fmt::Debug for ProofCollectorConfig {
 }
 
 /// Persisted witnesses with an in-memory index.
+/// Mutations are serialized by the collector; the lock only coordinates cache readers.
 #[derive(Debug)]
 struct ProofStore {
     directory: PathBuf,
     state: RwLock<ProofStoreState>,
-    /// Serializes file mutations between the collector and received-witness persistence; `state`
-    /// only coordinates cache readers.
-    mutations: Mutex<()>,
 }
 
 impl ProofStore {
@@ -397,33 +417,7 @@ impl ProofStore {
                 shadow_proven_through: None,
                 proofs,
             }),
-            mutations: Mutex::new(()),
         })
-    }
-
-    /// Persist `proof`, replacing any conflicting witness at its height.
-    ///
-    /// Returns `None` for a block already covered by finalized settlement, and the stored witness
-    /// otherwise; retrying an already persisted witness leaves its durable file in place.
-    fn persist(&self, proof: StoredBlockProof) -> Result<Option<Arc<StoredBlockProof>>> {
-        let _mutations = self.mutations.lock();
-        let number = proof.witness.block_number;
-        {
-            let state = self.state.read();
-            if number <= state.pruned_through {
-                return Ok(None);
-            }
-            if let Some(stored) = state
-                .proofs
-                .get(&number)
-                .filter(|stored| stored.witness.block_hash == proof.witness.block_hash)
-            {
-                return Ok(Some(stored.clone()));
-            }
-        }
-        self.remove_files(number..=number)?;
-        self.insert(proof)?;
-        Ok(Some(self.state.read().proofs[&number].clone()))
     }
 
     fn insert(&self, proof: StoredBlockProof) -> Result<()> {
@@ -495,7 +489,6 @@ impl ProofStore {
     }
 
     fn prune_through(&self, through: u64) -> Result<()> {
-        let _mutations = self.mutations.lock();
         let through = {
             let mut state = self.state.write();
             let through = state.shadow_proven_through.map_or(through, |proven| {
@@ -580,6 +573,9 @@ enum ProofRequest {
         number: u64,
         hash: B256,
         response: oneshot::Sender<Result<Option<Arc<StoredBlockProof>>>>,
+    },
+    Persist {
+        proof: Box<StoredBlockProof>,
     },
 }
 
@@ -731,32 +727,6 @@ mod tests {
         collector.prune_and_collect().await.unwrap();
         assert!(!store.contains(1, unprovable));
         assert!(store.contains(2, expected.witness.block_hash));
-    }
-
-    #[test]
-    fn persist_keeps_a_matching_witness_and_replaces_a_conflicting_one() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = ProofStore::open(directory.path().to_path_buf(), 1).unwrap();
-        let stale = proof(2, B256::repeat_byte(2));
-        let stale_path = directory.path().join(stale.file_name());
-        assert_eq!(*store.persist(stale.clone()).unwrap().unwrap(), stale);
-        assert_eq!(*store.persist(stale.clone()).unwrap().unwrap(), stale);
-        assert!(stale_path.is_file());
-
-        let canonical = proof(2, B256::repeat_byte(3));
-        assert_eq!(
-            *store.persist(canonical.clone()).unwrap().unwrap(),
-            canonical
-        );
-        assert!(!stale_path.exists());
-        assert!(store.contains(2, canonical.witness.block_hash));
-        // Settled blocks are never stored.
-        assert!(
-            store
-                .persist(proof(1, B256::repeat_byte(1)))
-                .unwrap()
-                .is_none()
-        );
     }
 
     #[test]
@@ -958,7 +928,10 @@ mod tests {
                     number,
                     hash,
                     response,
-                } = receiver.recv().await.unwrap();
+                } = receiver.recv().await.unwrap()
+                else {
+                    panic!("expected a collection request");
+                };
                 assert_eq!(number, 1);
                 assert_eq!(hash, B256::ZERO);
                 // Completion depends only on the response, not background readiness.
