@@ -305,7 +305,7 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         }
         self.deduct_gas(gas.static_cost())?;
         let previous = self.config_commitment(address)?;
-        self.deduct_gas(gas.dynamic_cost(previous)?)?;
+        self.deduct_gas(gas.dynamic_cost(previous, &self.gas_params)?)?;
         let account = self.accounts.entry(address).or_default();
         if previous.is_zero() {
             account.set_code(Bytecode::new_raw(CONFIGURABLE_ACCOUNT_CODE));
