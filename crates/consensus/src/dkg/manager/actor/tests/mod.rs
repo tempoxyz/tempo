@@ -115,7 +115,7 @@ fn network_storage_failures_panic_and_allow_recovery() {
             }
             // Rejected protocol messages must not attempt a write or stop the
             // actor, even when every storage operation would fail.
-            for invalid in invalid_messages {
+            for (index, invalid) in invalid_messages.into_iter().enumerate() {
                 assert!(
                     sender
                         .send(
@@ -127,7 +127,34 @@ fn network_storage_failures_panic_and_allow_recovery() {
                         .accepted()
                 );
                 context.sleep(Duration::from_millis(1)).await;
-                assert!(!harness.has_dealer_log(state.epoch).await);
+                if index == 1 {
+                    let blocker = harness.blocker.clone();
+                    let timer = context.child("penalty_wait");
+                    context
+                        .timeout(Duration::from_secs(1), async move {
+                            while blocker.peers().is_empty() {
+                                timer.sleep(Duration::from_millis(1)).await;
+                            }
+                        })
+                        .await
+                        .expect("invalid private share must penalize its sender");
+                }
+                assert_eq!(
+                    harness.blocker.peers(),
+                    vec![keys[1].public_key(); usize::from(index >= 1)]
+                );
+                let mailbox = harness.mailbox().clone();
+                let epoch = state.epoch;
+                assert!(
+                    context
+                        .timeout(Duration::from_secs(1), async move {
+                            mailbox.get_dealer_log(epoch).await
+                        })
+                        .await
+                        .expect("invalid network messages must not starve dealer-log requests")
+                        .unwrap()
+                        .is_none()
+                );
                 assert!(receiver.recv().now_or_never().is_none());
             }
             assert!(
@@ -149,6 +176,7 @@ fn network_storage_failures_panic_and_allow_recovery() {
                 })
                 .await
                 .expect("a network storage failure must panic immediately");
+            assert_eq!(harness.blocker.peers(), vec![keys[1].public_key()]);
             assert!(
                 receiver.recv().now_or_never().is_none(),
                 "a dealing must be persisted before its ACK is sent",
@@ -197,6 +225,7 @@ fn network_storage_failures_panic_and_allow_recovery() {
                 Message::read_cfg(&mut ack, &NZU32!(2)).unwrap(),
                 Message::Ack(_)
             ));
+            assert_eq!(harness.blocker.peers(), vec![keys[1].public_key()]);
             harness.stop().await;
         });
     }

@@ -1091,7 +1091,7 @@ impl Player {
 
     /// Handle an incoming dealer message, persisting it before returning its ack.
     ///
-    /// Returns protocol validation errors. Storage write failures panic.
+    /// Returns protocol validation errors. Storage failures and inconsistent ACK state panic.
     pub(super) async fn receive_dealing<TContext>(
         &mut self,
         storage: &mut Storage<TContext>,
@@ -1112,10 +1112,12 @@ impl Player {
             .player
             .dealer_message::<N3f1>(dealer.clone(), pub_msg.clone(), priv_msg.clone())
             .wrap_err("applying dealer message to player instance failed")?
-            .ok_or_eyre("dealer message was already processed without a cached acknowledgement")?;
+            .expect("dealer message was already processed without a cached acknowledgement");
+
         storage
             .append_dealing(epoch, dealer.clone(), pub_msg, priv_msg)
             .await;
+
         self.acks.insert(dealer, ack.clone());
         Ok(ack)
     }
