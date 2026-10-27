@@ -363,8 +363,7 @@ impl ZoneNode {
     }
 
     /// On an RPC-only node, serve the `zoneAdmin` allowlist methods and relay writes signed by
-    /// `admin` to every sequencer, and mirror the sequencers' list to reject transfers between
-    /// unlisted accounts on submission. Without it, the node does neither.
+    /// `admin` to every sequencer. Without it, the node does not serve those methods.
     pub fn with_deposit_allowlist_relay(mut self, admin: DepositAllowlistAdmin) -> Self {
         self.deposit_allowlist_admin = Some(admin);
         self

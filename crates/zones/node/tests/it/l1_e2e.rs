@@ -2881,7 +2881,8 @@ async fn test_rpc_node_allowlist_write_fails_with_offline_sequencer() -> eyre::R
 
 /// Sequencers enforce their allowlist on Zone transfers: a transfer to an unlisted recipient is
 /// rejected when it is submitted, and one admitted before its recipient was removed is dropped by
-/// the leader's block builder instead of being included.
+/// the leader's block builder instead of being included. Withdrawals naming the sender or a listed
+/// account as fallback recipient are still included.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_transfer_allowlist_restricts_both_parties() -> eyre::Result<()> {
     use alloy::providers::ProviderBuilder;
@@ -2891,6 +2892,7 @@ async fn test_transfer_allowlist_restricts_both_parties() -> eyre::Result<()> {
 
     const AMOUNT: u128 = 1_000_000;
     const TRANSFER_GAS: u64 = 500_000;
+    const WITHDRAWAL_AMOUNT: u128 = 100_000;
 
     let alice_signer = crate::utils::signer_at(3);
     let (alice, bob, carol) = (
@@ -2943,6 +2945,19 @@ async fn test_transfer_allowlist_restricts_both_parties() -> eyre::Result<()> {
             error.contains("transfer sender or recipient is not allowlisted"),
             "{error}"
         );
+    }
+
+    // The builder reads each withdrawal's fallback recipient from the outbox storage the
+    // transaction wrote. If that read broke, the recipient would read as zero and every
+    // withdrawal would be left out, including one naming the sender itself.
+    for fallback in [alice, bob] {
+        let mut withdrawal = WithdrawalArgs::new(WITHDRAWAL_AMOUNT);
+        withdrawal.zone_fallback_recipient = Some(fallback);
+        tokio::time::timeout(L1_TIMEOUT, account.withdraw_with(withdrawal))
+            .await
+            .wrap_err_with(|| {
+                format!("withdrawal with fallback recipient {fallback} was left out")
+            })??;
     }
 
     // Queue a transfer to Bob behind a nonce gap so no block can include it before Bob is

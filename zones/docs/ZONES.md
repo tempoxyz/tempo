@@ -356,11 +356,11 @@ an unlisted account cannot learn whether an address is listed from whether its t
 accepted.
 
 Once the list is written, submission also rejects any call to Multicall3, the only zone contract
-that relays calls. Its calldata does not show the transfers it makes, so a relayed transfer the
-leader leaves out would otherwise be forwarded and executed again every few seconds without
-paying fees. Multicall3 calls as itself, so a transfer it relays could land only if Multicall3
-itself were listed. Read-only `eth_call`s through it are unaffected, and an AA batch replaces
-batched writes.
+that relays calls. Zone TIP-20 transfers through it always revert, but it can still withdraw its
+own balance through an outbox allowance granted before T15. Its calldata does not show that
+withdrawal's fallback recipient, so one the leader leaves out would otherwise be forwarded and
+executed again every few seconds without paying fees. Read-only `eth_call`s through it are
+unaffected, and an AA batch replaces batched writes.
 
 Every RPC follower keeps an in-memory copy of the list so it can reject the same transactions
 on submission, returning `transfer sender or recipient is not allowlisted` instead of forwarding
@@ -372,10 +372,11 @@ list (for example after `--deposits.allowlist` is turned off), only when every s
 so a lagging sequencer cannot roll it back. Until it finds a written list it admits every transfer,
 and the sequencers still enforce their own lists.
 
-Removing an account from the list does not trap its funds. Fee payments and transfers to the
-outbox are exempt, so it can still withdraw. A withdrawal's `zoneFallbackRecipient` is credited
-on the zone if the withdrawal bounces on Tempo, so it must be the withdrawer, or the withdrawer
-and the fallback recipient must both be listed.
+Removing an account from the list does not trap its funds. Transfers to the outbox and to the
+block's fee recipient (the leading sequencer's fee address) are exempt, so it can still pay fees
+and withdraw. A withdrawal's `zoneFallbackRecipient` is credited on the zone if the withdrawal
+bounces on Tempo, so it must be the withdrawer, or the withdrawer and the fallback recipient must
+both be listed.
 
 Limits:
 
@@ -383,6 +384,9 @@ Limits:
 - The submission error tells a listed sender that a counterparty is not listed, so a listed
   account can check addresses one at a time.
 - Simulations (`eth_call`, `eth_estimateGas`) do not check the list.
+- The leader exempts every transfer to the block's fee recipient, not only fee payments.
+  Submission still requires both parties to be listed, so this only lets an account removed
+  after its transaction was admitted also pay the leader's fee address in that transaction.
 - Deposit recipients are not checked, so a listed depositor can still credit an unlisted zone
   address. That address can only withdraw.
 
