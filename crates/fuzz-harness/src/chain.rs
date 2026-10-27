@@ -87,6 +87,6 @@ fn context_header(spec: &TempoChainSpec, context: &BlockContextInput) -> TempoHe
             extra_data: context.extra_data.clone(),
             ..Default::default()
         },
-        consensus_context: None,
+        consensus_context: Default::default(),
     }
 }

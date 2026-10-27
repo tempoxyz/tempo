@@ -3,7 +3,7 @@
 //! The Tempo [`Block`] wraps the execution-layer block transmitted over commonware p2p.
 
 use alloy_consensus::BlockHeader as _;
-use alloy_primitives::{B256, Bytes};
+use alloy_primitives::Bytes;
 use bytes::{Buf, BufMut};
 use commonware_codec::{EncodeSize, Read, Write};
 use commonware_consensus::{
@@ -11,16 +11,12 @@ use commonware_consensus::{
     simplex::types::Context,
     types::{Epoch, Height, Round, View},
 };
-use commonware_cryptography::{
-    Committable, Digestible, Signer as _,
-    ed25519::{PrivateKey, PublicKey},
-};
+use commonware_cryptography::{Committable, Digestible, ed25519::PublicKey};
 use reth_consensus::ConsensusError;
 use reth_primitives_traits::{SealedBlock, SealedOrRecoveredBlock};
 use std::fmt::Display;
 use tempo_payload_types::EncodedBlock;
 use tempo_primitives::TempoConsensusContext;
-use tracing::warn;
 
 use crate::consensus::Digest;
 use tempo_evm::consensus::validate_body_against_header;
@@ -224,31 +220,11 @@ impl commonware_consensus::CertifiableBlock for Block {
     type Context = Context<Digest, PublicKey>;
 
     fn context(&self) -> Self::Context {
-        match self.consensus_context {
-            Some(ctx) => Context {
-                leader: ctx.proposer.to_inner(),
-                round: round_from_context(ctx),
-                parent: (View::new(ctx.parent_view), self.parent_digest()),
-            },
-            None => {
-                // Returns a deterministic sentinel `Context`.
-                //
-                // All consensus-produced blocks must carry a `consensus_context`, so
-                // reaching this branch indicates a malformed block. The sentinel
-                // intentionally does not match any real consensus values, so it will
-                // fail verification rather than panic.
-                warn!(
-                    "context request for block `{}` with no consensus context",
-                    self.digest()
-                );
-
-                let leader = PublicKey::from(PrivateKey::from_seed(0));
-                Context {
-                    leader,
-                    round: Round::new(Epoch::new(0), View::new(0)),
-                    parent: (View::new(0), Digest(B256::ZERO)),
-                }
-            }
+        let ctx = self.consensus_context;
+        Context {
+            leader: ctx.proposer.to_inner(),
+            round: round_from_context(ctx),
+            parent: (View::new(ctx.parent_view), self.parent_digest()),
         }
     }
 }
@@ -463,5 +439,45 @@ mod tests {
             ..Default::default()
         }));
         assert_ne!(uncached, different);
+    }
+
+    #[test]
+    fn read_rejects_headers_without_consensus_context() {
+        for number in [0, 42] {
+            let header = alloy_rlp::encode(LegacyHeader {
+                general_gas_limit: 0,
+                shared_gas_limit: 0,
+                timestamp_millis_part: 0,
+                inner: alloy_consensus::Header {
+                    number,
+                    ..Default::default()
+                },
+            });
+            let mut encoded = Vec::new();
+            alloy_rlp::Header {
+                list: true,
+                payload_length: header.len() + 2,
+            }
+            .encode(&mut encoded);
+            encoded.extend_from_slice(&header);
+            // Empty transaction and ommer lists.
+            encoded.extend_from_slice(&[alloy_rlp::EMPTY_LIST_CODE; 2]);
+
+            assert!(matches!(
+                Block::read_cfg(&mut encoded.as_slice(), &()),
+                Err(commonware_codec::Error::Wrapped(
+                    "reading RLP encoded block",
+                    _
+                ))
+            ));
+        }
+    }
+
+    #[derive(alloy_rlp::RlpEncodable)]
+    struct LegacyHeader {
+        general_gas_limit: u64,
+        shared_gas_limit: u64,
+        timestamp_millis_part: u64,
+        inner: alloy_consensus::Header,
     }
 }

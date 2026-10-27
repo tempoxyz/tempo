@@ -41,7 +41,9 @@ pub use evm::TempoEvmFactory;
 use reth_chainspec::EthChainSpec;
 use reth_evm::{self, ConfigureEvm, EvmEnvFor, SenderRecoveryCache, block::StateDB};
 use reth_primitives_traits::{SealedBlock, SealedHeader};
-use tempo_primitives::{Block, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope};
+use tempo_primitives::{
+    Block, TempoConsensusContext, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
+};
 
 use crate::evm::TempoEvm;
 use reth_evm_ethereum::EthEvmConfig;
@@ -203,7 +205,9 @@ impl ConfigureEvm for TempoEvmConfig {
                     .info
                     .epoch_length()
                     .unwrap_or(NonZeroU64::MIN),
-                proposer_public_key: header.consensus_context.map(|ctx| ctx.proposer),
+                // An all-zero context (genesis, dev mode, zones) has no proposer.
+                proposer_public_key: (header.consensus_context != TempoConsensusContext::default())
+                    .then_some(header.consensus_context.proposer),
                 configurable_account_recovery_factory: self
                     .chain_spec()
                     .info
@@ -292,7 +296,7 @@ impl ConfigureEvm for TempoEvmConfig {
             },
             general_gas_limit: block.header().general_gas_limit,
             shared_gas_limit: block.header().shared_gas_limit,
-            consensus_context: block.header().consensus_context,
+            consensus_context: Some(block.header().consensus_context),
         })
     }
 
@@ -384,12 +388,12 @@ mod tests {
         let proposer = PublicKey::from_seed(0xab);
         let evm_env = evm_config
             .evm_env(&TempoHeader {
-                consensus_context: Some(TempoConsensusContext {
+                consensus_context: TempoConsensusContext {
                     epoch: 1,
                     view: 2,
                     parent_view: 1,
                     proposer,
-                }),
+                },
                 ..header
             })
             .unwrap();

@@ -77,7 +77,7 @@ async fn canonicalize_block<T: commonware_runtime::Clock>(
     let acknowledged = report_block(mailbox, block);
     wait_until(context, || provider.forkchoices().len() == count + 1).await;
     assert_eq!(provider.forkchoices()[count].head_block_hash, tip.digest.0);
-    provider.set_finalized(header.inner.number, header.hash(), tip.round.unwrap());
+    provider.set_finalized(header.inner.number, header.hash(), tip.round);
     release.send(()).expect("block FCU should still be waiting");
     assert!(acknowledged.await.is_ok());
 }
@@ -361,7 +361,7 @@ fn forkchoice_failure_exits_without_acknowledging_block() {
         );
         let actor_handle = actor.start();
 
-        let block = make_block(1, B256::with_last_byte(1));
+        let block = make_block_at_round(1, B256::with_last_byte(1), round(1));
         let (ack, waiter) = Exact::handle();
         assert!(mailbox.report(Update::Block(block.into(), ack)).accepted());
 
@@ -552,10 +552,10 @@ fn execution_tip_round_orders_finalizations_after_restart() {
 }
 
 #[test_traced]
-fn tip_supersedes_roundless_prefork_execution_tip() {
+fn tip_supersedes_zero_context_execution_tip() {
     deterministic::Runner::default().start(|context| async move {
         let provider = StubExecutionProvider::default();
-        provider.set_prefork_finalized(100, digest(100).0);
+        provider.set_zero_context_finalized(100, digest(100).0);
 
         let (actor, mut mailbox) = init(
             context.child("follower_executor"),
@@ -631,7 +631,7 @@ fn heartbeat_resubmits_latest_tip_after_interval() {
         actor.start();
 
         let digest = Digest(B256::with_last_byte(1));
-        let tip = Update::Tip(Round::zero(), Height::new(1), digest);
+        let tip = Update::Tip(round(1), Height::new(1), digest);
         assert!(mailbox.report(tip).accepted());
         wait_until(&context, || provider.forkchoices().len() == 1).await;
 
@@ -666,7 +666,7 @@ fn heartbeat_waits_for_in_flight_execution() {
         actor.start();
 
         let digest = Digest(B256::with_last_byte(1));
-        let tip = Update::Tip(Round::zero(), Height::new(1), digest);
+        let tip = Update::Tip(round(1), Height::new(1), digest);
         assert!(mailbox.report(tip).accepted());
         wait_until(&context, || provider.forkchoices().len() == 1).await;
 

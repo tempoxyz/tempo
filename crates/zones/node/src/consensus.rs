@@ -7,7 +7,9 @@ use reth_consensus::{
 use reth_primitives_traits::{RecoveredBlock, SealedBlock, SealedHeader};
 use std::sync::Arc;
 use tempo_evm::consensus::TempoConsensus;
-use tempo_primitives::{Block, BlockBody, TempoHeader, TempoPrimitives, TempoReceipt};
+use tempo_primitives::{
+    Block, BlockBody, TempoConsensusContext, TempoHeader, TempoPrimitives, TempoReceipt,
+};
 use zone_chainspec::ZoneChainSpec;
 
 /// Consensus validation for Zone blocks.
@@ -35,7 +37,7 @@ impl HeaderValidator<TempoHeader> for ZoneConsensus {
         self.inner.validate_header(header)?;
 
         let header = header.header();
-        if header.consensus_context.is_some() {
+        if header.consensus_context != TempoConsensusContext::default() {
             return Err(ConsensusError::other(Error::ConsensusContext));
         }
         if !header.inner.extra_data.is_empty() {
@@ -128,7 +130,7 @@ impl FullConsensus<TempoPrimitives> for ZoneConsensus {
 
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 enum Error {
-    #[error("zone header consensus context must be absent")]
+    #[error("zone header consensus context must be zero")]
     ConsensusContext,
     #[error("zone header extra data must be empty")]
     ExtraData,
@@ -198,7 +200,7 @@ mod tests {
         assert_zone_header_error(
             &consensus,
             TempoHeader {
-                consensus_context: Some(TempoConsensusContext {
+                consensus_context: TempoConsensusContext {
                     epoch: 7,
                     view: 9,
                     parent_view: 8,
@@ -206,7 +208,7 @@ mod tests {
                         "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
                     ))
                     .unwrap(),
-                }),
+                },
                 ..header.clone()
             },
             Error::ConsensusContext,

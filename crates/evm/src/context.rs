@@ -12,7 +12,8 @@ pub struct TempoBlockExecutionCtx<'a> {
     pub general_gas_limit: u64,
     /// Shared gas limit for the block.
     pub shared_gas_limit: u64,
-    /// Consensus metadata for the block. `None` for pre-fork blocks.
+    /// Consensus metadata for the block. `None` when building without consensus, which
+    /// assembles an all-zero header context.
     pub consensus_context: Option<TempoConsensusContext>,
 }
 

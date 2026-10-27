@@ -379,7 +379,7 @@ where
             },
             general_gas_limit: 0,
             shared_gas_limit: 0,
-            consensus_context: block.header().consensus_context,
+            consensus_context: Some(block.header().consensus_context),
         })
     }
 
