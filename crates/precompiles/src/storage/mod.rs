@@ -21,13 +21,10 @@ pub mod packing;
 pub use packing::FieldLocation;
 pub use types::mapping as slots;
 
-use alloy::primitives::{Address, B256, Bytes, KECCAK256_EMPTY, LogData, Signature, U256};
-use evm2::{
-    evm::{AccountInfo, StateCheckpoint},
-    interpreter::gas::{KECCAK256, KECCAK256WORD},
-};
+use alloy::primitives::{Address, B256, Bytes, LogData, Signature, U256};
+use evm2::evm::{AccountInfo, StateCheckpoint};
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_primitives::TempoBlockEnv;
+use tempo_primitives::{TempoBlockEnv, gas::keccak_gas};
 
 use crate::error::{Result, TempoPrecompileError};
 
@@ -201,13 +198,7 @@ pub trait PrecompileStorageProvider {
     ///
     /// Implementations should use this over naked `keccak256` call to ensure gas is accounted for.
     fn keccak256(&mut self, data: &[u8]) -> Result<B256> {
-        let num_words =
-            u64::try_from(data.len().div_ceil(32)).map_err(|_| TempoPrecompileError::OutOfGas)?;
-        let price = u64::from(KECCAK256WORD)
-            .checked_mul(num_words)
-            .and_then(|w| w.checked_add(u64::from(KECCAK256)))
-            .ok_or(TempoPrecompileError::OutOfGas)?;
-        self.deduct_gas(price)?;
+        self.deduct_gas(keccak_cost(data.len())?)?;
         Ok(keccak256(data))
     }
 
@@ -304,6 +295,13 @@ pub trait ContractStorage {
     /// Returns true if the contract has been initialized (has bytecode deployed).
     fn is_initialized(&self) -> Result<bool> {
         self.storage()
-            .with_account_info(self.address(), |info| Ok(info.code_hash != KECCAK256_EMPTY))
+            .with_account_info(self.address(), |info| Ok(!info.is_empty_code_hash()))
     }
+}
+
+/// Gas for one `KECCAK256` over `len` bytes of input.
+///
+/// Fails with [`TempoPrecompileError::OutOfGas`] if the cost overflows `u64`.
+pub fn keccak_cost(len: usize) -> Result<u64> {
+    keccak_gas(len).ok_or(TempoPrecompileError::OutOfGas)
 }

@@ -1,8 +1,7 @@
 #![allow(missing_docs)]
 
+use smolgen::{Build, Cargo, Emitter, Gitcl};
 use std::{env, error::Error};
-use vergen::{Build, Cargo, Emitter};
-use vergen_git2::Git2;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let mut emitter = Emitter::default();
@@ -15,10 +14,14 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     emitter.add_instructions(&cargo_builder)?;
 
-    let git_builder = Git2::builder()
-        .describe(false, true, Some("v[0-9]*"))
+    // Tracking the git HEAD reruns this script, and rebuilds everything above this crate, on every
+    // commit and checkout. Debug builds skip it and keep the SHA from the last run of this script.
+    // Release profiles keep tracking HEAD, so their version always matches the checkout.
+    let git_builder = Gitcl::builder()
+        .describe(true, true, Some("tempo/v[0-9]*"))
         .dirty(true)
         .sha(false)
+        .rerun_on_head_change(env::var("PROFILE")? != "debug")
         .build();
 
     emitter.add_instructions(&git_builder)?;
@@ -29,10 +32,15 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let is_dirty = env::var("VERGEN_GIT_DIRTY").is_ok_and(|dirty| dirty == "true");
     // > git describe --always --tags
-    // if not on a tag: v0.2.0-beta.3-82-g1939939b
-    // if on a tag: v0.2.0-beta.3
+    // if not on a tag: tempo/v0.2.0-beta.3-82-g1939939b
+    // if on a tag: tempo/v0.2.0-beta.3
     let not_on_tag = env::var("VERGEN_GIT_DESCRIBE")
-        .map(|describe| !describe.starts_with("v") || describe.ends_with(&format!("-g{sha_short}")))
+        .map(|describe| {
+            !describe.starts_with("tempo/v")
+                || describe
+                    .rsplit_once("-g")
+                    .is_some_and(|(_, hash)| sha.starts_with(hash))
+        })
         .unwrap_or(true);
     let version_suffix = if is_dirty || not_on_tag { "-dev" } else { "" };
     println!("cargo:rustc-env=RETH_VERSION_SUFFIX={version_suffix}");

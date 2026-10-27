@@ -23,8 +23,38 @@ env:
   SOURCE_DATE_EPOCH: "1700000000"
 
 jobs:
+  changes:
+    name: Check Rust changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: read
+    outputs:
+      rust: ${{ contains(fromJSON(steps.filter.outputs.changes), 'rust') }}
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - uses: tempoxyz/gh-actions/actions/changed-paths@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        id: filter
+        with:
+          # Run the Rust jobs when Rust sources, manifests, Cargo.lock or their CI config change.
+          filters: |
+            rust:
+              - '{bin,crates,examples,scripts,xtask,tips/verify}/**'
+              - 'Cargo.lock'
+              - '*-network-identity.json'
+              - '*.toml'
+              - '{.cargo,.config,.github/actions}/**'
+              - '.github/scripts/{native-libs.sh,check_no_std.sh,warn_flaky_e2e.py,test_warn_flaky_e2e.py}'
+              - '.github/workflows/{test,lint,bench}.yml'
+
   clippy:
     name: clippy
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: depot-ubuntu-latest-32
     timeout-minutes: 60
     env:
@@ -49,12 +79,7 @@ jobs:
         with:
           version: v0.15.0
       - name: Install LLVM for JIT targets
-        run: |
-          if [ ! -x /usr/lib/llvm-22/bin/llvm-config ]; then
-            sudo .github/scripts/install_llvm_ubuntu.sh
-          fi
-          echo "LLVM_SYS_221_PREFIX=/usr/lib/llvm-22" >> "$GITHUB_ENV"
-          /usr/lib/llvm-22/bin/llvm-config --version
+        run: .github/scripts/install_llvm.sh
       - uses: ./.github/actions/native-libs # zizmor: ignore[self-repository] actionlint does not support $/ references yet.
         with:
           cargo-args: --workspace --all-features
@@ -79,6 +104,8 @@ jobs:
 
   fmt:
     name: fmt
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: depot-ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -123,10 +150,13 @@ jobs:
       - uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           tool: cargo-hack
+      - name: Install LLVM for JIT targets
+        run: .github/scripts/install_llvm.sh
       - run: cargo hack check --feature-powerset --depth 1 --partition ${{ matrix.partition }}/2
 
   docs:
-    if: ${{ github.repository == 'tempoxyz/tempo' }}
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' && github.repository == 'tempoxyz/tempo'
     name: docs
     runs-on: depot-ubuntu-latest-32
     timeout-minutes: 30
@@ -149,12 +179,7 @@ jobs:
         with:
           version: v0.15.0
       - name: Install LLVM for JIT targets
-        run: |
-          if [ ! -x /usr/lib/llvm-22/bin/llvm-config ]; then
-            sudo .github/scripts/install_llvm_ubuntu.sh
-          fi
-          echo "LLVM_SYS_221_PREFIX=/usr/lib/llvm-22" >> "$GITHUB_ENV"
-          /usr/lib/llvm-22/bin/llvm-config --version
+        run: .github/scripts/install_llvm.sh
       - uses: ./.github/actions/native-libs # zizmor: ignore[self-repository] actionlint does not support $/ references yet.
         with:
           cargo-args: --workspace --all-features
@@ -215,6 +240,8 @@ jobs:
       - uses: tempoxyz/gh-actions/actions/typos@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
   deny:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     permissions:
       contents: read
       id-token: write
@@ -225,6 +252,8 @@ jobs:
 
   zepter:
     name: zepter
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: depot-ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -251,6 +280,8 @@ jobs:
 
   no-std:
     name: no-std
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: depot-ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -276,6 +307,29 @@ jobs:
         env:
           CC_riscv32imac_unknown_none_elf: riscv64-unknown-elf-gcc
 
+  readme:
+    name: generated README
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Check generated README
+        run: |
+          python3 scripts/generate_readme.py
+          if [[ -n "$(git status --porcelain -- README.md)" ]]; then
+            git diff -- README.md
+            echo "README.md is stale; run: python3 scripts/generate_readme.py"
+            exit 1
+          fi
+
   lint-success:
     name: lint success
     runs-on: ubuntu-latest
@@ -283,6 +337,7 @@ jobs:
     permissions:
       id-token: write
     needs:
+      - changes
       - clippy
       - fmt
       - docs
@@ -290,6 +345,7 @@ jobs:
       - deny
       - zepter
       - no-std
+      - readme
     timeout-minutes: 30
     steps:
       - name: Secure runner
@@ -298,5 +354,5 @@ jobs:
       - name: Decide whether the needed jobs succeeded or failed
         uses: tempoxyz/gh-actions/actions/check-needs@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
-          allowed-skips: ${{ github.repository != 'tempoxyz/tempo' && 'docs' || '' }}
+          allowed-skips: ${{ needs.changes.outputs.rust != 'true' && 'clippy,fmt,docs,deny,zepter,no-std' || (github.repository != 'tempoxyz/tempo' && 'docs' || '') }}
           jobs: ${{ toJSON(needs) }}

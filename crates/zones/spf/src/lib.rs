@@ -834,6 +834,7 @@ mod tests {
             balance,
             storage_root,
             code_hash,
+            ..Default::default()
         };
         let account_node = TrieNode::Leaf(LeafNode::new(
             Nibbles::unpack(keccak256(address)),
@@ -1119,6 +1120,7 @@ mod tests {
             balance: U256::from(42),
             storage_root: EMPTY_ROOT_HASH,
             code_hash: alloy_consensus::constants::KECCAK_EMPTY,
+            ..Default::default()
         };
         let expected_root = state_root_unhashed([(address, expected_account)]);
         assert_eq!(

@@ -23,14 +23,14 @@ use evm2::{
 use tempo_contracts::{
     TempoHardfork,
     precompiles::{
-        AccountKeychainError, AddrRegistryError, CurrentCommitteeError, FeeManagerError,
-        NativeMultisigError, NonceError, ReceivePolicyGuardError, RolesAuthError,
+        AccountKeychainError, AddrRegistryError, ConfigurableAccountError, CurrentCommitteeError,
+        FeeManagerError, NonceError, ReceivePolicyGuardError, RolesAuthError,
         SignatureVerifierError, StablecoinDEXError, StorageCreditsError, TIP20ChannelReserveError,
         TIP20FactoryError, TIP403RegistryError, TIPFeeAMMError, UnknownFunctionSelector,
         ValidatorConfigError, ValidatorConfigV2Error, ZoneFactoryError,
     },
 };
-use tempo_primitives::transaction::MultisigConfigError;
+use tempo_primitives::transaction::ConfigurableAccountConfigError;
 
 /// Top-level error type for all Tempo precompile operations
 #[derive(
@@ -117,8 +117,8 @@ pub enum TempoPrecompileError {
     #[error("ZoneFactory error: {0:?}")]
     ZoneFactoryError(ZoneFactoryError),
 
-    #[error("native multisig error: {0:?}")]
-    NativeMultisigError(NativeMultisigError),
+    #[error("configurable account error: {0:?}")]
+    ConfigurableAccountError(ConfigurableAccountError),
 
     /// Gas limit exceeded during precompile execution.
     #[error("Gas limit exceeded")]
@@ -180,31 +180,43 @@ impl From<TempoPrecompileError> for HandlerError {
             | TempoPrecompileError::StorageCreditsError(_)
             | TempoPrecompileError::CurrentCommitteeError(_)
             | TempoPrecompileError::ZoneFactoryError(_)
-            | TempoPrecompileError::NativeMultisigError(_)
+            | TempoPrecompileError::ConfigurableAccountError(_)
+            | TempoPrecompileError::InvalidConfigCommitmentWrite
             | TempoPrecompileError::OutOfGas
             | TempoPrecompileError::StaticCallNotAllowed
-            | TempoPrecompileError::InvalidConfigCommitmentWrite
             | TempoPrecompileError::UnknownFunctionSelector(_)) => Self::external(error),
         }
     }
 }
 
-impl From<MultisigConfigError> for TempoPrecompileError {
-    fn from(error: MultisigConfigError) -> Self {
+impl From<ConfigurableAccountConfigError> for TempoPrecompileError {
+    fn from(error: ConfigurableAccountConfigError) -> Self {
         match error {
-            MultisigConfigError::EmptyOwners
-            | MultisigConfigError::ZeroOwner
-            | MultisigConfigError::AccountIsOwner => NativeMultisigError::invalid_multisig_owner(),
-            MultisigConfigError::TooManyOwners => NativeMultisigError::too_many_owners(),
-            MultisigConfigError::ZeroThreshold | MultisigConfigError::ThresholdExceedsWeight => {
-                NativeMultisigError::invalid_threshold()
+            ConfigurableAccountConfigError::EmptyOwners
+            | ConfigurableAccountConfigError::ZeroOwner
+            | ConfigurableAccountConfigError::AccountIsOwner => {
+                ConfigurableAccountError::invalid_configurable_account_owner()
             }
-            MultisigConfigError::ZeroWeight | MultisigConfigError::TotalWeightExceedsMax => {
-                NativeMultisigError::invalid_weight()
+            ConfigurableAccountConfigError::TooManyOwners => {
+                ConfigurableAccountError::too_many_owners()
             }
-            MultisigConfigError::DuplicateOwner => NativeMultisigError::duplicate_owner(),
-            MultisigConfigError::OwnersNotAscending => NativeMultisigError::invalid_owner_order(),
-            MultisigConfigError::DerivedAccountZero => NativeMultisigError::invalid_account(),
+            ConfigurableAccountConfigError::ZeroThreshold
+            | ConfigurableAccountConfigError::ThresholdExceedsWeight => {
+                ConfigurableAccountError::invalid_threshold()
+            }
+            ConfigurableAccountConfigError::ZeroWeight
+            | ConfigurableAccountConfigError::TotalWeightExceedsMax => {
+                ConfigurableAccountError::invalid_weight()
+            }
+            ConfigurableAccountConfigError::DuplicateOwner => {
+                ConfigurableAccountError::duplicate_owner()
+            }
+            ConfigurableAccountConfigError::OwnersNotAscending => {
+                ConfigurableAccountError::invalid_owner_order()
+            }
+            ConfigurableAccountConfigError::DerivedAccountZero => {
+                ConfigurableAccountError::invalid_account()
+            }
         }
         .into()
     }
@@ -235,7 +247,7 @@ impl TempoPrecompileError {
             Self::StorageCreditsError(e) => e.selector(),
             Self::CurrentCommitteeError(e) => e.selector(),
             Self::ZoneFactoryError(e) => e.selector(),
-            Self::NativeMultisigError(e) => e.selector(),
+            Self::ConfigurableAccountError(e) => e.selector(),
             Self::UnknownFunctionSelector(selector) => *selector,
             Self::Panic(_) | Self::StorageDeltaUnderflow(_) => Panic::SELECTOR,
             Self::OutOfGas
@@ -275,7 +287,7 @@ impl TempoPrecompileError {
             | Self::StorageCreditsError(_)
             | Self::CurrentCommitteeError(_)
             | Self::ZoneFactoryError(_)
-            | Self::NativeMultisigError(_)
+            | Self::ConfigurableAccountError(_)
             | Self::UnknownFunctionSelector(_)
             | Self::InvalidConfigCommitmentWrite => false,
         }
@@ -336,7 +348,7 @@ impl TempoPrecompileError {
             Self::StorageCreditsError(e) => e.abi_encode().into(),
             Self::CurrentCommitteeError(e) => e.abi_encode().into(),
             Self::ZoneFactoryError(e) => e.abi_encode().into(),
-            Self::NativeMultisigError(e) => e.abi_encode().into(),
+            Self::ConfigurableAccountError(e) => e.abi_encode().into(),
             Self::OutOfGas => {
                 return Err(PrecompileHalt::OutOfGas.into());
             }
@@ -421,7 +433,10 @@ pub fn error_decoder_registry() -> TempoPrecompileErrorRegistry {
     add_errors_to_registry(&mut registry, TempoPrecompileError::StorageCreditsError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::CurrentCommitteeError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::ZoneFactoryError);
-    add_errors_to_registry(&mut registry, TempoPrecompileError::NativeMultisigError);
+    add_errors_to_registry(
+        &mut registry,
+        TempoPrecompileError::ConfigurableAccountError,
+    );
 
     registry
 }
@@ -507,6 +522,24 @@ mod tests {
             TempoPrecompileError::from(LoadError::Database(error.clone())),
             TempoPrecompileError::Database(error)
         );
+    }
+
+    #[test]
+    fn storage_failures_stay_fatal_handler_errors() {
+        let database = DatabaseError::new(core::fmt::Error, true);
+        assert!(matches!(
+            HandlerError::from(TempoPrecompileError::Database(database)),
+            HandlerError::Database(_)
+        ));
+        assert!(matches!(
+            HandlerError::from(TempoPrecompileError::Fatal("db".into())),
+            HandlerError::Fatal(_)
+        ));
+        // Protocol failures stay transaction-level errors.
+        assert!(matches!(
+            HandlerError::from(TempoPrecompileError::OutOfGas),
+            HandlerError::External(_)
+        ));
     }
 
     #[test]
@@ -610,9 +643,7 @@ mod tests {
     #[test]
     fn test_encode_precompile_result_trait_success() {
         let result: Result<u64> = Ok(42);
-        let precompile_result = result.encode_precompile_result(|val| {
-            alloy::primitives::Bytes::from(val.to_be_bytes().to_vec())
-        });
+        let precompile_result = result.encode_precompile_result(|val| val.to_be_bytes().into());
 
         assert!(precompile_result.is_ok());
     }

@@ -412,17 +412,7 @@ where
                 .map_err(db_precompile_error)?
         };
 
-        Ok(account
-            .map(|account| AccountInfo {
-                balance: account.balance,
-                nonce: account.nonce,
-                code_hash: account
-                    .bytecode_hash
-                    .unwrap_or(alloy_primitives::KECCAK256_EMPTY),
-                code: None,
-                _non_exhaustive: (),
-            })
-            .unwrap_or_default())
+        Ok(account.map(AccountInfo::from).unwrap_or_default())
     }
 
     fn clear_db_storage(&self, address: Address) -> eyre::Result<()> {

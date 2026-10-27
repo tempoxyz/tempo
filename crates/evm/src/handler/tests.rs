@@ -3,7 +3,7 @@ use super::*;
 mod regressions;
 use crate::{
     FeeTokenResolver, ProtocolFeeContext, ProtocolFeeManager, ResolvedFeeToken, TempoBlockEnv,
-    TempoEvmExt, TempoEvmTx, TempoFeeManager, signature_gas::P256_VERIFY_GAS, tempo_tx_registry,
+    TempoEvmExt, TempoEvmTx, TempoFeeManager, TempoStateAccess, tempo_tx_registry,
 };
 use alloy_consensus::transaction::Recovered;
 use alloy_primitives::{B256, Bytes, Signature};
@@ -90,12 +90,14 @@ use evm2::evm::AccountInfo;
 use std::sync::Arc;
 use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, TIP20Error, TIPFeeAMMError};
 use tempo_precompiles::{
-    TIP_FEE_MANAGER_ADDRESS,
+    ECRECOVER_GAS, TIP_FEE_MANAGER_ADDRESS,
     storage::{ContractStorage, Handler, StorageActions},
     tip_fee_manager::TipFeeManager,
     tip20::TIP20Token,
 };
-use tempo_primitives::{TempoAddressExt, TempoTxEnvelope, transaction::calc_gas_balance_spending};
+use tempo_primitives::{
+    TempoAddressExt, TempoTxEnvelope, gas::P256_VERIFY_GAS, transaction::calc_gas_balance_spending,
+};
 
 fn legacy_env(to: TxKind, input: Bytes) -> TempoTxEnv {
     Recovered::new_unchecked(
@@ -156,6 +158,14 @@ fn insert_storage(evm: &mut crate::TempoEvm<'_>, address: Address, slot: U256, v
         .insert_account_info(&address, AccountInfo::default());
     evm.overlay_db_mut()
         .insert_account_storage(&address, &slot, &value);
+}
+
+/// Gives `address` code so calls to it reach the interpreter runner.
+fn insert_stop_code(evm: &mut crate::TempoEvm<'_>, address: Address) {
+    evm.overlay_db_mut().insert_account_info(
+        &address,
+        AccountInfo::default().with_code(Bytecode::new_raw(Bytes::from_static(&[0x00]))),
+    );
 }
 
 fn resolve(
@@ -557,10 +567,14 @@ fn test_get_token_balance() {
     let balance_slot = TIP20Token::from_address(token).unwrap().balances[account].slot();
     insert_storage(&mut evm, token, balance_slot, expected_balance);
 
-    let balance = StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
-        TIP20Token::from_address(token).unwrap().balances[account].read()
-    })
-    .unwrap();
+    let balance = evm
+        .get_token_balance(
+            token,
+            account,
+            TempoHardfork::Genesis,
+            StorageActions::disabled(),
+        )
+        .unwrap();
     assert_eq!(balance, expected_balance);
 }
 
@@ -681,7 +695,7 @@ fn test_aa_gas_single_call_vs_normal_tx() {
     // Calculate expected gas using EVM2's function for equivalent normal tx
     let version =
         tempo_chainspec::gas_params::version(SpecId::CANCUN, TempoHardfork::Genesis, false);
-    let normal_tx_gas = evm2::ethereum::intrinsic_gas(
+    let normal_tx_gas = evm2::ethereum::intrinsic_and_floor_gas(
         &version,
         SIGNER,
         TxKind::Call(to),
@@ -689,7 +703,8 @@ fn test_aa_gas_single_call_vs_normal_tx() {
         0,
         0,
         U256::ZERO,
-    );
+    )
+    .0;
 
     // AA with secp256k1 + single call should match normal tx exactly
     assert_eq!((aa_gas.0 + aa_gas.1), normal_tx_gas);
@@ -737,7 +752,7 @@ fn test_aa_gas_multiple_calls_overhead() {
     // Calculate base gas for a single normal tx
     let version =
         tempo_chainspec::gas_params::version(SpecId::CANCUN, TempoHardfork::Genesis, false);
-    let base_tx_gas = evm2::ethereum::intrinsic_gas(
+    let base_tx_gas = evm2::ethereum::intrinsic_and_floor_gas(
         &version,
         SIGNER,
         TxKind::Call(Address::ZERO),
@@ -745,7 +760,8 @@ fn test_aa_gas_multiple_calls_overhead() {
         0,
         0,
         U256::ZERO,
-    );
+    )
+    .0;
 
     // For 3 calls: base (21k) + 3*calldata + 2*per-call overhead (calls 2 and 3)
     // = 21k + 2*(calldata cost) + 2*COLD_ACCOUNT_ACCESS_COST
@@ -793,7 +809,7 @@ fn test_aa_gas_p256_signature() {
 
     // Calculate base gas for normal tx
     let version = tempo_chainspec::gas_params::version(spec, TempoHardfork::Genesis, false);
-    let base_gas = evm2::ethereum::intrinsic_gas(
+    let base_gas = evm2::ethereum::intrinsic_and_floor_gas(
         &version,
         SIGNER,
         TxKind::Call(Address::ZERO),
@@ -801,10 +817,11 @@ fn test_aa_gas_p256_signature() {
         0,
         0,
         U256::ZERO,
-    );
+    )
+    .0;
 
-    // Expected: normal tx + P256_VERIFY_GAS
-    let expected = base_gas + P256_VERIFY_GAS;
+    // Expected: normal tx + P256 verification, minus the ecrecover already in the base cost
+    let expected = base_gas + P256_VERIFY_GAS - ECRECOVER_GAS;
     assert_eq!((gas.0 + gas.1), expected,);
 }
 
@@ -841,7 +858,7 @@ fn test_aa_gas_create_call() {
 
     // Calculate expected using EVM2's function for CREATE tx
     let version = tempo_chainspec::gas_params::version(spec, TempoHardfork::Genesis, false);
-    let base_gas = evm2::ethereum::intrinsic_gas(
+    let base_gas = evm2::ethereum::intrinsic_and_floor_gas(
         &version,
         SIGNER,
         TxKind::Create,
@@ -849,7 +866,8 @@ fn test_aa_gas_create_call() {
         0,
         0,
         U256::ZERO,
-    );
+    )
+    .0;
 
     // AA CREATE should match normal CREATE exactly
     assert_eq!((gas.0 + gas.1), base_gas,);
@@ -924,7 +942,7 @@ fn test_aa_gas_access_list() {
 
     // Calculate expected using EVM2's function
     let version = tempo_chainspec::gas_params::version(spec, TempoHardfork::Genesis, false);
-    let base_gas = evm2::ethereum::intrinsic_gas(
+    let base_gas = evm2::ethereum::intrinsic_and_floor_gas(
         &version,
         SIGNER,
         TxKind::Call(Address::ZERO),
@@ -932,7 +950,8 @@ fn test_aa_gas_access_list() {
         0,
         0,
         U256::ZERO,
-    );
+    )
+    .0;
 
     // Expected: normal tx
     assert_eq!((gas.0 + gas.1), base_gas,);
@@ -1019,7 +1038,7 @@ fn test_aa_gas_floor_gas_prague() {
 
     // Calculate expected floor gas using EVM2's function
     let version = tempo_chainspec::gas_params::version(spec, TempoHardfork::Genesis, false);
-    let base_gas = evm2::ethereum::floor_gas(
+    let base_gas = evm2::ethereum::intrinsic_and_floor_gas(
         &version,
         SIGNER,
         TxKind::Call(Address::ZERO),
@@ -1027,7 +1046,8 @@ fn test_aa_gas_floor_gas_prague() {
         0,
         0,
         U256::ZERO,
-    );
+    )
+    .1;
 
     // Floor gas should match EVM2's calculation for same calldata
     assert_eq!(
@@ -1142,9 +1162,9 @@ fn test_key_authorization_gas_with_limits() {
 
     // T1B branch: gas = sig_gas + SLOAD + SSTORE * (1 + num_limits) + buffer
     let t1b_gas_params = tempo_gas_params(TempoHardfork::T1B);
-    let sstore = u64::from(t1b_gas_params.get(GasId::SstoreSetWithoutLoadCost));
-    let sload = u64::from(t1b_gas_params.get(GasId::WarmStorageReadCost))
-        + u64::from(t1b_gas_params.get(GasId::ColdStorageAdditionalCost));
+    let sstore = t1b_gas_params.get(GasId::SstoreSetWithoutLoadCost);
+    let sload = t1b_gas_params.get(GasId::WarmStorageReadCost)
+        + t1b_gas_params.get(GasId::ColdStorageAdditionalCost);
     const BUFFER: u64 = 2_000;
 
     for num_limits in 0..=3 {
@@ -1159,9 +1179,9 @@ fn test_key_authorization_gas_with_limits() {
     }
 
     let t3_gas_params = tempo_gas_params(TempoHardfork::T3);
-    let t3_sstore = u64::from(t3_gas_params.get(GasId::SstoreSetWithoutLoadCost));
-    let t3_sload = u64::from(t3_gas_params.get(GasId::WarmStorageReadCost))
-        + u64::from(t3_gas_params.get(GasId::ColdStorageAdditionalCost));
+    let t3_sstore = t3_gas_params.get(GasId::SstoreSetWithoutLoadCost);
+    let t3_sload = t3_gas_params.get(GasId::WarmStorageReadCost)
+        + t3_gas_params.get(GasId::ColdStorageAdditionalCost);
 
     for num_limits in 0..=3 {
         let num_sstores = 1 + 2 * num_limits as u64;
@@ -1177,10 +1197,10 @@ fn test_key_authorization_gas_with_limits() {
 
     // T4 with T4 gas params: regular sstore = 19,900, state gas = 230,000 per SSTORE
     let t4_gas_params = tempo_gas_params(TempoHardfork::T4);
-    let t4_sstore = u64::from(t4_gas_params.get(GasId::SstoreSetWithoutLoadCost));
-    let t4_sload = u64::from(t4_gas_params.get(GasId::WarmStorageReadCost))
-        + u64::from(t4_gas_params.get(GasId::ColdStorageAdditionalCost));
-    let t4_sstore_state = u64::from(t4_gas_params.get(GasId::SstoreSetState));
+    let t4_sstore = t4_gas_params.get(GasId::SstoreSetWithoutLoadCost);
+    let t4_sload = t4_gas_params.get(GasId::WarmStorageReadCost)
+        + t4_gas_params.get(GasId::ColdStorageAdditionalCost);
+    let t4_sstore_state = t4_gas_params.get(GasId::SstoreSetState);
 
     for num_limits in 0..=3 {
         let num_sstores = 1 + 2 * num_limits as u64;
@@ -1200,8 +1220,8 @@ fn test_key_authorization_gas_with_limits() {
     }
 
     let t5_gas_params = tempo_gas_params(TempoHardfork::T5);
-    let t5_sload = u64::from(t5_gas_params.get(GasId::WarmStorageReadCost))
-        + u64::from(t5_gas_params.get(GasId::ColdStorageAdditionalCost));
+    let t5_sload = t5_gas_params.get(GasId::WarmStorageReadCost)
+        + t5_gas_params.get(GasId::ColdStorageAdditionalCost);
     let base_t5_key_auth = create_key_auth(0);
     let mut witness_t5_key_auth = create_key_auth(0);
     witness_t5_key_auth.authorization = witness_t5_key_auth
@@ -1376,7 +1396,11 @@ fn test_t4_key_authorization_matches_tip1016_sstore_regular_cost() {
     let params = &evm.version().gas_params;
     let load = u64::from(params[GasId::WarmStorageReadCost])
         + u64::from(params[GasId::ColdStorageAdditionalCost]);
-    let (regular, state) = key_authorization_gas(&authorization, &evm, TempoHardfork::T4);
+    let (regular, state) = calculate_key_authorization_gas(
+        &authorization,
+        &evm.version().gas_params,
+        TempoHardfork::T4,
+    );
     assert_eq!(
         regular - ECRECOVER_GAS - load - 2_000 - call_scope_extra_gas(&authorization.authorization),
         20_000
@@ -1391,7 +1415,11 @@ fn test_t7_key_authorization_intrinsic_includes_storage_credit_value() {
     let params = &evm.version().gas_params;
     let load = u64::from(params[GasId::WarmStorageReadCost])
         + u64::from(params[GasId::ColdStorageAdditionalCost]);
-    let (regular, state) = key_authorization_gas(&authorization, &evm, TempoHardfork::T7);
+    let (regular, state) = calculate_key_authorization_gas(
+        &authorization,
+        &evm.version().gas_params,
+        TempoHardfork::T7,
+    );
     assert_eq!(params[GasId::SstoreSetWithoutLoadCost], 5_000);
     assert_eq!(
         regular - ECRECOVER_GAS - load - 2_000 - call_scope_extra_gas(&authorization.authorization),
@@ -1409,7 +1437,7 @@ fn test_translate_allowed_calls_for_precompile_preserves_empty_nested_allow_all_
                 selector_rules: Vec::new(),
             }])
             .into_signed(PrimitiveSignature::Secp256k1(Signature::test_signature()));
-    let translated = translate_allowed_calls(&empty_selectors);
+    let translated = translate_allowed_calls_for_precompile(&empty_selectors);
     assert_eq!(translated.len(), 1);
     assert!(translated[0].selectorRules.is_empty());
 
@@ -1423,7 +1451,7 @@ fn test_translate_allowed_calls_for_precompile_preserves_empty_nested_allow_all_
                 }],
             }])
             .into_signed(PrimitiveSignature::Secp256k1(Signature::test_signature()));
-    let translated = translate_allowed_calls(&empty_recipients);
+    let translated = translate_allowed_calls_for_precompile(&empty_recipients);
     assert_eq!(translated.len(), 1);
     assert_eq!(translated[0].selectorRules.len(), 1);
     assert!(translated[0].selectorRules[0].recipients.is_empty());
@@ -1607,7 +1635,7 @@ fn test_2d_nonce_gas_limit_validation() {
         let evm = test_evm(spec);
         let gas_params = &evm.version().gas_params;
         let nonce_zero_gas = if spec.is_t1() {
-            u64::from(gas_params.get(GasId::NewAccountCost))
+            gas_params.get(GasId::NewAccountCost)
         } else {
             spec.gas_new_nonce_key()
         };
@@ -1775,6 +1803,7 @@ fn test_t3_scope_validation_moves_to_execution(gas_limit: u64, expected_stop: In
     .expect("scope validation no longer runs during state validation");
     assert_eq!(keychain.access_key, Some(access_key));
 
+    insert_stop_code(&mut evm, target);
     let call_count = Arc::new(AtomicUsize::new(0));
     evm.set_interpreter_runner(Runner(call_count.clone()));
     let result = execute_batch(
@@ -1998,6 +2027,51 @@ fn test_refund_cap_removed_on_t7() {
 }
 
 #[test]
+fn test_negative_refund_counter_refunds_the_cap() {
+    const SPENT: u64 = 100_000;
+    const FLOOR: u64 = 30_000;
+
+    let settle = |spec: TempoHardfork, refund: i64, floor_gas: u64| {
+        let mut evm = test_evm(spec);
+        evm.ext_mut().resolved_fee_token = Some(ResolvedFeeToken::Selected(DEFAULT_FEE_TOKEN));
+        let mut result = MessageResult::<TempoEvmTypes> {
+            stop: InstrStop::Stop,
+            gas: GasTracker::new_spent_with_reservoir(SPENT, 0),
+            ..MessageResult::<TempoEvmTypes>::default()
+        };
+        result.gas.record_refund(refund);
+        TempoHandlerHooks::settle_transaction(
+            &mut evm,
+            &legacy_env(TxKind::Call(Address::ZERO), Bytes::new()),
+            GasSettlement {
+                caller: SIGNER,
+                gas_price: U256::ZERO,
+                gas_limit: SPENT,
+                floor_gas,
+                initial_state_gas: 0,
+                state_refund: 0,
+                result,
+            },
+        )
+        .unwrap()
+    };
+
+    // Before T7 a negative counter refunds the cap of one fifth of gas used.
+    for spec in [TempoHardfork::T4, TempoHardfork::T5, TempoHardfork::T6] {
+        assert_eq!(settle(spec, -1_000, 0).refunded, SPENT / 5, "{spec}");
+        assert_eq!(settle(spec, 1_000, 0).refunded, 1_000, "{spec}");
+    }
+
+    // From T7 there is no cap, so a negative counter refunds all gas spent and gas used falls to
+    // the calldata floor.
+    for spec in [TempoHardfork::T7, TempoHardfork::T8] {
+        assert_eq!(settle(spec, -1_000, 0).tx_gas_used(), 0, "{spec}");
+        assert_eq!(settle(spec, -1_000, FLOOR).tx_gas_used(), FLOOR, "{spec}");
+        assert_eq!(settle(spec, 1_000, 0).refunded, 1_000, "{spec}");
+    }
+}
+
+#[test]
 fn test_multicall_gas_refund_accounting() {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -2040,18 +2114,17 @@ fn test_multicall_gas_refund_accounting() {
         ],
     });
 
-    let calls = vec![
-        Call {
-            to: TxKind::Call(Address::random()),
+    let targets = [Address::random(), Address::random()];
+    for target in targets {
+        insert_stop_code(&mut evm, target);
+    }
+    let calls = targets
+        .map(|target| Call {
+            to: TxKind::Call(target),
             value: U256::ZERO,
             input: Bytes::new(),
-        },
-        Call {
-            to: TxKind::Call(Address::random()),
-            value: U256::ZERO,
-            input: Bytes::new(),
-        },
-    ];
+        })
+        .to_vec();
 
     let result = execute_batch(
         &mut evm,
@@ -2194,9 +2267,9 @@ proptest! {
             webauthn_data: Bytes::from(vec![0u8; webauthn_data_len]),
         });
 
-        let secp_gas = primitive_signature_verification_gas(&secp_sig);
-        let p256_gas = primitive_signature_verification_gas(&p256_sig);
-        let webauthn_gas = primitive_signature_verification_gas(&webauthn_sig);
+        let secp_gas = secp_sig.intrinsic_verification_gas();
+        let p256_gas = p256_sig.intrinsic_verification_gas();
+        let webauthn_gas = webauthn_sig.intrinsic_verification_gas();
 
         prop_assert!(secp_gas <= p256_gas, "secp256k1 should be <= p256");
         prop_assert!(p256_gas <= webauthn_gas, "p256 should be <= webauthn");
@@ -3118,10 +3191,13 @@ mod keychain {
                         );
                     }
                     StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
-                        assert_eq!(
-                            AccountKeychain::new().is_active_key(user, key).unwrap(),
-                            root_signed
-                        );
+                        let key_info = AccountKeychain::new()
+                            .get_key(tempo_precompiles::account_keychain::getKeyCall {
+                                account: user,
+                                keyId: key,
+                            })
+                            .unwrap();
+                        assert_eq!(key_info.keyId == key, root_signed);
                     });
                 }
             }
@@ -4385,6 +4461,8 @@ fn test_state_gas_batch_create_accounting() {
             call_idx: AtomicUsize::new(0),
             final_stop,
         });
+        let target = Address::random();
+        insert_stop_code(&mut evm, target);
         let initial_state_gas = 0;
         let (gas_limit, reservoir) = initial_gas_and_reservoir(
             evm.version(),
@@ -4399,7 +4477,7 @@ fn test_state_gas_batch_create_accounting() {
                 input: Bytes::from(vec![0x60, 0x80]),
             },
             Call {
-                to: TxKind::Call(Address::random()),
+                to: TxKind::Call(target),
                 value: U256::ZERO,
                 input: Bytes::new(),
             },

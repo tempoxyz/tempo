@@ -39,9 +39,9 @@ reth-metrics.workspace = true
 reth-node-metrics.workspace = true
 reth-tracing.workspace = true
 reth-provider.workspace = true
-reth-revm.workspace = true
 reth-transaction-pool.workspace = true
 reth-evm.workspace = true
+reth-trie-common.workspace = true
 reth-network-api.workspace = true
 reth-rpc.workspace = true
 reth-rpc-api.workspace = true
@@ -111,8 +111,7 @@ sha2 = { workspace = true }
 base64.workspace = true
 
 [build-dependencies]
-vergen.workspace = true
-vergen-git2.workspace = true
+smolgen.workspace = true
 
 [features]
 default = []
@@ -125,10 +124,12 @@ asm-keccak = [
 	"tempo-alloy/asm-keccak",
 	"reth-ethereum/asm-keccak",
 	"reth-evm/asm-keccak",
-	"reth-execution-types/asm-keccak",
-	"reth-storage-api/asm-keccak",
 ]
-otlp = ["reth-ethereum/otlp", "reth-node-core/otlp"]
+otlp = [
+	"reth-ethereum/otlp",
+	"reth-node-core/otlp",
+	"reth-tracing/otlp",
+]
 js-tracer = [
 	"reth-ethereum/js-tracer",
 	"reth-node-builder/js-tracer",
@@ -141,7 +142,6 @@ jemalloc = [
 	"reth-ethereum/jemalloc",
 	"reth-node-core/jemalloc",
 	"reth-node-metrics/jemalloc",
-	"reth-provider/jemalloc",
 ]
 jemalloc-prof = [
 	"reth-ethereum/jemalloc-prof",
@@ -165,5 +165,5 @@ trie-debug = [
 	"reth-node-core/trie-debug",
 	"tempo-payload-builder/trie-debug",
 ]
-
+# Native EVM2 JIT compilation; building requires LLVM.
 jit = ["tempo-evm/jit"]

@@ -42,13 +42,13 @@ impl StorageCreditsErr for HostError {
 pub trait StorageCreditsBackend {
     type Error: StorageCreditsErr;
 
-    /// Gas parameters for the active EVM2 version.
+    /// Gas parameters for the active spec.
     fn gas_params(&self) -> &GasParams;
 
-    /// Gas tracker for the active EVM2 execution context.
+    /// Gas tracker for the active execution context.
     fn gas_tracker(&mut self) -> &mut GasTracker;
 
-    /// Charges `cost` regular gas, returning out-of-gas if insufficient.
+    /// Charges `cost` regular gas, returning [`out_of_gas`](StorageCreditsErr::out_of_gas) if insufficient.
     #[inline]
     fn charge_gas(&mut self, cost: u64) -> Result<(), Self::Error> {
         let gas = self.gas_tracker();
@@ -128,12 +128,11 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
     }
 
     // Load the persistent storage credit balance for the storage-owning account.
-    let warm_storage_read_cost = u64::from(backend.gas_params().get(GasId::WarmStorageReadCost));
+    let warm_storage_read_cost = backend.gas_params().get(GasId::WarmStorageReadCost);
     backend.charge_gas(warm_storage_read_cost)?;
 
     let account_slot = StorageCredits::slot(owner);
-    let additional_cold_cost =
-        u64::from(backend.gas_params().get(GasId::ColdStorageAdditionalCost));
+    let additional_cold_cost = backend.gas_params().get(GasId::ColdStorageAdditionalCost);
     let skip_cold = backend.gas_tracker().remaining() < additional_cold_cost;
     let storage_credit_state_load =
         backend.sload(STORAGE_CREDITS_ADDRESS, account_slot, skip_cold)?;
@@ -205,11 +204,11 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
 
         // Only when change happens charge additional gas.
         if flags.charges_clean_update() {
-            backend.charge_gas(u64::from(
+            backend.charge_gas(
                 backend
                     .gas_params()
                     .get(GasId::SstoreResetWithoutColdLoadCost),
-            ))?;
+            )?;
         };
     }
 

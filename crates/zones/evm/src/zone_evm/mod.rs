@@ -6,18 +6,22 @@ mod validation;
 pub(crate) use contract_creation::zone_execution_config;
 pub use validation::validate_transaction;
 
+use crate::executor::ZoneTransactionKind;
 use alloy_consensus::transaction::Recovered;
 use alloy_primitives::B256;
 use evm2::{
-    TxResult,
-    registry::{AnyTxHandler, HandlerResult, TxHandler, TxRegistry, TxRequest},
+    AnyError, TxResult,
+    registry::{AnyTxHandler, HandlerError, HandlerResult, TxHandler, TxRegistry, TxRequest},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_evm::{ExecutionContext, TempoEvmTypes, TempoTxEnv, tempo_tx_registry};
 use zone_precompiles::{
-    L1State, L1StorageReader, tempo_state::TEMPO_BLOCK_NUMBER_SLOT, tx_context,
+    L1State, L1StorageReader, TIP403_REGISTRY_ADDRESS, tempo_state::TEMPO_BLOCK_NUMBER_SLOT,
+    tx_context,
 };
 use zone_primitives::constants::{CONTRACT_DEPLOYER_ALLOWLIST, TEMPO_STATE_ADDRESS};
+
+use crate::database::validate_journal;
 
 /// Wraps Tempo's handlers with Zone transaction validation and transaction-local L1 context.
 pub(crate) fn zone_tx_registry<L1: L1StorageReader>(
@@ -64,6 +68,26 @@ impl<L1: L1StorageReader> ZoneTxHandler<L1> {
             .host
             .state_mut()
             .storage_slot_untracked(&TEMPO_STATE_ADDRESS, &TEMPO_BLOCK_NUMBER_SLOT)?;
+
+        // Mirrored registry values depend on the anchor, but the accepted cache is keyed by slot
+        // only. Keep its entries only while they were loaded at this transaction's anchor.
+        // Anchor-changing transactions switch anchors mid-transaction, and a cache hit skips
+        // `L1OverlayDB`, which would hide the switch: they always start from an empty cache.
+        let changes_anchor = matches!(
+            ZoneTransactionKind::classify(request.envelope.evm_tx().is_system_tx(), || {
+                request.envelope.evm_tx().calls()
+            }),
+            ZoneTransactionKind::AdvanceTempo | ZoneTransactionKind::AdvanceTempoHeaders
+        );
+        if self.l1.select_registry_cache_anchor(initial_anchor) || changes_anchor {
+            request
+                .host
+                .state_mut()
+                .overlay_db_mut()
+                .cache
+                .storage
+                .remove(&TIP403_REGISTRY_ADDRESS);
+        }
         self.l1.begin_transaction(initial_anchor);
 
         let tx_hash = match request.envelope.execution_context() {
@@ -89,8 +113,8 @@ impl<L1: L1StorageReader> TxHandler<TempoEvmTypes, TempoTxEnv, TxResult<TempoEvm
         mut request: TxRequest<'_, '_, TempoEvmTypes, TempoTxEnv>,
     ) -> HandlerResult<()> {
         let _context = self.enter(&mut request)?;
-        let transaction = Recovered::new_unchecked(request.envelope.clone(), request.tx.signer());
-        self.inner.validate(&transaction, request.host)
+        let transaction = Recovered::new_unchecked(request.envelope, request.tx.signer());
+        self.inner.validate(transaction, request.host)
     }
 
     fn execute(
@@ -98,8 +122,11 @@ impl<L1: L1StorageReader> TxHandler<TempoEvmTypes, TempoTxEnv, TxResult<TempoEvm
         mut request: TxRequest<'_, '_, TempoEvmTypes, TempoTxEnv>,
     ) -> HandlerResult<TxResult<TempoEvmTypes>> {
         let _context = self.enter(&mut request)?;
-        let transaction = Recovered::new_unchecked(request.envelope.clone(), request.tx.signer());
-        self.inner.execute(&transaction, request.host)
+        let transaction = Recovered::new_unchecked(request.envelope, request.tx.signer());
+        let result = self.inner.execute(transaction, request.host)?;
+        validate_journal(request.host.state())
+            .map_err(|error| HandlerError::Fatal(AnyError::new(error)))?;
+        Ok(result)
     }
 }
 

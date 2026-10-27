@@ -25,6 +25,8 @@ reth-ethereum-primitives = { workspace = true, optional = true }
 reth-primitives-traits = { workspace = true, optional = true }
 reth-codecs = { workspace = true, optional = true }
 reth-rpc-convert = { workspace = true, optional = true }
+# Only to enable its `account-ext` feature.
+reth-evm = { workspace = true, optional = true }
 
 # Alloy
 alloy-consensus = { workspace = true, features = ["k256"] }
@@ -78,6 +80,7 @@ test-utils = [
 	"reth-db-api?/test-utils",
 	"reth-ethereum-primitives?/test-utils",
 	"reth-primitives-traits?/test-utils",
+	"reth-evm?/test-utils",
 ]
 std = [
 	"evm2?/std",
@@ -157,5 +160,6 @@ rpc = [
 	"reth-ethereum-primitives/rpc",
 	"dep:alloy-rpc-types-eth",
 	"dep:reth-rpc-convert",
+	"dep:reth-evm",
 	"dep:alloy-network",
 ]

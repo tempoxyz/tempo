@@ -5,7 +5,7 @@ use crate::{
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 
-use alloy_consensus::{Transaction, constants::KECCAK_EMPTY, transaction::Recovered};
+use alloy_consensus::{Transaction, transaction::Recovered};
 use alloy_primitives::{Address, B256, U256};
 use evm2::{EvmFeatures, evm::DynDatabase, registry::HandlerError};
 use parking_lot::RwLock;
@@ -545,7 +545,12 @@ where
                 return TransactionValidationOutcome::Invalid(transaction, error);
             }
         }
-        let fee_token = fee_token.expect("successful Tempo handler resolves a fee token");
+        let Some(fee_token) = fee_token else {
+            return TransactionValidationOutcome::Error(
+                *transaction.hash(),
+                "successful Tempo handler did not resolve a fee token".into(),
+            );
+        };
 
         // Cache the resolved fee token from EVM validation for pool maintenance.
         transaction.set_resolved_fee_token(fee_token);
@@ -832,12 +837,7 @@ where
             .borrow_mut()
             .get_account(address)
             .map_err(ProviderError::other)?
-            .map(|account| Account {
-                nonce: account.nonce,
-                balance: account.balance,
-                bytecode_hash: (!account.code_hash.is_zero() && account.code_hash != KECCAK_EMPTY)
-                    .then_some(account.code_hash),
-            }))
+            .map(Account::from))
     }
 }
 
@@ -846,13 +846,12 @@ where
     DB: DynDatabase,
 {
     fn bytecode_by_hash(&self, code_hash: &B256) -> ProviderResult<Option<Bytecode>> {
-        Ok(Some(Bytecode(reth_execution_types::revm_bytecode(
-            &self
-                .db
+        Ok(Some(Bytecode(
+            self.db
                 .borrow_mut()
                 .get_code_by_hash(code_hash)
                 .map_err(ProviderError::other)?,
-        ))))
+        )))
     }
 }
 
@@ -912,7 +911,7 @@ mod tests {
         TempoChainSpec,
         spec::{MODERATO, TEMPO_T0_BASE_FEE, TEMPO_T1_TX_GAS_LIMIT_CAP},
     };
-    use tempo_evm::{ResolvedFeeToken, TempoBlockEnv, TempoEvmExt, TempoTxEnv, build_tempo_evm};
+    use tempo_evm::{TempoBlockEnv, TempoEvmExt, TempoTxEnv, build_tempo_evm};
     use tempo_precompiles::{
         PATH_USD_ADDRESS,
         tip20::{TIP20Token, slots as tip20_slots},
@@ -971,6 +970,7 @@ mod tests {
             nonce: 7,
             balance: U256::from(42),
             bytecode_hash: Some(code_hash),
+            ..Default::default()
         };
         let bytecode = EvmBytecode::default();
         let account_reads = Arc::new(AtomicUsize::new(0));
@@ -991,17 +991,20 @@ mod tests {
         let cache = StateCache::default();
         let cached = CachedAccountInfoReader::new(Db::new(StateCacheDb::new(&cache, provider)));
 
-        assert_eq!(cached.basic_account(&address).unwrap(), Some(account));
+        assert_eq!(
+            cached.basic_account(&address).unwrap(),
+            Some(account.clone())
+        );
         assert_eq!(cached.basic_account(&address).unwrap(), Some(account));
         assert_eq!(account_reads.load(Ordering::Relaxed), 1);
 
         assert_eq!(
             cached.bytecode_by_hash(&code_hash).unwrap(),
-            Some(Bytecode(reth_execution_types::revm_bytecode(&bytecode)))
+            Some(Bytecode(bytecode.clone()))
         );
         assert_eq!(
             cached.bytecode_by_hash(&code_hash).unwrap(),
-            Some(Bytecode(reth_execution_types::revm_bytecode(&bytecode)))
+            Some(Bytecode(bytecode))
         );
         assert_eq!(bytecode_reads.load(Ordering::Relaxed), 1);
     }
@@ -3364,8 +3367,7 @@ mod tests {
             let mut registry = TxRegistry::new();
             registry.register(2, |tx: &TempoTxEnv| Some(tx), handler(
                 move |request: &mut TxRequest<'_, '_, TempoEvmTypes, TempoTxEnv>| -> HandlerResult<()> {
-                    request.host.ext_mut().resolved_fee_token =
-                        Some(ResolvedFeeToken::Selected(PATH_USD_ADDRESS));
+                    request.host.ext_mut().resolved_fee_token = Some(tempo_evm::ResolvedFeeToken::Selected(PATH_USD_ADDRESS));
                     request.host.ext_mut().key_expiry = Some(123);
                     Err(error.clone())
                 },

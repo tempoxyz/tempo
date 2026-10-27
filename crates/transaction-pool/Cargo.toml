@@ -25,16 +25,15 @@ tempo-precompiles.workspace = true
 
 reth-transaction-pool.workspace = true
 reth-evm.workspace = true
-reth-execution-types.workspace = true
 reth-chainspec.workspace = true
 reth-primitives-traits.workspace = true
 reth-storage-api.workspace = true
 reth-provider.workspace = true
+reth-trie-common.workspace = true
 reth-eth-wire-types.workspace = true
 reth-tracing.workspace = true
 reth-metrics.workspace = true
 
-revm.workspace = true
 
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
@@ -60,6 +59,7 @@ test-utils = [
 	"reth-evm/test-utils",
 	"reth-primitives-traits/test-utils",
 	"reth-provider/test-utils",
+	"reth-trie-common/test-utils",
 	"reth-transaction-pool/test-utils",
 	"tempo-precompiles/test-utils",
 	"tempo-primitives/test-utils"

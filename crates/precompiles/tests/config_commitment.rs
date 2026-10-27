@@ -1,12 +1,17 @@
 //! Account config-commitment reads and writes through precompile storage.
 
 use alloy_primitives::{Address, B256, Bytes};
-use evm2::{bytecode::Bytecode, precompiles::PrecompileError};
+use evm2::{
+    evm::{InMemoryDB, precompile::NoPrecompiles},
+    precompiles::PrecompileError,
+};
 use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_evm::{TempoEvmExt, build_tempo_evm};
 use tempo_precompiles::{
     error::TempoPrecompileError,
     storage::{ConfigCommitmentWriteGas, StorageCtx, hashmap::HashMapStorageProvider},
 };
+use tempo_primitives::TempoBlockEnv;
 
 const ACCOUNT: Address = Address::repeat_byte(1);
 const INITIAL: B256 = B256::repeat_byte(2);
@@ -126,8 +131,7 @@ fn checkpoint_revert_restores_commitment() {
         drop(inner);
         assert_eq!(ctx.config_commitment(ACCOUNT).unwrap(), INITIAL);
 
-        ctx.set_code(ACCOUNT, Bytecode::new().original_bytes())
-            .unwrap();
+        ctx.set_code(ACCOUNT, Bytes::new()).unwrap();
         assert_eq!(ctx.config_commitment(ACCOUNT).unwrap(), INITIAL);
 
         let inner = ctx.checkpoint();
@@ -141,13 +145,55 @@ fn checkpoint_revert_restores_commitment() {
 }
 
 #[test]
+fn evm_storage_reads_zero_and_rejects_writes() {
+    let mut evm = build_tempo_evm(
+        TempoHardfork::T14,
+        1,
+        TempoBlockEnv::default(),
+        InMemoryDB::default(),
+        NoPrecompiles::default(),
+        TempoEvmExt::default(),
+    );
+    StorageCtx::enter_evm(&mut evm, || {
+        let mut ctx = StorageCtx;
+        let before = ctx.gas_used();
+        ctx.with_account_info(Address::repeat_byte(9), |_| Ok(()))
+            .unwrap();
+        let account_access = ctx.gas_used() - before;
+        assert!(account_access > 0);
+
+        let before = ctx.gas_used();
+        assert_eq!(ctx.config_commitment(ACCOUNT).unwrap(), B256::ZERO);
+        assert_eq!(ctx.gas_used() - before, account_access);
+
+        // Each read touches the account it was asked about, so another fresh account is cold too.
+        let before = ctx.gas_used();
+        assert_eq!(
+            ctx.config_commitment(Address::repeat_byte(2)).unwrap(),
+            B256::ZERO
+        );
+        assert_eq!(ctx.gas_used() - before, account_access);
+
+        for gas in [
+            ConfigCommitmentWriteGas::Intrinsic,
+            ConfigCommitmentWriteGas::Precompile,
+        ] {
+            assert!(is_invalid_write(
+                ctx.set_config_commitment(ACCOUNT, INITIAL, gas)
+            ));
+        }
+        assert_eq!(ctx.config_commitment(ACCOUNT).unwrap(), B256::ZERO);
+    });
+}
+
+#[test]
 fn invalid_write_reverts_without_data() {
     let error = TempoPrecompileError::InvalidConfigCommitmentWrite;
     assert!(!error.is_system_error());
     assert_eq!(error.selector(), [0u8; 4]);
 
     let Err(PrecompileError::Revert(bytes)) = error.into_precompile_result() else {
-        panic!("expected a precompile revert");
+        panic!("expected a revert");
     };
     assert_eq!(bytes, Bytes::new());
 }

@@ -212,9 +212,9 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
             TempoEvmTx::AA(_) => return Ok(()),
         };
         let new_accounts = zero_nonce_authorizations.saturating_add(u64::from(nonce == 0));
-        *intrinsic = intrinsic.saturating_add(new_accounts.saturating_mul(u64::from(
-            host.version().gas_params.get(GasId::NewAccountCost),
-        )));
+        *intrinsic = intrinsic.saturating_add(
+            new_accounts.saturating_mul(host.version().gas_params.get(GasId::NewAccountCost)),
+        );
         *initial_state_gas = initial_state_gas.saturating_add(
             new_accounts.saturating_mul(host.version().gas_params.new_account_state_gas()),
         );
@@ -243,6 +243,11 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
         let gas_price = u128::try_from(gas.gas_price)
             .map_err(|_| HandlerError::Fatal("effective gas price does not fit u128".into()))?;
         let gas_limit = gas.gas_limit;
+        // A net-negative refund counter refunds the full cap: one fifth of gas used before T7,
+        // all of it from T7, where gas used falls to the calldata floor.
+        if gas.result.gas.refunded() < 0 {
+            gas.result.gas.set_refunded(i64::MAX);
+        }
         let mut result = finalize_gas(host, gas)?;
         if !host.feature(EvmFeatures::FEE_CHARGE) {
             return Ok(result);
@@ -538,7 +543,7 @@ fn prepare_eip7702(
 }
 
 fn validate_no_native_value(envelope: &TempoTxEnv) -> Result<(), TempoInvalidTransaction> {
-    if envelope.transaction().value().is_zero() {
+    if envelope.value().is_zero() {
         Ok(())
     } else {
         Err(TempoInvalidTransaction::ValueTransferNotAllowed)

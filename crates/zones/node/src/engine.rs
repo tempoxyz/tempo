@@ -56,8 +56,11 @@ use tempo_primitives::TempoHeader;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
+use crate::deposit_allowlist::DepositAllowlist;
 use zone_chainspec::ZoneChainSpec;
-use zone_l1::{DepositQueue, EncryptionKeyRing, FinalizedTarget, L1BlockDeposits, L1BlockTracker};
+use zone_l1::{
+    DepositQueue, EncryptionKeyRing, FinalizedTarget, L1BlockDeposits, L1BlockTracker, L1Deposit,
+};
 use zone_p2p::{LeadershipSchedule, P2pPeerId};
 use zone_payload::{TempoImport, ZonePayloadAttributes, ZonePayloadTypes};
 use zone_sequencer::ProofCollectorHandle;
@@ -209,6 +212,8 @@ pub struct ZoneEngine {
     production_permit: Option<ProductionPermit>,
     /// Proof WAL writer invoked after execution and before canonicalization.
     proof_collector: Option<ProofCollectorHandle>,
+    /// Depositors whose L1 deposits are credited. `None` credits every deposit.
+    deposit_allowlist: Option<DepositAllowlist>,
 }
 
 impl ZoneEngine {
@@ -236,7 +241,14 @@ impl ZoneEngine {
             portal_address,
             production_permit: None,
             proof_collector,
+            deposit_allowlist: None,
         }
+    }
+
+    /// Bounce deposits whose L1 sender is not on `allowlist`. `None` credits every deposit.
+    pub fn with_deposit_allowlist(mut self, allowlist: Option<DepositAllowlist>) -> Self {
+        self.deposit_allowlist = allowlist;
+        self
     }
 
     /// Enforce the per-anchor leadership permit before every advance.
@@ -369,14 +381,31 @@ impl ZoneEngine {
             let portal_work = self
                 .deposit_queue
                 .operational_work(l1_block.header.num_hash())?;
-            TempoImport::Full(Box::new(
-                L1BlockDeposits::prepare_many(
-                    portal_work,
-                    &self.encryption_keys,
-                    self.portal_address,
-                )
-                .await?,
-            ))
+            let senders = self.deposit_allowlist.as_ref().map(|_| {
+                portal_work
+                    .iter()
+                    .flat_map(|block| &block.events.deposits)
+                    .filter_map(|deposit| match deposit {
+                        L1Deposit::Deposit(deposit) => Some(deposit.sender),
+                        L1Deposit::WithdrawalBounceBack(_) => None,
+                    })
+                    .collect::<Vec<_>>()
+            });
+            let mut prepared = L1BlockDeposits::prepare_many(
+                portal_work,
+                &self.encryption_keys,
+                self.portal_address,
+            )
+            .await?;
+            if let Some((allowlist, senders)) = self.deposit_allowlist.as_ref().zip(senders) {
+                let rejected = allowlist.reject_unlisted(&senders, &mut prepared.decryptions)?;
+                if rejected > 0 {
+                    info!(target: "zone::engine", rejected, "Bouncing deposits from senders not on the allowlist");
+                    metrics::counter!("zone_deposit_allowlist_rejected_total")
+                        .increment(rejected as u64);
+                }
+            }
+            TempoImport::Full(Box::new(prepared))
         };
 
         let attributes = ZonePayloadAttributes {
@@ -430,15 +459,19 @@ impl ZoneEngine {
         }
 
         if let Some(collector) = &self.proof_collector {
-            stop.run_until_cancelled(collector.collect_and_persist(block_number, header.hash()))
-                .await
-                .ok_or_else(|| eyre::eyre!("engine stopped while waiting for witness persistence"))?
-                .wrap_err_with(|| {
-                    format!("collect proofs before canonicalizing Zone block {block_number}")
-                })?;
+            stop.run_until_cancelled(collector.collect_for_import(
+                block_number,
+                header.hash(),
+                header.timestamp(),
+            ))
+            .await
+            .ok_or_else(|| eyre::eyre!("engine stopped while waiting for witness persistence"))?
+            .wrap_err_with(|| {
+                format!("collect proofs before canonicalizing Zone block {block_number}")
+            })?;
         }
 
-        // Consume the L1 input only after witness persistence succeeds.
+        // Consume the L1 input only after witness persistence succeeds (or, before T15, is skipped).
         if checkpoint_only {
             self.deposit_queue.defer_through(l1_num_hash)?;
         } else {

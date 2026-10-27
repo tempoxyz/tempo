@@ -65,9 +65,15 @@ COPY --from=prover-builder /app/target/x86_64-unknown-linux-gnu/zones-reproducib
 # The production runtime copies the canonical reproducible binary. Production
 # publishing also compares the full image ID with an independent clean build.
 # Package logs and ldconfig's inode cache must be removed in the install layer.
-FROM debian:bookworm-slim@sha256:4724b8cc51e33e398f0e2e15e18d5ec2851ff0c2280647e1310bc1642182655d AS reproducible-runtime-base
+# Files the layer creates or changes take SOURCE_DATE_EPOCH as their time: BuildKit's
+# rewrite-timestamp only clamps times after it, and a builder clock running behind the
+# commit time would otherwise leave builder-dependent times in the image.
+FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8 AS reproducible-runtime-base
 ARG DEBIAN_SNAPSHOT=20260501T000000Z
-RUN echo "deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}/ bookworm main" \
+ARG SOURCE_DATE_EPOCH
+RUN case "$SOURCE_DATE_EPOCH" in ''|*[!0-9]*) echo "SOURCE_DATE_EPOCH must be numeric" >&2; exit 1;; esac && \
+    started="$(date +%s)" && \
+    echo "deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}/ bookworm main" \
         > /etc/apt/sources.list && \
     echo "deb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}/ bookworm-security main" \
         >> /etc/apt/sources.list && \
@@ -77,7 +83,11 @@ RUN echo "deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/$
     apt-get -o Acquire::Check-Valid-Until=false update && \
     apt-get install -y --no-install-recommends \
         ca-certificates \
-    && rm -rf /var/lib/apt/lists/* /var/log/* /var/cache/ldconfig/aux-cache
+    && rm -rf /var/lib/apt/lists/* /var/log/* /var/cache/ldconfig/aux-cache && \
+    mkdir -p /data && \
+    find / -xdev \( -path /proc -o -path /sys -o -path /dev -o -path /etc/hosts \
+        -o -path /etc/hostname -o -path /etc/resolv.conf \) -prune \
+        -o -newermt "@$((started - 1))" -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
 
 WORKDIR /data
 

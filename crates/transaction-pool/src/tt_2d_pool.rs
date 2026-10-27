@@ -19,7 +19,7 @@ use reth_transaction_pool::{
         size::SizeTracker,
     },
 };
-use revm::database::BundleAccount;
+use reth_trie_common::bundle_state::BundleAccount;
 use std::{
     borrow::Borrow,
     collections::{
@@ -6446,7 +6446,7 @@ mod tests {
 
     #[test]
     fn test_on_state_updates_with_nonce_precompile_slot() {
-        use revm::database::{AccountStatus, BundleAccount, states::StorageSlot};
+        use reth_trie_common::bundle_state::{AccountStatus, BundleAccount, StorageSlot};
 
         let mut pool = AA2dPool::default();
         let sender = Address::random();
@@ -6510,7 +6510,7 @@ mod tests {
 
     #[test]
     fn test_on_state_updates_creates_gap_demotion() {
-        use revm::database::{AccountStatus, BundleAccount, states::StorageSlot};
+        use reth_trie_common::bundle_state::{AccountStatus, BundleAccount, StorageSlot};
 
         let mut pool = AA2dPool::default();
         let sender = Address::random();
@@ -6572,7 +6572,7 @@ mod tests {
 
     #[test]
     fn on_state_updates_returns_promotions_before_discard() {
-        use revm::database::{AccountStatus, BundleAccount, states::StorageSlot};
+        use reth_trie_common::bundle_state::{AccountStatus, BundleAccount, StorageSlot};
 
         let mut pool = AA2dPool::new(AA2dPoolConfig {
             pending_limit: SubPoolLimit {
@@ -7236,7 +7236,7 @@ mod tests {
 
     #[test]
     fn on_state_updates_removes_included_expiring_nonce_from_eviction_index() {
-        use revm::database::{AccountStatus, BundleAccount, states::StorageSlot};
+        use reth_trie_common::bundle_state::{AccountStatus, BundleAccount, StorageSlot};
 
         let mut pool = AA2dPool::default();
         let sender = Address::random();

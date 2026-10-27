@@ -39,6 +39,13 @@ Reports resolve aliases to the concrete scenario and record the selected preset.
 The original alias is retained separately as `requested_preset`; workload category
 metadata describes the mix without changing historical transfer-only labels.
 
+`zone-portal-throughput` and `vault-throughput` isolate one public-mix workload for
+L1 saturation runs: they include `public-mix.yml`, run its full fixture setup, and
+select only zone portal deposits/withdrawals or vault deposits/withdrawals (50/50).
+Zone operations settle synthetically on chain 1337; Zone journey latency is measured
+by `derek bench zones` instead. Raise both gas limits to saturate, for example
+`derek bench preset=zone-portal-throughput bloat=100 gas-limit=1T general-gas-limit=1T`.
+
 `tip20-policy` isolates the successful policy-heavy payment case: pathUSD transfers
 to configured receivers in a disjoint account pool, paid in AlphaUSD through the FeeAMM, with protocol nonces.
 It requires at least two selected tokens. Setup installs distinct blacklist leaves
@@ -53,3 +60,47 @@ For example: `derek bench preset=tip20-policy bloat=100` (E2E), or
 and transaction gas on T13/T14, while benchmark timings use normal node caches.
 The snapshots create a fresh recipient balance and initial validator fee accrual;
 benchmark receivers already have balances from faucet funding.
+
+`zone-earn-mix` and `bridge-mix` model live customer traffic shapes, with gas-share
+weights taken from mainnet; each file lists its window, the mainnet shares and
+what it does not model. `zone-earn-mix` reuses the public-mix fixtures (zone
+portal settlement, Earn vault and transfers), so it has the same requirements.
+`bridge-mix` deploys a bridge fixture (`bridge/`) and splits bridge payouts from a
+small operator pool and sponsored bridge deposits, for example
+`derek bench preset=bridge-mix`. Refresh the weights when the traffic changes.
+
+Gap variants: `zone-earn-hot` pins every zone operation to one portal (shared
+portal and vault state, up to the TIP-1096 deposit cap); `zone-earn-serial`
+sends zone settlement and Earn deposits from one account with ordered nonces;
+`bridge-mix-new-accounts` pays every bridge payout to a fresh address; and
+`zone-portal-hot` puts all zone portal deposits and withdrawals on one portal.
+`card-settlement` models card-program settlement: 18 unsponsored shard senders
+redeem vault shares and forward the proceeds to one settlement account.
+Run them at mainnet limits (`gas-limit=500M general-gas-limit=30M`) to compare.
+
+`neobank-generic` is one workload across the six neobank modules (Account, Deposit,
+Earn, Transfer, Spend, Cash out), weighted by planned gas shares; the file lists
+each module's templates and what is not modelled yet. It reuses the public-mix
+fixtures and adds card settlement from Earn (`card_settlement`, the same shard
+redemptions as `card-settlement`, next to ordinary vault withdrawals), cash card
+spend and cash-out transfers into single accounts, cash refunds from one issuer
+account, stablecoin DEX swaps (with `dex.yml`'s liquidity setup), and first
+payments to fresh addresses. Customer-shaped presets are flavors of this shape. For example:
+`derek bench preset=neobank-generic gas-limit=500M general-gas-limit=30M`.
+
+`batch-payout` models payroll fan-out and reward distribution: a 16-sender treasury
+pool with expiring nonces pays 32 recipients per Tempo transaction (the txpool's call
+limit; `TXGEN_BATCH_PAYOUT_RECIPIENTS` lowers it), as payroll to existing state-bloat
+accounts, payroll to fresh addresses, and per-recipient Earn deposits. The helper
+repeats each template's payout call and sizes its gas limit to the batch. Earn deposits
+need ~1.75M gas limit each, so reward batches stop at 16 recipients and fit about once
+per block in the general lane. It reuses the public-mix fixtures. For example:
+`derek bench preset=batch-payout gas-limit=500M general-gas-limit=30M`.
+
+`access-key-mix` covers the Account and Spend access-key flows: transfers that
+authorise a new key inline (creation and rotation), and payments signed by keys
+authorised in setup, split between pulls into one merchant settlement account
+(subscriptions, issuer card pulls) and agent spend to random users. The file lists
+the gas shares and the gaps: rotation does not revoke the old key yet, because
+txgen has no revoke flow. It needs funded users (nonzero state bloat), for example
+`derek bench preset=access-key-mix gas-limit=500M general-gas-limit=30M`.

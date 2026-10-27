@@ -16,6 +16,8 @@ pub mod evm;
 mod fee_manager;
 mod handler;
 mod instructions;
+#[cfg(feature = "jit")]
+pub mod jit;
 mod signature_gas;
 #[cfg(test)]
 mod test_utils;
@@ -47,7 +49,7 @@ pub mod genesis;
 use core::num::NonZeroU64;
 use std::{borrow::Cow, sync::Arc};
 
-use alloy_consensus::BlockHeader as _;
+use alloy_consensus::{BlockHeader as _, transaction::TxHashRef as _};
 use alloy_eips::eip7840::BlobParams;
 use alloy_primitives::{Address, U256};
 use evm2::{ExecutionConfig, env::BlockEnv, evm::DynDatabase};
@@ -111,13 +113,13 @@ impl TempoEvmConfig {
         self
     }
 
-    /// Returns the chain spec
     /// Uses the supplied EVM factory for execution and custom precompile construction.
     pub fn with_evm_factory(mut self, factory: TempoEvmFactory) -> Self {
         self.evm_factory = factory;
         self
     }
 
+    /// Returns the chain spec
     pub const fn chain_spec(&self) -> &Arc<TempoChainSpec> {
         &self.chain_spec
     }
@@ -179,7 +181,8 @@ impl BlockExecutorFactory for TempoEvmConfig {
     {
         let ext = self.evm_factory.evm_ext(TempoEvmExt::default());
         let precompiles = self.evm_factory.precompiles(&env, &ext);
-        let evm = evm2::Evm::new_with_execution_config_and_ext(
+        #[cfg_attr(not(feature = "jit"), allow(unused_mut))]
+        let mut evm = evm2::Evm::new_with_execution_config_and_ext(
             ExecutionConfig::for_spec_and_version(env.spec, env.version),
             env.spec,
             env.block,
@@ -189,11 +192,7 @@ impl BlockExecutorFactory for TempoEvmConfig {
             ext,
         );
         #[cfg(feature = "jit")]
-        let evm = {
-            let mut evm = evm;
-            self.evm_factory.configure_jit(&mut evm);
-            evm
-        };
+        self.evm_factory.configure_jit(&mut evm);
         evm
     }
 }
@@ -213,23 +212,56 @@ impl ConfigureEvm for TempoEvmConfig {
         &self.block_assembler
     }
 
-    fn supports_prewarm_reuse(&self) -> bool {
+    #[cfg(feature = "jit")]
+    fn with_jit_support_enabled(mut self, enabled: bool) -> Self {
+        self.evm_factory.set_jit_support(enabled);
+        self
+    }
+
+    #[cfg(feature = "jit")]
+    fn jit_backend(&self) -> Option<&dyn reth_evm::JitBackend> {
+        self.evm_factory
+            .jit_backend()
+            .is_some()
+            .then_some(&self.evm_factory as _)
+    }
+
+    fn reuses_prewarm_results(&self) -> bool {
         true
     }
 
-    fn prewarm_transaction(
+    fn prewarm_tx_result<'a>(
         &self,
-        evm: &mut reth_evm::EvmFor<'_, Self>,
-        mut transaction: reth_evm::TxEnvFor<Self>,
-    ) -> Result<Option<reth_evm::execute::PrewarmResult>, reth_evm::execute::BlockExecutionError>
+        tx: &TempoTxEnvelope,
+        result: reth_evm::TxResultWithStateFor<Self>,
+    ) -> Option<reth_evm::TxExecutionResultFor<'a, Self>>
+    where
+        Self: 'a,
     {
-        transaction.inner_mut().set_expiring_nonce_idx(None);
-        let hash = transaction.inner().tx_hash();
-        let output = reth_evm::Evm::transact(evm, &transaction)?;
-        Ok(Some(reth_evm::execute::PrewarmResult {
-            state: output.pending_state,
-            result: Box::new((hash, output.result)),
-        }))
+        // Execute normally what the speculative result cannot stand in for: system and subblock
+        // transactions need the executor's pre-execution checks, prewarming runs expiring nonce
+        // transactions against a block-local ring index, and the payment lane of a transaction
+        // classified differently by the two rule sets depends on the block's hardfork.
+        if tx.is_system_tx()
+            || tx.has_sub_block_nonce_key_prefix()
+            || tx.is_expiring_nonce()
+            || tx.is_payment_v1() != tx.is_payment_v2()
+        {
+            return None;
+        }
+        // The engine reuses results only without EIP-8037, so block gas is the transaction's gas.
+        let block_gas_used = result.result.tx_gas_used();
+        Some(TempoTxResult::new_precomputed(
+            tx,
+            ExecutionContext::Transaction {
+                tx_hash: *tx.tx_hash(),
+            },
+            result.result,
+            result.pending_state,
+            false,
+            tx.is_payment_v2(),
+            block_gas_used,
+        ))
     }
 
     fn evm_env(&self, header: &TempoHeader) -> Result<EvmEnvFor<Self>, Self::Error> {
@@ -260,7 +292,10 @@ impl ConfigureEvm for TempoEvmConfig {
                     .epoch_length()
                     .unwrap_or(NonZeroU64::MIN),
                 proposer_public_key: header.consensus_context.map(|ctx| ctx.proposer),
-                multisig_recovery_factory: self.chain_spec().info.multisig_recovery_factory(),
+                configurable_account_recovery_factory: self
+                    .chain_spec()
+                    .info
+                    .configurable_account_recovery_factory(),
             },
             _non_exhaustive: (),
         };
@@ -304,7 +339,10 @@ impl ConfigureEvm for TempoEvmConfig {
                     .epoch_length()
                     .unwrap_or(NonZeroU64::MIN),
                 proposer_public_key: attributes.consensus_context.map(|ctx| ctx.proposer),
-                multisig_recovery_factory: self.chain_spec().info.multisig_recovery_factory(),
+                configurable_account_recovery_factory: self
+                    .chain_spec()
+                    .info
+                    .configurable_account_recovery_factory(),
             },
             _non_exhaustive: (),
         };
@@ -694,6 +732,3 @@ mod tests {
         );
     }
 }
-
-#[cfg(feature = "jit")]
-pub mod jit;

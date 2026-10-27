@@ -1,16 +1,13 @@
 //! Execution-local database adapter that overlays finalized Tempo L1 reads while preserving
 //! the caller-provided Zone database as the sole canonical state backend.
 
-use std::fmt;
+use std::{collections::HashMap, fmt};
 
 use alloy_primitives::{Address, B256, U256};
 use evm2::{
-    DatabaseError, PendingState,
+    DatabaseError, JournalEntry, PendingState,
     bytecode::Bytecode,
-    evm::{
-        AccountChangeRef, AccountInfo, DynDatabase, StateChangeSink, StateChangeSource,
-        StorageChange,
-    },
+    evm::{AccountChangeRef, AccountInfo, DynDatabase, State, StateChangeSink, StorageChange},
 };
 use thiserror::Error;
 use zone_precompiles::{
@@ -78,8 +75,42 @@ impl<DB: DynDatabase, L1: L1StorageReader> L1OverlayDB<DB, L1> {
     }
 }
 
+/// Rejects net registry storage changes made by the in-flight transaction.
+///
+/// Handlers run before the transaction state is finalized into a [`PendingState`], so this is the
+/// check available to every execution path. Like [`validate_pending_state`] it ignores slots that
+/// end at their original value, but it only sees storage writes; the block executor's check also
+/// covers account changes and wipes.
+pub(crate) fn validate_journal(state: &State<'_>) -> Result<(), ZoneDbError> {
+    let mut originals = HashMap::<U256, U256>::new();
+    for entry in state.journal() {
+        if let JournalEntry::StorageChange {
+            address,
+            key,
+            previous,
+        } = entry
+            && *address == TIP403_REGISTRY_ADDRESS
+        {
+            originals.entry(*key).or_insert(*previous);
+        }
+    }
+    for (key, original) in originals {
+        if state.get_storage(&TIP403_REGISTRY_ADDRESS, &key) != Some(original) {
+            return Err(ZoneDbError::L1Write {
+                address: TIP403_REGISTRY_ADDRESS,
+                slot: key,
+            });
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_pending_state(state: &PendingState) -> Result<(), ZoneDbError> {
-    state.visit(&mut L1WriteGuard)
+    // Only the registry account can fail the guard; skip visiting every other account's storage.
+    state
+        .account_changes()
+        .find(|changes| changes.address == TIP403_REGISTRY_ADDRESS)
+        .map_or(Ok(()), |changes| changes.visit(&mut L1WriteGuard))
 }
 
 struct L1WriteGuard;
@@ -135,10 +166,12 @@ impl<DB: DynDatabase, L1: L1StorageReader> DynDatabase for L1OverlayDB<DB, L1> {
         let anchor = self.anchor()?;
         // The EVM already charges this TIP-403 SLOAD; the host-side L1 fetch must not be charged
         // again.
-        self.l1
+        let value = self
+            .l1
             .read_l1_storage_unmetered(*address, B256::from(*slot), anchor)
-            .map(Into::into)
-            .map_err(|error| DatabaseError::new(error, true))
+            .map_err(|error| DatabaseError::new(error, true))?;
+        self.l1.note_registry_read(anchor);
+        Ok(value.into())
     }
 
     fn get_block_hash(&mut self, number: &U256) -> Result<B256, DatabaseError> {
@@ -163,7 +196,7 @@ pub enum ZoneDbError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use evm2::evm::InMemoryDB;
+    use evm2::evm::{InMemoryDB, StateChangeSource};
     use reth_execution_types::{BlockState, BundleSource, TransactionChanges};
     use zone_precompiles::{
         storage::L1StateError, tempo_state::TEMPO_BLOCK_NUMBER_SLOT,
@@ -186,6 +219,35 @@ mod tests {
         let db = L1OverlayDB::new(test_db(anchor.saturating_sub(1)), reader, Address::ZERO);
         db.l1_state().begin_transaction(U256::from(anchor));
         db
+    }
+
+    #[test]
+    fn journal_guard_ignores_restored_registry_slots() {
+        let slot = U256::from(7);
+        let mut state = State::new(InMemoryDB::default());
+
+        // A write that restores the original value, as `ZoneInbox::enable_tokens` does.
+        state
+            .storage_slot(&TIP403_REGISTRY_ADDRESS, slot)
+            .unwrap()
+            .set(U256::from(1));
+        state
+            .storage_slot(&TIP403_REGISTRY_ADDRESS, slot)
+            .unwrap()
+            .set(U256::ZERO);
+        validate_journal(&state).unwrap();
+
+        state
+            .storage_slot(&TIP403_REGISTRY_ADDRESS, slot)
+            .unwrap()
+            .set(U256::from(2));
+        assert!(matches!(
+            validate_journal(&state),
+            Err(ZoneDbError::L1Write {
+                address: TIP403_REGISTRY_ADDRESS,
+                slot: s,
+            }) if s == slot
+        ));
     }
 
     #[test]

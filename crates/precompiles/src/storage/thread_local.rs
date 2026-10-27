@@ -136,12 +136,12 @@ impl StorageCtx {
 
     /// Returns the current block number.
     pub fn block_number(&self) -> u64 {
-        self.with_block_env(|block_env| block_env.number.saturating_to())
+        self.with_block_env(|block_env| block_env.number.saturating_to::<u64>())
     }
 
     /// Executes a closure with access to the current Tempo block environment.
     pub fn with_block_env<R>(&self, f: impl FnOnce(&TempoBlockEnv) -> R) -> R {
-        Self::with_storage(|storage| f(storage.block_env()))
+        Self::with_storage(|s| f(s.block_env()))
     }
 
     /// Returns the epoch containing `height`.
@@ -342,6 +342,13 @@ impl StorageCtx {
     ) -> Result<()> {
         Self::try_with_storage(|s| s.set_config_commitment(address, commitment, gas))
     }
+
+    /// Returns whether `address` is a retired root key (TIP-1112): from T14, an address with a
+    /// nonzero configuration commitment no longer acts through its own key. Reads the commitment
+    /// at call time, so a migration earlier in the block counts.
+    pub fn is_retired_root(&self, address: Address) -> Result<bool> {
+        Ok(self.spec().is_t14() && !self.config_commitment(address)?.is_zero())
+    }
 }
 
 /// RAII guard for atomic state mutation batching.
@@ -389,7 +396,7 @@ impl StorageCtx {
         T::EvmExt: EvmStorageExt,
     {
         let mut gas = GasTracker::new(u64::MAX);
-        Self::enter_evm_with_gas_tracker(evm, &mut gas, true, f)
+        Self::enter_evm_with_gas_tracker(evm, &mut gas, true, None, f)
     }
 
     /// Enters EVM-backed storage with TIP-1060 accounting disabled.
@@ -406,7 +413,7 @@ impl StorageCtx {
         T::EvmExt: EvmStorageExt,
     {
         let mut gas = GasTracker::new(u64::MAX);
-        Self::enter_evm_with_gas_tracker(evm, &mut gas, false, f)
+        Self::enter_evm_with_gas_tracker(evm, &mut gas, false, None, f)
     }
 
     /// Enters EVM-backed storage with bounded regular gas and a state-gas reservoir.
@@ -421,28 +428,13 @@ impl StorageCtx {
         T::EvmExt: EvmStorageExt,
     {
         let mut gas = GasTracker::new_with_execution_gas_and_reservoir(gas_limit, reservoir);
-        let result = Self::enter_evm_with_gas_tracker(evm, &mut gas, true, f);
+        let result = Self::enter_evm_with_gas_tracker(evm, &mut gas, true, None, f);
         (result, gas)
     }
 
-    /// Like [`Self::enter_evm_with_gas_limit`], with TIP-1060 accounting disabled.
-    pub fn enter_evm_without_tip1060_accounting_with_gas_limit<T, R>(
-        evm: &mut Evm<'_, T>,
-        gas_limit: u64,
-        reservoir: u64,
-        f: impl FnOnce() -> R,
-    ) -> (R, GasTracker)
-    where
-        T: EvmTypes<BlockEnvExt = TempoBlockExt, SpecId = TempoHardfork>,
-        T::EvmExt: EvmStorageExt,
-    {
-        let mut gas = GasTracker::new_with_execution_gas_and_reservoir(gas_limit, reservoir);
-        let result = Self::enter_evm_with_gas_tracker(evm, &mut gas, false, f);
-        (result, gas)
-    }
-
-    /// Like [`Self::enter_evm_without_tip1060_accounting_with_gas_limit`], with an
-    /// explicit gas parameter table for historical metering compatibility.
+    /// Enters EVM-backed storage with TIP-1060 accounting disabled, bounded regular gas, a
+    /// state-gas reservoir and an explicit gas parameter table for historical metering
+    /// compatibility.
     pub fn enter_evm_without_tip1060_accounting_with_gas_limit_and_gas_params<T, R>(
         evm: &mut Evm<'_, T>,
         gas_limit: u64,
@@ -455,15 +447,7 @@ impl StorageCtx {
         T::EvmExt: EvmStorageExt,
     {
         let mut gas = GasTracker::new_with_execution_gas_and_reservoir(gas_limit, reservoir);
-        let actions = evm.ext().storage_actions();
-        let non_creditable_slots = evm.ext().non_creditable_slots();
-        let spec = evm.config_spec_id();
-        let mut storage = EvmPrecompileStorageProvider::new(evm, &mut gas, spec, false)
-            .with_actions(actions)
-            .with_non_creditable_slots(non_creditable_slots)
-            .with_gas_params(gas_params);
-        storage.set_tip1060_storage_credits(false);
-        let result = Self::enter(&mut storage, f);
+        let result = Self::enter_evm_with_gas_tracker(evm, &mut gas, false, Some(gas_params), f);
         (result, gas)
     }
 
@@ -471,6 +455,7 @@ impl StorageCtx {
         evm: &mut Evm<'_, T>,
         gas: &mut GasTracker,
         tip1060_storage_credits: bool,
+        gas_params: Option<GasParams>,
         f: impl FnOnce() -> R,
     ) -> R
     where
@@ -483,6 +468,9 @@ impl StorageCtx {
         let mut storage = EvmPrecompileStorageProvider::new(evm, gas, spec, false)
             .with_actions(actions)
             .with_non_creditable_slots(non_creditable_slots);
+        if let Some(gas_params) = gas_params {
+            storage = storage.with_gas_params(gas_params);
+        }
         storage.set_tip1060_storage_credits(tip1060_storage_credits);
 
         // The core logic of setting up thread-local storage is here.
@@ -577,9 +565,7 @@ impl StorageCtx {
 
     /// Checks if a contract at the given address has bytecode deployed.
     pub fn has_bytecode(&self, address: Address) -> Result<bool> {
-        self.with_account_info(address, |info| {
-            Ok(info.code_hash != alloy::primitives::KECCAK256_EMPTY)
-        })
+        self.with_account_info(address, |info| Ok(!info.is_empty_code_hash()))
     }
 }
 

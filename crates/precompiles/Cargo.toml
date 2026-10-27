@@ -58,6 +58,7 @@ serde_json.workspace = true
 sha2 = { workspace = true, features = ["oid"] }
 x509-cert = { version = "=0.2.5", features = ["builder"] }
 tempo-alloy.workspace = true
+tempo-evm.workspace = true
 
 [build-dependencies]
 serde.workspace = true
@@ -98,6 +99,22 @@ required-features = ["test-utils"]
 
 [[test]]
 name = "config_commitment"
+required-features = ["test-utils"]
+
+[[test]]
+name = "configurable_account"
+required-features = ["test-utils"]
+
+[[test]]
+name = "root_key_retired"
+required-features = ["test-utils"]
+
+[[test]]
+name = "signature_verifier"
+required-features = ["test-utils"]
+
+[[test]]
+name = "configurable_account_key_type"
 required-features = ["test-utils"]
 
 [[bench]]

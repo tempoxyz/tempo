@@ -2,7 +2,6 @@ use super::*;
 
 use alloy_primitives::{B256, Bytes, U256, address, keccak256};
 use alloy_sol_types::{SolCall, SolError, SolValue};
-use revm::precompile::PrecompileResult;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::{
     precompiles::UnknownFunctionSelector,
@@ -21,8 +20,8 @@ use tempo_primitives::TempoHeader;
 use zone_primitives::constants::ZONE_OUTBOX_ADDRESS;
 
 use crate::test_utils::{
-    EncryptedDepositFixture, MockL1Reader, TestContext, TestPrecompiles, build_plaintext,
-    call_precompile, compressed_x_and_parity, encrypt_plaintext, test_context,
+    EncryptedDepositFixture, MockL1Reader, PrecompileResult, TestContext, TestPrecompiles,
+    build_plaintext, call_precompile, compressed_x_and_parity, encrypt_plaintext, test_context,
     test_context_with_hardfork, test_precompiles, test_storage_provider,
 };
 
@@ -616,8 +615,8 @@ fn enabled_token_is_initialized_before_deposit_processing() -> eyre::Result<()> 
         assert!(token.is_initialized()?);
         assert_eq!(token.name()?, "Example Dollar");
         assert_eq!(token.next_quote_token()?, PATH_USD_ADDRESS);
-        assert!(token.has_role_internal(ZONE_INBOX_ADDRESS, (*ISSUER_ROLE).into())?);
-        assert!(token.has_role_internal(ZONE_OUTBOX_ADDRESS, (*ISSUER_ROLE).into())?);
+        assert!(token.has_role_internal(ZONE_INBOX_ADDRESS, ISSUER_ROLE)?);
+        assert!(token.has_role_internal(ZONE_OUTBOX_ADDRESS, ISSUER_ROLE)?);
         assert_eq!(
             StorageCtx.sload(TIP403_REGISTRY_ADDRESS, binding_slot)?,
             anchored_policy

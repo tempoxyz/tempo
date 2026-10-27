@@ -57,11 +57,7 @@ thiserror.workspace = true
 tracing.workspace = true
 
 # jit
-evm2-jit-runtime = { workspace = true, optional = true }
-evm2-jit-builtins = { workspace = true, features = ["ir"], optional = true }
-evm2-jit-context = { workspace = true, optional = true }
-metrics = { workspace = true, optional = true }
-reth-metrics = { workspace = true, optional = true }
+evm2-jit = { workspace = true, features = ["llvm"], optional = true }
 
 [dev-dependencies]
 alloy-eips.workspace = true
@@ -73,8 +69,6 @@ alloy-sol-types.workspace = true
 base64.workspace = true
 commonware-consensus.workspace = true
 commonware-cryptography.workspace = true
-commonware-math.workspace = true
-commonware-utils.workspace = true
 criterion.workspace = true
 eyre.workspace = true
 indexmap = { workspace = true, features = ["serde"] }
@@ -82,13 +76,13 @@ insta.workspace = true
 p256 = { workspace = true, features = ["ecdsa"] }
 proptest.workspace = true
 rand_08.workspace = true
-rand.workspace = true
 reth-execution-cache.workspace = true
 reth-storage-api.workspace = true
 reth-trie.workspace = true
-revm.workspace = true
+reth-trie-common.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+tempo-dkg-onchain-artifacts = { workspace = true, features = ["test-utils"] }
 tempo-precompiles = { workspace = true, features = ["test-utils"] }
 tempo-primitives = { workspace = true, features = ["arbitrary", "test-utils"] }
 test-case.workspace = true
@@ -100,8 +94,8 @@ rpc = ["dep:alloy-rpc-types-eth", "dep:reth-rpc-eth-api", "tempo-primitives/serd
 engine = ["dep:tempo-payload-types", "dep:rayon"]
 # Shared genesis state initialization helpers for genesis generators.
 genesis = ["dep:alloy-genesis", "dep:eyre"]
-
-jit = ["dep:evm2-jit-runtime", "dep:evm2-jit-builtins", "dep:evm2-jit-context", "dep:metrics", "dep:reth-metrics"]
+# Native EVM2 JIT compilation; building requires LLVM.
+jit = ["dep:evm2-jit", "reth-evm-ethereum/jit"]
 
 [[bench]]
 name = "tip20_execution"

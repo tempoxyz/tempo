@@ -121,7 +121,7 @@ impl ExecutionFixture {
 
 impl AccountReader for InMemoryStateProvider {
     fn basic_account(&self, address: &Address) -> ProviderResult<Option<RethAccount>> {
-        Ok(self.accounts.get(address).copied())
+        Ok(self.accounts.get(address).cloned())
     }
 }
 impl StateProvider for InMemoryStateProvider {
@@ -205,8 +205,8 @@ impl StateProofProvider for InMemoryStateProvider {
     }
     fn multiproof_v2(
         &self,
-        _input: TrieInput,
         _targets: MultiProofTargetsV2,
+        _requires_masks: bool,
     ) -> ProviderResult<DecodedMultiProofV2> {
         Err(ProviderError::UnsupportedProvider)
     }
@@ -341,7 +341,7 @@ pub(crate) fn fixture_from_seeded_db(seeded: InMemoryDB) -> ExecutionFixture {
     let mut contracts = B256Map::default();
     let mut block_hashes = HashMap::default();
     for (hash, bytecode) in state_cache.contracts {
-        let bytecode = RethBytecode(reth_execution_types::revm_bytecode(&bytecode));
+        let bytecode = RethBytecode(bytecode);
         execution_cache.insert_code(hash, Some(bytecode.clone()));
         contracts.insert(hash, bytecode);
     }
@@ -399,8 +399,9 @@ fn insert_account(
         nonce: info.nonce,
         balance: info.balance,
         bytecode_hash: Some(bytecode_hash),
+        ..Default::default()
     };
-    cache.insert_account(address, Some(account));
+    cache.insert_account(address, Some(account.clone()));
     accounts.insert(address, account);
 }
 

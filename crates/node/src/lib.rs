@@ -3,7 +3,7 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-pub use tempo_payload_types::{TempoExecutionData, TempoPayloadTypes};
+pub use tempo_payload_types::{Estimator, TempoExecutionData, TempoPayloadTypes, estimator};
 pub use version::{init_version_metadata, version_metadata};
 
 use crate::node::TempoAddOns;
@@ -48,6 +48,3 @@ type TempoNodeAdapter = NodeAdapter<TempoFullNodeTypes>;
 
 /// Type alias for a launched tempo node.
 pub type TempoFullNode = FullNode<TempoNodeAdapter, TempoAddOns<TempoFullNodeTypes>>;
-
-#[cfg(feature = "jit")]
-pub mod jit;
