@@ -627,7 +627,7 @@ async function replayFailure({ core, context, failedStep }) {
   }
 }
 
-function buildZonesSuccessBlocks({ comparison, changes, prNumber, actor, actorSlackId, jobUrl, repo }) {
+function buildZonesSuccessBlocks({ comparison, changes, reason, prNumber, actor, actorSlackId, jobUrl, repo }) {
   const { metadata, latencies } = comparison;
   // No scored row (missing or partial traces, under 100 journeys) is not a measured no-change.
   const verdict = verdictFromChanges(changes, Object.keys(changes).length ? 'No Significant Change' : 'Unclassified');
@@ -644,6 +644,7 @@ function buildZonesSuccessBlocks({ comparison, changes, prNumber, actor, actorSl
     '',
     `*Prover:* \`${metadata.prover ? 'on' : 'off'}\` | *Preset:* \`${metadata.preset}\` | *Hardfork:* \`${metadata.tempoHardfork}\``,
     `*Journeys:* \`${metadata.count}\` | *Target TPS:* \`${metadata.tps}\` | *Region:* \`${metadata.region}\``,
+    ...(reason ? [`*Unclassified:* ${reason}`] : []),
   ].join('\n');
   // Raw percentile changes are context; the verdict comes from bench-zones-classify.js.
   const rows = comparison.rows.map(({ key, label }) => [label, ...['p50', 'p95'].flatMap(quantile => {
@@ -689,13 +690,14 @@ async function zonesSuccess({ core, context }) {
 
   const slackUsers = loadSlackUsers(process.env.GITHUB_WORKSPACE || '.');
   const actorSlackId = slackUsers[actor];
-  let changes = {};
+  let changes = {}, reason;
   try {
-    changes = zonesClassify(comparison.rows, process.env.BENCH_WORK_DIR);
+    ({ changes, reason } = zonesClassify(comparison.rows, process.env.BENCH_WORK_DIR));
   } catch (e) {
     core.warning(`Could not classify Zones latency: ${e.message}`);
+    reason = 'Classification failed; see CI logs.';
   }
-  const blocks = buildZonesSuccessBlocks({ comparison, changes, prNumber, actor, actorSlackId, jobUrl, repo });
+  const blocks = buildZonesSuccessBlocks({ comparison, changes, reason, prNumber, actor, actorSlackId, jobUrl, repo });
   const text = `Tempo Zones bench: baseline vs feature (prover ${comparison.metadata.prover ? 'on' : 'off'})`;
 
   const channel = process.env.SLACK_BENCH_CHANNEL;
