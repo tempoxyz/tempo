@@ -651,6 +651,7 @@ where
 
         // 4. All txns in the block execute properly
         validate_block_timestamp(block.header().timestamp_millis(), SystemTime::now())?;
+        let timestamp = block.header().timestamp();
         let payload = ZonePayloadTypes::block_to_payload(block, None);
         let status = self.context.engine.new_payload(payload).await?;
         if !status.is_valid() {
@@ -664,10 +665,11 @@ where
                 .run_until_cancelled(async {
                     match peer_block.block.witness {
                         Some(proof) => collector.persist_received(proof).await,
-                        None => collector
-                            .collect_and_persist(block_number, hash)
-                            .await
-                            .map(|_| ()),
+                        None => {
+                            collector
+                                .collect_for_import(block_number, hash, timestamp)
+                                .await
+                        }
                     }
                 })
                 .await
