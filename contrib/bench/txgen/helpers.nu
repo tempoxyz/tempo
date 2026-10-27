@@ -686,9 +686,8 @@ def txgen-card-settlement-template [template: record] {
 # recipients that fit.
 def txgen-batch-payout-templates [presets_dir: string, recipients: int] {
     if $recipients < 1 { error make {msg: "TXGEN_BATCH_PAYOUT_RECIPIENTS must be positive"} }
-    let result = (^uv run --no-project --with yq==3.4.3 yq -c '.templates' ($presets_dir | path join batch-payout.yml) | complete)
-    if $result.exit_code != 0 { error make {msg: $"Failed to read batch-payout templates: ($result.stderr)"} }
-    $result.stdout | from json | items { |name, template|
+    # Nushell's YAML parser keeps the i64 nonce bound exact; a jq round-trip may not.
+    open ($presets_dir | path join batch-payout.yml) | get templates | items { |name, template|
         let gas_fit = (($TXGEN_HELPER_TX_GAS_LIMIT_CAP - $TXGEN_HELPER_BATCH_PAYOUT_BASE_GAS) // $template.gas_limit)
         let call_fit = $TXGEN_HELPER_MAX_AA_CALLS - ($template.calls | length) + 1
         let count = ([$recipients $gas_fit $call_fit] | math min)
