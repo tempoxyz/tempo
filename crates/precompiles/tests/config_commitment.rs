@@ -11,6 +11,7 @@ use evm2::{
 };
 use tempo_chainspec::{gas_params::version, hardfork::TempoHardfork};
 use tempo_precompiles::{
+    configurable_account::CONFIGURABLE_ACCOUNT_CODE_HASH,
     error::TempoPrecompileError,
     storage::{
         ConfigCommitmentWriteGas, PrecompileStorageProvider, StorageCtx,
@@ -87,6 +88,11 @@ fn write_then_read() {
             .unwrap();
         assert_eq!(ctx.config_commitment(ACCOUNT).unwrap(), INITIAL);
         assert_eq!(
+            ctx.with_account_info(ACCOUNT, |info| Ok(info.code_hash))
+                .unwrap(),
+            CONFIGURABLE_ACCOUNT_CODE_HASH
+        );
+        assert_eq!(
             ctx.config_commitment(Address::repeat_byte(9)).unwrap(),
             B256::ZERO
         );
@@ -94,6 +100,11 @@ fn write_then_read() {
         ctx.set_config_commitment(ACCOUNT, ROTATED, ConfigCommitmentWriteGas::Precompile)
             .unwrap();
         assert_eq!(ctx.config_commitment(ACCOUNT).unwrap(), ROTATED);
+        assert_eq!(
+            ctx.with_account_info(ACCOUNT, |info| Ok(info.code_hash))
+                .unwrap(),
+            CONFIGURABLE_ACCOUNT_CODE_HASH
+        );
     });
 }
 
@@ -173,8 +184,11 @@ fn checkpoint_revert_restores_commitment() {
         drop(inner);
         assert_eq!(ctx.config_commitment(ACCOUNT).unwrap(), INITIAL);
 
-        ctx.set_code(ACCOUNT, Bytes::new()).unwrap();
-        assert_eq!(ctx.config_commitment(ACCOUNT).unwrap(), INITIAL);
+        assert_eq!(
+            ctx.with_account_info(ACCOUNT, |info| Ok(info.code_hash))
+                .unwrap(),
+            CONFIGURABLE_ACCOUNT_CODE_HASH
+        );
 
         let inner = ctx.checkpoint();
         ctx.set_config_commitment(ACCOUNT, ROTATED, ConfigCommitmentWriteGas::Precompile)
@@ -183,6 +197,11 @@ fn checkpoint_revert_restores_commitment() {
         assert_eq!(ctx.config_commitment(ACCOUNT).unwrap(), ROTATED);
         drop(outer);
         assert_eq!(ctx.config_commitment(ACCOUNT).unwrap(), B256::ZERO);
+        assert_eq!(
+            ctx.with_account_info(ACCOUNT, |info| Ok(info.code_hash))
+                .unwrap(),
+            alloy_primitives::KECCAK256_EMPTY
+        );
     });
 }
 

@@ -22,7 +22,8 @@ use tempo_precompiles::{
     Precompile,
     account_keychain::AccountKeychain,
     configurable_account::{
-        ConfigurableAccount, UpgradeEligibility, config, initial_account_proof_gas, valid_account,
+        CONFIGURABLE_ACCOUNT_CODE, ConfigurableAccount, UpgradeEligibility, config,
+        initial_account_proof_gas, valid_account,
     },
     input_cost,
     storage::{
@@ -537,10 +538,11 @@ fn upgrade_account_checks_eligibility_code_and_commitment_in_order() {
     StorageCtx::enter(&mut storage, || {
         let owners = weighted_owners(&[(OWNER, 1)]);
         let with_code = Address::repeat_byte(0x44);
+        seed_commitment(with_code, B256::repeat_byte(9));
+        // Deliberately replace the protocol marker to test rejection precedence for invalid code.
         StorageCtx
             .set_code(with_code, Bytes::from_static(&[0x00]))
             .unwrap();
-        seed_commitment(with_code, B256::repeat_byte(9));
         let configured = Address::repeat_byte(0x55);
         seed_commitment(configured, B256::repeat_byte(9));
 
@@ -662,14 +664,15 @@ fn upgrade_account_installs_a_version_one_commitment() {
     );
 }
 
-/// A committed configuration ends an account's direct grant authority where its code begins; an
-/// uncommitted account grants keys whatever its code.
+/// Registered parents keep grant authority with the protocol marker; incompatible code is rejected.
+/// Uncommitted parents retain their existing grant behavior.
 #[test]
-fn committed_parent_with_code_cannot_authorize_keys() {
+fn committed_parent_requires_protocol_marker_to_authorize_keys() {
     let parent = Address::repeat_byte(0x11);
     let key = Address::repeat_byte(0x22);
     let codes = [
-        ("none", Bytes::new()),
+        ("unchanged", Bytes::new()),
+        ("marker", CONFIGURABLE_ACCOUNT_CODE),
         ("bytecode", Bytes::from_static(&[0x00])),
         (
             "delegation",
@@ -706,11 +709,12 @@ fn committed_parent_with_code_cannot_authorize_keys() {
                     },
                     None,
                 );
-                let expected = if committed && !code.is_empty() {
-                    Err(AccountKeychainError::invalid_key_id().into())
-                } else {
-                    Ok(())
-                };
+                let expected =
+                    if committed && !code.is_empty() && *code != CONFIGURABLE_ACCOUNT_CODE {
+                        Err(AccountKeychainError::invalid_key_id().into())
+                    } else {
+                        Ok(())
+                    };
                 assert_eq!(
                     result, expected,
                     "committed={committed}, parent code: {kind}"

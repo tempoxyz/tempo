@@ -39,6 +39,7 @@ use tempo_evm::{
     TempoStateAccess,
 };
 use tempo_precompiles::{
+    configurable_account::CONFIGURABLE_ACCOUNT_CODE_HASH,
     nonce::{INonce, NonceManager},
     storage::StorageActions,
 };
@@ -607,8 +608,27 @@ where
         // Delegate to the inner ETH validator for remaining checks
         // (chain_id, EIP-3607 code check, protocol nonce, etc.) and to produce
         // the Valid outcome with state_nonce and balance for pool ordering.
+        // The Tempo pipeline has already checked the commitment, marker and signature authority.
+        // Exempt that sender from the inner validator's Ethereum-only EIP-3607 rule.
+        let configurable_sender = if evm.config_spec_id().is_t14() {
+            match evm.read_account_info(transaction.sender_ref()) {
+                Ok(Some(info)) if info.code_hash == CONFIGURABLE_ACCOUNT_CODE_HASH => {
+                    Some(*transaction.sender_ref())
+                }
+                Ok(_) => None,
+                Err(error) => {
+                    return TransactionValidationOutcome::Error(
+                        *transaction.hash(),
+                        Box::new(error),
+                    );
+                }
+            }
+        } else {
+            None
+        };
         let inner_validation = {
-            let cached_state_provider = CachedAccountInfoReader::new(evm.overlay_db_mut());
+            let cached_state_provider =
+                CachedAccountInfoReader::new(evm.overlay_db_mut(), configurable_sender);
             self.inner
                 .validate_one_with_state_provider(origin, transaction, &cached_state_provider)
         };
@@ -622,6 +642,9 @@ where
                 propagate,
                 authorities,
             } => {
+                let bytecode_hash = configurable_sender
+                    .map(|_| CONFIGURABLE_ACCOUNT_CODE_HASH)
+                    .or(bytecode_hash);
                 let mut authorities = authorities;
                 if let Some(aa_tx) = transaction.transaction().inner().as_aa() {
                     let mut recovered_aa_authorities = aa_tx
@@ -812,12 +835,14 @@ where
 /// expected by the inner ETH transaction validator.
 struct CachedAccountInfoReader<DB> {
     db: RefCell<DB>,
+    configurable_sender: Option<Address>,
 }
 
 impl<DB> CachedAccountInfoReader<DB> {
-    const fn new(db: DB) -> Self {
+    const fn new(db: DB, configurable_sender: Option<Address>) -> Self {
         Self {
             db: RefCell::new(db),
+            configurable_sender,
         }
     }
 }
@@ -835,7 +860,10 @@ where
             .map(|account| Account {
                 nonce: account.nonce,
                 balance: account.balance,
-                bytecode_hash: (!account.code_hash.is_zero() && account.code_hash != KECCAK_EMPTY)
+                bytecode_hash: (!(self.configurable_sender == Some(*address)
+                    && account.code_hash == CONFIGURABLE_ACCOUNT_CODE_HASH)
+                    && !account.code_hash.is_zero()
+                    && account.code_hash != KECCAK_EMPTY)
                     .then_some(account.code_hash),
                 extension: AccountExtension::from_shared(account.extension.into_shared()),
             }))
@@ -991,7 +1019,8 @@ mod tests {
             bytecode_reads: bytecode_reads.clone(),
         };
         let cache = StateCache::default();
-        let cached = CachedAccountInfoReader::new(Db::new(StateCacheDb::new(&cache, provider)));
+        let cached =
+            CachedAccountInfoReader::new(Db::new(StateCacheDb::new(&cache, provider)), None);
 
         assert_eq!(
             cached.basic_account(&address).unwrap(),
@@ -1009,6 +1038,46 @@ mod tests {
             Some(Bytecode(reth_execution_types::revm_bytecode(&bytecode)))
         );
         assert_eq!(bytecode_reads.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn inner_eip3607_exempts_only_the_validated_configurable_sender() {
+        let sender = Address::repeat_byte(0x44);
+        let other = Address::repeat_byte(0x55);
+        let transaction = TxBuilder::aa(sender).build();
+        let validator = setup_validator(&transaction, 1_788_393_600);
+        for (allowed, code, valid) in [
+            (None, Bytes::from_static(&[0xef]), false),
+            (Some(other), Bytes::from_static(&[0xef]), false),
+            (Some(sender), Bytes::from_static(&[0xef]), true),
+            (Some(sender), Bytes::from_static(&[0x00]), false),
+        ] {
+            let mut database = InMemoryDB::default();
+            database.insert_account_info(
+                &sender,
+                AccountInfo::default().with_code(EvmBytecode::new_raw(code)),
+            );
+            let reader = CachedAccountInfoReader::new(Db::new(database), allowed);
+            let account = reader.basic_account(&sender).unwrap().unwrap();
+            let result = validator
+                .inner
+                .validate_sender_bytecode(&transaction, &account, &reader)
+                .unwrap();
+            if valid {
+                assert_eq!(account.bytecode_hash, None);
+                assert!(result.is_ok(), "{result:?}");
+            } else {
+                assert!(
+                    matches!(
+                        result,
+                        Err(InvalidPoolTransactionError::Consensus(
+                            InvalidTransactionError::SignerAccountHasBytecode
+                        ))
+                    ),
+                    "{result:?}"
+                );
+            }
+        }
     }
 
     /// Helper to create a mock sealed block with the given timestamp.
