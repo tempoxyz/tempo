@@ -246,17 +246,8 @@ impl reth_cli::chainspec::ChainSpecParser for ZoneChainSpecParser {
     const SUPPORTED_CHAINS: &'static [&'static str] = &[];
 
     fn parse(s: &str) -> eyre::Result<std::sync::Arc<Self::ChainSpec>> {
-        Ok(Arc::new(ZoneChainSpec::from_genesis(Self::parse_genesis(
-            s,
-        )?)?))
-    }
-}
-
-#[cfg(feature = "cli")]
-impl ZoneChainSpecParser {
-    /// Parses a `--chain` value (a path or inline JSON) into the raw Zone genesis.
-    pub fn parse_genesis(s: &str) -> eyre::Result<Genesis> {
-        reth_cli::chainspec::parse_genesis(s)
+        let genesis = reth_cli::chainspec::parse_genesis(s)?;
+        Ok(Arc::new(ZoneChainSpec::from_genesis(genesis)?))
     }
 }
 
@@ -280,14 +271,6 @@ pub fn tempo_chain_spec_for_l1(chain_id: u64) -> Option<Arc<TempoChainSpec>> {
         1_337 | 31_337 => Some(DEV.clone()),
         _ => None,
     })
-}
-
-/// Returns whether this binary compiles in the Tempo hardfork schedule of the parent chain.
-///
-/// Only mainnet and testnet qualify. Zone nodes on other parents read the schedule from their
-/// L1's `tempo_forkSchedule` at startup.
-pub fn has_compiled_l1_schedule(chain_id: u64) -> bool {
-    chainspec_from_chain_id(chain_id).is_some()
 }
 
 #[cfg(test)]
