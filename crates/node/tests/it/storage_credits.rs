@@ -1,4 +1,6 @@
-use crate::utils::{PendingTransactionBuilderExt, TestNodeBuilder, setup_test_token};
+use crate::utils::{
+    PendingTransactionBuilderExt, TestNodeBuilder, make_genesis_at, setup_test_token,
+};
 use alloy::{
     network::ReceiptResponse,
     primitives::{Address, B256, Bytes, U256, aliases::U96},
@@ -11,6 +13,7 @@ use alloy_rpc_types_eth::{TransactionReceipt, TransactionRequest};
 use eyre::WrapErr;
 use reth_e2e_test_utils::{receipt::PendingTransactionExt, wait::poll_until, wallet::test_signer};
 use tempo_alloy::rpc::TempoTransactionReceipt;
+use tempo_chainspec::TempoHardfork;
 use tempo_contracts::precompiles::{
     DEFAULT_FEE_TOKEN, IFeeManager, IReceivePolicyGuard, IStorageCredits, ITIP20,
     ITIP20ChannelReserve, ITIP403Registry, ITIPFeeAMM,
@@ -413,6 +416,7 @@ async fn test_tip1060_fee_manager_credit_from_distribute_fees_is_not_redeemable(
     let initial_validator = Address::repeat_byte(0x42);
     let dynamic_validator = std::sync::Arc::new(std::sync::Mutex::new(initial_validator));
     let setup = TestNodeBuilder::new()
+        .with_genesis(make_genesis_at(TempoHardfork::T14))
         .with_dynamic_validator(dynamic_validator.clone())
         .build_http_only()
         .await?;
@@ -667,6 +671,7 @@ async fn test_tip1060_distribute_fees_receive_policy_guard_creations_are_account
     let initial_validator = Address::repeat_byte(0x64);
     let dynamic_validator = std::sync::Arc::new(std::sync::Mutex::new(initial_validator));
     let setup = TestNodeBuilder::new()
+        .with_genesis(make_genesis_at(TempoHardfork::T14))
         .with_dynamic_validator(dynamic_validator.clone())
         .build_http_only()
         .await?;

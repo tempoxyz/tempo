@@ -796,6 +796,7 @@ mod tests {
         fn mainnet() {
             let cs = super::super::TempoChainSpecParser::parse("mainnet")
                 .expect("the mainnet chainspec must always be well formed");
+            assert!(!cs.is_t15_active_at_timestamp(u64::MAX));
 
             // Before T1 activation (1770908400 = Feb 12th 2026 16:00 CET)
             assert_eq!(cs.tempo_hardfork_at(0), TempoHardfork::T0);
@@ -927,6 +928,7 @@ mod tests {
         fn moderato() {
             let cs = super::super::TempoChainSpecParser::parse("moderato")
                 .expect("the moderato chainspec must always be well formed");
+            assert!(!cs.is_t15_active_at_timestamp(u64::MAX));
 
             // Before T0/T1 activation (1770303600 = Feb 5th 2026 16:00 CET)
             assert_eq!(cs.tempo_hardfork_at(0), TempoHardfork::Genesis);
