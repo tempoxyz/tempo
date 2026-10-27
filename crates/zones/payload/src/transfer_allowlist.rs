@@ -63,7 +63,8 @@ pub fn unlisted_transfer_error() -> InvalidPoolTransactionError {
 /// is allowed in a block whose fee recipient is `beneficiary`.
 ///
 /// Transfers to `beneficiary` settle fees, so they are also exempt and an account removed from
-/// the list can still pay for its withdrawal.
+/// the list can still pay for its withdrawal. This exempts any transfer to `beneficiary`, not only
+/// the fee settlement; submission still requires both parties to be listed.
 pub(crate) fn allows_executed(
     allowlist: &dyn TransferAllowlist,
     beneficiary: Address,

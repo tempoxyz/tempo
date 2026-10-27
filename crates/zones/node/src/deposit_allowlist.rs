@@ -591,11 +591,11 @@ impl TransferAllowlist for AllowlistMirror {
 /// checks only the accounts funds move between, so this check is not repeated there.
 ///
 /// Multicall3 is the only Zone contract that relays calls (contract creation is disabled), and
-/// its calldata does not show which transfers it makes. Admitting it would let a relayed transfer
-/// that the builder leaves out be forwarded and executed again every few seconds without paying
-/// fees. It calls as itself, so a transfer it relays moves Multicall3's funds or spends an
-/// allowance granted to it, and lands only if Multicall3 itself is listed. Rejecting it loses
-/// only calls that do not move funds, which an AA batch can make directly.
+/// its calldata does not show which calls it makes. TIP-20 transfers it relays always revert, but
+/// it can still withdraw its own balance through an outbox allowance granted before T15, naming
+/// any fallback recipient. Admitting it would let such a withdrawal that the builder leaves out
+/// be forwarded and executed again every few seconds without paying fees. Rejecting it loses only
+/// calls that do not move funds, which an AA batch can make directly.
 pub(crate) fn validate_transfer_calls(
     allowlist: &dyn TransferAllowlist,
     tx: &TempoPooledTransaction,
