@@ -8,7 +8,7 @@ use crate::{
 };
 use alloy_consensus::Transaction as _;
 use alloy_eips::eip7702::{RecoveredAuthority, RecoveredAuthorization};
-use alloy_primitives::{Address, B256, KECCAK256_EMPTY, TxKind, U256};
+use alloy_primitives::{Address, B256, TxKind, U256};
 use evm2::{
     Evm,
     ethereum::{LazyAuthorization, LazyTxEip7702},
@@ -19,7 +19,9 @@ use evm2::{
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{
     CONFIGURABLE_ACCOUNT_ADDRESS,
-    configurable_account::{ConfigurableAccount, UpgradeEligibility, valid_account},
+    configurable_account::{
+        ConfigurableAccount, UpgradeEligibility, valid_account, valid_account_code,
+    },
     error::TempoPrecompileError,
     storage::{ConfigCommitmentWriteGas, StorageCtx, account_config_commitment},
 };
@@ -46,7 +48,7 @@ struct NativeRoles {
 /// State of one account loaded (and warmed) for authorization checks.
 struct LoadedAccount {
     was_cold: bool,
-    has_code: bool,
+    invalid_code: bool,
     is_empty: bool,
     nonce: u64,
     commitment: B256,
@@ -309,12 +311,13 @@ fn load_account(
     let mut account = host.state_mut().account(&address)?;
     let was_cold = account.warm();
     let info = account.get();
+    let commitment = info.map_or(Ok(B256::ZERO), |info| account_config_commitment(info, spec))?;
     Ok(LoadedAccount {
         was_cold,
-        has_code: account.code_hash() != KECCAK256_EMPTY,
+        invalid_code: !valid_account_code(account.code_hash(), commitment),
         is_empty: info.is_none_or(AccountInfo::is_empty),
         nonce: account.nonce(),
-        commitment: info.map_or(Ok(B256::ZERO), |info| account_config_commitment(info, spec))?,
+        commitment,
     })
 }
 
@@ -333,7 +336,7 @@ fn validate_native_roles(
     }
     if spec.is_t14() && aa.signature().is_keychain() {
         let account = load_account(host, caller, spec)?;
-        if !account.commitment.is_zero() && account.has_code {
+        if !account.commitment.is_zero() && account.invalid_code {
             return Err(ConfigurableAccountError::InvalidAccount { account: caller }.into());
         }
     }
@@ -365,7 +368,7 @@ fn validate_native_roles(
             return Err(ConfigurableAccountError::InvalidAccount { account: address }.into());
         }
         let account = load_account(host, address, spec)?;
-        if account.has_code {
+        if account.invalid_code {
             return Err(ConfigurableAccountError::InvalidAccount { account: address }.into());
         }
         let first = !accounts.contains(&address);

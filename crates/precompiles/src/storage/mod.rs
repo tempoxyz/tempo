@@ -249,6 +249,8 @@ pub trait PrecompileStorageProvider {
     fn config_commitment(&mut self, address: Address) -> Result<B256>;
 
     /// Writes an authorized nonzero commitment through the account journal.
+    /// The first write also installs the shared account code marker without a code-deposit charge;
+    /// rotations preserve it. Both changes share the same rollback boundary.
     /// Callers must validate registration, rotation, or migration authority first.
     /// Account-access gas belongs to that authorization read; this method charges
     /// only what `gas` names, or nothing when registration was charged intrinsically.

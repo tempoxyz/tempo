@@ -3,11 +3,11 @@ pub mod dispatch;
 use crate::{
     SIGNATURE_VERIFIER_ADDRESS,
     account_keychain::{AccountKeychain, AuthorizedKey},
-    configurable_account::valid_account,
+    configurable_account::{valid_account, valid_account_code},
     error::{Result, TempoPrecompileError},
     storage::account_config_commitment,
 };
-use alloy::primitives::{Address, B256, Bytes, KECCAK256_EMPTY};
+use alloy::primitives::{Address, B256, Bytes};
 use tempo_contracts::precompiles::SignatureVerifierError;
 use tempo_precompiles_macros::contract;
 use tempo_primitives::transaction::{
@@ -80,11 +80,12 @@ impl SignatureVerifier {
             .is_some_and(|key| key.is_admin))
     }
 
-    fn verify_configurable_account(
+    pub(crate) fn verify_configurable_account(
         &self,
         account: Address,
         hash: B256,
         bytes: &[u8],
+        registered_only: bool,
     ) -> Result<bool> {
         let signature = TempoSignature::from_bytes(bytes).map_err(|error| {
             trace!(%error, "malformed configurable account signature");
@@ -95,11 +96,8 @@ impl SignatureVerifier {
         };
         let config = signature.config();
         let spec = self.storage.spec();
-        let (commitment, has_code) = self.storage.with_account_info(account, |info| {
-            Ok((
-                account_config_commitment(info, spec)?,
-                info.code_hash != KECCAK256_EMPTY,
-            ))
+        let (commitment, code_hash) = self.storage.with_account_info(account, |info| {
+            Ok((account_config_commitment(info, spec)?, info.code_hash))
         })?;
 
         let initial_proof_gas = if commitment.is_zero() {
@@ -114,7 +112,11 @@ impl SignatureVerifier {
             .and_then(|gas| gas.checked_add(initial_proof_gas))
             .ok_or(TempoPrecompileError::OutOfGas)?;
         self.storage.deduct_gas(verification_gas)?;
-        if signature.account() != account || !valid_account(account, spec) || has_code {
+        if (registered_only && commitment.is_zero())
+            || signature.account() != account
+            || !valid_account(account, spec)
+            || !valid_account_code(code_hash, commitment)
+        {
             return Ok(false);
         }
         if signature.validate_account_commitment(commitment).is_err() {
