@@ -11,6 +11,7 @@ use alloy_evm::{
     block::{BlockExecutionError, BlockExecutor, TxResult as _},
 };
 use alloy_primitives::Address;
+use invariants_core::Report;
 use reth_consensus::{Consensus as _, HeaderValidator as _};
 use reth_evm::ConfigureEvm;
 use reth_primitives_traits::{RecoveredBlock, transaction::signed::SignedTransaction as _};
@@ -177,6 +178,7 @@ fn broken_start(
         |address| listed.accounts.contains_key(address),
         &holders,
         &mut failures,
+        &mut Report::default(),
     );
     failures
 }
@@ -242,6 +244,12 @@ pub(crate) fn execute_blocks(
                 outcome
                     .invariant_failures
                     .extend(outputs.invariant_failures);
+                for (id, counts) in outputs.invariant_report.counts {
+                    let total = outcome.invariant_counts.entry(id.to_string()).or_default();
+                    total.evaluated += counts.evaluated;
+                    total.armed += counts.armed;
+                    total.fired += counts.fired;
+                }
             }
             Err(error) => {
                 outcome.error = error;
@@ -258,6 +266,7 @@ struct BlockOutputs {
     receipts: Vec<TxReceiptOutput>,
     changes: BlockChanges,
     invariant_failures: Vec<InvariantFailure>,
+    invariant_report: Report,
 }
 
 /// Executes `block` on `db`. Returns its changes and what it produced.
@@ -324,6 +333,7 @@ where
         false,
         changes,
         &mut outputs.invariant_failures,
+        &mut outputs.invariant_report,
     );
 
     let basefee = block.header().base_fee_per_gas();
@@ -366,6 +376,7 @@ where
             true,
             changes,
             &mut outputs.invariant_failures,
+            &mut outputs.invariant_report,
         );
         outputs.changes.txs.push(tx_changes);
     }
@@ -381,6 +392,7 @@ fn step<'db, E>(
     changed_only: bool,
     changes: &mut BundleState,
     failures: &mut Vec<InvariantFailure>,
+    report: &mut Report,
 ) -> StateChanges
 where
     E: BlockExecutor<Evm = TempoEvm<&'db mut Db>>,
@@ -389,7 +401,7 @@ where
     let step = state::drain(db);
     let step_changes = state::transition_changes(&step, &db.cache.contracts);
     let selected = |contract: &Address| !changed_only || step.transitions.contains_key(contract);
-    invariants::check(db, env, &scope, selected, &[], failures);
+    invariants::check(db, env, &scope, selected, &[], failures, report);
     changes.apply_transitions_and_create_reverts(step, BundleRetention::PlainState);
     step_changes
 }

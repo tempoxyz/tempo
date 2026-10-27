@@ -24,6 +24,7 @@ alloy-primitives.workspace = true
 alloy-rlp.workspace = true
 alloy-sol-types.workspace = true
 bincode.workspace = true
+invariants-core.workspace = true
 reth-primitives-traits.workspace = true
 reth-chainspec.workspace = true
 reth-consensus.workspace = true

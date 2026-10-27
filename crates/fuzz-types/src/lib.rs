@@ -18,7 +18,7 @@ pub const FUZZ_REJECT: FuzzStatus = 0;
 pub const FUZZ_ACCEPT: FuzzStatus = 1;
 
 /// The version of these types' encoding, reported in [`TempoHarnessCapabilities`].
-pub const TYPED_HARNESS_SCHEMA_VERSION: u32 = 3;
+pub const TYPED_HARNESS_SCHEMA_VERSION: u32 = 4;
 
 /// Why an input, or part of it, did not execute.
 #[repr(u8)]
@@ -293,6 +293,17 @@ pub struct TempoExecutionOutcome {
     /// Invariants broken after a block's pre-execution changes or after a transaction. They do not
     /// stop execution.
     pub invariant_failures: Vec<InvariantFailure>,
+    /// By invariant ID, how often each was evaluated after a step, how often its precondition held
+    /// (armed), and how often it broke (fired). An invariant that is never armed checks nothing.
+    pub invariant_counts: BTreeMap<String, InvariantCounts>,
+}
+
+/// How often an invariant was evaluated, armed and broken.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub struct InvariantCounts {
+    pub evaluated: u64,
+    pub armed: u64,
+    pub fired: u64,
 }
 
 /// What a harness build accepts, so a runner that loads several builds can generate inputs all of
