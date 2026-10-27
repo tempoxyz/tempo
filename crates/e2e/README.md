@@ -23,6 +23,14 @@ cargo nextest run -p tempo-e2e --test deferred
 Shared tests live in `tests/suite`. Pass `crate::VERIFICATION_MODE` to
 `Setup::new` so each test uses its binary's verification mode.
 
+The standalone `hardfork` test binary checks the default policy transitioning from
+immediate to deferred verification when the previous epoch boundary reaches T14,
+while validators keep finalizing blocks:
+
+```sh
+cargo nextest run -p tempo-e2e --test hardfork
+```
+
 ## Implementation details
 
 The tests are rust tests (no container images or production binaries).

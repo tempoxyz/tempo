@@ -253,8 +253,8 @@ impl ZoneInbox {
                 PATH_USD_ADDRESS,
                 ZONE_INBOX_ADDRESS,
             )?;
-            token.grant_role_internal(ZONE_INBOX_ADDRESS, B256::from(*ISSUER_ROLE))?;
-            token.grant_role_internal(ZONE_OUTBOX_ADDRESS, B256::from(*ISSUER_ROLE))?;
+            token.grant_role_internal(ZONE_INBOX_ADDRESS, ISSUER_ROLE)?;
+            token.grant_role_internal(ZONE_OUTBOX_ADDRESS, ISSUER_ROLE)?;
             policy_registry.token_transfer_policies[enabled.token].write(l1_policy)?;
 
             self.emit_event(enabled.enabled_event())?;

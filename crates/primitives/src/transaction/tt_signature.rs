@@ -371,6 +371,16 @@ impl PrimitiveSignature {
             }
         }
     }
+
+    /// Verification gas a transaction signature adds on top of the base 21k, which already
+    /// covers one secp256k1 verification:
+    /// - Secp256k1: 0
+    /// - P256: 5000
+    /// - WebAuthn: 5000 + calldata cost of `webauthn_data`
+    pub fn intrinsic_verification_gas(&self) -> u64 {
+        // Every signature type costs at least a secp256k1 verification, so this cannot underflow.
+        self.verification_gas() - SECP256K1_VERIFY_GAS
+    }
 }
 
 impl Default for PrimitiveSignature {
@@ -2440,7 +2450,7 @@ pub(crate) mod tests {
             version: 0,
             ..current_config(owner_address)
         };
-        let account = config.derive_account(Address::repeat_byte(0x99)).unwrap();
+        let account = config.derive_account().unwrap();
         let inner_hash = B256::repeat_byte(0x24);
         let approve =
             |digest: B256| PrimitiveSignature::Secp256k1(owner.sign_hash_sync(&digest).unwrap());

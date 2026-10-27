@@ -3,7 +3,7 @@ pub mod dispatch;
 use crate::{
     SIGNATURE_VERIFIER_ADDRESS,
     account_keychain::{AccountKeychain, AuthorizedKey},
-    configurable_account::{initial_account_proof_gas, valid_account},
+    configurable_account::valid_account,
     error::{Result, TempoPrecompileError},
     storage::account_config_commitment,
 };
@@ -103,7 +103,9 @@ impl SignatureVerifier {
         })?;
 
         let initial_proof_gas = if commitment.is_zero() {
-            initial_account_proof_gas(config)?
+            config
+                .derivation_gas()
+                .ok_or(TempoPrecompileError::OutOfGas)?
         } else {
             0
         };
@@ -115,13 +117,7 @@ impl SignatureVerifier {
         if signature.account() != account || !valid_account(account, spec) || has_code {
             return Ok(false);
         }
-        let factory = self
-            .storage
-            .with_block_env(|block_env| block_env.ext.configurable_account_recovery_factory());
-        if signature
-            .validate_account_commitment(commitment, factory)
-            .is_err()
-        {
+        if signature.validate_account_commitment(commitment).is_err() {
             return Ok(false);
         }
 

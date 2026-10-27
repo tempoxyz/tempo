@@ -4,7 +4,7 @@ use crate::{
 };
 use alloy_consensus::{Transaction, transaction::TxHashRef};
 use alloy_eip7928::{BlockAccessIndex, BlockAccessList};
-use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, U256};
+use alloy_primitives::{Address, B256, Bytes, U256};
 use alloy_rlp::Decodable;
 use alloy_sol_types::SolCall;
 use commonware_codec::ReadExt;
@@ -16,7 +16,8 @@ use evm2::{
 use reth_chainspec::{EthChainSpec as _, EthereumHardforks as _};
 use reth_evm::{
     BlockExecutionError, BlockExecutionOutput, BlockExecutor, BlockTransactionResult,
-    BlockValidationError, ExecutorTx, GasOutput, ReceiptBuilder, ReceiptBuilderCtx, RecoveredTx,
+    BlockValidationError, CommitChanges, ExecutorTx, GasOutput, ReceiptBuilder, ReceiptBuilderCtx,
+    RecoveredTx,
     execute::{map_database_error, map_handler_error},
 };
 use reth_evm_ethereum::{EthBlockExecutor, EthTransactionResultWithState};
@@ -98,11 +99,6 @@ pub struct TempoTxResult {
     is_payment: bool,
     /// Block gas consumed by this transaction. The block `gas_used` field will be incremented by this value.
     block_gas_used: u64,
-    /// Validator-credited fee (in the validator's fee token) reported by `collectFeePostTx`.
-    ///
-    /// Used by the payload builder to score blocks by actual proposer revenue. The value is the
-    /// post-feeAMM amount, regardless of route shape — absorbs any number of pool haircuts.
-    validator_fee: U256,
 }
 
 impl Clone for TempoTxResult {
@@ -115,17 +111,12 @@ impl Clone for TempoTxResult {
             is_system_tx: self.is_system_tx,
             is_payment: self.is_payment,
             block_gas_used: self.block_gas_used,
-            validator_fee: self.validator_fee,
         }
     }
 }
 
 impl TempoTxResult {
     /// Creates a new [`TempoTxResult`] from a precomputed result and state.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "preserve execution provenance alongside precomputed results"
-    )]
     pub(crate) fn new_precomputed(
         tx: &TempoTxEnvelope,
         execution_context: ExecutionContext,
@@ -134,7 +125,6 @@ impl TempoTxResult {
         is_system_tx: bool,
         is_payment: bool,
         block_gas_used: u64,
-        validator_fee: U256,
     ) -> Self {
         Self {
             inner: EthTransactionResultWithState::new(
@@ -152,7 +142,6 @@ impl TempoTxResult {
             is_system_tx,
             is_payment,
             block_gas_used,
-            validator_fee,
         }
     }
 
@@ -173,7 +162,7 @@ impl TempoTxResult {
 
     /// Returns the validator-credited fee amount (post-feeAMM haircut) for this transaction.
     pub fn validator_fee(&self) -> U256 {
-        self.validator_fee
+        self.result().ext.validator_fee
     }
 
     /// Returns the transaction's pending EVM2 state.
@@ -264,7 +253,7 @@ impl<'a> TempoBlockExecutor<'a> {
         };
         if original
             .as_ref()
-            .is_some_and(|info| info.code_hash != KECCAK256_EMPTY)
+            .is_some_and(|info| !info.is_empty_code_hash())
         {
             return Ok(());
         }
@@ -305,7 +294,7 @@ impl<'a> TempoBlockExecutor<'a> {
         // post-genesis installation.
         if original
             .as_ref()
-            .is_some_and(|info| info.code_hash != KECCAK256_EMPTY)
+            .is_some_and(|info| !info.is_empty_code_hash())
         {
             return Ok(());
         }
@@ -505,11 +494,33 @@ impl<'a> TempoBlockExecutor<'a> {
         is_payment: bool,
         gas_used: u64,
     ) -> Result<BlockSection, BlockValidationError> {
+        Self::next_section(
+            self.section,
+            self.non_shared_gas_left,
+            self.non_payment_gas_left,
+            tx_hash,
+            is_system_tx,
+            is_payment,
+            gas_used,
+        )
+    }
+
+    /// Implements [`Self::validate_tx`] over copied section state, so it can run while the inner
+    /// executor is borrowed.
+    fn next_section(
+        section: BlockSection,
+        non_shared_gas_left: u64,
+        non_payment_gas_left: u64,
+        tx_hash: B256,
+        is_system_tx: bool,
+        is_payment: bool,
+        gas_used: u64,
+    ) -> Result<BlockSection, BlockValidationError> {
         if is_system_tx {
             // End-of-block system transactions are limited to a single subblocks metadata
             // transaction.
             if matches!(
-                self.section,
+                section,
                 BlockSection::System {
                     seen_subblocks_signatures: true
                 }
@@ -523,10 +534,10 @@ impl<'a> TempoBlockExecutor<'a> {
             });
         }
 
-        match self.section {
+        match section {
             BlockSection::StartOfBlock | BlockSection::NonShared => {
-                if gas_used > self.non_shared_gas_left
-                    || (!is_payment && gas_used > self.non_payment_gas_left)
+                if gas_used > non_shared_gas_left
+                    || (!is_payment && gas_used > non_payment_gas_left)
                 {
                     // Historical blocks can use the gas incentive section after
                     // exhausting the non-shared or general gas budget.
@@ -543,6 +554,41 @@ impl<'a> TempoBlockExecutor<'a> {
                 ))
             }
         }
+    }
+
+    /// Advances the block section and lane budgets after a transaction was committed.
+    fn record_committed_tx(
+        &mut self,
+        next_section: BlockSection,
+        block_gas_used: u64,
+        is_payment: bool,
+        execution_context: ExecutionContext,
+    ) {
+        self.block_gas_used = self.block_gas_used.saturating_add(block_gas_used);
+
+        self.section = next_section;
+
+        match self.section {
+            BlockSection::StartOfBlock => {
+                // no gas spending for start-of-block system transactions
+            }
+            BlockSection::NonShared => {
+                self.non_shared_gas_left -= block_gas_used;
+                if !is_payment {
+                    self.non_payment_gas_left -= block_gas_used;
+                }
+            }
+            BlockSection::GasIncentive => {
+                if matches!(execution_context, ExecutionContext::Transaction { .. }) {
+                    self.incentive_gas_used += block_gas_used;
+                }
+            }
+            BlockSection::System { .. } => {
+                // no gas spending for end-of-block system transactions
+            }
+        }
+
+        self.replay_state.commit_tx_changes();
     }
 }
 
@@ -562,6 +608,35 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
             .is_some_and(|withdrawals| !withdrawals.is_empty())
         {
             return Err(BlockValidationError::msg("withdrawals are not permitted").into());
+        }
+
+        // Consensus rejects proposals without a consensus context, so every proposed block
+        // carries a proposer key. Resolved before any system call so reads see parent state.
+        if self.evm().config_spec_id().is_t14()
+            && let Some(proposer) = self.evm().block().ext.proposer_public_key
+        {
+            let proposer = B256::from(proposer);
+            let spec = self.evm().config_spec_id();
+            let number = self.evm().block().number;
+            let expected = crate::TempoStateAccess::proposer_fee_recipient(
+                self.evm_mut(),
+                spec,
+                number,
+                proposer,
+            )
+            .map_err(BlockExecutionError::other)?
+            .ok_or_else(|| {
+                BlockValidationError::msg(format!(
+                    "proposer {proposer} has no ValidatorConfigV2 entry"
+                ))
+            })?;
+            let beneficiary = self.evm().block().beneficiary;
+            if beneficiary != expected {
+                return Err(BlockValidationError::msg(format!(
+                    "block beneficiary {beneficiary} does not match proposer fee recipient {expected}"
+                ))
+                .into());
+            }
         }
 
         if self.evm().config_spec_id().is_t13() {
@@ -646,8 +721,6 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         // Reject before the result is observed; `commit_transaction` derives the section again
         // from the committing executor's state.
         self.validate_tx(tx_hash, is_system_tx, is_payment, block_gas_used)?;
-        // Snapshot the per-tx validator-credited fee set by the handler's `reimburse_caller`
-        let validator_fee = inner.result().result.ext.validator_fee;
         Ok(TempoTxResult {
             inner,
             tx_type,
@@ -656,7 +729,6 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
             is_system_tx,
             is_payment,
             block_gas_used,
-            validator_fee,
         })
     }
 
@@ -672,7 +744,6 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
             is_system_tx,
             is_payment,
             block_gas_used,
-            validator_fee: _,
         } = output;
 
         // The result may have been produced by another executor (e.g. a BAL worker) whose
@@ -680,33 +751,71 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         let next_section = self.validate_tx(tx_hash, is_system_tx, is_payment, block_gas_used)?;
 
         let gas_output = self.inner.commit_transaction(inner)?;
-        self.block_gas_used = self.block_gas_used.saturating_add(block_gas_used);
-
-        self.section = next_section;
-
-        match self.section {
-            BlockSection::StartOfBlock => {
-                // no gas spending for start-of-block system transactions
-            }
-            BlockSection::NonShared => {
-                self.non_shared_gas_left -= block_gas_used;
-                if !is_payment {
-                    self.non_payment_gas_left -= block_gas_used;
-                }
-            }
-            BlockSection::GasIncentive => {
-                if matches!(execution_context, ExecutionContext::Transaction { .. }) {
-                    self.incentive_gas_used += block_gas_used;
-                }
-            }
-            BlockSection::System { .. } => {
-                // no gas spending for end-of-block system transactions
-            }
-        }
-
-        self.replay_state.commit_tx_changes();
+        self.record_committed_tx(next_section, block_gas_used, is_payment, execution_context);
 
         Ok(gas_output)
+    }
+
+    fn execute_transaction_with_commit_condition(
+        &mut self,
+        tx: impl ExecutorTx<Self>,
+        f: impl FnOnce(&TxResult<TempoEvmTypes>) -> CommitChanges,
+    ) -> Result<Option<GasOutput>, BlockExecutionError> {
+        let (mut tx_env, recovered) = tx.into_parts();
+        // Remove any prewarming-specific context that was added to the tx env.
+        tx_env.inner_mut().set_expiring_nonce_idx(None);
+        let execution_context = tx_env.inner().execution_context();
+        let original = recovered.tx();
+        let is_system_tx = self.validate_tx_pre_execution(original)?;
+        let tx_hash = *original.tx_hash();
+        let is_payment = self.is_payment(original);
+        let use_regular_gas = self.evm().version().feature(evm2::EvmFeatures::EIP8037);
+        let (section, non_shared_gas_left, non_payment_gas_left) = (
+            self.section,
+            self.non_shared_gas_left,
+            self.non_payment_gas_left,
+        );
+
+        // Validate the section inside the commit condition so the transaction commits in place
+        // instead of detaching its state and reattaching it in `commit_transaction`.
+        let mut validated = None;
+        let gas_output = self.inner.execute_transaction_with_commit_condition(
+            (tx_env, recovered),
+            |result| {
+                let block_gas_used = if use_regular_gas {
+                    result.execution_gas_spent()
+                } else {
+                    result.tx_gas_used()
+                };
+                let next_section = Self::next_section(
+                    section,
+                    non_shared_gas_left,
+                    non_payment_gas_left,
+                    tx_hash,
+                    is_system_tx,
+                    is_payment,
+                    block_gas_used,
+                );
+                let commit = if next_section.is_ok() {
+                    f(result)
+                } else {
+                    CommitChanges::No
+                };
+                validated = Some(next_section.map(|section| (section, block_gas_used)));
+                commit
+            },
+        )?;
+
+        let Some(gas_output) = gas_output else {
+            return match validated {
+                Some(Err(err)) => Err(err.into()),
+                _ => Ok(None),
+            };
+        };
+        if let Some(Ok((next_section, block_gas_used))) = validated {
+            self.record_committed_tx(next_section, block_gas_used, is_payment, execution_context);
+        }
+        Ok(Some(gas_output))
     }
 
     fn finish_with_block_access_list(
@@ -827,7 +936,9 @@ mod tests {
         eip7002::WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS,
         eip7251::CONSOLIDATION_REQUEST_PREDEPLOY_ADDRESS,
     };
-    use alloy_primitives::{Bytes, Log, Signature, TxKind, address, bytes::BytesMut, keccak256};
+    use alloy_primitives::{
+        Bytes, Keccak256, Log, Signature, TxKind, address, bytes::BytesMut, keccak256,
+    };
     use alloy_rlp::Encodable;
     use commonware_codec::Encode as _;
     use commonware_cryptography::{
@@ -849,6 +960,7 @@ mod tests {
     use rand::SeedableRng as _;
     use reth_chainspec::{EthChainSpec, EthereumHardfork, ForkCondition};
     use std::{
+        collections::HashMap,
         iter::repeat_with,
         sync::{Arc, Mutex},
     };
@@ -864,6 +976,10 @@ mod tests {
         },
     };
     use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
+    use tempo_precompiles::{
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        validator_config_v2::{IValidatorConfigV2, VALIDATOR_NS_ADD, ValidatorConfigV2},
+    };
     use tempo_primitives::{
         SubBlockMetadata, TempoSignature, TempoTransaction, TempoTxType,
         subblock::{SubBlockVersion, TEMPO_SUBBLOCK_NONCE_KEY_PREFIX},
@@ -1222,6 +1338,97 @@ mod tests {
     }
 
     #[test]
+    fn test_t14_rejects_beneficiary_not_matching_proposer_fee_recipient() {
+        let chainspec = system_calls_chainspec();
+        let registered = PrivateKey::from_seed(1);
+        let registered_key = B256::from_slice(&registered.public_key());
+        let unregistered_key = B256::from_slice(&PrivateKey::from_seed(2).public_key());
+        let fee_recipient = Address::repeat_byte(0xFE);
+        let attacker = Address::repeat_byte(0xBA);
+
+        // Registers `registered` in ValidatorConfigV2 at height 0 with `fee_recipient`.
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let owner = Address::repeat_byte(0xAA);
+            let validator_address = Address::repeat_byte(0x11);
+            let (ingress, egress) = ("192.168.1.1:8000", "192.168.1.1");
+            let mut hasher = Keccak256::new();
+            hasher.update(1u64.to_be_bytes());
+            hasher.update(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
+            hasher.update(validator_address.as_slice());
+            hasher.update([ingress.len() as u8]);
+            hasher.update(ingress.as_bytes());
+            hasher.update([egress.len() as u8]);
+            hasher.update(egress.as_bytes());
+            hasher.update(fee_recipient.as_slice());
+            let signature = registered.sign(VALIDATOR_NS_ADD, hasher.finalize().as_slice());
+
+            let mut config = ValidatorConfigV2::new();
+            config.initialize(owner)?;
+            config.add_validator(
+                owner,
+                IValidatorConfigV2::addValidatorCall {
+                    validatorAddress: validator_address,
+                    publicKey: registered_key,
+                    ingress: ingress.to_string(),
+                    egress: egress.to_string(),
+                    feeRecipient: fee_recipient,
+                    signature: signature.encode().to_vec().into(),
+                },
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let mut accounts = HashMap::<Address, HashMap<U256, U256>>::new();
+        for (address, slot, value) in storage.into_storage() {
+            accounts.entry(address).or_default().insert(slot, value);
+        }
+
+        let pre_execution = |fork, proposer: B256, beneficiary| {
+            let mut db = InMemoryDB::default();
+            for (address, storage) in &accounts {
+                db.insert_account_info(address, AccountInfo::default());
+                for (slot, value) in storage {
+                    db.insert_account_storage(address, slot, value);
+                }
+            }
+            let mut executor = TestExecutorBuilder::default()
+                .with_block_number(2)
+                .with_spec(fork)
+                .build(db, &chainspec);
+            let mut block = *executor.evm().block();
+            block.beneficiary = beneficiary;
+            block.ext.proposer_public_key = Some(proposer.try_into().unwrap());
+            executor.evm_mut().set_block(block);
+            executor
+                .apply_pre_execution_changes()
+                .map_err(|e| e.to_string())
+        };
+
+        assert_eq!(
+            pre_execution(TempoHardfork::T14, registered_key, fee_recipient),
+            Ok(())
+        );
+        assert_eq!(
+            pre_execution(TempoHardfork::T14, registered_key, attacker),
+            Err(format!(
+                "block beneficiary {attacker} does not match proposer fee recipient {fee_recipient}"
+            ))
+        );
+        // A proposer without a V2 record is rejected regardless of the beneficiary.
+        assert_eq!(
+            pre_execution(TempoHardfork::T14, unregistered_key, Address::ZERO),
+            Err(format!(
+                "proposer {unregistered_key} has no ValidatorConfigV2 entry"
+            ))
+        );
+        assert_eq!(
+            pre_execution(TempoHardfork::T13, registered_key, attacker),
+            Ok(())
+        );
+    }
+
+    #[test]
     fn test_system_calls_skips_ethereum_deposit_parsing() {
         let chainspec = system_calls_chainspec();
         for fork in [TempoHardfork::T12, TempoHardfork::T13] {
@@ -1309,7 +1516,6 @@ mod tests {
             is_system_tx,
             is_payment: false,
             block_gas_used,
-            validator_fee: U256::ZERO,
         }
     }
 
@@ -1470,6 +1676,39 @@ mod tests {
             result.unwrap_err().to_string(),
             "duplicate subblocks metadata system transaction"
         );
+    }
+
+    #[test]
+    fn test_execute_transaction_rejects_section_before_commit() {
+        let chainspec = test_chainspec();
+        let mut db = InMemoryDB::default();
+        let mut executor = TestExecutorBuilder::default()
+            .with_section(BlockSection::NonShared)
+            .build(&mut db, &chainspec);
+
+        let signer = PrivateKey::from_seed(0);
+        let input = create_system_tx_input(vec![create_subblock_metadata(&signer)], 1);
+        let system_tx = create_system_tx(chainspec.chain_id(), input);
+
+        executor
+            .execute_transaction(Recovered::new_unchecked(system_tx.clone(), Address::ZERO))
+            .unwrap();
+        assert_eq!(executor.receipts().len(), 1);
+        assert_eq!(
+            executor.section,
+            BlockSection::System {
+                seen_subblocks_signatures: true
+            }
+        );
+
+        let err = executor
+            .execute_transaction(Recovered::new_unchecked(system_tx, Address::ZERO))
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "duplicate subblocks metadata system transaction"
+        );
+        assert_eq!(executor.receipts().len(), 1);
     }
 
     #[test]
@@ -1684,7 +1923,6 @@ mod tests {
             is_system_tx: false,
             is_payment: false,
             block_gas_used: 21000,
-            validator_fee: U256::ZERO,
         };
 
         let gas_output = executor.commit_transaction(output).unwrap();
@@ -1828,7 +2066,6 @@ mod tests {
                 is_system_tx: false,
                 is_payment: false,
                 block_gas_used: 21_000,
-                validator_fee: U256::ZERO,
             })
             .unwrap();
 
@@ -1959,7 +2196,6 @@ mod tests {
                             is_system_tx: false,
                             is_payment: false,
                             block_gas_used: 21_000,
-                            validator_fee: U256::ZERO,
                         })
                         .unwrap();
                 }
@@ -2008,7 +2244,6 @@ mod tests {
             is_system_tx: false,
             is_payment: false,
             block_gas_used: 21000,
-            validator_fee: U256::ZERO,
         };
 
         let gas_output = executor.commit_transaction(output).unwrap();
@@ -2051,7 +2286,6 @@ mod tests {
             is_system_tx: false,
             is_payment: false,
             block_gas_used: 21000,
-            validator_fee: U256::ZERO,
         };
         executor.commit_transaction(output1).unwrap();
 
@@ -2078,7 +2312,6 @@ mod tests {
             is_system_tx: false,
             is_payment: false,
             block_gas_used: 50000,
-            validator_fee: U256::ZERO,
         };
         executor.commit_transaction(output2).unwrap();
 
@@ -2123,7 +2356,6 @@ mod tests {
                 is_system_tx: false,
                 is_payment: false,
                 block_gas_used: 21000,
-                validator_fee: U256::ZERO,
             })
             .unwrap();
 
@@ -2167,7 +2399,6 @@ mod tests {
             is_system_tx: false,
             is_payment: false,
             block_gas_used: 50_000,
-            validator_fee: U256::ZERO,
         };
         executor.commit_transaction(output).unwrap();
 
@@ -2217,7 +2448,6 @@ mod tests {
             is_system_tx: false,
             is_payment: false,
             block_gas_used: 200_000,
-            validator_fee: U256::ZERO,
         };
         executor.commit_transaction(output).unwrap();
 
@@ -2271,7 +2501,6 @@ mod tests {
             is_system_tx: false,
             is_payment: false,
             block_gas_used: 200_000,
-            validator_fee: U256::ZERO,
         };
         executor.commit_transaction(output).unwrap();
 
@@ -2298,7 +2527,7 @@ mod tests {
             .overlay_db()
             .account_info(&VALIDATOR_CONFIG_V2_ADDRESS)
             .unwrap();
-        assert_ne!(info.code_hash, KECCAK256_EMPTY);
+        assert!(!info.is_empty_code_hash());
     }
 
     #[test]
@@ -2318,7 +2547,7 @@ mod tests {
             .overlay_db()
             .account_info(&SIGNATURE_VERIFIER_ADDRESS)
             .unwrap();
-        assert_ne!(info.code_hash, KECCAK256_EMPTY);
+        assert!(!info.is_empty_code_hash());
     }
 
     #[test]
@@ -2338,7 +2567,7 @@ mod tests {
             .overlay_db()
             .account_info(&RECEIVE_POLICY_GUARD_ADDRESS)
             .unwrap();
-        assert_ne!(info.code_hash, KECCAK256_EMPTY);
+        assert!(!info.is_empty_code_hash());
     }
 
     #[test]
@@ -2357,7 +2586,7 @@ mod tests {
             .overlay_db()
             .account_info(&SIGNATURE_VERIFIER_ADDRESS);
         assert!(
-            info.is_none() || info.unwrap().code_hash == KECCAK256_EMPTY,
+            info.is_none_or(|info| info.is_empty_code_hash()),
             "SignatureVerifier code should not be deployed before T3"
         );
     }
@@ -2384,7 +2613,7 @@ mod tests {
             .overlay_db()
             .account_info(&addr)
             .unwrap();
-        assert_ne!(info.code_hash, KECCAK256_EMPTY);
+        assert!(!info.is_empty_code_hash());
 
         // Verify the state hook was called exactly once with the correct address.
         let calls = hook_calls.lock().unwrap();
@@ -2428,7 +2657,7 @@ mod tests {
         assert_eq!(calls.len(), 1, "state hook should be called exactly once");
         assert_eq!(
             calls[0].account(&addr).unwrap().original.clone(),
-            Some(reth_execution_types::revm_account(&original_info)),
+            Some(original_info),
             "state hook account should preserve existing original_info"
         );
     }
@@ -2705,7 +2934,6 @@ mod tests {
                 is_system_tx: false,
                 is_payment: false,
                 block_gas_used: regular_gas,
-                validator_fee: U256::ZERO,
             })
             .unwrap();
 
@@ -2756,7 +2984,6 @@ mod tests {
                 is_system_tx: false,
                 is_payment: false,
                 block_gas_used: 100_000,
-                validator_fee: U256::ZERO,
             })
             .unwrap();
 
@@ -2808,7 +3035,6 @@ mod tests {
                 is_system_tx: false,
                 is_payment: false,
                 block_gas_used: cumulative,
-                validator_fee: U256::ZERO,
             })
             .unwrap();
 

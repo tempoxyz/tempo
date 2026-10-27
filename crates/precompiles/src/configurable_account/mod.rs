@@ -4,9 +4,9 @@ pub mod dispatch;
 
 use crate::{
     error::{Result, TempoPrecompileError},
-    storage::{ConfigCommitmentWriteGas, Handler, account_config_commitment, keccak_cost},
+    storage::{ConfigCommitmentWriteGas, Handler, account_config_commitment},
 };
-use alloy::primitives::{Address, B256, KECCAK256_EMPTY};
+use alloy::primitives::{Address, B256};
 pub use tempo_chainspec::is_valid_native_account as valid_account;
 use tempo_contracts::precompiles::{
     CONFIGURABLE_ACCOUNT_ADDRESS, ConfigurableAccountError, ConfigurableAccountEvent,
@@ -15,9 +15,7 @@ use tempo_contracts::precompiles::{
 use tempo_precompiles_macros::{Storable, contract};
 use tempo_primitives::transaction::{
     ConfigurableAccountConfig, ConfigurableAccountOwner,
-    configurable_account::{
-        CONFIGURABLE_ACCOUNT_CREATE2_PREIMAGE_LEN, CONFIGURABLE_ACCOUNT_UPGRADE_DOMAIN,
-    },
+    configurable_account::CONFIGURABLE_ACCOUNT_UPGRADE_DOMAIN,
 };
 
 /// Configurable account precompile.
@@ -55,13 +53,15 @@ impl ConfigurableAccount {
         threshold: u8,
         owners: &[IConfigurableAccount::ConfigurableAccountOwner],
     ) -> Result<Address> {
-        let factory = self.factory()?;
         let config = config(salt, 0, threshold, owners);
         // Reject an invalid configuration before charging the proof hashing gas.
         config.validate()?;
-        self.storage
-            .deduct_gas(initial_account_proof_gas(&config)?)?;
-        let account = config.derive_account(factory)?;
+        self.storage.deduct_gas(
+            config
+                .derivation_gas()
+                .ok_or(TempoPrecompileError::OutOfGas)?,
+        )?;
+        let account = config.derive_account()?;
         if !valid_account(account, self.storage.spec()) {
             return Err(ConfigurableAccountError::invalid_account().into());
         }
@@ -149,7 +149,7 @@ impl ConfigurableAccount {
         let spec = self.storage.spec();
         let (has_code, commitment) = self.storage.with_account_info(sender, |info| {
             Ok((
-                info.code_hash != KECCAK256_EMPTY,
+                !info.is_empty_code_hash(),
                 account_config_commitment(info, spec)?,
             ))
         })?;
@@ -181,12 +181,6 @@ impl ConfigurableAccount {
         ))?;
         Ok(hash)
     }
-
-    fn factory(&self) -> Result<Address> {
-        self.storage
-            .with_block_env(|block_env| block_env.ext.configurable_account_recovery_factory())
-            .ok_or_else(|| ConfigurableAccountError::invalid_config().into())
-    }
 }
 
 /// What the transaction allows `upgradeAccount` to do, as decided by the handler before execution.
@@ -202,15 +196,6 @@ pub enum UpgradeEligibility {
     NotPrimitiveRoot,
     /// The transaction is a sole call signed by a primitive root key.
     PrimitiveRoot,
-}
-
-/// Hashing cost of deriving an unregistered account from its initial configuration.
-///
-/// Fails with `OutOfGas` if the cost overflows `u64`.
-pub fn initial_account_proof_gas(config: &ConfigurableAccountConfig) -> Result<u64> {
-    keccak_cost(config.account_salt_preimage_len())?
-        .checked_add(keccak_cost(CONFIGURABLE_ACCOUNT_CREATE2_PREIMAGE_LEN)?)
-        .ok_or(TempoPrecompileError::OutOfGas)
 }
 
 /// Builds the configuration with the given `salt`, `version`, `threshold` and `owners`.

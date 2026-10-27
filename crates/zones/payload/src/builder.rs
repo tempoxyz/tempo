@@ -19,7 +19,9 @@ use reth_evm::{
     BlockExecutionError, BlockExecutor, BlockValidationError, ConfigureEvm,
     InternalBlockExecutionError, NextBlockEnvAttributes,
     database::StateProviderDatabase,
-    execute::{BlockBuilder, BlockBuilderOutcome, BlockExecutionOutput, WithTxEnv},
+    execute::{
+        BlockBuilder, BlockBuilderOutcome, BlockExecutionOutput, WithTxEnv, map_handler_error,
+    },
 };
 use reth_node_api::{FullNodeTypes, NodeTypes};
 use reth_node_builder::{BuilderContext, components::PayloadBuilderBuilder};
@@ -265,6 +267,7 @@ where
             ),
             TempoImport::CheckpointOnly(_) => None,
         };
+
         // Execute advanceTempo system transaction — exactly one per zone block.
         let opening_tx = match tempo_import {
             TempoImport::Full(prepared) => build_advance_tempo_tx(prepared, chain_id),
@@ -731,7 +734,7 @@ fn read_pending_withdrawals_from_outbox(
                 ?err,
                 block_number, "ZoneOutbox getPendingWithdrawals view call failed"
             );
-            PayloadBuilderError::evm(BlockExecutionError::msg(err))
+            PayloadBuilderError::evm(map_handler_error(err))
         })?;
 
     if !call_result.result().status {

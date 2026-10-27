@@ -19,9 +19,7 @@ use evm2::{
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{
     CONFIGURABLE_ACCOUNT_ADDRESS,
-    configurable_account::{
-        ConfigurableAccount, UpgradeEligibility, initial_account_proof_gas, valid_account,
-    },
+    configurable_account::{ConfigurableAccount, UpgradeEligibility, valid_account},
     error::TempoPrecompileError,
     storage::{
         CONFIG_COMMITMENT_REGISTRATION_GAS, ConfigCommitmentWriteGas, StorageCtx,
@@ -333,7 +331,7 @@ fn validate_native_roles(
     let caller = aa.signer();
     let tx = aa.tx();
     let roles = aa.native_authorizations();
-    // Context rejection must not depend on factory configuration or account reads.
+    // Context rejection must not depend on account reads.
     if roles.iter().any(Option::is_some) && !spec.is_t14() {
         return Err(ConfigurableAccountError::UnsupportedContext.into());
     }
@@ -361,7 +359,6 @@ fn validate_native_roles(
         }
         .into());
     }
-    let factory = host.block().ext.configurable_account_recovery_factory();
     let mut accounts = Vec::with_capacity(2);
     let mut extra_gas = 0;
     let mut state_gas = 0;
@@ -381,7 +378,7 @@ fn validate_native_roles(
         }
         accounts.push(address);
         signature
-            .validate_account_commitment(account.commitment, factory)
+            .validate_account_commitment(account.commitment)
             .map_err(|error| match error {
                 ConfigurableAccountStateError::CommitmentMismatch { expected, actual } => {
                     HandlerError::from(ConfigurableAccountError::ConfigurationCommitmentMismatch {
@@ -390,13 +387,15 @@ fn validate_native_roles(
                     })
                 }
                 ConfigurableAccountStateError::UnregisteredVersion { .. }
-                | ConfigurableAccountStateError::FactoryNotConfigured
                 | ConfigurableAccountStateError::InitialAccountMismatch { .. } => {
                     ConfigurableAccountError::InvalidAccount { account: address }.into()
                 }
             })?;
         if account.commitment.is_zero() {
-            extra_gas += initial_account_proof_gas(signature.config())?;
+            extra_gas += signature
+                .config()
+                .derivation_gas()
+                .ok_or(TempoPrecompileError::OutOfGas)?;
             if first {
                 extra_gas += CONFIG_COMMITMENT_REGISTRATION_GAS;
                 // The sender's creation is free here only when another TIP-1000 charge pays it:

@@ -13,8 +13,7 @@ use p256::{
 use proptest::prelude::*;
 use sha2::{Digest, Sha256};
 use tempo_primitives::transaction::{
-    ACCOUNT_PROXY_INIT_CODE_HASH, AccountSignature, CONFIGURABLE_ACCOUNT_CONFIG_DOMAIN,
-    CONFIGURABLE_ACCOUNT_CREATE2_PREIMAGE_LEN, CONFIGURABLE_ACCOUNT_DOMAIN,
+    AccountSignature, CONFIGURABLE_ACCOUNT_CONFIG_DOMAIN, CONFIGURABLE_ACCOUNT_DOMAIN,
     CONFIGURABLE_ACCOUNT_SIGNATURE_DOMAIN, ConfigurableAccountConfig,
     ConfigurableAccountConfigError, ConfigurableAccountOwner, ConfigurableAccountQuorumError,
     ConfigurableAccountSignature, ConfigurableAccountSignatureError, ConfigurableAccountStateError,
@@ -27,9 +26,6 @@ use tempo_primitives::transaction::{
         SIGNATURE_TYPE_WEBAUTHN, WebAuthnSignature, normalize_p256_s,
     },
 };
-
-// Deliberately non-production factory fixture: TIP-1110 has not selected its public address.
-const TEST_FACTORY: Address = Address::repeat_byte(0x99);
 
 /// An encoding that configurable account signature decoding rejects, with the error it reports.
 struct MalformedEncoding {
@@ -464,11 +460,7 @@ fn config_validation_reports_the_first_broken_rule() {
             None => {
                 assert_eq!(config.validate(), expected, "{case}");
                 // Deriving the account and committing to the config validate it first.
-                assert_eq!(
-                    config.derive_account(TEST_FACTORY).err(),
-                    expected.err(),
-                    "{case}"
-                );
+                assert_eq!(config.derive_account().err(), expected.err(), "{case}");
                 assert_eq!(config.commitment().err(), expected.err(), "{case}");
             }
         }
@@ -681,18 +673,18 @@ fn configurable_account_hashes_follow_vectors_and_documented_layout() {
     let inner_digest = B256::repeat_byte(0x42);
 
     // Vectors over one owner of weight 1 at threshold 1, independently reproduced with raw
-    // keccak and CREATE2 hashing over the placeholder account proxy hash.
+    // keccak.
     let owner = Address::repeat_byte(0x11);
     let initial = configurable_account_config(0, 1, &[(owner, 1)]);
     assert_eq!(
-        initial.account_salt_preimage().map(keccak256),
+        initial.account_preimage().map(keccak256),
         Ok(b256!(
             "641ad6eccc3adf35fac828d5cbb727e2489c904a905420e794e8275b6150bfe1"
         ))
     );
     assert_eq!(
-        initial.derive_account(TEST_FACTORY),
-        Ok(address!("87c346a9029d675f296db533b12e146439cf20d5"))
+        initial.derive_account(),
+        Ok(address!("cbb727e2489c904a905420e794e8275b6150bfe1"))
     );
     assert_eq!(
         initial.commitment(),
@@ -722,8 +714,8 @@ fn configurable_account_hashes_follow_vectors_and_documented_layout() {
     // The most owners, each of weight 1, at threshold 8, reproduced the same way.
     assert_eq!(
         configurable_account_config(0, 8, &indexed_owners(MAX_CONFIGURABLE_ACCOUNT_OWNERS, 1))
-            .derive_account(TEST_FACTORY),
-        Ok(address!("7a4279bb3f1b8b54d703484317f64eae6814e827"))
+            .derive_account(),
+        Ok(address!("9859f0316567499ebcd81d3417c0622999d7179f"))
     );
 
     // The documented preimage layouts, built by hand.
@@ -736,14 +728,14 @@ fn configurable_account_hashes_follow_vectors_and_documented_layout() {
         owner_set.push(weight);
     }
 
-    let salt_preimage = [
+    let account_preimage = [
         CONFIGURABLE_ACCOUNT_DOMAIN,
         config.salt.as_slice(),
         owner_set.as_slice(),
     ]
     .concat();
-    assert_eq!(config.account_salt_preimage(), Ok(salt_preimage.clone()));
-    assert_eq!(config.account_salt_preimage_len(), salt_preimage.len());
+    assert_eq!(config.account_preimage(), Ok(account_preimage.clone()));
+    assert_eq!(config.account_preimage_len(), account_preimage.len());
 
     let commitment_preimage = [
         CONFIGURABLE_ACCOUNT_CONFIG_DOMAIN,
@@ -759,19 +751,8 @@ fn configurable_account_hashes_follow_vectors_and_documented_layout() {
     assert_eq!(config.commitment_preimage_len(), commitment_preimage.len());
     assert_eq!(config.commitment(), Ok(keccak256(&commitment_preimage)));
 
-    let create2_preimage = [
-        &[0xff][..],
-        TEST_FACTORY.as_slice(),
-        keccak256(&salt_preimage).as_slice(),
-        ACCOUNT_PROXY_INIT_CODE_HASH.as_slice(),
-    ]
-    .concat();
-    assert_eq!(
-        create2_preimage.len(),
-        CONFIGURABLE_ACCOUNT_CREATE2_PREIMAGE_LEN
-    );
-    let account = Address::from_word(keccak256(&create2_preimage));
-    assert_eq!(config.derive_account(TEST_FACTORY), Ok(account));
+    let account = Address::from_word(keccak256(&account_preimage));
+    assert_eq!(config.derive_account(), Ok(account));
 
     let digest_preimage = [
         CONFIGURABLE_ACCOUNT_SIGNATURE_DOMAIN,
@@ -788,7 +769,7 @@ fn configurable_account_hashes_follow_vectors_and_documented_layout() {
     // An owner approval cannot replay across accounts that share owners, or across versions.
     let mut resalted = config.clone();
     resalted.salt = B256::repeat_byte(0x08);
-    let resalted_account = resalted.derive_account(TEST_FACTORY).unwrap();
+    let resalted_account = resalted.derive_account().unwrap();
     assert_ne!(resalted_account, account, "the salt sets the account");
     assert_ne!(
         configurable_account_digest(inner_digest, resalted_account, config.version),
@@ -808,7 +789,7 @@ fn configurable_account_hashes_follow_vectors_and_documented_layout() {
         &indexed_owners(MAX_CONFIGURABLE_ACCOUNT_OWNERS + 1, 1),
     );
     assert_eq!(
-        oversized.account_salt_preimage(),
+        oversized.account_preimage(),
         Err(ConfigurableAccountConfigError::TooManyOwners)
     );
     assert_eq!(
@@ -935,7 +916,7 @@ fn configurable_account_approvals_report_the_first_broken_rule() {
     let mut owners = [first.address(), second.address()];
     owners.sort();
     let config = configurable_account_config(0, 2, &owners.map(|owner| (owner, 1)));
-    let account = config.derive_account(TEST_FACTORY).unwrap();
+    let account = config.derive_account().unwrap();
     let inner_digest = B256::repeat_byte(0x42);
     let digest = configurable_account_digest(inner_digest, account, config.version);
     let approve = |signer: &PrivateKeySigner| {
@@ -1017,10 +998,10 @@ fn configurable_account_approvals_report_the_first_broken_rule() {
 fn configurable_account_commitment_reports_the_first_broken_rule() {
     let owners = [(indexed_owner(1), 1)];
     let account = configurable_account_config(0, 1, &owners)
-        .derive_account(TEST_FACTORY)
+        .derive_account()
         .unwrap();
-    let other_factory = Address::repeat_byte(0x98);
-    let signature = |version: u64| {
+    let other_account = Address::repeat_byte(0x98);
+    let signature = |account: Address, version: u64| {
         ConfigurableAccountSignature::try_new(
             account,
             configurable_account_config(version, 1, &owners),
@@ -1029,13 +1010,13 @@ fn configurable_account_commitment_reports_the_first_broken_rule() {
         .unwrap()
     };
     let [initial_commitment, current_commitment] =
-        [0, 1].map(|version| signature(version).config_commitment());
+        [0, 1].map(|version| signature(account, version).config_commitment());
 
     struct CommitmentCase {
         case: &'static str,
         version: u64,
         stored: B256,
-        factory: Option<Address>,
+        account: Address,
         expected: Result<(), ConfigurableAccountStateError>,
     }
 
@@ -1043,62 +1024,53 @@ fn configurable_account_commitment_reports_the_first_broken_rule() {
         case,
         version,
         stored,
-        factory,
+        account,
         expected,
     } in [
         CommitmentCase {
             case: "a stored commitment equal to the witness",
             version: 1,
             stored: current_commitment,
-            factory: None,
+            account,
             expected: Ok(()),
         },
         CommitmentCase {
             case: "a stored commitment differing from the witness",
             version: 1,
             stored: initial_commitment,
-            factory: Some(TEST_FACTORY),
+            account,
             expected: Err(ConfigurableAccountStateError::CommitmentMismatch {
                 expected: initial_commitment,
                 actual: current_commitment,
             }),
         },
         CommitmentCase {
-            case: "first use of the account the factory derives",
+            case: "first use of the derived account",
             version: 0,
             stored: B256::ZERO,
-            factory: Some(TEST_FACTORY),
+            account,
             expected: Ok(()),
         },
         CommitmentCase {
             case: "first use at a version above zero",
             version: 1,
             stored: B256::ZERO,
-            factory: Some(TEST_FACTORY),
+            account,
             expected: Err(ConfigurableAccountStateError::UnregisteredVersion { actual: 1 }),
         },
         CommitmentCase {
-            case: "first use without a configured factory",
+            case: "first use of an account other than the derived one",
             version: 0,
             stored: B256::ZERO,
-            factory: None,
-            expected: Err(ConfigurableAccountStateError::FactoryNotConfigured),
-        },
-        CommitmentCase {
-            case: "first use against a factory deriving another account",
-            version: 0,
-            stored: B256::ZERO,
-            factory: Some(other_factory),
+            account: other_account,
             expected: Err(ConfigurableAccountStateError::InitialAccountMismatch {
-                expected: configurable_account_config(0, 1, &owners)
-                    .derive_account(other_factory)
-                    .unwrap(),
-                actual: account,
+                expected: account,
+                actual: other_account,
             }),
         },
     ] {
         assert_eq!(
-            signature(version).validate_account_commitment(stored, factory),
+            signature(account, version).validate_account_commitment(stored),
             expected,
             "{case}"
         );
@@ -1243,11 +1215,11 @@ proptest! {
     }
 }
 
-/// A version 0 single-owner witness over the account the test factory derives for it.
+/// A version 0 single-owner witness over the account derived for it.
 fn initial_signature() -> ConfigurableAccountSignature {
     let config = configurable_account_config(0, 1, &[(indexed_owner(2), 1)]);
     ConfigurableAccountSignature::try_new(
-        config.derive_account(TEST_FACTORY).unwrap(),
+        config.derive_account().unwrap(),
         config,
         vec![PrimitiveSignature::default()],
     )
@@ -1258,7 +1230,7 @@ fn initial_signature() -> ConfigurableAccountSignature {
 fn signed_delegate(parent: Address) -> ConfigurableAccountSignature {
     let owner = PrivateKeySigner::from_bytes(&B256::repeat_byte(2)).unwrap();
     let config = configurable_account_config(0, 1, &[(owner.address(), 1)]);
-    let account = config.derive_account(TEST_FACTORY).unwrap();
+    let account = config.derive_account().unwrap();
     let digest = configurable_account_digest(
         KeychainSignature::signing_hash(B256::ZERO, parent),
         account,
@@ -1290,7 +1262,7 @@ fn tempo_signature_size_counts_each_allocation_once() {
             let owners_capacity = config.owners.capacity();
             let approvals_capacity = approvals.capacity();
             let signature = ConfigurableAccountSignature::try_new(
-                config.derive_account(TEST_FACTORY).unwrap(),
+                config.derive_account().unwrap(),
                 config,
                 approvals,
             )
@@ -1365,7 +1337,7 @@ fn noncanonical_p256_owner_prehash_flag_canonicalizes() {
     let pub_key_y = B256::from_slice(encoded_point.y().unwrap().as_ref());
     let owner = derive_p256_address(&pub_key_x, &pub_key_y);
     let config = configurable_account_config(0, 1, &[(owner, 1)]);
-    let account = config.derive_account(TEST_FACTORY).unwrap();
+    let account = config.derive_account().unwrap();
     let digest = configurable_account_digest(B256::repeat_byte(0x42), account, 0);
 
     let prehashed = B256::from_slice(Sha256::digest(digest).as_ref());

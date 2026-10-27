@@ -111,13 +111,13 @@ impl TempoEvmConfig {
         self
     }
 
-    /// Returns the chain spec
     /// Uses the supplied EVM factory for execution and custom precompile construction.
     pub fn with_evm_factory(mut self, factory: TempoEvmFactory) -> Self {
         self.evm_factory = factory;
         self
     }
 
+    /// Returns the chain spec
     pub const fn chain_spec(&self) -> &Arc<TempoChainSpec> {
         &self.chain_spec
     }
@@ -234,10 +234,6 @@ impl ConfigureEvm for TempoEvmConfig {
                     .epoch_length()
                     .unwrap_or(NonZeroU64::MIN),
                 proposer_public_key: header.consensus_context.map(|ctx| ctx.proposer),
-                configurable_account_recovery_factory: self
-                    .chain_spec()
-                    .info
-                    .configurable_account_recovery_factory(),
             },
             _non_exhaustive: (),
         };
@@ -281,10 +277,6 @@ impl ConfigureEvm for TempoEvmConfig {
                     .epoch_length()
                     .unwrap_or(NonZeroU64::MIN),
                 proposer_public_key: attributes.consensus_context.map(|ctx| ctx.proposer),
-                configurable_account_recovery_factory: self
-                    .chain_spec()
-                    .info
-                    .configurable_account_recovery_factory(),
             },
             _non_exhaustive: (),
         };

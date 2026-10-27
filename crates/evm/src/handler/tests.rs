@@ -3,8 +3,7 @@ use super::*;
 mod regressions;
 use crate::{
     FeeTokenResolver, ProtocolFeeContext, ProtocolFeeManager, ResolvedFeeToken, TempoBlockEnv,
-    TempoEvmExt, TempoEvmTx, TempoFeeManager, signature_gas::primitive_signature_verification_gas,
-    tempo_tx_registry,
+    TempoEvmExt, TempoEvmTx, TempoFeeManager, TempoStateAccess, tempo_tx_registry,
 };
 use alloy_consensus::transaction::Recovered;
 use alloy_primitives::{B256, Bytes, Signature};
@@ -560,10 +559,14 @@ fn test_get_token_balance() {
     let balance_slot = TIP20Token::from_address(token).unwrap().balances[account].slot();
     insert_storage(&mut evm, token, balance_slot, expected_balance);
 
-    let balance = StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
-        TIP20Token::from_address(token).unwrap().balances[account].read()
-    })
-    .unwrap();
+    let balance = evm
+        .get_token_balance(
+            token,
+            account,
+            TempoHardfork::Genesis,
+            StorageActions::disabled(),
+        )
+        .unwrap();
     assert_eq!(balance, expected_balance);
 }
 
@@ -1385,7 +1388,11 @@ fn test_t4_key_authorization_matches_tip1016_sstore_regular_cost() {
     let params = &evm.version().gas_params;
     let load = u64::from(params[GasId::WarmStorageReadCost])
         + u64::from(params[GasId::ColdStorageAdditionalCost]);
-    let (regular, state) = key_authorization_gas(&authorization, &evm, TempoHardfork::T4);
+    let (regular, state) = calculate_key_authorization_gas(
+        &authorization,
+        &evm.version().gas_params,
+        TempoHardfork::T4,
+    );
     assert_eq!(
         regular - ECRECOVER_GAS - load - 2_000 - call_scope_extra_gas(&authorization.authorization),
         20_000
@@ -1400,7 +1407,11 @@ fn test_t7_key_authorization_intrinsic_includes_storage_credit_value() {
     let params = &evm.version().gas_params;
     let load = u64::from(params[GasId::WarmStorageReadCost])
         + u64::from(params[GasId::ColdStorageAdditionalCost]);
-    let (regular, state) = key_authorization_gas(&authorization, &evm, TempoHardfork::T7);
+    let (regular, state) = calculate_key_authorization_gas(
+        &authorization,
+        &evm.version().gas_params,
+        TempoHardfork::T7,
+    );
     assert_eq!(params[GasId::SstoreSetWithoutLoadCost], 5_000);
     assert_eq!(
         regular - ECRECOVER_GAS - load - 2_000 - call_scope_extra_gas(&authorization.authorization),
@@ -1418,7 +1429,7 @@ fn test_translate_allowed_calls_for_precompile_preserves_empty_nested_allow_all_
                 selector_rules: Vec::new(),
             }])
             .into_signed(PrimitiveSignature::Secp256k1(Signature::test_signature()));
-    let translated = translate_allowed_calls(&empty_selectors);
+    let translated = translate_allowed_calls_for_precompile(&empty_selectors);
     assert_eq!(translated.len(), 1);
     assert!(translated[0].selectorRules.is_empty());
 
@@ -1432,7 +1443,7 @@ fn test_translate_allowed_calls_for_precompile_preserves_empty_nested_allow_all_
                 }],
             }])
             .into_signed(PrimitiveSignature::Secp256k1(Signature::test_signature()));
-    let translated = translate_allowed_calls(&empty_recipients);
+    let translated = translate_allowed_calls_for_precompile(&empty_recipients);
     assert_eq!(translated.len(), 1);
     assert_eq!(translated[0].selectorRules.len(), 1);
     assert!(translated[0].selectorRules[0].recipients.is_empty());
@@ -2007,6 +2018,51 @@ fn test_refund_cap_removed_on_t7() {
 }
 
 #[test]
+fn test_negative_refund_counter_refunds_the_cap() {
+    const SPENT: u64 = 100_000;
+    const FLOOR: u64 = 30_000;
+
+    let settle = |spec: TempoHardfork, refund: i64, floor_gas: u64| {
+        let mut evm = test_evm(spec);
+        evm.ext_mut().resolved_fee_token = Some(ResolvedFeeToken::Selected(DEFAULT_FEE_TOKEN));
+        let mut result = MessageResult::<TempoEvmTypes> {
+            stop: InstrStop::Stop,
+            gas: GasTracker::new_spent_with_reservoir(SPENT, 0),
+            ..MessageResult::<TempoEvmTypes>::default()
+        };
+        result.gas.record_refund(refund);
+        TempoHandlerHooks::settle_transaction(
+            &mut evm,
+            &legacy_env(TxKind::Call(Address::ZERO), Bytes::new()),
+            GasSettlement {
+                caller: SIGNER,
+                gas_price: U256::ZERO,
+                gas_limit: SPENT,
+                floor_gas,
+                initial_state_gas: 0,
+                state_refund: 0,
+                result,
+            },
+        )
+        .unwrap()
+    };
+
+    // Before T7 a negative counter refunds the cap of one fifth of gas used.
+    for spec in [TempoHardfork::T4, TempoHardfork::T5, TempoHardfork::T6] {
+        assert_eq!(settle(spec, -1_000, 0).refunded, SPENT / 5, "{spec}");
+        assert_eq!(settle(spec, 1_000, 0).refunded, 1_000, "{spec}");
+    }
+
+    // From T7 there is no cap, so a negative counter refunds all gas spent and gas used falls to
+    // the calldata floor.
+    for spec in [TempoHardfork::T7, TempoHardfork::T8] {
+        assert_eq!(settle(spec, -1_000, 0).tx_gas_used(), 0, "{spec}");
+        assert_eq!(settle(spec, -1_000, FLOOR).tx_gas_used(), FLOOR, "{spec}");
+        assert_eq!(settle(spec, 1_000, 0).refunded, 1_000, "{spec}");
+    }
+}
+
+#[test]
 fn test_multicall_gas_refund_accounting() {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -2203,9 +2259,9 @@ proptest! {
             webauthn_data: Bytes::from(vec![0u8; webauthn_data_len]),
         });
 
-        let secp_gas = primitive_signature_verification_gas(&secp_sig);
-        let p256_gas = primitive_signature_verification_gas(&p256_sig);
-        let webauthn_gas = primitive_signature_verification_gas(&webauthn_sig);
+        let secp_gas = secp_sig.intrinsic_verification_gas();
+        let p256_gas = p256_sig.intrinsic_verification_gas();
+        let webauthn_gas = webauthn_sig.intrinsic_verification_gas();
 
         prop_assert!(secp_gas <= p256_gas, "secp256k1 should be <= p256");
         prop_assert!(p256_gas <= webauthn_gas, "p256 should be <= webauthn");
@@ -3068,8 +3124,6 @@ mod keychain {
 
     #[test]
     fn test_same_tx_authorization_requires_root_signature() {
-        use tempo_precompiles::account_keychain::getKeyCall;
-
         for spec in [TempoHardfork::T6, TempoHardfork::T13] {
             for is_admin in [false, true] {
                 for root_signed in [false, true] {
@@ -3129,13 +3183,13 @@ mod keychain {
                         );
                     }
                     StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
-                        let info = AccountKeychain::new()
-                            .get_key(getKeyCall {
+                        let key_info = AccountKeychain::new()
+                            .get_key(tempo_precompiles::account_keychain::getKeyCall {
                                 account: user,
                                 keyId: key,
                             })
                             .unwrap();
-                        assert_eq!(info.expiry != 0 && !info.isRevoked, root_signed);
+                        assert_eq!(key_info.keyId == key, root_signed);
                     });
                 }
             }

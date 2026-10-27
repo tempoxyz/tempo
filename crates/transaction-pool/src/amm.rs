@@ -698,7 +698,9 @@ mod tests {
     #[test]
     fn test_on_new_state_invalidates_stale_quote_token_cache() {
         use reth_provider::ExecutionOutcome;
-        use revm::database::{AccountStatus, BundleAccount, BundleState, states::StorageSlot};
+        use reth_trie_common::bundle_state::{
+            AccountStatus, BundleAccount, BundleState, StorageSlot,
+        };
         use tempo_primitives::TempoReceipt;
 
         // TIP-20-prefixed addresses so `from_address_unchecked`'s debug_assert holds.

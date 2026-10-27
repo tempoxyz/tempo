@@ -21,10 +21,7 @@ use commonware_cryptography::{
 };
 use commonware_runtime::Clock;
 use commonware_utils::ordered;
-use evm2::{
-    bytecode::Bytecode,
-    evm::{InMemoryDB, precompile::NoPrecompiles},
-};
+use evm2::bytecode::Bytecode;
 use eyre::{OptionExt as _, WrapErr as _};
 use futures::{StreamExt, future::BoxFuture};
 use reth_chainspec::EthChainSpec;
@@ -47,7 +44,7 @@ use tempfile::TempDir;
 use tempo_chainspec::{TempoChainSpec, TempoHardfork};
 use tempo_consensus::feed::FeedStateHandle;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
-use tempo_evm::{TempoBlockEnv, TempoEvm, TempoEvmExt, build_tempo_evm};
+use tempo_evm::genesis::{create_genesis_evm, genesis_evm_env, with_genesis_storage};
 use tempo_node::{
     TempoFullNode,
     node::TempoNode,
@@ -55,7 +52,6 @@ use tempo_node::{
 };
 use tempo_precompiles::{
     VALIDATOR_CONFIG_V2_ADDRESS,
-    storage::StorageCtx,
     validator_config_v2::{
         IValidatorConfigV2, VALIDATOR_NS_ADD, VALIDATOR_NS_ROTATE, ValidatorConfigV2,
     },
@@ -73,6 +69,7 @@ pub const TEST_MNEMONIC: &str = "test test test test test test test test test te
 #[derive(Default, Debug)]
 pub struct Builder {
     t12_time: Option<u64>,
+    t14_time: Option<u64>,
     epoch_length: Option<u64>,
     initial_dkg_outcome: Option<OnchainDkgOutcome>,
     validators: Option<ordered::Map<PublicKey, ConsensusNodeConfig>>,
@@ -82,6 +79,7 @@ impl Builder {
     pub fn new() -> Self {
         Self {
             t12_time: None,
+            t14_time: None,
             epoch_length: None,
             initial_dkg_outcome: None,
             validators: None,
@@ -113,9 +111,15 @@ impl Builder {
         }
     }
 
+    /// Overrides T14 activation; `None` preserves the fixture schedule.
+    pub fn with_t14_time(self, t14_time: Option<u64>) -> Self {
+        Self { t14_time, ..self }
+    }
+
     pub fn launch(self) -> eyre::Result<ExecutionRuntime> {
         let Self {
             t12_time,
+            t14_time,
             epoch_length,
             initial_dkg_outcome,
             validators,
@@ -160,13 +164,21 @@ impl Builder {
             }
         }
 
+        if let Some(t14_time) = t14_time {
+            genesis
+                .config
+                .extra_fields
+                .insert_value("t14Time".to_string(), t14_time)
+                .unwrap();
+        }
+
         genesis.extra_data = initial_dkg_outcome.encode().into();
 
         // Just remove whatever is already written into chainspec.
         genesis.alloc.remove(&VALIDATOR_CONFIG_V2_ADDRESS);
 
-        let mut evm = setup_tempo_evm(genesis.config.chain_id);
-        StorageCtx::enter_evm(&mut evm, || {
+        let mut evm = create_genesis_evm(genesis_evm_env(genesis.config.chain_id));
+        with_genesis_storage(&mut evm, || {
             let mut validator_config_v2 = ValidatorConfigV2::new();
             validator_config_v2
                 .initialize(admin())
@@ -208,8 +220,6 @@ impl Builder {
                 }
             }
         });
-        evm.state_mut().commit_transaction();
-        evm.state_mut().clear_transaction_state();
 
         let state = &evm.overlay_db().cache;
         let addresses = state
@@ -272,6 +282,9 @@ pub struct ExecutionNodeConfig {
     /// The protocol is registered before the network starts because `RLPx`
     /// negotiates capabilities during the handshake.
     pub gossip: Option<tempo_node::gossip::Config>,
+    /// Proposal budget estimator the payload builder paces builds with, or
+    /// `None` for a private one seeded from the default multiplier.
+    pub estimator: Option<tempo_node::Estimator>,
 }
 
 impl ExecutionNodeConfig {
@@ -287,6 +300,7 @@ impl ExecutionNodeConfig {
             feed_state: None,
             share_sparse_trie_with_payload_builder: false,
             gossip: None,
+            estimator: None,
         }
     }
 }
@@ -922,6 +936,7 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
         feed_state,
         share_sparse_trie_with_payload_builder,
         gossip,
+        estimator,
     } = config;
     let node_config = NodeConfig::new(Arc::new(chain_spec))
         .with_rpc(
@@ -944,7 +959,12 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
             c.network.discovery.disable_discovery = true;
             c.network = c.network.with_unused_ports();
             c.network.p2p_secret_key_hex = Some(secret_key);
-            // Match Tempo's engine default for nodes launched by tests.
+            // Match Tempo's engine defaults for nodes launched by tests. The
+            // persistence settings matter: marshal only counts a block as
+            // processed once reth persisted it, so reth's larger defaults
+            // would delay every height-based wait.
+            c.engine.persistence_threshold = 25;
+            c.engine.num_state_masking_blocks = 10;
             c.engine.suppress_persistence_during_build = true;
             c.engine.share_sparse_trie_with_payload_builder =
                 share_sparse_trie_with_payload_builder;
@@ -962,6 +982,10 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
     };
 
     let tempo_node = TempoNode::default().with_validator_key(validator_key);
+    let tempo_node = match estimator {
+        Some(estimator) => tempo_node.with_estimator(estimator),
+        None => tempo_node,
+    };
     let tempo_node = match gossip_protocol {
         Some(protocol) => tempo_node.with_finalization_cert_gossip(protocol),
         None => tempo_node,
@@ -1119,18 +1143,6 @@ pub fn validator(idx: u32) -> Address {
 
 pub fn address(index: u32) -> Address {
     secret_key_to_address(MnemonicBuilder::from_phrase_nth(TEST_MNEMONIC, index).credential())
-}
-
-fn setup_tempo_evm(chain_id: u64) -> TempoEvm<'static> {
-    // The block timestamp defaults to 0 for genesis initializations.
-    build_tempo_evm(
-        tempo_chainspec::hardfork::TempoHardfork::T0,
-        chain_id,
-        TempoBlockEnv::default(),
-        InMemoryDB::default(),
-        NoPrecompiles::default(),
-        TempoEvmExt::default(),
-    )
 }
 
 fn sign_add_validator_args(
