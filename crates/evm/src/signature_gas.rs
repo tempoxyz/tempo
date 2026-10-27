@@ -1,8 +1,8 @@
-use revm::interpreter::gas::COLD_SLOAD_COST;
+use evm2::interpreter::gas::COLD_SLOAD_COST;
 use tempo_primitives::transaction::TempoSignature;
 
 /// Additional gas for keychain signatures (key validation overhead: cold SLOAD + processing).
-const KEYCHAIN_VALIDATION_GAS: u64 = COLD_SLOAD_COST + 900;
+const KEYCHAIN_VALIDATION_GAS: u64 = COLD_SLOAD_COST as u64 + 900;
 
 /// Calculates the gas cost for verifying an AA signature.
 ///
@@ -16,4 +16,11 @@ pub(crate) fn tempo_signature_verification_gas(signature: &TempoSignature) -> u6
             keychain_sig.signature.intrinsic_verification_gas() + KEYCHAIN_VALIDATION_GAS
         }
     }
+}
+
+pub(crate) fn calldata_tokens(input: &[u8]) -> u64 {
+    input
+        .iter()
+        .map(|byte| if *byte == 0 { 1 } else { 4 })
+        .sum()
 }

@@ -202,6 +202,10 @@ jobs:
           git add -A
           git commit -m "deps: bump reth rev to ${NEW_REV} ($(date -u +%Y-%m-%d))"
 
+      - name: Install LLVM for JIT targets
+        if: steps.update.outputs.bumped == 'true'
+        run: .github/scripts/install_llvm.sh
+
       # ── cargo check + Amp fix loop ────────────────────────────
       - name: Fix compilation errors
         id: check-loop

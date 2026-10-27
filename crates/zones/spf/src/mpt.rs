@@ -303,8 +303,8 @@ mod tests {
             balance: U256::MAX,
             ..Default::default()
         };
-        let encoded = alloy_rlp::encode(account);
-        assert_eq!(decode_account(&encoded, address), Ok(account));
+        let encoded = alloy_rlp::encode(&account);
+        assert_eq!(decode_account(&encoded, address), Ok(account.clone()));
         assert_eq!(decode_hashed_account(&encoded), Ok(account));
 
         let mut invalid = (0..encoded.len())

@@ -32,22 +32,17 @@ use reth_engine_tree::tree::{
     CachedStateMetrics, CachedStateMetricsSource, CachedStateProvider,
     instrumented_state::InstrumentedStateProvider,
 };
-use reth_errors::{ConsensusError, ProviderError};
+use reth_errors::ConsensusError;
 use reth_evm::{
-    ConfigureEvm, Database, Evm, NextBlockEnvAttributes,
-    block::{BlockExecutionError, BlockExecutor, BlockValidationError},
+    BlockExecutionError, BlockExecutor, BlockExecutorFactory, BlockValidationError, ConfigureEvm,
+    Database, NextBlockEnvAttributes, OnStateHook, database::StateProviderDatabase,
     execute::BlockAssemblerInput,
 };
-use reth_execution_types::BlockExecutionOutput;
 use reth_payload_builder::{EthBuiltPayload, PayloadBuilderError};
 use reth_payload_primitives::BuiltPayloadExecutedBlock;
 use reth_primitives_traits::{RecoveredBlock, transaction::error::InvalidTransactionError};
-use reth_revm::{
-    State, context::Block, database::StateProviderDatabase,
-    db::states::bundle_state::BundleRetention,
-};
 use reth_storage_api::{
-    EvmStateProvider, HashedPostStateProvider, StateProvider, StateProviderFactory,
+    EvmStateProvider, HashedPostStateProvider, StateProvider as _, StateProviderFactory,
     StateRootProvider,
 };
 use reth_tasks::TaskExecutor;
@@ -61,8 +56,8 @@ use std::{
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_evm::{
-    StorageActionReplayError, TempoEvmConfig, TempoNextBlockEnvAttributes, TempoTxResult,
-    evm::TempoEvm,
+    StorageActionReplayError, TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess,
+    TempoTxResult,
 };
 use tempo_payload_types::{
     Estimator, TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload,
@@ -306,27 +301,28 @@ where
         let state_setup_start = Instant::now();
         let _state_setup_span = debug_span!(target: "payload_builder", "state_setup").entered();
         let state_provider = self.provider.state_by_block_hash(parent_header.hash())?;
-        let mut evm_state_provider: Box<dyn EvmStateProvider + '_> =
-            Box::new((&state_provider).into_evm_state_provider());
-        if let Some(execution_cache) = &execution_cache {
-            evm_state_provider = Box::new(CachedStateProvider::new(
-                evm_state_provider,
+        let evm_state_provider = state_provider.as_ref().into_evm_state_provider();
+        let cached_state_provider = execution_cache.as_ref().map(|execution_cache| {
+            CachedStateProvider::new(
+                &evm_state_provider,
                 execution_cache.cache().clone(),
                 Some(self.cache_metrics.clone()),
-            ));
-        }
-        if self.config.state_provider_metrics {
-            evm_state_provider = Box::new(InstrumentedStateProvider::new(
-                evm_state_provider,
-                "builder",
-            ));
-        }
+            )
+        });
+        let evm_state_provider = cached_state_provider
+            .as_ref()
+            .map(|provider| provider as &dyn EvmStateProvider)
+            .unwrap_or(&evm_state_provider);
+        let instrumented_state_provider = self
+            .config
+            .state_provider_metrics
+            .then(|| InstrumentedStateProvider::new(evm_state_provider, "builder"));
+        let evm_state_provider = instrumented_state_provider
+            .as_ref()
+            .map(|provider| provider as &dyn EvmStateProvider)
+            .unwrap_or(evm_state_provider);
 
-        let state = StateProviderDatabase::new(&evm_state_provider);
-        let mut db = State::builder()
-            .with_database(Box::new(state) as Box<dyn Database<Error = ProviderError>>)
-            .with_bundle_update()
-            .build();
+        let mut db = StateProviderDatabase::new(evm_state_provider);
         drop(_state_setup_span);
         self.metrics
             .state_setup_duration_seconds
@@ -380,7 +376,7 @@ where
             timestamp_millis_part: attributes.timestamp_millis_part(),
             consensus_context: attributes.consensus_context(),
         };
-        let evm_env = self
+        let mut evm_env = self
             .evm_config
             .next_evm_env(&parent_header, &next_attributes)
             .map_err(PayloadBuilderError::other)?;
@@ -389,27 +385,27 @@ where
             .context_for_next_block(&parent_header, next_attributes)
             .map_err(PayloadBuilderError::other)?;
 
-        let evm = self.evm_config.evm_with_env(&mut db, evm_env);
-        let mut executor = self.evm_config.create_executor(evm, ctx.clone());
+        // Resolve the configured fee recipient before moving the database into the EVM. This
+        // keeps the read out of EVM2's journal and therefore out of transaction gas accounting.
+        maybe_override_fee_recipient(&mut db, &mut evm_env, &attributes);
+
+        let prewarm_evm_env = evm_env.clone();
+        let assembly_evm_env = evm_env.clone();
+        let evm_config = self.evm_config.clone().with_jit_support();
+        let evm = evm_config.evm_with_database(db, evm_env);
+        let mut executor = evm_config.create_executor(evm, ctx.clone());
 
         check_cancel!();
 
-        // Override the fee recipient with the on-chain value from the V2
-        // validator config contract, if available.
-        maybe_override_fee_recipient(&mut executor, &attributes);
-
         if let Some(handle) = state_root_handle.as_mut() {
-            executor
-                .evm_mut()
-                .db_mut()
-                .set_state_hook(Some(Box::new(handle.take_state_hook())));
+            let mut hook = handle.take_state_hook();
+            executor.set_state_hook(move |state| hook.on_state(state));
         }
 
         executor.apply_pre_execution_changes().map_err(|err| {
             warn!(%err, "failed to apply pre-execution changes");
             PayloadBuilderError::Internal(err.into())
         })?;
-
         check_cancel!();
 
         debug!("building new payload");
@@ -425,19 +421,16 @@ where
 
         let pool_fetch_start = Instant::now();
         let raw_best_txs = best_txs(BestTransactionsAttributes::new(
-            executor.evm().block().basefee,
-            executor
-                .evm()
-                .block()
-                .blob_gasprice()
-                .map(|gasprice| gasprice as u64),
+            executor.evm().block().basefee.to(),
+            Some(executor.evm().block().blob_basefee.to()),
         ));
         let prewarm_ctx = PrewarmingExecutionContext::new(
             self.provider.clone(),
             self.executor.clone(),
             execution_cache,
             parent_header.hash(),
-            executor.evm().evm_env(),
+            prewarm_evm_env,
+            self.evm_config.clone(),
             self.config.enable_parallel,
         );
         let mut best_txs = if self.config.enable_prewarming {
@@ -529,10 +522,8 @@ where
             let tx = pool_tx.tx.clone();
             pool_transactions_yielded += 1;
 
-            let max_regular_gas_used = core::cmp::min(
-                tx.gas_limit(),
-                executor.evm().cfg.tx_gas_limit_cap.unwrap_or(u64::MAX),
-            );
+            let max_regular_gas_used =
+                core::cmp::min(tx.gas_limit(), executor.evm().version().tx_gas_limit_cap);
 
             // Ensure we still have capacity for this transaction within the block gas limit.
             if cumulative_gas_used + max_regular_gas_used > block_gas_limit {
@@ -595,7 +586,7 @@ where
                 .then(|| format!("{:?}", tx.transaction))
                 .unwrap_or_default();
 
-            let result_closure = |result: &TempoTxResult| {
+            let mut result_closure = |result: &TempoTxResult| {
                 cumulative_gas_used += result.block_gas_used();
                 cumulative_state_gas_used += result.state_gas_used();
                 if !is_payment {
@@ -620,11 +611,11 @@ where
             } else {
                 executor.invalidate_expiring_nonce_cache();
                 executor
-                    .execute_transaction_with_result_closure(
-                        tx.transaction.executable(),
-                        result_closure,
-                    )
-                    .map(|_| ())
+                    .execute_transaction_without_commit(tx.transaction.executable())
+                    .and_then(|result| {
+                        result_closure(&result);
+                        executor.commit_transaction(result).map(|_| ())
+                    })
             };
 
             if let Err(err) = execution_result {
@@ -681,7 +672,6 @@ where
             }
 
             trace!("Transaction executed");
-
             pool_transactions_included += 1;
             estimated_rlp_block_size += tx_rlp_length;
             let receipt = executor.receipts().last().unwrap().clone();
@@ -719,7 +709,6 @@ where
         if !is_better_payload(best_payload.as_ref(), total_fees) {
             // Release db
             drop(executor);
-            drop(db);
             // can skip building the block
             return Ok(BuildOutcome::Aborted {
                 fees: total_fees,
@@ -746,16 +735,9 @@ where
         // Drop the roots task handle to trigger finalization
         drop(roots_tx);
 
-        let (evm, execution_result) = executor.finish()?;
-        let evm_env = evm.into_env();
-
-        // Drop the state hook to signal that execution is complete and the sparse trie task can
-        // finalize the state root. Nothing commits to `db` after `finish`, so this can happen
-        // before the transitions are merged, letting the trie finalization overlap with it.
-        db.set_state_hook(None);
-
-        // merge all transitions into bundle state before deriving the hashed post-state
-        db.merge_transitions(BundleRetention::Reverts);
+        let execution_output = executor.finish()?;
+        let execution_result = &execution_output.result;
+        let execution_state = &execution_output.state;
 
         let hashed_state = if let Some(Ok(hashed_state)) = state_root_handle
             .as_mut()
@@ -764,11 +746,7 @@ where
         {
             hashed_state
         } else {
-            Arc::new(
-                finish_provider
-                    .hashed_post_state(&db.bundle_state)
-                    .map_err(PayloadBuilderError::other)?,
-            )
+            Arc::new(finish_provider.hashed_post_state(execution_state)?)
         };
 
         let (state_root_outcome, sparse_trie_state_root_wait_elapsed) =
@@ -837,12 +815,12 @@ where
 
         let block = self.evm_config.block_assembler.assemble_block(
             BlockAssemblerInput::new(
-                evm_env,
+                assembly_evm_env,
                 ctx,
                 &parent_header,
                 transactions,
-                &execution_result,
-                &db.bundle_state,
+                execution_result,
+                execution_state,
                 &finish_provider,
                 state_root,
                 None,
@@ -1009,11 +987,6 @@ where
         self.executor.spawn_drop(execution_block_encoder);
         let eth_payload = EthBuiltPayload::new(block.clone(), total_fees, requests, None);
 
-        let execution_output = BlockExecutionOutput {
-            result: execution_result,
-            state: db.take_bundle(),
-        };
-
         let executed_block = BuiltPayloadExecutedBlock {
             recovered_block: block,
             execution_output: Arc::new(execution_output),
@@ -1030,8 +1003,8 @@ where
             execution_block_encoded,
         );
 
-        drop(db);
-        drop(evm_state_provider);
+        drop(instrumented_state_provider);
+        drop(cached_state_provider);
         self.executor.spawn_drop(state_provider);
         Ok(BuildOutcome::Freeze(payload))
     }
@@ -1098,17 +1071,18 @@ where
 /// V2 validator config contract, if the contract is active and returns a
 /// non-zero address for the given `public_key`.
 fn maybe_override_fee_recipient<DB: Database>(
-    executor: &mut impl BlockExecutor<Evm = TempoEvm<DB>>,
+    db: &mut DB,
+    evm_env: &mut reth_evm::EvmEnvFor<TempoEvmConfig>,
     attributes: &TempoPayloadAttributes,
 ) {
     let Some(public_key) = attributes.proposer_public_key() else {
         return;
     };
     // T14+ executors reject blocks whose beneficiary differs from this resolution.
-    match executor.evm_mut().proposer_fee_recipient(*public_key) {
+    match db.proposer_fee_recipient(evm_env.spec, evm_env.block.number, *public_key) {
         Ok(Some(fee_recipient)) => {
             debug!(%fee_recipient, "resolved fee recipient from contract");
-            executor.evm_mut().ctx_mut().block.beneficiary = fee_recipient;
+            evm_env.block.beneficiary = fee_recipient;
         }
         Ok(None) => {}
         Err(err) => {

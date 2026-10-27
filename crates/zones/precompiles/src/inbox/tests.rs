@@ -1,9 +1,7 @@
 use super::*;
 
-use alloy_evm::EvmInternals;
 use alloy_primitives::{B256, Bytes, U256, address, keccak256};
 use alloy_sol_types::{SolCall, SolError, SolValue};
-use revm::precompile::PrecompileResult;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::{
     precompiles::UnknownFunctionSelector,
@@ -22,9 +20,9 @@ use tempo_primitives::TempoHeader;
 use zone_primitives::constants::ZONE_OUTBOX_ADDRESS;
 
 use crate::test_utils::{
-    EncryptedDepositFixture, MockL1Reader, TestContext, build_plaintext, call_precompile,
-    compressed_x_and_parity, encrypt_plaintext, test_context, test_context_with_hardfork, test_env,
-    test_storage_provider,
+    EncryptedDepositFixture, MockL1Reader, PrecompileResult, TestContext, TestPrecompiles,
+    build_plaintext, call_precompile, compressed_x_and_parity, encrypt_plaintext, test_context,
+    test_context_with_hardfork, test_precompiles, test_storage_provider,
 };
 
 const GAS: u64 = 30_000_000;
@@ -37,8 +35,8 @@ struct Harness {
     ctx: TestContext,
     l1: MockL1Reader,
     l1_state: L1State<MockL1Reader>,
-    precompile: DynPrecompile,
-    outbox_precompile: DynPrecompile,
+    precompile: TestPrecompiles,
+    outbox_precompile: TestPrecompiles,
     genesis_hash: B256,
 }
 
@@ -63,8 +61,8 @@ impl Harness {
             },
             ..Default::default()
         };
-        ctx.block.inner.timestamp = U256::from(child_header.inner.timestamp);
-        ctx.block.timestamp_millis_part = child_header.timestamp_millis_part;
+        ctx.block.timestamp = U256::from(child_header.inner.timestamp);
+        ctx.block.ext.timestamp_millis_part = child_header.timestamp_millis_part;
         {
             let mut storage = test_storage_provider(&mut ctx, u64::MAX, false);
             StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
@@ -83,9 +81,8 @@ impl Harness {
 
         l1.seed_active_sequencer(PORTAL, 1, SEQUENCER);
         let l1_state = L1State::new(l1.clone(), PORTAL);
-        let env = test_env(&ctx);
-        let precompile = ZoneInbox::create(l1_state.clone(), &env);
-        let outbox_precompile = crate::create_outbox_precompile(l1_state.clone(), &env);
+        let precompile = test_precompiles(&ctx, l1_state.clone());
+        let outbox_precompile = test_precompiles(&ctx, l1_state.clone());
         Ok(Self {
             ctx,
             l1,
@@ -166,7 +163,7 @@ impl Harness {
     ) -> PrecompileResult {
         call_precompile(
             &mut self.ctx,
-            &self.precompile,
+            &mut self.precompile,
             caller,
             calldata.as_ref(),
             gas,
@@ -177,14 +174,11 @@ impl Harness {
     }
 
     fn call_atomic(&mut self, caller: Address, calldata: impl AsRef<[u8]>) -> PrecompileResult {
-        let checkpoint = EvmInternals::from_context(&mut self.ctx).checkpoint();
+        let checkpoint = self.ctx.checkpoint();
         let result = self.call(caller, calldata);
         let success = result.as_ref().is_ok_and(|output| output.is_success());
-        let mut internals = EvmInternals::from_context(&mut self.ctx);
-        if success {
-            internals.checkpoint_commit();
-        } else {
-            internals.checkpoint_revert(checkpoint);
+        if !success {
+            self.ctx.checkpoint_revert(checkpoint);
         }
         result
     }
@@ -201,7 +195,7 @@ impl Harness {
         let calldata = IZoneOutbox::getPendingWithdrawalsCall {}.abi_encode();
         let output = call_precompile(
             &mut self.ctx,
-            &self.outbox_precompile,
+            &mut self.outbox_precompile,
             Address::ZERO,
             &calldata,
             GAS,
@@ -442,11 +436,9 @@ fn processed_enabled_token_count_activates_at_t13() -> eyre::Result<()> {
     );
 
     let mut harness = Harness::new()?;
-    let t13_env = test_env(&harness.ctx);
-    let t13_precompile = ZoneInbox::create(harness.l1_state.clone(), &t13_env);
     let post_t13 = call_precompile(
         &mut harness.ctx,
-        &t13_precompile,
+        &mut harness.precompile,
         ALICE,
         &calldata,
         GAS,
@@ -468,7 +460,7 @@ fn static_advance_and_delegate_call_revert_before_l1_reads() -> eyre::Result<()>
     let calldata = harness.advance_call(Vec::new(), Vec::new()).abi_encode();
     let output = call_precompile(
         &mut harness.ctx,
-        &harness.precompile,
+        &mut harness.precompile,
         Address::ZERO,
         &calldata,
         GAS,
@@ -482,13 +474,13 @@ fn static_advance_and_delegate_call_revert_before_l1_reads() -> eyre::Result<()>
 
     let output = call_precompile(
         &mut harness.ctx,
-        &harness.precompile,
+        &mut harness.precompile,
         Address::ZERO,
         &calldata,
         GAS,
         false,
-        ZONE_INBOX_ADDRESS,
         Address::repeat_byte(0x44),
+        ZONE_INBOX_ADDRESS,
     )?;
     assert!(output.is_revert());
     assert_eq!(

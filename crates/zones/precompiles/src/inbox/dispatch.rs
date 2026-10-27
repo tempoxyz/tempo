@@ -1,7 +1,7 @@
 //! ABI dispatch for the [`ZoneInbox`] precompile.
 
 use alloy_primitives::{Address, Bytes};
-use revm::precompile::PrecompileResult;
+use evm2::precompiles::PrecompileResult;
 use tempo_contracts::zones::IZoneInbox;
 use tempo_precompiles::{
     EncodePrecompileResult, charge_input_cost, dispatch, dispatch::typed, storage::Handler, view,
@@ -53,19 +53,19 @@ impl ZoneInbox {
                     }),
                     advanceTempo(call) => {
                         if self.storage.is_static() {
-                            Ok(self.storage.revert_output(Bytes::new()))
+                            self.storage.revert_result(Bytes::new())
                         } else {
                             self.advance_tempo(l1, l1.portal(), msg_sender, call)
-                                .encode_precompile_result(0, 0, |()| Bytes::new())
+                                .encode_precompile_result(|()| Bytes::new())
                         }
                     },
                     #[schedule(since = T13)]
                     advanceTempoHeaders(call) => {
                         if self.storage.is_static() {
-                            Ok(self.storage.revert_output(Bytes::new()))
+                            self.storage.revert_result(Bytes::new())
                         } else {
                             self.advance_tempo_headers(l1, msg_sender, call)
-                                .encode_precompile_result(0, 0, |()| Bytes::new())
+                                .encode_precompile_result(|()| Bytes::new())
                         }
                     },
                 }

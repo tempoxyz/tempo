@@ -6,12 +6,12 @@ use alloy_eips::BlockNumHash;
 use alloy_primitives::{Address, B256, U256};
 use reth_storage_api::{StateProviderFactory, errors::provider::ProviderError};
 use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_evm::TempoStateAccess as _;
 use tempo_precompiles::{
     error::TempoPrecompileError,
     storage::{ContractStorage, StorageActions},
     tip20::{ITIP20, TIP20Token},
 };
-use tempo_revm::TempoStateAccess as _;
 use zone_precompiles::zone_state::ZoneStateSnapshot;
 
 use crate::AttemptError;
@@ -137,9 +137,13 @@ pub(crate) fn read_accounting_state<P: StateProviderFactory>(
 }
 
 fn classify_read_error(error: TempoPrecompileError, block: B256) -> AccountingStateError {
-    // Storage reads surface provider failures as `Fatal`, including a block being persisted
-    // and evicted from the in-memory overlay while it is being read; re-open state and retry.
-    let fatal = matches!(error, TempoPrecompileError::Fatal(_));
+    // Storage reads surface provider failures as `Fatal` or `Database`, including a block being
+    // persisted and evicted from the in-memory overlay while it is being read; re-open state
+    // and retry.
+    let fatal = matches!(
+        error,
+        TempoPrecompileError::Fatal(_) | TempoPrecompileError::Database(_)
+    );
     let report = eyre::Report::new(error)
         .wrap_err(format!("failed to read accounting state for block {block}"));
     if fatal {
@@ -170,6 +174,7 @@ fn classify_provider_error(error: ProviderError, block: B256) -> AttemptError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use evm2::DatabaseError;
 
     #[test]
     fn classifies_transient_and_permanent_provider_failures() {
@@ -190,6 +195,16 @@ mod tests {
         let block = B256::repeat_byte(1);
         assert!(matches!(
             classify_read_error(TempoPrecompileError::Fatal("db".into()), block),
+            AccountingStateError::Unavailable(_)
+        ));
+        assert!(matches!(
+            classify_read_error(
+                TempoPrecompileError::Database(DatabaseError::new(
+                    std::io::Error::other("db"),
+                    true
+                )),
+                block
+            ),
             AccountingStateError::Unavailable(_)
         ));
 

@@ -26,7 +26,6 @@ use tempo_precompiles::{
     tip20,
 };
 use tempo_primitives::{TempoHeader, TempoReceipt};
-use tempo_revm::IntoAddress;
 
 /// Number of recent validators/tokens to track.
 const LAST_SEEN_WINDOW: usize = 10;
@@ -219,7 +218,7 @@ impl AmmLiquidityCache {
                     // Update validator fee token preferences
                     inner
                         .validator_preferences
-                        .insert(validator, value.present_value().into_address());
+                        .insert(validator, Address::from_word(value.present_value.into()));
                 }
             }
         }
@@ -272,12 +271,14 @@ impl AmmLiquidityCache {
                     state = Some(client.state_by_block_hash(latest_hash)?);
                 }
 
-                state
-                    .as_mut()
-                    .expect("initialized above")
-                    .storage(TIP_FEE_MANAGER_ADDRESS, validator_token_slot.into())?
-                    .unwrap_or_default()
-                    .into_address()
+                Address::from_word(
+                    state
+                        .as_mut()
+                        .expect("initialized above")
+                        .storage(TIP_FEE_MANAGER_ADDRESS, validator_token_slot.into())?
+                        .unwrap_or_default()
+                        .into(),
+                )
             };
 
             // Get the actual fee token, accounting for defaults.
@@ -697,7 +698,9 @@ mod tests {
     #[test]
     fn test_on_new_state_invalidates_stale_quote_token_cache() {
         use reth_provider::ExecutionOutcome;
-        use revm::database::{AccountStatus, BundleAccount, BundleState, states::StorageSlot};
+        use reth_trie_common::bundle_state::{
+            AccountStatus, BundleAccount, BundleState, StorageSlot,
+        };
         use tempo_primitives::TempoReceipt;
 
         // TIP-20-prefixed addresses so `from_address_unchecked`'s debug_assert holds.

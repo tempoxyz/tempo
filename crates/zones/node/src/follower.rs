@@ -651,23 +651,28 @@ where
 
         // 4. All txns in the block execute properly
         validate_block_timestamp(block.header().timestamp_millis(), SystemTime::now())?;
+        let timestamp = block.header().timestamp();
         let payload = ZonePayloadTypes::block_to_payload(block, None);
         let status = self.context.engine.new_payload(payload).await?;
         if !status.is_valid() {
             eyre::bail!("execution engine rejected peer block {block_number} ({hash}): {status:?}");
         }
 
-        // Peers without a stored witness still send plain blocks. Preserve local collection
-        // for them; supplied witnesses are persisted directly. Both paths precede canonicalization.
+        // Supplied witnesses are persisted directly. From T15 a plain block's witness is collected
+        // locally; both paths precede canonicalization. Before T15 a plain block is imported
+        // without collecting: it usually means the leader's own collection just failed, and
+        // retrying here would load the same struggling L1 RPC. Background collection still
+        // fills the gap.
         if let Some(collector) = &self.context.proof_collector {
             self.stop
                 .run_until_cancelled(async {
                     match peer_block.block.witness {
                         Some(proof) => collector.persist_received(proof).await,
-                        None => collector
+                        None if collector.witness_mandatory(timestamp) => collector
                             .collect_and_persist(block_number, hash)
                             .await
                             .map(|_| ()),
+                        None => Ok(()),
                     }
                 })
                 .await
