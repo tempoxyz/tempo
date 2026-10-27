@@ -1159,6 +1159,9 @@ where
                                 .into()
                             }
                         }
+                        TempoPrecompileError::NonceError(
+                            tempo_contracts::precompiles::NonceError::ExpiringNonceReplay(_),
+                        ) => TempoInvalidTransaction::ExpiringNonceReplay.into(),
                         err => TempoInvalidTransaction::NonceManagerError(err.to_string()).into(),
                     })?;
 

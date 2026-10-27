@@ -86,6 +86,11 @@ pub enum TempoInvalidTransaction {
     #[error("expiring nonce transaction requires valid_before to be set")]
     ExpiringNonceMissingValidBefore,
 
+    /// Expiring nonce transaction whose replay hash is already recorded and unexpired,
+    /// i.e. the same transaction was already included.
+    #[error("expiring nonce transaction already included")]
+    ExpiringNonceReplay,
+
     /// Pre-T12 expiring nonce transaction must have nonce == 0.
     #[error("expiring nonce transaction must have nonce == 0 before T12")]
     ExpiringNonceNonceNotZero,
@@ -312,6 +317,7 @@ impl TempoInvalidTransaction {
             // State- or fork-dependent: may resolve as the chain advances.
             Self::ValidAfter { .. }
             | Self::ValidBefore { .. }
+            | Self::ExpiringNonceReplay
             | Self::ExpiringNonceNonceNotZero
             | Self::InvalidFeeToken(_)
             | Self::FeeTokenNotTip20 { .. }
@@ -331,6 +337,7 @@ impl InvalidTxError for TempoInvalidTransaction {
     fn is_nonce_too_low(&self) -> bool {
         match self {
             Self::EthInvalidTransaction(err) => err.is_nonce_too_low(),
+            Self::ExpiringNonceReplay => true,
             _ => false,
         }
     }
@@ -515,6 +522,10 @@ mod tests {
         });
         assert!(err.is_nonce_too_low());
         assert!(err.as_invalid_tx_err().is_some());
+
+        let err = TempoInvalidTransaction::ExpiringNonceReplay;
+        assert!(err.is_nonce_too_low());
+        assert!(!err.is_bad_transaction());
 
         let err = TempoInvalidTransaction::InvalidFeePayerSignature;
         assert!(!err.is_nonce_too_low());
