@@ -4,7 +4,7 @@
 use alloy_primitives::Address;
 use alloy_sol_types::sol;
 
-use crate::{ObserveError, Views, view};
+use crate::{Observe, ObserveError, Views, view};
 
 sol! {
     #[derive(Debug, PartialEq, Eq)]
@@ -41,32 +41,45 @@ pub struct Key {
     pub limit: getRemainingLimitWithPeriodReturn,
 }
 
-/// Reads `account`'s access key `key` and its remaining limit for `token`
-/// from the keychain at `keychain`.
-pub fn observe<V: Views>(
-    views: &mut V,
-    keychain: Address,
-    account: Address,
-    key: Address,
-    token: Address,
-) -> Result<Key, ObserveError<V::Error>> {
-    Ok(Key {
-        info: view(
-            views,
+/// The keychain, an account's access key and a token whose remaining limit to read.
+#[derive(Debug, Clone, Copy)]
+pub struct At {
+    pub keychain: Address,
+    pub account: Address,
+    pub key: Address,
+    pub token: Address,
+}
+
+impl Observe for Key {
+    type At<'a> = At;
+
+    /// Reads `account`'s access key `key` and its remaining limit for `token`
+    /// from the keychain at `keychain`.
+    fn observe<V: Views>(views: &mut V, at: Self::At<'_>) -> Result<Self, ObserveError<V::Error>> {
+        let At {
             keychain,
-            getKeyCall {
-                account,
-                keyId: key,
-            },
-        )?,
-        limit: view(
-            views,
-            keychain,
-            getRemainingLimitWithPeriodCall {
-                account,
-                keyId: key,
-                token,
-            },
-        )?,
-    })
+            account,
+            key,
+            token,
+        } = at;
+        Ok(Self {
+            info: view(
+                views,
+                keychain,
+                getKeyCall {
+                    account,
+                    keyId: key,
+                },
+            )?,
+            limit: view(
+                views,
+                keychain,
+                getRemainingLimitWithPeriodCall {
+                    account,
+                    keyId: key,
+                    token,
+                },
+            )?,
+        })
+    }
 }

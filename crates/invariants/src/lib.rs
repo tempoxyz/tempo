@@ -9,22 +9,17 @@
 //! `TEMPO-<AREA>-<NAME>` scheme, though not every ID exists in the harness.
 
 use alloy_primitives::U256;
-use invariants_core::decode;
 pub use invariants_core::{
-    AnyCheck, Check, Checked, ObserveError, Report, Step, StepChecked, Verdict, Views, Violation,
-    complete, view,
+    AnyCheck, Check, Checked, Complete, Observe, ObserveError, Report, Step, StepChecked, Verdict,
+    Views, Violation, view,
 };
+use invariants_core::{decode, optional};
 
 pub mod dex;
 pub mod fee_amm;
 pub mod keychain;
 pub mod receive_policy;
 pub mod tip20;
-
-/// `value` as text, `missing` when there is none.
-fn or_text(value: Option<U256>, missing: &str) -> String {
-    value.map_or_else(|| missing.to_string(), |value| value.to_string())
-}
 
 /// Every Tempo check, whatever its context.
 pub fn all() -> impl Iterator<Item = &'static dyn AnyCheck> {
@@ -39,4 +34,9 @@ pub fn all() -> impl Iterator<Item = &'static dyn AnyCheck> {
         .chain(erased(dex::CHECKS))
         .chain(erased(keychain::CHECKS))
         .chain(erased(receive_policy::CHECKS))
+}
+
+/// `value` as text, `missing` when there is none.
+fn or_text(value: Option<U256>, missing: &str) -> String {
+    value.map_or_else(|| missing.to_string(), |value| value.to_string())
 }

@@ -10,7 +10,7 @@ use std::fmt::{Debug, Display};
 
 use alloy_evm::{Evm as _, EvmEnv};
 use alloy_primitives::{Address, B256, Bytes, Log, U256};
-use invariants_core::{ObserveError, Report, SlotChange, Step, Views, Violation};
+use invariants_core::{Observe, ObserveError, Report, SlotChange, Step, Views, Violation};
 use revm::{
     DatabaseRef, bytecode::Bytecode, database::TransitionState,
     database_interface::WrapDatabaseRef, state::AccountInfo,
@@ -94,11 +94,19 @@ pub(crate) fn check(
     }
 
     for &token in tokens.iter().filter(|token| selected(token)) {
-        let post = tip20::observe_partial(&mut views, token, &all_holders);
-        let Some(post) = observed(&mut step, TIP20_VIEW, format!("token={token}"), post) else {
+        let at = tip20::At {
+            token,
+            holders: &all_holders,
+        };
+        let Some(post) = observe_checked::<tip20::Ledger, _>(
+            &mut step,
+            &mut views,
+            at,
+            TIP20_VIEW,
+            format!("token={token}"),
+        ) else {
             continue;
         };
-        step.run_any(all(), &post);
         let Some(effects) = &effects else {
             continue;
         };
@@ -106,11 +114,7 @@ pub(crate) fn check(
             db,
             transitions: effects.transitions,
         };
-        let pre = tip20::observe_partial(
-            &mut EvmViews::new(before, env, pre_state),
-            token,
-            &all_holders,
-        );
+        let pre = tip20::Ledger::observe(&mut EvmViews::new(before, env, pre_state), at);
         let subject = format!("token={token} before the step");
         let Some(pre) = observed(&mut step, TIP20_VIEW, subject, pre) else {
             continue;
@@ -123,29 +127,35 @@ pub(crate) fn check(
             .flat_map(|&user| tokens.iter().map(move |&validator| (user, validator)))
             .filter(|(user, validator)| user != validator)
             .collect();
-        let books = fee_amm::observe(
+        let at = fee_amm::At {
+            fee_manager: TIP_FEE_MANAGER_ADDRESS,
+            tokens: &tokens,
+            pairs: &pairs,
+            validators: &[env.block_env.inner.beneficiary],
+            holders: &all_holders,
+        };
+        observe_checked::<fee_amm::Books, _>(
+            &mut step,
             &mut views,
+            at,
+            FEE_VIEW,
             TIP_FEE_MANAGER_ADDRESS,
-            &tokens,
-            &pairs,
-            &[env.block_env.inner.beneficiary],
-            &all_holders,
         );
-        if let Some(books) = observed(&mut step, FEE_VIEW, TIP_FEE_MANAGER_ADDRESS, books) {
-            step.run_any(all(), &books);
-        }
     }
     if selected(&STABLECOIN_DEX_ADDRESS) {
-        let books = dex::observe(
+        let at = dex::At {
+            dex: STABLECOIN_DEX_ADDRESS,
+            tokens: &tokens,
+            users: &all_holders,
+            orders: &[],
+        };
+        observe_checked::<dex::Books, _>(
+            &mut step,
             &mut views,
+            at,
+            DEX_VIEW,
             STABLECOIN_DEX_ADDRESS,
-            &tokens,
-            &all_holders,
-            &[],
         );
-        if let Some(books) = observed(&mut step, DEX_VIEW, STABLECOIN_DEX_ADDRESS, books) {
-            step.run_any(all(), &books);
-        }
     }
 
     failures.extend(step.violations.drain(..).map(|violation| InvariantFailure {
@@ -157,13 +167,27 @@ pub(crate) fn check(
     pre_state.restore_missed(missed);
 }
 
+/// The model `at` names, read through `views` and checked against every check of its type into
+/// `report`; `None` when it could not be read, counted under `view` as [`observed`] does.
+fn observe_checked<M: Observe + 'static, V: Views<Error = ViewFailed>>(
+    report: &mut Report,
+    views: &mut V,
+    at: M::At<'_>,
+    view: &'static str,
+    subject: impl Display,
+) -> Option<M> {
+    let model = observed(report, view, subject, M::observe(views, at))?;
+    report.run_any(all(), &model);
+    Some(model)
+}
+
 /// `read`'s value, counting it under `view`: a read nothing answered is not armed, one that
 /// failed otherwise breaks `view`.
 fn observed<T>(
     report: &mut Report,
     view: &'static str,
     subject: impl Display,
-    read: Result<T, ObserveError<String>>,
+    read: Result<T, ObserveError<ViewFailed>>,
 ) -> Option<T> {
     let counts = report.counts.entry(view).or_default();
     counts.evaluated += 1;
@@ -278,7 +302,7 @@ impl<'a, D: DatabaseRef + Debug> EvmViews<'a, D> {
 
     /// `input`'s output from `target`. `Ok(None)` when nothing answers: `target` has no code, or
     /// the call read a key the pre-state lacks. `Err` when the call reverts or halts.
-    fn call_one(&mut self, target: Address, input: &Bytes) -> Result<Option<Bytes>, String> {
+    fn call_one(&mut self, target: Address, input: &Bytes) -> Result<Option<Bytes>, ViewFailed> {
         let selector = input
             .get(..4)
             .map(Bytes::copy_from_slice)
@@ -290,23 +314,45 @@ impl<'a, D: DatabaseRef + Debug> EvmViews<'a, D> {
         if self.pre_state().missed() {
             return Ok(None);
         }
-        let result = result
-            .map_err(|err| format!("{selector} on {target}: {err}"))?
-            .result;
+        let failed = |reason| ViewFailed {
+            selector: selector.clone(),
+            target,
+            reason,
+        };
+        let result = result.map_err(|err| failed(err.to_string()))?.result;
         if !result.is_success() {
-            return Err(format!("{selector} on {target}: {result:?}"));
+            return Err(failed(format!("{result:?}")));
         }
         Ok(result.output().filter(|output| !output.is_empty()).cloned())
     }
 }
 
 impl<D: DatabaseRef + Debug> Views for EvmViews<'_, D> {
-    type Error = String;
+    type Error = ViewFailed;
 
-    fn call(&mut self, calls: &[(Address, Bytes)]) -> Result<Vec<Option<Bytes>>, String> {
+    fn call(&mut self, calls: &[(Address, Bytes)]) -> Result<Vec<Option<Bytes>>, ViewFailed> {
         calls
             .iter()
             .map(|(target, input)| self.call_one(*target, input))
             .collect()
+    }
+
+    /// The seeded pre-state may hold only the accounts and slots execution touched.
+    fn partial(&self) -> bool {
+        true
+    }
+}
+
+/// A view call that reverted, halted or could not run.
+#[derive(Debug)]
+struct ViewFailed {
+    selector: Bytes,
+    target: Address,
+    reason: String,
+}
+
+impl Display for ViewFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} on {}: {}", self.selector, self.target, self.reason)
     }
 }

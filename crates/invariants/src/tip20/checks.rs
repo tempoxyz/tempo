@@ -4,7 +4,7 @@ use std::fmt;
 
 use invariants_core::{check, ensure};
 
-use super::{Ledger, Transfer, apply, decode_transfer};
+use super::{Ledger, Transfer};
 use crate::{Check, Checked, Step, StepChecked, Verdict, or_text};
 
 pub const SUPPLY_CAP: &str = "TEMPO-TIP20-SUPPLY-CAP";
@@ -49,9 +49,9 @@ pub const STEP_CHECKS: &[Check<Step<Ledger>>] = &[
         judge: |s, _| {
             let transfers: Vec<Transfer> = s
                 .logs_from(s.post.token)
-                .filter_map(|log| decode_transfer(&log.data))
+                .filter_map(|log| Transfer::from_log(&log.data))
                 .collect();
-            let detail = match apply(&s.pre, &transfers) {
+            let detail = match s.pre.apply(&transfers) {
                 // `Transfer` events say nothing of the cap.
                 Ok(want) if want.balances == s.post.balances && want.supply == s.post.supply => {
                     return Some(Verdict::Holds);
