@@ -417,6 +417,9 @@ bitflags = "2.11.1"
 # build deps
 smolgen = { version = "0.1.1", features = ["build", "cargo", "emit_and_set", "gitcl"] }
 
+[patch.crates-io]
+alloy-primitives = { git = "https://github.com/alloy-rs/core", branch = "dani/keccak-cache-lock-free" }
+
 # [patch."https://github.com/paradigmxyz/reth"]
 # reth-basic-payload-builder = { path = "../reth/crates/payload/basic" }
 # reth-chain-state = { path = "../reth/crates/chain-state" }
