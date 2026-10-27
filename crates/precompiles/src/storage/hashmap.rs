@@ -304,7 +304,7 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         }
         self.deduct_gas(gas.static_cost())?;
         let previous = self.config_commitment(address)?;
-        self.deduct_gas(gas.dynamic_cost(previous)?)?;
+        self.deduct_gas(gas.dynamic_cost(previous, &self.gas_params)?)?;
         self.accounts.entry(address).or_default().extension =
             AccountExtension::from(encode_config_commitment(commitment));
         Ok(())

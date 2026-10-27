@@ -25,14 +25,12 @@ use alloy::primitives::{Address, B256, Bytes, KECCAK256_EMPTY, LogData, Signatur
 use evm2::{
     evm::{AccountInfo, StateCheckpoint},
     interpreter::gas::{KECCAK256, KECCAK256WORD},
+    version::{GasId, GasParams},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_primitives::{TempoBlockEnv, account::decode_config_commitment};
 
 use crate::error::{Result, TempoPrecompileError};
-
-/// TIP-1108 charge for the first config-commitment write to an account.
-pub const CONFIG_COMMITMENT_REGISTRATION_GAS: u64 = 20_000;
 
 /// TIP-1108 charge for replacing a nonzero config commitment.
 const CONFIG_COMMITMENT_UPDATE_GAS: u64 = 5_000;
@@ -56,15 +54,27 @@ impl ConfigCommitmentWriteGas {
         }
     }
 
-    /// Gas charged once the previous commitment is known, on top of [`Self::static_cost`].
-    fn dynamic_cost(self, previous: B256) -> Result<u64> {
+    /// Regular gas charged once the previous commitment is known, on top of
+    /// [`Self::static_cost`]. A first write is priced like account creation (TIP-1016), since the
+    /// commitment is permanent account state; its state gas is [`Self::state_cost`].
+    fn dynamic_cost(self, previous: B256, gas: &GasParams) -> Result<u64> {
         match self {
             Self::Intrinsic if previous.is_zero() => Ok(0),
             Self::Intrinsic => Err(TempoPrecompileError::InvalidConfigCommitmentWrite),
-            Self::Precompile if previous.is_zero() => {
-                Ok(CONFIG_COMMITMENT_REGISTRATION_GAS - CONFIG_COMMITMENT_UPDATE_GAS)
-            }
+            Self::Precompile if previous.is_zero() => u64::from(gas.get(GasId::NewAccountCost))
+                .checked_sub(CONFIG_COMMITMENT_UPDATE_GAS)
+                .ok_or_else(|| {
+                    TempoPrecompileError::Fatal("account creation costs less than an update".into())
+                }),
             Self::Precompile => Ok(0),
+        }
+    }
+
+    /// State gas for the write: account-creation state gas for a first write charged here.
+    fn state_cost(self, previous: B256, gas: &GasParams) -> u64 {
+        match self {
+            Self::Precompile if previous.is_zero() => gas.new_account_state_gas(),
+            Self::Intrinsic | Self::Precompile => 0,
         }
     }
 }
