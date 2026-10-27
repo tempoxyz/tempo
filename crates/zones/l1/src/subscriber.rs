@@ -963,16 +963,32 @@ where
             }
             if let Some(sender) = &self.finalized_batch_submissions {
                 for submission in finalized_batches {
-                    sender
-                        .send(submission)
-                        .await
-                        .map_err(|_| L1SubscriberError::Fatal {
-                            block_number,
-                            stage: "finalized batch observer delivery",
-                            source: eyre::eyre!(
-                                "finalized batch submission observer is unavailable"
-                            ),
-                        })?;
+                    // The observer only shadow-proves, so a backed-up prover drops submissions
+                    // rather than stalling L1 ingestion and, through it, block production.
+                    match sender.try_send(submission) {
+                        Ok(()) => {}
+                        Err(tokio::sync::mpsc::error::TrySendError::Full(submission)) => {
+                            warn!(
+                                target: "zone::l1::subscriber",
+                                l1_block = block_number,
+                                transaction_index = submission.transaction_index,
+                                log_index = submission.log_index,
+                                "Finalized batch observer is full; dropping submission"
+                            );
+                            self.subscriber_metrics
+                                .finalized_batch_submissions_dropped
+                                .increment(1);
+                        }
+                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                            return Err(L1SubscriberError::Fatal {
+                                block_number,
+                                stage: "finalized batch observer delivery",
+                                source: eyre::eyre!(
+                                    "finalized batch submission observer is unavailable"
+                                ),
+                            });
+                        }
+                    }
                 }
             }
             // Publish derived L1 state only after the header has been admitted to every

@@ -24,16 +24,18 @@
 //!                                │                  ZoneEngine
 //!                                │               5. resolve payload
 //!                                │               6. newPayload
-//!                                │               7. persist proofs (file + directory sync)
-//!                                │               8. FCU (update head)
+//!                                │               7. FCU (update head)
 //!                                │                       │
 //!                                ◄── confirm ◄───────────┘
 //! ```
 //!
 //! The deposit queue uses a **peek / confirm** pattern: the engine peeks at
 //! the next L1 block, wraps it into [`ZonePayloadAttributes`], and only
-//! confirms (removes) the block after proof persistence and canonical forkchoice succeed.
-//! A failed build, proof write, or forkchoice leaves the block in the queue for retry.
+//! confirms (removes) the block after `newPayload` succeeds and before canonical forkchoice.
+//! A failed build or payload leaves the block in the queue for retry.
+//!
+//! Production never waits for witnesses: the proof collector gathers them in the background on a
+//! best-effort basis, and settlement collects any it still lacks.
 //!
 //! The zone assumes **instant finality** — head, safe, and finalized all point
 //! to the same block.
@@ -41,7 +43,7 @@
 use alloy_consensus::BlockHeader as _;
 use alloy_primitives::{Address, B256};
 use alloy_rpc_types_engine::{ForkchoiceState, PayloadAttributes as EthPayloadAttributes};
-use eyre::{OptionExt, WrapErr as _};
+use eyre::OptionExt;
 use reth_chainspec::EthereumHardforks;
 use reth_node_builder::ConsensusEngineHandle;
 use reth_payload_builder::PayloadBuilderHandle;
@@ -63,7 +65,6 @@ use zone_l1::{
 };
 use zone_p2p::{LeadershipSchedule, P2pPeerId};
 use zone_payload::{TempoImport, ZonePayloadAttributes, ZonePayloadTypes};
-use zone_sequencer::ProofCollectorHandle;
 
 /// Local block production permit backed by the effective leadership schedule.
 ///
@@ -136,11 +137,7 @@ trait AvailableBlockDrain {
     fn production_paused(&self) -> bool;
 
     /// Completes and consumes one block.
-    async fn advance_one(
-        &mut self,
-        block: Self::Block,
-        stop: &CancellationToken,
-    ) -> eyre::Result<()>;
+    async fn advance_one(&mut self, block: Self::Block) -> eyre::Result<()>;
 }
 
 /// Drain available blocks until the queue is empty, cancellation is observed, the Portal is
@@ -172,7 +169,7 @@ where
         if drain.production_paused() {
             return Ok(None);
         }
-        drain.advance_one(block, stop).await?;
+        drain.advance_one(block).await?;
     }
 }
 
@@ -210,8 +207,6 @@ pub struct ZoneEngine {
     portal_address: Address,
     /// Optional per-anchor leadership permit. `None` runs the legacy single-sequencer mode.
     production_permit: Option<ProductionPermit>,
-    /// Proof WAL writer invoked after execution and before canonicalization.
-    proof_collector: Option<ProofCollectorHandle>,
     /// Depositors whose L1 deposits are credited. `None` credits every deposit.
     deposit_allowlist: Option<DepositAllowlist>,
 }
@@ -227,7 +222,6 @@ impl ZoneEngine {
         fee_recipient: Address,
         encryption_keys: EncryptionKeyRing,
         portal_address: Address,
-        proof_collector: Option<ProofCollectorHandle>,
     ) -> Self {
         Self {
             chain_spec,
@@ -240,7 +234,6 @@ impl ZoneEngine {
             encryption_keys,
             portal_address,
             production_permit: None,
-            proof_collector,
             deposit_allowlist: None,
         }
     }
@@ -352,12 +345,8 @@ impl ZoneEngine {
     /// Wraps the given L1 block into [`ZonePayloadAttributes`], sends FCU
     /// with those attributes, waits for the payload to be built, then submits
     /// via `newPayload`. Only confirms (removes) the L1 block from the
-    /// deposit queue after witness persistence and canonicalization succeed.
-    async fn advance(
-        &mut self,
-        available: AvailableTempoImport,
-        stop: &CancellationToken,
-    ) -> eyre::Result<()> {
+    /// deposit queue after `newPayload` succeeds.
+    async fn advance(&mut self, available: AvailableTempoImport) -> eyre::Result<()> {
         let AvailableTempoImport {
             l1_block,
             checkpoint_headers,
@@ -458,16 +447,6 @@ impl ZoneEngine {
             eyre::bail!("Invalid payload for block {block_number}");
         }
 
-        if let Some(collector) = &self.proof_collector {
-            stop.run_until_cancelled(collector.collect_and_persist(block_number, header.hash()))
-                .await
-                .ok_or_else(|| eyre::eyre!("engine stopped while waiting for witness persistence"))?
-                .wrap_err_with(|| {
-                    format!("collect proofs before canonicalizing Zone block {block_number}")
-                })?;
-        }
-
-        // Consume the L1 input only after witness persistence succeeds.
         if checkpoint_only {
             self.deposit_queue.defer_through(l1_num_hash)?;
         } else {
@@ -543,12 +522,8 @@ impl AvailableBlockDrain for ZoneEngine {
         self.l1_block_tracker.portal_paused()
     }
 
-    async fn advance_one(
-        &mut self,
-        block: Self::Block,
-        stop: &CancellationToken,
-    ) -> eyre::Result<()> {
-        self.advance(block, stop).await
+    async fn advance_one(&mut self, block: Self::Block) -> eyre::Result<()> {
+        self.advance(block).await
     }
 }
 
@@ -1014,11 +989,7 @@ mod tests {
             self.portal_paused.load(Ordering::Relaxed)
         }
 
-        async fn advance_one(
-            &mut self,
-            block: Self::Block,
-            _stop: &CancellationToken,
-        ) -> eyre::Result<()> {
+        async fn advance_one(&mut self, block: Self::Block) -> eyre::Result<()> {
             if let Some(started) = self.first_started.take() {
                 let _ = started.send(());
                 self.release_first

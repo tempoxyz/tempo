@@ -39,6 +39,9 @@ pub(crate) struct L1SubscriberMetrics {
     /// Number of failed L1 block preparation fetches.
     pub fetch_failures: Counter,
 
+    /// Number of finalized batch submissions dropped because the shadow prover queue was full.
+    pub finalized_batch_submissions_dropped: Counter,
+
     /// Number of reconnect attempts after the subscriber exits or errors.
     pub reconnects: Counter,
 }

@@ -101,7 +101,8 @@ where
 /// * [`BroadcasterShutdown::Stop`] is the abrupt path. It flushes what is already durable and
 ///   abandons the rest.
 ///
-/// Neither path ever broadcasts a canonical-only block.
+/// Neither path ever broadcasts a canonical-only block. Blocks carry their witness when one is
+/// already stored; broadcast never waits for one.
 pub(crate) async fn broadcast_persisted_blocks<P>(
     provider: P,
     commands: mpsc::Sender<P2pCommand>,
@@ -164,9 +165,9 @@ pub(crate) async fn broadcast_persisted_blocks<P>(
                     Ok(BroadcasterShutdown::Stop) => {
                         // Stopped without an engine-complete drain, so the canonical head is
                         // still moving and cannot be a flush target. Publish what is already
-                        // durable and abandon the rest: a canonical-only block would disappear
-                        // from this node on restart, leaving followers on a height no replica can
-                        // serve.
+                        // durable and abandon the rest: a
+                        // canonical-only block would disappear from this node on restart,
+                        // leaving followers on a height no replica can serve.
                         match provider.last_block_number() {
                             Ok(persisted_head) => {
                                 if let Err(err) = broadcast_persisted_range(
@@ -323,16 +324,8 @@ fn encode_block_with_witness(
     hash: B256,
     proofs: Option<&ProofCollectorHandle>,
 ) -> eyre::Result<EncodedBlock> {
-    let witness = if let Some(proofs) = proofs {
-        let witness = proofs.get(number, hash);
-        eyre::ensure!(
-            witness.is_some() || !proofs.requires_witness(number),
-            "unsettled block {number} has no retained witness to replicate"
-        );
-        witness
-    } else {
-        None
-    };
+    // Witnesses are best-effort; peers import blocks without one.
+    let witness = proofs.and_then(|proofs| proofs.get(number, hash));
     let witness = witness.as_deref().map(minicbor_serde::to_vec).transpose()?;
     Ok(EncodedBlock { block, witness })
 }
