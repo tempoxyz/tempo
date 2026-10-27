@@ -33,7 +33,7 @@ use commonware_consensus::{
 };
 use commonware_runtime::{Clock, Handle, Metrics, Spawner, deterministic};
 use commonware_utils::{Acknowledgement as _, acknowledgement::Exact};
-use eyre::{Report, WrapErr as _};
+use eyre::{OptionExt as _, Report, WrapErr as _};
 use parking_lot::Mutex;
 use reth_ethereum::rpc::eth::primitives::BlockNumHash;
 use reth_ethereum_engine_primitives::EthBuiltPayload;
@@ -41,7 +41,7 @@ use reth_node_core::primitives::{RecoveredBlock, SealedBlock};
 use tempo_node::TempoExecutionData;
 use tempo_payload_types::{EncodedBlock, TempoBuiltPayload, TempoPayloadAttributes};
 use tempo_primitives::{Block as TempoBlock, TempoConsensusContext, TempoHeader};
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 
 use crate::{
     consensus::{Digest, block::Block},
@@ -74,26 +74,23 @@ pub(super) fn make_block_with_proposer(
     parent: Digest,
     proposer: tempo_primitives::ed25519::PublicKey,
 ) -> Block {
-    Block::from_execution_block_unchecked(
-        SealedBlock::seal_slow(TempoBlock {
-            header: TempoHeader {
-                inner: alloy_consensus::Header {
-                    number: height,
-                    parent_hash: parent.0,
-                    ..Default::default()
-                },
-                consensus_context: TempoConsensusContext {
-                    epoch: 0,
-                    view,
-                    parent_view: view.saturating_sub(1),
-                    proposer,
-                },
+    Block::from_execution_block_unchecked(SealedBlock::seal_slow(TempoBlock {
+        header: TempoHeader {
+            inner: alloy_consensus::Header {
+                number: height,
+                parent_hash: parent.0,
                 ..Default::default()
             },
-            body: Default::default(),
-        }),
-        None,
-    )
+            consensus_context: Some(TempoConsensusContext {
+                epoch: 0,
+                view,
+                parent_view: view.saturating_sub(1),
+                proposer,
+            }),
+            ..Default::default()
+        },
+        body: Default::default(),
+    }))
 }
 
 /// Wraps `block` in a [`TempoBuiltPayload`] the way the payload builder
@@ -102,7 +99,6 @@ pub(super) fn built_payload(block: &Block) -> TempoBuiltPayload {
     let recovered = RecoveredBlock::new_sealed(block.block().clone(), Vec::new());
     TempoBuiltPayload::new(
         EthBuiltPayload::new(Arc::new(recovered), U256::ZERO, None, None),
-        None,
         None,
         Duration::ZERO,
         Duration::ZERO,
@@ -271,6 +267,11 @@ struct FakeExecutionInner {
     scripted_builds: Mutex<VecDeque<TempoBuiltPayload>>,
     /// Blocks servable through `block_by_digest`.
     bodies: Mutex<HashMap<B256, Block>>,
+    /// The durable tip. Follows the head of every accepted FCU and seeded
+    /// block unless persistence is manual.
+    durable: watch::Sender<Option<BlockNumHash>>,
+    /// Only [`FakeExecution::persist`] moves the durable tip while set.
+    manual_persistence: AtomicBool,
 }
 
 /// Records cancellation when an unresolved fake payload future is dropped.
@@ -330,11 +331,13 @@ impl FakeExecution {
                 scripted_builds: Mutex::new(VecDeque::new()),
                 bodies: Mutex::new(HashMap::from([(
                     genesis,
-                    Block::from_execution_block_unchecked(
-                        SealedBlock::new_unchecked(TempoBlock::default(), genesis),
-                        None,
-                    ),
+                    Block::from_execution_block_unchecked(SealedBlock::new_unchecked(
+                        TempoBlock::default(),
+                        genesis,
+                    )),
                 )])),
+                durable: watch::Sender::new(Some(BlockNumHash::new(0, genesis))),
+                manual_persistence: AtomicBool::new(false),
             }),
         }
     }
@@ -353,6 +356,31 @@ impl FakeExecution {
         state.blocks.insert(digest, (height, parent));
         state.canonical.insert(height, digest);
         state.head = digest;
+        self.persist_head(&state);
+    }
+
+    /// Stops the durable tip from following the head; only
+    /// [`Self::persist`] moves it afterwards.
+    pub(super) fn persist_manually(&self) {
+        self.inner.manual_persistence.store(true, Ordering::SeqCst);
+    }
+
+    /// Moves the durable tip to `digest` at `height` and notifies the
+    /// executor, like a completed persistence run.
+    pub(super) fn persist(&self, height: u64, digest: Digest) {
+        self.inner
+            .durable
+            .send_replace(Some(BlockNumHash::new(height, digest.0)));
+    }
+
+    fn persist_head(&self, state: &ElState) {
+        if self.inner.manual_persistence.load(Ordering::SeqCst) {
+            return;
+        }
+        let height = state.blocks[&state.head].0;
+        self.inner
+            .durable
+            .send_replace(Some(BlockNumHash::new(height, state.head)));
     }
 
     pub(super) fn set_finalized(&self, height: u64, digest: Digest) {
@@ -585,6 +613,7 @@ impl FakeExecution {
             height -= 1;
         }
         state.head = fcu.head_block_hash;
+        self.persist_head(&state);
 
         if let Some(&(finalized_height, _)) = state.blocks.get(&fcu.finalized_block_hash) {
             state.finalized = Some(BlockNumHash::new(
@@ -600,7 +629,7 @@ impl FakeExecution {
 impl ExecutionLayer for FakeExecution {
     fn current_forkchoice_state(&self) -> eyre::Result<ForkchoiceState> {
         let state = self.inner.state.lock();
-        eyre::ensure!(state.head != B256::ZERO, "fake has a zero canonical head");
+        eyre::ensure!(!state.head.is_zero(), "fake has a zero canonical head");
         let finalized_block_hash = state
             .finalized
             .map_or(B256::ZERO, |finalized| finalized.hash);
@@ -632,6 +661,27 @@ impl ExecutionLayer for FakeExecution {
         Ok(self.inner.state.lock().canonical.get(&height).copied())
     }
 
+    fn durable_block_at_or_below(&self, height: u64) -> eyre::Result<BlockNumHash> {
+        let mut durable = self
+            .inner
+            .durable
+            .borrow()
+            .expect("the fake always has a durable tip");
+        let state = self.inner.state.lock();
+        while durable.number > height {
+            let &(_, parent) = state
+                .blocks
+                .get(&durable.hash)
+                .ok_or_eyre("the fake's durable chain has an unknown block")?;
+            durable = BlockNumHash::new(durable.number - 1, parent);
+        }
+        Ok(durable)
+    }
+
+    fn subscribe_persisted_block(&self) -> watch::Receiver<Option<BlockNumHash>> {
+        self.inner.durable.subscribe()
+    }
+
     fn block_by_digest(&self, digest: Digest) -> eyre::Result<Option<Block>> {
         if let Some(outcome) = self.inner.block_overrides.pop(&digest.0) {
             return outcome
@@ -645,7 +695,7 @@ impl ExecutionLayer for FakeExecution {
         &self,
         payload: TempoExecutionData,
     ) -> impl Future<Output = eyre::Result<PayloadStatus>> + Send + 'static {
-        let block = Block::from_execution_block_unchecked(payload.block, None);
+        let block = Block::from_execution_block_unchecked(payload.block);
         let (digest, height, parent) = (
             block.digest().0,
             block.height().get(),
@@ -683,7 +733,7 @@ impl ExecutionLayer for FakeExecution {
                     Digest(digest)
                 )
             })?;
-            if status == PayloadStatusEnum::Valid {
+            if status.is_valid() {
                 inner.bodies.lock().insert(digest, block);
                 let mut state = inner.state.lock();
                 state.buffered.remove(&digest);
@@ -697,7 +747,7 @@ impl ExecutionLayer for FakeExecution {
                     state.buffered.remove(&hash);
                     state.blocks.insert(hash, block);
                 }
-            } else if status == PayloadStatusEnum::Syncing {
+            } else if status.is_syncing() {
                 inner.state.lock().buffered.insert(digest, (height, parent));
             }
             Ok(PayloadStatus::from_status(status))

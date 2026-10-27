@@ -25,6 +25,8 @@ use rayon as _;
 mod error;
 pub use error::TempoEvmError;
 pub mod evm;
+#[cfg(feature = "genesis")]
+pub mod genesis;
 use core::num::NonZeroU64;
 use std::{borrow::Cow, sync::Arc};
 
@@ -51,8 +53,8 @@ use tempo_precompiles::{error::Result as TempoResult, storage::StorageActions};
 use tempo_revm::{TempoTxEnv, evm::TempoContext, gas_params::tempo_gas_params_with_amsterdam};
 
 pub use tempo_revm::{
-    FeeTokenResolver, ProtocolFeeContext, ProtocolFeeManager, TempoBlockEnv, TempoFeeManager,
-    TempoInvalidTransaction, TempoStateAccess,
+    FeeTokenResolver, ProtocolFeeContext, ProtocolFeeManager, ResolvedFeeToken, TempoBlockEnv,
+    TempoFeeManager, TempoInvalidTransaction, TempoStateAccess,
 };
 
 #[cfg(test)]
@@ -166,7 +168,7 @@ impl ConfigureEvm for TempoEvmConfig {
         let EvmEnv { cfg_env, block_env } = EvmEnv::for_eth_block(
             header,
             self.chain_spec(),
-            self.chain_spec().chain().id(),
+            self.chain_spec().chain_id(),
             self.chain_spec()
                 .blob_params_at_timestamp(header.timestamp()),
         );
@@ -201,7 +203,11 @@ impl ConfigureEvm for TempoEvmConfig {
                     .info
                     .epoch_length()
                     .unwrap_or(NonZeroU64::MIN),
-                proposer_public_key: Some(header.consensus_context.proposer),
+                proposer_public_key: header.consensus_context.map(|ctx| ctx.proposer),
+                configurable_account_recovery_factory: self
+                    .chain_spec()
+                    .info
+                    .configurable_account_recovery_factory(),
             },
         })
     }
@@ -224,7 +230,7 @@ impl ConfigureEvm for TempoEvmConfig {
                 .next_block_base_fee(parent, attributes.timestamp)
                 .unwrap_or_default(),
             self.chain_spec(),
-            self.chain_spec().chain().id(),
+            self.chain_spec().chain_id(),
             self.chain_spec()
                 .blob_params_at_timestamp(attributes.timestamp),
         );
@@ -256,9 +262,11 @@ impl ConfigureEvm for TempoEvmConfig {
                     .info
                     .epoch_length()
                     .unwrap_or(NonZeroU64::MIN),
-                proposer_public_key: Some(
-                    attributes.consensus_context.unwrap_or_default().proposer,
-                ),
+                proposer_public_key: attributes.consensus_context.map(|ctx| ctx.proposer),
+                configurable_account_recovery_factory: self
+                    .chain_spec()
+                    .info
+                    .configurable_account_recovery_factory(),
             },
         })
     }
@@ -284,7 +292,7 @@ impl ConfigureEvm for TempoEvmConfig {
             },
             general_gas_limit: block.header().general_gas_limit,
             shared_gas_limit: block.header().shared_gas_limit,
-            consensus_context: Some(block.header().consensus_context),
+            consensus_context: block.header().consensus_context,
         })
     }
 
@@ -371,20 +379,17 @@ mod tests {
 
         // Verify Tempo-specific field
         assert_eq!(evm_env.block_env.timestamp_millis_part, 500);
-        assert_eq!(
-            evm_env.block_env.proposer_public_key,
-            Some(TempoConsensusContext::default().proposer)
-        );
+        assert_eq!(evm_env.block_env.proposer_public_key, None);
 
         let proposer = PublicKey::from_seed(0xab);
         let evm_env = evm_config
             .evm_env(&TempoHeader {
-                consensus_context: TempoConsensusContext {
+                consensus_context: Some(TempoConsensusContext {
                     epoch: 1,
                     view: 2,
                     parent_view: 1,
                     proposer,
-                },
+                }),
                 ..header
             })
             .unwrap();
@@ -481,10 +486,7 @@ mod tests {
 
         // Verify Tempo-specific field
         assert_eq!(evm_env.block_env.timestamp_millis_part, 750);
-        assert_eq!(
-            evm_env.block_env.proposer_public_key,
-            Some(TempoConsensusContext::default().proposer)
-        );
+        assert_eq!(evm_env.block_env.proposer_public_key, None);
 
         let proposer = PublicKey::from_seed(0xcd);
         let evm_env = evm_config
@@ -527,7 +529,7 @@ mod tests {
 
         let system_tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(
             TxLegacy {
-                chain_id: Some(reth_chainspec::EthChainSpec::chain(&*chainspec).id()),
+                chain_id: Some(chainspec.chain_id()),
                 nonce: 0,
                 gas_price: 0,
                 gas_limit: 0,

@@ -19,8 +19,10 @@
 //! tip. Otherwise HEAD is the delivered finalized block. The update runs on a
 //! later iteration.
 //! Finalized blocks are acknowledged to the marshal actor once the update
-//! finalizing them is accepted. Finality work is scheduled ahead of builds,
-//! verification, and notarized convergence.
+//! finalizing them is accepted and the execution layer has durably persisted
+//! them, so that a crash never loses a block the marshal actor considers
+//! processed. Finality work is scheduled ahead of builds, verification, and
+//! notarized convergence.
 //!
 //! Builds fetch and deliver their parent, then issue the forkchoice update
 //! with payload attributes on VALID, using the finalized state captured when
@@ -107,9 +109,10 @@ use futures::{
     stream::FuturesUnordered,
 };
 use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
+use reth_ethereum::rpc::eth::primitives::BlockNumHash;
 use tempo_node::TempoExecutionData;
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
-use tokio::select;
+use tokio::{select, sync::watch};
 use tracing::{
     Instrument as _, Level, Span, debug, error, error_span, info, info_span, instrument, warn,
 };
@@ -167,12 +170,20 @@ pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal> {
     pending_finalizations: VecDeque<FinalizedBlockRequest>,
 
     /// Finalized blocks the execution layer has accepted, waiting for the
-    /// forkchoice update that finalizes them before they are acknowledged
-    /// to the marshal actor. In height order.
-    pending_acknowledgements: VecDeque<FinalizedBlockRequest>,
+    /// forkchoice update that finalizes them and for the execution layer to
+    /// durably persist them before they are acknowledged to the marshal
+    /// actor. Bounded by the marshal actor's maximum of pending acks, and
+    /// during startup backfill by how far the execution layer's persistence
+    /// lags its head.
+    pending_acknowledgements: BTreeMap<Height, FinalizedBlockRequest>,
+
+    /// Marked changed after every persistence run of the execution layer,
+    /// which may make pending acknowledgements durable.
+    persisted_blocks: watch::Receiver<Option<BlockNumHash>>,
 
     /// New-payload requests the execution layer may have executed since the
-    /// last successful forkchoice update, see [`DELIVERIES_PER_FORKCHOICE_UPDATE`].
+    /// last successful or stale-skipped forkchoice update, see
+    /// [`DELIVERIES_PER_FORKCHOICE_UPDATE`].
     deliveries_since_forkchoice: usize,
 
     /// The newest round observed through build and verify contexts or
@@ -235,7 +246,9 @@ pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal> {
     /// consensus round. Initialized from the local finalized state.
     delivered_finalized_tip: (Round, Height, Digest),
     /// The latest finalized tip announced by consensus, which may still
-    /// need to be delivered to the execution layer.
+    /// need to be delivered to the execution layer. Never below the finalized
+    /// blocks received from the marshal actor: each counts as a tip in the
+    /// round it was proposed in.
     network_finalized_tip: (Round, Height, Digest),
 
     /// The parent selected by the latest consensus context, independently of
@@ -256,15 +269,15 @@ pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal> {
 #[derive(Clone)]
 struct Metrics {
     /// Number of finalized blocks whose proposer matches this node's public key.
-    finalized_blocks_proposed_by_self: commonware_runtime::telemetry::metrics::Registered<Counter>,
+    finalized_blocks_proposed_by_self: commonware_runtime::telemetry::metrics::Counter,
     /// Height distance from the locally canonicalized finalized tip up to
     /// the network's finalized tip: the undelivered finalized backlog.
-    finalization_lag: commonware_runtime::telemetry::metrics::Registered<Gauge>,
+    finalization_lag: commonware_runtime::telemetry::metrics::Gauge,
     /// Height distance from the execution layer's head to the pending head:
     /// the convergence backlog. Negative when consensus re-anchored below
     /// the head; holds its last value while the pending head's height is
     /// unknown (its body has not arrived yet).
-    convergence_depth: commonware_runtime::telemetry::metrics::Registered<Gauge>,
+    convergence_depth: commonware_runtime::telemetry::metrics::Gauge,
 }
 
 impl Metrics {
@@ -377,7 +390,7 @@ where
         };
         let finalized_round = if finalized.1 == finalized_tip.2 {
             finalized_tip.0
-        } else if finalized.0 == Height::zero() {
+        } else if finalized.0.is_zero() {
             Round::zero()
         } else {
             execution_node
@@ -387,6 +400,8 @@ where
                 .context()
                 .round
         };
+
+        let persisted_blocks = execution_node.subscribe_persisted_block();
 
         Ok(Self {
             context: ContextCell::new(context),
@@ -398,7 +413,8 @@ where
             fcu_heartbeat_timer: OptionFuture::none(),
 
             pending_finalizations: VecDeque::new(),
-            pending_acknowledgements: VecDeque::new(),
+            pending_acknowledgements: BTreeMap::new(),
+            persisted_blocks,
             deliveries_since_forkchoice: 0,
             latest_consensus_round: finalized_tip.0,
             pending_build: None,
@@ -526,6 +542,16 @@ where
 
                 _ = (&mut self.fcu_heartbeat_timer).fuse() => {
                     self.send_forkchoice_update_heartbeat();
+                },
+
+                changed = self.persisted_blocks.changed() => {
+                    let result = changed
+                        .wrap_err("execution layer closed its persisted-block notifications")
+                        .and_then(|()| self.acknowledge_persisted());
+                    if let Err(error) = result {
+                        log_fatal(&error);
+                        break;
+                    }
                 },
             }
         }
@@ -719,7 +745,7 @@ where
         if !walk.awaits(digest) {
             return Ok(());
         }
-        if status == PayloadStatusEnum::Syncing && digest == self.pending_head.digest {
+        if status.is_syncing() && digest == self.pending_head.digest {
             self.pending_head.executed = None;
         }
         let (_, finalized_height, finalized_digest) = self.network_finalized_tip;
@@ -872,19 +898,6 @@ where
         build: Option<(Span, oneshot::Sender<TempoBuiltPayload>)>,
         response: Option<eyre::Result<ForkchoiceUpdated>>,
     ) -> eyre::Result<()> {
-        let Some(response) = response else {
-            // No update was submitted because the execution layer is ahead
-            // of tracked finality. Advance the tracked state for replay and
-            // acknowledgements; a skipped update cannot register a build.
-            if build.is_some() {
-                // Dropping the build's response channel signals the failure
-                // to the subscriber.
-                info!("tracked finality is below the execution layer's; dropping the build");
-            }
-            self.local_state = target;
-            self.acknowledge_finalized();
-            return Ok(());
-        };
         let diverged = || {
             format!(
                 "forkchoice update onto head `{}` at height `{}` and finalized block `{}` at \
@@ -893,19 +906,39 @@ where
                 target.head.1, target.head.0, target.finalized.1, target.finalized.0,
             )
         };
-        let response = response.wrap_err_with(diverged)?;
-        if !response.is_valid() {
-            return Err(Report::msg(response.payload_status)).wrap_err_with(diverged);
-        }
+        let accepted = match response {
+            // No update was submitted because the execution layer is ahead
+            // of tracked finality.
+            None => None,
+            Some(Ok(updated)) if updated.is_valid() => Some(updated),
+            Some(Ok(updated)) => {
+                return Err(Report::msg(updated.payload_status)).wrap_err_with(diverged);
+            }
+            Some(Err(error)) => return Err(error).wrap_err_with(diverged),
+        };
 
+        // A skipped update settles the deliveries like an accepted one: an
+        // update forced by a full batch would be skipped just the same, and
+        // with the count left full it would be rescheduled ahead of the
+        // mailbox forever.
         self.deliveries_since_forkchoice = 0;
         self.local_state = target;
-        self.acknowledge_finalized();
+        self.acknowledge_persisted()?;
 
         // Dropping the build's response channel signals the failure to the
         // subscriber.
-        match (build, response.payload_id) {
-            (Some((cause, response)), Some(payload_id)) => {
+        match (build, accepted) {
+            (None, _) => {}
+            (Some(_dropped_to_signal_failure), None) => {
+                info!("tracked finality is below the execution layer's; dropping the build");
+            }
+            (
+                Some((cause, response)),
+                Some(ForkchoiceUpdated {
+                    payload_id: Some(payload_id),
+                    ..
+                }),
+            ) => {
                 let job = StartPayloadJob {
                     cause,
                     payload_id,
@@ -914,19 +947,19 @@ where
                 self.payload_jobs
                     .push(run_payload_job(self.execution_node.clone(), job).boxed());
             }
-            (Some(_dropped_to_signal_failure), None) => {
+            (Some(_dropped_to_signal_failure), Some(_)) => {
                 warn!("execution layer did not return a payload id for the build request");
             }
-            (None, _) => {}
         }
         Ok(())
     }
 
     /// A non-`VALID` answer is fatal. Otherwise the block becomes the next
     /// finalized target and is acknowledged once the forkchoice update
-    /// finalizing it lands - or right away if the execution layer already
-    /// finalized it (a re-delivery). The marshal actor delivers the
-    /// finalized chain in order; that order is trusted, not checked.
+    /// finalizing it lands - or without another update if the execution
+    /// layer already finalized it (a re-delivery) - and the execution layer
+    /// durably persisted it. The marshal actor delivers the finalized chain
+    /// in order; that order is trusted, not checked.
     #[instrument(
         skip_all,
         fields(
@@ -971,11 +1004,9 @@ where
         if block.height() <= self.local_state.finalized.0 {
             // NOTE: this block is already final on the execution layer. This
             // can happen if marshal is anchored below the EL and delivers
-            // finalized blocks the EL already knows about. In this case, it
-            // makes sense to ACK immediately rather than wait for an FCU
-            // sweep.
-            // The execution layer confirms it is the block it finalized at
-            // this height before it is acknowledged.
+            // finalized blocks the EL already knows about. The execution layer
+            // must confirm it is the block it finalized at this height before
+            // it is queued for acknowledgement.
             let canonical = self
                 .execution_node
                 .canonical_block_hash(block.height().get())
@@ -994,15 +1025,24 @@ where
                 block.digest(),
                 block.height(),
             );
-            self.acknowledge(request);
-        } else {
-            self.pending_acknowledgements.push_back(request);
         }
-        Ok(())
+        self.pending_acknowledgements
+            .insert(block.height(), request);
+        self.acknowledge_persisted()
     }
 
-    /// Acknowledges the queued blocks the last accepted forkchoice update
-    /// finalized. Deliveries are in chain order, so height identifies them.
+    /// Acknowledges the pending blocks that the last accepted forkchoice
+    /// update finalized and that the execution layer durably persisted.
+    ///
+    /// Pending blocks are finalized and contiguous in height, so a durable
+    /// block matching the pending block at its height proves every pending
+    /// block up to it durable. The durable block is looked up at or below the
+    /// highest pending finalized height. A mismatch means the persisted
+    /// block lies on a branch the execution layer reorged away from; its
+    /// next persistence run unwinds it and triggers another attempt.
+    /// If that branch forks off inside the pending range, the pending blocks
+    /// below the fork are durable but wait for the unwind: it lowers the
+    /// durable block to the fork point, where it matches.
     ///
     /// NOTE: the tracked state is the reference, not the execution layer's
     /// own finalized marker. An update whose head is a canonical ancestor of
@@ -1012,17 +1052,42 @@ where
     /// stall the marshal actor. The blocks are canonical and held by the
     /// execution layer either way; the marker follows with the first update
     /// that moves the head onto a new block.
-    fn acknowledge_finalized(&mut self) {
+    #[instrument(skip_all, err)]
+    fn acknowledge_persisted(&mut self) -> eyre::Result<()> {
         let finalized = self.local_state.finalized.0;
-        while let Some(request) = self.pending_acknowledgements.front() {
-            if request.block.height() > finalized {
-                break;
-            }
-            let Some(request) = self.pending_acknowledgements.pop_front() else {
-                break;
-            };
+        let (Some((lowest, _)), Some((highest, _))) = (
+            self.pending_acknowledgements.first_key_value(),
+            self.pending_acknowledgements.last_key_value(),
+        ) else {
+            return Ok(());
+        };
+        if *lowest > finalized {
+            return Ok(());
+        }
+        let durable = self
+            .execution_node
+            .durable_block_at_or_below((*highest).min(finalized).get())
+            .wrap_err("failed reading the execution layer's durable block")?;
+        let height = Height::new(durable.number);
+        // `None` if the durable block is below every pending block.
+        let Some(request) = self.pending_acknowledgements.get(&height) else {
+            return Ok(());
+        };
+        if request.block.digest().0 != durable.hash {
+            debug!(
+                durable.height = durable.number,
+                durable.hash = %durable.hash,
+                finalized.digest = %request.block.digest(),
+                "durable block conflicts with the finalized block at its height; \
+                waiting for the execution layer to unwind it",
+            );
+            return Ok(());
+        }
+        let pending = self.pending_acknowledgements.split_off(&height.next());
+        for (_, request) in std::mem::replace(&mut self.pending_acknowledgements, pending) {
             self.acknowledge(request);
         }
+        Ok(())
     }
 
     /// Acknowledges a block the execution layer finalized to the marshal actor.
@@ -1034,14 +1099,17 @@ where
         } = request;
         let _entered = cause.enter();
         if let Some(public_key) = self.public_key.as_ref()
-            && block.header().consensus_context.proposer.to_inner() == *public_key
+            && block
+                .header()
+                .consensus_context
+                .is_some_and(|context| context.proposer.to_inner() == *public_key)
         {
             self.metrics.finalized_blocks_proposed_by_self.inc();
         }
         info!(
             block.digest = %block.digest(),
             block.height = %block.height(),
-            "finalized block is final on the execution layer; acknowledging it",
+            "finalized block is final and durable on the execution layer; acknowledging it",
         );
         acknowledgment.acknowledge();
     }
@@ -1097,7 +1165,12 @@ where
                 Height::new(height),
             )
             .await
-            .wrap_err_with(|| format!("failed backfilling block for height `{height}`"))?;
+            .wrap_err_with(|| {
+                format!(
+                    "failed backfilling block for height `{height}`: execution state is likely stale. \
+                     Run as a follower to sync to tip or restore a fresher snapshot"
+                )
+            })?;
 
             let (ack, _wait) = Exact::handle();
             let request = FinalizedBlockRequest {
@@ -1189,15 +1262,22 @@ where
             }
             Command::Finalize(finalized) => match *finalized {
                 Update::Tip(round, height, digest) => {
-                    self.record_convergence_target(round, (round.view(), digest));
-                    if round > self.network_finalized_tip.0 {
-                        if digest != self.network_finalized_tip.2 {
-                            self.pending_head.executed = None;
-                        }
-                        self.network_finalized_tip = (round, height, digest);
-                    }
+                    self.record_finalized_tip(round, height, digest);
                 }
                 Update::Block(block, acknowledgement) => {
+                    // Marshal reports a tip before the blocks up to it, except
+                    // after a crash: its block archive can keep a finalized
+                    // block whose finalization was lost, and marshal delivers
+                    // that block without a tip. The block proves its own
+                    // finality, so it is reported as a tip too, before its
+                    // delivery can move local finality past the tip. Blocks
+                    // at or below the tip were proposed no later than the
+                    // tip's round, so round order ignores them.
+                    self.record_finalized_tip(
+                        block.context().round,
+                        block.height(),
+                        block.digest(),
+                    );
                     self.pending_finalizations.push_back(FinalizedBlockRequest {
                         cause,
                         block,
@@ -1234,6 +1314,18 @@ where
             debug!(%round, "verification replaced a pending one for the same round");
         }
         self.queued_verifications.insert(round, verification);
+    }
+
+    /// Records a finalized tip, which also selects the finalized block as the
+    /// convergence target. Tips are ordered by round.
+    fn record_finalized_tip(&mut self, round: Round, height: Height, digest: Digest) {
+        self.record_convergence_target(round, (round.view(), digest));
+        if round > self.network_finalized_tip.0 {
+            if digest != self.network_finalized_tip.2 {
+                self.pending_head.executed = None;
+            }
+            self.network_finalized_tip = (round, height, digest);
+        }
     }
 
     /// Records the newest observed consensus round and its convergence target.
@@ -2350,7 +2442,7 @@ async fn execute_build(
         Ok(status) => status,
         Err(error) => return BuildOutcome::ParentDeliveryFailed(error),
     };
-    if status != PayloadStatusEnum::Valid {
+    if !status.is_valid() {
         warn!(%status, "build parent was not VALID");
         return BuildOutcome::Aborted {
             delivery_attempted: true,
@@ -2410,6 +2502,8 @@ async fn execute_build(
     fields(
         block.digest = %request.block.digest(),
         block.height = %request.block.height(),
+        proposal.epoch = request.block.context().round.epoch().get(),
+        proposal.view = request.block.context().round.view().get(),
     ),
 )]
 async fn execute_finalization(
@@ -2429,6 +2523,8 @@ async fn execute_finalization(
         block.digest = %block.digest(),
         block.height = %block.height(),
         block.parent_digest = %block.parent_digest(),
+        proposal.epoch = block.context().round.epoch().get(),
+        proposal.view = block.context().round.view().get(),
     ),
 )]
 async fn execute_delivery(
@@ -2455,12 +2551,9 @@ async fn deliver_block(
     execution_node: &impl ExecutionLayer,
     block: Arc<Block>,
 ) -> eyre::Result<PayloadStatusEnum> {
-    let (block, block_access_list) = Arc::unwrap_or_clone(block).into_parts();
+    let block = Arc::unwrap_or_clone(block).into_execution_block();
     let payload_status = execution_node
-        .new_payload(TempoExecutionData {
-            block,
-            block_access_list,
-        })
+        .new_payload(TempoExecutionData { block })
         .await
         .wrap_err("failed sending new-payload request to execution layer")?;
     if payload_status.is_valid() {
@@ -2569,11 +2662,9 @@ async fn run_payload_job(
             }
             // The application received the block and may propose it; hand
             // the body to the actor loop for a later build on this proposal.
-            let (execution_block, block_access_list, _) =
-                retained.into_consensus_execution_payload();
+            let (execution_block, _) = retained.into_consensus_execution_payload();
             Some(Arc::new(Block::from_execution_block_unchecked(
                 execution_block,
-                block_access_list,
             )))
         }
         Some(Err(error)) => {

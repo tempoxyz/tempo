@@ -78,7 +78,7 @@ impl TempoBlockAssembler {
             general_gas_limit,
             timestamp_millis_part,
             shared_gas_limit,
-            consensus_context: consensus_context.unwrap_or_default(),
+            consensus_context,
         }))
     }
 }
@@ -237,8 +237,8 @@ mod tests {
         // Verify body
         assert_eq!(block.body.transactions.len(), 1);
 
-        // Missing build context produces an all-zero header context.
-        assert_eq!(block.header.consensus_context, Default::default());
+        // Verify consensus context is None when not provided
+        assert!(block.header.consensus_context.is_none());
     }
 
     #[test]
@@ -260,7 +260,7 @@ mod tests {
         let evm_env = EvmEnv {
             block_env: TempoBlockEnv {
                 inner: BlockEnv {
-                    number: U256::from(1),
+                    number: U256::ONE,
                     timestamp: U256::from(1000),
                     beneficiary: Address::repeat_byte(0x01),
                     basefee: 1,
@@ -325,7 +325,7 @@ mod tests {
         let block =
             BlockAssembler::assemble_block(&assembler, input).expect("should assemble block");
 
-        assert_eq!(block.header.consensus_context, ctx);
+        assert_eq!(block.header.consensus_context, Some(ctx));
     }
 
     #[test]
@@ -340,7 +340,7 @@ mod tests {
         let evm_env = EvmEnv {
             block_env: TempoBlockEnv {
                 inner: BlockEnv {
-                    number: U256::from(1),
+                    number: U256::ONE,
                     timestamp: U256::from(1000),
                     beneficiary: Address::repeat_byte(0x01),
                     basefee: 1,

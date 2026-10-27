@@ -9,10 +9,11 @@ use crate::consensus::{
 
 /// A possible finalized forkchoice target.
 ///
-/// Every execution header contains a consensus round, with zero used for genesis.
+/// Execution headers before TIP-1031 do not contain a consensus round. After
+/// activation, every newly observed finalization has one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Target {
-    pub(super) round: Round,
+    pub(super) round: Option<Round>,
     pub(super) digest: Digest,
 }
 
@@ -20,7 +21,7 @@ impl Target {
     pub(super) fn from_header(header: &SealedHeader<TempoHeader>) -> Self {
         let tip = header.num_hash();
         Self {
-            round: round_from_context(header.consensus_context),
+            round: header.consensus_context.map(round_from_context),
             digest: Digest(tip.hash),
         }
     }
@@ -30,12 +31,24 @@ impl Target {
     }
 
     pub(super) const fn from_finalization(round: Round, digest: Digest) -> Self {
-        Self { round, digest }
+        Self {
+            round: Some(round),
+            digest,
+        }
     }
 
-    /// A finalization supersedes targets from earlier consensus rounds.
+    /// Newly observed finalizations are post-TIP-1031 and always have a round.
+    /// They therefore supersede a roundless genesis or pre-activation target.
     pub(super) fn supersedes(&self, current: &Self) -> bool {
-        self.round > current.round
+        match (self.round, current.round) {
+            (Some(new), Some(old)) => new > old,
+            // TIP-1031 is active. In supported startup states, a roundless
+            // execution target is genesis; restoring partially synchronized
+            // pre-TIP execution state is unsupported. Any newly verified
+            // finalization therefore supersedes it.
+            (Some(_), None) => true,
+            _ => false,
+        }
     }
 }
 
@@ -56,13 +69,17 @@ mod tests {
         Digest(alloy_primitives::B256::with_last_byte(byte))
     }
 
-    fn execution_header(height: u64, round: Round, digest: Digest) -> SealedHeader<TempoHeader> {
-        let consensus_context = TempoConsensusContext {
+    fn execution_header(
+        height: u64,
+        round: Option<Round>,
+        digest: Digest,
+    ) -> SealedHeader<TempoHeader> {
+        let consensus_context = round.map(|round| TempoConsensusContext {
             epoch: round.epoch().get(),
             view: round.view().get(),
             parent_view: 0,
             proposer: PublicKey::from_seed(0),
-        };
+        });
         SealedHeader::new(
             TempoHeader {
                 inner: Header {
@@ -92,24 +109,24 @@ mod tests {
     }
 
     #[test]
-    fn finalized_target_supersedes_zero_round_execution_target() {
-        let header = execution_header(0, Round::zero(), digest(1));
-        let genesis = Target::from_header(&header);
+    fn finalized_target_supersedes_roundless_execution_target() {
+        let header = execution_header(100, None, digest(1));
+        let prefork = Target::from_header(&header);
         let finalized = Target::from_finalization(round(1), digest(2));
-        assert!(finalized.supersedes(&genesis));
+        assert!(finalized.supersedes(&prefork));
     }
 
     #[test]
-    fn zero_round_target_never_supersedes() {
-        let genesis = Target::from_header(&execution_header(0, Round::zero(), digest(1)));
+    fn roundless_target_never_supersedes() {
+        let roundless = Target::from_header(&execution_header(100, None, digest(1)));
         let finalized = Target::from_finalization(round(1), digest(2));
-        assert!(!genesis.supersedes(&finalized));
-        assert!(!genesis.supersedes(&genesis));
+        assert!(!roundless.supersedes(&finalized));
+        assert!(!roundless.supersedes(&roundless));
     }
 
     #[test]
     fn execution_target_uses_header_round() {
-        let header = execution_header(100, round(2), digest(1));
-        assert_eq!(Target::from_header(&header).round, round(2));
+        let header = execution_header(100, Some(round(2)), digest(1));
+        assert_eq!(Target::from_header(&header).round, Some(round(2)));
     }
 }
