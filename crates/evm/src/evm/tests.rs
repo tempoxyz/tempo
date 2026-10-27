@@ -4970,7 +4970,9 @@ fn test_fee_fallback_records_affordability_instead_of_exact_balances() -> eyre::
                 _ => None,
             })
             .collect();
+        // The handler records a second check of the selected token against the max fee.
         let expected: Vec<_> = (0..=selected)
+            .chain([selected])
             .map(|index| {
                 (
                     tokens[index],
