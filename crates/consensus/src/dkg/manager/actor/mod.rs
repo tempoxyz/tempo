@@ -1002,11 +1002,8 @@ where
                     info!("received an ACK");
                     self.metrics.acks_received.metric().inc();
                     dealer_state
-                        .receive_ack(storage, round.epoch(), from.clone(), ack)
+                        .receive_ack(storage, round.epoch(), from, ack)
                         .await
-                        .inspect_err(|error| {
-                            commonware_p2p::block!(self.config.blocker, from.clone(), %error, "invalid DKG acknowledgement");
-                        })
                         .wrap_err("invalid DKG acknowledgement")?;
                 } else {
                     info!("received an ACK, but we are not a dealer");

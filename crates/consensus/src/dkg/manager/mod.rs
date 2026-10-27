@@ -65,7 +65,7 @@ pub(crate) struct Config<TExecutionLayer, TMarshal, TBlocker> {
 
     pub(crate) me: PrivateKey,
 
-    /// Blocks peers that send invalid DKG dealings or acknowledgements.
+    /// Blocks peers that send invalid DKG dealings.
     pub(crate) blocker: TBlocker,
 
     pub(crate) mailbox_size: NonZeroUsize,
