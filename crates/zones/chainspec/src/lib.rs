@@ -61,22 +61,24 @@ impl ZoneChainSpec {
 
     /// Converts a genesis configuration using the Tempo fork schedule its L1 reports.
     ///
-    /// Used for parents whose schedule is not compiled into this binary, such as devnets. Tempo
-    /// forks the genesis leaves out activate at the reported times, explicit genesis activations
-    /// take precedence, and forks the schedule omits stay inactive.
+    /// The schedule replaces every Tempo fork field in the genesis: scheduled forks activate at
+    /// the reported times and all others are disabled. Ethereum activations keep their genesis
+    /// values.
     pub fn from_genesis_with_l1_schedule(
         mut genesis: Genesis,
         schedule: impl IntoIterator<Item = (TempoHardfork, u64)>,
     ) -> Result<Self, ZoneChainSpecError> {
         decode_l1_chain_id(genesis.config.chain_id)?;
-        for (fork, time) in schedule {
-            if let Some(key) = fork.genesis_key()
-                && !genesis.config.extra_fields.contains_key(key)
-            {
+        let schedule: std::collections::HashMap<_, _> = schedule.into_iter().collect();
+        for fork in TempoHardfork::VARIANTS {
+            if let Some(key) = fork.genesis_key() {
+                let activation = schedule
+                    .get(fork)
+                    .map_or(serde_json::Value::Null, |&time| time.into());
                 genesis
                     .config
                     .extra_fields
-                    .insert(key.to_owned(), serde_json::Value::from(time));
+                    .insert(key.to_owned(), activation);
             }
         }
         Ok(Self::from_explicit_genesis(genesis))
@@ -511,18 +513,17 @@ mod tests {
     }
 
     #[test]
-    fn l1_schedule_fills_missing_forks_and_keeps_explicit_ones() {
+    fn l1_schedule_replaces_genesis_fork_fields() {
         let mut genesis = DEV.genesis().clone();
         genesis.config.chain_id = zone_chain_id(31_318, 4).unwrap();
-        for &fork in TempoHardfork::VARIANTS {
-            if let Some(key) = fork.genesis_key() {
-                genesis.config.extra_fields.remove(key);
-            }
-        }
         genesis
             .config
             .extra_fields
             .insert("t12Time".into(), serde_json::json!(500));
+        genesis
+            .config
+            .extra_fields
+            .insert("t13Time".into(), serde_json::json!(0));
         let schedule = TempoHardfork::VARIANTS
             .iter()
             .copied()
@@ -530,9 +531,8 @@ mod tests {
             .map(|fork| (fork, if fork == TempoHardfork::T12 { 300 } else { 0 }));
         let zone = ZoneChainSpec::from_genesis_with_l1_schedule(genesis, schedule).unwrap();
 
-        assert_eq!(zone.tempo_hardfork_at(0), TempoHardfork::T11);
-        assert_eq!(zone.tempo_hardfork_at(300), TempoHardfork::T11);
-        assert_eq!(zone.tempo_hardfork_at(500), TempoHardfork::T12);
+        assert_eq!(zone.tempo_hardfork_at(299), TempoHardfork::T11);
+        assert_eq!(zone.tempo_hardfork_at(300), TempoHardfork::T12);
         assert_eq!(zone.tempo_hardfork_at(u64::MAX), TempoHardfork::T12);
     }
 }
