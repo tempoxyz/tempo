@@ -1,0 +1,277 @@
+# Generic neobank: one workload across the six neobank modules, so a regression in
+# any of them shows up in a single run. Weights are gas shares, set from the
+# planned product mix rather than any one customer's traffic; customer-shaped
+# presets (zone-earn-mix, bridge-mix, card-settlement) are flavors of this shape.
+#
+#   module    gas  template                 what it models
+#   Account     3  account_first_receive    first payment to a fresh address (new account + balance slot)
+#               3  access_key_create        a payment that authorises a new access key inline
+#               2  access_key_rotate        a key holder authorises a replacement key (authorise-only)
+#   Deposit    10  zone_deposit             encrypted deposit from L1 into a zone (payroll funding)
+#               4  public_transfer          top-up to an existing account
+#               4  payroll_existing         one treasury tx paying up to 32 existing accounts
+#               2  payroll_new              one treasury tx paying fresh addresses (new accounts)
+#   Earn       14  vault_deposit            deposit into an Earn vault
+#               9  vault_withdraw           redeem from an Earn vault
+#               1  reward_distribution      one treasury tx depositing rewards into the vault per recipient
+#   Transfer    8  public_transfer_memo     user to user, with memo
+#               7  zone_withdraw            zone to public L1
+#               3  dex_swap                 asset conversion on the stablecoin DEX (dex.yml liquidity)
+#   Spend      10  card_settlement          card swipe funded from Earn: an 18-sender shard pool
+#                                           redeems vault shares and forwards to one settlement account
+#               3  card_spend               card swipe from a cash balance: one transfer into the
+#                                           same settlement account (one hot balance slot)
+#               2  card_refund              refund as cash from one issuer liquidity account back to
+#                                           a user's wallet (mainnet refunds never return to Earn)
+#               3  keychain_merchant_pull   subscription or issuer pull with a delegated key into one
+#                                           merchant account
+#               2  keychain_agent_spend     agent spend with a delegated key
+#   Cash out   10  cash_out                 transfer to one off-ramp account
+#
+# Batch templates come from batch-payout.yml (expanded by the helper to N calls,
+# TXGEN_BATCH_PAYOUT_RECIPIENTS, default 32); access-key templates mirror
+# access-key-mix.yml, whose keychain setup the helper appends.
+#
+# Mainnet shows one transaction per swipe whether settled from cash (~63K gas) or
+# from Earn (~350K gas); authorisation, holds and declines happen off-chain at the issuer.
+#
+# Not modelled yet: zone-to-zone transfers, key revocation, fixed per-agent rates
+# and queued withdrawals.
+# Same fixtures and requirements as public-mix: chain 1337, T10+ and nonzero state bloat.
+include: public-mix.yml
+
+accounts:
+  # Batch payout treasury: users[0..16), funded and allowlisted by the vault setup.
+  treasury:
+    mnemonic: "test test test test test test test test test test test junk"
+    range:
+      - 0
+      - 16
+
+artifacts:
+  StablecoinDEX: ../stablecoin-dex.abi.json
+
+templates:
+  card_refund:
+    type: tempo
+    # One issuer liquidity account; expiring nonces keep its refunds independent.
+    from: {pool: users, select: {index: 1}}
+    gas_limit: 300000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    nonce: { uniform: [0, 18446744073709551615] } # TIP-1106, requires T12+
+    valid_for_secs: 25
+    call:
+      to: "0x20c0000000000000000000000000000000000000"
+      abi: ERC20
+      function: transfer
+      args:
+        - {pool: {pool: users, select: random}}
+        - 1
+  dex_swap:
+    type: tempo
+    from: {pool: users, select: random}
+    gas_limit: 8000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    nonce: { uniform: [0, 18446744073709551615] } # TIP-1106, requires T12+
+    valid_for_secs: 25
+    call:
+      to: "0xdec0000000000000000000000000000000000000"
+      abi: StablecoinDEX
+      function: swapExactAmountIn
+      args:
+        vars:
+          base_token:
+            choice:
+              - "0x20c0000000000000000000000000000000000001"
+              - "0x20c0000000000000000000000000000000000002"
+              - "0x20c0000000000000000000000000000000000003"
+          base_to_quote:
+            choice: [true, false]
+        values:
+          - if:
+              cond: { var: base_to_quote }
+              then: { var: base_token }
+              else: "0x20c0000000000000000000000000000000000000"
+          - if:
+              cond: { var: base_to_quote }
+              then: "0x20c0000000000000000000000000000000000000"
+              else: { var: base_token }
+          # 1-5 tokens per swap, so dex.yml's 10,000-token walls last ~2,000 swaps per side.
+          - uniform: [1000000, 5000000]
+          - 0
+  account_first_receive:
+    type: tempo
+    from: {pool: users, select: random}
+    gas_limit: 1000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    nonce: { uniform: [0, 18446744073709551615] } # TIP-1106, requires T12+
+    valid_for_secs: 25
+    call:
+      to: "0x20c0000000000000000000000000000000000000"
+      abi: ERC20
+      function: transfer
+      args:
+        - random
+        - 1
+  card_spend:
+    type: tempo
+    from: {pool: users, select: random}
+    gas_limit: 1000000  # first transfer creates the sink balance slot
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    nonce: { uniform: [0, 18446744073709551615] } # TIP-1106, requires T12+
+    valid_for_secs: 25
+    call:
+      to: "0x20c0000000000000000000000000000000000000"
+      abi: ERC20
+      function: transfer
+      args:
+        - "0x000000000000000000000000000000000000ca4d"
+        - 1
+  cash_out:
+    type: tempo
+    from: {pool: users, select: random}
+    gas_limit: 1000000  # first transfer creates the sink balance slot
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    nonce: { uniform: [0, 18446744073709551615] } # TIP-1106, requires T12+
+    valid_for_secs: 25
+    call:
+      to: "0x20c0000000000000000000000000000000000000"
+      abi: ERC20
+      function: transfer
+      args:
+        - "0x0000000000000000000000000000000000000ff0"
+        - 1
+
+  access_key_create:
+    type: tempo
+    from: {pool: users, select: random}
+    gas_limit: ${TXGEN_KEY_AUTHORIZATION_GAS_LIMIT}
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    nonce: { uniform: [0, 18446744073709551615] } # TIP-1106, requires T12+
+    valid_for_secs: 25
+    auth:
+      mode: key_authorization
+      access_key:
+        derive: per_tx
+      key_type: secp256k1
+      limits: ${TXGEN_KEYCHAIN_TIP20_LIMITS}
+      allowed_calls: ${TXGEN_KEYCHAIN_TIP20_ALLOWED_CALLS}
+      witness:
+        random_bytes: 32
+    call:
+      to: "0x20c0000000000000000000000000000000000000"
+      abi: ERC20
+      function: transfer
+      args:
+        - pool: {pool: users, select: random}
+        - 1
+  access_key_rotate:
+    type: tempo
+    from: {pool: users, select: random}
+    gas_limit: ${TXGEN_KEY_AUTHORIZATION_GAS_LIMIT}
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    nonce: { uniform: [0, 18446744073709551615] } # TIP-1106, requires T12+
+    valid_for_secs: 25
+    auth:
+      mode: key_authorization
+      access_key:
+        derive: per_tx
+      key_type: secp256k1
+      limits: ${TXGEN_KEYCHAIN_TIP20_LIMITS}
+      allowed_calls: ${TXGEN_KEYCHAIN_TIP20_ALLOWED_CALLS}
+      witness:
+        random_bytes: 32
+    call:
+      to: "0x20c0000000000000000000000000000000000000"
+      abi: ERC20
+      function: transfer
+      args:
+        - pool: {pool: users, select: random}
+        - 1
+  keychain_merchant_pull:
+    type: tempo
+    from: {pool: users, select: random}
+    gas_limit: 3000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    nonce: { uniform: [0, 18446744073709551615] } # TIP-1106, requires T12+
+    valid_for_secs: 25
+    auth:
+      mode: keychain
+      access_key:
+        from_setup: authorize_keychain_users
+        pair: same_index
+    call:
+      to: "0x20c0000000000000000000000000000000000000"
+      abi: ERC20
+      function: transfer
+      args:
+        - "0x0000000000000000000000000000000000005e77"
+        - 1
+  keychain_agent_spend:
+    type: tempo
+    from: {pool: users, select: random}
+    gas_limit: 3000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    nonce: { uniform: [0, 18446744073709551615] } # TIP-1106, requires T12+
+    valid_for_secs: 25
+    auth:
+      mode: keychain
+      access_key:
+        from_setup: authorize_keychain_users
+        pair: same_index
+    call:
+      to: "0x20c0000000000000000000000000000000000000"
+      abi: ERC20
+      function: transfer
+      args:
+        - pool: {pool: users, select: random}
+        - 1
+
+mix:
+  - template: account_first_receive
+    weight: 3
+  - template: access_key_create
+    weight: 3
+  - template: access_key_rotate
+    weight: 2
+  - template: zone_deposit
+    weight: 10
+  - template: public_transfer
+    weight: 4
+  - template: payroll_existing
+    weight: 4
+  - template: payroll_new
+    weight: 2
+  - template: vault_deposit
+    weight: 14
+  - template: vault_withdraw
+    weight: 9
+  - template: reward_distribution
+    weight: 1
+  - template: public_transfer_memo
+    weight: 8
+  - template: zone_withdraw
+    weight: 7
+  - template: dex_swap
+    weight: 3
+  - template: card_settlement
+    weight: 10
+  - template: card_spend
+    weight: 3
+  - template: card_refund
+    weight: 2
+  - template: keychain_merchant_pull
+    weight: 3
+  - template: keychain_agent_spend
+    weight: 2
+  - template: cash_out
+    weight: 10

@@ -1,42 +1,60 @@
-bin/tempo @0xKitsune @klkvr @Zygimantass @SuperFluffy 
-bin/tempo-sidecar @Zygimantass
-contrib/ @Zygimantass
+# Workspace, CI and build
+/.github/ @rkrasiuk @mattsse @shekhirin
+/Cargo.toml @0xKitsune @klkvr @mattsse
+/Cargo.lock @0xKitsune @klkvr @mattsse
+/deny.toml @0xKitsune @klkvr @mattsse
+/Dockerfile* @shekhirin @rkrasiuk
+/docs/ @klkvr @mattsse
+/examples/ @klkvr @mattsse
+
+bin/tempo @0xKitsune @klkvr @Zygimantass @SuperFluffy
+contrib/ @Zygimantass @shekhirin
 scripts/ @0xKitsune
-xtask/ @0xKitsune @Zygimantass @SuperFluffy 
+xtask/ @0xKitsune @Zygimantass @SuperFluffy @joshieDo
 crates/alloy/ @0xrusowsky @klkvr @onbjerg @mattsse
 crates/chainspec/ @0xrusowsky @0xKitsune @klkvr @mattsse
-crates/commonware-node/ @joshieDo @SuperFluffy @hamdiallam
-crates/commonware-node-config/ @joshieDo @SuperFluffy @hamdiallam
-crates/consensus/ @joshieDo @SuperFluffy @hamdiallam
+crates/consensus/ @joshieDo @SuperFluffy @hamdiallam @pepyakin
+crates/consensus-config/ @joshieDo @SuperFluffy @hamdiallam
 crates/contracts/ @0xrusowsky @0xKitsune @klkvr @mattsse @legion2002
-crates/e2e/ @joshieDo @SuperFluffy @hamdiallam
-crates/evm/ @0xKitsune @klkvr @mattsse
+crates/dkg-onchain-artifacts/ @joshieDo @SuperFluffy @hamdiallam
+crates/e2e/ @joshieDo @SuperFluffy @hamdiallam @pepyakin
+crates/evm/ @0xKitsune @klkvr @mattsse @shekhirin @rakita
+crates/ext/ @Zygimantass @SuperFluffy
 crates/eyre/ @SuperFluffy
 crates/faucet/ @klkvr @mattsse
+crates/fuzz-harness/ @0xrusowsky
+crates/fuzz-types/ @0xrusowsky
+crates/hardfork/ @klkvr @0xrusowsky @legion2002 @jenpaff @mattsse @rakita @0xKitsune
+crates/nitro-attestation/ @shekhirin @rkrasiuk
 crates/node/ @0xKitsune @klkvr @mattsse
-crates/payload/ @0xKitsune @klkvr @mattsse
-crates/precompiles/ @0xrusowsky @0xKitsune @klkvr @mattsse @legion2002
+crates/node-launcher/ @mattsse
+crates/payload/ @0xKitsune @klkvr @mattsse @shekhirin
+crates/precompiles/ @0xrusowsky @0xKitsune @klkvr @mattsse @legion2002 @joshieDo
 crates/precompiles-macros/ @0xrusowsky @mattsse
-crates/primitives/ @klkvr @mattsse
-crates/revm/ @klkvr @mattsse @rakita @0xKitsune
+crates/primitives/ @klkvr @mattsse @joshieDo @0xrusowsky
+crates/state-bloat/ @mattsse @klkvr
 crates/telemetry-util/ @SuperFluffy
 crates/transaction-pool/ @0xKitsune @klkvr @mattsse
-tips/ @legion2002 @0xKitsune @danrobinson @dankrad @jenpaff @horsefacts @0xalpharush @samczsun
+crates/validator-config/ @joshieDo @SuperFluffy @hamdiallam
+tips/ @legion2002 @0xKitsune @danrobinson @dankrad @jenpaff @horsefacts @0xalpharush
 
 # Zones (imported from tempoxyz/zones)
-bin/tempo-zone/ @0xKitsune @mattsse @klkvr
+/zones/ @rkrasiuk @shekhirin
+bin/tempo-zone/ @0xKitsune @mattsse @klkvr @rkrasiuk
 bin/prover/ @rkrasiuk @shekhirin
 crates/zones/chainspec/ @0xrusowsky @0xKitsune @klkvr @mattsse
+crates/zones/checker/ @rkrasiuk
 crates/zones/contracts/ @0xrusowsky @0xKitsune @klkvr @mattsse @legion2002 @0xalpharush
-crates/zones/evm/ @0xrusowsky @klkvr @0xKitsune
-crates/zones/l1/ @0xKitsune @mattsse @klkvr @0xrusowsky @adityapk00
-crates/zones/node/ @mattsse @0xKitsune @klkvr @0xrusowsky @adityapk00 @legion2002
-crates/zones/p2p/ @adityapk00 @legion2002 @klkvr
+crates/zones/evm/ @0xrusowsky @klkvr @0xKitsune @rakita
+crates/zones/exithatch/ @rkrasiuk
+crates/zones/l1/ @0xKitsune @mattsse @klkvr @0xrusowsky @adityapk00 @rkrasiuk
+crates/zones/node/ @mattsse @0xKitsune @klkvr @0xrusowsky @adityapk00 @legion2002 @rkrasiuk
+crates/zones/p2p/ @adityapk00 @legion2002 @klkvr @rkrasiuk
 crates/zones/payload/ @mattsse @0xKitsune @0xrusowsky @adityapk00 @klkvr
 crates/zones/precompiles/ @0xrusowsky @0xKitsune @klkvr @mattsse @legion2002
 crates/zones/primitives/ @mattsse @0xKitsune @0xrusowsky @klkvr
 crates/zones/prover/ @rkrasiuk @shekhirin
-crates/zones/rpc/ @mattsse @0xKitsune @klkvr @adityapk00
+crates/zones/rpc/ @mattsse @0xKitsune @klkvr @adityapk00 @rkrasiuk
 crates/zones/sequencer/ @mattsse @0xKitsune @adityapk00 @rkrasiuk @klkvr
 crates/zones/spf/ @rkrasiuk @shekhirin @klkvr
 xtask/src/zones/ @mattsse @0xKitsune @adityapk00 @klkvr @legion2002

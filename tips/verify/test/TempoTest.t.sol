@@ -49,16 +49,21 @@ contract TempoTest is Tempo, Test {
         }
     }
 
-    /// @dev True when the active hardfork is T14 or later. Parses the numeric part of the fork
-    ///      name ("t13", "t1a" -> 13, 1), so forks added later need no edit; "genesis" is false.
+    /// @dev True when the active hardfork is T14 or later.
     function _isT14OrLater() internal view returns (bool) {
+        return _isTempoForkOrLater(14);
+    }
+
+    /// @dev True when the active hardfork is `T<number>` or later. Parses the numeric part of the
+    ///      fork name ("t13", "t1a" -> 13, 1), so forks added later need no edit; "genesis" is false.
+    function _isTempoForkOrLater(uint256 number) internal view returns (bool) {
         bytes memory fork = bytes(vm.getEvmVersion());
         if (fork.length < 2 || fork[0] != "t") return false;
-        uint256 number;
+        uint256 active;
         for (uint256 i = 1; i < fork.length && fork[i] >= "0" && fork[i] <= "9"; i++) {
-            number = number * 10 + uint8(fork[i]) - 48;
+            active = active * 10 + uint8(fork[i]) - 48;
         }
-        return number >= 14;
+        return active >= number;
     }
 
     function setUp() public virtual {

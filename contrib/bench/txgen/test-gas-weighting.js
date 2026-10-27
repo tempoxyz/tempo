@@ -12,7 +12,9 @@ test('bench presets confirm setup and use gas weighting without opt-in', async (
     let body = '';
     request.on('data', data => { body += data; });
     request.on('end', () => {
-      const result = JSON.parse(body).method === 'txpool_status' ? { pending: '0x0' } : '0x539';
+      // A fresh chain-1337 fixture: public-mix presets check the deployer nonce and policy counter.
+      const results = { txpool_status: { pending: '0x0' }, eth_getTransactionCount: '0x0', eth_call: '0x2' };
+      const result = results[JSON.parse(body).method] ?? '0x539';
       response.setHeader('Content-Type', 'application/json');
       response.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result }));
     });
@@ -43,7 +45,10 @@ if (kind === 'txgen-tempo') {
     const bench = path.join(directory, 'txgen-bench');
     fs.symlinkSync(mock, tempo);
     fs.symlinkSync(mock, bench);
-    for (const [preset, extraArgs] of [['tip20', ''], ['mix', ''], ['dex', '--gas-weighted-mix'], ['mpp', '']]) {
+    for (const [preset, extraArgs, pipelineArgs = ''] of [
+      ['tip20', ''], ['mix', ''], ['dex', '--gas-weighted-mix'], ['mpp', ''],
+      ['batch-payout', '', '--bloat-mib 1024'], ['access-key-mix', ''],
+    ]) {
       const callsPath = path.join(directory, `${preset}.calls`);
       const report = path.join(directory, `${preset}.json`);
       const spec = path.join(__dirname, 'presets', `${preset}.yml`);
@@ -54,7 +59,7 @@ if (kind === 'txgen-tempo') {
           --preset-path ${JSON.stringify(spec)} --generate-rpc-url ${JSON.stringify(rpc)}
           --submit-rpc-url ${JSON.stringify(rpc)} --metrics-url [] --report-path ${JSON.stringify(report)}
           --tps 1 --duration 1 --accounts 2 --max-concurrent-requests 1
-          --bench-args ${JSON.stringify(extraArgs)} --skip-funding);
+          --bench-args ${JSON.stringify(extraArgs)} --skip-funding ${pipelineArgs});
         if not $result.ok { error make { msg: 'pipeline failed' } }`;
       const output = await new Promise((resolve, reject) => {
         const child = spawn('nu', ['-c', command], {

@@ -21,11 +21,8 @@ pub mod packing;
 pub use packing::FieldLocation;
 pub use types::mapping as slots;
 
-use alloy::primitives::{Address, B256, LogData, Signature, U256};
-use revm::{
-    context::journaled_state::JournalCheckpoint,
-    state::{AccountInfo, Bytecode},
-};
+use alloy::primitives::{Address, B256, Bytes, LogData, Signature, U256};
+use evm2::evm::{AccountInfo, StateCheckpoint};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_primitives::{TempoBlockEnv, gas::keccak_gas};
 
@@ -77,7 +74,7 @@ pub trait PrecompileStorageProvider {
     fn block_env(&self) -> &TempoBlockEnv;
 
     /// Sets the bytecode at the given address.
-    fn set_code(&mut self, address: Address, code: Bytecode) -> Result<()>;
+    fn set_code(&mut self, address: Address, code: Bytes) -> Result<()>;
 
     /// Executes a closure with access to the account info for the given address.
     fn with_account_info(
@@ -85,21 +82,6 @@ pub trait PrecompileStorageProvider {
         address: Address,
         f: &mut dyn FnMut(&AccountInfo),
     ) -> Result<()>;
-
-    /// Returns `EXTCODEHASH(address)` and the account's runtime bytecode.
-    fn account_code(&mut self, address: Address) -> Result<(B256, Bytecode)>;
-
-    /// Copies deployed runtime bytecode between accounts.
-    ///
-    /// Returns `None` when the source account's runtime bytecode is empty.
-    fn copy_runtime(&mut self, source: Address, destination: Address) -> Result<Option<B256>> {
-        let (code_hash, code) = self.account_code(source)?;
-        if code.is_empty() {
-            return Ok(None);
-        }
-        self.set_code(destination, code)?;
-        Ok(Some(code_hash))
-    }
 
     /// Performs an SLOAD operation (persistent storage read).
     fn sload(&mut self, address: Address, key: U256) -> Result<U256>;
@@ -186,17 +168,17 @@ pub trait PrecompileStorageProvider {
     ///
     /// Prefer [`StorageCtx::checkpoint`] which returns a [`CheckpointGuard`] that
     /// auto-reverts on drop and is hardfork-aware (no-op pre-T1C).
-    fn checkpoint(&mut self) -> JournalCheckpoint;
+    fn checkpoint(&mut self) -> StateCheckpoint;
 
     /// Commits all state changes since the given checkpoint.
     ///
     /// Prefer [`CheckpointGuard::commit`].
-    fn checkpoint_commit(&mut self, checkpoint: JournalCheckpoint);
+    fn checkpoint_commit(&mut self, checkpoint: StateCheckpoint);
 
     /// Reverts all state changes back to the given checkpoint.
     ///
     /// Prefer [`CheckpointGuard`] (auto-reverts on drop).
-    fn checkpoint_revert(&mut self, checkpoint: JournalCheckpoint);
+    fn checkpoint_revert(&mut self, checkpoint: StateCheckpoint);
 
     /// Enables or disables TIP-1060 storage-credit accounting for subsequent storage writes.
     ///

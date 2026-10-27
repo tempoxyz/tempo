@@ -7,7 +7,7 @@ use super::analysis::{AccountDelta, Field};
 use crate::shadow_replay::{Boundary, Evidence, ObservedTx, fees::post_fee_slot_change};
 use alloy::{
     consensus::Transaction as _,
-    primitives::{Address, B256, KECCAK256_EMPTY, U256, keccak256},
+    primitives::{Address, B256, U256, keccak256},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::{
@@ -174,14 +174,14 @@ fn exact_runtime_upgrade(
         return None;
     }
     let transition = shadow.transitions.get(&address)?;
-    let before = transition
-        .previous_info
-        .as_ref()
-        .map_or(KECCAK256_EMPTY, |info| info.code_hash);
     let after = transition.info.as_ref()?.code_hash;
 
-    ((before == KECCAK256_EMPTY || old_runtimes.iter().any(|code| before == keccak256(code)))
-        && after == keccak256(new_runtime))
+    (transition.previous_info.as_ref().is_none_or(|info| {
+        info.is_empty_code_hash()
+            || old_runtimes
+                .iter()
+                .any(|code| info.code_hash == keccak256(code))
+    }) && after == keccak256(new_runtime))
     .then_some(())
 }
 
@@ -213,19 +213,16 @@ mod tests {
         *,
     };
     use crate::shadow_replay::analysis::{MAX_SAMPLES, Report};
-    use alloy::primitives::{Address, Signature};
-    use reth_revm::{
-        context::result::ResultGas,
-        db::states::{StorageSlot, TransitionAccount},
-        state::AccountInfo,
-    };
+    use alloy::primitives::{Address, KECCAK256_EMPTY, Signature};
+    use evm2::evm::{AccountInfo, TxResultExt};
+    use reth_trie_common::bundle_state::{StorageSlot, TransitionAccount};
     use tempo_primitives::{TempoTransaction, transaction::Call};
 
     #[test]
     fn accepts_exact_bytecode_upgrades() {
         let address = ZONE_PORTAL_IMPL_ADDRESS;
         let transition = |info: Option<AccountInfo>, code_hash| {
-            let mut state = reth_revm::db::TransitionState::default();
+            let mut state = TransitionState::default();
             state.transitions.insert(
                 address,
                 TransitionAccount {
@@ -305,7 +302,10 @@ mod tests {
                 .map(|&gas_used| {
                     Ok(ObservedTx {
                         outcome: TxOutcome::Success,
-                        gas: ResultGas::default().with_total_gas_spent(gas_used),
+                        gas: TxResultExt {
+                            total_gas_spent: gas_used,
+                            ..Default::default()
+                        },
                         ..Default::default()
                     })
                 })
