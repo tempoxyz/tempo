@@ -66,6 +66,7 @@ where
         provider,
         store: store.clone(),
         requests: requests_rx,
+        chain_spec: chain_spec.clone(),
     };
     let handle = ProofCollectorHandle {
         store,
@@ -173,7 +174,7 @@ impl ProofCollectorHandle {
 
     /// Fill any restart or upgrade gaps before allowing a proving node to advance.
     ///
-    /// Pre-T15 blocks are left to background collection, since they may lack a witness.
+    /// Pre-T15 blocks are skipped: they may lack a witness and then settle with NoProof.
     pub async fn collect_canonical_tail<P: ZoneSequencerProvider>(
         &self,
         provider: &P,
@@ -218,6 +219,7 @@ struct ProofCollector<P> {
     provider: P,
     store: Arc<ProofStore>,
     requests: mpsc::Receiver<ProofRequest>,
+    chain_spec: Arc<ZoneChainSpec>,
 }
 
 impl<P: ZoneSequencerProvider> ProofCollector<P> {
@@ -277,12 +279,20 @@ impl<P: ZoneSequencerProvider> ProofCollector<P> {
 
         let start = self.store.state.read().pruned_through.saturating_add(1);
         for number in start..=head {
-            let block_hash = self
+            let header = self
                 .provider
-                .block_hash(number)?
-                .ok_or_eyre(format!("canonical Zone block {number} has no hash"))?;
-            if !self.store.contains(number, block_hash) {
-                self.collect_and_persist(number, block_hash).await?;
+                .sealed_header(number)?
+                .ok_or_eyre(format!("canonical Zone block {number} has no header"))?;
+            // A pre-T15 block imported without a witness settles with NoProof. Retrying it here
+            // would keep loading a failing L1 RPC and hold the collector that imports wait on.
+            if !self
+                .chain_spec
+                .is_t15_active_at_timestamp(header.timestamp())
+            {
+                continue;
+            }
+            if !self.store.contains(number, header.hash()) {
+                self.collect_and_persist(number, header.hash()).await?;
             }
         }
         Ok(())
@@ -626,7 +636,7 @@ fn sync_directory(directory: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
 
-    use alloy_primitives::Bytes;
+    use alloy_primitives::{Bytes, U256};
 
     use super::*;
 
@@ -684,6 +694,7 @@ mod tests {
             provider: MockEthProvider::<TempoPrimitives>::new(),
             store: store.clone(),
             requests,
+            chain_spec: t15_chain_spec(0),
         };
         // Historical state for settled backfill is deliberately unavailable from the stub.
         assert!(
@@ -996,5 +1007,57 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error.to_string(), "proof collector stopped");
+    }
+
+    #[tokio::test]
+    async fn background_collection_skips_pre_t15_blocks() {
+        use alloy_consensus::{Header, Sealable as _};
+        use alloy_provider::{Provider as _, ProviderBuilder};
+        use alloy_transport::mock::Asserter;
+        use reth_provider::test_utils::MockEthProvider;
+        use tempo_primitives::{TempoHeader, TempoPrimitives};
+
+        let provider = MockEthProvider::<TempoPrimitives>::new();
+        let mut hashes = Vec::new();
+        for (number, timestamp) in [(1, 999), (2, 1_000)] {
+            let header = TempoHeader {
+                inner: Header {
+                    number,
+                    timestamp,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let hash = header.hash_slow();
+            provider.add_header(hash, header);
+            hashes.push(hash);
+        }
+        // Finalized Zone height 0: nothing settled, both blocks are unsettled.
+        let asserter = Asserter::new();
+        asserter.push_success(&Bytes::from(U256::ZERO.to_be_bytes::<32>()));
+
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(ProofStore::open(directory.path().to_path_buf(), 0).unwrap());
+        let (_, requests) = mpsc::channel(1);
+        // The stub serves only block 2, so collecting pre-T15 block 1 would panic.
+        let collector = ProofCollector {
+            config: ProofCollectorConfig {
+                directory: directory.path().to_path_buf(),
+                debug_api: Arc::new(StubDebugApi(proof(2, hashes[1]).witness)),
+                portal_address: Address::ZERO,
+                l1_provider: ProviderBuilder::new_with_network::<TempoNetwork>()
+                    .connect_mocked_client(asserter)
+                    .erased(),
+                retain_for_shadow_proving: false,
+            },
+            provider,
+            store: store.clone(),
+            requests,
+            chain_spec: t15_chain_spec(1_000),
+        };
+
+        collector.prune_and_collect().await.unwrap();
+        assert!(!store.contains(1, hashes[0]));
+        assert!(store.contains(2, hashes[1]));
     }
 }
