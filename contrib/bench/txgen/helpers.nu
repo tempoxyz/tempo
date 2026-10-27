@@ -25,11 +25,23 @@ const TXGEN_HELPER_ALWAYS_FUND_PRESETS = [
     "vault-withdraw"
     "vault-throughput"
     "zone-portal-throughput"
+    "zone-to-zone"
+    "zone-to-zone-hot"
 ]
 # Presets composed by txgen-prepare-public-mix-preset from the public-mix fixtures.
 const TXGEN_HELPER_PUBLIC_MIX_PRESETS = ["public-mix" "vault-throughput" "zone-portal-throughput" "zone-earn-mix" "zone-earn-hot" "zone-earn-serial" "zone-portal-hot" "card-settlement" "neobank-generic" "batch-payout"]
 # Presets that pin the zone portal count instead of sizing it by TPS (TXGEN_ZONE_COUNT still overrides).
 const TXGEN_HELPER_PRESET_ZONE_COUNTS = {"zone-earn-hot": 1, "zone-portal-hot": 1}
+# Zone -> zone presets (presets/zone-to-zone.yml); the hot variant pins one source and one target portal.
+const TXGEN_HELPER_ZONE_TO_ZONE_PRESETS = ["zone-to-zone" "zone-to-zone-hot"]
+const TXGEN_HELPER_ZONE_TO_ZONE_CALLBACK_GAS = 1500000
+const TXGEN_HELPER_ZONE_TO_ZONE_GAS_LIMIT = 2500000
+# A route's first transfer creates portal queue state, so setup warms it with more gas.
+const TXGEN_HELPER_ZONE_TO_ZONE_WARM_CALLBACK_GAS = 3000000
+const TXGEN_HELPER_ZONE_TO_ZONE_WARM_GAS_LIMIT = 10000000
+# ZoneToZoneTransfer(address,address) and WithdrawalProcessed(address,bytes32,address,uint128,bool).
+const TXGEN_HELPER_ZONE_TO_ZONE_TRANSFER_TOPIC = "0x45310f61ef78f3fcb9ab97ea27304d615534bc583c8ef2b31ecabd38fac9a4b7"
+const TXGEN_HELPER_WITHDRAWAL_PROCESSED_TOPIC = "0x65042ea6dad60c26f055e80ec401b3437c854ed586a0704d305bb4e9ea4518cf"
 # Presets whose zone settlement and Earn deposits come from one sender with ordered nonces.
 const TXGEN_HELPER_SINGLE_SENDER_PRESETS = ["zone-earn-serial"]
 # Card settlement: a small pool of shard senders redeem vault shares and forward proceeds.
@@ -773,6 +785,121 @@ def txgen-prepare-zones-preset [spec_path: string, count: int, accounts: int, zo
     $output
 }
 
+# Zone -> zone transfer settings, from TXGEN_ZONE_TO_ZONE_* (see presets/zone-to-zone.yml).
+def txgen-zone-to-zone-config [] {
+    let access = ($env.TXGEN_ZONE_TO_ZONE_ACCESS? | default "closed")
+    if $access not-in [closed open] { error make {msg: "TXGEN_ZONE_TO_ZONE_ACCESS must be closed or open"} }
+    let share = ($env.TXGEN_ZONE_TO_ZONE_SHARE? | default "100" | into int)
+    if $share < 1 or $share > 100 { error make {msg: "TXGEN_ZONE_TO_ZONE_SHARE must be 1–100"} }
+    let callback_gas = ($env.TXGEN_ZONE_TO_ZONE_CALLBACK_GAS? | default $TXGEN_HELPER_ZONE_TO_ZONE_CALLBACK_GAS | into int)
+    let gas_limit = ($env.TXGEN_ZONE_TO_ZONE_GAS_LIMIT? | default $TXGEN_HELPER_ZONE_TO_ZONE_GAS_LIMIT | into int)
+    if $callback_gas < 1 or $gas_limit > $TXGEN_HELPER_TX_GAS_LIMIT_CAP {
+        error make {msg: "TXGEN_ZONE_TO_ZONE_CALLBACK_GAS must be positive and TXGEN_ZONE_TO_ZONE_GAS_LIMIT at most 30M"}
+    }
+    # A closed source portal only accepts a callback that deposits back into it.
+    {access: $access, share: $share, callback_gas: $callback_gas, gas_limit: $gas_limit,
+        return_amount: (if $access == closed { 1 } else { 0 })}
+}
+
+# Portal i sends to portal i + 1 (a ring of at least two); hot sends everything from 0 to 1.
+# Setup warms each route once, so the first transfer's queue-state creation stays out of the run.
+def txgen-prepare-zone-to-zone-preset [spec_path: string, count: int, accounts: int, zones: int, --hot, --out-dir: string = ""] {
+    let config = (txgen-zone-to-zone-config)
+    let base = if $hot { $spec_path | path dirname | path join zone-to-zone.yml } else { $spec_path }
+    let spec = (open $base)
+    let zones = if $hot { 2 } else { [$zones 2] | math max }
+    let token = "0x20c0000000000000000000000000000000000000"
+    let closed = $config.access == closed
+    let sources = if $hot { [0] } else { 0..<$zones | each { |zone| $zone } }
+    let target = { |zone| if $hot { 1 } else { ($zone + 1) mod $zones } }
+    let portal = { |zone| {var: $"setup.portal_($zone).address"} }
+    let transfer_call = ($spec.templates.zone_to_zone.calls | first)
+    let withdraw_call = ($spec.templates.zone_withdraw.calls | first)
+    # Closed portals only pay plain withdrawals to their allowlisted account (the deployer).
+    let allowlisted = {var: setup.settlement.sender}
+    mut steps = ($spec.setup.steps | take 3)
+    for zone in 0..<$zones {
+        $steps = ($steps | append ($spec.setup.steps.3 | update id $"portal_($zone)" | update deploy.constructor_args.6 $closed))
+    }
+    let escrow = $count * (1 + $config.return_amount) + $count + 2 * (2 + $config.return_amount)
+    for zone in $sources {
+        $steps = ($steps | append ($spec.setup.steps.4 | update id $"fund_($zone)"
+            | update tx.calls.0.args [(do $portal $zone) $escrow]))
+    }
+    for zone in $sources {
+        let warm = ($spec.setup.steps.4 | update id $"warm_($zone)" | update tx.gas_limit $TXGEN_HELPER_ZONE_TO_ZONE_WARM_GAS_LIMIT)
+        mut calls = [($transfer_call | update args [(do $portal $zone) (do $portal (do $target $zone)) $token
+            {var: setup.gateway.address} $config.return_amount $TXGEN_HELPER_ZONE_TO_ZONE_WARM_CALLBACK_GAS])]
+        if $config.share < 100 {
+            $calls = ($calls | append ($withdraw_call | update args [(do $portal $zone) $token $allowlisted true]))
+        }
+        $steps = ($steps | append ($warm | update tx.calls $calls))
+    }
+    let pairs = ([$accounts ($sources | length)] | math max)
+    let minimum_per_zone = ($pairs // ($sources | length))
+    mut templates = {}
+    mut mix = []
+    for pair in 0..<$pairs {
+        let user = $pair mod $accounts
+        let slot = $pair mod ($sources | length)
+        let zone = ($sources | get $slot)
+        let account = {pool: users, select: {index: $user}}
+        let per_zone = $minimum_per_zone + (if $slot < ($pairs mod ($sources | length)) { 1 } else { 0 })
+        let weight = $minimum_per_zone * ($minimum_per_zone + 1) // $per_zone
+        let transfer = ($spec.templates.zone_to_zone | update from $account | update gas_limit $config.gas_limit
+            | update calls [($transfer_call | update args [(do $portal $zone) (do $portal (do $target $zone)) $token
+                {var: setup.gateway.address} $config.return_amount $config.callback_gas])])
+        $templates = ($templates | insert $"zone_to_zone_($pair)" $transfer)
+        $mix = ($mix | append {template: $"zone_to_zone_($pair)", weight: ($weight * $config.share)})
+        if $config.share < 100 {
+            let recipient = if $closed { $allowlisted } else { {pool: $account} }
+            let withdraw = ($spec.templates.zone_withdraw | update from $account
+                | update calls [($withdraw_call | update args [(do $portal $zone) $token $recipient true])])
+            $templates = ($templates | insert $"zone_withdraw_($pair)" $withdraw)
+            $mix = ($mix | append {template: $"zone_withdraw_($pair)", weight: ($weight * (100 - $config.share))})
+        }
+    }
+    let output_dir = if $out_dir == "" {
+        [ (txgen-repo-root) $TXGEN_HELPER_DEFAULT_RENDERED_SPECS_DIR (random uuid) ] | path join
+    } else { $out_dir | path expand }
+    mkdir $output_dir
+    # Keep the preset's file name: reports derive the preset label from it.
+    let output = ($output_dir | path join ($spec_path | path basename))
+    {include: $base, accounts: {users: {range: [0 $accounts]}},
+        setup: {steps: $steps}, templates: $templates, mix: $mix} | to yaml | save -f $output
+    $output
+}
+
+# Tallies zone -> zone receipts: ZoneToZoneTransfer marks a transfer, and its
+# WithdrawalProcessed log's callbackSuccess says delivered or bounced back to zone A.
+def txgen-zone-to-zone-tally [receipts: list<any>] {
+    let marker = $TXGEN_HELPER_ZONE_TO_ZONE_TRANSFER_TOPIC
+    let processed = $TXGEN_HELPER_WITHDRAWAL_PROCESSED_TOPIC
+    let rows = ($receipts | each { |receipt|
+        let logs = ($receipt.logs? | default [])
+        let is_transfer = ($logs | any { |log| ($log.topics | first) == $marker })
+        let outcomes = ($logs | where { |log| ($log.topics | first) == $processed }
+            | each { |log| ($log.data | str substring (-1..)) == "1" })
+        {
+            transfer: $is_transfer
+            reverted: ($receipt.status == "0x0")
+            delivered: ($is_transfer and ($outcomes | any { |ok| $ok }))
+            bounced: ($is_transfer and ($outcomes | any { |ok| not $ok }))
+            plain: ((not $is_transfer) and ($outcomes | is-not-empty))
+            gas: ($receipt.gasUsed | into int)
+        }
+    })
+    let transfers = ($rows | where transfer)
+    {
+        transfers: ($transfers | length)
+        delivered: ($transfers | where delivered | length)
+        bounced: ($transfers | where bounced | length)
+        plain_withdrawals: ($rows | where plain | length)
+        reverted: ($rows | where reverted | length)
+        transfer_gas: ($transfers | get gas | math sum)
+    }
+}
+
 # Empty, distinct blacklists exercise every successful authorization lookup without
 # requiring per-member setup. Policy IDs come from the live registry counter.
 def txgen-tip20-policy-calls [token_count: int, policy_start: int] {
@@ -1022,9 +1149,12 @@ def txgen-run-preset-pipeline [
     txgen-configure-fee-amm-env $spec_path
     let preset_name = ($spec_path | path basename | str replace --regex '\.yml$' '')
     let is_public_mix = $preset_name in $TXGEN_HELPER_PUBLIC_MIX_PRESETS
+    let is_zone_to_zone = $preset_name in $TXGEN_HELPER_ZONE_TO_ZONE_PRESETS
+    # Zones, zone -> zone and vaults generate the full count: setup must not consume workload duration.
+    let full_count = $preset_name in ["zones" "vault-deposit" "vault-withdraw"] or $is_zone_to_zone
     let tx_count = [($tps * $duration) 1] | math max
     mut zone_metadata = []
-    if $preset_name == "zones" or $is_public_mix {
+    if $preset_name == "zones" or $is_public_mix or $is_zone_to_zone {
         if $chain_id != 1337 or $accounts < 1 or $accounts > 100000 {
             error make { msg: "zones requires local chain 1337 and 1–100000 accounts" }
         }
@@ -1045,10 +1175,21 @@ def txgen-run-preset-pipeline [
         let automatic_zones = ([1 (($tps * $window_ms / 210000) | math ceil | into int)] | math max)
         let zones = (txgen-zone-count $preset_name $automatic_zones)
         if $zones < 1 { error make { msg: "TXGEN_ZONE_COUNT must be positive" } }
+        # Zone -> zone needs a source and a target portal; the hot variant uses exactly those two.
+        let zones = if $preset_name == "zone-to-zone-hot" { 2 } else if $is_zone_to_zone { [$zones 2] | math max } else { $zones }
         $zone_metadata = ["-m" $"zone_count=($zones)" "-m" $"zone_sizing_window_ms=($window_ms)"]
+        if $is_zone_to_zone {
+            let config = (txgen-zone-to-zone-config)
+            $zone_metadata = ($zone_metadata | append [
+                "-m" $"zone_to_zone_access=($config.access)" "-m" $"zone_to_zone_share=($config.share)"
+                "-m" $"zone_to_zone_callback_gas=($config.callback_gas)" "-m" $"zone_to_zone_gas_limit=($config.gas_limit)"
+            ])
+        }
         print $"  Zones: ($zones), users: ($accounts), sizing window: ($window_ms)ms, capacity: 210 deposits/portal"
         $spec_path = if $is_public_mix {
             txgen-prepare-public-mix-preset $spec_path $tx_count $accounts $zones $chain_id
+        } else if $is_zone_to_zone {
+            txgen-prepare-zone-to-zone-preset $spec_path $tx_count $accounts $zones --hot=($preset_name == "zone-to-zone-hot")
         } else {
             txgen-prepare-zones-preset $spec_path $tx_count $accounts $zones $mode
         }
@@ -1094,8 +1235,7 @@ def txgen-run-preset-pipeline [
         "-n" $tx_count
         "--seed" $TXGEN_HELPER_DEFAULT_SEED
         "--rpc" $generate_rpc_url
-    ] | append (if $is_vault or $preset_name == "zones" { [] } else { ["--duration" $txgen_duration] })
-    # Zones and vaults generate the full count: setup must not consume workload duration.
+    ] | append (if $full_count { [] } else { ["--duration" $txgen_duration] })
     let txgen_setup_cmd = [
         $txgen_tempo_bin
         "generate"
@@ -1182,12 +1322,12 @@ def txgen-run-preset-pipeline [
         return { ok: false, exit_code: $setup_result.exit_code, report_path: $report_path }
     }
 
-    if $is_vault or $preset_name == "zones" {
+    if $full_count {
         print $"  Streaming ($tx_count) ($preset_name) transactions at target ($tps) TPS into bench send..."
     } else {
         print $"  Streaming up to ($tx_count) txgen transaction\(s\) over ($txgen_duration) into bench send..."
     }
-    let check_receipts = $is_vault or $preset_name == "tip20-policy"
+    let check_receipts = $is_vault or $preset_name == "tip20-policy" or $is_zone_to_zone
     let workload_start_block = if $check_receipts {
         (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}').result | into int
     } else { 0 }
@@ -1215,6 +1355,7 @@ def txgen-run-preset-pipeline [
         mut next_block = $workload_start_block + 1
         mut included = 0
         mut reverted = 0
+        mut zone_to_zone = []
         while $included < $expected and (date now) < $deadline {
             let last = (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}').result | into int
             while $next_block <= $last {
@@ -1223,13 +1364,36 @@ def txgen-run-preset-pipeline [
                 let receipts = (txgen-rpc-call $generate_rpc_url $payload).result | where type == "0x76"
                 $included = $included + ($receipts | length)
                 $reverted = $reverted + ($receipts | where status == "0x0" | length)
+                if $is_zone_to_zone and ($receipts | is-not-empty) {
+                    $zone_to_zone = ($zone_to_zone | append (txgen-zone-to-zone-tally $receipts))
+                }
                 $next_block = $next_block + 1
             }
             # An empty pool can precede canonical inclusion of the last built block.
             if $included < $expected { sleep 200ms }
         }
         print $"  ($preset_name) receipts: ($included) included, ($reverted) reverted, ($report.sent) submitted"
-        if $expected == 0 or $included != $expected or $reverted != 0 {
+        if $is_zone_to_zone {
+            # Bounce-backs and saturation are results, not harness failures; report them.
+            let transfers = ($zone_to_zone | get -o transfers | default [] | math sum)
+            let gas = ($zone_to_zone | get -o transfer_gas | default [] | math sum)
+            let summary = {
+                included: $included
+                reverted: $reverted
+                transfers: $transfers
+                delivered: ($zone_to_zone | get -o delivered | default [] | math sum)
+                bounced: ($zone_to_zone | get -o bounced | default [] | math sum)
+                plain_withdrawals: ($zone_to_zone | get -o plain_withdrawals | default [] | math sum)
+                gas_per_transfer: (if $transfers > 0 { $gas // $transfers } else { 0 })
+                max_transfers_per_block: ($zone_to_zone | get -o transfers | default [0] | math max)
+                blocks_with_transfers: ($zone_to_zone | where transfers > 0 | length)
+            }
+            print $"  zone-to-zone: ($summary.transfers) transfers, ($summary.delivered) delivered, ($summary.bounced) bounced, ($summary.plain_withdrawals) plain withdrawals, ($summary.reverted) reverted; ($summary.gas_per_transfer) gas/transfer; up to ($summary.max_transfers_per_block) transfers/block over ($summary.blocks_with_transfers) blocks"
+            $summary | to json | save -f $"($report_path).zone-to-zone.json"
+            if $summary.delivered == 0 {
+                error make { msg: "zone-to-zone workload delivered no transfers" }
+            }
+        } else if $expected == 0 or $included != $expected or $reverted != 0 {
             error make { msg: $"($preset_name) workload did not include the full transaction count successfully" }
         }
     }

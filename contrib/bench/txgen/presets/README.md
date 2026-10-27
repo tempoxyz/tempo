@@ -78,6 +78,14 @@ sends zone settlement and Earn deposits from one account with ordered nonces;
 redeem vault shares and forward the proceeds to one settlement account.
 Run them at mainnet limits (`gas-limit=500M general-gas-limit=30M`) to compare.
 
+`zone-to-zone` moves value from zone A to zone B through withdrawal callbacks: zone A's
+portal pays a gateway that deposits into zone B's portal. It defaults to closed access, where
+the gateway also returns one unit to zone A (otherwise the callback bounces), and records
+delivered transfers, bounce-backs and gas per transfer from the receipts.
+`zone-to-zone-hot` sends every transfer from one source portal to one target portal. The
+file header lists the knobs and limits; run them like the gap variants, for example
+`derek bench preset=zone-to-zone gas-limit=500M general-gas-limit=30M`.
+
 `neobank-generic` is one workload across the six neobank modules (Account, Deposit,
 Earn, Transfer, Spend, Cash out), weighted by planned gas shares; the file lists
 each module's templates and what is not modelled yet. It reuses the public-mix

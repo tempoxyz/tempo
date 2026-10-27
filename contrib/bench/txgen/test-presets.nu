@@ -172,4 +172,61 @@ for name in [keychain_merchant_pull keychain_agent_spend] {
     assert equal ($access.templates | get $name | get auth.access_key.from_setup) authorize_keychain_users
 }
 assert equal ($access.templates.keychain_merchant_pull.call.args | first) "0x0000000000000000000000000000000000005e77"
+# Zone -> zone: a ring of callback portals, warmed in setup; closed access returns one unit to the source.
+for preset in [zone-to-zone zone-to-zone-hot] {
+    let spec = (txgen-resolve-bench-spec $preset)
+    assert equal ($spec.spec_path | path basename) $"($preset).yml"
+    assert ($preset in $TXGEN_HELPER_ZONE_TO_ZONE_PRESETS)
+    assert ($preset in $TXGEN_HELPER_ALWAYS_FUND_PRESETS)
+    assert ($preset not-in $TXGEN_HELPER_PUBLIC_MIX_PRESETS)
+}
+let z2z_dir = (mktemp -d)
+let z2z_spec = (txgen-resolve-bench-spec zone-to-zone).spec_path
+let z2z = (open (txgen-prepare-zone-to-zone-preset $z2z_spec 100 4 3 --out-dir $z2z_dir))
+let portals = ($z2z.setup.steps | where id =~ '^portal_')
+assert equal ($portals | get id) [portal_0 portal_1 portal_2]
+assert ($portals | all { |step| ($step.deploy.constructor_args | last) == true })
+assert equal ($z2z.setup.steps | where id =~ '^warm_' | length) 3
+assert equal ($z2z.setup.steps | where id == fund_0 | first | get tx.calls.0.args.1) 306
+assert equal ($z2z.mix | get template) [zone_to_zone_0 zone_to_zone_1 zone_to_zone_2 zone_to_zone_3]
+let ring = ($z2z.templates | values | each { |template| $template.calls.0.args | first 2 | each { |arg| $arg.var } })
+assert equal $ring.0 [setup.portal_0.address setup.portal_1.address]
+assert equal $ring.2 [setup.portal_2.address setup.portal_0.address]
+assert equal $ring.3 [setup.portal_0.address setup.portal_1.address]
+assert equal ($z2z.templates.zone_to_zone_0.calls.0.args | last 2) [1 $TXGEN_HELPER_ZONE_TO_ZONE_CALLBACK_GAS]
+assert equal $z2z.templates.zone_to_zone_0.gas_limit $TXGEN_HELPER_ZONE_TO_ZONE_GAS_LIMIT
+# Equal aggregate weight per source portal: portal 0's two users split its share.
+assert equal ($z2z.mix | get weight) [100 200 200 100]
+let hot = (open (txgen-prepare-zone-to-zone-preset (txgen-resolve-bench-spec zone-to-zone-hot).spec_path 100 4 9 --hot --out-dir $z2z_dir))
+assert equal ($hot.setup.steps | where id =~ '^portal_' | length) 2
+assert equal ($hot.setup.steps | where id =~ '^(fund|warm)_' | get id) [fund_0 warm_0]
+assert ($hot.templates | values | all { |template|
+    ($template.calls.0.args | first 2 | each { |arg| $arg.var }) == [setup.portal_0.address setup.portal_1.address]
+})
+with-env {TXGEN_ZONE_TO_ZONE_ACCESS: open, TXGEN_ZONE_TO_ZONE_SHARE: "60"} {
+    let open_mix = (open (txgen-prepare-zone-to-zone-preset $z2z_spec 100 2 2 --out-dir $z2z_dir))
+    assert (($open_mix.setup.steps | where id =~ '^portal_') | all { |step| ($step.deploy.constructor_args | last) == false })
+    assert equal ($open_mix.templates.zone_to_zone_0.calls.0.args | get 4) 0
+    assert equal ($open_mix.mix | get weight) [120 80 120 80]
+    assert equal ($open_mix.templates.zone_withdraw_1.calls.0.args.2) {pool: {pool: users, select: {index: 1}}}
+    assert equal ($open_mix.setup.steps | where id == warm_0 | first | get tx.calls | length) 2
+}
+with-env {TXGEN_ZONE_TO_ZONE_SHARE: "60"} {
+    let closed_mix = (open (txgen-prepare-zone-to-zone-preset $z2z_spec 100 2 2 --out-dir $z2z_dir))
+    assert equal ($closed_mix.templates.zone_withdraw_0.calls.0.args.2) {var: setup.settlement.sender}
+}
+with-env {TXGEN_ZONE_TO_ZONE_ACCESS: gated} {
+    assert ((try { txgen-zone-to-zone-config; false } catch { true }))
+}
+rm -rf $z2z_dir
+# Receipt tally: the transfer marker plus WithdrawalProcessed(callbackSuccess) per receipt.
+let processed = { |ok| {topics: [$TXGEN_HELPER_WITHDRAWAL_PROCESSED_TOPIC], data: $"0x(if $ok { '01' } else { '00' })"} }
+let marker = {topics: [$TXGEN_HELPER_ZONE_TO_ZONE_TRANSFER_TOPIC], data: "0x"}
+let tally = (txgen-zone-to-zone-tally [
+    {status: "0x1", gasUsed: "0x5a550", logs: [(do $processed true) $marker]}
+    {status: "0x1", gasUsed: "0x186a0", logs: [(do $processed false) $marker]}
+    {status: "0x1", gasUsed: "0x30d40", logs: [(do $processed true)]}
+    {status: "0x0", gasUsed: "0x10", logs: []}
+])
+assert equal $tally {transfers: 2, delivered: 1, bounced: 1, plain_withdrawals: 1, reverted: 1, transfer_gas: 470000}
 print "Preset, policy setup, state-bloat, and workload metadata checks passed"
