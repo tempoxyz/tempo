@@ -120,6 +120,16 @@ fn execute(
     let consensus = TempoConsensus::new(spec);
     let mut outcome = TempoExecutionOutcome::default();
     let applied = execute_blocks(&evm_config, &consensus, &mut db, &blocks, &mut outcome);
+    if !outcome.invariant_failures.is_empty() {
+        let invariant_failures = broken_start(&evm_config, pre_state, &blocks[0], &db, &outcome);
+        if !invariant_failures.is_empty() {
+            return TempoExecutionOutcome {
+                error: ErrorClass::InvalidInput,
+                invariant_failures,
+                ..Default::default()
+            };
+        }
+    }
 
     let contracts = &db.cache.contracts;
     let after = state::after(&pre, &applied);
@@ -128,6 +138,47 @@ fn execute(
         matches!(pre_state, PreState::Genesis(_)).then(|| state::state_root(&after));
     outcome.final_state = state::encode(&after, contracts);
     outcome
+}
+
+/// The invariants `pre_state` already breaks, summing balances over every account `db` came to hold
+/// after execution and every address in a log topic of `outcome`'s receipts (such as a holder whose
+/// balance only a transaction touched, or one `transferFrom` or `burnBlocked` moved without loading
+/// it). A
+/// pre-state that breaks one is not a reachable state, so nothing executed on it is a finding: the
+/// input is invalid, and these failures are reported at `Execution` scope. Only the accounts it
+/// lists can break one.
+fn broken_start(
+    evm_config: &TempoEvmConfig,
+    pre_state: &PreState,
+    block: &ExecutionBlock,
+    db: &Db,
+    outcome: &TempoExecutionOutcome,
+) -> Vec<InvariantFailure> {
+    let (Ok(env), Ok(start)) = (evm_config.evm_env(block.header()), state::seed(pre_state)) else {
+        return Vec::new();
+    };
+    let (PreState::Genesis(listed) | PreState::Exact { state: listed, .. }) = pre_state;
+    let logged = outcome.receipts.iter().flat_map(|receipt| &receipt.logs);
+    let topics = logged
+        .flat_map(|log| log.topics())
+        .filter(|topic| topic[..12] == [0; 12]);
+    let holders: Vec<Address> = db
+        .cache
+        .accounts
+        .keys()
+        .copied()
+        .chain(topics.map(|topic| Address::from_word(*topic)))
+        .collect();
+    let mut failures = Vec::new();
+    invariants::check(
+        &start,
+        &env,
+        &InvariantScope::Execution,
+        |address| listed.accounts.contains_key(address),
+        &holders,
+        &mut failures,
+    );
+    failures
 }
 
 /// `block` with its header resolved, its transactions decoded and their senders known.
@@ -338,7 +389,7 @@ where
     let step = state::drain(db);
     let step_changes = state::transition_changes(&step, &db.cache.contracts);
     let selected = |contract: &Address| !changed_only || step.transitions.contains_key(contract);
-    invariants::check(db, env, &scope, selected, failures);
+    invariants::check(db, env, &scope, selected, &[], failures);
     changes.apply_transitions_and_create_reverts(step, BundleRetention::PlainState);
     step_changes
 }

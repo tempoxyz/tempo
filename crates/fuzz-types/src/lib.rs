@@ -28,7 +28,9 @@ pub enum ErrorClass {
     #[default]
     None = 0,
     /// The input contradicts itself or this harness's contract, e.g. a decreasing hardfork
-    /// schedule, senders that do not match the transactions, or blocks out of timestamp order.
+    /// schedule, senders that do not match the transactions, blocks out of timestamp order, or a
+    /// pre-state that already breaks an invariant (reported in `invariant_failures` at
+    /// [`InvariantScope::Execution`]).
     InvalidInput = 1,
     /// A transaction or header does not decode, or has trailing bytes.
     RlpDecode = 2,
@@ -206,8 +208,8 @@ pub struct TempoBlockchainInput {
 /// The state blocks execute on.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub enum PreState {
-    /// The dev genesis allocation plus these accounts, which must not be genesis accounts. Anything
-    /// else reads as empty.
+    /// The dev genesis allocation plus these accounts. One at a genesis address replaces it whole: its
+    /// code and slots are only the ones given. Anything else reads as empty.
     Genesis(StateInput),
     /// Exactly this state, e.g. a block's pre-state taken from a node, and the block hashes
     /// `BLOCKHASH` may read. Reading anything it does not hold fails the input with

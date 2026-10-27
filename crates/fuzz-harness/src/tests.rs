@@ -469,10 +469,10 @@ fn an_epoch_boundary_block_updates_the_committee_after_its_transactions() {
 }
 
 #[test]
-fn invariants_are_checked_without_stopping_execution() {
-    // pathUSD, which the transfer changes, has a supply below its holders' balances and above its
-    // cap. The second token's supply is missing from the pre-state, so its views are skipped, and
-    // checking goes on to the third, whose cap is broken but which the transfer leaves unchanged.
+fn a_pre_state_that_breaks_an_invariant_is_invalid() {
+    // pathUSD's supply is below its holders' balances and above its cap. The second token's supply
+    // is missing from the pre-state, so its views are skipped, and checking goes on to the third,
+    // whose cap is broken.
     fn token(index: u8) -> Address {
         Address::with_last_byte(index) | PATH_USD_ADDRESS
     }
@@ -487,7 +487,7 @@ fn invariants_are_checked_without_stopping_execution() {
 
     assert_eq!(
         (outcome.error, outcome.receipts.len()),
-        (ErrorClass::None, 1)
+        (ErrorClass::InvalidInput, 0)
     );
     let failures: HashSet<_> = outcome
         .invariant_failures
@@ -498,17 +498,11 @@ fn invariants_are_checked_without_stopping_execution() {
             (id, &failure.scope, token)
         })
         .collect();
-    let block = InvariantScope::Block { block_index: 0 };
-    let tx = InvariantScope::Transaction {
-        block_index: 0,
-        tx_index: 0,
-    };
+    let start = InvariantScope::Execution;
     let expected = [
-        ("SUPPLY-CAP", &block, 0),
-        ("BALANCE-SUM", &block, 0),
-        ("SUPPLY-CAP", &tx, 0),
-        ("BALANCE-SUM", &tx, 0),
-        ("SUPPLY-CAP", &block, 2),
+        ("SUPPLY-CAP", &start, 0),
+        ("BALANCE-SUM", &start, 0),
+        ("SUPPLY-CAP", &start, 2),
     ];
     assert_eq!(
         failures,
@@ -571,7 +565,13 @@ fn bad_inputs_are_classified_rather_than_executed() {
         chain_id: 1337,
         ..Default::default()
     };
-    let overriding = one_account(PATH_USD_ADDRESS, path_usd(&mut genesis_state()).clone());
+    let recoded = one_account(
+        PATH_USD_ADDRESS,
+        AccountInput {
+            code: Bytes::from_static(&[0x00]),
+            ..path_usd(&mut genesis_state()).clone()
+        },
+    );
     let bad_code = one_account(
         RECIPIENT,
         AccountInput {
@@ -598,7 +598,7 @@ fn bad_inputs_are_classified_rather_than_executed() {
             vec![
                 ("time reversal", on_blocks(vec![late, t4_block(vec![])])),
                 ("T3 after T4", on_chain(t3_after_t4)),
-                ("genesis override", on_pre(PreState::Genesis(overriding))),
+                ("protocol code replaced", on_pre(PreState::Genesis(recoded))),
                 ("7702, genesis", on_pre(PreState::Genesis(bad_code.clone()))),
                 ("7702, exact", on_pre(exact(bad_code))),
                 ("extra sender", on_blocks(vec![extra_sender])),

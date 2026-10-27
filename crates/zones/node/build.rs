@@ -17,7 +17,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // commit and checkout. Debug builds skip it and keep the SHA from the last run of this script.
     // Release profiles keep tracking HEAD, so their version always matches the checkout.
     let git_builder = Gitcl::builder()
-        .describe(false, true, Some("zones/v[0-9]*"))
+        .describe(true, true, Some("zones/v[0-9]*"))
         .dirty(true)
         .sha(false)
         .rerun_on_head_change(env::var("PROFILE")? != "debug")
