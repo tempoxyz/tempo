@@ -1,0 +1,155 @@
+# Generic neobank: one workload across the six neobank modules, so a regression in
+# any of them shows up in a single run. Weights are gas shares, set from the
+# planned product mix rather than any one customer's traffic; customer-shaped
+# presets (zone-earn-mix, bridge-mix, card-settlement) are flavors of this shape.
+#
+#   module    gas  template                 what it models
+#   Account     5  account_first_receive    first payment to a fresh address (new account + balance slot)
+#   Deposit    12  zone_deposit             encrypted deposit from L1 into a zone (payroll funding)
+#               8  public_transfer          top-up to an existing account
+#   Earn       15  vault_deposit            deposit into an Earn vault
+#              10  vault_withdraw           redeem from an Earn vault
+#   Transfer    9  public_transfer_memo     user to user, with memo
+#               8  zone_withdraw            zone to public L1
+#               3  dex_swap                 asset conversion on the stablecoin DEX (dex.yml liquidity)
+#   Spend      12  card_settlement          card swipe funded from Earn: an 18-sender shard pool
+#                                           redeems vault shares and forwards to one settlement account
+#               5  card_spend               card swipe from a cash balance: one transfer into the
+#                                           same settlement account (one hot balance slot)
+#               3  card_refund              refund as cash from one issuer liquidity account back to
+#                                           a user's wallet (mainnet refunds never return to Earn)
+#   Cash out   10  cash_out                 transfer to one off-ramp account
+#
+# Mainnet shows one transaction per swipe whether settled from cash (~63K gas) or
+# from Earn (~350K gas); authorisation, holds and declines happen off-chain at the issuer.
+#
+# Not modelled yet: access-key creation and rotation, batched payouts and reward
+# distribution to many recipients, zone-to-zone transfers, subscriptions and
+# queued withdrawals.
+# Same fixtures and requirements as public-mix: chain 1337, T10+ and nonzero state bloat.
+include: public-mix.yml
+
+artifacts:
+  StablecoinDEX: ../stablecoin-dex.abi.json
+
+templates:
+  card_refund:
+    type: tempo
+    # One issuer liquidity account; expiring nonces keep its refunds independent.
+    from: {pool: users, select: {index: 1}}
+    gas_limit: 300000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    nonce: { uniform: [0, 18446744073709551615] } # TIP-1106, requires T12+
+    valid_for_secs: 25
+    call:
+      to: "0x20c0000000000000000000000000000000000000"
+      abi: ERC20
+      function: transfer
+      args:
+        - {pool: {pool: users, select: random}}
+        - 1
+  dex_swap:
+    type: tempo
+    from: {pool: users, select: random}
+    gas_limit: 8000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    nonce: { uniform: [0, 18446744073709551615] } # TIP-1106, requires T12+
+    valid_for_secs: 25
+    call:
+      to: "0xdec0000000000000000000000000000000000000"
+      abi: StablecoinDEX
+      function: swapExactAmountIn
+      args:
+        vars:
+          base_token:
+            choice:
+              - "0x20c0000000000000000000000000000000000001"
+              - "0x20c0000000000000000000000000000000000002"
+              - "0x20c0000000000000000000000000000000000003"
+          base_to_quote:
+            choice: [true, false]
+        values:
+          - if:
+              cond: { var: base_to_quote }
+              then: { var: base_token }
+              else: "0x20c0000000000000000000000000000000000000"
+          - if:
+              cond: { var: base_to_quote }
+              then: "0x20c0000000000000000000000000000000000000"
+              else: { var: base_token }
+          # 1-5 tokens per swap, so dex.yml's 10,000-token walls last ~2,000 swaps per side.
+          - uniform: [1000000, 5000000]
+          - 0
+  account_first_receive:
+    type: tempo
+    from: {pool: users, select: random}
+    gas_limit: 1000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    nonce: { uniform: [0, 18446744073709551615] } # TIP-1106, requires T12+
+    valid_for_secs: 25
+    call:
+      to: "0x20c0000000000000000000000000000000000000"
+      abi: ERC20
+      function: transfer
+      args:
+        - random
+        - 1
+  card_spend:
+    type: tempo
+    from: {pool: users, select: random}
+    gas_limit: 1000000  # first transfer creates the sink balance slot
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    nonce: { uniform: [0, 18446744073709551615] } # TIP-1106, requires T12+
+    valid_for_secs: 25
+    call:
+      to: "0x20c0000000000000000000000000000000000000"
+      abi: ERC20
+      function: transfer
+      args:
+        - "0x000000000000000000000000000000000000ca4d"
+        - 1
+  cash_out:
+    type: tempo
+    from: {pool: users, select: random}
+    gas_limit: 1000000  # first transfer creates the sink balance slot
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    nonce: { uniform: [0, 18446744073709551615] } # TIP-1106, requires T12+
+    valid_for_secs: 25
+    call:
+      to: "0x20c0000000000000000000000000000000000000"
+      abi: ERC20
+      function: transfer
+      args:
+        - "0x0000000000000000000000000000000000000ff0"
+        - 1
+
+mix:
+  - template: account_first_receive
+    weight: 5
+  - template: zone_deposit
+    weight: 12
+  - template: public_transfer
+    weight: 8
+  - template: vault_deposit
+    weight: 15
+  - template: vault_withdraw
+    weight: 10
+  - template: public_transfer_memo
+    weight: 9
+  - template: zone_withdraw
+    weight: 8
+  - template: dex_swap
+    weight: 3
+  - template: card_settlement
+    weight: 12
+  - template: card_spend
+    weight: 5
+  - template: card_refund
+    weight: 3
+  - template: cash_out
+    weight: 10

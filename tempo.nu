@@ -2,6 +2,7 @@
 
 # Tempo local utilities
 
+source contrib/bench/counter-delta.nu
 source contrib/bench/txgen/helpers.nu
 
 const BENCH_DIR = "contrib/bench"
@@ -909,6 +910,106 @@ def upload-tracy-profile [profile_path: string, label: string, commit_sha: strin
 
 # Generate summary.md from multiple report files
 # Compute percentile from a sorted list (0-100)
+# Persistence stats for one run from scraped node metrics, averaged over nodes.
+# Unpersisted lag is the growth of canonical height minus blocks saved to disk since the
+# first sample (blocks still in memory beyond the run's starting backlog), clamped at 0.
+def persistence-stats [samples: list<any>] {
+    let wanted = [
+        "reth_blockchain_tree_canonical_chain_height"
+        "reth_consensus_engine_persistence_save_blocks_batch_size_sum"
+        "reth_consensus_engine_persistence_save_blocks_duration_seconds_sum"
+        "reth_consensus_engine_persistence_save_blocks_duration_seconds_count"
+        "reth_consensus_engine_beacon_backpressure_stall_duration_sum"
+        "reth_io_write_bytes"
+    ]
+    let nodes = ($samples
+        | where { |sample| $sample.name in $wanted }
+        | group-by { |sample| $sample.labels | get -o node | default "" }
+        | transpose node samples
+        | each { |node|
+            let series = { |name: string|
+                $node.samples | where name == $name | sort-by unix_ms | each { |sample| {unix_ms: ($sample.unix_ms | into int), value: $sample.value} }
+            }
+            let span = { |points: list<any>|
+                if ($points | length) > 1 { (($points | last).value - ($points | first).value) } else { null }
+            }
+            let height = (do $series "reth_blockchain_tree_canonical_chain_height")
+            let persisted = (do $series "reth_consensus_engine_persistence_save_blocks_batch_size_sum")
+            let save_s = (do $series "reth_consensus_engine_persistence_save_blocks_duration_seconds_sum")
+            let batches = (do $series "reth_consensus_engine_persistence_save_blocks_duration_seconds_count")
+            let stall = (do $series "reth_consensus_engine_beacon_backpressure_stall_duration_sum")
+            let written = (do $series "reth_io_write_bytes")
+            let wall_s = if ($height | length) > 1 { ((($height | last).unix_ms - ($height | first).unix_ms) / 1000.0) } else { 0.0 }
+            if $wall_s <= 0.0 or ($persisted | length) < 2 {
+                null
+            } else {
+                let h0 = ($height | first).value
+                let p0 = ($persisted | first).value
+                let persisted_by_ms = ($persisted | reduce -f {} { |point, acc| $acc | upsert ($point.unix_ms | into string) $point.value })
+                let lags = ($height | each { |point|
+                    let p = ($persisted_by_ms | get -o ($point.unix_ms | into string))
+                    if $p == null { null } else { [(($point.value - $h0) - ($p - $p0)) 0] | math max }
+                } | where { |lag| $lag != null })
+                let batch_count = (do $span $batches | default 0)
+                {
+                    blocks_persisted_s: ((do $span $persisted) / $wall_s)
+                    persist_busy_pct: ((do $span $save_s | default 0) / $wall_s * 100.0)
+                    persist_batch_ms: (if $batch_count > 0 { (do $span $save_s) / $batch_count * 1000.0 } else { null })
+                    unpersisted_max_blocks: (if ($lags | length) > 0 { $lags | math max } else { null })
+                    disk_write_mb_s: (if ($written | length) > 1 { (do $span $written) / $wall_s / 1_000_000.0 } else { null })
+                    backpressure_stall_s: (do $span $stall | default 0)
+                }
+            }
+        }
+        | where { |stats| $stats != null })
+    if ($nodes | length) == 0 { return null }
+    let avg = { |field: string|
+        let values = ($nodes | get $field | where { |value| $value != null })
+        if ($values | length) > 0 { $values | math avg } else { null }
+    }
+    {
+        blocks_persisted_s: (do $avg blocks_persisted_s)
+        persist_busy_pct: (do $avg persist_busy_pct)
+        persist_batch_ms: (do $avg persist_batch_ms)
+        unpersisted_max_blocks: ($nodes | get unpersisted_max_blocks | where { |value| $value != null } | append 0 | math max)
+        disk_write_mb_s: (do $avg disk_write_mb_s)
+        backpressure_stall_s: (do $avg backpressure_stall_s)
+    }
+}
+
+# Summary rows for durable writes and how far disk persistence falls behind the chain.
+def persistence-summary-lines [baseline: any, feature: any, baseline_block_ms: float, feature_block_ms: float] {
+    if $baseline == null and $feature == null { return [] }
+    let value = { |stats: any, field: string| if $stats == null { null } else { $stats | get -o $field } }
+    let show = { |v: any| if $v == null { "n/a" } else { $"($v)" } }
+    let pct = { |b: any, f: any| if $b == null or $f == null or $b == 0 { "n/a" } else { $"((($f - $b) / $b * 100) | math round --precision 1)%" } }
+    let row = { |label: string, field: string|
+        let b = (do $value $baseline $field)
+        let f = (do $value $feature $field)
+        $"| ($label) | (do $show $b) | (do $show $f) | (do $pct $b $f) |"
+    }
+    let lag_ms = { |stats: any, block_ms: float|
+        let blocks = (do $value $stats unpersisted_max_blocks)
+        if $blocks == null { null } else { ($blocks * $block_ms) | math round --precision 0 }
+    }
+    let b_lag_ms = (do $lag_ms $baseline $baseline_block_ms)
+    let f_lag_ms = (do $lag_ms $feature $feature_block_ms)
+    [
+        "## Persistence"
+        ""
+        "| Metric | Baseline | Feature | Delta |"
+        "|--------|----------|---------|-------|"
+        (do $row "Durable Writes [MB/s]" disk_write_mb_s)
+        (do $row "Blocks Persisted [/s]" blocks_persisted_s)
+        (do $row "Persistence Busy [%]" persist_busy_pct)
+        (do $row "Save Batch Mean [ms]" persist_batch_ms)
+        (do $row "Max Unpersisted [blocks]" unpersisted_max_blocks)
+        $"| Max Unpersisted [ms] | (do $show $b_lag_ms) | (do $show $f_lag_ms) | (do $pct $b_lag_ms $f_lag_ms) |"
+        (do $row "Backpressure Stall [s]" backpressure_stall_s)
+        ""
+    ]
+}
+
 def percentile [sorted_vals: list<any>, pct: int] {
     if ($sorted_vals | length) == 0 { return 0.0 }
     let idx = (($sorted_vals | length) * $pct / 100 | into int)
@@ -1006,6 +1107,8 @@ def generate-summary [
     mut feature_serialized_block_size_values = []
     mut baseline_serialized_block_size_per_tx_values = []
     mut feature_serialized_block_size_per_tx_values = []
+    mut baseline_persistence = []
+    mut feature_persistence = []
 
     let compute_block_time_stats = { |intervals: list<any>|
         let sorted_intervals = ($intervals | sort)
@@ -1102,33 +1205,6 @@ def generate-summary [
         $values
     }
 
-    let counter_delta_total = { |samples: list<any>, metric: string|
-        let counter_samples = ($samples | where name == $metric)
-        if ($counter_samples | length) == 0 {
-            0.0
-        } else {
-            let deltas = (
-                $counter_samples
-                    | group-by { |sample| $sample.labels | to json --raw }
-                    | transpose labels samples
-                    | each { |series|
-                        let points = (
-                            $series.samples
-                                | where { |sample| ($sample | get -o value | default null) != null }
-                                | sort-by unix_ms
-                        )
-                        if ($points | length) > 1 {
-                            let first = ($points | first)
-                            let last = ($points | last)
-                            let delta = ($last.value - $first.value)
-                            if $delta >= 0 { $delta } else { $last.value }
-                        } else { 0.0 }
-                    }
-            )
-            if ($deltas | length) > 0 { $deltas | math sum | math round --precision 0 } else { 0.0 }
-        }
-    }
-
     let histogram_delta_sum_total = { |samples: list<any>, metric: string|
         let sum_name = $"($metric)_sum"
         let sum_samples = ($samples | where name == $sum_name)
@@ -1182,6 +1258,12 @@ def generate-summary [
         "reth_tempo_payload_builder_total_transactions_count"
         "reth_tempo_payload_builder_rlp_block_size_bytes_sum"
         "reth_tempo_payload_builder_rlp_block_size_bytes_count"
+        "reth_blockchain_tree_canonical_chain_height"
+        "reth_consensus_engine_persistence_save_blocks_batch_size_sum"
+        "reth_consensus_engine_persistence_save_blocks_duration_seconds_sum"
+        "reth_consensus_engine_persistence_save_blocks_duration_seconds_count"
+        "reth_consensus_engine_beacon_backpressure_stall_duration_sum"
+        "reth_io_write_bytes"
     ]
     let metric_sample_match_args = ($metric_sample_names | each { |name| ["-e" $name] } | flatten)
     let has_rg = ((which rg | length) > 0)
@@ -1280,6 +1362,12 @@ def generate-summary [
         } else {
             $raw_metric_samples
         }
+        let first_scrape_ms_by_node = (
+            $metric_samples
+                | group-by { |sample| $sample.labels | get -o node | default "" }
+                | items { |node, node_samples| [$node ($node_samples | get unix_ms | into int | math min)] }
+                | into record
+        )
         let optional_counter_metric_values = { |metric: string, scale: float|
             do $optional_counter_values (do $counter_delta_values $metric_samples $metric $scale) $label $metric
         }
@@ -1294,7 +1382,7 @@ def generate-summary [
                 $builder_pool_tx_skip_samples
                     | where { |sample| ($sample.labels | get -o reason | default "") == $reason }
             )
-            do $counter_delta_total $samples "reth_tempo_payload_builder_pool_transactions_skipped_total"
+            counter-delta-total $samples "reth_tempo_payload_builder_pool_transactions_skipped_total" $first_scrape_ms_by_node
         }
         let builder_invalid_tx_skips = do $builder_pool_tx_skips_for_reason "invalid_tx"
         let builder_nonce_too_low_skips = do $builder_pool_tx_skips_for_reason "nonce_too_low"
@@ -1304,7 +1392,7 @@ def generate-summary [
                 $builder_stop_samples
                     | where { |sample| ($sample.labels | get -o reason | default "") == $reason }
             )
-            do $counter_delta_total $samples "reth_tempo_payload_builder_block_build_stop_total"
+            counter-delta-total $samples "reth_tempo_payload_builder_block_build_stop_total" $first_scrape_ms_by_node
         }
         let builder_stop_rlp_size = do $builder_stops_for_reason "rlp_block_size_limit"
         let builder_stop_gas_limit = do $builder_stops_for_reason "gas_limit"
@@ -1317,6 +1405,7 @@ def generate-summary [
         let serialized_block_size_values = (do $optional_counter_metric_values "reth_tempo_payload_builder_rlp_block_size_bytes" 1.0)
         let serialized_block_tx_count_values = (do $optional_counter_metric_values "reth_tempo_payload_builder_total_transactions" 1.0)
         let serialized_block_size_per_tx_values = do $paired_ratio_values $serialized_block_size_values $serialized_block_tx_count_values $label
+        let persistence = (persistence-stats $metric_samples)
 
         let run_bt = do $compute_block_time_stats $block_intervals
 
@@ -1341,6 +1430,7 @@ def generate-summary [
             $baseline_validation_gas_values = ($baseline_validation_gas_values | append $validation_gas_values)
             $baseline_serialized_block_size_values = ($baseline_serialized_block_size_values | append $serialized_block_size_values)
             $baseline_serialized_block_size_per_tx_values = ($baseline_serialized_block_size_per_tx_values | append $serialized_block_size_per_tx_values)
+            if $persistence != null { $baseline_persistence = ($baseline_persistence | append $persistence) }
         } else {
             $feature_blocks = ($feature_blocks | append $blocks)
             $feature_intervals = ($feature_intervals | append $block_intervals)
@@ -1361,6 +1451,7 @@ def generate-summary [
             $feature_validation_gas_values = ($feature_validation_gas_values | append $validation_gas_values)
             $feature_serialized_block_size_values = ($feature_serialized_block_size_values | append $serialized_block_size_values)
             $feature_serialized_block_size_per_tx_values = ($feature_serialized_block_size_per_tx_values | append $serialized_block_size_per_tx_values)
+            if $persistence != null { $feature_persistence = ($feature_persistence | append $persistence) }
         }
 
         let total_tx = ($blocks | get tx_count | math sum)
@@ -1423,6 +1514,7 @@ def generate-summary [
             validation_latency_p99: $run_validation.p99
             validation_gas_s: $run_validation_gas
             success_rate: $success_rate
+            persistence: $persistence
         }])
     }
 
@@ -1480,6 +1572,26 @@ def generate-summary [
     let f_serialized_block_size = do $compute_value_stats $feature_serialized_block_size_values
     let b_serialized_block_size_per_tx = do $compute_value_stats $baseline_serialized_block_size_per_tx_values
     let f_serialized_block_size_per_tx = do $compute_value_stats $feature_serialized_block_size_per_tx_values
+
+    # Persistence: mean over runs, except the worst unpersisted backlog, which takes the max.
+    let summarize_persistence = { |runs: list<any>|
+        let mean = { |field: string, precision: int|
+            let values = ($runs | get -o $field | default [] | where { |value| $value != null })
+            if ($values | length) > 0 { $values | math avg | math round --precision $precision } else { null }
+        }
+        if ($runs | length) == 0 { null } else {
+            {
+                disk_write_mb_s: (do $mean disk_write_mb_s 1)
+                blocks_persisted_s: (do $mean blocks_persisted_s 2)
+                persist_busy_pct: (do $mean persist_busy_pct 1)
+                persist_batch_ms: (do $mean persist_batch_ms 0)
+                unpersisted_max_blocks: ($runs | get unpersisted_max_blocks | where { |value| $value != null } | append 0 | math max)
+                backpressure_stall_s: (do $mean backpressure_stall_s 2)
+            }
+        }
+    }
+    let b_persistence = do $summarize_persistence $baseline_persistence
+    let f_persistence = do $summarize_persistence $feature_persistence
 
     let b_bt = do $compute_block_time_stats $baseline_intervals
     let f_bt = do $compute_block_time_stats $feature_intervals
@@ -1650,7 +1762,7 @@ def generate-summary [
         $"| P90 [ms] | ($b_validation.p90) | ($f_validation.p90) | (do $delta $b_validation.p90 $f_validation.p90)% |"
         $"| P99 [ms] | ($b_validation.p99) | ($f_validation.p99) | (do $delta $b_validation.p99 $f_validation.p99)% |"
         ""
-    ] | where { |line| $line != null })
+    ] | append (persistence-summary-lines $b_persistence $f_persistence $b_block_time.mean $f_block_time.mean) | where { |line| $line != null })
     let full_summary = ($summary_lines | str join "\n")
     $full_summary | save -f $"($results_dir)/summary.md"
     print $"Summary saved: ($results_dir)/summary.md"
@@ -1730,6 +1842,7 @@ def generate-summary [
                 validation_latency_p99: $b_validation.p99
                 validation_gas_s: $b_validation_gas
                 blocks: $b_block_time.n
+                persistence: $b_persistence
             }
             feature: {
                 block_time_mean: $f_block_time.mean
@@ -1772,6 +1885,7 @@ def generate-summary [
                 validation_latency_p99: $f_validation.p99
                 validation_gas_s: $f_validation_gas
                 blocks: $f_block_time.n
+                persistence: $f_persistence
             }
             deltas: {
                 block_time_mean: (do $delta $b_block_time.mean $f_block_time.mean)

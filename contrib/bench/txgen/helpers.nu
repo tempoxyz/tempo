@@ -6,7 +6,16 @@ const TXGEN_HELPER_PRESETS_DIR = "contrib/bench/txgen/presets"
 const TXGEN_HELPER_TIP20_PIECES_DIR = "contrib/bench/txgen/presets/tip20"
 const TXGEN_HELPER_TIP20_SCENARIO_PRESETS = ["default" "public" "tip20"]
 const TXGEN_HELPER_ALWAYS_FUND_PRESETS = [
+    "zone-earn-mix"
+    "zone-earn-hot"
+    "zone-earn-serial"
+    "zone-portal-hot"
+    "card-settlement"
+    "neobank-generic"
+    "batch-payout"
     "dex"
+    "bridge-mix"
+    "bridge-mix-new-accounts"
     "neobank-deposit"
     "neobank-swap"
     "neobank-withdraw"
@@ -18,7 +27,21 @@ const TXGEN_HELPER_ALWAYS_FUND_PRESETS = [
     "zone-portal-throughput"
 ]
 # Presets composed by txgen-prepare-public-mix-preset from the public-mix fixtures.
-const TXGEN_HELPER_PUBLIC_MIX_PRESETS = ["public-mix" "vault-throughput" "zone-portal-throughput"]
+const TXGEN_HELPER_PUBLIC_MIX_PRESETS = ["public-mix" "vault-throughput" "zone-portal-throughput" "zone-earn-mix" "zone-earn-hot" "zone-earn-serial" "zone-portal-hot" "card-settlement" "neobank-generic" "batch-payout"]
+# Presets that pin the zone portal count instead of sizing it by TPS (TXGEN_ZONE_COUNT still overrides).
+const TXGEN_HELPER_PRESET_ZONE_COUNTS = {"zone-earn-hot": 1, "zone-portal-hot": 1}
+# Presets whose zone settlement and Earn deposits come from one sender with ordered nonces.
+const TXGEN_HELPER_SINGLE_SENDER_PRESETS = ["zone-earn-serial"]
+# Card settlement: a small pool of shard senders redeem vault shares and forward proceeds.
+const TXGEN_HELPER_CARD_SETTLEMENT_PRESETS = ["card-settlement"]
+const TXGEN_HELPER_CARD_SETTLEMENT_SENDERS = 18
+const TXGEN_HELPER_CARD_SETTLEMENT_ACCOUNT = "0x000000000000000000000000000000000000ca4d"
+# Batch payouts: recipients per transaction by preset (TXGEN_BATCH_PAYOUT_RECIPIENTS overrides),
+# within the txpool's 32 calls per Tempo transaction and the 30M transaction gas cap.
+const TXGEN_HELPER_BATCH_PAYOUT_RECIPIENTS = {"batch-payout": 32}
+const TXGEN_HELPER_BATCH_PAYOUT_BASE_GAS = 500000
+const TXGEN_HELPER_MAX_AA_CALLS = 32
+const TXGEN_HELPER_TX_GAS_LIMIT_CAP = 30000000
 const TXGEN_HELPER_EXISTING_RECIPIENTS_START = 10000
 const TXGEN_HELPER_KEYCHAIN_ACCESS_KEYS_START = 100000
 const TXGEN_HELPER_KEYCHAIN_AUTHORIZE_SETUP_GAS_LIMIT = 20000000
@@ -609,7 +632,8 @@ def txgen-fund-accounts [txgen_bin: string, spec_path: string, rpc_url: string] 
         error make { msg: $"failed to list txgen addresses for ($spec_path): ($result.stderr | str trim)" }
     }
 
-    let addresses = ($result.stdout | str trim | split row " " | where { |addr| $addr != "" })
+    # Pools may share accounts (batch-payout treasury); fund each address once.
+    let addresses = ($result.stdout | str trim | split row " " | where { |addr| $addr != "" } | uniq)
     if ($addresses | is-empty) {
         error make { msg: $"txgen spec produced no addresses: ($spec_path)" }
     }
@@ -621,6 +645,79 @@ def txgen-fund-accounts [txgen_bin: string, spec_path: string, rpc_url: string] 
 
     print "  Waiting for faucet transactions to drain..."
     txgen-wait-for-txpool-drain $rpc_url $TXGEN_HELPER_FUND_DRAIN_TIMEOUT_SECS
+}
+
+# Portal count: TXGEN_ZONE_COUNT, else the preset's pinned count, else the TPS-sized default.
+def txgen-zone-count [preset_name: string, automatic: int] {
+    let pinned = ($TXGEN_HELPER_PRESET_ZONE_COUNTS | get -o $preset_name)
+    $env.TXGEN_ZONE_COUNT? | default ($pinned | default $automatic) | into int
+}
+
+# Sends zone settlement and Earn deposits from users[0] with ordered nonces.
+def txgen-single-sender-templates [templates: record] {
+    $templates | items { |name, template|
+        let serial = ($name =~ '^(zone_withdraw|vault_deposit)_[0-9]+$')
+        let value = if $serial {
+            $template
+                | upsert from {pool: users, select: {index: 0}}
+                | upsert expiring_nonce false
+                | reject -o valid_for_secs nonce
+        } else { $template }
+        {name: $name, value: $value}
+    } | transpose -r -d
+}
+
+# Keeps the first card shard senders' vault redemptions, unsponsored, each followed by
+# a transfer of the proceeds to one settlement account. Each gets a random TIP-1106
+# nonce discriminator so a sender's otherwise identical redemptions stay distinct.
+def txgen-card-settlement-template [template: record] {
+    let forward = {
+        to: "0x20c0000000000000000000000000000000000000"
+        abi: ERC20
+        function: transfer
+        args: [$TXGEN_HELPER_CARD_SETTLEMENT_ACCOUNT 1]
+    }
+    $template | reject -o sponsor | upsert nonce {uniform: [0 9223372036854775807]} | upsert calls ($template.calls | append $forward)
+}
+
+# Repeats each batch-payout template's last call once per recipient, scales its
+# approvals to cover every recipient and sizes gas_limit (a per-recipient budget) to
+# the batch. A template whose batch would pass the call or gas cap gets the most
+# recipients that fit.
+def txgen-batch-payout-templates [presets_dir: string, recipients: int] {
+    if $recipients < 1 { error make {msg: "TXGEN_BATCH_PAYOUT_RECIPIENTS must be positive"} }
+    # Nushell's YAML parser keeps the i64 nonce bound exact; a jq round-trip may not.
+    open ($presets_dir | path join batch-payout.yml) | get templates | items { |name, template|
+        let gas_fit = (($TXGEN_HELPER_TX_GAS_LIMIT_CAP - $TXGEN_HELPER_BATCH_PAYOUT_BASE_GAS) // $template.gas_limit)
+        let call_fit = $TXGEN_HELPER_MAX_AA_CALLS - ($template.calls | length) + 1
+        let count = ([$recipients $gas_fit $call_fit] | math min)
+        let payout = ($template.calls | last)
+        let approvals = ($template.calls | drop 1 | each { |call|
+            if $call.function == approve { $call | update args.1 ($call.args.1 * $count) } else { $call }
+        })
+        {name: $name, value: ($template
+            | update gas_limit ($template.gas_limit * $count + $TXGEN_HELPER_BATCH_PAYOUT_BASE_GAS)
+            | update calls ($approvals | append (1..$count | each { $payout })))}
+    } | transpose -r -d
+}
+
+def txgen-card-settlement [templates: record, mix: list<any>] {
+    let shard = { |name: string|
+        let parsed = ($name | parse --regex '^vault_withdraw_(?<index>[0-9]+)$')
+        ($parsed | length) > 0 and (($parsed | first).index | into int) < $TXGEN_HELPER_CARD_SETTLEMENT_SENDERS
+    }
+    {
+        templates: ($templates | items { |name, template|
+            let value = if (do $shard $name) {
+                txgen-card-settlement-template $template
+            } else { $template }
+            {name: $name, value: $value}
+        } | transpose -r -d)
+        mix: ($mix | where { |entry|
+            let name = ($entry | get -o template | default "")
+            not ($name | str starts-with "vault_withdraw_") or (do $shard $name)
+        })
+    }
 }
 
 def txgen-prepare-zones-preset [spec_path: string, count: int, accounts: int, zones: int, mode: string] {
@@ -766,7 +863,7 @@ def txgen-workload-metadata-args [preset_name: string, spec_path: string] {
     let result = (^uv run --no-project --with yq==3.4.3 yq -ceS '
         .mix | if length > 0 then . else error("public-mix requires a mix") end
         | map({key: ((.template // .sequence)
-            | sub("^(?<category>(zone|vault)_(deposit|withdraw))_[0-9]+$"; "\(.category)")), value: .weight})
+            | sub("^(?<category>(zone|vault)_(deposit|withdraw)|card_settlement)_[0-9]+$"; "\(.category)")), value: .weight})
         | group_by(.key)
         | map({key: .[0].key, value: (map(.value) | add)})
         | from_entries
@@ -812,6 +909,16 @@ def txgen-prepare-public-mix-preset [spec_path: string, count: int, accounts: in
         if $name in [vault_deposit vault_withdraw] {
             let entries = if $name == vault_deposit { $deposits.mix } else { $withdrawals.mix }
             $mix = ($mix | append ($entries | each { |item| $item | update weight ($entry.weight * $zone_weight) }))
+        } else if $name == card_settlement {
+            # Card shards: the first users' vault redemptions forwarded to the settlement account,
+            # alongside ordinary withdrawals. Shards split the entry's aggregate weight.
+            let shards = ($withdrawals.mix | where { |item|
+                ($item.template | str replace "vault_withdraw_" "" | into int) < $TXGEN_HELPER_CARD_SETTLEMENT_SENDERS
+            })
+            let per_shard = ($entry.weight * $scale // ($shards | length))
+            $mix = ($mix | append ($shards | each { |item|
+                {template: ($item.template | str replace "vault_withdraw_" "card_settlement_"), weight: $per_shard}
+            }))
         } else if $name in [zone_deposit zone_withdraw] {
             let entries = ($zone_spec.mix | where { |item| $item.template | str starts-with $"($name)_" })
             $mix = ($mix | append ($entries | each { |item| $item | update weight ($item.weight * $entry.weight * $accounts) }))
@@ -831,8 +938,34 @@ def txgen-prepare-public-mix-preset [spec_path: string, count: int, accounts: in
         | items { |name, template|
             {name: $name, value: ($template | upsert expiring_nonce true | upsert valid_for_secs 25)}
         } | transpose -r -d)
+    let preset_name = ($spec_path | path basename | str replace --regex '\.yml$' '')
+    let templates = if $preset_name in $TXGEN_HELPER_SINGLE_SENDER_PRESETS {
+        txgen-single-sender-templates $templates
+    } else { $templates }
+    let batch_recipients = ($TXGEN_HELPER_BATCH_PAYOUT_RECIPIENTS | get -o $preset_name)
+    let templates = if $batch_recipients != null {
+        let recipients = ($env.TXGEN_BATCH_PAYOUT_RECIPIENTS? | default $batch_recipients | into int)
+        $templates | merge (txgen-batch-payout-templates $presets $recipients)
+    } else { $templates }
+    let templates = ($mix
+        | where { |entry| ($entry | get -o template | default "") | str starts-with "card_settlement_" }
+        | reduce --fold $templates { |entry, acc|
+            let source = ($templates | get ($entry.template | str replace "card_settlement_" "vault_withdraw_"))
+            $acc | insert $entry.template (txgen-card-settlement-template $source)
+        })
+    let card = if $preset_name in $TXGEN_HELPER_CARD_SETTLEMENT_PRESETS {
+        txgen-card-settlement $templates $mix
+    } else { {templates: $templates, mix: $mix} }
+    let templates = $card.templates
+    let mix = $card.mix
+    # Asset conversion swaps on the stablecoin DEX need dex.yml's liquidity walls.
+    let dex_setup = if ($spec.mix | any { |entry| ($entry | get -o template) == "dex_swap" }) {
+        let result = (^uv run --no-project --with yq==3.4.3 yq -c '.setup.steps' ($presets | path join dex.yml) | complete)
+        if $result.exit_code != 0 { error make {msg: $"Failed to read dex setup: ($result.stderr)"} }
+        $result.stdout | from json
+    } else { [] }
     {include: $spec_path, accounts: {users: {range: [0 $accounts]}},
-        setup: {steps: ($vault_setup | append $users | append $zone_spec.setup.steps)},
+        setup: {steps: ($vault_setup | append $users | append $zone_spec.setup.steps | append $dex_setup)},
         templates: $templates,
         mix: $mix} | to yaml | save -f $output
     $output
@@ -904,7 +1037,7 @@ def txgen-run-preset-pipeline [
         let window_ms = ($env.TXGEN_ZONE_SETTLEMENT_WINDOW_MS? | default "3000" | into int)
         if $window_ms < 1 { error make { msg: "TXGEN_ZONE_SETTLEMENT_WINDOW_MS must be positive" } }
         let automatic_zones = ([1 (($tps * $window_ms / 210000) | math ceil | into int)] | math max)
-        let zones = ($env.TXGEN_ZONE_COUNT? | default $automatic_zones | into int)
+        let zones = (txgen-zone-count $preset_name $automatic_zones)
         if $zones < 1 { error make { msg: "TXGEN_ZONE_COUNT must be positive" } }
         $zone_metadata = ["-m" $"zone_count=($zones)" "-m" $"zone_sizing_window_ms=($window_ms)"]
         print $"  Zones: ($zones), users: ($accounts), sizing window: ($window_ms)ms, capacity: 210 deposits/portal"

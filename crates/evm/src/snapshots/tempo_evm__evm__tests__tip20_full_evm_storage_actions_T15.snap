@@ -1,6 +1,5 @@
 ---
 source: crates/evm/src/evm.rs
-assertion_line: 1723
 expression: snapshot
 ---
 direct_first_transfer:
