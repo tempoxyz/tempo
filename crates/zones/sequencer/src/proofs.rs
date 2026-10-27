@@ -127,7 +127,7 @@ impl ProofCollectorHandle {
     /// From T14 (by the block's `timestamp`) this waits for collection and returns its error, so
     /// a block whose witness cannot be collected never becomes canonical. Before T14 a batch
     /// without witnesses settles with the `NoProof` verifier, so collection is bounded by
-    /// [`OPTIONAL_WITNESS_TIMEOUT`] and a failure is logged and counted instead of returned.
+    /// `OPTIONAL_WITNESS_TIMEOUT` and a failure is logged and counted instead of returned.
     pub async fn collect_for_import(&self, number: u64, hash: B256, timestamp: u64) -> Result<()> {
         if self.witness_mandatory(timestamp) {
             return self.collect_and_persist(number, hash).await.map(|_| ());
