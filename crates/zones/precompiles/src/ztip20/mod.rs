@@ -40,7 +40,7 @@ pub const TIP20_FIXED_TRANSFER_GAS: u64 = 100_000;
 /// Predeploys that relay arbitrary callers. Contract creation is disabled, so the set is fixed.
 ///
 /// Permit2's allowance and nonce getters are public, and Multicall3 lets any caller act as itself.
-const RELAY_PREDEPLOYS: [Address; 2] = [PERMIT2_ADDRESS, MULTICALL3_ADDRESS];
+pub(crate) const RELAY_PREDEPLOYS: [Address; 2] = [PERMIT2_ADDRESS, MULTICALL3_ADDRESS];
 
 pub(crate) const TIP20_FIXED_GAS_SELECTORS: &[[u8; 4]] = &[
     ITIP20::transferCall::SELECTOR,
@@ -75,8 +75,9 @@ impl<P: L1StorageReader> TIP20Rules<P> {
             return unauthorized();
         }
         // Relays may neither spend allowances granted to them nor have their own funds moved,
-        // including through allowances they granted before T15.
-        if [caller, from]
+        // including through allowances they granted before T15. Nor may they receive funds,
+        // which could then never leave.
+        if [caller, from, to]
             .iter()
             .any(|account| RELAY_PREDEPLOYS.contains(account))
             || !self.l1.read_portal(|portal| &portal.transfers_enabled)?
@@ -576,28 +577,33 @@ mod tests {
             let mut harness = PrecompileHarness::new_at(TempoHardfork::T15)?;
             harness.set_transfers_enabled(true)?;
             let (alice, bob, spender) = (harness.alice, harness.bob, harness.spender);
-            for calldata in [
+            let approve = harness.call(
+                alice,
                 ITIP20::approveCall {
                     spender: relay,
                     amount: U256::MAX,
                 }
-                .abi_encode(),
-                ITIP20::transferCall {
-                    to: relay,
-                    amount: relay_balance,
-                }
-                .abi_encode(),
-            ] {
-                let result =
-                    harness.call(alice, calldata.into(), TIP20_FIXED_TRANSFER_GAS, false)?;
-                assert!(result.is_success(), "{relay}");
-            }
-            // An allowance the relay granted before T15, when relays could still approve.
+                .abi_encode()
+                .into(),
+                TIP20_FIXED_TRANSFER_GAS,
+                false,
+            )?;
+            assert!(approve.is_success(), "{relay}");
+            // A balance the relay received and an allowance it granted before T15, when deposits
+            // could credit it and relays could still approve.
             {
                 let token = harness.token;
                 let mut storage = test_storage_provider(&mut harness.ctx, u64::MAX, false);
                 StorageCtx::enter(&mut storage, || {
-                    TIP20Token::from_address(token)?.approve(
+                    let mut token = TIP20Token::from_address(token)?;
+                    token.transfer(
+                        alice,
+                        ITIP20::transferCall {
+                            to: relay,
+                            amount: relay_balance,
+                        },
+                    )?;
+                    token.approve(
                         relay,
                         ITIP20::approveCall {
                             spender,
@@ -608,12 +614,13 @@ mod tests {
             }
 
             // Every transfer-family call from the relay, spending Alice's allowance or the relay's
-            // own balance, a new approval by the relay, and the spender using the relay's
-            // allowance.
+            // own balance, a new approval by the relay, the spender using the relay's allowance,
+            // and every transfer-family call to the relay.
             let mut calls: Vec<(Address, Bytes)> = harness
                 .transfer_calls(bob)
                 .into_iter()
                 .map(|(_, calldata)| (relay, calldata))
+                .chain(harness.transfer_calls(relay))
                 .collect();
             calls.push((
                 relay,
