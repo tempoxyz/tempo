@@ -585,8 +585,11 @@ jobs:
         uses: tempoxyz/gh-actions/vendor/depot/bake-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           provenance: false
+          # Pull requests build tempo-zone with the profiling profile instead of
+          # the fat-LTO reproducible profile (see docker-bake-pr.hcl).
           files: |
             zones/docker/docker-bake.hcl
+            ${{ github.event_name == 'pull_request' && 'zones/docker/docker-bake-pr.hcl' || '' }}
             ${{ steps.meta-tempo-zone-xtask.outputs.bake-file }}
             ${{ steps.meta-tempo-zone-prover-utils.outputs.bake-file }}
           targets: |
