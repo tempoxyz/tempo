@@ -74,6 +74,7 @@ jobs:
       contents: read
       id-token: write
       issues: write
+      pull-requests: write
     uses: ./.github/workflows/zones-prover-benchmark.yml # zizmor: ignore[self-repository] actionlint does not support $/ references yet.
     with:
       actor: ${{ needs.resolve-refs.outputs.actor }}

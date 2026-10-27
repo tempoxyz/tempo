@@ -136,6 +136,7 @@ jobs:
       contents: read
       id-token: write
       issues: write
+      pull-requests: write
     env:
       BASELINE_ZONES_ROOT: ${{ github.workspace }}/baseline-zones
       FEATURE_ZONES_ROOT: ${{ github.workspace }}/feature-zones
