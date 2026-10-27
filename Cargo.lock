@@ -17323,6 +17323,7 @@ dependencies = [
  "parking_lot",
  "proptest",
  "reth-chain-state",
+ "reth-chainspec",
  "reth-metrics",
  "reth-primitives-traits",
  "reth-provider",

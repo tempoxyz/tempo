@@ -16,6 +16,7 @@ use alloy_rpc_types_eth::BlockId;
 use eyre::{Context as _, OptionExt as _, Result, bail, ensure};
 use futures::StreamExt as _;
 use parking_lot::RwLock;
+use reth_chainspec::ChainSpecProvider;
 use serde::{Deserialize, Serialize};
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::TempoHardforks as _;
@@ -37,14 +38,17 @@ const MAX_SHADOW_RETENTION_BLOCKS: u64 = 10_000;
 const OPTIONAL_WITNESS_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Load unsettled witnesses and return the proof collector handle and worker future.
-pub async fn create_proof_collector<P: ZoneSequencerProvider>(
+pub async fn create_proof_collector<P>(
     config: ProofCollectorConfig,
     provider: P,
-    chain_spec: Arc<ZoneChainSpec>,
 ) -> Result<(
     ProofCollectorHandle,
     impl Future<Output = ()> + Send + 'static,
-)> {
+)>
+where
+    P: ZoneSequencerProvider + ChainSpecProvider<ChainSpec = ZoneChainSpec>,
+{
+    let chain_spec = provider.chain_spec();
     let directory = config.directory.clone();
     let finalized_zone_height = config.finalized_zone_height().await?;
     let store = Arc::new(

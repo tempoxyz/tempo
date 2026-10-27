@@ -889,12 +889,8 @@ where
                 l1_provider: l1_provider.clone(),
                 retain_for_shadow_proving: matches!(prover_config, ZoneProverConfig::Shadow { .. }),
             };
-            let (collector, collector_task) = create_proof_collector(
-                proof_collector_config,
-                provider.clone(),
-                provider.chain_spec(),
-            )
-            .await?;
+            let (collector, collector_task) =
+                create_proof_collector(proof_collector_config, provider.clone()).await?;
             task_executor.spawn_critical_task("zone-proof-collector", collector_task);
 
             if let Some(addresses) = prover_config.prover_addresses().cloned() {
