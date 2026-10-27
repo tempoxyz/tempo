@@ -47,7 +47,7 @@ if (kind === 'txgen-tempo') {
     fs.symlinkSync(mock, bench);
     for (const [preset, extraArgs, pipelineArgs = ''] of [
       ['tip20', ''], ['mix', ''], ['dex', '--gas-weighted-mix'], ['mpp', ''],
-      ['batch-payout', '', '--bloat-mib 1024'],
+      ['batch-payout', '', '--bloat-mib 1024'], ['access-key-mix', ''],
     ]) {
       const callsPath = path.join(directory, `${preset}.calls`);
       const report = path.join(directory, `${preset}.json`);
