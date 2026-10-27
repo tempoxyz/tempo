@@ -37,210 +37,70 @@ pub(crate) struct StepEffects<'a> {
     pub(crate) logs: &'a [Log],
 }
 
-/// Appends to `failures` each invariant `db` breaks, at `scope`, over the accounts `db` holds,
-/// and adds how many subjects each judged, was armed for and found broken to `report`; `holders`
-/// are read as balance holders too, but never checked as contracts. `env` is the block's
-/// environment. Only contracts for which `selected` holds are checked, e.g. those whose state
-/// changed, as no other contract's invariants can have broken. With `effects`, a token's step
-/// checks also run on its ledger before the step against its ledger after it.
-#[expect(clippy::too_many_arguments)]
-pub(crate) fn check(
-    db: &Db,
-    env: &EvmEnv<TempoHardfork, TempoBlockEnv>,
-    scope: &InvariantScope,
-    selected: impl Fn(&Address) -> bool,
-    holders: &[Address],
-    effects: Option<StepEffects<'_>>,
-    failures: &mut Vec<InvariantFailure>,
-    report: &mut Report,
-) {
-    let pre_state = &db.database.0;
-    let missed = pre_state.missed();
-    let mut accounts: Vec<Address> = db
-        .cache
-        .accounts
-        .iter()
-        .filter(|(_, account)| account.account.is_some())
-        .map(|(address, _)| *address)
-        .collect();
-    accounts.sort_unstable();
-    // A step's own logs name holders its transitions touched only through a token's storage,
-    // such as a transfer's recipient.
-    let logged = effects
-        .iter()
-        .flat_map(|effects| effects.logs)
-        .flat_map(|log| log.topics())
-        .filter(|topic| topic[..12] == [0; 12])
-        .map(|topic| Address::from_word(*topic));
-    let mut all_holders: Vec<Address> = accounts
-        .iter()
-        .chain(holders)
-        .copied()
-        .chain(logged)
-        .collect();
-    all_holders.sort_unstable();
-    all_holders.dedup();
-    let tokens: Vec<Address> = accounts
-        .iter()
-        .copied()
-        .filter(|account| is_tip20_prefix(*account))
-        .collect();
-
-    let mut views = EvmViews::new(db, env, pre_state);
-    let mut step = Report::default();
-    step.register_any(all());
-    for id in [TIP20_VIEW, FEE_VIEW, DEX_VIEW] {
-        step.counts.entry(id).or_default();
+impl StepEffects<'_> {
+    /// The step from `pre` to `post`, models of `contract`.
+    fn step<M>(&self, contract: Address, pre: M, post: M) -> Step<M> {
+        let changes = self
+            .transitions
+            .transitions
+            .get(&contract)
+            .into_iter()
+            .flat_map(|account| &account.storage)
+            .filter(|(_, slot)| slot.is_changed())
+            .map(|(slot, value)| SlotChange {
+                address: contract,
+                slot: *slot,
+                before: value.original_value(),
+                after: value.present_value(),
+            })
+            .collect();
+        Step {
+            pre,
+            post,
+            changes,
+            logs: self.logs.to_vec(),
+            tx: (),
+        }
     }
+}
 
-    for &token in tokens.iter().filter(|token| selected(token)) {
-        let at = tip20::At {
-            token,
-            holders: &all_holders,
+/// Reads models from the state after a step and, with its `effects`, from the state before it.
+struct Reader<'a> {
+    db: &'a Db,
+    env: &'a EvmEnv<TempoHardfork, TempoBlockEnv>,
+    pre_state: &'a PreStateDb,
+    effects: Option<&'a StepEffects<'a>>,
+}
+
+impl Reader<'_> {
+    /// Reads the model `at` names at `contract` after the step and checks it into `report`; with
+    /// the step's effects, also reads it before the step and checks the step. A read that fails
+    /// is counted under `view` as [`observed`] does.
+    fn check<M: Observe + 'static>(
+        &self,
+        report: &mut Report,
+        at: M::At<'_>,
+        contract: Address,
+        view: &'static str,
+    ) {
+        let after = EvmViews::new(self.db, self.env, self.pre_state);
+        let Some(post) = observed(report, view, contract, M::observe(&mut { after }, at)) else {
+            return;
         };
-        let Some(post) = observe_checked::<tip20::Ledger, _>(
-            &mut step,
-            &mut views,
-            at,
-            TIP20_VIEW,
-            format!("token={token}"),
-        ) else {
-            continue;
-        };
-        let Some(effects) = &effects else {
-            continue;
+        report.run_any(all(), &post);
+        let Some(effects) = self.effects else {
+            return;
         };
         let before = PreView {
-            db,
+            db: self.db,
             transitions: effects.transitions,
         };
-        let pre = tip20::Ledger::observe(&mut EvmViews::new(before, env, pre_state), at);
-        let subject = format!("token={token} before the step");
-        let Some(pre) = observed(&mut step, TIP20_VIEW, subject, pre) else {
-            continue;
+        let before = EvmViews::new(before, self.env, self.pre_state);
+        let subject = format!("{contract} before the step");
+        let Some(pre) = observed(report, view, subject, M::observe(&mut { before }, at)) else {
+            return;
         };
-        step.run_any(all(), &ledger_step(pre, post, effects));
-    }
-    if selected(&TIP_FEE_MANAGER_ADDRESS) {
-        let pairs: Vec<(Address, Address)> = tokens
-            .iter()
-            .flat_map(|&user| tokens.iter().map(move |&validator| (user, validator)))
-            .filter(|(user, validator)| user != validator)
-            .collect();
-        let at = fee_amm::At {
-            fee_manager: TIP_FEE_MANAGER_ADDRESS,
-            tokens: &tokens,
-            pairs: &pairs,
-            validators: &[env.block_env.inner.beneficiary],
-            holders: &all_holders,
-        };
-        observe_checked::<fee_amm::Books, _>(
-            &mut step,
-            &mut views,
-            at,
-            FEE_VIEW,
-            TIP_FEE_MANAGER_ADDRESS,
-        );
-    }
-    if selected(&STABLECOIN_DEX_ADDRESS) {
-        let at = dex::At {
-            dex: STABLECOIN_DEX_ADDRESS,
-            tokens: &tokens,
-            users: &all_holders,
-            orders: &[],
-        };
-        observe_checked::<dex::Books, _>(
-            &mut step,
-            &mut views,
-            at,
-            DEX_VIEW,
-            STABLECOIN_DEX_ADDRESS,
-        );
-    }
-
-    failures.extend(step.violations.drain(..).map(|violation| InvariantFailure {
-        id: violation.id.to_string(),
-        message: format!("{} {}", violation.subject, violation.detail),
-        scope: scope.clone(),
-    }));
-    report.merge(step);
-    pre_state.restore_missed(missed);
-}
-
-/// The model `at` names, read through `views` and checked against every check of its type into
-/// `report`; `None` when it could not be read, counted under `view` as [`observed`] does.
-fn observe_checked<M: Observe + 'static, V: Views<Error = ViewFailed>>(
-    report: &mut Report,
-    views: &mut V,
-    at: M::At<'_>,
-    view: &'static str,
-    subject: impl Display,
-) -> Option<M> {
-    let model = observed(report, view, subject, M::observe(views, at))?;
-    report.run_any(all(), &model);
-    Some(model)
-}
-
-/// `read`'s value, counting it under `view`: a read nothing answered is not armed, one that
-/// failed otherwise breaks `view`.
-fn observed<T>(
-    report: &mut Report,
-    view: &'static str,
-    subject: impl Display,
-    read: Result<T, ObserveError<ViewFailed>>,
-) -> Option<T> {
-    let counts = report.counts.entry(view).or_default();
-    counts.evaluated += 1;
-    match read {
-        Ok(value) => {
-            counts.armed += 1;
-            Some(value)
-        }
-        Err(err) if err.is_not_answered() => None,
-        Err(err) => {
-            counts.armed += 1;
-            counts.fired += 1;
-            report.violations.push(Violation {
-                id: view,
-                subject: subject.to_string(),
-                detail: err.to_string(),
-            });
-            None
-        }
-    }
-}
-
-/// A token's step from `pre` to `post`, over the accounts both read, as `effects` made it.
-fn ledger_step(
-    mut pre: tip20::Ledger,
-    mut post: tip20::Ledger,
-    effects: &StepEffects<'_>,
-) -> Step<tip20::Ledger> {
-    pre.balances
-        .retain(|account, _| post.balances.contains_key(account));
-    post.balances
-        .retain(|account, _| pre.balances.contains_key(account));
-    let token = post.token;
-    let changes = effects
-        .transitions
-        .transitions
-        .get(&token)
-        .into_iter()
-        .flat_map(|account| &account.storage)
-        .filter(|(_, slot)| slot.is_changed())
-        .map(|(slot, value)| SlotChange {
-            address: token,
-            slot: *slot,
-            before: value.original_value(),
-            after: value.present_value(),
-        })
-        .collect();
-    Step {
-        pre,
-        post,
-        changes,
-        logs: effects.logs.to_vec(),
-        tx: (),
+        report.run_any(all(), &effects.step(contract, pre, post));
     }
 }
 
@@ -354,5 +214,136 @@ struct ViewFailed {
 impl Display for ViewFailed {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{} on {}: {}", self.selector, self.target, self.reason)
+    }
+}
+
+/// Appends to `failures` each invariant `db` breaks, at `scope`, over the accounts `db` holds,
+/// and adds how many subjects each judged, was armed for and found broken to `report`; `holders`
+/// are read as balance holders too, but never checked as contracts. `env` is the block's
+/// environment. Only contracts for which `selected` holds are checked, e.g. those whose state
+/// changed, as no other contract's invariants can have broken. With `effects`, a token's step
+/// checks also run on its ledger before the step against its ledger after it.
+#[expect(clippy::too_many_arguments)]
+pub(crate) fn check(
+    db: &Db,
+    env: &EvmEnv<TempoHardfork, TempoBlockEnv>,
+    scope: &InvariantScope,
+    selected: impl Fn(&Address) -> bool,
+    holders: &[Address],
+    effects: Option<StepEffects<'_>>,
+    failures: &mut Vec<InvariantFailure>,
+    report: &mut Report,
+) {
+    let pre_state = &db.database.0;
+    let missed = pre_state.missed();
+    let mut accounts: Vec<Address> = db
+        .cache
+        .accounts
+        .iter()
+        .filter(|(_, account)| account.account.is_some())
+        .map(|(address, _)| *address)
+        .collect();
+    accounts.sort_unstable();
+    // A step's own logs name holders its transitions touched only through a token's storage,
+    // such as a transfer's recipient.
+    let logged = effects
+        .iter()
+        .flat_map(|effects| effects.logs)
+        .flat_map(|log| log.topics())
+        .filter(|topic| topic[..12] == [0; 12])
+        .map(|topic| Address::from_word(*topic));
+    let mut all_holders: Vec<Address> = accounts
+        .iter()
+        .chain(holders)
+        .copied()
+        .chain(logged)
+        .collect();
+    all_holders.sort_unstable();
+    all_holders.dedup();
+    let tokens: Vec<Address> = accounts
+        .iter()
+        .copied()
+        .filter(|account| is_tip20_prefix(*account))
+        .collect();
+
+    let reader = Reader {
+        db,
+        env,
+        pre_state,
+        effects: effects.as_ref(),
+    };
+    let mut step = Report::default();
+    step.register_any(all());
+    for id in [TIP20_VIEW, FEE_VIEW, DEX_VIEW] {
+        step.counts.entry(id).or_default();
+    }
+
+    for &token in tokens.iter().filter(|token| selected(token)) {
+        let at = tip20::At {
+            token,
+            holders: &all_holders,
+        };
+        reader.check::<tip20::Ledger>(&mut step, at, token, TIP20_VIEW);
+    }
+    if selected(&TIP_FEE_MANAGER_ADDRESS) {
+        let pairs: Vec<(Address, Address)> = tokens
+            .iter()
+            .flat_map(|&user| tokens.iter().map(move |&validator| (user, validator)))
+            .filter(|(user, validator)| user != validator)
+            .collect();
+        let at = fee_amm::At {
+            fee_manager: TIP_FEE_MANAGER_ADDRESS,
+            tokens: &tokens,
+            pairs: &pairs,
+            validators: &[env.block_env.inner.beneficiary],
+            holders: &all_holders,
+        };
+        reader.check::<fee_amm::Books>(&mut step, at, TIP_FEE_MANAGER_ADDRESS, FEE_VIEW);
+    }
+    if selected(&STABLECOIN_DEX_ADDRESS) {
+        let at = dex::At {
+            dex: STABLECOIN_DEX_ADDRESS,
+            tokens: &tokens,
+            users: &all_holders,
+            orders: &[],
+        };
+        reader.check::<dex::Books>(&mut step, at, STABLECOIN_DEX_ADDRESS, DEX_VIEW);
+    }
+
+    failures.extend(step.violations.drain(..).map(|violation| InvariantFailure {
+        id: violation.id.to_string(),
+        message: format!("{} {}", violation.subject, violation.detail),
+        scope: scope.clone(),
+    }));
+    report.merge(step);
+    pre_state.restore_missed(missed);
+}
+
+/// `read`'s value, counting it under `view`: a read nothing answered is not armed, one that
+/// failed otherwise breaks `view`.
+fn observed<T>(
+    report: &mut Report,
+    view: &'static str,
+    subject: impl Display,
+    read: Result<T, ObserveError<ViewFailed>>,
+) -> Option<T> {
+    let counts = report.counts.entry(view).or_default();
+    counts.evaluated += 1;
+    match read {
+        Ok(value) => {
+            counts.armed += 1;
+            Some(value)
+        }
+        Err(err) if err.is_not_answered() => None,
+        Err(err) => {
+            counts.armed += 1;
+            counts.fired += 1;
+            report.violations.push(Violation {
+                id: view,
+                subject: subject.to_string(),
+                detail: err.to_string(),
+            });
+            None
+        }
     }
 }

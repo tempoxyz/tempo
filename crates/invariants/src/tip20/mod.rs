@@ -9,7 +9,7 @@ use std::{collections::BTreeMap, fmt};
 use alloy_primitives::{Address, Bytes, LogData, U256};
 use alloy_sol_types::{SolCall, SolEvent, sol};
 
-use crate::{Observe, ObserveError, Views, decode, optional, or_text};
+use crate::{Observe, ObserveError, Replay, Views, decode, optional, or_text};
 
 sol! {
     #[derive(Debug, PartialEq, Eq)]
@@ -102,8 +102,56 @@ impl Observe for Ledger {
 }
 
 impl Ledger {
-    /// The ledger after `transfers`, or why they would take a balance or the supply out of `U256`.
-    fn apply(&self, transfers: &[Transfer]) -> Result<Self, Unapplied> {
+    /// The sum of the observed balances, or `None` if it overflows.
+    /// `self` and `other` over only the accounts both read.
+    fn common(&self, other: &Self) -> (Self, Self) {
+        let mut this = self.clone();
+        let mut that = other.clone();
+        this.balances
+            .retain(|account, _| other.balances.contains_key(account));
+        that.balances
+            .retain(|account, _| self.balances.contains_key(account));
+        (this, that)
+    }
+
+    pub fn balance_sum(&self) -> Option<U256> {
+        self.balances
+            .values()
+            .try_fold(U256::ZERO, |sum, balance| sum.checked_add(*balance))
+    }
+
+    /// Fields of `self` that differ in `other`, as `field: self -> other`.
+    pub fn diff(&self, other: &Self) -> String {
+        let mut out: Vec<String> = self
+            .balances
+            .iter()
+            .filter(|(account, balance)| other.balances.get(*account) != Some(*balance))
+            .map(|(account, balance)| {
+                format!("{account}: {balance} -> {:?}", other.balances.get(account))
+            })
+            .collect();
+        if self.supply != other.supply {
+            out.push(format!("supply: {} -> {}", self.supply, other.supply));
+        }
+        if self.supply_cap != other.supply_cap {
+            out.push(format!(
+                "supplyCap: {} -> {}",
+                or_text(self.supply_cap, "?"),
+                or_text(other.supply_cap, "?")
+            ));
+        }
+        out.join(", ")
+    }
+}
+
+/// The ledger after a step is the ledger before it with the step's `Transfer`s replayed: each
+/// observed balance moves by the transfers into and out of it, and the supply by the mints (from
+/// the zero address) and burns (to it). A transfer between an observed and an unobserved account
+/// moves only the observed side.
+impl Replay<Transfer> for Ledger {
+    type Error = Unapplied;
+
+    fn replay(&self, transfers: &[Transfer]) -> Result<Self, Unapplied> {
         let mut next = self.clone();
         for t in transfers {
             if t.from.is_zero() {
@@ -141,41 +189,11 @@ impl Ledger {
         }
         Ok(next)
     }
-
-    /// The sum of the observed balances, or `None` if it overflows.
-    pub fn balance_sum(&self) -> Option<U256> {
-        self.balances
-            .values()
-            .try_fold(U256::ZERO, |sum, balance| sum.checked_add(*balance))
-    }
-
-    /// Fields of `self` that differ in `other`, as `field: self -> other`.
-    pub fn diff(&self, other: &Self) -> String {
-        let mut out: Vec<String> = self
-            .balances
-            .iter()
-            .filter(|(account, balance)| other.balances.get(*account) != Some(*balance))
-            .map(|(account, balance)| {
-                format!("{account}: {balance} -> {:?}", other.balances.get(account))
-            })
-            .collect();
-        if self.supply != other.supply {
-            out.push(format!("supply: {} -> {}", self.supply, other.supply));
-        }
-        if self.supply_cap != other.supply_cap {
-            out.push(format!(
-                "supplyCap: {} -> {}",
-                or_text(self.supply_cap, "?"),
-                or_text(other.supply_cap, "?")
-            ));
-        }
-        out.join(", ")
-    }
 }
 
 /// Why `Transfer`s do not apply to a [`Ledger`]: a balance or the supply would leave `U256`.
 #[derive(Debug, Clone, Copy)]
-enum Unapplied {
+pub enum Unapplied {
     MintOverflows {
         amount: U256,
         supply: U256,

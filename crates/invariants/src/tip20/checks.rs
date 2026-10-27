@@ -5,7 +5,7 @@ use std::fmt;
 use invariants_core::{check, ensure};
 
 use super::{Ledger, Transfer};
-use crate::{Check, Checked, Step, StepChecked, Verdict, or_text};
+use crate::{Check, Checked, Replay, Step, StepChecked, Verdict, or_text};
 
 pub const SUPPLY_CAP: &str = "TEMPO-TIP20-SUPPLY-CAP";
 pub const BALANCE_SUM: &str = "TEMPO-TIP20-BALANCE-SUM";
@@ -51,12 +51,13 @@ pub const STEP_CHECKS: &[Check<Step<Ledger>>] = &[
                 .logs_from(s.post.token)
                 .filter_map(|log| Transfer::from_log(&log.data))
                 .collect();
-            let detail = match s.pre.apply(&transfers) {
+            let (pre, post) = s.pre.common(&s.post);
+            let detail = match pre.replay(&transfers) {
                 // `Transfer` events say nothing of the cap.
-                Ok(want) if want.balances == s.post.balances && want.supply == s.post.supply => {
+                Ok(want) if want.balances == post.balances && want.supply == post.supply => {
                     return Some(Verdict::Holds);
                 }
-                Ok(want) => format!("expected -> read: {}", want.diff(&s.post)),
+                Ok(want) => format!("expected -> read: {}", want.diff(&post)),
                 Err(e) => format!("on the earlier balances: {e}"),
             };
             Some(Verdict::Broken(format!("{} transfers; {detail}", transfers.len())))

@@ -2,15 +2,18 @@
 
 use std::fmt;
 
-use alloy_primitives::U256;
+use alloy_primitives::{Address, U256};
 use invariants_core::{check, ensure};
 
-use super::{Books, MIN_LIQUIDITY, PoolState};
-use crate::{Check, Checked, or_text};
+use super::{Books, Burn, MIN_LIQUIDITY, Mint, PoolState, RebalanceSwap, Unminted};
+use crate::{Check, Checked, Replay, Step, StepChecked, Verdict, or_text};
 
 pub const FEE_CUSTODY: &str = "TEMPO-FEE5";
 pub const LP_SUPPLY: &str = "TEMPO-AMM14";
 pub const POOL_SHAPE: &str = "TEMPO-AMM30";
+pub const MINT_SUPPLY: &str = "TEMPO-AMM2";
+pub const MINT_BALANCE: &str = "TEMPO-AMM3";
+pub const MINT_RESERVE: &str = "TEMPO-AMM4";
 
 pub const CHECKS: &[Check<Books>] = &[
     // The fee manager holds, of each token, at least its pools' reserves of it plus the fees it
@@ -74,6 +77,57 @@ pub const CHECKS: &[Check<Books>] = &[
     },
 ];
 
+/// The step's effect on each pool the fee manager's books read before and after it.
+pub const STEP_CHECKS: &[Check<Step<Books>>] = &[
+    // The LP supply grows by exactly the minted liquidity, plus `MIN_LIQUIDITY` on a pool's first
+    // mint.
+    check! {
+        id: MINT_SUPPLY,
+        over: |step: &Step<Books>| &step.post.pools,
+        judge: |s, pool| {
+            let want = match minted(s, pool)? {
+                Ok(want) => want,
+                Err(err) => return Some(Verdict::Broken(err.to_string())),
+            };
+            ensure!(
+                want.total_supply == pool.total_supply,
+                "LP supply {} after mints, expected {}",
+                pool.total_supply,
+                want.total_supply
+            )
+        },
+    },
+    // The recipient's LP balance grows by exactly the liquidity minted to it.
+    check! {
+        id: MINT_BALANCE,
+        over: |step: &Step<Books>| &step.post.pools,
+        judge: |s, pool| {
+            let want = match minted(s, pool)? {
+                Ok(want) => want,
+                Err(err) => return Some(Verdict::Broken(err.to_string())),
+            };
+            ensure!(want.lp == pool.lp, "LP balances {:?} after mints, expected {:?}", pool.lp, want.lp)
+        },
+    },
+    // The validator reserve grows by exactly the validator tokens deposited.
+    check! {
+        id: MINT_RESERVE,
+        over: |step: &Step<Books>| &step.post.pools,
+        judge: |s, pool| {
+            let want = match minted(s, pool)? {
+                Ok(want) => want,
+                Err(err) => return Some(Verdict::Broken(err.to_string())),
+            };
+            ensure!(
+                want.reserve_validator == pool.reserve_validator,
+                "validator reserve {} after mints, expected {}",
+                pool.reserve_validator,
+                want.reserve_validator
+            )
+        },
+    },
+];
+
 impl PoolState {
     /// The observed holders' LP, or `None` if it overflows.
     fn lp_sum(&self) -> Option<U256> {
@@ -91,4 +145,35 @@ impl fmt::Display for PoolState {
 
 impl Checked for Books {
     const CHECKS: &'static [Check<Self>] = CHECKS;
+}
+
+impl StepChecked for Books {
+    const STEP_CHECKS: &'static [Check<Step<Self>>] = STEP_CHECKS;
+}
+
+/// `pool` as the step's `Mint`s into it predict it from its state before the step, or why it
+/// cannot be predicted. `None` (not armed) unless the step only minted into the pool: no burn,
+/// rebalance or fee swap (which moves the user reserve) touched it.
+fn minted(step: &Step<Books>, pool: &PoolState) -> Option<Result<PoolState, Unminted>> {
+    let pre = step
+        .pre
+        .pools
+        .iter()
+        .find(|pre| pre.is(pool.user_token, pool.validator_token))?;
+    let manager = step.post.fee_manager;
+    let mints: Vec<Mint> = step.events(manager);
+    let ours = |user: Address, validator: Address| pool.is(user, validator);
+    let burned = step
+        .events::<Burn>(manager)
+        .iter()
+        .any(|b| ours(b.userToken, b.validatorToken));
+    let swapped = step
+        .events::<RebalanceSwap>(manager)
+        .iter()
+        .any(|r| ours(r.userToken, r.validatorToken));
+    let minted_here = mints.iter().any(|m| ours(m.userToken, m.validatorToken));
+    if !minted_here || burned || swapped || pre.reserve_user != pool.reserve_user {
+        return None;
+    }
+    Some(pre.replay(&mints))
 }

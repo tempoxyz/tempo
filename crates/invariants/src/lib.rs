@@ -10,8 +10,8 @@
 
 use alloy_primitives::U256;
 pub use invariants_core::{
-    AnyCheck, Check, Checked, Complete, Observe, ObserveError, Report, Step, StepChecked, Verdict,
-    Views, Violation, view,
+    AnyCheck, Check, Checked, Complete, Observe, ObserveError, Replay, Report, Step, StepChecked,
+    Verdict, Views, Violation, view,
 };
 use invariants_core::{decode, optional};
 
@@ -31,6 +31,7 @@ pub fn all() -> impl Iterator<Item = &'static dyn AnyCheck> {
     erased(tip20::CHECKS)
         .chain(erased(tip20::STEP_CHECKS))
         .chain(erased(fee_amm::CHECKS))
+        .chain(erased(fee_amm::STEP_CHECKS))
         .chain(erased(dex::CHECKS))
         .chain(erased(keychain::CHECKS))
         .chain(erased(receive_policy::CHECKS))

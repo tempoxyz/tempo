@@ -7,14 +7,14 @@
 //! Pools, validators and LP holders need not all be known: each check sums
 //! claims over the observed subset, which only makes it weaker.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, fmt};
 
 use alloy_primitives::{Address, B256, Bytes, U256};
 use alloy_sol_types::{SolCall, sol};
 
 use crate::tip20::ITIP20;
 
-use crate::{Observe, ObserveError, Views, decode};
+use crate::{Observe, ObserveError, Replay, Views, decode};
 
 sol! {
     #[derive(Debug, PartialEq, Eq)]
@@ -38,7 +38,10 @@ pub use IFeeAmm::{Burn, Mint, RebalanceSwap};
 
 mod checks;
 
-pub use checks::{CHECKS, FEE_CUSTODY, LP_SUPPLY, POOL_SHAPE};
+pub use checks::{
+    CHECKS, FEE_CUSTODY, LP_SUPPLY, MINT_BALANCE, MINT_RESERVE, MINT_SUPPLY, POOL_SHAPE,
+    STEP_CHECKS,
+};
 
 /// LP supply locked on a pool's first mint and assigned to no holder.
 pub const MIN_LIQUIDITY: U256 = U256::from_limbs([1000, 0, 0, 0]);
@@ -58,6 +61,8 @@ pub struct PoolState {
 /// The fee manager's books over the observed tokens, pools and validators.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Books {
+    /// The fee manager read.
+    pub fee_manager: Address,
     /// Its own balance of each token.
     pub holdings: BTreeMap<Address, U256>,
     pub pools: Vec<PoolState>,
@@ -180,6 +185,7 @@ impl Observe for Books {
             }
         }
         Ok(Self {
+            fee_manager,
             holdings,
             pools,
             collected,
@@ -207,5 +213,66 @@ impl Books {
             .filter(|((_, t), _)| *t == token)
             .try_fold(U256::ZERO, |sum, (_, v)| sum.checked_add(*v))?;
         Some((reserves, fees))
+    }
+}
+
+impl PoolState {
+    /// Whether `(user_token, validator_token)` names this pool.
+    fn is(&self, user_token: Address, validator_token: Address) -> bool {
+        self.user_token == user_token && self.validator_token == validator_token
+    }
+}
+
+/// A pool after a step is the pool before it with the step's `Mint`s into it replayed: the first
+/// mint also locks [`MIN_LIQUIDITY`] in the LP supply, every mint adds its liquidity to the LP
+/// supply and to the observed recipient's LP balance, and its validator-token deposit to the
+/// validator reserve.
+impl Replay<Mint> for PoolState {
+    type Error = Unminted;
+
+    fn replay(&self, mints: &[Mint]) -> Result<Self, Unminted> {
+        let mut next = self.clone();
+        for mint in mints
+            .iter()
+            .filter(|m| self.is(m.userToken, m.validatorToken))
+        {
+            let locked = if next.total_supply.is_zero() {
+                MIN_LIQUIDITY
+            } else {
+                U256::ZERO
+            };
+            next.total_supply = next
+                .total_supply
+                .checked_add(mint.liquidity)
+                .and_then(|supply| supply.checked_add(locked))
+                .ok_or(Unminted::Supply)?;
+            next.reserve_validator = next
+                .reserve_validator
+                .checked_add(mint.amountValidatorToken)
+                .ok_or(Unminted::Reserve)?;
+            if let Some(lp) = next.lp.get_mut(&mint.to) {
+                *lp = lp.checked_add(mint.liquidity).ok_or(Unminted::Balance)?;
+            }
+        }
+        Ok(next)
+    }
+}
+
+/// What a `Mint` would take out of `U256`.
+#[derive(Debug, Clone, Copy)]
+pub enum Unminted {
+    Supply,
+    Reserve,
+    Balance,
+}
+
+impl fmt::Display for Unminted {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let what = match self {
+            Self::Supply => "the LP supply",
+            Self::Reserve => "the validator reserve",
+            Self::Balance => "an LP balance",
+        };
+        write!(f, "minting overflows {what}")
     }
 }
