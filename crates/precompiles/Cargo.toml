@@ -86,7 +86,6 @@ serde = [
 	"bitflags/serde",
 	"revm/serde",
 	"tempo-chainspec/serde",
-	"tempo-contracts/serde",
 	"tempo-primitives/serde",
 	"p256/serde",
 	"p384/serde",
