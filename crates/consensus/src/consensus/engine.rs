@@ -33,7 +33,7 @@ use crate::{
     peer_manager, storage,
 };
 
-use super::block::Block;
+use super::{ProposalBudget, block::Block};
 
 // A bunch of constants to configure commonwarexyz singletons and copied over form alto.
 
@@ -79,11 +79,12 @@ pub struct Builder<TBlocker, TPeerManager> {
     /// Leader inactivity window after which a view is skipped early. Must
     /// exceed `time_to_collect_notarizations` and `time_to_retry_nullify_broadcast`.
     pub inactive_time_before_leader_skip: Duration,
-    /// Fixed proposal pacing window after reserving network propagation time.
+    /// Header-clock pacing allowance after reserving network propagation time.
     ///
-    /// The leader uses this window for proposal preparation, payload building,
-    /// and pacing, capped at one target interval after proposal entry.
-    pub proposal_budget: tempo_payload_types::ProposalBudget,
+    /// Preparation precedes this window but reduces its allowance when the planned
+    /// deadline would exceed one target interval after proposal entry. Required
+    /// payload work may overrun the allowance; this is not a build timeout.
+    pub proposal_budget: ProposalBudget,
     /// Proposal budget estimator that records local validation feedback.
     pub estimator: tempo_payload_types::Estimator,
     pub fcu_heartbeat_interval: Duration,

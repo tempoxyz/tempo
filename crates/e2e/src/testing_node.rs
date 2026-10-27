@@ -347,7 +347,7 @@ where
             views_to_track: 10,
             // Floor (2s nullify rebroadcast) plus one 1s proposal wait.
             inactive_time_before_leader_skip: Duration::from_secs(3),
-            proposal_budget: tempo_node::ProposalBudget::new(
+            proposal_budget: consensus::ProposalBudget::new(
                 self.proposal_return_budget + Duration::from_millis(50),
                 Duration::from_millis(50),
             ),

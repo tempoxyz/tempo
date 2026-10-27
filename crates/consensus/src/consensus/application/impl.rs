@@ -2,7 +2,7 @@
 
 use std::{
     sync::Arc,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 use alloy_consensus::BlockHeader;
@@ -29,16 +29,14 @@ use futures::{FutureExt as _, StreamExt as _, channel::oneshot};
 use rand_core::Rng;
 use reth_primitives_traits::BlockBody as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
-use tempo_payload_types::{
-    Estimator, ProposalBudget, TempoPayloadAttributes, ValidationLatencyWorkload,
-};
+use tempo_payload_types::{Estimator, TempoPayloadAttributes, ValidationLatencyWorkload};
 use tempo_primitives::TempoConsensusContext;
 use tempo_telemetry_util::display_duration;
 use tracing::{Level, debug, info, instrument, warn};
 
 use super::parent_state::TempoParentState;
 use crate::{
-    consensus::{Digest, block::Block},
+    consensus::{Digest, ProposalBudget, block::Block},
     executor::DeferredExtraData,
 };
 
@@ -116,7 +114,7 @@ impl Inner {
         runtime: &TContext,
         context: Context<Digest, PublicKey>,
         parent: &Arc<Block>,
-        propose_start: Instant,
+        propose_start: SystemTime,
     ) -> eyre::Result<Block> {
         self.executor
             .report_pending_head(context.round, context.parent)?;
@@ -164,11 +162,10 @@ impl Inner {
         };
 
         // Pace from the clock reading used for the header timestamp.
-        let window_opened = Instant::now();
-        let window_opened_unix_ms = runtime.current().epoch_millis();
+        let window_opened = runtime.current();
 
         // Use current timestamp but make sure that if parent's timestamp is in the future, we account for that.
-        let mut epoch_millis = window_opened_unix_ms;
+        let mut epoch_millis = window_opened.epoch_millis();
         if epoch_millis <= parent.timestamp_millis() {
             self.metrics.parent_ahead_of_local_time.metric().inc();
             epoch_millis = parent.timestamp_millis() + 1
@@ -184,13 +181,15 @@ impl Inner {
         });
 
         let proposer_public_key = crate::utils::public_key_to_b256(&self.public_key);
-        // Bound the return by proposal entry even when preparation was slow.
-        let proposal_budget = self
+        // Cap the pacing allowance, not the duration of required build work.
+        let window_duration = self
             .proposal_budget
-            .after_preparation(window_opened.saturating_duration_since(propose_start));
-        let build_budget = proposal_budget
-            .return_budget
-            .saturating_sub(window_opened.elapsed());
+            .window_duration(propose_start, window_opened);
+        let window_elapsed = runtime
+            .current()
+            .duration_since(window_opened)
+            .unwrap_or_default();
+        let build_budget = window_duration.saturating_sub(window_elapsed);
         let attrs = TempoPayloadAttributes::new(
             Some(proposer_public_key),
             timestamp,
@@ -230,24 +229,25 @@ impl Inner {
             block,
             execution_block_encoded,
         );
-        let proposal_elapsed = window_opened.elapsed();
+        let window_elapsed = runtime
+            .current()
+            .duration_since(window_opened)
+            .unwrap_or_default();
         // Pace proposal return from the header stamp. Validators still need
         // to repeat replayable build work, so leave room for it before
         // returning the proposal.
-        let return_delay = proposal_budget
-            .return_budget
-            .saturating_sub(proposal_elapsed)
-            .saturating_sub(validation_latency_elapsed);
+        let return_window = window_duration.saturating_sub(validation_latency_elapsed);
+        let return_delay = return_window.saturating_sub(window_elapsed);
         debug!(
             proposal.digest = %proposal.digest(),
-            proposal_elapsed = %display_duration(proposal_elapsed),
+            window_elapsed = %display_duration(window_elapsed),
             build_time = %display_duration(payload_build_elapsed),
             payload_validation_work = %display_duration(payload_validation_work_elapsed),
             validation_latency_time = %display_duration(validation_latency_elapsed),
             return_time = %display_duration(return_delay),
             "sleeping before returning proposal"
         );
-        runtime.sleep_until(runtime.current() + return_delay).await;
+        runtime.sleep_until(window_opened + return_window).await;
 
         Ok(proposal)
     }
@@ -456,7 +456,7 @@ where
         mut ancestry: impl Ancestry<Block>,
         (): (),
     ) -> Option<Block> {
-        let propose_start = Instant::now();
+        let propose_start = runtime.current();
         let parent = ancestry.next().await?;
         match self.build(&runtime, context, &parent, propose_start).await {
             Ok(block) => {

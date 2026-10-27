@@ -103,10 +103,8 @@ pub async fn run_consensus_stack(
     let marshal = network.register(MARSHAL_CHANNEL_IDENT, backfill_quota);
     let dkg = network.register(DKG_CHANNEL_IDENT, DKG_LIMIT);
     let target_block_time = config.target_block_time.into_duration();
-    let proposal_budget = tempo_payload_types::ProposalBudget::new(
-        target_block_time,
-        config.network_budget.into_duration(),
-    );
+    let proposal_budget =
+        consensus::ProposalBudget::new(target_block_time, config.network_budget.into_duration());
 
     let consensus_engine = crate::consensus::engine::Builder {
         network_identity,

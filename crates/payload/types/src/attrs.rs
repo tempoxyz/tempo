@@ -4,7 +4,7 @@ use alloy_rpc_types_eth::Withdrawal;
 use reth_ethereum_engine_primitives::EthPayloadAttributes;
 use reth_node_api::PayloadAttributes;
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tempo_primitives::TempoConsensusContext;
 
 /// Container type for all components required to build a payload.
@@ -26,13 +26,13 @@ pub struct TempoPayloadAttributes {
     #[deref_mut]
     #[serde(flatten)]
     inner: EthPayloadAttributes,
-    /// Remaining local proposal budget available to this payload build.
+    /// Local proposal budget and the monotonic clock reading when it was set.
     ///
     /// Consensus sets this to the proposal return budget left when it dispatches
     /// the build. `None` means the build was not requested by consensus, so the
     /// builder should not stop early for block pacing.
     #[serde(skip)]
-    payload_build_budget: Option<Duration>,
+    payload_build_budget: Option<(Duration, Instant)>,
     /// Milliseconds portion of the timestamp.
     timestamp_millis_part: u64,
     /// DKG ceremony data to include in the block's extra_data header field.
@@ -99,19 +99,22 @@ impl TempoPayloadAttributes {
     ///
     /// The value should already account for any time spent before the build was
     /// requested. The builder treats it as a shared budget for leader
-    /// build/persist work and validator replay/persist work.
+    /// build/persist work and validator replay/persist work. Time between setting
+    /// this budget and starting the build counts against it.
     pub fn with_payload_build_budget(mut self, budget: Duration) -> Self {
-        self.payload_build_budget = Some(budget);
+        self.payload_build_budget = Some((budget, Instant::now()));
         self
     }
 
-    /// Returns the consensus-provided build budget, if this is a paced build.
+    /// Returns the remaining consensus-provided build budget, accounting for time
+    /// since it was set. An exhausted paced budget returns zero.
     ///
     /// `None` is intentional for non-consensus builds such as dev or external
     /// payload requests; those builds are not constrained by the consensus
     /// block-time budget.
     pub fn payload_build_budget(&self) -> Option<Duration> {
         self.payload_build_budget
+            .map(|(budget, observed)| budget.saturating_sub(observed.elapsed()))
     }
 
     /// Returns the milliseconds portion of the timestamp.
@@ -229,6 +232,68 @@ mod tests {
             self.timestamp_millis_part = millis % 1000;
             self
         }
+    }
+
+    #[test]
+    fn setting_payload_build_budget_starts_a_new_window() {
+        let budget = Duration::from_secs(1);
+        let before = Instant::now();
+        let attrs = TempoPayloadAttributes::random()
+            .with_payload_build_budget(Duration::ZERO)
+            .with_payload_build_budget(budget);
+        let remaining = attrs.payload_build_budget().unwrap();
+        assert!((budget.saturating_sub(before.elapsed())..=budget).contains(&remaining));
+    }
+
+    #[test]
+    fn payload_build_budget_charges_handoff_time() {
+        let budget = Duration::from_millis(800);
+        let observed = Instant::now() - Duration::from_millis(700);
+        let mut attrs = TempoPayloadAttributes::random().with_payload_build_budget(budget);
+        attrs.payload_build_budget = Some((budget, observed));
+
+        let before = observed.elapsed();
+        let remaining = attrs.payload_build_budget().unwrap();
+        let after = observed.elapsed();
+        assert!(
+            (budget.saturating_sub(after)..=budget.saturating_sub(before)).contains(&remaining)
+        );
+    }
+
+    #[test]
+    fn cloning_attributes_preserves_the_budget_clock() {
+        let budget = Duration::from_millis(800);
+        let observed = Instant::now() - Duration::from_millis(700);
+        let mut attrs = TempoPayloadAttributes::random().with_payload_build_budget(budget);
+        attrs.payload_build_budget = Some((budget, observed));
+        let cloned = attrs.clone();
+        assert_eq!(cloned.payload_build_budget, attrs.payload_build_budget);
+
+        let before = attrs.payload_build_budget().unwrap();
+        let remaining = cloned.payload_build_budget().unwrap();
+        let after = attrs.payload_build_budget().unwrap();
+        assert!((after..=before).contains(&remaining));
+    }
+
+    #[test]
+    fn delayed_handoff_exhausts_the_budget() {
+        let budget = Duration::from_millis(800);
+        let mut attrs = TempoPayloadAttributes::random().with_payload_build_budget(budget);
+        attrs.payload_build_budget = Some((budget, Instant::now() - Duration::from_secs(1)));
+        assert_eq!(attrs.payload_build_budget(), Some(Duration::ZERO));
+        assert_eq!(attrs.clone().payload_build_budget(), Some(Duration::ZERO));
+    }
+
+    #[test]
+    fn unpaced_and_deserialized_attributes_have_no_build_budget() {
+        let attrs = TempoPayloadAttributes::random();
+        assert_eq!(attrs.payload_build_budget(), None);
+
+        let attrs = attrs.with_payload_build_budget(Duration::from_secs(1));
+        let json = serde_json::to_string(&attrs).unwrap();
+        assert!(!json.contains("payloadBuildBudget"));
+        let deserialized: TempoPayloadAttributes = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.payload_build_budget(), None);
     }
 
     #[test]
