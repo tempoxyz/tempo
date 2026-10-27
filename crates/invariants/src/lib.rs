@@ -15,11 +15,6 @@ pub mod receive_policy;
 pub mod tip20;
 
 use invariants_core::decode;
-pub use invariants_core::{Check, ObserveError, Report, Verdict, Views, Violation, complete, view};
-
-/// The violations `checks` find in `ctx`.
-pub fn judge<C: ?Sized>(checks: &[Check<C>], ctx: &C) -> Vec<Violation> {
-    let mut report = Report::default();
-    report.run(checks, ctx);
-    report.violations
-}
+pub use invariants_core::{
+    Check, Checked, ObserveError, Report, Verdict, Views, Violation, complete, view,
+};

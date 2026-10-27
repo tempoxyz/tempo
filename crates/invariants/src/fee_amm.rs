@@ -15,7 +15,7 @@ use alloy_sol_types::{SolCall, sol};
 use crate::tip20::ITIP20;
 use invariants_core::{check, ensure};
 
-use crate::{Check, ObserveError, Views, Violation, decode, judge};
+use crate::{Check, Checked, ObserveError, Views, decode};
 
 pub const FEE_CUSTODY: &str = "TEMPO-FEE5";
 pub const LP_SUPPLY: &str = "TEMPO-AMM14";
@@ -36,7 +36,7 @@ impl fmt::Display for PoolState {
     }
 }
 
-pub static CHECKS: &[Check<Books>] = &[
+pub const CHECKS: &[Check<Books>] = &[
     // The fee manager holds, of each token, at least its pools' reserves of it plus the fees it
     // collected in it.
     check! {
@@ -98,9 +98,8 @@ pub static CHECKS: &[Check<Books>] = &[
     },
 ];
 
-/// The violations of [`CHECKS`] in `books`.
-pub fn check(books: &Books) -> Vec<Violation> {
-    judge(CHECKS, books)
+impl Checked for Books {
+    const CHECKS: &'static [Check<Self>] = CHECKS;
 }
 
 sol! {

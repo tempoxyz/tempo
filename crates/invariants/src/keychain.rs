@@ -8,7 +8,7 @@ use alloy_sol_types::sol;
 
 use invariants_core::{check, ensure};
 
-use crate::{Check, ObserveError, Views, Violation, judge, view};
+use crate::{Check, Checked, ObserveError, Views, view};
 
 pub const REVOKED: &str = "TEMPO-KEYCHAIN-REVOKED-KEY-SPENDS";
 pub const EXPIRED: &str = "TEMPO-KEYCHAIN-EXPIRED-KEY-SPENDS";
@@ -34,7 +34,7 @@ impl fmt::Display for Spend {
     }
 }
 
-pub static CHECKS: &[Check<Spend>] = &[
+pub const CHECKS: &[Check<Spend>] = &[
     check! {
         id: REVOKED,
         over: |spend: &Spend| [spend],
@@ -75,17 +75,8 @@ pub static CHECKS: &[Check<Spend>] = &[
     },
 ];
 
-/// The violations of [`CHECKS`] by a spend of `amount` by `key`.
-pub fn check_spend(key: &Key, timestamp: u64, limit_updated: bool, amount: U256) -> Vec<Violation> {
-    judge(
-        CHECKS,
-        &Spend {
-            key: key.clone(),
-            timestamp,
-            limit_updated,
-            amount,
-        },
-    )
+impl Checked for Spend {
+    const CHECKS: &'static [Check<Self>] = CHECKS;
 }
 
 sol! {

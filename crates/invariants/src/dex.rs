@@ -17,11 +17,11 @@ use alloy_sol_types::{SolCall, sol};
 use crate::tip20::ITIP20;
 use invariants_core::{check, ensure};
 
-use crate::{Check, ObserveError, Views, Violation, decode, judge};
+use crate::{Check, Checked, ObserveError, Views, decode};
 
 pub const DEX_CUSTODY: &str = "TEMPO-DEX10";
 
-pub static CHECKS: &[Check<Books>] = &[
+pub const CHECKS: &[Check<Books>] = &[
     // The DEX holds, of each token, at least its users' internal balances of it plus its live
     // orders' escrow in it.
     check! {
@@ -49,9 +49,8 @@ pub static CHECKS: &[Check<Books>] = &[
     },
 ];
 
-/// The violations of [`CHECKS`] in `books`.
-pub fn check(books: &Books) -> Vec<Violation> {
-    judge(CHECKS, books)
+impl Checked for Books {
+    const CHECKS: &'static [Check<Self>] = CHECKS;
 }
 
 sol! {

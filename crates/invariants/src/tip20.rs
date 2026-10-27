@@ -11,7 +11,7 @@ use alloy_sol_types::{SolCall, SolEvent, sol};
 
 use invariants_core::{check, ensure};
 
-use crate::{Check, ObserveError, Verdict, Views, Violation, decode, judge};
+use crate::{Check, Checked, ObserveError, Verdict, Views, decode};
 
 pub const SUPPLY_CAP: &str = "TEMPO-TIP20-SUPPLY-CAP";
 pub const BALANCE_SUM: &str = "TEMPO-TIP20-BALANCE-SUM";
@@ -24,7 +24,7 @@ impl fmt::Display for Ledger {
 }
 
 /// A token's supply and the balances read of it.
-pub static CHECKS: &[Check<Ledger>] = &[
+pub const CHECKS: &[Check<Ledger>] = &[
     // A zero cap is not exempt: minting checks the cap with no exception, and `setSupplyCap`
     // rejects a cap below the supply.
     check! {
@@ -52,11 +52,6 @@ pub static CHECKS: &[Check<Ledger>] = &[
     },
 ];
 
-/// The violations of [`CHECKS`] in `ledger`.
-pub fn check(ledger: &Ledger) -> Vec<Violation> {
-    judge(CHECKS, ledger)
-}
-
 /// A token's ledger before and after `transfers`.
 pub struct Transition {
     pub pre: Ledger,
@@ -73,7 +68,11 @@ impl fmt::Display for Transition {
 /// Each observed balance moves by exactly the transfers into and out of it, never going
 /// negative, and the supply by the mints (from the zero address) and burns (to it). A transfer
 /// between an observed and an unobserved account moves only the observed side.
-pub static TRANSITION_CHECKS: &[Check<Transition>] = &[check! {
+impl Checked for Ledger {
+    const CHECKS: &'static [Check<Self>] = CHECKS;
+}
+
+pub const TRANSITION_CHECKS: &[Check<Transition>] = &[check! {
     id: TRANSFER_EVENTS,
     over: |transition: &Transition| [transition],
     judge: |_, t| {
@@ -89,16 +88,8 @@ pub static TRANSITION_CHECKS: &[Check<Transition>] = &[check! {
     },
 }];
 
-/// The violations of [`TRANSITION_CHECKS`] from `pre` to `post` through `transfers`, in order.
-pub fn check_transfers(pre: &Ledger, post: &Ledger, transfers: &[Transfer]) -> Vec<Violation> {
-    judge(
-        TRANSITION_CHECKS,
-        &Transition {
-            pre: pre.clone(),
-            post: post.clone(),
-            transfers: transfers.to_vec(),
-        },
-    )
+impl Checked for Transition {
+    const CHECKS: &'static [Check<Self>] = TRANSITION_CHECKS;
 }
 
 sol! {

@@ -8,7 +8,7 @@ use alloy_sol_types::sol;
 
 use invariants_core::check;
 
-use crate::{Check, Verdict, Violation, judge};
+use crate::{Check, Checked, Verdict};
 
 pub const CLAIM_AUTHORITY: &str = "TEMPO-RECEIVE-POLICY-CLAIM-AUTHORITY";
 
@@ -33,7 +33,7 @@ impl fmt::Display for Claim {
     }
 }
 
-pub static CHECKS: &[Check<Claim>] = &[check! {
+pub const CHECKS: &[Check<Claim>] = &[check! {
     id: CLAIM_AUTHORITY,
     over: |claim: &Claim| [claim],
     judge: |_, c| {
@@ -53,17 +53,8 @@ pub static CHECKS: &[Check<Claim>] = &[check! {
     },
 }];
 
-/// The violation of [`CHECKS`] by `claim` against `set`, if any.
-pub fn check_claim(claim: &ReceiptClaimed, set: Option<&AuthoritySet>) -> Option<Violation> {
-    judge(
-        CHECKS,
-        &Claim {
-            claim: claim.clone(),
-            set: set.copied(),
-        },
-    )
-    .into_iter()
-    .next()
+impl Checked for Claim {
+    const CHECKS: &'static [Check<Self>] = CHECKS;
 }
 
 sol! {
