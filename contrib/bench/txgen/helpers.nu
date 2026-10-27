@@ -958,8 +958,14 @@ def txgen-prepare-public-mix-preset [spec_path: string, count: int, accounts: in
     } else { {templates: $templates, mix: $mix} }
     let templates = $card.templates
     let mix = $card.mix
+    # Asset conversion swaps on the stablecoin DEX need dex.yml's liquidity walls.
+    let dex_setup = if ($spec.mix | any { |entry| ($entry | get -o template) == "dex_swap" }) {
+        let result = (^uv run --no-project --with yq==3.4.3 yq -c '.setup.steps' ($presets | path join dex.yml) | complete)
+        if $result.exit_code != 0 { error make {msg: $"Failed to read dex setup: ($result.stderr)"} }
+        $result.stdout | from json
+    } else { [] }
     {include: $spec_path, accounts: {users: {range: [0 $accounts]}},
-        setup: {steps: ($vault_setup | append $users | append $zone_spec.setup.steps)},
+        setup: {steps: ($vault_setup | append $users | append $zone_spec.setup.steps | append $dex_setup)},
         templates: $templates,
         mix: $mix} | to yaml | save -f $output
     $output

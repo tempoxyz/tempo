@@ -83,8 +83,9 @@ Earn, Transfer, Spend, Cash out), weighted by planned gas shares; the file lists
 each module's templates and what is not modelled yet. It reuses the public-mix
 fixtures and adds card settlement from Earn (`card_settlement`, the same shard
 redemptions as `card-settlement`, next to ordinary vault withdrawals), cash card
-spend and cash-out transfers into single accounts, and first payments to fresh
-addresses. Customer-shaped presets are flavors of this shape. For example:
+spend and cash-out transfers into single accounts, cash refunds from one issuer
+account, stablecoin DEX swaps (with `dex.yml`'s liquidity setup), and first
+payments to fresh addresses. Customer-shaped presets are flavors of this shape. For example:
 `derek bench preset=neobank-generic gas-limit=500M general-gas-limit=30M`.
 
 `batch-payout` models payroll fan-out and reward distribution: a 16-sender treasury
