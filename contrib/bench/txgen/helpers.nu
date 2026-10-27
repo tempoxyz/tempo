@@ -12,6 +12,7 @@ const TXGEN_HELPER_ALWAYS_FUND_PRESETS = [
     "zone-portal-hot"
     "card-settlement"
     "neobank-generic"
+    "neobank-multi"
     "batch-payout"
     "dex"
     "bridge-mix"
@@ -27,7 +28,7 @@ const TXGEN_HELPER_ALWAYS_FUND_PRESETS = [
     "zone-portal-throughput"
 ]
 # Presets composed by txgen-prepare-public-mix-preset from the public-mix fixtures.
-const TXGEN_HELPER_PUBLIC_MIX_PRESETS = ["public-mix" "vault-throughput" "zone-portal-throughput" "zone-earn-mix" "zone-earn-hot" "zone-earn-serial" "zone-portal-hot" "card-settlement" "neobank-generic" "batch-payout"]
+const TXGEN_HELPER_PUBLIC_MIX_PRESETS = ["public-mix" "vault-throughput" "zone-portal-throughput" "zone-earn-mix" "zone-earn-hot" "zone-earn-serial" "zone-portal-hot" "card-settlement" "neobank-generic" "neobank-multi" "batch-payout"]
 # Presets that pin the zone portal count instead of sizing it by TPS (TXGEN_ZONE_COUNT still overrides).
 const TXGEN_HELPER_PRESET_ZONE_COUNTS = {"zone-earn-hot": 1, "zone-portal-hot": 1}
 # Presets whose zone settlement and Earn deposits come from one sender with ordered nonces.
@@ -38,8 +39,26 @@ const TXGEN_HELPER_CARD_SETTLEMENT_SENDERS = 18
 const TXGEN_HELPER_CARD_SETTLEMENT_ACCOUNT = "0x000000000000000000000000000000000000ca4d"
 # Batch payouts: recipients per transaction by preset (TXGEN_BATCH_PAYOUT_RECIPIENTS overrides),
 # within the txpool's 32 calls per Tempo transaction and the 30M transaction gas cap.
-const TXGEN_HELPER_BATCH_PAYOUT_RECIPIENTS = {"batch-payout": 32, "neobank-generic": 32}
+const TXGEN_HELPER_BATCH_PAYOUT_RECIPIENTS = {"batch-payout": 32, "neobank-generic": 32, "neobank-multi": 32}
 const TXGEN_HELPER_BATCH_PAYOUT_BASE_GAS = 500000
+const TXGEN_HELPER_BATCH_TREASURY_SIZE = 16
+# neobank-generic mix templates by module (TXGEN_NEOBANK_MODULES selects modules).
+const TXGEN_HELPER_NEOBANK_MODULES = {
+    account: [account_first_receive access_key_create access_key_rotate]
+    deposit: [zone_deposit public_transfer payroll_existing payroll_new]
+    earn: [vault_deposit vault_withdraw reward_distribution]
+    transfer: [public_transfer_memo zone_withdraw dex_swap]
+    spend: [card_settlement card_spend card_refund keychain_merchant_pull keychain_agent_spend]
+    cashout: [cash_out]
+}
+# Single-account sinks (card settlement, cash out, merchant); each neobank-multi instance gets its own.
+const TXGEN_HELPER_NEOBANK_SINKS = [
+    "0x000000000000000000000000000000000000ca4d"
+    "0x0000000000000000000000000000000000000ff0"
+    "0x0000000000000000000000000000000000005e77"
+]
+# neobank-multi mix weights sum to about this, split by instance gas share.
+const TXGEN_HELPER_NEOBANK_WEIGHT_SCALE = 1000000000
 const TXGEN_HELPER_MAX_AA_CALLS = 32
 const TXGEN_HELPER_TX_GAS_LIMIT_CAP = 30000000
 const TXGEN_HELPER_EXISTING_RECIPIENTS_START = 10000
@@ -670,12 +689,12 @@ def txgen-single-sender-templates [templates: record] {
 # Keeps the first card shard senders' vault redemptions, unsponsored, each followed by
 # a transfer of the proceeds to one settlement account. Each gets a random TIP-1106
 # nonce discriminator so a sender's otherwise identical redemptions stay distinct.
-def txgen-card-settlement-template [template: record] {
+def txgen-card-settlement-template [template: record, --account: string = $TXGEN_HELPER_CARD_SETTLEMENT_ACCOUNT] {
     let forward = {
         to: "0x20c0000000000000000000000000000000000000"
         abi: ERC20
         function: transfer
-        args: [$TXGEN_HELPER_CARD_SETTLEMENT_ACCOUNT 1]
+        args: [$account 1]
     }
     $template | reject -o sponsor | upsert nonce {uniform: [0 9223372036854775807]} | upsert calls ($template.calls | append $forward)
 }
@@ -720,7 +739,9 @@ def txgen-card-settlement [templates: record, mix: list<any>] {
     }
 }
 
-def txgen-prepare-zones-preset [spec_path: string, count: int, accounts: int, zones: int, mode: string] {
+# Pairs users with portals. --groups pairs each user range only with its own portal
+# range ([{users: [start end], zones: [start end]}]); by default all users with all portals.
+def txgen-prepare-zones-preset [spec_path: string, count: int, accounts: int, zones: int, mode: string, --groups: list<any> = []] {
     if $mode not-in [mixed deposit withdraw] { error make {msg: "TXGEN_ZONE_MODE must be mixed, deposit, or withdraw"} }
     let spec = (open $spec_path)
     let token = "0x20c0000000000000000000000000000000000000"
@@ -734,35 +755,43 @@ def txgen-prepare-zones-preset [spec_path: string, count: int, accounts: int, zo
         $steps = ($steps | append ($spec.setup.steps.2 | update id $"fund_($zone)"
             | update tx.calls.0.args [{var: $"setup.portal_($zone).address"} $count]))
     }
-    let pairs = ([$accounts $zones] | math max)
-    let minimum_per_zone = ($pairs // $zones)
+    let groups = if ($groups | is-empty) { [{users: [0 $accounts], zones: [0 $zones]}] } else { $groups }
     mut templates = {}
     mut mix = []
-    for pair in 0..<$pairs {
-        let user = $pair mod $accounts
-        let zone = $pair mod $zones
-        let portal = {var: $"setup.portal_($zone).address"}
-        let account = {pool: users, select: {index: $user}}
-        let recipient = {pool: $account}
-        if $mode != withdraw {
-            $steps = ($steps | append ($spec.setup.steps.2 | update id $"approve_($pair)"
-                | update tx.from $account
-                | update tx.calls [{to: $token, abi: ERC20, function: approve,
-                    args: [$portal "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"]}]))
-        }
-        let per_zone = $minimum_per_zone + (if $zone < ($pairs mod $zones) { 1 } else { 0 })
-        let weight = $minimum_per_zone * ($minimum_per_zone + 1) // $per_zone
-        for kind in (if $mode == mixed { [deposit withdraw] } else { [$mode] }) {
-            let name = $"zone_($kind)_($pair)"
-            mut template = ($spec.templates | get $"zone_($kind)" | update from $account)
-            if $kind == deposit {
-                $template = ($template | update calls.0.to $portal | update calls.0.args.4 $recipient)
+    mut pair = 0
+    for group in $groups {
+        let group_users = $group.users.1 - $group.users.0
+        let group_zones = $group.zones.1 - $group.zones.0
+        let pairs = ([$group_users $group_zones] | math max)
+        let minimum_per_zone = ($pairs // $group_zones)
+        for offset in 0..<$pairs {
+            let user = $group.users.0 + ($offset mod $group_users)
+            let zone_offset = $offset mod $group_zones
+            let zone = $group.zones.0 + $zone_offset
+            let portal = {var: $"setup.portal_($zone).address"}
+            let account = {pool: users, select: {index: $user}}
+            let recipient = {pool: $account}
+            if $mode != withdraw {
+                $steps = ($steps | append ($spec.setup.steps.2 | update id $"approve_($pair)"
+                    | update tx.from $account
+                    | update tx.calls [{to: $token, abi: ERC20, function: approve,
+                        args: [$portal "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"]}]))
             }
-            let settlement_index = if $kind == deposit { 1 } else { 0 }
-            let call = ($template.calls | get $settlement_index | update args [$portal $token $recipient ($kind == withdraw)])
-            $template = ($template | update calls ($template.calls | update $settlement_index $call))
-            $templates = ($templates | insert $name $template)
-            $mix = ($mix | append {template: $name, weight: $weight})
+            let per_zone = $minimum_per_zone + (if $zone_offset < ($pairs mod $group_zones) { 1 } else { 0 })
+            let weight = $minimum_per_zone * ($minimum_per_zone + 1) // $per_zone
+            for kind in (if $mode == mixed { [deposit withdraw] } else { [$mode] }) {
+                let name = $"zone_($kind)_($pair)"
+                mut template = ($spec.templates | get $"zone_($kind)" | update from $account)
+                if $kind == deposit {
+                    $template = ($template | update calls.0.to $portal | update calls.0.args.4 $recipient)
+                }
+                let settlement_index = if $kind == deposit { 1 } else { 0 }
+                let call = ($template.calls | get $settlement_index | update args [$portal $token $recipient ($kind == withdraw)])
+                $template = ($template | update calls ($template.calls | update $settlement_index $call))
+                $templates = ($templates | insert $name $template)
+                $mix = ($mix | append {template: $name, weight: $weight})
+            }
+            $pair = $pair + 1
         }
     }
     let output_dir = ([ (txgen-repo-root) $TXGEN_HELPER_DEFAULT_RENDERED_SPECS_DIR (random uuid) ] | path join)
@@ -863,7 +892,10 @@ def txgen-workload-metadata-args [preset_name: string, spec_path: string] {
     let result = (^uv run --no-project --with yq==3.4.3 yq -ceS '
         .mix | if length > 0 then . else error("public-mix requires a mix") end
         | map({key: ((.template // .sequence)
-            | sub("^(?<category>(zone|vault)_(deposit|withdraw)|card_settlement)_[0-9]+$"; "\(.category)")), value: .weight})
+            | capture("^((?<instance>[a-z][a-z0-9-]*)/)?(?<name>.+)$") as $m
+            | ($m.name | sub("^(?<category>(zone|vault)_(deposit|withdraw)|card_settlement)_[0-9]+$"; "\(.category)")) as $family
+            # neobank-multi templates are named <instance>/<template>.
+            | if $m.instance then "\($m.instance)/\($family)" else $family end), value: .weight})
         | group_by(.key)
         | map({key: .[0].key, value: (map(.value) | add)})
         | from_entries
@@ -873,6 +905,253 @@ def txgen-workload-metadata-args [preset_name: string, spec_path: string] {
     }
     ["-m" "workload_mix_version=1" "-m" "workload_mix_weighting=gas" "-m" $"workload_mix_weights=($result.stdout | str trim)"]
 }
+
+# TXGEN_NEOBANK_MODULES: comma-separated neobank modules (empty: all), in module order.
+def txgen-neobank-modules [value: string] {
+    let known = ($TXGEN_HELPER_NEOBANK_MODULES | columns)
+    let requested = ($value | split row "," | each { |name| $name | str trim } | where { |name| $name != "" })
+    let unknown = ($requested | where { |name| $name not-in $known })
+    if ($unknown | is-not-empty) {
+        error make {msg: $"unknown neobank module\(s\): ($unknown | str join ', '); expected ($known | str join ', ')"}
+    }
+    if ($requested | is-empty) { $known } else { $known | where { |name| $name in $requested } }
+}
+
+# Keeps the mix entries of the given modules. Weights are relative gas shares, so the
+# remaining entries renormalise.
+def txgen-neobank-filter-mix [mix: list<any>, modules: list<string>] {
+    let families = ($modules | each { |module| $TXGEN_HELPER_NEOBANK_MODULES | get $module } | flatten)
+    let filtered = ($mix | where { |entry| ($entry | get -o template | default "") in $families })
+    if ($filtered | is-empty) {
+        error make {msg: $"neobank modules ($modules | str join ',') select no mix templates"}
+    }
+    $filtered
+}
+
+# Splits total items into contiguous [start, end) ranges proportional to shares
+# (largest remainder), each holding at least minimum items.
+def txgen-split-ranges [total: int, shares: list<number>, minimum: int] {
+    let count = ($shares | length)
+    if $total < $count * $minimum {
+        error make {msg: $"cannot split ($total) into ($count) ranges of at least ($minimum)"}
+    }
+    let spare = $total - $count * $minimum
+    let share_sum = ($shares | math sum)
+    let exact = ($shares | each { |share| $spare * $share / $share_sum })
+    let floors = ($exact | each { |value| $value | math floor | into int })
+    let extra = ($exact | enumerate
+        | sort-by -r { |item| $item.item - ($item.item | math floor) }
+        | first ($spare - ($floors | math sum)) | get index)
+    let sizes = ($floors | enumerate | each { |item| $minimum + $item.item + (if $item.index in $extra { 1 } else { 0 }) })
+    $sizes | enumerate | each { |item|
+        let start = ($sizes | first $item.index | append 0 | math sum)
+        [$start ($start + $item.item)]
+    }
+}
+
+# neobank-multi instances: name (a traffic shape, never a customer), gas share and
+# modules (default all), from TXGEN_NEOBANK_INSTANCES or presets/neobank/instances.yml.
+def txgen-neobank-instances [path: string] {
+    let instances = (open $path | get -o instances | default [])
+    if ($instances | is-empty) { error make {msg: $"($path) lists no neobank instances"} }
+    let parsed = ($instances | each { |instance|
+        let name = ($instance | get -o name | default "")
+        if not ($name =~ '^[a-z][a-z0-9-]*$') {
+            error make {msg: $"neobank instance name '($name)' must be lowercase letters, digits and hyphens"}
+        }
+        let share = ($instance | get -o share | default 0)
+        if ($share | describe) not-in [int float] or $share <= 0 {
+            error make {msg: $"neobank instance ($name) needs a positive share"}
+        }
+        let modules = ($instance | get -o modules | default [])
+        let modules = if ($modules | describe) == string { $modules } else { $modules | str join "," }
+        {name: $name, id: ($name | str replace --all "-" "_"), share: $share, modules: (txgen-neobank-modules $modules)}
+    })
+    if ($parsed | get id | uniq | length) != ($parsed | length) {
+        error make {msg: "neobank instance names must be unique"}
+    }
+    $parsed
+}
+
+# Lines under one top-level key of a YAML file, read as text.
+def txgen-raw-section-lines [path: string, key: string] {
+    let lines = (open --raw $path | lines)
+    let start = ($lines | enumerate | where item == $"($key):" | get -o 0.index)
+    if $start == null { return [] }
+    $lines | skip ($start + 1) | take while { |line| not ($line =~ '^[A-Za-z_]') }
+}
+
+# A preset's own templates as raw text blocks keyed by name. Copies made by text
+# replacement keep u64 nonce bounds (which Nushell's YAML parser cannot hold) and
+# ${TXGEN_*} placeholders exactly as written.
+def txgen-raw-template-blocks [path: string] {
+    txgen-raw-section-lines $path templates | reduce --fold {current: null, blocks: {}} { |line, acc|
+        let header = ($line | parse --regex '^  (?<name>[A-Za-z0-9_]+):\s*$')
+        if ($header | is-not-empty) {
+            let name = ($header | first | get name)
+            {current: $name, blocks: ($acc.blocks | insert $name [$line])}
+        } else if $acc.current == null {
+            $acc
+        } else {
+            let block = ($acc.blocks | get $acc.current | append $line)
+            {current: $acc.current, blocks: ($acc.blocks | update $acc.current $block)}
+        }
+    } | get blocks | items { |name, block|
+        {name: $name, value: ($block | str join "\n" | str trim --right)}
+    } | transpose -r -d
+}
+
+# Instance index's copy of a single-account sink: the instance number (1-based) in the
+# address's top two bytes.
+def txgen-neobank-sink [address: string, index: int] {
+    $"0x(($index + 1) | fill --alignment right --character '0' --width 4)($address | str substring 6..)"
+}
+
+# Copies a raw template or setup block for one instance: its own sender pool, sinks
+# and keychain setup.
+def txgen-neobank-instance-text [text: string, instance: record, index: int] {
+    let pool = $"users_($instance.id)"
+    let text = ($text
+        | str replace --all --regex '(?m)pool: users([,}]|$)' ('pool: ' + $pool + '${1}')
+        | str replace --all "authorize_keychain_users" $"authorize_keychain_($instance.id)")
+    $TXGEN_HELPER_NEOBANK_SINKS | reduce --fold $text { |sink, acc|
+        $acc | str replace --all $sink (txgen-neobank-sink $sink $index)
+    }
+}
+
+# Several neobank setups side by side (see neobank-multi.yml). Each instance gets a
+# disjoint user slice with its own random-sender and treasury pools, sinks, keychain
+# setup, vault/zone templates and portals (when zones >= instances); its mix is its
+# share times its modules' neobank-generic weights renormalised within the instance.
+def txgen-prepare-neobank-multi-preset [spec_path: string, count: int, accounts: int, zones: int, chain_id: int, output_dir: string] {
+    let presets = ($spec_path | path dirname)
+    let config = ($env.TXGEN_NEOBANK_INSTANCES? | default ($presets | path join neobank instances.yml))
+    let instances = (txgen-neobank-instances $config)
+    let base_path = ($presets | path join neobank-generic.yml)
+    let result = (^uv run --no-project --with yq==3.4.3 yq -c '.mix' $base_path | complete)
+    if $result.exit_code != 0 { error make {msg: $"Failed to read neobank-generic mix: ($result.stderr)"} }
+    let base_mix = ($result.stdout | from json)
+    let shares = ($instances | get share)
+    let share_sum = ($shares | math sum)
+    # Two users per instance at least: its refund sender is the slice's second user.
+    let user_ranges = (txgen-split-ranges $accounts $shares 2)
+    let zone_ranges = if $zones >= ($instances | length) {
+        txgen-split-ranges $zones $shares 1
+    } else {
+        $instances | enumerate | each { |item| let zone = $item.index mod $zones; [$zone ($zone + 1)] }
+    }
+    let groups = ($user_ranges | zip $zone_ranges | each { |pair| {users: $pair.0, zones: $pair.1} })
+    let deposits = (open (txgen-prepare-vault-preset ($presets | path join vault-deposit.yml) $accounts $chain_id))
+    let withdrawals = (open (txgen-prepare-vault-preset ($presets | path join vault-withdraw.yml) $accounts $chain_id))
+    let zone_spec = (open (txgen-prepare-zones-preset ($presets | path join zones.yml) $count $accounts $zones mixed --groups $groups))
+    let vault_setup = (open ($presets | path join vault setup.yml)).setup.steps
+    let users = ($withdrawals.append.setup.steps | each { |step|
+        $step | update tx.calls.0.args.1 "2000000000000000000000000"
+    })
+    let recipients = ($env.TXGEN_BATCH_PAYOUT_RECIPIENTS? | default ($TXGEN_HELPER_BATCH_PAYOUT_RECIPIENTS | get neobank-multi) | into int)
+    let batch = (txgen-batch-payout-templates $presets $recipients)
+    let raw = (txgen-raw-template-blocks ($presets | path join public-mix.yml) | merge (txgen-raw-template-blocks $base_path))
+    let keychain_lines = (txgen-raw-section-lines ($presets | path join access-key-mix.yml) setup | skip 1)
+    if ($keychain_lines | where { |line| $line =~ '^    - ' } | length) != 1 {
+        error make {msg: "access-key-mix.yml setup must hold exactly one keychain step"}
+    }
+    let keychain_step = ($keychain_lines | str join "\n" | str trim --right)
+    let expiring = { |template| $template | upsert expiring_nonce true | upsert valid_for_secs 25 }
+
+    let parts = ($instances | enumerate | each { |item|
+        let index = $item.index
+        let instance = $item.item
+        let range = ($user_ranges | get $index)
+        let instance_share = $instance.share / $share_sum
+        let families = (txgen-neobank-filter-mix $base_mix $instance.modules)
+        let family_total = ($families | get weight | math sum)
+        let in_slice = { |template| $template.from.select.index >= $range.0 and $template.from.select.index < $range.1 }
+        let entries = ($families | each { |entry|
+            let family = $entry.template
+            let prefix = $"($instance.name)/"
+            let members = if $family in [vault_deposit vault_withdraw] {
+                let source = if $family == vault_deposit { $deposits.templates } else { $withdrawals.templates }
+                $range.0..<$range.1 | each { |user|
+                    {name: $"($prefix)($family)_($user)", rel: 1, template: (do $expiring ($source | get $"($family)_($user)"))}
+                }
+            } else if $family == card_settlement {
+                let card_account = (txgen-neobank-sink $TXGEN_HELPER_CARD_SETTLEMENT_ACCOUNT $index)
+                let end = ([$range.1 ($range.0 + $TXGEN_HELPER_CARD_SETTLEMENT_SENDERS)] | math min)
+                $range.0..<$end | each { |user|
+                    let source = (do $expiring ($withdrawals.templates | get $"vault_withdraw_($user)"))
+                    {name: $"($prefix)card_settlement_($user)", rel: 1,
+                        template: (txgen-card-settlement-template $source --account $card_account)}
+                }
+            } else if $family in [zone_deposit zone_withdraw] {
+                $zone_spec.mix | where { |zone|
+                    ($zone.template | str starts-with $"($family)_") and (do $in_slice ($zone_spec.templates | get $zone.template))
+                } | each { |zone|
+                    {name: $"($prefix)($zone.template)", rel: $zone.weight, template: (do $expiring ($zone_spec.templates | get $zone.template))}
+                }
+            } else if $family in ($batch | columns) {
+                let template = ($batch | get $family | to json -r
+                    | str replace --all '"pool":"treasury"' $'"pool":"treasury_($instance.id)"'
+                    | str replace --all '"pool":"users"' $'"pool":"users_($instance.id)"' | from json)
+                [{name: $"($prefix)($family)", rel: 1, template: $template}]
+            } else if $family in ($raw | columns) {
+                let text = (txgen-neobank-instance-text ($raw | get $family) $instance $index
+                    | str replace --regex '^  [A-Za-z0-9_]+:' $'  "($prefix)($family)":')
+                [{name: $"($prefix)($family)", rel: 1, raw: $text}]
+            } else {
+                error make {msg: $"neobank-multi has no template for ($family)"}
+            }
+            let rel_total = ($members | get rel | math sum)
+            $members | each { |member|
+                let weight = ($instance_share * $entry.weight / $family_total * $member.rel / $rel_total * $TXGEN_HELPER_NEOBANK_WEIGHT_SCALE)
+                $member | insert weight ([1 ($weight | math round | into int)] | math max)
+            }
+        } | flatten)
+        let treasury_end = ([$range.1 ($range.0 + $TXGEN_HELPER_BATCH_TREASURY_SIZE)] | math min)
+        let keychain = if ($families | any { |entry| $entry.template | str starts-with "keychain_" }) {
+            let keys = ($range | each { |user| $TXGEN_HELPER_KEYCHAIN_ACCESS_KEYS_START + $user | into string })
+            [(txgen-neobank-instance-text $keychain_step $instance $index
+                | str replace '${TXGEN_KEYCHAIN_ACCESS_KEYS_START}' $keys.0
+                | str replace '${TXGEN_KEYCHAIN_ACCESS_KEYS_END}' $keys.1)]
+        } else { [] }
+        {
+            accounts: {
+                $"users_($instance.id)": {mnemonic: $TXGEN_HELPER_ACCOUNT_MNEMONIC, range: $range}
+                $"treasury_($instance.id)": {mnemonic: $TXGEN_HELPER_ACCOUNT_MNEMONIC, range: [$range.0 $treasury_end]}
+            }
+            entries: $entries
+            keychain: $keychain
+            dex: ($families | any { |entry| $entry.template == "dex_swap" })
+        }
+    })
+    let entries = ($parts | get entries | flatten)
+    let templates = ($entries | where { |entry| ($entry | get -o template) != null }
+        | each { |entry| {name: $entry.name, value: $entry.template} } | transpose -r -d)
+    let raw_templates = ($entries | where { |entry| ($entry | get -o raw) != null } | get raw)
+    let accounts_record = ($parts | get accounts | reduce --fold {users: {range: [0 $accounts]}} { |pools, acc| $acc | merge $pools })
+    let dex_setup = if ($parts | any { |part| $part.dex }) {
+        let result = (^uv run --no-project --with yq==3.4.3 yq -c '.setup.steps' ($presets | path join dex.yml) | complete)
+        if $result.exit_code != 0 { error make {msg: $"Failed to read dex setup: ($result.stderr)"} }
+        $result.stdout | from json
+    } else { [] }
+    mkdir $output_dir
+    # Copied templates stay text: included as a separate file next to the rendered spec.
+    let raw_name = "neobank-multi-templates.yml"
+    $"# Per-instance copies of neobank-generic templates, rendered by helpers.nu.\ntemplates:\n($raw_templates | str join "\n")\n"
+        | save -f ($output_dir | path join $raw_name)
+    let body = ({include: [($spec_path | path expand) $raw_name], accounts: $accounts_record,
+        setup: {steps: ($vault_setup | append $users | append $zone_spec.setup.steps | append $dex_setup)},
+        templates: $templates,
+        mix: ($entries | each { |entry| {template: $entry.name, weight: $entry.weight} })} | to yaml)
+    # Keychain steps hold ${TXGEN_*} placeholders: appended as text after the setup above.
+    let keychain = ($parts | get keychain | flatten)
+    let append = if ($keychain | is-empty) { "" } else {
+        "append:\n  setup:\n    steps:\n" + ($keychain | str join "\n" | lines | each { |line| $"  ($line)" } | str join "\n") + "\n"
+    }
+    let output = ($output_dir | path join ($spec_path | path basename))
+    $body + $append | save -f $output
+    $output
+}
+
 
 # Reuse the standalone renderers, preserving aggregate transaction shares even
 # when users and portals have different counts. Keep each fixture nonce lane in
@@ -892,6 +1171,16 @@ def txgen-prepare-public-mix-preset [spec_path: string, count: int, accounts: in
         return $spec_path
     }
     if $zones < 1 { error make {msg: "Public mix requires at least one zone"} }
+    let preset_name = ($spec_path | path basename | str replace --regex '\.yml$' '')
+    if $preset_name == "neobank-multi" {
+        let output_dir = if $out_dir == "" {
+            [ (txgen-repo-root) $TXGEN_HELPER_DEFAULT_RENDERED_SPECS_DIR (random uuid) ] | path join
+        } else { $out_dir | path expand }
+        return (txgen-prepare-neobank-multi-preset $spec_path $count $accounts $zones $chain_id $output_dir)
+    }
+    let spec = if $preset_name == "neobank-generic" {
+        $spec | update mix (txgen-neobank-filter-mix $spec.mix (txgen-neobank-modules ($env.TXGEN_NEOBANK_MODULES? | default "")))
+    } else { $spec }
     let presets = ($spec_path | path dirname)
     let deposits = (open (txgen-prepare-vault-preset ($presets | path join vault-deposit.yml) $accounts $chain_id))
     let withdrawals = (open (txgen-prepare-vault-preset ($presets | path join vault-withdraw.yml) $accounts $chain_id))
@@ -938,7 +1227,6 @@ def txgen-prepare-public-mix-preset [spec_path: string, count: int, accounts: in
         | items { |name, template|
             {name: $name, value: ($template | upsert expiring_nonce true | upsert valid_for_secs 25)}
         } | transpose -r -d)
-    let preset_name = ($spec_path | path basename | str replace --regex '\.yml$' '')
     let templates = if $preset_name in $TXGEN_HELPER_SINGLE_SENDER_PRESETS {
         txgen-single-sender-templates $templates
     } else { $templates }

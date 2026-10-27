@@ -1,0 +1,22 @@
+# neobank-multi instances: several neobank setups running side by side, to size the
+# combined headroom of more than one live program. Name instances by traffic shape,
+# never by customer. Override the file with TXGEN_NEOBANK_INSTANCES=<path>.
+#
+#   name     traffic shape (gas share of the whole run, by instance)
+#   share    relative gas share of this instance; shares need not sum to 100
+#   modules  neobank-generic modules it runs (account, deposit, earn, transfer,
+#            spend, cashout; default all). Template weights within an instance are
+#            neobank-generic's, renormalised over its modules.
+instances:
+  - name: full
+    share: 40
+    modules: [account, deposit, earn, transfer, spend, cashout]
+  - name: card-heavy
+    share: 25
+    modules: [account, earn, spend, cashout]
+  - name: payroll-earn
+    share: 20
+    modules: [deposit, earn, cashout]
+  - name: remittance
+    share: 15
+    modules: [account, deposit, transfer, cashout]

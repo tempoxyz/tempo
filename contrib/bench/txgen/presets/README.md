@@ -88,6 +88,23 @@ account, stablecoin DEX swaps (with `dex.yml`'s liquidity setup), and first
 payments to fresh addresses. Customer-shaped presets are flavors of this shape. For example:
 `derek bench preset=neobank-generic gas-limit=500M general-gas-limit=30M`.
 
+`TXGEN_NEOBANK_MODULES` (comma list of `account`, `deposit`, `earn`, `transfer`, `spend`, `cashout`;
+default all) runs only those modules: the helper drops the other modules' templates from
+the mix before composing it, so the rest keep their relative gas shares, and adds DEX
+liquidity and keychain setup only when the remaining mix uses them. Unknown names fail.
+
+`neobank-multi` runs several neobank setups side by side, to size combined headroom for
+several live programs. Instances (traffic-shape names, gas share and modules) live in
+`neobank/instances.yml`; `TXGEN_NEOBANK_INSTANCES=<path>` selects another file. Each
+instance gets its own user slice and sender pool, batch treasury, card shards, refund
+sender, card settlement, cash-out and merchant accounts, keychain setup, vault and zone
+templates and, when there are at least as many zone portals as instances, its own
+portals. Its weight is its share times its modules' `neobank-generic` weights,
+renormalised within the instance; report metadata lists weights as `<instance>/<family>`.
+The Earn vault, zone settlement fixture, DEX books and state-bloat recipients are
+shared; the preset header lists the details. For example:
+`derek bench preset=neobank-multi gas-limit=500M general-gas-limit=30M`.
+
 `batch-payout` models payroll fan-out and reward distribution: a 16-sender treasury
 pool with expiring nonces pays 32 recipients per Tempo transaction (the txpool's call
 limit; `TXGEN_BATCH_PAYOUT_RECIPIENTS` lowers it), as payroll to existing state-bloat
