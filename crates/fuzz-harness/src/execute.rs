@@ -121,7 +121,7 @@ fn execute(
     let mut outcome = TempoExecutionOutcome::default();
     let applied = execute_blocks(&evm_config, &consensus, &mut db, &blocks, &mut outcome);
     if !outcome.invariant_failures.is_empty() {
-        let invariant_failures = broken_start(&evm_config, pre_state, &blocks[0], &db);
+        let invariant_failures = broken_start(&evm_config, pre_state, &blocks[0], &db, &outcome);
         if !invariant_failures.is_empty() {
             return TempoExecutionOutcome {
                 error: ErrorClass::InvalidInput,
@@ -140,8 +140,10 @@ fn execute(
     outcome
 }
 
-/// The invariants `pre_state` already breaks, checked over every account `db` came to hold after
-/// execution (such as a holder whose balance it gives but that only a transaction touched). A
+/// The invariants `pre_state` already breaks, summing balances over every account `db` came to hold
+/// after execution and every address in a log topic of `outcome`'s receipts (such as a holder whose
+/// balance only a transaction touched, or one `transferFrom` or `burnBlocked` moved without loading
+/// it). A
 /// pre-state that breaks one is not a reachable state, so nothing executed on it is a finding: the
 /// input is invalid, and these failures are reported at `Execution` scope. Only the accounts it
 /// lists can break one.
@@ -150,12 +152,23 @@ fn broken_start(
     pre_state: &PreState,
     block: &ExecutionBlock,
     db: &Db,
+    outcome: &TempoExecutionOutcome,
 ) -> Vec<InvariantFailure> {
     let (Ok(env), Ok(start)) = (evm_config.evm_env(block.header()), state::seed(pre_state)) else {
         return Vec::new();
     };
     let (PreState::Genesis(listed) | PreState::Exact { state: listed, .. }) = pre_state;
-    let holders: Vec<Address> = db.cache.accounts.keys().copied().collect();
+    let logged = outcome.receipts.iter().flat_map(|receipt| &receipt.logs);
+    let topics = logged
+        .flat_map(|log| log.topics())
+        .filter(|topic| topic[..12] == [0; 12]);
+    let holders: Vec<Address> = db
+        .cache
+        .accounts
+        .keys()
+        .copied()
+        .chain(topics.map(|topic| Address::from_word(*topic)))
+        .collect();
     let mut failures = Vec::new();
     invariants::check(
         &start,
