@@ -6443,7 +6443,7 @@ checksum = "4275b20e6057cd7733fd8df8a5a31701e4fe44497dad0f3fa0e1c4fb971506be"
 [[package]]
 name = "invariants-core"
 version = "0.1.0"
-source = "git+https://github.com/tempoxyz/invariants-core?rev=36634c61b5a486d2f12064d86c428aa4a5c31996#36634c61b5a486d2f12064d86c428aa4a5c31996"
+source = "git+https://github.com/tempoxyz/invariants-core?rev=60764ed357c47307084127ba033bd9611a495835#60764ed357c47307084127ba033bd9611a495835"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
@@ -14292,6 +14292,7 @@ dependencies = [
  "tempo-dkg-onchain-artifacts",
  "tempo-evm",
  "tempo-fuzz-types",
+ "tempo-invariants",
  "tempo-precompiles",
  "tempo-primitives",
 ]
@@ -14318,6 +14319,15 @@ dependencies = [
  "paste",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "tempo-invariants"
+version = "1.17.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-sol-types",
+ "invariants-core",
 ]
 
 [[package]]
