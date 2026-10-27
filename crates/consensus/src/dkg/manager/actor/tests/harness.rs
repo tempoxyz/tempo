@@ -604,7 +604,7 @@ impl StubExecutionProvider {
             .extra_fields
             .insert_value("t12Time".into(), activation)
             .unwrap();
-        self.chain_spec = Arc::new(TempoChainSpec::from_genesis(genesis));
+        self.chain_spec = Arc::new(TempoChainSpec::from_genesis(genesis).unwrap());
     }
 
     pub(super) fn add_header(&self, header: TempoHeader) {

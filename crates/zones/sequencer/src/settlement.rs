@@ -1985,7 +1985,7 @@ mod tests {
         let mut genesis = tempo_chainspec::spec::DEV.inner.genesis.clone();
         set_tempo_fork(&mut genesis, TempoHardfork::T13, activation);
         Arc::new(ZoneChainSpec {
-            inner: Arc::new(tempo_chainspec::TempoChainSpec::from_genesis(genesis)),
+            inner: Arc::new(tempo_chainspec::TempoChainSpec::from_genesis(genesis).unwrap()),
         })
     }
 

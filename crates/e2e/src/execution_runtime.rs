@@ -258,7 +258,7 @@ impl Builder {
         }
 
         Ok(ExecutionRuntime::with_chain_spec(
-            TempoChainSpec::from_genesis(genesis),
+            TempoChainSpec::from_genesis(genesis)?,
         ))
     }
 }
@@ -879,6 +879,7 @@ impl ExecutionNode {
 /// TODO(janis): allow configuring this.
 pub fn chainspec() -> TempoChainSpec {
     TempoChainSpec::from_genesis(genesis())
+        .expect("e2e genesis must contain valid Tempo genesis info")
 }
 
 /// Generate execution node name from public key.

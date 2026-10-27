@@ -976,7 +976,7 @@ mod tests {
     #[tokio::test]
     async fn profile_genesis_disables_later_forks() {
         let genesis = generate("--hardfork T13").await;
-        let chainspec = tempo_chainspec::TempoChainSpec::from_genesis(genesis.clone());
+        let chainspec = tempo_chainspec::TempoChainSpec::from_genesis(genesis.clone()).unwrap();
 
         assert_eq!(
             genesis.config.extra_fields.get("t13Time"),

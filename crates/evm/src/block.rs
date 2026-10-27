@@ -794,7 +794,7 @@ mod tests {
     };
 
     fn system_calls_chainspec() -> Arc<TempoChainSpec> {
-        let mut spec = TempoChainSpec::from_genesis(DEV.genesis().clone());
+        let mut spec = TempoChainSpec::from_genesis(DEV.genesis().clone()).unwrap();
         spec.inner
             .hardforks
             .insert(EthereumHardfork::Amsterdam, ForkCondition::Timestamp(0));
@@ -1939,7 +1939,7 @@ mod tests {
     /// block_regular_gas_used semantics (no refunds, no state gas).
     #[test]
     fn test_t4_non_shared_gas_excludes_state_gas() {
-        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()).unwrap());
         let mut db = State::builder().with_bundle_update().build();
         let mut executor = TestExecutorBuilder::default()
             .with_general_gas_limit(30_000_000)
@@ -1996,7 +1996,7 @@ mod tests {
     /// T4: incentive gas accounting must also exclude state gas.
     #[test]
     fn test_t4_incentive_gas_excludes_state_gas() {
-        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()).unwrap());
         let mut db = State::builder().with_bundle_update().build();
         let mut executor = TestExecutorBuilder::default()
             .with_general_gas_limit(30_000_000)
@@ -2040,7 +2040,7 @@ mod tests {
     #[test]
     fn test_apply_pre_execution_deploys_validator_v2_code() {
         // Dev chainspec has t2Time: 0, so T2 is active at any timestamp.
-        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()).unwrap());
         let mut db = State::builder().with_bundle_update().build();
         let mut executor = TestExecutorBuilder::default()
             .with_parent_beacon_block_root(B256::ZERO)
@@ -2057,7 +2057,7 @@ mod tests {
     #[test]
     fn test_apply_pre_execution_deploys_signature_verifier_code() {
         // Dev chainspec has t3Time: 0, so T3 is active at any timestamp.
-        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()).unwrap());
         let mut db = State::builder().with_bundle_update().build();
         let mut executor = TestExecutorBuilder::default()
             .with_parent_beacon_block_root(B256::ZERO)
@@ -2074,7 +2074,7 @@ mod tests {
     #[test]
     fn test_apply_pre_execution_deploys_guard_code() {
         // Dev chainspec has t6Time: 0, so T6 is active at any timestamp.
-        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()).unwrap());
         let mut db = State::builder().with_bundle_update().build();
         let mut executor = TestExecutorBuilder::default()
             .with_parent_beacon_block_root(B256::ZERO)
@@ -2197,7 +2197,7 @@ mod tests {
                 .extra_fields
                 .insert_value("t13Time".into(), activation)
                 .unwrap();
-            let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
+            let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis).unwrap());
             let mut db = State::builder().with_bundle_update().build();
             let mut expected = Vec::new();
             for (index, address) in [
@@ -2297,7 +2297,7 @@ mod tests {
                 .extra_fields
                 .insert_value("t13Time".into(), activation)
                 .unwrap();
-            let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
+            let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis).unwrap());
             let mut db = State::builder().with_bundle_update().build();
             let mut executor = TestExecutorBuilder::default()
                 .with_spec(if timestamp >= activation {
@@ -2337,7 +2337,7 @@ mod tests {
             INITIAL_FACTORY_OWNER,
             address!("0xaF571FD4B3AD43a5807A5E58bFb25ea1aB327A14")
         );
-        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()).unwrap());
         let mut db = State::builder().with_bundle_update().build();
         let mut executor = TestExecutorBuilder::default()
             .with_parent_beacon_block_root(B256::ZERO)
@@ -2428,7 +2428,7 @@ mod tests {
     #[test]
     fn test_t4_finish_exempts_state_gas_from_header() {
         // DEV chainspec has T4 active at timestamp 0.
-        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()).unwrap());
         let mut db = State::builder().with_bundle_update().build();
         let mut executor = TestExecutorBuilder::default()
             .with_parent_beacon_block_root(B256::ZERO)

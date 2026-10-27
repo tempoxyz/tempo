@@ -116,7 +116,7 @@ fn apply_tempo_cli_overrides(cli: &mut TempoCli) -> eyre::Result<()> {
         if owner != DEFAULT_DEV_ZONE_FACTORY_OWNER {
             let mut genesis = node_cmd.chain.genesis().clone();
             set_zone_factory_genesis_owner(&mut genesis, owner)?;
-            node_cmd.chain = Arc::new(TempoChainSpec::from_genesis(genesis));
+            node_cmd.chain = Arc::new(TempoChainSpec::from_genesis(genesis)?);
         }
     }
 

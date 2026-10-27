@@ -71,13 +71,12 @@ macro_rules! tempo_genesis_info {
 tempo_hardfork::tempo_post_genesis_hardforks!(tempo_genesis_info);
 
 impl TempoGenesisInfo {
-    /// Extract Tempo genesis info from genesis extra_fields
-    fn extract_from(genesis: &Genesis) -> Self {
-        genesis
-            .config
-            .extra_fields
-            .deserialize_as::<Self>()
-            .unwrap_or_default()
+    /// Extract Tempo genesis info from genesis extra_fields.
+    ///
+    /// Returns an error if any recognized field (e.g. `epochLength` or a `<fork>Time`) is
+    /// malformed, instead of silently discarding every Tempo-specific setting.
+    fn extract_from(genesis: &Genesis) -> Result<Self, serde_json::Error> {
+        genesis.config.extra_fields.deserialize_as::<Self>()
     }
 
     pub fn epoch_length(&self) -> Option<NonZeroU64> {
@@ -111,7 +110,7 @@ pub fn chain_value_parser(s: &str) -> eyre::Result<Arc<TempoChainSpec>> {
         "mainnet" => PRESTO.clone(),
         "testnet" | "moderato" => MODERATO.clone(),
         "dev" => DEV.clone(),
-        _ => TempoChainSpec::from_genesis(reth_cli::chainspec::parse_genesis(s)?).into(),
+        _ => TempoChainSpec::from_genesis(reth_cli::chainspec::parse_genesis(s)?)?.into(),
     })
 }
 
@@ -142,6 +141,7 @@ pub static MODERATO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
         .expect("`./genesis/moderato.json` must be present and deserializable");
 
     TempoChainSpec::from_genesis(genesis)
+        .expect("`./genesis/moderato.json` must contain valid Tempo genesis info")
         .with_network_identity(NetworkIdentity::testnet())
         .with_default_follow_url("wss://rpc.moderato.tempo.xyz")
         .into()
@@ -152,6 +152,7 @@ pub static PRESTO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
         .expect("`./genesis/presto.json` must be present and deserializable");
 
     TempoChainSpec::from_genesis(genesis)
+        .expect("`./genesis/presto.json` must contain valid Tempo genesis info")
         .with_network_identity(NetworkIdentity::mainnet())
         .with_default_follow_url("wss://rpc.presto.tempo.xyz")
         .into()
@@ -164,7 +165,9 @@ pub static DEV: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
     let genesis: Genesis = serde_json::from_str(include_str!("./genesis/dev.json"))
         .expect("`./genesis/dev.json` must be present and deserializable");
 
-    TempoChainSpec::from_genesis(genesis).into()
+    TempoChainSpec::from_genesis(genesis)
+        .expect("`./genesis/dev.json` must contain valid Tempo genesis info")
+        .into()
 });
 
 /// Tempo chain spec type.
@@ -207,9 +210,11 @@ impl TempoChainSpec {
     }
 
     /// Converts the given [`Genesis`] into a [`TempoChainSpec`].
-    pub fn from_genesis(genesis: Genesis) -> Self {
+    ///
+    /// Returns an error if the Tempo-specific genesis config fields are malformed.
+    pub fn from_genesis(genesis: Genesis) -> Result<Self, serde_json::Error> {
         // Extract Tempo genesis info from extra_fields
-        let info = TempoGenesisInfo::extract_from(&genesis);
+        let info = TempoGenesisInfo::extract_from(&genesis)?;
 
         // Create base chainspec from genesis (already has ordered Ethereum hardforks)
         let mut base_spec = ChainSpec::from_genesis(genesis);
@@ -234,12 +239,12 @@ impl TempoChainSpec {
         let network_identity =
             NetworkIdentity::from_extra_data(inner.genesis_header().inner.extra_data.as_ref()).ok();
 
-        Self {
+        Ok(Self {
             inner,
             info,
             network_identity,
             default_follow_url: None,
-        }
+        })
     }
 
     /// Sets the compiled consensus network identity for this chain.
@@ -548,7 +553,7 @@ mod tests {
             serde_json::from_str(include_str!("./genesis/presto.json"))
                 .expect("the mainnet genesis must always be well formed");
 
-        let chainspec = super::TempoChainSpec::from_genesis(genesis);
+        let chainspec = super::TempoChainSpec::from_genesis(genesis).unwrap();
         let identity = chainspec
             .network_identity
             .expect("presto genesis contains a DKG outcome");
@@ -595,7 +600,7 @@ mod tests {
         }))
         .unwrap();
 
-        let chainspec = super::TempoChainSpec::from_genesis(genesis);
+        let chainspec = super::TempoChainSpec::from_genesis(genesis).unwrap();
         assert!(chainspec.network_identity.is_none());
     }
 
@@ -631,7 +636,7 @@ mod tests {
         }
         let json = serde_json::json!({ "config": config, "alloc": {} });
         let genesis: Genesis = serde_json::from_value(json).unwrap();
-        let chainspec = super::TempoChainSpec::from_genesis(genesis);
+        let chainspec = super::TempoChainSpec::from_genesis(genesis).unwrap();
 
         // Every fork should be active at any timestamp
         for &fork in TempoHardfork::VARIANTS {
@@ -655,6 +660,27 @@ mod tests {
     }
 
     #[test]
+    fn from_genesis_rejects_malformed_tempo_genesis_info() {
+        for (key, value) in [
+            ("epochLength", serde_json::json!(0)),
+            ("epochLength", serde_json::json!("100")),
+            ("t1Time", serde_json::json!(-1)),
+            ("generalGasLimit", serde_json::json!("not a number")),
+        ] {
+            let genesis: alloy_genesis::Genesis = serde_json::from_value(serde_json::json!({
+                "config": { "chainId": 1234, "t2Time": 0, key: value },
+                "alloc": {}
+            }))
+            .unwrap();
+
+            assert!(
+                super::TempoChainSpec::from_genesis(genesis).is_err(),
+                "malformed `{key}` should be rejected"
+            );
+        }
+    }
+
+    #[test]
     fn test_general_gas_limit_at_uses_genesis_override() {
         let genesis: alloy_genesis::Genesis = serde_json::from_value(serde_json::json!({
             "config": {
@@ -666,7 +692,7 @@ mod tests {
         }))
         .unwrap();
 
-        let chainspec = super::TempoChainSpec::from_genesis(genesis);
+        let chainspec = super::TempoChainSpec::from_genesis(genesis).unwrap();
 
         assert_eq!(chainspec.info.general_gas_limit(), Some(123456789));
         assert_eq!(chainspec.general_gas_limit_at(0, 500_000_000, 0), 123456789);
@@ -720,7 +746,7 @@ mod tests {
             "alloc": {}
         });
         let genesis: alloy_genesis::Genesis = serde_json::from_value(genesis).unwrap();
-        super::TempoChainSpec::from_genesis(genesis)
+        super::TempoChainSpec::from_genesis(genesis).unwrap()
     }
 
     #[test]

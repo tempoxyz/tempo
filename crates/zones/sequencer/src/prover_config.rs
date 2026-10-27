@@ -311,7 +311,7 @@ mod tests {
     fn scheduled(fork: TempoHardfork, timestamp: u64) -> tempo_chainspec::TempoChainSpec {
         let mut genesis = tempo_chainspec::spec::DEV.inner.genesis.clone();
         set_tempo_fork(&mut genesis, fork, timestamp);
-        tempo_chainspec::TempoChainSpec::from_genesis(genesis)
+        tempo_chainspec::TempoChainSpec::from_genesis(genesis).unwrap()
     }
 
     fn routed(before: TempoHardfork, after: TempoHardfork) -> ProverAddresses {

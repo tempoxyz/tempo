@@ -135,7 +135,7 @@ mod tests {
 
     #[test]
     fn test_assemble_block() {
-        let chainspec = Arc::new(TempoChainSpec::from_genesis(MODERATO.genesis().clone()));
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(MODERATO.genesis().clone()).unwrap());
         let assembler = TempoBlockAssembler::new(chainspec.clone());
 
         let block_number = 1u64;
@@ -243,7 +243,7 @@ mod tests {
 
     #[test]
     fn test_assemble_block_with_consensus_context() {
-        let chainspec = Arc::new(TempoChainSpec::from_genesis(MODERATO.genesis().clone()));
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(MODERATO.genesis().clone()).unwrap());
         let assembler = TempoBlockAssembler::new(chainspec.clone());
 
         let gas_limit = 30_000_000u64;
@@ -330,7 +330,7 @@ mod tests {
 
     #[test]
     fn test_assemble_block_preserves_pre_amsterdam_bal_hash() {
-        let chainspec = Arc::new(TempoChainSpec::from_genesis(MODERATO.genesis().clone()));
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(MODERATO.genesis().clone()).unwrap());
         let assembler = TempoBlockAssembler::new(chainspec.clone());
 
         let gas_limit = 30_000_000u64;

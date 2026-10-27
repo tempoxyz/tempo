@@ -515,7 +515,7 @@ mod tests {
             "alloc": {}
         }"#;
         let genesis: Genesis = serde_json::from_str(genesis_json).unwrap();
-        Arc::new(TempoChainSpec::from_genesis(genesis))
+        Arc::new(TempoChainSpec::from_genesis(genesis).unwrap())
     }
 
     /// Creates a chainspec with T1 active at timestamp 0.
@@ -555,7 +555,7 @@ mod tests {
             "alloc": {}
         }"#;
         let genesis: Genesis = serde_json::from_str(genesis_json).unwrap();
-        Arc::new(TempoChainSpec::from_genesis(genesis))
+        Arc::new(TempoChainSpec::from_genesis(genesis).unwrap())
     }
 
     /// Creates a chainspec with T7 active at timestamp 10.
@@ -596,7 +596,7 @@ mod tests {
             "alloc": {}
         }"#;
         let genesis: Genesis = serde_json::from_str(genesis_json).unwrap();
-        Arc::new(TempoChainSpec::from_genesis(genesis))
+        Arc::new(TempoChainSpec::from_genesis(genesis).unwrap())
     }
 
     #[test]
