@@ -14,10 +14,10 @@ use std::collections::BTreeMap;
 use alloy_primitives::{Address, B256, Bytes, U256};
 use alloy_sol_types::{SolCall, sol};
 
-use crate::tip20::ITIP20;
+use super::tip20::ITIP20;
 use invariants_core::{check, ensure};
 
-use crate::{Check, ObserveError, Views, Violation, decode, judge};
+use super::{Check, ObserveError, Views, Violation, decode, judge};
 
 sol! {
     #[derive(Debug, PartialEq, Eq)]

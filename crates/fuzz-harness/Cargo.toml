@@ -32,7 +32,6 @@ reth-evm.workspace = true
 reth-trie-common.workspace = true
 revm.workspace = true
 tempo-fuzz-types.workspace = true
-tempo-invariants.workspace = true
 tempo-chainspec.workspace = true
 tempo-contracts.workspace = true
 tempo-evm.workspace = true

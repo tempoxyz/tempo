@@ -14292,7 +14292,6 @@ dependencies = [
  "tempo-dkg-onchain-artifacts",
  "tempo-evm",
  "tempo-fuzz-types",
- "tempo-invariants",
  "tempo-precompiles",
  "tempo-primitives",
 ]
@@ -14319,15 +14318,6 @@ dependencies = [
  "paste",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "tempo-invariants"
-version = "1.17.0"
-dependencies = [
- "alloy-primitives",
- "alloy-sol-types",
- "invariants-core",
 ]
 
 [[package]]

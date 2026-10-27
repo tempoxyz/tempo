@@ -27,7 +27,6 @@ members = [
   "crates/faucet",
   "crates/fuzz-harness",
   "crates/fuzz-types",
-  "crates/invariants",
   "crates/node",
   "crates/node-launcher",
   "crates/nitro-attestation",
@@ -212,7 +211,6 @@ tempo-consensus-config = { path = "crates/consensus-config", default-features = 
 tempo-dkg-onchain-artifacts = { path = "crates/dkg-onchain-artifacts", default-features = false }
 tempo-faucet = { path = "crates/faucet", default-features = false }
 tempo-fuzz-types = { path = "crates/fuzz-types", default-features = false }
-tempo-invariants = { path = "crates/invariants" }
 invariants-core = { git = "https://github.com/tempoxyz/invariants-core", rev = "60764ed357c47307084127ba033bd9611a495835" }
 tempo-evm = { path = "crates/evm", default-features = false }
 tempo-eyre = { path = "crates/eyre", default-features = false }

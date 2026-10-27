@@ -11,7 +11,7 @@ use alloy_sol_types::{SolCall, SolEvent, sol};
 
 use invariants_core::{check, ensure};
 
-use crate::{Check, ObserveError, Verdict, Views, Violation, decode, judge};
+use super::{Check, ObserveError, Verdict, Views, Violation, decode, judge};
 
 sol! {
     #[derive(Debug, PartialEq, Eq)]
