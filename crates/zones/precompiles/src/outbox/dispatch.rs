@@ -1,6 +1,6 @@
 //! ABI dispatch for the [`ZoneOutbox`] precompile.
 
-use alloy_primitives::{Address, B256, U256};
+use alloy_primitives::{Address, U256};
 use revm::precompile::PrecompileResult;
 use tempo_contracts::zones::IZoneOutbox;
 use tempo_precompiles::{charge_input_cost, dispatch, storage::Handler, view};
@@ -10,6 +10,7 @@ use crate::{
     dispatch::{mutate, view as typed_view},
     ecies::{AUTHENTICATED_WITHDRAWAL_ENCRYPTED_SIZE, COMPRESSED_PUBLIC_KEY_SIZE},
     storage::{L1State, L1StorageReader},
+    tx_context::TransactionContext,
 };
 
 use super::{MAX_CALLBACK_DATA_SIZE, WITHDRAWAL_BASE_GAS, ZoneOutbox};
@@ -20,8 +21,7 @@ impl ZoneOutbox {
         l1: &L1State<P>,
         calldata: &[u8],
         msg_sender: Address,
-        tx_hash: B256,
-        fee_payer: Address,
+        tx: TransactionContext,
     ) -> PrecompileResult {
         if let Some(err) = charge_input_cost(&mut self.storage, calldata) {
             return err;
@@ -50,7 +50,7 @@ impl ZoneOutbox {
                 setTempoGasRate(call) => mutate(call, msg_sender, |sender, call| self.set_tempo_gas_rate(l1, sender, call)),
                 setMaxWithdrawalsPerBlock(call) => mutate(call, msg_sender, |sender, call| self.set_max_withdrawals_per_block(l1, sender, call)),
                 requestWithdrawal(call) => mutate(call, msg_sender, |sender, call| {
-                    self.request_withdrawal(l1, sender, fee_payer, tx_hash, call)
+                    self.request_withdrawal(l1, sender, tx, call)
                 }),
                 enqueueDepositBounceBack(call) => mutate(call, msg_sender, |sender, call| self.enqueue_deposit_bounce_back(sender, call)),
                 consumeFallbackRecipient(call) => mutate(call, msg_sender, |sender, call| self.consume_fallback_recipient(sender, call.fallbackNonce)),

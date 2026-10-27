@@ -152,7 +152,11 @@ where
             ExecutionContext::Simulation => B256::repeat_byte(0xff),
         };
         let _tx_context_guard =
-            tx_context::set_current_transaction(tx_hash, tx.fee_payer().unwrap_or(tx.caller));
+            tx_context::set_current_transaction(tx_context::TransactionContext {
+                tx_hash,
+                origin: tx.caller,
+                fee_payer: tx.fee_payer().unwrap_or(tx.caller),
+            });
         self.execute_and_sanitize(|evm| evm.transact_raw(tx))
     }
 
