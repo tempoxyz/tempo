@@ -195,6 +195,8 @@ assert equal $ring.2 [setup.portal_2.address setup.portal_0.address]
 assert equal $ring.3 [setup.portal_0.address setup.portal_1.address]
 assert equal ($z2z.templates.zone_to_zone_0.calls.0.args | last 2) [1 $TXGEN_HELPER_ZONE_TO_ZONE_CALLBACK_GAS]
 assert equal $z2z.templates.zone_to_zone_0.gas_limit $TXGEN_HELPER_ZONE_TO_ZONE_GAS_LIMIT
+assert equal $z2z.templates.zone_to_zone_0.expiring_nonce true
+assert equal $z2z.templates.zone_to_zone_0.valid_for_secs $TXGEN_HELPER_ZONE_TO_ZONE_VALID_FOR_SECS
 # Equal aggregate weight per source portal: portal 0's two users split its share.
 assert equal ($z2z.mix | get weight) [100 200 200 100]
 let hot = (open (txgen-prepare-zone-to-zone-preset (txgen-resolve-bench-spec zone-to-zone-hot).spec_path 100 4 9 --hot --out-dir $z2z_dir))

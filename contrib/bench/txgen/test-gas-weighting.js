@@ -100,7 +100,7 @@ test('bench presets confirm setup and use gas weighting without opt-in', async (
   }
 });
 
-test('zone-to-zone generates the full count and tallies callback receipts', async () => {
+test('zone-to-zone runs for the duration and tallies callback receipts', async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'bench-zone-to-zone-'));
   const marker = '0x45310f61ef78f3fcb9ab97ea27304d615534bc583c8ef2b31ecabd38fac9a4b7';
   const processed = '0x65042ea6dad60c26f055e80ec401b3437c854ed586a0704d305bb4e9ea4518cf';
@@ -137,7 +137,7 @@ test('zone-to-zone generates the full count and tallies callback receipts', asyn
     const calls = fs.readFileSync(callsPath, 'utf8').trim().split('\n').map(JSON.parse);
     const generations = calls.filter(call => call.kind === 'txgen-tempo' && call.args[0] === 'generate').map(call => call.args);
     assert.equal(generations.length, 2);
-    assert.equal(generations[1].includes('--duration'), false);
+    assert.equal(generations[1].includes('--duration'), true);
     assert.equal(generations[1].includes('--gas-weighted-mix'), true);
     const sender = calls.filter(call => call.kind === 'txgen-bench').map(call => call.args)[1];
     for (const metadata of ['zone_count=2', 'zone_to_zone_access=closed', 'zone_to_zone_share=100']) {
