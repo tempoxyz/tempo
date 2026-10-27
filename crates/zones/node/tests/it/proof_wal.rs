@@ -1,25 +1,64 @@
 //! Exercise proof collection against a real pending engine payload and Tempo L1.
 
 use alloy_consensus::BlockHeader as _;
+use alloy_primitives::B256;
 use alloy_provider::Provider as _;
-use std::time::Duration;
+use std::{path::Path, time::Duration};
 use zone_sequencer::StoredBlockProof;
 
 use crate::utils::start_real_p2p_cluster_with_settlement_proving;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn canonical_leader_block_has_durable_proof() -> eyre::Result<()> {
+async fn canonical_blocks_get_best_effort_durable_proofs() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
-    let mut cluster = start_real_p2p_cluster_with_settlement_proving(120, 2).await?;
+    let cluster = start_real_p2p_cluster_with_settlement_proving(120, 2).await?;
     let leader = &cluster.nodes[0];
     let mut canonical = leader.subscribe_to_canonical_state();
-    let mut follower_canonical = cluster.nodes[1].subscribe_to_canonical_state();
     let notification = tokio::time::timeout(Duration::from_secs(60), canonical.recv()).await??;
     let tip = notification.tip();
-    let path = leader
-        .proof_directory()
-        .join(format!("{}-{:x}.json", tip.number(), tip.hash()));
+
     // The leader collects witnesses in the background, after the block is canonical.
+    let proof = wait_for_proof(&leader.proof_directory(), tip.number(), tip.hash()).await?;
+    assert_eq!(proof.witness.parent_hash, tip.parent_hash());
+    assert!(leader.provider().get_block_number().await? >= proof.witness.block_number);
+
+    // Followers persist a broadcast witness or collect a missing one in the background, so a
+    // promoted node can prove its tail.
+    wait_for_proof(
+        &cluster.nodes[1].proof_directory(),
+        tip.number(),
+        tip.hash(),
+    )
+    .await?;
+
+    // Turn the spool path into a regular file so every proof write fails, retaining the
+    // previously collected proofs in a sibling directory. Production must carry on.
+    let directory = leader.proof_directory();
+    let retained = directory.with_file_name("proofs-retained");
+    std::fs::rename(&directory, &retained)?;
+    std::fs::File::create(&directory)?;
+    let target = tip.number() + 3;
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            if canonical.recv().await?.tip().number() >= target {
+                return Ok::<_, eyre::Report>(());
+            }
+        }
+    })
+    .await
+    .expect("leader must keep producing blocks while proof writes fail")?;
+    std::fs::remove_file(&directory)?;
+    std::fs::rename(&retained, &directory)?;
+    Ok(())
+}
+
+/// Wait for the stored proof of block `number` with `hash` to appear in `directory`.
+async fn wait_for_proof(
+    directory: &Path,
+    number: u64,
+    hash: B256,
+) -> eyre::Result<StoredBlockProof> {
+    let path = directory.join(format!("{number}-{hash:x}.json"));
     tokio::time::timeout(Duration::from_secs(60), async {
         while !path.is_file() {
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -27,44 +66,7 @@ async fn canonical_leader_block_has_durable_proof() -> eyre::Result<()> {
     })
     .await?;
     let proof: StoredBlockProof = serde_json::from_slice(&std::fs::read(&path)?)?;
-    assert_eq!(proof.witness.block_hash, tip.hash());
-    assert_eq!(proof.witness.parent_hash, tip.parent_hash());
-    assert_eq!(proof.witness.block_number, tip.number());
-    assert!(leader.provider().get_block_number().await? >= proof.witness.block_number);
-
-    // Followers persist the broadcast witness before canonicalization, so a promoted node can
-    // prove its tail.
-    tokio::time::timeout(Duration::from_secs(60), async {
-        loop {
-            let notification = follower_canonical.recv().await?;
-            let follower_tip = notification.tip();
-            let path = cluster.nodes[1].proof_directory().join(format!(
-                "{}-{:x}.json",
-                follower_tip.number(),
-                follower_tip.hash()
-            ));
-            let proof: StoredBlockProof = serde_json::from_slice(&std::fs::read(path)?)?;
-            assert_eq!(proof.witness.block_hash, follower_tip.hash());
-            if follower_tip.number() >= tip.number() {
-                return Ok::<_, eyre::Report>(());
-            }
-        }
-    })
-    .await??;
-
-    // Turn the spool path into a regular file to force the next atomic write to fail,
-    // retaining the previously collected proofs in a sibling directory.
-    let directory = leader.proof_directory();
-    let retained = directory.with_file_name("proofs-retained");
-    std::fs::rename(&directory, &retained)?;
-    std::fs::File::create(&directory)?;
-    let _exit = tokio::time::timeout(
-        Duration::from_secs(30),
-        cluster.nodes[0].wait_for_node_exit(),
-    )
-    .await
-    .expect("node must shut down after a proof-store mutation fails");
-    std::fs::remove_file(&directory)?;
-    std::fs::rename(&retained, &directory)?;
-    Ok(())
+    assert_eq!(proof.witness.block_number, number);
+    assert_eq!(proof.witness.block_hash, hash);
+    Ok(proof)
 }

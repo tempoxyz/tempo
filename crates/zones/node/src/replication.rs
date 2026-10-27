@@ -101,9 +101,8 @@ where
 /// * [`BroadcasterShutdown::Stop`] is the abrupt path. It flushes what is already durable and
 ///   abandons the rest.
 ///
-/// Neither path ever broadcasts a canonical-only block. With a proof collector, each unsettled
-/// block also waits for its witness, which the collector gathers in the background; the role
-/// controller's shutdown deadline bounds that wait.
+/// Neither path ever broadcasts a canonical-only block. Blocks carry their witness when one is
+/// already stored; broadcast never waits for one.
 pub(crate) async fn broadcast_persisted_blocks<P>(
     provider: P,
     commands: mpsc::Sender<P2pCommand>,
@@ -166,7 +165,7 @@ pub(crate) async fn broadcast_persisted_blocks<P>(
                     Ok(BroadcasterShutdown::Stop) => {
                         // Stopped without an engine-complete drain, so the canonical head is
                         // still moving and cannot be a flush target. Publish what is already
-                        // durable (waiting for its witnesses) and abandon the rest: a
+                        // durable and abandon the rest: a
                         // canonical-only block would disappear from this node on restart,
                         // leaving followers on a height no replica can serve.
                         match provider.last_block_number() {
@@ -308,9 +307,6 @@ where
                 "persisted zone block hash does not match notification at height {number}: expected={expected}, actual={hash}"
             );
         }
-        if let Some(proofs) = proofs {
-            proofs.wait_until_witnessed(number).await;
-        }
         let block = encode_block_with_witness(block.encoded, number, hash, proofs)?;
         commands
             .send(P2pCommand::BroadcastBlock(block))
@@ -328,16 +324,8 @@ fn encode_block_with_witness(
     hash: B256,
     proofs: Option<&ProofCollectorHandle>,
 ) -> eyre::Result<EncodedBlock> {
-    let witness = if let Some(proofs) = proofs {
-        let witness = proofs.get(number, hash);
-        eyre::ensure!(
-            witness.is_some() || !proofs.requires_witness(number),
-            "unsettled block {number} has no retained witness to replicate"
-        );
-        witness
-    } else {
-        None
-    };
+    // Witnesses are best-effort; peers import blocks without one.
+    let witness = proofs.and_then(|proofs| proofs.get(number, hash));
     let witness = witness.as_deref().map(minicbor_serde::to_vec).transpose()?;
     Ok(EncodedBlock { block, witness })
 }
@@ -386,23 +374,18 @@ fn serve_backfill_page<P>(
 where
     P: BlockReader<Block = Block> + StateProviderFactory,
 {
-    let mut tip = provider.last_block_number()?;
+    let tip = provider.last_block_number()?;
     let end = tip.min(start.saturating_add(BACKFILL_PAGE_SIZE.saturating_sub(1)));
     for number in start..=end {
         let block = provider.block_by_number(number)?.ok_or_else(|| {
             eyre::eyre!("persisted canonical block {number} is missing while serving backfill")
         })?;
-        let hash = block.header.hash_slow();
-        if let Some(proofs) = proofs
-            && proofs.requires_witness(number)
-            && proofs.get(number, hash).is_none()
-        {
-            // Witness collection trails persistence; advertise only what can be served with
-            // witnesses. `requires_witness` implies `number > 0`.
-            tip = number - 1;
-            break;
-        }
-        let block = encode_block_with_witness(alloy_rlp::encode(&block), number, hash, proofs)?;
+        let block = encode_block_with_witness(
+            alloy_rlp::encode(&block),
+            number,
+            block.header.hash_slow(),
+            proofs,
+        )?;
         commands
             .blocking_send(BackfillCommand::SendBlock {
                 peer: peer.clone(),

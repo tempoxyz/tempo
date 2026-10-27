@@ -657,24 +657,22 @@ where
             eyre::bail!("execution engine rejected peer block {block_number} ({hash}): {status:?}");
         }
 
-        // Peers without a stored witness still send plain blocks. Preserve local collection
-        // for them; supplied witnesses are persisted directly. Both paths precede canonicalization.
-        if let Some(collector) = &self.context.proof_collector {
-            self.stop
-                .run_until_cancelled(async {
-                    match peer_block.block.witness {
-                        Some(proof) => collector.persist_received(proof).await,
-                        None => collector
-                            .collect_and_persist(block_number, hash)
-                            .await
-                            .map(|_| ()),
-                    }
-                })
+        // Witnesses are best-effort: persist a supplied one, and leave a missing or unwritable one
+        // to the background collector rather than delaying import.
+        if let Some(collector) = &self.context.proof_collector
+            && let Some(proof) = peer_block.block.witness
+            && let Err(error) = self
+                .stop
+                .run_until_cancelled(collector.persist_received(proof))
                 .await
-                .ok_or_else(|| eyre::eyre!("follower stopped while persisting peer witness"))?
-                .wrap_err_with(|| {
-                    format!("persist witness before importing Zone block {block_number}")
-                })?;
+                .ok_or_eyre("follower stopped while persisting peer witness")?
+        {
+            tracing::warn!(
+                target: "zone::p2p",
+                zone_block = block_number,
+                error = ?error,
+                "Failed to persist peer witness; importing without it"
+            );
         }
 
         // 5. Forkchoice

@@ -34,9 +34,8 @@
 //! confirms (removes) the block after `newPayload` succeeds and before canonical forkchoice.
 //! A failed build or payload leaves the block in the queue for retry.
 //!
-//! Witnesses for produced blocks are collected in the background by the proof collector, so slow
-//! L1 proofs do not stall production. Production pauses only once `MAX_UNWITNESSED_BLOCKS`
-//! blocks are waiting for witnesses.
+//! Production never waits for witnesses: the proof collector gathers them in the background on a
+//! best-effort basis, and settlement collects any it still lacks.
 //!
 //! The zone assumes **instant finality** — head, safe, and finalized all point
 //! to the same block.
@@ -66,14 +65,6 @@ use zone_l1::{
 };
 use zone_p2p::{LeadershipSchedule, P2pPeerId};
 use zone_payload::{TempoImport, ZonePayloadAttributes, ZonePayloadTypes};
-use zone_sequencer::ProofCollectorHandle;
-
-/// Produced blocks allowed to wait for their witnesses before production pauses.
-///
-/// Broadcast waits for each block's witness, so this also bounds how far followers can trail the
-/// leader. It stays well inside the L1 RPC proof window (256 blocks by default): a backlog past
-/// that window can never be collected.
-pub(crate) const MAX_UNWITNESSED_BLOCKS: u64 = 128;
 
 /// Local block production permit backed by the effective leadership schedule.
 ///
@@ -146,11 +137,7 @@ trait AvailableBlockDrain {
     fn production_paused(&self) -> bool;
 
     /// Completes and consumes one block.
-    async fn advance_one(
-        &mut self,
-        block: Self::Block,
-        stop: &CancellationToken,
-    ) -> eyre::Result<()>;
+    async fn advance_one(&mut self, block: Self::Block) -> eyre::Result<()>;
 }
 
 /// Drain available blocks until the queue is empty, cancellation is observed, the Portal is
@@ -182,7 +169,7 @@ where
         if drain.production_paused() {
             return Ok(None);
         }
-        drain.advance_one(block, stop).await?;
+        drain.advance_one(block).await?;
     }
 }
 
@@ -220,8 +207,6 @@ pub struct ZoneEngine {
     portal_address: Address,
     /// Optional per-anchor leadership permit. `None` runs the legacy single-sequencer mode.
     production_permit: Option<ProductionPermit>,
-    /// Background witness collector; production waits on it only past [`MAX_UNWITNESSED_BLOCKS`].
-    proof_collector: Option<ProofCollectorHandle>,
     /// Depositors whose L1 deposits are credited. `None` credits every deposit.
     deposit_allowlist: Option<DepositAllowlist>,
 }
@@ -237,7 +222,6 @@ impl ZoneEngine {
         fee_recipient: Address,
         encryption_keys: EncryptionKeyRing,
         portal_address: Address,
-        proof_collector: Option<ProofCollectorHandle>,
     ) -> Self {
         Self {
             chain_spec,
@@ -250,7 +234,6 @@ impl ZoneEngine {
             encryption_keys,
             portal_address,
             production_permit: None,
-            proof_collector,
             deposit_allowlist: None,
         }
     }
@@ -362,30 +345,13 @@ impl ZoneEngine {
     /// Wraps the given L1 block into [`ZonePayloadAttributes`], sends FCU
     /// with those attributes, waits for the payload to be built, then submits
     /// via `newPayload`. Only confirms (removes) the L1 block from the
-    /// deposit queue after `newPayload` succeeds. Waits first if the block
-    /// [`MAX_UNWITNESSED_BLOCKS`] below it still has no witness.
-    async fn advance(
-        &mut self,
-        available: AvailableTempoImport,
-        stop: &CancellationToken,
-    ) -> eyre::Result<()> {
+    /// deposit queue after `newPayload` succeeds.
+    async fn advance(&mut self, available: AvailableTempoImport) -> eyre::Result<()> {
         let AvailableTempoImport {
             l1_block,
             checkpoint_headers,
             wall_clock_timestamp_millis,
         } = available;
-        if let Some(collector) = &self.proof_collector
-            && let Some(oldest) = self
-                .last_header
-                .number()
-                .checked_add(1)
-                .and_then(|next| next.checked_sub(MAX_UNWITNESSED_BLOCKS))
-        {
-            stop.run_until_cancelled(collector.wait_until_witnessed(oldest))
-                .await
-                .ok_or_eyre("engine stopped while waiting for witness collection")?;
-        }
-
         let checkpoint_only = !checkpoint_headers.is_empty();
         let final_header = checkpoint_headers.last().unwrap_or(&l1_block.header);
         let l1_num_hash = final_header.num_hash();
@@ -556,12 +522,8 @@ impl AvailableBlockDrain for ZoneEngine {
         self.l1_block_tracker.portal_paused()
     }
 
-    async fn advance_one(
-        &mut self,
-        block: Self::Block,
-        stop: &CancellationToken,
-    ) -> eyre::Result<()> {
-        self.advance(block, stop).await
+    async fn advance_one(&mut self, block: Self::Block) -> eyre::Result<()> {
+        self.advance(block).await
     }
 }
 
@@ -1027,11 +989,7 @@ mod tests {
             self.portal_paused.load(Ordering::Relaxed)
         }
 
-        async fn advance_one(
-            &mut self,
-            block: Self::Block,
-            _stop: &CancellationToken,
-        ) -> eyre::Result<()> {
+        async fn advance_one(&mut self, block: Self::Block) -> eyre::Result<()> {
             if let Some(started) = self.first_started.take() {
                 let _ = started.send(());
                 self.release_first

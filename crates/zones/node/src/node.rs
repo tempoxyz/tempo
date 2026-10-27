@@ -909,9 +909,8 @@ where
             };
             match prover_config {
                 ZoneProverConfig::Settlement(_) => {
-                    // Repair a pre-existing canonical tail before admitting new blocks or
-                    // starting settlement.
-                    collector.collect_canonical_tail(&provider).await?;
+                    // The collector fills any pre-existing canonical tail in the background, and
+                    // settlement collects whatever witnesses are still missing.
                     settlement_prover = Some(spawn_settlement_prover(
                         spf_config,
                         collector.clone(),
@@ -1048,7 +1047,6 @@ where
                     .clone()
                     .expect("sequencer mode configures deposit decryption keys"),
                 self.portal_address,
-                proof_collector.clone(),
             )
             .with_deposit_allowlist(config.deposit_allowlist.clone());
             task_executor.spawn_critical_task("zone-engine", engine.run());

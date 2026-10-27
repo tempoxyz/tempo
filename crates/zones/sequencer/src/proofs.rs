@@ -14,15 +14,15 @@ use alloy_provider::DynProvider;
 use alloy_rpc_types_eth::BlockId;
 use eyre::{Context as _, OptionExt as _, Result, bail, ensure};
 use futures::StreamExt as _;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use tempo_alloy::TempoNetwork;
 use tempo_contracts::zones::ZonePortal;
-use tokio::sync::{mpsc, oneshot, watch};
-use tracing::{error, info};
+use tokio::sync::{mpsc, oneshot};
+use tracing::{error, info, warn};
 use zone_rpc::{ZoneDebugApi, types::ZoneExecutionWitness};
 
-use crate::ZoneSequencerProvider;
+use crate::{ZoneSequencerProvider, metrics::ProofCollectorMetrics};
 
 // Persisted files survive upgrades; reject incompatible witness formats explicitly.
 const FORMAT_VERSION: u32 = 1;
@@ -58,6 +58,7 @@ pub async fn create_proof_collector<P: ZoneSequencerProvider>(
         provider,
         store: store.clone(),
         requests: requests_rx,
+        metrics: ProofCollectorMetrics::default(),
     };
     let handle = ProofCollectorHandle {
         store,
@@ -74,7 +75,7 @@ pub struct ProofCollectorHandle {
 }
 
 impl ProofCollectorHandle {
-    /// Collect one executed block before it becomes canonical.
+    /// Collect one block's witness on demand, for settlement.
     ///
     /// Returns `None` for blocks already covered by finalized settlement. Otherwise the
     /// returned witness's file and directory have both been synced.
@@ -101,56 +102,16 @@ impl ProofCollectorHandle {
 
     /// Persist a received witness without recollecting it. The caller must bind its metadata
     /// to the imported block; this does not validate witness contents or completeness.
+    ///
+    /// Writes the store directly rather than queueing behind the collector, so a slow collection
+    /// pass never delays block import.
     pub async fn persist_received(&self, proof: StoredBlockProof) -> Result<()> {
         proof.validate()?;
-        let (response, result) = oneshot::channel();
-        self.requests
-            .send(ProofRequest::Persist {
-                proof: Box::new(proof),
-                response,
-            })
+        let store = self.store.clone();
+        tokio::task::spawn_blocking(move || store.persist(proof))
             .await
-            .context("proof collector stopped")?;
-        result
-            .await
-            .context("proof collector stopped before persistence")?
-    }
-
-    /// Whether an imported block still needs a durable witness for future settlement.
-    pub fn requires_witness(&self, number: u64) -> bool {
-        number > self.store.state.read().pruned_through
-    }
-
-    /// Fill any restart or upgrade gaps before allowing a proving node to advance.
-    pub async fn collect_canonical_tail<P: ZoneSequencerProvider>(
-        &self,
-        provider: &P,
-    ) -> Result<()> {
-        let start = self.store.state.read().pruned_through.saturating_add(1);
-        let head = provider.best_block_number()?;
-        for number in start..=head {
-            let hash = provider
-                .block_hash(number)?
-                .ok_or_eyre(format!("canonical Zone block {number} has no hash"))?;
-            self.collect_and_persist(number, hash).await?;
-        }
-        Ok(())
-    }
-
-    /// Wait until block `number` has a retained witness or is covered by finalized settlement.
-    ///
-    /// Witnesses are keyed by height; callers that need a specific block check its hash with
-    /// [`Self::get`]. Never returns if collection for `number` never succeeds, so callers race it
-    /// against their shutdown signal.
-    pub async fn wait_until_witnessed(&self, number: u64) {
-        // Subscribing before the check means any insert or prune after it wakes this wait.
-        let mut changed = self.store.changed.subscribe();
-        while !self.store.is_witnessed(number) {
-            changed
-                .changed()
-                .await
-                .expect("the proof store owns the sender");
-        }
+            .context("proof persistence task panicked")?
+            .map(|_| ())
     }
 
     /// Allow pruning of finalized witnesses through a completed shadow proving job.
@@ -180,6 +141,7 @@ struct ProofCollector<P> {
     provider: P,
     store: Arc<ProofStore>,
     requests: mpsc::Receiver<ProofRequest>,
+    metrics: ProofCollectorMetrics,
 }
 
 impl<P: ZoneSequencerProvider> ProofCollector<P> {
@@ -201,10 +163,6 @@ impl<P: ZoneSequencerProvider> ProofCollector<P> {
                     match request {
                         ProofRequest::Collect { number, hash, response } => {
                             let result = self.collect_and_persist(number, hash).await;
-                            let _ = response.send(result);
-                        }
-                        ProofRequest::Persist { proof, response } => {
-                            let result = self.persist(*proof).await.map(|_| ());
                             let _ = response.send(result);
                         }
                     }
@@ -229,9 +187,7 @@ impl<P: ZoneSequencerProvider> ProofCollector<P> {
         let store = self.store.clone();
         let provider = self.provider.clone();
         let head = tokio::task::spawn_blocking(move || {
-            store
-                .prune_through(finalized_zone_height)
-                .unwrap_or_else(|error| panic!("failed to prune block proofs: {error:#}"));
+            store.prune_through(finalized_zone_height)?;
             Ok::<_, eyre::Report>(provider.best_block_number()?)
         })
         .await
@@ -248,20 +204,37 @@ impl<P: ZoneSequencerProvider> ProofCollector<P> {
                 missing.push((number, block_hash));
             }
         }
-        // Persist in height order so the retained witnesses stay a contiguous prefix.
-        let mut collected =
-            futures::stream::iter(missing)
-                .map(|(number, block_hash)| async move {
-                    (number, self.collect_block(block_hash).await)
-                })
-                .buffered(COLLECTION_CONCURRENCY);
-        while let Some((number, proof)) = collected.next().await {
-            let proof = proof?;
-            ensure!(
-                proof.witness.block_number == number,
-                "witness height does not match Zone block {number}"
-            );
-            self.persist(proof).await?;
+        self.metrics.unwitnessed_blocks.set(missing.len() as f64);
+        let mut collected = futures::stream::iter(missing)
+            .map(|(number, block_hash)| async move {
+                let result = async {
+                    let proof = self.collect_block(block_hash).await?;
+                    ensure!(
+                        proof.witness.block_number == number,
+                        "witness height does not match Zone block {number}"
+                    );
+                    self.persist(proof).await
+                }
+                .await;
+                (number, result)
+            })
+            .buffered(COLLECTION_CONCURRENCY);
+        while let Some((number, result)) = collected.next().await {
+            match result {
+                Ok(_) => self.metrics.unwitnessed_blocks.decrement(1.0),
+                // Witnesses are best-effort: a block that cannot be witnessed, such as one past
+                // the L1 proof window, must not hold back the blocks after it. It is retried on
+                // the next pass, and settlement collects any witness still missing.
+                Err(error) => {
+                    self.metrics.witness_failures_total.increment(1);
+                    warn!(
+                        target: "zone::sequencer::proofs",
+                        zone_block = number,
+                        error = ?error,
+                        "Failed to collect block witness; skipping"
+                    );
+                }
+            }
         }
         Ok(())
     }
@@ -295,22 +268,13 @@ impl<P: ZoneSequencerProvider> ProofCollector<P> {
     async fn persist(&self, proof: StoredBlockProof) -> Result<Option<Arc<StoredBlockProof>>> {
         let number = proof.witness.block_number;
         let block_hash = proof.witness.block_hash;
-        if number <= self.store.state.read().pruned_through {
-            return Ok(None);
-        }
-        // Retrying an already persisted witness must not unlink its durable file first.
-        if self.store.contains(number, block_hash) {
-            return Ok(self.store.state.read().proofs.get(&number).cloned());
-        }
         let store = self.store.clone();
-        let proof = tokio::task::spawn_blocking(move || {
-            store.remove_files(number..=number)?;
-            store.insert(proof)?;
-            Ok::<_, eyre::Report>(store.state.read().proofs[&number].clone())
-        })
-        .await
-        .expect("proof persistence task panicked")
-        .unwrap_or_else(|error| panic!("failed to persist block proof: {error:#}"));
+        let Some(proof) = tokio::task::spawn_blocking(move || store.persist(proof))
+            .await
+            .context("proof persistence task panicked")??
+        else {
+            return Ok(None);
+        };
         info!(
             target: "zone::sequencer::proofs",
             zone_block = number,
@@ -379,13 +343,13 @@ impl std::fmt::Debug for ProofCollectorConfig {
 }
 
 /// Persisted witnesses with an in-memory index.
-/// Mutations are serialized by the collector; the lock only coordinates cache readers.
 #[derive(Debug)]
 struct ProofStore {
     directory: PathBuf,
     state: RwLock<ProofStoreState>,
-    /// Signalled after every insert and prune, for [`ProofCollectorHandle::wait_until_witnessed`].
-    changed: watch::Sender<()>,
+    /// Serializes file mutations between the collector and received-witness persistence; `state`
+    /// only coordinates cache readers.
+    mutations: Mutex<()>,
 }
 
 impl ProofStore {
@@ -433,8 +397,33 @@ impl ProofStore {
                 shadow_proven_through: None,
                 proofs,
             }),
-            changed: watch::Sender::new(()),
+            mutations: Mutex::new(()),
         })
+    }
+
+    /// Persist `proof`, replacing any conflicting witness at its height.
+    ///
+    /// Returns `None` for a block already covered by finalized settlement, and the stored witness
+    /// otherwise; retrying an already persisted witness leaves its durable file in place.
+    fn persist(&self, proof: StoredBlockProof) -> Result<Option<Arc<StoredBlockProof>>> {
+        let _mutations = self.mutations.lock();
+        let number = proof.witness.block_number;
+        {
+            let state = self.state.read();
+            if number <= state.pruned_through {
+                return Ok(None);
+            }
+            if let Some(stored) = state
+                .proofs
+                .get(&number)
+                .filter(|stored| stored.witness.block_hash == proof.witness.block_hash)
+            {
+                return Ok(Some(stored.clone()));
+            }
+        }
+        self.remove_files(number..=number)?;
+        self.insert(proof)?;
+        Ok(Some(self.state.read().proofs[&number].clone()))
     }
 
     fn insert(&self, proof: StoredBlockProof) -> Result<()> {
@@ -477,13 +466,7 @@ impl ProofStore {
             .write()
             .proofs
             .insert(proof.witness.block_number, Arc::new(proof));
-        self.changed.send_replace(());
         Ok(())
-    }
-
-    fn is_witnessed(&self, number: u64) -> bool {
-        let state = self.state.read();
-        number <= state.pruned_through || state.proofs.contains_key(&number)
     }
 
     fn contains(&self, number: u64, hash: B256) -> bool {
@@ -512,6 +495,7 @@ impl ProofStore {
     }
 
     fn prune_through(&self, through: u64) -> Result<()> {
+        let _mutations = self.mutations.lock();
         let through = {
             let mut state = self.state.write();
             let through = state.shadow_proven_through.map_or(through, |proven| {
@@ -520,7 +504,6 @@ impl ProofStore {
             state.pruned_through = state.pruned_through.max(through);
             state.pruned_through
         };
-        self.changed.send_replace(());
         self.remove_files(..=through)
     }
 
@@ -598,10 +581,6 @@ enum ProofRequest {
         hash: B256,
         response: oneshot::Sender<Result<Option<Arc<StoredBlockProof>>>>,
     },
-    Persist {
-        proof: Box<StoredBlockProof>,
-        response: oneshot::Sender<Result<()>>,
-    },
 }
 
 fn sync_directory(directory: &Path) -> Result<()> {
@@ -635,6 +614,7 @@ mod tests {
         }
     }
 
+    /// Serves its witness for its own block and fails every other block.
     struct StubDebugApi(ZoneExecutionWitness);
 
     #[jsonrpsee::core::async_trait]
@@ -643,8 +623,15 @@ mod tests {
             &self,
             block: alloy_eips::BlockId,
         ) -> jsonrpsee::core::RpcResult<ZoneExecutionWitness> {
-            assert_eq!(block, self.0.block_hash.into());
-            Ok(self.0.clone())
+            if block == self.0.block_hash.into() {
+                Ok(self.0.clone())
+            } else {
+                Err(jsonrpsee::types::ErrorObject::owned(
+                    -32000,
+                    "state outside the proof window",
+                    None::<()>,
+                ))
+            }
         }
     }
 
@@ -672,6 +659,7 @@ mod tests {
             provider: MockEthProvider::<TempoPrimitives>::new(),
             store: store.clone(),
             requests,
+            metrics: ProofCollectorMetrics::default(),
         };
         // Historical state for settled backfill is deliberately unavailable from the stub.
         assert!(
@@ -700,6 +688,75 @@ mod tests {
         store.prune_through(2).unwrap();
         // The collection response owns the input even if pruning runs before the caller resumes.
         assert_eq!(*retained, expected);
+    }
+
+    #[tokio::test]
+    async fn collection_pass_skips_blocks_it_cannot_witness() {
+        use alloy_primitives::U256;
+        use alloy_provider::{Provider as _, ProviderBuilder};
+        use alloy_transport::mock::Asserter;
+        use reth_provider::test_utils::MockEthProvider;
+        use tempo_primitives::{TempoHeader, TempoPrimitives};
+
+        let directory = tempfile::tempdir().unwrap();
+        let unprovable = B256::repeat_byte(1);
+        let expected = proof(2, B256::repeat_byte(2));
+        let provider = MockEthProvider::<TempoPrimitives>::new();
+        for (number, hash) in [(1, unprovable), (2, expected.witness.block_hash)] {
+            let mut header = TempoHeader::default();
+            header.inner.number = number;
+            provider.add_header(hash, header);
+        }
+        let asserter = Asserter::new();
+        // Finalized Zone height read by the pass before collecting.
+        asserter.push_success(&Bytes::from(U256::ZERO.to_be_bytes::<32>()));
+        let store = Arc::new(ProofStore::open(directory.path().to_path_buf(), 0).unwrap());
+        let (_, requests) = mpsc::channel(1);
+        let collector = ProofCollector {
+            config: ProofCollectorConfig {
+                directory: directory.path().to_path_buf(),
+                debug_api: Arc::new(StubDebugApi(expected.witness.clone())),
+                portal_address: Address::ZERO,
+                l1_provider: ProviderBuilder::new_with_network::<TempoNetwork>()
+                    .connect_mocked_client(asserter)
+                    .erased(),
+                retain_for_shadow_proving: false,
+            },
+            provider,
+            store: store.clone(),
+            requests,
+            metrics: ProofCollectorMetrics::default(),
+        };
+
+        collector.prune_and_collect().await.unwrap();
+        assert!(!store.contains(1, unprovable));
+        assert!(store.contains(2, expected.witness.block_hash));
+    }
+
+    #[test]
+    fn persist_keeps_a_matching_witness_and_replaces_a_conflicting_one() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = ProofStore::open(directory.path().to_path_buf(), 1).unwrap();
+        let stale = proof(2, B256::repeat_byte(2));
+        let stale_path = directory.path().join(stale.file_name());
+        assert_eq!(*store.persist(stale.clone()).unwrap().unwrap(), stale);
+        assert_eq!(*store.persist(stale.clone()).unwrap().unwrap(), stale);
+        assert!(stale_path.is_file());
+
+        let canonical = proof(2, B256::repeat_byte(3));
+        assert_eq!(
+            *store.persist(canonical.clone()).unwrap().unwrap(),
+            canonical
+        );
+        assert!(!stale_path.exists());
+        assert!(store.contains(2, canonical.witness.block_hash));
+        // Settled blocks are never stored.
+        assert!(
+            store
+                .persist(proof(1, B256::repeat_byte(1)))
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -888,43 +945,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn witness_wait_resolves_on_insert_or_settlement() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = Arc::new(ProofStore::open(directory.path().to_path_buf(), 0).unwrap());
-        let (requests, _) = mpsc::channel(1);
-        let handle = ProofCollectorHandle {
-            store: store.clone(),
-            requests,
-        };
-
-        let collected = handle.wait_until_witnessed(1);
-        tokio::pin!(collected);
-        assert!(
-            tokio::time::timeout(Duration::from_millis(50), &mut collected)
-                .await
-                .is_err(),
-            "block 1 has no witness yet"
-        );
-        store.insert(proof(1, B256::repeat_byte(1))).unwrap();
-        tokio::time::timeout(Duration::from_secs(1), collected)
-            .await
-            .expect("insert wakes the wait");
-
-        let settled = handle.wait_until_witnessed(3);
-        tokio::pin!(settled);
-        assert!(
-            tokio::time::timeout(Duration::from_millis(50), &mut settled)
-                .await
-                .is_err(),
-            "block 3 is neither collected nor settled"
-        );
-        store.prune_through(3).unwrap();
-        tokio::time::timeout(Duration::from_secs(1), settled)
-            .await
-            .expect("settlement wakes the wait");
-    }
-
-    #[tokio::test]
     async fn collection_request_returns_its_result_or_worker_exit() {
         for outcome in 0..3 {
             let directory = tempfile::tempdir().unwrap();
@@ -938,10 +958,7 @@ mod tests {
                     number,
                     hash,
                     response,
-                } = receiver.recv().await.unwrap()
-                else {
-                    panic!("expected a collection request");
-                };
+                } = receiver.recv().await.unwrap();
                 assert_eq!(number, 1);
                 assert_eq!(hash, B256::ZERO);
                 // Completion depends only on the response, not background readiness.

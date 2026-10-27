@@ -13,6 +13,16 @@ pub(crate) struct SequencerMetrics {
     pub(crate) pathusd_balance: Gauge,
 }
 
+/// Metrics emitted by the best-effort block witness collector.
+#[derive(Metrics, Clone)]
+#[metrics(scope = "tempo_zone_proofs")]
+pub(crate) struct ProofCollectorMetrics {
+    /// Unsettled canonical blocks without a stored witness in the current collection pass.
+    pub(crate) unwitnessed_blocks: Gauge,
+    /// Witness collections that failed; each block is retried on the next pass.
+    pub(crate) witness_failures_total: Counter,
+}
+
 /// Metrics emitted by the prover.
 #[derive(Metrics, Clone)]
 #[metrics(scope = "tempo_zone_prover")]
