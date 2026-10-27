@@ -686,7 +686,7 @@ pub struct ZoneArgs {
 
     /// Maximum `eth_call`, `eth_estimateGas`, and `eth_fillTransaction` requests the redacted RPC
     /// runs at once across all callers. Further simulations wait in arrival order and fail with
-    /// `-32009` if none finishes within two seconds.
+    /// `-32009` if no permit frees up within two seconds of their request or batch arriving.
     #[arg(
         long = "redacted-rpc.max-concurrent-simulations",
         env = "REDACTED_RPC_MAX_CONCURRENT_SIMULATIONS",

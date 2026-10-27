@@ -32,16 +32,17 @@ use crate::{
     auth::{self, AuthContext, now_unix_seconds},
     config::RedactedRpcConfig,
     error::{AuthError, AuthenticateError},
-    handlers::{self, ZoneRpcApi},
+    handlers::{self, Simulation, ZoneRpcApi},
     metrics::{RedactedRpcAuthMetrics, RedactedRpcCallMetrics, RedactedRpcSimulationMetrics},
-    types::{JsonRpcError, JsonRpcRequest, JsonRpcResponse, Method},
+    types::{JsonRpcError, JsonRpcRequest, JsonRpcResponse},
     ws::handle_ws_upgrade,
 };
 
 /// Maximum number of requests in a single JSON-RPC batch.
 pub(crate) const MAX_BATCH_SIZE: usize = 100;
 
-/// How long a simulation waits for a permit before it is rejected with `-32009`.
+/// How long the simulations in a request or batch wait for permits before they are rejected with
+/// `-32009`.
 ///
 /// Waiters are served in arrival order, so a caller that reissues simulations back to back cannot
 /// take every released permit ahead of callers already waiting.
@@ -218,9 +219,10 @@ pub(crate) async fn process_rpc_text(
                 max_response_size,
             ),
             Ok(requests) => {
+                let permit_deadline = simulation_permit_deadline();
                 let mut responses = String::from("[");
                 for req in &requests {
-                    let response = dispatch_request(req, auth, state).await;
+                    let response = dispatch_request(req, auth, state, permit_deadline).await;
                     if let Err(error) =
                         append_batch_response(&mut responses, response, max_response_size)
                     {
@@ -242,7 +244,7 @@ pub(crate) async fn process_rpc_text(
     } else {
         match serde_json::from_str::<JsonRpcRequest>(trimmed) {
             Ok(request) => RpcResult::single(
-                dispatch_request(&request, auth, state).await,
+                dispatch_request(&request, auth, state, simulation_permit_deadline()).await,
                 max_response_size,
             ),
             Err(e) => RpcResult::single(
@@ -256,45 +258,32 @@ pub(crate) async fn process_rpc_text(
     }
 }
 
+/// Returns the deadline for simulation permits in a request or batch arriving now.
+///
+/// A batch shares one deadline, so its simulations wait at most [`SIMULATION_PERMIT_WAIT`] in
+/// total rather than that long each.
+pub(crate) fn simulation_permit_deadline() -> tokio::time::Instant {
+    tokio::time::Instant::now() + SIMULATION_PERMIT_WAIT
+}
+
+/// Dispatches one request. A simulation waits for a permit until `permit_deadline`.
 pub(crate) async fn dispatch_request(
     req: &JsonRpcRequest,
     auth: &AuthContext,
     state: &RpcState,
+    permit_deadline: tokio::time::Instant,
 ) -> JsonRpcResponse {
     let metrics = RedactedRpcCallMetrics::new_for(&req.method);
     let started_at = Instant::now();
 
     metrics.started_total.increment(1);
-    let is_simulation = matches!(
-        Method::from_name(&req.method),
-        Some(Method::EthCall | Method::EthEstimateGas | Method::EthFillTransaction)
-    );
-    let response = if !is_simulation {
-        handlers::dispatch(req, auth, state.api.as_ref()).await
-    } else if let Ok(permit) = tokio::time::timeout(
-        SIMULATION_PERMIT_WAIT,
-        Arc::clone(&state.simulation_permits).acquire_owned(),
-    )
-    .await
-    {
-        let permit = permit.expect("simulation semaphore is never closed");
-        let (task_req, task_auth, api) = (req.clone(), auth.clone(), Arc::clone(&state.api));
-        // Reth keeps executing on a blocking thread when a disconnecting client drops this future,
-        // so a detached task holds the permit until the simulation completes.
-        let simulation = tokio::spawn(async move {
-            let _permit = permit;
-            handlers::dispatch(&task_req, &task_auth, api.as_ref()).await
-        });
-        match simulation.await {
-            Ok(response) => response,
-            Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
-            Err(err) => {
-                JsonRpcResponse::error(req.id.clone(), JsonRpcError::internal(err.to_string()))
-            }
+    // Params are validated before taking a permit, so invalid simulations never wait for one.
+    let response = match Simulation::parse(req) {
+        None => handlers::dispatch(req, auth, state.api.as_ref()).await,
+        Some(Err(response)) => response,
+        Some(Ok(simulation)) => {
+            simulate(simulation, req.id.clone(), auth, state, permit_deadline).await
         }
-    } else {
-        state.simulation_metrics.rejected_total.increment(1);
-        JsonRpcResponse::error(req.id.clone(), JsonRpcError::server_busy())
     };
     metrics
         .time_seconds
@@ -307,6 +296,52 @@ pub(crate) async fn dispatch_request(
     }
 
     response
+}
+
+/// Runs a validated simulation once a permit is free, or rejects it with `-32009` if none frees up
+/// by `permit_deadline`. A permit that is free immediately is taken even after the deadline.
+async fn simulate(
+    simulation: Simulation,
+    id: serde_json::Value,
+    auth: &AuthContext,
+    state: &RpcState,
+    permit_deadline: tokio::time::Instant,
+) -> JsonRpcResponse {
+    let Ok(permit) = tokio::time::timeout_at(
+        permit_deadline,
+        Arc::clone(&state.simulation_permits).acquire_owned(),
+    )
+    .await
+    else {
+        state.simulation_metrics.rejected_total.increment(1);
+        return JsonRpcResponse::error(id, JsonRpcError::server_busy());
+    };
+    let permit = permit.expect("simulation semaphore is never closed");
+    let (permits, metrics) = (
+        Arc::clone(&state.simulation_permits),
+        state.simulation_metrics.clone(),
+    );
+    let max_permits = state.config.max_concurrent_simulations.get();
+    // Read from the semaphore, so the next update corrects a count missed by a panic.
+    let record_permits_in_use = move || {
+        let in_use = max_permits.saturating_sub(permits.available_permits());
+        metrics.permits_in_use.set(in_use as f64);
+    };
+    record_permits_in_use();
+    let (task_id, task_auth, api) = (id.clone(), auth.clone(), Arc::clone(&state.api));
+    // Reth keeps executing on a blocking thread when a disconnecting client drops this future,
+    // so a detached task holds the permit until the simulation completes.
+    let simulation = tokio::spawn(async move {
+        let response = simulation.execute(task_id, &task_auth, api.as_ref()).await;
+        drop(permit);
+        record_permits_in_use();
+        response
+    });
+    match simulation.await {
+        Ok(response) => response,
+        Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
+        Err(err) => JsonRpcResponse::error(id, JsonRpcError::internal(err.to_string())),
+    }
 }
 
 /// Main HTTP RPC handler — authenticates, dispatches, returns response.
@@ -433,7 +468,8 @@ pub(crate) fn validate_keychain_key_info(key_info: &KeyInfo) -> Result<(), Authe
 mod tests {
     use super::{
         RpcState, SIMULATION_PERMIT_WAIT, append_batch_response, authenticate_token,
-        dispatch_request, serialize_response, serialize_response_with_limit,
+        dispatch_request, process_rpc_text, serialize_response, serialize_response_with_limit,
+        simulation_permit_deadline,
     };
     use crate::{
         RedactedRpcConfig,
@@ -657,17 +693,27 @@ mod tests {
             .try_acquire()
             .expect("the only permit is available");
         for method in simulations {
-            let error = dispatch_request(&simulation_request(method), &auth, &state)
-                .await
-                .error
-                .expect("simulation is rejected");
+            let error = dispatch_request(
+                &simulation_request(method),
+                &auth,
+                &state,
+                simulation_permit_deadline(),
+            )
+            .await
+            .error
+            .expect("simulation is rejected");
             assert_eq!(error.code, JsonRpcError::server_busy().code, "{method}");
         }
         // Other methods do not take a simulation permit.
-        let error = dispatch_request(&simulation_request("eth_chainId"), &auth, &state)
-            .await
-            .error
-            .expect("stub returns an error");
+        let error = dispatch_request(
+            &simulation_request("eth_chainId"),
+            &auth,
+            &state,
+            simulation_permit_deadline(),
+        )
+        .await
+        .error
+        .expect("stub returns an error");
         assert_eq!(error.code, stub_error);
         drop(held);
 
@@ -677,18 +723,88 @@ mod tests {
                 .try_acquire()
                 .expect("the only permit is available");
             let request = simulation_request(method);
-            let (response, ()) = tokio::join!(dispatch_request(&request, &auth, &state), async {
-                tokio::time::sleep(SIMULATION_PERMIT_WAIT / 2).await;
-                drop(held);
-                assert!(
-                    state.simulation_permits.try_acquire().is_err(),
-                    "the released permit goes to the queued simulation"
-                );
-            });
+            let (response, ()) = tokio::join!(
+                dispatch_request(&request, &auth, &state, simulation_permit_deadline()),
+                async {
+                    tokio::time::sleep(SIMULATION_PERMIT_WAIT / 2).await;
+                    drop(held);
+                    assert!(
+                        state.simulation_permits.try_acquire().is_err(),
+                        "the released permit goes to the queued simulation"
+                    );
+                }
+            );
             let error = response.error.expect("stub returns an error");
             assert_eq!(error.code, stub_error, "{method}");
         }
         assert_eq!(state.simulation_permits.available_permits(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn invalid_simulations_are_rejected_without_waiting_for_a_permit() {
+        let state = simulation_state(TestApi::default());
+        let auth = simulation_auth();
+        let call = serde_json::json!({"to": format!("{:#x}", Address::repeat_byte(0x22))});
+        let requests = [
+            ("eth_call", serde_json::json!([call, "0x1"])),
+            ("eth_estimateGas", serde_json::json!([call, "latest", {}])),
+            ("eth_fillTransaction", serde_json::json!([])),
+        ];
+
+        let _held = state
+            .simulation_permits
+            .try_acquire()
+            .expect("the only permit is available");
+        let started_at = tokio::time::Instant::now();
+        for (method, params) in requests {
+            let request = serde_json::from_value(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": method,
+                "params": params,
+            }))
+            .expect("test request deserializes");
+            let error = dispatch_request(&request, &auth, &state, simulation_permit_deadline())
+                .await
+                .error
+                .expect("simulation is rejected");
+            assert_eq!(
+                error.code,
+                JsonRpcError::invalid_params("").code,
+                "{method}"
+            );
+        }
+        assert_eq!(started_at.elapsed(), Duration::ZERO);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn batch_simulations_share_one_permit_deadline() {
+        let state = simulation_state(TestApi::default());
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "eth_call",
+            "params": [{"to": format!("{:#x}", Address::repeat_byte(0x22)), "data": "0x"}],
+        });
+        let batch = serde_json::json!([request, request, request]).to_string();
+
+        let _held = state
+            .simulation_permits
+            .try_acquire()
+            .expect("the only permit is available");
+        let started_at = tokio::time::Instant::now();
+        let responses = process_rpc_text(&batch, &simulation_auth(), &state).await;
+        assert_eq!(started_at.elapsed(), SIMULATION_PERMIT_WAIT);
+
+        let responses: Vec<serde_json::Value> =
+            serde_json::from_str(&responses.0).expect("batch response is valid JSON");
+        assert_eq!(responses.len(), 3);
+        for response in responses {
+            assert_eq!(
+                response["error"]["code"],
+                serde_json::json!(JsonRpcError::server_busy().code)
+            );
+        }
     }
 
     #[tokio::test(start_paused = true)]
@@ -703,7 +819,12 @@ mod tests {
         // Dropping the request future is what a client disconnect does.
         tokio::time::timeout(
             Duration::from_secs(1),
-            dispatch_request(&request, &simulation_auth(), &state),
+            dispatch_request(
+                &request,
+                &simulation_auth(),
+                &state,
+                simulation_permit_deadline(),
+            ),
         )
         .await
         .expect_err("the simulation runs until released");

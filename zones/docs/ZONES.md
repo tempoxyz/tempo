@@ -429,8 +429,10 @@ just set-transfers-enabled true
 
 Pass `false` to disable transfers again. A Safe admin can use
 `cargo zone-xtask set-transfers-enabled --enabled --safe-address ... --safe-output ...`;
-omit `--enabled` to create a disable proposal. Transfers require T15 on Tempo, which adds
-`setTransfersEnabled` to the portal. Zone transactions see the change once the zone has
+omit `--enabled` to create a disable proposal. Transfers require T15 on both chains: on Tempo,
+T15 adds `setTransfersEnabled` to the portal, and the zone checks T15 against its own genesis
+fork schedule (`t15Time`). A zone whose genesis does not schedule T15 rejects transfers even
+after the opt-in. Zone transactions see the change once the zone has
 finalized the Tempo block that recorded it. Abdicating `AccessPolicy` freezes the current
 setting once the 30-day abdication delay has passed.
 
@@ -917,7 +919,7 @@ cast code 0x5A4d000000000000000000000000000000000000 --rpc-url "$ETH_RPC_URL"
 | `--http.port` | 8546 | HTTP JSON-RPC port |
 | `--redacted-rpc.port` | 8544 | Redacted RPC server port |
 | `--redacted-rpc.max-auth-token-validity-secs` | 2592000 | Maximum auth token validity the redacted RPC accepts, in seconds. The effective limit is capped at 30 days. |
-| `--redacted-rpc.max-concurrent-simulations` | 16 | Maximum `eth_call`, `eth_estimateGas`, and `eth_fillTransaction` requests the redacted RPC runs at once across all callers. Further simulations wait in arrival order and fail with `-32009` if none finishes within two seconds. |
+| `--redacted-rpc.max-concurrent-simulations` | 16 | Maximum `eth_call`, `eth_estimateGas`, and `eth_fillTransaction` requests the redacted RPC runs at once across all callers. Further simulations wait in arrival order and fail with `-32009` if no permit frees up within two seconds of their request or batch arriving. |
 
 ### Environment Variables
 

@@ -22,7 +22,10 @@ use reth_revm::{
     context::result::{ExecutionResult, HaltReason, ResultAndState},
     state::{Account, Bytecode, EvmState, EvmStorageSlot, TransactionId},
 };
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
+use tempo_chainspec::{
+    TempoChainSpec,
+    hardfork::{TempoHardfork, TempoHardforks},
+};
 use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, INITIAL_FACTORY_OWNER,
     InitialZoneFactoryAccount, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
@@ -283,6 +286,22 @@ where
     fn upgrade_zone_runtimes_at_t15_boundary(&mut self) -> Result<(), BlockExecutionError> {
         let [_, portal, verifier, messenger] = t15_zone_factory_state(INITIAL_FACTORY_OWNER);
         self.install_zone_runtimes_at_boundary([portal, verifier, messenger])
+    }
+
+    /// Returns the fork whose shared Zone runtimes are live at `timestamp`, or `None` before T13.
+    ///
+    /// A runtime set is live only once every earlier runtime upgrade is also active, matching how
+    /// genesis generation picks the set. So a chain with T15 at genesis and T13 later installs the
+    /// T15 set when T13 activates.
+    fn zone_runtime_fork_at(&self, timestamp: u64) -> Option<TempoHardfork> {
+        let spec = &self.inner.spec;
+        if !spec.is_t13_active_at_timestamp(timestamp) {
+            None
+        } else if spec.is_t15_active_at_timestamp(timestamp) {
+            Some(TempoHardfork::T15)
+        } else {
+            Some(TempoHardfork::T13)
+        }
     }
 
     /// Installs shared Zone runtimes without modifying their existing storage.
@@ -574,24 +593,15 @@ where
         }
         // Chains starting at a runtime-upgrade fork supply its runtime code in genesis. Preserve
         // those allocations (including locally compiled contracts on test chains). Chains that
-        // activate the fork later follow the normal runtime upgrade path. Only the newest active
+        // activate the fork later follow the normal runtime upgrade path. Only the newest live
         // runtime set is installed, so T13 runtimes are never reinstalled over T15 ones.
-        let genesis_timestamp = self.inner.spec.genesis().timestamp;
-        if self.inner.spec.is_t15_active_at_timestamp(timestamp) {
-            if !self
-                .inner
-                .spec
-                .is_t15_active_at_timestamp(genesis_timestamp)
-            {
-                self.upgrade_zone_runtimes_at_t15_boundary()?;
+        let runtime_fork = self.zone_runtime_fork_at(timestamp);
+        if runtime_fork != self.zone_runtime_fork_at(self.inner.spec.genesis().timestamp) {
+            match runtime_fork {
+                Some(TempoHardfork::T15) => self.upgrade_zone_runtimes_at_t15_boundary()?,
+                Some(TempoHardfork::T13) => self.upgrade_zone_runtimes_at_boundary()?,
+                _ => {}
             }
-        } else if self.inner.spec.is_t13_active_at_timestamp(timestamp)
-            && !self
-                .inner
-                .spec
-                .is_t13_active_at_timestamp(genesis_timestamp)
-        {
-            self.upgrade_zone_runtimes_at_boundary()?;
         }
 
         Ok(())
@@ -2364,14 +2374,26 @@ mod tests {
             T13_ZONE_VERIFIER_RUNTIME,
             T13_ZONE_MESSENGER_RUNTIME,
         ];
-        for (timestamp, spec, expected_runtimes) in [
-            (14, TempoHardfork::T13, t13.clone()),
-            (19, TempoHardfork::T14, t13),
-            (20, TempoHardfork::T15, t15.clone()),
-            (21, TempoHardfork::T15, t15),
+        let initial = [
+            ZONE_PORTAL_RUNTIME,
+            ZONE_VERIFIER_RUNTIME,
+            ZONE_MESSENGER_RUNTIME,
+        ];
+        // `t13Time`, `t14Time` and `t15Time`.
+        let in_order = [10u64, 15, 20];
+        // What `--t13-time 200` without `--hardfork` generates.
+        let t15_before_t13 = [200u64, 0, 0];
+        for (schedule, timestamp, spec, expected_runtimes) in [
+            (in_order, 14, TempoHardfork::T13, t13.clone()),
+            (in_order, 19, TempoHardfork::T14, t13),
+            (in_order, 20, TempoHardfork::T15, t15.clone()),
+            (in_order, 21, TempoHardfork::T15, t15.clone()),
+            (t15_before_t13, 199, TempoHardfork::T15, initial),
+            (t15_before_t13, 200, TempoHardfork::T15, t15.clone()),
+            (t15_before_t13, 201, TempoHardfork::T15, t15),
         ] {
             let mut genesis = DEV.genesis().clone();
-            for (fork, activation) in [("t13Time", 10u64), ("t14Time", 15), ("t15Time", 20)] {
+            for (fork, activation) in ["t13Time", "t14Time", "t15Time"].into_iter().zip(schedule) {
                 genesis
                     .config
                     .extra_fields
