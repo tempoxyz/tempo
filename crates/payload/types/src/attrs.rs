@@ -280,8 +280,9 @@ mod tests {
         let budget = Duration::from_millis(800);
         let mut attrs = TempoPayloadAttributes::random().with_payload_build_budget(budget);
         attrs.payload_build_budget = Some((budget, Instant::now() - Duration::from_secs(1)));
+        let cloned = attrs.clone();
         assert_eq!(attrs.payload_build_budget(), Some(Duration::ZERO));
-        assert_eq!(attrs.clone().payload_build_budget(), Some(Duration::ZERO));
+        assert_eq!(cloned.payload_build_budget(), Some(Duration::ZERO));
     }
 
     #[test]
