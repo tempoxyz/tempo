@@ -1,7 +1,8 @@
 //! TIP-20 supply invariants.
 
 use alloy_primitives::{Address, U256};
-use invariants_core::{Check, Layer, Views, view, view_many};
+use alloy_sol_types::SolCall;
+use invariants_core::{Check, Layer, ObserveError, Views, view, view_many};
 use tempo_contracts::precompiles::ITIP20;
 
 /// A token's supply, cap and the sum of the balances read, or why they could not be read.
@@ -14,7 +15,8 @@ struct Ledger {
     supply: U256,
     /// `None` when the pre-state cannot answer it.
     cap: Option<U256>,
-    balances: Balances,
+    /// `Err` when a balance view failed; the supply and cap are still judged.
+    balances: Result<Balances, String>,
 }
 
 enum Balances {
@@ -28,10 +30,13 @@ pub(super) static CHECKS: &[Check<Token>] = &[
     Check {
         id: "TEMPO-TIP20-VIEW",
         layer: Layer::State,
-        run: |t, p| {
-            if let Err(error) = &t.read {
-                p.fail(format!("token={} {error}", t.token));
-            }
+        run: |t, p| match &t.read {
+            Err(error)
+            | Ok(Ledger {
+                balances: Err(error),
+                ..
+            }) => p.fail(format!("token={} {error}", t.token)),
+            Ok(_) => {}
         },
     },
     // A zero cap is not exempt: minting checks the cap without exception, and setSupplyCap
@@ -61,7 +66,9 @@ pub(super) static CHECKS: &[Check<Token>] = &[
         layer: Layer::State,
         run: |t, p| {
             let Ok(Ledger {
-                supply, balances, ..
+                supply,
+                balances: Ok(balances),
+                ..
             }) = &t.read
             else {
                 p.when(false);
@@ -101,13 +108,26 @@ fn read<V: Views<Error = String>>(
     let supply = match view(views, token, ITIP20::totalSupplyCall {}) {
         Ok(supply) => supply,
         Err(err) if err.is_not_answered() => return Ok(None),
-        Err(err) => return Err(err.to_string()),
+        Err(err) => return Err(failed::<ITIP20::totalSupplyCall>(err)),
     };
     let cap = match view(views, token, ITIP20::supplyCapCall {}) {
         Ok(cap) => Some(cap),
         Err(err) if err.is_not_answered() => None,
-        Err(err) => return Err(err.to_string()),
+        Err(err) => return Err(failed::<ITIP20::supplyCapCall>(err)),
     };
+    Ok(Some(Ledger {
+        supply,
+        cap,
+        balances: balances(views, token, holders),
+    }))
+}
+
+/// The sum of `holders`' balances of `token`, leaving out those nobody answers for.
+fn balances<V: Views<Error = String>>(
+    views: &mut V,
+    token: Address,
+    holders: &[Address],
+) -> Result<Balances, String> {
     let calls: Vec<_> = holders
         .iter()
         .map(|&account| (token, ITIP20::balanceOfCall { account }))
@@ -115,20 +135,20 @@ fn read<V: Views<Error = String>>(
     let mut sum = U256::ZERO;
     for (&account, balance) in holders
         .iter()
-        .zip(view_many(views, &calls).map_err(|err| err.to_string())?)
+        .zip(view_many(views, &calls).map_err(failed::<ITIP20::balanceOfCall>)?)
     {
         let Some(next) = balance.map_or(Some(sum), |balance| sum.checked_add(balance)) else {
-            return Ok(Some(Ledger {
-                supply,
-                cap,
-                balances: Balances::Overflow(account),
-            }));
+            return Ok(Balances::Overflow(account));
         };
         sum = next;
     }
-    Ok(Some(Ledger {
-        supply,
-        cap,
-        balances: Balances::Sum(sum),
-    }))
+    Ok(Balances::Sum(sum))
+}
+
+/// Why `C` could not be read, naming the view.
+fn failed<C: SolCall>(err: ObserveError<String>) -> String {
+    match err {
+        ObserveError::Views(err) => format!("{}: {err}", C::SIGNATURE),
+        err => err.to_string(),
+    }
 }
