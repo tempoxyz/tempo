@@ -38,6 +38,7 @@ const TXGEN_HELPER_ZONE_TO_ZONE_CALLBACK_GAS = 1500000
 const TXGEN_HELPER_ZONE_TO_ZONE_GAS_LIMIT = 2500000
 # Like the public-mix workloads: expiring nonces let transfers the saturated general lane
 # cannot include expire instead of holding the sender's pending window past its timeout.
+# A random TIP-1106 nonce keeps a sender's otherwise identical transfers distinct.
 const TXGEN_HELPER_ZONE_TO_ZONE_VALID_FOR_SECS = 25
 # A route's first transfer creates portal queue state, so setup warms it with more gas.
 const TXGEN_HELPER_ZONE_TO_ZONE_WARM_CALLBACK_GAS = 3000000
@@ -850,7 +851,7 @@ def txgen-prepare-zone-to-zone-preset [spec_path: string, count: int, accounts: 
         let per_zone = $minimum_per_zone + (if $slot < ($pairs mod ($sources | length)) { 1 } else { 0 })
         let weight = $minimum_per_zone * ($minimum_per_zone + 1) // $per_zone
         let transfer = ($spec.templates.zone_to_zone | update from $account | update gas_limit $config.gas_limit
-            | upsert expiring_nonce true | upsert valid_for_secs $TXGEN_HELPER_ZONE_TO_ZONE_VALID_FOR_SECS
+            | upsert expiring_nonce true | upsert valid_for_secs $TXGEN_HELPER_ZONE_TO_ZONE_VALID_FOR_SECS | upsert nonce {uniform: [0 9223372036854775807]}
             | update calls [($transfer_call | update args [(do $portal $zone) (do $portal (do $target $zone)) $token
                 {var: setup.gateway.address} $config.return_amount $config.callback_gas])])
         $templates = ($templates | insert $"zone_to_zone_($pair)" $transfer)
@@ -858,7 +859,7 @@ def txgen-prepare-zone-to-zone-preset [spec_path: string, count: int, accounts: 
         if $config.share < 100 {
             let recipient = if $closed { $allowlisted } else { {pool: $account} }
             let withdraw = ($spec.templates.zone_withdraw | update from $account
-                | upsert expiring_nonce true | upsert valid_for_secs $TXGEN_HELPER_ZONE_TO_ZONE_VALID_FOR_SECS
+                | upsert expiring_nonce true | upsert valid_for_secs $TXGEN_HELPER_ZONE_TO_ZONE_VALID_FOR_SECS | upsert nonce {uniform: [0 9223372036854775807]}
                 | update calls [($withdraw_call | update args [(do $portal $zone) $token $recipient true])])
             $templates = ($templates | insert $"zone_withdraw_($pair)" $withdraw)
             $mix = ($mix | append {template: $"zone_withdraw_($pair)", weight: ($weight * (100 - $config.share))})

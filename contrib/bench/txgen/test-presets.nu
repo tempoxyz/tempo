@@ -197,6 +197,7 @@ assert equal ($z2z.templates.zone_to_zone_0.calls.0.args | last 2) [1 $TXGEN_HEL
 assert equal $z2z.templates.zone_to_zone_0.gas_limit $TXGEN_HELPER_ZONE_TO_ZONE_GAS_LIMIT
 assert equal $z2z.templates.zone_to_zone_0.expiring_nonce true
 assert equal $z2z.templates.zone_to_zone_0.valid_for_secs $TXGEN_HELPER_ZONE_TO_ZONE_VALID_FOR_SECS
+assert equal $z2z.templates.zone_to_zone_0.nonce {uniform: [0 9223372036854775807]}
 # Equal aggregate weight per source portal: portal 0's two users split its share.
 assert equal ($z2z.mix | get weight) [100 200 200 100]
 let hot = (open (txgen-prepare-zone-to-zone-preset (txgen-resolve-bench-spec zone-to-zone-hot).spec_path 100 4 9 --hot --out-dir $z2z_dir))
@@ -211,6 +212,7 @@ with-env {TXGEN_ZONE_TO_ZONE_ACCESS: open, TXGEN_ZONE_TO_ZONE_SHARE: "60"} {
     assert equal ($open_mix.templates.zone_to_zone_0.calls.0.args | get 4) 0
     assert equal ($open_mix.mix | get weight) [120 80 120 80]
     assert equal ($open_mix.templates.zone_withdraw_1.calls.0.args.2) {pool: {pool: users, select: {index: 1}}}
+    assert equal $open_mix.templates.zone_withdraw_1.nonce {uniform: [0 9223372036854775807]}
     assert equal ($open_mix.setup.steps | where id == warm_0 | first | get tx.calls | length) 2
 }
 with-env {TXGEN_ZONE_TO_ZONE_SHARE: "60"} {
