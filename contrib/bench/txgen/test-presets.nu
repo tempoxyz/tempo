@@ -110,4 +110,21 @@ assert equal $shard.nonce {uniform: [0 9223372036854775807]}
 assert equal ($shard.calls | last | get function) transfer
 assert equal ($shard.calls | last | get args | first) $TXGEN_HELPER_CARD_SETTLEMENT_ACCOUNT
 rm -rf $card_dir
+# The generic neobank keeps ordinary vault withdrawals alongside 18 card shards.
+let neobank_dir = (mktemp -d)
+let neobank_spec = (txgen-resolve-bench-spec neobank-generic)
+assert ("neobank-generic" in $TXGEN_HELPER_PUBLIC_MIX_PRESETS)
+assert ("neobank-generic" in $TXGEN_HELPER_ALWAYS_FUND_PRESETS)
+assert equal ((^uv run --no-project --with yq==3.4.3 yq -c .mix $neobank_spec.spec_path | from json) | get weight | math sum) 100
+let neobank_path = (txgen-prepare-public-mix-preset $neobank_spec.spec_path 1000 40 2 1337 --out-dir $neobank_dir)
+let neobank = (open $neobank_path)
+let neobank_cards = ($neobank.mix | get template | where { |name| $name | str starts-with "card_settlement_" })
+assert equal ($neobank_cards | length) 18
+assert equal ($neobank.mix | get template | where { |name| $name | str starts-with "vault_withdraw_" } | length) 40
+assert equal ($neobank.templates.card_settlement_0.calls | last | get args | first) $TXGEN_HELPER_CARD_SETTLEMENT_ACCOUNT
+assert equal ($neobank.templates.vault_withdraw_0.calls | length) (($neobank.templates.card_settlement_0.calls | length) - 1)
+let neobank_weights = (txgen-workload-metadata-args neobank-generic $neobank_path | last | str replace "workload_mix_weights=" "" | from json)
+assert equal ($neobank_weights | columns | sort) [account_first_receive card_settlement card_spend cash_out public_transfer public_transfer_memo vault_deposit vault_withdraw zone_deposit zone_withdraw]
+assert equal ($neobank_weights.card_settlement * 5) ($neobank_weights.account_first_receive * 12)
+rm -rf $neobank_dir
 print "Preset, policy setup, state-bloat, and workload metadata checks passed"

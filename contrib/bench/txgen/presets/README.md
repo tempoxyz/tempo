@@ -77,3 +77,12 @@ sends zone settlement and Earn deposits from one account with ordered nonces;
 `card-settlement` models card-program settlement: 18 unsponsored shard senders
 redeem vault shares and forward the proceeds to one settlement account.
 Run them at mainnet limits (`gas-limit=500M general-gas-limit=30M`) to compare.
+
+`neobank-generic` is one workload across the six neobank modules (Account, Deposit,
+Earn, Transfer, Spend, Cash out), weighted by planned gas shares; the file lists
+each module's templates and what is not modelled yet. It reuses the public-mix
+fixtures and adds card settlement from Earn (`card_settlement`, the same shard
+redemptions as `card-settlement`, next to ordinary vault withdrawals), cash card
+spend and cash-out transfers into single accounts, and first payments to fresh
+addresses. Customer-shaped presets are flavors of this shape. For example:
+`derek bench preset=neobank-generic gas-limit=500M general-gas-limit=30M`.
