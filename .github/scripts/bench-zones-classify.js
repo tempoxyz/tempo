@@ -1,13 +1,11 @@
-// Zones latency significance. Journeys cluster on block timing, so raw percentiles jump
-// with no code change; an end-to-end row counts only when its p95 change clears a 95%
-// bootstrap CI plus FLOOR_PCT, like bench-e2e-classify.js. The bootstrap is smoothed
-// (Silverman bandwidth) because resampling a few discrete clusters understates noise;
-// below MIN_JOURNEYS the p95 is one of the slowest few journeys, so there is no verdict.
+// Zones latency significance: resample measured journeys without synthetic jitter.
+// An end-to-end row counts when its p95 change clears the bootstrap uncertainty, with no extra floor.
+// This estimates within-run sampling uncertainty, not run-to-run environment variation.
+// Below MIN_JOURNEYS there are too few tail observations for a verdict.
 const fs = require('fs');
 const path = require('path');
 const { rng } = require('./bench-e2e-classify');
 
-const FLOOR_PCT = 2;
 const MIN_JOURNEYS = 100;
 // End-to-end rows of the controller's LATENCY_ROWS; null is the whole client-observed journey.
 const EDGES = {
@@ -33,20 +31,16 @@ function samples(instances, edge) {
 }
 
 function resampler(values, rand) {
-  const mean = values.reduce((a, b) => a + b) / values.length;
-  const sd = Math.sqrt(values.reduce((a, v) => a + (v - mean) ** 2, 0) / (values.length - 1));
-  const h = 1.06 * sd * values.length ** -0.2;
   const sample = new Float64Array(values.length);
   return () => {
     for (let j = 0; j < values.length; j += 1) {
-      const noise = Math.sqrt(-2 * Math.log(1 - rand())) * Math.cos(2 * Math.PI * rand());
-      sample[j] = values[Math.floor(rand() * values.length)] + h * noise;
+      sample[j] = values[Math.floor(rand() * values.length)];
     }
     return p95(sample.sort());
   };
 }
 
-// Lower is better: 'good' when the p95 drops by more than CI + floor, 'bad' when it rises.
+// Lower is better: 'good' when the p95 drop exceeds bootstrap uncertainty, 'bad' for a rise.
 function sig(baseline, feature, rand) {
   const base = p95(Float64Array.from(baseline).sort());
   if (!(base > 0)) return 'neutral';
@@ -54,7 +48,7 @@ function sig(baseline, feature, rand) {
   const [b, f] = [resampler(baseline, rand), resampler(feature, rand)];
   const diffs = Float64Array.from({ length: 10000 }, () => f() - b()).sort();
   const ciPct = (diffs[9750] - diffs[250]) / 2 / base * 100;
-  return Math.abs(pct) - ciPct > FLOOR_PCT ? (pct < 0 ? 'good' : 'bad') : 'neutral';
+  return Math.abs(pct) > ciPct ? (pct < 0 ? 'good' : 'bad') : 'neutral';
 }
 
 function classify(rows, workDir) {

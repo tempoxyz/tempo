@@ -181,16 +181,19 @@ class ReportingTests(unittest.TestCase):
         rows = [{"key": key, "label": key, "end_to_end": key != "sub_leg"} for key in ("withdrawal", "deposit", "journey", "sub_leg")]
         latency = lambda ms: {"p50_ms": ms, "p95_ms": ms}
         base = traced_report(DEPOSIT_MS * 10)
-        rng = random.Random(35)  # A draw an unsmoothed bootstrap flags as a change.
+        # A same-distribution draw with fewer upper-cluster samples. The empirical
+        # bootstrap flags its p95 drop: retain this known false-positive example.
+        rng = random.Random(35)
         noise = traced_report([rng.choice(DEPOSIT_MS) for _ in range(100)])
         scaled = lambda factor, n=10: traced_report([d * factor for d in DEPOSIT_MS * n])
         for name, baseline, feature, verdict, feature_sha, reason in (
                 ("improvement", base, scaled(0.8), "Improvement", SHA, ""),
                 ("regression", base, scaled(1.2), "Regression", SHA, ""),
                 ("same commit", base, scaled(0.8), "Improvement", OTHER_SHA, ""),
-                ("clustered noise", base, noise, "No Significant Change", SHA, ""),
-                ("within floor", base, traced_report(DEPOSIT_MS * 10, withdrawal=1970.0), "No Significant Change", SHA, ""),
-                ("tight row beyond floor", base, traced_report(DEPOSIT_MS * 10, withdrawal=1900.0), "Improvement", SHA, ""),
+                ("clustered sampling false positive", base, noise, "Improvement", SHA, ""),
+                ("identical samples", base, base, "No Significant Change", SHA, ""),
+                ("small precise improvement", base, traced_report(DEPOSIT_MS * 10, withdrawal=1970.0), "Improvement", SHA, ""),
+                ("small precise regression", base, traced_report(DEPOSIT_MS * 10, withdrawal=2030.0), "Regression", SHA, ""),
                 ("under 100 journeys", scaled(1, 2), scaled(0.5, 2), "Unclassified", SHA,
                  "baseline: only 20 completed journeys; at least 100 are required."),
                 ("partial traces", base, dict(scaled(0.6, 1), completed=100), "Unclassified", SHA,
