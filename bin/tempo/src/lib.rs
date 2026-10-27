@@ -54,6 +54,7 @@ use alloy_genesis::Genesis;
 use alloy_primitives::{Address, B256};
 use alloy_signer_local::MnemonicBuilder;
 use clap::{CommandFactory, FromArgMatches};
+use commonware_allocator as _;
 use commonware_runtime::{Runner, Supervisor as _};
 use eyre::{OptionExt, WrapErr as _};
 use futures::{

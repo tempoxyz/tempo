@@ -139,11 +139,18 @@ on:
         type: string
         required: true
         default: "3"
-      clickhouse-run:
-        description: Benchmark phase that may use the direct ClickHouse reporter.
-        type: string
-        required: false
-        default: "feature-1"
+      allocator-config:
+        description: Allocator experiment configuration.
+        type: choice
+        default: default
+        options:
+          - default
+          - purge
+          - reserve
+          - prefault
+          - 1mb
+          - 2mb
+          - 4mb
   workflow_call:
     inputs:
       pr:
@@ -367,6 +374,7 @@ jobs:
     runs-on: [self-hosted, Linux, X64, bare-metal-dual-schelk]
     timeout-minutes: 300
     env:
+      ALLOCATOR_BENCH_CONFIG: ${{ inputs.allocator-config || 'default' }}
       BENCH_PR: ${{ inputs.pr }}
       BENCH_ACTOR: ${{ inputs.actor || github.actor }}
       BENCH_MODE: ${{ inputs.mode || 'e2e' }}
@@ -386,8 +394,8 @@ jobs:
       BENCH_TRACY_OFFSET: ${{ inputs.tracy-offset }}
       BENCH_OTLP: ${{ inputs.otlp != false && inputs.otlp != 'false' }}
       BENCH_VALSCOPE: ${{ inputs.valscope == true || inputs.valscope == 'true' }}
-      BENCH_FEATURES: ${{ (inputs.otlp != false && inputs.otlp != 'false') && 'jemalloc,asm-keccak,keccak-cache-global,otlp' || 'jemalloc,asm-keccak,keccak-cache-global' }}
-      BENCH_BASELINE_FEATURES: ${{ inputs.baseline-features }}
+      BENCH_FEATURES: ${{ (inputs.otlp != false && inputs.otlp != 'false') && 'asm-keccak,keccak-cache-global,otlp' || 'asm-keccak,keccak-cache-global' }}
+      BENCH_BASELINE_FEATURES: ${{ inputs.baseline-features || 'jemalloc' }}
       BENCH_FEATURE_FEATURES: ${{ inputs.feature-features }}
       BENCH_BASELINE_ARGS: ${{ inputs.baseline-args }}
       BENCH_FEATURE_ARGS: ${{ inputs.feature-args }}
@@ -870,6 +878,19 @@ jobs:
             const s = require('./.github/scripts/bench-update-status.js');
             await s({github, context, status: 'Running benchmark...'});
 
+      - uses: tempoxyz/gh-actions/vendor/astral-sh/setup-uv@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Start allocator memory sampling
+        run: |
+          monitor_dir="$RUNNER_TEMP/allocator-memory-${GITHUB_RUN_ID}"
+          mkdir -p "$monitor_dir"
+          echo "ALLOCATOR_MEMORY_DIR=$monitor_dir" >> "$GITHUB_ENV"
+          if ! command -v uv >/dev/null; then
+            echo "uv is required for allocator memory sampling" >&2
+            exit 1
+          fi
+          nohup sudo taskset -c 0 "$(command -v uv)" run --no-project python .github/scripts/bench-allocator-memory.py "$monitor_dir" tempo > "$monitor_dir/monitor.log" 2>&1 < /dev/null &
+
       - name: Run e2e benchmark
         id: bench
         env:
@@ -903,6 +924,20 @@ jobs:
             echo "::error::token-count must be <= 4, matching the TIP20 tokens available in state bloat"
             exit 1
           fi
+          case "$ALLOCATOR_BENCH_CONFIG" in
+            default)
+              if ! git grep -q -e 'commonware-allocator.workspace' -e 'mimalloc.workspace' "$FEATURE_REF" -- bin/tempo/Cargo.toml; then
+                BENCH_FEATURE_FEATURES=jemalloc
+              fi
+              ;;
+            purge) BENCH_FEATURE_FEATURES="mimalloc-purge" ;;
+            reserve) BENCH_FEATURE_FEATURES="mimalloc-reserve" ;;
+            prefault) BENCH_FEATURE_FEATURES="mimalloc-prefault" ;;
+            1mb|2mb|4mb) BENCH_FEATURE_FEATURES="mimalloc-prefault,commonware-allocator/large-objects-$ALLOCATOR_BENCH_CONFIG" ;;
+            *) echo "Unknown allocator configuration" >&2; exit 1 ;;
+          esac
+          # Configuration and C flags must not reuse a binary cached by SHA alone.
+          BENCH_NO_CACHE=true
           cmd=(nu bench-e2e.nu e2e)
           cmd+=(
             --preset "$BENCH_PRESET"
@@ -1290,3 +1325,19 @@ jobs:
               comment_id: parseInt(process.env.BENCH_COMMENT_ID),
               body: `cc @${process.env.BENCH_ACTOR}\n\n⚠️ Benchmark cancelled. [View logs](${jobUrl})`,
             });
+
+      - name: Stop allocator memory sampling
+        if: always()
+        run: |
+          if [ -n "${ALLOCATOR_MEMORY_DIR:-}" ]; then
+            sudo touch "$ALLOCATOR_MEMORY_DIR/stop"
+            sleep 2
+          fi
+
+      - name: Upload allocator memory samples
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: allocator-memory
+          path: ${{ env.ALLOCATOR_MEMORY_DIR }}
+          if-no-files-found: warn

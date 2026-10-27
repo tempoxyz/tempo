@@ -1209,6 +1209,8 @@ def run-local-e2e-phase [run: record, ctx: record] {
     if $tracy_capture_started {
         print "  Stopping validators before tracy-capture so Tracy can record graceful node shutdown..."
     }
+    # Observe retention after the measured phase, before node teardown.
+    sleep 15sec
     stop-e2e-processes-gracefully
     if $tracy_capture_started {
         stop-tracy-capture

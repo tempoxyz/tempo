@@ -414,6 +414,8 @@ age = { version = "0.11", default-features = false }
 secrecy = "0.10"
 bitflags = "2.11.1"
 
+commonware-allocator = { git = "https://github.com/commonwarexyz/monorepo", rev = "15aa24343a190a42bcc823e3f60ad354966e64d7" }
+
 # build deps
 smolgen = { version = "0.1.1", features = ["build", "cargo", "emit_and_set", "gitcl"] }
 
