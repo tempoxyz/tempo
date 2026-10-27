@@ -2,7 +2,7 @@
 
 use std::{
     sync::Arc,
-    time::{Duration, Instant, SystemTime},
+    time::{Duration, Instant},
 };
 
 use alloy_consensus::BlockHeader;
@@ -36,7 +36,7 @@ use tracing::{Level, debug, info, instrument, warn};
 
 use super::parent_state::TempoParentState;
 use crate::{
-    consensus::{Digest, ProposalBudget, block::Block},
+    consensus::{Digest, PacingClock, ProposalBudget, block::Block},
     executor::DeferredExtraData,
 };
 
@@ -109,12 +109,12 @@ impl Inner {
         ),
         err(level = Level::WARN),
     )]
-    async fn build<TContext: Clock>(
+    async fn build<TContext: PacingClock>(
         &self,
         runtime: &TContext,
         context: Context<Digest, PublicKey>,
         parent: &Arc<Block>,
-        propose_start: SystemTime,
+        propose_start: TContext::PacingInstant,
     ) -> eyre::Result<Block> {
         self.executor
             .report_pending_head(context.round, context.parent)?;
@@ -161,11 +161,12 @@ impl Inner {
             (extra_data, None)
         };
 
-        // Pace from the clock reading used for the header timestamp.
-        let window_opened = runtime.current();
+        // Start monotonic pacing alongside the wall-clock header stamp.
+        let window_opened = runtime.pacing_now();
+        let preparation_elapsed = runtime.pacing_elapsed(propose_start);
 
         // Use current timestamp but make sure that if parent's timestamp is in the future, we account for that.
-        let mut epoch_millis = window_opened.epoch_millis();
+        let mut epoch_millis = runtime.current().epoch_millis();
         if epoch_millis <= parent.timestamp_millis() {
             self.metrics.parent_ahead_of_local_time.metric().inc();
             epoch_millis = parent.timestamp_millis() + 1
@@ -182,13 +183,8 @@ impl Inner {
 
         let proposer_public_key = crate::utils::public_key_to_b256(&self.public_key);
         // Cap the pacing allowance, not the duration of required build work.
-        let window_duration = self
-            .proposal_budget
-            .window_duration(propose_start, window_opened);
-        let window_elapsed = runtime
-            .current()
-            .duration_since(window_opened)
-            .unwrap_or_default();
+        let window_duration = self.proposal_budget.window_duration(preparation_elapsed);
+        let window_elapsed = runtime.pacing_elapsed(window_opened);
         let build_budget = window_duration.saturating_sub(window_elapsed);
         let attrs = TempoPayloadAttributes::new(
             Some(proposer_public_key),
@@ -229,10 +225,7 @@ impl Inner {
             block,
             execution_block_encoded,
         );
-        let window_elapsed = runtime
-            .current()
-            .duration_since(window_opened)
-            .unwrap_or_default();
+        let window_elapsed = runtime.pacing_elapsed(window_opened);
         // Pace proposal return from the header stamp. Validators still need
         // to repeat replayable build work, so leave room for it before
         // returning the proposal.
@@ -247,7 +240,7 @@ impl Inner {
             return_time = %display_duration(return_delay),
             "sleeping before returning proposal"
         );
-        runtime.sleep_until(window_opened + return_window).await;
+        runtime.sleep_remaining(window_opened, return_window).await;
 
         Ok(proposal)
     }
@@ -441,7 +434,7 @@ impl Inner {
 
 impl<TContext> commonware_consensus::Application<TContext> for Inner
 where
-    TContext: Rng + Spawner + commonware_runtime::Metrics + Clock,
+    TContext: Rng + Spawner + commonware_runtime::Metrics + PacingClock,
 {
     type SigningScheme = Scheme<PublicKey, MinSig>;
     type Context = Context<Digest, PublicKey>;
@@ -456,7 +449,7 @@ where
         mut ancestry: impl Ancestry<Block>,
         (): (),
     ) -> Option<Block> {
-        let propose_start = runtime.current();
+        let propose_start = runtime.pacing_now();
         let parent = ancestry.next().await?;
         match self.build(&runtime, context, &parent, propose_start).await {
             Ok(block) => {

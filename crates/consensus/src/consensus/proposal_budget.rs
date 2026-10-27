@@ -1,8 +1,8 @@
 //! Consensus proposal pacing policy.
 
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
-/// The pacing allowance counted from the clock sample used for the header timestamp.
+/// The pacing allowance counted from a monotonic sample alongside the header timestamp.
 ///
 /// Preparation before that sample is excluded from the normal allowance, but reduces
 /// it when necessary to keep the planned deadline within one target interval of
@@ -25,17 +25,8 @@ impl ProposalBudget {
         }
     }
 
-    /// Returns the allowance after preparation, using samples from the same clock.
-    /// Clock regressions count as zero preparation rather than underflowing.
-    pub(crate) fn window_duration(
-        &self,
-        proposal_started: SystemTime,
-        window_opened: SystemTime,
-    ) -> Duration {
-        let preparation = match window_opened.duration_since(proposal_started) {
-            Ok(preparation) => preparation,
-            Err(_) => Duration::ZERO,
-        };
+    /// Returns the allowance after monotonically measured preparation.
+    pub(crate) fn window_duration(&self, preparation: Duration) -> Duration {
         self.header_window
             .min(self.target_block_time.saturating_sub(preparation))
     }
@@ -44,11 +35,11 @@ impl ProposalBudget {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::consensus::PacingClock as _;
     use commonware_runtime::{Clock as _, Runner as _, deterministic};
 
     #[test]
     fn preparation_caps_the_header_window() {
-        let start = SystemTime::UNIX_EPOCH;
         let budget = ProposalBudget::new(Duration::from_millis(500), Duration::from_millis(50));
         for (preparation, expected) in [
             (0, 450),
@@ -59,25 +50,20 @@ mod tests {
             (600, 0),
         ] {
             assert_eq!(
-                budget.window_duration(start, start + Duration::from_millis(preparation)),
+                budget.window_duration(Duration::from_millis(preparation)),
                 Duration::from_millis(expected),
             );
         }
-        assert_eq!(
-            budget.window_duration(start + Duration::from_secs(1), start),
-            Duration::from_millis(450)
-        );
     }
 
     #[test]
     fn exhausted_network_allowance_leaves_no_window() {
-        let start = SystemTime::UNIX_EPOCH;
         for (target, network) in [(500, 500), (500, 600), (0, 0)] {
             let budget = ProposalBudget::new(
                 Duration::from_millis(target),
                 Duration::from_millis(network),
             );
-            assert_eq!(budget.window_duration(start, start), Duration::ZERO);
+            assert_eq!(budget.window_duration(Duration::ZERO), Duration::ZERO);
         }
     }
 
@@ -85,10 +71,10 @@ mod tests {
     fn preparation_uses_the_injected_clock() {
         deterministic::Runner::default().start(|context| async move {
             let budget = ProposalBudget::new(Duration::from_millis(500), Duration::from_millis(50));
-            let started = context.current();
+            let started = context.pacing_now();
             context.sleep(Duration::from_millis(600)).await;
             assert_eq!(
-                budget.window_duration(started, context.current()),
+                budget.window_duration(context.pacing_elapsed(started)),
                 Duration::ZERO
             );
         });

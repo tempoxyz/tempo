@@ -51,7 +51,7 @@ use commonware_p2p::{
 };
 use commonware_parallel::Sequential;
 use commonware_runtime::{
-    BufferPooler, Clock, ContextCell, Handle, Network, Spawner, Storage, spawn_cell,
+    BufferPooler, ContextCell, Handle, Network, Spawner, Storage, spawn_cell,
     telemetry::metrics::{Counter, Gauge, GaugeExt as _, MetricsExt as _},
 };
 use commonware_utils::{NZUsize, vec::NonEmptyVec};
@@ -64,7 +64,7 @@ use tempo_primitives::TempoHeader;
 use tracing::{Level, Span, debug, error, error_span, info, instrument, warn, warn_span};
 
 use crate::{
-    consensus::{Digest, application::Application},
+    consensus::{Digest, PacingClock, application::Application},
     epoch::manager::ingress::{EpochTransition, Exit},
     storage::FinalizedBlocksProvider as _,
 };
@@ -76,7 +76,7 @@ const WRITE_BUFFER: NonZeroUsize = NZUsize!(1024 * 1024); // 1MB
 
 pub(crate) struct Actor<TContext, TBlocker>
 where
-    TContext: Rng + Spawner + commonware_runtime::Metrics + Clock,
+    TContext: Rng + Spawner + commonware_runtime::Metrics + PacingClock,
 {
     active_epochs: BTreeMap<Epoch, Handle<()>>,
     config: super::Config<TContext, TBlocker>,
@@ -94,7 +94,7 @@ where
         + commonware_runtime::Metrics
         + Rng
         + CryptoRng
-        + Clock
+        + PacingClock
         + governor::clock::Clock
         + Storage
         + Network,

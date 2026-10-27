@@ -16,8 +16,8 @@ use commonware_cryptography::{
 };
 use commonware_p2p::{AddressableManager, Blocker, Receiver, Sender};
 use commonware_runtime::{
-    BufferPooler, Clock, ContextCell, Handle, Metrics, Network, Spawner, Storage,
-    buffer::paged::CacheRef, spawn_cell,
+    BufferPooler, ContextCell, Handle, Metrics, Network, Spawner, Storage, buffer::paged::CacheRef,
+    spawn_cell,
 };
 use eyre::{OptionExt as _, WrapErr as _, ensure};
 use rand_core::{CryptoRng, Rng};
@@ -33,7 +33,7 @@ use crate::{
     peer_manager, storage,
 };
 
-use super::{ProposalBudget, block::Block};
+use super::{PacingClock, ProposalBudget, block::Block};
 
 // A bunch of constants to configure commonwarexyz singletons and copied over form alto.
 
@@ -79,7 +79,7 @@ pub struct Builder<TBlocker, TPeerManager> {
     /// Leader inactivity window after which a view is skipped early. Must
     /// exceed `time_to_collect_notarizations` and `time_to_retry_nullify_broadcast`.
     pub inactive_time_before_leader_skip: Duration,
-    /// Header-clock pacing allowance after reserving network propagation time.
+    /// Header-stamp pacing allowance after reserving network propagation time.
     ///
     /// Preparation precedes this window but reduces its allowance when the planned
     /// deadline would exceed one target interval after proposal entry. Required
@@ -113,7 +113,7 @@ where
         context: TContext,
     ) -> eyre::Result<Engine<TContext, TBlocker, TPeerManager>>
     where
-        TContext: Clock
+        TContext: PacingClock
             + governor::clock::Clock
             + Rng
             + CryptoRng
@@ -370,7 +370,7 @@ where
 pub struct Engine<TContext, TBlocker, TPeerManager>
 where
     TContext: BufferPooler
-        + Clock
+        + PacingClock
         + governor::clock::Clock
         + Rng
         + CryptoRng
@@ -426,7 +426,7 @@ where
 impl<TContext, TBlocker, TPeerManager> Engine<TContext, TBlocker, TPeerManager>
 where
     TContext: BufferPooler
-        + Clock
+        + PacingClock
         + governor::clock::Clock
         + Rng
         + CryptoRng
