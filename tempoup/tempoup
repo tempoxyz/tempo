@@ -6,7 +6,7 @@ set -e
 
 # NOTE: if you make modifications to this script, please increment the version number.
 # WARNING: the SemVer pattern: major.minor.patch must be followed as we use it to determine if the script is up to date.
-TEMPOUP_INSTALLER_VERSION="0.0.18"
+TEMPOUP_INSTALLER_VERSION="0.0.19"
 
 REPO="tempoxyz/tempo"
 # GPG key fingerprint for release signing verification
@@ -176,6 +176,7 @@ $output"
 rollback_tempo_install() {
     local status="$?"
     trap - EXIT
+    rm -rf "${TMP_DIR:-}"
 
     if [[ "$status" -ne 0 ]]; then
         if [[ "${TEMPOUP_HAD_OLD_BINARY:-0}" -eq 1 ]]; then
@@ -687,6 +688,7 @@ main() {
 
     # Installation succeeded — remove backup and clear the trap
     rm -f "$TEMPOUP_OLD_BINARY" 2>/dev/null || true
+    rm -rf "$TMP_DIR"
     trap - EXIT
 
     # Success message
