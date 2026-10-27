@@ -27,7 +27,7 @@ txgen-configure-existing-recipients-env $default.spec_path 1024 4
 assert equal ($env.TXGEN_EXISTING_RECIPIENTS_START | into int) 10000
 assert (($env.TXGEN_EXISTING_RECIPIENTS_END | into int) > 10000)
 assert equal (txgen-workload-metadata-args $default.scenario_id $default.spec_path) (txgen-workload-metadata-args public-mix $public_mix.spec_path)
-for preset in [tip20 tip20_existing_recipients mix dex mpp neobank-deposit neobank-swap neobank-withdraw zones vault-deposit vault-withdraw] {
+for preset in [tip20 tip20_existing_recipients mix dex mpp neobank-deposit neobank-swap neobank-withdraw zones vault-deposit vault-withdraw bridge-mix] {
     assert equal (txgen-workload-metadata-args $preset "") ["-m" "workload_mix_weighting=gas"]
 }
 # The policy preset uses distinct issuer and receiver lists on the current layout.
@@ -41,4 +41,73 @@ assert equal ($policy.admin_calls | where function == createCompoundPolicy | get
 assert equal ($policy.admin_calls | where function == createPolicy | length) 8
 assert equal $policy.receive_call.function setReceivePolicy
 assert equal $policy.receive_call.args [25 26 "0x0000000000000000000000000000000000000000"]
+# Single-workload throughput presets reuse public-mix fixtures and keep their own label.
+for preset in [zone-portal-throughput vault-throughput] {
+    let spec = (txgen-resolve-bench-spec $preset)
+    assert equal ($spec.spec_path | path basename) $"($preset).yml"
+    assert ($preset in $TXGEN_HELPER_PUBLIC_MIX_PRESETS)
+    assert ($preset in $TXGEN_HELPER_ALWAYS_FUND_PRESETS)
+    assert equal (txgen-scenario-metadata-args $preset $spec.spec_path) ["-m" $"preset=($preset)" "-m" $"scenario=($preset)"]
+    txgen-configure-existing-recipients-env $spec.spec_path 1024 4
+    assert (($env.TXGEN_EXISTING_RECIPIENTS_END | into int) > 10000)
+    let out_dir = (mktemp -d)
+    let rendered = (txgen-prepare-public-mix-preset $spec.spec_path 1000 4 2 1337 --out-dir $out_dir)
+    assert equal ($rendered | path basename) $"($preset).yml"
+    hide-env TXGEN_EXISTING_RECIPIENTS_END
+    txgen-configure-existing-recipients-env $rendered 1024 4
+    assert (($env.TXGEN_EXISTING_RECIPIENTS_END | into int) > 10000)
+    let kind = if $preset == "vault-throughput" { "vault" } else { "zone" }
+    let categories = (txgen-workload-metadata-args $preset $rendered | last | str replace "workload_mix_weights=" "" | from json | columns | sort)
+    assert equal $categories [$"($kind)_deposit" $"($kind)_withdraw"]
+    rm -rf $out_dir
+}
+# Customer-shaped presets keep their own label; zone-earn-mix reuses the public-mix fixtures.
+for preset in [zone-earn-mix bridge-mix] {
+    let spec = (txgen-resolve-bench-spec $preset)
+    assert equal ($spec.spec_path | path basename) $"($preset).yml"
+    assert ($preset in $TXGEN_HELPER_ALWAYS_FUND_PRESETS)
+    assert equal (txgen-scenario-metadata-args $preset $spec.spec_path) ["-m" $"preset=($preset)" "-m" $"scenario=($preset)"]
+    let mix = (^uv run --no-project --with yq==3.4.3 yq -c .mix $spec.spec_path | from json)
+    assert equal ($mix | get weight | math sum) 100
+}
+assert ("zone-earn-mix" in $TXGEN_HELPER_PUBLIC_MIX_PRESETS)
+assert ("bridge-mix" not-in $TXGEN_HELPER_PUBLIC_MIX_PRESETS)
+let zone_earn_dir = (mktemp -d)
+let zone_earn = (txgen-prepare-public-mix-preset (txgen-resolve-bench-spec zone-earn-mix).spec_path 1000 4 2 1337 --out-dir $zone_earn_dir)
+assert equal ($zone_earn | path basename) "zone-earn-mix.yml"
+let zone_earn_weights = (txgen-workload-metadata-args zone-earn-mix $zone_earn | last | str replace "workload_mix_weights=" "" | from json)
+assert equal ($zone_earn_weights | columns | sort) [public_transfer vault_deposit vault_withdraw zone_deposit zone_withdraw]
+rm -rf $zone_earn_dir
+# Gap variants: pinned portal count, single-sender settlement, fresh payees.
+for preset in [zone-earn-hot zone-earn-serial zone-portal-hot bridge-mix-new-accounts card-settlement] {
+    let spec = (txgen-resolve-bench-spec $preset)
+    assert equal ($spec.spec_path | path basename) $"($preset).yml"
+    assert ($preset in $TXGEN_HELPER_ALWAYS_FUND_PRESETS)
+}
+assert equal (txgen-zone-count zone-earn-hot 143) 1
+assert equal (txgen-zone-count zone-portal-hot 143) 1
+assert equal (txgen-zone-count zone-earn-mix 143) 143
+let serial_dir = (mktemp -d)
+let serial = (open (txgen-prepare-public-mix-preset (txgen-resolve-bench-spec zone-earn-serial).spec_path 1000 4 2 1337 --out-dir $serial_dir))
+let serial_names = ($serial.templates | columns | where { |name| $name =~ '^(zone_withdraw|vault_deposit)_[0-9]+$' })
+assert (($serial_names | length) > 0)
+for name in $serial_names {
+    let template = ($serial.templates | get $name)
+    assert equal $template.from {pool: users, select: {index: 0}}
+    assert equal $template.expiring_nonce false
+}
+assert equal ($serial.templates.zone_deposit_0.expiring_nonce) true
+rm -rf $serial_dir
+# Card settlement keeps 18 unsponsored shard senders that forward redemptions.
+let card_dir = (mktemp -d)
+let card = (open (txgen-prepare-public-mix-preset (txgen-resolve-bench-spec card-settlement).spec_path 1000 40 2 1337 --out-dir $card_dir))
+let card_mix = ($card.mix | get template)
+assert equal ($card_mix | length) 18
+assert ($card_mix | all { |name| $name | str starts-with "vault_withdraw_" })
+let shard = ($card.templates | get vault_withdraw_0)
+assert equal ($shard | get -o sponsor) null
+assert equal $shard.nonce {uniform: [0 9223372036854775807]}
+assert equal ($shard.calls | last | get function) transfer
+assert equal ($shard.calls | last | get args | first) $TXGEN_HELPER_CARD_SETTLEMENT_ACCOUNT
+rm -rf $card_dir
 print "Preset, policy setup, state-bloat, and workload metadata checks passed"

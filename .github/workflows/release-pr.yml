@@ -86,7 +86,7 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           for tag in $(git tag --points-at HEAD); do
-            if [[ "$tag" != v* ]]; then
+            if [[ "$tag" != v* && "$tag" != tempo/v* ]]; then
               echo "Setting $tag as non-latest"
               gh release edit "$tag" --latest=false || true
             fi

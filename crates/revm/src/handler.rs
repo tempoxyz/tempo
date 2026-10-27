@@ -38,7 +38,6 @@ use tempo_contracts::precompiles::{
     IAccountKeychain::SignatureType as PrecompileSignatureType, TIPFeeAMMError,
 };
 use tempo_precompiles::{
-    ECRECOVER_GAS,
     account_keychain::{
         AccountKeychain, AuthorizedKey, CallScope as PrecompileCallScope, KeyRestrictions,
         SelectorRule as PrecompileSelectorRule, TokenLimit,
@@ -61,10 +60,8 @@ use tempo_primitives::{
 
 use crate::{
     ProtocolFeeContext, ResolvedFeeToken, TempoBatchCallEnv, TempoEvm, TempoInvalidTransaction,
-    error::FeePaymentError,
-    evm::TempoContext,
-    gas_credits,
-    signature_gas::{primitive_signature_verification_gas, tempo_signature_verification_gas},
+    error::FeePaymentError, evm::TempoContext, gas_credits,
+    signature_gas::tempo_signature_verification_gas,
 };
 
 /// Base gas for KeyAuthorization (22k storage + 5k buffer), signature gas added at runtime
@@ -297,10 +294,9 @@ fn calculate_key_authorization_gas(
     gas_params: &GasParams,
     spec: tempo_chainspec::hardfork::TempoHardfork,
 ) -> (u64, u64) {
-    // All signature types pay ECRECOVER_GAS (3k) as the baseline since
-    // primitive_signature_verification_gas assumes ecrecover is already in base 21k.
-    // For KeyAuthorization, we're doing an additional signature verification.
-    let sig_gas = ECRECOVER_GAS + primitive_signature_verification_gas(&key_auth.signature);
+    // The base 21k includes one ecrecover, for the transaction's own signature. The key
+    // authorization's signature is verified on top of that, so it pays the full verification gas.
+    let sig_gas = key_auth.signature.verification_gas();
 
     let num_limits = key_auth
         .authorization

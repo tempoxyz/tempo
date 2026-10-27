@@ -20,7 +20,7 @@ COPY --from=proxy-planner /manifests/ .
 COPY bin/prover/vsock-proxy bin/prover/vsock-proxy
 RUN cargo build --locked --release --package tempo-vsock-proxy
 
-FROM public.ecr.aws/amazonlinux/amazonlinux:2023@sha256:6d8e068b91f351df5bf6acd4bd261316e42747ad4bae76689ff6f4939e2180a2
+FROM public.ecr.aws/amazonlinux/amazonlinux:2023@sha256:d9b4c61f49de68d41e43af1c0ef89c5600b0ad51da024406a15f5d014720c998
 
 # Keep these IDs in sync with the Pod security context and the Talos udev rule.
 ARG PROVER_UID=10001
@@ -56,7 +56,7 @@ COPY --from=prover-eif /tempo-zone-prover.eif /opt/tempo-zone-prover/tempo-zone-
 COPY --chmod=0755 zones/scripts/run-prover-host.sh /opt/tempo-zone-prover/run-prover-host.sh
 RUN test -x /opt/tempo-zone-prover/run-prover-host.sh
 
-EXPOSE 5000
+EXPOSE 5000 9100
 
 USER ${PROVER_UID}:${PROVER_GID}
 

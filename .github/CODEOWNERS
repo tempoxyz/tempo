@@ -1,5 +1,4 @@
 bin/tempo @0xKitsune @klkvr @Zygimantass @SuperFluffy 
-bin/tempo-sidecar @Zygimantass
 contrib/ @Zygimantass
 scripts/ @0xKitsune
 xtask/ @0xKitsune @Zygimantass @SuperFluffy 
