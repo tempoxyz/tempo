@@ -12,6 +12,7 @@ const E2E_B_MOUNT = "/reth-bench-b"
 const BENCH_SCHELK_SCRIPT = "bench-schelk.nu"
 const E2E_VALIDATORS = "127.0.0.2:8000,127.0.0.3:8100"
 const E2E_SEED = 42
+# Fallback cpusets when the host has fewer than two L3 domains; see e2e-node-cpusets.
 const E2E_A_CPUS = "0-7,16-23"
 const E2E_B_CPUS = "8-15,24-31"
 const E2E_A_MEMORY = "60G"
@@ -600,6 +601,27 @@ def systemd-scope-command [unit: string, cpus: string, memory: string, script: s
         "-lc"
         $script
     ]
+}
+
+# Node A and node B cpusets, each made of whole L3 cache domains: half the host's L3 domains per node,
+# so the nodes never share an L3 and cross-node cache traffic stays out of the comparison. Falls back
+# to the fixed cpusets when the cache topology is unreadable or has fewer than two L3 domains.
+def e2e-node-cpusets [] {
+    let domains = try {
+        glob "/sys/devices/system/cpu/cpu[0-9]*/cache/index3/shared_cpu_list"
+        | each { |path| open --raw $path | str trim }
+        | where { |cpus| $cpus != "" }
+        | uniq
+        | sort-by { |cpus| $cpus | split row "," | first | split row "-" | first | into int }
+    } catch { [] }
+    let per_node = ($domains | length) // 2
+    if $per_node == 0 {
+        return { a: $E2E_A_CPUS, b: $E2E_B_CPUS }
+    }
+    {
+        a: ($domains | first $per_node | str join ",")
+        b: ($domains | skip $per_node | first $per_node | str join ",")
+    }
 }
 
 def taskset-command [cmd: list<string>, cpus: string] {
@@ -1704,6 +1726,7 @@ def "main e2e" [
     }
     let txgen = txgen-resolve-binaries
     let samply_args_list = if $samply_args == "" { [] } else { $samply_args | split row " " }
+    let cpusets = e2e-node-cpusets
     let ctx = {
         genesis: $genesis_path
         trusted_peers: $trusted_peers
@@ -1714,7 +1737,7 @@ def "main e2e" [
             node_dir: $a_identity
             ip: $a_ip
             consensus_port: $a_consensus_port
-            cpus: $E2E_A_CPUS
+            cpus: $cpusets.a
             memory: $E2E_A_MEMORY
         }
         b: {
@@ -1724,7 +1747,7 @@ def "main e2e" [
             node_dir: $b_identity
             ip: $b_ip
             consensus_port: $b_consensus_port
-            cpus: $E2E_B_CPUS
+            cpus: $cpusets.b
             memory: $E2E_B_MEMORY
         }
         preset: $preset
