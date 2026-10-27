@@ -11,7 +11,7 @@ Use this skill for repo-local zone deployment, smoke tests, and sync debugging.
 
 1. If the zone already exists, read `generated/<name>/zone.json` first.
 2. For real smoke tests, prefer `release` for `tempo-zone`.
-3. Use the `zones/Justfile` and `zones/docs/ZONES.md` as the source of truth for user-facing commands.
+3. Use the `zones/Justfile` as the source of truth for user-facing commands.
 4. Read `references/commands.md` for concrete command patterns and troubleshooting checks.
 
 ## Preferred workflow
@@ -28,7 +28,6 @@ Use this skill for repo-local zone deployment, smoke tests, and sync debugging.
 
 - `generated/<name>/zone.json`
 - `zones/Justfile`
-- `zones/docs/ZONES.md`
 - `/tmp/tempo-zone-<name>*/logs/*/reth.log`
 
 ## Known sharp edges
