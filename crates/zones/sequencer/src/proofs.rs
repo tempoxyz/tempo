@@ -161,6 +161,8 @@ impl ProofCollectorHandle {
     /// Whether a block with this `timestamp` must not become canonical without its witness.
     ///
     /// Settlement has no `NoProof` fallback from T14, so a missing witness must stall the chain.
+    ///
+    /// NOTE: can be removed once T14 is active, since every new block then requires a witness.
     pub fn witness_mandatory(&self, timestamp: u64) -> bool {
         self.chain_spec.is_t14_active_at_timestamp(timestamp)
     }
