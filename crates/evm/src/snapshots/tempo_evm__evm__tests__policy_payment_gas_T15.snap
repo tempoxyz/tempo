@@ -1,0 +1,5 @@
+---
+source: crates/evm/src/evm.rs
+expression: result.result.tx_gas_used()
+---
+556218
