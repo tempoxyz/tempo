@@ -165,7 +165,7 @@ fn derive_account_matches_the_config_derivation() {
 }
 
 #[test]
-fn derive_account_charges_input_and_proof_hashing_gas() {
+fn derive_account_charges_input_and_derivation_gas() {
     let block = TempoBlockEnv::default();
     let mut evm = build_tempo_evm(
         TempoHardfork::T14,
@@ -182,7 +182,7 @@ fn derive_account_charges_input_and_proof_hashing_gas() {
             weighted_owners(&[(Address::repeat_byte(0x11), 1), (OWNER, 1)]),
         ] {
             let config = config(B256::ZERO, 0, 1, &owners);
-            let proof_gas = keccak(config.account_preimage_len());
+            let derivation_gas = keccak(config.account_preimage_len());
 
             let calldata = IConfigurableAccount::deriveAccountCall {
                 salt: B256::ZERO,
@@ -201,7 +201,7 @@ fn derive_account_charges_input_and_proof_hashing_gas() {
             );
             assert_eq!(
                 StorageCtx.gas_used() - before,
-                input_cost(TempoHardfork::T14, calldata.len()).unwrap() + proof_gas
+                input_cost(TempoHardfork::T14, calldata.len()).unwrap() + derivation_gas
             );
         }
 
