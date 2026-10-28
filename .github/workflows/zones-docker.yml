@@ -75,6 +75,10 @@ on:
         description: "Deprecated compatibility input; ignored (images are built from the checked-out commit)"
         type: string
         default: ""
+      release_tag:
+        description: "Existing zones/vX.Y.Z or prover/vX.Y.Z tag to build and publish (dispatch from main)"
+        type: string
+        default: ""
   workflow_call:
     inputs:
       defer_genesis:
@@ -223,7 +227,7 @@ jobs:
       - name: Check out workflow commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.sha }}
           fetch-depth: 1
           persist-credentials: false
           submodules: recursive
@@ -429,6 +433,7 @@ jobs:
       is_stable: ${{ steps.release-version.outputs.is_stable }}
       prover_release: ${{ steps.release-version.outputs.prover_release }}
       prover_stable: ${{ steps.release-version.outputs.prover_stable }}
+      sha_version: ${{ needs.resolve-production-build-inputs.outputs.version }}
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
@@ -439,16 +444,36 @@ jobs:
           ref: ${{ needs.resolve-production-build-inputs.outputs.commit_sha }}
           persist-credentials: false
           submodules: recursive
-          fetch-depth: ${{ (startsWith(github.ref, 'refs/tags/zones/v') || startsWith(github.ref, 'refs/tags/prover/v')) && '0' || '1' }}
+          fetch-depth: ${{ (inputs.release_tag || startsWith(github.ref, 'refs/tags/zones/v') || startsWith(github.ref, 'refs/tags/prover/v')) && '0' || '1' }}
 
       - uses: tempoxyz/gh-actions/vendor/depot/setup-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
       - name: Validate Zones or prover image release tag
         id: release-version
         env:
-          TAG_REF: ${{ github.ref }}
+          TAG_REF: ${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          WORKFLOW_REF: ${{ github.ref }}
+          NIGHTLY: ${{ inputs.nightly }}
         run: |
           set -euo pipefail
+
+          # A dispatched release tag runs main's copy of these checks against
+          # that tag, for tags pushed before a fix to this workflow landed.
+          if [[ -n "${RELEASE_TAG:-}" ]]; then
+            [[ "$WORKFLOW_REF" == refs/heads/main ]] || {
+              echo "release_tag must be dispatched from main" >&2
+              exit 1
+            }
+            [[ "${NIGHTLY:-false}" != true ]] || {
+              echo "release_tag cannot be combined with nightly" >&2
+              exit 1
+            }
+            [[ "$RELEASE_TAG" =~ ^(zones|prover)/v ]] || {
+              echo "release_tag must be a zones/v* or prover/v* tag" >&2
+              exit 1
+            }
+          fi
 
           # Manual builds from unrelated tags may publish a SHA tag, but must
           # never publish a release or stable tag. zones/vX.Y.Z versions the
@@ -590,9 +615,9 @@ jobs:
             type=semver,pattern={{major}}.{{minor}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.is_release == 'true' }}
             type=semver,pattern={{major}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.is_release == 'true' }}
             type=raw,value=stable,enable=${{ steps.release-version.outputs.is_stable == 'true' }}
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=edge,branch=main
-            type=sha,prefix=sha-
+            type=raw,value=latest,enable=${{ !inputs.release_tag && github.ref == 'refs/heads/main' }}
+            type=edge,branch=main,enable=${{ !inputs.release_tag }}
+            type=raw,value=${{ needs.resolve-production-build-inputs.outputs.version }}
             type=ref,event=pr
 
       - name: Docker metadata for tempo-zone-prover
@@ -611,9 +636,9 @@ jobs:
             type=semver,pattern={{major}}.{{minor}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.prover_release == 'true' }}
             type=semver,pattern={{major}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.prover_release == 'true' }}
             type=raw,value=stable,enable=${{ steps.release-version.outputs.prover_stable == 'true' }}
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=edge,branch=main
-            type=sha,prefix=sha-
+            type=raw,value=latest,enable=${{ !inputs.release_tag && github.ref == 'refs/heads/main' }}
+            type=edge,branch=main,enable=${{ !inputs.release_tag }}
+            type=raw,value=${{ needs.resolve-production-build-inputs.outputs.version }}
             type=ref,event=pr
 
       - name: Docker metadata for tempo-zone-prover-utils
@@ -632,9 +657,9 @@ jobs:
             type=semver,pattern={{major}}.{{minor}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.prover_release == 'true' }}
             type=semver,pattern={{major}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.prover_release == 'true' }}
             type=raw,value=stable,enable=${{ steps.release-version.outputs.prover_stable == 'true' }}
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=edge,branch=main
-            type=sha,prefix=sha-
+            type=raw,value=latest,enable=${{ !inputs.release_tag && github.ref == 'refs/heads/main' }}
+            type=edge,branch=main,enable=${{ !inputs.release_tag }}
+            type=raw,value=${{ needs.resolve-production-build-inputs.outputs.version }}
             type=ref,event=pr
 
       - name: Log in to Container Registry
@@ -646,7 +671,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - id: shortsha
-        run: echo "shortsha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+        run: echo "shortsha=${GIT_SHA::7}" >> "$GITHUB_OUTPUT"
 
       - name: Record reproducible prover inputs
         run: |
@@ -713,7 +738,7 @@ jobs:
           no-cache: true
           pull: true
         env:
-          VERGEN_GIT_SHA: ${{ github.sha }}
+          VERGEN_GIT_SHA: ${{ needs.resolve-production-build-inputs.outputs.commit_sha }}
           VERGEN_GIT_SHA_SHORT: ${{ steps.shortsha.outputs.shortsha }}
 
       - name: Mark compilation complete
@@ -721,7 +746,7 @@ jobs:
         run: |
           binary_sha=$(sha256sum target/prover-compiled/tempo-zone-prover-enclave | cut -d' ' -f1)
           echo "binary_sha=$binary_sha" >> "$GITHUB_OUTPUT"
-          jq -n --arg sha "$GITHUB_SHA" --arg attempt "$GITHUB_RUN_ATTEMPT" \
+          jq -n --arg sha "$GIT_SHA" --arg attempt "$GITHUB_RUN_ATTEMPT" \
             --arg binary_sha256 "$binary_sha" \
             '{sha: $sha, attempt: $attempt, binary_sha256: $binary_sha256}' > "$RUNNER_TEMP/compilation.json"
 
@@ -805,7 +830,7 @@ jobs:
           PROVER_BINARY_SHA256: ${{ steps.compiled.outputs.binary_sha }}
           EIF_BUILDER_IMAGE: ${{ steps.eif_builder.outputs.image }}
         run: |
-          jq -n --arg sha "$GITHUB_SHA" --arg attempt "$GITHUB_RUN_ATTEMPT" \
+          jq -n --arg sha "$GIT_SHA" --arg attempt "$GITHUB_RUN_ATTEMPT" \
             --arg genesis_sha256 "$(sha256sum .tempo-genesis/genesis.json | cut -d' ' -f1)" \
             --arg binary_sha256 "$PROVER_BINARY_SHA256" \
             --arg eif_builder_image "$EIF_BUILDER_IMAGE" \
@@ -900,9 +925,9 @@ jobs:
             type=semver,pattern={{major}}.{{minor}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.is_release == 'true' }}
             type=semver,pattern={{major}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.is_release == 'true' }}
             type=raw,value=stable,enable=${{ needs.build-and-push.outputs.is_stable == 'true' }}
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=edge,branch=main
-            type=sha,prefix=sha-
+            type=raw,value=latest,enable=${{ !inputs.release_tag && github.ref == 'refs/heads/main' }}
+            type=edge,branch=main,enable=${{ !inputs.release_tag }}
+            type=raw,value=${{ needs.build-and-push.outputs.sha_version }}
             type=ref,event=pr
 
       - name: Docker metadata for tempo-zone-prover
@@ -921,9 +946,9 @@ jobs:
             type=semver,pattern={{major}}.{{minor}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.prover_release == 'true' }}
             type=semver,pattern={{major}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.prover_release == 'true' }}
             type=raw,value=stable,enable=${{ needs.build-and-push.outputs.prover_stable == 'true' }}
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=edge,branch=main
-            type=sha,prefix=sha-
+            type=raw,value=latest,enable=${{ !inputs.release_tag && github.ref == 'refs/heads/main' }}
+            type=edge,branch=main,enable=${{ !inputs.release_tag }}
+            type=raw,value=${{ needs.build-and-push.outputs.sha_version }}
             type=ref,event=pr
 
       - name: Docker metadata for tempo-zone-prover-utils
@@ -942,9 +967,9 @@ jobs:
             type=semver,pattern={{major}}.{{minor}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.prover_release == 'true' }}
             type=semver,pattern={{major}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.prover_release == 'true' }}
             type=raw,value=stable,enable=${{ needs.build-and-push.outputs.prover_stable == 'true' }}
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=edge,branch=main
-            type=sha,prefix=sha-
+            type=raw,value=latest,enable=${{ !inputs.release_tag && github.ref == 'refs/heads/main' }}
+            type=edge,branch=main,enable=${{ !inputs.release_tag }}
+            type=raw,value=${{ needs.build-and-push.outputs.sha_version }}
             type=ref,event=pr
 
       - name: Publish fixed companion image names
@@ -1247,9 +1272,9 @@ jobs:
             type=semver,pattern={{major}}.{{minor}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.is_release == 'true' }}
             type=semver,pattern={{major}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.is_release == 'true' }}
             type=raw,value=stable,enable=${{ needs.build-and-push.outputs.is_stable == 'true' }}
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=edge,branch=main
-            type=sha,prefix=sha-
+            type=raw,value=latest,enable=${{ !inputs.release_tag && github.ref == 'refs/heads/main' }}
+            type=edge,branch=main,enable=${{ !inputs.release_tag }}
+            type=raw,value=${{ needs.resolve-production-build-inputs.outputs.version }}
 
       - name: Promote the verified manifest and recheck its binary
         id: promote
@@ -1358,7 +1383,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Publish Zones CI event
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' && !inputs.release_tag
         shell: bash
         env:
           EVENTS_KEY: ${{ secrets.EVENTS_KEY }}
