@@ -763,7 +763,7 @@ pub struct TempoPoolBuilder {
     pub max_txs_per_lane: usize,
     /// Whether to skip the FeeAMM liquidity check during pool admission.
     pub disable_fee_amm_check: bool,
-    /// Addresses checked against transaction senders and direct call targets.
+    /// Addresses checked during pool admission; see [`AddressFilter`] for what it checks.
     pub address_filter: AddressFilter,
     /// Optional additional stateless validation check forwarded to the inner ETH validator.
     pub additional_stateless_validation: Option<StatelessValidationFn<TempoPooledTransaction>>,
@@ -796,7 +796,7 @@ impl TempoPoolBuilder {
         self
     }
 
-    /// Configures transaction sender and direct call target checks.
+    /// Configures the [`AddressFilter`] checked during pool admission.
     pub fn with_address_filter(mut self, address_filter: AddressFilter) -> Self {
         self.address_filter = address_filter;
         self
