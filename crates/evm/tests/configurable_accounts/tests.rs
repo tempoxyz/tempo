@@ -3665,7 +3665,7 @@ fn sender_registration_gas(lane: NonceLane, create_first: bool, empty_sender: bo
 fn registration_charges_the_new_account_cost_once_for_every_nonce_type() {
     let params = tempo_gas_params(TempoHardfork::T14);
     let new_account = BlockGas {
-        regular: u64::from(params.get(GasId::NewAccountCost)),
+        regular: params.get(GasId::NewAccountCost),
         state: params.new_account_state_gas(),
     };
     struct Row {
@@ -4095,7 +4095,7 @@ fn native_signature_verification_is_intrinsic_gas() {
     let verification = calldata + keccak(75 + 21) + keccak(96);
     // First use: derivation K(68 + 21), plus the registration write, priced like account creation.
     let new_account = tempo_gas_params(TempoHardfork::T14).get(GasId::NewAccountCost);
-    let first_use = keccak(68 + 21) + u64::from(new_account);
+    let first_use = keccak(68 + 21) + new_account;
     assert_eq!(
         native.tx_gas_used() - primitive.tx_gas_used(),
         verification + first_use
