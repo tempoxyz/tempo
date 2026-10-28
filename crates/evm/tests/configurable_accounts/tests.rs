@@ -1235,11 +1235,16 @@ fn eoa_migration_inactive_before_t14() {
     }
 }
 
+/// Seeds retirement, adding the protocol marker to code-free T14 accounts.
+/// Existing incompatible code is preserved for tests of corrupted account states.
 fn retire(f: &mut Fixture, account: Address) {
     let mut info = f
         .info(account)
         .unwrap_or_else(|| AccountInfo::default().with_balance(U256::ZERO));
     info.extension = encode_config_commitment(B256::repeat_byte(0x77)).into();
+    if f.evm.config_spec_id().is_t14() && info.code_hash == KECCAK256_EMPTY {
+        info = info.with_code(Bytecode::new_raw(CONFIGURABLE_ACCOUNT_CODE));
+    }
     f.evm.overlay_db_mut().insert_account_info(&account, info);
 }
 
@@ -1869,6 +1874,18 @@ fn account_state(f: &mut Fixture, address: Address) -> AccountState {
     let info = f
         .info(address)
         .unwrap_or_else(|| AccountInfo::default().with_balance(U256::ZERO));
+    let delegation = (info.code_hash != KECCAK256_EMPTY
+        && info.code_hash != CONFIGURABLE_ACCOUNT_CODE_HASH)
+        .then(|| {
+            let code = info.code.clone().unwrap_or_else(|| {
+                f.evm
+                    .overlay_db_mut()
+                    .get_code_by_hash(&info.code_hash)
+                    .unwrap()
+            });
+            let bytes = code.original_bytes();
+            assert_eq!(bytes[..3], [0xef, 0x01, 0x00], "{bytes:?}");
+            Address::from_slice(&bytes[3..])
         });
     let retired = !decode_config_commitment(&info.extension, TempoHardfork::T14)
         .unwrap()

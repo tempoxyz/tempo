@@ -113,8 +113,10 @@ fn load_account(
     let mut account = host.state_mut().account(&address)?;
     let was_cold = account.warm();
     let info = account.get();
+    let commitment = info.map_or(Ok(B256::ZERO), |info| account_config_commitment(info, spec))?;
     Ok(LoadedAccount {
         was_cold,
+        commitment,
     })
 }
 
