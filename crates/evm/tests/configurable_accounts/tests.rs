@@ -5131,7 +5131,7 @@ fn native_admin_delegate_signs_inline_grant() {
 fn native_sender_signing_its_own_grant_registers_once() {
     let params = tempo_gas_params(TempoHardfork::T14);
     let new_account = BlockGas {
-        regular: u64::from(params.get(GasId::NewAccountCost)),
+        regular: params.get(GasId::NewAccountCost),
         state: params.new_account_state_gas(),
     };
     let key = signer(2).address();
