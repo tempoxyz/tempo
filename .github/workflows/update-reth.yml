@@ -77,13 +77,13 @@ jobs:
           if git rev-parse --verify origin/reth-auto-bump >/dev/null 2>&1; then
             echo "Continuing on existing reth-auto-bump branch, rebasing onto main"
             git checkout reth-auto-bump
-            # -X theirs keeps our side of each conflicting hunk (source fixes and old
-            # rev bumps, which the bump below rewrites) and main's other changes.
-            if ! git rebase -X theirs origin/main; then
+            # -X ours (main during a rebase) keeps main's side of each conflicting
+            # hunk and our non-conflicting fixes; the fix loop below re-applies any
+            # fix this drops.
+            if ! git rebase -X ours origin/main; then
               echo "Rebase conflicts detected, resolving..."
-              # Conflicts left over are whole-file ones (such as modify/delete). Take
-              # main's side (--ours during a rebase); the fix loop below re-applies
-              # any source fix this drops.
+              # Conflicts left over are whole-file ones (such as modify/delete); take
+              # main's side of those too.
               while [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ]; do
                 CONFLICTED=$(git diff --name-only --diff-filter=U)
                 for f in $CONFLICTED; do
@@ -197,7 +197,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
           # Update all reth rev references in Cargo.toml files
-          find . -name 'Cargo.toml' -exec sed -i "s|paradigmxyz/reth\", rev = \"${CURRENT_REV}\"|paradigmxyz/reth\", rev = \"${NEW_REV}\"|g" {} +
+          find . -name 'Cargo.toml' -exec sed -i "s|paradigmxyz/reth\", rev = \"[0-9a-f]*\"|paradigmxyz/reth\", rev = \"${NEW_REV}\"|g" {} +
           echo "Updated reth rev: $CURRENT_REV -> $NEW_REV"
 
           # Match the reth-core and evm2 pins to the ones the new reth rev uses.
