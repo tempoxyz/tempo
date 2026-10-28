@@ -239,7 +239,8 @@ jobs:
           set -euo pipefail
 
           commit_sha="$(git rev-parse HEAD)"
-          short_sha="$(git rev-parse --short=7 HEAD)"
+          # The promotion gate expects exactly seven hex digits.
+          short_sha="${commit_sha::7}"
           source_date_epoch="$(git show -s --format=%ct HEAD)"
 
           [[ "$commit_sha" =~ ^[0-9a-f]{40}$ ]] || {
@@ -434,6 +435,7 @@ jobs:
       prover_release: ${{ steps.release-version.outputs.prover_release }}
       prover_stable: ${{ steps.release-version.outputs.prover_stable }}
       sha_version: ${{ needs.resolve-production-build-inputs.outputs.version }}
+      commit_sha: ${{ needs.resolve-production-build-inputs.outputs.commit_sha }}
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
@@ -516,12 +518,13 @@ jobs:
             # addition, so only in-place edits of regular allowlisted files pass.
             changed_files="$(git diff --no-renames --raw --no-abbrev "$1" "$2" || true)"
             unexpected_files="$(
-              printf '%s\n' "$changed_files" | grep -v '^$' |
-                grep -Ev $'^:100644 100644 [0-9a-f]{40} [0-9a-f]{40} M\t(Cargo\\.lock|bin/tempo-zone/Cargo\\.toml|crates/zones/[^/]+/Cargo\\.toml)$' || true
+              printf '%s\n' "$changed_files" | grep -av '^$' |
+                grep -aEv $'^:100644 100644 [0-9a-f]{40} [0-9a-f]{40} M\t(Cargo\\.lock|bin/tempo-zone/Cargo\\.toml|crates/zones/[^/]+/Cargo\\.toml)$' || true
             )"
             unexpected_lines="$(
-              git diff --no-renames -U0 "$1" "$2" | grep -E '^[+-]' |
-                grep -Ev '^(\+\+\+|---) ' | grep -Ev '^[+-]version = "[^"]+"$' || true
+              # --text and grep -a keep a NUL byte from hiding a line.
+              git diff --text --no-renames -U0 "$1" "$2" | grep -aE '^[+-]' |
+                grep -aEv '^(\+\+\+|---) ' | grep -aEv '^[+-]version = "[^"]+"$' || true
             )"
             [[ -n "$changed_files" && -z "$unexpected_files" && -z "$unexpected_lines" ]]
           }
@@ -599,6 +602,10 @@ jobs:
         id: meta-tempo-zone-xtask
         uses: tempoxyz/gh-actions/vendor/docker/metadata-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
+          labels: |
+            org.opencontainers.image.revision=${{ needs.resolve-production-build-inputs.outputs.commit_sha }}
+          annotations: |
+            org.opencontainers.image.revision=${{ needs.resolve-production-build-inputs.outputs.commit_sha }}
           images: |
             ${{ env.REGISTRY }}/tempo-zone-xtask
             docker.io/tempoxyz/tempo-zone-xtask
@@ -620,6 +627,10 @@ jobs:
         id: meta-tempo-zone-prover
         uses: tempoxyz/gh-actions/vendor/docker/metadata-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
+          labels: |
+            org.opencontainers.image.revision=${{ needs.resolve-production-build-inputs.outputs.commit_sha }}
+          annotations: |
+            org.opencontainers.image.revision=${{ needs.resolve-production-build-inputs.outputs.commit_sha }}
           images: |
             ${{ env.REGISTRY }}/tempo-zone-prover
             docker.io/tempoxyz/tempo-zone-prover
@@ -641,6 +652,10 @@ jobs:
         id: meta-tempo-zone-prover-utils
         uses: tempoxyz/gh-actions/vendor/docker/metadata-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
+          labels: |
+            org.opencontainers.image.revision=${{ needs.resolve-production-build-inputs.outputs.commit_sha }}
+          annotations: |
+            org.opencontainers.image.revision=${{ needs.resolve-production-build-inputs.outputs.commit_sha }}
           images: |
             ${{ env.REGISTRY }}/tempo-zone-prover-utils
             docker.io/tempoxyz/tempo-zone-prover-utils
@@ -909,6 +924,10 @@ jobs:
         id: meta-tempo-zone-xtask
         uses: tempoxyz/gh-actions/vendor/docker/metadata-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
+          labels: |
+            org.opencontainers.image.revision=${{ needs.build-and-push.outputs.commit_sha }}
+          annotations: |
+            org.opencontainers.image.revision=${{ needs.build-and-push.outputs.commit_sha }}
           images: |
             ${{ env.REGISTRY }}/tempo-zone-xtask
             docker.io/tempoxyz/tempo-zone-xtask
@@ -930,6 +949,10 @@ jobs:
         id: meta-tempo-zone-prover
         uses: tempoxyz/gh-actions/vendor/docker/metadata-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
+          labels: |
+            org.opencontainers.image.revision=${{ needs.build-and-push.outputs.commit_sha }}
+          annotations: |
+            org.opencontainers.image.revision=${{ needs.build-and-push.outputs.commit_sha }}
           images: |
             ${{ env.REGISTRY }}/tempo-zone-prover
             docker.io/tempoxyz/tempo-zone-prover
@@ -951,6 +974,10 @@ jobs:
         id: meta-tempo-zone-prover-utils
         uses: tempoxyz/gh-actions/vendor/docker/metadata-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
+          labels: |
+            org.opencontainers.image.revision=${{ needs.build-and-push.outputs.commit_sha }}
+          annotations: |
+            org.opencontainers.image.revision=${{ needs.build-and-push.outputs.commit_sha }}
           images: |
             ${{ env.REGISTRY }}/tempo-zone-prover-utils
             docker.io/tempoxyz/tempo-zone-prover-utils
@@ -1257,6 +1284,10 @@ jobs:
         id: meta-tempo-zone
         uses: tempoxyz/gh-actions/vendor/docker/metadata-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
+          labels: |
+            org.opencontainers.image.revision=${{ needs.resolve-production-build-inputs.outputs.commit_sha }}
+          annotations: |
+            org.opencontainers.image.revision=${{ needs.resolve-production-build-inputs.outputs.commit_sha }}
           images: |
             ${{ env.REGISTRY }}/tempo-zone
             docker.io/tempoxyz/tempo-zone

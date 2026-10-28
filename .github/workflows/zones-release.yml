@@ -149,12 +149,13 @@ jobs:
             # addition, so only in-place edits of regular allowlisted files pass.
             changed_files="$(git diff --no-renames --raw --no-abbrev "$1" "$2" || true)"
             unexpected_files="$(
-              printf '%s\n' "$changed_files" | grep -v '^$' |
-                grep -Ev $'^:100644 100644 [0-9a-f]{40} [0-9a-f]{40} M\t(Cargo\\.lock|bin/tempo-zone/Cargo\\.toml|crates/zones/[^/]+/Cargo\\.toml)$' || true
+              printf '%s\n' "$changed_files" | grep -av '^$' |
+                grep -aEv $'^:100644 100644 [0-9a-f]{40} [0-9a-f]{40} M\t(Cargo\\.lock|bin/tempo-zone/Cargo\\.toml|crates/zones/[^/]+/Cargo\\.toml)$' || true
             )"
             unexpected_lines="$(
-              git diff --no-renames -U0 "$1" "$2" | grep -E '^[+-]' |
-                grep -Ev '^(\+\+\+|---) ' | grep -Ev '^[+-]version = "[^"]+"$' || true
+              # --text and grep -a keep a NUL byte from hiding a line.
+              git diff --text --no-renames -U0 "$1" "$2" | grep -aE '^[+-]' |
+                grep -aEv '^(\+\+\+|---) ' | grep -aEv '^[+-]version = "[^"]+"$' || true
             )"
             [[ -n "$changed_files" && -z "$unexpected_files" && -z "$unexpected_lines" ]]
           }
