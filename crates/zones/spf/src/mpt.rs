@@ -7,8 +7,11 @@
 //! pre-state root before it can serve reads.
 
 use alloy_primitives::{Address, B256, Bytes, U256, keccak256, map::B256Map};
+use alloy_rlp::decode_exact;
 use reth_trie_common::{DecodedMultiProofV2, EMPTY_ROOT_HASH, HashedPostState, TrieAccount};
 use reth_trie_sparse::{LeafUpdate, RevealableSparseTrie, SparseStateTrie, TrieNodeEpoch};
+use tempo_contracts::TempoHardfork;
+use tempo_primitives::account::decode_config_commitment;
 
 /// Fully revealed, root-bound stateless trie.
 #[derive(Debug)]
@@ -226,8 +229,15 @@ impl StatelessSparseTrie {
 }
 
 fn decode_account(value: &[u8], address: Address) -> Result<TrieAccount, StatelessSparseTrieError> {
-    alloy_rlp::decode_exact(value)
+    decode_account_leaf(value)
         .map_err(|_| StatelessSparseTrieError::InvalidAccountValue { account: address })
+}
+
+fn decode_account_leaf(value: &[u8]) -> alloy_rlp::Result<TrieAccount> {
+    let account: TrieAccount = decode_exact(value)?;
+    // A witness leaf carries no hardfork, so this checks the payload format as of T14.
+    decode_config_commitment(&account.extension, TempoHardfork::T14)?;
+    Ok(account)
 }
 
 fn decode_storage_value(
@@ -240,7 +250,7 @@ fn decode_storage_value(
 }
 
 fn decode_hashed_account(value: &[u8]) -> Result<TrieAccount, StatelessSparseTrieError> {
-    alloy_rlp::decode_exact(value).map_err(|_| StatelessSparseTrieError::InvalidSparseTrie)
+    decode_account_leaf(value).map_err(|_| StatelessSparseTrieError::InvalidSparseTrie)
 }
 
 /// The pinned Reth helper assumes internally consistent paths in a few places.
