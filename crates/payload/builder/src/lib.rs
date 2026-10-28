@@ -22,7 +22,6 @@ use alloy_consensus::{BlockHeader as _, TxReceipt};
 use alloy_eips::{eip1559::calculate_block_gas_limit, eip2718::Encodable2718};
 use alloy_primitives::{Address, B256, Bloom, U256};
 use alloy_rlp::Encodable;
-use evm2::registry::HandlerError;
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
     is_better_payload,
@@ -631,14 +630,10 @@ where
                             // if the nonce is too low, we can skip this transaction
                             trace!(%error, tx = %tx_debug_repr, "skipping nonce too low transaction");
                             self.metrics.inc_pool_tx_skipped("nonce_too_low");
-                        } else if error
-                            .as_any()
-                            .downcast_ref::<HandlerError>()
-                            .and_then(HandlerError::external_ref::<TempoInvalidTransaction>)
-                            .is_some_and(|err| {
-                                matches!(err, TempoInvalidTransaction::ExpiringNonceReplay)
-                            })
-                        {
+                        } else if matches!(
+                            TempoInvalidTransaction::from_invalid_tx_error(error.as_ref()),
+                            Some(TempoInvalidTransaction::ExpiringNonceReplay)
+                        ) {
                             // This exact transaction is already included, typically in the parent
                             // block before pool maintenance evicted it. Skip it without marking it
                             // invalid.

@@ -22,8 +22,6 @@ tempo-primitives = { workspace = true, features = ["reth"] }
 tempo-transaction-pool.workspace = true
 tempo-payload-types.workspace = true
 
-evm2.workspace = true
-
 reth-basic-payload-builder.workspace = true
 reth-chainspec.workspace = true
 reth-consensus-common.workspace = true

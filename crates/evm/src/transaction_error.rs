@@ -2,6 +2,7 @@
 
 use alloy_primitives::{Address, U256};
 use evm2::registry::HandlerError;
+use reth_evm::InvalidTxError;
 use tempo_primitives::transaction::{KeyAuthorizationChainIdError, KeychainVersionError};
 
 /// Tempo-specific invalid transaction errors.
@@ -285,6 +286,17 @@ impl TempoInvalidTransaction {
             | Self::NonceManagerError(_)
             | Self::V2KeychainBeforeActivation => false,
         }
+    }
+}
+
+impl TempoInvalidTransaction {
+    /// Returns the Tempo validation error carried by a block executor's invalid-tx error,
+    /// or `None` if it is a generic EVM validation error.
+    pub fn from_invalid_tx_error(error: &dyn InvalidTxError) -> Option<&Self> {
+        error
+            .as_any()
+            .downcast_ref::<HandlerError>()?
+            .external_ref()
     }
 }
 
