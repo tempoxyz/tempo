@@ -1,4 +1,4 @@
-# Manual workflow to update reth dependencies from upstream main branch.
+# Nightly workflow to update reth dependencies from upstream main branch.
 #
 # If `reth-auto-bump` exists, rebases it onto main (preserving source fixes)
 # and bumps to the latest reth rev. Opens a PR targeting `main`.
@@ -6,6 +6,8 @@
 name: Update reth deps
 
 on:
+  schedule:
+    - cron: "0 3 * * *"
   workflow_dispatch:
 
 concurrency:
