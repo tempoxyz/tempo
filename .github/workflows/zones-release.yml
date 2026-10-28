@@ -335,7 +335,7 @@ jobs:
         uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
       - name: Download canonical Linux x86_64 release assets
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ needs.build-linux-x86_64-release.outputs.asset_artifact_id }}
           path: ${{ runner.temp }}/canonical-linux-x86_64-assets
@@ -618,25 +618,25 @@ jobs:
           persist-credentials: false
 
       - name: Download verified canonical Linux x86_64 assets
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ needs.build-linux-x86_64-release.outputs.asset_artifact_id }}
           path: artifacts/canonical
 
       - name: Download Linux ARM release assets
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: tempo-zone-aarch64-unknown-linux-gnu
           path: artifacts/aarch64-unknown-linux-gnu
 
       - name: Download macOS ARM release assets
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: tempo-zone-aarch64-apple-darwin
           path: artifacts/aarch64-apple-darwin
 
       - name: Download Linux x86_64 verification manifest
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ needs.compare-linux-x86_64-release.outputs.manifest_artifact_id }}
           path: artifacts/verification
