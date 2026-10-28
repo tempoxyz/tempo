@@ -1,6 +1,6 @@
 //! Zones reject configurable accounts until they sync configurations from Tempo (TIP-1114 Zones).
 
-use alloy::primitives::{Address, B256, Bytes, Signature, TxKind, U256};
+use alloy::primitives::{Address, B256, Bytes, TxKind, U256};
 use alloy_eips::{eip2718::Encodable2718, eip2930::AccessList};
 use alloy_provider::Provider;
 use alloy_signer::SignerSync;
@@ -12,7 +12,7 @@ use tempo_primitives::{
     TempoTxEnvelope,
     transaction::{
         Call, ConfigurableAccountConfig, ConfigurableAccountOwner, ConfigurableAccountSignature,
-        PrimitiveSignature, TempoSignature, TempoTransaction,
+        PrimitiveSignature, TempoSignature, TempoTransaction, configurable_account_digest,
     },
 };
 
@@ -43,25 +43,17 @@ async fn test_configurable_accounts_are_rejected() -> eyre::Result<()> {
     let chain_id = provider.get_chain_id().await?;
     let next_nonce = provider.get_transaction_count(dev_address).await?;
     let delegate = Address::repeat_byte(0x66);
-    // Zones reject before the owner quorum is checked, so the approval only needs a valid shape.
-    let configurable = ConfigurableAccountSignature::try_new(
-        delegate,
-        ConfigurableAccountConfig {
-            salt: B256::ZERO,
-            version: 0,
-            threshold: 1,
-            owners: vec![ConfigurableAccountOwner {
-                owner: dev_address,
-                weight: 1,
-            }],
-        },
-        vec![PrimitiveSignature::Secp256k1(Signature::new(
-            U256::ONE,
-            U256::from(2),
-            false,
-        ))],
-    )
-    .expect("the witness has a valid shape");
+    // Sender recovery verifies the owner quorum, so the root key approves as the sole owner and
+    // the zone policy is what rejects the transaction.
+    let config = ConfigurableAccountConfig {
+        salt: B256::ZERO,
+        version: 0,
+        threshold: 1,
+        owners: vec![ConfigurableAccountOwner {
+            owner: root.address(),
+            weight: 1,
+        }],
+    };
 
     let owners = vec![IConfigurableAccount::ConfigurableAccountOwner {
         owner: delegate,
@@ -95,27 +87,27 @@ async fn test_configurable_accounts_are_rejected() -> eyre::Result<()> {
         }]
     };
 
-    // A case without its own signature is signed by the root key. Each case takes its own nonce
+    // A configurable case is approved by the root key as owner, the others are signed by it. Each case takes its own nonce
     // so a case the pool accepts cannot shadow the next one.
     let cases = [
         (
             "configurable account signature",
             call(dev_address, Bytes::new()),
-            Some(TempoSignature::ConfigurableAccount(configurable)),
+            true,
         ),
         (
             "upgradeAccount transaction",
             call(CONFIGURABLE_ACCOUNT_ADDRESS, upgrade_account_input),
-            None,
+            false,
         ),
         (
             "updateConfig transaction",
             call(CONFIGURABLE_ACCOUNT_ADDRESS, update_config_input),
-            None,
+            false,
         ),
     ];
     let mut mismatches = Vec::new();
-    for (nonce, (case, calls, signature)) in (next_nonce..).zip(cases) {
+    for (nonce, (case, calls, configurable)) in (next_nonce..).zip(cases) {
         let transaction = TempoTransaction {
             chain_id,
             fee_token: Some(PATH_USD_ADDRESS),
@@ -132,9 +124,15 @@ async fn test_configurable_accounts_are_rejected() -> eyre::Result<()> {
             key_authorization: None,
             tempo_authorization_list: vec![],
         };
-        let signature = match signature {
-            Some(signature) => signature,
-            None => root.sign_hash_sync(&transaction.signature_hash())?.into(),
+        let signature = if configurable {
+            let digest = configurable_account_digest(transaction.signature_hash(), delegate, 0);
+            let approval = PrimitiveSignature::Secp256k1(root.sign_hash_sync(&digest)?);
+            TempoSignature::ConfigurableAccount(
+                ConfigurableAccountSignature::try_new(delegate, config.clone(), vec![approval])
+                    .expect("the witness has a valid shape"),
+            )
+        } else {
+            root.sign_hash_sync(&transaction.signature_hash())?.into()
         };
         let envelope: TempoTxEnvelope = transaction.into_signed(signature).into();
         let outcome = match provider
