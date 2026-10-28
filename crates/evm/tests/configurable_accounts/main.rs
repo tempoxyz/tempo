@@ -65,7 +65,6 @@ impl Fixture {
             InMemoryDB::default(),
             TempoEvmEnv::new_with_version(spec, TempoBlockEnv::default(), version),
         );
-        // The accepted overlay holds the whole state, so `chain_db` sees it.
         evm.overlay_db_mut().insert_account_info(
             &account,
             AccountInfo::default()
@@ -207,14 +206,6 @@ impl Fixture {
             tempo_tx_registry(spec.into()),
             precompiles,
         );
-    }
-
-    /// A database holding the accepted state, for a block executor.
-    fn chain_db(&self) -> InMemoryDB {
-        InMemoryDB {
-            cache: self.evm.overlay_db().cache.clone(),
-            ..Default::default()
-        }
     }
 
     fn install_contract(&mut self, address: Address, code: Vec<u8>) -> Call {

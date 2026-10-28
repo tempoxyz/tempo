@@ -14,7 +14,7 @@ use evm2::{
 use reth_chainspec::EthChainSpec;
 use reth_evm::{BlockExecutor, ConfigureEvm};
 use reth_execution_types::BundleSource;
-use reth_primitives_traits::{Block as _, SignedTransaction};
+use reth_primitives_traits::Block as _;
 use serde_json::json;
 use std::{num::NonZeroU64, sync::Arc};
 use tempo_chainspec::{TempoChainSpec, spec::DEV};
@@ -22,7 +22,7 @@ use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, PATH_USD_ADDRESS, account_keychain::IAccountKeychain, nonce::INonce,
     tip20::ITIP20,
 };
-use tempo_evm::{StorageActionReplay, StorageActionReplayError, TempoEvmConfig};
+use tempo_evm::TempoEvmConfig;
 use tempo_precompiles::{
     configurable_account::CONFIGURABLE_ACCOUNT_CODE_HASH, error::TempoPrecompileError,
     nonce::NonceManager, storage::keccak_cost, tip20::TIP20Token,
@@ -351,52 +351,6 @@ fn expect_revert(
     assert!(result.stop.is_revert(), "{label}: {result:?}");
     assert_eq!(&result.output, error, "{label}");
     assert!(configurable_account_logs(&result).is_empty(), "{label}");
-}
-
-#[test]
-fn replay_is_rejected_from_t14() {
-    let config = activation_config();
-    let mut f = Fixture::new();
-    let tx = f.primitive(3, vec![f.getter()]);
-    let result = f.run(&tx);
-    assert!(result.status, "{result:?}");
-    let recovered = TempoTxEnvelope::AA(tx).with_signer(f.account);
-    // The chain activates T14 at timestamp 10.
-    for (timestamp, spec) in [(9, TempoHardfork::T13), (10, TempoHardfork::T14)] {
-        let block = TempoBlock::uncle(TempoHeader {
-            inner: Header {
-                number: 1,
-                timestamp,
-                gas_limit: 30_000_000,
-                base_fee_per_gas: Some(0),
-                parent_beacon_block_root: Some(B256::ZERO),
-                ..Default::default()
-            },
-            general_gas_limit: 30_000_000,
-            ..Default::default()
-        })
-        .seal_slow();
-        let mut executor = config.executor_for_block(f.chain_db(), &block).unwrap();
-        assert_eq!(executor.evm().config_spec_id(), spec);
-        let outcome = executor.execute_transaction_with_actions(
-            recovered.as_recovered_ref(),
-            StorageActionReplay {
-                result: result.clone(),
-                actions: vec![],
-                expiring_nonce: None,
-            },
-            |_| {},
-        );
-        if spec == TempoHardfork::T14 {
-            let error = outcome.unwrap_err();
-            assert_eq!(
-                StorageActionReplayError::from_block_execution_error(&error),
-                Some(StorageActionReplayError::UnsupportedHardfork)
-            );
-        } else {
-            outcome.unwrap();
-        }
-    }
 }
 
 #[test]

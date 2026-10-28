@@ -23,18 +23,12 @@ impl TempoBlockExecutor<'_> {
     /// Commits a precomputed transaction by replaying recorded storage actions.
     ///
     /// `result_closure` observes the synthesized result before the replayed state is committed.
-    ///
-    /// From T14 a replay is rejected with [`StorageActionReplayError::UnsupportedHardfork`]; the
-    /// transaction must execute through the handler instead.
     pub fn execute_transaction_with_actions(
         &mut self,
         tx: impl ExecutorTx<Self>,
         replay: StorageActionReplay,
         result_closure: impl FnOnce(&TempoTxResult),
     ) -> Result<(), BlockExecutionError> {
-        if self.evm().config_spec_id().is_t14() {
-            return Err(StorageActionReplayError::UnsupportedHardfork.into());
-        }
         let (tx_env, recovered) = tx.into_parts();
         let original = recovered.tx();
 
@@ -333,8 +327,6 @@ pub enum StorageActionReplayError {
     Overflow,
     #[error("storage action underflow")]
     Underflow,
-    #[error("storage action replay is unsupported from T14")]
-    UnsupportedHardfork,
 }
 
 impl StorageActionReplayError {
