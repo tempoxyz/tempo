@@ -58,6 +58,9 @@ for auditors, invariant/fuzz test authors, and production monitoring.
 | `TEMPO-ZONE-DEPOSIT-PROCESSED-PREFIX` | The inbox processes only a prefix of the portal queue, oldest first, and never skips, reorders, or duplicates deposits | 🔴 | Users receive wrong mints/refunds or deposits become unprovable |
 | `TEMPO-ZONE-DEPOSIT-FAIL-BOUNCEBACK` | Any rejected deposit, invalid encryption, or failed mint enqueues exactly one deposit bounce-back withdrawal | 🔴 | Failed deposits can be lost, duplicated, or stuck |
 | `TEMPO-ZONE-DEPOSIT-REJECTION-NO-MINT` | A rejected user deposit never mints zone tokens and still advances the deposit queue | 🔴 | Sequencer rejection can create unbacked mints or stall deposits |
+| `TEMPO-ZONE-DEPOSIT-AUTH-REQUIRED` | While deposit authorization mode is enforced, every deposit queued by a caller other than an enforced gateway carries an authorization signed by an address holding `DepositAuthorizer` at execution time (TIP-1151) | 🟡 | Accounts outside the operator's deposit policy can enter the zone |
+| `TEMPO-ZONE-DEPOSIT-AUTH-SINGLE-USE` | An authorization is accepted at most once, only from its `depositor`, only before `validBefore`, only within `MAX_DEPOSIT_AUTHORIZATION_TTL` of the current block, and only for the exact signed token, amount, key index, payload, refund recipient, chain, and portal; `depositAuthorizationNonce` never decreases | 🟡 | One approval can admit repeated, redirected, or front-run deposits |
+| `TEMPO-ZONE-DEPOSIT-AUTH-ALIAS` | `depositAuthorized` produces the same queue entry and `DepositMade` event as `deposit` with the same arguments | 🔴 | Authorized deposits can be processed differently from ordinary deposits |
 
 ### Deposit Encryption and Keys
 

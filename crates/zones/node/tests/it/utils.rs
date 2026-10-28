@@ -659,7 +659,12 @@ where
 /// - [`start()`](Self::start) — connected to an external L1 via WebSocket URL
 type RpcApiFuture =
     Pin<Box<dyn Future<Output = eyre::Result<Arc<dyn zone_node::rpc::ZoneRpcApi>>>>>;
-type RpcApiFactory = dyn Fn(zone_node::rpc::RedactedRpcConfig) -> RpcApiFuture + Send + Sync;
+type RpcApiFactory = dyn Fn(
+        zone_node::rpc::RedactedRpcConfig,
+        Option<Arc<zone_node::rpc::DepositAuthorizer>>,
+    ) -> RpcApiFuture
+    + Send
+    + Sync;
 
 pub(crate) struct ZoneTestNode {
     http_url: url::Url,
@@ -833,8 +838,9 @@ impl ZoneTestNode {
     pub(crate) async fn rpc_api(
         &self,
         config: zone_node::rpc::RedactedRpcConfig,
+        deposit_authorizer: Option<Arc<zone_node::rpc::DepositAuthorizer>>,
     ) -> eyre::Result<Arc<dyn zone_node::rpc::ZoneRpcApi>> {
-        (self.rpc_api_factory)(config).await
+        (self.rpc_api_factory)(config, deposit_authorizer).await
     }
 
     /// Subscribe to canonical state notifications.
@@ -1536,20 +1542,28 @@ impl ZoneTestNode {
         let eth_handlers = node_handle.node.eth_handlers().clone();
         let rpc_enabled_tokens = enabled_tokens.clone();
         let rpc_l1_provider = redacted_l1_provider;
-        let rpc_api_factory = Arc::new(move |config: zone_node::rpc::RedactedRpcConfig| {
-            let eth_handlers = eth_handlers.clone();
-            let enabled_tokens = rpc_enabled_tokens.clone();
-            let l1_provider = rpc_l1_provider.clone();
-            Box::pin(async move {
-                Ok(Arc::new(zone_node::rpc::ZoneRpc::new(
-                    eth_handlers,
-                    config,
-                    enabled_tokens,
-                    l1_provider,
-                )) as Arc<dyn zone_node::rpc::ZoneRpcApi>)
-            })
-                as Pin<Box<dyn Future<Output = eyre::Result<Arc<dyn zone_node::rpc::ZoneRpcApi>>>>>
-        });
+        let rpc_api_factory = Arc::new(
+            move |config: zone_node::rpc::RedactedRpcConfig,
+                  deposit_authorizer: Option<Arc<zone_node::rpc::DepositAuthorizer>>| {
+                let eth_handlers = eth_handlers.clone();
+                let enabled_tokens = rpc_enabled_tokens.clone();
+                let l1_provider = rpc_l1_provider.clone();
+                Box::pin(async move {
+                    Ok(Arc::new(
+                        zone_node::rpc::ZoneRpc::new(
+                            eth_handlers,
+                            config,
+                            enabled_tokens,
+                            l1_provider,
+                        )
+                        .with_deposit_authorizer(deposit_authorizer),
+                    ) as Arc<dyn zone_node::rpc::ZoneRpcApi>)
+                })
+                    as Pin<
+                        Box<dyn Future<Output = eyre::Result<Arc<dyn zone_node::rpc::ZoneRpcApi>>>>,
+                    >
+            },
+        );
 
         Ok(Self {
             deposit_queue,
@@ -4654,7 +4668,7 @@ fn build_keychain_auth_token(
 /// Send a JSON-RPC request to the redacted zone RPC and return the parsed response.
 ///
 /// Returns the full JSON response body (including `jsonrpc`, `id`, `result`/`error`).
-async fn redacted_rpc_call(
+pub(crate) async fn redacted_rpc_call(
     url: &url::Url,
     method: &str,
     params: serde_json::Value,
@@ -4777,6 +4791,20 @@ impl RedactedRpcL1TestCtx {
     /// Returns the real portal address for tests that require one.
     pub(crate) fn portal_address(&self) -> Address {
         self.portal_address
+    }
+
+    /// Starts another redacted RPC server for this zone that serves `zone_authorizeDeposit`.
+    pub(crate) async fn start_deposit_authorizer_rpc(
+        &self,
+        config: zone_node::rpc::DepositAuthorizerConfig,
+    ) -> eyre::Result<url::Url> {
+        let authorizer = zone_node::rpc::DepositAuthorizer::new(
+            config,
+            self.config.zone_id,
+            self.l1.provider().get_chain_id().await?,
+            self.portal_address,
+        )?;
+        start_redacted_rpc_url(&self.zone, self.config.clone(), Some(Arc::new(authorizer))).await
     }
 }
 
@@ -5017,9 +5045,13 @@ impl RedactedRpcTestCtx {
 async fn start_redacted_rpc_url(
     zone: &ZoneTestNode,
     config: zone_node::rpc::RedactedRpcConfig,
+    deposit_authorizer: Option<Arc<zone_node::rpc::DepositAuthorizer>>,
 ) -> eyre::Result<url::Url> {
-    let local_addr =
-        zone_node::rpc::start_redacted_rpc(config.clone(), zone.rpc_api(config).await?).await?;
+    let local_addr = zone_node::rpc::start_redacted_rpc(
+        config.clone(),
+        zone.rpc_api(config, deposit_authorizer).await?,
+    )
+    .await?;
     Ok(format!("http://{local_addr}").parse()?)
 }
 
@@ -5076,7 +5108,7 @@ pub(crate) async fn start_zone_with_redacted_rpc() -> eyre::Result<RedactedRpcTe
         zone_portal: Address::ZERO,
     };
 
-    let redacted_rpc_url = start_redacted_rpc_url(&zone, config.clone()).await?;
+    let redacted_rpc_url = start_redacted_rpc_url(&zone, config.clone(), None).await?;
 
     Ok(build_redacted_rpc_ctx(
         zone,
@@ -5118,7 +5150,7 @@ async fn start_zone_with_redacted_rpc_l1_inner() -> eyre::Result<RedactedRpcL1Te
         zone_portal: portal_address,
     };
 
-    let redacted_rpc_url = start_redacted_rpc_url(&zone, config.clone()).await?;
+    let redacted_rpc_url = start_redacted_rpc_url(&zone, config.clone(), None).await?;
     let sequencer_signer = l1.dev_signer();
 
     Ok(RedactedRpcL1TestCtx {

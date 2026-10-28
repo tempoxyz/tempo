@@ -35,12 +35,20 @@ fn zone_portal_slot_constants_match_solidity() {
         ("role", portal::slots::ROLE),
         ("_isAccessEnforced", portal::slots::IS_ACCESS_ENFORCED),
         ("_isGatewayEnforced", portal::slots::IS_GATEWAY_ENFORCED),
+        (
+            "_isDepositAuthEnforced",
+            portal::slots::IS_DEPOSIT_AUTH_ENFORCED,
+        ),
         ("maxTempoGasRate", portal::slots::MAX_TEMPO_GAS_RATE),
         ("pauseExpiry", portal::slots::PAUSE_EXPIRY),
         ("tokenEnablementHash", portal::slots::TOKEN_ENABLEMENT_HASH),
         (
             "abdicationEffectiveAt",
             portal::slots::ABDICATION_EFFECTIVE_AT,
+        ),
+        (
+            "depositAuthorizationNonce",
+            portal::slots::DEPOSIT_AUTHORIZATION_NONCE,
         ),
     ]
     .map(|(name, slot)| RustStorageSlot::new(name, slot));

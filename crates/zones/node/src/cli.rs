@@ -230,6 +230,7 @@ fn run_node(mut cli: ZoneNodeCli, l1_access: CliL1Access) -> eyre::Result<()> {
             max_auth_token_validity: Duration::from_secs(
                 args.redacted_rpc_max_auth_token_validity_secs,
             ),
+            deposit_authorizer: load_deposit_authorizer(&args).await?,
         });
         if !additional_decryption_keys.is_empty() {
             node = node.with_deposit_decryption_keys(additional_decryption_keys);
@@ -453,18 +454,36 @@ async fn load_sequencer_signer(
     let path = key_file.ok_or_else(|| {
         eyre::eyre!("--sequencer-key-file is required when sequencing is enabled")
     })?;
+    load_signer_file(path, "--sequencer-key-file").await
+}
+
+/// Reads a hex secp256k1 private key passed through `flag`.
+async fn load_signer_file(path: &std::path::Path, flag: &str) -> eyre::Result<PrivateKeySigner> {
     let path = path.to_path_buf();
-    let source = format!("--sequencer-key-file {}", path.display());
+    let source = format!("{flag} {}", path.display());
     let display_path = path.display().to_string();
     let key = tokio::task::spawn_blocking(move || std::fs::read_to_string(path))
         .await
-        .map_err(|err| eyre::eyre!("sequencer key reader task failed for {display_path}: {err}"))?
-        .map_err(|err| eyre::eyre!("failed to read sequencer key from {display_path}: {err}"))?;
+        .map_err(|err| eyre::eyre!("{flag} reader task failed for {display_path}: {err}"))?
+        .map_err(|err| eyre::eyre!("failed to read {flag} from {display_path}: {err}"))?;
     let key = Zeroizing::new(key);
 
     key.trim()
         .parse::<PrivateKeySigner>()
-        .map_err(|_| eyre::eyre!("invalid sequencer key from {source}"))
+        .map_err(|_| eyre::eyre!("invalid key from {source}"))
+}
+
+async fn load_deposit_authorizer(
+    args: &ZoneArgs,
+) -> eyre::Result<Option<crate::rpc::DepositAuthorizerConfig>> {
+    let Some(path) = &args.deposit_authorizer_key_file else {
+        return Ok(None);
+    };
+    Ok(Some(crate::rpc::DepositAuthorizerConfig {
+        signer: load_signer_file(path, "--deposit-authorizer.key-file").await?,
+        ttl: Duration::from_secs(args.deposit_authorizer_ttl_secs),
+        policy_url: args.deposit_authorizer_policy_url.clone(),
+    }))
 }
 
 async fn load_decryption_keys(
@@ -682,6 +701,34 @@ pub struct ZoneArgs {
         default_value_t = DEFAULT_MAX_AUTH_TOKEN_VALIDITY_SECS
     )]
     pub redacted_rpc_max_auth_token_validity_secs: u64,
+
+    /// File containing the TIP-1151 deposit authorizer private key. Enables
+    /// `zone_authorizeDeposit` on the redacted RPC. The key must hold `DepositAuthorizer` on
+    /// the portal.
+    #[arg(
+        long = "deposit-authorizer.key-file",
+        env = "DEPOSIT_AUTHORIZER_KEY_FILE",
+        value_name = "PATH"
+    )]
+    pub deposit_authorizer_key_file: Option<PathBuf>,
+
+    /// Lifetime of issued deposit authorizations, in seconds. At most 3600.
+    #[arg(
+        long = "deposit-authorizer.ttl-secs",
+        env = "DEPOSIT_AUTHORIZER_TTL_SECS",
+        default_value_t = crate::rpc::deposit_auth::DEFAULT_DEPOSIT_AUTHORIZATION_TTL.as_secs()
+    )]
+    pub deposit_authorizer_ttl_secs: u64,
+
+    /// Operator policy webhook consulted before signing a deposit authorization. Without it,
+    /// every authenticated depositor is approved.
+    #[arg(
+        long = "deposit-authorizer.policy-url",
+        env = "DEPOSIT_AUTHORIZER_POLICY_URL",
+        value_name = "URL",
+        requires = "deposit_authorizer_key_file"
+    )]
+    pub deposit_authorizer_policy_url: Option<url::Url>,
 
     /// Enable the Zone node in sequencer mode. This advances block production and submits
     /// withdrawal batches.

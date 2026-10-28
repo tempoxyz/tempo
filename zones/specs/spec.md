@@ -200,6 +200,12 @@ Each zone has an **admin** authority and a set of **sequencers** registered on t
 - Any active sequencer may perform a sequencer-authorized portal operation or submit a batch transaction. In normal node operation, the leader performs these duties, and batch settlement additionally requires a threshold certificate containing distinct active-sequencer signatures.
 - Hold the encryption private keys corresponding to the portal's encryption public keys and used to decrypt [deposits](#deposits).
 
+**Deposit authorizers.**
+
+- Hold the `DepositAuthorizer` portal role, assigned and removed by the admin ([TIP-1151](../../tips/tip-1151.md)).
+- Sign short-lived EIP-712 authorizations that admit one deposit each while deposit authorization mode is enforced (see [Signed Deposit Authorizations](#signed-deposit-authorizations)).
+- Have no other portal permission. A sequencer node may run the authorizer, but the key is configured separately from settlement and encryption keys.
+
 The admin may also be a member of the sequencer set. Admin authorization remains independent of
 the account's mutually exclusive portal role.
 
@@ -220,6 +226,9 @@ The following table lists every privileged action and the role authorized to inv
 | `abdicate(capability)` | [`ZonePortal`](#izoneportal) | **admin** |
 | `setAccessMode(mode)` | [`ZonePortal`](#izoneportal) | **admin** |
 | `setGatewayMode(mode)` | [`ZonePortal`](#izoneportal) | **admin** |
+| `setDepositAuthMode(mode)` | [`ZonePortal`](#izoneportal) | **admin**; frozen after `AccessPolicy` abdication |
+| `setDepositAuthorizer(account, allowed)` | [`ZonePortal`](#izoneportal) | **admin**; additions frozen after `AccessPolicy` abdication, removals always allowed |
+| `depositAuthorized(..., authorization)` | [`ZonePortal`](#izoneportal) | **any caller** with an unexpired authorization signed by a deposit authorizer |
 | `transferAdmin(newAdmin)` | [`ZonePortal`](#izoneportal) | **admin** |
 | `acceptAdmin()` | [`ZonePortal`](#izoneportal) | **pending admin** |
 | `setSequencerSet(sequencers, threshold)` | [`ZonePortal`](#izoneportal) | **admin** |
@@ -286,6 +295,7 @@ The shared portal runtime MUST preserve the native factory's constructor-equival
 | 20 | 0 | `role` |
 | 21 | 0 | `_isAccessEnforced` |
 | 21 | 1 | `_isGatewayEnforced` |
+| 21 | 2 | `_isDepositAuthEnforced` |
 | 22 | 0 | `maxTempoGasRate` |
 | 23 | 0 | `leader` |
 | 23 | 20 | `leaderEpoch` |
@@ -296,6 +306,7 @@ The shared portal runtime MUST preserve the native factory's constructor-equival
 | 25 | 0 | `_tokensEnabledInCurrentBlock` |
 | 26 | 0 | `tokenEnablementHash` |
 | 28 | 0 | `lastProcessedEnabledTokenCount` |
+| 29 | 0 | `depositAuthorizationNonce` |
 
 The factory performs this initialization natively in the portal account; the Solidity
 `initialize` function documents and tests the equivalent state transition.
@@ -324,7 +335,7 @@ A single [`ZoneFactory`](#izonefactory) on Tempo creates zones and maintains the
 |----------|---------|
 | [`ZonePortal`](#izoneportal) | Locks deposited tokens, accepts batch submissions, verifies proofs, and processes withdrawals. Manages the token registry and deposit/withdrawal queues. |
 
-The factory's shared `ZoneMessenger` is fixed when each portal is initialized. It is separated from the portal so callback code does not execute with the fund-owning portal as `msg.sender`. An account has exactly one of `None`, `Sequencer`, `Account`, `CallbackGateway`, or `PauseGuardian`. The admin manages these roles through `setAllowedAccount`, `setGateway`, and `setPauseGuardian`, while sequencer membership changes only through `setSequencerSet`. Each managed-role setter controls only its corresponding role, so changing roles requires first clearing the current role and then assigning the new one. `setAccessMode` and `setGatewayMode` activate or deactivate enforcement of the corresponding roles without clearing them.
+The factory's shared `ZoneMessenger` is fixed when each portal is initialized. It is separated from the portal so callback code does not execute with the fund-owning portal as `msg.sender`. An account has exactly one of `None`, `Sequencer`, `Account`, `CallbackGateway`, `PauseGuardian`, or `DepositAuthorizer`. The admin manages these roles through `setAllowedAccount`, `setGateway`, `setPauseGuardian`, and `setDepositAuthorizer`, while sequencer membership changes only through `setSequencerSet`. Each managed-role setter controls only its corresponding role, so changing roles requires first clearing the current role and then assigning the new one. `setAccessMode` and `setGatewayMode` activate or deactivate enforcement of the corresponding roles without clearing them.
 
 Account and gateway membership is evaluated when each portal or zone-side action executes. Revoked in-flight destinations and gateways bounce back, while revoked refund recipients have funds parked until membership is restored.
 
@@ -547,6 +558,20 @@ The encryption scheme is ECIES with secp256k1:
 2. The user derives an AES-256 key from the shared secret and the deposit sender using HKDF-SHA256.
 3. The user encrypts `(to || memo || padding)` with AES-256-GCM, producing ciphertext, a nonce, and an authentication tag.
 4. The user calls `deposit(token, amount, keyIndex, encryptedPayload, tempoRefundRecipient)` on the portal, where `keyIndex` references which encryption key they encrypted to (see [Encryption Key Management](#encryption-key-management)), and `tempoRefundRecipient` is the Tempo address that receives a refund if zone-side processing fails (see [Deposit Failures and Bounce-Back](#deposit-failures-and-bounce-back)). In closed access mode, the caller and refund recipient must be allowed; a caller with the `CallbackGateway` role is the exception while gateway mode is enforced. Open access mode skips membership checks. The decrypted `to` address is not checked against Tempo membership. `deposit` also enforces its fee, encryption-key, payload-shape, and TIP-403 checks.
+
+#### Signed Deposit Authorizations
+
+[TIP-1151](../../tips/tip-1151.md) lets a zone gate deposits with operator-signed authorizations instead of the `Account` allowlist. While `isDepositAuthEnforced()` is `true`, `deposit` and `depositEncrypted` revert `DepositAuthorizationRequired` unless the caller is a `CallbackGateway` while gateway mode is enforced. Other depositors call `depositAuthorized(token, amount, keyIndex, encrypted, tempoRefundRecipient, authorization)`, where `authorization = (nonce, validBefore, signature)`.
+
+The signature is a TIP-1020 signature over the EIP-712 digest returned by `depositAuthorizationDigest`, using the portal's existing domain (`"ZonePortal"`, version `"1"`, Tempo chain ID, portal address) and the type
+
+```
+DepositAuthorization(address depositor,address token,uint128 amount,uint256 keyIndex,bytes32 payloadHash,address tempoRefundRecipient,uint64 nonce,uint64 validBefore)
+```
+
+where `depositor` is `msg.sender` and `payloadHash = keccak256(abi.encode(ephemeralPubkeyX, ephemeralPubkeyYParity, keccak256(ciphertext), nonce, tag))`. The portal requires `block.timestamp < validBefore <= block.timestamp + MAX_DEPOSIT_AUTHORIZATION_TTL` (3600 seconds), `nonce >= depositAuthorizationNonce(depositor)`, and a signer holding `DepositAuthorizer`. It then sets `depositAuthorizationNonce(depositor) = nonce + 1`, so a used or skipped nonce cannot be replayed, and queues the deposit exactly as `deposit` would, without the `Account` checks. It emits `DepositMade` followed by `DepositAuthorized(depositNumber, depositor, authorizer, nonce)`. Fee, encryption-key, payload-shape, pause, and TIP-403 checks are unchanged.
+
+While deposit authorization mode is enforced, deposit bounce-back delivery and `claimRefund` also skip the `Account` check on the refund recipient, because admitted depositors need not be allowlisted. Withdrawal and callback checks do not depend on this mode.
 
 Before queue insertion, the portal also validates encrypted-payload shape. `deposit` reverts `InvalidEphemeralPubkey` if the ephemeral public key parity is not `0x02` or `0x03`, or if the X coordinate is not a valid secp256k1 X coordinate. It reverts `InvalidCiphertextLength(actual, expected)` unless `ciphertext.length == 64`, the fixed plaintext size for `(to, memo, padding)`. These are Tempo-side deposit-time reverts: no queue entry is created and no zone-side bounce-back is needed.
 
@@ -1036,7 +1061,7 @@ Keychain keys allow session keys and scoped access keys to authenticate to the R
 
 The RPC uses a default-deny model. Any method not explicitly listed returns `-32601` (method not found). Exposed methods fall into two categories:
 
-**Allowed.** `eth_chainId`, `eth_blockNumber`, `eth_gasPrice`, `eth_maxPriorityFeePerGas`, `eth_feeHistory`, `eth_getBlockByNumber` and `eth_getBlockByHash` (without full transactions), `eth_syncing`, `eth_coinbase`, `net_version`, `net_listening`, `web3_clientVersion`, `web3_sha3`, `zone_getAuthorizationTokenInfo`, `zone_getZoneInfo`, and `zone_getEncryptionKey`.
+**Allowed.** `eth_chainId`, `eth_blockNumber`, `eth_gasPrice`, `eth_maxPriorityFeePerGas`, `eth_feeHistory`, `eth_getBlockByNumber` and `eth_getBlockByHash` (without full transactions), `eth_syncing`, `eth_coinbase`, `net_version`, `net_listening`, `web3_clientVersion`, `web3_sha3`, `zone_getAuthorizationTokenInfo`, `zone_getZoneInfo`, `zone_getEncryptionKey`, and `zone_authorizeDeposit`.
 
 Fee quotes are caller-independent: `eth_gasPrice` returns the fixed T1 gas price and `eth_maxPriorityFeePerGas` returns `0`.
 
@@ -1110,8 +1135,9 @@ operator RPC transports and the authenticated redacted RPC.
 | Method | Access | Description |
 |--------|--------|-------------|
 | `zone_getAuthorizationTokenInfo` | Authenticated redacted RPC only | Returns the authenticated account address and token expiry |
-| `zone_getZoneInfo` | Operator RPC and authenticated redacted RPC | Returns `zoneId`, `isAccessEnforced`, `isGatewayOpen`, `zoneTokens`, `sequencers`, `chainId`, and `tempoBlockNumber` |
+| `zone_getZoneInfo` | Operator RPC and authenticated redacted RPC | Returns `zoneId`, `isAccessEnforced`, `isGatewayOpen`, `isDepositAuthEnforced`, `zoneTokens`, `sequencers`, `chainId`, and `tempoBlockNumber` |
 | `zone_getEncryptionKey` | Operator RPC and authenticated redacted RPC | Returns the active sequencer encryption key at the current Tempo L1 head |
+| `zone_authorizeDeposit` | Authenticated redacted RPC on a node configured as a deposit authorizer | Signs a [deposit authorization](#signed-deposit-authorizations) for the authenticated caller |
 
 `zone_getEncryptionKey` reads the active key directly from the portal at the current Tempo L1 head.
 Its response is:
@@ -1128,6 +1154,27 @@ This is the portal's `encryptionKeyAtBlock` return value without additional wrap
 uses JSON-RPC quantity encoding. Key rotation is visible immediately on L1 and does not wait for the
 Zone to process the corresponding Tempo block.
 
+`zone_authorizeDeposit` takes one object with `token`, `amount`, `keyIndex`, `encrypted` (the
+`DepositPayload` fields), `tempoRefundRecipient`, and an optional operator-defined `credentials`
+value such as an OIDC ID token. The depositor is the authenticated account. The node reads the
+depositor's current `depositAuthorizationNonce` from the portal, applies its policy, and returns:
+
+```ts
+{
+  authorizer: Address,
+  nonce: bigint,
+  validBefore: bigint,
+  signature: Hex,
+}
+```
+
+The reference node enables the method with `--deposit-authorizer.key-file`, sets the lifetime with
+`--deposit-authorizer.ttl-secs` (default 120), and optionally consults
+`--deposit-authorizer.policy-url`. The policy webhook receives a JSON POST with `zoneId`,
+`depositor`, and the request fields, and the node signs only after a 2xx response with
+`{"approved": true}`. Without a webhook, every authenticated caller is approved. Nodes without an
+authorizer return `-32006`.
+
 There are no state-changing methods via authorization token. Withdrawals require a signed transaction submitted via `eth_sendRawTransaction`.
 
 ### Error Codes
@@ -1139,7 +1186,8 @@ There are no state-changing methods via authorization token. Withdrawals require
 | `-32003` | Transaction rejected | Sender mismatch on `eth_sendRawTransaction` |
 | `-32004` | Account mismatch | `from` mismatch on `eth_call` / `eth_estimateGas` |
 | `-32005` | Sequencer only | Full block transactions require the unrestricted operator RPC |
-| `-32006` | Method disabled | WebSocket subscription kind is not available on zones |
+| `-32006` | Method disabled | WebSocket subscription kind is not available on zones, or `zone_authorizeDeposit` on a node without a deposit authorizer |
+| `-32007` | Deposit not authorized | The deposit policy refused `zone_authorizeDeposit` |
 | `-32601` | Method not found | Method is not exposed by the redacted RPC allowlist |
 
 Methods where the user explicitly supplies a mismatched parameter return explicit errors (the user already knows the address they provided). Methods that query about other accounts return silent dummy values (`0x0`, `null`, empty results) to avoid revealing "data exists but you can't see it."
@@ -1709,6 +1757,13 @@ struct DepositPayload {
     bytes16 tag;
 }
 
+/// Short-lived deposit permission signed by a `DepositAuthorizer` (TIP-1151).
+struct DepositAuthorization {
+    uint64 nonce;
+    uint64 validBefore;
+    bytes signature;
+}
+
 enum DepositType {
     WithdrawalBounceBack,
     Deposit
@@ -1792,7 +1847,8 @@ enum Role {
     Sequencer,
     Account,
     CallbackGateway,
-    PauseGuardian
+    PauseGuardian,
+    DepositAuthorizer
 }
 
 enum Capability {
@@ -1972,6 +2028,26 @@ interface IZonePortal {
     function hasRole(address account, Role role) external view returns (bool);
     function setAllowedAccount(address account, bool allowed) external; // admin-only
     function setGateway(address account, bool allowed) external; // admin-only
+
+    // Signed deposit authorizations (TIP-1151)
+    event DepositAuthModeUpdated(bool enforced);
+    event DepositAuthorized(
+        uint64 indexed depositNumber, address indexed depositor, address indexed authorizer, uint64 nonce
+    );
+    function MAX_DEPOSIT_AUTHORIZATION_TTL() external view returns (uint64);
+    function DOMAIN_SEPARATOR() external view returns (bytes32);
+    function isDepositAuthEnforced() external view returns (bool);
+    function setDepositAuthMode(bool enforced) external; // admin-only
+    function setDepositAuthorizer(address account, bool allowed) external; // admin-only
+    function depositAuthorizationNonce(address depositor) external view returns (uint64);
+    function depositAuthorizationDigest(
+        address depositor, address token, uint128 amount, uint256 keyIndex,
+        DepositPayload calldata encrypted, address tempoRefundRecipient, uint64 nonce, uint64 validBefore
+    ) external view returns (bytes32);
+    function depositAuthorized(
+        address token, uint128 amount, uint256 keyIndex, DepositPayload calldata encrypted,
+        address tempoRefundRecipient, DepositAuthorization calldata authorization
+    ) external returns (bytes32 newCurrentDepositQueueHash);
 
     // Zone RPC endpoint. Published on-chain so clients can discover how to reach the zone.
     event RpcUrlUpdated(string rpcUrl);

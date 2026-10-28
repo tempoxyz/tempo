@@ -13,7 +13,10 @@ use tracing::warn;
 use crate::{
     auth::AuthContext,
     subscription::BoxWsSubscriptionFut,
-    types::{BoxEyreFut, BoxFut, JsonRpcError, JsonRpcRequest, JsonRpcResponse, Method},
+    types::{
+        AuthorizeDepositRequest, BoxEyreFut, BoxFut, JsonRpcError, JsonRpcRequest, JsonRpcResponse,
+        Method,
+    },
 };
 
 /// Interface to the underlying reth EthApi for the redacted zone RPC.
@@ -181,6 +184,18 @@ pub trait ZoneRpcApi: Send + Sync + 'static {
     /// `zone_getEncryptionKey()` — returns the active encryption key at the
     /// current Tempo L1 head.
     fn zone_get_encryption_key(&self, auth: AuthContext) -> BoxFut<'_>;
+
+    /// `zone_authorizeDeposit(request)` — signs a TIP-1151 deposit authorization for the
+    /// authenticated caller, or refuses with `-32007`.
+    ///
+    /// Returns `-32006` unless the node is configured as a deposit authorizer.
+    fn zone_authorize_deposit(
+        &self,
+        _request: AuthorizeDepositRequest,
+        _auth: AuthContext,
+    ) -> BoxFut<'_> {
+        Box::pin(async { Err(JsonRpcError::method_disabled()) })
+    }
 }
 
 /// Deserialize JSON-RPC params, returning an error response on failure.
@@ -323,6 +338,18 @@ pub async fn dispatch(
         }
         Method::ZoneGetEncryptionKey => {
             api_result(id, method, api.zone_get_encryption_key(auth.clone()).await)
+        }
+        Method::ZoneAuthorizeDeposit => {
+            let (request,) =
+                match parse_params::<(AuthorizeDepositRequest,)>(raw, &id, "expected [request]") {
+                    Ok(v) => v,
+                    Err(resp) => return resp,
+                };
+            api_result(
+                id,
+                method,
+                api.zone_authorize_deposit(request, auth.clone()).await,
+            )
         }
     }
 }

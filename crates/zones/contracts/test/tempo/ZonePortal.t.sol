@@ -10,6 +10,7 @@ import {
     BlockTransition,
     Capability,
     Deposit,
+    DepositAuthorization,
     DepositPayload,
     DepositQueueTransition,
     DepositType,
@@ -5913,6 +5914,489 @@ contract ZonePortalTest is BaseTest {
         assertEq(x, xs[expectedIndex]);
         assertEq(yParity, yParities[expectedIndex]);
         assertEq(keyIndex, expectedIndex);
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                SIGNED DEPOSIT AUTHORIZATIONS (TIP-1151)
+    //////////////////////////////////////////////////////////////*/
+
+    bytes32 internal constant DEPOSIT_AUTHORIZATION_TYPEHASH = keccak256(
+        "DepositAuthorization(address depositor,address token,uint128 amount,uint256 keyIndex,bytes32 payloadHash,address tempoRefundRecipient,uint64 nonce,uint64 validBefore)"
+    );
+    uint256 internal constant AUTHORIZER_KEY = 0xA11CE;
+    uint256 internal constant P256_AUTHORIZER_KEY = 0xB0B;
+    uint256 internal constant P256_ORDER =
+        0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551;
+
+    struct AuthorizedDeposit {
+        address depositor;
+        address token;
+        uint128 amount;
+        uint256 keyIndex;
+        DepositPayload payload;
+        address refund;
+        uint64 nonce;
+        uint64 validBefore;
+    }
+
+    function _enableDepositAuth() internal returns (address authorizer) {
+        authorizer = vm.addr(AUTHORIZER_KEY);
+        vm.startPrank(admin);
+        portal.setDepositAuthorizer(authorizer, true);
+        portal.setDepositAuthMode(true);
+        vm.stopPrank();
+    }
+
+    /// @dev Creates a funded depositor with no portal role that has approved the portal.
+    function _newDepositor(string memory name) internal returns (address depositor) {
+        depositor = makeAddr(name);
+        vm.prank(pathUSDAdmin);
+        pathUSD.mint(depositor, 10_000e6);
+        vm.prank(depositor);
+        pathUSD.approve(address(portal), type(uint256).max);
+    }
+
+    function _authorizedDeposit(address depositor) internal returns (AuthorizedDeposit memory) {
+        return AuthorizedDeposit({
+            depositor: depositor,
+            token: address(pathUSD),
+            amount: 1000e6,
+            keyIndex: _ensureEncryptionKey(portal),
+            payload: _depositPayload(makeAddr("zone recipient"), bytes32("authorized")),
+            refund: depositor,
+            nonce: portal.depositAuthorizationNonce(depositor),
+            validBefore: uint64(block.timestamp + 60)
+        });
+    }
+
+    /// @dev Derives the EIP-712 digest from the TIP-1151 definition, independently of the portal.
+    function _depositAuthorizationDigest(AuthorizedDeposit memory d)
+        internal
+        view
+        returns (bytes32)
+    {
+        bytes32 payloadHash = keccak256(
+            abi.encode(
+                d.payload.ephemeralPubkeyX,
+                d.payload.ephemeralPubkeyYParity,
+                keccak256(d.payload.ciphertext),
+                d.payload.nonce,
+                d.payload.tag
+            )
+        );
+        bytes32 structHash = keccak256(
+            abi.encode(
+                DEPOSIT_AUTHORIZATION_TYPEHASH,
+                d.depositor,
+                d.token,
+                d.amount,
+                d.keyIndex,
+                payloadHash,
+                d.refund,
+                d.nonce,
+                d.validBefore
+            )
+        );
+        bytes32 domainSeparator = keccak256(
+            abi.encode(
+                EIP712_DOMAIN_TYPEHASH,
+                keccak256("ZonePortal"),
+                keccak256("1"),
+                block.chainid,
+                address(portal)
+            )
+        );
+        return keccak256(abi.encodePacked("\x19\x01", domainSeparator, structHash));
+    }
+
+    function _authorize(AuthorizedDeposit memory d) internal returns (DepositAuthorization memory) {
+        return DepositAuthorization({
+            nonce: d.nonce,
+            validBefore: d.validBefore,
+            signature: _sign(AUTHORIZER_KEY, _depositAuthorizationDigest(d))
+        });
+    }
+
+    function _depositAuthorized(
+        AuthorizedDeposit memory d,
+        DepositAuthorization memory authorization
+    )
+        internal
+        returns (bytes32)
+    {
+        vm.prank(d.depositor);
+        return portal.depositAuthorized(
+            d.token, d.amount, d.keyIndex, d.payload, d.refund, authorization
+        );
+    }
+
+    function test_depositAuthorized_admitsUnlistedDepositorWithLegacyQueueEncoding() public {
+        address authorizer = _enableDepositAuth();
+        address depositor = _newDepositor("signed-up user");
+        assertTrue(portal.hasRole(depositor, Role.None));
+        AuthorizedDeposit memory d = _authorizedDeposit(depositor);
+        DepositAuthorization memory authorization = _authorize(d);
+
+        assertEq(
+            portal.depositAuthorizationDigest(
+                d.depositor,
+                d.token,
+                d.amount,
+                d.keyIndex,
+                d.payload,
+                d.refund,
+                d.nonce,
+                d.validBefore
+            ),
+            _depositAuthorizationDigest(d)
+        );
+
+        bytes32 expectedHash = keccak256(
+            abi.encode(
+                DepositType.Deposit,
+                Deposit({
+                    token: d.token,
+                    sender: depositor,
+                    amount: d.amount - portal.calculateDepositFee(),
+                    tempoRefundRecipient: d.refund,
+                    keyIndex: d.keyIndex,
+                    encrypted: d.payload
+                }),
+                portal.currentDepositQueueHash()
+            )
+        );
+        uint64 depositNumber = portal.depositCount() + 1;
+
+        vm.expectEmit(true, true, true, true, address(portal));
+        emit IZonePortal.DepositAuthorized(depositNumber, depositor, authorizer, 0);
+        bytes32 hash = _depositAuthorized(d, authorization);
+
+        assertEq(hash, expectedHash);
+        assertEq(portal.currentDepositQueueHash(), expectedHash);
+        assertEq(portal.depositCount(), depositNumber);
+        assertEq(portal.depositAuthorizationNonce(depositor), 1);
+        assertEq(pathUSD.balanceOf(address(portal)), d.amount);
+    }
+
+    function test_depositAuthorized_revertsWhenModeDisabled() public {
+        address depositor = _newDepositor("signed-up user");
+        vm.prank(admin);
+        portal.setDepositAuthorizer(vm.addr(AUTHORIZER_KEY), true);
+        AuthorizedDeposit memory d = _authorizedDeposit(depositor);
+        DepositAuthorization memory authorization = _authorize(d);
+
+        vm.expectRevert(IZonePortal.DepositAuthorizationNotEnforced.selector);
+        _depositAuthorized(d, authorization);
+    }
+
+    function test_deposit_requiresAuthorizationForAllowedAccountInAuthMode() public {
+        _enableDepositAuth();
+        assertTrue(portal.hasRole(alice, Role.Account));
+
+        vm.startPrank(alice);
+        pathUSD.approve(address(portal), 1000e6);
+        vm.expectRevert(IZonePortal.DepositAuthorizationRequired.selector);
+        _deposit(portal, address(pathUSD), alice, 1000e6, bytes32(0), alice);
+        vm.stopPrank();
+    }
+
+    function test_deposit_exemptsGatewayOnlyWhileGatewayModeEnforced() public {
+        _enableDepositAuth();
+        pathUSD.mint(address(zoneGateway), 2);
+
+        vm.startPrank(address(zoneGateway));
+        pathUSD.approve(address(portal), 2);
+        _deposit(portal, address(pathUSD), alice, 1, bytes32(0), alice);
+        vm.stopPrank();
+        assertEq(pathUSD.balanceOf(address(portal)), 1);
+
+        vm.prank(admin);
+        portal.setGatewayMode(false);
+        vm.prank(address(zoneGateway));
+        vm.expectRevert(IZonePortal.DepositAuthorizationRequired.selector);
+        _deposit(portal, address(pathUSD), alice, 1, bytes32(0), alice);
+    }
+
+    function test_depositAuthorized_enforcesExpiryAndTtlBoundaries() public {
+        _enableDepositAuth();
+        address depositor = _newDepositor("signed-up user");
+        AuthorizedDeposit memory d = _authorizedDeposit(depositor);
+
+        d.validBefore = uint64(block.timestamp);
+        DepositAuthorization memory authorization = _authorize(d);
+        vm.expectRevert(
+            abi.encodeWithSelector(IZonePortal.DepositAuthorizationExpired.selector, d.validBefore)
+        );
+        _depositAuthorized(d, authorization);
+
+        d.validBefore = uint64(block.timestamp + portal.MAX_DEPOSIT_AUTHORIZATION_TTL() + 1);
+        authorization = _authorize(d);
+        vm.expectRevert(
+            abi.encodeWithSelector(IZonePortal.DepositAuthorizationTooLong.selector, d.validBefore)
+        );
+        _depositAuthorized(d, authorization);
+
+        d.validBefore = uint64(block.timestamp + portal.MAX_DEPOSIT_AUTHORIZATION_TTL());
+        _depositAuthorized(d, _authorize(d));
+        assertEq(portal.depositAuthorizationNonce(depositor), 1);
+    }
+
+    function test_depositAuthorized_noncesSkipAndInvalidateLowerValues() public {
+        _enableDepositAuth();
+        address depositor = _newDepositor("signed-up user");
+        AuthorizedDeposit memory d = _authorizedDeposit(depositor);
+        d.nonce = 3;
+        DepositAuthorization memory lower = _authorize(d);
+
+        d.nonce = 5;
+        DepositAuthorization memory higher = _authorize(d);
+        _depositAuthorized(d, higher);
+        assertEq(portal.depositAuthorizationNonce(depositor), 6);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(IZonePortal.DepositAuthorizationNonceInvalid.selector, 5, 6)
+        );
+        _depositAuthorized(d, higher);
+
+        d.nonce = 3;
+        vm.expectRevert(
+            abi.encodeWithSelector(IZonePortal.DepositAuthorizationNonceInvalid.selector, 3, 6)
+        );
+        _depositAuthorized(d, lower);
+
+        d.nonce = type(uint64).max;
+        DepositAuthorization memory maximum = _authorize(d);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IZonePortal.DepositAuthorizationNonceInvalid.selector, type(uint64).max, 6
+            )
+        );
+        _depositAuthorized(d, maximum);
+    }
+
+    function test_depositAuthorized_rejectsAuthorizationCopiedByAnotherAccount() public {
+        _enableDepositAuth();
+        AuthorizedDeposit memory d = _authorizedDeposit(_newDepositor("signed-up user"));
+        DepositAuthorization memory authorization = _authorize(d);
+
+        d.depositor = _newDepositor("front-runner");
+        vm.expectPartialRevert(IZonePortal.UnauthorizedDepositAuthorizer.selector);
+        _depositAuthorized(d, authorization);
+    }
+
+    function test_depositAuthorized_rejectsEachMutatedSignedField() public {
+        _enableDepositAuth();
+        AuthorizedDeposit memory original = _authorizedDeposit(_newDepositor("signed-up user"));
+        DepositAuthorization memory authorization = _authorize(original);
+
+        for (uint256 field; field < 6; ++field) {
+            AuthorizedDeposit memory d = _authorizedDeposit(original.depositor);
+            if (field == 0) d.token = address(token1);
+            if (field == 1) d.amount += 1;
+            if (field == 2) d.keyIndex += 1;
+            if (field == 3) d.payload.ciphertext[0] = 0xff;
+            if (field == 4) d.refund = alice;
+            if (field == 5) authorization.validBefore -= 1;
+            vm.expectPartialRevert(IZonePortal.UnauthorizedDepositAuthorizer.selector);
+            _depositAuthorized(d, authorization);
+        }
+
+        authorization = _authorize(original);
+        authorization.nonce = 1;
+        vm.expectPartialRevert(IZonePortal.UnauthorizedDepositAuthorizer.selector);
+        _depositAuthorized(original, authorization);
+
+        authorization.nonce = 0;
+        vm.chainId(block.chainid + 1);
+        vm.expectPartialRevert(IZonePortal.UnauthorizedDepositAuthorizer.selector);
+        _depositAuthorized(original, authorization);
+    }
+
+    function test_depositAuthorized_rejectsRevokedAuthorizer() public {
+        address authorizer = _enableDepositAuth();
+        AuthorizedDeposit memory d = _authorizedDeposit(_newDepositor("signed-up user"));
+        DepositAuthorization memory authorization = _authorize(d);
+
+        vm.prank(admin);
+        portal.setDepositAuthorizer(authorizer, false);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(IZonePortal.UnauthorizedDepositAuthorizer.selector, authorizer)
+        );
+        _depositAuthorized(d, authorization);
+    }
+
+    function test_depositAuthorized_rejectsMalformedSignature() public {
+        _enableDepositAuth();
+        AuthorizedDeposit memory d = _authorizedDeposit(_newDepositor("signed-up user"));
+        DepositAuthorization memory authorization = _authorize(d);
+        authorization.signature = hex"01";
+
+        vm.expectRevert(IZonePortal.InvalidDepositAuthorization.selector);
+        _depositAuthorized(d, authorization);
+    }
+
+    function test_depositAuthorized_acceptsP256Authorizer() public {
+        (uint256 x, uint256 y) = vm.publicKeyP256(P256_AUTHORIZER_KEY);
+        address authorizer = address(uint160(uint256(keccak256(abi.encodePacked(x, y)))));
+        vm.startPrank(admin);
+        portal.setDepositAuthorizer(authorizer, true);
+        portal.setDepositAuthMode(true);
+        vm.stopPrank();
+
+        address depositor = _newDepositor("passkey user");
+        AuthorizedDeposit memory d = _authorizedDeposit(depositor);
+        (bytes32 r, bytes32 s) = vm.signP256(P256_AUTHORIZER_KEY, _depositAuthorizationDigest(d));
+        if (uint256(s) > P256_ORDER / 2) s = bytes32(P256_ORDER - uint256(s));
+        DepositAuthorization memory authorization = DepositAuthorization({
+            nonce: d.nonce,
+            validBefore: d.validBefore,
+            signature: abi.encodePacked(uint8(0x01), r, s, x, y, uint8(0))
+        });
+
+        vm.expectEmit(true, true, true, true, address(portal));
+        emit IZonePortal.DepositAuthorized(portal.depositCount() + 1, depositor, authorizer, 0);
+        _depositAuthorized(d, authorization);
+    }
+
+    function test_depositAuthorized_revertsWhilePaused() public {
+        _enableDepositAuth();
+        AuthorizedDeposit memory d = _authorizedDeposit(_newDepositor("signed-up user"));
+        DepositAuthorization memory authorization = _authorize(d);
+        vm.prank(admin);
+        portal.pause();
+
+        vm.expectRevert(IZonePortal.PortalIsPaused.selector);
+        _depositAuthorized(d, authorization);
+    }
+
+    function test_setDepositAuthMode_isAdminOnlyAndFrozenByAbdication() public {
+        vm.prank(alice);
+        vm.expectRevert(IZonePortal.NotAdmin.selector);
+        portal.setDepositAuthMode(true);
+
+        vm.expectEmit(false, false, false, true, address(portal));
+        emit IZonePortal.DepositAuthModeUpdated(true);
+        vm.prank(admin);
+        portal.setDepositAuthMode(true);
+        assertTrue(portal.isDepositAuthEnforced());
+        assertTrue(portal.isAccessEnforced());
+
+        vm.prank(admin);
+        portal.abdicate(Capability.AccessPolicy);
+        vm.warp(block.timestamp + 30 days);
+        vm.prank(admin);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IZonePortal.CapabilityAbdicated.selector, Capability.AccessPolicy
+            )
+        );
+        portal.setDepositAuthMode(false);
+    }
+
+    function test_setDepositAuthorizer_validatesAccountAndRole() public {
+        address authorizer = vm.addr(AUTHORIZER_KEY);
+        vm.prank(alice);
+        vm.expectRevert(IZonePortal.NotAdmin.selector);
+        portal.setDepositAuthorizer(authorizer, true);
+
+        vm.startPrank(admin);
+        vm.expectRevert();
+        portal.setDepositAuthorizer(address(0), true);
+        vm.expectRevert();
+        portal.setDepositAuthorizer(ZONE_MESSENGER_ADDRESS, true);
+        vm.expectRevert();
+        portal.setDepositAuthorizer(alice, true);
+        vm.expectRevert();
+        portal.setDepositAuthorizer(sequencer, false);
+
+        vm.expectEmit(true, false, false, true, address(portal));
+        emit IZonePortal.RoleUpdated(authorizer, Role.None, Role.DepositAuthorizer);
+        portal.setDepositAuthorizer(authorizer, true);
+        vm.expectRevert();
+        portal.setAllowedAccount(authorizer, true);
+
+        vm.expectEmit(true, false, false, true, address(portal));
+        emit IZonePortal.RoleUpdated(authorizer, Role.DepositAuthorizer, Role.None);
+        portal.setDepositAuthorizer(authorizer, false);
+        vm.stopPrank();
+        assertTrue(portal.hasRole(alice, Role.Account));
+    }
+
+    function test_setDepositAuthorizer_removalSurvivesAbdication() public {
+        address authorizer = _enableDepositAuth();
+        vm.prank(admin);
+        portal.abdicate(Capability.AccessPolicy);
+        vm.warp(block.timestamp + 30 days);
+
+        vm.startPrank(admin);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IZonePortal.CapabilityAbdicated.selector, Capability.AccessPolicy
+            )
+        );
+        portal.setDepositAuthorizer(makeAddr("replacement"), true);
+
+        portal.setDepositAuthorizer(authorizer, false);
+        vm.stopPrank();
+        assertTrue(portal.hasRole(authorizer, Role.None));
+    }
+
+    function _depositBounceBackTo(
+        address recipient,
+        uint128 amount
+    )
+        internal
+        returns (Withdrawal memory withdrawal)
+    {
+        withdrawal = Withdrawal({
+            token: address(pathUSD),
+            senderTag: keccak256(abi.encodePacked(address(0), bytes32(0))),
+            to: recipient,
+            amount: amount,
+            memo: bytes32(0),
+            gasLimit: 0,
+            fallbackNonce: 0,
+            callbackData: "",
+            encryptedSender: ""
+        });
+        _enqueueWithdrawal(withdrawal);
+    }
+
+    function test_depositBounceBack_paysUnlistedRefundRecipientInAuthMode() public {
+        vm.fee(0);
+        uint128 amount = 500e6;
+        _fundCallbackWithdrawal(amount);
+        address recipient = makeAddr("authorized refund recipient");
+        Withdrawal memory withdrawal = _depositBounceBackTo(recipient, amount);
+        _enableDepositAuth();
+
+        portal.processWithdrawals(_singleWithdrawal(withdrawal), bytes32(0));
+
+        assertEq(pathUSD.balanceOf(recipient), amount);
+        assertEq(portal.refunds(address(pathUSD), recipient), 0);
+    }
+
+    function test_claimRefund_allowsUnlistedRecipientInAuthMode() public {
+        vm.fee(0);
+        uint128 amount = 500e6;
+        _fundCallbackWithdrawal(amount);
+        address recipient = makeAddr("authorized refund recipient");
+        Withdrawal memory withdrawal = _depositBounceBackTo(recipient, amount);
+        _enableDepositAuth();
+
+        vm.mockCall(
+            address(pathUSD),
+            abi.encodeWithSelector(ITIP20.transfer.selector, recipient, amount),
+            abi.encode(false)
+        );
+        portal.processWithdrawals(_singleWithdrawal(withdrawal), bytes32(0));
+        assertEq(portal.refunds(address(pathUSD), recipient), amount);
+        vm.clearMockedCalls();
+
+        vm.prank(recipient);
+        assertEq(portal.claimRefund(address(pathUSD)), amount);
+        assertEq(pathUSD.balanceOf(recipient), amount);
     }
 
     function _setZoneGasRate(uint128 rate) internal {
