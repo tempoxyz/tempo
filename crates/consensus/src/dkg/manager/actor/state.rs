@@ -1097,8 +1097,7 @@ impl Player {
 
     /// Handle an incoming dealer message, persisting it before returning its ack.
     ///
-    /// Returns None if the dealing was already processed without a cached ack.
-    /// Returns protocol validation errors. Storage failures panic.
+    /// Returns protocol validation errors. Storage failures and inconsistent ACK state panic.
     pub(super) async fn receive_dealing<TContext>(
         &mut self,
         storage: &mut Storage<TContext>,
@@ -1106,33 +1105,27 @@ impl Player {
         dealer: PublicKey,
         pub_msg: DealerPubMsg<MinSig>,
         priv_msg: DealerPrivMsg,
-    ) -> eyre::Result<Option<PlayerAck<PublicKey>>>
+    ) -> eyre::Result<PlayerAck<PublicKey>>
     where
         TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
     {
         // Cached acks are backed by a persisted dealing.
         if let Some(ack) = self.acks.get(&dealer) {
-            return Ok(Some(ack.clone()));
+            return Ok(ack.clone());
         }
 
-        let Some(ack) = self
+        let ack = self
             .player
             .dealer_message::<N3f1>(dealer.clone(), pub_msg.clone(), priv_msg.clone())
             .wrap_err("applying dealer message to player instance failed")?
-        else {
-            info!(
-                %dealer,
-                "dealer message was already processed without a cached acknowledgement; ignoring",
-            );
-            return Ok(None);
-        };
+            .expect("dealer message was already processed without a cached acknowledgement");
 
         storage
             .append_dealing(epoch, dealer.clone(), pub_msg, priv_msg)
             .await;
 
         self.acks.insert(dealer, ack.clone());
-        Ok(Some(ack))
+        Ok(ack)
     }
 
     /// Replay an already-persisted dealer message (updates in-memory state only).
@@ -1459,7 +1452,6 @@ mod tests {
                     private,
                 )
                 .await
-                .unwrap()
                 .unwrap();
             drop(storage);
             drop(player);

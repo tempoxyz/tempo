@@ -903,8 +903,7 @@ where
                         .receive_dealing(storage, epoch, me.clone(), pub_msg, priv_msg)
                         .await
                     {
-                        Ok(Some(ack)) => ack,
-                        Ok(None) => continue,
+                        Ok(ack) => ack,
                         Err(error) => {
                             warn!(%error, "failed to process our own dealing");
                             continue;
@@ -968,16 +967,13 @@ where
                 if let Some(player_state) = player_state {
                     info!("received message from a dealer");
                     self.metrics.shares_received.metric().inc();
-                    let Some(ack) = player_state
+                    let ack = player_state
                         .receive_dealing(storage, round.epoch(), from.clone(), pub_msg, priv_msg)
                         .await
                         .inspect_err(|error| {
                             commonware_p2p::block!(self.config.blocker, from.clone(), %error, "invalid DKG dealing");
                         })
-                        .wrap_err("invalid DKG dealing")?
-                    else {
-                        return Ok(());
-                    };
+                        .wrap_err("invalid DKG dealing")?;
 
                     let sent = round_channel.send(
                         Recipients::One(from.clone()),
