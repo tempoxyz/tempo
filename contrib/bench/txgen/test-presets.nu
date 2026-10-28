@@ -245,6 +245,38 @@ for bad in [[{name: Big, share: 1}] [{name: a, share: 0}] [{name: a, share: 1, m
     }
 }
 rm -rf $multi_dir
+# Per-instance weight overrides: merged over neobank-generic's weights, zero drops a template.
+let pipeline_dir = (mktemp -d)
+let presets_dir = ($multi_spec.spec_path | path dirname)
+let plain = (txgen-neobank-instances ($presets_dir | path join neobank instances-pipeline-plain-cards.yml))
+assert equal ($plain | get name) [card-heavy earn-app remittance payroll-earn settlement]
+assert equal ($plain | get share | math sum) 100
+let base_mix = ((^uv run --no-project --with yq==3.4.3 yq -c .mix ($presets_dir | path join neobank-generic.yml)) | from json)
+let card_mix = (txgen-neobank-instance-mix $base_mix ($plain | first))
+assert not ("card_settlement" in ($card_mix | get template))
+assert equal ($card_mix | where template == card_spend | get 0.weight) 13
+assert equal ($card_mix | where template == cash_out | get 0.weight) 10
+with-env {TXGEN_NEOBANK_INSTANCES: "contrib/bench/txgen/presets/neobank/instances-pipeline-plain-cards.yml"} {
+    let path = (txgen-prepare-public-mix-preset $multi_spec.spec_path 1000 40 6 1337 --out-dir $pipeline_dir)
+    let weights = (txgen-workload-metadata-args neobank-multi $path | last | str replace "workload_mix_weights=" "" | from json)
+    assert not ("card-heavy/card_settlement" in ($weights | columns))
+    assert ("card-heavy/card_spend" in ($weights | columns))
+    let total = ($weights | values | math sum)
+    for instance in $plain {
+        let weight = ($weights | items { |key, value| {key: $key, value: $value} } | where { |entry| $entry.key | str starts-with $"($instance.name)/" } | get value | math sum)
+        assert ((($weight / $total) - ($instance.share / 100) | math abs) < 0.000001)
+    }
+    # card-heavy drops card_settlement and the shard templates; others keep theirs.
+    assert equal ((open $path).templates | columns | where { |name| $name =~ '/card_settlement_' } | length) 0
+}
+for bad in [{card_shards: 1} {card_spend: -1} {zone_deposit: 1}] {
+    {instances: [{name: a, share: 1, modules: [spend], weights: $bad}]} | to yaml | save -f ($pipeline_dir | path join bad.yml)
+    assert (try { txgen-neobank-instances ($pipeline_dir | path join bad.yml); false } catch { true })
+}
+{instances: [{name: a, share: 1, modules: [cashout], weights: {cash_out: 0}}]} | to yaml | save -f ($pipeline_dir | path join bad.yml)
+assert (try { txgen-neobank-instance-mix $base_mix (txgen-neobank-instances ($pipeline_dir | path join bad.yml) | first); false } catch { true })
+assert equal (txgen-neobank-instances ($presets_dir | path join neobank instances-pipeline.yml) | get share | math sum) 100
+rm -rf $pipeline_dir
 # Batch payouts: a 16-sender treasury pays 32 recipients per transaction (the txpool's
 # call limit); reward batches stop at 16 Earn deposits to fit the transaction gas cap.
 let batch_dir = (mktemp -d)
@@ -347,4 +379,9 @@ let tally = (txgen-zone-to-zone-tally [
     {status: "0x0", gasUsed: "0x10", logs: []}
 ])
 assert equal $tally {transfers: 2, delivered: 1, bounced: 1, plain_withdrawals: 1, reverted: 1, transfer_gas: 470000}
+# bench-env TXGEN_* values are read as bash's export reads them (quotes stripped, $VAR expanded).
+with-env {TXGEN_TEST_BASE: "/x"} {
+    assert equal (txgen-bench-env-txgen-vars "") {}
+    assert equal (txgen-bench-env-txgen-vars "TXGEN_NEOBANK_MODULES='spend,cashout' BENCH_TPS_SCHEDULE=200:30s TXGEN_ZONE_COUNT=\"8\" TXGEN_NEOBANK_INSTANCES=$TXGEN_TEST_BASE/i.yml") {TXGEN_NEOBANK_MODULES: "spend,cashout", TXGEN_ZONE_COUNT: "8", TXGEN_NEOBANK_INSTANCES: "/x/i.yml"}
+}
 print "Preset, policy setup, state-bloat, and workload metadata checks passed"
