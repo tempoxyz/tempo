@@ -341,11 +341,14 @@ fn extract_zstd_tar_archive(
     archive.set_overwrite(overwrite);
 
     let mut files = BTreeSet::new();
+    // Directories are unpacked last, deepest first, so a read-only directory mode does not
+    // block writing its files (as `Archive::unpack` does).
+    let mut directories = Vec::new();
     for entry in archive
         .entries()
         .wrap_err("failed to read consensus archive entries")?
     {
-        let mut entry = entry.wrap_err("failed to read consensus archive entry")?;
+        let entry = entry.wrap_err("failed to read consensus archive entry")?;
         let path = entry
             .path()
             .wrap_err("invalid consensus archive entry path")?
@@ -363,7 +366,10 @@ fn extract_zstd_tar_archive(
             .filter(|c| matches!(c, Component::Normal(_)))
             .collect();
         match entry_type {
-            tar::EntryType::Directory => {}
+            tar::EntryType::Directory => {
+                directories.push((entry, path));
+                continue;
+            }
             // `tar::Builder` emits `GNUSparse` for files with holes by default.
             tar::EntryType::Regular | tar::EntryType::Continuous | tar::EntryType::GNUSparse => {
                 ensure!(
@@ -381,21 +387,33 @@ fn extract_zstd_tar_archive(
                 path.display(),
             ),
         }
-        let unpacked = entry.unpack_in(target_dir).wrap_err_with(|| {
-            format!(
-                "failed to extract consensus archive entry {} into {}",
-                path.display(),
-                target_dir.display()
-            )
-        })?;
-        ensure!(
-            unpacked,
-            "consensus archive entry {} escapes {}",
-            path.display(),
-            target_dir.display(),
-        );
+        unpack_entry_in(entry, &path, target_dir)?;
+    }
+    for (entry, path) in directories.into_iter().rev() {
+        unpack_entry_in(entry, &path, target_dir)?;
     }
     Ok(files)
+}
+
+fn unpack_entry_in<R: io::Read>(
+    mut entry: tar::Entry<'_, R>,
+    path: &Path,
+    target_dir: &Path,
+) -> eyre::Result<()> {
+    let unpacked = entry.unpack_in(target_dir).wrap_err_with(|| {
+        format!(
+            "failed to extract consensus archive entry {} into {}",
+            path.display(),
+            target_dir.display()
+        )
+    })?;
+    ensure!(
+        unpacked,
+        "consensus archive entry {} escapes {}",
+        path.display(),
+        target_dir.display(),
+    );
+    Ok(())
 }
 
 /// Verifies that `extracted_files` are exactly the manifest's `output_files` and that each
@@ -493,6 +511,8 @@ fn write_test_archive(bytes: &[u8]) -> tempfile::NamedTempFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::os::unix::fs::PermissionsExt;
 
     use alloy_primitives::B256;
     use clap::CommandFactory;
@@ -1151,5 +1171,38 @@ mod tests {
             fs::read(target.path().join("partition/00")).unwrap(),
             expected
         );
+    }
+
+    #[test]
+    fn extract_zstd_tar_archive_applies_read_only_directory_mode_after_files() {
+        let target = tempfile::tempdir().unwrap();
+        let mut builder = tar::Builder::new(zstd::Encoder::new(Vec::new(), 0).unwrap());
+        let mut dir = tar::Header::new_gnu();
+        dir.set_entry_type(tar::EntryType::Directory);
+        dir.set_mode(0o555);
+        dir.set_size(0);
+        builder
+            .append_data(&mut dir, "partition", io::empty())
+            .unwrap();
+        let mut file = tar::Header::new_gnu();
+        file.set_mode(0o644);
+        file.set_size(3);
+        builder
+            .append_data(&mut file, "partition/00", &mut &b"abc"[..])
+            .unwrap();
+        let archive_file = finish_test_archive(builder);
+
+        let result = extract_zstd_tar_archive(archive_file.path(), target.path(), false);
+        let partition = target.path().join("partition");
+        let mode = fs::metadata(&partition).map(|m| m.permissions().mode() & 0o777);
+        // Let the tempdir clean up.
+        fs::set_permissions(&partition, fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert_eq!(
+            result.unwrap(),
+            BTreeSet::from([PathBuf::from("partition/00")])
+        );
+        assert_eq!(fs::read(partition.join("00")).unwrap(), b"abc");
+        assert_eq!(mode.unwrap(), 0o555);
     }
 }
