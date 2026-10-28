@@ -656,7 +656,12 @@ fn sync_directory(directory: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
 
+    use alloy_consensus::{Header, Sealable as _};
     use alloy_primitives::{Bytes, U256};
+    use alloy_provider::{Provider as _, ProviderBuilder};
+    use alloy_transport::mock::Asserter;
+    use reth_provider::test_utils::MockEthProvider;
+    use tempo_primitives::{TempoHeader, TempoPrimitives};
 
     use super::*;
 
@@ -692,11 +697,6 @@ mod tests {
 
     #[tokio::test]
     async fn collection_returns_durable_witness_and_skips_settled_backfill() {
-        use alloy_provider::{Provider as _, ProviderBuilder};
-        use alloy_transport::mock::Asserter;
-        use reth_provider::test_utils::MockEthProvider;
-        use tempo_primitives::TempoPrimitives;
-
         let directory = tempfile::tempdir().unwrap();
         let expected = proof(2, B256::repeat_byte(2));
         let store = Arc::new(ProofStore::open(directory.path().to_path_buf(), 1).unwrap());
@@ -1057,12 +1057,6 @@ mod tests {
 
     #[tokio::test]
     async fn background_collection_tries_pre_t15_blocks_once() {
-        use alloy_consensus::{Header, Sealable as _};
-        use alloy_provider::{Provider as _, ProviderBuilder};
-        use alloy_transport::mock::Asserter;
-        use reth_provider::test_utils::MockEthProvider;
-        use tempo_primitives::{TempoHeader, TempoPrimitives};
-
         let provider = MockEthProvider::<TempoPrimitives>::new()
             .with_chain_spec((*t15_chain_spec(1_000)).clone());
         let mut hashes = Vec::new();
