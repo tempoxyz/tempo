@@ -59,6 +59,17 @@ This fixture settles atomically within each operation; the sizing window spreads
 load across portal state and does not introduce a settlement delay. Real capacity
 planning also needs actual settlement latency and workload composition.
 
+## Zone -> zone
+
+`presets/zone-to-zone.yml` and `zone-to-zone-hot.yml` route zone A withdrawals into zone B
+through withdrawal callbacks, using `ZoneToZoneFixture.sol`: `CallbackPortalFixture` (this
+portal fixture with configurable messenger, access mode and roles), `ZoneMessengerFixture` (the
+shared ZoneMessenger rejects portals the ZoneFactory did not create, so this copy relays for
+fixture portals), `ZoneToZoneGatewayFixture` (deposits the callback amount into zone B and, for
+closed source zones, returns one unit to zone A) and `ZoneToZoneSettlementFixture`. The portals
+still run the production runtime, including callback delivery, bounce-backs and the closed-access
+return-deposit check. The preset file header lists the knobs and limits.
+
 ## Rebuild
 
 The artifacts use solc 0.8.30, optimizer 200 runs, Cancun EVM:
@@ -70,6 +81,12 @@ forge build --root contrib/bench/txgen/zones --contracts . \
 for contract in PortalFixture SettlementFixture; do
   jq '{abi, bytecode: {object: .bytecode.object}}' \
     ".bench-tmp/zones-out/PortalFixture.sol/$contract.json" \
+    > "contrib/bench/txgen/zones/$contract.json"
+done
+for contract in CallbackPortalFixture ZoneMessengerFixture ZoneToZoneGatewayFixture \
+  ZoneToZoneSettlementFixture; do
+  jq '{abi, bytecode: {object: .bytecode.object}}' \
+    ".bench-tmp/zones-out/ZoneToZoneFixture.sol/$contract.json" \
     > "contrib/bench/txgen/zones/$contract.json"
 done
 jq '.abi | map(select(.name == "deposit" or .name == "processWithdrawals"))' \

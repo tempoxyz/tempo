@@ -85,17 +85,15 @@ pub fn sstore(cx: _, [key, value]: [Word]) -> Result {
     }
 
     let is_eip2200 = cx.state.feature(EvmFeatures::EIP2200);
-    if is_eip2200 && cx.gas.remaining() <= u64::from(cx.state.gas_params().get(GasId::CallStipend))
-    {
+    if is_eip2200 && cx.gas.remaining() <= cx.state.gas_params().get(GasId::CallStipend) {
         return Err(InstrStop::ReentrancySentryOOG);
     }
 
     cx.gas
-        .spend(cx.state.gas_params().get(GasId::SstoreStatic).into())?;
+        .spend(cx.state.gas_params().get(GasId::SstoreStatic))?;
 
     let skip_cold_load = cx.state.feature(EvmFeatures::EIP2929)
-        && cx.gas.remaining()
-            < u64::from(cx.state.gas_params().get(GasId::ColdStorageAdditionalCost));
+        && cx.gas.remaining() < cx.state.gas_params().get(GasId::ColdStorageAdditionalCost);
     let destination = cx.state.message().destination;
     let state_load = cx
         .state

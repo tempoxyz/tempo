@@ -8,8 +8,7 @@ set -Eeuo pipefail
 
 readonly L1_SNAPSHOT_SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly L1_SNAPSHOT_REPO_ROOT="$(cd -- "$L1_SNAPSHOT_SCRIPT_DIR/../../.." && pwd)"
-readonly L1_SNAPSHOT_SCHEMA=1
-readonly L1_SNAPSHOT_FUTURE_HARDFORK_TIME=4102444800
+readonly L1_SNAPSHOT_SCHEMA=2
 readonly L1_SNAPSHOT_ZONE_FACTORY="0x5aF2000000000000000000000000000000000000"
 readonly L1_SNAPSHOT_PORTAL_IMPL="0x5AD1000000000000000000000000000000000000"
 readonly L1_SNAPSHOT_VERIFIER="0x5a56000000000000000000000000000000000000"
@@ -74,17 +73,7 @@ l1_snapshot_resolve_hardfork() {
             || l1_snapshot_die "Tempo revision does not support hardfork '$requested'; supported: ${L1_SNAPSHOT_SUPPORTED_HARDFORKS[*]}"
     fi
 
-    L1_SNAPSHOT_HARDFORK_ARGS=()
-    local activation=0 selected=0
-    for hardfork in "${L1_SNAPSHOT_SUPPORTED_HARDFORKS[@]}"; do
-        if (( selected )); then
-            activation=$L1_SNAPSHOT_FUTURE_HARDFORK_TIME
-        fi
-        L1_SNAPSHOT_HARDFORK_ARGS+=("--${hardfork}-time" "$activation")
-        if [[ "$hardfork" == "$L1_SNAPSHOT_HARDFORK" ]]; then
-            selected=1
-        fi
-    done
+    L1_SNAPSHOT_HARDFORK_ARGS=(--hardfork "$L1_SNAPSHOT_HARDFORK")
 }
 
 l1_snapshot_sha256() {
@@ -400,13 +389,13 @@ l1_snapshot_required_files_exist() {
 l1_snapshot_validate_cache() {
     l1_snapshot_required_files_exist || return 1
 
-    jq -e --arg role a --arg key "$L1_SNAPSHOT_CACHE_KEY" \
+    jq -e --arg role a --arg key "$L1_SNAPSHOT_CACHE_KEY" --argjson schema "$L1_SNAPSHOT_SCHEMA" \
         --argjson expected "$L1_SNAPSHOT_EXPECTED_CONFIG" '
-        .schema == 1 and .role == $role and .cacheKey == $key and .config == $expected
+        .schema == $schema and .role == $role and .cacheKey == $key and .config == $expected
     ' "$L1_SNAPSHOT_A_MANIFEST" >/dev/null || { echo "validator A manifest does not match requested inputs" >&2; return 1; }
-    jq -e --arg role b --arg key "$L1_SNAPSHOT_CACHE_KEY" \
+    jq -e --arg role b --arg key "$L1_SNAPSHOT_CACHE_KEY" --argjson schema "$L1_SNAPSHOT_SCHEMA" \
         --argjson expected "$L1_SNAPSHOT_EXPECTED_CONFIG" '
-        .schema == 1 and .role == $role and .cacheKey == $key and .config == $expected
+        .schema == $schema and .role == $role and .cacheKey == $key and .config == $expected
     ' "$L1_SNAPSHOT_B_MANIFEST" >/dev/null || { echo "validator B manifest does not match requested inputs" >&2; return 1; }
 
     local generation_a generation_b patched_a patched_b raw_a raw_b allocation_a allocation_b
