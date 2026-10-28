@@ -16,6 +16,8 @@ pub mod evm;
 mod fee_manager;
 mod handler;
 mod instructions;
+#[cfg(feature = "jit")]
+pub mod jit;
 mod signature_gas;
 #[cfg(test)]
 mod test_utils;
@@ -179,7 +181,8 @@ impl BlockExecutorFactory for TempoEvmConfig {
     {
         let ext = self.evm_factory.evm_ext(TempoEvmExt::default());
         let precompiles = self.evm_factory.precompiles(&env, &ext);
-        evm2::Evm::new_with_execution_config_and_ext(
+        #[cfg_attr(not(feature = "jit"), allow(unused_mut))]
+        let mut evm = evm2::Evm::new_with_execution_config_and_ext(
             ExecutionConfig::for_spec_and_version(env.spec, env.version),
             env.spec,
             env.block,
@@ -187,7 +190,10 @@ impl BlockExecutorFactory for TempoEvmConfig {
             db,
             precompiles,
             ext,
-        )
+        );
+        #[cfg(feature = "jit")]
+        self.evm_factory.configure_jit(&mut evm);
+        evm
     }
 }
 
@@ -204,6 +210,20 @@ impl ConfigureEvm for TempoEvmConfig {
 
     fn block_assembler(&self) -> &Self::BlockAssembler {
         &self.block_assembler
+    }
+
+    #[cfg(feature = "jit")]
+    fn with_jit_support_enabled(mut self, enabled: bool) -> Self {
+        self.evm_factory.set_jit_support(enabled);
+        self
+    }
+
+    #[cfg(feature = "jit")]
+    fn jit_backend(&self) -> Option<&dyn reth_evm::JitBackend> {
+        self.evm_factory
+            .jit_backend()
+            .is_some()
+            .then_some(&self.evm_factory as _)
     }
 
     fn evm_env(&self, header: &TempoHeader) -> Result<EvmEnvFor<Self>, Self::Error> {

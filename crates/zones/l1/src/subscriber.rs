@@ -961,18 +961,33 @@ where
                 self.block_tracker
                     .record_with_portal_events(anchor, events.clone())?;
             }
+            // The shadow prover observer is best-effort: a slow prover must never hold up L1
+            // ingestion, which follower block import depends on.
             if let Some(sender) = &self.finalized_batch_submissions {
                 for submission in finalized_batches {
-                    sender
-                        .send(submission)
-                        .await
-                        .map_err(|_| L1SubscriberError::Fatal {
-                            block_number,
-                            stage: "finalized batch observer delivery",
-                            source: eyre::eyre!(
-                                "finalized batch submission observer is unavailable"
-                            ),
-                        })?;
+                    match sender.try_send(submission) {
+                        Ok(()) => {}
+                        Err(tokio::sync::mpsc::error::TrySendError::Full(submission)) => {
+                            self.subscriber_metrics
+                                .finalized_batch_submissions_dropped
+                                .increment(1);
+                            warn!(
+                                block_number,
+                                transaction_index = submission.transaction_index,
+                                log_index = submission.log_index,
+                                "Finalized batch observer is full; dropping submission"
+                            );
+                        }
+                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                            return Err(L1SubscriberError::Fatal {
+                                block_number,
+                                stage: "finalized batch observer delivery",
+                                source: eyre::eyre!(
+                                    "finalized batch submission observer is unavailable"
+                                ),
+                            });
+                        }
+                    }
                 }
             }
             // Publish derived L1 state only after the header has been admitted to every

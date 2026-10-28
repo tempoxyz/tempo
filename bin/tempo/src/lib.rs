@@ -71,7 +71,7 @@ use tempo_chainspec::{
 };
 use tempo_consensus::{feed as consensus_feed, run_consensus_stack, run_follow_stack};
 use tempo_contracts::precompiles::{ZONE_FACTORY_ADDRESS, initial_zone_factory_config};
-use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
+use tempo_evm::consensus::TempoConsensus;
 use tempo_faucet::faucet::{TempoFaucetExt, TempoFaucetExtApiServer};
 pub use tempo_node::{
     AccountInfoReader, AddressFilter, InvalidPoolTransactionError, PoolTransaction,
@@ -152,6 +152,12 @@ pub fn tempo_main() -> eyre::Result<()> {
 /// launched. See [`TempoOverrides`] for the currently supported hooks and an
 /// example that injects additional transaction pool validation.
 pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
+    // A JIT backend launches this binary as its out-of-process compiler.
+    #[cfg(feature = "jit")]
+    if tempo_evm::jit::maybe_run_jit_helper()?.is_break() {
+        return Ok(());
+    }
+
     install_crypto_provider();
 
     reth_cli_util::sigsegv_handler::install();
@@ -463,8 +469,15 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         ret
     });
 
-    let components =
-        |spec: Arc<TempoChainSpec>| (TempoEvmConfig::new(spec.clone()), TempoConsensus::new(spec));
+    let jit_args = match &cli.command {
+        Commands::ReExecute(cmd) => cmd.jit.clone(),
+        _ => Default::default(),
+    };
+    let components = move |spec: Arc<TempoChainSpec>| {
+        let (evm_config, _) = tempo_node::node::build_evm_config(spec.clone(), &jit_args, None)
+            .expect("failed to build EVM config");
+        (evm_config, TempoConsensus::new(spec))
+    };
 
     cli.run_with_components::<TempoNode>(components, async move |builder, args| {
         if let Some(value) = args.consensus.message_backlog {
@@ -556,11 +569,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                 None => node,
             }
         });
-        let payload_builder = tempo_node.payload_builder_builder();
-        let estimator = payload_builder
-            .estimator
-            .clone()
-            .unwrap_or_else(|| tempo_node::Estimator::new(payload_builder.build_time_multiplier));
+        let estimator = tempo_node.payload_builder_builder().resolve_estimator();
         // Share the overridden settings with both the payload builder and consensus.
         let tempo_node = tempo_node.with_estimator(estimator.clone());
         let executed_state = tempo_node.executed_state();
@@ -1191,7 +1200,10 @@ mod tests {
             node_cmd.ext.consensus.network_budget.into_duration(),
             Duration::from_millis(50)
         );
-        assert_eq!(node_cmd.ext.node_args.builder_build_time_multiplier, 1.35);
+        assert_eq!(
+            node_cmd.ext.node_args.builder_build_time_multiplier,
+            tempo_node::estimator::BuildTimeMultiplier::default()
+        );
 
         let mut cli = TempoCli::try_parse_from([
             "tempo",
@@ -1277,5 +1289,23 @@ mod tests {
                 .payload_builder_builder()
                 .enable_prewarming
         );
+    }
+
+    #[test]
+    fn parses_jit_args() {
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "node",
+            "--dev",
+            "--jit",
+            "--jit.hot-threshold",
+            "8",
+        ])
+        .unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+        assert!(node_cmd.jit.enabled);
+        assert_eq!(node_cmd.jit.hot_threshold, 8);
     }
 }

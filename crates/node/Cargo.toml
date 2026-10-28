@@ -165,3 +165,5 @@ trie-debug = [
 	"reth-node-core/trie-debug",
 	"tempo-payload-builder/trie-debug",
 ]
+# Native EVM2 JIT compilation; building requires LLVM.
+jit = ["tempo-evm/jit"]
