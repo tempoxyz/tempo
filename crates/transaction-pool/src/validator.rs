@@ -646,6 +646,16 @@ where
                     }
                 }
 
+                if let Err(err) = self.address_filter.check_recovered(
+                    transaction.transaction(),
+                    authorities.as_deref().unwrap_or_default(),
+                ) {
+                    return TransactionValidationOutcome::Invalid(
+                        transaction.into_transaction(),
+                        InvalidPoolTransactionError::other(err),
+                    );
+                }
+
                 // Additional nonce validations for non-protocol nonce keys
                 if let Some(nonce_key) = transaction.transaction().nonce_key()
                     && !nonce_key.is_zero()
@@ -1202,6 +1212,54 @@ mod tests {
                     err.downcast_other_ref::<TempoPoolTransactionError>(),
                     Some(TempoPoolTransactionError::AddressCheck { address })
                         if *address == checked_address
+                ));
+            }
+            _ => panic!("Expected Invalid outcome with address check error, got: {outcome:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn address_filter_checks_recovered_authorization_authority() {
+        use alloy_eips::eip7702::Authorization;
+        use alloy_signer::SignerSync;
+        use alloy_signer_local::PrivateKeySigner;
+        use tempo_primitives::transaction::TempoSignedAuthorization;
+
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let authority_signer = PrivateKeySigner::random();
+        let authority = authority_signer.address();
+        let authorization = Authorization {
+            chain_id: U256::ONE,
+            nonce: 0,
+            address: Address::random(),
+        };
+        let signature = authority_signer
+            .sign_hash_sync(&authorization.signature_hash())
+            .expect("authorization signing should succeed");
+        let transaction = TxBuilder::aa(Address::random())
+            .fee_token(PATH_USD_ADDRESS)
+            .authorization_list(vec![TempoSignedAuthorization::new_unchecked(
+                authorization,
+                signature.into(),
+            )])
+            .build();
+        let validator = setup_validator(&transaction, current_time)
+            .with_address_filter(AddressFilter::new([authority]));
+
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+
+        match outcome {
+            TransactionValidationOutcome::Invalid(_, ref err) => {
+                assert!(matches!(
+                    err.downcast_other_ref::<TempoPoolTransactionError>(),
+                    Some(TempoPoolTransactionError::AddressCheck { address })
+                        if *address == authority
                 ));
             }
             _ => panic!("Expected Invalid outcome with address check error, got: {outcome:?}"),

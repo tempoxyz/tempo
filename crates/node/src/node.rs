@@ -93,8 +93,9 @@ pub struct TempoNodeArgs {
     #[arg(long = "txpool.max-txs-per-lane", default_value_t = DEFAULT_MAX_TXS_PER_LANE)]
     pub max_txs_per_lane: usize,
 
-    /// Comma-separated addresses or a file containing comma/newline-separated addresses used for
-    /// transaction sender and direct call target checks.
+    /// Comma-separated addresses or a file containing comma/newline-separated addresses checked
+    /// against each transaction's sender, fee payer, direct call targets, authorization delegates
+    /// and authorities, and access list entries.
     #[arg(
         long = "txpool.filter",
         value_name = "ADDRESSES_OR_FILE",
