@@ -39,8 +39,8 @@ pub use fee_manager::{
 };
 pub use handler::{
     TempoBlockEnv, TempoBlockExt, TempoConfig, TempoConfigSelector, TempoEvmExt, TempoEvmTypes,
-    TempoTxResultExt, build_tempo_evm, tempo_execution_config, tempo_opcode_config,
-    tempo_tx_registry,
+    TempoTxResultExt, build_tempo_evm, configurable_account::account_access_gas,
+    tempo_execution_config, tempo_opcode_config, tempo_tx_registry,
 };
 pub use transaction::{ExecutionContext, RecoveredTxEnvelope, TempoAaTx, TempoEvmTx, TempoTxEnv};
 pub use transaction_error::{FeePaymentError, TempoInvalidTransaction};

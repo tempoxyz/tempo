@@ -490,6 +490,15 @@ where
         // Read-only context rejects every write; the caller sees a revert, not a panic.
         Err(TempoPrecompileError::InvalidConfigCommitmentWrite)
     }
+
+    fn with_warm_caller_info(
+        &mut self,
+        address: Address,
+        f: &mut dyn FnMut(&AccountInfo),
+    ) -> TempoResult<()> {
+        // Read-only context charges no gas and tracks no warm set, so every read is already free.
+        self.with_account_info(address, f)
+    }
 }
 
 #[cfg(test)]

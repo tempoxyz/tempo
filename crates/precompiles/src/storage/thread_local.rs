@@ -349,6 +349,22 @@ impl StorageCtx {
     pub fn is_retired_root(&self, address: Address) -> Result<bool> {
         Ok(self.spec().is_t14() && !self.config_commitment(address)?.is_zero())
     }
+
+    /// Reads the already-warm execution caller without charging account access twice.
+    pub(crate) fn with_warm_caller_info<T>(
+        address: Address,
+        mut f: impl FnMut(&AccountInfo) -> Result<T>,
+    ) -> Result<T> {
+        let mut result = None;
+        Self::try_with_storage(|s| {
+            s.with_warm_caller_info(address, &mut |info| result = Some(f(info)))
+        })?;
+        result.ok_or_else(|| {
+            TempoPrecompileError::Fatal(
+                "storage provider did not invoke the account callback".to_string(),
+            )
+        })?
+    }
 }
 
 /// RAII guard for atomic state mutation batching.

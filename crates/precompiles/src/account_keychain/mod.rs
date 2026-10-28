@@ -30,7 +30,7 @@ use crate::{
     configurable_account::{valid_account, valid_account_code},
     error::Result,
     has_duplicates_metered,
-    storage::{Handler, Mapping, Set, account_config_commitment},
+    storage::{Handler, Mapping, Set, StorageCtx, account_config_commitment},
     tip20_factory::TIP20Factory,
 };
 use alloy::primitives::{Address, B256, FixedBytes, TxKind, U256, keccak256};
@@ -268,6 +268,16 @@ impl AccountKeychain {
     ) -> Result<()> {
         let config = &config;
         self.ensure_admin_caller(msg_sender)?;
+        if self.storage.spec().is_t14() {
+            let spec = self.storage.spec();
+            let invalid_parent = StorageCtx::with_warm_caller_info(msg_sender, |info| {
+                let commitment = account_config_commitment(info, spec)?;
+                Ok(!commitment.is_zero() && !valid_account_code(info.code_hash, commitment))
+            })?;
+            if invalid_parent {
+                return Err(AccountKeychainError::invalid_key_id().into());
+            }
+        }
         let is_t3 = self.storage.spec().is_t3();
 
         // Validate inputs

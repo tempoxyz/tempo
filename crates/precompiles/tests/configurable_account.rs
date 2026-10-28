@@ -1,4 +1,5 @@
-//! Configurable account precompile calls through its ABI.
+//! Configurable account precompile calls through its ABI, and the keychain grants that depend on
+//! an account's configuration.
 
 use alloy::{
     primitives::{Address, B256, Bytes, address, keccak256},
@@ -7,12 +8,17 @@ use alloy::{
 use evm2::evm::{InMemoryDB, precompile::NoPrecompiles};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
-    CONFIGURABLE_ACCOUNT_ADDRESS, ConfigurableAccountError, IConfigurableAccount,
+    AccountKeychainError, CONFIGURABLE_ACCOUNT_ADDRESS, ConfigurableAccountError,
+    IAccountKeychain::{KeyRestrictions, SignatureType},
+    IConfigurableAccount,
 };
 use tempo_evm::{TempoEvmExt, build_tempo_evm};
 use tempo_precompiles::{
     Precompile,
-    configurable_account::{ConfigurableAccount, UpgradeEligibility, config, valid_account},
+    account_keychain::AccountKeychain,
+    configurable_account::{
+        CONFIGURABLE_ACCOUNT_CODE, ConfigurableAccount, UpgradeEligibility, config, valid_account,
+    },
     input_cost,
     storage::{ConfigCommitmentWriteGas, StorageCtx, hashmap::HashMapStorageProvider},
 };
@@ -634,4 +640,64 @@ fn upgrade_account_installs_a_version_one_commitment() {
         storage.get_events(CONFIGURABLE_ACCOUNT_ADDRESS),
         &[upgraded, updated]
     );
+}
+
+/// Registered parents keep grant authority with the protocol marker; incompatible code is rejected.
+/// Uncommitted parents retain their existing grant behavior.
+#[test]
+fn committed_parent_requires_protocol_marker_to_authorize_keys() {
+    let parent = Address::repeat_byte(0x11);
+    let key = Address::repeat_byte(0x22);
+    let codes = [
+        ("unchanged", Bytes::new()),
+        ("marker", CONFIGURABLE_ACCOUNT_CODE),
+        ("bytecode", Bytes::from_static(&[0x00])),
+        (
+            "delegation",
+            Bytes::from_iter(
+                [0xef, 0x01, 0x00]
+                    .into_iter()
+                    .chain(Address::repeat_byte(0x33)),
+            ),
+        ),
+    ];
+    for committed in [false, true] {
+        for (kind, code) in &codes {
+            let mut storage = t14_storage();
+            StorageCtx::enter(&mut storage, || {
+                let mut keychain = AccountKeychain::new();
+                keychain.initialize().unwrap();
+                keychain.set_tx_origin(parent).unwrap();
+                if committed {
+                    seed_commitment(parent, B256::repeat_byte(1));
+                }
+                if !code.is_empty() {
+                    StorageCtx.set_code(parent, code.clone()).unwrap();
+                }
+                let result = keychain.authorize_key(
+                    parent,
+                    key,
+                    SignatureType::Secp256k1,
+                    KeyRestrictions {
+                        expiry: u64::MAX,
+                        enforceLimits: false,
+                        limits: vec![],
+                        allowAnyCalls: true,
+                        allowedCalls: vec![],
+                    },
+                    None,
+                );
+                let expected =
+                    if committed && !code.is_empty() && *code != CONFIGURABLE_ACCOUNT_CODE {
+                        Err(AccountKeychainError::invalid_key_id().into())
+                    } else {
+                        Ok(())
+                    };
+                assert_eq!(
+                    result, expected,
+                    "committed={committed}, parent code: {kind}"
+                );
+            });
+        }
+    }
 }
