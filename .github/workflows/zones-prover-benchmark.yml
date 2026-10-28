@@ -265,13 +265,11 @@ jobs:
           path: feature-zones
           submodules: recursive
           persist-credentials: false
-      # The L1 is built at the baseline commit: an older baseline Zone rejects L1 fork
-      # schedules listing forks it doesn't know, while the feature Zone knows every older fork.
-      - name: Check out Tempo L1 at the baseline commit
+      - name: Check out Tempo with native Nitro verifier
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: tempoxyz/tempo
-          ref: ${{ steps.refs.outputs.baseline-sha }}
+          ref: main
           path: tempo
           submodules: recursive
           persist-credentials: false

@@ -9,7 +9,6 @@ set -Eeuo pipefail
 readonly L1_SNAPSHOT_SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly L1_SNAPSHOT_REPO_ROOT="$(cd -- "$L1_SNAPSHOT_SCRIPT_DIR/../../.." && pwd)"
 readonly L1_SNAPSHOT_SCHEMA=1
-readonly L1_SNAPSHOT_FUTURE_HARDFORK_TIME=4102444800
 readonly L1_SNAPSHOT_ZONE_FACTORY="0x5aF2000000000000000000000000000000000000"
 readonly L1_SNAPSHOT_PORTAL_IMPL="0x5AD1000000000000000000000000000000000000"
 readonly L1_SNAPSHOT_VERIFIER="0x5a56000000000000000000000000000000000000"
@@ -74,17 +73,9 @@ l1_snapshot_resolve_hardfork() {
             || l1_snapshot_die "Tempo revision does not support hardfork '$requested'; supported: ${L1_SNAPSHOT_SUPPORTED_HARDFORKS[*]}"
     fi
 
-    L1_SNAPSHOT_HARDFORK_ARGS=()
-    local activation=0 selected=0
-    for hardfork in "${L1_SNAPSHOT_SUPPORTED_HARDFORKS[@]}"; do
-        if (( selected )); then
-            activation=$L1_SNAPSHOT_FUTURE_HARDFORK_TIME
-        fi
-        L1_SNAPSHOT_HARDFORK_ARGS+=("--${hardfork}-time" "$activation")
-        if [[ "$hardfork" == "$L1_SNAPSHOT_HARDFORK" ]]; then
-            selected=1
-        fi
-    done
+    # Leave later forks unscheduled rather than scheduled in the future: a Zone rejects an L1
+    # fork schedule that names a fork it doesn't know, so an older Zone could not run on it.
+    L1_SNAPSHOT_HARDFORK_ARGS=(--hardfork "$L1_SNAPSHOT_HARDFORK")
 }
 
 l1_snapshot_sha256() {
