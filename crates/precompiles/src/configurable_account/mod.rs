@@ -18,6 +18,13 @@ use tempo_primitives::transaction::{
     configurable_account::CONFIGURABLE_ACCOUNT_UPGRADE_DOMAIN,
 };
 
+/// Shared protocol-installed code for registered configurable accounts.
+pub const CONFIGURABLE_ACCOUNT_CODE: Bytes = Bytes::from_static(&[0xef]);
+
+/// Keccak-256 of [`CONFIGURABLE_ACCOUNT_CODE`], compared without loading code bytes.
+pub const CONFIGURABLE_ACCOUNT_CODE_HASH: B256 =
+    b256!("309b8896ee4c1ff7ec1966155373dee42663b6b40c3fedc70ba501684848d2a3");
+
 /// Configurable account precompile.
 ///
 /// Every field is transient transaction context, seeded by the handler before execution.
@@ -224,13 +231,6 @@ pub fn config(
             .collect(),
     }
 }
-
-/// Shared protocol-installed code for registered configurable accounts.
-pub const CONFIGURABLE_ACCOUNT_CODE: Bytes = Bytes::from_static(&[0xef]);
-
-/// Keccak-256 of [`CONFIGURABLE_ACCOUNT_CODE`], compared without loading code bytes.
-pub const CONFIGURABLE_ACCOUNT_CODE_HASH: B256 =
-    b256!("309b8896ee4c1ff7ec1966155373dee42663b6b40c3fedc70ba501684848d2a3");
 
 /// Whether code matches the account's registration state.
 pub fn valid_account_code(code_hash: B256, commitment: B256) -> bool {
