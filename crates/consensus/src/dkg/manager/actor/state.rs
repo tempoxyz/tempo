@@ -31,7 +31,7 @@ use commonware_storage::{journal::segmented, metadata};
 use commonware_utils::{N3f1, NZU16, NZU32, NZUsize, futures::rebind, ordered};
 use eyre::{OptionExt, WrapErr as _};
 use tempo_primitives::TempoHeader;
-use tracing::{debug, info, instrument, warn};
+use tracing::{Level, debug, info, instrument, warn};
 
 use crate::consensus::{Digest, block::Block};
 
@@ -945,7 +945,7 @@ impl Dealer {
     /// Returns protocol validation errors; subsequent and late ACKs are ignored.
     /// A rejected ACK stops retries for that player until restart or the next epoch.
     /// Storage write failures panic.
-    #[instrument(skip_all, fields(%epoch, %player))]
+    #[instrument(skip_all, fields(%epoch, %player), err(level = Level::WARN))]
     pub(super) async fn receive_ack<TContext>(
         &mut self,
         storage: &mut Storage<TContext>,
