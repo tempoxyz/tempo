@@ -374,7 +374,8 @@ impl ConfigurableAccountSignature {
             }
         }
         weight.finish()?;
-        self.cache_verified_digest(inner_digest);
+        #[allow(clippy::useless_conversion)]
+        self.verified_digest.get_or_init(|| inner_digest.into());
         Ok(())
     }
 
@@ -386,16 +387,6 @@ impl ConfigurableAccountSignature {
         self.verify_approvals(inner_digest)
             .map_err(|_| RecoveryError::new())?;
         Ok(self.account)
-    }
-
-    #[cfg(feature = "std")]
-    fn cache_verified_digest(&self, digest: B256) {
-        let _ = self.verified_digest.set(digest);
-    }
-
-    #[cfg(not(feature = "std"))]
-    fn cache_verified_digest(&self, digest: B256) {
-        let _ = self.verified_digest.set(alloc::boxed::Box::new(digest));
     }
 
     /// Checks the stored commitment or, on first use, derives the named account.
