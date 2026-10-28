@@ -13,14 +13,14 @@ use p256::{
 use proptest::prelude::*;
 use sha2::{Digest, Sha256};
 use tempo_primitives::transaction::{
-    CONFIGURABLE_ACCOUNT_CONFIG_DOMAIN, CONFIGURABLE_ACCOUNT_DOMAIN,
+    AccountSignature, CONFIGURABLE_ACCOUNT_CONFIG_DOMAIN, CONFIGURABLE_ACCOUNT_DOMAIN,
     CONFIGURABLE_ACCOUNT_SIGNATURE_DOMAIN, ConfigurableAccountConfig,
     ConfigurableAccountConfigError, ConfigurableAccountOwner, ConfigurableAccountQuorumError,
     ConfigurableAccountSignature, ConfigurableAccountSignatureError, ConfigurableAccountStateError,
-    ConfigurableAccountWeightAccumulator, KeychainSignature,
+    ConfigurableAccountWeightAccumulator, KeychainSignature, KeychainVersion,
     MAX_CONFIGURABLE_ACCOUNT_OWNER_SIGNATURE_BYTES, MAX_CONFIGURABLE_ACCOUNT_OWNERS,
     MAX_CONFIGURABLE_ACCOUNT_SIGNATURES, PrimitiveSignature, SIGNATURE_TYPE_CONFIGURABLE_ACCOUNT,
-    TempoSignature, configurable_account_digest, derive_p256_address,
+    SignatureType, TempoSignature, configurable_account_digest, derive_p256_address,
     tt_signature::{
         P256SignatureWithPreHash, SIGNATURE_TYPE_KEYCHAIN, SIGNATURE_TYPE_KEYCHAIN_V2,
         SIGNATURE_TYPE_WEBAUTHN, WebAuthnSignature, normalize_p256_s,
@@ -640,6 +640,10 @@ fn signature_bytes_dispatch_on_length_then_type_byte() {
         SIGNATURE_TYPE_CONFIGURABLE_ACCOUNT,
     ] {
         assert_eq!(TempoSignature::from_bytes(&[first]), Err(too_short));
+        assert_eq!(
+            decode_exact::<AccountSignature>(alloy_rlp::encode(Bytes::from(vec![first]))),
+            Err(RlpError::Custom(too_short))
+        );
         let lone_inner = [
             &[SIGNATURE_TYPE_KEYCHAIN_V2][..],
             indexed_owner(3).as_slice(),
@@ -1211,6 +1215,17 @@ proptest! {
     }
 }
 
+/// A version 0 single-owner witness over the account derived for it.
+fn initial_signature() -> ConfigurableAccountSignature {
+    let config = configurable_account_config(0, 1, &[(indexed_owner(2), 1)]);
+    ConfigurableAccountSignature::try_new(
+        config.derive_account().unwrap(),
+        config,
+        vec![PrimitiveSignature::default()],
+    )
+    .unwrap()
+}
+
 #[test]
 fn tempo_signature_size_counts_each_allocation_once() {
     for count in [1, MAX_CONFIGURABLE_ACCOUNT_SIGNATURES] {
@@ -1248,6 +1263,54 @@ fn tempo_signature_size_counts_each_allocation_once() {
             );
         }
     }
+}
+
+#[test]
+fn bounded_access_key_envelope_roundtrips_and_rejects_v1() {
+    let configurable_account = initial_signature();
+    let parent = indexed_owner(3);
+    let envelope =
+        TempoSignature::Keychain(KeychainSignature::new(parent, configurable_account.clone()));
+    let encoded = envelope.to_bytes();
+    assert_eq!(TempoSignature::from_bytes(&encoded).unwrap(), envelope);
+    assert_eq!(
+        envelope.as_keychain().unwrap().key_id(&B256::ZERO).unwrap(),
+        configurable_account.account()
+    );
+    // Changing the version must reject the envelope even with a cached key ID.
+    let mut keychain = envelope.as_keychain().unwrap().clone();
+    keychain.version = KeychainVersion::V1;
+    assert!(keychain.key_id(&B256::ZERO).is_err());
+    assert!(matches!(
+        envelope.as_keychain().unwrap().signature,
+        AccountSignature::ConfigurableAccount(_)
+    ));
+    let mut legacy = encoded.to_vec();
+    legacy[0] = SIGNATURE_TYPE_KEYCHAIN;
+    assert!(TempoSignature::from_bytes(&legacy).is_err());
+    assert!(decode_exact::<AccountSignature>(alloy_rlp::encode(&encoded)).is_err());
+    #[cfg(feature = "serde")]
+    {
+        use serde_json::{from_value, to_value};
+
+        let mut json = to_value(&envelope).unwrap();
+        assert_eq!(
+            from_value::<TempoSignature>(json.clone()).unwrap(),
+            envelope
+        );
+        json["version"] = to_value(KeychainVersion::V1).unwrap();
+        let legacy = from_value::<TempoSignature>(json).unwrap();
+        assert!(legacy.as_keychain().unwrap().key_id(&B256::ZERO).is_err());
+    }
+}
+
+#[test]
+fn access_key_digest_binds_parent_before_configurable_account_domain() {
+    let signature = initial_signature();
+    let inner = B256::repeat_byte(0x42);
+    let digest_a = signature.digest(KeychainSignature::signing_hash(inner, indexed_owner(3)));
+    let digest_b = signature.digest(KeychainSignature::signing_hash(inner, indexed_owner(4)));
+    assert_ne!(digest_a, digest_b);
 }
 
 #[test]
@@ -1306,4 +1369,19 @@ fn noncanonical_p256_owner_prehash_flag_canonicalizes() {
             .unwrap(),
         owner
     );
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn configurable_account_signature_type_serializes_under_its_name() {
+    use serde_json::{from_value, json, to_value};
+
+    let key_type = AccountSignature::from(initial_signature()).key_type();
+    assert_eq!(key_type, SignatureType::ConfigurableAccount);
+    assert_eq!(to_value(key_type).unwrap(), json!("configurableAccount"));
+    assert_eq!(
+        from_value::<SignatureType>(json!("configurableAccount")).unwrap(),
+        SignatureType::ConfigurableAccount
+    );
+    assert!(from_value::<SignatureType>(json!("multisig")).is_err());
 }
