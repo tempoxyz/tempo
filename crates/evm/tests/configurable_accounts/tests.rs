@@ -1742,7 +1742,7 @@ fn retired_root_error_order_and_access_gas() {
 
     // Sender, then key authorization signer, then fee payer, then access key.
     let tx = f.sign_primitive(sponsor(TempoTransaction {
-        key_authorization: Some(root_grant.clone()),
+        key_authorization: Some(root_grant),
         ..aa_tx(3, vec![f.getter()])
     }));
     assert_eq!(
