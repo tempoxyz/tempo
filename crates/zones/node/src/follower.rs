@@ -661,8 +661,7 @@ where
         // Supplied witnesses are persisted directly. From T15 a plain block's witness is collected
         // locally; both paths precede canonicalization. Before T15 a plain block is imported
         // without collecting: it usually means the leader's own collection just failed, and
-        // retrying here would load the same struggling L1 RPC. Background collection still
-        // fills the gap.
+        // retrying here would load the same struggling L1 RPC. Its batch settles with NoProof.
         if let Some(collector) = &self.context.proof_collector {
             self.stop
                 .run_until_cancelled(async {

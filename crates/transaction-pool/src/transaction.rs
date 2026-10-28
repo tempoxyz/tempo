@@ -743,8 +743,9 @@ pub enum TempoPoolTransactionError {
 
     /// A transaction matched a configured address check.
     ///
-    /// Thrown during pool admission when the recovered sender or a direct call target
-    /// appears in the node's configured address filter.
+    /// Thrown during pool admission when an address of the transaction (sender, fee payer, call
+    /// target, authorization delegate or authority, or access list entry) appears in the node's
+    /// configured address filter.
     #[error("Transaction address check failed for {address}")]
     AddressCheck {
         /// The address that matched the configured filter.

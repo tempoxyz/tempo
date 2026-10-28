@@ -469,9 +469,4 @@ impl HashMapStorageProvider {
     pub fn set_is_static(&mut self, is_static: bool) {
         self.is_static = is_static;
     }
-
-    /// Selects an explicit recovery factory for configurable account test fixtures.
-    pub fn set_configurable_account_recovery_factory(&mut self, factory: Address) {
-        self.block_env.ext.configurable_account_recovery_factory = Some(factory);
-    }
 }

@@ -46,10 +46,6 @@ macro_rules! tempo_genesis_info {
                     #[serde(skip_serializing_if = "Option::is_none")]
                     [<$variant:lower _time>]: Option<u64>,
                 )*
-                /// Development-only TIP-1110 factory; public networks remain unconfigured.
-                // TODO: set the canonical TIP-1110 recovery factory for public networks before T14 activation
-                #[serde(skip_serializing_if = "Option::is_none")]
-                configurable_account_recovery_factory: Option<Address>,
             }
 
             impl TempoGenesisInfo {
@@ -85,11 +81,6 @@ impl TempoGenesisInfo {
 
     pub fn general_gas_limit(&self) -> Option<u64> {
         self.general_gas_limit
-    }
-
-    /// Returns the TIP-1110 configurable account recovery factory configured in genesis, if any.
-    pub const fn configurable_account_recovery_factory(&self) -> Option<Address> {
-        self.configurable_account_recovery_factory
     }
 }
 

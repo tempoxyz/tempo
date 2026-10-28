@@ -35,6 +35,9 @@
 # Mainnet shows one transaction per swipe whether settled from cash (~63K gas) or
 # from Earn (~350K gas); authorisation, holds and declines happen off-chain at the issuer.
 #
+# TXGEN_NEOBANK_MODULES=spend,cashout (module names as above, lowercase, "Cash out"
+# as cashout) keeps only those modules' templates; neobank-multi runs several setups.
+#
 # Not modelled yet: zone-to-zone transfers, key revocation, fixed per-agent rates
 # and queued withdrawals.
 # Same fixtures and requirements as public-mix: chain 1337, T10+ and nonzero state bloat.
