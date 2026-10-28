@@ -36,6 +36,14 @@ Fork settings are persisted in `genesis.json`; restarting nodes does not fetch
 a new schedule. L1 upgrades not present in the snapshot require a coordinated
 configuration update. Existing Zone databases are not modified by generation.
 
+Public-network Zone startup rejects an explicit `null` for any fork scheduled on
+its parent, with an error naming the field and required activation timestamp.
+For Zones with explicit fork settings, update the named field in `genesis.json`
+on every node to the parent activation timestamp and restart before activation.
+Edit the existing fork field; do not regenerate allocations or reset the Zone
+database. Missing fields inherit the parent schedule. Local development and
+custom chains may still explicitly disable forks.
+
 For offline development or tests, `--hardfork T11` enables forks through T11 at
 timestamp zero and disables T12/T13/T14. Individual `--t*-time` flags still take
 precedence in offline mode, but cannot be combined with RPC-derived schedules.
