@@ -7,7 +7,6 @@ use alloy_eips::{
 use alloy_primitives::{Bytes, KECCAK256_EMPTY, LogData, aliases::U96, bytes, keccak256};
 use alloy_sol_types::{SolError, SolEvent, SolValue};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use commonware_utils::NZU64;
 use evm2::{
     EvmFeatures,
     evm::{DynDatabase, registry::HandlerError},
@@ -74,7 +73,7 @@ const PROBE: Address = Address::repeat_byte(0x99);
 const KEY_KINDS: [SigKind; 3] = [SigKind::P256, SigKind::WebAuthn, SigKind::Secp256k1];
 
 /// The expiry of an expiring-nonce transaction: just after the fixture's block timestamp of 1.
-const EXPIRING_VALID_BEFORE: NonZeroU64 = NZU64!(2);
+const EXPIRING_VALID_BEFORE: NonZeroU64 = NonZeroU64::new(2).expect("expiry is nonzero");
 
 /// TIP-1016's split of the new-account cost: 25k regular and 225k state gas. T14's table keeps the
 /// split off, so the test that needs state gas applies it on top.
