@@ -27,10 +27,10 @@ use tempo_primitives::TempoAddressExt;
 
 use crate::{
     ACCOUNT_KEYCHAIN_ADDRESS,
-    configurable_account::valid_account,
+    configurable_account::{valid_account, valid_account_code},
     error::Result,
     has_duplicates_metered,
-    storage::{Handler, Mapping, Set},
+    storage::{Handler, Mapping, Set, account_config_commitment},
     tip20_factory::TIP20Factory,
 };
 use alloy::primitives::{Address, B256, FixedBytes, TxKind, U256, keccak256};
@@ -243,8 +243,8 @@ impl AccountKeychain {
     /// - `ExpiryInPast` — expiry must be in the future (enforced since T0)
     /// - `KeyAlreadyExists` — a key with this ID is already registered
     /// - `KeyAlreadyRevoked` — revoked keys cannot be re-authorized
-    /// - `InvalidKeyId` — from T14, a ConfigurableAccount `keyId` that is the caller, has code or
-    ///   is a reserved address (precompile, TIP-20, virtual or zone portal)
+    /// - `InvalidKeyId` — from T14, a ConfigurableAccount `keyId` that is the caller, has
+    ///   incompatible code or is reserved (precompile, TIP-20, virtual or zone portal)
     /// - `InvalidSignatureType` — unsupported type, including ConfigurableAccount before T14
     pub fn authorize_key(
         &mut self,
@@ -281,11 +281,15 @@ impl AccountKeychain {
             return Err(AccountKeychainError::invalid_key_id().into());
         }
         if is_delegate_grant {
+            let spec = self.storage.spec();
             // Naming a delegate does not register it or require a configuration witness.
             if !valid_account(key_id, self.storage.spec())
-                || self
-                    .storage
-                    .with_account_info(key_id, |info| Ok(!info.is_empty_code_hash()))?
+                || self.storage.with_account_info(key_id, |info| {
+                    Ok(!valid_account_code(
+                        info.code_hash,
+                        account_config_commitment(info, spec)?,
+                    ))
+                })?
             {
                 return Err(AccountKeychainError::invalid_key_id().into());
             }

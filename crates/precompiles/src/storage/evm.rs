@@ -1,4 +1,5 @@
 use crate::{
+    configurable_account::CONFIGURABLE_ACCOUNT_CODE,
     error::TempoPrecompileError,
     storage::{
         ConfigCommitmentWriteGas, PrecompileStorageProvider, StorageActions,
@@ -665,7 +666,8 @@ where
                 None => (B256::ZERO, true),
             }
         };
-        self.deduct_gas(gas.dynamic_cost(previous)?)?;
+        self.deduct_gas(gas.dynamic_cost(previous, &self.version.gas_params)?)?;
+        self.deduct_state_gas(gas.state_cost(previous, &self.version.gas_params))?;
         // The write makes an empty account permanent; an intrinsic write was priced with the
         // transaction, creation included.
         if creates_account && gas == ConfigCommitmentWriteGas::Precompile {
@@ -674,10 +676,12 @@ where
             ))?;
             self.deduct_state_gas(self.version.gas_params.new_account_state_gas())?;
         }
-        self.evm
-            .state_mut()
-            .account(&address)?
-            .set_extension(AccountExtension::from(encode_config_commitment(commitment)));
+        let mut account = self.evm.state_mut().account(&address)?;
+        if previous.is_zero() {
+            // Registration and migration pay for the commitment write, including this marker.
+            account.set_code_slow(Bytecode::new_raw(CONFIGURABLE_ACCOUNT_CODE));
+        }
+        account.set_extension(AccountExtension::from(encode_config_commitment(commitment)));
         Ok(())
     }
 }
