@@ -42,7 +42,6 @@ pub fn call(account: Address, input: &[u8]) -> PrecompileResult {
                 account,
                 call.hash,
                 &call.signature,
-                true,
             )
         })();
         return result.encode_precompile_result(|valid| {

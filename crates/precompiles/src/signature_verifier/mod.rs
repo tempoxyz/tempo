@@ -85,7 +85,6 @@ impl SignatureVerifier {
         account: Address,
         hash: B256,
         bytes: &[u8],
-        registered_only: bool,
     ) -> Result<bool> {
         let signature = TempoSignature::from_bytes(bytes).map_err(|error| {
             trace!(%error, "malformed configurable account signature");
@@ -112,8 +111,7 @@ impl SignatureVerifier {
             .and_then(|gas| gas.checked_add(initial_proof_gas))
             .ok_or(TempoPrecompileError::OutOfGas)?;
         self.storage.deduct_gas(verification_gas)?;
-        if (registered_only && commitment.is_zero())
-            || signature.account() != account
+        if signature.account() != account
             || !valid_account(account, spec)
             || !valid_account_code(code_hash, commitment)
         {
