@@ -81,7 +81,7 @@ impl<L1: L1StorageReader> ZoneTxHandler<L1> {
             }),
             ZoneTransactionKind::AdvanceTempo | ZoneTransactionKind::AdvanceTempoHeaders
         );
-        if self.l1.select_registry_cache_anchor(initial_anchor) || changes_anchor {
+        if self.l1.select_cache_anchor(initial_anchor) || changes_anchor {
             request
                 .host
                 .state_mut()

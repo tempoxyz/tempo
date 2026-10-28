@@ -22,6 +22,8 @@ type Shared<T> = Arc<Mutex<T>>;
 pub struct MockL1Reader {
     storage: Shared<HashMap<u64, HashMapStorageProvider>>,
     storage_requests: Shared<Vec<L1Slot>>,
+    commitments: Shared<HashMap<(Address, u64), B256>>,
+    commitment_requests: Shared<Vec<(Address, u64)>>,
     fallback: B256,
     fail_storage: bool,
 }
@@ -31,6 +33,8 @@ impl Default for MockL1Reader {
         Self {
             storage: Default::default(),
             storage_requests: Default::default(),
+            commitments: Default::default(),
+            commitment_requests: Default::default(),
             fallback: B256::ZERO,
             fail_storage: false,
         }
@@ -55,6 +59,19 @@ impl MockL1Reader {
             StorageCtx::default().sstore(address, slot, value)
         })
         .unwrap();
+    }
+
+    /// Sets the TIP-1108 commitment of `account` at `block_number`.
+    pub fn insert_commitment(&self, account: Address, block_number: u64, commitment: B256) {
+        self.commitments
+            .lock()
+            .unwrap()
+            .insert((account, block_number), commitment);
+    }
+
+    /// Returns every `(account, block_number)` commitment read, in request order.
+    pub fn commitment_requests(&self) -> Vec<(Address, u64)> {
+        self.commitment_requests.lock().unwrap().clone()
     }
 
     pub fn returning(value: B256) -> Self {
@@ -204,5 +221,30 @@ impl L1StorageReader for MockL1Reader {
         } else {
             Ok(value.into())
         }
+    }
+
+    fn read_l1_config_commitment(
+        &self,
+        account: Address,
+        block_number: u64,
+    ) -> Result<B256, L1StateError> {
+        self.commitment_requests
+            .lock()
+            .unwrap()
+            .push((account, block_number));
+        if self.fail_storage {
+            return Err(L1StateError::AccountUnavailable {
+                account,
+                block_number,
+                reason: "RPC unavailable".into(),
+            });
+        }
+        Ok(self
+            .commitments
+            .lock()
+            .unwrap()
+            .get(&(account, block_number))
+            .copied()
+            .unwrap_or_default())
     }
 }

@@ -273,7 +273,9 @@ where
             self.zone_factory.portal_address,
         );
         let l1 = db.l1_state().clone();
-        let ext = TempoEvmExt::default().with_fee_manager(ZoneProtocolFeeManager::new());
+        let mut ext = TempoEvmExt::default().with_fee_manager(ZoneProtocolFeeManager::new());
+        // Zones mirror configuration commitments from Tempo and never register (TIP-1154).
+        ext.mirrored_config_commitments = true;
         let precompiles = ZonePrecompiles::<TempoEvmTypes, L1>::new(
             env.spec,
             ext.actions.clone(),
@@ -430,6 +432,14 @@ impl<L1: L1StorageReader> L1StorageReader for RecordingL1StorageReader<L1> {
             .expect("L1 read recorder lock poisoned")
             .insert(TempoStorageRead { account, slot });
         Ok(value)
+    }
+
+    fn read_l1_config_commitment(
+        &self,
+        account: Address,
+        block_number: u64,
+    ) -> Result<B256, zone_precompiles::L1StateError> {
+        self.inner.read_l1_config_commitment(account, block_number)
     }
 }
 

@@ -173,6 +173,9 @@ pub(crate) fn register_commitments(
     host: &mut Evm<'_, TempoEvmTypes>,
     aa: &TempoAaTx,
 ) -> HandlerResult<()> {
+    if host.ext().mirrored_config_commitments {
+        return Ok(());
+    }
     let Some(role) = aa.native_authorization() else {
         return Ok(());
     };
@@ -277,6 +280,9 @@ fn validate_native_roles(
             .config()
             .derivation_gas()
             .ok_or(TempoPrecompileError::OutOfGas)?;
+    }
+    // Chains that mirror commitments never register, so they charge no write.
+    if account.commitment.is_zero() && !host.ext().mirrored_config_commitments {
         let gas = &host.version().gas_params;
         // TIP-1108 prices the commitment write like account creation.
         extra_gas += gas.get(GasId::NewAccountCost);

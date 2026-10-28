@@ -42,6 +42,16 @@ pub trait L1StorageReader: Clone + Send + Sync + 'static {
         slot: B256,
         block_number: u64,
     ) -> core::result::Result<B256, L1StateError>;
+
+    /// Reads the TIP-1108 configuration commitment of `account` at `block_number` on Tempo L1,
+    /// or zero when the account has none, without gas accounting.
+    ///
+    /// Like [`Self::read_l1_storage`], this is a raw provider hook: callers choose the anchor.
+    fn read_l1_config_commitment(
+        &self,
+        account: Address,
+        block_number: u64,
+    ) -> core::result::Result<B256, L1StateError>;
 }
 
 /// Execution-local access to Tempo L1 storage at a single finalized block number.
@@ -72,10 +82,11 @@ pub struct L1State<P> {
     initial_anchor: Arc<Mutex<Option<U256>>>,
     /// Tempo block number selected for the current transaction attempt.
     anchor: Arc<Mutex<Option<u64>>>,
-    /// Anchor at which every registry entry in the EVM's accepted cache was loaded, or `None` if
-    /// they may come from several anchors. Unlike the fields above, it persists across
+    /// Anchor at which every L1-derived entry in the EVM's accepted cache (registry storage and
+    /// account commitment overlays) was loaded, or `None` if they may come from several anchors
+    /// or from a read without an anchor. Unlike the fields above, it persists across
     /// transactions.
-    registry_cache_anchor: Arc<Mutex<Option<U256>>>,
+    cache_anchor: Arc<Mutex<Option<U256>>>,
     /// `(account, slot)` keys successfully accessed during the current transaction attempt.
     ///
     /// Used for cold/warm gas accounting. Unlike REVM's journal, this access set is not rolled back
@@ -94,7 +105,7 @@ impl<P> L1State<P> {
         Self {
             initial_anchor: Arc::new(Mutex::new(None)),
             anchor: Arc::new(Mutex::new(None)),
-            registry_cache_anchor: Arc::new(Mutex::new(None)),
+            cache_anchor: Arc::new(Mutex::new(None)),
             access_set: Arc::new(Mutex::new(HashSet::default())),
             provider,
             portal_address,
@@ -115,18 +126,20 @@ impl<P> L1State<P> {
         self.access_set.lock().clear();
     }
 
-    /// Records that the accepted EVM cache may hold registry entries for `anchor` only, and
-    /// returns whether it must drop the ones it has because they were loaded at another anchor.
-    pub fn select_registry_cache_anchor(&self, anchor: U256) -> bool {
-        self.registry_cache_anchor.lock().replace(anchor) != Some(anchor)
+    /// Records that the accepted EVM cache may hold L1-derived entries for `anchor` only, and
+    /// returns whether it must drop or refresh the ones it has because they were loaded at
+    /// another anchor.
+    pub fn select_cache_anchor(&self, anchor: U256) -> bool {
+        self.cache_anchor.lock().replace(anchor) != Some(anchor)
     }
 
-    /// Records that a registry slot was loaded from L1 at `anchor`. A cache holding entries from
-    /// another anchor can no longer be trusted until the next
-    /// [`Self::select_registry_cache_anchor`].
-    pub fn note_registry_read(&self, anchor: u64) {
-        let mut cached = self.registry_cache_anchor.lock();
-        if *cached != Some(U256::from(anchor)) {
+    /// Records that a registry slot or account commitment was loaded from L1 at `anchor`, or,
+    /// with `None`, that an account was loaded without an anchor and so without its overlay. A
+    /// cache holding entries from another anchor can no longer be trusted until the next
+    /// [`Self::select_cache_anchor`].
+    pub fn note_cache_read(&self, anchor: Option<u64>) {
+        let mut cached = self.cache_anchor.lock();
+        if anchor.is_none_or(|anchor| *cached != Some(U256::from(anchor))) {
             *cached = None;
         }
     }
@@ -191,6 +204,21 @@ impl<P: L1StorageReader> L1State<P> {
     ) -> Result<B256, L1StateError> {
         self.set_anchor(block_number)?;
         self.provider.read_l1_storage(account, slot, block_number)
+    }
+
+    /// Reads the TIP-1108 commitment of `account` at `block_number` without gas metering.
+    ///
+    /// Unlike storage reads this does not select the anchor: the zone database overlays account
+    /// commitments on every account load, including loads that precede `advanceTempo`'s
+    /// anchor advancement. Callers pass the selected anchor, or the transaction's initial anchor
+    /// before one is selected.
+    pub fn read_config_commitment_unmetered(
+        &self,
+        account: Address,
+        block_number: u64,
+    ) -> Result<B256, L1StateError> {
+        self.provider
+            .read_l1_config_commitment(account, block_number)
     }
 
     /// Reads L1 storage, with gas metering, after selecting or validating `block_number` as this
@@ -286,6 +314,17 @@ pub enum L1StateError {
         /// Provider failure diagnostic.
         reason: String,
     },
+    /// The underlying L1 provider could not resolve an account's commitment at the requested
+    /// block.
+    #[error("Tempo L1 account unavailable account={account} block={block_number}: {reason}")]
+    AccountUnavailable {
+        /// Tempo account whose commitment was requested.
+        account: Address,
+        /// Tempo block number at which the account was requested.
+        block_number: u64,
+        /// Provider failure diagnostic.
+        reason: String,
+    },
     /// An L1 read disagreed with the anchor already selected for this transaction.
     #[error("Tempo L1 read at anchor {new} conflicts with currently selected anchor {current}")]
     AnchorConflict {
@@ -305,9 +344,12 @@ pub enum L1StateError {
 }
 
 impl L1StateError {
-    /// Returns whether this is an underlying storage-provider failure.
-    pub const fn is_storage_unavailable(&self) -> bool {
-        matches!(self, Self::StorageUnavailable { .. })
+    /// Returns whether this is an underlying provider failure for storage or an account.
+    pub const fn is_unavailable(&self) -> bool {
+        matches!(
+            self,
+            Self::StorageUnavailable { .. } | Self::AccountUnavailable { .. }
+        )
     }
 }
 
