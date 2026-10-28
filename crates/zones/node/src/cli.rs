@@ -6,13 +6,16 @@ use alloy_primitives::Address;
 use alloy_provider::{Provider, ProviderBuilder};
 use alloy_signer_local::PrivateKeySigner;
 use clap::{Arg, ArgAction, Args, CommandFactory, FromArgMatches};
-use reth_chainspec::EthChainSpec as _;
+use reth_chainspec::{EthChainSpec as _, ForkCondition};
 use reth_cli_runner::CliRunner;
 use reth_ethereum::cli::{Cli, ExtendedCommand};
 use reth_rpc_server_types::DefaultRpcModuleValidator;
 use reth_tracing::tracing::{info, warn};
 use tempo_alloy::{TempoNetwork, provider::TempoProviderExt as _};
-use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_chainspec::{
+    hardfork::TempoHardfork,
+    spec::{TempoHardforks as _, chainspec_from_chain_id},
+};
 use tempo_precompiles::zone_factory::portal_address;
 use zeroize::Zeroizing;
 use zone_chainspec::{ZoneChainSpec, ZoneChainSpecParser};
@@ -229,21 +232,40 @@ fn run_node(mut cli: ZoneNodeCli, l1_access: CliL1Access) -> eyre::Result<()> {
             warn!(target: "reth::cli", "--block.interval-ms is deprecated, has no effect, and will be removed in the next release");
         }
 
-        // Zones follow the Tempo fork schedule their L1 reports, read once at startup; Tempo fork
-        // fields in the Zone genesis are ignored.
+        // Zones on mainnet and testnet follow the parent fork schedule compiled into this binary.
+        // Zones on other parents follow the schedule their L1 reports, read once at startup.
+        // Tempo fork fields in the Zone genesis are ignored either way.
         let parent_chain_id = decode_l1_chain_id(builder.config().chain.chain_id())?;
-        let schedule = tokio::time::timeout(
-            Duration::from_secs(30),
-            fetch_l1_fork_schedule(&args.l1_rpc_url, parent_chain_id),
-        )
-        .await
-        .map_err(|_| eyre::eyre!("timed out reading the L1 fork schedule"))??;
-        info!(
-            target: "reth::cli",
-            parent_chain_id,
-            ?schedule,
-            "Using the L1 Tempo fork schedule from tempo_forkSchedule"
-        );
+        let schedule = if let Some(parent) = chainspec_from_chain_id(parent_chain_id) {
+            let schedule = TempoHardfork::VARIANTS
+                .iter()
+                .filter_map(|&fork| match parent.tempo_fork_activation(fork) {
+                    ForkCondition::Timestamp(time) => Some((fork, time)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            info!(
+                target: "reth::cli",
+                parent_chain_id,
+                ?schedule,
+                "Using the compiled Tempo fork schedule of the parent chain"
+            );
+            schedule
+        } else {
+            let schedule = tokio::time::timeout(
+                Duration::from_secs(30),
+                fetch_l1_fork_schedule(&args.l1_rpc_url, parent_chain_id),
+            )
+            .await
+            .map_err(|_| eyre::eyre!("timed out reading the L1 fork schedule"))??;
+            info!(
+                target: "reth::cli",
+                parent_chain_id,
+                ?schedule,
+                "Using the L1 Tempo fork schedule from tempo_forkSchedule"
+            );
+            schedule
+        };
         let chain = builder.config().chain.with_l1_fork_schedule(schedule)?;
         builder.config_mut().chain = Arc::new(chain);
 

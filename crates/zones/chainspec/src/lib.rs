@@ -59,7 +59,7 @@ impl ZoneChainSpec {
         Ok(Self::from_explicit_genesis(genesis))
     }
 
-    /// Returns this chain specification with the Tempo fork schedule its L1 reports.
+    /// Returns this chain specification with the given Tempo fork schedule of its L1.
     ///
     /// The schedule replaces every Tempo fork activation: scheduled forks activate at the
     /// reported times and all others are disabled. Ethereum activations are kept.
