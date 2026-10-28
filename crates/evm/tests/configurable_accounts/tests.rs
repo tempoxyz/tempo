@@ -39,17 +39,20 @@ use tempo_chainspec::{TempoChainSpec, spec::DEV};
 use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, ISignatureVerifier, ITIP20ChannelReserve, PATH_USD_ADDRESS,
     SIGNATURE_VERIFIER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, ZONE_PORTAL_PREFIX,
-    account_keychain::IAccountKeychain, nonce::INonce, tip20::ITIP20,
+    account_keychain::IAccountKeychain, configurable_account::IConfigurableAccountShim,
+    nonce::INonce, tip20::ITIP20,
 };
 use tempo_evm::{
     TempoEvmConfig, TempoInvalidTransaction,
     transaction_error::{ConfigurableAccountError, FeePaymentError, RootKeyRole},
 };
 use tempo_precompiles::{
-    configurable_account::{CONFIGURABLE_ACCOUNT_CODE, CONFIGURABLE_ACCOUNT_CODE_HASH},
+    Precompile,
+    configurable_account::{CONFIGURABLE_ACCOUNT_CODE, CONFIGURABLE_ACCOUNT_CODE_HASH, shim},
     error::TempoPrecompileError,
     input_cost,
     nonce::NonceManager,
+    signature_verifier::SignatureVerifier,
     storage::keccak_cost,
     tip20::{PERMIT_TYPEHASH, TIP20Token},
     tip20_channel_reserve::TIP20ChannelReserve,
@@ -4599,4 +4602,229 @@ fn verify_configurable_account_needs_its_gas() {
             "registered: {registered}: {result:?}"
         );
     }
+}
+
+/// Registration exposes the marker immediately and dispatches only the selected read-only hooks.
+#[test]
+fn configurable_account_marker_dispatch() {
+    let mut f = Fixture::new();
+    let account = f.account;
+    assert_eq!(f.info(account).unwrap().code_hash, KECCAK256_EMPTY);
+    let receive = Call {
+        to: TxKind::Call(account),
+        value: U256::ZERO,
+        input: Bytes::new(),
+    };
+    let tx = f.signed(3, vec![receive.clone()]);
+    let result = f.run(&tx);
+    assert!(result.status, "{result:?}");
+    assert!(result.output.is_empty());
+    assert_eq!(
+        f.info(account).unwrap().code_hash,
+        CONFIGURABLE_ACCOUNT_CODE_HASH
+    );
+    assert_eq!(
+        keccak256(&CONFIGURABLE_ACCOUNT_CODE),
+        CONFIGURABLE_ACCOUNT_CODE_HASH
+    );
+    let hook = IConfigurableAccountShim::onERC721ReceivedCall {
+        operator: Address::ZERO,
+        from: Address::ZERO,
+        tokenId: U256::ONE,
+        data: bytes!("1234"),
+    }
+    .abi_encode();
+    let mut trailing = hook.clone();
+    trailing.push(0);
+    let mut malformed = hook;
+    malformed.pop();
+    for (offset, input) in [
+        bytes!("01"),
+        bytes!("ffffffff"),
+        bytes!("01ffc9a7"),
+        bytes!("f23a6e61"),
+        bytes!("bc197c81"),
+        bytes!("1626ba7e"),
+        trailing.into(),
+        malformed.into(),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let result = f.run(&f.signed(
+            4 + offset as u64,
+            vec![Call {
+                input,
+                ..receive.clone()
+            }],
+        ));
+        assert!(result.stop.is_revert(), "{result:?}");
+        assert!(result.output.is_empty());
+        assert_eq!(
+            f.info(account).unwrap().code_hash,
+            CONFIGURABLE_ACCOUNT_CODE_HASH
+        );
+    }
+}
+
+/// A failing verification reverts through the shim exactly as the verifier does.
+#[test]
+fn configurable_account_erc1271_propagates_verifier_reverts() {
+    let mut f = Fixture::new();
+    let account = f.account;
+    assert!(f.run(&f.signed(3, vec![f.getter()])).status);
+    seed_relayer(&mut f);
+    let signature =
+        configurable_account_approval(account, &f.config, &f.owner, CONFIGURABLE_ACCOUNT_HASH);
+    let call = |hash, signature: Bytes| Call {
+        to: TxKind::Call(account),
+        value: U256::ZERO,
+        input: IConfigurableAccountShim::isValidSignatureCall { hash, signature }
+            .abi_encode()
+            .into(),
+    };
+    let witness: Bytes = TempoSignature::ConfigurableAccount(signature)
+        .to_bytes()
+        .into();
+    let wrong_hash = call(B256::ZERO, witness);
+    let result = relayed(&mut f, wrong_hash, 1_000_000, None);
+    assert_reverts_with(
+        &result,
+        ISignatureVerifier::InvalidSignature {},
+        "invalid owner signature",
+    );
+    let malformed = call(CONFIGURABLE_ACCOUNT_HASH, Bytes::new());
+    let result = relayed(&mut f, malformed, 1_000_000, None);
+    assert_reverts_with(
+        &result,
+        ISignatureVerifier::InvalidFormat {},
+        "malformed witness",
+    );
+}
+
+/// The marker is reserved for registered accounts and must remain an invalid opcode elsewhere.
+#[test]
+fn configurable_marker_is_gated_by_fork_and_commitment() {
+    for (spec, committed, code) in [
+        (TempoHardfork::T13, true, bytes!("ef")),
+        (TempoHardfork::T14, false, bytes!("ef")),
+        (TempoHardfork::T14, true, bytes!("ef00")),
+    ] {
+        let mut f = Fixture::with_spec(false, spec);
+        let target = Address::repeat_byte(0x55);
+        let call = f.install_contract(target, code.to_vec());
+        if committed {
+            f.update_account(target, |info| {
+                info.extension = encode_config_commitment(B256::repeat_byte(1)).into()
+            });
+        }
+        let tx = f.primitive(3, vec![call]);
+        let result = f.run(&tx);
+        assert_eq!(result.stop, InstrStop::OpcodeNotFound);
+        assert!(result.output.is_empty());
+    }
+}
+
+/// Calls through the marker use the storage context of the EVM call kind.
+#[test]
+fn configurable_marker_static_and_delegate_calls() {
+    let mut f = Fixture::new();
+    let account = f.account;
+    assert!(f.run(&f.signed(3, vec![f.getter()])).status);
+    seed_relayer(&mut f);
+    let approval =
+        configurable_account_approval(account, &f.config, &f.owner, CONFIGURABLE_ACCOUNT_HASH);
+    let input = IConfigurableAccountShim::isValidSignatureCall {
+        hash: CONFIGURABLE_ACCOUNT_HASH,
+        signature: TempoSignature::ConfigurableAccount(approval)
+            .to_bytes()
+            .into(),
+    }
+    .abi_encode();
+    for kind in [0xfa, 0xf4, 0xf2] {
+        let prefix = if kind == 0xf2 {
+            bytes!("365f5f375f5f365f5f73")
+        } else {
+            bytes!("365f5f375f5f365f73")
+        };
+        let code = [
+            prefix.as_ref(),
+            account.as_slice(),
+            &[0x5a, kind],
+            bytes!("503d5f5f3e3d5ff3").as_ref(),
+        ]
+        .concat();
+        let mut call = f.install_contract(Address::repeat_byte(kind), code);
+        call.input = input.clone().into();
+        let result = relayed(&mut f, call, 1_000_000, None);
+        assert!(result.status, "{result:?}");
+        let expected = if kind == 0xfa {
+            [0x16, 0x26, 0xba, 0x7e]
+        } else {
+            [0xff; 4]
+        };
+        assert_eq!(
+            result.output,
+            IConfigurableAccountShim::isValidSignatureCall::abi_encode_returns(&expected.into())
+        );
+    }
+    assert_eq!(f.commitment(), f.config.commitment().unwrap());
+}
+
+#[test]
+fn configurable_shim_matches_verifier_gas_and_propagates_oog() {
+    let mut f = Fixture::new();
+    assert!(f.run(&f.signed(3, vec![f.getter()])).status);
+    let account = f.account;
+    let approval =
+        configurable_account_approval(account, &f.config, &f.owner, CONFIGURABLE_ACCOUNT_HASH);
+    let signature: Bytes = TempoSignature::ConfigurableAccount(approval)
+        .to_bytes()
+        .into();
+    let direct = ISignatureVerifier::verifyConfigurableAccountCall {
+        account,
+        hash: CONFIGURABLE_ACCOUNT_HASH,
+        signature: signature.clone(),
+    }
+    .abi_encode();
+    let input = IConfigurableAccountShim::isValidSignatureCall {
+        hash: CONFIGURABLE_ACCOUNT_HASH,
+        signature,
+    }
+    .abi_encode();
+    let direct_gas = in_storage_ctx(&mut f.evm, || {
+        let result = SignatureVerifier::new()
+            .call(&direct, Address::ZERO)
+            .unwrap();
+        assert!(
+            ISignatureVerifier::verifyConfigurableAccountCall::abi_decode_returns(result.bytes())
+                .unwrap()
+        );
+        StorageCtx.gas_used()
+    });
+    let shim_gas = in_storage_ctx(&mut f.evm, || {
+        let result = shim::call(account, &input).unwrap();
+        assert_eq!(
+            result.bytes(),
+            IConfigurableAccountShim::isValidSignatureCall::abi_encode_returns(
+                &[0x16, 0x26, 0xba, 0x7e].into()
+            )
+        );
+        StorageCtx.gas_used()
+    });
+    assert_eq!(shim_gas, direct_gas);
+    let mut gas = evm2::interpreter::GasTracker::new(shim_gas - 1);
+    let mut provider = tempo_precompiles::storage::evm::EvmPrecompileStorageProvider::new(
+        &mut f.evm,
+        &mut gas,
+        TempoHardfork::T14,
+        true,
+    );
+    let result = StorageCtx::enter(&mut provider, || shim::call(account, &input));
+    assert!(matches!(
+        result,
+        Err(evm2::precompiles::PrecompileError::Halt(
+            evm2::precompiles::PrecompileHalt::OutOfGas
+        ))
+    ));
 }
