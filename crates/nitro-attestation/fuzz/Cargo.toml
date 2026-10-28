@@ -14,8 +14,6 @@ workspace = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-rustls-pki-types = "1.14"
-rustls-webpki = "0.103"
 sha2.workspace = true
 tempo-nitro-attestation.workspace = true
 x509-parser = "0.18"

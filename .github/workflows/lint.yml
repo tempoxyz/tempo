@@ -78,6 +78,8 @@ jobs:
       - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           version: v0.15.0
+      - name: Install LLVM for JIT targets
+        run: .github/scripts/install_llvm.sh
       - uses: ./.github/actions/native-libs # zizmor: ignore[self-repository] actionlint does not support $/ references yet.
         with:
           cargo-args: --workspace --all-features
@@ -148,6 +150,8 @@ jobs:
       - uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           tool: cargo-hack
+      - name: Install LLVM for JIT targets
+        run: .github/scripts/install_llvm.sh
       - run: cargo hack check --feature-powerset --depth 1 --partition ${{ matrix.partition }}/2
 
   docs:
@@ -174,6 +178,8 @@ jobs:
       - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           version: v0.15.0
+      - name: Install LLVM for JIT targets
+        run: .github/scripts/install_llvm.sh
       - uses: ./.github/actions/native-libs # zizmor: ignore[self-repository] actionlint does not support $/ references yet.
         with:
           cargo-args: --workspace --all-features

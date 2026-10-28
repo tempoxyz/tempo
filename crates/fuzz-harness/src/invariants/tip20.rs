@@ -13,10 +13,12 @@ use tempo_primitives::is_tip20_prefix;
 
 use super::Views;
 
-/// Invariants broken by each TIP-20 among `accounts` for which `selected` holds, as `(id, message)`.
+/// Invariants broken by each TIP-20 among `accounts` for which `selected` holds, summing balances
+/// over `holders`, as `(id, message)`.
 pub(super) fn check(
     views: &mut Views<'_>,
     accounts: &[Address],
+    holders: &[Address],
     selected: impl Fn(&Address) -> bool,
 ) -> Vec<(&'static str, String)> {
     let mut failures = Vec::new();
@@ -24,7 +26,7 @@ pub(super) fn check(
         .iter()
         .filter(|account| is_tip20_prefix(**account) && selected(account));
     for &token in tokens {
-        if let Err(message) = check_token(views, token, accounts, &mut failures) {
+        if let Err(message) = check_token(views, token, holders, &mut failures) {
             failures.push(("TEMPO-TIP20-VIEW", message));
         }
     }

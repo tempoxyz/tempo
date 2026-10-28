@@ -9,7 +9,8 @@ use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256, address};
 use alloy_sol_types::SolCall;
 use bincode::Options as _;
 use commonware_codec::Encode as _;
-use revm::{Database as _, database::BundleState};
+use evm2::evm::{AccountInfo, Cache, Database as _};
+use reth_execution_types::{AccountUpdate, StateUpdate};
 use tempo_chainspec::{
     constants::moderato::MODERATO_CHAIN_ID,
     hardfork::{TempoHardfork, TempoHardforks},
@@ -27,7 +28,10 @@ use tempo_fuzz_types::{
 use tempo_precompiles::tip20::slots::{SUPPLY_CAP, TOTAL_SUPPLY};
 use tempo_primitives::{TempoHeader, TempoTxEnvelope};
 
-use crate::{bincode_options, chain, execute, state};
+use crate::{
+    bincode_options, chain, execute,
+    state::{self, Contracts, Net},
+};
 
 /// Dev account 0, funded with pathUSD in the dev genesis.
 const SENDER: Address = address!("f39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
@@ -155,8 +159,9 @@ fn exact(state: StateInput) -> PreState {
 /// The whole dev genesis state, as an outcome reports it.
 fn genesis_state() -> StateInput {
     let db = state::seed(&genesis()).expect("the dev genesis seeds");
-    let accounts = state::after(&db.cache, &BundleState::default());
-    state::encode(&accounts, &db.cache.contracts)
+    let cache = db.cache.borrow();
+    let accounts = state::after(&cache, &Net::default());
+    state::encode(&accounts, &Contracts(&[&cache.contracts]))
 }
 
 /// The dev genesis as an exact pre-state for `blocks`, listing what they read, as an extractor
@@ -164,7 +169,7 @@ fn genesis_state() -> StateInput {
 /// before the blocks.
 fn exact_genesis(blocks: &[TempoBlock]) -> StateInput {
     let spec = Arc::new(chain::chain_spec(&ChainSpecInput::default()).unwrap());
-    let mut db = state::seed(&genesis()).unwrap();
+    let db = state::seed(&genesis()).unwrap();
     let blocks: Vec<_> = blocks
         .iter()
         .map(|block| execute::recover_block(&spec, block).unwrap())
@@ -173,23 +178,24 @@ fn exact_genesis(blocks: &[TempoBlock]) -> StateInput {
     let _ = execute::execute_blocks(
         &TempoEvmConfig::new(Arc::clone(&spec)),
         &TempoConsensus::new(spec),
-        &mut db,
+        &db,
         &blocks,
         &mut outcome,
     );
     assert_eq!(outcome.error, ErrorClass::None);
 
     let before = genesis_state();
-    let accounts = db
-        .cache
+    let cache = db.cache.borrow();
+    let accounts = cache
         .accounts
-        .iter()
-        .map(|(address, account)| {
+        .keys()
+        .map(|address| {
             let mut listed = before.accounts.get(address).cloned().unwrap_or_default();
-            for slot in account
-                .account
+            for slot in cache
+                .storage
+                .get(address)
                 .iter()
-                .flat_map(|account| account.storage.keys())
+                .flat_map(|storage| storage.slots.keys())
             {
                 listed.storage.entry(*slot).or_insert(U256::ZERO);
             }
@@ -222,6 +228,7 @@ fn trie_root(state: &StateInput) -> B256 {
             balance: account.balance,
             storage_root: storage_root_unhashed(storage),
             code_hash: alloy_primitives::keccak256(&account.code),
+            extension: Default::default(),
         };
         (*address, trie_account)
     }))
@@ -373,15 +380,15 @@ fn reading_outside_an_exact_pre_state_is_reported() {
 #[test]
 fn an_exact_pre_state_answers_listed_block_hashes_only() {
     let hash = B256::repeat_byte(7);
-    let mut db = state::seed(&PreState::Exact {
+    let db = state::seed(&PreState::Exact {
         state: StateInput::default(),
         block_hashes: BTreeMap::from([(5, hash)]),
     })
     .unwrap();
-    assert_eq!(db.block_hash(5).unwrap(), hash);
-    assert!(!db.database.0.missed());
-    assert!(db.block_hash(6).is_err());
-    assert!(db.database.0.missed());
+    assert_eq!(db.reader().get_block_hash(&U256::from(5)).unwrap(), hash);
+    assert!(!db.pre.missed());
+    assert!(db.reader().get_block_hash(&U256::from(6)).is_err());
+    assert!(db.pre.missed());
 }
 
 #[test]
@@ -419,25 +426,49 @@ fn an_empty_account_a_transaction_touches_is_destroyed() {
 
 #[test]
 fn a_recreated_account_keeps_none_of_its_earlier_slots() {
-    use revm::{
-        database::{AccountStatus, BundleAccount, CacheState},
-        state::AccountInfo,
+    let mut pre = Cache::default();
+    pre.accounts.insert(RECIPIENT, Some(AccountInfo::default()));
+    pre.storage
+        .entry(RECIPIENT)
+        .or_default()
+        .slots
+        .insert(U256::from(1), U256::from(5));
+    let recreated = StateUpdate {
+        accounts: vec![AccountUpdate {
+            address: RECIPIENT,
+            original: Some(AccountInfo::default()),
+            current: Some(AccountInfo::default().with_balance(U256::from(1))),
+            created: true,
+            wiped: true,
+            storage: Vec::new(),
+        }],
     };
-    let mut pre = CacheState::new();
-    let slots = [(U256::from(1), U256::from(5))].into_iter().collect();
-    pre.insert_account_with_storage(RECIPIENT, AccountInfo::default(), slots);
-    let mut bundle = BundleState::default();
-    let recreated = BundleAccount {
-        info: Some(AccountInfo::from_balance(U256::from(1))),
-        original_info: Some(AccountInfo::default()),
-        storage: Default::default(),
-        status: AccountStatus::DestroyedChanged,
-    };
-    bundle.state.insert(RECIPIENT, recreated);
 
-    let after = state::after(&pre, &bundle);
+    let after = state::after(&pre, &Net::of([&recreated]));
     assert_eq!(after[&RECIPIENT].info.balance, U256::from(1));
     assert!(after[&RECIPIENT].storage.is_empty());
+}
+
+#[test]
+fn a_created_account_reads_its_unwritten_slots_as_zero_on_an_exact_pre_state() {
+    // The extractor lists the target as empty, a block creates it, and later code reads a slot
+    // nothing wrote: the account did not exist before, so the slot is zero rather than missing.
+    let db = state::seed(&exact(one_account(RECIPIENT, AccountInput::default()))).unwrap();
+    let created = StateUpdate {
+        accounts: vec![AccountUpdate {
+            address: RECIPIENT,
+            original: None,
+            current: Some(AccountInfo::default().with_balance(U256::from(1))),
+            created: true,
+            wiped: false,
+            storage: Vec::new(),
+        }],
+    };
+    db.commit(&Net::of([&created]), |_| None);
+
+    let read = db.reader().get_storage(&RECIPIENT, &U256::from(1));
+    assert_eq!(read.unwrap(), U256::ZERO);
+    assert!(!db.pre.missed());
 }
 
 #[test]
@@ -469,10 +500,10 @@ fn an_epoch_boundary_block_updates_the_committee_after_its_transactions() {
 }
 
 #[test]
-fn invariants_are_checked_without_stopping_execution() {
-    // pathUSD, which the transfer changes, has a supply below its holders' balances and above its
-    // cap. The second token's supply is missing from the pre-state, so its views are skipped, and
-    // checking goes on to the third, whose cap is broken but which the transfer leaves unchanged.
+fn a_pre_state_that_breaks_an_invariant_is_invalid() {
+    // pathUSD's supply is below its holders' balances and above its cap. The second token's supply
+    // is missing from the pre-state, so its views are skipped, and checking goes on to the third,
+    // whose cap is broken.
     fn token(index: u8) -> Address {
         Address::with_last_byte(index) | PATH_USD_ADDRESS
     }
@@ -487,7 +518,7 @@ fn invariants_are_checked_without_stopping_execution() {
 
     assert_eq!(
         (outcome.error, outcome.receipts.len()),
-        (ErrorClass::None, 1)
+        (ErrorClass::InvalidInput, 0)
     );
     let failures: HashSet<_> = outcome
         .invariant_failures
@@ -498,17 +529,11 @@ fn invariants_are_checked_without_stopping_execution() {
             (id, &failure.scope, token)
         })
         .collect();
-    let block = InvariantScope::Block { block_index: 0 };
-    let tx = InvariantScope::Transaction {
-        block_index: 0,
-        tx_index: 0,
-    };
+    let start = InvariantScope::Execution;
     let expected = [
-        ("SUPPLY-CAP", &block, 0),
-        ("BALANCE-SUM", &block, 0),
-        ("SUPPLY-CAP", &tx, 0),
-        ("BALANCE-SUM", &tx, 0),
-        ("SUPPLY-CAP", &block, 2),
+        ("SUPPLY-CAP", &start, 0),
+        ("BALANCE-SUM", &start, 0),
+        ("SUPPLY-CAP", &start, 2),
     ];
     assert_eq!(
         failures,
@@ -571,7 +596,13 @@ fn bad_inputs_are_classified_rather_than_executed() {
         chain_id: 1337,
         ..Default::default()
     };
-    let overriding = one_account(PATH_USD_ADDRESS, path_usd(&mut genesis_state()).clone());
+    let recoded = one_account(
+        PATH_USD_ADDRESS,
+        AccountInput {
+            code: Bytes::from_static(&[0x00]),
+            ..path_usd(&mut genesis_state()).clone()
+        },
+    );
     let bad_code = one_account(
         RECIPIENT,
         AccountInput {
@@ -598,7 +629,7 @@ fn bad_inputs_are_classified_rather_than_executed() {
             vec![
                 ("time reversal", on_blocks(vec![late, t4_block(vec![])])),
                 ("T3 after T4", on_chain(t3_after_t4)),
-                ("genesis override", on_pre(PreState::Genesis(overriding))),
+                ("protocol code replaced", on_pre(PreState::Genesis(recoded))),
                 ("7702, genesis", on_pre(PreState::Genesis(bad_code.clone()))),
                 ("7702, exact", on_pre(exact(bad_code))),
                 ("extra sender", on_blocks(vec![extra_sender])),
@@ -755,7 +786,7 @@ fn the_c_abi_round_trips_and_rejects_what_does_not_decode() {
     assert_eq!(status, FUZZ_ACCEPT);
     let capabilities: TempoHarnessCapabilities =
         bincode_options().deserialize(&out[..written]).unwrap();
-    assert_eq!(capabilities.schema_version, 3);
+    assert_eq!(capabilities.schema_version, 4);
     assert_eq!(
         capabilities.supported_hardforks.as_slice(),
         TempoHardfork::VARIANTS
