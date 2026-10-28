@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     fs, io,
     path::{Component, Path, PathBuf},
     time::Instant,
@@ -98,7 +99,8 @@ pub(crate) fn run_with_runner(matches: &ArgMatches, runner: CliRunner) -> eyre::
             .unwrap_or_else(|| prepared.data_dir.join("consensus"));
 
         let loaded_consensus = load_consensus_manifest(&prepared.manifest)?;
-        install_consensus_archive(&consensus_dir, &loaded_consensus, force).await?;
+        install_consensus_archive(&prepared.data_dir, &consensus_dir, &loaded_consensus, force)
+            .await?;
 
         Ok(())
     })
@@ -199,6 +201,7 @@ fn archive_source_from_url(url: Url) -> eyre::Result<ConsensusArchiveSource> {
 }
 
 async fn install_consensus_archive(
+    data_dir: &Path,
     consensus_dir: &Path,
     loaded: &LoadedConsensusManifest,
     force: bool,
@@ -214,8 +217,11 @@ async fn install_consensus_archive(
         );
     }
 
+    // Use the configured data volume rather than assuming the system temp directory has capacity.
+    let staging =
+        tempfile::tempdir_in(data_dir).wrap_err("failed to create consensus staging directory")?;
+
     let output_files = &loaded.manifest.consensus_archive.output_files;
-    let staging = tempfile::tempdir().wrap_err("failed to create consensus staging directory")?;
     extract_zstd_tar_archive(archive_file.path(), staging.path(), false)?;
     validate_consensus_directory(staging.path())?;
     verify_consensus_output_files(staging.path(), output_files)?;
@@ -360,6 +366,7 @@ fn copy_consensus_directory(source: &Path, target: &Path, force: bool) -> eyre::
     }
 
     fs::create_dir_all(target)?;
+    let copying = tempfile::tempdir_in(target)?;
     for partition in fs::read_dir(source)? {
         let partition = partition?;
         let destination = target.join(partition.file_name());
@@ -375,14 +382,12 @@ fn copy_consensus_directory(source: &Path, target: &Path, force: bool) -> eyre::
         for file in fs::read_dir(partition.path())? {
             let file = file?;
             let output_path = destination.join(file.file_name());
-            let mut reader = fs::File::open(file.path())?;
-            let mut writer = fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&output_path)
+            let copy_path = copying.path().join("blob");
+            fs::copy(file.path(), &copy_path)?;
+            tempfile::TempPath::try_from_path(copy_path)?
+                .persist_noclobber(&output_path)
+                .map_err(|error| error.error)
                 .wrap_err_with(|| format!("failed to create {}", output_path.display()))?;
-            io::copy(&mut reader, &mut writer)?;
-            writer.set_permissions(file.metadata()?.permissions())?;
         }
         fs::set_permissions(&destination, partition.metadata()?.permissions())?;
     }
@@ -399,6 +404,7 @@ fn verify_consensus_output_files(
         "consensus archive output metadata is empty",
     );
 
+    let mut expected_paths = HashSet::new();
     for expected in output_files {
         ensure!(
             !expected.path.is_empty()
@@ -431,6 +437,19 @@ fn verify_consensus_output_files(
             expected.blake3,
             actual,
         );
+        expected_paths.insert(PathBuf::from(&expected.path));
+    }
+
+    for partition in fs::read_dir(consensus_dir)? {
+        for file in fs::read_dir(partition?.path())? {
+            let path = file?.path();
+            let relative = path.strip_prefix(consensus_dir)?;
+            ensure!(
+                expected_paths.contains(relative),
+                "unexpected consensus archive output: {}",
+                relative.display(),
+            );
+        }
     }
 
     Ok(())
@@ -808,9 +827,14 @@ mod tests {
                 let archive = write_test_consensus_archive(entries);
                 let loaded = loaded_test_archive(&archive, entries);
 
-                let error = install_consensus_archive(target.path(), &loaded, force)
-                    .await
-                    .unwrap_err();
+                let error = install_consensus_archive(
+                    target.path().parent().unwrap(),
+                    target.path(),
+                    &loaded,
+                    force,
+                )
+                .await
+                .unwrap_err();
 
                 assert_eq!(
                     error.to_string(),
@@ -863,9 +887,14 @@ mod tests {
             let archive = write_test_archive(&bytes);
             let loaded = loaded_test_archive(&archive, &[]);
 
-            let error = install_consensus_archive(target.path(), &loaded, true)
-                .await
-                .unwrap_err();
+            let error = install_consensus_archive(
+                target.path().parent().unwrap(),
+                target.path(),
+                &loaded,
+                true,
+            )
+            .await
+            .unwrap_err();
 
             let error = error.to_string();
             let alias_error = "unsupported consensus snapshot file type: engine-finalizations-by-height-metadata/alias";
@@ -892,9 +921,14 @@ mod tests {
         let archive = write_test_consensus_archive(&[(output_path, b"abc")]);
         let loaded = loaded_test_archive(&archive, &[(output_path, b"def")]);
 
-        let error = install_consensus_archive(target.path(), &loaded, true)
-            .await
-            .unwrap_err();
+        let error = install_consensus_archive(
+            target.path().parent().unwrap(),
+            target.path(),
+            &loaded,
+            true,
+        )
+        .await
+        .unwrap_err();
 
         assert_eq!(
             error.to_string(),
@@ -917,6 +951,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn install_consensus_archive_rejects_unlisted_files_before_clearing_destination() {
+        let target = tempfile::tempdir().unwrap();
+        fs::write(target.path().join("existing"), b"existing").unwrap();
+        let declared = "engine-finalizations-by-height-metadata/00";
+        let unlisted = "engine-finalizations-by-height-metadata/01";
+        let archive =
+            write_test_consensus_archive(&[(declared, b"abc"), (unlisted, b"unverified")]);
+        let loaded = loaded_test_archive(&archive, &[(declared, b"abc")]);
+
+        let error = install_consensus_archive(
+            target.path().parent().unwrap(),
+            target.path(),
+            &loaded,
+            true,
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            format!("unexpected consensus archive output: {unlisted}")
+        );
+        assert_eq!(
+            fs::read(target.path().join("existing")).unwrap(),
+            b"existing"
+        );
+        assert!(!target.path().join(unlisted).exists());
+    }
+
+    #[tokio::test]
+    async fn install_consensus_archive_uses_configured_data_dir_for_staging() {
+        let root = tempfile::tempdir().unwrap();
+        let data_dir = root.path().join("data");
+        let consensus_dir = root.path().join("custom-consensus");
+        let output_path = "engine-finalizations-by-height-metadata/00";
+        let entries: &[(&str, &[u8])] = &[(output_path, b"abc")];
+        let archive = write_test_consensus_archive(entries);
+        let loaded = loaded_test_archive(&archive, entries);
+
+        let error = install_consensus_archive(&data_dir, &consensus_dir, &loaded, true)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "failed to create consensus staging directory"
+        );
+        assert!(!consensus_dir.exists());
+
+        fs::create_dir(&data_dir).unwrap();
+        install_consensus_archive(&data_dir, &consensus_dir, &loaded, true)
+            .await
+            .unwrap();
+
+        assert_eq!(fs::read(consensus_dir.join(output_path)).unwrap(), b"abc");
+        assert!(fs::read_dir(data_dir).unwrap().next().is_none());
+    }
+
+    #[tokio::test]
     async fn install_consensus_archive_replaces_verified_state_when_forced() {
         let target = tempfile::tempdir().unwrap();
         let driver = target.path().join("engine_driver_states_metadata");
@@ -927,9 +1019,14 @@ mod tests {
         let archive = write_test_consensus_archive(entries);
         let loaded = loaded_test_archive(&archive, entries);
 
-        install_consensus_archive(target.path(), &loaded, true)
-            .await
-            .unwrap();
+        install_consensus_archive(
+            target.path().parent().unwrap(),
+            target.path(),
+            &loaded,
+            true,
+        )
+        .await
+        .unwrap();
 
         assert!(!driver.exists());
         assert_eq!(fs::read(target.path().join(output_path)).unwrap(), b"abc");
@@ -950,18 +1047,28 @@ mod tests {
         .unwrap();
         fs::write(target.path().join("existing"), b"existing").unwrap();
 
-        install_consensus_archive(target.path(), &loaded, false)
-            .await
-            .unwrap();
+        install_consensus_archive(
+            target.path().parent().unwrap(),
+            target.path(),
+            &loaded,
+            false,
+        )
+        .await
+        .unwrap();
         assert_eq!(fs::read(target.path().join(output_path)).unwrap(), b"abc");
         assert_eq!(
             fs::read(target.path().join("existing")).unwrap(),
             b"existing"
         );
 
-        let error = install_consensus_archive(target.path(), &loaded, false)
-            .await
-            .unwrap_err();
+        let error = install_consensus_archive(
+            target.path().parent().unwrap(),
+            target.path(),
+            &loaded,
+            false,
+        )
+        .await
+        .unwrap_err();
         assert_eq!(
             error.downcast_ref::<io::Error>().unwrap().kind(),
             io::ErrorKind::AlreadyExists
@@ -982,9 +1089,14 @@ mod tests {
         let archive = write_test_consensus_archive(entries);
         let loaded = loaded_test_archive(&archive, entries);
 
-        let error = install_consensus_archive(target.path(), &loaded, false)
-            .await
-            .unwrap_err();
+        let error = install_consensus_archive(
+            target.path().parent().unwrap(),
+            target.path(),
+            &loaded,
+            false,
+        )
+        .await
+        .unwrap_err();
 
         assert_eq!(
             error.to_string(),
@@ -1016,9 +1128,14 @@ mod tests {
         let archive = write_test_archive(&bytes);
         let loaded = loaded_test_archive(&archive, &[(original, b"abc"), (alias, b"abc")]);
 
-        install_consensus_archive(target.path(), &loaded, false)
-            .await
-            .unwrap();
+        install_consensus_archive(
+            target.path().parent().unwrap(),
+            target.path(),
+            &loaded,
+            false,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(fs::read(target.path().join(original)).unwrap(), b"abc");
         assert_eq!(fs::read(target.path().join(alias)).unwrap(), b"abc");
@@ -1028,6 +1145,9 @@ mod tests {
 
     #[tokio::test]
     async fn install_consensus_archive_round_trips_gnu_sparse_file() {
+        const HOLE_SIZE: usize = 64 * 1024 * 1024;
+        const FILE_SIZE: usize = HOLE_SIZE + 3;
+
         let target = tempfile::tempdir().unwrap();
         let output_path = "engine-finalizations-by-height-metadata/00";
         let encoder = zstd::Encoder::new(Vec::new(), 0).unwrap();
@@ -1036,26 +1156,42 @@ mod tests {
         header.set_entry_type(tar::EntryType::GNUSparse);
         header.set_size(3);
         let gnu = header.as_gnu_mut().unwrap();
-        gnu.set_real_size(8195);
-        gnu.sparse[0].set_offset(8192);
+        gnu.set_real_size(FILE_SIZE.try_into().unwrap());
+        gnu.sparse[0].set_offset(HOLE_SIZE.try_into().unwrap());
         gnu.sparse[0].set_length(3);
         builder
             .append_data(&mut header, output_path, &b"abc"[..])
             .unwrap();
         let archive = builder.into_inner().unwrap().finish().unwrap();
         let archive_file = write_test_archive(&archive);
-        let mut contents = vec![0; 8195];
-        contents[8192..].copy_from_slice(b"abc");
+        let mut contents = vec![0; FILE_SIZE];
+        contents[HOLE_SIZE..].copy_from_slice(b"abc");
         let loaded = loaded_test_archive(&archive_file, &[(output_path, &contents)]);
+        let reference = tempfile::tempdir().unwrap();
+        extract_zstd_tar_archive(archive_file.path(), reference.path(), false).unwrap();
 
-        install_consensus_archive(target.path(), &loaded, false)
-            .await
-            .unwrap();
+        install_consensus_archive(
+            target.path().parent().unwrap(),
+            target.path(),
+            &loaded,
+            false,
+        )
+        .await
+        .unwrap();
 
         let restored = fs::read(target.path().join(output_path)).unwrap();
-        assert_eq!(restored.len(), 8195);
-        assert!(restored[..8192].iter().all(|&byte| byte == 0));
-        assert_eq!(&restored[8192..], b"abc");
+        assert_eq!(restored.len(), FILE_SIZE);
+        assert!(restored[..HOLE_SIZE].iter().all(|&byte| byte == 0));
+        assert_eq!(&restored[HOLE_SIZE..], b"abc");
+        #[cfg(unix)]
+        assert!(
+            std::os::unix::fs::MetadataExt::blocks(
+                &fs::metadata(target.path().join(output_path)).unwrap()
+            ) <= std::os::unix::fs::MetadataExt::blocks(
+                &fs::metadata(reference.path().join(output_path)).unwrap()
+            ),
+            "installation must preserve the archive's sparse allocation",
+        );
     }
 
     #[tokio::test]
@@ -1080,9 +1216,14 @@ mod tests {
         let archive_file = write_test_archive(&archive);
         let loaded = loaded_test_archive(&archive_file, &[(output_path, b"abc")]);
 
-        install_consensus_archive(target.path(), &loaded, false)
-            .await
-            .unwrap();
+        install_consensus_archive(
+            target.path().parent().unwrap(),
+            target.path(),
+            &loaded,
+            false,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(fs::read(target.path().join(output_path)).unwrap(), b"abc");
         assert!(!target.path().join("pax_global_header").exists());
@@ -1234,7 +1375,7 @@ mod tests {
     #[test]
     fn verify_consensus_output_files_accepts_matching_outputs() {
         let dir = tempfile::tempdir().unwrap();
-        let output_path = "engine-finalized-blocks-prunable-key/nested/00";
+        let output_path = "engine-finalized-blocks-prunable-key/00";
         let file_path = dir.path().join(output_path);
         fs::create_dir_all(file_path.parent().unwrap()).unwrap();
         fs::write(&file_path, b"abc").unwrap();
