@@ -60,11 +60,8 @@ impl ConfigCommitmentWriteGas {
         match self {
             Self::Intrinsic if previous.is_zero() => Ok(0),
             Self::Intrinsic => Err(TempoPrecompileError::InvalidConfigCommitmentWrite),
-            Self::Precompile if previous.is_zero() => u64::from(gas.get(GasId::NewAccountCost))
-                .checked_sub(CONFIG_COMMITMENT_UPDATE_GAS)
-                .ok_or_else(|| {
-                    TempoPrecompileError::Fatal("account creation costs less than an update".into())
-                }),
+            Self::Precompile if previous.is_zero() => Ok(u64::from(gas.get(GasId::NewAccountCost))
+                .saturating_sub(CONFIG_COMMITMENT_UPDATE_GAS)),
             Self::Precompile => Ok(0),
         }
     }
