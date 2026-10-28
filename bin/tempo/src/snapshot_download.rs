@@ -358,7 +358,10 @@ fn extract_zstd_tar_archive(
             "consensus archive entry has an unsafe path: {}",
             path.display(),
         );
-        let relative: PathBuf = path.components().collect();
+        let relative: PathBuf = path
+            .components()
+            .filter(|c| matches!(c, Component::Normal(_)))
+            .collect();
         match entry_type {
             tar::EntryType::Directory => {}
             tar::EntryType::Regular | tar::EntryType::Continuous => {
@@ -1087,5 +1090,32 @@ mod tests {
             err.to_string(),
             "consensus archive output partition/00 was not extracted from the archive"
         );
+    }
+
+    #[test]
+    fn extract_zstd_tar_archive_strips_cur_dir_prefix() {
+        let target = tempfile::tempdir().unwrap();
+        let mut builder = tar::Builder::new(zstd::Encoder::new(Vec::new(), 0).unwrap());
+        let mut header = tar::Header::new_gnu();
+        header.set_size(3);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, "./partition/00", &mut &b"abc"[..])
+            .unwrap();
+        let archive_file = finish_test_archive(builder);
+
+        let files = extract_zstd_tar_archive(archive_file.path(), target.path(), false).unwrap();
+
+        assert_eq!(files, BTreeSet::from([PathBuf::from("partition/00")]));
+        verify_consensus_output_files(
+            target.path(),
+            &[OutputFileChecksum {
+                path: "partition/00".to_string(),
+                size: 3,
+                blake3: blake3::hash(b"abc").to_hex().to_string(),
+            }],
+            &files,
+        )
+        .unwrap();
     }
 }
