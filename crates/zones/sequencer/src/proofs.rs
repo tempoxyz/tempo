@@ -298,7 +298,8 @@ where
             }
             // A pre-T15 block without a witness settles with NoProof, so try it once: nodes that
             // do not collect at import (shadow provers) still get witnesses, while an L1 RPC that
-            // cannot serve the proofs is not retried forever.
+            // cannot serve the proofs is not retried forever. A failure ends the pass so queued
+            // import requests are served before the next block is tried.
             if number <= self.optional_attempted_through {
                 continue;
             }
@@ -311,6 +312,7 @@ where
                     error = ?error,
                     "Skipping pre-T15 Zone block witness after one background attempt"
                 );
+                return Ok(());
             }
         }
         Ok(())
@@ -1077,9 +1079,9 @@ mod tests {
             provider.add_header(hash, header);
             hashes.push(hash);
         }
-        // Finalized Zone height 0 for both passes: every block stays unsettled.
+        // Finalized Zone height 0 for every pass: every block stays unsettled.
         let asserter = Asserter::new();
-        for _ in 0..2 {
+        for _ in 0..3 {
             asserter.push_success(&Bytes::from(U256::ZERO.to_be_bytes::<32>()));
         }
 
@@ -1106,25 +1108,26 @@ mod tests {
             optional_attempted_through: 0,
         };
 
-        // Pre-T15 block 1 fails and is skipped, pre-T15 block 2 is collected, and T15 block 3
-        // fails the pass.
+        let failures = || {
+            debug_api
+                .failures
+                .load(std::sync::atomic::Ordering::Relaxed)
+        };
+
+        // Pre-T15 block 1 fails, which ends the pass.
+        collector.prune_and_collect().await.unwrap();
+        assert!(!store.contains(1, hashes[0]));
+        assert!(!store.contains(2, hashes[1]));
+        assert_eq!(failures(), 1);
+
+        // Block 1 is not retried, pre-T15 block 2 is collected, and T15 block 3 fails the pass.
         assert!(collector.prune_and_collect().await.is_err());
         assert!(!store.contains(1, hashes[0]));
         assert!(store.contains(2, hashes[1]));
-        assert_eq!(
-            debug_api
-                .failures
-                .load(std::sync::atomic::Ordering::Relaxed),
-            2
-        );
+        assert_eq!(failures(), 2);
 
         // The next pass retries only the mandatory T15 block.
         assert!(collector.prune_and_collect().await.is_err());
-        assert_eq!(
-            debug_api
-                .failures
-                .load(std::sync::atomic::Ordering::Relaxed),
-            3
-        );
+        assert_eq!(failures(), 3);
     }
 }
