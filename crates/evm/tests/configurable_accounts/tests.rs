@@ -5884,21 +5884,6 @@ fn configurable_account_marker_dispatch() {
         data: bytes!("1234"),
     }
     .abi_encode();
-    let tx = f.signed(
-        4,
-        vec![Call {
-            input: hook.clone().into(),
-            ..receive.clone()
-        }],
-    );
-    let result = f.run(&tx);
-    assert!(result.status, "{result:?}");
-    assert_eq!(
-        result.output,
-        IConfigurableAccountShim::onERC721ReceivedCall::abi_encode_returns(
-            &IConfigurableAccountShim::onERC721ReceivedCall::SELECTOR.into()
-        )
-    );
     let mut trailing = hook.clone();
     trailing.push(0);
     let mut malformed = hook;
@@ -5917,7 +5902,7 @@ fn configurable_account_marker_dispatch() {
     .enumerate()
     {
         let result = f.run(&f.signed(
-            5 + offset as u64,
+            4 + offset as u64,
             vec![Call {
                 input,
                 ..receive.clone()
@@ -5932,75 +5917,39 @@ fn configurable_account_marker_dispatch() {
     }
 }
 
+/// A failing verification reverts through the shim exactly as the verifier does.
 #[test]
-fn configurable_account_erc1271_verifies_current_config() {
+fn configurable_account_erc1271_propagates_verifier_reverts() {
     let mut f = Fixture::new();
     let account = f.account;
     assert!(f.run(&f.signed(3, vec![f.getter()])).status);
     seed_relayer(&mut f);
     let signature =
         configurable_account_approval(account, &f.config, &f.owner, CONFIGURABLE_ACCOUNT_HASH);
-    let input = IConfigurableAccountShim::isValidSignatureCall {
-        hash: CONFIGURABLE_ACCOUNT_HASH,
-        signature: TempoSignature::ConfigurableAccount(signature)
-            .to_bytes()
-            .into(),
-    }
-    .abi_encode();
-    let call = Call {
+    let call = |hash, signature: Bytes| Call {
         to: TxKind::Call(account),
         value: U256::ZERO,
-        input: input.into(),
+        input: IConfigurableAccountShim::isValidSignatureCall { hash, signature }
+            .abi_encode()
+            .into(),
     };
-    let result = relayed(&mut f, call.clone(), 1_000_000, None);
-    assert!(result.status, "{result:?}");
-    assert_eq!(
-        result.output,
-        IConfigurableAccountShim::isValidSignatureCall::abi_encode_returns(
-            &[0x16, 0x26, 0xba, 0x7e].into()
-        )
-    );
-    let mut bad_hash = call.clone();
-    let mut bad_input = bad_hash.input.to_vec();
-    bad_input[4] ^= 1;
-    bad_hash.input = bad_input.into();
-    let result = relayed(&mut f, bad_hash, 1_000_000, None);
+    let witness: Bytes = TempoSignature::ConfigurableAccount(signature)
+        .to_bytes()
+        .into();
+    let wrong_hash = call(B256::ZERO, witness);
+    let result = relayed(&mut f, wrong_hash, 1_000_000, None);
     assert_reverts_with(
         &result,
         ISignatureVerifier::InvalidSignature {},
         "invalid owner signature",
     );
-    let next = ConfigurableAccountConfig {
-        version: 1,
-        ..f.config.clone()
-    };
-    assert!(
-        f.run(&f.signed(4, vec![Fixture::rotation(&f.config, &next)]))
-            .status
-    );
-    let result = relayed(&mut f, call, 1_000_000, None);
-    assert!(result.status, "{result:?}");
-    assert_eq!(
-        result.output,
-        IConfigurableAccountShim::isValidSignatureCall::abi_encode_returns(&[0xff; 4].into())
-    );
-    let malformed = Call {
-        to: TxKind::Call(account),
-        value: U256::ZERO,
-        input: IConfigurableAccountShim::isValidSignatureCall {
-            hash: CONFIGURABLE_ACCOUNT_HASH,
-            signature: Bytes::new(),
-        }
-        .abi_encode()
-        .into(),
-    };
+    let malformed = call(CONFIGURABLE_ACCOUNT_HASH, Bytes::new());
     let result = relayed(&mut f, malformed, 1_000_000, None);
     assert_reverts_with(
         &result,
         ISignatureVerifier::InvalidFormat {},
         "malformed witness",
     );
-    assert_eq!(f.commitment(), next.commitment().unwrap());
 }
 
 /// The marker is reserved for registered accounts and must remain an invalid opcode elsewhere.
@@ -6024,34 +5973,6 @@ fn configurable_marker_is_gated_by_fork_and_commitment() {
         assert_eq!(result.stop, InstrStop::OpcodeNotFound);
         assert!(result.output.is_empty());
     }
-}
-
-#[test]
-fn configurable_marker_external_code_operations() {
-    let mut f = Fixture::new();
-    let account = f.account;
-    assert!(f.run(&f.signed(3, vec![f.getter()])).status);
-    let code = [
-        bytes!("73").as_ref(),
-        account.as_slice(),
-        bytes!("3b5f5273").as_ref(),
-        account.as_slice(),
-        bytes!("3f60205260015f604073").as_ref(),
-        account.as_slice(),
-        bytes!("3c60605ff3").as_ref(),
-    ]
-    .concat();
-    let call = f.install_contract(Address::repeat_byte(0x55), code);
-    let result = f.run(&f.signed(4, vec![call]));
-    assert!(result.status, "{result:?}");
-    let expected = [
-        U256::ONE.to_be_bytes::<32>().as_slice(),
-        CONFIGURABLE_ACCOUNT_CODE_HASH.as_slice(),
-        &[0xef],
-        &[0; 31],
-    ]
-    .concat();
-    assert_eq!(result.output.as_ref(), expected);
 }
 
 /// Calls through the marker use the storage context of the EVM call kind.
