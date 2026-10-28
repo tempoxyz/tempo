@@ -622,6 +622,14 @@ where
         // The overlay only persists storage slots; it cannot write account extensions.
         Err(TempoPrecompileError::InvalidConfigCommitmentWrite)
     }
+
+    fn with_warm_caller_info(
+        &mut self,
+        address: Address,
+        f: &mut dyn FnMut(&AccountInfo),
+    ) -> Result<(), TempoPrecompileError> {
+        self.with_account_info(address, f)
+    }
 }
 
 fn read_private_genesis_outcome(manifest_dir: &Path) -> eyre::Result<OnchainDkgOutcome> {

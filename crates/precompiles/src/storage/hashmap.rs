@@ -313,6 +313,14 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         account.extension = AccountExtension::from(encode_config_commitment(commitment));
         Ok(())
     }
+
+    fn with_warm_caller_info(
+        &mut self,
+        address: Address,
+        f: &mut dyn FnMut(&AccountInfo),
+    ) -> Result<(), TempoPrecompileError> {
+        self.with_account_info(address, f)
+    }
 }
 
 impl StorageCreditsBackend for HashMapStorageProvider {
