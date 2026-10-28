@@ -2532,20 +2532,7 @@ fn open_channel(
         in_storage_ctx(&mut f.evm, || TIP20ChannelReserve::new().initialize()).unwrap();
     }
     fund(f, payer, deposit);
-    let call = Call {
-        to: TxKind::Call(TIP20_CHANNEL_RESERVE_ADDRESS),
-        value: U256::ZERO,
-        input: ITIP20ChannelReserve::openCall {
-            payee,
-            operator: Address::ZERO,
-            token: PATH_USD_ADDRESS,
-            deposit: U96::from(deposit),
-            salt: B256::repeat_byte(0x5a),
-            authorizedSigner: authorized_signer,
-        }
-        .abi_encode()
-        .into(),
-    };
+    let call = open_call(payee, authorized_signer, deposit);
     let result = send(f, payer, vec![call]);
     assert!(result.status, "{result:?}");
     let opened = result
@@ -2565,6 +2552,24 @@ fn open_channel(
             authorizedSigner: authorized_signer,
             expiringNonceHash: opened.expiringNonceHash,
         },
+    }
+}
+
+/// The call opening a path USD channel to `payee` with the given voucher signer.
+fn open_call(payee: Address, authorized_signer: Address, deposit: u64) -> Call {
+    Call {
+        to: TxKind::Call(TIP20_CHANNEL_RESERVE_ADDRESS),
+        value: U256::ZERO,
+        input: ITIP20ChannelReserve::openCall {
+            payee,
+            operator: Address::ZERO,
+            token: PATH_USD_ADDRESS,
+            deposit: U96::from(deposit),
+            salt: B256::repeat_byte(0x5a),
+            authorizedSigner: authorized_signer,
+        }
+        .abi_encode()
+        .into(),
     }
 }
 
@@ -2657,11 +2662,25 @@ fn retired_root_channel_voucher_reverts() {
                     payer.address()
                 }
             };
+            // A voucher signed before the retirement stays redeemable: the deposit is already
+            // in the channel and payable only to its payee.
             let before = channel_snapshot(&mut f, &channel);
             let call = redeem.call(&channel, 60, signature);
             let result = send(&mut f, payee, vec![call]);
-            assert_reverts_with(&result, voucher_retired(retired), &label);
-            assert_eq!(channel_snapshot(&mut f, &channel), before, "{label}");
+            assert!(result.status, "{label}: {result:?}");
+            let after = channel_snapshot(&mut f, &channel);
+            assert_eq!(
+                after.payee_balance,
+                before.payee_balance + U256::from(60),
+                "{label}: payee"
+            );
+
+            // The retired root key gains no authority over new deposits.
+            let new_payer = signer(10).address();
+            fund(&mut f, new_payer, 100);
+            let call = open_call(payee, retired, 100);
+            let result = send(&mut f, new_payer, vec![call]);
+            assert_reverts_with(&result, voucher_retired(retired), &format!("{label}: open"));
         }
     }
 }
@@ -2734,7 +2753,7 @@ fn retired_root_channel_voucher_error_order() {
         let (channel, valid) = voucher_setup(&mut f, &payer, &payer);
         retire(&mut f, payer.address());
         // Another key's voucher, and garbage, keep the existing signature error for a committed
-        // signer; only a voucher the committed signer really signed is a retired root key.
+        // signer; a voucher the committed signer really signed is redeemable.
         let forged = voucher(&mut f, &channel, &signer(7), 60);
         for (label, signature) in [("forged", forged), ("garbage", Bytes::from(vec![0x42; 65]))] {
             let call = redeem.call(&channel, 60, signature);
@@ -2747,7 +2766,7 @@ fn retired_root_channel_voucher_error_order() {
         }
         let call = redeem.call(&channel, 60, valid);
         let result = send(&mut f, payee, vec![call]);
-        assert_reverts_with(&result, voucher_retired(payer.address()), "valid");
+        assert!(result.status, "{redeem:?} valid: {result:?}");
     }
 }
 
@@ -2791,8 +2810,12 @@ fn retired_root_signature_checks_cost_the_commitment_read() {
             let after = signature_gas(TempoHardfork::T14, action, warm);
             // Reads follow the normal account-access schedule: a cold account load, or a warm
             // one when the key's account is in the access list. An already loaded commitment adds
-            // nothing on top.
-            let read = if warm { 100 } else { 2600 };
+            // nothing on top. Redeeming a voucher reads no commitment.
+            let read = match (action, warm) {
+                (SignedAction::Permit, false) => 2600,
+                (SignedAction::Permit, true) => 100,
+                (SignedAction::Redeem(_), _) => 0,
+            };
             assert_eq!(after - before, read, "{action:?}, warm: {warm}");
         }
     }
