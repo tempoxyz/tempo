@@ -553,6 +553,8 @@ mod tests {
                 ("--t12-time", t12),
                 ("--t13-time", t13),
                 ("--t14-time", t14),
+                // T15 follows T14: the active fork at the anchor decides the marker.
+                ("--t15-time", t14),
             ] {
                 if let Some(timestamp) = timestamp {
                     args.extend([flag.to_owned(), timestamp.to_string()]);
@@ -590,6 +592,7 @@ mod tests {
                     TempoHardfork::T12 => t12.unwrap_or(0),
                     TempoHardfork::T13 => t13.unwrap_or(0),
                     TempoHardfork::T14 => t14.unwrap_or(0),
+                    TempoHardfork::T15 => t14.unwrap_or(0),
                     _ => 0,
                 };
                 let field = format!("{}Time", fork.to_string().to_lowercase());
