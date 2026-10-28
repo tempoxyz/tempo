@@ -14254,8 +14254,6 @@ name = "tempo-nitro-attestation-fuzz"
 version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
- "rustls-pki-types",
- "rustls-webpki",
  "sha2 0.10.9",
  "tempo-nitro-attestation",
  "x509-parser",

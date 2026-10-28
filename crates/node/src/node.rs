@@ -93,8 +93,9 @@ pub struct TempoNodeArgs {
     #[arg(long = "txpool.max-txs-per-lane", default_value_t = DEFAULT_MAX_TXS_PER_LANE)]
     pub max_txs_per_lane: usize,
 
-    /// Comma-separated addresses or a file containing comma/newline-separated addresses used for
-    /// transaction sender and direct call target checks.
+    /// Comma-separated addresses or a file containing comma/newline-separated addresses checked
+    /// against each transaction's sender, fee payer, direct call targets, authorization delegates
+    /// and authorities, and access list entries.
     #[arg(
         long = "txpool.filter",
         value_name = "ADDRESSES_OR_FILE",
@@ -762,7 +763,7 @@ pub struct TempoPoolBuilder {
     pub max_txs_per_lane: usize,
     /// Whether to skip the FeeAMM liquidity check during pool admission.
     pub disable_fee_amm_check: bool,
-    /// Addresses checked against transaction senders and direct call targets.
+    /// Addresses checked during pool admission; see [`AddressFilter`] for what it checks.
     pub address_filter: AddressFilter,
     /// Optional additional stateless validation check forwarded to the inner ETH validator.
     pub additional_stateless_validation: Option<StatelessValidationFn<TempoPooledTransaction>>,
@@ -795,7 +796,7 @@ impl TempoPoolBuilder {
         self
     }
 
-    /// Configures transaction sender and direct call target checks.
+    /// Configures the [`AddressFilter`] checked during pool admission.
     pub fn with_address_filter(mut self, address_filter: AddressFilter) -> Self {
         self.address_filter = address_filter;
         self

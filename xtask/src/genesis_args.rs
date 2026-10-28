@@ -53,6 +53,7 @@ use tempo_precompiles::{
     PATH_USD_ADDRESS,
     account_keychain::AccountKeychain,
     address_registry::AddressRegistry,
+    configurable_account::ConfigurableAccount,
     nonce::NonceManager,
     receive_policy_guard::ReceivePolicyGuard,
     signature_verifier::SignatureVerifier,
@@ -439,6 +440,11 @@ impl GenesisArgs {
         if self.hardforks.active_at_genesis(TempoHardfork::T6) {
             println!("Initializing TIP-1028 ReceivePolicyGuard (T6 active at genesis)");
             with_genesis_storage(&mut evm, || ReceivePolicyGuard::new().initialize())?;
+        }
+
+        if self.hardforks.active_at_genesis(TempoHardfork::T14) {
+            println!("Initializing configurable account (T14 active at genesis)");
+            with_genesis_storage(&mut evm, || ConfigurableAccount::new().initialize())?;
         }
 
         if !self.no_pairwise_liquidity {
@@ -986,6 +992,11 @@ mod tests {
                 .alloc
                 .contains_key(&tempo_precompiles::SIGNATURE_VERIFIER_ADDRESS)
         );
+        // T14 is active at genesis, so the configurable account marker is installed.
+        assert_eq!(
+            genesis.alloc[&tempo_precompiles::CONFIGURABLE_ACCOUNT_ADDRESS].code,
+            Some(Bytes::from_static(&[0xef]))
+        );
     }
 
     #[tokio::test]
@@ -1012,6 +1023,11 @@ mod tests {
         ] {
             assert_eq!(genesis.alloc[&destination].code.as_ref(), Some(&expected));
         }
+        assert!(
+            !genesis
+                .alloc
+                .contains_key(&tempo_precompiles::CONFIGURABLE_ACCOUNT_ADDRESS)
+        );
     }
 
     #[test]

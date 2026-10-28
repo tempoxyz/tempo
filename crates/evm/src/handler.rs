@@ -1,6 +1,7 @@
 //! Tempo EVM Handler implementation.
 
 mod config;
+mod configurable_account;
 
 pub use self::config::{
     TempoBlockEnv, TempoBlockExt, TempoConfig, TempoConfigSelector, TempoEvmExt, TempoEvmTypes,
@@ -9,10 +10,10 @@ pub use self::config::{
 };
 use self::config::{TempoFeeContext, TempoHandlerHooks};
 use crate::{
-    FeePaymentError, TempoAaTx, TempoInvalidTransaction, TempoTxEnv,
+    ExecutionContext, FeePaymentError, TempoAaTx, TempoInvalidTransaction, TempoTxEnv,
     signature_gas::{calldata_tokens, tempo_signature_verification_gas},
 };
-use alloy_primitives::{Address, KECCAK256_EMPTY, TxKind, U256};
+use alloy_primitives::{Address, B256, KECCAK256_EMPTY, TxKind, U256};
 use evm2::{
     Evm, EvmFeatures, TxResult,
     env::TxEnv,
@@ -42,9 +43,10 @@ use tempo_precompiles::{
         AccountKeychain, AuthorizedKey, CallScope as PrecompileCallScope, KeyRestrictions,
         SelectorRule as PrecompileSelectorRule, TokenLimit,
     },
+    configurable_account::CONFIGURABLE_ACCOUNT_CODE_HASH,
     error::TempoPrecompileError,
     nonce::{INonce::getNonceCall, NonceManager},
-    storage::{Handler as _, StorageCtx},
+    storage::{Handler as _, StorageCtx, account_config_commitment},
 };
 use tempo_primitives::transaction::{
     SignedKeyAuthorization, TEMPO_EXPIRING_NONCE_KEY, validate_calls,
@@ -1085,9 +1087,21 @@ fn apply_nonce(
     let nonce_check = host.feature(EvmFeatures::NONCE_CHECK);
     let mut account = host.state_mut().account(&caller)?;
     if eip3607 && account.code_hash() != KECCAK256_EMPTY {
-        let code = account.load_code()?;
-        if !code.is_empty() && !code.is_eip7702() {
-            return Err(HandlerError::RejectCallerWithCode);
+        // From T14 a registered configurable account carries the `0xef` marker (TIP-1114) and may
+        // still send keychain-signed or simulated transactions.
+        let registered_sender = spec.is_t14()
+            && account.code_hash() == CONFIGURABLE_ACCOUNT_CODE_HASH
+            && (aa.signature().is_keychain()
+                || matches!(envelope.execution_context(), ExecutionContext::Simulation))
+            && !account
+                .get()
+                .map_or(Ok(B256::ZERO), |info| account_config_commitment(info, spec))?
+                .is_zero();
+        if !registered_sender {
+            let code = account.load_code()?;
+            if !code.is_empty() && !code.is_eip7702() {
+                return Err(HandlerError::RejectCallerWithCode);
+            }
         }
     }
     account.touch();

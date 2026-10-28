@@ -292,6 +292,8 @@ where
         check_cancel!();
 
         let start = Instant::now();
+        // Snapshot before setup: the stop decision already charges start.elapsed().
+        let payload_build_budget = attributes.payload_build_budget();
 
         let block_time_millis =
             (attributes.timestamp_millis() - parent_header.timestamp_millis()) as f64;
@@ -463,7 +465,6 @@ where
         // Consensus builds carry a remaining proposal budget. When present, the
         // builder stops pool tx execution before projected proposer and validator
         // work would consume that window.
-        let payload_build_budget = attributes.payload_build_budget();
         // Snapshot the shared estimator once so every stop decision in this
         // build uses the same multiplier, dry build finish and validation feedback.
         let build_plan = payload_build_budget
