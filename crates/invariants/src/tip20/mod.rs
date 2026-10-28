@@ -15,7 +15,7 @@ pub use tempo_contracts::precompiles::ITIP20::{self, Transfer};
 
 mod checks;
 
-pub use checks::{BALANCE_SUM, CHECKS, STEP_CHECKS, SUPPLY_CAP, TRANSFER_EVENTS};
+pub use checks::{BALANCE_SUM, CHECKS, STEP_CHECKS, SUPPLY_CAP, TRANSFER_EVENTS, VIEW};
 
 /// A token's state, as its views report it.
 #[derive(Debug, Clone, PartialEq, Eq)]

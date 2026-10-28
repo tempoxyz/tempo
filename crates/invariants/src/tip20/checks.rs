@@ -7,6 +7,8 @@ use invariants_core::{check, ensure};
 use super::{Ledger, Transfer, transfer};
 use crate::{Check, Checked, Replay, Step, StepChecked, Tx, Verdict, or_text};
 
+/// A TIP-20's views answer. Counted by runners that read the model, not judged by a check here.
+pub const VIEW: &str = "TEMPO-TIP20-VIEW";
 pub const SUPPLY_CAP: &str = "TEMPO-TIP20-SUPPLY-CAP";
 pub const BALANCE_SUM: &str = "TEMPO-TIP20-BALANCE-SUM";
 pub const TRANSFER_EVENTS: &str = "TEMPO-TIP20-TRANSFER-EVENTS";

@@ -6,6 +6,8 @@ use invariants_core::{check, ensure};
 use super::{AccountUpgraded, Commitments, ConfigurableAccountConfigUpdated};
 use crate::{Check, Step, StepChecked, Tx};
 
+/// The configurable account precompile's views answer. Counted by runners that read the model, not judged by a check here.
+pub const VIEW: &str = "TEMPO-ACCOUNT-VIEW";
 pub const COMMITMENT_KEPT: &str = "TEMPO-ACCOUNT-COMMITMENT-KEPT";
 pub const COMMITMENT_BY_SELF: &str = "TEMPO-ACCOUNT-COMMITMENT-BY-SELF";
 pub const COMMITMENT_EVENT: &str = "TEMPO-ACCOUNT-COMMITMENT-EVENT";

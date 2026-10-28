@@ -1,7 +1,9 @@
 //! The account keychain: an access key's spend, judged against the key as the
 //! keychain reports it at the state before the spend.
 
-use alloy_primitives::Address;
+use std::fmt;
+
+use alloy_primitives::{Address, U256};
 
 use crate::{Observe, ObserveError, Views, view};
 
@@ -12,7 +14,7 @@ pub use tempo_contracts::precompiles::IAccountKeychain::{
 
 mod checks;
 
-pub use checks::{CHECKS, EXPIRED, REVOKED, SPEND_LIMIT, Spend};
+pub use checks::{CHECKS, EXPIRED, REVOKED, SPEND_LIMIT};
 
 /// An access key and its remaining limit for one token, as the keychain
 /// reports them.
@@ -63,4 +65,24 @@ pub struct At {
     pub account: Address,
     pub key: Address,
     pub token: Address,
+}
+
+/// A spend of `amount` by `key` (observed at the state before it) in a block
+/// at `timestamp`. A key that state does not know may have been authorized in
+/// the same block, so it is not judged.
+/// `getKey` zeroes a revoked key's id, so revocation is judged first. The
+/// limit is not judged when the key has none, when a new period began by
+/// `timestamp` (the limit refills), or when the block also updated this key's
+/// limit for the token (`limit_updated`).
+pub struct Spend {
+    pub key: Key,
+    pub timestamp: u64,
+    pub limit_updated: bool,
+    pub amount: U256,
+}
+
+impl fmt::Display for Spend {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "spend of {} by key {}", self.amount, self.key.info.keyId)
+    }
 }

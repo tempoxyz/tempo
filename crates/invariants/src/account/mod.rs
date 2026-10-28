@@ -7,14 +7,13 @@ use alloy_primitives::{Address, B256};
 
 use crate::{Observe, ObserveError, Views, optional, view_many};
 
-pub use tempo_contracts::precompiles::{
-    CONFIGURABLE_ACCOUNT_ADDRESS,
-    IConfigurableAccount::{self, AccountUpgraded, ConfigurableAccountConfigUpdated},
+pub use tempo_contracts::precompiles::IConfigurableAccount::{
+    self, AccountUpgraded, ConfigurableAccountConfigUpdated,
 };
 
 mod checks;
 
-pub use checks::{COMMITMENT_BY_SELF, COMMITMENT_EVENT, COMMITMENT_KEPT, STEP_CHECKS};
+pub use checks::{COMMITMENT_BY_SELF, COMMITMENT_EVENT, COMMITMENT_KEPT, STEP_CHECKS, VIEW};
 
 /// The configuration commitments of the observed accounts.
 #[derive(Debug, Clone, PartialEq, Eq)]

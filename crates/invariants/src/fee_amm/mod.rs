@@ -25,10 +25,9 @@ mod checks;
 
 pub use checks::{
     CHECKS, FEE_CUSTODY, LP_SUPPLY, MINT_BALANCE, MINT_RESERVE, MINT_SUPPLY, POOL_SHAPE,
-    STEP_CHECKS,
+    STEP_CHECKS, VIEW,
 };
 
-/// LP supply locked on a pool's first mint and assigned to no holder.
 /// The LP supply a pool's first mint locks, as `tempo_precompiles::tip_fee_manager::amm::MIN_LIQUIDITY`
 /// (not depended on: it pulls in revm).
 pub const MIN_LIQUIDITY: U256 = U256::from_limbs([1000, 0, 0, 0]);
@@ -49,6 +48,19 @@ impl PoolState {
     /// Whether `(user_token, validator_token)` names this pool.
     fn is(&self, user_token: Address, validator_token: Address) -> bool {
         self.user_token == user_token && self.validator_token == validator_token
+    }
+
+    /// The observed holders' LP, or `None` if it overflows.
+    fn lp_sum(&self) -> Option<U256> {
+        self.lp
+            .values()
+            .try_fold(U256::ZERO, |sum, lp| sum.checked_add(*lp))
+    }
+}
+
+impl fmt::Display for PoolState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "pool ({}, {})", self.user_token, self.validator_token)
     }
 }
 

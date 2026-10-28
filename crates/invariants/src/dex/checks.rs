@@ -6,6 +6,8 @@ use invariants_core::{check, ensure};
 use super::{Books, Escrow};
 use crate::{Check, Checked};
 
+/// The DEX's views answer. Counted by runners that read the model, not judged by a check here.
+pub const VIEW: &str = "TEMPO-DEX-VIEW";
 pub const DEX_CUSTODY: &str = "TEMPO-DEX10";
 
 pub const CHECKS: &[Check<Books>] = &[

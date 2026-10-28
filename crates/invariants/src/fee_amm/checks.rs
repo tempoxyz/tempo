@@ -1,13 +1,13 @@
 //! The fee manager and fee AMM invariants.
 
-use std::fmt;
-
 use alloy_primitives::{Address, U256};
 use invariants_core::{check, ensure};
 
 use super::{Books, Burn, MIN_LIQUIDITY, Mint, PoolState, RebalanceSwap, Unminted};
 use crate::{Check, Checked, Replay, Step, StepChecked, Tx, Verdict, or_text};
 
+/// The fee manager's views answer. Counted by runners that read the model, not judged by a check here.
+pub const VIEW: &str = "TEMPO-FEE-VIEW";
 pub const FEE_CUSTODY: &str = "TEMPO-FEE5";
 pub const LP_SUPPLY: &str = "TEMPO-AMM14";
 pub const POOL_SHAPE: &str = "TEMPO-AMM30";
@@ -127,21 +127,6 @@ pub const STEP_CHECKS: &[Check<Step<Books, Option<Tx>>>] = &[
         },
     },
 ];
-
-impl PoolState {
-    /// The observed holders' LP, or `None` if it overflows.
-    fn lp_sum(&self) -> Option<U256> {
-        self.lp
-            .values()
-            .try_fold(U256::ZERO, |sum, lp| sum.checked_add(*lp))
-    }
-}
-
-impl fmt::Display for PoolState {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "pool ({}, {})", self.user_token, self.validator_token)
-    }
-}
 
 impl Checked for Books {
     const CHECKS: &'static [Check<Self>] = CHECKS;

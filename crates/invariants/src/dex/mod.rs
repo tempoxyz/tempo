@@ -25,7 +25,7 @@ pub use tempo_contracts::precompiles::{
 
 mod checks;
 
-pub use checks::{CHECKS, DEX_CUSTODY};
+pub use checks::{CHECKS, DEX_CUSTODY, VIEW};
 
 /// One live order and the escrow it holds.
 #[derive(Debug, Clone, PartialEq, Eq)]

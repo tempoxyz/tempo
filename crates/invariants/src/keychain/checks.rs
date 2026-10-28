@@ -1,11 +1,8 @@
 //! The account keychain invariants.
 
-use std::fmt;
-
-use alloy_primitives::U256;
 use invariants_core::{check, ensure};
 
-use super::Key;
+use super::Spend;
 use crate::{Check, Checked};
 
 pub const REVOKED: &str = "TEMPO-KEYCHAIN-REVOKED-KEY-SPENDS";
@@ -49,26 +46,6 @@ pub const CHECKS: &[Check<Spend>] = &[
         },
     },
 ];
-
-/// A spend of `amount` by `key` (observed at the state
-/// before it) in a block at `timestamp` breaks. A key that state does not
-/// know may have been authorized in the same block, so it is not judged.
-/// `getKey` zeroes a revoked key's id, so revocation is judged first. The
-/// limit is not judged when the key has none, when a new period began by
-/// `timestamp` (the limit refills), or when the block also updated this key's
-/// limit for the token (`limit_updated`).
-pub struct Spend {
-    pub key: Key,
-    pub timestamp: u64,
-    pub limit_updated: bool,
-    pub amount: U256,
-}
-
-impl fmt::Display for Spend {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "spend of {} by key {}", self.amount, self.key.info.keyId)
-    }
-}
 
 impl Checked for Spend {
     const CHECKS: &'static [Check<Self>] = CHECKS;

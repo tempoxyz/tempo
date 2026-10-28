@@ -6,34 +6,24 @@
 //! subset of accounts, and a view that reads a key the pre-state lacks answers nothing rather than
 //! failing.
 
-use std::fmt::{Debug, Display};
-
-use alloy_evm::{Evm as _, EvmEnv};
-use alloy_primitives::{Address, B256, Bytes, Log, U256};
-use invariants_core::{Observe, ObserveError, Report, SlotChange, Step, Views, Violation};
-use revm::{
-    DatabaseRef, bytecode::Bytecode, database::TransitionState,
-    database_interface::WrapDatabaseRef, state::AccountInfo,
-};
+use alloy_evm::EvmEnv;
+use alloy_primitives::{Address, Log};
+use invariants_core::{Report, SlotChange, Step};
+use revm::database::TransitionState;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
     CONFIGURABLE_ACCOUNT_ADDRESS, STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
 };
-use tempo_evm::evm::TempoEvm;
 use tempo_fuzz_types::{InvariantFailure, InvariantScope};
 use tempo_invariants::{Tx, account, all, dex, fee_amm, tip20};
 use tempo_primitives::{TempoBlockEnv, is_tip20_prefix};
 
-use crate::state::{Db, PreStateDb};
+use crate::state::Db;
 
-/// A TIP-20's views answer.
-const TIP20_VIEW: &str = "TEMPO-TIP20-VIEW";
-/// The fee manager's views answer.
-const FEE_VIEW: &str = "TEMPO-FEE-VIEW";
-/// The DEX's views answer.
-const DEX_VIEW: &str = "TEMPO-DEX-VIEW";
-/// The configurable account precompile's views answer.
-const ACCOUNT_VIEW: &str = "TEMPO-ACCOUNT-VIEW";
+use reader::Reader;
+
+mod reader;
+mod views;
 
 /// What a transaction step did: its state transitions, not yet applied to the bundle, and its logs.
 pub(crate) struct StepEffects<'a> {
@@ -66,159 +56,6 @@ impl StepEffects<'_> {
             logs: self.logs.to_vec(),
             tx: Some(self.tx),
         }
-    }
-}
-
-/// Reads models from the state after a step and, with its `effects`, from the state before it.
-struct Reader<'a> {
-    db: &'a Db,
-    env: &'a EvmEnv<TempoHardfork, TempoBlockEnv>,
-    pre_state: &'a PreStateDb,
-    effects: Option<&'a StepEffects<'a>>,
-}
-
-impl Reader<'_> {
-    /// Reads the model `at` names at `contract` after the step and checks it into `report`; with
-    /// the step's effects, also reads it before the step and checks the step. A read that fails
-    /// is counted under `view` as [`observed`] does.
-    fn check<M: Observe + 'static>(
-        &self,
-        report: &mut Report,
-        at: M::At<'_>,
-        contract: Address,
-        view: &'static str,
-    ) {
-        let after = EvmViews::new(self.db, self.env, self.pre_state);
-        let Some(post) = observed(report, view, contract, M::observe(&mut { after }, at)) else {
-            return;
-        };
-        report.run_any(all(), &post);
-        let Some(effects) = self.effects else {
-            return;
-        };
-        let before = PreView {
-            db: self.db,
-            transitions: effects.transitions,
-        };
-        let before = EvmViews::new(before, self.env, self.pre_state);
-        let subject = format!("{contract} before the step");
-        let Some(pre) = observed(report, view, subject, M::observe(&mut { before }, at)) else {
-            return;
-        };
-        report.run_any(all(), &effects.step(contract, pre, post));
-    }
-}
-
-/// The state before a step: `db` with the step's `transitions` undone.
-#[derive(Debug)]
-struct PreView<'a> {
-    db: &'a Db,
-    transitions: &'a TransitionState,
-}
-
-impl DatabaseRef for PreView<'_> {
-    type Error = <Db as DatabaseRef>::Error;
-
-    fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
-        match self.transitions.transitions.get(&address) {
-            Some(account) => Ok(account.previous_info.clone()),
-            None => self.db.basic_ref(address),
-        }
-    }
-
-    fn code_by_hash_ref(&self, code_hash: B256) -> Result<Bytecode, Self::Error> {
-        self.db.code_by_hash_ref(code_hash)
-    }
-
-    fn storage_ref(&self, address: Address, slot: U256) -> Result<U256, Self::Error> {
-        if let Some(account) = self.transitions.transitions.get(&address) {
-            if let Some(value) = account.storage.get(&slot) {
-                return Ok(value.original_value());
-            }
-            if account.previous_info.is_none() {
-                return Ok(U256::ZERO);
-            }
-        }
-        self.db.storage_ref(address, slot)
-    }
-
-    fn block_hash_ref(&self, number: u64) -> Result<B256, Self::Error> {
-        self.db.block_hash_ref(number)
-    }
-}
-
-/// Read-only calls against the state `D` holds, noting reads the seeded pre-state misses.
-struct EvmViews<'a, D: DatabaseRef + Debug> {
-    evm: TempoEvm<WrapDatabaseRef<D>>,
-    pre_state: &'a PreStateDb,
-}
-
-impl<'a, D: DatabaseRef + Debug> EvmViews<'a, D> {
-    fn new(db: D, env: &EvmEnv<TempoHardfork, TempoBlockEnv>, pre_state: &'a PreStateDb) -> Self {
-        Self {
-            evm: TempoEvm::new(WrapDatabaseRef(db), env.clone()),
-            pre_state,
-        }
-    }
-
-    fn pre_state(&self) -> &PreStateDb {
-        self.pre_state
-    }
-
-    /// `input`'s output from `target`. `Ok(None)` when nothing answers: `target` has no code, or
-    /// the call read a key the pre-state lacks. `Err` when the call reverts or halts.
-    fn call_one(&mut self, target: Address, input: &Bytes) -> Result<Option<Bytes>, ViewFailed> {
-        let selector = input
-            .get(..4)
-            .map(Bytes::copy_from_slice)
-            .unwrap_or_default();
-        self.pre_state().restore_missed(false);
-        let result = self
-            .evm
-            .transact_system_call(Address::ZERO, target, input.clone());
-        if self.pre_state().missed() {
-            return Ok(None);
-        }
-        let failed = |reason| ViewFailed {
-            selector: selector.clone(),
-            target,
-            reason,
-        };
-        let result = result.map_err(|err| failed(err.to_string()))?.result;
-        if !result.is_success() {
-            return Err(failed(format!("{result:?}")));
-        }
-        Ok(result.output().filter(|output| !output.is_empty()).cloned())
-    }
-}
-
-impl<D: DatabaseRef + Debug> Views for EvmViews<'_, D> {
-    type Error = ViewFailed;
-
-    fn call(&mut self, calls: &[(Address, Bytes)]) -> Result<Vec<Option<Bytes>>, ViewFailed> {
-        calls
-            .iter()
-            .map(|(target, input)| self.call_one(*target, input))
-            .collect()
-    }
-
-    /// The seeded pre-state may hold only the accounts and slots execution touched.
-    fn partial(&self) -> bool {
-        true
-    }
-}
-
-/// A view call that reverted, halted or could not run.
-#[derive(Debug)]
-struct ViewFailed {
-    selector: Bytes,
-    target: Address,
-    reason: String,
-}
-
-impl Display for ViewFailed {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} on {}: {}", self.selector, self.target, self.reason)
     }
 }
 
@@ -284,7 +121,7 @@ pub(crate) fn check(
     };
     let mut step = Report::default();
     step.register_any(all());
-    for id in [TIP20_VIEW, FEE_VIEW, DEX_VIEW, ACCOUNT_VIEW] {
+    for id in [tip20::VIEW, fee_amm::VIEW, dex::VIEW, account::VIEW] {
         step.counts.entry(id).or_default();
     }
 
@@ -293,7 +130,7 @@ pub(crate) fn check(
             token,
             holders: &all_holders,
         };
-        reader.check::<tip20::Ledger>(&mut step, at, token, TIP20_VIEW);
+        reader.check::<tip20::Ledger>(&mut step, at, token, tip20::VIEW);
     }
     if selected(&TIP_FEE_MANAGER_ADDRESS) {
         let pairs: Vec<(Address, Address)> = tokens
@@ -308,7 +145,7 @@ pub(crate) fn check(
             validators: &[env.block_env.inner.beneficiary],
             holders: &all_holders,
         };
-        reader.check::<fee_amm::Books>(&mut step, at, TIP_FEE_MANAGER_ADDRESS, FEE_VIEW);
+        reader.check::<fee_amm::Books>(&mut step, at, TIP_FEE_MANAGER_ADDRESS, fee_amm::VIEW);
     }
     if selected(&STABLECOIN_DEX_ADDRESS) {
         let at = dex::At {
@@ -317,7 +154,7 @@ pub(crate) fn check(
             users: &all_holders,
             orders: &[],
         };
-        reader.check::<dex::Books>(&mut step, at, STABLECOIN_DEX_ADDRESS, DEX_VIEW);
+        reader.check::<dex::Books>(&mut step, at, STABLECOIN_DEX_ADDRESS, dex::VIEW);
     }
     if let Some(effects) = &effects {
         // A transaction changes a commitment only by changing its account, so the accounts it
@@ -336,7 +173,7 @@ pub(crate) fn check(
             accounts: &changed,
         };
         let precompile = CONFIGURABLE_ACCOUNT_ADDRESS;
-        reader.check::<account::Commitments>(&mut step, at, precompile, ACCOUNT_VIEW);
+        reader.check::<account::Commitments>(&mut step, at, precompile, account::VIEW);
     }
 
     failures.extend(step.violations.drain(..).map(|violation| InvariantFailure {
@@ -346,33 +183,4 @@ pub(crate) fn check(
     }));
     report.merge(step);
     pre_state.restore_missed(missed);
-}
-
-/// `read`'s value, counting it under `view`: a read nothing answered is not armed, one that
-/// failed otherwise breaks `view`.
-fn observed<T>(
-    report: &mut Report,
-    view: &'static str,
-    subject: impl Display,
-    read: Result<T, ObserveError<ViewFailed>>,
-) -> Option<T> {
-    let counts = report.counts.entry(view).or_default();
-    counts.evaluated += 1;
-    match read {
-        Ok(value) => {
-            counts.armed += 1;
-            Some(value)
-        }
-        Err(err) if err.is_not_answered() => None,
-        Err(err) => {
-            counts.armed += 1;
-            counts.fired += 1;
-            report.violations.push(Violation {
-                id: view,
-                subject: subject.to_string(),
-                detail: err.to_string(),
-            });
-            None
-        }
-    }
 }
