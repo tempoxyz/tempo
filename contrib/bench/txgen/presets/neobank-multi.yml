@@ -1,0 +1,28 @@
+# Several neobank setups side by side: N instances of neobank-generic, each with its
+# own traffic shape, enabled modules and gas share, in one run. Use it to size the
+# combined headroom and bottlenecks of several live programs before their own
+# traffic data exists. Instances live in neobank/instances.yml (traffic-shape names,
+# never customer names); TXGEN_NEOBANK_INSTANCES=<path> selects another file.
+#
+# The helper renders each instance from neobank-generic.yml. An instance's mix
+# weight is its share times its modules' neobank-generic weights renormalised within
+# the instance. Each instance has its own:
+#   - user slice (users_<instance>, proportional to its share, at least 2 users): the
+#     random senders and recipients of its transfers, card, cash-out, access-key and
+#     DEX templates, and the senders of its per-user vault and zone templates
+#   - batch treasury (treasury_<instance>, the slice's first 16 users)
+#   - card-settlement shards (the slice's first 18 users) and refund sender (its second user)
+#   - sinks: card settlement, cash out and merchant accounts, with the instance number
+#     (1-based) in the address's top two bytes, e.g. 0x0001...ca4d for the first
+#   - keychain setup (authorize_keychain_<instance>) over its slice
+#   - zone portals: zones split by share when there are at least as many as
+#     instances; otherwise instances share portals round-robin
+# Shared by every instance: the Earn vault and its fee payer, the zone settlement
+# fixture, the stablecoin DEX books (dex.yml liquidity), the state-bloat recipients
+# of public and payroll transfers, and the TIP-20 tokens. Setup (vault, zones, DEX,
+# keychain) runs once for every user.
+#
+# Same fixtures and requirements as neobank-generic: chain 1337, T12+ and nonzero
+# state bloat. Copied templates keep neobank-generic's text, so its u64 nonce bounds
+# and TXGEN_* environment placeholders reach txgen unchanged.
+include: neobank-generic.yml

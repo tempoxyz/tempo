@@ -160,6 +160,14 @@ fn insert_storage(evm: &mut crate::TempoEvm<'_>, address: Address, slot: U256, v
         .insert_account_storage(&address, &slot, &value);
 }
 
+/// Gives `address` code so calls to it reach the interpreter runner.
+fn insert_stop_code(evm: &mut crate::TempoEvm<'_>, address: Address) {
+    evm.overlay_db_mut().insert_account_info(
+        &address,
+        AccountInfo::default().with_code(Bytecode::new_raw(Bytes::from_static(&[0x00]))),
+    );
+}
+
 fn resolve(
     evm: &mut crate::TempoEvm<'_>,
     tx: &TempoTxEnv,
@@ -1154,9 +1162,9 @@ fn test_key_authorization_gas_with_limits() {
 
     // T1B branch: gas = sig_gas + SLOAD + SSTORE * (1 + num_limits) + buffer
     let t1b_gas_params = tempo_gas_params(TempoHardfork::T1B);
-    let sstore = u64::from(t1b_gas_params.get(GasId::SstoreSetWithoutLoadCost));
-    let sload = u64::from(t1b_gas_params.get(GasId::WarmStorageReadCost))
-        + u64::from(t1b_gas_params.get(GasId::ColdStorageAdditionalCost));
+    let sstore = t1b_gas_params.get(GasId::SstoreSetWithoutLoadCost);
+    let sload = t1b_gas_params.get(GasId::WarmStorageReadCost)
+        + t1b_gas_params.get(GasId::ColdStorageAdditionalCost);
     const BUFFER: u64 = 2_000;
 
     for num_limits in 0..=3 {
@@ -1171,9 +1179,9 @@ fn test_key_authorization_gas_with_limits() {
     }
 
     let t3_gas_params = tempo_gas_params(TempoHardfork::T3);
-    let t3_sstore = u64::from(t3_gas_params.get(GasId::SstoreSetWithoutLoadCost));
-    let t3_sload = u64::from(t3_gas_params.get(GasId::WarmStorageReadCost))
-        + u64::from(t3_gas_params.get(GasId::ColdStorageAdditionalCost));
+    let t3_sstore = t3_gas_params.get(GasId::SstoreSetWithoutLoadCost);
+    let t3_sload = t3_gas_params.get(GasId::WarmStorageReadCost)
+        + t3_gas_params.get(GasId::ColdStorageAdditionalCost);
 
     for num_limits in 0..=3 {
         let num_sstores = 1 + 2 * num_limits as u64;
@@ -1189,10 +1197,10 @@ fn test_key_authorization_gas_with_limits() {
 
     // T4 with T4 gas params: regular sstore = 19,900, state gas = 230,000 per SSTORE
     let t4_gas_params = tempo_gas_params(TempoHardfork::T4);
-    let t4_sstore = u64::from(t4_gas_params.get(GasId::SstoreSetWithoutLoadCost));
-    let t4_sload = u64::from(t4_gas_params.get(GasId::WarmStorageReadCost))
-        + u64::from(t4_gas_params.get(GasId::ColdStorageAdditionalCost));
-    let t4_sstore_state = u64::from(t4_gas_params.get(GasId::SstoreSetState));
+    let t4_sstore = t4_gas_params.get(GasId::SstoreSetWithoutLoadCost);
+    let t4_sload = t4_gas_params.get(GasId::WarmStorageReadCost)
+        + t4_gas_params.get(GasId::ColdStorageAdditionalCost);
+    let t4_sstore_state = t4_gas_params.get(GasId::SstoreSetState);
 
     for num_limits in 0..=3 {
         let num_sstores = 1 + 2 * num_limits as u64;
@@ -1212,8 +1220,8 @@ fn test_key_authorization_gas_with_limits() {
     }
 
     let t5_gas_params = tempo_gas_params(TempoHardfork::T5);
-    let t5_sload = u64::from(t5_gas_params.get(GasId::WarmStorageReadCost))
-        + u64::from(t5_gas_params.get(GasId::ColdStorageAdditionalCost));
+    let t5_sload = t5_gas_params.get(GasId::WarmStorageReadCost)
+        + t5_gas_params.get(GasId::ColdStorageAdditionalCost);
     let base_t5_key_auth = create_key_auth(0);
     let mut witness_t5_key_auth = create_key_auth(0);
     witness_t5_key_auth.authorization = witness_t5_key_auth
@@ -1627,7 +1635,7 @@ fn test_2d_nonce_gas_limit_validation() {
         let evm = test_evm(spec);
         let gas_params = &evm.version().gas_params;
         let nonce_zero_gas = if spec.is_t1() {
-            u64::from(gas_params.get(GasId::NewAccountCost))
+            gas_params.get(GasId::NewAccountCost)
         } else {
             spec.gas_new_nonce_key()
         };
@@ -1795,6 +1803,7 @@ fn test_t3_scope_validation_moves_to_execution(gas_limit: u64, expected_stop: In
     .expect("scope validation no longer runs during state validation");
     assert_eq!(keychain.access_key, Some(access_key));
 
+    insert_stop_code(&mut evm, target);
     let call_count = Arc::new(AtomicUsize::new(0));
     evm.set_interpreter_runner(Runner(call_count.clone()));
     let result = execute_batch(
@@ -2105,18 +2114,17 @@ fn test_multicall_gas_refund_accounting() {
         ],
     });
 
-    let calls = vec![
-        Call {
-            to: TxKind::Call(Address::random()),
+    let targets = [Address::random(), Address::random()];
+    for target in targets {
+        insert_stop_code(&mut evm, target);
+    }
+    let calls = targets
+        .map(|target| Call {
+            to: TxKind::Call(target),
             value: U256::ZERO,
             input: Bytes::new(),
-        },
-        Call {
-            to: TxKind::Call(Address::random()),
-            value: U256::ZERO,
-            input: Bytes::new(),
-        },
-    ];
+        })
+        .to_vec();
 
     let result = execute_batch(
         &mut evm,
@@ -4453,6 +4461,8 @@ fn test_state_gas_batch_create_accounting() {
             call_idx: AtomicUsize::new(0),
             final_stop,
         });
+        let target = Address::random();
+        insert_stop_code(&mut evm, target);
         let initial_state_gas = 0;
         let (gas_limit, reservoir) = initial_gas_and_reservoir(
             evm.version(),
@@ -4467,7 +4477,7 @@ fn test_state_gas_batch_create_accounting() {
                 input: Bytes::from(vec![0x60, 0x80]),
             },
             Call {
-                to: TxKind::Call(Address::random()),
+                to: TxKind::Call(target),
                 value: U256::ZERO,
                 input: Bytes::new(),
             },

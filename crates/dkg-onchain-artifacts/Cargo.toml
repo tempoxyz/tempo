@@ -16,8 +16,14 @@ bytes.workspace = true
 commonware-codec.workspace = true
 commonware-consensus = { workspace = true, optional = true }
 commonware-cryptography = { workspace = true, features = ["bls12381", "std"] }
+commonware-math = { workspace = true, optional = true }
 commonware-utils.workspace = true
 modular-bitfield = { version = "0.13.1", optional = true }
+rand = { workspace = true, optional = true }
+
+[features]
+# Test fixtures for crates that execute blocks carrying a DKG outcome.
+test-utils = ["dep:commonware-math", "dep:rand"]
 
 [dev-dependencies]
 commonware-consensus.workspace = true

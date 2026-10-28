@@ -2,6 +2,7 @@
 
 # Tempo local utilities
 
+source contrib/bench/counter-delta.nu
 source contrib/bench/txgen/helpers.nu
 
 const BENCH_DIR = "contrib/bench"
@@ -1204,33 +1205,6 @@ def generate-summary [
         $values
     }
 
-    let counter_delta_total = { |samples: list<any>, metric: string|
-        let counter_samples = ($samples | where name == $metric)
-        if ($counter_samples | length) == 0 {
-            0.0
-        } else {
-            let deltas = (
-                $counter_samples
-                    | group-by { |sample| $sample.labels | to json --raw }
-                    | transpose labels samples
-                    | each { |series|
-                        let points = (
-                            $series.samples
-                                | where { |sample| ($sample | get -o value | default null) != null }
-                                | sort-by unix_ms
-                        )
-                        if ($points | length) > 1 {
-                            let first = ($points | first)
-                            let last = ($points | last)
-                            let delta = ($last.value - $first.value)
-                            if $delta >= 0 { $delta } else { $last.value }
-                        } else { 0.0 }
-                    }
-            )
-            if ($deltas | length) > 0 { $deltas | math sum | math round --precision 0 } else { 0.0 }
-        }
-    }
-
     let histogram_delta_sum_total = { |samples: list<any>, metric: string|
         let sum_name = $"($metric)_sum"
         let sum_samples = ($samples | where name == $sum_name)
@@ -1388,6 +1362,12 @@ def generate-summary [
         } else {
             $raw_metric_samples
         }
+        let first_scrape_ms_by_node = (
+            $metric_samples
+                | group-by { |sample| $sample.labels | get -o node | default "" }
+                | items { |node, node_samples| [$node ($node_samples | get unix_ms | into int | math min)] }
+                | into record
+        )
         let optional_counter_metric_values = { |metric: string, scale: float|
             do $optional_counter_values (do $counter_delta_values $metric_samples $metric $scale) $label $metric
         }
@@ -1402,7 +1382,7 @@ def generate-summary [
                 $builder_pool_tx_skip_samples
                     | where { |sample| ($sample.labels | get -o reason | default "") == $reason }
             )
-            do $counter_delta_total $samples "reth_tempo_payload_builder_pool_transactions_skipped_total"
+            counter-delta-total $samples "reth_tempo_payload_builder_pool_transactions_skipped_total" $first_scrape_ms_by_node
         }
         let builder_invalid_tx_skips = do $builder_pool_tx_skips_for_reason "invalid_tx"
         let builder_nonce_too_low_skips = do $builder_pool_tx_skips_for_reason "nonce_too_low"
@@ -1412,7 +1392,7 @@ def generate-summary [
                 $builder_stop_samples
                     | where { |sample| ($sample.labels | get -o reason | default "") == $reason }
             )
-            do $counter_delta_total $samples "reth_tempo_payload_builder_block_build_stop_total"
+            counter-delta-total $samples "reth_tempo_payload_builder_block_build_stop_total" $first_scrape_ms_by_node
         }
         let builder_stop_rlp_size = do $builder_stops_for_reason "rlp_block_size_limit"
         let builder_stop_gas_limit = do $builder_stops_for_reason "gas_limit"
