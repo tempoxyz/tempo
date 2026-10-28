@@ -140,9 +140,9 @@ jobs:
           }
           # A release may also come from a pre-release branch: commits on a main
           # commit, each a Zones version bump or a "git cherry-pick -x" of a
-          # non-merge commit on main whose change it copies file for file (files
-          # that do not apply may be left out). The release then builds only code
-          # that reached protected main.
+          # non-merge commit on main that reproduces it exactly (files whose
+          # change does not apply may be left out). The release then builds only
+          # code that reached protected main.
           zones_version_bump() {
             local changed_files unexpected_files unexpected_lines
             # Without rename detection a moved file shows as a deletion and an
@@ -158,24 +158,31 @@ jobs:
             )"
             [[ -n "$changed_files" && -z "$unexpected_files" && -z "$unexpected_lines" ]]
           }
-          file_patch_id() {
-            # --verbatim keeps whitespace, so an indentation change does not match.
-            git diff --no-renames --no-ext-diff "$1" "$2" -- ":(literal)$3" | git patch-id --verbatim | cut -d' ' -f1
-          }
           main_cherry_pick() {
-            local source source_ancestry files file picked
+            local source source_ancestry index file tree
             source="$(git log -1 --format=%B "$2" |
               sed -n 's/^(cherry picked from commit \([0-9a-f]\{40\}\))$/\1/p' | tail -n 1)"
             [[ -n "$source" ]] || return 1
             git merge-base --is-ancestor "$source" refs/remotes/origin/main || return 1
             read -r -a source_ancestry <<< "$(git rev-list --parents -n 1 "$source")"
             [[ "${#source_ancestry[@]}" -eq 2 ]] || return 1
-            files="$(git -c core.quotePath=false diff --no-renames --name-only "$1" "$2")"
-            [[ -n "$files" ]] || return 1
-            while IFS= read -r file; do
-              picked="$(file_patch_id "$1" "$2" "$file")"
-              [[ -n "$picked" && "$picked" == "$(file_patch_id "${source_ancestry[1]}" "$source" "$file")" ]] || return 1
-            done <<< "$files"
+            # Rebuild the pick: apply each file of the source change to the pick's
+            # parent, at the source's line numbers, and require the pick's tree to
+            # match exactly. A file whose change does not apply there is left out;
+            # every file that applies must be in the pick, and nothing else may be.
+            index="$(mktemp)"
+            GIT_INDEX_FILE="$index" git read-tree "$1" || { rm -f "$index"; return 1; }
+            while IFS= read -r -d '' file; do
+              if git diff --binary --no-renames --no-ext-diff "${source_ancestry[1]}" "$source" -- ":(literal)$file" |
+                   GIT_INDEX_FILE="$index" git apply --cached --check 2>/dev/null; then
+                git diff --binary --no-renames --no-ext-diff "${source_ancestry[1]}" "$source" -- ":(literal)$file" |
+                  GIT_INDEX_FILE="$index" git apply --cached || { rm -f "$index"; return 1; }
+              fi
+            done < <(git diff --no-renames --name-only -z "${source_ancestry[1]}" "$source")
+            tree="$(GIT_INDEX_FILE="$index" git write-tree)"
+            rm -f "$index"
+            [[ -n "$tree" && "$tree" != "$(git rev-parse "$1^{tree}")" &&
+               "$tree" == "$(git rev-parse "$2^{tree}")" ]]
           }
           release_source_ok() {
             local base commits commit ancestry

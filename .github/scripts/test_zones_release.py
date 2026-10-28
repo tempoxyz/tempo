@@ -299,28 +299,34 @@ class ZonesReleaseTagTests(unittest.TestCase):
                 self.assertEqual(output, '')
 
     def release_branch(self, tamper=False, drop=None, trailer=True, on_main=True):
-        """Tag a cherry-pick of a main commit on a branch off an older main commit."""
+        """Tag a cherry-pick of a main commit on a branch off an older main commit.
+
+        The main commit changes a.rs, b.rs and c.rs. b.rs also changed on main
+        before it, so its change does not apply on the branch and is left out.
+        """
         with tempfile.TemporaryDirectory() as tmp:
-            git = lambda *args: subprocess.run(['git', '-C', tmp, '-c', 'user.name=Test',
-                                                '-c', 'user.email=test@example.invalid', *args],
-                                               check=True, capture_output=True, text=True).stdout.strip()
+            def git(*args, check=True):
+                return subprocess.run(['git', '-C', tmp, '-c', 'user.name=Test',
+                                       '-c', 'user.email=test@example.invalid', *args],
+                                      check=check, capture_output=True, text=True).stdout.strip()
             git('init', '-q')
-            (Path(tmp) / 'a.rs').write_text('fn a() {}\n')
-            (Path(tmp) / 'b.rs').write_text('fn b() {}\n')
+            for name in ('a', 'b', 'c'):
+                (Path(tmp) / f'{name}.rs').write_text(f'fn {name}() {{}}\n')
             git('add', '.')
             git('commit', '-qm', 'test: base')
             base = git('rev-parse', 'HEAD')
-            git('commit', '-q', '--allow-empty', '-m', 'test: unrelated main commit')
+            (Path(tmp) / 'b.rs').write_text('fn b2() {}\n')
+            git('commit', '-qam', 'test: unrelated main commit')
             (Path(tmp) / 'a.rs').write_text('fn a() {}\nfn fix() {}\n')
-            (Path(tmp) / 'b.rs').write_text('fn b() {}\nfn other() {}\n')
+            (Path(tmp) / 'b.rs').write_text('fn b2() {}\nfn other() {}\n')
+            (Path(tmp) / 'c.rs').write_text('fn c() {}\nfn guard() {}\n')
             git('commit', '-qam', 'fix: on main')
             fix = git('rev-parse', 'HEAD')
-            if on_main:
-                git('update-ref', 'refs/remotes/origin/main', 'HEAD')
-            else:
-                git('update-ref', 'refs/remotes/origin/main', base)
+            git('update-ref', 'refs/remotes/origin/main', 'HEAD' if on_main else base)
             git('checkout', '-q', base)
-            git('cherry-pick', *(['-x'] if trailer else []), fix)
+            git('cherry-pick', *(['-x'] if trailer else []), fix, check=False)
+            git('checkout', base, '--', 'b.rs')
+            git('-c', 'core.editor=true', 'cherry-pick', '--continue')
             if drop:
                 git('checkout', base, '--', drop)
                 git('commit', '-q', '--amend', '--no-edit')
@@ -335,13 +341,12 @@ class ZonesReleaseTagTests(unittest.TestCase):
                                     text=True, capture_output=True)
             return result.returncode
 
-    def test_accepts_cherry_picks_of_main_commits_off_main(self):
+    def test_accepts_exact_cherry_picks_of_main_commits_off_main(self):
         self.assertEqual(self.release_branch(), 0)
-        # A file the pick does not need may be left out.
-        self.assertEqual(self.release_branch(drop='b.rs'), 0)
 
     def test_rejects_cherry_picks_that_differ_or_do_not_come_from_main(self):
-        for options in ({'tamper': True}, {'trailer': False}, {'on_main': False}):
+        # c.rs applies on the branch, so leaving it out builds a partial change.
+        for options in ({'tamper': True}, {'drop': 'c.rs'}, {'trailer': False}, {'on_main': False}):
             with self.subTest(options=options):
                 self.assertNotEqual(self.release_branch(**options), 0)
 
