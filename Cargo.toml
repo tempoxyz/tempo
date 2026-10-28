@@ -190,6 +190,7 @@ reth-trie-sparse = { git = "https://github.com/paradigmxyz/reth", rev = "f6041ad
 alloy-chains = "0.2.36"
 alloy-rpc-types-debug = "2.5.0"
 bincode = "1.3.3"
+invariants-core = { git = "https://github.com/tempoxyz/invariants-core", rev = "85b51b3" }
 minicbor = { version = "=2.3.0", default-features = false, features = ["alloc"] }
 minicbor-serde = { version = "=0.7.1", default-features = false, features = ["alloc"] }
 libc = "0.2.186"
@@ -213,7 +214,6 @@ tempo-dkg-onchain-artifacts = { path = "crates/dkg-onchain-artifacts", default-f
 tempo-faucet = { path = "crates/faucet", default-features = false }
 tempo-fuzz-types = { path = "crates/fuzz-types", default-features = false }
 tempo-invariants = { path = "crates/invariants" }
-invariants-core = { git = "https://github.com/tempoxyz/invariants-core", rev = "85b51b3ce94185271374e389f40f3af34d41136f" }
 tempo-evm = { path = "crates/evm", default-features = false }
 tempo-eyre = { path = "crates/eyre", default-features = false }
 tempo-hardfork = { path = "crates/hardfork", default-features = false }
