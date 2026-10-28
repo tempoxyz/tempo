@@ -4683,9 +4683,7 @@ fn configurable_account_erc1271_propagates_verifier_reverts() {
             .abi_encode()
             .into(),
     };
-    let witness: Bytes = TempoSignature::ConfigurableAccount(signature)
-        .to_bytes()
-        .into();
+    let witness: Bytes = TempoSignature::ConfigurableAccount(signature).to_bytes();
     let wrong_hash = call(B256::ZERO, witness);
     let result = relayed(&mut f, wrong_hash, 1_000_000, None);
     assert_reverts_with(
@@ -4736,9 +4734,7 @@ fn configurable_marker_static_and_delegate_calls() {
         configurable_account_approval(account, &f.config, &f.owner, CONFIGURABLE_ACCOUNT_HASH);
     let input = IConfigurableAccountShim::isValidSignatureCall {
         hash: CONFIGURABLE_ACCOUNT_HASH,
-        signature: TempoSignature::ConfigurableAccount(approval)
-            .to_bytes()
-            .into(),
+        signature: TempoSignature::ConfigurableAccount(approval).to_bytes(),
     }
     .abi_encode();
     for kind in [0xfa, 0xf4, 0xf2] {
@@ -4778,9 +4774,7 @@ fn configurable_shim_matches_verifier_gas_and_propagates_oog() {
     let account = f.account;
     let approval =
         configurable_account_approval(account, &f.config, &f.owner, CONFIGURABLE_ACCOUNT_HASH);
-    let signature: Bytes = TempoSignature::ConfigurableAccount(approval)
-        .to_bytes()
-        .into();
+    let signature: Bytes = TempoSignature::ConfigurableAccount(approval).to_bytes();
     let direct = ISignatureVerifier::verifyConfigurableAccountCall {
         account,
         hash: CONFIGURABLE_ACCOUNT_HASH,
