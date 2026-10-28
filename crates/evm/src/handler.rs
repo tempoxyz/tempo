@@ -478,6 +478,9 @@ fn validate_key_authorization(
     let Some(key_auth) = tx.key_authorization.as_ref() else {
         return Ok(());
     };
+    if aa.grant_delegate().is_some() && !spec.is_t14() {
+        return Err(ConfigurableAccountError::UnsupportedContext.into());
+    }
 
     let access_key = access_key_id(aa)?;
     let same_tx_auth_use = access_key == Some(key_auth.key_id);
@@ -490,7 +493,7 @@ fn validate_key_authorization(
         && signed
             .signature()
             .as_keychain()
-            .is_some_and(|signature| key_auth.key_type != signature.signature.signature_type())
+            .is_some_and(|signature| key_auth.key_type != signature.signature.key_type())
     {
         return Err(TempoInvalidTransaction::KeychainValidationFailed {
             reason: "key authorization key_type does not match the keychain signature type".into(),
@@ -579,8 +582,7 @@ fn validate_key_authorization(
                         .into(),
                 });
             }
-            if key_auth.signature.signature_type() != keychain_signature.signature.signature_type()
-            {
+            if key_auth.signature.signature_type() != keychain_signature.signature.key_type() {
                 return Err(TempoInvalidTransaction::KeychainValidationFailed {
                     reason: "admin-signed key authorization signature type does not match transaction key signature type".into(),
                 });
@@ -685,14 +687,15 @@ fn prepare_keychain(
         //   the loaded admin/signature-type facts below when the sidecar signer is the same key
         let timestamp = host.block().timestamp.saturating_to::<u64>();
 
-        // Extract the signature type from the inner signature to validate it matches
-        // the key_type stored in the keychain. This prevents using a signature of one
-        // type to authenticate as a key registered with a different type.
+        // Extract the signature type from the inner signature to validate it against
+        // the key_type stored in the keychain: a signature must have the key's stored type,
+        // except a migrated delegate's owner quorum on its primitive grant (see
+        // `AccountKeychain::accepts_signature_type`).
         // Only validate signature type on T1+ to maintain backward compatibility
         // with historical blocks during re-execution.
         let expected_signature_type = (key_authorization.is_some()
             || host.config_spec_id().is_t1())
-        .then_some(u8::from(keychain_signature.signature.signature_type()));
+        .then_some(u8::from(keychain_signature.signature.key_type()));
         let loaded = StorageCtx::enter_evm_without_tip1060_accounting(host, || {
             let mut keychain = AccountKeychain::new();
             let key = keychain

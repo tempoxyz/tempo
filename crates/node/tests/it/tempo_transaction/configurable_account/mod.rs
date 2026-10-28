@@ -195,6 +195,9 @@ impl OwnerKey {
             SignatureType::WebAuthn => |digest, key, x, y| {
                 sign_webauthn_primitive(digest, key, x, y, "https://native.example")
             },
+            SignatureType::ConfigurableAccount => {
+                panic!("fixture owners must use primitive signatures")
+            }
         };
         let key = SigningKey::from_bytes(&[seed; 32].into()).unwrap();
         let point = key.verifying_key().to_encoded_point(false);
