@@ -1,6 +1,7 @@
 use std::{
+    collections::BTreeSet,
     fs, io,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     time::Instant,
 };
 
@@ -219,10 +220,11 @@ async fn install_consensus_archive(
             consensus_dir.display()
         )
     })?;
-    extract_zstd_tar_archive(archive_file.path(), consensus_dir, force)?;
+    let extracted_files = extract_zstd_tar_archive(archive_file.path(), consensus_dir, force)?;
     verify_consensus_output_files(
         consensus_dir,
         &loaded.manifest.consensus_archive.output_files,
+        &extracted_files,
     )?;
 
     info!("persisted consensus archive");
@@ -321,43 +323,118 @@ where
     Ok(hasher.finalize())
 }
 
+/// Extracts the consensus archive into `target_dir` and returns the relative paths of the
+/// regular files it wrote.
+///
+/// Only regular files and directories with plain relative paths are accepted: links and
+/// special files are rejected so a snapshot cannot redirect consensus storage outside
+/// `target_dir`.
 fn extract_zstd_tar_archive(
     archive_path: &Path,
     target_dir: &Path,
     overwrite: bool,
-) -> eyre::Result<()> {
+) -> eyre::Result<BTreeSet<PathBuf>> {
     let file = fs::File::open(archive_path)
         .wrap_err_with(|| format!("failed to open {}", archive_path.display()))?;
     let decoder = zstd::stream::read::Decoder::new(file)?;
     let mut archive = tar::Archive::new(decoder);
     archive.set_overwrite(overwrite);
-    // `Archive::unpack` delegates each member to `Entry::unpack_in`, which skips
-    // paths that would escape `target_dir` and validates link targets.
-    archive.unpack(target_dir).wrap_err_with(|| {
-        format!(
-            "failed to extract consensus archive into {}",
-            target_dir.display()
-        )
-    })
+
+    let mut files = BTreeSet::new();
+    for entry in archive
+        .entries()
+        .wrap_err("failed to read consensus archive entries")?
+    {
+        let mut entry = entry.wrap_err("failed to read consensus archive entry")?;
+        let path = entry
+            .path()
+            .wrap_err("invalid consensus archive entry path")?
+            .into_owned();
+        let entry_type = entry.header().entry_type();
+        // `CurDir` components come from builders that prefix members with `./`.
+        ensure!(
+            path.components()
+                .all(|c| matches!(c, Component::Normal(_) | Component::CurDir)),
+            "consensus archive entry has an unsafe path: {}",
+            path.display(),
+        );
+        let relative: PathBuf = path.components().collect();
+        match entry_type {
+            tar::EntryType::Directory => {}
+            tar::EntryType::Regular | tar::EntryType::Continuous => {
+                ensure!(
+                    relative.components().next().is_some(),
+                    "consensus archive file entry has an empty path",
+                );
+                ensure!(
+                    files.insert(relative.clone()),
+                    "consensus archive contains duplicate entry {}",
+                    relative.display(),
+                );
+            }
+            other => eyre::bail!(
+                "consensus archive entry {} has unsupported type {other:?}",
+                path.display(),
+            ),
+        }
+        let unpacked = entry.unpack_in(target_dir).wrap_err_with(|| {
+            format!(
+                "failed to extract consensus archive entry {} into {}",
+                path.display(),
+                target_dir.display()
+            )
+        })?;
+        ensure!(
+            unpacked,
+            "consensus archive entry {} escapes {}",
+            path.display(),
+            target_dir.display(),
+        );
+    }
+    Ok(files)
 }
 
+/// Verifies that `extracted_files` are exactly the manifest's `output_files` and that each
+/// one is a regular file under `consensus_dir` with the listed size and BLAKE3 hash.
 fn verify_consensus_output_files(
     consensus_dir: &Path,
     output_files: &[OutputFileChecksum],
+    extracted_files: &BTreeSet<PathBuf>,
 ) -> eyre::Result<()> {
     ensure!(
         !output_files.is_empty(),
         "consensus archive output metadata is empty",
     );
 
+    let mut listed = BTreeSet::new();
     for expected in output_files {
-        let output_path = consensus_dir.join(&expected.path);
-        let metadata = fs::metadata(&output_path).wrap_err_with(|| {
+        let relative = Path::new(&expected.path);
+        ensure!(
+            relative.components().next().is_some()
+                && relative
+                    .components()
+                    .all(|c| matches!(c, Component::Normal(_))),
+            "consensus archive output has an unsafe path: {}",
+            expected.path,
+        );
+        ensure!(
+            listed.insert(relative.to_path_buf()),
+            "consensus archive output {} is listed twice",
+            expected.path,
+        );
+
+        let output_path = consensus_dir.join(relative);
+        let metadata = fs::symlink_metadata(&output_path).wrap_err_with(|| {
             format!(
                 "failed to stat consensus archive output {}",
                 output_path.display()
             )
         })?;
+        ensure!(
+            metadata.is_file(),
+            "consensus archive output {} is not a regular file",
+            expected.path,
+        );
         ensure!(
             metadata.len() == expected.size,
             "consensus archive output size mismatch for {}: expected {}, got {}",
@@ -373,6 +450,19 @@ fn verify_consensus_output_files(
             expected.path,
             expected.blake3,
             actual,
+        );
+    }
+
+    if let Some(unlisted) = extracted_files.difference(&listed).next() {
+        eyre::bail!(
+            "consensus archive file {} is not listed in the manifest",
+            unlisted.display()
+        );
+    }
+    if let Some(missing) = listed.difference(extracted_files).next() {
+        eyre::bail!(
+            "consensus archive output {} was not extracted from the archive",
+            missing.display()
         );
     }
 
@@ -600,8 +690,12 @@ mod tests {
         let archive = encoder.finish().unwrap();
         let archive_file = write_test_archive(&archive);
 
-        extract_zstd_tar_archive(archive_file.path(), target.path(), false).unwrap();
+        let files = extract_zstd_tar_archive(archive_file.path(), target.path(), false).unwrap();
 
+        assert_eq!(
+            files,
+            BTreeSet::from([PathBuf::from(partition_name).join("nested").join("00")])
+        );
         assert_eq!(
             fs::read(target.path().join(partition_name).join("nested").join("00")).unwrap(),
             b"abc"
@@ -678,8 +772,9 @@ mod tests {
         let archive = encoder.finish().unwrap();
         let archive_file = write_test_archive(&archive);
 
-        extract_zstd_tar_archive(archive_file.path(), target.path(), false).unwrap();
+        let files = extract_zstd_tar_archive(archive_file.path(), target.path(), false).unwrap();
 
+        assert_eq!(files, BTreeSet::from([PathBuf::from("partition/00")]));
         assert_eq!(
             fs::read(target.path().join("partition").join("00")).unwrap(),
             b"abc"
@@ -787,6 +882,7 @@ mod tests {
                 size: 3,
                 blake3: blake3::hash(b"abc").to_hex().to_string(),
             }],
+            &BTreeSet::from([PathBuf::from(output_path)]),
         )
         .unwrap();
     }
@@ -795,7 +891,7 @@ mod tests {
     fn verify_consensus_output_files_rejects_empty_metadata() {
         let dir = tempfile::tempdir().unwrap();
 
-        assert!(verify_consensus_output_files(dir.path(), &[]).is_err());
+        assert!(verify_consensus_output_files(dir.path(), &[], &BTreeSet::new()).is_err());
     }
 
     #[test]
@@ -814,6 +910,7 @@ mod tests {
                     size: 4,
                     blake3: blake3::hash(b"abc").to_hex().to_string(),
                 }],
+                &BTreeSet::from([PathBuf::from(output_path)]),
             )
             .is_err()
         );
@@ -835,8 +932,160 @@ mod tests {
                     size: 3,
                     blake3: blake3::hash(b"def").to_hex().to_string(),
                 }],
+                &BTreeSet::from([PathBuf::from(output_path)]),
             )
             .is_err()
+        );
+    }
+
+    fn finish_test_archive(
+        builder: tar::Builder<zstd::Encoder<'static, Vec<u8>>>,
+    ) -> tempfile::NamedTempFile {
+        let encoder = builder.into_inner().unwrap();
+        write_test_archive(&encoder.finish().unwrap())
+    }
+
+    fn matching_output(dir: &Path, path: &str, contents: &[u8]) -> OutputFileChecksum {
+        let file_path = dir.join(path);
+        fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+        fs::write(&file_path, contents).unwrap();
+        OutputFileChecksum {
+            path: path.to_string(),
+            size: contents.len() as u64,
+            blake3: blake3::hash(contents).to_hex().to_string(),
+        }
+    }
+
+    #[test]
+    fn extract_zstd_tar_archive_rejects_symlink_entries() {
+        let target = tempfile::tempdir().unwrap();
+        let mut builder = tar::Builder::new(zstd::Encoder::new(Vec::new(), 0).unwrap());
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Symlink);
+        header.set_size(0);
+        builder
+            .append_link(&mut header, "partition", "../reth/db")
+            .unwrap();
+        let archive_file = finish_test_archive(builder);
+
+        let err = extract_zstd_tar_archive(archive_file.path(), target.path(), false).unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            "consensus archive entry partition has unsupported type Symlink"
+        );
+        assert!(fs::symlink_metadata(target.path().join("partition")).is_err());
+    }
+
+    #[test]
+    fn extract_zstd_tar_archive_rejects_hard_link_entries() {
+        let target = tempfile::tempdir().unwrap();
+        let mut builder = tar::Builder::new(zstd::Encoder::new(Vec::new(), 0).unwrap());
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Link);
+        header.set_size(0);
+        builder.append_link(&mut header, "00", "01").unwrap();
+        let archive_file = finish_test_archive(builder);
+
+        let err = extract_zstd_tar_archive(archive_file.path(), target.path(), false).unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            "consensus archive entry 00 has unsupported type Link"
+        );
+    }
+
+    #[test]
+    fn extract_zstd_tar_archive_rejects_parent_dir_entries() {
+        let target = tempfile::tempdir().unwrap();
+        let mut builder = tar::Builder::new(zstd::Encoder::new(Vec::new(), 0).unwrap());
+        let mut header = tar::Header::new_gnu();
+        // `Header::set_path` refuses `..`, so write the raw name.
+        let name = b"../escape";
+        header.as_gnu_mut().unwrap().name[..name.len()].copy_from_slice(name);
+        header.set_size(3);
+        header.set_cksum();
+        builder.append(&header, &b"abc"[..]).unwrap();
+        let archive_file = finish_test_archive(builder);
+
+        let err = extract_zstd_tar_archive(archive_file.path(), target.path(), false).unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            "consensus archive entry has an unsafe path: ../escape"
+        );
+    }
+
+    #[test]
+    fn verify_consensus_output_files_rejects_unsafe_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        for path in ["/dev/null", "../outside", "a/../b", "./a", ""] {
+            let output = OutputFileChecksum {
+                path: path.to_string(),
+                size: 0,
+                blake3: blake3::hash(b"").to_hex().to_string(),
+            };
+
+            let err =
+                verify_consensus_output_files(dir.path(), &[output], &BTreeSet::new()).unwrap_err();
+
+            assert_eq!(
+                err.to_string(),
+                format!("consensus archive output has an unsafe path: {path}")
+            );
+        }
+    }
+
+    #[test]
+    fn verify_consensus_output_files_rejects_symlinked_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let target = matching_output(outside.path(), "00", b"abc");
+        std::os::unix::fs::symlink(outside.path().join("00"), dir.path().join("00")).unwrap();
+
+        let err = verify_consensus_output_files(
+            dir.path(),
+            &[target],
+            &BTreeSet::from([PathBuf::from("00")]),
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            "consensus archive output 00 is not a regular file"
+        );
+    }
+
+    #[test]
+    fn verify_consensus_output_files_rejects_unlisted_extracted_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let listed = matching_output(dir.path(), "partition/00", b"abc");
+        matching_output(dir.path(), "partition/01", b"def");
+
+        let err = verify_consensus_output_files(
+            dir.path(),
+            &[listed],
+            &BTreeSet::from([PathBuf::from("partition/00"), PathBuf::from("partition/01")]),
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            "consensus archive file partition/01 is not listed in the manifest"
+        );
+    }
+
+    #[test]
+    fn verify_consensus_output_files_rejects_output_not_from_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        let preexisting = matching_output(dir.path(), "partition/00", b"abc");
+
+        let err = verify_consensus_output_files(dir.path(), &[preexisting], &BTreeSet::new())
+            .unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            "consensus archive output partition/00 was not extracted from the archive"
         );
     }
 }
