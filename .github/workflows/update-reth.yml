@@ -77,26 +77,22 @@ jobs:
           if git rev-parse --verify origin/reth-auto-bump >/dev/null 2>&1; then
             echo "Continuing on existing reth-auto-bump branch, rebasing onto main"
             git checkout reth-auto-bump
-            if ! git rebase origin/main; then
+            # -X theirs keeps our side of each conflicting hunk (source fixes and old
+            # rev bumps, which the bump below rewrites) and main's other changes.
+            if ! git rebase -X theirs origin/main; then
               echo "Rebase conflicts detected, resolving..."
-              # Conflicts are expected in Cargo.toml/Cargo.lock from old rev bumps.
-              # Accept main's version for those since we're about to bump to a new
-              # rev anyway. Keep source fixes from our side. During a rebase, --ours
-              # is main and --theirs is the commit being replayed.
+              # Conflicts left over are whole-file ones (such as modify/delete). Take
+              # main's side (--ours during a rebase); the fix loop below re-applies
+              # any source fix this drops.
               while [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ]; do
                 CONFLICTED=$(git diff --name-only --diff-filter=U)
                 for f in $CONFLICTED; do
-                  case "$f" in
-                    Cargo.toml|Cargo.lock)
-                      echo "  Accepting main version for $f"
-                      git checkout --ours "$f"
-                      ;;
-                    *)
-                      echo "  Accepting our version for $f"
-                      git checkout --theirs "$f"
-                      ;;
-                  esac
-                  git add "$f"
+                  echo "  Accepting main version for $f"
+                  if git checkout --ours "$f" 2>/dev/null; then
+                    git add "$f"
+                  else
+                    git rm -q "$f"
+                  fi
                 done
                 GIT_EDITOR=true git rebase --continue || true
               done
@@ -180,6 +176,13 @@ jobs:
           NEW_REV=$(gh api repos/paradigmxyz/reth/commits/main --jq '.sha')
           echo "Latest reth main: $NEW_REV"
 
+          for rev in "$CURRENT_REV" "$NEW_REV"; do
+            if ! [[ "$rev" =~ ^[0-9a-f]{7,40}$ ]]; then
+              echo "::error::Could not read reth rev: '$rev'"
+              exit 1
+            fi
+          done
+
           # Pins may be short or full SHAs.
           if [[ "$NEW_REV" == "$CURRENT_REV"* ]]; then
             echo "bumped=false" >> "$GITHUB_OUTPUT"
@@ -198,16 +201,25 @@ jobs:
           echo "Updated reth rev: $CURRENT_REV -> $NEW_REV"
 
           # Match the reth-core and evm2 pins to the ones the new reth rev uses.
-          RETH_TOML=$(gh api "repos/paradigmxyz/reth/contents/Cargo.toml?ref=${NEW_REV}" -H 'Accept: application/vnd.github.raw')
-          for repo in paradigmxyz/reth-core alloy-rs/evm2 DaniPopes/evm2; do
-            REV=$(echo "$RETH_TOML" | grep -m1 "github.com/${repo}\", rev = " | sed 's/.*rev = "\([^"]*\)".*/\1/' || true)
-            if [ -z "$REV" ]; then
-              echo "reth does not pin ${repo}; leaving it unchanged"
-              continue
-            fi
-            find . -name 'Cargo.toml' -exec sed -i "s|github.com/${repo}\", rev = \"[0-9a-f]*\"|github.com/${repo}\", rev = \"${REV}\"|g" {} +
-            echo "Set ${repo} rev: ${REV}"
-          done
+          RETH_TOML=$(gh api "repos/paradigmxyz/reth/contents/Cargo.toml?ref=${NEW_REV}" -H 'Accept: application/vnd.github.raw' | grep -v '^[[:space:]]*#')
+          reth_pin() {
+            echo "$RETH_TOML" | grep -m1 "github.com/$1\", rev = " | sed 's/.*rev = "\([^"]*\)".*/\1/' || true
+          }
+          set_pin() {
+            find . -name 'Cargo.toml' -exec sed -i "s|github.com/$1\", rev = \"[0-9a-f]*\"|github.com/$1\", rev = \"$2\"|g" {} +
+            echo "Set $1 rev: $2"
+          }
+          RETH_CORE_REV=$(reth_pin paradigmxyz/reth-core)
+          # Tempo patches alloy-rs/evm2 with DaniPopes/evm2; keep both at the evm2 rev reth builds with.
+          EVM2_REV=$(reth_pin DaniPopes/evm2)
+          [ -n "$EVM2_REV" ] || EVM2_REV=$(reth_pin alloy-rs/evm2)
+          if [ -z "$RETH_CORE_REV" ] || [ -z "$EVM2_REV" ]; then
+            echo "::error::Could not read reth-core or evm2 rev from reth ${NEW_REV}"
+            exit 1
+          fi
+          set_pin paradigmxyz/reth-core "$RETH_CORE_REV"
+          set_pin alloy-rs/evm2 "$EVM2_REV"
+          set_pin DaniPopes/evm2 "$EVM2_REV"
 
       # ── commit rev bump if changed ──────────────────────────────
       - name: Commit reth rev bump
