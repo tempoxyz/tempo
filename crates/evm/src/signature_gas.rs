@@ -15,6 +15,10 @@ pub(crate) fn tempo_signature_verification_gas(signature: &TempoSignature) -> u6
         TempoSignature::Keychain(keychain_sig) => {
             keychain_sig.signature.intrinsic_verification_gas() + KEYCHAIN_VALIDATION_GAS
         }
+        // Only a `u64` overflow fails; saturating keeps such a transaction unaffordable.
+        TempoSignature::ConfigurableAccount(signature) => {
+            signature.intrinsic_verification_gas().unwrap_or(u64::MAX)
+        }
     }
 }
 

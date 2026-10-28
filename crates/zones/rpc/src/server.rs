@@ -330,6 +330,10 @@ pub(crate) async fn authenticate_token(
 
     let signature =
         TempoSignature::from_bytes(&token.signature).map_err(|_| AuthError::InvalidSignature)?;
+    // Zone auth cannot validate configurable owner quorums.
+    if signature.is_configurable_account() {
+        return Err(AuthError::InvalidSignature.into());
+    }
     let caller = signature
         .recover_signer(&token.digest)
         .map_err(|_| AuthError::InvalidSignature)?;
