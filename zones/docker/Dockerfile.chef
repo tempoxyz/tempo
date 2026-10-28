@@ -1,6 +1,52 @@
+# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+
 FROM rust:1.96-bookworm@sha256:5e2214abe154fe26e39f64488952e5c991eeed1d6d6da7cc8381ae83927f0cfc AS chef
 
-RUN cargo install cargo-chef@0.1.77 sccache@0.14.0 --locked
+ARG TARGETARCH
+ARG CARGO_CHEF_VERSION=0.1.77
+ARG SCCACHE_VERSION=0.14.0
+
+# Install the upstream release binaries instead of compiling them on every build.
+RUN set -eu; \
+    case "$TARGETARCH" in \
+      amd64) arch=x86_64; \
+             chef_sha256=a3733ab416c3ffddd37914cd13919ca05fee1a1cf654f3016dcfe7f399d89cd1; \
+             sccache_sha256=8424b38cda4ecce616a1557d81328f3d7c96503a171eab79942fad618b42af44 ;; \
+      arm64) arch=aarch64; \
+             chef_sha256=3bff2e7ff979db837c7e820dfd8d51d2d97b9c94283506c6e596ae4887ef178b; \
+             sccache_sha256=62a6c942c47c93333bc0174704800cef7edfa0416d08e1356c1d3e39f0b462f2 ;; \
+      *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
+    esac; \
+    chef="cargo-chef-$arch-unknown-linux-musl"; \
+    sccache="sccache-v$SCCACHE_VERSION-$arch-unknown-linux-musl"; \
+    cd /tmp; \
+    curl --proto '=https' --tlsv1.2 -fsSL -o chef.tar.xz \
+      "https://github.com/LukeMathWalker/cargo-chef/releases/download/v$CARGO_CHEF_VERSION/$chef.tar.xz"; \
+    curl --proto '=https' --tlsv1.2 -fsSL -o sccache.tar.gz \
+      "https://github.com/mozilla/sccache/releases/download/v$SCCACHE_VERSION/$sccache.tar.gz"; \
+    printf '%s  chef.tar.xz\n%s  sccache.tar.gz\n' "$chef_sha256" "$sccache_sha256" | sha256sum --check --strict; \
+    tar -xJf chef.tar.xz --strip-components=1 -C "$CARGO_HOME/bin" "$chef/cargo-chef"; \
+    tar -xzf sccache.tar.gz --strip-components=1 -C "$CARGO_HOME/bin" "$sccache/sccache"; \
+    rm chef.tar.xz sccache.tar.gz; \
+    cargo chef --version; \
+    sccache --version
+
+# Use Depot Cache as the sccache backend when the build passes its WebDAV
+# endpoint and token as secrets (CI on Depot runners); otherwise fall back to
+# the local SCCACHE_DIR cache mount. Secrets keep layer cache keys unchanged.
+COPY --chmod=0755 <<'EOF' /usr/local/bin/sccache-env
+#!/bin/sh
+set -eu
+if [ -s /run/secrets/sccache_webdav_endpoint ] && [ -s /run/secrets/sccache_webdav_token ]; then
+  SCCACHE_WEBDAV_ENDPOINT="$(cat /run/secrets/sccache_webdav_endpoint)"
+  SCCACHE_WEBDAV_TOKEN="$(cat /run/secrets/sccache_webdav_token)"
+  export SCCACHE_WEBDAV_ENDPOINT SCCACHE_WEBDAV_TOKEN
+  echo "sccache: using the remote WebDAV cache" >&2
+else
+  echo "sccache: using the local cache mount" >&2
+fi
+exec "$@"
+EOF
 
 WORKDIR /app
 
@@ -39,8 +85,10 @@ COPY --from=planner /app/recipe.json recipe.json
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=zones-${TARGETARCH}-${RUST_PROFILE}-${CACHE_FAMILY}-registry \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked,id=zones-${TARGETARCH}-${RUST_PROFILE}-${CACHE_FAMILY}-git \
     --mount=type=cache,target=$SCCACHE_DIR,sharing=locked,id=zones-${TARGETARCH}-${RUST_PROFILE}-${CACHE_FAMILY}-sccache \
+    --mount=type=secret,id=sccache_webdav_endpoint \
+    --mount=type=secret,id=sccache_webdav_token \
     set -eu; set --; \
     for binary in $RUST_BINARIES; do set -- "$@" --bin "$binary"; done; \
     RUSTFLAGS="-C link-arg=-fuse-ld=mold ${EXTRA_RUSTFLAGS}" \
-    cargo chef cook --locked --profile ${RUST_PROFILE} --features "${RUST_FEATURES}" --recipe-path recipe.json "$@" \
+    sccache-env cargo chef cook --locked --profile ${RUST_PROFILE} --features "${RUST_FEATURES}" --recipe-path recipe.json "$@" \
     && sccache --show-stats

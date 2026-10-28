@@ -14,8 +14,10 @@ COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=zones-${TARGETARCH}-${RUST_PROFILE}-${CACHE_FAMILY}-registry \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked,id=zones-${TARGETARCH}-${RUST_PROFILE}-${CACHE_FAMILY}-git \
     --mount=type=cache,target=$SCCACHE_DIR,sharing=locked,id=zones-${TARGETARCH}-${RUST_PROFILE}-${CACHE_FAMILY}-sccache \
+    --mount=type=secret,id=sccache_webdav_endpoint \
+    --mount=type=secret,id=sccache_webdav_token \
     RUSTFLAGS="-C link-arg=-fuse-ld=mold" \
-    cargo build --locked --profile ${RUST_PROFILE} --bin tempo-zone-prover-utils \
+    sccache-env cargo build --locked --profile ${RUST_PROFILE} --bin tempo-zone-prover-utils \
     && /app/target/${RUST_PROFILE}/tempo-zone-prover-utils --help >/dev/null
 
 FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8

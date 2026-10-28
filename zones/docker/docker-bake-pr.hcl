@@ -17,6 +17,10 @@ target "tempo-zone" {
     VERGEN_GIT_SHA = "${VERGEN_GIT_SHA}"
     VERGEN_GIT_SHA_SHORT = "${VERGEN_GIT_SHA_SHORT}"
   }
+  secret = [
+    "id=sccache_webdav_endpoint,env=SCCACHE_WEBDAV_ENDPOINT",
+    "id=sccache_webdav_token,env=SCCACHE_WEBDAV_TOKEN",
+  ]
   labels = {
     "org.opencontainers.image.description" = "Pull request tempo-zone image (profiling build); not reproducible."
     "org.tempoxyz.reproducible.verification-scope" = "none"

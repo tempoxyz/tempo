@@ -43,6 +43,11 @@ target "chef" {
     CACHE_FAMILY = "node"
     RUST_BINARIES = "tempo-zone tempo-zone-xtask"
   }
+  # Depot runners export Depot Cache's sccache WebDAV credentials; builds without them use the local cache mount.
+  secret = [
+    "id=sccache_webdav_endpoint,env=SCCACHE_WEBDAV_ENDPOINT",
+    "id=sccache_webdav_token,env=SCCACHE_WEBDAV_TOKEN",
+  ]
 }
 
 target "prover-chef" {
@@ -55,6 +60,11 @@ target "prover-chef" {
     CACHE_FAMILY = "prover"
     RUST_BINARIES = "tempo-zone-prover-utils tempo-zone-prover-enclave"
   }
+  # Depot runners export Depot Cache's sccache WebDAV credentials; builds without them use the local cache mount.
+  secret = [
+    "id=sccache_webdav_endpoint,env=SCCACHE_WEBDAV_ENDPOINT",
+    "id=sccache_webdav_token,env=SCCACHE_WEBDAV_TOKEN",
+  ]
 }
 
 # Utilities and enclave share the same release dependency graph.
@@ -73,6 +83,11 @@ target "_common" {
     VERGEN_GIT_SHA_SHORT = "${VERGEN_GIT_SHA_SHORT}"
   }
   platforms = ["linux/amd64"]
+  # Depot runners export Depot Cache's sccache WebDAV credentials; builds without them use the local cache mount.
+  secret = [
+    "id=sccache_webdav_endpoint,env=SCCACHE_WEBDAV_ENDPOINT",
+    "id=sccache_webdav_token,env=SCCACHE_WEBDAV_TOKEN",
+  ]
 }
 
 target "tempo-zone" {
@@ -135,6 +150,11 @@ target "tempo-zone-prover-utils" {
     CACHE_FAMILY = "prover"
   }
   platforms = ["linux/amd64"]
+  # Depot runners export Depot Cache's sccache WebDAV credentials; builds without them use the local cache mount.
+  secret = [
+    "id=sccache_webdav_endpoint,env=SCCACHE_WEBDAV_ENDPOINT",
+    "id=sccache_webdav_token,env=SCCACHE_WEBDAV_TOKEN",
+  ]
 }
 
 # Build a matched Nitro guest kernel and NSM module from AWS's bootstrap sources. Keep this
@@ -167,6 +187,17 @@ target "tempo-zone-prover" {
     prover-eif = "${PROVER_EIF_CONTEXT}"
   }
   platforms = ["linux/amd64"]
+}
+
+# vsock-proxy for the prover host image. It does not depend on the EIF, so the
+# first bake warms these layers while the binaries compile; the later
+# tempo-zone-prover bake reuses them.
+target "tempo-zone-prover-proxy" {
+  dockerfile = "zones/docker/Dockerfile.prover-host"
+  context = "."
+  target = "proxy-builder"
+  platforms = ["linux/amd64"]
+  output = ["type=cacheonly"]
 }
 
 target "tempo-zone-xtask" {

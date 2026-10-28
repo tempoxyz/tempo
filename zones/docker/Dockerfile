@@ -18,8 +18,10 @@ FROM builder AS node-builder
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=zones-${TARGETARCH}-${RUST_PROFILE}-${CACHE_FAMILY}-registry \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked,id=zones-${TARGETARCH}-${RUST_PROFILE}-${CACHE_FAMILY}-git \
     --mount=type=cache,target=$SCCACHE_DIR,sharing=locked,id=zones-${TARGETARCH}-${RUST_PROFILE}-${CACHE_FAMILY}-sccache \
+    --mount=type=secret,id=sccache_webdav_endpoint \
+    --mount=type=secret,id=sccache_webdav_token \
     RUSTFLAGS="-C link-arg=-fuse-ld=mold ${EXTRA_RUSTFLAGS}" \
-    cargo build --locked --profile ${RUST_PROFILE} \
+    sccache-env cargo build --locked --profile ${RUST_PROFILE} \
         --bin tempo-zone --features "jemalloc" \
     && if [ -n "$VERGEN_GIT_SHA" ]; then \
          /app/target/${RUST_PROFILE}/tempo-zone --version | grep -F "$VERGEN_GIT_SHA"; \
@@ -30,8 +32,10 @@ FROM builder AS xtask-builder
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=zones-${TARGETARCH}-${RUST_PROFILE}-${CACHE_FAMILY}-registry \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked,id=zones-${TARGETARCH}-${RUST_PROFILE}-${CACHE_FAMILY}-git \
     --mount=type=cache,target=$SCCACHE_DIR,sharing=locked,id=zones-${TARGETARCH}-${RUST_PROFILE}-${CACHE_FAMILY}-sccache \
+    --mount=type=secret,id=sccache_webdav_endpoint \
+    --mount=type=secret,id=sccache_webdav_token \
     RUSTFLAGS="-C link-arg=-fuse-ld=mold ${EXTRA_RUSTFLAGS}" \
-    cargo build --locked --profile ${RUST_PROFILE} \
+    sccache-env cargo build --locked --profile ${RUST_PROFILE} \
         --bin tempo-zone-xtask
 
 # Solidity contracts compiled for shared runtimes, routers, and zone genesis artifacts.

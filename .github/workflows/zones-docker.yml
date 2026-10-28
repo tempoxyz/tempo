@@ -644,6 +644,12 @@ jobs:
       - name: Prepare candidate image exports
         run: mkdir -p "$RUNNER_TEMP/candidate-images"
 
+      - name: Check Depot Cache for sccache
+        run: |
+          if [[ -z "${SCCACHE_WEBDAV_ENDPOINT:-}" || -z "${SCCACHE_WEBDAV_TOKEN:-}" ]]; then
+            echo "::warning::Depot Cache sccache credentials are not set; Rust builds use the builder-local cache only"
+          fi
+
       - name: Compile all binaries and publish images
         uses: tempoxyz/gh-actions/vendor/depot/bake-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
@@ -658,6 +664,7 @@ jobs:
           targets: |
             default
             tempo-zone-prover-compiled
+            tempo-zone-prover-proxy
           project: 0c6tg19qsp
           # Export only the executable for the later genesis packaging step.
           set: |
@@ -669,9 +676,9 @@ jobs:
             tempo-zone-xtask.output=type=docker,dest=${{ runner.temp }}/candidate-images/tempo-zone-xtask.tar
             tempo-zone-prover-utils.tags=tempo-zone-prover-utils:candidate
             tempo-zone-prover-utils.output=type=docker,dest=${{ runner.temp }}/candidate-images/tempo-zone-prover-utils.tar
-          # Private registry cache layers can retain expired BuildKit client
-          # sessions across runs. Build fresh layers instead of importing them.
-          no-cache: true
+          # Reuse the Depot builder's layer cache: the chef dependency layer is
+          # rebuilt only when the dependency recipe changes. The production
+          # image is still compared against an uncached clean rebuild.
           pull: true
         env:
           VERGEN_GIT_SHA: ${{ github.sha }}
@@ -798,7 +805,7 @@ jobs:
             tempo-zone-prover.args.NITRO_PCR1=${{ steps.prover_measurements.outputs.pcr1 }}
             tempo-zone-prover.args.NITRO_PCR2=${{ steps.prover_measurements.outputs.pcr2 }}
           project: 0c6tg19qsp
-          no-cache: true
+          # The vsock-proxy layers were warmed by the first bake.
           pull: true
 
       - name: Upload candidate image archives
