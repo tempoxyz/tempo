@@ -11,6 +11,7 @@ use evm2::{
 };
 use tempo_chainspec::{gas_params::version, hardfork::TempoHardfork};
 use tempo_precompiles::{
+    configurable_account::CONFIGURABLE_ACCOUNT_CODE_HASH,
     error::TempoPrecompileError,
     storage::{
         ConfigCommitmentWriteGas, PrecompileStorageProvider, StorageCtx,
@@ -87,6 +88,11 @@ fn write_then_read() {
             .unwrap();
         assert_eq!(ctx.config_commitment(ACCOUNT).unwrap(), INITIAL);
         assert_eq!(
+            ctx.with_account_info(ACCOUNT, |info| Ok(info.code_hash))
+                .unwrap(),
+            CONFIGURABLE_ACCOUNT_CODE_HASH
+        );
+        assert_eq!(
             ctx.config_commitment(Address::repeat_byte(9)).unwrap(),
             B256::ZERO
         );
@@ -94,6 +100,11 @@ fn write_then_read() {
         ctx.set_config_commitment(ACCOUNT, ROTATED, ConfigCommitmentWriteGas::Precompile)
             .unwrap();
         assert_eq!(ctx.config_commitment(ACCOUNT).unwrap(), ROTATED);
+        assert_eq!(
+            ctx.with_account_info(ACCOUNT, |info| Ok(info.code_hash))
+                .unwrap(),
+            CONFIGURABLE_ACCOUNT_CODE_HASH
+        );
     });
 }
 
@@ -173,8 +184,11 @@ fn checkpoint_revert_restores_commitment() {
         drop(inner);
         assert_eq!(ctx.config_commitment(ACCOUNT).unwrap(), INITIAL);
 
-        ctx.set_code(ACCOUNT, Bytes::new()).unwrap();
-        assert_eq!(ctx.config_commitment(ACCOUNT).unwrap(), INITIAL);
+        assert_eq!(
+            ctx.with_account_info(ACCOUNT, |info| Ok(info.code_hash))
+                .unwrap(),
+            CONFIGURABLE_ACCOUNT_CODE_HASH
+        );
 
         let inner = ctx.checkpoint();
         ctx.set_config_commitment(ACCOUNT, ROTATED, ConfigCommitmentWriteGas::Precompile)
@@ -183,6 +197,11 @@ fn checkpoint_revert_restores_commitment() {
         assert_eq!(ctx.config_commitment(ACCOUNT).unwrap(), ROTATED);
         drop(outer);
         assert_eq!(ctx.config_commitment(ACCOUNT).unwrap(), B256::ZERO);
+        assert_eq!(
+            ctx.with_account_info(ACCOUNT, |info| Ok(info.code_hash))
+                .unwrap(),
+            alloy_primitives::KECCAK256_EMPTY
+        );
     });
 }
 
@@ -206,13 +225,14 @@ fn evm_storage_reads_and_writes_commitments() {
         assert_eq!(storage.config_commitment(ACCOUNT).unwrap(), B256::ZERO);
         assert_eq!(storage.gas_used() - before, account_access);
 
-        // The first precompile write registers the commitment and creates the account.
+        // The first precompile write registers the commitment, priced like account creation,
+        // and creates the account.
         let before = storage.gas_used();
         storage
             .set_config_commitment(ACCOUNT, INITIAL, ConfigCommitmentWriteGas::Precompile)
             .unwrap();
-        assert_eq!(storage.gas_used() - before, 20_000 + new_account);
-        assert_eq!(storage.state_gas_used(), params.new_account_state_gas());
+        assert_eq!(storage.gas_used() - before, 2 * new_account);
+        assert_eq!(storage.state_gas_used(), 2 * params.new_account_state_gas());
         assert_eq!(storage.config_commitment(ACCOUNT).unwrap(), INITIAL);
 
         // Rotation pays only the update charge; the account already exists.
@@ -297,7 +317,7 @@ struct WriteCase {
 fn evm_write_gas_boundary() {
     let spec = TempoHardfork::T14;
     let params = gas_params(spec, false);
-    let registration = 20_000 + u64::from(params.get(GasId::NewAccountCost));
+    let registration = 2 * u64::from(params.get(GasId::NewAccountCost));
     for WriteCase {
         previous,
         cost,
@@ -306,7 +326,7 @@ fn evm_write_gas_boundary() {
         WriteCase {
             previous: B256::ZERO,
             cost: registration,
-            state_gas: params.new_account_state_gas(),
+            state_gas: 2 * params.new_account_state_gas(),
         },
         WriteCase {
             previous: INITIAL,
@@ -368,8 +388,9 @@ fn evm_registration_state_gas_spills_into_regular_gas() {
     let state_gas = 100_000;
     let mut version = version(SpecId::OSAKA, spec, false);
     version.gas_params[GasId::NewAccountState] = state_gas;
-    let state_gas = u64::from(state_gas);
-    let regular = 20_000 + u64::from(version.gas_params.get(GasId::NewAccountCost));
+    // The commitment write and the account creation each charge it.
+    let state_gas = 2 * u64::from(state_gas);
+    let regular = 2 * u64::from(version.gas_params.get(GasId::NewAccountCost));
     let mut evm = new_evm_with_version(version);
     let reservoir = state_gas / 4;
     let mut gas_tracker = GasTracker::new_with_execution_gas_and_reservoir(u64::MAX / 2, reservoir);
