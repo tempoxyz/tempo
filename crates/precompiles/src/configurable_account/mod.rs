@@ -1,12 +1,13 @@
-//! Journaled configurable account configuration updates.
+//! Configurable account management and protocol account code.
 
 pub mod dispatch;
+pub mod shim;
 
 use crate::{
     error::{Result, TempoPrecompileError},
     storage::{ConfigCommitmentWriteGas, Handler, account_config_commitment},
 };
-use alloy::primitives::{Address, B256};
+use alloy::primitives::{Address, B256, Bytes, KECCAK256_EMPTY, b256};
 pub use tempo_chainspec::is_valid_native_account as valid_account;
 use tempo_contracts::precompiles::{
     CONFIGURABLE_ACCOUNT_ADDRESS, ConfigurableAccountError, ConfigurableAccountEvent,
@@ -147,13 +148,14 @@ impl ConfigurableAccount {
             UpgradeEligibility::PrimitiveRoot => {}
         }
         let spec = self.storage.spec();
-        let (has_code, commitment) = self.storage.with_account_info(sender, |info| {
+        let (invalid_code, commitment) = self.storage.with_account_info(sender, |info| {
+            let commitment = account_config_commitment(info, spec)?;
             Ok((
-                !info.is_empty_code_hash(),
-                account_config_commitment(info, spec)?,
+                !info.is_empty_code_hash() && !valid_account_code(info.code_hash, commitment),
+                commitment,
             ))
         })?;
-        if has_code {
+        if invalid_code {
             return Err(ConfigurableAccountError::account_has_code().into());
         }
         if !commitment.is_zero() {
@@ -222,4 +224,21 @@ pub fn config(
             })
             .collect(),
     }
+}
+
+/// Shared protocol-installed code for registered configurable accounts.
+pub const CONFIGURABLE_ACCOUNT_CODE: Bytes = Bytes::from_static(&[0xef]);
+
+/// Keccak-256 of [`CONFIGURABLE_ACCOUNT_CODE`], compared without loading code bytes.
+pub const CONFIGURABLE_ACCOUNT_CODE_HASH: B256 =
+    b256!("309b8896ee4c1ff7ec1966155373dee42663b6b40c3fedc70ba501684848d2a3");
+
+/// Whether code matches the account's registration state.
+pub fn valid_account_code(code_hash: B256, commitment: B256) -> bool {
+    code_hash
+        == if commitment.is_zero() {
+            KECCAK256_EMPTY
+        } else {
+            CONFIGURABLE_ACCOUNT_CODE_HASH
+        }
 }

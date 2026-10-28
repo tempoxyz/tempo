@@ -29,7 +29,10 @@ use reth_node_builder::BuiltPayload;
 use reth_rpc_eth_types::RpcInvalidTransactionError;
 use serde_json::{from_value, json};
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
-use tempo_contracts::precompiles::{ACCOUNT_KEYCHAIN_ADDRESS, IAccountKeychain, ITIP20};
+use tempo_contracts::precompiles::{
+    ACCOUNT_KEYCHAIN_ADDRESS, IAccountKeychain, ITIP20,
+    configurable_account::IConfigurableAccountShim,
+};
 use tempo_evm::transaction_error::ConfigurableAccountError;
 use tempo_primitives::{
     account::encode_config_commitment,
@@ -180,6 +183,58 @@ async fn configurable_account_rpc_registration_revert_retry_and_rotation() -> ey
             account.config.commitment().unwrap()
         ))
     );
+    // Registration installs the one-byte marker, which answers ERC-1271 and ERC-721 receipts.
+    assert_eq!(
+        env.provider().get_code_at(account.address).await?,
+        Bytes::from_static(&[0xef])
+    );
+    assert_eq!(account_info["codeHash"], json!(keccak256([0xef])));
+    let hash = B256::repeat_byte(0x5a);
+    let is_valid_signature = IConfigurableAccountShim::isValidSignatureCall {
+        hash,
+        signature: TempoSignature::ConfigurableAccount(account.quorum(hash, false)?)
+            .to_bytes()
+            .into(),
+    };
+    let address = account.address;
+    let shim_call = move |input: Vec<u8>| {
+        let mut request = call_request(Address::ZERO, input.into());
+        request.to = Some(address.into());
+        request
+    };
+    // A returned bytes4 is left-aligned in its word.
+    let magic = |value: [u8; 4]| {
+        let mut word = [0; 32];
+        word[..4].copy_from_slice(&value);
+        Bytes::from(word)
+    };
+    assert_eq!(
+        env.provider()
+            .call(shim_call(is_valid_signature.abi_encode()))
+            .await?,
+        magic(IConfigurableAccountShim::isValidSignatureCall::SELECTOR)
+    );
+    let on_erc721_received = IConfigurableAccountShim::onERC721ReceivedCall {
+        operator: Address::ZERO,
+        from: Address::ZERO,
+        tokenId: U256::ONE,
+        data: Bytes::new(),
+    };
+    assert_eq!(
+        env.provider()
+            .call(shim_call(on_erc721_received.abi_encode()))
+            .await?,
+        magic(IConfigurableAccountShim::onERC721ReceivedCall::SELECTOR)
+    );
+    // Other selectors revert without data.
+    let error = env
+        .provider()
+        .call(shim_call(vec![0xff; 4]))
+        .await
+        .expect_err("unknown selectors revert");
+    let payload = error.as_error_resp().expect("revert response");
+    assert_eq!(payload.message, "execution reverted");
+    assert_eq!(payload.as_revert_data(), None);
     let registered_estimate = provider
         .estimate_gas(account.simulation_request())
         .latest()
@@ -261,6 +316,13 @@ async fn configurable_account_rpc_registration_revert_retry_and_rotation() -> ey
     // The rotation changes the commitment, so the pool revalidates the transactions and evicts
     // them (TIP-1112).
     env.setup.node.wait_for_pool_removal(stale).await?;
+    // The rotated-out witness no longer verifies through the account.
+    assert_eq!(
+        env.provider()
+            .call(shim_call(is_valid_signature.abi_encode()))
+            .await?,
+        magic([0xff; 4])
+    );
     let tx = account.transaction(&env, vec![noop()]);
     reject_with(
         &env,
@@ -1137,8 +1199,12 @@ async fn retired_root_leaves_unrelated_pending_transactions_valid() -> eyre::Res
             .ok_or_else(|| eyre!("{what} not included"))?;
         assert!(receipt.status(), "{what}: {receipt:?}");
     }
-    // The entry was skipped: no delegation, and the nonce is the migration's alone.
-    assert!(provider.get_code_at(account.address).await?.is_empty());
+    // The entry was skipped: no delegation, only the migration's marker, and the nonce is the
+    // migration's alone.
+    assert_eq!(
+        provider.get_code_at(account.address).await?,
+        Bytes::from_static(&[0xef])
+    );
     assert_eq!(
         provider.get_transaction_count(account.address).await?,
         account.nonce + 1
