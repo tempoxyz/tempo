@@ -1820,7 +1820,7 @@ fn retired_root_error_order_and_access_gas() {
 
     // Gas: each distinct non-caller role account is charged one account access from T14.
     let params = tempo_gas_params(TempoHardfork::T14);
-    let warm = u64::from(params.get(GasId::WarmStorageReadCost));
+    let warm = params.get(GasId::WarmStorageReadCost);
     let cold = warm + params.cold_account_additional_cost();
     let other = signer(8);
     let delta = |tx: &dyn Fn(&Fixture) -> AASigned| {
