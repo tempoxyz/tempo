@@ -255,11 +255,8 @@ fn set_delegation(f: &mut Fixture, nonce: u64, target: Address) {
 }
 
 /// Authorizes `key` for the account with a root-signed grant at `nonce`.
-fn grant_key(f: &mut Fixture, nonce: u64, key: &PrivateKeySigner, admin: bool, expiry: u64) {
+fn grant_key(f: &mut Fixture, nonce: u64, key: &PrivateKeySigner, expiry: u64) {
     let mut grant = KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key.address());
-    if admin {
-        grant = grant.into_admin(f.account);
-    }
     if expiry != 0 {
         grant = grant.with_expiry(expiry);
     }
@@ -604,25 +601,23 @@ fn eoa_migration_error_order() {
         "access key batch",
         |f| {
             let key = signer(6);
-            grant_key(f, 3, &key, false, 0);
+            grant_key(f, 3, &key, 0);
             keychain_tx(f, &key, 4, vec![upgrade.clone(), f.getter()]).into()
         },
         &only_call,
     );
 
     // 2: only a primitive root signature may migrate.
-    for admin in [false, true] {
-        expect_revert(
-            Fixture::new(),
-            if admin { "admin key" } else { "access key" },
-            |f| {
-                let key = signer(6);
-                grant_key(f, 3, &key, admin, 0);
-                keychain_tx(f, &key, 4, vec![upgrade.clone()]).into()
-            },
-            &root_required,
-        );
-    }
+    expect_revert(
+        Fixture::new(),
+        "access key",
+        |f| {
+            let key = signer(6);
+            grant_key(f, 3, &key, 0);
+            keychain_tx(f, &key, 4, vec![upgrade.clone()]).into()
+        },
+        &root_required,
+    );
     // 2 before 3: a delegated account with an access key.
     expect_revert(
         Fixture::new(),
@@ -630,7 +625,7 @@ fn eoa_migration_error_order() {
         |f| {
             set_delegation(f, 3, delegate);
             let key = signer(6);
-            grant_key(f, 5, &key, false, 0);
+            grant_key(f, 5, &key, 0);
             keychain_tx(f, &key, 6, vec![upgrade.clone()]).into()
         },
         &root_required,
@@ -1000,10 +995,10 @@ fn eoa_migration_preserves_account_state() {
     let mut f = Fixture::new();
     let account = f.account;
     let spender = signer(7).address();
-    let keys = [signer(11), signer(12), signer(13), signer(14)];
+    let keys = [signer(11), signer(12), signer(13)];
     fund(&mut f, account, 50_000_000);
 
-    // Allowance, then an ordinary, an admin, a revoked and an expiring access key.
+    // Allowance, then an ordinary, a revoked and an expiring access key.
     let approve = Call {
         to: TxKind::Call(PATH_USD_ADDRESS),
         value: U256::ZERO,
@@ -1016,21 +1011,20 @@ fn eoa_migration_preserves_account_state() {
     };
     let tx = f.primitive(3, vec![approve]);
     assert!(f.run(&tx).status);
-    grant_key(&mut f, 4, &keys[0], false, 0);
-    grant_key(&mut f, 5, &keys[1], true, 0);
-    grant_key(&mut f, 6, &keys[2], false, 0);
+    grant_key(&mut f, 4, &keys[0], 0);
+    grant_key(&mut f, 5, &keys[1], 0);
     let revoke = Call {
         to: TxKind::Call(ACCOUNT_KEYCHAIN_ADDRESS),
         value: U256::ZERO,
         input: IAccountKeychain::revokeKeyCall {
-            keyId: keys[2].address(),
+            keyId: keys[1].address(),
         }
         .abi_encode()
         .into(),
     };
-    let tx = f.primitive(7, vec![revoke]);
+    let tx = f.primitive(6, vec![revoke]);
     assert!(f.run(&tx).status);
-    grant_key(&mut f, 8, &keys[3], false, 1000);
+    grant_key(&mut f, 7, &keys[2], 1000);
     f.update_block(|block| block.timestamp = U256::from(2000));
     // A used 2D nonce lane; the nonce manager needs its precompile account to persist.
     in_storage_ctx(&mut f.evm, || NonceManager::new().initialize()).unwrap();
@@ -1072,27 +1066,27 @@ fn eoa_migration_preserves_account_state() {
     assert_eq!(before.allowance, U256::from(77));
     assert_eq!(before.nonce, 1);
 
-    let config = migrate(&mut f, 9, signer(2).address());
+    let config = migrate(&mut f, 8, signer(2).address());
     assert_eq!(snapshot(&mut f), before);
-    assert_eq!(f.info(account).unwrap().nonce, 10);
+    assert_eq!(f.info(account).unwrap().nonce, 9);
 
-    // The admin key still cannot rotate the migrated account or migrate it again.
+    // The access key still cannot rotate the migrated account or migrate it again.
     let next = ConfigurableAccountConfig {
         version: 2,
         ..config.clone()
     };
     let mut rejected = |nonce, call, error: Vec<u8>| {
-        let tx = keychain_tx(&f, &keys[1], nonce, vec![call]);
+        let tx = keychain_tx(&f, &keys[0], nonce, vec![call]);
         let result = f.run(&tx);
         assert_eq!(&result.output, &error);
     };
     rejected(
-        10,
+        9,
         Fixture::rotation(&config, &next),
         IConfigurableAccount::UnauthorizedConfigurableAccountCaller {}.abi_encode(),
     );
     rejected(
-        11,
+        10,
         Fixture::upgrade(&config),
         IConfigurableAccount::PrimitiveRootRequired {}.abi_encode(),
     );
