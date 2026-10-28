@@ -7,32 +7,11 @@
 use std::{collections::BTreeMap, fmt};
 
 use alloy_primitives::{Address, Bytes, LogData, U256};
-use alloy_sol_types::{SolCall, SolEvent, sol};
+use alloy_sol_types::{SolCall, SolEvent};
 
 use crate::{Observe, ObserveError, Replay, Views, decode, optional, or_text};
 
-sol! {
-    #[derive(Debug, PartialEq, Eq)]
-    interface ITIP20 {
-        function totalSupply() external view returns (uint256);
-        function supplyCap() external view returns (uint256);
-        function balanceOf(address account) external view returns (uint256);
-        event Transfer(address indexed from, address indexed to, uint256 amount);
-    }
-}
-
-pub use ITIP20::Transfer;
-
-impl Transfer {
-    /// Decodes a `Transfer` event. Returns `None` for any other log, including
-    /// one with `Transfer`'s signature that does not decode.
-    pub fn from_log(log: &LogData) -> Option<Self> {
-        // ABI decoding ignores trailing bytes, and `Transfer`'s data is one word.
-        (log.data.len() == 32)
-            .then(|| Self::decode_log_data(log).ok())
-            .flatten()
-    }
-}
+pub use tempo_contracts::precompiles::ITIP20::{self, Transfer};
 
 mod checks;
 
@@ -49,11 +28,47 @@ pub struct Ledger {
     pub balances: BTreeMap<Address, U256>,
 }
 
-/// A token and the accounts whose balances to read.
-#[derive(Debug, Clone, Copy)]
-pub struct At<'a> {
-    pub token: Address,
-    pub holders: &'a [Address],
+impl Ledger {
+    /// The sum of the observed balances, or `None` if it overflows.
+    /// `self` and `other` over only the accounts both read.
+    fn common(&self, other: &Self) -> (Self, Self) {
+        let mut this = self.clone();
+        let mut that = other.clone();
+        this.balances
+            .retain(|account, _| other.balances.contains_key(account));
+        that.balances
+            .retain(|account, _| self.balances.contains_key(account));
+        (this, that)
+    }
+
+    pub fn balance_sum(&self) -> Option<U256> {
+        self.balances
+            .values()
+            .try_fold(U256::ZERO, |sum, balance| sum.checked_add(*balance))
+    }
+
+    /// Fields of `self` that differ in `other`, as `field: self -> other`.
+    pub fn diff(&self, other: &Self) -> String {
+        let mut out: Vec<String> = self
+            .balances
+            .iter()
+            .filter(|(account, balance)| other.balances.get(*account) != Some(*balance))
+            .map(|(account, balance)| {
+                format!("{account}: {balance} -> {:?}", other.balances.get(account))
+            })
+            .collect();
+        if self.supply != other.supply {
+            out.push(format!("supply: {} -> {}", self.supply, other.supply));
+        }
+        if self.supply_cap != other.supply_cap {
+            out.push(format!(
+                "supplyCap: {} -> {}",
+                or_text(self.supply_cap, "?"),
+                or_text(other.supply_cap, "?")
+            ));
+        }
+        out.join(", ")
+    }
 }
 
 impl Observe for Ledger {
@@ -98,49 +113,6 @@ impl Observe for Ledger {
             supply_cap,
             balances,
         })
-    }
-}
-
-impl Ledger {
-    /// The sum of the observed balances, or `None` if it overflows.
-    /// `self` and `other` over only the accounts both read.
-    fn common(&self, other: &Self) -> (Self, Self) {
-        let mut this = self.clone();
-        let mut that = other.clone();
-        this.balances
-            .retain(|account, _| other.balances.contains_key(account));
-        that.balances
-            .retain(|account, _| self.balances.contains_key(account));
-        (this, that)
-    }
-
-    pub fn balance_sum(&self) -> Option<U256> {
-        self.balances
-            .values()
-            .try_fold(U256::ZERO, |sum, balance| sum.checked_add(*balance))
-    }
-
-    /// Fields of `self` that differ in `other`, as `field: self -> other`.
-    pub fn diff(&self, other: &Self) -> String {
-        let mut out: Vec<String> = self
-            .balances
-            .iter()
-            .filter(|(account, balance)| other.balances.get(*account) != Some(*balance))
-            .map(|(account, balance)| {
-                format!("{account}: {balance} -> {:?}", other.balances.get(account))
-            })
-            .collect();
-        if self.supply != other.supply {
-            out.push(format!("supply: {} -> {}", self.supply, other.supply));
-        }
-        if self.supply_cap != other.supply_cap {
-            out.push(format!(
-                "supplyCap: {} -> {}",
-                or_text(self.supply_cap, "?"),
-                or_text(other.supply_cap, "?")
-            ));
-        }
-        out.join(", ")
     }
 }
 
@@ -191,6 +163,13 @@ impl Replay<Transfer> for Ledger {
     }
 }
 
+/// A token and the accounts whose balances to read.
+#[derive(Debug, Clone, Copy)]
+pub struct At<'a> {
+    pub token: Address,
+    pub holders: &'a [Address],
+}
+
 /// Why `Transfer`s do not apply to a [`Ledger`]: a balance or the supply would leave `U256`.
 #[derive(Debug, Clone, Copy)]
 pub enum Unapplied {
@@ -239,4 +218,13 @@ impl fmt::Display for Unapplied {
             }
         }
     }
+}
+
+/// Decodes a `Transfer` event. Returns `None` for any other log, including
+/// one with `Transfer`'s signature that does not decode.
+pub fn transfer(log: &LogData) -> Option<Transfer> {
+    // ABI decoding ignores trailing bytes, and `Transfer`'s data is one word.
+    (log.data.len() == 32)
+        .then(|| Transfer::decode_log_data(log).ok())
+        .flatten()
 }

@@ -12,53 +12,20 @@
 use std::collections::BTreeMap;
 
 use alloy_primitives::{Address, B256, Bytes, U256};
-use alloy_sol_types::{SolCall, sol};
+use alloy_sol_types::SolCall;
 
-use crate::tip20::ITIP20;
+use tempo_contracts::precompiles::ITIP20;
 
 use crate::{Observe, ObserveError, Views, decode};
 
-sol! {
-    #[derive(Debug, PartialEq, Eq)]
-    #[allow(clippy::too_many_arguments)]
-    interface IStablecoinDex {
-        struct Order {
-            uint128 orderId;
-            address maker;
-            bytes32 bookKey;
-            bool isBid;
-            int16 tick;
-            uint128 amount;
-            uint128 remaining;
-            uint128 prev;
-            uint128 next;
-            bool isFlip;
-            int16 flipTick;
-        }
-        struct Orderbook {
-            address base;
-            address quote;
-            int16 bestBidTick;
-            int16 bestAskTick;
-        }
-        function balanceOf(address user, address token) external view returns (uint128);
-        function getOrder(uint128 orderId) external view returns (Order memory);
-        function books(bytes32 pairKey) external view returns (Orderbook memory);
-        event OrderPlaced(uint128 indexed orderId, address indexed maker, address indexed token, uint128 amount, bool isBid, int16 tick, bool isFlipOrder, int16 flipTick);
-        event OrderFilled(uint128 indexed orderId, address indexed maker, address indexed taker, uint128 amountFilled, bool partialFill);
-        event OrderFlipped(uint128 indexed orderId, address indexed maker, address indexed token, uint128 amount, bool isBid, int16 tick, int16 flipTick);
-        event OrderCancelled(uint128 indexed orderId);
-    }
-}
-
-pub use IStablecoinDex::{OrderCancelled, OrderFilled, OrderFlipped, OrderPlaced};
+pub use tempo_contracts::precompiles::{
+    IStablecoinDEX::{self, OrderCancelled, OrderFilled, OrderFlipped, OrderPlaced},
+    PRICE_SCALE,
+};
 
 mod checks;
 
 pub use checks::{CHECKS, DEX_CUSTODY};
-
-/// The DEX's price scale: a tick's price is `PRICE_SCALE + tick`.
-pub const PRICE_SCALE: u32 = 100_000;
 
 /// One live order and the escrow it holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,16 +33,6 @@ pub struct Escrow {
     pub order: u128,
     pub token: Address,
     pub amount: U256,
-}
-
-/// The DEX's books over the observed tokens, users and orders.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Books {
-    /// Its own balance of each token.
-    pub holdings: BTreeMap<Address, U256>,
-    /// Internal balances, keyed `(user, token)`.
-    pub internal: BTreeMap<(Address, Address), U256>,
-    pub escrow: Vec<Escrow>,
 }
 
 impl Escrow {
@@ -87,13 +44,14 @@ impl Escrow {
     }
 }
 
-/// The DEX and the tokens, users and orders to read of it.
-#[derive(Debug, Clone, Copy)]
-pub struct At<'a> {
-    pub dex: Address,
-    pub tokens: &'a [Address],
-    pub users: &'a [Address],
-    pub orders: &'a [u128],
+/// The DEX's books over the observed tokens, users and orders.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Books {
+    /// Its own balance of each token.
+    pub holdings: BTreeMap<Address, U256>,
+    /// Internal balances, keyed `(user, token)`.
+    pub internal: BTreeMap<(Address, Address), U256>,
+    pub escrow: Vec<Escrow>,
 }
 
 impl Observe for Books {
@@ -112,7 +70,7 @@ impl Observe for Books {
         // Live orders in one batch; a deleted order's read reverts and fails the
         // batch, so then one call each, skipping the reverted ones.
         let get = |id: u128| -> (Address, Bytes) {
-            let call = IStablecoinDex::getOrderCall { orderId: id };
+            let call = IStablecoinDEX::getOrderCall { orderId: id };
             (dex, call.abi_encode().into())
         };
         let batch: Vec<(Address, Bytes)> = orders.iter().map(|&id| get(id)).collect();
@@ -130,7 +88,7 @@ impl Observe for Books {
         };
         let mut live = Vec::new();
         for output in outputs.into_iter().flatten() {
-            let order = decode::<IStablecoinDex::getOrderCall, _>(dex, Some(Some(output)))?;
+            let order = decode::<IStablecoinDEX::getOrderCall, _>(dex, Some(Some(output)))?;
             if !order.maker.is_zero() {
                 live.push(order);
             }
@@ -141,7 +99,7 @@ impl Observe for Books {
         let calls: Vec<(Address, Bytes)> = keys
             .iter()
             .map(|&pair_key| {
-                let c = IStablecoinDex::booksCall { pairKey: pair_key };
+                let c = IStablecoinDEX::booksCall { pairKey: pair_key };
                 (dex, c.abi_encode().into())
             })
             .collect();
@@ -150,7 +108,7 @@ impl Observe for Books {
         for &key in &keys {
             book.insert(
                 key,
-                decode::<IStablecoinDex::booksCall, _>(dex, out.next())?,
+                decode::<IStablecoinDEX::booksCall, _>(dex, out.next())?,
             );
         }
 
@@ -165,7 +123,7 @@ impl Observe for Books {
         }
         for &user in users {
             for &token in &all {
-                let c = IStablecoinDex::balanceOfCall { user, token };
+                let c = IStablecoinDEX::balanceOfCall { user, token };
                 calls.push((dex, c.abi_encode().into()));
             }
         }
@@ -180,7 +138,7 @@ impl Observe for Books {
         let mut internal = BTreeMap::new();
         for &user in users {
             for &token in &all {
-                let v = decode::<IStablecoinDex::balanceOfCall, _>(dex, out.next())?;
+                let v = decode::<IStablecoinDEX::balanceOfCall, _>(dex, out.next())?;
                 internal.insert((user, token), U256::from(v));
             }
         }
@@ -209,4 +167,13 @@ impl Observe for Books {
             escrow,
         })
     }
+}
+
+/// The DEX and the tokens, users and orders to read of it.
+#[derive(Debug, Clone, Copy)]
+pub struct At<'a> {
+    pub dex: Address,
+    pub tokens: &'a [Address],
+    pub users: &'a [Address],
+    pub orders: &'a [u128],
 }

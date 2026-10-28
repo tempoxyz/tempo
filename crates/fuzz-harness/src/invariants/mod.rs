@@ -16,7 +16,9 @@ use revm::{
     database_interface::WrapDatabaseRef, state::AccountInfo,
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_contracts::precompiles::{STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS};
+use tempo_contracts::precompiles::{
+    CONFIGURABLE_ACCOUNT_ADDRESS, STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+};
 use tempo_evm::evm::TempoEvm;
 use tempo_fuzz_types::{InvariantFailure, InvariantScope};
 use tempo_invariants::{Tx, account, all, dex, fee_amm, tip20};
@@ -220,6 +222,16 @@ impl Display for ViewFailed {
     }
 }
 
+/// The addresses in the topics of `logs`, such as the holders a `Transfer` names.
+pub(crate) fn logged_addresses<'a>(
+    logs: impl IntoIterator<Item = &'a Log>,
+) -> impl Iterator<Item = Address> {
+    logs.into_iter()
+        .flat_map(|log| log.topics())
+        .filter(|topic| topic[..12] == [0; 12])
+        .map(|topic| Address::from_word(*topic))
+}
+
 /// Appends to `failures` each invariant `db` breaks, at `scope`, over the accounts `db` holds,
 /// and adds how many subjects each judged, was armed for and found broken to `report`; `holders`
 /// are read as balance holders too, but never checked as contracts. `env` is the block's
@@ -249,12 +261,7 @@ pub(crate) fn check(
     accounts.sort_unstable();
     // A step's own logs name holders its transitions touched only through a token's storage,
     // such as a transfer's recipient.
-    let logged = effects
-        .iter()
-        .flat_map(|effects| effects.logs)
-        .flat_map(|log| log.topics())
-        .filter(|topic| topic[..12] == [0; 12])
-        .map(|topic| Address::from_word(*topic));
+    let logged = logged_addresses(effects.iter().flat_map(|effects| effects.logs));
     let mut all_holders: Vec<Address> = accounts
         .iter()
         .chain(holders)
@@ -325,10 +332,10 @@ pub(crate) fn check(
         changed.sort_unstable();
         changed.dedup();
         let at = account::At {
-            precompile: account::CONFIGURABLE_ACCOUNT,
+            precompile: CONFIGURABLE_ACCOUNT_ADDRESS,
             accounts: &changed,
         };
-        let precompile = account::CONFIGURABLE_ACCOUNT;
+        let precompile = CONFIGURABLE_ACCOUNT_ADDRESS;
         reader.check::<account::Commitments>(&mut step, at, precompile, ACCOUNT_VIEW);
     }
 

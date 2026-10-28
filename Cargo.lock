@@ -14328,6 +14328,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
  "invariants-core",
+ "tempo-contracts",
 ]
 
 [[package]]

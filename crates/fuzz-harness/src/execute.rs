@@ -161,15 +161,12 @@ fn broken_start(
     };
     let (PreState::Genesis(listed) | PreState::Exact { state: listed, .. }) = pre_state;
     let logged = outcome.receipts.iter().flat_map(|receipt| &receipt.logs);
-    let topics = logged
-        .flat_map(|log| log.topics())
-        .filter(|topic| topic[..12] == [0; 12]);
     let holders: Vec<Address> = db
         .cache
         .accounts
         .keys()
         .copied()
-        .chain(topics.map(|topic| Address::from_word(*topic)))
+        .chain(invariants::logged_addresses(logged))
         .collect();
     let mut failures = Vec::new();
     invariants::check(

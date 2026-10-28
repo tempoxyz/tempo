@@ -2,30 +2,8 @@
 //! claimed under a recovery authority the receiver chose itself.
 
 use alloy_primitives::Address;
-use alloy_sol_types::sol;
 
-sol! {
-    // `ReceiptClaimed`'s generated constructor takes its 11 fields.
-    #[allow(clippy::too_many_arguments)]
-    #[derive(Debug, PartialEq, Eq)]
-    interface IReceivePolicyGuard {
-        event ReceiptClaimed(
-            address indexed token,
-            address indexed receiver,
-            uint64 indexed blockedNonce,
-            uint64 blockedAt,
-            uint8 receiptVersion,
-            address originator,
-            address recipient,
-            address recoveryAuthority,
-            address caller,
-            address to,
-            uint256 amount
-        );
-    }
-}
-
-pub use IReceivePolicyGuard::ReceiptClaimed;
+pub use tempo_contracts::precompiles::IReceivePolicyGuard::{self, ReceiptClaimed};
 
 mod checks;
 

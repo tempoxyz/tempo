@@ -4,7 +4,7 @@ use std::fmt;
 
 use invariants_core::{check, ensure};
 
-use super::{Ledger, Transfer};
+use super::{Ledger, Transfer, transfer};
 use crate::{Check, Checked, Replay, Step, StepChecked, Tx, Verdict, or_text};
 
 pub const SUPPLY_CAP: &str = "TEMPO-TIP20-SUPPLY-CAP";
@@ -49,7 +49,7 @@ pub const STEP_CHECKS: &[Check<Step<Ledger, Option<Tx>>>] = &[
         judge: |s, _| {
             let transfers: Vec<Transfer> = s
                 .logs_from(s.post.token)
-                .filter_map(|log| Transfer::from_log(&log.data))
+                .filter_map(|log| transfer(&log.data))
                 .collect();
             let (pre, post) = s.pre.common(&s.post);
             let detail = match pre.replay(&transfers) {

@@ -14,3 +14,4 @@ workspace = true
 alloy-primitives = { workspace = true, features = ["std"] }
 alloy-sol-types = { workspace = true, features = ["std"] }
 invariants-core.workspace = true
+tempo-contracts.workspace = true
