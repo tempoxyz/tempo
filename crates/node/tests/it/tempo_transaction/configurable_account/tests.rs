@@ -16,6 +16,7 @@ use alloy_eips::{BlockId, BlockNumberOrTag, Decodable2718, eip7702::Authorizatio
 use evm2::registry::HandlerError;
 use eyre::OptionExt;
 use futures::{FutureExt, StreamExt};
+use jsonrpsee::types::error::INVALID_PARAMS_CODE;
 use reth_e2e_test_utils::{node::Finality, wait::WAIT_TIMEOUT};
 use reth_ethereum::{
     pool::{
@@ -33,8 +34,8 @@ use tempo_evm::transaction_error::ConfigurableAccountError;
 use tempo_primitives::{
     account::encode_config_commitment,
     transaction::{
-        ConfigurableAccountQuorumError, KeyAuthorization, SignedKeyAuthorization,
-        TempoSignedAuthorization, TokenLimit, calc_gas_balance_spending,
+        KeyAuthorization, SignedKeyAuthorization, TempoSignedAuthorization, TokenLimit,
+        calc_gas_balance_spending,
     },
 };
 use tempo_transaction_pool::transaction::TempoPoolTransactionError;
@@ -690,16 +691,15 @@ async fn configurable_account_rpc_maximum_mixed_quorums_and_validation_cost_orde
         delegate.address,
     )
     .with_account(parent.address);
-    let grant_signature = parent.quorum(grant.signature_hash(), false)?;
     let mut tx = parent.transaction(&env, vec![noop()]);
     tx.key_authorization = Some(
         grant
             .clone()
-            .into_signed(parent.quorum(grant.signature_hash(), true)?),
+            .into_signed(parent.quorum(grant.signature_hash(), false)?),
     );
 
-    // The outer delegate quorum is verified first, then the grant's quorum. Only the last
-    // approval of the grant signs the wrong digest, so the funded rejection reaches check 16.
+    // The pool and the RPC check intrinsic gas, then the fee balance, of a transaction whose
+    // delegate and grant quorums both recovered.
     let mut low_gas = tx.clone();
     low_gas.gas_limit = 21_000;
     let signature = delegate.as_delegate(&low_gas, parent.address, false)?;
@@ -738,29 +738,26 @@ async fn configurable_account_rpc_maximum_mixed_quorums_and_validation_cost_orde
         balance: U256::ZERO,
     };
     assert_rpc_error(&error, unfunded.error_code(), &unfunded.to_string())?;
+
+    // Only the last approval of the grant signs the wrong digest. Recovery rejects the
+    // transaction before any state is read, so it never reaches the unfunded check above.
+    let mut invalid_grant = tx.clone();
+    let invalid_quorum = parent.quorum(grant.signature_hash(), true)?;
+    invalid_grant.key_authorization = Some(grant.into_signed(invalid_quorum));
+    let signature = delegate.as_delegate(&invalid_grant, parent.address, false)?;
+    let invalid: TempoTxEnvelope = invalid_grant.clone().into_signed(signature.clone()).into();
+    invalid
+        .recover_signer()
+        .expect_err("recovery verifies the grant quorum");
+    let error = rejection(&env, invalid_grant, signature).await;
+    assert_rpc_error(&error, INVALID_PARAMS_CODE, "invalid transaction signature")?;
     env.fund_account(parent.address).await?;
-    let expected = match parent.owners.last().unwrap() {
-        OwnerKey::Secp(_) => {
-            ConfigurableAccountError::Quorum(ConfigurableAccountQuorumError::SignerNotOwner)
-        }
-        OwnerKey::P256 { .. } => ConfigurableAccountError::Quorum(
-            ConfigurableAccountQuorumError::OwnerSignatureRecoveryFailed { approval_index: 7 },
-        ),
-    };
-    reject_with(
-        &env,
-        tx.clone(),
-        delegate.as_delegate(&tx, parent.address, false)?,
-        TempoInvalidTransaction::ConfigurableAccount(expected),
-    )
-    .await?;
     assert_eq!(commitment(&env, parent.address).await?, B256::ZERO);
     assert_eq!(commitment(&env, delegate.address).await?, B256::ZERO);
 
     // Two independent eight-owner witnesses include secp256k1, P256 and WebAuthn. Sponsorship
     // adds exactly one ordinary secp256k1 signature without giving the sponsor authority.
     let sponsor = env.funder_signer.clone();
-    tx.key_authorization = Some(grant.into_signed(grant_signature));
     sign_fee_payer(&mut tx, parent.address, &sponsor)?;
     let before = ITIP20::new(DEFAULT_FEE_TOKEN, env.provider())
         .balanceOf(parent.address)
