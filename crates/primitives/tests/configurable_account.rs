@@ -1226,6 +1226,20 @@ fn initial_signature() -> ConfigurableAccountSignature {
     .unwrap()
 }
 
+/// A version 0 single-owner delegate witness for `parent`, approved over the zero transaction hash.
+fn signed_delegate(parent: Address) -> ConfigurableAccountSignature {
+    let owner = PrivateKeySigner::from_bytes(&B256::repeat_byte(2)).unwrap();
+    let config = configurable_account_config(0, 1, &[(owner.address(), 1)]);
+    let account = config.derive_account().unwrap();
+    let digest = configurable_account_digest(
+        KeychainSignature::signing_hash(B256::ZERO, parent),
+        account,
+        0,
+    );
+    let approval = PrimitiveSignature::Secp256k1(owner.sign_hash_sync(&digest).unwrap());
+    ConfigurableAccountSignature::try_new(account, config, vec![approval]).unwrap()
+}
+
 #[test]
 fn tempo_signature_size_counts_each_allocation_once() {
     for count in [1, MAX_CONFIGURABLE_ACCOUNT_SIGNATURES] {
@@ -1267,8 +1281,8 @@ fn tempo_signature_size_counts_each_allocation_once() {
 
 #[test]
 fn bounded_access_key_envelope_roundtrips_and_rejects_v1() {
-    let configurable_account = initial_signature();
     let parent = indexed_owner(3);
+    let configurable_account = signed_delegate(parent);
     let envelope =
         TempoSignature::Keychain(KeychainSignature::new(parent, configurable_account.clone()));
     let encoded = envelope.to_bytes();

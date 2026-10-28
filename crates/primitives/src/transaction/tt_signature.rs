@@ -523,9 +523,9 @@ impl KeychainSignature {
 
     /// Get the access key ID for Keychain signatures.
     ///
-    /// Verifies a primitive approval or returns the named configurable account delegate, caching
-    /// its ID. A configurable account ID requires account binding, state, and owner-quorum checks
-    /// by the caller.
+    /// Verifies a primitive approval or a configurable account delegate's owner quorum, caching
+    /// its ID. A configurable account ID still requires account binding and state checks by the
+    /// caller.
     ///
     /// This follows the pattern used in alloy for lazy hash computation.
     pub fn key_id(
@@ -686,13 +686,13 @@ impl AccountSignature {
         }
     }
 
-    /// Recovers a primitive signer or returns the shape-validated configurable account.
+    /// Recovers a primitive signer or verifies a configurable account's owner quorum.
     ///
-    /// A returned configurable account is untrusted until state and owner quorum are checked.
+    /// A returned configurable account is untrusted until its commitment is checked against state.
     fn recover_account(&self, digest: &B256) -> Result<Address, RecoveryError> {
         match self {
             Self::Primitive(signature) => signature.recover_signer(digest),
-            Self::ConfigurableAccount(signature) => Ok(signature.account()),
+            Self::ConfigurableAccount(signature) => signature.recover_account(*digest),
         }
     }
 
@@ -969,9 +969,8 @@ impl TempoSignature {
     /// - WebAuthn: Parses WebAuthn data, verifies P256 signature, derives address
     /// - Keychain: Validates inner signature and returns user_address
     ///
-    /// For primitive Keychain signatures, this verifies the inner signature.
-    /// A configurable account delegate only supplies its claimed ID here and requires stateful
-    /// validation.
+    /// For Keychain signatures, this verifies the inner primitive signature or configurable account
+    /// delegate quorum.
     /// The access key address is cached in the KeychainSignature for later use.
     /// Note: This pattern has a big footgun, that someone using recover_signer, cannot assume
     /// that the signature is valid for the keychain. They also need to check the access key is authorized
