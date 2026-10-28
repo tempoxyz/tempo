@@ -566,6 +566,22 @@ fn cache_invalidation_address(address: Address, topic0: Option<&B256>) -> Option
     .then_some(TIP403_REGISTRY_ADDRESS)
 }
 
+/// Returns the account whose cached TIP-1108 commitment a configurable-account precompile log
+/// changes: owner updates and migrations. Initial registration emits no log, so the cache never
+/// inherits a zero commitment across heights instead.
+fn config_commitment_invalidation_account(log: &alloy_rpc_types_eth::Log) -> Option<Address> {
+    use tempo_contracts::precompiles::{CONFIGURABLE_ACCOUNT_ADDRESS, IConfigurableAccount};
+
+    if log.address() != CONFIGURABLE_ACCOUNT_ADDRESS {
+        return None;
+    }
+    let topic0 = log.topic0()?;
+    (*topic0 == IConfigurableAccount::ConfigurableAccountConfigUpdated::SIGNATURE_HASH
+        || *topic0 == IConfigurableAccount::AccountUpgraded::SIGNATURE_HASH)
+        .then(|| log.topics().get(1).map(|account| Address::from_word(*account)))
+        .flatten()
+}
+
 fn portal_event_cache_invalidation_address(topic0: Option<&B256>) -> Option<Address> {
     use tempo_contracts::precompiles::TIP403_REGISTRY_ADDRESS;
 
@@ -1217,6 +1233,8 @@ where
                         })?;
                 } else if let Some(address) = cache_invalidation_address(address, log.topic0()) {
                     invalidated.extend([address, log.address()]);
+                } else if let Some(account) = config_commitment_invalidation_account(log) {
+                    invalidated.insert(account);
                 }
             }
         }
