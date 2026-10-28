@@ -50,11 +50,11 @@ use crate::{
     prover_config::active_l1_hardfork,
     resolve_portal_zone_anchor,
     settlement::{
-        BatchAnchorConfig, BatchData, BatchSubmitError, BatchSubmitter, FinalizedBatchLog,
-        PreparedBatch, WithdrawalPage, ZoneBlockSnapshot, fetch_finalized_batch,
-        fetch_finalized_batch_boundaries, read_zone_block_snapshot,
+        AtomicWithdrawalSlot, BatchAnchorConfig, BatchData, BatchSubmission, BatchSubmitError,
+        BatchSubmitter, FinalizedBatchLog, PreparedBatch, WithdrawalPage, ZoneBlockSnapshot,
+        fetch_finalized_batch, fetch_finalized_batch_boundaries, read_zone_block_snapshot,
     },
-    withdrawals::SharedWithdrawalStore,
+    withdrawals::{SharedWithdrawalStore, WithdrawalBatchLimits},
 };
 
 /// Maximum number of times to retry a failed batch submission before restarting the pipeline.
@@ -86,6 +86,9 @@ pub struct ZoneMonitorConfig {
     pub batch_anchor_config: BatchAnchorConfig,
     /// Settlement preparation for a P2P leader generation.
     pub settlements: Option<SettlementManager>,
+    /// Withdrawal planner limits, shared with the standalone processor. Bounds the slots the
+    /// batch submitter may process atomically with settlement.
+    pub withdrawal_batch_limits: WithdrawalBatchLimits,
 }
 
 /// Withdrawal state shared between the zone monitor and withdrawal processor.
@@ -766,6 +769,15 @@ impl<P: ZoneSequencerProvider> ZoneMonitor<P> {
                 );
             }
 
+            // Only the first attempt may drain the slot atomically. A combined transaction
+            // declares more gas than settlement alone, so after any failure retries submit the
+            // batch by itself and leave the slot to the standalone processor. A retry cannot
+            // replace a combined transaction that is still pending, since it reuses that nonce
+            // without a fee bump.
+            let atomic_slot = (attempt == 1).then_some(AtomicWithdrawalSlot {
+                withdrawals: &withdrawals,
+                max_batch_gas: self.config.withdrawal_batch_limits.max_batch_gas,
+            });
             let submit_started = std::time::Instant::now();
             match self
                 .batch_submitter
@@ -774,10 +786,14 @@ impl<P: ZoneSequencerProvider> ZoneMonitor<P> {
                     proof.as_ref(),
                     certificate.as_ref(),
                     verifier_mode,
+                    atomic_slot,
                 )
                 .await
             {
-                Ok(event) => {
+                Ok(BatchSubmission {
+                    event,
+                    withdrawals_processed,
+                }) => {
                     let portal_index = if event.withdrawalQueueIndex == NO_QUEUE_INDEX {
                         None
                     } else {
@@ -818,7 +834,21 @@ impl<P: ZoneSequencerProvider> ZoneMonitor<P> {
                         .latest_zone_block_submitted_to_l1
                         .set(last_zone_block as f64);
 
-                    if let Some(portal_index) = portal_index {
+                    // Store withdrawals under the logical portal queue index assigned on-chain.
+                    // A slot processed atomically with the submission is already consumed, so
+                    // there is nothing left for the standalone processor: the combined call is
+                    // only sent against an empty portal queue, so it can only have drained the
+                    // slot this submission enqueued.
+                    if withdrawals_processed {
+                        self.metrics.atomic_withdrawal_slots_total.increment(1);
+                        self.metrics
+                            .atomic_withdrawals_processed_total
+                            .increment(withdrawals.len() as u64);
+                        info!(
+                            count = withdrawals.len(),
+                            "Withdrawals processed in the batch submission transaction"
+                        );
+                    } else if let Some(portal_index) = portal_index {
                         if !withdrawals.is_empty() {
                             let count = withdrawals.len();
                             let mut store = self.withdrawal_store.lock();
@@ -1172,6 +1202,7 @@ mod tests {
             portal_address,
             batch_anchor_config: BatchAnchorConfig::default(),
             settlements: None,
+            withdrawal_batch_limits: WithdrawalBatchLimits::default(),
         };
         let l1_provider = mock_provider(l1);
         let chain_spec = config.chain_spec.clone();
@@ -1475,6 +1506,7 @@ mod tests {
             portal_address,
             batch_anchor_config: BatchAnchorConfig::default(),
             settlements: None,
+            withdrawal_batch_limits: WithdrawalBatchLimits::default(),
         };
 
         l1.push_failure_msg("boom");

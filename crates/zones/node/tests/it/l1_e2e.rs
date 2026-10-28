@@ -2089,6 +2089,29 @@ async fn test_deposit_and_withdrawal() -> eyre::Result<()> {
     )
     .await?;
 
+    // An eligible slot is processed by the same L1 transaction that submits its batch.
+    let portal = ZonePortal::new(portal_address, l1.provider());
+    let processed_tx = portal
+        .WithdrawalProcessed_filter()
+        .from_block(0)
+        .query()
+        .await?
+        .into_iter()
+        .find(|(event, _)| event.to == recipient && event.amount == withdrawal_amount)
+        .and_then(|(_, log)| log.transaction_hash)
+        .ok_or_else(|| eyre::eyre!("missing WithdrawalProcessed transaction"))?;
+    let batch_in_same_transaction = portal
+        .BatchSubmitted_1_filter()
+        .from_block(0)
+        .query()
+        .await?
+        .iter()
+        .any(|(_, log)| log.transaction_hash == Some(processed_tx));
+    assert!(
+        batch_in_same_transaction,
+        "withdrawal was not processed in the transaction that submitted its batch"
+    );
+
     Ok(())
 }
 

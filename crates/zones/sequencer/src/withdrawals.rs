@@ -16,8 +16,10 @@
 //!    [`WithdrawalStore`].
 //! 3. At batch finalization, the sequencer calls `finalizeWithdrawalBatch` on L2, which builds a
 //!    hash chain. The proof then enqueues this hash chain into the portal's withdrawal queue on L1.
-//! 4. The [`WithdrawalProcessor`] polls the portal queue on L1 and processes each withdrawal by
-//!    providing the original data and the remaining queue hash.
+//! 4. Batch settlement processes an eligible slot in its own L1 transaction (see
+//!    `BatchSubmitter::submit_batch`).
+//! 5. Otherwise, the [`WithdrawalProcessor`] polls the portal queue on L1 and processes each
+//!    withdrawal by providing the original data and the remaining queue hash.
 //!
 //! ## Batch-to-slot mapping
 //!
@@ -868,7 +870,7 @@ impl WithdrawalProcessor {
 /// Return the number of withdrawals that can each append one deposit without exceeding the
 /// portal's unprocessed-deposit cap. This mirrors the `processWithdrawals` preflight using a live
 /// portal snapshot; the portal revalidates the bound when the transaction executes.
-fn withdrawal_deposit_headroom(
+pub(crate) fn withdrawal_deposit_headroom(
     deposit_count: u64,
     last_processed_deposit_number: u64,
 ) -> eyre::Result<usize> {
@@ -938,7 +940,7 @@ const fn process_withdrawal_item_gas(callback_gas_limit: u64, fallback_nonce: u6
 
 /// A contiguous, gas-bounded transaction within one withdrawal queue slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct WithdrawalBatch {
+pub(crate) struct WithdrawalBatch {
     start: usize,
     end: usize,
     gas_limit: u64,
@@ -948,12 +950,17 @@ impl WithdrawalBatch {
     fn len(self) -> usize {
         self.end - self.start
     }
+
+    /// Planned gas limit for this transaction.
+    pub(crate) const fn gas_limit(self) -> u64 {
+        self.gas_limit
+    }
 }
 
 /// Split FIFO withdrawals by the configured per-transaction gas limit.
 ///
 /// A withdrawal that exceeds the limit is kept as a singleton so it cannot block the queue.
-fn build_withdrawal_batches(
+pub(crate) fn build_withdrawal_batches(
     withdrawals: &[abi::Withdrawal],
     max_batch_gas: u64,
 ) -> Vec<WithdrawalBatch> {
