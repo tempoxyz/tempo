@@ -22,14 +22,14 @@ pub use packing::FieldLocation;
 pub use types::mapping as slots;
 
 use alloy::primitives::{Address, B256, Bytes, LogData, Signature, U256};
-use evm2::evm::{AccountInfo, StateCheckpoint};
+use evm2::{
+    evm::{AccountInfo, StateCheckpoint},
+    version::{GasId, GasParams},
+};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_primitives::{TempoBlockEnv, account::decode_config_commitment, gas::keccak_gas};
 
 use crate::error::{Result, TempoPrecompileError};
-
-/// TIP-1108 charge for the first config-commitment write to an account.
-pub const CONFIG_COMMITMENT_REGISTRATION_GAS: u64 = 20_000;
 
 /// TIP-1108 charge for replacing a nonzero config commitment.
 const CONFIG_COMMITMENT_UPDATE_GAS: u64 = 5_000;
@@ -53,15 +53,24 @@ impl ConfigCommitmentWriteGas {
         }
     }
 
-    /// Gas charged once the previous commitment is known, on top of [`Self::static_cost`].
-    fn dynamic_cost(self, previous: B256) -> Result<u64> {
+    /// Regular gas charged once the previous commitment is known, on top of
+    /// [`Self::static_cost`]. A first write is priced like account creation, since the commitment
+    /// is permanent account state; its state gas is [`Self::state_cost`].
+    fn dynamic_cost(self, previous: B256, gas: &GasParams) -> Result<u64> {
         match self {
             Self::Intrinsic if previous.is_zero() => Ok(0),
             Self::Intrinsic => Err(TempoPrecompileError::InvalidConfigCommitmentWrite),
-            Self::Precompile if previous.is_zero() => {
-                Ok(CONFIG_COMMITMENT_REGISTRATION_GAS - CONFIG_COMMITMENT_UPDATE_GAS)
-            }
+            Self::Precompile if previous.is_zero() => Ok(u64::from(gas.get(GasId::NewAccountCost))
+                .saturating_sub(CONFIG_COMMITMENT_UPDATE_GAS)),
             Self::Precompile => Ok(0),
+        }
+    }
+
+    /// State gas for the write: account-creation state gas for a first write charged here.
+    fn state_cost(self, previous: B256, gas: &GasParams) -> u64 {
+        match self {
+            Self::Precompile if previous.is_zero() => gas.new_account_state_gas(),
+            Self::Intrinsic | Self::Precompile => 0,
         }
     }
 }
@@ -237,6 +246,8 @@ pub trait PrecompileStorageProvider {
     fn config_commitment(&mut self, address: Address) -> Result<B256>;
 
     /// Writes an authorized nonzero commitment through the account journal.
+    /// The first write also installs the shared account code marker without a code-deposit charge;
+    /// rotations preserve it. Both changes share the same rollback boundary.
     /// Callers must validate registration, rotation, or migration authority first.
     /// Account-access gas belongs to that authorization read; this method charges
     /// only what `gas` names, or nothing when registration was charged intrinsically.
