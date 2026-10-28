@@ -132,9 +132,13 @@ fn node_args(args: &Args) -> Vec<String> {
         "node".into(),
         "--dev".into(),
         "--dev.block-time".into(),
-        format_duration_as_secs_or_ms(args.block_time),
+        // The node requires a unit; whole seconds would otherwise format as a bare number.
+        format!("{}ms", args.block_time.as_millis()),
         "--datadir".into(),
         "/data".into(),
+        // Keep file logs in the data volume rather than HOME, which non-root users lack.
+        "--log.file.directory".into(),
+        "/data/logs".into(),
         "--tempo.bootnodes-endpoint".into(),
         "none".into(),
         "--disable-discovery".into(),
@@ -261,7 +265,14 @@ fn fee_pool_needs_repair(reserve: u128) -> bool {
 
 async fn wait_for_rpc(provider: &impl Provider<TempoNetwork>) -> Result<()> {
     for _ in 0..120 {
-        if matches!(provider.get_chain_id().await, Ok(1337)) {
+        // Faucet nonces expire relative to the latest block, so wait for a block past the
+        // zero-timestamp genesis.
+        if matches!(provider.get_chain_id().await, Ok(1337))
+            && provider
+                .get_block_number()
+                .await
+                .is_ok_and(|number| number > 0)
+        {
             return Ok(());
         }
         sleep(Duration::from_millis(500)).await;
@@ -394,6 +405,11 @@ mod tests {
 
         assert!(!args.iter().any(|value| value.starts_with("--faucet")));
         assert!(args.windows(2).any(|v| v == ["--datadir", "/data"]));
+        assert!(args.windows(2).any(|v| v == ["--dev.block-time", "1000ms"]));
+        assert!(
+            args.windows(2)
+                .any(|v| v == ["--log.file.directory", "/data/logs"])
+        );
     }
 
     #[test]
