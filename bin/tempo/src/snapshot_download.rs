@@ -364,7 +364,8 @@ fn extract_zstd_tar_archive(
             .collect();
         match entry_type {
             tar::EntryType::Directory => {}
-            tar::EntryType::Regular | tar::EntryType::Continuous => {
+            // `tar::Builder` emits `GNUSparse` for files with holes by default.
+            tar::EntryType::Regular | tar::EntryType::Continuous | tar::EntryType::GNUSparse => {
                 ensure!(
                     relative.components().next().is_some(),
                     "consensus archive file entry has an empty path",
@@ -1117,5 +1118,38 @@ mod tests {
             &files,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn extract_zstd_tar_archive_accepts_sparse_files() {
+        let source = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        let partition = source.path().join("partition");
+        fs::create_dir_all(&partition).unwrap();
+        let file = fs::File::create(partition.join("00")).unwrap();
+        file.set_len(1024 * 1024).unwrap();
+        std::os::unix::fs::FileExt::write_at(&file, b"abc", 512 * 1024).unwrap();
+        drop(file);
+        let expected = fs::read(partition.join("00")).unwrap();
+
+        let mut builder = tar::Builder::new(zstd::Encoder::new(Vec::new(), 0).unwrap());
+        builder.append_dir_all("", source.path()).unwrap();
+        let archive_file = finish_test_archive(builder);
+        let decoder = zstd::Decoder::new(fs::File::open(archive_file.path()).unwrap()).unwrap();
+        assert!(
+            tar::Archive::new(decoder)
+                .entries()
+                .unwrap()
+                .any(|e| e.unwrap().header().entry_type() == tar::EntryType::GNUSparse),
+            "filesystem did not produce a sparse entry",
+        );
+
+        let files = extract_zstd_tar_archive(archive_file.path(), target.path(), false).unwrap();
+
+        assert_eq!(files, BTreeSet::from([PathBuf::from("partition/00")]));
+        assert_eq!(
+            fs::read(target.path().join("partition/00")).unwrap(),
+            expected
+        );
     }
 }
