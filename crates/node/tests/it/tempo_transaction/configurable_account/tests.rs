@@ -1,9 +1,13 @@
 use super::*;
 use crate::tempo_transaction::helpers::{create_expiring_nonce_tx, sign_fee_payer};
-use alloy::consensus::{BlockHeader, SignableTransaction, TxEip1559, TxLegacy};
+use alloy::{
+    consensus::{BlockHeader, SignableTransaction, TxEip1559, TxLegacy},
+    sol_types::{SolError, SolEvent},
+};
 use alloy_eips::{BlockNumberOrTag, eip7702::Authorization};
 use eyre::OptionExt;
 use futures::{FutureExt, StreamExt};
+use jsonrpsee::types::error::INVALID_PARAMS_CODE;
 use reth_e2e_test_utils::{node::Finality, wait::WAIT_TIMEOUT};
 use reth_ethereum::pool::{TransactionEvent, TransactionPool};
 use reth_node_builder::BuiltPayload;
@@ -484,6 +488,156 @@ async fn retired_root_reorg_evicts_pending_transactions() -> eyre::Result<()> {
         while let Some(Some(event)) = events.next().now_or_never() {
             assert!(!event.is_final(), "{what} left the pool: {event:?}");
         }
+    }
+    Ok(())
+}
+
+/// Reads the revert data of a failed `eth_call` and requires it to be exactly `expected`.
+fn assert_call_reverts(result: Result<Bytes, TransportError>, expected: Vec<u8>) {
+    let error = result.expect_err("call must revert");
+    let data = error
+        .as_error_resp()
+        .and_then(|payload| payload.as_revert_data());
+    assert_eq!(data, Some(Bytes::from(expected)), "{error:?}");
+}
+
+/// An EOA migrates through the RPC, for a root of each signature type: simulations of the upgrade
+/// write nothing and a contract cannot be upgraded, the root signs the upgrade, the retired root
+/// can no longer send but the witness can, calls and estimates from the retired address stay
+/// allowed, and the witness rotates the configuration (TIP-1112).
+#[tokio::test(flavor = "multi_thread")]
+async fn eoa_migration_rpc_lifecycle() -> eyre::Result<()> {
+    let mut env = environment().await?;
+    for (index, kind) in [
+        SignatureType::Secp256k1,
+        SignatureType::P256,
+        SignatureType::WebAuthn,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let seed = 0x30 + 0x10 * index as u8;
+        let root = OwnerKey::new(seed, kind);
+        let mut account = ConfigurableAccount::migrated(root.address(), seed + 1, 3);
+        env.fund_account(account.address).await?;
+        assert_eq!(commitment(&env, account.address).await?, B256::ZERO);
+        let expected = account.config.commitment().unwrap();
+        let call = account.upgrade_call();
+        let request = call_request(account.address, call.input.clone());
+
+        // A simulation returns the commitment and the gas, and writes nothing.
+        let simulated = env.provider().call(request.clone()).latest().await?;
+        assert_eq!(
+            simulated,
+            Bytes::from(IConfigurableAccount::upgradeAccountCall::abi_encode_returns(&expected))
+        );
+        assert!(
+            env.provider()
+                .estimate_gas(request.clone())
+                .latest()
+                .await?
+                > 0
+        );
+        assert_eq!(commitment(&env, account.address).await?, B256::ZERO);
+
+        // A contract cannot be upgraded, even by simulation.
+        let from_contract = TransactionRequest {
+            from: Some(OBSERVER),
+            ..request.clone()
+        };
+        assert_call_reverts(
+            env.provider().call(from_contract).latest().await,
+            IConfigurableAccount::AccountHasCode {}.abi_encode(),
+        );
+
+        // The root signs the sole call.
+        let tx = account.transaction(&env, vec![call]);
+        let signature = TempoSignature::Primitive(root.sign(tx.signature_hash())?);
+        let receipt = account.submit(&mut env, tx, signature, true).await?;
+        assert_eq!(commitment(&env, account.address).await?, expected);
+        let upgraded = receipt
+            .logs()
+            .iter()
+            .filter(|log| log.address() == CONFIGURABLE_ACCOUNT_ADDRESS)
+            .map(|log| IConfigurableAccount::AccountUpgraded::decode_log(&log.inner))
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(upgraded.len(), 1);
+        let event = &upgraded[0].data;
+        assert_eq!(
+            *event,
+            IConfigurableAccount::AccountUpgraded {
+                account: account.address,
+                commitment: expected,
+                salt: account.config.salt,
+                threshold: account.config.threshold,
+                owners: abi_owners(&account.config),
+            }
+        );
+
+        // The root key cannot send any more, whatever the transaction does.
+        let tx = account.transaction(&env, vec![noop()]);
+        let signature = TempoSignature::Primitive(root.sign(tx.signature_hash())?);
+        reject_with(
+            &env,
+            tx,
+            signature,
+            TempoInvalidTransaction::RootKeyRetired {
+                account: account.address,
+                role: RootKeyRole::Sender,
+            },
+        )
+        .await?;
+
+        // A quorum whose last approval signs the wrong digest fails sender recovery, so the pool
+        // rejects it and the transaction uses no nonce.
+        let tx = account.transaction(&env, vec![noop()]);
+        let signature =
+            TempoSignature::ConfigurableAccount(account.quorum(tx.signature_hash(), true)?);
+        let error = rejection(&env, tx, signature).await;
+        assert_rpc_error(&error, INVALID_PARAMS_CODE, "invalid transaction signature")?;
+        assert_eq!(commitment(&env, account.address).await?, expected);
+
+        // The witness still can, and the rejected transaction used no nonce.
+        let tx = account.transaction(&env, vec![noop()]);
+        let signature = account.sign(&tx)?;
+        account.submit(&mut env, tx, signature, true).await?;
+
+        // The account is configured now, so a second upgrade reverts when simulated.
+        assert_call_reverts(
+            env.provider().call(request).latest().await,
+            IConfigurableAccount::AccountAlreadyConfigurable {}.abi_encode(),
+        );
+
+        // Calls and gas estimates from the retired address are simulations, which stay allowed.
+        let request = call_request(
+            account.address,
+            IConfigurableAccount::getConfigCommitmentCall {
+                account: account.address,
+            }
+            .abi_encode()
+            .into(),
+        );
+        let output = env.provider().call(request.clone()).latest().await?;
+        assert_eq!(
+            output,
+            Bytes::from(
+                IConfigurableAccount::getConfigCommitmentCall::abi_encode_returns(
+                    &account.config.commitment().unwrap()
+                )
+            )
+        );
+        assert!(env.provider().estimate_gas(request).latest().await? > 0);
+
+        // The version-one witness signs the next transaction, which rotates to version two.
+        let replacement = ConfigurableAccount::new(seed + 8, 2);
+        let (next, rotate) = account.rotate_to(&replacement);
+        let tx = account.transaction(&env, vec![rotate]);
+        let signature = account.sign(&tx)?;
+        account.submit(&mut env, tx, signature, true).await?;
+        assert_eq!(
+            commitment(&env, account.address).await?,
+            next.commitment().unwrap()
+        );
     }
     Ok(())
 }

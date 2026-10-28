@@ -14,9 +14,23 @@ use evm2::{
 };
 use p256::ecdsa::{SigningKey, signature::hazmat::PrehashSigner};
 use reth_chainspec::EthChainSpec;
-use reth_evm::{BlockExecutor, ConfigureEvm};
-use reth_execution_types::BundleSource;
-use reth_primitives_traits::Block as _;
+use reth_ethereum_primitives::Block as EthereumBlock;
+use reth_evm::{BlockExecutor, ConfigureEvm, Evm as _};
+use reth_execution_types::{BundleSource, ExecutionOutcome};
+use reth_primitives_traits::{Block as _, SignedTransaction};
+use reth_provider::{
+    BlockExecutionWriter, BlockWriter, OriginalValuesKnown, StateWriter, TrieWriter,
+    providers::BlockchainProvider, test_utils::create_test_provider_factory,
+};
+use reth_stages::{MerkleCheckpoint, StorageRootMerkleCheckpoint, stages::MerkleStage};
+use reth_storage_api::{
+    AccountReader, ChangeSetReader, DBProvider, HistoryWriter, StateProviderFactory,
+    StateRootProvider, StateWriteConfig, StorageSettingsCache,
+};
+use reth_trie::{HashedPostState, KeccakKeyHasher, StateRoot, StateRootProgress, StoredSubNode};
+use reth_trie_db::{
+    DatabaseHashedCursorFactory, DatabaseStateRoot, DatabaseTrieCursorFactory, with_adapter,
+};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{num::NonZeroU64, sync::Arc};
@@ -28,7 +42,7 @@ use tempo_contracts::precompiles::{
 };
 use tempo_evm::{
     TempoEvmConfig, TempoInvalidTransaction,
-    transaction_error::{FeePaymentError, RootKeyRole},
+    transaction_error::{ConfigurableAccountError, FeePaymentError, RootKeyRole},
 };
 use tempo_precompiles::{
     configurable_account::{CONFIGURABLE_ACCOUNT_CODE, CONFIGURABLE_ACCOUNT_CODE_HASH},
@@ -42,9 +56,9 @@ use tempo_primitives::{
     Block as TempoBlock, SignatureType, TempoHeader, TempoTxEnvelope,
     account::encode_config_commitment,
     transaction::{
-        CONFIGURABLE_ACCOUNT_CONFIG_DOMAIN, KeyAuthorization, KeychainSignature,
-        SignedKeyAuthorization, TEMPO_EXPIRING_NONCE_KEY, TempoSignedAuthorization, TokenLimit,
-        calc_gas_balance_spending, derive_p256_address,
+        CONFIGURABLE_ACCOUNT_CONFIG_DOMAIN, ConfigurableAccountStateError, KeyAuthorization,
+        KeychainSignature, SignedKeyAuthorization, TEMPO_EXPIRING_NONCE_KEY,
+        TempoSignedAuthorization, TokenLimit, calc_gas_balance_spending, derive_p256_address,
         tt_signature::{P256SignatureWithPreHash, WebAuthnSignature, normalize_p256_s},
     },
 };
@@ -671,7 +685,7 @@ fn eoa_migration_commits_configuration() {
     let others = [signer(2).address(), signer(3).address()];
     for kind in [RootTx::Legacy, RootTx::Eip2930, RootTx::Eip1559, RootTx::Aa] {
         for root_listed in [false, true] {
-            let mut f = Fixture::new();
+            let mut f = Fixture::with_parent(false);
             let mut members = others.to_vec();
             if root_listed {
                 members.push(f.owner.address());
@@ -696,7 +710,7 @@ fn eoa_migration_commits_configuration() {
     }
 
     // A nonce-zero account with no balance migrates under a fee payer, which pays.
-    let mut f = Fixture::new();
+    let mut f = Fixture::with_parent(false);
     f.evm.overlay_db_mut().insert_account_info(
         &f.account,
         AccountInfo::new(U256::ZERO, 0, KECCAK256_EMPTY, Some(Bytecode::default())),
@@ -736,7 +750,7 @@ fn eoa_migration_error_order() {
     let has_code = IConfigurableAccount::AccountHasCode {}.abi_encode();
     let invalid_config = IConfigurableAccount::InvalidConfig {}.abi_encode();
     let member = signer(2).address();
-    let base = Fixture::new().upgraded(1, owner_set(vec![member]));
+    let base = Fixture::with_parent(false).upgraded(1, owner_set(vec![member]));
     let upgrade = Fixture::upgrade(&base);
     let zero_threshold = ConfigurableAccountConfig {
         threshold: 0,
@@ -746,19 +760,19 @@ fn eoa_migration_error_order() {
 
     // 1: the call must be the transaction's only call, however the account signs.
     expect_revert(
-        Fixture::new(),
+        Fixture::with_parent(false),
         "upgrade then call",
         |f| f.primitive(3, vec![upgrade.clone(), f.getter()]).into(),
         &only_call,
     );
     expect_revert(
-        Fixture::new(),
+        Fixture::with_parent(false),
         "call then upgrade",
         |f| f.primitive(3, vec![f.getter(), upgrade.clone()]).into(),
         &only_call,
     );
     expect_revert(
-        Fixture::new(),
+        Fixture::with_parent(false),
         "nested call",
         |f| {
             let mut call = forwarder(f);
@@ -768,7 +782,7 @@ fn eoa_migration_error_order() {
         &only_call,
     );
     expect_revert(
-        Fixture::new(),
+        Fixture::with_parent(false),
         "type-4 authorization list",
         |f| {
             let authorizations = vec![authorization(&signer(5), Address::ZERO, 0)];
@@ -783,7 +797,7 @@ fn eoa_migration_error_order() {
         &only_call,
     );
     expect_revert(
-        Fixture::new(),
+        Fixture::with_parent(false),
         "AA authorization list",
         |f| {
             let authorization = Authorization {
@@ -806,7 +820,7 @@ fn eoa_migration_error_order() {
         &only_call,
     );
     expect_revert(
-        Fixture::new(),
+        Fixture::with_parent(false),
         "key authorization",
         |f| {
             let grant =
@@ -822,7 +836,7 @@ fn eoa_migration_error_order() {
     );
     // 1 before 2: a batch is rejected before the signer is.
     expect_revert(
-        Fixture::new(),
+        Fixture::with_parent(false),
         "access key batch",
         |f| {
             let key = signer(6);
@@ -835,7 +849,7 @@ fn eoa_migration_error_order() {
     // 2: only a primitive root signature may migrate.
     for admin in [false, true] {
         expect_revert(
-            Fixture::new(),
+            Fixture::with_parent(false),
             if admin { "admin key" } else { "access key" },
             |f| {
                 let key = signer(6);
@@ -847,7 +861,7 @@ fn eoa_migration_error_order() {
     }
     // 2 before 3: a delegated account with an access key.
     expect_revert(
-        Fixture::new(),
+        Fixture::with_parent(false),
         "delegated access key",
         |f| {
             set_delegation(f, 3, delegate);
@@ -860,7 +874,7 @@ fn eoa_migration_error_order() {
 
     // 3: an account with code, here a 7702 delegation.
     expect_revert(
-        Fixture::new(),
+        Fixture::with_parent(false),
         "delegated account",
         |f| {
             set_delegation(f, 3, delegate);
@@ -870,7 +884,7 @@ fn eoa_migration_error_order() {
     );
     // 3 before 5: the invalid configuration is not reached.
     expect_revert(
-        Fixture::new(),
+        Fixture::with_parent(false),
         "delegated account, invalid configuration",
         |f| {
             set_delegation(f, 3, delegate);
@@ -959,7 +973,7 @@ fn eoa_migration_error_order() {
     ];
     for (label, config) in &invalid {
         expect_revert(
-            Fixture::new(),
+            Fixture::with_parent(false),
             label,
             |f| f.primitive(3, vec![Fixture::upgrade(config)]).into(),
             &invalid_config,
@@ -969,7 +983,7 @@ fn eoa_migration_error_order() {
 
 #[test]
 fn eoa_migration_after_delegation_cleared() {
-    let mut f = Fixture::new();
+    let mut f = Fixture::with_parent(false);
     let config = f.upgraded(1, owner_set(vec![signer(2).address()]));
     let tx = f.primitive(5, vec![Fixture::upgrade(&config)]);
     set_delegation(&mut f, 3, Address::repeat_byte(0x74));
@@ -993,7 +1007,7 @@ fn eoa_migration_after_delegation_cleared() {
 #[test]
 fn eoa_migration_failure_keeps_fee_and_nonce() {
     let member = signer(2).address();
-    let base = Fixture::new().upgraded(1, owner_set(vec![member]));
+    let base = Fixture::with_parent(false).upgraded(1, owner_set(vec![member]));
     let zero_threshold = ConfigurableAccountConfig {
         threshold: 0,
         ..base.clone()
@@ -1010,7 +1024,7 @@ fn eoa_migration_failure_keeps_fee_and_nonce() {
                 IConfigurableAccount::InvalidConfig {}.abi_encode(),
             )
         };
-        let mut f = Fixture::new();
+        let mut f = Fixture::with_parent(false);
         let account = f.account;
         fund(&mut f, account, 50_000_000);
         let config = if batch { &base } else { &zero_threshold };
@@ -1057,7 +1071,7 @@ fn eoa_migration_gas_schedule() {
     let pins = [(1, 275_598), (3, 277_770)];
     for (count, expected) in pins {
         for kind in [RootTx::Legacy, RootTx::Aa] {
-            let mut f = Fixture::new();
+            let mut f = Fixture::with_parent(false);
             let config = f.upgraded(1, members[..count].to_vec());
             let call = Fixture::upgrade(&config);
             let tx = root_tx(&f, kind, 3, call.clone());
@@ -1113,7 +1127,7 @@ fn sender_upgrade_gas(
     sponsored: bool,
     state_gas_split: bool,
 ) -> BlockGas {
-    let mut f = Fixture::with_cfg(TempoHardfork::T14, |cfg| {
+    let mut f = Fixture::with_cfg(false, TempoHardfork::T14, |cfg| {
         if state_gas_split {
             cfg.features.insert(EvmFeatures::EIP8037);
             for (id, cost) in SPLIT_NEW_ACCOUNT_COST {
@@ -1219,7 +1233,7 @@ fn eoa_migration_charges_the_new_account_cost_once_for_every_nonce_type() {
 
 #[test]
 fn eoa_migration_preserves_account_state() {
-    let mut f = Fixture::new();
+    let mut f = Fixture::with_parent(false);
     let account = f.account;
     let spender = signer(7).address();
     let keys = [signer(11), signer(12), signer(13), signer(14)];
@@ -1323,7 +1337,7 @@ fn eoa_migration_preserves_account_state() {
 
 #[test]
 fn eoa_migration_inactive_before_t14() {
-    let mut f = Fixture::with_spec(TempoHardfork::T13);
+    let mut f = Fixture::with_spec(false, TempoHardfork::T13);
     let config = f.upgraded(1, owner_set(vec![signer(2).address()]));
     for (nonce, kind) in [(3, RootTx::Legacy), (4, RootTx::Aa)] {
         // The call reaches an empty account: it succeeds without state or logs.
@@ -1469,7 +1483,7 @@ fn retired_root_rejects_sender_signatures() {
         PrimitiveSignature::from_bytes(&[&[0x02u8][..], &[0x22; 37 + 20 + 128][..]].concat())
             .unwrap();
     for kind in [RootTx::Legacy, RootTx::Eip2930, RootTx::Eip1559, RootTx::Aa] {
-        let mut f = Fixture::new();
+        let mut f = Fixture::with_parent(false);
         // Before the migration the same signatures are accepted.
         let tx = root_tx(&f, kind, 3, f.getter());
         let result = f.run(&tx);
@@ -1496,7 +1510,7 @@ fn retired_root_rejects_sender_signatures() {
         assert_eq!(f.info(account).unwrap().nonce, 5);
     }
 
-    let mut f = Fixture::new();
+    let mut f = Fixture::with_parent(false);
     migrate(&mut f, 3, other);
     let account = f.account;
     let expected = retired(account, RootKeyRole::Sender);
@@ -1536,7 +1550,7 @@ fn retired_root_rejects_sender_signatures() {
     );
 
     // The retirement starts at T14: the same state is accepted before it.
-    let mut before = Fixture::with_spec(TempoHardfork::T13);
+    let mut before = Fixture::with_spec(false, TempoHardfork::T13);
     let account = before.account;
     retire(&mut before, account);
     let tx = before.primitive(3, vec![before.getter()]);
@@ -1552,7 +1566,7 @@ fn retired_root_rejects_delegated_roles() {
     // The bootstrap flow, a root-signed grant used by the new key in the same
     // transaction, is accepted before the migration and rejected after it.
     for migrated in [false, true] {
-        let mut f = Fixture::new();
+        let mut f = Fixture::with_parent(false);
         if migrated {
             migrate(&mut f, 3, other);
         }
@@ -1576,7 +1590,7 @@ fn retired_root_rejects_delegated_roles() {
 
     // An admin access key that migrated can neither sign a grant nor sign
     // transactions; its parent is not affected.
-    let mut f = Fixture::new();
+    let mut f = Fixture::with_parent(false);
     let admin = signer(4);
     grant_key(&mut f, 3, &admin, true, 0);
     let account = f.account;
@@ -1611,7 +1625,7 @@ fn retired_root_rejects_delegated_roles() {
 
     // A sponsor that migrates after signing can no longer pay, even for a transaction
     // it signed earlier.
-    let mut f = Fixture::new();
+    let mut f = Fixture::with_parent(false);
     let sponsor = signer(5);
     let account = f.account;
     let tx = sponsored(aa_tx(3, vec![f.getter()]), &sponsor, account);
@@ -1636,7 +1650,7 @@ fn retired_root_rejects_delegated_roles() {
     );
 
     // The treasury A granted the primitive key B an allowance of 100, then B migrates for real.
-    let mut f = Fixture::new();
+    let mut f = Fixture::with_parent(false);
     let key = signer(6);
     let new_owner = signer(8);
     let account = f.account;
@@ -1709,7 +1723,7 @@ fn gas_at(
     key: &PrivateKeySigner,
     tx: impl FnOnce(&Fixture) -> AASigned,
 ) -> u64 {
-    let mut f = Fixture::with_spec(spec);
+    let mut f = Fixture::with_spec(false, spec);
     grant_key(&mut f, 3, key, false, 0);
     let tx = tx(&f);
     let result = f.run(&tx);
@@ -1721,7 +1735,7 @@ fn gas_at(
 #[test]
 fn retired_root_error_order_and_access_gas() {
     let (signer_s, payer, key) = (signer(4), signer(5), signer(6));
-    let mut f = Fixture::new();
+    let mut f = Fixture::with_parent(false);
     let account = f.account;
     // Every role names a retired account: the sender, the grant signer, the fee payer, and the
     // access key.
@@ -1779,7 +1793,7 @@ fn retired_root_error_order_and_access_gas() {
         TempoInvalidTransaction::SelfSponsoredFeePayer
     );
     // Nonce, intrinsic gas and balance errors come after, with or without a commitment.
-    let mut fresh = Fixture::new();
+    let mut fresh = Fixture::with_parent(false);
     let mut fresh_rejection = |label: &str, edit: fn(&mut TempoTransaction)| {
         let mut tx = aa_tx(3, vec![f.getter()]);
         edit(&mut tx);
@@ -2024,7 +2038,7 @@ fn retired_root_authorization_list_entries_skipped() {
         let mismatched = Entry { nonce: 6, ..x };
         // Runs the transaction with `entry` for the authority at nonce 5, retired or not.
         let run = |entry: Entry, retire_x: bool| {
-            let mut f = Fixture::new();
+            let mut f = Fixture::with_parent(false);
             seed_eoa(&mut f, x.address(), 5);
             seed_eoa(&mut f, existing.address(), 2);
             if retire_x {
@@ -2104,7 +2118,7 @@ fn retired_root_authorization_list_entries_skipped_after_a_same_block_migration(
     let sender = signer(2);
     let fresh = Entry::new(SigKind::Secp256k1, 6, target, 0);
     for aa in [false, true] {
-        let mut f = Fixture::new();
+        let mut f = Fixture::with_parent(false);
         let account = f.account;
         // Signed by the fixture's root key for the nonce its migration leaves.
         let entry = Entry::new(SigKind::Secp256k1, 1, target, 4);
@@ -2171,7 +2185,7 @@ fn retired_root_authorization_list_variants() {
         } in &rows
         {
             let label = format!("aa {aa}, {name}");
-            let mut f = Fixture::new();
+            let mut f = Fixture::with_parent(false);
             let info = AccountInfo {
                 nonce: *nonce,
                 ..AccountInfo::default().with_balance(U256::ONE)
@@ -2211,7 +2225,7 @@ fn retired_root_authorization_list_entries_apply_before_t14() {
     let sender = signer(2);
     let x = Entry::new(SigKind::Secp256k1, 9, target, 5);
     for aa in [false, true] {
-        let mut f = Fixture::with_spec(TempoHardfork::T13);
+        let mut f = Fixture::with_spec(false, TempoHardfork::T13);
         seed_eoa(&mut f, x.address(), 5);
         retire(&mut f, x.address());
         let tx = listed_tx(&sender, aa, Address::repeat_byte(0x73), &[x]);
@@ -2254,7 +2268,7 @@ fn authorization_list_gas_is_unchanged_by_the_retired_root_skip() {
             for retired in [false, true] {
                 let label = format!("aa {aa}, {name}, retired {retired}");
                 let run = |spec: TempoHardfork| {
-                    let mut f = Fixture::with_spec(spec);
+                    let mut f = Fixture::with_spec(false, spec);
                     seed_eoa(&mut f, x.address(), 5);
                     if retired {
                         retire(&mut f, x.address());
@@ -2280,7 +2294,7 @@ fn keychain_authorization_list_entries_stay_skipped() {
     for retired in [false, true] {
         let run = |spec: TempoHardfork| {
             let label = format!("{spec:?}, retired {retired}");
-            let mut f = Fixture::with_spec(spec);
+            let mut f = Fixture::with_spec(false, spec);
             seed_eoa(&mut f, x.address(), 5);
             if retired {
                 retire(&mut f, x.address());
@@ -2414,7 +2428,7 @@ fn permit_state(f: &mut Fixture, owner: Address, spender: Address) -> (U256, U25
 #[test]
 fn retired_root_permit_reverts() {
     let (spender, relayer) = (signer(8).address(), signer(9).address());
-    let mut f = Fixture::new();
+    let mut f = Fixture::with_parent(false);
     let x = f.account;
     let old_key = f.owner.clone();
 
@@ -2437,7 +2451,7 @@ fn retired_root_permit_reverts() {
 fn retired_root_permit_error_order() {
     let (owner, spender, relayer) = (signer(4), signer(8).address(), signer(9).address());
     let x = owner.address();
-    let mut f = Fixture::new();
+    let mut f = Fixture::with_parent(false);
     retire(&mut f, x);
     f.update_block(|block| block.timestamp = U256::from(2000));
 
@@ -2467,8 +2481,8 @@ fn retired_root_permit_error_order() {
 fn retired_root_permit_reverts_before_writing() {
     let (owner, spender, relayer) = (signer(4), signer(8).address(), signer(9).address());
     let x = owner.address();
-    let mut retired = Fixture::new();
-    let mut stale = Fixture::new();
+    let mut retired = Fixture::with_parent(false);
+    let mut stale = Fixture::with_parent(false);
     let permit = permit_signed(&mut retired, x, &owner, spender, 1_000);
     // Each fixture grants one permit first (another owner's in `retired`, one spending X's nonce 0
     // in `stale`), so the two relays below read the same state apart from X's permit nonce.
@@ -2501,7 +2515,7 @@ fn retired_root_permit_stays_allowed() {
         (TempoHardfork::T13, owner.address()),
         (TempoHardfork::T14, spender),
     ] {
-        let mut f = Fixture::with_spec(spec);
+        let mut f = Fixture::with_spec(false, spec);
         retire(&mut f, retired);
         let permit = permit_signed(&mut f, owner.address(), &owner, spender, 1_000);
         let result = send(&mut f, relayer, vec![permit]);
@@ -2639,7 +2653,7 @@ fn retired_root_channel_voucher_reverts() {
         for (case, payer_seed, signer_seed, how) in cases {
             let label = format!("{redeem:?}, {case}");
             let (payer, voucher_signer) = (signer(payer_seed), signer(signer_seed));
-            let mut f = Fixture::new();
+            let mut f = Fixture::with_parent(false);
             let (channel, signature) = voucher_setup(&mut f, &payer, &voucher_signer);
             let retired = match how {
                 Retire::CommitPayer => {
@@ -2676,7 +2690,7 @@ fn retired_root_channel_voucher_stays_allowed() {
         (TempoHardfork::T14, &delegate),
     ] {
         for redeem in [Redeem::Settle, Redeem::Close] {
-            let mut f = Fixture::with_spec(spec);
+            let mut f = Fixture::with_spec(false, spec);
             let (channel, signature) = voucher_setup(&mut f, &payer, voucher_signer);
             retire(&mut f, payer.address());
             let before = channel_snapshot(&mut f, &channel);
@@ -2699,7 +2713,7 @@ fn retired_root_channel_close_without_capture_stays_allowed() {
     // Closing without capturing anything verifies no voucher, so a retired payer still gets its
     // refund through the payee's close.
     let (payer, payee) = (signer(4), signer(5).address());
-    let mut f = Fixture::new();
+    let mut f = Fixture::with_parent(false);
     let (channel, signature) = voucher_setup(&mut f, &payer, &payer);
     retire(&mut f, payer.address());
     let before = channel_snapshot(&mut f, &channel);
@@ -2730,7 +2744,7 @@ fn retired_root_channel_close_without_capture_stays_allowed() {
 fn retired_root_channel_voucher_error_order() {
     let (payer, payee) = (signer(4), signer(5).address());
     for redeem in [Redeem::Settle, Redeem::Close] {
-        let mut f = Fixture::new();
+        let mut f = Fixture::with_parent(false);
         let (channel, valid) = voucher_setup(&mut f, &payer, &payer);
         retire(&mut f, payer.address());
         // Another key's voucher, and garbage, keep the existing signature error for a committed
@@ -2755,7 +2769,7 @@ fn retired_root_channel_voucher_error_order() {
 /// listed in the access list (warm) or not (cold).
 fn signature_gas(spec: TempoHardfork, action: SignedAction, warm: bool) -> u64 {
     let (key, payee, relayer) = (signer(4), signer(5).address(), signer(9).address());
-    let mut f = Fixture::with_spec(spec);
+    let mut f = Fixture::with_spec(false, spec);
     let (sender, call) = match action {
         SignedAction::Permit => (
             relayer,
@@ -2898,7 +2912,7 @@ fn retired_root_keychain_verifiers_reject() {
                     "{kind:?} {function:?} key committed {key_committed}, account committed \
                      {account_committed}"
                 );
-                let mut f = Fixture::new();
+                let mut f = Fixture::with_parent(false);
                 let account = f.account;
                 let (key, signature) = keychain_signature(kind, 7, account, hash);
                 grant_kind(&mut f, 3, kind, key, admin);
@@ -2919,7 +2933,7 @@ fn retired_root_keychain_verifiers_reject() {
         // The root key of its own address: the implicit admin, or a stored row of its own.
         for committed in [false, true] {
             let label = format!("{kind:?} root, committed {committed}");
-            let mut f = Fixture::new();
+            let mut f = Fixture::with_parent(false);
             let (root, signature) = root_keychain_signature(kind, 1, hash);
             if matches!(kind, SigKind::Secp256k1) {
                 assert_eq!(root, f.account, "{label}");
@@ -2951,7 +2965,7 @@ fn retired_root_keychain_verifiers_reject() {
 fn retired_root_is_not_an_implicit_admin_key() {
     let key = signer(7);
     for committed in [false, true] {
-        let mut f = Fixture::new();
+        let mut f = Fixture::with_parent(false);
         let account = f.account;
         // A stored non-admin row of the root's own address never makes it an admin key.
         grant_kind(&mut f, 3, SigKind::Secp256k1, account, false);
@@ -2991,7 +3005,7 @@ fn retired_root_is_not_an_implicit_admin_key() {
 #[test]
 fn retired_root_signatures_still_recover_and_keychain_format_is_unchanged() {
     let hash = B256::repeat_byte(0x42);
-    let mut f = Fixture::new();
+    let mut f = Fixture::with_parent(false);
     let account = f.account;
     retire(&mut f, account);
     let signature = f.owner.sign_hash_sync(&hash).unwrap();
@@ -3033,7 +3047,7 @@ fn retired_root_keychain_checks_are_unchanged_before_t14() {
         let admin = matches!(function, Verifier::KeychainAdmin);
         let label = format!("{function:?}");
         // The commitment is seeded the way the pre-T14 authorization-list test does.
-        let mut f = Fixture::with_spec(TempoHardfork::T13);
+        let mut f = Fixture::with_spec(false, TempoHardfork::T13);
         let account = f.account;
         let (key, signature) = keychain_signature(SigKind::Secp256k1, 7, account, hash);
         grant_kind(&mut f, 3, SigKind::Secp256k1, key, admin);
@@ -3045,7 +3059,7 @@ fn retired_root_keychain_checks_are_unchanged_before_t14() {
             "access key {label}"
         );
     }
-    let mut f = Fixture::with_spec(TempoHardfork::T13);
+    let mut f = Fixture::with_spec(false, TempoHardfork::T13);
     let account = f.account;
     retire(&mut f, account);
     let (root, signature) = root_keychain_signature(SigKind::Secp256k1, 1, hash);
@@ -3061,7 +3075,7 @@ fn retired_root_keychain_checks_are_unchanged_before_t14() {
 /// true.
 fn keychain_check_gas(spec: TempoHardfork, check: KeychainCheck, warm: bool) -> u64 {
     let hash = B256::repeat_byte(0x42);
-    let mut f = Fixture::with_spec(spec);
+    let mut f = Fixture::with_spec(false, spec);
     let account = f.account;
     let (key, signature) = keychain_signature(SigKind::Secp256k1, 7, account, hash);
     let (call, warm_account) = match check {
@@ -3142,7 +3156,7 @@ fn retired_root_keychain_checks_cost_the_commitment_read() {
 /// account or, when `mismatched`, against another one than the signature names.
 fn retired_key_check(spec: TempoHardfork, function: Verifier, mismatched: bool) -> (bool, u64) {
     let hash = B256::repeat_byte(0x42);
-    let mut f = Fixture::with_spec(spec);
+    let mut f = Fixture::with_spec(false, spec);
     let account = f.account;
     let (key, signature) = keychain_signature(SigKind::Secp256k1, 7, account, hash);
     grant_kind(&mut f, 3, SigKind::Secp256k1, key, true);
@@ -3190,7 +3204,7 @@ fn retired_root_check_in_admin_caller_reads_the_warm_sender() {
     // A non-admin row of the root's own address is the one way `transaction_key` names the
     // account itself. The commitment read on that branch hits the already loaded sender.
     let gas_at = |spec: TempoHardfork| {
-        let mut f = Fixture::with_spec(spec);
+        let mut f = Fixture::with_spec(false, spec);
         let (account, owner) = (f.account, f.owner.clone());
         grant_kind(&mut f, 3, SigKind::Secp256k1, account, false);
         let revoke = Call {
@@ -3207,4 +3221,1012 @@ fn retired_root_check_in_admin_caller_reads_the_warm_sender() {
     };
     // The sender is always loaded: one warm account access, nothing more.
     assert_eq!(gas_at(TempoHardfork::T14) - gas_at(TempoHardfork::T13), 100);
+}
+
+#[test]
+fn native_commitment_only_account_evm_semantics() {
+    let target = Address::repeat_byte(0x44);
+    let commitment = B256::repeat_byte(0x99);
+    // EXTCODEHASH, zero/value CALL, and SELFDESTRUCT must treat the leaf as existing.
+    for operation in [0x3f, 0xf1, 0xff] {
+        for value in [0u8, 1] {
+            let mut gas = Vec::new();
+            for (nonce, extension) in [(1, B256::ZERO), (0, commitment), (0, B256::ZERO)] {
+                let mut f = Fixture::new();
+                let mut info = AccountInfo {
+                    nonce,
+                    ..Default::default()
+                };
+                info.extension = encode_config_commitment(extension).into();
+                f.evm.overlay_db_mut().insert_account_info(&target, info);
+                let mut code = if operation == 0xf1 {
+                    vec![0x5f, 0x5f, 0x5f, 0x5f, 0x60, value, 0x73]
+                } else {
+                    vec![0x73]
+                };
+                code.extend_from_slice(target.as_slice());
+                match operation {
+                    0x3f => code.extend_from_slice(&[0x3f, 0x5f, 0x52, 0x60, 0x20, 0x5f, 0xf3]),
+                    0xf1 => code.extend_from_slice(&[0x5a, 0xf1, 0x00]),
+                    0xff => code.push(0xff),
+                    _ => unreachable!(),
+                }
+                let contract = Address::repeat_byte(0x55);
+                let call = f.install_contract(contract, code);
+                f.update_account(contract, |info| info.balance = U256::from(value));
+                let tx = f.signed(3, vec![call]);
+                let output = f.evm.transact(&tx_env(&tx, f.account)).unwrap().commit();
+                assert!(output.status, "{output:?}");
+                if operation == 0x3f {
+                    let expected = if nonce != 0 || !extension.is_zero() {
+                        KECCAK256_EMPTY
+                    } else {
+                        B256::ZERO
+                    };
+                    assert_eq!(&output.output, expected.as_slice());
+                }
+                gas.push(output.tx_gas_used());
+                if !extension.is_zero() {
+                    let info = f
+                        .info(target)
+                        .expect("config-only leaf must survive state clearing");
+                    assert_eq!(
+                        decode_config_commitment(&info.extension, TempoHardfork::T14).unwrap(),
+                        commitment
+                    );
+                    assert_eq!(info.nonce, 0);
+                }
+            }
+            assert_eq!(gas[0], gas[1], "operation={operation:x}, value={value}");
+            if operation != 0x3f && value != 0 {
+                assert!(gas[2] > gas[1], "only an empty target pays new-account gas");
+            }
+        }
+    }
+}
+
+#[test]
+fn native_commitment_activation_database_lifecycle() {
+    let factory = create_test_provider_factory();
+    let mut fixture = Fixture::new();
+    let config = activation_config();
+    let mut roots = Vec::new();
+    let mut parent_hash = B256::ZERO;
+    for block in 0..=2 {
+        let bundle = if block == 0 {
+            fixture.genesis_bundle()
+        } else {
+            let tx = fixture.signed(block + 2, vec![fixture.getter()]);
+            let block_env = TempoBlock::uncle(TempoHeader {
+                inner: Header {
+                    number: block,
+                    timestamp: 9 + block,
+                    gas_limit: 30_000_000,
+                    base_fee_per_gas: Some(0),
+                    blob_gas_used: Some(0),
+                    excess_blob_gas: Some(0),
+                    parent_beacon_block_root: Some(B256::ZERO),
+                    ..Default::default()
+                },
+                general_gas_limit: 30_000_000,
+                ..Default::default()
+            })
+            .seal_slow();
+            let mut executor = config
+                .executor_for_block(fixture.chain_db(), &block_env)
+                .unwrap();
+            assert_eq!(executor.evm().config_spec_id(), TempoHardfork::T14);
+            executor.apply_pre_execution_changes().unwrap();
+            let recovered = TempoTxEnvelope::AA(tx).with_signer(fixture.account);
+            executor
+                .execute_transaction(recovered.as_recovered_ref())
+                .unwrap();
+            let output = executor.finish().unwrap();
+            assert!(output.result.receipts[0].success);
+            fixture.evm.commit_source(&BundleSource(&output.state));
+            output.state
+        };
+        assert!(
+            bundle.state().contains_key(&fixture.account),
+            "account missing from executed bundle at {block}"
+        );
+        let hashed = HashedPostState::from_bundle_state::<KeccakKeyHasher>(bundle.state());
+        let (root, updates) = factory
+            .latest()
+            .unwrap()
+            .state_root_with_updates(hashed.clone())
+            .unwrap();
+        let mut header = Header {
+            number: block,
+            timestamp: 9 + block,
+            state_root: root,
+            ..Default::default()
+        };
+        header.parent_hash = parent_hash;
+        let chain_block = EthereumBlock::uncle(header).try_into_recovered().unwrap();
+        parent_hash = chain_block.hash();
+        let provider = factory.provider_rw().unwrap();
+        provider.insert_block(&chain_block).unwrap();
+        let outcome = ExecutionOutcome::new(bundle, vec![vec![]], block, vec![]);
+        provider
+            .write_state(
+                &outcome,
+                OriginalValuesKnown::Yes,
+                StateWriteConfig::default(),
+            )
+            .unwrap();
+        provider.write_hashed_state(&hashed.into_sorted()).unwrap();
+        provider.write_trie_updates(updates).unwrap();
+        provider.update_history_indices(block..=block).unwrap();
+        provider.commit().unwrap();
+        let latest = factory.latest().unwrap();
+        let account = latest
+            .basic_account(&fixture.account)
+            .unwrap()
+            .unwrap_or_else(|| panic!("persisted account missing at {block}"));
+        let expected = if block == 0 {
+            B256::ZERO
+        } else {
+            fixture.config.commitment().unwrap()
+        };
+        assert_eq!(
+            decode_config_commitment(&account.extension, TempoHardfork::T14).unwrap(),
+            expected
+        );
+        assert_eq!(latest.state_root(Default::default()).unwrap(), root);
+        roots.push(root);
+    }
+    assert_ne!(roots[0], roots[1]);
+    {
+        let blockchain = BlockchainProvider::new(factory.clone()).unwrap();
+        for block in [0, 1] {
+            let historical = blockchain.history_by_block_number(block).unwrap();
+            let account = historical.basic_account(&fixture.account).unwrap().unwrap();
+            let expected = if block == 0 {
+                B256::ZERO
+            } else {
+                fixture.config.commitment().unwrap()
+            };
+            assert_eq!(
+                decode_config_commitment(&account.extension, TempoHardfork::T14).unwrap(),
+                expected
+            );
+        }
+    }
+    let before_second = factory
+        .provider()
+        .unwrap()
+        .get_account_before_block(2, fixture.account)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        decode_config_commitment(&before_second.info.unwrap().extension, TempoHardfork::T14)
+            .unwrap(),
+        fixture.config.commitment().unwrap()
+    );
+    for block in [1, 0] {
+        let provider = factory.unwind_provider_rw().unwrap();
+        provider.remove_block_and_execution_above(block).unwrap();
+        provider.commit().unwrap();
+        let latest = factory.latest().unwrap();
+        let account = latest.basic_account(&fixture.account).unwrap().unwrap();
+        let expected = if block == 0 {
+            B256::ZERO
+        } else {
+            fixture.config.commitment().unwrap()
+        };
+        assert_eq!(
+            decode_config_commitment(&account.extension, TempoHardfork::T14).unwrap(),
+            expected
+        );
+        assert_eq!(
+            latest.state_root(Default::default()).unwrap(),
+            roots[usize::try_from(block).unwrap()]
+        );
+    }
+}
+
+/// Exercises the stage's persisted checkpoint codec with real partial storage-trie work.
+/// Reopens database transactions, not a process or a full `Stage::execute` pipeline.
+#[test]
+fn native_commitment_persisted_storage_trie_resume_and_proof() {
+    let factory = create_test_provider_factory();
+    let mut fixture = Fixture::new();
+    let commitment = fixture.config.commitment().unwrap();
+    let mut info = fixture.info(fixture.account).unwrap();
+    info.extension = encode_config_commitment(commitment).into();
+    fixture
+        .evm
+        .overlay_db_mut()
+        .insert_account_info(&fixture.account, info);
+    for slot in 0..128u64 {
+        fixture.evm.overlay_db_mut().insert_account_storage(
+            &fixture.account,
+            &U256::from(slot),
+            &U256::from(slot + 1),
+        );
+    }
+    let bundle = fixture.genesis_bundle();
+    let hashed = HashedPostState::from_bundle_state::<KeccakKeyHasher>(bundle.state());
+    let expected_root = factory
+        .latest()
+        .unwrap()
+        .state_root(hashed.clone())
+        .unwrap();
+    {
+        let provider = factory.provider_rw().unwrap();
+        provider
+            .insert_block(
+                &EthereumBlock::uncle(Header {
+                    state_root: expected_root,
+                    ..Default::default()
+                })
+                .try_into_recovered()
+                .unwrap(),
+            )
+            .unwrap();
+        provider
+            .write_state(
+                &ExecutionOutcome::new(bundle, vec![vec![]], 0, vec![]),
+                OriginalValuesKnown::Yes,
+                StateWriteConfig::default(),
+            )
+            .unwrap();
+        provider.write_hashed_state(&hashed.into_sorted()).unwrap();
+        provider.commit().unwrap();
+    }
+
+    let stage = MerkleStage::default_execution();
+    let mut storage_resumptions = 0;
+    let mut completed_root = None;
+    for _ in 0..512 {
+        // Drop/commit the previous RW transaction before reading its persisted checkpoint.
+        let provider = factory.provider_rw().unwrap();
+        let checkpoint = stage.get_execution_checkpoint(&*provider).unwrap();
+        if let Some(storage) = checkpoint
+            .as_ref()
+            .filter(|checkpoint| checkpoint.last_account_key == keccak256(fixture.account))
+            .and_then(|checkpoint| checkpoint.storage_root_checkpoint.as_ref())
+        {
+            storage_resumptions += 1;
+            assert_eq!(
+                decode_config_commitment(&storage.account_extension, TempoHardfork::T14).unwrap(),
+                commitment
+            );
+        }
+        let progress = with_adapter!(&provider, |A| {
+            StateRoot::<DatabaseTrieCursorFactory<_, A>, DatabaseHashedCursorFactory<_>>::from_tx(
+                provider.tx_ref(),
+            )
+            .with_intermediate_state(checkpoint.map(Into::into))
+            .with_threshold(4)
+            .root_with_progress()
+        })
+        .unwrap();
+        match progress {
+            StateRootProgress::Progress(state, _, updates) => {
+                provider.write_trie_updates(updates).unwrap();
+                let mut checkpoint = MerkleCheckpoint::new(
+                    0,
+                    state.account_root_state.last_hashed_key,
+                    state
+                        .account_root_state
+                        .walker_stack
+                        .into_iter()
+                        .map(StoredSubNode::from)
+                        .collect(),
+                    state.account_root_state.hash_builder.into(),
+                );
+                checkpoint.storage_root_checkpoint = state.storage_root_state.map(|storage| {
+                    StorageRootMerkleCheckpoint::new(
+                        storage.state.last_hashed_key,
+                        storage
+                            .state
+                            .walker_stack
+                            .into_iter()
+                            .map(StoredSubNode::from)
+                            .collect(),
+                        storage.state.hash_builder.into(),
+                        storage.account,
+                    )
+                });
+                stage
+                    .save_execution_checkpoint(&*provider, Some(checkpoint))
+                    .unwrap();
+            }
+            StateRootProgress::Complete(root, _, updates) => {
+                provider.write_trie_updates(updates).unwrap();
+                stage.save_execution_checkpoint(&*provider, None).unwrap();
+                completed_root = Some(root);
+            }
+        }
+        provider.commit().unwrap();
+        if completed_root.is_some() {
+            break;
+        }
+    }
+    assert!(
+        storage_resumptions > 0,
+        "must resume inside an account's nonempty storage trie"
+    );
+    assert_eq!(completed_root, Some(expected_root));
+    let latest = factory.latest().unwrap();
+    let proof = latest
+        .proof(
+            Default::default(),
+            fixture.account,
+            &[B256::ZERO, B256::with_last_byte(127)],
+        )
+        .unwrap();
+    assert_eq!(
+        decode_config_commitment(&proof.info.as_ref().unwrap().extension, TempoHardfork::T14)
+            .unwrap(),
+        commitment
+    );
+    assert_eq!(proof.storage_proofs.len(), 2);
+    for (key, value) in [
+        (B256::ZERO, U256::ONE),
+        (B256::with_last_byte(127), U256::from(128)),
+    ] {
+        assert_eq!(
+            proof
+                .storage_proofs
+                .iter()
+                .find(|proof| proof.key == key)
+                .unwrap()
+                .value,
+            value
+        );
+    }
+    proof.verify(expected_root).unwrap();
+    // Verification must bind the fifth account field, not merely the ordinary account fields.
+    let mut wrong_commitment = proof;
+    wrong_commitment.info.as_mut().unwrap().extension =
+        encode_config_commitment(B256::repeat_byte(0x99)).into();
+    assert!(wrong_commitment.verify(expected_root).is_err());
+}
+
+#[test]
+fn native_first_call_registration_and_retry() {
+    let mut f = Fixture::new();
+    let revert = f.install_contract(Address::repeat_byte(0x55), bytes!("60006000fd").to_vec());
+    let failed = f.signed(3, vec![f.getter(), revert]);
+    let output = f
+        .evm
+        .transact(&tx_env(&failed, f.account))
+        .unwrap()
+        .detach();
+    assert!(!output.result.status);
+    assert_eq!(
+        decode_config_commitment(
+            &output
+                .pending_state
+                .account_info(&f.account)
+                .unwrap()
+                .extension,
+            TempoHardfork::T14
+        )
+        .unwrap(),
+        f.config.commitment().unwrap()
+    );
+    assert_eq!(
+        output
+            .pending_state
+            .account_info(&f.account)
+            .unwrap()
+            .code_hash,
+        CONFIGURABLE_ACCOUNT_CODE_HASH
+    );
+    f.evm.commit_state(&output.pending_state);
+    let tx = f.signed(4, vec![f.getter()]);
+    let output = f.evm.transact(&tx_env(&tx, f.account)).unwrap().detach();
+    assert!(output.result.status, "{:?}", output.result);
+    assert_eq!(
+        decode_config_commitment(
+            &output
+                .pending_state
+                .account_info(&f.account)
+                .unwrap()
+                .extension,
+            TempoHardfork::T14
+        )
+        .unwrap(),
+        f.config.commitment().unwrap()
+    );
+    assert_eq!(
+        IConfigurableAccount::getConfigCommitmentCall::abi_decode_returns(&output.result.output)
+            .unwrap(),
+        f.config.commitment().unwrap()
+    );
+}
+
+/// Gas of a first registration of the sender on `lane` (at transaction nonce zero, except on the
+/// simulated lane), whose only call is a `CREATE` when `create_first` and a read of the
+/// commitment otherwise.
+fn sender_registration_gas(lane: NonceLane, create_first: bool, empty_sender: bool) -> BlockGas {
+    let mut f = Fixture::new();
+    let account = f.account;
+    seed_account(&mut f, account, empty_sender);
+    let call = if create_first {
+        Call {
+            to: TxKind::Create,
+            value: U256::ZERO,
+            input: bytes!("00"),
+        }
+    } else {
+        f.getter()
+    };
+    let tx = lane_tx(&mut f, lane, vec![call]);
+    let tx = configurable_account_signed(&f, tx);
+    block_gas(&mut f, &tx)
+}
+
+#[test]
+fn registration_charges_the_new_account_cost_once_for_every_nonce_type() {
+    let params = tempo_gas_params(TempoHardfork::T14);
+    let new_account = BlockGas {
+        regular: u64::from(params.get(GasId::NewAccountCost)),
+        state: params.new_account_state_gas(),
+    };
+    struct Row {
+        lane: NonceLane,
+        create_first: bool,
+        registration_charges_new_account: bool,
+    }
+    // The `nonce == 0` charge of the protocol lane creates the sender; a 2D `nonce == 0` charge
+    // pays the nonce-key slot, so registration still pays. A first-call CREATE from a nonce-zero
+    // sender pays the creation on a 2D or expiring lane, so registration adds nothing. A protocol
+    // lane without the `nonce == 0` charge has no CREATE charge either, so registration pays.
+    for Row {
+        lane,
+        create_first,
+        registration_charges_new_account,
+    } in [
+        Row {
+            lane: NonceLane::Protocol,
+            create_first: false,
+            registration_charges_new_account: false,
+        },
+        Row {
+            lane: NonceLane::Protocol,
+            create_first: true,
+            registration_charges_new_account: false,
+        },
+        Row {
+            lane: NonceLane::TwoD,
+            create_first: false,
+            registration_charges_new_account: true,
+        },
+        Row {
+            lane: NonceLane::Expiring,
+            create_first: false,
+            registration_charges_new_account: true,
+        },
+        Row {
+            lane: NonceLane::TwoD,
+            create_first: true,
+            registration_charges_new_account: false,
+        },
+        Row {
+            lane: NonceLane::Expiring,
+            create_first: true,
+            registration_charges_new_account: false,
+        },
+        Row {
+            lane: NonceLane::ProtocolSimulated,
+            create_first: true,
+            registration_charges_new_account: true,
+        },
+    ] {
+        let funded = sender_registration_gas(lane, create_first, false);
+        let empty = sender_registration_gas(lane, create_first, true);
+        let expected = if registration_charges_new_account {
+            funded.plus(new_account)
+        } else {
+            funded
+        };
+        assert_eq!(empty, expected, "{lane:?}, create first: {create_first}");
+    }
+}
+
+/// Names the row of a table test that is running when it panics.
+struct Case(String);
+
+impl Drop for Case {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            eprintln!("failing case: {}", self.0);
+        }
+    }
+}
+
+#[test]
+fn native_first_registration_preserves_existing_storage() {
+    let mut f = Fixture::new();
+    let info = f.info(f.account).unwrap();
+    let slot = U256::from(7);
+    let value = U256::from(91);
+    f.evm
+        .overlay_db_mut()
+        .insert_account_info(&f.account, info.clone());
+    f.evm
+        .overlay_db_mut()
+        .insert_account_storage(&f.account, &slot, &value);
+    let tx = f.signed(3, vec![f.getter()]);
+    let output = f.evm.transact(&tx_env(&tx, f.account)).unwrap().commit();
+    assert!(output.status, "{output:?}");
+    assert_eq!(output.logs, []);
+    assert_eq!(f.commitment(), f.config.commitment().unwrap());
+    assert_eq!(
+        f.evm
+            .overlay_db_mut()
+            .get_storage(&f.account, &slot)
+            .unwrap(),
+        value
+    );
+    let after = f.info(f.account).unwrap();
+    assert_eq!(after.balance, info.balance);
+    assert_eq!(after.nonce, info.nonce + 1);
+}
+
+#[test]
+fn native_registration_survives_caught_reverting_subcall() {
+    let mut f = Fixture::new();
+    let reverter = Address::repeat_byte(0x55);
+    // The child writes slot zero, then reverts. Its parent catches the failed CALL.
+    f.install_contract(reverter, bytes!("600160005560006000fd").to_vec());
+    let catcher = Address::repeat_byte(0x56);
+    // GAS CALL ISZERO; persist the caught failure in the parent's slot zero.
+    let code = [
+        bytes!("6000600060006000600073").as_ref(),
+        reverter.as_slice(),
+        bytes!("5af11560005500").as_ref(),
+    ]
+    .concat();
+    let call = f.install_contract(catcher, code);
+    let tx = f.signed(3, vec![call]);
+    let output = f.evm.transact(&tx_env(&tx, f.account)).unwrap().commit();
+    assert!(output.status, "{output:?}");
+    assert_eq!(output.logs, []);
+    assert_eq!(f.commitment(), f.config.commitment().unwrap());
+    assert_eq!(
+        f.evm
+            .overlay_db_mut()
+            .get_storage(&reverter, &U256::ZERO)
+            .unwrap(),
+        U256::ZERO
+    );
+    assert_eq!(
+        f.evm
+            .overlay_db_mut()
+            .get_storage(&catcher, &U256::ZERO)
+            .unwrap(),
+        U256::ONE
+    );
+}
+
+#[test]
+fn native_first_transaction_can_rotate_configuration() {
+    let mut f = Fixture::new();
+    let next = ConfigurableAccountConfig {
+        version: 1,
+        ..f.config.clone()
+    };
+    let tx = f.signed(3, vec![Fixture::rotation(&f.config, &next), f.getter()]);
+    let output = f.evm.transact(&tx_env(&tx, f.account)).unwrap().commit();
+    assert!(output.status, "{output:?}");
+    assert_eq!(output.logs.len(), 1);
+    assert_eq!(
+        IConfigurableAccount::getConfigCommitmentCall::abi_decode_returns(&output.output).unwrap(),
+        next.commitment().unwrap()
+    );
+    assert_eq!(f.commitment(), next.commitment().unwrap());
+}
+
+#[test]
+fn native_rotation_authorizes_next_transaction_in_same_block() {
+    let mut f = Fixture::new();
+    let block = *f.evm.block();
+    let next_owner = signer(2);
+    let next = ConfigurableAccountConfig {
+        version: 1,
+        owners: vec![ConfigurableAccountOwner {
+            owner: next_owner.address(),
+            weight: 1,
+        }],
+        ..f.config.clone()
+    };
+    let rotate = f.signed(3, vec![Fixture::rotation(&f.config, &next)]);
+    let output = f
+        .evm
+        .transact(&tx_env(&rotate, f.account))
+        .unwrap()
+        .commit();
+    assert!(output.status, "{output:?}");
+    let stale = f.signed(4, vec![f.getter()]);
+    let error = f.evm.transact(&tx_env(&stale, f.account)).unwrap_err();
+    assert!(
+        matches!(
+            error.external_ref::<TempoInvalidTransaction>(),
+            Some(TempoInvalidTransaction::ConfigurableAccount(
+                ConfigurableAccountError::ConfigurationCommitmentMismatch { .. }
+            ))
+        ),
+        "{error}"
+    );
+    f.config = next;
+    f.owner = next_owner;
+    let tx = f.signed(4, vec![f.getter()]);
+    let output = f.evm.transact(&tx_env(&tx, f.account)).unwrap().commit();
+    assert!(output.status, "{output:?}");
+    assert_eq!(f.commitment(), f.config.commitment().unwrap());
+    assert_eq!(f.evm.block().number, block.number);
+    assert_eq!(f.evm.block().timestamp, block.timestamp);
+}
+
+#[test]
+fn native_batch_rotation_failures_roll_back_together() {
+    for (registered, halt) in [(true, false), (true, true), (false, false), (false, true)] {
+        native_batch_rotation_failure(registered, halt);
+    }
+}
+
+fn native_batch_rotation_failure(registered: bool, halt: bool) {
+    let _case = Case(format!("registered={registered}, halt={halt}"));
+    let mut f = Fixture::new();
+    let mut nonce = 3;
+    if registered {
+        let register = f.signed(nonce, vec![f.getter()]);
+        let output = f
+            .evm
+            .transact(&tx_env(&register, f.account))
+            .unwrap()
+            .commit();
+        assert!(output.status);
+        nonce += 1;
+    }
+    let v1 = ConfigurableAccountConfig {
+        version: 1,
+        owners: vec![ConfigurableAccountOwner {
+            owner: signer(2).address(),
+            weight: 1,
+        }],
+        ..f.config.clone()
+    };
+    let v2 = ConfigurableAccountConfig {
+        version: 2,
+        owners: vec![ConfigurableAccountOwner {
+            owner: signer(3).address(),
+            weight: 1,
+        }],
+        ..f.config.clone()
+    };
+    let revert = f.install_contract(
+        Address::repeat_byte(0x55),
+        if halt {
+            bytes!("fe").to_vec()
+        } else {
+            bytes!("60006000fd").to_vec()
+        },
+    );
+    let rotations = vec![
+        Fixture::rotation(&f.config, &v1),
+        Fixture::rotation(&v1, &v2),
+    ];
+    let mut calls = rotations.clone();
+    calls.push(revert);
+    let tx = f.signed(nonce, calls);
+    let output = f.evm.transact(&tx_env(&tx, f.account)).unwrap().commit();
+    assert_eq!(output.stop.is_halt(), halt);
+    assert_eq!(output.stop.is_revert(), !halt);
+    assert_eq!(output.logs, []);
+    assert_eq!(f.commitment(), f.config.commitment().unwrap());
+    nonce += 1;
+    assert_eq!(f.info(f.account).unwrap().nonce, nonce);
+    // The original witness remains valid. Each successful update must read the
+    // previous call's journaled commitment, not the transaction-start leaf.
+    let retry = f.signed(nonce, rotations);
+    let output = f.evm.transact(&tx_env(&retry, f.account)).unwrap().commit();
+    assert!(output.status, "{output:?}");
+    assert_eq!(output.logs.len(), 2);
+    assert_eq!(f.commitment(), v2.commitment().unwrap());
+}
+
+#[test]
+fn eoa_migration_then_configurable_account_and_rotation() {
+    let mut f = Fixture::with_parent(false);
+    let owner = f.owner.address();
+    let config = migrate(&mut f, 3, owner);
+
+    // The next transaction's witness uses the event's salt at version 1.
+    f.config = config.clone();
+    let tx = f.signed(4, vec![f.getter()]);
+    let result = f.run(&tx);
+    assert_eq!(
+        IConfigurableAccount::getConfigCommitmentCall::abi_decode_returns(&result.output).unwrap(),
+        config.commitment().unwrap()
+    );
+
+    // Version 1 rotates to version 2 with a new owner.
+    let next_owner = signer(2);
+    let next = ConfigurableAccountConfig {
+        version: 2,
+        owners: owner_set(vec![next_owner.address()]),
+        ..config
+    };
+    let tx = f.signed(5, vec![Fixture::rotation(&config, &next), f.getter()]);
+    let result = f.run(&tx);
+    assert!(result.status, "{result:?}");
+    assert_eq!(result.logs.len(), 1);
+    assert_eq!(f.commitment(), next.commitment().unwrap());
+
+    let stale = f.signed(6, vec![f.getter()]);
+    let error = f.evm.transact(&tx_env(&stale, f.account)).unwrap_err();
+    assert!(
+        matches!(
+            error.external_ref::<TempoInvalidTransaction>(),
+            Some(TempoInvalidTransaction::ConfigurableAccount(
+                ConfigurableAccountError::ConfigurationCommitmentMismatch { .. }
+            ))
+        ),
+        "{error}"
+    );
+    f.config = next;
+    f.owner = next_owner;
+    let tx = f.signed(6, vec![f.getter()]);
+    assert!(f.run(&tx).status);
+}
+
+#[test]
+fn configurable_account_is_rejected_before_t14() {
+    let unsupported =
+        TempoInvalidTransaction::ConfigurableAccount(ConfigurableAccountError::UnsupportedContext);
+    let mut f = Fixture::with_spec(true, TempoHardfork::T13);
+    let account = f.account;
+    // Signature type `0x05`.
+    let tx = f.signed(3, vec![f.getter()]);
+    assert_eq!(rejection(&mut f, &tx, account), unsupported, "0x05");
+}
+
+#[test]
+fn configurable_account_is_rejected_where_it_cannot_sign() {
+    let context = TempoInvalidTransaction::ConfigurableAccount(
+        ConfigurableAccountError::InvalidSignatureContext,
+    );
+    // An authorization-list entry signed by a configurable account, whatever the hardfork.
+    for spec in [TempoHardfork::T13, TempoHardfork::T14] {
+        let mut f = Fixture::with_spec(true, spec);
+        let account = f.account;
+        let authorization = Authorization {
+            chain_id: U256::ONE,
+            address: Address::ZERO,
+            nonce: 0,
+        };
+        let approval = configurable_account_approval(
+            account,
+            &f.config,
+            &f.owner,
+            authorization.signature_hash(),
+        );
+        let tx = f.sign_primitive(TempoTransaction {
+            tempo_authorization_list: vec![TempoSignedAuthorization::new_unchecked(
+                authorization,
+                TempoSignature::ConfigurableAccount(approval),
+            )],
+            ..aa_tx(3, vec![f.getter()])
+        });
+        assert_eq!(rejection(&mut f, &tx, account), context, "{spec:?}");
+    }
+}
+
+#[test]
+fn native_signature_must_name_the_sender() {
+    let mut f = Fixture::new();
+    let account = f.account;
+    let other = signer(9).address();
+    seed_account(&mut f, other, false);
+    let tx = f.signed(3, vec![f.getter()]);
+    let mismatch =
+        TempoInvalidTransaction::ConfigurableAccount(ConfigurableAccountError::AccountMismatch {
+            expected: other,
+            actual: account,
+        });
+    // In a signed transaction and in RPC simulation alike, the account the configurable
+    // account signature names must be the sender.
+    assert_eq!(rejection(&mut f, &tx, other), mismatch, "transaction");
+    let error = transact_err(&mut f, &simulation_env(&tx, other, None));
+    assert_eq!(
+        error.external_ref::<TempoInvalidTransaction>(),
+        Some(&mismatch),
+        "simulation: {error:?}"
+    );
+    // Neither rejection consumed the nonce.
+    let result = f.run(&tx);
+    assert!(result.status, "{result:?}");
+}
+
+#[test]
+fn native_signer_with_code_is_rejected() {
+    let mut f = Fixture::new();
+    let account = f.account;
+    f.update_account(account, |info| {
+        *info = info
+            .clone()
+            .with_code(Bytecode::new_eip7702(Address::repeat_byte(0x74)));
+    });
+    let tx = f.signed(3, vec![f.getter()]);
+    assert_eq!(
+        rejection(&mut f, &tx, account),
+        TempoInvalidTransaction::ConfigurableAccount(ConfigurableAccountError::InvalidAccount {
+            account
+        })
+    );
+}
+
+/// A configurable-account signature adds its TIP-1114 verification cost `V - 3,000` to intrinsic
+/// gas, on top of the first-use account proof and the TIP-1108 registration write.
+#[test]
+fn native_signature_verification_is_intrinsic_gas() {
+    let calls = vec![Call {
+        to: TxKind::Call(Address::repeat_byte(0x44)),
+        value: U256::ZERO,
+        input: Bytes::new(),
+    }];
+    // The root and the configurable account both hold nonce 3, so no new-account cost differs.
+    let mut root = Fixture::with_parent(false);
+    let tx = root.primitive(3, calls.clone());
+    let primitive = root.run(&tx);
+    assert!(primitive.status, "{primitive:?}");
+
+    let mut f = Fixture::new();
+    let witness = [alloy_rlp::encode(f.account), alloy_rlp::encode(&f.config)].concat();
+    let tx = f.signed(3, calls);
+    let native = f.run(&tx);
+    assert!(native.status, "{native:?}");
+    assert!(!f.commitment().is_zero());
+
+    // K(n) = 30 + 6 * ceil(n / 32); one owner, one secp256k1 approval.
+    let keccak = |len: u64| 30 + 6 * len.div_ceil(32);
+    let calldata: u64 = witness
+        .iter()
+        .map(|byte| if *byte == 0 { 4 } else { 16 })
+        .sum();
+    // V - 3,000: witness calldata, commitment K(75 + 21), digest K(96), approval 3,000 - 3,000.
+    let verification = calldata + keccak(75 + 21) + keccak(96);
+    // First use: derivation K(68 + 21), plus the registration write, priced like account creation.
+    let new_account = tempo_gas_params(TempoHardfork::T14).get(GasId::NewAccountCost);
+    let first_use = keccak(68 + 21) + u64::from(new_account);
+    assert_eq!(
+        native.tx_gas_used() - primitive.tx_gas_used(),
+        verification + first_use
+    );
+}
+
+/// A registered account signing with another configuration fails with the commitment mismatch
+/// that the account state reports, worded as the state error is.
+#[test]
+fn native_commitment_mismatch_reads_as_the_state_error() {
+    let mut f = Fixture::new();
+    let account = f.account;
+    let tx = f.signed(3, vec![f.getter()]);
+    let result = f.run(&tx);
+    assert!(result.status, "{result:?}");
+    let registered = f.commitment();
+
+    let stale = ConfigurableAccountConfig {
+        salt: B256::repeat_byte(0x5b),
+        ..f.config.clone()
+    };
+    let tx = configurable_account_signed_by(account, &stale, &f.owner, aa_tx(4, vec![f.getter()]));
+    let error = rejection(&mut f, &tx, account);
+    let TempoInvalidTransaction::ConfigurableAccount(
+        ConfigurableAccountError::ConfigurationCommitmentMismatch { expected, actual },
+    ) = error
+    else {
+        panic!("{error:?}");
+    };
+    assert_eq!(expected, registered);
+    assert_ne!(actual, registered);
+    assert_eq!(
+        error.to_string(),
+        ConfigurableAccountStateError::CommitmentMismatch { expected, actual }.to_string()
+    );
+}
+
+/// A threshold above eight is met by eight approvals whose weights reach it.
+#[test]
+fn native_threshold_above_eight_is_met_by_eight_approvals() {
+    let mut f = Fixture::new();
+    let mut owners = (1..=9).map(signer).collect::<Vec<_>>();
+    owners.sort_by_key(PrivateKeySigner::address);
+    let config = ConfigurableAccountConfig {
+        salt: B256::repeat_byte(9),
+        version: 0,
+        threshold: 9,
+        owners: owners
+            .iter()
+            .enumerate()
+            .map(|(index, owner)| ConfigurableAccountOwner {
+                owner: owner.address(),
+                weight: if index == 0 { 2 } else { 1 },
+            })
+            .collect(),
+    };
+    let account = config.derive_account().unwrap();
+    seed_account(&mut f, account, false);
+    let tx = aa_tx(0, vec![f.getter()]);
+    let digest = configurable_account_digest(tx.signature_hash(), account, config.version);
+    let approvals = owners[..8]
+        .iter()
+        .map(|owner| PrimitiveSignature::Secp256k1(owner.sign_hash_sync(&digest).unwrap()))
+        .collect();
+    let signature =
+        ConfigurableAccountSignature::try_new(account, config.clone(), approvals).unwrap();
+    let result = f.run_as(
+        account,
+        &tx.into_signed(TempoSignature::ConfigurableAccount(signature)),
+    );
+    assert!(result.status, "{result:?}");
+    assert_eq!(
+        decode_config_commitment(&f.info(account).unwrap().extension, TempoHardfork::T14).unwrap(),
+        config.commitment().unwrap()
+    );
+}
+
+/// A transaction rejected for too little intrinsic gas or an unpaid fee does not register the
+/// account's configuration; the first valid one does.
+#[test]
+fn native_rejected_transaction_does_not_register() {
+    let mut f = Fixture::new();
+    let account = f.account;
+    let low_gas = configurable_account_signed(
+        &f,
+        TempoTransaction {
+            gas_limit: 21_000,
+            ..aa_tx(3, vec![f.getter()])
+        },
+    );
+    let error = handler_rejection(&mut f, &low_gas, account);
+    assert!(
+        matches!(error, HandlerError::IntrinsicGasTooLow { .. }),
+        "{error:?}"
+    );
+    // The account holds no fee token, so collecting the fee fails after validation.
+    let unpaid = configurable_account_signed(
+        &f,
+        TempoTransaction {
+            max_fee_per_gas: 1_000_000_000_000,
+            fee_token: Some(PATH_USD_ADDRESS),
+            ..aa_tx(3, vec![f.getter()])
+        },
+    );
+    let error = rejection(&mut f, &unpaid, account);
+    assert!(
+        matches!(error, TempoInvalidTransaction::CollectFeePreTx(_)),
+        "{error:?}"
+    );
+    assert!(f.commitment().is_zero());
+    let result = f.run(&f.signed(3, vec![f.getter()]));
+    assert!(result.status, "{result:?}");
+    assert_eq!(f.commitment(), f.config.commitment().unwrap());
+}
+
+#[test]
+fn native_invalid_quorum_is_rejected_at_block() {
+    let mut f = Fixture::new();
+    let account = f.account;
+    // A block carries the sender, so execution checks the quorum itself: an approval from a key
+    // that is not an owner must not authorize the transaction.
+    let stranger = signer(0x77);
+    let tx =
+        configurable_account_signed_by(account, &f.config, &stranger, aa_tx(3, vec![f.getter()]));
+    assert_eq!(
+        rejection(&mut f, &tx, account),
+        TempoInvalidTransaction::ConfigurableAccount(ConfigurableAccountError::Quorum(
+            tempo_primitives::transaction::ConfigurableAccountQuorumError::SignerNotOwner
+        ))
+    );
+    // The rejection consumed no nonce, so the owners' approval of the same nonce still runs.
+    let result = f.run(&f.signed(3, vec![f.getter()]));
+    assert!(result.status, "{result:?}");
 }

@@ -4,7 +4,14 @@ use alloy_primitives::{Address, B256, Bytes, Signature, U256, address, b256, kec
 use alloy_rlp::{Decodable, Encodable, Error as RlpError, Header, decode_exact};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
+use p256::{
+    ecdsa::{
+        Signature as P256Signature, SigningKey as P256SigningKey, signature::hazmat::PrehashSigner,
+    },
+    elliptic_curve::rand_core::OsRng,
+};
 use proptest::prelude::*;
+use sha2::{Digest, Sha256};
 use tempo_primitives::transaction::{
     CONFIGURABLE_ACCOUNT_CONFIG_DOMAIN, CONFIGURABLE_ACCOUNT_DOMAIN,
     CONFIGURABLE_ACCOUNT_SIGNATURE_DOMAIN, ConfigurableAccountConfig,
@@ -13,8 +20,11 @@ use tempo_primitives::transaction::{
     ConfigurableAccountWeightAccumulator, KeychainSignature,
     MAX_CONFIGURABLE_ACCOUNT_OWNER_SIGNATURE_BYTES, MAX_CONFIGURABLE_ACCOUNT_OWNERS,
     MAX_CONFIGURABLE_ACCOUNT_SIGNATURES, PrimitiveSignature, SIGNATURE_TYPE_CONFIGURABLE_ACCOUNT,
-    TempoSignature, configurable_account_digest,
-    tt_signature::{SIGNATURE_TYPE_WEBAUTHN, WebAuthnSignature},
+    TempoSignature, configurable_account_digest, derive_p256_address,
+    tt_signature::{
+        P256SignatureWithPreHash, SIGNATURE_TYPE_KEYCHAIN, SIGNATURE_TYPE_KEYCHAIN_V2,
+        SIGNATURE_TYPE_WEBAUTHN, WebAuthnSignature, normalize_p256_s,
+    },
 };
 
 /// An encoding that configurable account signature decoding rejects, with the error it reports.
@@ -622,6 +632,39 @@ fn sixty_five_byte_owners_remain_untyped() {
 }
 
 #[test]
+fn signature_bytes_dispatch_on_length_then_type_byte() {
+    let too_short = "Signature data too short: expected type identifier + signature data";
+    for first in [
+        SIGNATURE_TYPE_KEYCHAIN,
+        SIGNATURE_TYPE_KEYCHAIN_V2,
+        SIGNATURE_TYPE_CONFIGURABLE_ACCOUNT,
+    ] {
+        assert_eq!(TempoSignature::from_bytes(&[first]), Err(too_short));
+        let lone_inner = [
+            &[SIGNATURE_TYPE_KEYCHAIN_V2][..],
+            indexed_owner(3).as_slice(),
+            &[first],
+        ]
+        .concat();
+        assert_eq!(TempoSignature::from_bytes(&lone_inner), Err(too_short));
+
+        let mut untyped = owner_approval().to_bytes().to_vec();
+        untyped[0] = first;
+        assert_eq!(
+            TempoSignature::from_bytes(&untyped),
+            Ok(TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                Signature::try_from(untyped.as_slice()).unwrap()
+            )))
+        );
+    }
+
+    assert_eq!(
+        TempoSignature::from_bytes(&[SIGNATURE_TYPE_CONFIGURABLE_ACCOUNT, 0xff, 0xff]),
+        Err("Invalid configurable account signature RLP")
+    );
+}
+
+#[test]
 fn configurable_account_hashes_follow_vectors_and_documented_layout() {
     let inner_digest = B256::repeat_byte(0x42);
 
@@ -1033,8 +1076,8 @@ fn configurable_account_commitment_reports_the_first_broken_rule() {
 #[cfg(feature = "serde")]
 mod serde_json_and_binary {
     use super::{
-        ConfigurableAccountSignature, MalformedEncoding, RlpError, current_config, indexed_owner,
-        malformed_configurable_account_encodings, owner_approval,
+        ConfigurableAccountSignature, MalformedEncoding, RlpError, TempoSignature, current_config,
+        indexed_owner, malformed_configurable_account_encodings, owner_approval,
     };
     use alloy_primitives::{Address, Bytes};
     use serde::{
@@ -1044,7 +1087,7 @@ mod serde_json_and_binary {
             value::{BorrowedBytesDeserializer, Error as DeError},
         },
     };
-    use serde_json::{from_value, to_value};
+    use serde_json::{from_value, json, to_value};
 
     fn decode_binary_configurable_account_signature(
         bytes: &[u8],
@@ -1103,6 +1146,24 @@ mod serde_json_and_binary {
             );
         }
     }
+
+    #[test]
+    fn tempo_signature_json_rejects_malformed_bytes_and_structured_form() {
+        for MalformedEncoding { case, encoded, .. } in malformed_configurable_account_encodings() {
+            let json = to_value(Bytes::from(encoded)).unwrap();
+            assert!(from_value::<TempoSignature>(json).is_err(), "{case}");
+        }
+
+        let json = json!({
+            "account": Address::repeat_byte(0x11),
+            "signatures": [],
+        });
+        let error = from_value::<TempoSignature>(json).unwrap_err().to_string();
+        assert!(
+            error.contains("did not match any variant") || error.contains("missing field"),
+            "unexpected error: {error}"
+        );
+    }
 }
 
 proptest! {
@@ -1148,4 +1209,101 @@ proptest! {
             Err(error) => prop_assert_eq!(decoded, Err(error)),
         }
     }
+}
+
+#[test]
+fn tempo_signature_size_counts_each_allocation_once() {
+    for count in [1, MAX_CONFIGURABLE_ACCOUNT_SIGNATURES] {
+        for data_len in [0, 64] {
+            let approval = if data_len == 0 {
+                PrimitiveSignature::default()
+            } else {
+                PrimitiveSignature::WebAuthn(WebAuthnSignature {
+                    webauthn_data: vec![0xff; data_len].into(),
+                    r: B256::ZERO,
+                    s: B256::ZERO,
+                    pub_key_x: B256::ZERO,
+                    pub_key_y: B256::ZERO,
+                })
+            };
+            let mut config = configurable_account_config(0, 1, &[(indexed_owner(2), 1)]);
+            config.owners.reserve(1);
+            let mut approvals = vec![approval; count];
+            approvals.reserve(1);
+            let owners_capacity = config.owners.capacity();
+            let approvals_capacity = approvals.capacity();
+            let signature = ConfigurableAccountSignature::try_new(
+                config.derive_account().unwrap(),
+                config,
+                approvals,
+            )
+            .unwrap();
+
+            assert_eq!(
+                TempoSignature::ConfigurableAccount(signature).size(),
+                1 + size_of::<ConfigurableAccountSignature>()
+                    + owners_capacity * size_of::<ConfigurableAccountOwner>()
+                    + approvals_capacity * size_of::<PrimitiveSignature>()
+                    + count * data_len,
+            );
+        }
+    }
+}
+
+#[test]
+fn noncanonical_p256_owner_prehash_flag_canonicalizes() {
+    // Preserve lenient P256 flag decoding inside a configurable account envelope while ensuring
+    // its re-encoding uses the canonical flag and its owner approval remains valid.
+    let signing_key = P256SigningKey::random(&mut OsRng);
+    let encoded_point = signing_key.verifying_key().to_encoded_point(false);
+    let pub_key_x = B256::from_slice(encoded_point.x().unwrap().as_ref());
+    let pub_key_y = B256::from_slice(encoded_point.y().unwrap().as_ref());
+    let owner = derive_p256_address(&pub_key_x, &pub_key_y);
+    let config = configurable_account_config(0, 1, &[(owner, 1)]);
+    let account = config.derive_account().unwrap();
+    let digest = configurable_account_digest(B256::repeat_byte(0x42), account, 0);
+
+    let prehashed = B256::from_slice(Sha256::digest(digest).as_ref());
+    let signature: P256Signature = signing_key.sign_prehash(prehashed.as_slice()).unwrap();
+    let (r, s) = signature.split_bytes();
+    let canonical_signature = PrimitiveSignature::P256(P256SignatureWithPreHash {
+        r: B256::from_slice(&r),
+        s: normalize_p256_s(&s).expect("p256 crate produces valid s"),
+        pub_key_x,
+        pub_key_y,
+        pre_hash: true,
+    })
+    .to_bytes();
+    assert_eq!(
+        canonical_signature[canonical_signature.len() - 1],
+        1,
+        "test setup should use canonical pre_hash=true encoding"
+    );
+
+    let mut noncanonical_signature = canonical_signature.to_vec();
+    let flag_index = noncanonical_signature.len() - 1;
+    noncanonical_signature[flag_index] = 2;
+
+    let envelope = |approval| {
+        let mut encoded = vec![SIGNATURE_TYPE_CONFIGURABLE_ACCOUNT];
+        encoded.extend(encoded_configurable_account_signature(
+            account,
+            &config,
+            vec![approval],
+        ));
+        encoded
+    };
+    let decoded = TempoSignature::from_bytes(&envelope(noncanonical_signature))
+        .expect("noncanonical pre_hash flag decodes leniently");
+    assert_eq!(
+        decoded.to_bytes(),
+        envelope(canonical_signature.to_vec()),
+        "noncanonical owner approval re-encodes to the canonical configurable account envelope"
+    );
+    assert_eq!(
+        decoded.as_configurable_account().unwrap().signatures()[0]
+            .recover_signer(&digest)
+            .unwrap(),
+        owner
+    );
 }
