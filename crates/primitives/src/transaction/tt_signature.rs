@@ -793,11 +793,6 @@ impl TempoSignature {
         matches!(self, Self::Keychain(_))
     }
 
-    /// Check if this is a configurable account signature.
-    pub const fn is_configurable_account(&self) -> bool {
-        matches!(self, Self::ConfigurableAccount(_))
-    }
-
     /// Check if this is a legacy V1 Keychain signature (deprecated at T1C).
     pub fn is_legacy_keychain(&self) -> bool {
         matches!(self, Self::Keychain(k) if k.is_legacy())
@@ -842,6 +837,11 @@ impl TempoSignature {
             Self::ConfigurableAccount(configurable_account_sig) => Some(configurable_account_sig),
             _ => None,
         }
+    }
+
+    /// Check if this is a configurable account signature.
+    pub const fn is_configurable_account(&self) -> bool {
+        matches!(self, Self::ConfigurableAccount(_))
     }
 }
 
