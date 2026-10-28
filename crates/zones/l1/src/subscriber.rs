@@ -578,7 +578,11 @@ fn config_commitment_invalidation_account(log: &alloy_rpc_types_eth::Log) -> Opt
     let topic0 = log.topic0()?;
     (*topic0 == IConfigurableAccount::ConfigurableAccountConfigUpdated::SIGNATURE_HASH
         || *topic0 == IConfigurableAccount::AccountUpgraded::SIGNATURE_HASH)
-        .then(|| log.topics().get(1).map(|account| Address::from_word(*account)))
+        .then(|| {
+            log.topics()
+                .get(1)
+                .map(|account| Address::from_word(*account))
+        })
         .flatten()
 }
 

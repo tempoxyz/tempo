@@ -442,7 +442,9 @@ impl<L1: L1StorageReader> L1StorageReader for RecordingL1StorageReader<L1> {
         account: Address,
         block_number: u64,
     ) -> Result<B256, zone_precompiles::L1StateError> {
-        let commitment = self.inner.read_l1_config_commitment(account, block_number)?;
+        let commitment = self
+            .inner
+            .read_l1_config_commitment(account, block_number)?;
         self.reads
             .lock()
             .expect("L1 read recorder lock poisoned")
