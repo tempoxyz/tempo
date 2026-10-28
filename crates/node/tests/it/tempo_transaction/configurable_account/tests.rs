@@ -1202,8 +1202,12 @@ async fn retired_root_leaves_unrelated_pending_transactions_valid() -> eyre::Res
             .ok_or_else(|| eyre!("{what} not included"))?;
         assert!(receipt.status(), "{what}: {receipt:?}");
     }
-    // The entry was skipped: no delegation, and the nonce is the migration's alone.
-    assert!(provider.get_code_at(account.address).await?.is_empty());
+    // The entry was skipped: no delegation, only the migration's marker, and the nonce is the
+    // migration's alone.
+    assert_eq!(
+        provider.get_code_at(account.address).await?,
+        Bytes::from_static(&[0xef])
+    );
     assert_eq!(
         provider.get_transaction_count(account.address).await?,
         account.nonce + 1
