@@ -34,8 +34,8 @@ use zone_sequencer::{
     HardforkProverAddress, MAX_WITHDRAWAL_BATCH_GAS, ProverAddresses, WithdrawalBatchLimits,
 };
 
-const MAX_LOGS_PER_RESPONSE: u64 = 1_000_000;
-const MAX_BLOCKS_PER_FILTER: u64 = 1_000_000;
+const MAX_LOGS_PER_RESPONSE: u64 = 20_000;
+const MAX_BLOCKS_PER_FILTER: u64 = 100_000;
 const L1_OFFLINE: &str = "l1.offline";
 /// Subcommands that build the CLI EVM config to execute zone blocks.
 const BLOCK_EXECUTION_SUBCOMMANDS: [&str; 3] = ["import", "re-execute", "stage"];
