@@ -1,0 +1,6 @@
+# Zone -> zone transfers between exactly one source and one target portal, to find where a
+# single A -> B route saturates (A's portal, B's portal and the shared messenger are all hot).
+# Same fixtures, knobs and access modes as zone-to-zone.yml; the helper pins two portals
+# (TXGEN_ZONE_COUNT is ignored) and sends every transfer from portal 0 to portal 1. Compare
+# against zone-to-zone, which spreads transfers over a TPS-sized ring of portals.
+include: zone-to-zone.yml

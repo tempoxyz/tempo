@@ -113,8 +113,8 @@ impl<L1: L1StorageReader> TxHandler<TempoEvmTypes, TempoTxEnv, TxResult<TempoEvm
         mut request: TxRequest<'_, '_, TempoEvmTypes, TempoTxEnv>,
     ) -> HandlerResult<()> {
         let _context = self.enter(&mut request)?;
-        let transaction = Recovered::new_unchecked(request.envelope.clone(), request.tx.signer());
-        self.inner.validate(&transaction, request.host)
+        let transaction = Recovered::new_unchecked(request.envelope, request.tx.signer());
+        self.inner.validate(transaction, request.host)
     }
 
     fn execute(
@@ -122,8 +122,8 @@ impl<L1: L1StorageReader> TxHandler<TempoEvmTypes, TempoTxEnv, TxResult<TempoEvm
         mut request: TxRequest<'_, '_, TempoEvmTypes, TempoTxEnv>,
     ) -> HandlerResult<TxResult<TempoEvmTypes>> {
         let _context = self.enter(&mut request)?;
-        let transaction = Recovered::new_unchecked(request.envelope.clone(), request.tx.signer());
-        let result = self.inner.execute(&transaction, request.host)?;
+        let transaction = Recovered::new_unchecked(request.envelope, request.tx.signer());
+        let result = self.inner.execute(transaction, request.host)?;
         validate_journal(request.host.state())
             .map_err(|error| HandlerError::Fatal(AnyError::new(error)))?;
         Ok(result)

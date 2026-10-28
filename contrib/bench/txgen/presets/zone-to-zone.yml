@@ -1,0 +1,125 @@
+# Zone -> zone transfers through withdrawal callbacks (zones/specs/spec.md "Withdrawal
+# Callbacks", "Zone-to-Zone Transfers"). Each zone_to_zone transaction settles a zone A batch
+# committing one callback withdrawal to a gateway, processes it (A's portal pays the shared
+# messenger, which pays the gateway and calls onWithdrawalReceived; the gateway deposits into
+# zone B's portal), then settles zone B's deposit. zone_withdraw is a plain withdrawal on the
+# same portals. The helper expands portals and user templates; payloads are synthetic.
+#
+# Portals run the production ZonePortal runtime. Fixture portals are not ZoneFactory-registered,
+# so a fixture messenger (zones/ZoneToZoneFixture.sol) stands in for the shared ZoneMessenger;
+# verification is a dummy that always passes. Zone execution and proving are excluded.
+#
+# Access modes (TXGEN_ZONE_TO_ZONE_ACCESS):
+# - closed (default; all live mainnet zones): a callback must append a deposit to the SOURCE
+#   portal or the portal reverts it (CallbackDidNotReturnToZone) and bounces the withdrawal back
+#   to zone A. A pure A -> B route therefore always bounces; the gateway deposits 1 unit to B and
+#   returns 1 unit to A, which uses A's 20-deposit withdrawal reserve.
+# - open: source and target portals in open access mode; no return deposit.
+# Gateway mode is on in both; the gateway holds each portal's CallbackGateway role.
+#
+# Knobs: TXGEN_ZONE_TO_ZONE_SHARE (zone -> zone percent of workload gas, default 100; the rest
+# is plain withdrawals; mix weights are gas shares), TXGEN_ZONE_TO_ZONE_CALLBACK_GAS (callback gasLimit, default 1.5M)
+# and TXGEN_ZONE_TO_ZONE_GAS_LIMIT (transaction gas limit, default 2.5M). Portals form a ring
+# (portal i sends to i + 1); zone-to-zone-hot pins one source and one target portal.
+#
+# Limits: net gas per transfer is ~320K (open) and ~370K (closed) on an anvil T13 replay, but
+# Tempo charges new-slot state gas before refunds, and the messenger's and gateway's balance and
+# the gateway's allowance go 0 -> n -> 0 on every transfer, so a transfer needs ~2M (open) to
+# ~2.5M (closed) of gas limit and a closed callback ~1.2M of gasLimit; below that it bounces.
+# Each portal's first transfer creates queue state (~5M), so setup warms every pair once. A's
+# withdrawal batch here is one item; processWithdrawals caps a batch at 230 minus A's
+# unprocessed deposits. B's public deposit cap (210 outstanding, TIP-1096) does not bind
+# because B settles in the same transaction; a real B bounds transfers per B settlement interval
+# at 210. Every transfer writes the shared messenger's reentrancy slot.
+#
+# The pipeline counts WithdrawalProcessed(callbackSuccess) per receipt: delivered transfers,
+# bounce-backs, reverts and gas per transfer go to the run log and the JSON report.
+chain_id: 1337
+gas:
+  max_fee_per_gas: 100000000000
+  max_priority_fee_per_gas: 100000000000
+accounts:
+  users:
+    mnemonic: "test test test test test test test test test test test junk"
+    range:
+      - 0
+      - ${TXGEN_ACCOUNTS}
+  deployer:
+    mnemonic: "test test test test test test test test test test test junk"
+    index: 100001
+artifacts:
+  ERC20: ../tip20.abi.json
+  CallbackPortalFixture: ../zones/CallbackPortalFixture.json
+  ZoneMessengerFixture: ../zones/ZoneMessengerFixture.json
+  ZoneToZoneGatewayFixture: ../zones/ZoneToZoneGatewayFixture.json
+  ZoneToZoneSettlementFixture: ../zones/ZoneToZoneSettlementFixture.json
+setup:
+  steps:
+    - id: settlement
+      deploy:
+        type: eip1559
+        from: {pool: deployer, select: {index: 0}}
+        artifact: ZoneToZoneSettlementFixture
+        gas_limit: 5000000
+    - id: messenger
+      deploy:
+        type: eip1559
+        from: {pool: deployer, select: {index: 0}}
+        artifact: ZoneMessengerFixture
+        gas_limit: 5000000
+    - id: gateway
+      deploy:
+        type: eip1559
+        from: {pool: deployer, select: {index: 0}}
+        artifact: ZoneToZoneGatewayFixture
+        gas_limit: 5000000
+        constructor_args: [{var: setup.messenger.address}, {var: setup.settlement.sender}]
+    # Template for each portal: admin, token, settlement, messenger, gateway, allowlisted
+    # account (bounce-back refunds and closed-mode plain withdrawals), closed access mode.
+    - id: portal
+      deploy:
+        type: eip1559
+        from: {pool: deployer, select: {index: 0}}
+        artifact: CallbackPortalFixture
+        gas_limit: 10000000
+        constructor_args: [{var: setup.settlement.sender}, "0x20c0000000000000000000000000000000000000",
+          {var: setup.settlement.address}, {var: setup.messenger.address}, {var: setup.gateway.address},
+          {var: setup.settlement.sender}, true]
+    # Template for each portal's withdrawal escrow.
+    - id: fund
+      tx:
+        type: tempo
+        from: {pool: deployer, select: {index: 0}}
+        gas_limit: 5000000
+        fee_token: "0x20c0000000000000000000000000000000000000"
+        calls:
+          - to: "0x20c0000000000000000000000000000000000000"
+            abi: ERC20
+            function: transfer
+            args: [{var: setup.portal.address}, 0]
+templates:
+  zone_to_zone:
+    type: tempo
+    from: {pool: users, select: {index: 0}}
+    gas_limit: 2500000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    calls:
+      - to: {var: setup.settlement.address}
+        abi: ZoneToZoneSettlementFixture
+        function: transfer
+        # source portal, target portal, token, gateway, return amount, callback gasLimit
+        args: [{var: setup.portal.address}, {var: setup.portal.address}, "0x20c0000000000000000000000000000000000000",
+          {var: setup.gateway.address}, 1, 1500000]
+  zone_withdraw:
+    type: tempo
+    from: {pool: users, select: {index: 0}}
+    gas_limit: 2500000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    calls:
+      - to: {var: setup.settlement.address}
+        abi: ZoneToZoneSettlementFixture
+        function: settle
+        args: [{var: setup.portal.address}, "0x20c0000000000000000000000000000000000000", null, true]
+mix:
+  - template: zone_to_zone
+    weight: 100
