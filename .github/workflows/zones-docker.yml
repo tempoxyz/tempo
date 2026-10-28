@@ -76,7 +76,7 @@ on:
         type: string
         default: ""
       release_tag:
-        description: "Existing zones/vX.Y.Z or prover/vX.Y.Z tag to build and publish (dispatch from main)"
+        description: "Existing zones/vX.Y.Z or prover/vX.Y.Z tag to build and publish"
         type: string
         default: ""
   workflow_call:
@@ -453,18 +453,14 @@ jobs:
         env:
           TAG_REF: ${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
           RELEASE_TAG: ${{ inputs.release_tag }}
-          WORKFLOW_REF: ${{ github.ref }}
           NIGHTLY: ${{ inputs.nightly }}
         run: |
           set -euo pipefail
 
-          # A dispatched release tag runs main's copy of these checks against
-          # that tag, for tags pushed before a fix to this workflow landed.
+          # A dispatched release tag runs the dispatched branch's copy of these
+          # checks against that tag, for tags pushed before a fix to this
+          # workflow landed.
           if [[ -n "${RELEASE_TAG:-}" ]]; then
-            [[ "$WORKFLOW_REF" == refs/heads/main ]] || {
-              echo "release_tag must be dispatched from main" >&2
-              exit 1
-            }
             [[ "${NIGHTLY:-false}" != true ]] || {
               echo "release_tag cannot be combined with nightly" >&2
               exit 1
