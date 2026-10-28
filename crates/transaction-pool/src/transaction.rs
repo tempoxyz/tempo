@@ -10,7 +10,8 @@ use alloy_eips::{
     eip7702::SignedAuthorization,
 };
 use alloy_primitives::{
-    Address, B256, Bytes, TxHash, TxKind, U256, bytes, keccak256, map::AddressMap,
+    Address, B256, Bytes, TxHash, TxKind, U256, bytes, keccak256,
+    map::{AddressMap, AddressSet},
 };
 use evm2::registry::HandlerError;
 use reth_evm::execute::WithTxEnv;
@@ -519,6 +520,31 @@ impl TempoPooledTransaction {
             self.fee_payer().unwrap_or(sender),
             |_slot| {},
         );
+    }
+
+    /// Whether any account in `accounts` is an authority of this transaction: the sender (unless
+    /// an access key signs for it), the key authorization signer, a separate fee payer or the
+    /// access key.
+    pub(crate) fn has_authority_in(&self, accounts: &AddressSet) -> bool {
+        let Some(tx) = self.inner().as_aa() else {
+            return accounts.contains(self.sender_ref());
+        };
+        let sender = (!tx.signature().is_keychain()).then(|| *self.sender_ref());
+        // Recovery fails only for a transaction that validation already rejects.
+        let grant_signer = tx
+            .tx()
+            .key_authorization
+            .as_ref()
+            .and_then(|authorization| authorization.recover_signer().ok());
+        let fee_payer = tx
+            .tx()
+            .fee_payer_signature
+            .and_then(|_| self.fee_payer().ok());
+        let access_key = self.keychain_subject().map(|subject| subject.key_id);
+        [sender, grant_signer, fee_payer, access_key]
+            .into_iter()
+            .flatten()
+            .any(|authority| accounts.contains(&authority))
     }
 }
 
