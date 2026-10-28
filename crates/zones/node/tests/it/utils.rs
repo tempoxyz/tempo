@@ -2731,6 +2731,21 @@ impl L1TestNode {
     pub(crate) async fn start_with(
         f: impl FnOnce(&mut NodeConfig<TempoChainSpec>),
     ) -> eyre::Result<Self> {
+        Self::launch(f, false).await
+    }
+
+    /// Start an L1 dev node, like [`Self::start_with`], whose RPC refuses every state proof
+    /// (`eth_getProof` and `eth_getMultiProof`), including proofs at the tip.
+    pub(crate) async fn start_without_state_proofs(
+        f: impl FnOnce(&mut NodeConfig<TempoChainSpec>),
+    ) -> eyre::Result<Self> {
+        Self::launch(f, true).await
+    }
+
+    async fn launch(
+        f: impl FnOnce(&mut NodeConfig<TempoChainSpec>),
+        refuse_state_proofs: bool,
+    ) -> eyre::Result<Self> {
         let tasks = Runtime::test();
 
         let genesis: serde_json::Value =
@@ -2763,6 +2778,22 @@ impl L1TestNode {
         let node_handle = NodeBuilder::new(node_config)
             .testing_node(tasks.clone())
             .node(tempo_node::node::TempoNode::default())
+            .extend_rpc_modules(move |ctx| {
+                if refuse_state_proofs {
+                    let mut module = jsonrpsee::RpcModule::new(());
+                    for method in ["eth_getProof", "eth_getMultiProof"] {
+                        module.register_method(method, |_, _, _| {
+                            Err::<(), _>(jsonrpsee::types::ErrorObjectOwned::owned(
+                                -32000,
+                                "state proofs unavailable",
+                                None::<()>,
+                            ))
+                        })?;
+                    }
+                    ctx.modules.replace_configured(module)?;
+                }
+                Ok(())
+            })
             .launch_with_debug_capabilities()
             .await?;
 
@@ -3937,8 +3968,8 @@ pub(crate) async fn start_real_p2p_cluster_with_settlement_proving(
     .cluster)
 }
 
-/// Start a three-node settlement-proving cluster, before T15, whose L1 serves no historical state
-/// proofs, so collecting any Zone block's witness fails while the L1 subscriber keeps observing
+/// Start a three-node settlement-proving cluster, before T15, whose L1 serves no state proofs,
+/// so collecting any Zone block's witness fails while the L1 subscriber keeps observing
 /// headers and portal events.
 ///
 /// Settlement falls back to the `NoProof` verifier, as in
@@ -4157,16 +4188,18 @@ async fn start_real_p2p_cluster_inner(
         "the RPC-only node does not support proxied P2P links"
     );
 
-    let l1 = L1TestNode::start_with(|config| {
+    let configure = |config: &mut NodeConfig<TempoChainSpec>| {
         if let Some(block_time) = l1_block_time {
             config.dev.block_time = Some(block_time);
         }
-        if l1_proofs_unavailable {
-            // Proofs are served only at the L1 tip, which no Zone checkpoint ever is.
-            config.rpc.rpc_eth_proof_window = 0;
-        }
-    })
-    .await?;
+    };
+    // Refuse proofs outright: a proof window of 0 still serves the tip, and a Zone block whose
+    // witness is collected before the next L1 block anchors to the tip.
+    let l1 = if l1_proofs_unavailable {
+        L1TestNode::start_without_state_proofs(configure).await?
+    } else {
+        L1TestNode::start_with(configure).await?
+    };
     let direct_url = l1.ws_url().to_string();
     let (l1_proxies, l1_rpc_urls) = match proxy_mode {
         L1ProxyMode::Direct => (Vec::new(), vec![direct_url; active_nodes]),
