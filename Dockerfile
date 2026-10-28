@@ -19,7 +19,6 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=cargo-
     cargo build --profile ${RUST_PROFILE} \
         --bin tempo --features "${RUST_FEATURES},localnet" \
         --bin tempo-localnet --features "${RUST_FEATURES},localnet" \
-        --bin tempo-sidecar \
         --bin tempo-xtask
 
 # Reuse the regular build artifacts, enabling custom PCRs only for the devnet binary.
@@ -57,15 +56,13 @@ ARG RUST_PROFILE=profiling
 COPY --from=builder /app/target/${RUST_PROFILE}/tempo /usr/local/bin/tempo
 COPY --from=builder /app/target/${RUST_PROFILE}/tempo-localnet /usr/local/bin/tempo-localnet
 EXPOSE 8545
+# Let any UID write the data directory; new volumes inherit this mode.
+RUN chmod 1777 /data
 VOLUME ["/data"]
+# Give non-root users a writable home for caches; root is unaffected.
+ENV HOME=/data
 HEALTHCHECK --interval=2s --timeout=2s --start-period=120s --retries=5 CMD ["/usr/local/bin/tempo-localnet", "--health"]
 ENTRYPOINT ["/usr/local/bin/tempo-localnet"]
-
-# tempo-sidecar
-FROM base AS tempo-sidecar
-ARG RUST_PROFILE=profiling
-COPY --from=builder /app/target/${RUST_PROFILE}/tempo-sidecar /usr/local/bin/tempo-sidecar
-ENTRYPOINT ["/usr/local/bin/tempo-sidecar"]
 
 # tempo-xtask
 FROM base AS tempo-xtask

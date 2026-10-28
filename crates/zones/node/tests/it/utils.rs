@@ -3908,6 +3908,7 @@ pub(crate) async fn start_real_p2p_cluster_with_active_nodes(
         false,
         None,
         None,
+        false,
     )
     .await?
     .cluster)
@@ -3922,6 +3923,45 @@ pub(crate) async fn start_real_p2p_cluster_with_settlement_proving(
     withdrawal_batch_interval_blocks: u64,
     active_nodes: usize,
 ) -> eyre::Result<RealP2pCluster> {
+    Ok(start_real_p2p_cluster_inner(
+        withdrawal_batch_interval_blocks,
+        active_nodes,
+        L1ProxyMode::Direct,
+        None,
+        false,
+        Some(unreachable_settlement_prover()?),
+        None,
+        false,
+    )
+    .await?
+    .cluster)
+}
+
+/// Start a three-node settlement-proving cluster, before T15, whose L1 serves no historical state
+/// proofs, so collecting any Zone block's witness fails while the L1 subscriber keeps observing
+/// headers and portal events.
+///
+/// Settlement falls back to the `NoProof` verifier, as in
+/// [`start_real_p2p_cluster_with_settlement_proving`].
+pub(crate) async fn start_real_p2p_cluster_without_l1_proofs(
+    withdrawal_batch_interval_blocks: u64,
+) -> eyre::Result<RealP2pCluster> {
+    Ok(start_real_p2p_cluster_inner(
+        withdrawal_batch_interval_blocks,
+        3,
+        L1ProxyMode::Direct,
+        None,
+        false,
+        Some(unreachable_settlement_prover()?),
+        None,
+        true,
+    )
+    .await?
+    .cluster)
+}
+
+/// Settlement prover routed to an endpoint where nothing listens, so every proof fails fast.
+fn unreachable_settlement_prover() -> eyre::Result<ZoneProverConfig> {
     let unreachable = TempoHardfork::VARIANTS
         .iter()
         .map(|&hardfork| zone_sequencer::HardforkProverAddress {
@@ -3937,17 +3977,7 @@ pub(crate) async fn start_real_p2p_cluster_with_settlement_proving(
     }))?;
     let prover_addresses = zone_sequencer::ProverAddresses::new(unreachable, Some(&policy))?
         .expect("hardforks are non-empty");
-    Ok(start_real_p2p_cluster_inner(
-        withdrawal_batch_interval_blocks,
-        active_nodes,
-        L1ProxyMode::Direct,
-        None,
-        false,
-        Some(ZoneProverConfig::Settlement(prover_addresses)),
-        None,
-    )
-    .await?
-    .cluster)
+    Ok(ZoneProverConfig::Settlement(prover_addresses))
 }
 
 /// Start the full three-member real-L1 cluster with one shared, controllable L1 proxy. Existing
@@ -3964,6 +3994,7 @@ pub(crate) async fn start_real_p2p_cluster_with_l1_proxy(
         false,
         None,
         None,
+        false,
     )
     .await?;
     Ok((
@@ -3988,6 +4019,7 @@ pub(crate) async fn start_real_p2p_cluster_with_per_node_l1_proxies(
         false,
         None,
         None,
+        false,
     )
     .await?;
     let proxies: [TcpChaosProxy; 3] = parts
@@ -4011,6 +4043,7 @@ pub(crate) async fn start_real_p2p_network_chaos_cluster(
         true,
         None,
         None,
+        false,
     )
     .await?;
     let proxies = parts
@@ -4090,6 +4123,7 @@ pub(crate) async fn start_real_p2p_cluster_with_deposit_allowlist(
         false,
         None,
         Some(seed),
+        false,
     )
     .await?;
     let allowlist = parts
@@ -4103,6 +4137,7 @@ pub(crate) async fn start_real_p2p_cluster_with_deposit_allowlist(
     })
 }
 
+#[expect(clippy::too_many_arguments, reason = "test cluster knobs")]
 async fn start_real_p2p_cluster_inner(
     withdrawal_batch_interval_blocks: u64,
     active_nodes: usize,
@@ -4111,6 +4146,7 @@ async fn start_real_p2p_cluster_inner(
     proxy_p2p: bool,
     prover_config: Option<ZoneProverConfig>,
     deposit_allowlist_seed: Option<&[Address]>,
+    l1_proofs_unavailable: bool,
 ) -> eyre::Result<RealP2pClusterParts> {
     eyre::ensure!(
         (2..=3).contains(&active_nodes),
@@ -4121,12 +4157,16 @@ async fn start_real_p2p_cluster_inner(
         "the RPC-only node does not support proxied P2P links"
     );
 
-    let l1 = match l1_block_time {
-        Some(block_time) => {
-            L1TestNode::start_with(|config| config.dev.block_time = Some(block_time)).await?
+    let l1 = L1TestNode::start_with(|config| {
+        if let Some(block_time) = l1_block_time {
+            config.dev.block_time = Some(block_time);
         }
-        None => L1TestNode::start().await?,
-    };
+        if l1_proofs_unavailable {
+            // Proofs are served only at the L1 tip, which no Zone checkpoint ever is.
+            config.rpc.rpc_eth_proof_window = 0;
+        }
+    })
+    .await?;
     let direct_url = l1.ws_url().to_string();
     let (l1_proxies, l1_rpc_urls) = match proxy_mode {
         L1ProxyMode::Direct => (Vec::new(), vec![direct_url; active_nodes]),
@@ -4200,7 +4240,11 @@ async fn start_real_p2p_cluster_inner(
 
     let portal = ZonePortal::new(portal_address, l1.provider());
     let zone_id = portal.zoneId().call().await?;
-    let (genesis, _) = build_l1_anchored_genesis(l1.http_url(), portal_address).await?;
+    let (mut genesis, _) = build_l1_anchored_genesis(l1.http_url(), portal_address).await?;
+    if l1_proofs_unavailable {
+        // Keep the Zone before T15, where a block may become canonical without its witness.
+        set_tempo_fork(&mut genesis, TempoHardfork::T15, u64::MAX);
+    }
     let chain_id = next_unique_chain_id();
 
     let config_dir = std::env::temp_dir().join(format!(
