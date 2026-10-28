@@ -6,7 +6,7 @@ use alloy_primitives::{Address, U256};
 use invariants_core::{check, ensure};
 
 use super::{Books, Burn, MIN_LIQUIDITY, Mint, PoolState, RebalanceSwap, Unminted};
-use crate::{Check, Checked, Replay, Step, StepChecked, Verdict, or_text};
+use crate::{Check, Checked, Replay, Step, StepChecked, Tx, Verdict, or_text};
 
 pub const FEE_CUSTODY: &str = "TEMPO-FEE5";
 pub const LP_SUPPLY: &str = "TEMPO-AMM14";
@@ -78,12 +78,12 @@ pub const CHECKS: &[Check<Books>] = &[
 ];
 
 /// The step's effect on each pool the fee manager's books read before and after it.
-pub const STEP_CHECKS: &[Check<Step<Books>>] = &[
+pub const STEP_CHECKS: &[Check<Step<Books, Option<Tx>>>] = &[
     // The LP supply grows by exactly the minted liquidity, plus `MIN_LIQUIDITY` on a pool's first
     // mint.
     check! {
         id: MINT_SUPPLY,
-        over: |step: &Step<Books>| &step.post.pools,
+        over: |step: &Step<Books, Option<Tx>>| &step.post.pools,
         judge: |s, pool| {
             let want = match minted(s, pool)? {
                 Ok(want) => want,
@@ -100,7 +100,7 @@ pub const STEP_CHECKS: &[Check<Step<Books>>] = &[
     // The recipient's LP balance grows by exactly the liquidity minted to it.
     check! {
         id: MINT_BALANCE,
-        over: |step: &Step<Books>| &step.post.pools,
+        over: |step: &Step<Books, Option<Tx>>| &step.post.pools,
         judge: |s, pool| {
             let want = match minted(s, pool)? {
                 Ok(want) => want,
@@ -112,7 +112,7 @@ pub const STEP_CHECKS: &[Check<Step<Books>>] = &[
     // The validator reserve grows by exactly the validator tokens deposited.
     check! {
         id: MINT_RESERVE,
-        over: |step: &Step<Books>| &step.post.pools,
+        over: |step: &Step<Books, Option<Tx>>| &step.post.pools,
         judge: |s, pool| {
             let want = match minted(s, pool)? {
                 Ok(want) => want,
@@ -147,14 +147,14 @@ impl Checked for Books {
     const CHECKS: &'static [Check<Self>] = CHECKS;
 }
 
-impl StepChecked for Books {
-    const STEP_CHECKS: &'static [Check<Step<Self>>] = STEP_CHECKS;
+impl StepChecked<Option<Tx>> for Books {
+    const STEP_CHECKS: &'static [Check<Step<Self, Option<Tx>>>] = STEP_CHECKS;
 }
 
 /// `pool` as the step's `Mint`s into it predict it from its state before the step, or why it
 /// cannot be predicted. `None` (not armed) unless the step only minted into the pool: no burn,
 /// rebalance or fee swap (which moves the user reserve) touched it.
-fn minted(step: &Step<Books>, pool: &PoolState) -> Option<Result<PoolState, Unminted>> {
+fn minted(step: &Step<Books, Option<Tx>>, pool: &PoolState) -> Option<Result<PoolState, Unminted>> {
     let pre = step
         .pre
         .pools

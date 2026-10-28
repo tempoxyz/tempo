@@ -19,7 +19,7 @@ use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS};
 use tempo_evm::evm::TempoEvm;
 use tempo_fuzz_types::{InvariantFailure, InvariantScope};
-use tempo_invariants::{all, dex, fee_amm, tip20};
+use tempo_invariants::{Tx, account, all, dex, fee_amm, tip20};
 use tempo_primitives::{TempoBlockEnv, is_tip20_prefix};
 
 use crate::state::{Db, PreStateDb};
@@ -30,16 +30,19 @@ const TIP20_VIEW: &str = "TEMPO-TIP20-VIEW";
 const FEE_VIEW: &str = "TEMPO-FEE-VIEW";
 /// The DEX's views answer.
 const DEX_VIEW: &str = "TEMPO-DEX-VIEW";
+/// The configurable account precompile's views answer.
+const ACCOUNT_VIEW: &str = "TEMPO-ACCOUNT-VIEW";
 
 /// What a transaction step did: its state transitions, not yet applied to the bundle, and its logs.
 pub(crate) struct StepEffects<'a> {
     pub(crate) transitions: &'a TransitionState,
     pub(crate) logs: &'a [Log],
+    pub(crate) tx: Tx,
 }
 
 impl StepEffects<'_> {
     /// The step from `pre` to `post`, models of `contract`.
-    fn step<M>(&self, contract: Address, pre: M, post: M) -> Step<M> {
+    fn step<M>(&self, contract: Address, pre: M, post: M) -> Step<M, Option<Tx>> {
         let changes = self
             .transitions
             .transitions
@@ -59,7 +62,7 @@ impl StepEffects<'_> {
             post,
             changes,
             logs: self.logs.to_vec(),
-            tx: (),
+            tx: Some(self.tx),
         }
     }
 }
@@ -274,7 +277,7 @@ pub(crate) fn check(
     };
     let mut step = Report::default();
     step.register_any(all());
-    for id in [TIP20_VIEW, FEE_VIEW, DEX_VIEW] {
+    for id in [TIP20_VIEW, FEE_VIEW, DEX_VIEW, ACCOUNT_VIEW] {
         step.counts.entry(id).or_default();
     }
 
@@ -308,6 +311,25 @@ pub(crate) fn check(
             orders: &[],
         };
         reader.check::<dex::Books>(&mut step, at, STABLECOIN_DEX_ADDRESS, DEX_VIEW);
+    }
+    if let Some(effects) = &effects {
+        // A transaction changes a commitment only by changing its account, so the accounts it
+        // changed and its sender are all it can have moved.
+        let mut changed: Vec<Address> = effects
+            .transitions
+            .transitions
+            .keys()
+            .copied()
+            .chain([effects.tx.sender])
+            .collect();
+        changed.sort_unstable();
+        changed.dedup();
+        let at = account::At {
+            precompile: account::CONFIGURABLE_ACCOUNT,
+            accounts: &changed,
+        };
+        let precompile = account::CONFIGURABLE_ACCOUNT;
+        reader.check::<account::Commitments>(&mut step, at, precompile, ACCOUNT_VIEW);
     }
 
     failures.extend(step.violations.drain(..).map(|violation| InvariantFailure {

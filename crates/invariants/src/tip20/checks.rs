@@ -5,7 +5,7 @@ use std::fmt;
 use invariants_core::{check, ensure};
 
 use super::{Ledger, Transfer};
-use crate::{Check, Checked, Replay, Step, StepChecked, Verdict, or_text};
+use crate::{Check, Checked, Replay, Step, StepChecked, Tx, Verdict, or_text};
 
 pub const SUPPLY_CAP: &str = "TEMPO-TIP20-SUPPLY-CAP";
 pub const BALANCE_SUM: &str = "TEMPO-TIP20-BALANCE-SUM";
@@ -39,13 +39,13 @@ pub const CHECKS: &[Check<Ledger>] = &[
 ];
 
 /// A step's effect on one token, its ledgers read over the same accounts before and after it.
-pub const STEP_CHECKS: &[Check<Step<Ledger>>] = &[
+pub const STEP_CHECKS: &[Check<Step<Ledger, Option<Tx>>>] = &[
     // Each observed balance moves by exactly the step's `Transfer` events into and out of it,
     // never going negative, and the supply by the mints (from the zero address) and burns (to
     // it). A transfer between an observed and an unobserved account moves only the observed side.
     check! {
         id: TRANSFER_EVENTS,
-        over: |step: &Step<Ledger>| [&step.post],
+        over: |step: &Step<Ledger, Option<Tx>>| [&step.post],
         judge: |s, _| {
             let transfers: Vec<Transfer> = s
                 .logs_from(s.post.token)
@@ -75,6 +75,6 @@ impl Checked for Ledger {
     const CHECKS: &'static [Check<Self>] = CHECKS;
 }
 
-impl StepChecked for Ledger {
-    const STEP_CHECKS: &'static [Check<Step<Self>>] = STEP_CHECKS;
+impl StepChecked<Option<Tx>> for Ledger {
+    const STEP_CHECKS: &'static [Check<Step<Self, Option<Tx>>>] = STEP_CHECKS;
 }

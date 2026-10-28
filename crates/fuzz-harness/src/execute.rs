@@ -26,6 +26,7 @@ use tempo_fuzz_types::{
     PreState, StateChanges, TempoBlock, TempoExecutionOutcome, TempoHarnessInput,
     TempoHarnessOutcome, TempoTransactionInput, TransactionOutcome, TxOutcome, TxReceiptOutput,
 };
+use tempo_invariants::Tx;
 use tempo_primitives::{Block, BlockBody, TempoBlockEnv, TempoReceipt, TempoTxEnvelope};
 
 use crate::{
@@ -341,6 +342,7 @@ where
     let basefee = block.header().base_fee_per_gas();
     for (tx_index, tx) in block.transactions_recovered().enumerate() {
         let tx_index = tx_index as u64;
+        let sender = tx.signer();
         let effective_gas_price = tx.effective_gas_price(basefee);
         let result = executor.execute_transaction_without_commit(tx)?;
         let execution = &result.result().result;
@@ -371,12 +373,16 @@ where
             block_index,
             tx_index,
         };
-        let logs = &outputs.receipts.last().expect("pushed above").logs;
+        let receipt = outputs.receipts.last().expect("pushed above");
+        let tx = Tx {
+            sender,
+            success: receipt.outcome == TxOutcome::Success,
+        };
         let tx_changes = step(
             executor,
             &env,
             scope,
-            Some(logs),
+            Some((tx, &receipt.logs)),
             changes,
             &mut outputs.invariant_failures,
             &mut outputs.invariant_report,
@@ -387,13 +393,13 @@ where
 }
 
 /// Ends an execution step: applies its transitions to `changes`, checks invariants at `scope`, and
-/// returns the step's changes. A transaction's step, given its `tx_logs`, is checked only for the
-/// contracts it changed, and also on what it did.
+/// returns the step's changes. A transaction's step, given the transaction and its logs as `tx`,
+/// is checked only for the contracts it changed, and also on what it did.
 fn step<'db, E>(
     executor: &mut E,
     env: &EvmEnv<TempoHardfork, TempoBlockEnv>,
     scope: InvariantScope,
-    tx_logs: Option<&[Log]>,
+    tx: Option<(Tx, &[Log])>,
     changes: &mut BundleState,
     failures: &mut Vec<InvariantFailure>,
     report: &mut Report,
@@ -404,11 +410,11 @@ where
     let db: &mut Db = executor.evm_mut().db_mut();
     let step = state::drain(db);
     let step_changes = state::transition_changes(&step, &db.cache.contracts);
-    let selected =
-        |contract: &Address| tx_logs.is_none() || step.transitions.contains_key(contract);
-    let effects = tx_logs.map(|logs| invariants::StepEffects {
+    let selected = |contract: &Address| tx.is_none() || step.transitions.contains_key(contract);
+    let effects = tx.map(|(tx, logs)| invariants::StepEffects {
         transitions: &step,
         logs,
+        tx,
     });
     invariants::check(db, env, &scope, selected, &[], effects, failures, report);
     changes.apply_transitions_and_create_reverts(step, BundleRetention::PlainState);
