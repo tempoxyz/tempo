@@ -24,7 +24,7 @@ use tempo_contracts::precompiles::{
 };
 use tempo_evm::{StorageActionReplay, StorageActionReplayError, TempoEvmConfig};
 use tempo_precompiles::{
-    error::TempoPrecompileError,
+    configurable_account::CONFIGURABLE_ACCOUNT_CODE_HASH, error::TempoPrecompileError,
     nonce::NonceManager, storage::keccak_cost, tip20::TIP20Token,
 };
 use tempo_primitives::{
@@ -333,6 +333,10 @@ fn assert_upgraded(
     };
     assert_eq!(configurable_account_logs(result), [event.encode_log_data()]);
     assert_eq!(f.commitment(), commitment);
+    assert_eq!(
+        f.info(f.account).unwrap().code_hash,
+        CONFIGURABLE_ACCOUNT_CODE_HASH
+    );
 }
 
 /// Runs the transaction `tx` builds on `f` and asserts it reverts with exactly `error`.
@@ -856,6 +860,11 @@ fn eoa_migration_failure_keeps_fee_and_nonce() {
             "{label}"
         );
         assert_eq!(f.commitment(), B256::ZERO, "{label}");
+        assert_eq!(
+            f.info(account).unwrap().code_hash,
+            KECCAK256_EMPTY,
+            "{label}"
+        );
         assert_eq!(f.info(account).unwrap().nonce, 4, "{label}");
     }
 }
@@ -869,7 +878,7 @@ fn eoa_migration_gas_schedule() {
     ]);
     let params = tempo_gas_params(TempoHardfork::T14);
     // Pinned totals: (owners, gas_used). Legacy and AA primitive transactions cost the same.
-    let pins = [(1, 45_598), (3, 47_770)];
+    let pins = [(1, 275_598), (3, 277_770)];
     for (count, expected) in pins {
         for kind in [RootTx::Legacy, RootTx::Aa] {
             let mut f = Fixture::new();
@@ -899,7 +908,7 @@ fn eoa_migration_gas_schedule() {
             let origin = warm_read;
             let tload = warm_read;
             let account_access = warm_read;
-            let write = 20_000;
+            let write = params.get(GasId::NewAccountCost);
             let log_data = (4 + count as u64 * 2) * 32;
             let log = 375 + 3 * 375 + 8 * log_data;
             let components = intrinsic
