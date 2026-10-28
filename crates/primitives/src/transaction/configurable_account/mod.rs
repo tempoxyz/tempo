@@ -115,6 +115,12 @@ impl ConfigurableAccountConfig {
         CONFIGURABLE_ACCOUNT_DOMAIN.len() + 32 + 2 + self.owners.len() * 21
     }
 
+    /// Hashing gas to derive the account address from this configuration (TIP-1114).
+    /// Returns `None` if the cost overflows `u64`.
+    pub fn derivation_gas(&self) -> Option<u64> {
+        keccak_gas(self.account_preimage_len())
+    }
+
     /// Byte length of the commitment preimage: domain, 32-byte salt, 8-byte version, 1-byte
     /// threshold, 1-byte owner count, and a 20-byte address plus 1-byte weight per owner.
     pub const fn commitment_preimage_len(&self) -> usize {
@@ -234,12 +240,6 @@ impl ConfigurableAccountConfig {
 
     fn account_address(&self) -> Result<Address, ConfigurableAccountConfigError> {
         Ok(Address::from_word(keccak256(self.account_preimage()?)))
-    }
-
-    /// Hashing gas to derive the account address from this configuration (TIP-1114).
-    /// Returns `None` if the cost overflows `u64`.
-    pub fn derivation_gas(&self) -> Option<u64> {
-        keccak_gas(self.account_preimage_len())
     }
 }
 

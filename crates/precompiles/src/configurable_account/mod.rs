@@ -55,7 +55,7 @@ impl ConfigurableAccount {
         owners: &[IConfigurableAccount::ConfigurableAccountOwner],
     ) -> Result<Address> {
         let config = config(salt, 0, threshold, owners);
-        // Reject an invalid configuration before charging the proof hashing gas.
+        // Reject an invalid configuration before charging the derivation gas.
         config.validate()?;
         self.storage.deduct_gas(
             config
