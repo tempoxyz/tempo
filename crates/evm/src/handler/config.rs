@@ -65,6 +65,7 @@ pub const fn tempo_opcode_config<const BASE_SPEC_ID: u32>() -> OpcodeConfig<Temp
     let mut config = OpcodeConfig::base::<TempoConfig<BASE_SPEC_ID>>();
     config.set_instruction::<crate::instructions::millis_timestamp>(0x4f, 0);
     config.set_instruction::<crate::instructions::sstore>(evm2::interpreter::op::SSTORE, 0);
+    config.set_instruction::<crate::instructions::configurable_account>(0xef, 0);
     config
 }
 

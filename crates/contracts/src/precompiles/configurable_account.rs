@@ -67,3 +67,15 @@ sol! {
         error AccountHasCode();
     }
 }
+
+sol! {
+    /// Read-only methods executed at every registered configurable account address.
+    interface IConfigurableAccountShim {
+        /// Returns the ERC-1271 magic value for a valid current-owner witness.
+        function isValidSignature(bytes32 hash, bytes calldata signature) external view returns (bytes4);
+
+        /// Accepts ERC-721 safe transfers and safe mints.
+        function onERC721Received(address operator, address from, uint256 tokenId, bytes calldata data)
+            external view returns (bytes4);
+    }
+}
