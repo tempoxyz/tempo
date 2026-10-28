@@ -12,9 +12,8 @@ use alloy::{
     signers::{local::MnemonicBuilder, utils::secret_key_to_address},
     transports::http::reqwest::Url,
 };
-use alloy_evm::{EvmFactory as _, revm::context::JournalTr};
 use alloy_genesis::{Genesis, GenesisAccount};
-use alloy_primitives::{Address, B256, Keccak256, U256};
+use alloy_primitives::{Address, B256, Keccak256};
 use commonware_codec::Encode;
 use commonware_cryptography::{
     Signer,
@@ -22,12 +21,12 @@ use commonware_cryptography::{
 };
 use commonware_runtime::Clock;
 use commonware_utils::ordered;
+use evm2::bytecode::Bytecode;
 use eyre::{OptionExt as _, WrapErr as _};
 use futures::{StreamExt, future::BoxFuture};
 use reth_chainspec::EthChainSpec;
 use reth_db::mdbx::DatabaseEnv;
 use reth_ethereum::{
-    evm::{primitives::EvmEnv, revm::db::InMemoryDB},
     network::{
         Peers as _,
         api::{NetworkEventListenerProvider, PeerKind, PeersInfo, events::NetworkEvent},
@@ -45,15 +44,14 @@ use tempfile::TempDir;
 use tempo_chainspec::{TempoChainSpec, TempoHardfork};
 use tempo_consensus::feed::FeedStateHandle;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
+use tempo_evm::genesis::{create_genesis_evm, genesis_evm_env, with_genesis_storage};
 use tempo_node::{
     TempoFullNode,
-    evm::{TempoEvmFactory, evm::TempoEvm},
     node::TempoNode,
     rpc::consensus::{TempoConsensusApiServer, TempoConsensusRpc},
 };
 use tempo_precompiles::{
     VALIDATOR_CONFIG_V2_ADDRESS,
-    storage::{StorageActions, StorageCtx},
     validator_config_v2::{
         IValidatorConfigV2, VALIDATOR_NS_ADD, VALIDATOR_NS_ROTATE, ValidatorConfigV2,
     },
@@ -71,6 +69,7 @@ pub const TEST_MNEMONIC: &str = "test test test test test test test test test te
 #[derive(Default, Debug)]
 pub struct Builder {
     t12_time: Option<u64>,
+    t14_time: Option<u64>,
     epoch_length: Option<u64>,
     initial_dkg_outcome: Option<OnchainDkgOutcome>,
     validators: Option<ordered::Map<PublicKey, ConsensusNodeConfig>>,
@@ -80,6 +79,7 @@ impl Builder {
     pub fn new() -> Self {
         Self {
             t12_time: None,
+            t14_time: None,
             epoch_length: None,
             initial_dkg_outcome: None,
             validators: None,
@@ -111,9 +111,15 @@ impl Builder {
         }
     }
 
+    /// Overrides T14 activation; `None` preserves the fixture schedule.
+    pub fn with_t14_time(self, t14_time: Option<u64>) -> Self {
+        Self { t14_time, ..self }
+    }
+
     pub fn launch(self) -> eyre::Result<ExecutionRuntime> {
         let Self {
             t12_time,
+            t14_time,
             epoch_length,
             initial_dkg_outcome,
             validators,
@@ -158,83 +164,96 @@ impl Builder {
             }
         }
 
+        if let Some(t14_time) = t14_time {
+            genesis
+                .config
+                .extra_fields
+                .insert_value("t14Time".to_string(), t14_time)
+                .unwrap();
+        }
+
         genesis.extra_data = initial_dkg_outcome.encode().into();
 
         // Just remove whatever is already written into chainspec.
         genesis.alloc.remove(&VALIDATOR_CONFIG_V2_ADDRESS);
 
-        let mut evm = setup_tempo_evm(genesis.config.chain_id);
-        {
-            let cx = evm.ctx_mut();
-            StorageCtx::enter_evm(
-                &mut cx.journaled_state,
-                &cx.block,
-                &cx.cfg,
-                &cx.tx,
-                StorageActions::disabled(),
-                || {
-                    let mut validator_config_v2 = ValidatorConfigV2::new();
+        let mut evm = create_genesis_evm(genesis_evm_env(genesis.config.chain_id));
+        with_genesis_storage(&mut evm, || {
+            let mut validator_config_v2 = ValidatorConfigV2::new();
+            validator_config_v2
+                .initialize(admin())
+                .wrap_err("failed to initialize validator config v2")
+                .unwrap();
+
+            for (public_key, validator) in validators {
+                if let ConsensusNodeConfig {
+                    address,
+                    ingress,
+                    egress,
+                    fee_recipient,
+                    private_key,
+                    share: Some(_),
+                } = validator
+                {
                     validator_config_v2
-                        .initialize(admin())
-                        .wrap_err("failed to initialize validator config v2")
-                        .unwrap();
-
-                    for (public_key, validator) in validators {
-                        if let ConsensusNodeConfig {
-                            address,
-                            ingress,
-                            egress,
-                            fee_recipient,
-                            private_key,
-                            share: Some(_),
-                        } = validator
-                        {
-                            validator_config_v2
-                                .add_validator(
-                                    admin(),
-                                    IValidatorConfigV2::addValidatorCall {
-                                        validatorAddress: address,
-                                        publicKey: public_key.encode().as_ref().try_into().unwrap(),
-                                        ingress: ingress.to_string(),
-                                        egress: egress.ip().to_string(),
-                                        feeRecipient: fee_recipient,
-                                        signature: sign_add_validator_args(
-                                            genesis.config.chain_id,
-                                            &private_key,
-                                            address,
-                                            ingress,
-                                            egress.ip(),
-                                            fee_recipient,
-                                        )
-                                        .encode()
-                                        .into(),
-                                    },
+                        .add_validator(
+                            admin(),
+                            IValidatorConfigV2::addValidatorCall {
+                                validatorAddress: address,
+                                publicKey: public_key.encode().as_ref().try_into().unwrap(),
+                                ingress: ingress.to_string(),
+                                egress: egress.ip().to_string(),
+                                feeRecipient: fee_recipient,
+                                signature: sign_add_validator_args(
+                                    genesis.config.chain_id,
+                                    &private_key,
+                                    address,
+                                    ingress,
+                                    egress.ip(),
+                                    fee_recipient,
                                 )
-                                .unwrap();
-                        }
-                    }
-                },
-            );
-        }
+                                .encode()
+                                .into(),
+                            },
+                        )
+                        .unwrap();
+                }
+            }
+        });
 
-        let evm_state = evm.ctx_mut().journaled_state.evm_state();
-        for (address, account) in evm_state.iter() {
-            let storage = if !account.storage.is_empty() {
-                Some(
-                    account
-                        .storage
+        let state = &evm.overlay_db().cache;
+        let addresses = state
+            .accounts
+            .keys()
+            .chain(state.storage.keys())
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        for address in addresses {
+            let account = state
+                .accounts
+                .get(&address)
+                .and_then(Option::as_ref)
+                .cloned()
+                .unwrap_or_default();
+            let storage = state.storage.get(&address).and_then(|storage| {
+                (!storage.slots.is_empty()).then(|| {
+                    storage
+                        .slots
                         .iter()
-                        .map(|(key, val)| ((*key).into(), val.present_value.into()))
-                        .collect(),
-                )
-            } else {
-                None
-            };
+                        .map(|(key, value)| ((*key).into(), (*value).into()))
+                        .collect()
+                })
+            });
             genesis.alloc.insert(
-                *address,
+                address,
                 GenesisAccount {
-                    nonce: Some(account.info.nonce),
-                    code: account.info.code.as_ref().map(|c| c.original_bytes()),
+                    nonce: Some(account.nonce),
+                    balance: account.balance,
+                    code: state
+                        .contracts
+                        .get(&account.code_hash)
+                        .filter(|code| !code.is_empty())
+                        .map(Bytecode::original_bytes),
                     storage,
                     ..Default::default()
                 },
@@ -263,6 +282,9 @@ pub struct ExecutionNodeConfig {
     /// The protocol is registered before the network starts because `RLPx`
     /// negotiates capabilities during the handshake.
     pub gossip: Option<tempo_node::gossip::Config>,
+    /// Proposal budget estimator the payload builder paces builds with, or
+    /// `None` for a private one seeded from the default multiplier.
+    pub estimator: Option<tempo_node::Estimator>,
 }
 
 impl ExecutionNodeConfig {
@@ -278,6 +300,7 @@ impl ExecutionNodeConfig {
             feed_state: None,
             share_sparse_trie_with_payload_builder: false,
             gossip: None,
+            estimator: None,
         }
     }
 }
@@ -913,6 +936,7 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
         feed_state,
         share_sparse_trie_with_payload_builder,
         gossip,
+        estimator,
     } = config;
     let node_config = NodeConfig::new(Arc::new(chain_spec))
         .with_rpc(
@@ -935,7 +959,12 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
             c.network.discovery.disable_discovery = true;
             c.network = c.network.with_unused_ports();
             c.network.p2p_secret_key_hex = Some(secret_key);
-            // Match Tempo's engine default for nodes launched by tests.
+            // Match Tempo's engine defaults for nodes launched by tests. The
+            // persistence settings matter: marshal only counts a block as
+            // processed once reth persisted it, so reth's larger defaults
+            // would delay every height-based wait.
+            c.engine.persistence_threshold = 25;
+            c.engine.num_state_masking_blocks = 10;
             c.engine.suppress_persistence_during_build = true;
             c.engine.share_sparse_trie_with_payload_builder =
                 share_sparse_trie_with_payload_builder;
@@ -953,6 +982,10 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
     };
 
     let tempo_node = TempoNode::default().with_validator_key(validator_key);
+    let tempo_node = match estimator {
+        Some(estimator) => tempo_node.with_estimator(estimator),
+        None => tempo_node,
+    };
     let tempo_node = match gossip_protocol {
         Some(protocol) => tempo_node.with_finalization_cert_gossip(protocol),
         None => tempo_node,
@@ -1110,16 +1143,6 @@ pub fn validator(idx: u32) -> Address {
 
 pub fn address(index: u32) -> Address {
     secret_key_to_address(MnemonicBuilder::from_phrase_nth(TEST_MNEMONIC, index).credential())
-}
-
-fn setup_tempo_evm(chain_id: u64) -> TempoEvm<InMemoryDB> {
-    let db = InMemoryDB::default();
-    // revm sets timestamp to 1 by default, override it to 0 for genesis initializations
-    let mut env = EvmEnv::default().with_timestamp(U256::ZERO);
-    env.cfg_env.chain_id = chain_id;
-
-    let factory = TempoEvmFactory::default();
-    factory.create_evm(db, env)
 }
 
 fn sign_add_validator_args(

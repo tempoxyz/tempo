@@ -23,7 +23,6 @@ tempo-dkg-onchain-artifacts.workspace = true
 tempo-payload-types = { workspace = true, optional = true }
 tempo-precompiles.workspace = true
 tempo-primitives = { workspace = true, features = ["reth"] }
-tempo-revm.workspace = true
 
 commonware-codec.workspace = true
 
@@ -31,19 +30,24 @@ reth-consensus.workspace = true
 reth-consensus-common.workspace = true
 reth-chainspec.workspace = true
 reth-ethereum-consensus.workspace = true
+reth-execution-types.workspace = true
 reth-evm.workspace = true
 reth-evm-ethereum.workspace = true
-reth-revm.workspace = true
 reth-primitives-traits.workspace = true
 reth-rpc-eth-api = { workspace = true, optional = true }
+reth-storage-api.workspace = true
 
 rayon = { workspace = true, optional = true }
 alloy-consensus.workspace = true
-alloy-evm = { workspace = true, features = ["std"] }
+alloy-eip7928.workspace = true
+alloy-eips.workspace = true
 alloy-primitives.workspace = true
 alloy-rlp.workspace = true
 alloy-sol-types.workspace = true
 alloy-rpc-types-eth = { workspace = true, optional = true }
+auto_impl.workspace = true
+evm2 = { workspace = true, features = ["std"] }
+evm2-macros.workspace = true
 
 alloy-genesis = { workspace = true, features = ["std"], optional = true }
 eyre = { workspace = true, optional = true }
@@ -52,6 +56,9 @@ derive_more.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
+# jit
+evm2-jit = { workspace = true, features = ["llvm"], optional = true }
+
 [dev-dependencies]
 alloy-eips.workspace = true
 alloy-genesis = { workspace = true, features = ["std"] }
@@ -59,21 +66,26 @@ alloy-primitives = { workspace = true, features = ["asm-keccak", "keccak-cache-g
 alloy-signer-local = { workspace = true, features = ["mnemonic"] }
 alloy-signer.workspace = true
 alloy-sol-types.workspace = true
+base64.workspace = true
+commonware-consensus.workspace = true
 commonware-cryptography.workspace = true
-commonware-math.workspace = true
-commonware-utils.workspace = true
 criterion.workspace = true
 eyre.workspace = true
-indexmap.workspace = true
+indexmap = { workspace = true, features = ["serde"] }
 insta.workspace = true
-rand.workspace = true
+p256 = { workspace = true, features = ["ecdsa"] }
+proptest.workspace = true
+rand_08.workspace = true
 reth-execution-cache.workspace = true
 reth-storage-api.workspace = true
 reth-trie.workspace = true
-revm.workspace = true
+reth-trie-common.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
+tempo-dkg-onchain-artifacts = { workspace = true, features = ["test-utils"] }
 tempo-precompiles = { workspace = true, features = ["test-utils"] }
 tempo-primitives = { workspace = true, features = ["arbitrary", "test-utils"] }
+test-case.workspace = true
 tikv-jemallocator = "0.6.1"
 
 [features]
@@ -82,6 +94,8 @@ rpc = ["dep:alloy-rpc-types-eth", "dep:reth-rpc-eth-api", "tempo-primitives/serd
 engine = ["dep:tempo-payload-types", "dep:rayon"]
 # Shared genesis state initialization helpers for genesis generators.
 genesis = ["dep:alloy-genesis", "dep:eyre"]
+# Native EVM2 JIT compilation; building requires LLVM.
+jit = ["dep:evm2-jit", "reth-evm-ethereum/jit"]
 
 [[bench]]
 name = "tip20_execution"

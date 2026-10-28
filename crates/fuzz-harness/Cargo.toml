@@ -1,0 +1,47 @@
+[package]
+name = "tempo-fuzz-harness"
+description = "Loadable transaction fuzzing harness for Tempo"
+
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+# `rlib` lets the benchmark call the C ABI in-process.
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[dependencies]
+alloy-consensus.workspace = true
+alloy-eips.workspace = true
+alloy-primitives.workspace = true
+alloy-rlp.workspace = true
+alloy-sol-types.workspace = true
+bincode.workspace = true
+evm2.workspace = true
+reth-primitives-traits.workspace = true
+reth-chainspec.workspace = true
+reth-consensus.workspace = true
+reth-evm.workspace = true
+reth-execution-types.workspace = true
+reth-trie-common.workspace = true
+tempo-fuzz-types.workspace = true
+tempo-chainspec.workspace = true
+tempo-contracts.workspace = true
+tempo-evm.workspace = true
+tempo-primitives = { workspace = true, features = ["reth"] }
+
+[dev-dependencies]
+commonware-codec.workspace = true
+criterion.workspace = true
+tempo-dkg-onchain-artifacts = { workspace = true, features = ["test-utils"] }
+tempo-precompiles.workspace = true
+
+[[bench]]
+name = "execute"
+harness = false

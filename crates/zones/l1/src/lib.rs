@@ -27,6 +27,8 @@ use alloy_sol_types::{SolEvent, SolEventInterface, SolValue};
 use alloy_transport::Authorization;
 use futures::{Stream, StreamExt, TryStreamExt as _};
 use parking_lot::Mutex;
+// TODO: Remove this import and feature-only dependency after updating Reth's feature forwarding.
+use reth_evm as _;
 use reth_primitives_traits::SealedHeader;
 use reth_storage_api::StateProviderFactory;
 use std::{pin::Pin, sync::Arc};

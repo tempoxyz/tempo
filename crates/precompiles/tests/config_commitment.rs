@@ -1,16 +1,17 @@
 //! Account config-commitment reads and writes through precompile storage.
 
-use alloy_evm::EvmEnv;
 use alloy_primitives::{Address, B256, Bytes};
-use revm::{context::CfgEnv, database::InMemoryDB, state::Bytecode};
+use evm2::{
+    evm::{InMemoryDB, precompile::NoPrecompiles},
+    precompiles::PrecompileError,
+};
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_evm::{TempoBlockEnv, evm::TempoEvm};
+use tempo_evm::{TempoEvmExt, build_tempo_evm};
 use tempo_precompiles::{
     error::TempoPrecompileError,
-    storage::{
-        ConfigCommitmentWriteGas, StorageActions, StorageCtx, hashmap::HashMapStorageProvider,
-    },
+    storage::{ConfigCommitmentWriteGas, StorageCtx, hashmap::HashMapStorageProvider},
 };
+use tempo_primitives::TempoBlockEnv;
 
 const ACCOUNT: Address = Address::repeat_byte(1);
 const INITIAL: B256 = B256::repeat_byte(2);
@@ -130,7 +131,7 @@ fn checkpoint_revert_restores_commitment() {
         drop(inner);
         assert_eq!(ctx.config_commitment(ACCOUNT).unwrap(), INITIAL);
 
-        ctx.set_code(ACCOUNT, Bytecode::new()).unwrap();
+        ctx.set_code(ACCOUNT, Bytes::new()).unwrap();
         assert_eq!(ctx.config_commitment(ACCOUNT).unwrap(), INITIAL);
 
         let inner = ctx.checkpoint();
@@ -145,16 +146,15 @@ fn checkpoint_revert_restores_commitment() {
 
 #[test]
 fn evm_storage_reads_zero_and_rejects_writes() {
-    let mut cfg = CfgEnv::<TempoHardfork>::default();
-    cfg.set_spec_and_mainnet_gas_params(TempoHardfork::T14);
-    let mut evm = TempoEvm::new(
+    let mut evm = build_tempo_evm(
+        TempoHardfork::T14,
+        1,
+        TempoBlockEnv::default(),
         InMemoryDB::default(),
-        EvmEnv {
-            cfg_env: cfg,
-            block_env: TempoBlockEnv::default(),
-        },
+        NoPrecompiles::default(),
+        TempoEvmExt::default(),
     );
-    StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
+    StorageCtx::enter_evm(&mut evm, || {
         let mut ctx = StorageCtx;
         let before = ctx.gas_used();
         ctx.with_account_info(Address::repeat_byte(9), |_| Ok(()))
@@ -192,8 +192,8 @@ fn invalid_write_reverts_without_data() {
     assert!(!error.is_system_error());
     assert_eq!(error.selector(), [0u8; 4]);
 
-    let output = error.into_precompile_result(7, 11).unwrap();
-    assert!(output.is_revert());
-    assert_eq!(output.gas_used, 7);
-    assert_eq!(output.bytes, Bytes::new());
+    let Err(PrecompileError::Revert(bytes)) = error.into_precompile_result() else {
+        panic!("expected a revert");
+    };
+    assert_eq!(bytes, Bytes::new());
 }

@@ -69,6 +69,7 @@ rand_08.workspace = true
 reth-consensus.workspace = true
 reth-consensus-common.workspace = true
 reth-engine-primitives.workspace = true
+reth-evm.workspace = true
 rand_core.workspace = true
 reth-ethereum.workspace = true
 reth-node-builder.workspace = true
@@ -77,6 +78,7 @@ reth-network-api.workspace = true
 reth-network-p2p.workspace = true
 reth-primitives-traits.workspace = true
 reth-provider.workspace = true
+reth-stages-types.workspace = true
 
 thiserror.workspace = true
 

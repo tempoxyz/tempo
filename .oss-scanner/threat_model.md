@@ -28,7 +28,7 @@ Most important:
 - `crates/consensus`, `crates/payload`, `crates/node`: block building, finalization, DKG and epochs, subblocks.
 - `crates/nitro-attestation`, `crates/precompiles/src/zone_verifier`: consensus-critical attestation checks.
 
-In scope but lower priority: `crates/zones` and `bin/tempo-zone` (Tempo Zones L2), `bin/tempo-sidecar`.
+In scope but lower priority: `crates/zones` and `bin/tempo-zone` (Tempo Zones L2).
 
 Out of scope: `xtask`, `crates/state-bloat`, `crates/faucet` (testnets only), `contrib/`, benchmark tooling,
 development scripts in `scripts/` (but not `publish-crates.sh` and the `sanitize_*.py` it runs, which handle the

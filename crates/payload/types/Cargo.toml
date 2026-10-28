@@ -19,6 +19,8 @@ workspace = true
 tempo-primitives = { workspace = true, features = ["reth-codec", "serde"] }
 
 reth-ethereum-engine-primitives.workspace = true
+# Only to enable its `account-ext` feature.
+reth-evm.workspace = true
 reth-node-api.workspace = true
 reth-payload-primitives.workspace = true
 reth-primitives-traits.workspace = true
@@ -31,6 +33,7 @@ alloy-rpc-types-engine.workspace = true
 
 derive_more.workspace = true
 serde.workspace = true
+thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]

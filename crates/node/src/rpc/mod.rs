@@ -8,6 +8,7 @@ pub mod simulate;
 pub mod token;
 
 pub use admin::{TempoAdminApi, TempoAdminApiServer};
+use alloy::consensus::Transaction;
 use alloy_primitives::B256;
 use alloy_rpc_types_eth::{Log, ReceiptWithBloom};
 pub use consensus::{TempoConsensusApiServer, TempoConsensusRpc};
@@ -21,8 +22,7 @@ use reth_transaction_pool::{PoolTransaction, PoolTx, TransactionOrigin};
 pub use simulate::{TempoSimulate, TempoSimulateApiServer, TempoSimulateV1Response};
 use std::{marker::PhantomData, sync::Arc};
 pub use tempo_alloy::rpc::TempoTransactionRequest;
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
-use tempo_evm::{FeeTokenResolver, TempoStateAccess};
+use tempo_chainspec::TempoChainSpec;
 use tempo_precompiles::{
     NONCE_PRECOMPILE_ADDRESS, error::TempoPrecompileError, nonce::NonceManager,
     storage::StorageActions, tip20::TIP20Error,
@@ -32,20 +32,12 @@ pub use token::{TempoToken, TempoTokenApiServer};
 
 use crate::rpc::error::TempoEthApiError;
 use alloy::primitives::{U256, uint};
-use alloy_evm::{EvmFactory, block::BlockExecutorFactory};
 use reth_chainspec::{EthChainSpec, EthereumHardforks, Hardforks};
 use reth_ethereum::tasks::{
     Runtime,
     pool::{BlockingTaskGuard, BlockingTaskPool},
 };
-use reth_evm::{
-    ConfigureEvm, EvmEnvFor, TxEnvFor,
-    revm::{
-        Database,
-        context::result::{EVMError, HaltReason},
-        database_interface::bal::EvmDatabaseError,
-    },
-};
+use reth_evm::{BlockExecutorFactory, ConfigureEvm, Database, EvmEnvFor, TxEnvFor};
 use reth_node_api::{FullNodeComponents, FullNodeTypes, NodeTypes};
 use reth_node_builder::rpc::{EthApiBuilder, EthApiCtx};
 use reth_provider::{ChainSpecProvider, ProviderError};
@@ -69,11 +61,10 @@ use reth_rpc_eth_types::{
     receipt::EthReceiptConverter,
 };
 use tempo_alloy::{TempoNetwork, rpc::TempoTransactionReceipt};
-use tempo_evm::{TempoBlockEnv, TempoInvalidTransaction};
+use tempo_evm::{FeeTokenResolver, TempoEvmEnv, TempoEvmTypes, TempoStateAccess};
 use tempo_primitives::{
     TEMPO_GAS_PRICE_SCALING_FACTOR, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
 };
-use tempo_revm::TempoTxEnv;
 use tempo_transaction_pool::TempoTransactionPoolExt;
 use tokio::sync::Mutex;
 
@@ -93,16 +84,9 @@ pub trait TempoEthApiBounds:
         Pool: TempoTransactionPoolExt<Transaction: PoolTransaction<Pooled = TempoTxEnvelope>>,
         Evm: ConfigureEvm<
             BlockExecutorFactory: BlockExecutorFactory<
-                EvmFactory: EvmFactory<
-                    Tx = TempoTxEnv,
-                    Spec = TempoHardfork,
-                    BlockEnv = TempoBlockEnv,
-                    HaltReason = HaltReason,
-                    Error<EvmDatabaseError<ProviderError>> = EVMError<
-                        EvmDatabaseError<ProviderError>,
-                        TempoInvalidTransaction,
-                    >,
-                >,
+                EvmTypes = TempoEvmTypes,
+                Transaction = TempoTxEnvelope,
+                EvmEnv = TempoEvmEnv,
             >,
         > + FeeTokenResolver,
     >
@@ -115,16 +99,9 @@ impl<N> TempoEthApiBounds for N where
             Pool: TempoTransactionPoolExt<Transaction: PoolTransaction<Pooled = TempoTxEnvelope>>,
             Evm: ConfigureEvm<
                 BlockExecutorFactory: BlockExecutorFactory<
-                    EvmFactory: EvmFactory<
-                        Tx = TempoTxEnv,
-                        Spec = TempoHardfork,
-                        BlockEnv = TempoBlockEnv,
-                        HaltReason = HaltReason,
-                        Error<EvmDatabaseError<ProviderError>> = EVMError<
-                            EvmDatabaseError<ProviderError>,
-                            TempoInvalidTransaction,
-                        >,
-                    >,
+                    EvmTypes = TempoEvmTypes,
+                    Transaction = TempoTxEnvelope,
+                    EvmEnv = TempoEvmEnv,
                 >,
             > + FeeTokenResolver,
         >
@@ -396,18 +373,18 @@ where
     ) -> Result<u64, Self::Error> {
         let fee_payer = tx_env
             .fee_payer()
-            .map_err(EVMError::<ProviderError, _>::from)?;
+            .map_err(|_| Self::Error::from_eth_err(EthApiError::InvalidTransactionSignature))?;
 
         let actions = StorageActions::disabled();
         let fee_token_balance = match self.evm_config().resolve_fee_token(
             &mut db,
-            tx_env,
+            tx_env.inner(),
             fee_payer,
-            evm_env.cfg_env.spec,
+            evm_env.spec,
             actions.clone(),
         ) {
             Ok(fee_token) => db
-                .get_token_balance(fee_token, fee_payer, evm_env.cfg_env.spec, actions)
+                .get_token_balance(fee_token, fee_payer, evm_env.spec, actions)
                 .map_err(ProviderError::other)?,
             // No token covers the initial gas bound; cap it by the largest candidate balance.
             Err(TempoPrecompileError::TIP20(TIP20Error::InsufficientBalance(error))) => {
@@ -415,12 +392,14 @@ where
             }
             Err(error) => return Err(ProviderError::other(error).into()),
         };
+        // The handler checks the balance against `gas_limit * max_fee_per_gas`.
+        let gas_price = Transaction::max_fee_per_gas(tx_env.inner());
 
         Ok(fee_token_balance
             // multiply by the scaling factor
             .saturating_mul(TEMPO_GAS_PRICE_SCALING_FACTOR)
             // Calculate the amount of gas the caller can afford with the specified gas price.
-            .checked_div(U256::from(tx_env.inner.gas_price))
+            .checked_div(U256::from(gas_price))
             // This will be 0 if gas price is 0. It is fine, because we check it before.
             .unwrap_or_default()
             .saturating_to())
@@ -442,7 +421,7 @@ where
                 // 2D nonce: fetch from storage
                 let slot =
                     NonceManager::new().nonces[request.from.unwrap_or_default()][nonce_key].slot();
-                db.storage(NONCE_PRECOMPILE_ADDRESS, slot)
+                db.get_storage(&NONCE_PRECOMPILE_ADDRESS, &slot)
                     .map_err(Into::into)?
                     .saturating_to()
             };
