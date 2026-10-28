@@ -8,13 +8,13 @@ on:
     paths:
       - 'crates/node/**'
       - 'crates/primitives/**'
-      - 'crates/revm/**'
+      - 'crates/evm/**'
       - '.github/workflows/rpc-tests.yml'
   pull_request:
     paths:
       - 'crates/node/**'
       - 'crates/primitives/**'
-      - 'crates/revm/**'
+      - 'crates/evm/**'
       - '.github/workflows/rpc-tests.yml'
   merge_group:
 

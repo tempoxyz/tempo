@@ -104,8 +104,8 @@ secp256k1.workspace = true
 reth-storage-api.workspace = true
 reth-static-file-types.workspace = true
 reth-trie.workspace = true
+reth-trie-common.workspace = true
 reth-trie-db.workspace = true
-revm.workspace = true
 clap.workspace = true
 eyre.workspace = true
 reqwest = { workspace = true, features = ["stream"] }
@@ -147,7 +147,7 @@ asm-keccak = [
 	"tempo-alloy/asm-keccak",
 	"tempo-node/asm-keccak",
 	"reth-ethereum-cli/asm-keccak",
-	"revm/asm-keccak",
+	"reth-ethereum/asm-keccak",
 ]
 keccak-cache-global = [
 	"alloy-primitives/keccak-cache-global",
@@ -174,7 +174,6 @@ jemalloc = [
 	"reth-cli-util/jemalloc",
 	"reth-ethereum-cli/jemalloc",
 	"reth-ethereum/jemalloc",
-	"reth-provider/jemalloc",
 	"tempo-node/jemalloc",
 ]
 jemalloc-prof = [
@@ -230,3 +229,5 @@ min-trace-logs = [
 trie-debug = ["tempo-node/trie-debug"]
 # Devnet-only: accept zone verifier PCRs via `--zone-verifier.custom-pcrs`.
 custom-pcrs = ["tempo-precompiles/custom-pcrs"]
+# Native EVM2 JIT compilation; building requires LLVM.
+jit = ["tempo-evm/jit", "tempo-node/jit"]

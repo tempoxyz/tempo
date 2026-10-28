@@ -7,47 +7,43 @@ use alloy_consensus::{
     transaction::{Recovered, SignerRecoverable as _},
 };
 use alloy_eips::{eip2718::Decodable2718 as _, eip4895::Withdrawals};
-use alloy_evm::{
-    EvmFactory as _,
-    block::{BlockExecutionResult, BlockExecutor as _, BlockExecutorFactory, TxResult as _},
-    eth::EthBlockExecutionCtx,
-};
 use alloy_primitives::{B256, Bytes, U256};
 use alloy_sol_types::{ContractError, SolCall as _, SolInterface as _};
-use reth_chainspec::EthereumHardforks as _;
-use reth_evm::{ConfigureEvm as _, NextBlockEnvAttributes};
-use revm::{
-    database::{State, states::bundle_state::BundleRetention},
-    database_interface::bal::EvmDatabaseError,
+use evm2::{
+    DatabaseError,
+    evm::{CacheDB, Db},
+    registry::HandlerError,
 };
-use tempo_chainspec::hardfork::TempoHardfork;
+use reth_chainspec::EthereumHardforks as _;
+use reth_evm::{
+    BlockExecutionOutput, BlockExecutor as _, BlockExecutorFactory, BlockTransactionResult as _,
+    ConfigureEvm as _, NextBlockEnvAttributes,
+};
+use reth_evm_ethereum::EthBlockExecutionCtx;
 use tempo_contracts::zones::{
     IZoneInbox, IZoneOutbox, TempoState, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS,
 };
-use tempo_evm::{TempoBlockEnv, TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
+use tempo_evm::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
 use tempo_primitives::{
     TempoHeader, TempoReceipt, TempoTxEnvelope,
     transaction::envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
 };
-use zone_evm::{L1OverlayDB, ZoneBlockExecutor, ZoneEvmConfig};
+use zone_evm::{ZoneBlockExecutor, ZoneEvmConfig};
 
 use crate::{
     Error, TempoImport, ZoneBlock,
     execution::database::{TempoWitnessDatabase, WitnessDatabase},
 };
 
-type ZoneState = State<WitnessDatabase>;
-type WitnessOverlay<'db> = L1OverlayDB<&'db mut ZoneState, TempoWitnessDatabase>;
-type WitnessContext<'db> = tempo_revm::evm::TempoContext<WitnessOverlay<'db>>;
-type WitnessExecutor<'a, 'db, I> =
-    ZoneBlockExecutor<'a, &'db mut ZoneState, I, TempoWitnessDatabase>;
+type ZoneState = CacheDB<Db<WitnessDatabase>>;
+type WitnessExecutor<'a> = ZoneBlockExecutor<'a>;
 
 /// Execution artifacts committed by one Zone block header.
 #[derive(Debug)]
 pub(crate) struct ExecutedZoneBlock {
     pub(crate) transactions: Vec<TempoTxEnvelope>,
-    pub(crate) output: BlockExecutionResult<TempoReceipt>,
-    pub(crate) evm_env: alloy_evm::EvmEnv<TempoHardfork, TempoBlockEnv>,
+    pub(crate) output: BlockExecutionOutput<TempoReceipt>,
+    pub(crate) evm_env: tempo_evm::TempoEvmEnv,
 }
 
 pub(crate) struct BlockReplayContext<'a> {
@@ -80,19 +76,23 @@ pub(crate) fn execute_zone_block(
         .number
         .checked_sub(1)
         .ok_or(Error::BlockNumberOverflow)?;
-    if let Some(existing) = zone_state.block_hashes.get(parent_number)
-        && existing != block.parent_hash
+    if let Some(existing) = zone_state
+        .cache
+        .block_hashes
+        .get(&U256::from(parent_number))
+        && *existing != block.parent_hash
     {
         return Err(crate::WitnessDatabaseError::ConflictingBlockHash {
             number: parent_number,
-            expected: existing,
+            expected: *existing,
             actual: block.parent_hash,
         }
         .into());
     }
     zone_state
+        .cache
         .block_hashes
-        .insert(parent_number, block.parent_hash);
+        .insert(U256::from(parent_number), block.parent_hash);
 
     if parent.inner.base_fee_per_gas.is_none() {
         return Err(Error::MissingParentBaseFee {
@@ -104,12 +104,11 @@ pub(crate) fn execute_zone_block(
     let env = evm_config
         .next_evm_env(parent, &attributes)
         .map_err(|_| Error::EvmEnvironment)?;
-    let chain_id = env.cfg_env.chain_id;
+    let chain_id = env.version.chain_id;
     let assembly_env = env.clone();
-    let block_gas_limit = env.block_env.inner.gas_limit;
-    let evm = BlockExecutorFactory::evm_factory(&evm_config).create_evm(&mut *zone_state, env);
-    let mut executor = BlockExecutorFactory::create_executor(
-        &evm_config,
+    let block_gas_limit = env.block.gas_limit.to::<u64>();
+    let evm = BlockExecutorFactory::evm_with_env(&evm_config, &mut *zone_state, env);
+    let mut executor = evm_config.create_executor(
         evm,
         next_block_execution_context(evm_config.chain_spec().as_ref(), block, block_gas_limit),
     );
@@ -158,7 +157,7 @@ pub(crate) fn execute_zone_block(
         )?);
     }
 
-    let (_, output) = executor.finish().map_err(|error| {
+    let output = executor.finish().map_err(|error| {
         map_block_execution_error(
             error,
             Error::BlockPostExecution {
@@ -166,8 +165,6 @@ pub(crate) fn execute_zone_block(
             },
         )
     })?;
-    zone_state.merge_transitions(BundleRetention::Reverts);
-
     Ok(ExecutedZoneBlock {
         transactions,
         output,
@@ -231,18 +228,15 @@ pub(crate) fn next_block_execution_context(
     }
 }
 
-fn execute_advance_tempo<'a, 'db, I>(
-    executor: &mut WitnessExecutor<'a, 'db, I>,
+fn execute_advance_tempo(
+    executor: &mut WitnessExecutor<'_>,
     header: &Bytes,
     deposits: &[tempo_contracts::zones::QueuedDeposit],
     decryptions: &[tempo_contracts::zones::DecryptionData],
     enabled_tokens: &[tempo_contracts::zones::EnabledToken],
     block_index: usize,
     chain_id: u64,
-) -> Result<TempoTxEnvelope, Error>
-where
-    I: alloy_evm::revm::Inspector<WitnessContext<'db>>,
-{
+) -> Result<TempoTxEnvelope, Error> {
     let calldata = IZoneInbox::advanceTempoCall {
         header: header.clone(),
         deposits: deposits.to_vec(),
@@ -272,15 +266,12 @@ where
     Ok(transaction)
 }
 
-fn execute_advance_tempo_headers<'a, 'db, I>(
-    executor: &mut WitnessExecutor<'a, 'db, I>,
+fn execute_advance_tempo_headers(
+    executor: &mut WitnessExecutor<'_>,
     headers: &[Bytes],
     block_index: usize,
     chain_id: u64,
-) -> Result<TempoTxEnvelope, Error>
-where
-    I: alloy_evm::revm::Inspector<WitnessContext<'db>>,
-{
+) -> Result<TempoTxEnvelope, Error> {
     let calldata = IZoneInbox::advanceTempoHeadersCall {
         headers: headers.to_vec(),
     }
@@ -306,17 +297,14 @@ where
     Ok(transaction)
 }
 
-fn execute_finalize_withdrawal_batch<'a, 'db, I>(
-    executor: &mut WitnessExecutor<'a, 'db, I>,
+fn execute_finalize_withdrawal_batch(
+    executor: &mut WitnessExecutor<'_>,
     count: U256,
     block_number: u64,
     encrypted_senders: Vec<Bytes>,
     block_index: usize,
     chain_id: u64,
-) -> Result<TempoTxEnvelope, Error>
-where
-    I: alloy_evm::revm::Inspector<WitnessContext<'db>>,
-{
+) -> Result<TempoTxEnvelope, Error> {
     let calldata = IZoneOutbox::finalizeWithdrawalBatchCall {
         count,
         blockNumber: block_number,
@@ -375,14 +363,11 @@ fn decode_user_transactions(
     Ok(decoded)
 }
 
-fn execute_user_transactions<'a, 'db, I>(
-    executor: &mut WitnessExecutor<'a, 'db, I>,
+fn execute_user_transactions(
+    executor: &mut WitnessExecutor<'_>,
     block_index: usize,
     transactions: Vec<Recovered<TempoTxEnvelope>>,
-) -> Result<Vec<TempoTxEnvelope>, Error>
-where
-    I: alloy_evm::revm::Inspector<WitnessContext<'db>>,
-{
+) -> Result<Vec<TempoTxEnvelope>, Error> {
     let mut executed = Vec::with_capacity(transactions.len());
     for (transaction_index, transaction) in transactions.into_iter().enumerate() {
         let envelope = transaction.clone_inner();
@@ -401,33 +386,32 @@ where
     Ok(executed)
 }
 
-fn execute_recovered_transaction<'a, 'db, I>(
-    executor: &mut WitnessExecutor<'a, 'db, I>,
+fn execute_recovered_transaction(
+    executor: &mut WitnessExecutor<'_>,
     transaction: Recovered<TempoTxEnvelope>,
     execution_error: Error,
     require_success: bool,
-) -> Result<(), Error>
-where
-    I: alloy_evm::revm::Inspector<WitnessContext<'db>>,
-{
+) -> Result<(), Error> {
     let result = match executor.execute_transaction_without_commit(transaction) {
         Ok(result) => result,
         Err(error) => return Err(map_block_execution_error(error, execution_error)),
     };
-    if require_success && !result.result().result.is_success() {
-        return Err(match (execution_error, &result.result().result) {
-            (
-                Error::AdvanceTempoExecution { block_index },
-                revm::context::result::ExecutionResult::Revert { output, .. },
-            ) => Error::AdvanceTempoRevert {
-                block_index,
-                reason: decode_advance_tempo_revert(output),
-                output: output.clone(),
-            },
-            (error, _) => error,
+    if require_success && !result.result().result.status {
+        let tx_result = &result.result().result;
+        return Err(match execution_error {
+            Error::AdvanceTempoExecution { block_index } if tx_result.stop.is_revert() => {
+                Error::AdvanceTempoRevert {
+                    block_index,
+                    reason: decode_advance_tempo_revert(&tx_result.output),
+                    output: tx_result.output.clone(),
+                }
+            }
+            error => error,
         });
     }
-    executor.commit_transaction(result);
+    executor
+        .commit_transaction(result)
+        .map_err(|error| map_block_execution_error(error, execution_error))?;
     Ok(())
 }
 
@@ -445,18 +429,20 @@ fn decode_advance_tempo_revert(output: &Bytes) -> String {
 }
 
 fn map_block_execution_error(
-    error: alloy_evm::block::BlockExecutionError,
+    error: reth_evm::BlockExecutionError,
     execution_error: Error,
 ) -> Error {
-    type WitnessEvmError = revm::context::result::EVMError<
-        EvmDatabaseError<crate::WitnessDatabaseError>,
-        tempo_evm::TempoInvalidTransaction,
-    >;
-
-    if let Some(revm::context::result::EVMError::Database(EvmDatabaseError::Database(error))) =
+    // Transaction execution reports fatal database failures as `HandlerError::Database`, while
+    // block-level system calls report the `DatabaseError` itself.
+    let database_error =
         error
             .as_internal()
-            .and_then(|error| error.downcast_evm::<WitnessEvmError>())
+            .and_then(|error| match error.downcast_evm::<HandlerError>() {
+                Some(HandlerError::Database(error)) => Some(error),
+                _ => error.downcast_other::<DatabaseError>(),
+            });
+    if let Some(error) =
+        database_error.and_then(|error| error.downcast_ref::<crate::WitnessDatabaseError>())
     {
         return (*error).into();
     }
@@ -482,6 +468,27 @@ mod tests {
         let output = Bytes::from(TempoState::InvalidParentHash {}.abi_encode());
 
         assert!(decode_advance_tempo_revert(&output).contains("InvalidParentHash"));
+    }
+
+    #[test]
+    fn preserves_zone_witness_database_errors() {
+        let witness_error = crate::WitnessDatabaseError::MissingCode {
+            code_hash: B256::repeat_byte(0x11),
+        };
+        let database_error = DatabaseError::new(witness_error, true);
+        let transaction_error = reth_evm::InternalBlockExecutionError::EVM {
+            hash: B256::ZERO,
+            error: Box::new(HandlerError::Database(database_error.clone())),
+        };
+        for error in [
+            transaction_error.into(),
+            reth_evm::BlockExecutionError::other(database_error),
+        ] {
+            assert!(matches!(
+                map_block_execution_error(error, Error::BlockPreExecution { block_index: 0 }),
+                Error::WitnessDatabase(error) if error == witness_error
+            ));
+        }
     }
 
     #[test]

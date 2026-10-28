@@ -28,6 +28,7 @@ use reth_node_builder::{
         RpcAddOns, RpcHandle, RpcHooks,
     },
 };
+use reth_node_core::args::JitArgs;
 use reth_primitives_traits::SealedHeader;
 use reth_provider::providers::ProviderFactoryBuilder;
 use reth_rpc_builder::{Identity, RethRpcModule};
@@ -42,7 +43,7 @@ use reth_transaction_pool::{
     TransactionOrigin, TransactionPool, TransactionValidationTaskExecutor,
     blobstore::InMemoryBlobStore, error::InvalidPoolTransactionError,
 };
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 use tempo_chainspec::{TempoConsensusSpec, hardfork::TempoHardfork, spec::TempoChainSpec};
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_payload_builder::{TempoPayloadBuilder, TempoPayloadBuilderConfig};
@@ -61,6 +62,16 @@ use tempo_transaction_pool::{
         DEFAULT_AA_VALID_AFTER_MAX_SECS, DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
         TempoTransactionValidator,
     },
+};
+
+#[cfg(feature = "jit")]
+use reth_evm::BlockExecutorFactory as _;
+#[cfg(feature = "jit")]
+use tempo_chainspec::hardfork::TempoHardforks as _;
+#[cfg(feature = "jit")]
+use tempo_evm::{
+    TempoEvmFactory,
+    jit::{JitBackend, JitMetrics, JitMode, RuntimeConfig, RuntimeTuning, runtime_config},
 };
 
 /// 500M gas limit
@@ -561,6 +572,100 @@ impl PayloadAttributesBuilder<TempoPayloadAttributes, TempoHeader>
     }
 }
 
+/// Builds a [`RuntimeConfig`] for `spec` from CLI [`JitArgs`].
+#[cfg(feature = "jit")]
+fn jit_runtime_config(jit: &JitArgs, spec: TempoHardfork) -> RuntimeConfig {
+    let default_tuning = RuntimeTuning::default();
+    let tuning = RuntimeTuning {
+        channel_capacity: jit.channel_capacity,
+        jit_hot_threshold: jit.hot_threshold,
+        jit_max_bytecode_len: jit.max_bytecode_len,
+        jit_max_pending_jobs: jit.max_pending_jobs,
+        jit_worker_count: jit.worker_count.unwrap_or(default_tuning.jit_worker_count),
+        resident_code_cache_bytes: jit.code_cache_bytes,
+        idle_evict_duration: Some(jit.idle_evict_duration),
+        ..default_tuning
+    };
+
+    RuntimeConfig {
+        enabled: jit.enabled,
+        tuning,
+        debug_assertions: jit.debug,
+        blocking: jit.blocking,
+        jit_mode: JitMode::OutOfProcess,
+        ..runtime_config(spec)
+    }
+}
+
+/// Builds a [`TempoEvmConfig`] with evm2 JIT from CLI [`JitArgs`].
+///
+/// This is the shared setup used by both [`TempoExecutorBuilder`] and `tempo re-execute`. The
+/// backend compiles for the chain's latest hardfork; frames under a hardfork with another gas
+/// schedule or opcode table stay on the interpreter.
+///
+/// Returns the EVM config and metrics recorder if JIT starts enabled.
+#[cfg(feature = "jit")]
+pub fn build_evm_config(
+    chain_spec: Arc<TempoChainSpec>,
+    jit: &JitArgs,
+    dump_dir: Option<PathBuf>,
+) -> eyre::Result<(TempoEvmConfig, Option<Arc<JitMetrics>>)> {
+    let spec = chain_spec.tempo_hardfork_at(u64::MAX);
+    let mut config = jit_runtime_config(jit, spec);
+    if !jit.enabled {
+        let factory =
+            TempoEvmFactory::default().with_jit(JitBackend::new(config)?, JitMetrics::default());
+        return Ok((
+            TempoEvmConfig::new(chain_spec).with_evm_factory(factory),
+            None,
+        ));
+    }
+
+    config.dump_dir = dump_dir;
+
+    let jit_metrics = Arc::new(JitMetrics::default());
+    let compilation_metrics = jit_metrics.clone();
+    config.on_compilation = Some(Arc::new(move |event| {
+        compilation_metrics.record_compilation(&event);
+    }));
+
+    let tuning = config.tuning;
+    let jit_mode = config.jit_mode;
+    let backend = JitBackend::new(config)?;
+
+    warn!(target: "tempo::cli",
+        ?spec,
+        hot_threshold = tuning.jit_hot_threshold,
+        workers = tuning.jit_worker_count,
+        mode = ?jit_mode,
+        blocking = jit.blocking,
+        "Started experimental evm2 JIT backend; this may cause instability",
+    );
+
+    let factory = TempoEvmFactory::default().with_jit(backend, jit_metrics.as_ref().clone());
+    let evm_config = TempoEvmConfig::new(chain_spec).with_evm_factory(factory);
+
+    Ok((evm_config, Some(jit_metrics)))
+}
+
+/// Builds a [`TempoEvmConfig`] from CLI [`JitArgs`].
+///
+/// Compiled without the `jit` feature: errors if JIT was requested via [`JitArgs`] and otherwise
+/// returns a plain interpreter-backed config.
+#[cfg(not(feature = "jit"))]
+pub fn build_evm_config(
+    chain_spec: Arc<TempoChainSpec>,
+    jit: &JitArgs,
+    _dump_dir: Option<PathBuf>,
+) -> eyre::Result<(TempoEvmConfig, Option<()>)> {
+    if jit.enabled {
+        eyre::bail!(
+            "JIT compilation was requested but this binary was compiled without the `jit` feature"
+        );
+    }
+    Ok((TempoEvmConfig::new(chain_spec), None))
+}
+
 /// A regular ethereum evm and executor builder.
 #[derive(Debug, Default, Clone, Copy)]
 #[non_exhaustive]
@@ -573,10 +678,37 @@ where
     type EVM = TempoEvmConfig;
 
     async fn build_evm(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::EVM> {
-        let mut evm_config = TempoEvmConfig::new(ctx.chain_spec());
+        let jit = &ctx.config().jit;
+        let dump_dir = jit
+            .debug
+            .then(|| ctx.config().datadir().data_dir().join("jit"));
+
+        let (mut evm_config, jit_metrics) = build_evm_config(ctx.chain_spec(), jit, dump_dir)?;
         if let Some(cache) = ctx.sender_recovery_cache() {
             evm_config = evm_config.with_sender_recovery_cache(cache.clone());
         }
+
+        #[cfg(not(feature = "jit"))]
+        let _ = jit_metrics;
+
+        #[cfg(feature = "jit")]
+        if let Some(jit_metrics) = jit_metrics
+            && let Some(metrics_backend) = evm_config.evm_factory().jit_backend().cloned()
+        {
+            ctx.task_executor()
+                .spawn_with_graceful_shutdown_signal(|shutdown| async move {
+                    let mut shutdown = std::pin::pin!(shutdown);
+                    loop {
+                        tokio::select! {
+                            _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
+                                jit_metrics.record(&metrics_backend.stats());
+                            }
+                            _ = &mut shutdown => break,
+                        }
+                    }
+                });
+        }
+
         Ok(evm_config)
     }
 }
