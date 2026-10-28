@@ -287,9 +287,7 @@ impl TempoInvalidTransaction {
             | Self::V2KeychainBeforeActivation => false,
         }
     }
-}
 
-impl TempoInvalidTransaction {
     /// Returns the Tempo validation error carried by a block executor's invalid-tx error,
     /// or `None` if it is a generic EVM validation error.
     pub fn from_invalid_tx_error(error: &dyn InvalidTxError) -> Option<&Self> {
