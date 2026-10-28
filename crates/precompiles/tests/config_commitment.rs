@@ -209,7 +209,7 @@ fn checkpoint_revert_restores_commitment() {
 fn evm_storage_reads_and_writes_commitments() {
     let spec = TempoHardfork::T14;
     let params = gas_params(spec, false);
-    let new_account = u64::from(params.get(GasId::NewAccountCost));
+    let new_account = params.get(GasId::NewAccountCost);
     let mut evm = new_evm(spec, false);
     {
         let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
@@ -317,7 +317,7 @@ struct WriteCase {
 fn evm_write_gas_boundary() {
     let spec = TempoHardfork::T14;
     let params = gas_params(spec, false);
-    let registration = 2 * u64::from(params.get(GasId::NewAccountCost));
+    let registration = 2 * params.get(GasId::NewAccountCost);
     for WriteCase {
         previous,
         cost,
@@ -390,7 +390,7 @@ fn evm_registration_state_gas_spills_into_regular_gas() {
     version.gas_params[GasId::NewAccountState] = state_gas;
     // The commitment write and the account creation each charge it.
     let state_gas = 2 * u64::from(state_gas);
-    let regular = 2 * u64::from(version.gas_params.get(GasId::NewAccountCost));
+    let regular = 2 * version.gas_params.get(GasId::NewAccountCost);
     let mut evm = new_evm_with_version(version);
     let reservoir = state_gas / 4;
     let mut gas_tracker = GasTracker::new_with_execution_gas_and_reservoir(u64::MAX / 2, reservoir);

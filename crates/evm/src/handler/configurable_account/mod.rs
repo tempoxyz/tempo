@@ -295,7 +295,7 @@ pub(crate) fn register_commitments(
 
 /// Gas for loading one account: a warm read, plus the cold surcharge when it was not yet accessed.
 pub fn account_access_gas(gas: &GasParams, is_cold: bool) -> u64 {
-    u64::from(gas.get(GasId::WarmStorageReadCost))
+    gas.get(GasId::WarmStorageReadCost)
         + if is_cold {
             gas.cold_account_additional_cost()
         } else {
@@ -399,7 +399,7 @@ fn validate_native_roles(
             if first {
                 let gas = &host.version().gas_params;
                 // TIP-1108 prices the commitment write like account creation.
-                extra_gas += u64::from(gas.get(GasId::NewAccountCost));
+                extra_gas += gas.get(GasId::NewAccountCost);
                 state_gas += gas.new_account_state_gas();
                 // The sender's creation is free here only when another TIP-1000 charge pays it:
                 // the nonce-zero charge of a protocol-nonce transaction, or the first-call CREATE
@@ -411,7 +411,7 @@ fn validate_native_roles(
                 let sender_creation_paid = address == caller
                     && (pays_nonce_zero_account_gas || pays_first_call_create_account_gas);
                 if account.is_empty && !sender_creation_paid {
-                    extra_gas += u64::from(gas.get(GasId::NewAccountCost));
+                    extra_gas += gas.get(GasId::NewAccountCost);
                     state_gas += gas.new_account_state_gas();
                 }
             }

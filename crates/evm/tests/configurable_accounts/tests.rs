@@ -952,7 +952,7 @@ fn delegate_registration_gas(empty_delegate: bool) -> BlockGas {
 fn registration_charges_the_new_account_cost_once_for_every_nonce_type() {
     let params = tempo_gas_params(TempoHardfork::T14);
     let new_account = BlockGas {
-        regular: u64::from(params.get(GasId::NewAccountCost)),
+        regular: params.get(GasId::NewAccountCost),
         state: params.new_account_state_gas(),
     };
     struct Row {
@@ -2217,11 +2217,11 @@ fn eoa_migration_gas_schedule() {
             let commitment =
                 keccak_cost(CONFIGURABLE_ACCOUNT_CONFIG_DOMAIN.len() + 32 + 8 + 2 + count * 21)
                     .unwrap();
-            let warm_read = u64::from(params.get(GasId::WarmStorageReadCost));
+            let warm_read = params.get(GasId::WarmStorageReadCost);
             let origin = warm_read;
             let tload = warm_read;
             let account_access = warm_read;
-            let write = u64::from(params.get(GasId::NewAccountCost));
+            let write = params.get(GasId::NewAccountCost);
             let log_data = (4 + count as u64 * 2) * 32;
             let log = 375 + 3 * 375 + 8 * log_data;
             let components = intrinsic
@@ -2297,7 +2297,7 @@ fn eoa_migration_charges_the_new_account_cost_once_for_every_nonce_type() {
         } else {
             let params = tempo_gas_params(TempoHardfork::T14);
             BlockGas {
-                regular: u64::from(params.get(GasId::NewAccountCost)),
+                regular: params.get(GasId::NewAccountCost),
                 state: params.new_account_state_gas(),
             }
         };
@@ -3292,7 +3292,7 @@ fn retired_root_error_order_and_access_gas() {
 
     // Gas: each distinct non-caller role account is charged one account access from T14.
     let params = tempo_gas_params(TempoHardfork::T14);
-    let warm = u64::from(params.get(GasId::WarmStorageReadCost));
+    let warm = params.get(GasId::WarmStorageReadCost);
     let cold = warm + params.cold_account_additional_cost();
     let other = signer(8);
     let delta = |tx: &dyn Fn(&Fixture) -> AASigned| {
@@ -4857,7 +4857,7 @@ fn check_configurable_account_verdict(
         Access::Cold => params.cold_account_additional_cost(),
         Access::Listed | Access::Warm => 0,
     };
-    let access_gas = u64::from(params.get(GasId::WarmStorageReadCost)) + cold_extra;
+    let access_gas = params.get(GasId::WarmStorageReadCost) + cold_extra;
     let initial = if registered {
         0
     } else {
@@ -5334,7 +5334,7 @@ fn native_signature_verification_is_intrinsic_gas() {
     let verification = calldata + keccak(75 + 21) + keccak(96);
     // First use: derivation K(68 + 21), plus the registration write, priced like account creation.
     let new_account = tempo_gas_params(TempoHardfork::T14).get(GasId::NewAccountCost);
-    let first_use = keccak(68 + 21) + u64::from(new_account);
+    let first_use = keccak(68 + 21) + new_account;
     assert_eq!(
         native.tx_gas_used() - primitive.tx_gas_used(),
         verification + first_use
@@ -5711,7 +5711,7 @@ fn native_admin_delegate_signs_inline_grant() {
 fn native_sender_signing_its_own_grant_registers_once() {
     let params = tempo_gas_params(TempoHardfork::T14);
     let new_account = BlockGas {
-        regular: u64::from(params.get(GasId::NewAccountCost)),
+        regular: params.get(GasId::NewAccountCost),
         state: params.new_account_state_gas(),
     };
     let key = signer(2).address();
@@ -5774,7 +5774,7 @@ fn native_grant_delegate_access_is_charged_once() {
         AccessKey,
     }
     let params = tempo_gas_params(TempoHardfork::T14);
-    let warm = u64::from(params.get(GasId::WarmStorageReadCost));
+    let warm = params.get(GasId::WarmStorageReadCost);
     let cold = warm + params.cold_account_additional_cost();
     let owner = signer(2);
     let config = ConfigurableAccountConfig {
@@ -5933,9 +5933,7 @@ fn configurable_account_erc1271_propagates_verifier_reverts() {
             .abi_encode()
             .into(),
     };
-    let witness: Bytes = TempoSignature::ConfigurableAccount(signature)
-        .to_bytes()
-        .into();
+    let witness: Bytes = TempoSignature::ConfigurableAccount(signature).to_bytes();
     let wrong_hash = call(B256::ZERO, witness);
     let result = relayed(&mut f, wrong_hash, 1_000_000, None);
     assert_reverts_with(
@@ -5986,9 +5984,7 @@ fn configurable_marker_static_and_delegate_calls() {
         configurable_account_approval(account, &f.config, &f.owner, CONFIGURABLE_ACCOUNT_HASH);
     let input = IConfigurableAccountShim::isValidSignatureCall {
         hash: CONFIGURABLE_ACCOUNT_HASH,
-        signature: TempoSignature::ConfigurableAccount(approval)
-            .to_bytes()
-            .into(),
+        signature: TempoSignature::ConfigurableAccount(approval).to_bytes(),
     }
     .abi_encode();
     for kind in [0xfa, 0xf4, 0xf2] {
@@ -6028,9 +6024,7 @@ fn configurable_shim_matches_verifier_gas_and_propagates_oog() {
     let account = f.account;
     let approval =
         configurable_account_approval(account, &f.config, &f.owner, CONFIGURABLE_ACCOUNT_HASH);
-    let signature: Bytes = TempoSignature::ConfigurableAccount(approval)
-        .to_bytes()
-        .into();
+    let signature: Bytes = TempoSignature::ConfigurableAccount(approval).to_bytes();
     let direct = ISignatureVerifier::verifyConfigurableAccountCall {
         account,
         hash: CONFIGURABLE_ACCOUNT_HASH,

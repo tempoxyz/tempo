@@ -671,9 +671,7 @@ where
         // The write makes an empty account permanent; an intrinsic write was priced with the
         // transaction, creation included.
         if creates_account && gas == ConfigCommitmentWriteGas::Precompile {
-            self.deduct_gas(u64::from(
-                self.version.gas_params.get(GasId::NewAccountCost),
-            ))?;
+            self.deduct_gas(self.version.gas_params.get(GasId::NewAccountCost))?;
             self.deduct_state_gas(self.version.gas_params.new_account_state_gas())?;
         }
         let mut account = self.evm.state_mut().account(&address)?;

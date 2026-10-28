@@ -2,7 +2,7 @@
 
 use alloy::{
     genesis::GenesisAccount,
-    primitives::{Address, B256, Bytes, Signature, TxKind, U256, hex},
+    primitives::{Address, B256, Bytes, TxKind, U256, hex},
     rpc::types::TransactionRequest,
 };
 use alloy_eips::{eip2718::Encodable2718, eip2930::AccessList};
@@ -19,7 +19,7 @@ use tempo_primitives::{
     transaction::{
         Call, ConfigurableAccountConfig, ConfigurableAccountOwner, ConfigurableAccountSignature,
         KeyAuthorization, KeychainSignature, PrimitiveSignature, SignatureType, TempoSignature,
-        TempoTransaction,
+        TempoTransaction, configurable_account_digest,
     },
 };
 
@@ -63,34 +63,35 @@ async fn test_configurable_accounts_are_rejected() -> eyre::Result<()> {
     let chain_id = provider.get_chain_id().await?;
     let next_nonce = provider.get_transaction_count(dev_address).await?;
     let delegate = Address::repeat_byte(0x66);
-    // Zones reject before the owner quorum is checked, so the approval only needs a valid shape.
-    let configurable = ConfigurableAccountSignature::try_new(
-        delegate,
-        ConfigurableAccountConfig {
-            salt: B256::ZERO,
-            version: 0,
-            threshold: 1,
-            owners: vec![ConfigurableAccountOwner {
-                owner: dev_address,
-                weight: 1,
-            }],
-        },
-        vec![PrimitiveSignature::Secp256k1(Signature::new(
-            U256::ONE,
-            U256::from(2),
-            false,
-        ))],
-    )
-    .expect("the witness has a valid shape");
+    // Sender recovery verifies owner quorums, so the owner approves each digest for real.
+    let config = ConfigurableAccountConfig {
+        salt: B256::ZERO,
+        version: 0,
+        threshold: 1,
+        owners: vec![ConfigurableAccountOwner {
+            owner: dev_address,
+            weight: 1,
+        }],
+    };
+    let approve = |inner: B256| -> eyre::Result<ConfigurableAccountSignature> {
+        let digest = configurable_account_digest(inner, delegate, config.version);
+        Ok(ConfigurableAccountSignature::try_new(
+            delegate,
+            config.clone(),
+            vec![PrimitiveSignature::Secp256k1(root.sign_hash_sync(&digest)?)],
+        )
+        .expect("the witness has a valid shape"))
+    };
     let delegate_grant =
         KeyAuthorization::unrestricted(chain_id, SignatureType::ConfigurableAccount, delegate);
     let delegate_grant_signature = root.sign_hash_sync(&delegate_grant.signature_hash())?;
-    let configurable_grant = KeyAuthorization::unrestricted(
+    let grant = KeyAuthorization::unrestricted(
         chain_id,
         SignatureType::Secp256k1,
         Address::repeat_byte(0x77),
-    )
-    .into_signed(configurable.clone());
+    );
+    let grant_approval = approve(grant.signature_hash())?;
+    let configurable_grant = grant.into_signed(grant_approval);
 
     let owners = vec![IConfigurableAccount::ConfigurableAccountOwner {
         owner: delegate,
@@ -124,51 +125,52 @@ async fn test_configurable_accounts_are_rejected() -> eyre::Result<()> {
         }]
     };
 
-    // A case without its own signature is signed by the root key. Each case takes its own nonce
-    // so a case the pool accepts cannot shadow the next one.
+    // Each case takes its own nonce so a case the pool accepts cannot shadow the next one.
+    enum Signer {
+        Root,
+        Configurable,
+        Keychain,
+    }
     let cases = [
         (
             "configurable account key authorization",
             call(dev_address, Bytes::new()),
             Some(delegate_grant.into_signed(delegate_grant_signature)),
-            None,
+            Signer::Root,
         ),
         (
             "key authorization signed by a configurable account",
             call(dev_address, Bytes::new()),
             Some(configurable_grant),
-            None,
+            Signer::Root,
         ),
         (
             "configurable account signature",
             call(dev_address, Bytes::new()),
             None,
-            Some(TempoSignature::ConfigurableAccount(configurable.clone())),
+            Signer::Configurable,
         ),
         (
             "keychain-wrapped configurable account signature",
             call(dev_address, Bytes::new()),
             None,
-            Some(TempoSignature::Keychain(KeychainSignature::new(
-                dev_address,
-                configurable,
-            ))),
+            Signer::Keychain,
         ),
         (
             "upgradeAccount transaction",
             call(CONFIGURABLE_ACCOUNT_ADDRESS, upgrade_account_input.clone()),
             None,
-            None,
+            Signer::Root,
         ),
         (
             "updateConfig transaction",
             call(CONFIGURABLE_ACCOUNT_ADDRESS, update_config_input.clone()),
             None,
-            None,
+            Signer::Root,
         ),
     ];
     let mut mismatches = Vec::new();
-    for (nonce, (case, calls, key_authorization, signature)) in (next_nonce..).zip(cases) {
+    for (nonce, (case, calls, key_authorization, signer)) in (next_nonce..).zip(cases) {
         let transaction = TempoTransaction {
             chain_id,
             fee_token: Some(PATH_USD_ADDRESS),
@@ -185,9 +187,14 @@ async fn test_configurable_accounts_are_rejected() -> eyre::Result<()> {
             key_authorization,
             tempo_authorization_list: vec![],
         };
-        let signature = match signature {
-            Some(signature) => signature,
-            None => root.sign_hash_sync(&transaction.signature_hash())?.into(),
+        let hash = transaction.signature_hash();
+        let signature = match signer {
+            Signer::Root => root.sign_hash_sync(&hash)?.into(),
+            Signer::Configurable => TempoSignature::ConfigurableAccount(approve(hash)?),
+            Signer::Keychain => TempoSignature::Keychain(KeychainSignature::new(
+                dev_address,
+                approve(KeychainSignature::signing_hash(hash, dev_address))?,
+            )),
         };
         let envelope: TempoTxEnvelope = transaction.into_signed(signature).into();
         let outcome = match provider
