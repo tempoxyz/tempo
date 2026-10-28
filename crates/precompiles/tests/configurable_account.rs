@@ -509,10 +509,11 @@ fn upgrade_account_checks_eligibility_code_and_commitment_in_order() {
     StorageCtx::enter(&mut storage, || {
         let owners = weighted_owners(&[(OWNER, 1)]);
         let with_code = Address::repeat_byte(0x44);
+        seed_commitment(with_code, B256::repeat_byte(9));
+        // Deliberately replace the protocol marker to test rejection precedence for invalid code.
         StorageCtx
             .set_code(with_code, Bytes::from_static(&[0x00]))
             .unwrap();
-        seed_commitment(with_code, B256::repeat_byte(9));
         let configured = Address::repeat_byte(0x55);
         seed_commitment(configured, B256::repeat_byte(9));
 
