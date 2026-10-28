@@ -16,7 +16,9 @@ use tempo_evm::{TempoEvmExt, build_tempo_evm};
 use tempo_precompiles::{
     Precompile,
     account_keychain::AccountKeychain,
-    configurable_account::{ConfigurableAccount, UpgradeEligibility, config, valid_account},
+    configurable_account::{
+        CONFIGURABLE_ACCOUNT_CODE, ConfigurableAccount, UpgradeEligibility, config, valid_account,
+    },
     input_cost,
     storage::{ConfigCommitmentWriteGas, StorageCtx, hashmap::HashMapStorageProvider},
 };
@@ -639,14 +641,15 @@ fn upgrade_account_installs_a_version_one_commitment() {
     );
 }
 
-/// A committed configuration ends an account's direct grant authority where its code begins; an
-/// uncommitted account grants keys whatever its code.
+/// Registered parents keep grant authority with the protocol marker; incompatible code is rejected.
+/// Uncommitted parents retain their existing grant behavior.
 #[test]
-fn committed_parent_with_code_cannot_authorize_keys() {
+fn committed_parent_requires_protocol_marker_to_authorize_keys() {
     let parent = Address::repeat_byte(0x11);
     let key = Address::repeat_byte(0x22);
     let codes = [
-        ("none", Bytes::new()),
+        ("unchanged", Bytes::new()),
+        ("marker", CONFIGURABLE_ACCOUNT_CODE),
         ("bytecode", Bytes::from_static(&[0x00])),
         (
             "delegation",
@@ -683,11 +686,12 @@ fn committed_parent_with_code_cannot_authorize_keys() {
                     },
                     None,
                 );
-                let expected = if committed && !code.is_empty() {
-                    Err(AccountKeychainError::invalid_key_id().into())
-                } else {
-                    Ok(())
-                };
+                let expected =
+                    if committed && !code.is_empty() && *code != CONFIGURABLE_ACCOUNT_CODE {
+                        Err(AccountKeychainError::invalid_key_id().into())
+                    } else {
+                        Ok(())
+                    };
                 assert_eq!(
                     result, expected,
                     "committed={committed}, parent code: {kind}"
