@@ -1058,7 +1058,12 @@ fn replay_is_rejected_from_t14() {
 fn activation_config() -> TempoEvmConfig {
     let mut genesis = DEV.genesis().clone();
     genesis.config.chain_id = 1;
-    for (field, value) in [("t12Time", 0), ("t13Time", 0), ("t14Time", 10)] {
+    for (field, value) in [
+        ("t12Time", 0),
+        ("t13Time", 0),
+        ("t14Time", 10),
+        ("t15Time", 1_000),
+    ] {
         genesis
             .config
             .extra_fields
