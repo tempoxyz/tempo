@@ -36,7 +36,7 @@ use tracing::{Level, debug, info, instrument, warn};
 
 use super::parent_state::TempoParentState;
 use crate::{
-    consensus::{Digest, PacingClock, ProposalBudget, block::Block},
+    consensus::{Digest, ProposalBudget, block::Block},
     executor::DeferredExtraData,
 };
 
@@ -109,12 +109,12 @@ impl Inner {
         ),
         err(level = Level::WARN),
     )]
-    async fn build<TContext: PacingClock>(
+    async fn build<TContext: Clock>(
         &self,
         runtime: &TContext,
         context: Context<Digest, PublicKey>,
         parent: &Arc<Block>,
-        propose_start: TContext::PacingInstant,
+        propose_start: Instant,
     ) -> eyre::Result<Block> {
         self.executor
             .report_pending_head(context.round, context.parent)?;
@@ -162,8 +162,8 @@ impl Inner {
         };
 
         // Start monotonic pacing alongside the wall-clock header stamp.
-        let pacing_started = runtime.pacing_now();
-        let preparation_elapsed = runtime.pacing_elapsed(propose_start);
+        let pacing_started = Instant::now();
+        let preparation_elapsed = propose_start.elapsed();
 
         // Use current timestamp but make sure that if parent's timestamp is in the future, we account for that.
         let mut epoch_millis = runtime.current().epoch_millis();
@@ -184,7 +184,7 @@ impl Inner {
         let proposer_public_key = crate::utils::public_key_to_b256(&self.public_key);
         // Cap the pacing allowance, not the duration of required build work.
         let pacing_allowance = self.proposal_budget.pacing_allowance(preparation_elapsed);
-        let pacing_elapsed = runtime.pacing_elapsed(pacing_started);
+        let pacing_elapsed = pacing_started.elapsed();
         let build_budget = pacing_allowance.saturating_sub(pacing_elapsed);
         let attrs = TempoPayloadAttributes::new(
             Some(proposer_public_key),
@@ -225,7 +225,7 @@ impl Inner {
             block,
             execution_block_encoded,
         );
-        let pacing_elapsed = runtime.pacing_elapsed(pacing_started);
+        let pacing_elapsed = pacing_started.elapsed();
         // Pace proposal return from the header stamp. Validators still need
         // to repeat replayable build work, so leave room for it before
         // returning the proposal.
@@ -240,7 +240,9 @@ impl Inner {
             return_time = %display_duration(return_delay),
             "sleeping before returning proposal"
         );
-        runtime.sleep_remaining(pacing_started, return_after).await;
+        runtime
+            .sleep(return_after.saturating_sub(pacing_started.elapsed()))
+            .await;
 
         Ok(proposal)
     }
@@ -434,7 +436,7 @@ impl Inner {
 
 impl<TContext> commonware_consensus::Application<TContext> for Inner
 where
-    TContext: Rng + Spawner + commonware_runtime::Metrics + PacingClock,
+    TContext: Rng + Spawner + commonware_runtime::Metrics + Clock,
 {
     type SigningScheme = Scheme<PublicKey, MinSig>;
     type Context = Context<Digest, PublicKey>;
@@ -449,7 +451,7 @@ where
         mut ancestry: impl Ancestry<Block>,
         (): (),
     ) -> Option<Block> {
-        let propose_start = runtime.pacing_now();
+        let propose_start = Instant::now();
         let parent = ancestry.next().await?;
         match self.build(&runtime, context, &parent, propose_start).await {
             Ok(block) => {

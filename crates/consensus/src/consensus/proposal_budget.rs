@@ -35,8 +35,6 @@ impl ProposalBudget {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::consensus::PacingClock as _;
-    use commonware_runtime::{Clock as _, Runner as _, deterministic};
 
     #[test]
     fn preparation_caps_the_post_header_allowance() {
@@ -65,18 +63,5 @@ mod tests {
             );
             assert_eq!(budget.pacing_allowance(Duration::ZERO), Duration::ZERO);
         }
-    }
-
-    #[test]
-    fn preparation_uses_the_injected_clock() {
-        deterministic::Runner::default().start(|context| async move {
-            let budget = ProposalBudget::new(Duration::from_millis(500), Duration::from_millis(50));
-            let started = context.pacing_now();
-            context.sleep(Duration::from_millis(600)).await;
-            assert_eq!(
-                budget.pacing_allowance(context.pacing_elapsed(started)),
-                Duration::ZERO
-            );
-        });
     }
 }

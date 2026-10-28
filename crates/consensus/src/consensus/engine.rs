@@ -16,8 +16,8 @@ use commonware_cryptography::{
 };
 use commonware_p2p::{AddressableManager, Blocker, Receiver, Sender};
 use commonware_runtime::{
-    BufferPooler, ContextCell, Handle, Metrics, Network, Spawner, Storage, buffer::paged::CacheRef,
-    spawn_cell,
+    BufferPooler, Clock, ContextCell, Handle, Metrics, Network, Spawner, Storage,
+    buffer::paged::CacheRef, spawn_cell,
 };
 use eyre::{OptionExt as _, WrapErr as _, ensure};
 use rand_core::{CryptoRng, Rng};
@@ -33,7 +33,7 @@ use crate::{
     peer_manager, storage,
 };
 
-use super::{PacingClock, ProposalBudget, block::Block};
+use super::{ProposalBudget, block::Block};
 
 // A bunch of constants to configure commonwarexyz singletons and copied over form alto.
 
@@ -113,7 +113,7 @@ where
         context: TContext,
     ) -> eyre::Result<Engine<TContext, TBlocker, TPeerManager>>
     where
-        TContext: PacingClock
+        TContext: Clock
             + governor::clock::Clock
             + Rng
             + CryptoRng
@@ -370,7 +370,7 @@ where
 pub struct Engine<TContext, TBlocker, TPeerManager>
 where
     TContext: BufferPooler
-        + PacingClock
+        + Clock
         + governor::clock::Clock
         + Rng
         + CryptoRng
@@ -426,7 +426,7 @@ where
 impl<TContext, TBlocker, TPeerManager> Engine<TContext, TBlocker, TPeerManager>
 where
     TContext: BufferPooler
-        + PacingClock
+        + Clock
         + governor::clock::Clock
         + Rng
         + CryptoRng
