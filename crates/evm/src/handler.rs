@@ -228,8 +228,8 @@ fn calculate_key_authorization_gas(
         //   + N SSTOREs (one per spending limit) + 2k buffer (TSTORE + keccak + event)
         // T5 witness and T6 admin authorizations emit additional LOG3 events with no data.
         const BUFFER: u64 = 2_000;
-        let sload_cost = u64::from(gas_params.get(GasId::WarmStorageReadCost))
-            + u64::from(gas_params.get(GasId::ColdStorageAdditionalCost));
+        let sload_cost = gas_params.get(GasId::WarmStorageReadCost)
+            + gas_params.get(GasId::ColdStorageAdditionalCost);
 
         let limit_slots = if spec.is_t3() {
             // T3 periodic limits write 2 storage slots per token:
@@ -246,7 +246,7 @@ fn calculate_key_authorization_gas(
             num_sstores += call_scope_storage_slots(&key_auth.authorization, spec);
         }
 
-        let mut sstore_cost = u64::from(gas_params.get(GasId::SstoreSetWithoutLoadCost));
+        let mut sstore_cost = gas_params.get(GasId::SstoreSetWithoutLoadCost);
         if spec.is_t7() {
             // T7 exposes only the SSTORE residual in the gas table. Since key-auth storage is
             // intrinsic-only, we must also add the creditable portion here.
@@ -268,8 +268,9 @@ fn calculate_key_authorization_gas(
         }
 
         // TIP-1016: each storage-creating SSTORE also incurs state gas.
-        let state_gas =
-            u64::from(gas_params.get(GasId::SstoreSetState)).saturating_mul(num_sstores);
+        let state_gas = gas_params
+            .get(GasId::SstoreSetState)
+            .saturating_mul(num_sstores);
 
         (regular_gas, state_gas)
     } else {
@@ -307,7 +308,7 @@ fn intrinsic_gas(
     let spec = host.config_spec_id();
     let params = &host.version().gas_params;
     // 1. Base stipend (21k, once per transaction)
-    let mut regular = u64::from(params.get(GasId::TxBaseStipend));
+    let mut regular = params.get(GasId::TxBaseStipend);
     let mut state = 0u64;
     let mut tokens = 0u64;
 
@@ -316,8 +317,8 @@ fn intrinsic_gas(
 
     // 3. Per-call overhead: cold account access for calls after the first. The 21k base stipend
     // already covers the first call's target access.
-    let cold_account = u64::from(params.get(GasId::WarmStorageReadCost))
-        + u64::from(params.get(GasId::ColdAccountAdditionalCost));
+    let cold_account =
+        params.get(GasId::WarmStorageReadCost) + params.get(GasId::ColdAccountAdditionalCost);
     regular = regular
         .saturating_add(cold_account.saturating_mul(tx.calls.len().saturating_sub(1) as u64));
 
@@ -327,13 +328,13 @@ fn intrinsic_gas(
     // No need for v1 fork check as gas_params would be zero
     for authorization in &tx.tempo_authorization_list {
         regular = regular
-            .saturating_add(u64::from(params.get(GasId::TxEip7702PerEmptyAccountCost)))
+            .saturating_add(params.get(GasId::TxEip7702PerEmptyAccountCost))
             .saturating_add(tempo_signature_verification_gas(authorization.signature()));
         state = state.saturating_add(params.eip7702_auth_state_gas());
         if spec.is_t1() && authorization.nonce == 0 {
             // TIP-1000: Storage pricing updates for launch
             // EIP-7702 authorisation list entries with `auth_list.nonce == 0` require an additional 250,000 gas.
-            regular = regular.saturating_add(u64::from(params.get(GasId::NewAccountCost)));
+            regular = regular.saturating_add(params.get(GasId::NewAccountCost));
             state = state.saturating_add(params.new_account_state_gas());
         }
     }
@@ -359,34 +360,29 @@ fn intrinsic_gas(
             // 4b. CREATE-specific costs
             // CREATE costs 500,000 gas in TIP-1000 (T1), 32,000 before
             regular = regular
-                .saturating_add(u64::from(params.get(GasId::Create)))
+                .saturating_add(params.get(GasId::Create))
                 .saturating_add(params.initcode_cost(call.input.len()));
         }
     }
-    regular =
-        regular.saturating_add(tokens.saturating_mul(u64::from(params.get(GasId::TxTokenCost))));
+    regular = regular.saturating_add(tokens.saturating_mul(params.get(GasId::TxTokenCost)));
 
     // 5. Access list costs using the configured gas parameters
     let (accounts, storage_keys) = access_list_counts(&tx.access_list);
     regular = regular
-        .saturating_add(
-            accounts.saturating_mul(u64::from(params.get(GasId::TxAccessListAddressCost))),
-        )
-        .saturating_add(
-            storage_keys.saturating_mul(u64::from(params.get(GasId::TxAccessListStorageKeyCost))),
-        );
+        .saturating_add(accounts.saturating_mul(params.get(GasId::TxAccessListAddressCost)))
+        .saturating_add(storage_keys.saturating_mul(params.get(GasId::TxAccessListStorageKeyCost)));
 
     // 6. Floor gas using EVM2 gas parameters
     let floor = if host.feature(EvmFeatures::EIP7623) {
         let mut floor_tokens = tokens;
-        let multiplier = u64::from(params.get(GasId::TxAccessListFloorByteMultiplier));
+        let multiplier = params.get(GasId::TxAccessListFloorByteMultiplier);
         floor_tokens = floor_tokens.saturating_add(
             (accounts.saturating_mul(20) + storage_keys.saturating_mul(32))
                 .saturating_mul(multiplier),
         );
-        u64::from(params.get(GasId::TxFloorCostBase)).saturating_add(
-            floor_tokens.saturating_mul(u64::from(params.get(GasId::TxFloorCostPerToken))),
-        )
+        params
+            .get(GasId::TxFloorCostBase)
+            .saturating_add(floor_tokens.saturating_mul(params.get(GasId::TxFloorCostPerToken)))
     } else {
         0
     };
@@ -405,7 +401,7 @@ fn nonce_intrinsic_gas(host: &Evm<'_, TempoEvmTypes>, aa: &TempoAaTx) -> (u64, u
         // TIP-1000: Storage pricing updates for launch
         // Tempo transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas
         (
-            u64::from(params.get(GasId::NewAccountCost)),
+            params.get(GasId::NewAccountCost),
             params.new_account_state_gas(),
         )
     } else if !tx.nonce_key.is_zero() {
@@ -811,8 +807,10 @@ fn apply_key_authorization(
     let metered = spec.is_t1() && !spec.is_t1b();
     let mut key_authorization_gas_params = host.version().gas_params;
     if metered {
-        let sstore_set = key_authorization_gas_params.get(GasId::SstoreSetWithoutLoadCost);
-        let warm_storage_read = key_authorization_gas_params.get(GasId::WarmStorageReadCost);
+        let cost =
+            |id| u32::try_from(key_authorization_gas_params.get(id)).expect("gas costs are u32");
+        let sstore_set = cost(GasId::SstoreSetWithoutLoadCost);
+        let warm_storage_read = cost(GasId::WarmStorageReadCost);
         for index in 0..GasId::COUNT {
             key_authorization_gas_params
                 .set(GasId::from_usize(index).expect("gas IDs are contiguous"), 0);
@@ -983,8 +981,8 @@ fn apply_authorization_list(
 ) -> HandlerResult<(u64, u64)> {
     let eip8037 = host.feature(EvmFeatures::EIP8037);
     let new_account = host.version().gas_params.new_account_state_gas();
-    let auth_base = u64::from(host.version().gas_params.get(GasId::TxEip7702PerAuthState));
-    let regular_per_auth = u64::from(host.version().gas_params.get(GasId::TxEip7702AuthRefund));
+    let auth_base = host.version().gas_params.get(GasId::TxEip7702PerAuthState);
+    let regular_per_auth = host.version().gas_params.get(GasId::TxEip7702AuthRefund);
     let mut state_refund = 0u64;
     let mut regular_refund = 0u64;
 
