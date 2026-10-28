@@ -1098,12 +1098,40 @@ def txgen-neobank-instances [path: string] {
         }
         let modules = ($instance | get -o modules | default [])
         let modules = if ($modules | describe) == string { $modules } else { $modules | str join "," }
-        {name: $name, id: ($name | str replace --all "-" "_"), share: $share, modules: (txgen-neobank-modules $modules)}
+        let modules = (txgen-neobank-modules $modules)
+        let weights = ($instance | get -o weights | default {})
+        if ($weights | describe | str starts-with "record") == false {
+            error make {msg: $"neobank instance ($name) weights must map template names to weights"}
+        }
+        let enabled = ($modules | each { |module| $TXGEN_HELPER_NEOBANK_MODULES | get $module } | flatten)
+        for item in ($weights | transpose template weight) {
+            if $item.template not-in ($TXGEN_HELPER_NEOBANK_MODULES | values | flatten) {
+                error make {msg: $"neobank instance ($name) weights name unknown template ($item.template)"}
+            }
+            if $item.template not-in $enabled {
+                error make {msg: $"neobank instance ($name) weights ($item.template), which is outside its modules"}
+            }
+            if ($item.weight | describe) not-in [int float] or $item.weight < 0 {
+                error make {msg: $"neobank instance ($name) weight for ($item.template) must be a non-negative number"}
+            }
+        }
+        {name: $name, id: ($name | str replace --all "-" "_"), share: $share, modules: $modules, weights: $weights}
     })
     if ($parsed | get id | uniq | length) != ($parsed | length) {
         error make {msg: "neobank instance names must be unique"}
     }
     $parsed
+}
+
+# An instance's mix: neobank-generic's entries for its modules, with its weight
+# overrides applied; a zero weight drops the template.
+def txgen-neobank-instance-mix [mix: list<any>, instance: record] {
+    let weights = ($instance | get -o weights | default {})
+    let entries = (txgen-neobank-filter-mix $mix $instance.modules
+        | each { |entry| $entry | update weight ($weights | get -o $entry.template | default $entry.weight) }
+        | where weight > 0)
+    if ($entries | is-empty) { error make {msg: $"neobank instance ($instance.name) has no templates with positive weight"} }
+    $entries
 }
 
 # Lines under one top-level key of a YAML file, read as text.
@@ -1158,7 +1186,10 @@ def txgen-neobank-instance-text [text: string, instance: record, index: int] {
 # share times its modules' neobank-generic weights renormalised within the instance.
 def txgen-prepare-neobank-multi-preset [spec_path: string, count: int, accounts: int, zones: int, chain_id: int, output_dir: string] {
     let presets = ($spec_path | path dirname)
+    # A relative TXGEN_NEOBANK_INSTANCES path resolves from the working directory, then the repository root.
     let config = ($env.TXGEN_NEOBANK_INSTANCES? | default ($presets | path join neobank instances.yml))
+    let config = if ($config | path exists) { $config } else { [ (txgen-repo-root) $config ] | path join }
+    if not ($config | path exists) { error make {msg: $"neobank instances file not found: ($config)"} }
     let instances = (txgen-neobank-instances $config)
     let base_path = ($presets | path join neobank-generic.yml)
     let result = (^uv run --no-project --with yq==3.4.3 yq -c '.mix' $base_path | complete)
@@ -1196,7 +1227,7 @@ def txgen-prepare-neobank-multi-preset [spec_path: string, count: int, accounts:
         let instance = $item.item
         let range = ($user_ranges | get $index)
         let instance_share = $instance.share / $share_sum
-        let families = (txgen-neobank-filter-mix $base_mix $instance.modules)
+        let families = (txgen-neobank-instance-mix $base_mix $instance)
         let family_total = ($families | get weight | math sum)
         let in_slice = { |template| $template.from.select.index >= $range.0 and $template.from.select.index < $range.1 }
         let entries = ($families | each { |entry|

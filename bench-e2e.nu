@@ -1353,6 +1353,15 @@ def "main render-txgen-spec" [
     --tps: int = 50000                                  # Public-mix target TPS
     --duration: int = 90                                # Public-mix duration in seconds
 ] {
+    # CI renders before the run, so apply the TXGEN_* assignments of BENCH_BENCH_ENV
+    # (bench-env) here too, such as TXGEN_NEOBANK_INSTANCES or TXGEN_NEOBANK_MODULES.
+    let render_env = ($env.BENCH_BENCH_ENV? | default "" | split row " "
+        | parse --regex '^(?<key>TXGEN_[A-Z0-9_]+)=(?<value>.*)$'
+        | reduce --fold {} { |item, acc| $acc | upsert $item.key $item.value })
+    with-env $render_env { render-txgen-spec-inner $preset $out_dir $accounts $tps $duration }
+}
+
+def render-txgen-spec-inner [preset: string, out_dir: string, accounts: int, tps: int, duration: int] {
     let spec = (txgen-resolve-bench-spec $preset $out_dir)
     if $spec.scenario_id in $TXGEN_HELPER_PUBLIC_MIX_PRESETS {
         let window_ms = ($env.TXGEN_ZONE_SETTLEMENT_WINDOW_MS? | default "3000" | into int)
