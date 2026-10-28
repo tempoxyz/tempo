@@ -2170,7 +2170,7 @@ fn eoa_migration_gas_schedule() {
     ]);
     let params = tempo_gas_params(TempoHardfork::T14);
     // Pinned totals: (owners, gas_used). Legacy and AA primitive transactions cost the same.
-    let pins = [(1, 45_598), (3, 47_770)];
+    let pins = [(1, 275_598), (3, 277_770)];
     for (count, expected) in pins {
         for kind in [RootTx::Legacy, RootTx::Aa] {
             let mut f = Fixture::with_parent(false);
@@ -2200,7 +2200,7 @@ fn eoa_migration_gas_schedule() {
             let origin = warm_read;
             let tload = warm_read;
             let account_access = warm_read;
-            let write = 20_000;
+            let write = u64::from(params.get(GasId::NewAccountCost));
             let log_data = (4 + count as u64 * 2) * 32;
             let log = 375 + 3 * 375 + 8 * log_data;
             let components = intrinsic
@@ -5306,8 +5306,9 @@ fn native_signature_verification_is_intrinsic_gas() {
         .sum();
     // V - 3,000: witness calldata, commitment K(75 + 21), digest K(96), approval 3,000 - 3,000.
     let verification = calldata + keccak(75 + 21) + keccak(96);
-    // First use: derivation K(68 + 21), plus the 20,000 registration write.
-    let first_use = keccak(68 + 21) + 20_000;
+    // First use: derivation K(68 + 21), plus the registration write, priced like account creation.
+    let new_account = tempo_gas_params(TempoHardfork::T14).get(GasId::NewAccountCost);
+    let first_use = keccak(68 + 21) + u64::from(new_account);
     assert_eq!(
         native.tx_gas_used() - primitive.tx_gas_used(),
         verification + first_use
