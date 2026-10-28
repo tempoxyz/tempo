@@ -945,6 +945,7 @@ impl Dealer {
     /// Returns protocol validation errors; subsequent and late ACKs are ignored.
     /// A rejected ACK stops retries for that player until restart or the next epoch.
     /// Storage write failures panic.
+    #[instrument(skip_all, fields(%epoch, %player))]
     pub(super) async fn receive_ack<TContext>(
         &mut self,
         storage: &mut Storage<TContext>,
@@ -957,9 +958,11 @@ impl Dealer {
     {
         // Remove before validation so invalid ACKs cannot trigger repeated verification.
         if self.unsent.remove(&player).is_none() {
+            info!("ignoring ACK; already received an ACK from this player");
             return Ok(());
         }
         let Some(dealer) = &mut self.dealer else {
+            info!("ignoring ACK; dealer was already finalized");
             return Ok(());
         };
 
