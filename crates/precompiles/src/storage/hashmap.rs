@@ -2,17 +2,21 @@ use alloy::primitives::{Address, B256, Bytes, LogData, U256};
 use evm2::{
     SpecId,
     bytecode::Bytecode,
-    evm::{AccountInfo, SLoad, SStore, StateCheckpoint},
+    evm::{AccountExtension, AccountInfo, SLoad, SStore, StateCheckpoint},
     interpreter::GasTracker,
     version::GasParams,
 };
 use std::collections::HashMap;
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_primitives::TempoBlockEnv;
+use tempo_primitives::{TempoBlockEnv, account::encode_config_commitment};
 
 use crate::{
+    configurable_account::CONFIGURABLE_ACCOUNT_CODE,
     error::TempoPrecompileError,
-    storage::{ConfigCommitmentWriteGas, PrecompileStorageProvider, SstoreTransitionFlags},
+    storage::{
+        ConfigCommitmentWriteGas, PrecompileStorageProvider, SstoreTransitionFlags,
+        account_config_commitment,
+    },
     storage_credits::{NonCreditableSlots, StorageCreditsBackend, sstore_storage_credits},
 };
 
@@ -23,7 +27,6 @@ pub struct HashMapStorageProvider {
     internals: HashMap<(Address, U256), U256>,
     transient: HashMap<(Address, U256), U256>,
     accounts: HashMap<Address, AccountInfo>,
-    config_commitments: HashMap<Address, B256>,
     fail_on_sload: Option<(Address, U256)>,
     chain_id: u64,
     block_env: TempoBlockEnv,
@@ -46,7 +49,7 @@ pub struct HashMapStorageProvider {
 ///
 /// PERF: naive cloning strategy due to its limited usage.
 struct Snapshot {
-    config_commitments: HashMap<Address, B256>,
+    accounts: HashMap<Address, AccountInfo>,
     internals: HashMap<(Address, U256), U256>,
     transient: HashMap<(Address, U256), U256>,
     events: HashMap<Address, Vec<LogData>>,
@@ -64,7 +67,6 @@ impl HashMapStorageProvider {
             internals: HashMap::new(),
             transient: HashMap::new(),
             accounts: HashMap::new(),
-            config_commitments: HashMap::new(),
             fail_on_sload: None,
             events: HashMap::new(),
             snapshots: Vec::new(),
@@ -249,7 +251,7 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
     fn checkpoint(&mut self) -> StateCheckpoint {
         let idx = self.snapshots.len();
         self.snapshots.push(Snapshot {
-            config_commitments: self.config_commitments.clone(),
+            accounts: self.accounts.clone(),
             internals: self.internals.clone(),
             transient: self.transient.clone(),
             events: self.events.clone(),
@@ -273,7 +275,7 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
             "out-of-order checkpoint revert (expected top of stack)"
         );
         if let Some(snapshot) = self.snapshots.drain(checkpoint.journal_len()..).next() {
-            self.config_commitments = snapshot.config_commitments;
+            self.accounts = snapshot.accounts;
             self.internals = snapshot.internals;
             self.transient = snapshot.transient;
             self.events = snapshot.events;
@@ -285,11 +287,10 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
     }
 
     fn config_commitment(&mut self, address: Address) -> Result<B256, TempoPrecompileError> {
-        Ok(self
-            .config_commitments
-            .get(&address)
-            .copied()
-            .unwrap_or(B256::ZERO))
+        // A missing account has no extension; reading must not create it.
+        self.accounts.get(&address).map_or(Ok(B256::ZERO), |info| {
+            account_config_commitment(info, self.spec)
+        })
     }
 
     fn set_config_commitment(
@@ -302,9 +303,14 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         if !self.spec.is_t14() || self.is_static || commitment.is_zero() {
             return Err(TempoPrecompileError::InvalidConfigCommitmentWrite);
         }
+        self.deduct_gas(gas.static_cost())?;
         let previous = self.config_commitment(address)?;
-        self.deduct_gas(gas.cost(previous)?)?;
-        self.config_commitments.insert(address, commitment);
+        self.deduct_gas(gas.dynamic_cost(previous, &self.gas_params)?)?;
+        let account = self.accounts.entry(address).or_default();
+        if previous.is_zero() {
+            account.set_code(Bytecode::new_raw(CONFIGURABLE_ACCOUNT_CODE));
+        }
+        account.extension = AccountExtension::from(encode_config_commitment(commitment));
         Ok(())
     }
 }

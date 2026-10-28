@@ -1,14 +1,18 @@
 use crate::{
+    configurable_account::CONFIGURABLE_ACCOUNT_CODE,
     error::TempoPrecompileError,
-    storage::{PrecompileStorageProvider, StorageActions, actions::StorageAction},
+    storage::{
+        ConfigCommitmentWriteGas, PrecompileStorageProvider, StorageActions,
+        account_config_commitment, actions::StorageAction,
+    },
     storage_credits::{NonCreditableSlots, StorageCreditsBackend, sstore_storage_credits},
 };
-use alloy::primitives::{Address, Bytes, Log, LogData, U256};
+use alloy::primitives::{Address, B256, Bytes, Log, LogData, U256};
 use bitflags::bitflags;
 use evm2::{
     Evm, EvmFeatures, EvmTypes, Version,
     bytecode::Bytecode,
-    evm::{AccountInfo, SLoad, SStore, StateCheckpoint},
+    evm::{AccountExtension, AccountInfo, SLoad, SStore, StateCheckpoint},
     interpreter::{GasTracker, gas},
     version::{GasId, GasParams},
 };
@@ -18,7 +22,7 @@ use std::{
     rc::Rc,
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_primitives::{TempoBlockEnv, TempoBlockExt};
+use tempo_primitives::{TempoBlockEnv, TempoBlockExt, account::encode_config_commitment};
 
 /// Production [`PrecompileStorageProvider`] backed by EVM2's live transaction state.
 ///
@@ -634,6 +638,49 @@ where
     #[inline]
     fn set_tip1060_storage_credit_minting(&mut self, enabled: bool) {
         self.tip1060_storage_credit_minting_enabled = enabled;
+    }
+
+    #[inline]
+    fn config_commitment(&mut self, address: Address) -> Result<B256, TempoPrecompileError> {
+        let spec = self.spec;
+        self.with_loaded_account(address, |info| account_config_commitment(info, spec))?
+    }
+
+    fn set_config_commitment(
+        &mut self,
+        address: Address,
+        commitment: B256,
+        gas: ConfigCommitmentWriteGas,
+    ) -> Result<(), TempoPrecompileError> {
+        // Reject before any read or gas charge, so a rejected write is never charged.
+        if !self.spec.is_t14() || self.is_static || commitment.is_zero() {
+            return Err(TempoPrecompileError::InvalidConfigCommitmentWrite);
+        }
+        self.deduct_gas(gas.static_cost())?;
+        // The authorization read already charged account access (or was intrinsic).
+        let spec = self.spec;
+        let (previous, creates_account) = {
+            let account = self.evm.state_mut().account(&address)?;
+            match account.get() {
+                Some(info) => (account_config_commitment(info, spec)?, info.is_empty()),
+                None => (B256::ZERO, true),
+            }
+        };
+        self.deduct_gas(gas.dynamic_cost(previous, &self.version.gas_params)?)?;
+        self.deduct_state_gas(gas.state_cost(previous, &self.version.gas_params))?;
+        // The write makes an empty account permanent; an intrinsic write was priced with the
+        // transaction, creation included.
+        if creates_account && gas == ConfigCommitmentWriteGas::Precompile {
+            self.deduct_gas(self.version.gas_params.get(GasId::NewAccountCost))?;
+            self.deduct_state_gas(self.version.gas_params.new_account_state_gas())?;
+        }
+        let mut account = self.evm.state_mut().account(&address)?;
+        if previous.is_zero() {
+            // Registration and migration pay for the commitment write, including this marker.
+            account.set_code_slow(Bytecode::new_raw(CONFIGURABLE_ACCOUNT_CODE));
+        }
+        account.set_extension(AccountExtension::from(encode_config_commitment(commitment)));
+        Ok(())
     }
 }
 

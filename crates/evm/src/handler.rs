@@ -9,10 +9,10 @@ pub use self::config::{
 };
 use self::config::{TempoFeeContext, TempoHandlerHooks};
 use crate::{
-    FeePaymentError, TempoAaTx, TempoInvalidTransaction, TempoTxEnv,
+    ExecutionContext, FeePaymentError, TempoAaTx, TempoInvalidTransaction, TempoTxEnv,
     signature_gas::{calldata_tokens, tempo_signature_verification_gas},
 };
-use alloy_primitives::{Address, KECCAK256_EMPTY, TxKind, U256};
+use alloy_primitives::{Address, B256, KECCAK256_EMPTY, TxKind, U256};
 use evm2::{
     Evm, EvmFeatures, TxResult,
     env::TxEnv,
@@ -42,9 +42,10 @@ use tempo_precompiles::{
         AccountKeychain, AuthorizedKey, CallScope as PrecompileCallScope, KeyRestrictions,
         SelectorRule as PrecompileSelectorRule, TokenLimit,
     },
+    configurable_account::valid_account_code,
     error::TempoPrecompileError,
     nonce::{INonce::getNonceCall, NonceManager},
-    storage::{Handler as _, StorageCtx},
+    storage::{Handler as _, StorageCtx, account_config_commitment},
 };
 use tempo_primitives::transaction::{
     SignedKeyAuthorization, TEMPO_EXPIRING_NONCE_KEY, validate_calls,
@@ -1084,7 +1085,18 @@ fn apply_nonce(
     let eip3607 = host.feature(EvmFeatures::EIP3607);
     let nonce_check = host.feature(EvmFeatures::NONCE_CHECK);
     let mut account = host.state_mut().account(&caller)?;
-    if eip3607 && account.code_hash() != KECCAK256_EMPTY {
+    let configurable_sender = if spec.is_t14()
+        && (aa.signature().is_keychain()
+            || matches!(envelope.execution_context(), ExecutionContext::Simulation))
+    {
+        let commitment = account
+            .get()
+            .map_or(Ok(B256::ZERO), |info| account_config_commitment(info, spec))?;
+        !commitment.is_zero() && valid_account_code(account.code_hash(), commitment)
+    } else {
+        false
+    };
+    if eip3607 && !configurable_sender && account.code_hash() != KECCAK256_EMPTY {
         let code = account.load_code()?;
         if !code.is_empty() && !code.is_eip7702() {
             return Err(HandlerError::RejectCallerWithCode);

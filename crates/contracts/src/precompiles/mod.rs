@@ -69,6 +69,7 @@ pub const CONFIGURABLE_ACCOUNT_ADDRESS: Address =
 
 /// Fixed system precompile addresses and corresponding activation hardfork
 pub const SYSTEM_PRECOMPILES: &[(Address, TempoHardfork)] = &[
+    (CONFIGURABLE_ACCOUNT_ADDRESS, TempoHardfork::T14),
     (TIP403_REGISTRY_ADDRESS, TempoHardfork::Genesis),
     (TIP_FEE_MANAGER_ADDRESS, TempoHardfork::Genesis),
     (STABLECOIN_DEX_ADDRESS, TempoHardfork::Genesis),
