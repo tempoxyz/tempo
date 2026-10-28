@@ -272,6 +272,7 @@ impl AccountKeychain {
             let spec = self.storage.spec();
             let invalid_parent = StorageCtx::with_warm_caller_info(msg_sender, |info| {
                 let commitment = account_config_commitment(info, spec)?;
+                Ok(!commitment.is_zero() && !valid_account_code(info.code_hash, commitment))
             })?;
             if invalid_parent {
                 return Err(AccountKeychainError::invalid_key_id().into());
