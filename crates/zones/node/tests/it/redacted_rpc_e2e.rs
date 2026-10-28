@@ -1549,3 +1549,96 @@ async fn test_zone_get_encryption_key_reads_latest_l1_key() -> eyre::Result<()> 
 
     Ok(())
 }
+
+/// Log filters deliver each matching log once across `eth_getFilterChanges` polls,
+/// and `eth_getFilterLogs` returns the filter's full range.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_log_filter_changes_deliver_logs_once() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let mut ctx = start_zone_with_redacted_rpc().await?;
+    let owner_signer = l1_dev_signer();
+    let spender = PrivateKeySigner::random().address();
+
+    ctx.inject_deposit(
+        PATH_USD_ADDRESS,
+        owner_signer.address(),
+        owner_signer.address(),
+        1_000_000,
+    )
+    .await?;
+
+    let create_resp = ctx
+        .call_as_user(
+            "eth_newFilter",
+            json!([{
+                "address": format!("{PATH_USD_ADDRESS:#x}"),
+                "fromBlock": "0x0",
+                "topics": [null, address_topic(owner_signer.address())],
+            }]),
+            &owner_signer,
+        )
+        .await?;
+    assert!(
+        create_resp.get("error").is_none(),
+        "owner should be able to create a log filter: {create_resp}"
+    );
+    let filter_id = create_resp["result"].clone();
+
+    let owner_provider = ProviderBuilder::new()
+        .wallet(owner_signer.clone())
+        .connect_http(ctx.zone.http_url().clone());
+    let pending = ContractTip20::new(PATH_USD_ADDRESS, &owner_provider)
+        .approve(spender, U256::from(111u64))
+        .gas_price(u128::from(TEMPO_T0_BASE_FEE))
+        .gas(TIP20_TX_GAS)
+        .send()
+        .await?;
+    let tx_hash = *pending.tx_hash();
+    ctx.fixture.inject_empty_block(ctx.zone.deposit_queue());
+    assert!(
+        pending.get_receipt().await?.status(),
+        "approve should succeed"
+    );
+
+    let tx_hashes = |response: &Value| {
+        response["result"]
+            .as_array()
+            .unwrap_or_else(|| panic!("expected logs, got {response}"))
+            .iter()
+            .map(|log| log["transactionHash"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+
+    let first = ctx
+        .call_as_user(
+            "eth_getFilterChanges",
+            json!([filter_id.clone()]),
+            &owner_signer,
+        )
+        .await?;
+    assert!(
+        tx_hashes(&first).contains(&tx_hash.to_string()),
+        "first poll should include the approval: {first}"
+    );
+
+    ctx.inject_empty_block().await?;
+    let second = ctx
+        .call_as_user(
+            "eth_getFilterChanges",
+            json!([filter_id.clone()]),
+            &owner_signer,
+        )
+        .await?;
+    assert!(
+        tx_hashes(&second).is_empty(),
+        "logs should not be delivered twice: {second}"
+    );
+
+    let all = ctx
+        .call_as_user("eth_getFilterLogs", json!([filter_id]), &owner_signer)
+        .await?;
+    assert!(tx_hashes(&all).contains(&tx_hash.to_string()));
+
+    Ok(())
+}

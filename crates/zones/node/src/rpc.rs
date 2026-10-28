@@ -19,7 +19,7 @@ use alloy_primitives::{Address, B256, Bloom, Bytes, U64, U256, keccak256};
 use alloy_provider::{DynProvider, Provider};
 use alloy_rpc_types_eth::{
     Block, BlockId, BlockNumberOrTag, BlockTransactions, EIP1186AccountProofResponse, FeeHistory,
-    Filter, FilterChanges, FilterId, TransactionRequest,
+    Filter, FilterBlockOption, FilterChanges, FilterId, TransactionRequest,
     state::{EvmOverrides, StateOverride},
 };
 use alloy_sol_types::SolCall;
@@ -29,7 +29,10 @@ use jsonrpsee::{RpcModule, core::RpcResult, proc_macros::rpc, types::ErrorObject
 use reth_chainspec::Hardforks;
 use reth_evm::{ConfigureEvm as _, execute::Executor as _, witness::ExecutionWitnessRecord};
 use reth_execution_types::BundleSource;
-use reth_provider::{BlockReader, CanonStateSubscriptions, ChainSpecProvider, HeaderProvider};
+use reth_provider::{
+    BlockIdReader, BlockNumReader, BlockReader, CanonStateSubscriptions, ChainSpecProvider,
+    HeaderProvider,
+};
 use reth_rpc::{EthFilter, eth::filter::EthFilterError};
 use reth_rpc_api::Web3ApiServer;
 use reth_rpc_builder::EthHandlers;
@@ -705,9 +708,9 @@ fn stale_filter_owner_ids(
         .collect()
 }
 
-async fn prune_filter_owners<Api: EthApiTypes + 'static>(
+async fn prune_filter_owners<Api: EthApiTypes + 'static, V>(
     filter: &EthFilter<Api>,
-    owners: &Mutex<HashMap<FilterId, Address>>,
+    owners: &Mutex<HashMap<FilterId, V>>,
 ) {
     let owner_ids = {
         let owners = owners.lock().await;
@@ -732,6 +735,19 @@ async fn prune_filter_owners<Api: EthApiTypes + 'static>(
     for id in stale_ids {
         owners.remove(&id);
     }
+}
+
+/// Log filter the zone RPC polls itself.
+///
+/// reth advances its own filter cursor before running the log query, so a poll that
+/// fails on the log or response size limit would skip that block window for good.
+/// Keeping the cursor here lets it advance only past blocks that were delivered.
+#[derive(Clone, Debug)]
+struct LogFilterCursor {
+    /// Caller-scoped filter, as installed.
+    filter: Filter,
+    /// First block the next `eth_getFilterChanges` poll returns logs from.
+    next_block: u64,
 }
 
 /// [`ZoneRpcApi`] implementation backed by reth's [`EthHandlers`].
@@ -763,6 +779,9 @@ pub struct ZoneRpc<Api: EthApiTypes> {
     /// Maps filter IDs to the authenticated account that created them.
     /// The reth filter registry remains the source of truth for filter liveness.
     filter_owners: Arc<Mutex<HashMap<FilterId, Address>>>,
+    /// Cursors of log filters. reth registers these IDs as block filters, which keeps
+    /// their liveness and expiry while the logs are queried from here.
+    log_cursors: Arc<Mutex<HashMap<FilterId, LogFilterCursor>>>,
 }
 
 impl<Api: EthApiTypes + 'static> ZoneRpc<Api> {
@@ -779,6 +798,7 @@ impl<Api: EthApiTypes + 'static> ZoneRpc<Api> {
             enabled_tokens,
             l1_provider,
             filter_owners: Arc::new(Mutex::new(HashMap::new())),
+            log_cursors: Arc::new(Mutex::new(HashMap::new())),
         };
         rpc.spawn_filter_owner_pruner();
         rpc
@@ -799,6 +819,8 @@ impl<Api: EthApiTypes + 'static> ZoneRpc<Api> {
     {
         let filter = self.filter().clone();
         let owners: Weak<Mutex<HashMap<FilterId, Address>>> = Arc::downgrade(&self.filter_owners);
+        let cursors: Weak<Mutex<HashMap<FilterId, LogFilterCursor>>> =
+            Arc::downgrade(&self.log_cursors);
         tokio::spawn(async move {
             let mut prune_interval = interval(FILTER_OWNER_PRUNE_INTERVAL);
             prune_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -811,6 +833,9 @@ impl<Api: EthApiTypes + 'static> ZoneRpc<Api> {
                 };
 
                 prune_filter_owners(&filter, &owners).await;
+                if let Some(cursors) = cursors.upgrade() {
+                    prune_filter_owners(&filter, &cursors).await;
+                }
             }
         });
     }
@@ -836,6 +861,7 @@ impl<Api: EthApiTypes + 'static> ZoneRpc<Api> {
             Ok(())
         } else {
             self.filter_owners.lock().await.remove(id);
+            self.log_cursors.lock().await.remove(id);
             Err(filter_not_found_error())
         }
     }
@@ -876,6 +902,72 @@ where
 
             to_raw(&block)
         })
+    }
+
+    /// Block range the next poll of a log filter covers, or `None` when there is nothing new.
+    fn log_filter_poll_range(
+        &self,
+        cursor: &LogFilterCursor,
+    ) -> Result<Option<(u64, u64)>, JsonRpcError> {
+        let provider = self.eth.api.provider();
+        let best = provider.best_block_number().map_err(internal)?;
+        let (from, to) = match cursor.filter.block_option {
+            FilterBlockOption::Range {
+                from_block,
+                to_block,
+            } => {
+                let resolve = |block: Option<BlockNumberOrTag>| {
+                    block
+                        .map(|block| provider.convert_block_number(block))
+                        .transpose()
+                        .map(Option::flatten)
+                        .map_err(internal)
+                };
+                let from = resolve(from_block)?.unwrap_or_default();
+                let to = resolve(to_block)?.unwrap_or(best);
+                (from.max(cursor.next_block), to.min(best))
+            }
+            FilterBlockOption::AtBlockHash(hash) => {
+                let Some(number) = provider.block_number(hash).map_err(internal)? else {
+                    return Ok(None);
+                };
+                (number.max(cursor.next_block), number.min(best))
+            }
+        };
+        Ok((from <= to).then_some((from, to)))
+    }
+
+    /// Serializes the caller's logs for the longest prefix of `[from, to]` that fits the
+    /// log and response size limits, halving the range on failure. Returns the response
+    /// and the last block it covers; a single block that still fails returns its error.
+    async fn poll_log_filter(
+        &self,
+        filter: &Filter,
+        from: u64,
+        to: u64,
+        caller: &Address,
+    ) -> Result<(Box<serde_json::value::RawValue>, u64), JsonRpcError> {
+        let mut end = to;
+        loop {
+            let query = match filter.block_option {
+                FilterBlockOption::Range { .. } => filter.clone().from_block(from).to_block(end),
+                FilterBlockOption::AtBlockHash(_) => filter.clone(),
+            };
+            let result = match EthFilterApiServer::logs(&self.eth.filter, query).await {
+                Ok(logs) => to_raw_bounded(
+                    &FilterChanges::<alloy_rpc_types_eth::Transaction<TempoTxEnvelope>>::Logs(
+                        zone_rpc::filter::filter_logs(logs, caller),
+                    ),
+                    self.config.max_response_size,
+                ),
+                Err(err) => Err(internal(err)),
+            };
+            match result {
+                Ok(raw) => return Ok((raw, end)),
+                Err(_) if end > from => end = from + (end - from) / 2,
+                Err(err) => return Err(err),
+            }
+        }
     }
 }
 
@@ -1182,9 +1274,20 @@ where
             let zone_tokens = self.zone_tokens();
             zone_rpc::filter::scope_filter_addresses(&mut filter, &zone_tokens)?;
             zone_rpc::filter::scope_filter_for_caller(&mut filter, &auth.caller)?;
-            let id = EthFilterApiServer::new_filter(&self.eth.filter, filter)
+            let next_block = self
+                .eth
+                .api
+                .provider()
+                .best_block_number()
+                .map_err(internal)?;
+            // A block filter gives the ID reth's liveness and expiry; logs are polled here.
+            let id = EthFilterApiServer::new_block_filter(&self.eth.filter)
                 .await
                 .map_err(internal)?;
+            self.log_cursors
+                .lock()
+                .await
+                .insert(id.clone(), LogFilterCursor { filter, next_block });
             self.filter_owners
                 .lock()
                 .await
@@ -1196,6 +1299,15 @@ where
     fn get_filter_logs(&self, id: FilterId, auth: AuthContext) -> BoxFut<'_> {
         Box::pin(async move {
             self.ensure_filter_owner(&id, &auth).await?;
+
+            let cursor = self.log_cursors.lock().await.get(&id).cloned();
+            if let Some(cursor) = cursor {
+                let logs = EthFilterApiServer::logs(&self.eth.filter, cursor.filter)
+                    .await
+                    .map_err(internal)?;
+                let filtered = zone_rpc::filter::filter_logs(logs, &auth.caller);
+                return to_raw_bounded(&filtered, self.config.max_response_size);
+            }
 
             let logs = self
                 .filter()
@@ -1211,6 +1323,28 @@ where
     fn get_filter_changes(&self, id: FilterId, auth: AuthContext) -> BoxFut<'_> {
         Box::pin(async move {
             self.ensure_filter_owner(&id, &auth).await?;
+
+            let cursor = self.log_cursors.lock().await.get(&id).cloned();
+            if let Some(cursor) = cursor {
+                // Polling reth's block filter keeps the ID alive; its hashes are not returned.
+                self.filter()
+                    .filter_changes(id.clone())
+                    .await
+                    .map_err(map_eth_filter_error)?;
+
+                let Some((from, to)) = self.log_filter_poll_range(&cursor)? else {
+                    return to_raw(
+                        &FilterChanges::<alloy_rpc_types_eth::Transaction<TempoTxEnvelope>>::Empty,
+                    );
+                };
+                let (raw, end) = self
+                    .poll_log_filter(&cursor.filter, from, to, &auth.caller)
+                    .await?;
+                if let Some(cursor) = self.log_cursors.lock().await.get_mut(&id) {
+                    cursor.next_block = cursor.next_block.max(end + 1);
+                }
+                return Ok(raw);
+            }
 
             let changes = self
                 .filter()
@@ -1265,6 +1399,7 @@ where
 
             if result || !self.filter_is_active(&id).await {
                 self.filter_owners.lock().await.remove(&id);
+                self.log_cursors.lock().await.remove(&id);
             }
 
             to_raw(&result)
