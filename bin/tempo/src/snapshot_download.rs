@@ -1,6 +1,6 @@
 use std::{
     fs, io,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     time::Instant,
 };
 
@@ -12,7 +12,9 @@ use reth_cli_commands::download::{
     manifest::{OutputFileChecksum, SnapshotManifest},
 };
 use reth_cli_runner::CliRunner;
+use tar::Archive;
 use tempo_chainspec::spec::TempoChainSpecParser;
+use tempo_consensus::follow::DRIVER_PARTITION_SUFFIX;
 use tempo_telemetry_util::display_duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio_util::io::StreamReader;
@@ -321,18 +323,56 @@ where
     Ok(hasher.finalize())
 }
 
+fn open_archive(path: &Path) -> eyre::Result<Archive<impl io::Read>> {
+    let file =
+        fs::File::open(path).wrap_err_with(|| format!("failed to open {}", path.display()))?;
+    let decoder = zstd::stream::read::Decoder::new(file)?;
+
+    Ok(Archive::new(decoder))
+}
+
 fn extract_zstd_tar_archive(
     archive_path: &Path,
     target_dir: &Path,
     overwrite: bool,
 ) -> eyre::Result<()> {
-    let file = fs::File::open(archive_path)
-        .wrap_err_with(|| format!("failed to open {}", archive_path.display()))?;
-    let decoder = zstd::stream::read::Decoder::new(file)?;
-    let mut archive = tar::Archive::new(decoder);
+    // Validate the archive
+    for entry in open_archive(archive_path)?.entries()? {
+        let entry = entry?;
+        let path = entry.path()?;
+
+        // Match the first partition component after the prefixes ignored by tar's unpack_in.
+        let is_driver_storage = path
+            .components()
+            .find(|component| matches!(component, Component::Normal(_)))
+            .and_then(|component| component.as_os_str().to_str())
+            .is_some_and(|name| {
+                name.starts_with(&format!(
+                    "{}{DRIVER_PARTITION_SUFFIX}_",
+                    tempo_consensus::PARTITION_PREFIX
+                ))
+            });
+
+        ensure!(
+            !is_driver_storage,
+            "consensus archive contains driver-local storage: {}",
+            path.display(),
+        );
+
+        // Links could redirect otherwise valid paths into a driver partition.
+        let entry_type = entry.header().entry_type();
+        ensure!(
+            entry_type.is_file() || entry_type.is_dir(),
+            "unsupported consensus archive entry type for {}",
+            path.display(),
+        );
+    }
+
+    let mut archive = open_archive(archive_path)?;
     archive.set_overwrite(overwrite);
+
     // `Archive::unpack` delegates each member to `Entry::unpack_in`, which skips
-    // paths that would escape `target_dir` and validates link targets.
+    // paths that would escape `target_dir`.
     archive.unpack(target_dir).wrap_err_with(|| {
         format!(
             "failed to extract consensus archive into {}",
@@ -390,18 +430,17 @@ fn hash_file_blake3(path: &Path) -> eyre::Result<String> {
 }
 
 #[cfg(test)]
-fn write_test_archive(bytes: &[u8]) -> tempfile::NamedTempFile {
-    let archive_file = tempfile::NamedTempFile::new().unwrap();
-    fs::write(archive_file.path(), bytes).unwrap();
-    archive_file
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
 
     use alloy_primitives::B256;
     use clap::CommandFactory;
+
+    fn write_test_archive(bytes: &[u8]) -> tempfile::NamedTempFile {
+        let archive_file = tempfile::NamedTempFile::new().unwrap();
+        fs::write(archive_file.path(), bytes).unwrap();
+        archive_file
+    }
 
     #[test]
     fn help_hides_skip_consensus_override() {
@@ -614,6 +653,10 @@ mod tests {
         let consensus_dir = parent.path().join("consensus");
         fs::create_dir_all(consensus_dir.join("nested")).unwrap();
         fs::write(consensus_dir.join("nested").join("stale"), b"stale").unwrap();
+        fs::write(consensus_dir.join("stale"), b"stale").unwrap();
+        let driver = consensus_dir.join("engine_driver_states_metadata");
+        fs::create_dir_all(driver.join("nested")).unwrap();
+        fs::write(driver.join("nested").join("identity"), b"local identity").unwrap();
 
         prepare_consensus_directory(&consensus_dir, true).unwrap();
 
@@ -657,6 +700,87 @@ mod tests {
             fs::read(target.path().join(partition_name).join("00")).unwrap(),
             b"abc"
         );
+    }
+
+    #[test]
+    fn extract_zstd_tar_archive_rejects_driver_storage_with_or_without_force() {
+        for force in [false, true] {
+            for path in [
+                "engine_driver_states_metadata/identity",
+                "./engine_driver_states_metadata/identity",
+                "/engine_driver_states_metadata/identity",
+            ] {
+                for entry_type in [tar::EntryType::Regular, tar::EntryType::Directory] {
+                    let target = tempfile::tempdir().unwrap();
+                    let driver = target.path().join("engine_driver_states_metadata");
+                    fs::create_dir_all(&driver).unwrap();
+                    fs::write(driver.join("identity"), b"local identity").unwrap();
+
+                    let encoder = zstd::Encoder::new(Vec::new(), 0).unwrap();
+                    let mut builder = tar::Builder::new(encoder);
+                    let mut header = tar::Header::new_gnu();
+                    header.set_entry_type(entry_type);
+                    header.set_size(0);
+                    // Preserve leading slashes and dots to exercise unpack_in's normalization.
+                    header.as_mut_bytes()[..path.len()].copy_from_slice(path.as_bytes());
+                    header.set_cksum();
+                    builder.append(&header, io::empty()).unwrap();
+                    let archive = builder.into_inner().unwrap().finish().unwrap();
+                    let archive_file = write_test_archive(&archive);
+
+                    let error = extract_zstd_tar_archive(archive_file.path(), target.path(), force)
+                        .unwrap_err();
+                    assert_eq!(
+                        error.to_string(),
+                        format!("consensus archive contains driver-local storage: {path}")
+                    );
+                    assert_eq!(
+                        fs::read(driver.join("identity")).unwrap(),
+                        b"local identity"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn extract_zstd_tar_archive_rejects_links_to_driver_storage() {
+        for entry_type in [tar::EntryType::Symlink, tar::EntryType::Link] {
+            let target = tempfile::tempdir().unwrap();
+            let driver = target.path().join("engine_driver_states_metadata");
+            fs::create_dir_all(&driver).unwrap();
+            fs::write(driver.join("identity"), b"local identity").unwrap();
+
+            let encoder = zstd::Encoder::new(Vec::new(), 0).unwrap();
+            let mut builder = tar::Builder::new(encoder);
+            let mut header = tar::Header::new_gnu();
+            header.set_size(3);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, "before-link", &b"new"[..])
+                .unwrap();
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(entry_type);
+            header.set_size(0);
+            builder
+                .append_link(&mut header, "partition", "engine_driver_states_metadata")
+                .unwrap();
+            let archive = builder.into_inner().unwrap().finish().unwrap();
+            let archive_file = write_test_archive(&archive);
+
+            let error =
+                extract_zstd_tar_archive(archive_file.path(), target.path(), true).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "unsupported consensus archive entry type for partition"
+            );
+            assert!(!target.path().join("before-link").exists());
+            assert!(!target.path().join("partition").exists());
+            assert_eq!(
+                fs::read(driver.join("identity")).unwrap(),
+                b"local identity"
+            );
+        }
     }
 
     #[test]

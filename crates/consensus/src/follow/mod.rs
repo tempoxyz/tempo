@@ -13,3 +13,7 @@ pub(crate) mod test_utils;
 pub mod upstream;
 
 pub use engine::Config;
+
+/// Suffix appended to the engine's partition prefix for driver-local storage.
+/// These partitions contain locally observed identities and must not be loaded from snapshots.
+pub const DRIVER_PARTITION_SUFFIX: &str = "_driver";

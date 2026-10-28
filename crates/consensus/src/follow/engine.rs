@@ -37,7 +37,7 @@ use tempo_evm::consensus::TempoConsensus;
 use tempo_node::{TempoFullNode, TempoPayloadTypes, node::TempoNode};
 use tracing::{info, info_span};
 
-use super::{driver, executor, resolver, stubs};
+use super::{DRIVER_PARTITION_SUFFIX, driver, executor, resolver, stubs};
 use crate::{
     alias,
     consensus::{Digest, block::Block},
@@ -206,7 +206,7 @@ impl<TUpstream> Config<TUpstream> {
                 last_finalized_height,
                 finalized_tip: finalized_tip_certificate
                     .map(|certificate| (finalized_tip.1, certificate)),
-                partition_prefix: format!("{}_driver", self.partition_prefix),
+                partition_prefix: format!("{}{DRIVER_PARTITION_SUFFIX}", self.partition_prefix),
                 marshal: marshal_mailbox.clone(),
                 epoch_strategy: epoch_strategy.clone(),
             },
