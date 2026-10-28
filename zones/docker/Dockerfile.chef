@@ -31,32 +31,6 @@ RUN set -eu; \
     cargo chef --version; \
     sccache --version
 
-# Use Depot Cache as the sccache backend when the build passes its WebDAV
-# endpoint and token as secrets (trusted CI builds on Depot runners; pull
-# request builds get none). Without them, or when the backend fails sccache's
-# startup check, fall back to the local SCCACHE_DIR cache mount. Secrets keep
-# layer cache keys unchanged.
-COPY --chmod=0755 <<'EOF' /usr/local/bin/sccache-env
-#!/bin/sh
-set -eu
-if [ -s /run/secrets/sccache_webdav_endpoint ] && [ -s /run/secrets/sccache_webdav_token ]; then
-  SCCACHE_WEBDAV_ENDPOINT="$(cat /run/secrets/sccache_webdav_endpoint)"
-  SCCACHE_WEBDAV_TOKEN="$(cat /run/secrets/sccache_webdav_token)"
-  export SCCACHE_WEBDAV_ENDPOINT SCCACHE_WEBDAV_TOKEN
-  # The server checks its storage at startup; keep it running for the build.
-  if sccache --start-server >/dev/null 2>&1; then
-    echo "sccache: using the remote WebDAV cache" >&2
-  else
-    sccache --stop-server >/dev/null 2>&1 || true
-    unset SCCACHE_WEBDAV_ENDPOINT SCCACHE_WEBDAV_TOKEN
-    echo "sccache: remote WebDAV cache unavailable; using the local cache mount" >&2
-  fi
-else
-  echo "sccache: using the local cache mount" >&2
-fi
-exec "$@"
-EOF
-
 WORKDIR /app
 
 FROM chef AS planner
@@ -94,10 +68,8 @@ COPY --from=planner /app/recipe.json recipe.json
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=zones-${TARGETARCH}-${RUST_PROFILE}-${CACHE_FAMILY}-registry \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked,id=zones-${TARGETARCH}-${RUST_PROFILE}-${CACHE_FAMILY}-git \
     --mount=type=cache,target=$SCCACHE_DIR,sharing=locked,id=zones-${TARGETARCH}-${RUST_PROFILE}-${CACHE_FAMILY}-sccache \
-    --mount=type=secret,id=sccache_webdav_endpoint \
-    --mount=type=secret,id=sccache_webdav_token \
     set -eu; set --; \
     for binary in $RUST_BINARIES; do set -- "$@" --bin "$binary"; done; \
     RUSTFLAGS="-C link-arg=-fuse-ld=mold ${EXTRA_RUSTFLAGS}" \
-    sccache-env cargo chef cook --locked --profile ${RUST_PROFILE} --features "${RUST_FEATURES}" --recipe-path recipe.json "$@" \
+    cargo chef cook --locked --profile ${RUST_PROFILE} --features "${RUST_FEATURES}" --recipe-path recipe.json "$@" \
     && sccache --show-stats
