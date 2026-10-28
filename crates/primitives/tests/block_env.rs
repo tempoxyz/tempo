@@ -1,12 +1,12 @@
 #![cfg(feature = "evm")]
 
 use alloy_primitives::Address;
-use tempo_primitives::TempoBlockEnv;
+use tempo_primitives::TempoBlockExt;
 
 #[test]
 fn configurable_account_recovery_factory_treats_zero_as_unset() {
     let factory = Address::repeat_byte(0x11);
-    let with = |configurable_account_recovery_factory| TempoBlockEnv {
+    let with = |configurable_account_recovery_factory| TempoBlockExt {
         configurable_account_recovery_factory,
         ..Default::default()
     };

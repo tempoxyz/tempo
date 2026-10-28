@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const { test } = require('node:test');
+const { spawnSync } = require('node:child_process');
 
 // Execute the workflow's inline dispatcher without checking out or running PR code.
 const yaml = fs.readFileSync(path.join(__dirname, '../workflows/docker-pr.yml'), 'utf8');
@@ -87,7 +88,7 @@ for (const event of ['pull_request', 'merge_group', 'fork']) {
     const outputs = {};
     const summary = { addHeading() { return this; }, addTable() { return this; }, async write() {} };
     const result = vm.runInNewContext(`(async () => {${script}\n})()`, {
-      process: { env: { PR_NUMBER: '', BRANCH_NAME: 'feature' } },
+      process: { env: { PR_NUMBER: '', BRANCH_NAME: 'feature', BUILD_TAG: 'network-e2e-42-1' } },
       context: { payload, sha: merge, repo: { owner: 'tempoxyz', repo: 'tempo' } },
       core: { setOutput: (key, value) => { outputs[key] = value; }, summary },
     });
@@ -98,6 +99,13 @@ for (const event of ['pull_request', 'merge_group', 'fork']) {
       const expected = event === 'pull_request' ? head : merge;
       assert.equal(outputs.sha, expected);
       assert.equal(outputs.short_sha, expected.slice(0, 7));
+      assert.equal(outputs.image_tag, 'network-e2e-42-1');
+      const dispatch = fs.readFileSync(path.join(__dirname, '../workflows/network-e2e.yml'), 'utf8');
+      const tagGuard = dispatch.split('\n').find(line => line.includes('[[ "$IMAGE_TAG" =~'));
+      assert.ok(tagGuard);
+      for (const [tag, code] of [[outputs.image_tag, 0], ['build-42-1', 1], ['sha-abcdef0', 1]]) {
+        assert.equal(spawnSync('bash', ['-c', tagGuard], { env: { IMAGE_TAG: tag } }).status, code);
+      }
       assert.equal(outputs.revision_label, event === 'pull_request' ? `org.opencontainers.image.revision=${head}` : '');
     }
   });

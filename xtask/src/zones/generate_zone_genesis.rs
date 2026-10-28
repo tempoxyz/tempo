@@ -6,11 +6,8 @@ use alloy::{
 };
 use alloy_eips::BlockNumberOrTag;
 use alloy_rpc_types_eth::BlockId;
+use evm2::{bytecode::Bytecode, evm::AccountInfo};
 use eyre::{WrapErr as _, ensure, eyre};
-use reth_evm::{
-    Evm as _,
-    revm::{DatabaseCommit, context::JournalTr, state::AccountInfo},
-};
 use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::{cli::TempoHardforkArgs, spec::TEMPO_T0_BASE_FEE};
@@ -158,9 +155,12 @@ impl GenerateZoneGenesis {
         let timestamp = anchor.timestamp();
         let mut evm = setup_zone_evm(self.chain_id, self.gas_limit, &forks, timestamp)?;
 
-        evm.db_mut().insert_account_info(
-            DEPLOYER,
-            AccountInfo::from_balance(U256::from(1_000_000_000_000_000_000_000u128)),
+        evm.overlay_db_mut().insert_account_info(
+            &DEPLOYER,
+            AccountInfo {
+                balance: U256::from(1_000_000_000_000_000_000_000u128),
+                ..Default::default()
+            },
         );
 
         // Initialize all precompiles and deploy standard contracts to match the
@@ -209,10 +209,7 @@ impl GenerateZoneGenesis {
             NativeZoneOutbox::new().initialize()
         })?;
 
-        let native_state = evm.ctx_mut().journaled_state.finalize();
-        evm.db_mut().commit(native_state);
-
-        let db = evm.db_mut();
+        let db = evm.overlay_db();
         for (name, addr) in [
             ("TempoState", TEMPO_STATE_ADDRESS),
             ("ZoneInbox", ZONE_INBOX_ADDRESS),
@@ -222,8 +219,13 @@ impl GenerateZoneGenesis {
                 .cache
                 .accounts
                 .get(&addr)
+                .and_then(Option::as_ref)
                 .ok_or_else(|| eyre!("{name} not found at {addr}"))?;
-            let has_code = account.info.code.as_ref().is_some_and(|c| !c.is_empty());
+            let has_code = db
+                .cache
+                .contracts
+                .get(&account.code_hash)
+                .is_some_and(|c| !c.is_empty());
             if !has_code {
                 return Err(eyre!("{name} has no code at {addr}"));
             }
@@ -237,9 +239,22 @@ impl GenerateZoneGenesis {
             .filter(|(addr, _)| {
                 self.with_create2_factory || **addr != ARACHNID_CREATE2_FACTORY_ADDRESS
             })
+            .filter_map(|(address, account)| account.as_ref().map(|account| (address, account)))
             .map(|(address, account)| {
-                let storage = account.storage.iter().map(|(key, val)| (*key, *val));
-                (*address, genesis_account(&account.info, storage))
+                let storage = db
+                    .cache
+                    .storage
+                    .get(address)
+                    .into_iter()
+                    .flat_map(|storage| storage.slots.iter())
+                    .map(|(key, val)| (*key, *val));
+                let mut account_genesis = genesis_account(account, storage);
+                account_genesis.code = db
+                    .cache
+                    .contracts
+                    .get(&account.code_hash)
+                    .map(Bytecode::original_bytes);
+                (*address, account_genesis)
             })
             .collect();
 
@@ -454,10 +469,9 @@ fn setup_zone_evm(
     timestamp: u64,
 ) -> eyre::Result<GenesisEvm> {
     let mut env = genesis_evm_env(chain_id);
-    env.cfg_env.spec = forks.hardfork_at(timestamp)?;
-    env.block_env.inner.timestamp = U256::from(timestamp);
-    env.cfg_env.tx_gas_limit_cap = Some(u64::MAX);
-    env.block_env.inner.gas_limit = gas_limit;
+    env.spec = forks.hardfork_at(timestamp)?;
+    env.block_env.timestamp = U256::from(timestamp);
+    env.block_env.gas_limit = U256::from(gas_limit);
     Ok(create_genesis_evm(env))
 }
 
@@ -525,7 +539,7 @@ mod tests {
                 "--admin".to_owned(),
                 "0x1000000000000000000000000000000000000001".to_owned(),
                 "--hardfork".to_owned(),
-                "T14".to_owned(),
+                "T15".to_owned(),
             ];
             for (flag, timestamp) in [
                 ("--t12-time", t12),
@@ -593,7 +607,7 @@ mod tests {
                 &flag,
                 "12345",
                 "--hardfork",
-                "T14",
+                "T15",
             ])
             .unwrap();
             let mut genesis = Genesis::default();
@@ -683,8 +697,8 @@ mod tests {
                 (u64::MAX, delayed),
             ] {
                 let evm = setup_zone_evm(1337, 30_000_000, &forks, timestamp).unwrap();
-                assert_eq!(evm.ctx().cfg.spec, expected);
-                assert_eq!(evm.ctx().block.inner.timestamp, U256::from(timestamp));
+                assert_eq!(evm.config_spec_id(), expected);
+                assert_eq!(evm.block().timestamp, U256::from(timestamp));
                 assert_eq!(spec.tempo_hardfork_at(timestamp), expected);
             }
         }

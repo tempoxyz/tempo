@@ -13,10 +13,14 @@ use commonware_cryptography::{
     },
     ed25519::PrivateKey,
 };
+use commonware_macros::test_traced;
 use commonware_runtime::{Runner as _, Supervisor as _, deterministic::Runner};
 use commonware_utils::{TryFromIterator as _, ordered, ordered::Quorum as _};
 use rand::{SeedableRng as _, rngs::StdRng};
+use tempo_chainspec::NetworkIdentity;
 use tempo_primitives::TempoConsensusContext;
+
+use crate::test_utils::{dkg_fixture, make_certificate};
 
 use super::*;
 use harness::{
@@ -1274,6 +1278,167 @@ fn reshare_produces_new_shares() {
                 .public()
                 .partial_public(new_second_share.index)
                 .unwrap()
+        );
+    });
+}
+
+/// Marshal re-delivers every finalized block that was not acknowledged
+/// before a restart, so the actor replays blocks it already processed. A
+/// replayed ceremony must conclude with the same output, and a replayed
+/// boundary must not enter the next epoch again.
+#[test_traced]
+fn replaying_unacknowledged_blocks_after_restart_is_idempotent() {
+    Runner::default().start(|mut context| async move {
+        let (state, keys, shares) = dkg_state(&mut context, Epoch::new(1), 2, false);
+        let mut first_state = state.clone();
+        first_state.share = ShareState::Plaintext(Some(shares[0].clone()));
+        let mut second_state = state.clone();
+        second_state.share = ShareState::Plaintext(Some(shares[1].clone()));
+
+        let execution = StubExecutionProvider::default();
+        let network = TestNetwork::default();
+        let mut first_harness = Harness::builder(context.child("first"), "replay_first")
+            .epoch_length(10)
+            .initial_state(first_state)
+            .identity(keys[0].clone())
+            .execution(execution.clone())
+            .network(network.clone())
+            .build()
+            .await;
+        let mut second_harness = Harness::builder(context.child("second"), "replay_second")
+            .epoch_length(10)
+            .initial_state(second_state)
+            .identity(keys[1].clone())
+            .execution(execution.clone())
+            .network(network.clone())
+            .build()
+            .await;
+        first_harness.start().await;
+        second_harness.start().await;
+
+        for harness in [&mut first_harness, &mut second_harness] {
+            harness
+                .report_finalized_header(header(Height::new(10)))
+                .await;
+        }
+        for harness in [&mut first_harness, &mut second_harness] {
+            harness
+                .report_finalized_header(header(Height::new(15)))
+                .await;
+        }
+        let mut log_headers = Vec::new();
+        for (height, harness) in [(16, &first_harness), (17, &second_harness)] {
+            let log = harness
+                .mailbox()
+                .get_dealer_log(state.epoch)
+                .await
+                .unwrap()
+                .unwrap();
+            let mut log_header = header(Height::new(height));
+            log_header.inner.extra_data = log.encode().into();
+            log_headers.push(log_header);
+        }
+        for log_header in &log_headers {
+            for harness in [&mut first_harness, &mut second_harness] {
+                harness.report_finalized_header(log_header.clone()).await;
+            }
+        }
+
+        // Restart the first actor with marshal's processed height still at
+        // 15, so the dealer logs are replayed.
+        first_harness.stop().await;
+        drop(first_harness);
+        // A trusted identity from beyond every persisted epoch, as the
+        // harness models a binary bootstrapping from historical data.
+        let fixture = dkg_fixture(&mut context, Epoch::new(3));
+        let trusted = NetworkIdentity {
+            from_epoch: fixture.outcome.epoch,
+            identity: *fixture.outcome.network_identity(),
+        };
+        let floor = header(Height::new(15));
+        let tip = (
+            Height::new(15),
+            make_certificate(Digest(floor.hash_slow()), state.epoch, 1, &fixture.schemes),
+        );
+        let restart = |name: &'static str| {
+            Harness::builder(context.child(name), "replay_first")
+                .epoch_length(10)
+                .identity(keys[0].clone())
+                .execution(execution.clone())
+                .finalized_floor(Height::new(15))
+                .startup(trusted.clone(), Some(tip.clone()))
+                .network(network.clone())
+                .build()
+        };
+        let mut first_harness = restart("first_restart").await;
+        first_harness.start().await;
+        for log_header in &log_headers {
+            first_harness
+                .report_finalized_header(log_header.clone())
+                .await;
+        }
+
+        let parent = parent_block(
+            ConsensusRound::new(state.epoch, View::new(17)),
+            Height::new(17),
+            1,
+        );
+        let first_output = first_harness
+            .mailbox()
+            .subscribe_dkg_ceremony(parent.clone())
+            .await
+            .unwrap();
+        let second_output = second_harness
+            .mailbox()
+            .subscribe_dkg_ceremony(parent.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            first_output, second_output,
+            "a replayed ceremony must conclude with the same output",
+        );
+
+        let outcome = boundary_outcome(state.epoch, first_output, state.players());
+        let mut boundary = header(Height::new(19));
+        boundary.inner.parent_hash = parent.digest().0;
+        boundary.inner.extra_data = outcome.encode().into();
+        first_harness
+            .report_finalized_header(boundary.clone())
+            .await;
+        let EpochEvent::Enter {
+            epoch: entered,
+            share: Some(entered_share),
+            ..
+        } = first_harness
+            .epoch_manager
+            .events()
+            .last()
+            .cloned()
+            .unwrap()
+        else {
+            panic!("the boundary should enter the next epoch with a share");
+        };
+        assert_eq!(entered, outcome.epoch());
+
+        // Restart again with marshal's processed height below the boundary,
+        // so the dealer logs and the boundary are replayed into the new epoch.
+        first_harness.stop().await;
+        drop(first_harness);
+        let mut first_harness = restart("first_second_restart").await;
+        first_harness.start().await;
+        for replayed in log_headers.iter().chain([&boundary]) {
+            first_harness
+                .report_finalized_header(replayed.clone())
+                .await;
+        }
+        let events = first_harness.epoch_manager.events();
+        assert!(
+            matches!(
+                events.as_slice(),
+                [EpochEvent::Enter { epoch, share: Some(share), .. }]
+                    if *epoch == entered && *share == entered_share
+            ),
+            "replayed blocks must not exit or re-enter an epoch: {events:?}",
         );
     });
 }

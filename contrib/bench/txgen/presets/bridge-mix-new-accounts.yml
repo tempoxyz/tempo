@@ -1,0 +1,14 @@
+# bridge-mix with every payout sent to a fresh random address, so each payout
+# creates a new account and balance slot, as payouts to new payees do. New
+# accounts cost far more gas than payouts to existing ones, so the gas limit is raised.
+include: bridge-mix.yml
+
+merge:
+  templates:
+    bridge_payout:
+      gas_limit: 1000000
+      call:
+        args:
+          - "0x20c0000000000000000000000000000000000000"
+          - random
+          - 1

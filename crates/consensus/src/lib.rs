@@ -61,6 +61,7 @@ pub async fn run_consensus_stack(
     executed_state: tempo_node::ExecutedState,
     feed_state: feed::FeedStateHandle,
     gossip_transport: Option<tempo_node::gossip::TransportHandle>,
+    estimator: tempo_payload_types::Estimator,
 ) -> eyre::Result<()> {
     config.validate_simplex_timing()?;
 
@@ -135,6 +136,7 @@ pub async fn run_consensus_stack(
         views_to_track: config.views_to_track,
         inactive_time_before_leader_skip: config.inactive_time_before_leader_skip.into_duration(),
         proposal_return_budget,
+        estimator,
         fcu_heartbeat_interval: config.fcu_heartbeat_interval.into_duration(),
 
         feed_state,
