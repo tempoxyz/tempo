@@ -1429,6 +1429,20 @@ def txgen-prepare-public-mix-preset [spec_path: string, count: int, accounts: in
     $output
 }
 
+# The TXGEN_* variables bench-env sets, read through bash's export as the sender's
+# pipeline does, so quoting and expansion match what the sender sees.
+def txgen-bench-env-txgen-vars [bench_env: string] {
+    if ($bench_env | str trim) == "" { return {} }
+    let result = (with-env {TXGEN_HELPER_BENCH_ENV: $bench_env} {
+        ^bash -c 'eval "export $TXGEN_HELPER_BENCH_ENV" && env -0' | complete
+    })
+    if $result.exit_code != 0 { error make {msg: $"invalid bench-env: ($result.stderr | str trim)"} }
+    let names = ($bench_env | parse --regex '(?:^|\s)(?<name>TXGEN_[A-Z0-9_]+)=' | get name)
+    $result.stdout | split row (char nul) | where { |line| ($line | split row "=" | first) in $names }
+        | parse --regex '^(?<key>[^=]+)=(?<value>[\s\S]*)$'
+        | reduce --fold {} { |item, acc| $acc | upsert $item.key $item.value }
+}
+
 def txgen-run-preset-pipeline [
     --txgen-tempo-bin: string
     --txgen-bench-bin: string
@@ -1461,6 +1475,8 @@ def txgen-run-preset-pipeline [
     --initial-db-size-bytes: int = 0
     --skip-funding                                   # Skip faucet funding (accounts already funded at genesis via state bloat)
 ] {
+    # Size zones and label metadata with the same TXGEN_* values the render used.
+    load-env (txgen-bench-env-txgen-vars $bench_env)
     let chain_id = (txgen-fetch-chain-id $generate_rpc_url)
     $env.TXGEN_ACCOUNTS = ($accounts | into string)
     mut spec_path = ($preset_path | path expand)

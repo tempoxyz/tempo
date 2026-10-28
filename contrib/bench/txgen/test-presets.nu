@@ -379,4 +379,9 @@ let tally = (txgen-zone-to-zone-tally [
     {status: "0x0", gasUsed: "0x10", logs: []}
 ])
 assert equal $tally {transfers: 2, delivered: 1, bounced: 1, plain_withdrawals: 1, reverted: 1, transfer_gas: 470000}
+# bench-env TXGEN_* values are read as bash's export reads them (quotes stripped, $VAR expanded).
+with-env {TXGEN_TEST_BASE: "/x"} {
+    assert equal (txgen-bench-env-txgen-vars "") {}
+    assert equal (txgen-bench-env-txgen-vars "TXGEN_NEOBANK_MODULES='spend,cashout' BENCH_TPS_SCHEDULE=200:30s TXGEN_ZONE_COUNT=\"8\" TXGEN_NEOBANK_INSTANCES=$TXGEN_TEST_BASE/i.yml") {TXGEN_NEOBANK_MODULES: "spend,cashout", TXGEN_ZONE_COUNT: "8", TXGEN_NEOBANK_INSTANCES: "/x/i.yml"}
+}
 print "Preset, policy setup, state-bloat, and workload metadata checks passed"
