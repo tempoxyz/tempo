@@ -1,6 +1,7 @@
 //! Tempo EVM Handler implementation.
 
 mod config;
+mod configurable_account;
 
 pub use self::config::{
     TempoBlockEnv, TempoBlockExt, TempoConfig, TempoConfigSelector, TempoEvmExt, TempoEvmTypes,
