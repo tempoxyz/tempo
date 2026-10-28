@@ -1,7 +1,7 @@
 use std::{
     collections::HashSet,
     fs, io,
-    path::{Component, Path, PathBuf},
+    path::{Component, Path, PathBuf, absolute},
     time::Instant,
 };
 
@@ -216,14 +216,18 @@ async fn install_consensus_archive(
     }
 
     fs::create_dir_all(consensus_dir).wrap_err("failed to create consensus directory")?;
-    let staging = tempfile::tempdir_in(consensus_dir)
+
+    // Keep cleanup paths consistent with tempfile's absolute staging path.
+    let consensus_dir =
+        absolute(consensus_dir).wrap_err("failed to resolve consensus directory")?;
+    let staging = tempfile::tempdir_in(&consensus_dir)
         .wrap_err("failed to create consensus staging directory")?;
 
     let output_files = &loaded.manifest.consensus_archive.output_files;
-    extract_zstd_tar_archive(archive_file.path(), staging.path(), false)?;
+    extract_zstd_tar_archive(archive_file.path(), staging.path())?;
     validate_consensus_directory(staging.path())?;
     verify_consensus_output_files(staging.path(), output_files)?;
-    move_consensus_directory(staging.path(), consensus_dir, force)?;
+    move_consensus_directory(staging.path(), &consensus_dir, force)?;
 
     info!("persisted consensus archive");
     Ok(())
@@ -306,16 +310,12 @@ where
     Ok(hasher.finalize())
 }
 
-fn extract_zstd_tar_archive(
-    archive_path: &Path,
-    target_dir: &Path,
-    overwrite: bool,
-) -> eyre::Result<()> {
+fn extract_zstd_tar_archive(archive_path: &Path, target_dir: &Path) -> eyre::Result<()> {
     let file = fs::File::open(archive_path)
         .wrap_err_with(|| format!("failed to open {}", archive_path.display()))?;
     let decoder = zstd::stream::read::Decoder::new(file)?;
     let mut archive = tar::Archive::new(decoder);
-    archive.set_overwrite(overwrite);
+    archive.set_overwrite(false);
     // `Archive::unpack` delegates each member to `Entry::unpack_in`, which skips
     // paths that would escape `target_dir` and validates link targets.
     archive.unpack(target_dir).wrap_err_with(|| {
@@ -724,7 +724,7 @@ mod tests {
         let archive = encoder.finish().unwrap();
         let archive_file = write_test_archive(&archive);
 
-        extract_zstd_tar_archive(archive_file.path(), target.path(), false).unwrap();
+        extract_zstd_tar_archive(archive_file.path(), target.path()).unwrap();
 
         assert_eq!(
             fs::read(target.path().join(partition_name).join("nested").join("00")).unwrap(),
@@ -781,7 +781,7 @@ mod tests {
         let archive = encoder.finish().unwrap();
         let archive_file = write_test_archive(&archive);
 
-        extract_zstd_tar_archive(archive_file.path(), target.path(), false).unwrap();
+        extract_zstd_tar_archive(archive_file.path(), target.path()).unwrap();
         let error = validate_consensus_directory(target.path()).unwrap_err();
         assert_eq!(
             error.to_string(),
@@ -1002,6 +1002,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn install_consensus_archive_preserves_staging_for_relative_destinations() {
+        let current_dir = std::env::current_dir().unwrap();
+        let root = tempfile::tempdir_in(&current_dir).unwrap();
+        let relative_root = root.path().strip_prefix(&current_dir).unwrap();
+        let output_path = "engine-finalizations-by-height-metadata/00";
+        let entries: &[(&str, &[u8])] = &[(output_path, b"abc")];
+        let archive = write_test_consensus_archive(entries);
+        let loaded = loaded_test_archive(&archive, entries);
+
+        for relative in ["consensus", "./consensus", "parent/../consensus"] {
+            let target = Path::new(".").join(relative_root).join(relative);
+            fs::create_dir_all(&target).unwrap();
+            fs::write(target.join("existing"), b"existing").unwrap();
+
+            install_consensus_archive(&target, &loaded, true)
+                .await
+                .unwrap();
+
+            assert_eq!(fs::read(target.join(output_path)).unwrap(), b"abc");
+            let names: Vec<_> = fs::read_dir(&target)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect();
+            assert_eq!(names, ["engine-finalizations-by-height-metadata"]);
+        }
+    }
+
+    #[tokio::test]
     async fn install_consensus_archive_creates_destination_and_removes_staging() {
         let root = tempfile::tempdir().unwrap();
         let target = root.path().join("consensus");
@@ -1162,7 +1190,7 @@ mod tests {
         contents[HOLE_SIZE..].copy_from_slice(b"abc");
         let loaded = loaded_test_archive(&archive_file, &[(output_path, &contents)]);
         let reference = tempfile::tempdir().unwrap();
-        extract_zstd_tar_archive(archive_file.path(), reference.path(), false).unwrap();
+        extract_zstd_tar_archive(archive_file.path(), reference.path()).unwrap();
 
         install_consensus_archive(target.path(), &loaded, false)
             .await
@@ -1236,7 +1264,7 @@ mod tests {
         let archive = encoder.finish().unwrap();
         let archive_file = write_test_archive(&archive);
 
-        extract_zstd_tar_archive(archive_file.path(), target.path(), false).unwrap();
+        extract_zstd_tar_archive(archive_file.path(), target.path()).unwrap();
 
         assert_eq!(
             fs::read(
@@ -1274,7 +1302,7 @@ mod tests {
         let archive = encoder.finish().unwrap();
         let archive_file = write_test_archive(&archive);
 
-        extract_zstd_tar_archive(archive_file.path(), target.path(), false).unwrap();
+        extract_zstd_tar_archive(archive_file.path(), target.path()).unwrap();
         assert_eq!(fs::read(existing.join("old")).unwrap(), b"old");
         assert_eq!(fs::read(existing.join("00")).unwrap(), b"new");
     }
@@ -1306,39 +1334,8 @@ mod tests {
         let archive = encoder.finish().unwrap();
         let archive_file = write_test_archive(&archive);
 
-        assert!(extract_zstd_tar_archive(archive_file.path(), target.path(), false).is_err());
+        assert!(extract_zstd_tar_archive(archive_file.path(), target.path()).is_err());
         assert_eq!(fs::read(existing).unwrap(), b"old");
-    }
-
-    #[test]
-    fn extract_zstd_tar_archive_overwrites_existing_file_when_forced() {
-        let target = tempfile::tempdir().unwrap();
-        let partition = target
-            .path()
-            .join("engine-finalizations-by-height-metadata");
-        fs::create_dir_all(&partition).unwrap();
-        let existing = partition.join("00");
-        fs::write(&existing, b"old").unwrap();
-
-        let encoder = zstd::Encoder::new(Vec::new(), 0).unwrap();
-        let mut builder = tar::Builder::new(encoder);
-        let mut header = tar::Header::new_gnu();
-        header.set_size(3);
-        header.set_cksum();
-        builder
-            .append_data(
-                &mut header,
-                "engine-finalizations-by-height-metadata/00",
-                &mut &b"new"[..],
-            )
-            .unwrap();
-        builder.finish().unwrap();
-        let encoder = builder.into_inner().unwrap();
-        let archive = encoder.finish().unwrap();
-        let archive_file = write_test_archive(&archive);
-
-        extract_zstd_tar_archive(archive_file.path(), target.path(), true).unwrap();
-        assert_eq!(fs::read(existing).unwrap(), b"new");
     }
 
     #[tokio::test]
