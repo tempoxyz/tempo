@@ -543,7 +543,9 @@ async fn encryption_key(
 /// ZonePortal reads behind `zone_getZoneInfo` and `zone_getEncryptionKey`, shared by every caller
 /// for [`PORTAL_READ_TTL`] so request load does not reach the Tempo L1 endpoint.
 ///
-/// Concurrent callers await one in-flight read, and a failed read is retried by the next caller.
+/// Concurrent callers await one in-flight read, and a failed read is retried by the next caller. A
+/// read that outlasts its callers' timeouts stays in flight, so a silent L1 endpoint is sent no
+/// further reads.
 #[derive(Clone)]
 struct PortalReads {
     zone_id: u32,
@@ -604,7 +606,8 @@ impl PortalReads {
 /// How long a successful [`PortalReads`] read is reused, measured from when it started.
 const PORTAL_READ_TTL: Duration = Duration::from_secs(1);
 
-/// Time limit on one [`PortalReads`] read, so an unresponsive L1 endpoint cannot hold it forever.
+/// How long one caller waits on a [`PortalReads`] read, so an unresponsive L1 endpoint cannot hold
+/// it forever.
 const PORTAL_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// A ZonePortal read that callers share while it is in flight and for [`PORTAL_READ_TTL`] after.
@@ -614,39 +617,39 @@ struct SharedRead<T> {
 }
 
 impl<T: Clone + Send + Sync + 'static> SharedRead<T> {
-    /// Returns the read in `slot` while it is in flight or succeeded within [`PORTAL_READ_TTL`], and
-    /// otherwise starts `read` in its place.
-    fn get_or_start(
+    /// Awaits the read in `slot` while it is in flight or succeeded within [`PORTAL_READ_TTL`], and
+    /// otherwise starts `read` in its place, for at most [`PORTAL_READ_TIMEOUT`].
+    async fn get_or_start(
         slot: &parking_lot::Mutex<Option<Self>>,
         read: impl Future<Output = Result<T, JsonRpcError>> + Send + 'static,
-    ) -> Shared<BoxFuture<'static, Result<T, JsonRpcError>>> {
-        let mut slot = slot.lock();
-        if let Some(current) = slot.as_ref()
-            && match current.read.peek() {
-                None => true,
-                Some(Ok(_)) => current.started_at.elapsed() < PORTAL_READ_TTL,
-                Some(Err(_)) => false,
+    ) -> Result<T, JsonRpcError> {
+        let shared = 'shared: {
+            let mut slot = slot.lock();
+            if let Some(current) = slot.as_ref()
+                && match current.read.peek() {
+                    None => true,
+                    Some(Ok(_)) => current.started_at.elapsed() < PORTAL_READ_TTL,
+                    Some(Err(_)) => false,
+                }
+            {
+                break 'shared current.read.clone();
             }
-        {
-            return current.read.clone();
-        }
 
-        let read = async move {
-            tokio::time::timeout(PORTAL_READ_TIMEOUT, read)
-                .await
-                .unwrap_or_else(|_| {
-                    Err(JsonRpcError::internal(format!(
-                        "ZonePortal read timed out after {PORTAL_READ_TIMEOUT:?}"
-                    )))
-                })
-        }
-        .boxed()
-        .shared();
-        *slot = Some(Self {
-            started_at: tokio::time::Instant::now(),
-            read: read.clone(),
-        });
-        read
+            let read = read.boxed().shared();
+            *slot = Some(Self {
+                started_at: tokio::time::Instant::now(),
+                read: read.clone(),
+            });
+            read
+        };
+
+        tokio::time::timeout(PORTAL_READ_TIMEOUT, shared)
+            .await
+            .unwrap_or_else(|_| {
+                Err(JsonRpcError::internal(format!(
+                    "ZonePortal read timed out after {PORTAL_READ_TIMEOUT:?}"
+                )))
+            })
     }
 }
 
@@ -2081,11 +2084,17 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn stalled_portal_read_times_out() {
+    async fn stalled_portal_read_times_out_and_stays_in_flight() {
         let slot = parking_lot::Mutex::new(None);
         let error = SharedRead::<u64>::get_or_start(&slot, std::future::pending())
             .await
             .expect_err("a stalled read must time out");
+        assert!(error.message.contains("timed out"), "{}", error.message);
+
+        // The next caller waits on the stalled read instead of sending another.
+        let error = SharedRead::get_or_start(&slot, async { Ok(7) })
+            .await
+            .expect_err("the stalled read must stay in flight");
         assert!(error.message.contains("timed out"), "{}", error.message);
     }
 

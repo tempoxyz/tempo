@@ -10,15 +10,17 @@
 //! intended for use inside EVM precompiles where async is unavailable — it retries the RPC
 //! call indefinitely with exponential backoff to avoid bricking the chain on transient outages.
 //! RPC simulations and cache prewarming instead make one time-limited attempt, so an outage fails
-//! them rather than holding RPC permits or prewarming threads.
+//! them rather than holding RPC permits or prewarming threads. A WebSocket transport keeps a
+//! request until L1 answers it, so the number of those attempts still awaiting L1 is capped.
 
 use alloy_primitives::{Address, B256, U256};
 use alloy_provider::{DynProvider, Provider, ProviderBuilder};
 use alloy_rpc_client::RpcClient;
 use alloy_transport::layers::RetryBackoffLayer;
-use eyre::Result;
-use std::{num::NonZeroU32, time::Duration};
+use eyre::{Result, WrapErr as _};
+use std::{num::NonZeroU32, sync::Arc, time::Duration};
 use tempo_alloy::TempoNetwork;
+use tokio::sync::Semaphore;
 use tracing::{debug, info, warn};
 use zone_precompiles::{
     L1StateError, L1StorageReader,
@@ -34,6 +36,11 @@ const NON_CANONICAL_SYNC_ATTEMPTS: NonZeroU32 = NonZeroU32::MIN;
 /// Time limit on one cache-miss fetch during an RPC simulation or cache prewarming, so an L1
 /// endpoint that stops responding fails the execution.
 const NON_CANONICAL_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Cap on RPC simulation and cache prewarming fetches still awaiting L1, including ones whose
+/// caller timed out. Past it, those cache misses fail without sending a request, which bounds the
+/// requests a silent WebSocket retains and lets its keepalive detect the dead connection.
+const MAX_OUTSTANDING_NON_CANONICAL_FETCHES: usize = 256;
 
 /// Configuration for the [`L1StateProvider`].
 #[derive(Debug, Clone)]
@@ -102,6 +109,8 @@ pub struct L1StateProvider {
     runtime_handle: tokio::runtime::Handle,
     /// Optional finite attempt limit for synchronous cache-miss fallback outside RPC simulations and prewarming.
     max_sync_attempts: Option<NonZeroU32>,
+    /// Permits for RPC simulation and cache prewarming fetches, each held until L1 answers.
+    non_canonical_fetches: Arc<Semaphore>,
     metrics: L1StateMetricsByOrigin,
 }
 
@@ -151,6 +160,7 @@ impl L1StateProvider {
             provider,
             runtime_handle,
             max_sync_attempts: config.max_sync_attempts,
+            non_canonical_fetches: Arc::new(Semaphore::new(MAX_OUTSTANDING_NON_CANONICAL_FETCHES)),
             metrics: L1StateMetricsByOrigin::new(),
         })
     }
@@ -171,6 +181,7 @@ impl L1StateProvider {
             provider,
             runtime_handle,
             max_sync_attempts: config.max_sync_attempts,
+            non_canonical_fetches: Arc::new(Semaphore::new(MAX_OUTSTANDING_NON_CANONICAL_FETCHES)),
             metrics: L1StateMetricsByOrigin::new(),
         }
     }
@@ -186,7 +197,8 @@ impl L1StateProvider {
     ///
     /// During an RPC simulation or cache prewarming (any origin but [`ExecutionOrigin::Canonical`])
     /// it makes one attempt limited to 5s and returns an error if that fails, since retrying would
-    /// only hold an RPC permit or a prewarming thread.
+    /// only hold an RPC permit or a prewarming thread. It also fails without a request while 256 such
+    /// fetches, including timed-out ones, are still awaiting L1.
     ///
     /// # Panics
     ///
@@ -218,17 +230,30 @@ impl L1StateProvider {
             let start = std::time::Instant::now();
             let result = tokio::task::block_in_place(|| {
                 self.runtime_handle.block_on(async {
-                    let fetch = self.fetch_slot(address, slot, block_number);
                     if canonical {
-                        return fetch.await;
+                        return self.fetch_slot(address, slot, block_number).await;
                     }
-                    tokio::time::timeout(NON_CANONICAL_FETCH_TIMEOUT, fetch)
-                        .await
-                        .unwrap_or_else(|_| {
-                            Err(eyre::eyre!(
-                                "eth_getStorageAt timed out after {NON_CANONICAL_FETCH_TIMEOUT:?}"
-                            ))
-                        })
+                    // The transport keeps the request after a timeout, so the fetch holds the permit.
+                    let permit = self
+                        .non_canonical_fetches
+                        .clone()
+                        .try_acquire_owned()
+                        .map_err(|_| {
+                            eyre::eyre!(
+                                "{MAX_OUTSTANDING_NON_CANONICAL_FETCHES} L1 storage fetches are still awaiting L1"
+                            )
+                        })?;
+                    let this = self.clone();
+                    let fetch = tokio::spawn(async move {
+                        let _permit = permit;
+                        this.fetch_slot(address, slot, block_number).await
+                    });
+                    match tokio::time::timeout(NON_CANONICAL_FETCH_TIMEOUT, fetch).await {
+                        Ok(joined) => joined.wrap_err("eth_getStorageAt task failed")?,
+                        Err(_) => Err(eyre::eyre!(
+                            "eth_getStorageAt timed out after {NON_CANONICAL_FETCH_TIMEOUT:?}"
+                        )),
+                    }
                 })
             });
             let elapsed = start.elapsed();
@@ -319,6 +344,8 @@ impl L1StorageReader for L1StateProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::StreamExt;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[tokio::test(flavor = "multi_thread")]
     async fn finite_sync_attempt_limit_returns_diagnostic_error() {
@@ -408,5 +435,78 @@ mod tests {
             .to_string();
             assert!(message.contains("timed out"), "{origin:?}: {message}");
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn timed_out_ws_fetch_holds_its_permit_until_l1_answers() {
+        // Completes the WebSocket handshake and counts requests, but never answers them.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let requests = Arc::new(AtomicUsize::new(0));
+        let server_requests = requests.clone();
+        let _server = tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let requests = server_requests.clone();
+                tokio::spawn(async move {
+                    let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+                    while let Some(Ok(message)) = socket.next().await {
+                        if message.is_text() {
+                            requests.fetch_add(1, Ordering::SeqCst);
+                        }
+                    }
+                });
+            }
+        });
+
+        let config = L1StateProviderConfig {
+            l1_rpc_url: url,
+            ..Default::default()
+        };
+        let reader = L1StateProvider::new(
+            config,
+            L1StateCache::default(),
+            tokio::runtime::Handle::current(),
+        )
+        .await
+        .unwrap();
+        let simulate = |reader: L1StateProvider| {
+            tokio::task::spawn_blocking(move || {
+                let _guard = tx_context::set_current_transaction(
+                    B256::ZERO,
+                    Address::ZERO,
+                    ExecutionOrigin::Simulation,
+                );
+                reader.get_storage(Address::ZERO, B256::ZERO, 7)
+            })
+        };
+
+        let message = simulate(reader.clone())
+            .await
+            .unwrap()
+            .expect_err("silent endpoint must fail a simulation read")
+            .to_string();
+        assert!(message.contains("timed out"), "{message}");
+        assert_eq!(
+            reader.non_canonical_fetches.available_permits(),
+            MAX_OUTSTANDING_NON_CANONICAL_FETCHES - 1,
+            "the timed-out fetch must keep its permit while the transport retains the request"
+        );
+
+        let _outstanding = reader
+            .non_canonical_fetches
+            .clone()
+            .try_acquire_many_owned((MAX_OUTSTANDING_NON_CANONICAL_FETCHES - 1) as u32)
+            .unwrap();
+        let message = simulate(reader.clone())
+            .await
+            .unwrap()
+            .expect_err("a full cap must fail a simulation read")
+            .to_string();
+        assert!(message.contains("still awaiting L1"), "{message}");
+        assert_eq!(
+            requests.load(Ordering::SeqCst),
+            1,
+            "a full cap must not send a request"
+        );
     }
 }
