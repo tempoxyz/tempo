@@ -138,29 +138,61 @@ jobs:
             echo "Protected main was not fetched" >&2
             exit 1
           }
-          if ! git merge-base --is-ancestor "$commit_sha" refs/remotes/origin/main; then
-            # Prepare Zones Release tags the commit on its pre-release branch,
-            # which a squash merge keeps off main. Accept it only as one commit
-            # on main that changes nothing but Zones version lines.
-            read -r -a ancestry <<< "$(git rev-list --parents -n 1 "$commit_sha")"
-            parent="${ancestry[1]:-}"
+          # A release may also come from a pre-release branch: commits on a main
+          # commit, each a Zones version bump or a "git cherry-pick -x" of a
+          # non-merge commit on main whose change it copies file for file (files
+          # that do not apply may be left out). The release then builds only code
+          # that reached protected main.
+          zones_version_bump() {
+            local changed_files unexpected_files unexpected_lines
             # Without rename detection a moved file shows as a deletion and an
             # addition, so only in-place edits of regular allowlisted files pass.
-            changed_files="$(git diff --no-renames --raw --no-abbrev "$parent" "$commit_sha" || true)"
+            changed_files="$(git diff --no-renames --raw --no-abbrev "$1" "$2" || true)"
             unexpected_files="$(
               printf '%s\n' "$changed_files" | grep -v '^$' |
                 grep -Ev $'^:100644 100644 [0-9a-f]{40} [0-9a-f]{40} M\t(Cargo\\.lock|bin/tempo-zone/Cargo\\.toml|crates/zones/[^/]+/Cargo\\.toml)$' || true
             )"
             unexpected_lines="$(
-              git diff --no-renames -U0 "$parent" "$commit_sha" | grep -E '^[+-]' |
+              git diff --no-renames -U0 "$1" "$2" | grep -E '^[+-]' |
                 grep -Ev '^(\+\+\+|---) ' | grep -Ev '^[+-]version = "[^"]+"$' || true
             )"
-            if [[ "${#ancestry[@]}" -ne 2 ]] ||
-               ! git merge-base --is-ancestor "$parent" refs/remotes/origin/main ||
-               [[ -z "$changed_files" || -n "$unexpected_files" || -n "$unexpected_lines" ]]; then
-              echo "Release source $commit_sha is not a commit on main or a Zones version bump on one" >&2
-              exit 1
-            fi
+            [[ -n "$changed_files" && -z "$unexpected_files" && -z "$unexpected_lines" ]]
+          }
+          file_patch_id() {
+            # --verbatim keeps whitespace, so an indentation change does not match.
+            git diff --no-renames --no-ext-diff "$1" "$2" -- ":(literal)$3" | git patch-id --verbatim | cut -d' ' -f1
+          }
+          main_cherry_pick() {
+            local source source_ancestry files file picked
+            source="$(git log -1 --format=%B "$2" |
+              sed -n 's/^(cherry picked from commit \([0-9a-f]\{40\}\))$/\1/p' | tail -n 1)"
+            [[ -n "$source" ]] || return 1
+            git merge-base --is-ancestor "$source" refs/remotes/origin/main || return 1
+            read -r -a source_ancestry <<< "$(git rev-list --parents -n 1 "$source")"
+            [[ "${#source_ancestry[@]}" -eq 2 ]] || return 1
+            files="$(git -c core.quotePath=false diff --no-renames --name-only "$1" "$2")"
+            [[ -n "$files" ]] || return 1
+            while IFS= read -r file; do
+              picked="$(file_patch_id "$1" "$2" "$file")"
+              [[ -n "$picked" && "$picked" == "$(file_patch_id "${source_ancestry[1]}" "$source" "$file")" ]] || return 1
+            done <<< "$files"
+          }
+          release_source_ok() {
+            local base commits commit ancestry
+            base="$(git merge-base "$1" refs/remotes/origin/main)" || return 1
+            commits="$(git rev-list --reverse "$base..$1")" || return 1
+            [[ -n "$commits" ]] || return 1
+            for commit in $commits; do
+              read -r -a ancestry <<< "$(git rev-list --parents -n 1 "$commit")"
+              [[ "${#ancestry[@]}" -eq 2 ]] || return 1
+              zones_version_bump "${ancestry[1]}" "$commit" ||
+                main_cherry_pick "${ancestry[1]}" "$commit" || return 1
+            done
+          }
+          if ! git merge-base --is-ancestor "$commit_sha" refs/remotes/origin/main &&
+             ! release_source_ok "$commit_sha"; then
+            echo "Release source $commit_sha is not a commit on main or Zones version bumps and cherry-picks of main commits on one" >&2
+            exit 1
           fi
 
           {

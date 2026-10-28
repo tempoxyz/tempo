@@ -298,6 +298,53 @@ class ZonesReleaseTagTests(unittest.TestCase):
                 self.assertNotEqual(code, 0)
                 self.assertEqual(output, '')
 
+    def release_branch(self, tamper=False, drop=None, trailer=True, on_main=True):
+        """Tag a cherry-pick of a main commit on a branch off an older main commit."""
+        with tempfile.TemporaryDirectory() as tmp:
+            git = lambda *args: subprocess.run(['git', '-C', tmp, '-c', 'user.name=Test',
+                                                '-c', 'user.email=test@example.invalid', *args],
+                                               check=True, capture_output=True, text=True).stdout.strip()
+            git('init', '-q')
+            (Path(tmp) / 'a.rs').write_text('fn a() {}\n')
+            (Path(tmp) / 'b.rs').write_text('fn b() {}\n')
+            git('add', '.')
+            git('commit', '-qm', 'test: base')
+            base = git('rev-parse', 'HEAD')
+            git('commit', '-q', '--allow-empty', '-m', 'test: unrelated main commit')
+            (Path(tmp) / 'a.rs').write_text('fn a() {}\nfn fix() {}\n')
+            (Path(tmp) / 'b.rs').write_text('fn b() {}\nfn other() {}\n')
+            git('commit', '-qam', 'fix: on main')
+            fix = git('rev-parse', 'HEAD')
+            if on_main:
+                git('update-ref', 'refs/remotes/origin/main', 'HEAD')
+            else:
+                git('update-ref', 'refs/remotes/origin/main', base)
+            git('checkout', '-q', base)
+            git('cherry-pick', *(['-x'] if trailer else []), fix)
+            if drop:
+                git('checkout', base, '--', drop)
+                git('commit', '-q', '--amend', '--no-edit')
+            if tamper:
+                (Path(tmp) / 'a.rs').write_text('fn a() {}\nfn fix() {}\nfn sneaky() {}\n')
+                git('commit', '-q', '--amend', '-a', '--no-edit')
+            git('tag', 'zones/v0.3.8')
+            result = subprocess.run(['bash', '-eu', '-c', script('resolve-release', 'Record immutable release inputs')],
+                                    cwd=tmp, env=dict(os.environ, GITHUB_EVENT_NAME='push', INPUT_TAG='',
+                                                      INPUT_SHA='', GITHUB_REF='refs/tags/zones/v0.3.8',
+                                                      GITHUB_OUTPUT=str(Path(tmp) / 'output')),
+                                    text=True, capture_output=True)
+            return result.returncode
+
+    def test_accepts_cherry_picks_of_main_commits_off_main(self):
+        self.assertEqual(self.release_branch(), 0)
+        # A file the pick does not need may be left out.
+        self.assertEqual(self.release_branch(drop='b.rs'), 0)
+
+    def test_rejects_cherry_picks_that_differ_or_do_not_come_from_main(self):
+        for options in ({'tamper': True}, {'trailer': False}, {'on_main': False}):
+            with self.subTest(options=options):
+                self.assertNotEqual(self.release_branch(**options), 0)
+
     def test_commit_dry_run_input_validation(self):
         cases = [
             ("", "a" * 40, "true", True),
