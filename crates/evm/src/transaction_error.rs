@@ -233,6 +233,18 @@ pub enum TempoInvalidTransaction {
     /// This wraps validation errors from the shared validate_calls function.
     #[error("{0}")]
     CallsValidation(&'static str),
+
+    /// A primitive key acted alone in `role` for an account with a nonzero configuration
+    /// commitment (TIP-1112).
+    ///
+    /// State-dependent: a migration can be undone by a reorg, so the transaction is not bad.
+    #[error("root key of {account} is retired and cannot act as {role}")]
+    RootKeyRetired {
+        /// Account whose bare primitive authority is retired.
+        account: Address,
+        /// Authority role the retired key tried to fill.
+        role: RootKeyRole,
+    },
 }
 
 impl TempoInvalidTransaction {
@@ -277,8 +289,33 @@ impl TempoInvalidTransaction {
             | Self::KeychainValidationFailed { .. }
             | Self::CollectFeePreTx(_)
             | Self::NonceManagerError(_)
-            | Self::V2KeychainBeforeActivation => false,
+            | Self::V2KeychainBeforeActivation
+            | Self::RootKeyRetired { .. } => false,
         }
+    }
+}
+
+/// Authority role a primitive key can fill in a transaction (TIP-1112).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RootKeyRole {
+    /// Direct transaction sender.
+    Sender,
+    /// Signer of a primitive-signed key authorization.
+    KeyAuthorizationSigner,
+    /// Fee payer.
+    FeePayer,
+    /// Access key identity of a keychain signature.
+    AccessKey,
+}
+
+impl core::fmt::Display for RootKeyRole {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Self::Sender => "the transaction sender",
+            Self::KeyAuthorizationSigner => "a key authorization signer",
+            Self::FeePayer => "the fee payer",
+            Self::AccessKey => "an access key",
+        })
     }
 }
 

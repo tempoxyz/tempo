@@ -1,37 +1,49 @@
 use super::*;
 use alloy_consensus::{Header, SignableTransaction, TxEip1559, TxEip2930, TxEip7702, TxLegacy};
 use alloy_eips::{
-    eip2930::AccessList,
+    eip2930::{AccessList, AccessListItem},
     eip7702::{Authorization, SignedAuthorization},
 };
 use alloy_primitives::{Bytes, KECCAK256_EMPTY, LogData, bytes, keccak256};
 use alloy_sol_types::{SolError, SolEvent};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use evm2::{
     EvmFeatures,
-    evm::DynDatabase,
+    evm::{DynDatabase, registry::HandlerError},
     version::{GasId, GasParams},
 };
+use p256::ecdsa::{SigningKey, signature::hazmat::PrehashSigner};
 use reth_chainspec::EthChainSpec;
 use reth_evm::{BlockExecutor, ConfigureEvm};
 use reth_execution_types::BundleSource;
 use reth_primitives_traits::Block as _;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::{num::NonZeroU64, sync::Arc};
 use tempo_chainspec::{TempoChainSpec, spec::DEV};
 use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, PATH_USD_ADDRESS, account_keychain::IAccountKeychain, nonce::INonce,
     tip20::ITIP20,
 };
-use tempo_evm::TempoEvmConfig;
+use tempo_evm::{
+    TempoEvmConfig, TempoInvalidTransaction,
+    transaction_error::{FeePaymentError, RootKeyRole},
+};
 use tempo_precompiles::{
-    configurable_account::CONFIGURABLE_ACCOUNT_CODE_HASH, error::TempoPrecompileError,
-    nonce::NonceManager, storage::keccak_cost, tip20::TIP20Token,
+    configurable_account::{CONFIGURABLE_ACCOUNT_CODE, CONFIGURABLE_ACCOUNT_CODE_HASH},
+    error::TempoPrecompileError,
+    nonce::NonceManager,
+    storage::keccak_cost,
+    tip20::TIP20Token,
 };
 use tempo_primitives::{
     Block as TempoBlock, SignatureType, TempoHeader, TempoTxEnvelope,
+    account::encode_config_commitment,
     transaction::{
         CONFIGURABLE_ACCOUNT_CONFIG_DOMAIN, KeyAuthorization, KeychainSignature,
-        TEMPO_EXPIRING_NONCE_KEY, TempoSignedAuthorization, calc_gas_balance_spending,
+        SignedKeyAuthorization, TEMPO_EXPIRING_NONCE_KEY, TempoSignedAuthorization, TokenLimit,
+        calc_gas_balance_spending, derive_p256_address,
+        tt_signature::{P256SignatureWithPreHash, WebAuthnSignature, normalize_p256_s},
     },
 };
 
@@ -102,6 +114,114 @@ enum UpgradeSender {
     Funded,
     /// The fixture's account at nonce 3, on the protocol lane.
     Settled,
+}
+
+/// A call target that touches `account`'s code size: its gas shows whether the account is warm.
+const PROBE: Address = Address::repeat_byte(0x99);
+
+/// The nonce, the 7702 delegation target (`None` without code) and whether the account's
+/// configuration commitment is set.
+#[derive(Debug, PartialEq, Eq)]
+struct AccountState {
+    nonce: u64,
+    delegation: Option<Address>,
+    retired: bool,
+}
+
+/// An account seeded with `nonce`, and the `entries` that precede the fresh authority in the
+/// list.
+struct ListVariant {
+    name: &'static str,
+    nonce: u64,
+    entries: Vec<Entry>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum SigKind {
+    Secp256k1,
+    P256,
+    WebAuthn,
+    /// The secp256k1 key signing as an access key of its own address, which it names as the
+    /// authority.
+    Keychain,
+}
+
+/// One authorization-list entry: the authority is derived from `kind` and `seed`.
+#[derive(Clone, Copy, Debug)]
+struct Entry {
+    kind: SigKind,
+    seed: u8,
+    chain_id: u64,
+    target: Address,
+    nonce: u64,
+}
+
+impl Entry {
+    fn new(kind: SigKind, seed: u8, target: Address, nonce: u64) -> Self {
+        Self {
+            kind,
+            seed,
+            chain_id: 1,
+            target,
+            nonce,
+        }
+    }
+
+    fn authorization(&self) -> Authorization {
+        Authorization {
+            chain_id: U256::from(self.chain_id),
+            address: self.target,
+            nonce: self.nonce,
+        }
+    }
+
+    fn address(&self) -> Address {
+        self.sign().0
+    }
+
+    /// The authority and the entry signed by it with its own key type.
+    fn sign(&self) -> (Address, TempoSignedAuthorization) {
+        let authorization = self.authorization();
+        let hash = authorization.signature_hash();
+        let (address, signature) = match self.kind {
+            SigKind::Secp256k1 => {
+                let key = signer(self.seed);
+                let signature = key.sign_hash_sync(&hash).unwrap();
+                (key.address(), TempoSignature::from(signature))
+            }
+            SigKind::Keychain => {
+                let key = signer(self.seed);
+                let signature = key
+                    .sign_hash_sync(&KeychainSignature::signing_hash(hash, key.address()))
+                    .unwrap();
+                (
+                    key.address(),
+                    TempoSignature::Keychain(KeychainSignature::new(
+                        key.address(),
+                        PrimitiveSignature::Secp256k1(signature),
+                    )),
+                )
+            }
+            SigKind::P256 | SigKind::WebAuthn => {
+                let (address, primitive) = p256_primitive(self.kind, self.seed, hash);
+                (address, TempoSignature::Primitive(primitive))
+            }
+        };
+        (
+            address,
+            TempoSignedAuthorization::new_unchecked(authorization, signature),
+        )
+    }
+
+    /// The entry as an EIP-7702 authorization, which only a secp256k1 authority can sign.
+    fn legacy(&self) -> SignedAuthorization {
+        assert!(matches!(self.kind, SigKind::Secp256k1), "{self:?}");
+        let authorization = self.authorization();
+        let signature = signer(self.seed)
+            .sign_hash_sync(&authorization.signature_hash())
+            .unwrap();
+        authorization.into_signed(signature)
+    }
 }
 
 /// The gas parameters of `spec`'s EVM version.
@@ -1112,5 +1232,959 @@ fn eoa_migration_inactive_before_t14() {
         assert!(result.logs.is_empty(), "{kind:?}");
         assert_eq!(f.commitment(), B256::ZERO, "{kind:?}");
         assert_eq!(f.info(f.account).unwrap().nonce, nonce + 1);
+    }
+}
+
+fn retire(f: &mut Fixture, account: Address) {
+    let mut info = f
+        .info(account)
+        .unwrap_or_else(|| AccountInfo::default().with_balance(U256::ZERO));
+    info.extension = encode_config_commitment(B256::repeat_byte(0x77)).into();
+    f.evm.overlay_db_mut().insert_account_info(&account, info);
+}
+
+/// Migrates the primitive account `key`, which is not the fixture's account, with
+/// `upgradeAccount` to a configuration owned by `owner`.
+fn migrate_key(
+    f: &mut Fixture,
+    key: &PrivateKeySigner,
+    nonce: u64,
+    owner: &PrivateKeySigner,
+) -> ConfigurableAccountConfig {
+    let config = ConfigurableAccountConfig {
+        salt: keccak256(
+            [
+                CONFIGURABLE_ACCOUNT_UPGRADE_DOMAIN,
+                key.address().as_slice(),
+            ]
+            .concat(),
+        ),
+        version: 1,
+        threshold: 1,
+        owners: owner_set(vec![owner.address()]),
+    };
+    let tx = aa_tx(nonce, vec![Fixture::upgrade(&config)]);
+    let signature = key.sign_hash_sync(&tx.signature_hash()).unwrap();
+    let result = f.run_as(key.address(), &tx.into_signed(signature.into()));
+    assert!(result.status, "{result:?}");
+    let info = f.info(key.address()).unwrap();
+    assert_eq!(
+        decode_config_commitment(&info.extension, TempoHardfork::T14).unwrap(),
+        config.commitment().unwrap()
+    );
+    config
+}
+
+/// The environment of `tx` sent by `sender`, optionally as a plain RPC simulation request.
+fn env_of<T>(tx: &T, sender: Address, simulation: bool) -> Recovered<TempoTxEnv>
+where
+    T: Clone + Into<TempoTxEnvelope>,
+{
+    if simulation {
+        simulation_env(tx, sender, None)
+    } else {
+        tx_env(tx, sender)
+    }
+}
+
+/// The RPC simulation environment of `tx` sent by `sender`, whose key ID `key_id` overrides.
+fn simulation_env<T>(tx: &T, sender: Address, key_id: Option<Address>) -> Recovered<TempoTxEnv>
+where
+    T: Clone + Into<TempoTxEnvelope>,
+{
+    let env = tx_env(tx, sender).into_inner();
+    let unique_tx_identifier = env.unique_tx_identifier();
+    Recovered::new_unchecked(
+        env.with_simulation_overrides(unique_tx_identifier, None, key_id),
+        sender,
+    )
+}
+
+/// The handler error that executing `env` fails with.
+fn transact_err(f: &mut Fixture, env: &Recovered<TempoTxEnv>) -> HandlerError {
+    match f.evm.transact(env) {
+        Err(error) => error,
+        Ok(executed) => panic!("expected a validation error, got {:?}", executed.discard()),
+    }
+}
+
+/// The handler error `tx` fails with when sent by `sender`.
+fn handler_rejection<T>(f: &mut Fixture, tx: &T, sender: Address) -> HandlerError
+where
+    T: Clone + Into<TempoTxEnvelope>,
+{
+    transact_err(f, &env_of(tx, sender, false))
+}
+
+/// The Tempo validation error `tx` fails with when sent by `sender`.
+fn rejection<T>(f: &mut Fixture, tx: &T, sender: Address) -> TempoInvalidTransaction
+where
+    T: Clone + Into<TempoTxEnvelope>,
+{
+    let error = handler_rejection(f, tx, sender);
+    error
+        .external_ref::<TempoInvalidTransaction>()
+        .cloned()
+        .unwrap_or_else(|| panic!("expected a Tempo validation error, got {error:?}"))
+}
+
+fn retired(account: Address, role: RootKeyRole) -> TempoInvalidTransaction {
+    TempoInvalidTransaction::RootKeyRetired { account, role }
+}
+
+/// `tx` with `payer` as its fee payer, for sender `sender`.
+fn sponsored(
+    mut tx: TempoTransaction,
+    payer: &PrivateKeySigner,
+    sender: Address,
+) -> TempoTransaction {
+    tx.fee_payer_signature = Some(
+        payer
+            .sign_hash_sync(&tx.fee_payer_signature_hash(sender))
+            .unwrap(),
+    );
+    tx
+}
+
+/// A grant of `key` for the account, signed by `signer` (a primitive root or admin key).
+fn grant_by(signer: &PrivateKeySigner, key: Address) -> SignedKeyAuthorization {
+    let grant = KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key);
+    let signature = signer.sign_hash_sync(&grant.signature_hash()).unwrap();
+    grant.into_signed(PrimitiveSignature::Secp256k1(signature))
+}
+
+#[test]
+fn retired_root_rejects_sender_signatures() {
+    let other = signer(2).address();
+    // A P256 and a WebAuthn signature are primitive too; only their type reaches validation.
+    let p256 = PrimitiveSignature::from_bytes(&[&[0x01u8][..], &[0x11; 129][..]].concat()).unwrap();
+    let webauthn =
+        PrimitiveSignature::from_bytes(&[&[0x02u8][..], &[0x22; 37 + 20 + 128][..]].concat())
+            .unwrap();
+    for kind in [RootTx::Legacy, RootTx::Eip2930, RootTx::Eip1559, RootTx::Aa] {
+        let mut f = Fixture::new();
+        // Before the migration the same signatures are accepted.
+        let tx = root_tx(&f, kind, 3, f.getter());
+        let result = f.run(&tx);
+        assert!(result.status, "{kind:?}: {result:?}");
+        migrate(&mut f, 4, other);
+        let account = f.account;
+
+        let tx = root_tx(&f, kind, 5, f.getter());
+        let error = rejection(&mut f, &tx, account);
+        assert_eq!(error, retired(account, RootKeyRole::Sender), "{kind:?}");
+        assert!(!error.is_bad_transaction(), "{kind:?}");
+        // A repeated migration is a root-signed transaction like any other.
+        let again = f.upgraded(1, owner_set(vec![signer(3).address()]));
+        let tx = root_tx(&f, kind, 5, Fixture::upgrade(&again));
+        assert_eq!(
+            rejection(&mut f, &tx, account),
+            retired(account, RootKeyRole::Sender),
+            "{kind:?}"
+        );
+        assert_eq!(
+            f.commitment(),
+            f.upgraded(1, owner_set(vec![other])).commitment().unwrap()
+        );
+        assert_eq!(f.info(account).unwrap().nonce, 5);
+    }
+
+    let mut f = Fixture::new();
+    migrate(&mut f, 3, other);
+    let account = f.account;
+    let expected = retired(account, RootKeyRole::Sender);
+    // EIP-7702, a 2D nonce lane, and the other primitive signature types.
+    let tx = type4(
+        &f.owner,
+        4,
+        other,
+        Bytes::new(),
+        vec![authorization(&f.owner, other, 5)],
+    );
+    assert_eq!(rejection(&mut f, &tx, account), expected);
+    let lane = TempoTransaction {
+        nonce_key: U256::ONE,
+        ..aa_tx(0, vec![f.getter()])
+    };
+    let tx = f.sign_primitive(lane);
+    assert_eq!(rejection(&mut f, &tx, account), expected);
+    for signature in [p256, webauthn] {
+        let tx = aa_tx(4, vec![f.getter()]).into_signed(TempoSignature::Primitive(signature));
+        assert_eq!(rejection(&mut f, &tx, account), expected);
+    }
+
+    // A plain RPC simulation does not check the sender.
+    let tx = f.primitive(4, vec![f.getter()]);
+    let output = f
+        .evm
+        .transact(&env_of(&tx, account, true))
+        .unwrap()
+        .detach();
+    assert!(output.result.status, "{:?}", output.result);
+    // A signed transaction, the only other origin, is not a simulation: the sender is checked.
+    let error = transact_err(&mut f, &env_of(&tx, account, false));
+    assert!(
+        error.external_ref::<TempoInvalidTransaction>() == Some(&expected),
+        "{error:?}"
+    );
+
+    // The retirement starts at T14: the same state is accepted before it.
+    let mut before = Fixture::with_spec(TempoHardfork::T13);
+    let account = before.account;
+    retire(&mut before, account);
+    let tx = before.primitive(3, vec![before.getter()]);
+    let result = before.run(&tx);
+    assert!(result.status, "{result:?}");
+}
+
+#[test]
+fn retired_root_rejects_delegated_roles() {
+    let new_key = signer(7);
+    let other = signer(2).address();
+
+    // The bootstrap flow, a root-signed grant used by the new key in the same
+    // transaction, is accepted before the migration and rejected after it.
+    for migrated in [false, true] {
+        let mut f = Fixture::new();
+        if migrated {
+            migrate(&mut f, 3, other);
+        }
+        let nonce = if migrated { 4 } else { 3 };
+        let account = f.account;
+        let tx = TempoTransaction {
+            key_authorization: Some(grant_by(&f.owner, new_key.address())),
+            ..aa_tx(nonce, vec![f.getter()])
+        };
+        let tx = keychain_signed(tx, &new_key, account);
+        if migrated {
+            assert_eq!(
+                rejection(&mut f, &tx, account),
+                retired(account, RootKeyRole::KeyAuthorizationSigner)
+            );
+        } else {
+            let result = f.run(&tx);
+            assert!(result.status, "{result:?}");
+        }
+    }
+
+    // An admin access key that migrated can neither sign a grant nor sign
+    // transactions; its parent is not affected.
+    let mut f = Fixture::new();
+    let admin = signer(4);
+    grant_key(&mut f, 3, &admin, true, 0);
+    let account = f.account;
+    let admin_grant = |f: &Fixture| {
+        let grant = KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, new_key.address())
+            .with_account(f.account);
+        let signature = admin.sign_hash_sync(&grant.signature_hash()).unwrap();
+        grant.into_signed(PrimitiveSignature::Secp256k1(signature))
+    };
+    let tx = TempoTransaction {
+        key_authorization: Some(admin_grant(&f)),
+        ..aa_tx(4, vec![f.getter()])
+    };
+    let tx = keychain_signed(tx, &admin, account);
+    // Control: the admin key still works while it has no commitment.
+    let output = f
+        .evm
+        .transact(&env_of(&tx, account, false))
+        .unwrap()
+        .detach();
+    assert!(output.result.status, "{:?}", output.result);
+    retire(&mut f, admin.address());
+    assert_eq!(
+        rejection(&mut f, &tx, account),
+        retired(admin.address(), RootKeyRole::KeyAuthorizationSigner)
+    );
+    let tx = keychain_signed(aa_tx(4, vec![f.getter()]), &admin, account);
+    assert_eq!(
+        rejection(&mut f, &tx, account),
+        retired(admin.address(), RootKeyRole::AccessKey)
+    );
+
+    // A sponsor that migrates after signing can no longer pay, even for a transaction
+    // it signed earlier.
+    let mut f = Fixture::new();
+    let sponsor = signer(5);
+    let account = f.account;
+    let tx = sponsored(aa_tx(3, vec![f.getter()]), &sponsor, account);
+    let tx = f.sign_primitive(tx);
+    let output = f
+        .evm
+        .transact(&env_of(&tx, account, false))
+        .unwrap()
+        .detach();
+    assert!(output.result.status, "{:?}", output.result);
+    retire(&mut f, sponsor.address());
+    assert_eq!(
+        rejection(&mut f, &tx, account),
+        retired(sponsor.address(), RootKeyRole::FeePayer)
+    );
+    // Simulation checks every role but the sender.
+    let error = transact_err(&mut f, &env_of(&tx, account, true));
+    assert!(
+        error.external_ref::<TempoInvalidTransaction>()
+            == Some(&retired(sponsor.address(), RootKeyRole::FeePayer)),
+        "{error:?}"
+    );
+
+    // The treasury A granted the primitive key B an allowance of 100, then B migrates for real.
+    let mut f = Fixture::new();
+    let key = signer(6);
+    let new_owner = signer(8);
+    let account = f.account;
+    fund(&mut f, account, 1_000);
+    let grant = KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key.address())
+        .with_limits(vec![TokenLimit {
+            token: PATH_USD_ADDRESS,
+            limit: U256::from(100),
+            period: 0,
+        }]);
+    let approval = f.owner.sign_hash_sync(&grant.signature_hash()).unwrap();
+    let tx = f.sign_primitive(TempoTransaction {
+        key_authorization: Some(grant.into_signed(PrimitiveSignature::Secp256k1(approval))),
+        ..aa_tx(3, vec![f.getter()])
+    });
+    let result = f.run(&tx);
+    assert!(result.status, "{result:?}");
+    let remaining = |f: &mut Fixture| {
+        in_storage_ctx(&mut f.evm, || {
+            AccountKeychain::new().get_remaining_limit(IAccountKeychain::getRemainingLimitCall {
+                account,
+                keyId: key.address(),
+                token: PATH_USD_ADDRESS,
+            })
+        })
+        .unwrap()
+    };
+    let spend = |amount: u64| Call {
+        to: TxKind::Call(PATH_USD_ADDRESS),
+        value: U256::ZERO,
+        input: ITIP20::transferCall {
+            to: Address::repeat_byte(0x66),
+            amount: U256::from(amount),
+        }
+        .abi_encode()
+        .into(),
+    };
+    let tx = keychain_tx(&f, &key, 4, vec![spend(30)]);
+    let result = f.run(&tx);
+    assert!(result.status, "{result:?}");
+    assert_eq!(remaining(&mut f), U256::from(70));
+
+    seed_eoa(&mut f, key.address(), 0);
+    migrate_key(&mut f, &key, 0, &new_owner);
+
+    // Its retired root no longer signs for A, whether recovered or named by a simulation.
+    let tx = keychain_tx(&f, &key, 5, vec![spend(20)]);
+    let expected = retired(key.address(), RootKeyRole::AccessKey);
+    assert_eq!(rejection(&mut f, &tx, account), expected);
+    let error = transact_err(&mut f, &simulation_env(&tx, account, Some(key.address())));
+    assert!(
+        error.external_ref::<TempoInvalidTransaction>() == Some(&expected),
+        "{error:?}"
+    );
+    // The override also names the key when another key signed the request.
+    let placeholder = keychain_tx(&f, &signer(7), 5, vec![f.getter()]);
+    let error = transact_err(
+        &mut f,
+        &simulation_env(&placeholder, account, Some(key.address())),
+    );
+    assert!(
+        error.external_ref::<TempoInvalidTransaction>() == Some(&expected),
+        "{error:?}"
+    );
+}
+
+/// Gas used by `tx` at `spec` on a fresh unmigrated fixture with the access key `key` granted.
+fn gas_at(
+    spec: TempoHardfork,
+    key: &PrivateKeySigner,
+    tx: impl FnOnce(&Fixture) -> AASigned,
+) -> u64 {
+    let mut f = Fixture::with_spec(spec);
+    grant_key(&mut f, 3, key, false, 0);
+    let tx = tx(&f);
+    let result = f.run(&tx);
+    assert!(result.status, "{spec:?}: {result:?}");
+    // Before the minimum-gas floor, which hides small differences.
+    result.total_gas_spent
+}
+
+#[test]
+fn retired_root_error_order_and_access_gas() {
+    let (signer_s, payer, key) = (signer(4), signer(5), signer(6));
+    let mut f = Fixture::new();
+    let account = f.account;
+    // Every role names a retired account: the sender, the grant signer, the fee payer, and the
+    // access key.
+    for address in [account, signer_s.address(), payer.address(), key.address()] {
+        retire(&mut f, address);
+    }
+    let target = signer(7).address();
+    // A root-signed grant for a root-signed transaction; an admin-signed grant must travel with
+    // its own admin key.
+    let root_grant = grant_by(&f.owner, target);
+    let admin_grant = {
+        let grant = KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, target)
+            .with_account(account);
+        let signature = signer_s.sign_hash_sync(&grant.signature_hash()).unwrap();
+        grant.into_signed(PrimitiveSignature::Secp256k1(signature))
+    };
+    let sponsor = |tx: TempoTransaction| sponsored(tx, &payer, account);
+
+    // Sender, then key authorization signer, then fee payer, then access key.
+    let tx = f.sign_primitive(sponsor(TempoTransaction {
+        key_authorization: Some(root_grant.clone()),
+        ..aa_tx(3, vec![f.getter()])
+    }));
+    assert_eq!(
+        rejection(&mut f, &tx, account),
+        retired(account, RootKeyRole::Sender)
+    );
+    let tx = keychain_signed(
+        sponsor(TempoTransaction {
+            key_authorization: Some(admin_grant),
+            ..aa_tx(3, vec![f.getter()])
+        }),
+        &signer_s,
+        account,
+    );
+    assert_eq!(
+        rejection(&mut f, &tx, account),
+        retired(signer_s.address(), RootKeyRole::KeyAuthorizationSigner)
+    );
+    let tx = keychain_signed(sponsor(aa_tx(3, vec![f.getter()])), &key, account);
+    assert_eq!(
+        rejection(&mut f, &tx, account),
+        retired(payer.address(), RootKeyRole::FeePayer)
+    );
+    let tx = keychain_signed(aa_tx(3, vec![f.getter()]), &key, account);
+    assert_eq!(
+        rejection(&mut f, &tx, account),
+        retired(key.address(), RootKeyRole::AccessKey)
+    );
+
+    // Request validation comes first: the sponsor may not be the sender.
+    let tx = f.sign_primitive(sponsored(aa_tx(3, vec![f.getter()]), &f.owner, account));
+    assert_eq!(
+        rejection(&mut f, &tx, account),
+        TempoInvalidTransaction::SelfSponsoredFeePayer
+    );
+    // Nonce, intrinsic gas and balance errors come after, with or without a commitment.
+    let mut fresh = Fixture::new();
+    let mut fresh_rejection = |label: &str, edit: fn(&mut TempoTransaction)| {
+        let mut tx = aa_tx(3, vec![f.getter()]);
+        edit(&mut tx);
+        let signed = f.sign_primitive(tx);
+        assert_eq!(
+            rejection(&mut f, &signed, account),
+            retired(account, RootKeyRole::Sender),
+            "{label}"
+        );
+        handler_rejection(&mut fresh, &signed, account)
+    };
+    assert_eq!(
+        fresh_rejection("nonce", |tx| tx.nonce = 99),
+        HandlerError::InvalidNonce {
+            expected: 3,
+            got: 99
+        }
+    );
+    let error = fresh_rejection("intrinsic gas", |tx| tx.gas_limit = 1);
+    assert!(
+        matches!(error, HandlerError::IntrinsicGasTooLow { got: 1, .. }),
+        "{error:?}"
+    );
+    let error = fresh_rejection("balance", |tx| {
+        tx.max_fee_per_gas = 1_000_000_000_000;
+        tx.fee_token = Some(PATH_USD_ADDRESS);
+    });
+    assert_eq!(
+        error.external_ref::<TempoInvalidTransaction>(),
+        Some(&TempoInvalidTransaction::CollectFeePreTx(
+            FeePaymentError::InsufficientFeeTokenBalance {
+                fee: calc_gas_balance_spending(1_000_000, 1_000_000_000_000),
+                balance: U256::ZERO,
+            }
+        )),
+        "{error:?}"
+    );
+
+    // Gas: each distinct non-caller role account is charged one account access from T14.
+    let params = tempo_gas_params(TempoHardfork::T14);
+    let warm = u64::from(params.get(GasId::WarmStorageReadCost));
+    let cold = warm + params.cold_account_additional_cost();
+    let other = signer(8);
+    let delta = |tx: &dyn Fn(&Fixture) -> AASigned| {
+        gas_at(TempoHardfork::T14, &key, tx) - gas_at(TempoHardfork::T13, &key, tx)
+    };
+    let listed = AccessList(vec![AccessListItem {
+        address: payer.address(),
+        storage_keys: Vec::new(),
+    }]);
+    // T14 prices every transaction a little differently, with or without role checks; the
+    // role charges are measured on top of a plain transaction.
+    let base = delta(&|f| f.primitive(4, vec![f.getter()]));
+    // The caller is free, even as the grant signer.
+    let grant_tx = |f: &Fixture| {
+        let grant = KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, other.address());
+        let signature = f.owner.sign_hash_sync(&grant.signature_hash()).unwrap();
+        f.sign_primitive(TempoTransaction {
+            key_authorization: Some(grant.into_signed(PrimitiveSignature::Secp256k1(signature))),
+            ..aa_tx(4, vec![f.getter()])
+        })
+    };
+    assert_eq!(delta(&grant_tx), base);
+    // A cold fee payer costs a cold access, an access-listed one a warm access.
+    let paid = |f: &Fixture, payer: &PrivateKeySigner, list: &AccessList| {
+        f.sign_primitive(sponsored(
+            TempoTransaction {
+                access_list: list.clone(),
+                ..aa_tx(4, vec![f.getter()])
+            },
+            payer,
+            f.account,
+        ))
+    };
+    assert_eq!(
+        delta(&|f| paid(f, &payer, &AccessList(Vec::new()))),
+        base + cold
+    );
+    assert_eq!(delta(&|f| paid(f, &payer, &listed)), base + warm);
+    // The access key and the fee payer are one account here: one access, not two.
+    let keyed = |f: &Fixture, payer: &PrivateKeySigner| {
+        keychain_signed(
+            sponsored(aa_tx(4, vec![f.getter()]), payer, f.account),
+            &key,
+            f.account,
+        )
+    };
+    assert_eq!(delta(&|f| keyed(f, &key)), base + cold);
+    assert_eq!(delta(&|f| keyed(f, &payer)), base + 2 * cold);
+    // An access-listed access key costs a warm access.
+    let key_listed = AccessList(vec![AccessListItem {
+        address: key.address(),
+        storage_keys: Vec::new(),
+    }]);
+    assert_eq!(
+        delta(&|f| keychain_signed(
+            TempoTransaction {
+                access_list: key_listed.clone(),
+                ..aa_tx(4, vec![f.getter()])
+            },
+            &key,
+            f.account
+        )),
+        base + warm
+    );
+}
+
+/// The P256 or WebAuthn signature of the key seeded by `seed` over `hash`, and the key's address.
+fn p256_primitive(kind: SigKind, seed: u8, hash: B256) -> (Address, PrimitiveSignature) {
+    let key = SigningKey::from_slice(&[seed; 32]).unwrap();
+    let point = key.verifying_key().to_encoded_point(false);
+    let pub_key_x = B256::from_slice(point.x().unwrap());
+    let pub_key_y = B256::from_slice(point.y().unwrap());
+    let primitive = if matches!(kind, SigKind::P256) {
+        let signature: p256::ecdsa::Signature = key.sign_prehash(&Sha256::digest(hash)).unwrap();
+        let bytes = signature.to_bytes();
+        PrimitiveSignature::P256(P256SignatureWithPreHash {
+            r: B256::from_slice(&bytes[..32]),
+            s: normalize_p256_s(&bytes[32..]).unwrap(),
+            pub_key_x,
+            pub_key_y,
+            pre_hash: true,
+        })
+    } else {
+        let mut authenticator_data = vec![0u8; 37];
+        authenticator_data[..32].copy_from_slice(&[0xAA; 32]);
+        authenticator_data[32] = 0x01;
+        let client_data = format!(
+            r#"{{"type":"webauthn.get","challenge":"{}","origin":"https://tempo.xyz","crossOrigin":false}}"#,
+            URL_SAFE_NO_PAD.encode(hash)
+        );
+        let mut message = Sha256::new();
+        message.update(&authenticator_data);
+        message.update(Sha256::digest(client_data.as_bytes()));
+        let signature: p256::ecdsa::Signature = key.sign_prehash(&message.finalize()).unwrap();
+        let bytes = signature.to_bytes();
+        authenticator_data.extend_from_slice(client_data.as_bytes());
+        PrimitiveSignature::WebAuthn(WebAuthnSignature {
+            webauthn_data: authenticator_data.into(),
+            r: B256::from_slice(&bytes[..32]),
+            s: normalize_p256_s(&bytes[32..]).unwrap(),
+            pub_key_x,
+            pub_key_y,
+        })
+    };
+    (derive_p256_address(&pub_key_x, &pub_key_y), primitive)
+}
+
+/// A transaction sent by `sender` (nonce 0) that calls `to` and carries `entries`, as an
+/// EIP-7702 transaction or as an AA transaction's `tempo_authorization_list`.
+fn listed_tx(
+    sender: &PrivateKeySigner,
+    aa: bool,
+    to: Address,
+    entries: &[Entry],
+) -> TempoTxEnvelope {
+    if aa {
+        let tx = TempoTransaction {
+            tempo_authorization_list: entries.iter().map(|entry| entry.sign().1).collect(),
+            ..aa_tx(
+                0,
+                vec![Call {
+                    to: TxKind::Call(to),
+                    value: U256::ZERO,
+                    input: Bytes::new(),
+                }],
+            )
+        };
+        let signature = sender.sign_hash_sync(&tx.signature_hash()).unwrap();
+        TempoTxEnvelope::AA(tx.into_signed(signature.into()))
+    } else {
+        type4(
+            sender,
+            0,
+            to,
+            Bytes::new(),
+            entries.iter().map(Entry::legacy).collect(),
+        )
+    }
+}
+
+/// Seeds `address` as an existing account without code at `nonce`.
+fn seed_eoa(f: &mut Fixture, address: Address, nonce: u64) {
+    f.evm.overlay_db_mut().insert_account_info(
+        &address,
+        AccountInfo {
+            nonce,
+            ..AccountInfo::default().with_balance(U256::ONE)
+        },
+    );
+}
+
+fn account_state(f: &mut Fixture, address: Address) -> AccountState {
+    let info = f
+        .info(address)
+        .unwrap_or_else(|| AccountInfo::default().with_balance(U256::ZERO));
+        });
+    let retired = !decode_config_commitment(&info.extension, TempoHardfork::T14)
+        .unwrap()
+        .is_zero();
+    AccountState {
+        nonce: info.nonce,
+        delegation,
+        retired,
+    }
+}
+
+fn probe(f: &mut Fixture, account: Address) {
+    f.install_contract(
+        PROBE,
+        [&[0x73u8][..], account.as_slice(), &[0x3b, 0x50, 0x00]].concat(),
+    );
+}
+
+#[test]
+fn retired_root_authorization_list_entries_skipped() {
+    let target = Address::repeat_byte(0x55);
+    let sender = signer(2);
+    let existing = Entry::new(SigKind::Secp256k1, 7, target, 2);
+    let fresh = Entry::new(SigKind::Secp256k1, 6, target, 0);
+
+    for (aa, kind) in [
+        (false, SigKind::Secp256k1),
+        (true, SigKind::Secp256k1),
+        (true, SigKind::P256),
+        (true, SigKind::WebAuthn),
+    ] {
+        let label = format!("aa {aa}, {kind:?}");
+        let x = Entry::new(kind, 9, target, 5);
+        let mismatched = Entry { nonce: 6, ..x };
+        // Runs the transaction with `entry` for the authority at nonce 5, retired or not.
+        let run = |entry: Entry, retire_x: bool| {
+            let mut f = Fixture::new();
+            seed_eoa(&mut f, x.address(), 5);
+            seed_eoa(&mut f, existing.address(), 2);
+            if retire_x {
+                retire(&mut f, x.address());
+            }
+            probe(&mut f, x.address());
+            let tx = listed_tx(&sender, aa, PROBE, &[entry, existing, fresh]);
+            let result = f.run_as(sender.address(), &tx);
+            assert!(result.status, "{label}: {result:?}");
+            (f, result.tx_gas_used())
+        };
+
+        let (mut f, skipped_gas) = run(x, true);
+        // The retired authority is untouched, the other entries applied.
+        assert_eq!(
+            account_state(&mut f, x.address()),
+            AccountState {
+                nonce: 5,
+                delegation: None,
+                retired: true
+            },
+            "{label}"
+        );
+        assert_eq!(
+            account_state(&mut f, existing.address()),
+            AccountState {
+                nonce: 3,
+                delegation: Some(target),
+                retired: false
+            },
+            "{label}"
+        );
+        assert_eq!(
+            account_state(&mut f, fresh.address()),
+            AccountState {
+                nonce: 1,
+                delegation: Some(target),
+                retired: false
+            },
+            "{label}"
+        );
+
+        // Same gas, warming and refunds as an entry revm itself skips for its nonce.
+        let (mut control, mismatched_gas) = run(mismatched, false);
+        assert_eq!(
+            account_state(&mut control, x.address()),
+            AccountState {
+                nonce: 5,
+                delegation: None,
+                retired: false
+            },
+            "{label}"
+        );
+        assert_eq!(skipped_gas, mismatched_gas, "{label}");
+
+        // Without the retirement the entry applies. Its gas is the same too: the authorization
+        // refund is disabled since T1, so only the warming above is observable.
+        let (mut applied, applied_gas) = run(x, false);
+        assert_eq!(
+            account_state(&mut applied, x.address()),
+            AccountState {
+                nonce: 6,
+                delegation: Some(target),
+                retired: false
+            },
+            "{label}"
+        );
+        assert_eq!(applied_gas, skipped_gas, "{label}");
+    }
+}
+
+#[test]
+fn retired_root_authorization_list_entries_skipped_after_a_same_block_migration() {
+    // TIP-1112: an entry the root key signed before migrating, relayed by a later transaction
+    // of the same block, is skipped.
+    let target = Address::repeat_byte(0x55);
+    let sender = signer(2);
+    let fresh = Entry::new(SigKind::Secp256k1, 6, target, 0);
+    for aa in [false, true] {
+        let mut f = Fixture::new();
+        let account = f.account;
+        // Signed by the fixture's root key for the nonce its migration leaves.
+        let entry = Entry::new(SigKind::Secp256k1, 1, target, 4);
+        assert_eq!(entry.address(), account);
+        let tx = listed_tx(&sender, aa, Address::repeat_byte(0x73), &[entry, fresh]);
+        migrate(&mut f, 3, signer(3).address());
+
+        let result = f.run_as(sender.address(), &tx);
+        assert!(result.status, "aa {aa}: {result:?}");
+        assert_eq!(
+            account_state(&mut f, account),
+            AccountState {
+                nonce: 4,
+                delegation: None,
+                retired: true
+            },
+            "aa {aa}"
+        );
+        assert_eq!(
+            account_state(&mut f, fresh.address()),
+            AccountState {
+                nonce: 1,
+                delegation: Some(target),
+                retired: false
+            },
+            "aa {aa}"
+        );
+    }
+}
+
+#[test]
+fn retired_root_authorization_list_variants() {
+    let target = Address::repeat_byte(0x55);
+    let sender = signer(2);
+    let fresh = Entry::new(SigKind::Secp256k1, 6, target, 0);
+    let x = Entry::new(SigKind::Secp256k1, 9, target, 5);
+    let address = x.address();
+
+    let rows = [
+        // A wildcard chain id is loaded by revm like a matching one.
+        ListVariant {
+            name: "chain id 0",
+            nonce: 5,
+            entries: vec![Entry { chain_id: 0, ..x }],
+        },
+        // An EOA migrated on a 2D nonce lane keeps protocol nonce 0, where its entry would apply.
+        ListVariant {
+            name: "nonce 0",
+            nonce: 0,
+            entries: vec![Entry { nonce: 0, ..x }],
+        },
+        // Every entry of the authority is skipped, whatever its nonce.
+        ListVariant {
+            name: "repeated",
+            nonce: 5,
+            entries: vec![x, Entry { nonce: 6, ..x }, Entry { nonce: 5, ..x }],
+        },
+    ];
+    for aa in [false, true] {
+        for ListVariant {
+            name,
+            nonce,
+            entries,
+        } in &rows
+        {
+            let label = format!("aa {aa}, {name}");
+            let mut f = Fixture::new();
+            let info = AccountInfo {
+                nonce: *nonce,
+                ..AccountInfo::default().with_balance(U256::ONE)
+            };
+            f.evm.overlay_db_mut().insert_account_info(&address, info);
+            retire(&mut f, address);
+            let mut entries = entries.clone();
+            entries.push(fresh);
+            let tx = listed_tx(&sender, aa, Address::repeat_byte(0x73), &entries);
+            let result = f.run_as(sender.address(), &tx);
+            assert!(result.status, "{label}: {result:?}");
+            assert_eq!(
+                account_state(&mut f, address),
+                AccountState {
+                    nonce: *nonce,
+                    delegation: None,
+                    retired: true
+                },
+                "{label}"
+            );
+            assert_eq!(
+                account_state(&mut f, fresh.address()),
+                AccountState {
+                    nonce: 1,
+                    delegation: Some(target),
+                    retired: false
+                },
+                "{label}"
+            );
+        }
+    }
+}
+
+#[test]
+fn retired_root_authorization_list_entries_apply_before_t14() {
+    let target = Address::repeat_byte(0x55);
+    let sender = signer(2);
+    let x = Entry::new(SigKind::Secp256k1, 9, target, 5);
+    for aa in [false, true] {
+        let mut f = Fixture::with_spec(TempoHardfork::T13);
+        seed_eoa(&mut f, x.address(), 5);
+        retire(&mut f, x.address());
+        let tx = listed_tx(&sender, aa, Address::repeat_byte(0x73), &[x]);
+        let result = f.run_as(sender.address(), &tx);
+        assert!(result.status, "aa {aa}: {result:?}");
+        assert_eq!(
+            account_state(&mut f, x.address()),
+            AccountState {
+                nonce: 6,
+                delegation: Some(target),
+                retired: true
+            },
+            "aa {aa}"
+        );
+    }
+}
+
+#[test]
+fn authorization_list_gas_is_unchanged_by_the_retired_root_skip() {
+    // The skip may only read the authorities revm itself loads: whatever the list holds, T14
+    // warms the same accounts and charges the same gas as T13, where nothing is skipped.
+    let target = Address::repeat_byte(0x55);
+    let sender = signer(2);
+    let x = Entry::new(SigKind::Secp256k1, 9, target, 5);
+    let rows = [
+        ("matching", x),
+        ("chain id 0", Entry { chain_id: 0, ..x }),
+        ("other chain id", Entry { chain_id: 2, ..x }),
+        ("nonce mismatch", Entry { nonce: 6, ..x }),
+        (
+            "nonce max",
+            Entry {
+                nonce: u64::MAX,
+                ..x
+            },
+        ),
+    ];
+    for aa in [false, true] {
+        for (name, entry) in rows {
+            for retired in [false, true] {
+                let label = format!("aa {aa}, {name}, retired {retired}");
+                let run = |spec: TempoHardfork| {
+                    let mut f = Fixture::with_spec(spec);
+                    seed_eoa(&mut f, x.address(), 5);
+                    if retired {
+                        retire(&mut f, x.address());
+                    }
+                    probe(&mut f, x.address());
+                    let tx = listed_tx(&sender, aa, PROBE, &[entry]);
+                    let result = f.run_as(sender.address(), &tx);
+                    assert!(result.status, "{label}: {result:?}");
+                    result.tx_gas_used()
+                };
+                assert_eq!(run(TempoHardfork::T14), run(TempoHardfork::T13), "{label}");
+            }
+        }
+    }
+}
+
+#[test]
+fn keychain_authorization_list_entries_stay_skipped() {
+    // The T0 filter drops a keychain-signed entry before the retired-root check reads its
+    // authority: retired or not, the named account is neither delegated nor warmed, as at T13.
+    let sender = signer(2);
+    let x = Entry::new(SigKind::Keychain, 9, Address::repeat_byte(0x55), 5);
+    for retired in [false, true] {
+        let run = |spec: TempoHardfork| {
+            let label = format!("{spec:?}, retired {retired}");
+            let mut f = Fixture::with_spec(spec);
+            seed_eoa(&mut f, x.address(), 5);
+            if retired {
+                retire(&mut f, x.address());
+            }
+            probe(&mut f, x.address());
+            let tx = listed_tx(&sender, true, PROBE, &[x]);
+            let result = f.run_as(sender.address(), &tx);
+            assert!(result.status, "{label}: {result:?}");
+            assert_eq!(
+                account_state(&mut f, x.address()),
+                AccountState {
+                    nonce: 5,
+                    delegation: None,
+                    retired
+                },
+                "{label}"
+            );
+            result.tx_gas_used()
+        };
+        assert_eq!(
+            run(TempoHardfork::T14),
+            run(TempoHardfork::T13),
+            "retired {retired}"
+        );
     }
 }

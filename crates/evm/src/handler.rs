@@ -1,7 +1,7 @@
 //! Tempo EVM Handler implementation.
 
 mod config;
-mod configurable_account;
+pub(crate) mod configurable_account;
 
 pub use self::config::{
     TempoBlockEnv, TempoBlockExt, TempoConfig, TempoConfigSelector, TempoEvmExt, TempoEvmTypes,
@@ -1429,9 +1429,16 @@ fn prepare_aa(
         timestamp,
     )?;
 
+    // Configurable-account state checks load more accounts, so transaction warmth goes first.
+    request.host.state_mut().prewarm(&caller);
+    warm_base_accounts(request.host, tx.calls[0].to);
+    warm_access_list(request.host, &tx.access_list);
+    let native_gas = configurable_account::validate_state(request.host, request.envelope, spec)?;
+
     // Route to the AA gas calculation and validation path.
     let (mut intrinsic, mut initial_state_gas, floor_gas) =
         intrinsic_gas(request.host, request.tx.inner())?;
+    intrinsic = intrinsic.saturating_add(native_gas);
     let (nonce_gas, nonce_state_gas) = nonce_intrinsic_gas(request.host, request.tx.inner());
 
     // For T0+, include 2D nonce gas in validation (charged upfront)
@@ -1479,10 +1486,6 @@ fn prepare_aa(
     }
 
     validate_execution_gas_limit_cap(request.host.version(), tx.gas_limit, intrinsic, floor_gas)?;
-
-    request.host.state_mut().prewarm(&caller);
-    warm_base_accounts(request.host, tx.calls[0].to);
-    warm_access_list(request.host, &tx.access_list);
 
     // Collect fees for the transaction.
     let fee_context = TempoHandlerHooks::resolve_fee_context(request.host, request.envelope)?;
