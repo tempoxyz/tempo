@@ -81,18 +81,19 @@ jobs:
               echo "Rebase conflicts detected, resolving..."
               # Conflicts are expected in Cargo.toml/Cargo.lock from old rev bumps.
               # Accept main's version for those since we're about to bump to a new
-              # rev anyway. Keep source fixes from our side.
+              # rev anyway. Keep source fixes from our side. During a rebase, --ours
+              # is main and --theirs is the commit being replayed.
               while [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ]; do
                 CONFLICTED=$(git diff --name-only --diff-filter=U)
                 for f in $CONFLICTED; do
                   case "$f" in
                     Cargo.toml|Cargo.lock)
                       echo "  Accepting main version for $f"
-                      git checkout --theirs "$f"
+                      git checkout --ours "$f"
                       ;;
                     *)
                       echo "  Accepting our version for $f"
-                      git checkout --ours "$f"
+                      git checkout --theirs "$f"
                       ;;
                   esac
                   git add "$f"
@@ -176,10 +177,11 @@ jobs:
           echo "Current reth rev (on working branch): $CURRENT_REV"
 
           # Latest commit on reth main
-          NEW_REV=$(gh api repos/paradigmxyz/reth/commits/main --jq '.sha' | head -c 7)
+          NEW_REV=$(gh api repos/paradigmxyz/reth/commits/main --jq '.sha')
           echo "Latest reth main: $NEW_REV"
 
-          if [ "$CURRENT_REV" = "$NEW_REV" ]; then
+          # Pins may be short or full SHAs.
+          if [[ "$NEW_REV" == "$CURRENT_REV"* ]]; then
             echo "bumped=false" >> "$GITHUB_OUTPUT"
             echo "Already on latest reth rev."
             exit 0
@@ -194,6 +196,18 @@ jobs:
           # Update all reth rev references in Cargo.toml files
           find . -name 'Cargo.toml' -exec sed -i "s|paradigmxyz/reth\", rev = \"${CURRENT_REV}\"|paradigmxyz/reth\", rev = \"${NEW_REV}\"|g" {} +
           echo "Updated reth rev: $CURRENT_REV -> $NEW_REV"
+
+          # Match the reth-core and evm2 pins to the ones the new reth rev uses.
+          RETH_TOML=$(gh api "repos/paradigmxyz/reth/contents/Cargo.toml?ref=${NEW_REV}" -H 'Accept: application/vnd.github.raw')
+          for repo in paradigmxyz/reth-core alloy-rs/evm2 DaniPopes/evm2; do
+            REV=$(echo "$RETH_TOML" | grep -m1 "github.com/${repo}\", rev = " | sed 's/.*rev = "\([^"]*\)".*/\1/' || true)
+            if [ -z "$REV" ]; then
+              echo "reth does not pin ${repo}; leaving it unchanged"
+              continue
+            fi
+            find . -name 'Cargo.toml' -exec sed -i "s|github.com/${repo}\", rev = \"[0-9a-f]*\"|github.com/${repo}\", rev = \"${REV}\"|g" {} +
+            echo "Set ${repo} rev: ${REV}"
+          done
 
       # ── commit rev bump if changed ──────────────────────────────
       - name: Commit reth rev bump
