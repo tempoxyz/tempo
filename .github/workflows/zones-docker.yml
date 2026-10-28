@@ -644,9 +644,19 @@ jobs:
       - name: Prepare candidate image exports
         run: mkdir -p "$RUNNER_TEMP/candidate-images"
 
-      - name: Check Depot Cache for sccache
+      - name: Configure Depot Cache for sccache
+        env:
+          EVENT_NAME: ${{ github.event_name }}
         run: |
-          if [[ -z "${SCCACHE_WEBDAV_ENDPOINT:-}" || -z "${SCCACHE_WEBDAV_TOKEN:-}" ]]; then
+          # Pull request code runs build scripts in the compile steps, so it must
+          # not get a token that writes the cache main and release builds read.
+          if [[ "$EVENT_NAME" == pull_request ]]; then
+            {
+              echo "SCCACHE_WEBDAV_ENDPOINT="
+              echo "SCCACHE_WEBDAV_TOKEN="
+            } >> "$GITHUB_ENV"
+            echo "Pull request build: Rust builds use the builder-local sccache cache only"
+          elif [[ -z "${SCCACHE_WEBDAV_ENDPOINT:-}" || -z "${SCCACHE_WEBDAV_TOKEN:-}" ]]; then
             echo "::warning::Depot Cache sccache credentials are not set; Rust builds use the builder-local cache only"
           fi
 

@@ -32,8 +32,10 @@ RUN set -eu; \
     sccache --version
 
 # Use Depot Cache as the sccache backend when the build passes its WebDAV
-# endpoint and token as secrets (CI on Depot runners); otherwise fall back to
-# the local SCCACHE_DIR cache mount. Secrets keep layer cache keys unchanged.
+# endpoint and token as secrets (trusted CI builds on Depot runners; pull
+# request builds get none). Without them, or when the backend fails sccache's
+# startup check, fall back to the local SCCACHE_DIR cache mount. Secrets keep
+# layer cache keys unchanged.
 COPY --chmod=0755 <<'EOF' /usr/local/bin/sccache-env
 #!/bin/sh
 set -eu
@@ -41,7 +43,14 @@ if [ -s /run/secrets/sccache_webdav_endpoint ] && [ -s /run/secrets/sccache_webd
   SCCACHE_WEBDAV_ENDPOINT="$(cat /run/secrets/sccache_webdav_endpoint)"
   SCCACHE_WEBDAV_TOKEN="$(cat /run/secrets/sccache_webdav_token)"
   export SCCACHE_WEBDAV_ENDPOINT SCCACHE_WEBDAV_TOKEN
-  echo "sccache: using the remote WebDAV cache" >&2
+  # The server checks its storage at startup; keep it running for the build.
+  if sccache --start-server >/dev/null 2>&1; then
+    echo "sccache: using the remote WebDAV cache" >&2
+  else
+    sccache --stop-server >/dev/null 2>&1 || true
+    unset SCCACHE_WEBDAV_ENDPOINT SCCACHE_WEBDAV_TOKEN
+    echo "sccache: remote WebDAV cache unavailable; using the local cache mount" >&2
+  fi
 else
   echo "sccache: using the local cache mount" >&2
 fi
