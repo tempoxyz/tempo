@@ -1963,7 +1963,10 @@ mod tests {
                 witness: B256::ZERO,
             }
             .abi_encode();
-            assert!(keychain.call(&authorize_admin, account)?.is_revert());
+            assert!(matches!(
+                keychain.call(&authorize_admin, account),
+                Err(evm2::precompiles::PrecompileError::Revert(_))
+            ));
             assert!(
                 keychain
                     .authorize_admin_key(account, Address::random(), SignatureType::Secp256k1, None)
