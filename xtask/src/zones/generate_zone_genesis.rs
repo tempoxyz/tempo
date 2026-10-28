@@ -24,6 +24,7 @@ use tempo_evm::genesis::{
 use tempo_precompiles::{
     PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
     account_keychain::AccountKeychain,
+    configurable_account::ConfigurableAccount,
     nonce::NonceManager,
     receive_policy_guard::ReceivePolicyGuard,
     stablecoin_dex::StablecoinDEX,
@@ -169,6 +170,7 @@ impl GenerateZoneGenesis {
         deploy_arachnid_create2_factory(&mut evm);
         deploy_permit2(&mut evm)?;
 
+        let t14_at_genesis = forks.hardfork_at(timestamp)?.is_t14();
         with_genesis_storage(&mut evm, || {
             // Required for fee token transfer checks.
             println!("Initializing TIP403 registry");
@@ -192,6 +194,12 @@ impl GenerateZoneGenesis {
 
             println!("Initializing TIP-1028 ReceivePolicyGuard");
             ReceivePolicyGuard::new().initialize()?;
+
+            // Zone blocks run no fork-boundary deploys, so only genesis installs this marker.
+            if t14_at_genesis {
+                println!("Initializing configurable account (T14 active at genesis)");
+                ConfigurableAccount::new().initialize()?;
+            }
 
             // TIP-1060 bookkeeping writes StorageCredits from the EVM handler even when no
             // transaction calls it. Keeping the account non-empty prevents EIP-161 from dropping
