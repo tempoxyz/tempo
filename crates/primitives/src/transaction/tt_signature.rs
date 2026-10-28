@@ -766,9 +766,9 @@ impl TempoSignature {
     /// in the keychain precompile.
     /// We cannot check this here, as we don't have access to the keychain precompile.
     ///
-    /// - Configurable account: returns the account from the shape-validated signature. Versioned
-    ///   configs remain untrusted until stateful validation matches the commitment and verifies
-    ///   owner quorum.
+    /// - Configurable account: verifies the owner quorum against the embedded config and returns the
+    ///   named account. The config remains untrusted until stateful validation matches it to the
+    ///   account's commitment or initial derivation.
     pub fn recover_signer(
         &self,
         sig_hash: &B256,
@@ -783,7 +783,7 @@ impl TempoSignature {
                 Ok(keychain_sig.user_address)
             }
             Self::ConfigurableAccount(configurable_account_sig) => {
-                Ok(configurable_account_sig.account())
+                configurable_account_sig.recover_account(*sig_hash)
             }
         }
     }

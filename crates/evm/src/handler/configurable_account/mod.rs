@@ -144,9 +144,10 @@ pub(crate) fn validate_state(
     Ok((extra_gas, state_gas))
 }
 
-/// Verifies the owner quorum of the signed role. RPC simulation must validate the claimed owner
-/// quorum before constructing its mock witness; this function skips quorum recovery only in that
-/// mode.
+/// Verifies the owner quorum of the signed role. Sender recovery already verified and cached it,
+/// so this only rechecks transactions built without recovery. RPC simulation must validate the
+/// claimed owner quorum before constructing its mock witness; this function skips quorum recovery
+/// only in that mode.
 pub(crate) fn verify(
     context: ExecutionContext,
     aa: &TempoAaTx,
