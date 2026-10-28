@@ -422,26 +422,6 @@ where
                     }
                 }
 
-                network_msg = round_receiver.recv().fuse() => {
-                    match network_msg {
-                        Ok((sender, message)) => {
-                            // Protocol errors are logged by the handler; write failures panic.
-                            let _ = self.handle_network_msg(
-                                &round,
-                                &mut round_sender,
-                                storage,
-                                dealer_state.as_mut(),
-                                player_state.as_mut(),
-                                sender,
-                                message,
-                            ).await;
-                        }
-                        Err(err) => {
-                            break Err(err).wrap_err("network p2p subchannel closed")
-                        }
-                    }
-                }
-
                 msg = self.mailbox.next() => {
                     let Some(msg) = msg else {
                         break Err(eyre!("all instances of the DKG actor's mailbox are dropped"));
@@ -510,6 +490,26 @@ where
                                 &round,
                                 verify,
                             );
+                        }
+                    }
+                }
+
+                network_msg = round_receiver.recv().fuse() => {
+                    match network_msg {
+                        Ok((sender, message)) => {
+                            // Protocol errors are logged by the handler; write failures panic.
+                            let _ = self.handle_network_msg(
+                                &round,
+                                &mut round_sender,
+                                storage,
+                                dealer_state.as_mut(),
+                                player_state.as_mut(),
+                                sender,
+                                message,
+                            ).await;
+                        }
+                        Err(err) => {
+                            break Err(err).wrap_err("network p2p subchannel closed")
                         }
                     }
                 }
