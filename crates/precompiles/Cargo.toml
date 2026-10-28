@@ -26,7 +26,7 @@ alloy-json-abi = { workspace = true, optional = true }
 itertools = { workspace = true, optional = true }
 alloy-primitives = { workspace = true, features = ["map-foldhash"] }
 keccak-const.workspace = true
-evm2 = { workspace = true, features = ["std"] }
+evm2 = { workspace = true, features = ["std", "account-ext"] }
 paste.workspace = true
 bitflags.workspace = true
 tempo-nitro-attestation = { workspace = true, features = ["aws-lc"] }

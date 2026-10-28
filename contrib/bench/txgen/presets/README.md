@@ -112,6 +112,11 @@ renormalised within the instance; report metadata lists weights as `<instance>/<
 The Earn vault, zone settlement fixture, DEX books and state-bloat recipients are
 shared; the preset header lists the details. For example:
 `derek bench preset=neobank-multi gas-limit=500M general-gas-limit=30M`.
+An instance may override template weights (`weights: {card_settlement: 0, card_spend: 13}`),
+merged over `neobank-generic`'s before renormalising; zero drops a template. `neobank/instances-pipeline.yml`
+holds the pipeline's flows and `instances-pipeline-plain-cards.yml` the same with plain card swipes.
+CI renders the spec with bench-env's `TXGEN_*` assignments, for example
+`derek bench preset=neobank-multi bench-env="TXGEN_NEOBANK_INSTANCES=contrib/bench/txgen/presets/neobank/instances-pipeline.yml"`.
 
 `batch-payout` models payroll fan-out and reward distribution: a 16-sender treasury
 pool with expiring nonces pays 32 recipients per Tempo transaction (the txpool's call

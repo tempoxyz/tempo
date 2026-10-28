@@ -44,7 +44,9 @@ use tempo_contracts::precompiles::VALIDATOR_CONFIG_V2_ADDRESS;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_precompiles::{
     error::TempoPrecompileError,
-    storage::{PrecompileStorageProvider, StorageCtx},
+    storage::{
+        ConfigCommitmentWriteGas, PrecompileStorageProvider, StorageCtx, account_config_commitment,
+    },
     validator_config_v2::ValidatorConfigV2,
 };
 use tempo_primitives::{TempoBlockEnv, TempoPrimitives};
@@ -604,6 +606,21 @@ where
 
     fn set_tip1060_storage_credits(&mut self, _enabled: bool) {
         // DbStorageOverlay does not run TIP-1060 accounting.
+    }
+
+    fn config_commitment(&mut self, address: Address) -> Result<B256, TempoPrecompileError> {
+        let account = self.read_db_account_info(address)?;
+        account_config_commitment(&account, self.spec())
+    }
+
+    fn set_config_commitment(
+        &mut self,
+        _address: Address,
+        _commitment: B256,
+        _gas: ConfigCommitmentWriteGas,
+    ) -> Result<(), TempoPrecompileError> {
+        // The overlay only persists storage slots; it cannot write account extensions.
+        Err(TempoPrecompileError::InvalidConfigCommitmentWrite)
     }
 }
 
