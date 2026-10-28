@@ -110,47 +110,44 @@ impl EncodeSize for OnchainDkgOutcome {
     }
 }
 
+#[cfg(any(test, feature = "test-utils"))]
+impl OnchainDkgOutcome {
+    /// The outcome of a DKG dealt to new `players` for `epoch`, who are also the next players.
+    /// The dealing is seeded with `epoch`, so the same arguments give the same outcome.
+    pub fn dealt(epoch: u64, players: usize) -> Self {
+        use commonware_cryptography::{
+            Signer as _,
+            bls12381::{dkg::feldman_desmedt as dkg, primitives::sharing::Mode},
+            ed25519::PrivateKey,
+        };
+        use commonware_math::algebra::Random as _;
+        use commonware_utils::{N3f1, TryFromIterator as _};
+        use rand::SeedableRng as _;
+
+        let mut rng = rand::rngs::StdRng::seed_from_u64(epoch);
+        let keys =
+            std::iter::repeat_with(|| PrivateKey::random(&mut rng).public_key()).take(players);
+        let players = ordered::Set::try_from_iter(keys).expect("random keys are distinct");
+        let (output, shares) = dkg::deal::<_, _, N3f1>(&mut rng, Mode::NonZeroCounter, players)
+            .expect("a DKG deals to distinct players");
+        Self {
+            epoch,
+            output,
+            next_players: shares.keys().clone(),
+            is_next_full_dkg: false,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::iter::repeat_with;
-
+    use super::OnchainDkgOutcome;
     use commonware_codec::{Encode as _, EncodeSize as _, ReadExt as _};
     use commonware_consensus::types::Epoch;
-    use commonware_cryptography::{
-        Signer as _,
-        bls12381::{dkg::feldman_desmedt as dkg, primitives::sharing::Mode},
-        ed25519::PrivateKey,
-    };
-    use commonware_math::algebra::Random as _;
-    use commonware_utils::{N3f1, TryFromIterator as _, ordered};
-    use rand::SeedableRng as _;
-
-    use super::OnchainDkgOutcome;
 
     #[test]
     fn onchain_dkg_outcome_roundtrip() {
-        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
-
-        let mut player_keys = repeat_with(|| PrivateKey::random(&mut rng))
-            .take(10)
-            .collect::<Vec<_>>();
-        player_keys.sort_by_key(|key| key.public_key());
-        let (output, _shares) = dkg::deal::<_, _, N3f1>(
-            &mut rng,
-            Mode::NonZeroCounter,
-            ordered::Set::try_from_iter(player_keys.iter().map(|key| key.public_key())).unwrap(),
-        )
-        .unwrap();
-
-        let mut on_chain = OnchainDkgOutcome {
-            epoch: 42,
-            output,
-            next_players: ordered::Set::try_from_iter(
-                player_keys.iter().map(|key| key.public_key()),
-            )
-            .unwrap(),
-            is_next_full_dkg: false,
-        };
+        let mut on_chain = OnchainDkgOutcome::dealt(42, 10);
         // Preserve Commonware Epoch's wire encoding, including varint boundaries.
         let payload = on_chain.encode()[Epoch::new(on_chain.epoch).encode_size()..].to_vec();
         for epoch in [0, 127, 128, 16383, 16384, u64::MAX] {

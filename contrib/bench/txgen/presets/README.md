@@ -72,5 +72,60 @@ small operator pool and sponsored bridge deposits, for example
 Gap variants: `zone-earn-hot` pins every zone operation to one portal (shared
 portal and vault state, up to the TIP-1096 deposit cap); `zone-earn-serial`
 sends zone settlement and Earn deposits from one account with ordered nonces;
-and `bridge-mix-new-accounts` pays every bridge payout to a fresh address.
+`bridge-mix-new-accounts` pays every bridge payout to a fresh address; and
+`zone-portal-hot` puts all zone portal deposits and withdrawals on one portal.
+`card-settlement` models card-program settlement: 18 unsponsored shard senders
+redeem vault shares and forward the proceeds to one settlement account.
 Run them at mainnet limits (`gas-limit=500M general-gas-limit=30M`) to compare.
+
+`zone-to-zone` moves value from zone A to zone B through withdrawal callbacks: zone A's
+portal pays a gateway that deposits into zone B's portal. It defaults to closed access, where
+the gateway also returns one unit to zone A (otherwise the callback bounces), and records
+delivered transfers, bounce-backs and gas per transfer from the receipts.
+`zone-to-zone-hot` sends every transfer from one source portal to one target portal. The
+file header lists the knobs and limits; run them like the gap variants, for example
+`derek bench preset=zone-to-zone gas-limit=500M general-gas-limit=30M`.
+
+`neobank-generic` is one workload across the six neobank modules (Account, Deposit,
+Earn, Transfer, Spend, Cash out), weighted by planned gas shares; the file lists
+each module's templates and what is not modelled yet. It reuses the public-mix
+fixtures and adds card settlement from Earn (`card_settlement`, the same shard
+redemptions as `card-settlement`, next to ordinary vault withdrawals), cash card
+spend and cash-out transfers into single accounts, cash refunds from one issuer
+account, stablecoin DEX swaps (with `dex.yml`'s liquidity setup), and first
+payments to fresh addresses. Customer-shaped presets are flavors of this shape. For example:
+`derek bench preset=neobank-generic gas-limit=500M general-gas-limit=30M`.
+
+`TXGEN_NEOBANK_MODULES` (comma list of `account`, `deposit`, `earn`, `transfer`, `spend`, `cashout`;
+default all) runs only those modules: the helper drops the other modules' templates from
+the mix before composing it, so the rest keep their relative gas shares, and adds DEX
+liquidity and keychain setup only when the remaining mix uses them. Unknown names fail.
+
+`neobank-multi` runs several neobank setups side by side, to size combined headroom for
+several live programs. Instances (traffic-shape names, gas share and modules) live in
+`neobank/instances.yml`; `TXGEN_NEOBANK_INSTANCES=<path>` selects another file. Each
+instance gets its own user slice and sender pool, batch treasury, card shards, refund
+sender, card settlement, cash-out and merchant accounts, keychain setup, vault and zone
+templates and, when there are at least as many zone portals as instances, its own
+portals. Its weight is its share times its modules' `neobank-generic` weights,
+renormalised within the instance; report metadata lists weights as `<instance>/<family>`.
+The Earn vault, zone settlement fixture, DEX books and state-bloat recipients are
+shared; the preset header lists the details. For example:
+`derek bench preset=neobank-multi gas-limit=500M general-gas-limit=30M`.
+
+`batch-payout` models payroll fan-out and reward distribution: a 16-sender treasury
+pool with expiring nonces pays 32 recipients per Tempo transaction (the txpool's call
+limit; `TXGEN_BATCH_PAYOUT_RECIPIENTS` lowers it), as payroll to existing state-bloat
+accounts, payroll to fresh addresses, and per-recipient Earn deposits. The helper
+repeats each template's payout call and sizes its gas limit to the batch. Earn deposits
+need ~1.75M gas limit each, so reward batches stop at 16 recipients and fit about once
+per block in the general lane. It reuses the public-mix fixtures. For example:
+`derek bench preset=batch-payout gas-limit=500M general-gas-limit=30M`.
+
+`access-key-mix` covers the Account and Spend access-key flows: transfers that
+authorise a new key inline (creation and rotation), and payments signed by keys
+authorised in setup, split between pulls into one merchant settlement account
+(subscriptions, issuer card pulls) and agent spend to random users. The file lists
+the gas shares and the gaps: rotation does not revoke the old key yet, because
+txgen has no revoke flow. It needs funded users (nonzero state bloat), for example
+`derek bench preset=access-key-mix gas-limit=500M general-gas-limit=30M`.

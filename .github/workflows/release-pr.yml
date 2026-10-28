@@ -73,15 +73,19 @@ jobs:
               path.write_text("---\n" + "".join(kept) + "---\n" + body, encoding="utf-8")
           PY
 
-      - uses: tempoxyz/changelogs@83e69646d7ef76c5f35364d3a06fce3a6fe62bf9 # tempoxyz/changelogs#159: vendored Peter Evans action
+      - uses: tempoxyz/changelogs@35288d5b399317c9412f9dd4bfaf8cccf2d22215 # v0.11.0
         id: changelogs
         with:
           conventional-commit: true
           post-version-command: cargo update -w
           github-token: ${{ steps.app-token.outputs.token }}
 
+      # Also run when the changelogs step failed partway, or on a rerun that
+      # only creates missing releases (published is then false): releases it
+      # already created must not stay Latest. Editing a tag without a release
+      # or an already demoted release is a no-op.
       - name: Demote non-v* releases from latest
-        if: steps.changelogs.outputs.published == 'true'
+        if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
