@@ -56,6 +56,8 @@ ARG RUST_PROFILE=profiling
 COPY --from=builder /app/target/${RUST_PROFILE}/tempo /usr/local/bin/tempo
 COPY --from=builder /app/target/${RUST_PROFILE}/tempo-localnet /usr/local/bin/tempo-localnet
 EXPOSE 8545
+# Let any UID write the data directory; new volumes inherit this mode.
+RUN chmod 1777 /data
 VOLUME ["/data"]
 # Give non-root users a writable home for caches; root is unaffected.
 ENV HOME=/data

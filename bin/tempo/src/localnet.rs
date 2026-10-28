@@ -264,16 +264,18 @@ fn fee_pool_needs_repair(reserve: u128) -> bool {
 }
 
 async fn wait_for_rpc(provider: &impl Provider<TempoNetwork>) -> Result<()> {
+    // Faucet nonces expire relative to the latest block, so wait for a block sealed by this run:
+    // a fresh genesis has timestamp zero and a reused datadir's tip dates from its last shutdown.
+    let mut first_block = None;
     for _ in 0..120 {
-        // Faucet nonces expire relative to the latest block, so wait for a block past the
-        // zero-timestamp genesis.
         if matches!(provider.get_chain_id().await, Ok(1337))
-            && provider
-                .get_block_number()
-                .await
-                .is_ok_and(|number| number > 0)
+            && let Ok(number) = provider.get_block_number().await
         {
-            return Ok(());
+            match first_block {
+                None => first_block = Some(number),
+                Some(first) if number > first => return Ok(()),
+                Some(_) => {}
+            }
         }
         sleep(Duration::from_millis(500)).await;
     }
