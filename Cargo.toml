@@ -413,6 +413,8 @@ bitflags = "2.11.1"
 smolgen = { version = "0.1.1", features = ["build", "cargo", "emit_and_set", "gitcl"] }
 
 [patch.crates-io]
+# TEMP instrumentation: proposal parent fetch probe.
+commonware-consensus = { path = "vendor/commonware-consensus" }
 # LLVM 23 support is not released yet.
 inkwell = { git = "https://github.com/TheDan64/inkwell", rev = "c9d9734ae17dbaf1d9902dab3b8ee9d2041781ff" }
 
