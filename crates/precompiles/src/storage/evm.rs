@@ -187,17 +187,14 @@ where
         key: U256,
         record: bool,
     ) -> Result<U256, TempoPrecompileError> {
-        let additional_cost = u64::from(
-            self.version
-                .gas_params
-                .get(GasId::ColdStorageAdditionalCost),
-        );
+        let additional_cost = self
+            .version
+            .gas_params
+            .get(GasId::ColdStorageAdditionalCost);
 
         // T4+: pre-charge static gas to avoid cheap useless work.
         let skip_cold_load = if self.spec.is_t4() {
-            self.deduct_gas(u64::from(
-                self.version.gas_params.get(GasId::WarmStorageReadCost),
-            ))?;
+            self.deduct_gas(self.version.gas_params.get(GasId::WarmStorageReadCost))?;
             self.gas_tracker.remaining() < additional_cost
         } else {
             false
@@ -210,9 +207,7 @@ where
         }
 
         if !self.spec.is_t4() {
-            self.deduct_gas(u64::from(
-                self.version.gas_params.get(GasId::WarmStorageReadCost),
-            ))?;
+            self.deduct_gas(self.version.gas_params.get(GasId::WarmStorageReadCost))?;
         }
 
         // dynamic gas
@@ -234,20 +229,19 @@ where
     ) -> Result<(), TempoPrecompileError> {
         // T12+: EIP-2200 sentry. SSTORE fails if the frame only has the call stipend remaining.
         if self.spec.is_t12()
-            && self.gas_tracker.remaining() <= u64::from(self.gas_params().get(GasId::CallStipend))
+            && self.gas_tracker.remaining() <= self.gas_params().get(GasId::CallStipend)
         {
             return Err(TempoPrecompileError::OutOfGas);
         }
 
         // T4+: pre-charge static gas before loading storage to avoid cheap useless work.
         let skip_cold_load = if self.spec.is_t4() {
-            self.deduct_gas(u64::from(self.version.gas_params.get(GasId::SstoreStatic)))?;
+            self.deduct_gas(self.version.gas_params.get(GasId::SstoreStatic))?;
             self.gas_tracker.remaining()
-                < u64::from(
-                    self.version
-                        .gas_params
-                        .get(GasId::ColdStorageAdditionalCost),
-                )
+                < self
+                    .version
+                    .gas_params
+                    .get(GasId::ColdStorageAdditionalCost)
         } else {
             false
         };
@@ -256,7 +250,7 @@ where
         self.actions.record(action(&result));
 
         if !self.spec.is_t4() {
-            self.deduct_gas(u64::from(self.version.gas_params.get(GasId::SstoreStatic)))?;
+            self.deduct_gas(self.version.gas_params.get(GasId::SstoreStatic))?;
         }
 
         // TIP-1060 (T7+): run the storage credits policy so precompile-driven storage
@@ -288,8 +282,7 @@ where
         let additional_cost = self.version.gas_params.cold_account_additional_cost();
 
         // T4+: pre-charge static gas to avoid cheap useless work.
-        let warm_storage_read_cost =
-            u64::from(self.version.gas_params.get(GasId::WarmStorageReadCost));
+        let warm_storage_read_cost = self.version.gas_params.get(GasId::WarmStorageReadCost);
         let insufficient_gas_for_cold_load = if self.spec.is_t4() {
             self.deduct_gas(warm_storage_read_cost)?;
             self.gas_tracker.remaining() < additional_cost
@@ -408,7 +401,9 @@ where
         let code = Bytecode::new_raw(code);
         let code_len = code.len();
         self.deduct_gas(
-            u64::from(self.version.gas_params.get(GasId::CodeDepositCost))
+            self.version
+                .gas_params
+                .get(GasId::CodeDepositCost)
                 .saturating_mul(code_len as u64),
         )?;
 
@@ -425,7 +420,7 @@ where
 
         // TIP-1016: charge TIP20 deployments as CREATE.
         if self.version.feature(EvmFeatures::EIP8037) && was_empty {
-            self.deduct_gas(u64::from(self.version.gas_params.get(GasId::Create)))?;
+            self.deduct_gas(self.version.gas_params.get(GasId::Create))?;
             self.deduct_state_gas(self.version.gas_params.create_state_gas())?;
             self.deduct_gas(
                 self.version
@@ -523,9 +518,7 @@ where
     ) -> Result<(), TempoPrecompileError> {
         self.ensure_not_static()?;
 
-        self.deduct_gas(u64::from(
-            self.version.gas_params.get(GasId::WarmStorageReadCost),
-        ))?;
+        self.deduct_gas(self.version.gas_params.get(GasId::WarmStorageReadCost))?;
         self.evm.state_mut().tstore(&address, &key, &value);
         Ok(())
     }
@@ -556,9 +549,7 @@ where
 
     #[inline]
     fn tload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError> {
-        self.deduct_gas(u64::from(
-            self.version.gas_params.get(GasId::WarmStorageReadCost),
-        ))?;
+        self.deduct_gas(self.version.gas_params.get(GasId::WarmStorageReadCost))?;
         Ok(self.evm.state_mut().tload(&address, &key))
     }
 
@@ -1160,7 +1151,7 @@ mod tests {
         let address = Address::random();
         evm.evm.state_mut().prewarm(&address);
 
-        let warm_storage_read_cost = u64::from(evm.gas_params().get(GasId::WarmStorageReadCost));
+        let warm_storage_read_cost = evm.gas_params().get(GasId::WarmStorageReadCost);
         let mut provider =
             evm.provider_with_gas_limit(warm_storage_read_cost.saturating_sub(10), 0);
 
@@ -1226,7 +1217,7 @@ mod tests {
             evm.provider_max_gas().sstore(address, key, U256::ONE)?;
 
             let result = evm
-                .provider_with_gas_limit(u64::from(gas_params.get(GasId::CallStipend)), 0)
+                .provider_with_gas_limit(gas_params.get(GasId::CallStipend), 0)
                 .sstore(address, key, U256::from(2));
 
             let expected = if spec.is_t12() {
@@ -1651,8 +1642,8 @@ mod tests {
         let code = Bytes::from(vec![0xef]);
         let expected_state_gas =
             gas_params.create_state_gas() + gas_params.code_deposit_state_gas(code.len());
-        let expected_regular_gas = u64::from(gas_params.get(GasId::Create))
-            + u64::from(gas_params.get(GasId::CodeDepositCost)) * code.len() as u64
+        let expected_regular_gas = gas_params.get(GasId::Create)
+            + gas_params.get(GasId::CodeDepositCost) * code.len() as u64
             + gas_params.keccak256_word_cost(code.len().div_ceil(32));
         let mut provider = evm.provider_with_reservoir(expected_state_gas);
 
@@ -1750,7 +1741,7 @@ mod tests {
         let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T4);
         let gas_params = evm.gas_params();
 
-        let static_gas = u64::from(gas_params.get(GasId::SstoreStatic));
+        let static_gas = gas_params.get(GasId::SstoreStatic);
         let dynamic_gas = 25_000u64;
         let gas_limit = static_gas + dynamic_gas;
 
@@ -1789,7 +1780,7 @@ mod tests {
         }
 
         let gas_params = evm.gas_params();
-        let warm_read_gas = u64::from(gas_params.get(GasId::WarmStorageReadCost));
+        let warm_read_gas = gas_params.get(GasId::WarmStorageReadCost);
         let dynamic_gas = 2_100u64;
         let gas_limit = warm_read_gas + dynamic_gas;
 
@@ -1810,7 +1801,7 @@ mod tests {
         let mut evm = TestEvm::new(TempoHardfork::T4);
         let gas_params = evm.gas_params();
 
-        let static_gas = u64::from(gas_params.get(GasId::SstoreStatic));
+        let static_gas = gas_params.get(GasId::SstoreStatic);
         let gas_limit = static_gas + 10_000u64;
 
         let mut provider = evm.provider_with_gas_limit(gas_limit, 0);
@@ -1835,7 +1826,7 @@ mod tests {
         let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T4);
         let gas_params = evm.gas_params();
 
-        let static_gas = u64::from(gas_params.get(GasId::SstoreStatic));
+        let static_gas = gas_params.get(GasId::SstoreStatic);
         let dynamic_gas = 20_000u64;
         let gas_per_sstore = static_gas + dynamic_gas;
         let gas_limit = gas_per_sstore * 3;

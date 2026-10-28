@@ -1,0 +1,12 @@
+# Card settlement: card-program shards redeem yield-vault shares and forward the
+# proceeds to one settlement account, modelled on live mainnet card withdrawals
+# (one call per transaction, ~290-360K gas, ~18 shard senders, expiring nonces,
+# not sponsored). The helper keeps the first 18 users' vault redemptions, drops
+# their sponsor and appends a pathUSD transfer to the settlement account.
+# Mainnet routes through a swap/forwarder before the custody account; that hop is
+# not modelled. Same fixtures and requirements as public-mix.
+include: public-mix.yml
+
+mix:
+  - template: vault_withdraw
+    weight: 100

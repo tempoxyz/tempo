@@ -459,15 +459,19 @@ impl ZoneEngine {
         }
 
         if let Some(collector) = &self.proof_collector {
-            stop.run_until_cancelled(collector.collect_and_persist(block_number, header.hash()))
-                .await
-                .ok_or_else(|| eyre::eyre!("engine stopped while waiting for witness persistence"))?
-                .wrap_err_with(|| {
-                    format!("collect proofs before canonicalizing Zone block {block_number}")
-                })?;
+            stop.run_until_cancelled(collector.collect_for_import(
+                block_number,
+                header.hash(),
+                header.timestamp(),
+            ))
+            .await
+            .ok_or_else(|| eyre::eyre!("engine stopped while waiting for witness persistence"))?
+            .wrap_err_with(|| {
+                format!("collect proofs before canonicalizing Zone block {block_number}")
+            })?;
         }
 
-        // Consume the L1 input only after witness persistence succeeds.
+        // Consume the L1 input only after witness persistence succeeds (or, before T15, is skipped).
         if checkpoint_only {
             self.deposit_queue.defer_through(l1_num_hash)?;
         } else {

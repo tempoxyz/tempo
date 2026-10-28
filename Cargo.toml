@@ -1,5 +1,5 @@
 [workspace.package]
-version = "1.16.1"
+version = "1.17.0"
 edition = "2024"
 rust-version = "1.96.0"
 authors = ["Tempo Contributors"]
@@ -11,10 +11,8 @@ keywords = ["blockchain", "ethereum", "evm", "payments", "tempo"]
 publish = false
 
 [workspace]
-exclude = ["crates/nitro-attestation/fuzz"]
 members = [
   "bin/tempo",
-  "bin/tempo-sidecar",
   "crates/alloy",
   "crates/chainspec",
   "crates/consensus",
@@ -27,9 +25,12 @@ members = [
   "crates/hardfork",
   "crates/e2e",
   "crates/faucet",
+  "crates/fuzz-harness",
+  "crates/fuzz-types",
   "crates/node",
   "crates/node-launcher",
   "crates/nitro-attestation",
+  "crates/nitro-attestation/fuzz",
   "crates/payload/builder",
   "crates/payload/types",
   "crates/precompiles",
@@ -110,6 +111,11 @@ debug = "none"
 strip = "symbols"
 panic = "unwind"
 codegen-units = 16
+
+# Keep symbols in the fuzz target so libFuzzer and sanitizer stack traces are readable.
+[profile.release.package.tempo-nitro-attestation-fuzz]
+debug = "line-tables-only"
+strip = "none"
 
 # Use the `--profile profiling` flag to show symbols in release mode.
 # e.g. `cargo build --profile profiling`
@@ -204,6 +210,7 @@ tempo-consensus = { path = "crates/consensus", default-features = false }
 tempo-consensus-config = { path = "crates/consensus-config", default-features = false }
 tempo-dkg-onchain-artifacts = { path = "crates/dkg-onchain-artifacts", default-features = false }
 tempo-faucet = { path = "crates/faucet", default-features = false }
+tempo-fuzz-types = { path = "crates/fuzz-types", default-features = false }
 tempo-evm = { path = "crates/evm", default-features = false }
 tempo-eyre = { path = "crates/eyre", default-features = false }
 tempo-hardfork = { path = "crates/hardfork", default-features = false }
@@ -291,8 +298,9 @@ alloy = { version = "2.5.0", default-features = false }
 alloy-consensus = { version = "2.5.0", default-features = false }
 alloy-contract = { version = "2.5.0", default-features = false }
 alloy-eips = { version = "2.5.0", default-features = false }
-evm2 = { git = "https://github.com/alloy-rs/evm2", rev = "301852ff4b0cc1f9878ed6e9ff58b35e5eb95152", default-features = false }
-evm2-macros = { git = "https://github.com/alloy-rs/evm2", rev = "301852ff4b0cc1f9878ed6e9ff58b35e5eb95152" }
+evm2 = { git = "https://github.com/alloy-rs/evm2", rev = "5652ca0a1e5a13639fb6e65427292b2e7d259df2", default-features = false }
+evm2-macros = { git = "https://github.com/alloy-rs/evm2", rev = "5652ca0a1e5a13639fb6e65427292b2e7d259df2" }
+evm2-jit = { git = "https://github.com/alloy-rs/evm2", rev = "5652ca0a1e5a13639fb6e65427292b2e7d259df2", default-features = false }
 alloy-genesis = { version = "2.5.0", default-features = false }
 alloy-hardforks = "0.4.11"
 alloy-json-rpc = "2.5.0"
@@ -396,13 +404,13 @@ rayon = "1.11"
 url = "2.5"
 test-case = "3"
 zeroize = "1"
-zstd = "0.13.3"
+zstd = "0.14.3"
 age = { version = "0.11", default-features = false }
 secrecy = "0.10"
 bitflags = "2.11.1"
 
 # build deps
-smolgen = { version = "0.1", features = ["build", "cargo", "emit_and_set", "gitcl"] }
+smolgen = { version = "0.1.1", features = ["build", "cargo", "emit_and_set", "gitcl"] }
 
 [patch.crates-io]
 # LLVM 23 support is not released yet.
@@ -418,10 +426,10 @@ reth-zstd-compressors = { git = "https://github.com/paradigmxyz/reth-core", rev 
 # evm2 is patched through its pre-transfer URL, which redirects to alloy-rs/evm2, because Cargo
 # rejects a patch from the same source.
 [patch."https://github.com/alloy-rs/evm2"]
-evm2 = { git = "https://github.com/DaniPopes/evm2", rev = "301852ff4b0cc1f9878ed6e9ff58b35e5eb95152" }
-evm2-inspectors = { git = "https://github.com/DaniPopes/evm2", rev = "301852ff4b0cc1f9878ed6e9ff58b35e5eb95152" }
-evm2-jit = { git = "https://github.com/DaniPopes/evm2", rev = "301852ff4b0cc1f9878ed6e9ff58b35e5eb95152" }
-evm2-macros = { git = "https://github.com/DaniPopes/evm2", rev = "301852ff4b0cc1f9878ed6e9ff58b35e5eb95152" }
+evm2 = { git = "https://github.com/DaniPopes/evm2", rev = "5652ca0a1e5a13639fb6e65427292b2e7d259df2" }
+evm2-inspectors = { git = "https://github.com/DaniPopes/evm2", rev = "5652ca0a1e5a13639fb6e65427292b2e7d259df2" }
+evm2-jit = { git = "https://github.com/DaniPopes/evm2", rev = "5652ca0a1e5a13639fb6e65427292b2e7d259df2" }
+evm2-macros = { git = "https://github.com/DaniPopes/evm2", rev = "5652ca0a1e5a13639fb6e65427292b2e7d259df2" }
 
 # [patch."https://github.com/paradigmxyz/reth"]
 # reth-basic-payload-builder = { path = "../reth/crates/payload/basic" }

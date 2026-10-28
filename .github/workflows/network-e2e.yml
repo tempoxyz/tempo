@@ -3,7 +3,7 @@ name: Tempo Network E2E
 on:
   # Detection reads PR data through pinned actions; fork code is never executed.
   pull_request_target: # zizmor: ignore[dangerous-triggers]
-    types: [opened, reopened, synchronize, ready_for_review]
+    types: [opened, reopened, synchronize, ready_for_review, converted_to_draft]
   merge_group:
 
 permissions: {}
@@ -17,10 +17,14 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      pull-requests: read
       statuses: write
       id-token: write
     outputs:
       required: ${{ steps.decision.outputs.required }}
+      draft: ${{ steps.target.outputs.draft }}
+      # Missing detector output is not proof that image inputs are unchanged.
+      images_required: ${{ steps.paths.outputs.changes == '' || contains(fromJSON(steps.paths.outputs.changes || '[]'), 'images') }}
       sha: ${{ steps.target.outputs.sha }}
     steps:
       - name: Secure runner
@@ -30,10 +34,18 @@ jobs:
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ && "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
           echo "sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
           echo "base=$BASE_SHA" >> "$GITHUB_OUTPUT"
+          # Re-runs reuse the original event payload, so read the live draft state.
+          draft=false
+          if [[ -n "$PR_NUMBER" ]]; then
+            draft="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq .draft)"
+          fi
+          echo "draft=$draft" >> "$GITHUB_OUTPUT"
       - name: Mark network tests pending
         env:
           GH_TOKEN: ${{ github.token }}
@@ -43,7 +55,7 @@ jobs:
             -f state=pending -f context='Tempo Network E2E' \
             -f description="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT: Checking changes" \
             -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" --silent
-      - name: Detect consensus changes
+      - name: Detect network and image changes
         id: paths
         uses: tempoxyz/gh-actions/actions/changed-paths@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
@@ -52,6 +64,15 @@ jobs:
           filters: |
             consensus:
               - 'crates/consensus/**'
+            # Default to building unknown inputs; exclude only audited non-image paths.
+            images:
+              - '**'
+              - '!docs/**'
+              - '!contrib/**'
+              - '!localnet/**'
+              - '!tips/*.md'
+              - '!crates/node/tests/it/**'
+              - '!crates/zones/node/tests/**'
       - name: Detect Reth revision changes
         id: reth
         uses: tempoxyz/gh-actions/actions/cargo-dependency-changes@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
@@ -63,7 +84,7 @@ jobs:
         id: decision
         if: steps.paths.outcome == 'success' && steps.reth.outcome == 'success'
         env:
-          REQUIRED: ${{ contains(fromJSON(steps.paths.outputs.changes || '[]'), 'consensus') || steps.reth.outputs.changed == 'true' }}
+          REQUIRED: ${{ steps.target.outputs.draft != 'true' && (contains(fromJSON(steps.paths.outputs.changes || '[]'), 'consensus') || steps.reth.outputs.changed == 'true') }}
           SAME_REPO: ${{ !github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository }}
         run: |
           if [[ "$REQUIRED" == true && "$SAME_REPO" != true ]]; then
@@ -74,7 +95,12 @@ jobs:
 
   build:
     needs: detect
-    if: needs.detect.outputs.required == 'true'
+    # Skip only positively irrelevant queue changes; network tests always need their image.
+    if: >-
+      ${{ !cancelled() &&
+          ((github.event_name == 'merge_group' &&
+            (needs.detect.result != 'success' || needs.detect.outputs.images_required != 'false')) ||
+           (needs.detect.result == 'success' && needs.detect.outputs.required == 'true')) }}
     permissions:
       actions: read
       contents: read
@@ -92,6 +118,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      pull-requests: read
       statuses: write
       id-token: write
     steps:
@@ -117,6 +144,8 @@ jobs:
           IMAGE_TAG: ${{ needs.build.outputs.tempo_image_tag }}
         run: |
           set -euo pipefail
+          # Never dispatch with an empty, mutable, or independently reconstructed tag.
+          [[ "$IMAGE_TAG" =~ ^network-e2e-[0-9]{1,20}-[0-9]{1,5}$ ]]
           trap 'rm -f "$RUNNER_TEMP/network-e2e.key" "$RUNNER_TEMP/network-e2e.crt"' EXIT
           umask 077
           printf '%s' "$EVENTS_KEY" > "$RUNNER_TEMP/network-e2e.key"
@@ -136,10 +165,19 @@ jobs:
           DETECT_RESULT: ${{ needs.detect.result }}
           REQUIRED: ${{ needs.detect.outputs.required }}
           SUBMIT_RESULT: ${{ steps.submit.outcome }}
+          DRAFT: ${{ needs.detect.outputs.draft }}
         with:
           script: |
             if (process.env.SUBMIT_RESULT === 'success') return; // Argo owns the result now.
-            const skipped = process.env.DETECT_RESULT === 'success' && process.env.REQUIRED === 'false';
+            // Network skip is independent of Docker; a failed build still fails its own job/run.
+            let skipped = process.env.DETECT_RESULT === 'success' && process.env.REQUIRED === 'false';
+            let reason = !skipped ? 'Build or dispatch failed'
+              : process.env.DRAFT === 'true' ? 'Draft PR; waiting for review' : 'No relevant changes';
+            // A dispatch-only re-run keeps detect's draft snapshot; never skip a PR that has since left draft.
+            if (skipped && process.env.DRAFT === 'true') {
+              const { data: pr } = await github.rest.pulls.get({ ...context.repo, pull_number: context.payload.pull_request.number });
+              if (!pr.draft) [skipped, reason] = [false, 'PR left draft; re-run all jobs'];
+            }
             const owner = `${context.runId}-${process.env.GITHUB_RUN_ATTEMPT}`;
             for await (const page of github.paginate.iterator(github.rest.repos.listCommitStatusesForRef, {
               ...context.repo, ref: process.env.SHA, per_page: 100,
@@ -152,7 +190,7 @@ jobs:
             await github.rest.repos.createCommitStatus({
               ...context.repo, sha: process.env.SHA, context: 'Tempo Network E2E',
               state: skipped ? 'success' : 'failure',
-              description: `${owner}: ${skipped ? 'No relevant changes' : 'Build or dispatch failed'}`,
+              description: `${owner}: ${reason}`,
               target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}/attempts/${process.env.GITHUB_RUN_ATTEMPT}`,
             });
             if (!skipped) core.setFailed('Network E2E could not be started');

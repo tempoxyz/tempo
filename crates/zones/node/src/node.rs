@@ -1900,6 +1900,10 @@ where
     type EVM = ZoneEvmConfig;
 
     async fn build_evm(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::EVM> {
+        eyre::ensure!(
+            !ctx.config().jit.enabled,
+            "Zone nodes do not support JIT compilation"
+        );
         let runtime_handle = tokio::runtime::Handle::current();
         let portal_address = self.l1_state_provider_config.portal_address;
         let l1_provider = L1StateProvider::new(
