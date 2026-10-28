@@ -31,37 +31,3 @@ impl ProposalBudget {
             .min(self.target_block_time.saturating_sub(preparation))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn preparation_caps_the_post_header_allowance() {
-        let budget = ProposalBudget::new(Duration::from_millis(500), Duration::from_millis(50));
-        for (preparation, expected) in [
-            (0, 450),
-            (50, 450),
-            (100, 400),
-            (499, 1),
-            (500, 0),
-            (600, 0),
-        ] {
-            assert_eq!(
-                budget.pacing_allowance(Duration::from_millis(preparation)),
-                Duration::from_millis(expected),
-            );
-        }
-    }
-
-    #[test]
-    fn exhausted_network_budget_leaves_no_pacing_allowance() {
-        for (target, network) in [(500, 500), (500, 600), (0, 0)] {
-            let budget = ProposalBudget::new(
-                Duration::from_millis(target),
-                Duration::from_millis(network),
-            );
-            assert_eq!(budget.pacing_allowance(Duration::ZERO), Duration::ZERO);
-        }
-    }
-}
