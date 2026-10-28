@@ -367,7 +367,7 @@ fn extract_zstd_tar_archive(
             .collect();
         match entry_type {
             tar::EntryType::Directory => {
-                directories.push((entry, path));
+                directories.push((relative, entry, path));
                 continue;
             }
             // `tar::Builder` emits `GNUSparse` for files with holes by default.
@@ -389,7 +389,9 @@ fn extract_zstd_tar_archive(
         }
         unpack_entry_in(entry, &path, target_dir)?;
     }
-    for (entry, path) in directories.into_iter().rev() {
+    // Descending path order puts every child before its parent.
+    directories.sort_by(|a, b| b.0.cmp(&a.0));
+    for (_, entry, path) in directories {
         unpack_entry_in(entry, &path, target_dir)?;
     }
     Ok(files)
@@ -1204,5 +1206,34 @@ mod tests {
         );
         assert_eq!(fs::read(partition.join("00")).unwrap(), b"abc");
         assert_eq!(mode.unwrap(), 0o555);
+    }
+
+    #[test]
+    fn extract_zstd_tar_archive_unpacks_child_directories_before_read_only_parent() {
+        let target = tempfile::tempdir().unwrap();
+        let mut builder = tar::Builder::new(zstd::Encoder::new(Vec::new(), 0).unwrap());
+        for (name, mode) in [("partition/empty", 0o755), ("partition", 0o555)] {
+            let mut dir = tar::Header::new_gnu();
+            dir.set_entry_type(tar::EntryType::Directory);
+            dir.set_mode(mode);
+            dir.set_size(0);
+            builder.append_data(&mut dir, name, io::empty()).unwrap();
+        }
+        let mut file = tar::Header::new_gnu();
+        file.set_mode(0o644);
+        file.set_size(3);
+        builder
+            .append_data(&mut file, "00", &mut &b"abc"[..])
+            .unwrap();
+        let archive_file = finish_test_archive(builder);
+
+        let result = extract_zstd_tar_archive(archive_file.path(), target.path(), false);
+        let partition = target.path().join("partition");
+        let empty_is_dir = partition.join("empty").is_dir();
+        // Let the tempdir clean up.
+        fs::set_permissions(&partition, fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert_eq!(result.unwrap(), BTreeSet::from([PathBuf::from("00")]));
+        assert!(empty_is_dir);
     }
 }
