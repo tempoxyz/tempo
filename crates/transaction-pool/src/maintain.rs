@@ -543,6 +543,30 @@ where
         // 3. Collect all block-level invalidation events
         let updates = TempoPoolUpdates::from_chain(tip);
 
+        // Revalidate transactions whose authorities' configuration commitment changed,
+        // including eventless first registration (TIP-1112). Bump the config commitment epoch
+        // before any pool snapshot so outcomes validated against the old commitment are either
+        // already inserted, and found by the scan below, or validated again on insertion.
+        let changed_commitments: AddressSet = bundle_state
+            .iter()
+            .filter(|(_, account)| {
+                account
+                    .original_info
+                    .as_ref()
+                    .map(|info| info.extension.as_ref())
+                    .unwrap_or_default()
+                    != account
+                        .info
+                        .as_ref()
+                        .map(|info| info.extension.as_ref())
+                        .unwrap_or_default()
+            })
+            .map(|(address, _)| *address)
+            .collect();
+        if !changed_commitments.is_empty() {
+            pool.bump_config_commitment_epoch();
+        }
+
         let mut all_txs: Option<AllPoolTransactions<TempoPooledTransaction>> = None;
         // Reth's canonical-update handling may not have pruned mined transactions yet.
         // Exclude them from every snapshot-based maintenance phase so they follow the
@@ -596,24 +620,6 @@ where
             revalidate_txs.extend(transactions);
         }
 
-        // Revalidate transactions whose authorities' configuration commitment changed,
-        // including eventless first registration (TIP-1112).
-        let changed_commitments: AddressSet = bundle_state
-            .iter()
-            .filter(|(_, account)| {
-                account
-                    .original_info
-                    .as_ref()
-                    .map(|info| info.extension.as_ref())
-                    .unwrap_or_default()
-                    != account
-                        .info
-                        .as_ref()
-                        .map(|info| info.extension.as_ref())
-                        .unwrap_or_default()
-            })
-            .map(|(address, _)| *address)
-            .collect();
         if !changed_commitments.is_empty() {
             let hashes: Vec<TxHash> = {
                 let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());

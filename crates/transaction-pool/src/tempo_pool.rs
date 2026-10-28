@@ -44,6 +44,9 @@ use tempo_precompiles::{
 };
 use tempo_primitives::{Block, TempoHeader};
 
+/// Validation attempts before admission gives up on a batch that keeps racing maintenance.
+const ADMISSION_ATTEMPTS: usize = 3;
+
 /// Transaction pool operations for Tempo nonce lanes.
 pub trait TempoTransactionPoolExt: TransactionPool {
     /// Returns pending transactions in the address's sequential 2D nonce lane.
@@ -64,6 +67,11 @@ pub struct TempoTransactionPool<Client, EvmConfig = TempoEvmConfig> {
     >,
     /// Minimal pool for 2D nonces (nonce_key > 0)
     aa_2d_pool: Arc<RwLock<AA2dPool>>,
+    /// Advanced by maintenance before it scans for transactions whose validation state changed.
+    ///
+    /// Admission reads it before acquiring a state snapshot and inserts under its read lock only
+    /// if it is unchanged, so a stale outcome is either seen by the scan or validated again.
+    config_commitment_epoch: Arc<RwLock<u64>>,
 }
 
 impl<Client, EvmConfig> TempoTransactionPool<Client, EvmConfig>
@@ -85,6 +93,7 @@ where
         Self {
             protocol_pool,
             aa_2d_pool: Arc::new(RwLock::new(aa_2d_pool)),
+            config_commitment_epoch: Arc::new(RwLock::new(0)),
         }
     }
 }
@@ -540,6 +549,118 @@ where
         self.remove_transactions(to_remove)
     }
 
+    /// Invalidates every validation outcome still in flight.
+    ///
+    /// Call before taking the pool snapshot that revalidates transactions affected by a
+    /// canonical update. Waits for in-progress insertions, so the snapshot includes them.
+    pub(crate) fn bump_config_commitment_epoch(&self) {
+        let mut epoch = self.config_commitment_epoch.write();
+        *epoch = epoch.wrapping_add(1);
+    }
+
+    /// Validates and inserts transactions, revalidating valid outcomes whose state snapshot
+    /// a maintenance scan may have missed.
+    async fn validate_and_add_transactions(
+        &self,
+        transactions: Vec<(TransactionOrigin, TempoPooledTransaction)>,
+    ) -> Vec<PoolResult<AddedTransactionOutcome>> {
+        let mut results: Vec<_> = transactions.iter().map(|_| None).collect();
+        let mut pending: Vec<_> = transactions
+            .into_iter()
+            .enumerate()
+            .map(|(index, (origin, tx))| ((index, origin), tx))
+            .collect();
+        for _ in 0..ADMISSION_ATTEMPTS {
+            if pending.is_empty() {
+                break;
+            }
+            // Read before the validator acquires its state provider.
+            let epoch = *self.config_commitment_epoch.read();
+            let (slots, transactions): (Vec<_>, Vec<_>) = pending
+                .into_iter()
+                .map(|((index, origin), tx)| ((index, origin), (origin, tx)))
+                .unzip();
+            let outcomes = self
+                .protocol_pool
+                .validator()
+                .validate_transactions(transactions)
+                .await;
+            pending = self.add_validated_at_config_commitment_epoch(
+                epoch,
+                slots.into_iter().zip(outcomes),
+                &mut results,
+            );
+        }
+        for ((index, _), tx) in pending {
+            results[index] = Some(Err(PoolError::other(
+                *tx.hash(),
+                "pool state changed during validation; retry transaction",
+            )));
+        }
+        results
+            .into_iter()
+            .map(|result| result.expect("every transaction has a result"))
+            .collect()
+    }
+
+    /// Inserts outcomes validated against the config commitment epoch `epoch` into `results`.
+    ///
+    /// If maintenance bumped the epoch since, returns valid outcomes' transactions for
+    /// revalidation instead; invalid outcomes are final either way.
+    fn add_validated_at_config_commitment_epoch(
+        &self,
+        epoch: u64,
+        outcomes: impl IntoIterator<
+            Item = (
+                (usize, TransactionOrigin),
+                TransactionValidationOutcome<TempoPooledTransaction>,
+            ),
+        >,
+        results: &mut [Option<PoolResult<AddedTransactionOutcome>>],
+    ) -> Vec<((usize, TransactionOrigin), TempoPooledTransaction)> {
+        // Holding the read lock across insertion makes a concurrent maintenance scan see them.
+        let current = self.config_commitment_epoch.read();
+        if *current != epoch {
+            drop(current);
+            return outcomes
+                .into_iter()
+                .filter_map(|((index, origin), outcome)| match outcome {
+                    TransactionValidationOutcome::Valid { transaction, .. } => Some((
+                        (index, origin),
+                        transaction.into_transaction().with_discarded_caches(),
+                    )),
+                    outcome => {
+                        results[index] = Some(self.add_validated_transaction(origin, outcome));
+                        None
+                    }
+                })
+                .collect();
+        }
+
+        let (indices, outcomes): (Vec<_>, Vec<_>) = outcomes
+            .into_iter()
+            .map(|((index, origin), outcome)| (index, (origin, outcome)))
+            .unzip();
+        // Reth inserts protocol-only batches under one pool lock.
+        let added: Vec<_> = if outcomes.iter().any(|(_, outcome)| {
+            matches!(outcome, TransactionValidationOutcome::Valid { transaction, .. }
+                if transaction.transaction().is_aa_2d())
+        }) {
+            outcomes
+                .into_iter()
+                .map(|(origin, outcome)| self.add_validated_transaction(origin, outcome))
+                .collect()
+        } else {
+            self.protocol_pool
+                .inner()
+                .add_transactions_with_origins(outcomes)
+        };
+        for (index, result) in indices.into_iter().zip(added) {
+            results[index] = Some(result);
+        }
+        Vec::new()
+    }
+
     /// Adds a validated transaction to the subpool derived from its type and nonce key.
     ///
     /// [`TempoPooledTransaction::is_aa_2d`] routes AA transactions with non-zero
@@ -638,6 +759,7 @@ impl<Client, EvmConfig> Clone for TempoTransactionPool<Client, EvmConfig> {
         Self {
             protocol_pool: self.protocol_pool.clone(),
             aa_2d_pool: Arc::clone(&self.aa_2d_pool),
+            config_commitment_epoch: Arc::clone(&self.config_commitment_epoch),
         }
     }
 }
@@ -685,12 +807,11 @@ where
         origin: TransactionOrigin,
         transaction: Self::Transaction,
     ) -> PoolResult<TransactionEvents> {
-        let tx = self
-            .protocol_pool
-            .validator()
-            .validate_transaction(origin, transaction)
-            .await;
-        let res = self.add_validated_transaction(origin, tx)?;
+        let res = self
+            .validate_and_add_transactions(vec![(origin, transaction)])
+            .await
+            .pop()
+            .expect("one result per transaction")?;
         self.transaction_event_listener(res.hash)
             .ok_or_else(|| PoolError::new(res.hash, PoolErrorKind::DiscardedOnInsert))
     }
@@ -700,12 +821,10 @@ where
         origin: TransactionOrigin,
         transaction: Self::Transaction,
     ) -> PoolResult<AddedTransactionOutcome> {
-        let tx = self
-            .protocol_pool
-            .validator()
-            .validate_transaction(origin, transaction)
-            .await;
-        self.add_validated_transaction(origin, tx)
+        self.validate_and_add_transactions(vec![(origin, transaction)])
+            .await
+            .pop()
+            .expect("one result per transaction")
     }
 
     async fn add_transactions(
@@ -713,56 +832,17 @@ where
         origin: TransactionOrigin,
         transactions: Vec<Self::Transaction>,
     ) -> Vec<PoolResult<AddedTransactionOutcome>> {
-        if transactions.is_empty() {
-            return Vec::new();
-        }
-
-        // Fully delegate to protocol pool for non-2D transactions
-        if !transactions.iter().any(|tx| tx.is_aa_2d()) {
-            return self
-                .protocol_pool
-                .add_transactions(origin, transactions)
-                .await;
-        }
-
-        self.protocol_pool
-            .validator()
-            .validate_transactions_with_origin(origin, transactions)
-            .await
-            .into_iter()
-            .map(|outcome| self.add_validated_transaction(origin, outcome))
-            .collect()
+        self.validate_and_add_transactions(
+            transactions.into_iter().map(|tx| (origin, tx)).collect(),
+        )
+        .await
     }
 
     async fn add_transactions_with_origins(
         &self,
         transactions: Vec<(TransactionOrigin, Self::Transaction)>,
     ) -> Vec<PoolResult<AddedTransactionOutcome>> {
-        if transactions.is_empty() {
-            return Vec::new();
-        }
-
-        // Fully delegate to protocol pool for non-2D transactions
-        if !transactions.iter().any(|(_, tx)| tx.is_aa_2d()) {
-            return self
-                .protocol_pool
-                .add_transactions_with_origins(transactions)
-                .await;
-        }
-
-        let origins = transactions
-            .iter()
-            .map(|(origin, _)| *origin)
-            .collect::<Vec<_>>();
-
-        self.protocol_pool
-            .validator()
-            .validate_transactions(transactions)
-            .await
-            .into_iter()
-            .zip(origins)
-            .map(|(outcome, origin)| self.add_validated_transaction(origin, outcome))
-            .collect()
+        self.validate_and_add_transactions(transactions).await
     }
 
     fn transaction_event_listener(&self, tx_hash: B256) -> Option<TransactionEvents> {
@@ -1480,6 +1560,7 @@ mod tests {
     use reth_transaction_pool::{
         PoolConfig, TransactionOrigin, TransactionPool, TransactionValidationTaskExecutor,
         blobstore::InMemoryBlobStore,
+        error::InvalidPoolTransactionError,
         validate::{EthTransactionValidatorBuilder, ValidTransaction},
     };
     use tempo_chainspec::{
@@ -1783,6 +1864,72 @@ mod tests {
         assert_eq!(size.queued, 0);
         assert_eq!(size.queued_size, 0);
         assert_eq!(size.total, 1);
+    }
+
+    #[test]
+    fn outcomes_validated_before_maintenance_are_revalidated() {
+        let pool = create_test_pool(create_provider_with_tip());
+        let aa_2d = crate::test_utils::TxBuilder::aa(Address::random())
+            .nonce_key(U256::ONE)
+            .build();
+        let protocol = crate::test_utils::TxBuilder::aa(Address::random()).build();
+        let invalid = crate::test_utils::TxBuilder::aa(Address::random()).build();
+        let hashes = [*aa_2d.hash(), *protocol.hash()];
+        let outcomes = |txs: [TempoPooledTransaction; 2]| {
+            txs.into_iter().enumerate().map(|(index, pooled)| {
+                (
+                    (index, TransactionOrigin::External),
+                    TransactionValidationOutcome::Valid {
+                        balance: *pooled.cost(),
+                        state_nonce: pooled.nonce(),
+                        bytecode_hash: None,
+                        transaction: ValidTransaction::new(pooled, None),
+                        propagate: true,
+                        authorities: None,
+                    },
+                )
+            })
+        };
+        let mut results = vec![None, None, None];
+
+        let stale = *pool.config_commitment_epoch.read();
+        pool.bump_config_commitment_epoch();
+        let pending = pool.add_validated_at_config_commitment_epoch(
+            stale,
+            outcomes([aa_2d, protocol]).chain([(
+                (2, TransactionOrigin::External),
+                TransactionValidationOutcome::Invalid(
+                    invalid,
+                    InvalidPoolTransactionError::Underpriced,
+                ),
+            )]),
+            &mut results,
+        );
+        assert!(hashes.iter().all(|hash| !pool.contains(hash)));
+        assert!(results[..2].iter().all(Option::is_none));
+        assert!(results[2].as_ref().is_some_and(Result::is_err));
+
+        let (slots, txs): (Vec<_>, Vec<_>) = pending.into_iter().unzip();
+        assert_eq!(
+            slots.iter().map(|(index, _)| *index).collect::<Vec<_>>(),
+            [0, 1]
+        );
+        let current = *pool.config_commitment_epoch.read();
+        assert!(
+            pool.add_validated_at_config_commitment_epoch(
+                current,
+                outcomes(txs.try_into().unwrap()),
+                &mut results
+            )
+            .is_empty()
+        );
+        assert_eq!(
+            results[..2]
+                .iter()
+                .map(|result| result.as_ref().unwrap().as_ref().unwrap().hash)
+                .collect::<Vec<_>>(),
+            hashes
+        );
     }
 
     #[test]
