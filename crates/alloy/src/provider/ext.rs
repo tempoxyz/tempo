@@ -22,7 +22,7 @@ use tempo_primitives::transaction::{CallScope, TEMPO_EXPIRING_NONCE_KEY};
 use crate::{
     TempoFillers, TempoNetwork,
     fillers::{ExpiringNonceFiller, NonceKeyFiller, Random2DNonceFiller, SponsorFiller},
-    rpc::ForkSchedule,
+    rpc::{ForkSchedule, VerifierPcrPolicy},
     transport::{AuthHeaderTransport, RelayConnector, SponsorshipMode},
 };
 
@@ -171,6 +171,20 @@ pub trait TempoProviderExt: Provider<TempoNetwork> {
             .active
             .parse::<TempoHardfork>()
             .map_err(TransportErrorKind::custom)
+    }
+
+    /// Returns the connected node's expected Nitro verifier policy and per-fork history.
+    /// `None` selects the active fork. Unknown, unscheduled and future forks return RPC errors.
+    /// Requires `tempo_getVerifierPcrPolicy`; never falls back to this SDK's local policy.
+    async fn get_verifier_pcr_policy(
+        &self,
+        hardfork: Option<&str>,
+    ) -> Result<VerifierPcrPolicy, TransportError>
+    where
+        Self: Sized,
+    {
+        self.raw_request("tempo_getVerifierPcrPolicy".into(), (hardfork,))
+            .await
     }
 
     /// Returns the Tempo fork schedule and active fork at the connected chain's head.
@@ -871,6 +885,33 @@ mod tests {
             provider.get_fork_schedule().await.unwrap().active,
             "FutureFork"
         );
+    }
+
+    #[tokio::test]
+    async fn test_verifier_pcr_policy_preserves_empty_policy_and_rpc_errors() {
+        let asserter = Asserter::new();
+        let provider = mock_provider(asserter.clone());
+        let response = serde_json::json!({
+            "chainId": 42431,
+            "blockNumber": 0,
+            "blockHash": format!("0x{}", "ab".repeat(32)),
+            "blockTimestamp": 0,
+            "activeHardfork": "FutureFork",
+            "selected": { "hardfork": "FutureFork", "activationTime": 0, "pcrs": null },
+            "history": [{ "hardfork": "Genesis", "activationTime": null, "pcrs": null }]
+        });
+        asserter.push_success(&response);
+        assert_eq!(
+            serde_json::to_value(provider.get_verifier_pcr_policy(None).await.unwrap()).unwrap(),
+            response
+        );
+        asserter.push_failure_msg("Method not found");
+        let error = provider
+            .get_verifier_pcr_policy(Some("T13"))
+            .await
+            .unwrap_err();
+        assert_eq!(error.as_error_resp().unwrap().message, "Method not found");
+        assert!(asserter.read_q().is_empty());
     }
 
     #[tokio::test]

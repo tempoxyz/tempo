@@ -6,6 +6,7 @@ pub mod fork_schedule;
 pub mod operator;
 pub mod simulate;
 pub mod token;
+pub mod verifier_pcr_policy;
 
 pub use admin::{TempoAdminApi, TempoAdminApiServer};
 use alloy::consensus::Transaction;
@@ -30,6 +31,7 @@ use tempo_precompiles::{
 };
 use tempo_primitives::transaction::{FEE_PAYER_SIGNATURE_MARKER, TEMPO_EXPIRING_NONCE_KEY};
 pub use token::{TempoToken, TempoTokenApiServer};
+pub use verifier_pcr_policy::{TempoVerifierPcrPolicyApiServer, TempoVerifierPcrPolicyRpc};
 
 use crate::rpc::error::TempoEthApiError;
 use alloy::primitives::{U256, uint};

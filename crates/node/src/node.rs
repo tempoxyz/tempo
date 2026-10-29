@@ -7,7 +7,8 @@ use crate::{
         TempoAdminApi, TempoAdminApiServer, TempoEthApi, TempoEthApiBuilder, TempoEthExt,
         TempoEthExtApiServer, TempoForkScheduleApiServer, TempoForkScheduleRpc,
         TempoOperatorApiServer, TempoOperatorRpc, TempoSimulate, TempoSimulateApiServer,
-        TempoToken, TempoTokenApiServer,
+        TempoToken, TempoTokenApiServer, TempoVerifierPcrPolicyApiServer,
+        TempoVerifierPcrPolicyRpc,
     },
 };
 use alloy_primitives::B256;
@@ -459,6 +460,10 @@ where
                 modules.merge_configured(eth_ext.into_rpc())?;
                 modules.merge_if_module_configured(RethRpcModule::Eth, simulate.into_rpc())?;
                 modules.merge_configured(fork_schedule.into_rpc())?;
+                modules.merge_configured(
+                    TempoVerifierPcrPolicyRpc::new(registry.eth_api().provider().clone())
+                        .into_rpc(),
+                )?;
                 modules.merge_if_module_configured(
                     RethRpcModule::Other("operator".to_string()),
                     operator.into_rpc(),

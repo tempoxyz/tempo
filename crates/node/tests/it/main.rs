@@ -25,6 +25,7 @@ mod tip20_gas_fees;
 mod tip_fee_amm;
 mod tip_fee_manager;
 mod utils;
+mod verifier_pcr_policy;
 
 use tempo_node as _;
 

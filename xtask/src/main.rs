@@ -24,6 +24,7 @@ mod generate_localnet;
 mod generate_shadowfork;
 mod genesis_args;
 mod get_dkg_outcome;
+mod get_verifier_pcr_policy;
 mod identity_transitions;
 mod shadowfork;
 
@@ -31,6 +32,10 @@ mod shadowfork;
 async fn main() -> eyre::Result<()> {
     let args = Args::parse();
     match args.action {
+        Action::GetVerifierPcrPolicy(args) => args
+            .run()
+            .await
+            .wrap_err("failed to get verifier PCR policy"),
         Action::CheckAbi(args) => args.run().wrap_err("failed ABI alignment check"),
         Action::GetDkgOutcome(args) => args.run().await.wrap_err("failed to get DKG outcome"),
         Action::GetIdentityTransitions(args) => args
@@ -75,6 +80,7 @@ struct Args {
 #[derive(Debug, clap::Subcommand)]
 enum Action {
     CheckAbi(CheckAbi),
+    GetVerifierPcrPolicy(get_verifier_pcr_policy::GetVerifierPcrPolicy),
     GetDkgOutcome(GetDkgOutcome),
     GetIdentityTransitions(GetIdentityTransitions),
     GenerateGenesis(GenerateGenesis),

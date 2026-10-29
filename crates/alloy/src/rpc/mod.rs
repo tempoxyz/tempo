@@ -17,3 +17,6 @@ pub mod pagination;
 
 mod fork_schedule;
 pub use fork_schedule::{ForkInfo, ForkSchedule};
+
+mod verifier_pcr_policy;
+pub use verifier_pcr_policy::{VerifierPcrPolicy, VerifierPcrPolicyEntry};

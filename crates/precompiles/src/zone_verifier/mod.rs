@@ -50,15 +50,9 @@ impl ZoneVerifier {
     pub fn verify(&self, portal: Address, call: IZoneVerifier::verifyCall) -> Result<bool> {
         let hardfork = self.storage.spec();
 
-        #[cfg(feature = "custom-pcrs")]
-        if let Some(policy) = CUSTOM_PCRS.get() {
-            policy
-                .validate(self.storage.chain_id())
-                .map_err(|e| crate::error::TempoPrecompileError::Fatal(e.to_string()))?;
-            return self.verify_with_policy(portal, call, AWS_NITRO_ROOT_DER, policy.at(hardfork));
-        }
-
-        self.verify_with_policy(portal, call, AWS_NITRO_ROOT_DER, APPROVED_PCRS.at(hardfork))
+        let policy = PcrPolicy::configured(self.storage.chain_id())
+            .map_err(|e| crate::error::TempoPrecompileError::Fatal(e.to_string()))?;
+        self.verify_with_policy(portal, call, AWS_NITRO_ROOT_DER, policy.at(hardfork))
     }
 
     /// Verify locally with independently approved PCR0, PCR1 and PCR2 measurements.
@@ -156,6 +150,20 @@ fn batch_commitment(chain_id: u64, call: &IZoneVerifier::verifyCall) -> B256 {
 pub struct PcrPolicy(Cow<'static, [(TempoHardfork, [[u8; 48]; 3])]>);
 
 impl PcrPolicy {
+    /// Return the policy used by this node, including its development override if configured.
+    /// Returns an error if a custom policy is configured on a production chain.
+    pub fn configured(chain_id: u64) -> std::result::Result<&'static Self, PolicyError> {
+        #[cfg(feature = "custom-pcrs")]
+        if let Some(policy) = CUSTOM_PCRS.get() {
+            policy.validate(chain_id)?;
+            return Ok(policy);
+        }
+        #[cfg(not(feature = "custom-pcrs"))]
+        let _ = chain_id;
+        static DEFAULT_POLICY: PcrPolicy = APPROVED_PCRS;
+        Ok(&DEFAULT_POLICY)
+    }
+
     /// Validate use as a custom override. Custom PCRs are forbidden on mainnet and Moderato.
     pub fn validate(&self, chain_id: u64) -> std::result::Result<(), PolicyError> {
         if matches!(chain_id, MAINNET_CHAIN_ID | MODERATO_CHAIN_ID) {
@@ -474,6 +482,20 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "custom-pcrs"))]
+    fn configured_pcr_policy_matches_verification_policy() {
+        for chain_id in [1, MAINNET_CHAIN_ID, MODERATO_CHAIN_ID] {
+            assert_eq!(PcrPolicy::configured(chain_id), Ok(&APPROVED_PCRS));
+        }
+        let empty = PcrPolicy(Cow::Borrowed(&[]));
+        assert_eq!(empty.at(TempoHardfork::T13), None);
+        let policy = PcrPolicy(Cow::Borrowed(&[(TempoHardfork::T13, [[0x11; 48]; 3])]));
+        assert_eq!(policy.at(TempoHardfork::T12), None);
+        assert_eq!(policy.at(TempoHardfork::T13), Some([[0x11; 48]; 3]));
+        assert_eq!(policy.at(TempoHardfork::T14), Some([[0x11; 48]; 3]));
+    }
+
+    #[test]
     fn pcr_policy() {
         let [a, b, c, zero] = ["11", "22", "33", "00"].map(|s| s.repeat(48));
         let bare = format!("{a},{b},0x{c}").parse::<PcrPolicy>().unwrap();
@@ -542,6 +564,13 @@ mod tests {
         {
             CUSTOM_PCRS.set(borrowed.clone()).unwrap();
             assert_eq!(CUSTOM_PCRS.get(), Some(&borrowed));
+            assert_eq!(PcrPolicy::configured(1), Ok(&borrowed));
+            for chain_id in [MAINNET_CHAIN_ID, MODERATO_CHAIN_ID] {
+                assert_eq!(
+                    PcrPolicy::configured(chain_id),
+                    Err(PolicyError::CustomPolicyNotAllowed(chain_id))
+                );
+            }
             assert_eq!(CUSTOM_PCRS.set(borrowed.clone()), Err(borrowed));
         }
     }
