@@ -25,7 +25,7 @@ pub use tempo_contracts::precompiles::{
 
 mod checks;
 
-pub use checks::{CHECKS, DEX_CUSTODY, VIEW};
+pub use checks::{CHECKS, CUSTODY_STEP, DEX_CUSTODY, STEP_CHECKS, VIEW};
 
 /// One live order and the escrow it holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,6 +52,25 @@ pub struct Books {
     /// Internal balances, keyed `(user, token)`.
     pub internal: BTreeMap<(Address, Address), U256>,
     pub escrow: Vec<Escrow>,
+}
+
+impl Books {
+    /// What the DEX owes in `token`: its users' internal balances and its live orders' escrow.
+    pub fn owed(&self, token: Address) -> (U256, U256) {
+        let internal = self
+            .internal
+            .iter()
+            .filter(|((_, t), _)| *t == token)
+            .map(|(_, v)| *v)
+            .sum();
+        let escrowed = self
+            .escrow
+            .iter()
+            .filter(|e| e.token == token)
+            .map(|e| e.amount)
+            .sum();
+        (internal, escrowed)
+    }
 }
 
 impl Observe for Books {

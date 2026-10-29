@@ -42,6 +42,7 @@ pub fn all() -> impl Iterator<Item = &'static dyn AnyCheck> {
         .chain(erased(fee_amm::CHECKS))
         .chain(erased(fee_amm::STEP_CHECKS))
         .chain(erased(dex::CHECKS))
+        .chain(erased(dex::STEP_CHECKS))
         .chain(erased(account::STEP_CHECKS))
         .chain(erased(keychain::CHECKS))
         .chain(erased(receive_policy::CHECKS))
