@@ -99,12 +99,17 @@ fn configurable_account_authorization_for_another_account_is_rejected() {
     let path = directory.join("store.json");
     let store = TempoAccountsStore::at(path.clone());
 
-    // Naming the account does not let another configurable account sign its grant.
+    // Naming the account does not let another configurable account sign its grant, and a
+    // configurable account's grant cannot name another account.
     let mut named = authorization.clone();
     named.authorization.account = Some(account);
-    for authorization in [&authorization, &named] {
+    for (expected, authorization) in [
+        (account, &authorization),
+        (account, &named),
+        (other, &named),
+    ] {
         assert!(matches!(
-            store.upsert_secp256k1_access_key(account, &signer, authorization),
+            store.upsert_secp256k1_access_key(expected, &signer, authorization),
             Err(TempoAccountsError::InvalidAuthorization(_))
         ));
     }
@@ -112,14 +117,22 @@ fn configurable_account_authorization_for_another_account_is_rejected() {
     store
         .upsert_secp256k1_access_key(other, &signer, &authorization)
         .unwrap();
-    let mut value: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    value["tempo-cli.store"]["state"]["accessKeys"][0]["access"] = serde_json::json!(account);
-    fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
-    let result = TempoAccountsStore::open(&path).unwrap().access_keys();
+    let stored: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    // Neither the stored owner nor the grant's explicit account may differ from the signing
+    // configurable account.
+    for field in ["access", "keyAuthorization/account"] {
+        let mut value = stored.clone();
+        *field.split('/').fold(
+            &mut value["tempo-cli.store"]["state"]["accessKeys"][0],
+            |value, field| &mut value[field],
+        ) = serde_json::json!(account);
+        fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+        let Err(TempoAccountsError::InvalidAccessKey { address, .. }) =
+            TempoAccountsStore::open(&path).unwrap().access_keys()
+        else {
+            panic!("expected the stored authorization with a different {field} to be rejected")
+        };
+        assert_eq!(address, signer.address());
+    }
     fs::remove_dir_all(directory).unwrap();
-
-    let Err(TempoAccountsError::InvalidAccessKey { address, .. }) = result else {
-        panic!("expected the stored authorization to be rejected")
-    };
-    assert_eq!(address, signer.address());
 }
