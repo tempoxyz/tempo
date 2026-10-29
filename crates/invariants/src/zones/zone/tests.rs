@@ -726,6 +726,44 @@ fn supply_solvency_folds_bridge_events() {
     assert_eq!(fired, ["totalSupply 107, bridge events account for 106"]);
 }
 
+/// A token enabled in a block reads no supply before it; its first mints still count.
+#[test]
+fn supply_solvency_judges_a_token_from_the_block_that_enabled_it() {
+    let mut pre = zone(1, 0, 0, 0);
+    pre.supplies.clear();
+    let mut history = History::<Bridged>::default();
+    let enabled = step(
+        pre.clone(),
+        zone(1, 1, 0, 10),
+        vec![deposit_processed(ALICE, 10)],
+        block(vec![]),
+    );
+    history.push(&enabled);
+    assert_eq!(
+        judge(
+            HISTORY_CHECKS,
+            &history.at(enabled.post.clone()),
+            SUPPLY_SOLVENCY
+        ),
+        (1, vec![])
+    );
+
+    let mut history = History::<Bridged>::default();
+    let unbacked = step(
+        pre,
+        zone(1, 1, 0, 11),
+        vec![deposit_processed(ALICE, 10)],
+        block(vec![]),
+    );
+    history.push(&unbacked);
+    let (_, fired) = judge(
+        HISTORY_CHECKS,
+        &history.at(unbacked.post.clone()),
+        SUPPLY_SOLVENCY,
+    );
+    assert_eq!(fired, ["totalSupply 11, bridge events account for 10"]);
+}
+
 #[test]
 fn privacy_getters_asked_as_a_third_party() {
     let balance = Getter::Balance { account: ALICE };

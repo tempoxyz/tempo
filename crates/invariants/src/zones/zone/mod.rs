@@ -265,6 +265,12 @@ impl Fold<Step<Zone, ZoneBlock>> for Bridged {
         for (&token, &supply) in &step.pre.supplies {
             self.expected.entry(token).or_insert(Some(supply));
         }
+        // A token the block enabled had no supply before it, so its first mints count from zero.
+        for &token in step.post.supplies.keys() {
+            if !step.pre.supplies.contains_key(&token) {
+                self.expected.entry(token).or_insert(Some(U256::ZERO));
+            }
+        }
         let mut credit = |token: Address, amount: U256, mint: bool| {
             if let Some(expected) = self.expected.get_mut(&token) {
                 *expected = expected.and_then(|value| {
