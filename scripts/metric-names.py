@@ -38,7 +38,6 @@ HEADER = """\
 """
 
 MACRO = re.compile(r"(?<![\w])(counter|gauge|histogram)!\s*\(\s*")
-DESCRIBE = re.compile(r'(?<![\w])describe_(counter|gauge|histogram)!\s*\(\s*"([^"\\]+)"')
 METRICS_ATTR = re.compile(r"#\[metrics\(([^)]*)\)\]")
 STRUCT = re.compile(r"\bstruct\s+\w+\s*(?:<[^{]*>)?\s*\{")
 FIELD = re.compile(
@@ -177,10 +176,6 @@ def collect(path: Path, metrics: dict[str, set[str]], errors: list[str]) -> None
                 )
             continue
         metrics.setdefault(prefix + sanitize(literal.group(1)), set()).add(call.group(1))
-
-    # Names passed to the macros at runtime are often described up front.
-    for described in DESCRIBE.finditer(src):
-        metrics.setdefault(prefix + sanitize(described.group(2)), set()).add(described.group(1))
 
 
 def render() -> str:
