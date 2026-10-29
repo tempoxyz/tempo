@@ -621,7 +621,7 @@ where
     /// for revalidation; every other outcome is final.
     fn add_validated_at_config_commitment_epoch(
         &self,
-        epoch: u64,
+        epoch: usize,
         outcomes: impl IntoIterator<
             Item = (
                 (usize, TransactionOrigin),
@@ -814,11 +814,7 @@ where
         origin: TransactionOrigin,
         transaction: Self::Transaction,
     ) -> PoolResult<TransactionEvents> {
-        let res = self
-            .validate_and_add_transactions(vec![(origin, transaction)], ADMISSION_ATTEMPTS)
-            .await
-            .pop()
-            .expect("one result per transaction")?;
+        let res = self.add_transaction(origin, transaction).await?;
         self.transaction_event_listener(res.hash)
             .ok_or_else(|| PoolError::new(res.hash, PoolErrorKind::DiscardedOnInsert))
     }
@@ -1554,7 +1550,7 @@ fn get_recipient_policy_ids(
 #[derive(Debug, Default)]
 struct ConfigCommitmentChanges {
     /// Number of canonical updates recorded so far.
-    epoch: u64,
+    epoch: usize,
     /// Changed accounts of the latest recorded updates, oldest first.
     recent: VecDeque<AddressSet>,
 }
@@ -1562,17 +1558,14 @@ struct ConfigCommitmentChanges {
 impl ConfigCommitmentChanges {
     /// Whether an authority of `tx` changed after `epoch`, or the changes since are no longer
     /// retained.
-    fn affects(&self, epoch: u64, tx: &TempoPooledTransaction) -> bool {
+    fn affects(&self, epoch: usize, tx: &TempoPooledTransaction) -> bool {
         let since = self.epoch - epoch;
         since != 0
-            && usize::try_from(since)
-                .ok()
-                .and_then(|since| self.recent.len().checked_sub(since))
-                .is_none_or(|start| {
-                    self.recent
-                        .range(start..)
-                        .any(|accounts| tx.has_authority_in(accounts))
-                })
+            && self.recent.len().checked_sub(since).is_none_or(|start| {
+                self.recent
+                    .range(start..)
+                    .any(|accounts| tx.has_authority_in(accounts))
+            })
     }
 }
 
@@ -1765,19 +1758,24 @@ mod tests {
         TempoTransactionPool::new(protocol_pool, AA2dPool::new(Default::default()))
     }
 
-    fn add_validated(
-        pool: &TempoTransactionPool<MockEthProvider<TempoPrimitives, TempoChainSpec>>,
+    fn valid_outcome(
         pooled: TempoPooledTransaction,
-    ) {
-        let validated = TransactionValidationOutcome::Valid {
+    ) -> TransactionValidationOutcome<TempoPooledTransaction> {
+        TransactionValidationOutcome::Valid {
             balance: *pooled.cost(),
             state_nonce: pooled.nonce(),
             bytecode_hash: None,
             transaction: ValidTransaction::new(pooled, None),
             propagate: true,
             authorities: None,
-        };
-        pool.add_validated_transaction(TransactionOrigin::External, validated)
+        }
+    }
+
+    fn add_validated(
+        pool: &TempoTransactionPool<MockEthProvider<TempoPrimitives, TempoChainSpec>>,
+        pooled: TempoPooledTransaction,
+    ) {
+        pool.add_validated_transaction(TransactionOrigin::External, valid_outcome(pooled))
             .expect("transaction should be admitted");
     }
 
@@ -1913,14 +1911,7 @@ mod tests {
         let valid = |index, pooled: &TempoPooledTransaction| {
             (
                 (index, TransactionOrigin::External),
-                TransactionValidationOutcome::Valid {
-                    balance: *pooled.cost(),
-                    state_nonce: pooled.nonce(),
-                    bytecode_hash: None,
-                    transaction: ValidTransaction::new(pooled.clone(), None),
-                    propagate: true,
-                    authorities: None,
-                },
+                valid_outcome(pooled.clone()),
             )
         };
         let mut results = vec![None, None, None];
