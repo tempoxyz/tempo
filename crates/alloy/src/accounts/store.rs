@@ -326,10 +326,7 @@ impl TempoAccessKey {
                 "chain ID does not match the selected key",
             ));
         }
-        if authorization
-            .account
-            .is_some_and(|account| account != self.account)
-        {
+        if authorization_accounts(authorization).any(|account| account != self.account) {
             return Err(TempoAccessKeyError::InvalidAuthorization(
                 "account does not match the selected key",
             ));
@@ -3026,9 +3023,7 @@ fn select_access_key(
                 || authorization
                     .expiry
                     .is_some_and(|expiry| expiry.get() <= now)
-                || authorization
-                    .account
-                    .is_some_and(|authorized_account| authorized_account != account)
+                || authorization_accounts(authorization).any(|authorized| authorized != account)
         }) {
             continue;
         }
