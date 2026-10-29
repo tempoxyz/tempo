@@ -826,6 +826,8 @@ jobs:
     permissions:
       packages: write
       id-token: write
+    outputs:
+      prover_image_refs: ${{ steps.publish.outputs.prover_image_refs }}
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
@@ -908,10 +910,8 @@ jobs:
             type=sha,prefix=sha-
             type=ref,event=pr
 
-      - name: Install cosign
-        uses: tempoxyz/gh-actions/vendor/sigstore/cosign-installer@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
-
       - name: Publish fixed companion image names
+        id: publish
         env:
           XTASK_TAGS: ${{ steps.meta-tempo-zone-xtask.outputs.tags }}
           PROVER_TAGS: ${{ steps.meta-tempo-zone-prover.outputs.tags }}
@@ -929,7 +929,8 @@ jobs:
               docker tag "$image:candidate" "$tag"
               if [[ "$image" == tempo-zone-prover ]]; then
                 # Bind signing to this push receipt, never a mutable tag lookup.
-                digest="$(docker push --quiet "$tag")"
+                docker push "$tag" | tee "$RUNNER_TEMP/prover-push.log"
+                digest="$(sed -nE 's/^.*: digest: (sha256:[0-9a-f]{64}) size: [0-9]+$/\1/p' "$RUNNER_TEMP/prover-push.log")"
                 [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
                   echo "Invalid prover push digest for $tag: $digest" >&2
                   exit 1
@@ -949,20 +950,51 @@ jobs:
             docker tag tempo-zone-prover-eif-builder:local "$BUILDER_REF"
             docker push "$BUILDER_REF"
           fi
+          printf 'prover_image_refs=%s\n' "$(sort -u "$RUNNER_TEMP/prover-image-refs.txt" | jq -Rsc 'split("\n") | map(select(length > 0))')" >> "$GITHUB_OUTPUT"
+
+  sign-prover-images:
+    name: Sign published prover images
+    needs: publish-companion-images
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+      id-token: write
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+      - name: Log in to Container Registry
+        uses: tempoxyz/gh-actions/vendor/docker/login-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Log in to Docker Hub
+        uses: tempoxyz/gh-actions/vendor/docker/login-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          username: ${{ vars.DOCKER_HUB_USER }}
+          password: ${{ secrets.DOCKER_HUB_TOKEN }}
+      - name: Install cosign
+        uses: tempoxyz/gh-actions/vendor/sigstore/cosign-installer@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
       - name: Sign published prover image digests
         shell: bash
+        env:
+          PROVER_IMAGE_REFS: ${{ needs.publish-companion-images.outputs.prover_image_refs }}
         run: |
           set -euo pipefail
+          printf '%s' "$PROVER_IMAGE_REFS" | jq -er '.[]' > "$RUNNER_TEMP/prover-image-refs.txt"
           [[ -s "$RUNNER_TEMP/prover-image-refs.txt" ]] || {
             echo "No published prover image digests to sign" >&2
             exit 1
           }
-          sort -u "$RUNNER_TEMP/prover-image-refs.txt" > "$RUNNER_TEMP/prover-image-refs-unique.txt"
 
           # Keyless signatures identify the publishing workflow, not human/VK
           # approval or L1-approved PCRs. Tags already exist if signing fails.
           while IFS= read -r ref; do
+            [[ "$ref" =~ ^(ghcr.io|docker.io)/tempoxyz/tempo-zone-prover@sha256:[0-9a-f]{64}$ ]] || {
+              echo "Invalid prover image reference: $ref" >&2
+              exit 1
+            }
             for attempt in 1 2 3; do
               if cosign sign --yes "$ref"; then
                 break
@@ -973,7 +1005,7 @@ jobs:
               fi
               sleep "$((attempt * 15))"
             done
-          done < "$RUNNER_TEMP/prover-image-refs-unique.txt"
+          done < "$RUNNER_TEMP/prover-image-refs.txt"
 
   production-reproducible-clean-rebuild:
     name: Rebuild production tempo-zone image without cache
