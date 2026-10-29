@@ -154,41 +154,41 @@ impl<I: ConsensusFeed> TempoConsensusApiServer for TempoConsensusRpc<I> {
             ErrorObject::owned(INTERNAL_ERROR_CODE, "Failed to subscribe", None::<()>)
         })?;
 
-        tokio::spawn(async move {
-            // Released when the task exits.
-            let _permit = permit;
-            loop {
-                // Events only arrive on finalization, so a failed `send` alone would not detect
-                // a disconnect or unsubscribe while finalization is stalled. Race against
-                // `closed()` so the task (and its subscription permit) is released promptly.
-                let recv = tokio::select! {
-                    _ = sink.closed() => break,
-                    recv = rx.recv() => recv,
-                };
-                match recv {
-                    Ok(event) => {
-                        // A client that is not reading would queue a full block per event: drop
-                        // it before copying another one. It can resubscribe and backfill with
-                        // `consensus_getFinalization`.
-                        if sink.max_capacity() - sink.capacity() > MAX_PENDING_NOTIFICATIONS {
-                            break;
-                        }
-                        let msg = jsonrpsee::SubscriptionMessage::new(
-                            sink.method_name(),
-                            sink.subscription_id().clone(),
-                            &event.json().await,
-                        )
-                        .expect("Event should be serializable");
-                        if sink.send_timeout(msg, SEND_TIMEOUT).await.is_err() {
-                            break;
-                        }
+        // Runs for the life of the subscription. jsonrpsee drives this future in its own task and,
+        // when it returns an error, sends the client a close notification so it can resubscribe
+        // and backfill with `consensus_getFinalization`. Holding `permit` here releases it when the
+        // subscription ends.
+        let _permit = permit;
+        loop {
+            // Events only arrive on finalization, so a failed `send` alone would not detect a
+            // disconnect or unsubscribe while finalization is stalled. Race against `closed()` so
+            // the subscription (and its permit) is released promptly.
+            let recv = tokio::select! {
+                _ = sink.closed() => return Ok(()),
+                recv = rx.recv() => recv,
+            };
+            match recv {
+                Ok(event) => {
+                    // A client that is not reading would queue a full block per event: drop it
+                    // before copying another one.
+                    if sink.max_capacity() - sink.capacity() > MAX_PENDING_NOTIFICATIONS {
+                        return Err("subscriber is too slow, resubscribe and backfill".into());
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    let msg = jsonrpsee::SubscriptionMessage::new(
+                        sink.method_name(),
+                        sink.subscription_id().clone(),
+                        &event.json().await,
+                    )
+                    .expect("Event should be serializable");
+                    if sink.send_timeout(msg, SEND_TIMEOUT).await.is_err() {
+                        return Err("subscriber is too slow, resubscribe and backfill".into());
+                    }
                 }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    return Err("consensus feed closed".into());
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
             }
-        });
-
-        Ok(())
+        }
     }
 }

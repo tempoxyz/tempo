@@ -217,3 +217,49 @@ async fn subscriber_that_stops_reading_is_dropped() {
     }
     wait_for_live_subscriptions(&events_tx, 0).await;
 }
+
+/// A feed whose single subscriber's channel closes once the test drops the sender.
+struct ClosingFeed {
+    rx: std::sync::Mutex<Option<broadcast::Receiver<Arc<SharedEvent>>>>,
+}
+
+impl ConsensusFeed for ClosingFeed {
+    async fn get_finalization(&self, _query: Query) -> types::Response<CertifiedBlock> {
+        types::Response::NotReady
+    }
+
+    async fn get_latest(&self) -> ConsensusState {
+        ConsensusState::default()
+    }
+
+    async fn subscribe(&self) -> Option<broadcast::Receiver<Arc<SharedEvent>>> {
+        self.rx.lock().unwrap().take()
+    }
+}
+
+#[tokio::test]
+async fn server_ended_subscription_closes_client_stream() {
+    let (events_tx, events_rx) = broadcast::channel(1);
+    let module = TempoConsensusRpc::new(ClosingFeed {
+        rx: std::sync::Mutex::new(Some(events_rx)),
+    })
+    .into_rpc();
+
+    let server = Server::builder().build("127.0.0.1:0").await.unwrap();
+    let addr = server.local_addr().unwrap();
+    let _handle = server.start(module);
+    let client = WsClientBuilder::default()
+        .build(format!("ws://{addr}"))
+        .await
+        .unwrap();
+
+    let mut subscription = client.subscribe_events().await.unwrap();
+    // The server ends the subscription while the connection stays open; the client must see its
+    // stream end so it can resubscribe.
+    drop(events_tx);
+    let next = tokio::time::timeout(Duration::from_secs(5), subscription.next())
+        .await
+        .expect("client stream must end once the server closes the subscription");
+    assert!(next.is_none(), "expected the stream to end, got {next:?}");
+    assert!(client.is_connected());
+}
