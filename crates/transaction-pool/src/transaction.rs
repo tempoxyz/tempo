@@ -535,7 +535,7 @@ impl TempoPooledTransaction {
             .tx()
             .key_authorization
             .as_ref()
-            .and_then(|authorization| authorization.recover_signer().ok());
+            .and_then(|authorization| authorization.recover_account().ok());
         let fee_payer = tx
             .tx()
             .fee_payer_signature
@@ -1225,8 +1225,16 @@ mod tests {
     }
 
     fn raw_pooled_transaction(
-        tx: TempoTransaction,
+        mut tx: TempoTransaction,
     ) -> (TempoPooledTransaction, TempoTxEnvelope, Address, usize) {
+        // Recovery verifies a configurable grant quorum, which arbitrary approvals never reach.
+        if tx
+            .key_authorization
+            .as_ref()
+            .is_some_and(|auth| auth.signature.as_configurable_account().is_some())
+        {
+            tx.key_authorization = None;
+        }
         let (envelope, sender) = signed_aa_envelope(tx);
         let mut raw = Vec::with_capacity(envelope.encode_2718_len());
         envelope.encode_2718(&mut raw);
