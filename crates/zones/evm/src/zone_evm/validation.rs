@@ -7,7 +7,6 @@ use tempo_contracts::precompiles::{CONFIGURABLE_ACCOUNT_ADDRESS, IConfigurableAc
 use tempo_evm::{
     TempoInvalidTransaction, TempoTx, TempoTxEnv, transaction_error::ConfigurableAccountError,
 };
-use tempo_primitives::transaction::SignatureType;
 
 /// Validates transaction policies enforced by the Zone EVM.
 pub fn validate_transaction(
@@ -39,10 +38,12 @@ pub fn validate_transaction(
     if spec.is_t14()
         && (tx.as_aa().is_some_and(|aa| {
             aa.signature().is_or_wraps_configurable_account()
-                || aa.tx().key_authorization.as_ref().is_some_and(|auth| {
-                    auth.key_type == SignatureType::ConfigurableAccount
-                        || auth.signature.is_configurable_account()
-                })
+                || aa.granted_configurable_account().is_some()
+                || aa
+                    .tx()
+                    .key_authorization
+                    .as_ref()
+                    .is_some_and(|auth| auth.signature.is_configurable_account())
         }) || tx.calls().any(|(kind, input)| {
             kind == TxKind::Call(CONFIGURABLE_ACCOUNT_ADDRESS)
                 && matches!(

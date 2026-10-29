@@ -55,7 +55,7 @@ struct LoadedAccount {
 impl TempoAaTx {
     /// Outer (direct or delegated) role, then inline grant role; either slot may be absent.
     fn configurable_roles(&self) -> [Option<ConfigurableRole<'_>>; 2] {
-        let outer =
+        [
             match self.signature() {
                 TempoSignature::ConfigurableAccount(signature) => Some(ConfigurableRole {
                     signature,
@@ -72,14 +72,14 @@ impl TempoAaTx {
                         ),
                     }),
                 TempoSignature::Primitive(_) => None,
-            };
-        let grant = self.tx().key_authorization.as_ref().and_then(|auth| {
-            Some(ConfigurableRole {
-                signature: auth.signature.as_configurable_account()?,
-                inner_digest: auth.signature_hash(),
-            })
-        });
-        [outer, grant]
+            },
+            self.tx().key_authorization.as_ref().and_then(|auth| {
+                Some(ConfigurableRole {
+                    signature: auth.signature.as_configurable_account()?,
+                    inner_digest: auth.signature_hash(),
+                })
+            }),
+        ]
     }
 
     /// The configurable account an inline key authorization grants as an access key, if any.

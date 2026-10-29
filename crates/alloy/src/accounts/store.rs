@@ -2002,15 +2002,14 @@ impl TryFrom<PersistedSignedKeyAuthorization> for SignedKeyAuthorization {
             is_admin,
             account,
         };
-        let signature = match signature {
+        Ok(authorization.into_signed(match signature {
             PersistedAuthorizationSignature::Primitive(signature) => {
                 AccountSignature::Primitive(PrimitiveSignature::try_from(signature)?)
             }
             PersistedAuthorizationSignature::ConfigurableAccount(signature) => {
                 AccountSignature::ConfigurableAccount(signature)
             }
-        };
-        Ok(authorization.into_signed(signature))
+        }))
     }
 }
 
