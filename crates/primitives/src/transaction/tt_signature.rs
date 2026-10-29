@@ -1032,7 +1032,7 @@ impl TempoSignature {
     }
 
     /// Whether a configurable account signs, directly or inside a keychain envelope.
-    pub fn signed_by_configurable_account(&self) -> bool {
+    pub fn is_or_wraps_configurable_account(&self) -> bool {
         self.primitive_signature_type().is_none()
     }
 }
