@@ -478,7 +478,7 @@ fn validate_key_authorization(
     let Some(key_auth) = tx.key_authorization.as_ref() else {
         return Ok(());
     };
-    if aa.grant_delegate().is_some() && !spec.is_t14() {
+    if aa.granted_configurable_account().is_some() && !spec.is_t14() {
         return Err(ConfigurableAccountError::UnsupportedContext.into());
     }
 

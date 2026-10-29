@@ -4389,7 +4389,7 @@ fn native_committed_keychain_parent_with_incompatible_code_is_rejected() {
 /// access-listed. Used by the delegate in the same transaction, the grant costs as much as one
 /// used by a primitive access key: no access beyond the signing key's own.
 #[test]
-fn native_grant_delegate_access_is_charged_once() {
+fn native_granted_configurable_account_access_is_charged_once() {
     /// The signer of the transaction that carries or uses the grant.
     #[derive(Clone, Copy)]
     enum GrantUser {
