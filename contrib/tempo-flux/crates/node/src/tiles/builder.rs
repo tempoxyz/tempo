@@ -95,9 +95,17 @@ impl BuilderTile {
         tracing::debug!(req.height, pooled = self.pooled, "building");
         self.picked.clear();
         let max = req.max_txs as usize;
-        for (sender, txs) in &self.by_sender {
+        // The body must fit one dcache frame of the block queue.
+        let mut bytes = 0usize;
+        'senders: for (sender, txs) in &self.by_sender {
             let mut nonce = self.next_nonce.get(sender).copied().unwrap_or(0);
-            while self.picked.len() < max && txs.contains_key(&nonce) {
+            while self.picked.len() < max {
+                let Some(tx) = txs.get(&nonce) else { break };
+                let len = 24 + tx.bytes.len();
+                if bytes + len > crate::spine::BLOCK_MTU {
+                    break 'senders;
+                }
+                bytes += len;
                 self.picked.push((*sender, nonce));
                 nonce += 1;
             }

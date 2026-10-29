@@ -10,6 +10,9 @@ use tempo_flux_primitives::{
 /// consensus -> BuildRequest -> builder -> Block -> executor, storage
 /// executor -> StateDiff -> merkle -> Executed -> consensus -> Finalized -> builder, storage
 /// storage -> Persisted -> consensus
+/// Largest block body the block queue carries.
+pub const BLOCK_MTU: usize = 1 << 25;
+
 #[from_spine("tempo-flux")]
 #[derive(Debug)]
 pub struct NodeSpine {
@@ -20,7 +23,7 @@ pub struct NodeSpine {
     pub valid_tx: SpineQueue<ValidTx>,
     #[queue(size(2usize.pow(10)))]
     pub build_request: SpineQueue<BuildRequest>,
-    #[queue(size(2usize.pow(10)), mtu(2usize.pow(25)))]
+    #[queue(size(2usize.pow(10)), mtu(BLOCK_MTU))]
     pub block: SpineQueue<Block>,
     #[queue(size(2usize.pow(10)), mtu(2usize.pow(26)))]
     pub state_diff: SpineQueue<StateDiff>,
