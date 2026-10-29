@@ -38,6 +38,12 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
             TempoTxType::AA => {
                 let signature = match self.simulated_block_signature() {
                     Ok(Some(signature)) => signature,
+                    Ok(None) if self.key_type == Some(SignatureType::ConfigurableAccount) => {
+                        return Err(ValueError::new(
+                            self,
+                            EthApiError::InvalidParams(MISSING_CONFIGURATION_WITNESS.into()),
+                        ));
+                    }
                     Ok(None) => TempoSignature::default(),
                     Err(error) => return Err(ValueError::new(self, error)),
                 };
@@ -177,9 +183,9 @@ impl TempoTransactionRequest {
     /// Configurable account signatures for a simulated call.
     ///
     /// Installs the mock grant described by `keyAuthorizationSimulation` and returns the mock
-    /// outer signature described by `configurableAccountSimulation`, or `None` when the outer
-    /// signature is not configurable. Stateful configurable account checks run when the call
-    /// executes at its position, so only the stateless ones are done here.
+    /// outer signature described by `configurableAccountSimulation`, or `None` when the request
+    /// has no `configurableAccountSimulation`. Stateful configurable account checks run when the
+    /// call executes at its position, so only the stateless ones are done here.
     fn simulated_block_signature(&mut self) -> Result<Option<TempoSignature>, EthApiError> {
         let invalid = |message: &str| EthApiError::InvalidParams(message.into());
         let parent = self.inner.from.unwrap_or_default();
@@ -201,11 +207,7 @@ impl TempoTransactionRequest {
                 .map_err(|error| EthApiError::InvalidParams(error.to_string()))?;
         }
         let Some(spec) = self.configurable_account_simulation.as_ref() else {
-            return if self.key_type == Some(SignatureType::ConfigurableAccount) {
-                Err(invalid(MISSING_CONFIGURATION_WITNESS))
-            } else {
-                Ok(None)
-            };
+            return Ok(None);
         };
         if self.key_id == Some(parent) {
             return Err(invalid("a configurable delegate cannot be its own parent"));
