@@ -63,7 +63,7 @@ use futures::{
 use reth_cli_runner::CliRunner;
 use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands};
 use reth_network_api::Peers;
-use reth_node_builder::{NodeHandle, WithLaunchContext};
+use reth_node_builder::{FullNodeComponents as _, NodeHandle, WithLaunchContext};
 use std::{sync::Arc, thread};
 use tempo_chainspec::{
     hardfork::TempoHardfork,
@@ -596,7 +596,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                     }
 
                     if has_consensus_engine {
-                        let consensus_rpc = TempoConsensusRpc::new(cl_feed_state);
+                        let consensus_rpc = TempoConsensusRpc::new(cl_feed_state, ctx.node().task_executor().clone());
                         ctx.modules.merge_configured(consensus_rpc.into_rpc())
                             .wrap_err("failed to register consensus rpc module")?;
                     }

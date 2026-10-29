@@ -8,6 +8,7 @@ use jsonrpsee::{
 use reth_primitives_traits::SealedBlock;
 use std::{sync::Arc, time::Duration};
 use tempo_primitives::Block;
+use test_case::test_case;
 use tokio::sync::broadcast;
 
 /// A feed with no publisher of its own, modelling a node whose finalization has stalled.
@@ -56,9 +57,12 @@ async fn wait_for_live_subscriptions(
 #[tokio::test]
 async fn subscription_task_exits_on_disconnect_without_events() {
     let (events_tx, _) = broadcast::channel(1);
-    let module = TempoConsensusRpc::new(IdleFeed {
-        events_tx: events_tx.clone(),
-    })
+    let module = TempoConsensusRpc::new(
+        IdleFeed {
+            events_tx: events_tx.clone(),
+        },
+        TaskExecutor::test(),
+    )
     .into_rpc();
 
     let subscription = module
@@ -72,11 +76,44 @@ async fn subscription_task_exits_on_disconnect_without_events() {
 }
 
 #[tokio::test]
-async fn unsubscribe_releases_permit_without_events() {
+async fn subscription_task_exits_on_node_shutdown_without_events() {
     let (events_tx, _) = broadcast::channel(1);
-    let module = TempoConsensusRpc::new(IdleFeed {
-        events_tx: events_tx.clone(),
-    })
+    let task_executor = TaskExecutor::test();
+    let module = TempoConsensusRpc::new(
+        IdleFeed {
+            events_tx: events_tx.clone(),
+        },
+        task_executor.clone(),
+    )
+    .into_rpc();
+
+    let subscription = module
+        .subscribe_unbounded("consensus_subscribe", EmptyServerParams::new())
+        .await
+        .unwrap();
+    wait_for_live_subscriptions(&events_tx, 1).await;
+
+    let shutdown = task_executor.initiate_graceful_shutdown().unwrap();
+    drop(
+        tokio::time::timeout(Duration::from_secs(5), shutdown)
+            .await
+            .unwrap(),
+    );
+    wait_for_live_subscriptions(&events_tx, 0).await;
+    drop(subscription);
+}
+
+#[test_case(false; "disconnect")]
+#[test_case(true; "unsubscribe")]
+#[tokio::test]
+async fn websocket_subscription_releases_receiver_without_events(unsubscribe: bool) {
+    let (events_tx, _) = broadcast::channel(1);
+    let module = TempoConsensusRpc::new(
+        IdleFeed {
+            events_tx: events_tx.clone(),
+        },
+        TaskExecutor::test(),
+    )
     .into_rpc();
 
     let server = Server::builder()
@@ -89,7 +126,7 @@ async fn unsubscribe_releases_permit_without_events() {
         .await
         .unwrap();
     let addr = server.local_addr().unwrap();
-    let _handle = server.start(module);
+    let handle = server.start(module);
 
     let client = WsClientBuilder::default()
         .build(format!("ws://{addr}"))
@@ -99,20 +136,36 @@ async fn unsubscribe_releases_permit_without_events() {
     let subscription = client.subscribe_events().await.unwrap();
     wait_for_live_subscriptions(&events_tx, 1).await;
 
-    subscription.unsubscribe().await.unwrap();
+    if unsubscribe {
+        subscription.unsubscribe().await.unwrap();
+        wait_for_live_subscriptions(&events_tx, 0).await;
+
+        // The only permit on this connection must be available again.
+        let subscription = client.subscribe_events().await.unwrap();
+        wait_for_live_subscriptions(&events_tx, 1).await;
+        subscription.unsubscribe().await.unwrap();
+    } else {
+        drop(client);
+        wait_for_live_subscriptions(&events_tx, 0).await;
+        drop(subscription);
+    }
     wait_for_live_subscriptions(&events_tx, 0).await;
 
-    // The only permit on this connection must be available again.
-    let _subscription = client.subscribe_events().await.unwrap();
-    wait_for_live_subscriptions(&events_tx, 1).await;
+    handle.stop().unwrap();
+    tokio::time::timeout(Duration::from_secs(5), handle.stopped())
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
 async fn subscription_notification_carries_event() {
     let (events_tx, _) = broadcast::channel(1);
-    let module = TempoConsensusRpc::new(IdleFeed {
-        events_tx: events_tx.clone(),
-    })
+    let module = TempoConsensusRpc::new(
+        IdleFeed {
+            events_tx: events_tx.clone(),
+        },
+        TaskExecutor::test(),
+    )
     .into_rpc();
 
     let mut subscription = module
@@ -135,7 +188,11 @@ async fn subscription_notification_carries_event() {
         }))
         .unwrap();
 
-    let (received, _) = subscription.next::<Event>().await.unwrap().unwrap();
+    let (received, _) = tokio::time::timeout(Duration::from_secs(5), subscription.next::<Event>())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
     let Event::Finalized {
         block: received_block,
         seen,

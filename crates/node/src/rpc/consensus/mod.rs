@@ -16,6 +16,7 @@ use jsonrpsee::{
     proc_macros::rpc,
     types::{ErrorObject, error::INTERNAL_ERROR_CODE},
 };
+use reth_ethereum::tasks::TaskExecutor;
 
 pub use types::{CertifiedBlock, ConsensusFeed, ConsensusState, Event, Query, SharedEvent};
 
@@ -80,12 +81,17 @@ pub trait TempoConsensusApi {
 #[derive(Debug, Clone)]
 pub struct TempoConsensusRpc<I> {
     consensus_feed: I,
+    /// Runs subscription tasks until node shutdown.
+    task_executor: TaskExecutor,
 }
 
 impl<I: ConsensusFeed> TempoConsensusRpc<I> {
-    /// Create a new consensus RPC handler.
-    pub fn new(consensus_feed: I) -> Self {
-        Self { consensus_feed }
+    /// Create a consensus RPC handler whose subscription tasks stop on node shutdown.
+    pub fn new(consensus_feed: I, task_executor: TaskExecutor) -> Self {
+        Self {
+            consensus_feed,
+            task_executor,
+        }
     }
 }
 
@@ -108,15 +114,17 @@ impl<I: ConsensusFeed> TempoConsensusApiServer for TempoConsensusRpc<I> {
             ErrorObject::owned(INTERNAL_ERROR_CODE, "Failed to subscribe", None::<()>)
         })?;
 
-        tokio::spawn(async move {
+        self.task_executor.spawn_task(async move {
             loop {
                 // Events only arrive on finalization, so a failed `send` alone would not detect
                 // a disconnect or unsubscribe while finalization is stalled. Race against
                 // `closed()` so the task (and its subscription permit) is released promptly.
                 let recv = tokio::select! {
+                    biased;
                     _ = sink.closed() => break,
                     recv = rx.recv() => recv,
                 };
+
                 match recv {
                     Ok(event) => {
                         let msg = jsonrpsee::SubscriptionMessage::new(

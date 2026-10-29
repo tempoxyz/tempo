@@ -35,7 +35,7 @@ use reth_ethereum::{
     provider::providers::RocksDBProvider,
     tasks::Runtime,
 };
-use reth_node_builder::{NodeBuilder, NodeConfig};
+use reth_node_builder::{FullNodeComponents as _, NodeBuilder, NodeConfig};
 use reth_node_core::{
     args::{DatadirArgs, PayloadBuilderArgs, RpcServerArgs},
     exit::NodeExitFuture,
@@ -995,8 +995,9 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
     .node(tempo_node)
     .extend_rpc_modules(move |ctx| {
         if let Some(feed_state) = feed_state {
-            ctx.modules
-                .merge_configured(TempoConsensusRpc::new(feed_state).into_rpc())?;
+            let consensus_rpc =
+                TempoConsensusRpc::new(feed_state, ctx.node().task_executor().clone());
+            ctx.modules.merge_configured(consensus_rpc.into_rpc())?;
         }
         Ok(())
     });
