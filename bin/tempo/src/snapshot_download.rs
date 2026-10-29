@@ -1,12 +1,12 @@
 use std::{
-    collections::HashSet,
+    collections::BTreeMap,
     fs, io,
     path::{Component, Path, PathBuf, absolute},
     time::Instant,
 };
 
 use clap::{ArgMatches, FromArgMatches, Parser};
-use eyre::{Context as _, OptionExt, ensure};
+use eyre::{Context as _, OptionExt, bail, ensure, eyre};
 use futures::TryStreamExt;
 use reth_cli_commands::download::{
     DownloadCommand, DownloadPlanArchive,
@@ -225,8 +225,7 @@ async fn install_consensus_archive(
 
     let output_files = &loaded.manifest.consensus_archive.output_files;
     extract_zstd_tar_archive(archive_file.path(), staging.path())?;
-    validate_consensus_directory(staging.path())?;
-    verify_consensus_output_files(staging.path(), output_files)?;
+    verify_consensus_directory(staging.path(), output_files)?;
     move_consensus_directory(staging.path(), &consensus_dir, force)?;
 
     info!("persisted consensus archive");
@@ -326,36 +325,6 @@ fn extract_zstd_tar_archive(archive_path: &Path, target_dir: &Path) -> eyre::Res
     })
 }
 
-#[tracing::instrument(skip_all, fields(path = %root.display()), err)]
-fn validate_consensus_directory(root: &Path) -> eyre::Result<()> {
-    for partition in fs::read_dir(root)? {
-        let partition = partition?;
-        ensure!(
-            partition.file_name().to_str().is_some_and(|name| {
-                is_snapshot_storage_partition(tempo_consensus::PARTITION_PREFIX, name)
-            }),
-            "unsupported consensus snapshot partition: {}",
-            partition.file_name().to_string_lossy(),
-        );
-        ensure!(
-            partition.file_type()?.is_dir(),
-            "unsupported consensus snapshot file type: {}",
-            partition.file_name().to_string_lossy(),
-        );
-
-        for file in fs::read_dir(partition.path())? {
-            let file = file?;
-            ensure!(
-                file.file_type()?.is_file(),
-                "unsupported consensus snapshot file type: {}",
-                file.path().strip_prefix(root)?.display(),
-            );
-        }
-    }
-
-    Ok(())
-}
-
 #[tracing::instrument(parent = None, skip_all, fields(path = %target.display(), force), err)]
 fn move_consensus_directory(source: &Path, target: &Path, force: bool) -> eyre::Result<()> {
     if force && target.try_exists()? {
@@ -401,16 +370,18 @@ fn move_consensus_directory(source: &Path, target: &Path, force: bool) -> eyre::
     Ok(())
 }
 
-fn verify_consensus_output_files(
-    consensus_dir: &Path,
+/// Verify the staged consensus archive before installing it.
+///
+/// Every top-level entry must be a snapshot storage partition directory holding
+/// only regular files, every file must be listed in the manifest with a matching
+/// size and checksum, and every listed file must be present. Structural checks
+/// run before a file is hashed, and nothing here follows symlinks.
+#[tracing::instrument(skip_all, fields(path = %root.display()), err)]
+fn verify_consensus_directory(
+    root: &Path,
     output_files: &[OutputFileChecksum],
 ) -> eyre::Result<()> {
-    ensure!(
-        !output_files.is_empty(),
-        "consensus archive output metadata is empty",
-    );
-
-    let mut expected_paths = HashSet::new();
+    let mut expected_files = BTreeMap::new();
     for expected in output_files {
         ensure!(
             !expected.path.is_empty()
@@ -420,43 +391,72 @@ fn verify_consensus_output_files(
             "invalid consensus archive output path: {}",
             expected.path,
         );
-        let output_path = consensus_dir.join(&expected.path);
-        let metadata = fs::metadata(&output_path).wrap_err_with(|| {
-            format!(
-                "failed to stat consensus archive output {}",
-                output_path.display()
-            )
-        })?;
         ensure!(
-            metadata.len() == expected.size,
-            "consensus archive output size mismatch for {}: expected {}, got {}",
+            expected_files
+                .insert(PathBuf::from(&expected.path), expected)
+                .is_none(),
+            "duplicate consensus archive output path: {}",
             expected.path,
-            expected.size,
-            metadata.len(),
         );
-
-        let actual = hash_file_blake3(&output_path)?;
-        ensure!(
-            actual.eq_ignore_ascii_case(&expected.blake3),
-            "consensus archive output checksum mismatch for {}: expected {}, got {}",
-            expected.path,
-            expected.blake3,
-            actual,
-        );
-        expected_paths.insert(PathBuf::from(&expected.path));
     }
 
-    for partition in fs::read_dir(consensus_dir)? {
-        for file in fs::read_dir(partition?.path())? {
-            let path = file?.path();
-            let relative = path.strip_prefix(consensus_dir)?;
+    for partition in fs::read_dir(root)? {
+        let partition = partition?;
+        ensure!(
+            partition.file_name().to_str().is_some_and(|name| {
+                is_snapshot_storage_partition(tempo_consensus::PARTITION_PREFIX, name)
+            }),
+            "unsupported consensus snapshot partition: {}",
+            partition.file_name().to_string_lossy(),
+        );
+        ensure!(
+            partition.file_type()?.is_dir(),
+            "unsupported consensus snapshot file type: {}",
+            partition.file_name().to_string_lossy(),
+        );
+
+        for file in fs::read_dir(partition.path())? {
+            let file = file?;
+            let path = file.path();
+            let relative = path.strip_prefix(root)?;
             ensure!(
-                expected_paths.contains(relative),
-                "unexpected consensus archive output: {}",
+                file.file_type()?.is_file(),
+                "unsupported consensus snapshot file type: {}",
                 relative.display(),
+            );
+            let expected = expected_files.remove(relative).ok_or_else(|| {
+                eyre!(
+                    "unexpected consensus archive output: {}",
+                    relative.display()
+                )
+            })?;
+
+            let size = file.metadata()?.len();
+            ensure!(
+                size == expected.size,
+                "consensus archive output size mismatch for {}: expected {}, got {}",
+                expected.path,
+                expected.size,
+                size,
+            );
+            let actual = hash_file_blake3(&path)?;
+            ensure!(
+                actual.eq_ignore_ascii_case(&expected.blake3),
+                "consensus archive output checksum mismatch for {}: expected {}, got {}",
+                expected.path,
+                expected.blake3,
+                actual,
             );
         }
     }
+
+    if let Some(missing) = expected_files.keys().next() {
+        bail!("missing consensus archive output: {}", missing.display());
+    }
+    ensure!(
+        !output_files.is_empty(),
+        "consensus archive output metadata is empty",
+    );
 
     Ok(())
 }
@@ -765,7 +765,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_consensus_directory_rejects_unknown_partition_names() {
+    fn verify_consensus_directory_rejects_unknown_partition_names() {
         let source = tempfile::tempdir().unwrap();
         let target = tempfile::tempdir().unwrap();
         let partition_name = "new-storage-partition";
@@ -782,7 +782,7 @@ mod tests {
         let archive_file = write_test_archive(&archive);
 
         extract_zstd_tar_archive(archive_file.path(), target.path()).unwrap();
-        let error = validate_consensus_directory(target.path()).unwrap_err();
+        let error = verify_consensus_directory(target.path(), &[]).unwrap_err();
         assert_eq!(
             error.to_string(),
             format!("unsupported consensus snapshot partition: {partition_name}")
@@ -790,7 +790,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_consensus_directory_requires_partitions_with_only_files() {
+    fn verify_consensus_directory_requires_partitions_with_only_files() {
         for nested_directory in [false, true] {
             let staging = tempfile::tempdir().unwrap();
             let partition = "engine-finalizations-by-height-metadata";
@@ -804,7 +804,7 @@ mod tests {
                 partition.to_owned()
             };
 
-            let error = validate_consensus_directory(staging.path()).unwrap_err();
+            let error = verify_consensus_directory(staging.path(), &[]).unwrap_err();
 
             assert_eq!(
                 error.to_string(),
@@ -1354,14 +1354,14 @@ mod tests {
     }
 
     #[test]
-    fn verify_consensus_output_files_accepts_matching_outputs() {
+    fn verify_consensus_directory_accepts_matching_outputs() {
         let dir = tempfile::tempdir().unwrap();
         let output_path = "engine-finalized-blocks-prunable-key/00";
         let file_path = dir.path().join(output_path);
         fs::create_dir_all(file_path.parent().unwrap()).unwrap();
         fs::write(&file_path, b"abc").unwrap();
 
-        verify_consensus_output_files(
+        verify_consensus_directory(
             dir.path(),
             &[OutputFileChecksum {
                 path: output_path.to_string(),
@@ -1373,10 +1373,10 @@ mod tests {
     }
 
     #[test]
-    fn verify_consensus_output_files_rejects_paths_outside_staging() {
+    fn verify_consensus_directory_rejects_paths_outside_staging() {
         let dir = tempfile::tempdir().unwrap();
         for path in ["../outside", "/outside", "", "."] {
-            let error = verify_consensus_output_files(
+            let error = verify_consensus_directory(
                 dir.path(),
                 &[OutputFileChecksum {
                     path: path.to_owned(),
@@ -1393,14 +1393,42 @@ mod tests {
     }
 
     #[test]
-    fn verify_consensus_output_files_rejects_empty_metadata() {
+    fn verify_consensus_directory_rejects_empty_metadata() {
         let dir = tempfile::tempdir().unwrap();
 
-        assert!(verify_consensus_output_files(dir.path(), &[]).is_err());
+        assert!(verify_consensus_directory(dir.path(), &[]).is_err());
     }
 
     #[test]
-    fn verify_consensus_output_files_rejects_mismatched_size() {
+    fn verify_consensus_directory_rejects_missing_and_duplicate_outputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let present = "engine-finalized-blocks-prunable-key/00";
+        let missing = "engine-finalized-blocks-prunable-key/01";
+        fs::create_dir_all(dir.path().join("engine-finalized-blocks-prunable-key")).unwrap();
+        fs::write(dir.path().join(present), b"abc").unwrap();
+        let output = |path: &str| OutputFileChecksum {
+            path: path.to_owned(),
+            size: 3,
+            blake3: blake3::hash(b"abc").to_hex().to_string(),
+        };
+
+        let error = verify_consensus_directory(dir.path(), &[output(present), output(missing)])
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!("missing consensus archive output: {missing}")
+        );
+
+        let error = verify_consensus_directory(dir.path(), &[output(present), output(present)])
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!("duplicate consensus archive output path: {present}")
+        );
+    }
+
+    #[test]
+    fn verify_consensus_directory_rejects_mismatched_size() {
         let dir = tempfile::tempdir().unwrap();
         let output_path = "engine-finalized-blocks-prunable-key/00";
         let file_path = dir.path().join(output_path);
@@ -1408,7 +1436,7 @@ mod tests {
         fs::write(&file_path, b"abc").unwrap();
 
         assert!(
-            verify_consensus_output_files(
+            verify_consensus_directory(
                 dir.path(),
                 &[OutputFileChecksum {
                     path: output_path.to_string(),
@@ -1421,7 +1449,7 @@ mod tests {
     }
 
     #[test]
-    fn verify_consensus_output_files_rejects_mismatched_checksum() {
+    fn verify_consensus_directory_rejects_mismatched_checksum() {
         let dir = tempfile::tempdir().unwrap();
         let output_path = "engine-finalized-blocks-prunable-key/00";
         let file_path = dir.path().join(output_path);
@@ -1429,7 +1457,7 @@ mod tests {
         fs::write(&file_path, b"abc").unwrap();
 
         assert!(
-            verify_consensus_output_files(
+            verify_consensus_directory(
                 dir.path(),
                 &[OutputFileChecksum {
                     path: output_path.to_string(),
