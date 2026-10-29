@@ -1355,12 +1355,11 @@ fn prepare_aa(
     }
 
     // A configurable-account quorum cannot sign an EIP-7702 delegation.
-    if tx.tempo_authorization_list.iter().any(|authorization| {
-        authorization
-            .signature()
-            .primitive_signature_type()
-            .is_none()
-    }) {
+    if tx
+        .tempo_authorization_list
+        .iter()
+        .any(|authorization| authorization.signature().signed_by_configurable_account())
+    {
         return Err(ConfigurableAccountError::InvalidSignatureContext.into());
     }
     // Validate AA transaction structure (calls list, CREATE rules)
