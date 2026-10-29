@@ -193,8 +193,7 @@ impl TempoTransactionRequest {
             let grant = self
                 .key_authorization
                 .as_ref()
-                .ok_or_else(|| invalid("keyAuthorizationSimulation requires keyAuthorization"))?;
-            let grant = grant
+                .ok_or_else(|| invalid("keyAuthorizationSimulation requires keyAuthorization"))?
                 .authorization
                 .clone()
                 .into_signed(spec.mock_signature(spec.signer.unwrap_or(parent))?);

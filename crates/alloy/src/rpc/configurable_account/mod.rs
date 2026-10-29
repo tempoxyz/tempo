@@ -43,7 +43,6 @@ mod serde_configurable_account_config {
     pub(super) fn deserialize<'de, D: Deserializer<'de>>(
         deserializer: D,
     ) -> Result<ConfigurableAccountConfig, D::Error> {
-        let encoded = Bytes::deserialize(deserializer)?;
-        decode_exact(&encoded).map_err(D::Error::custom)
+        decode_exact(&Bytes::deserialize(deserializer)?).map_err(D::Error::custom)
     }
 }
