@@ -113,6 +113,10 @@ execution threads, 500 ms slots. No drops, reverts, failed blocks or fallbacks:
 Ceiling is about 240k TPS on dev-dst, up from ~35k sequential. Verified runs
 (parallel against sequential, incremental against full root) matched on every block.
 
-Caveat: summing deltas is exact only while no transaction branches on a
-concurrently written balance (e.g. an insufficient-balance revert). General
-blocks need read-set validation (Block-STM style) before this is safe.
+Caveats: summing deltas is exact only for balance-like slots and while no
+transaction branches on a concurrently written balance. Overwrites that make
+the sum wrap, a failing shard and blocks over the gas limit fall back to
+sequential execution, but non-wrapping overwrites (an allowance set by
+approve in one shard and spent in another) still merge wrongly. General blocks
+need read-set validation (Block-STM style) before this is safe. The builder
+also tracks only the default 2D nonce key per sender.

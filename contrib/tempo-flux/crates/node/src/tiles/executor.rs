@@ -207,9 +207,18 @@ fn merge(bundles: &[BundleState], baseline: &BundleState) -> Option<Changes> {
     }
     for ((addr, key), (orig, base, writes)) in slots {
         let value = if ADDITIVE.contains(&addr) {
-            writes
-                .iter()
-                .fold(base, |v, w| v.wrapping_add(w.wrapping_sub(base)))
+            // Summing is only right for balance-like slots. An overwrite (an
+            // allowance set by approve) shows up as a sum that wraps; fall back.
+            let mut v = base;
+            for w in &writes {
+                let up = w.checked_sub(base);
+                let next = match up {
+                    Some(d) => v.checked_add(d),
+                    None => v.checked_sub(base - *w),
+                };
+                v = next?;
+            }
+            v
         } else {
             let mut changed = writes.into_iter().filter(|w| *w != base);
             match (changed.next(), changed.next()) {
@@ -302,6 +311,10 @@ impl ExecutorTile {
             bundles.push(r.bundle);
         }
         let baseline = bundles.pop().expect("baseline shard");
+        // Each shard checks gas only against its own txs.
+        if gas > tempo::BLOCK_GAS_LIMIT {
+            return Ok(None);
+        }
         Ok(merge(&bundles, &baseline).map(|c| (c, gas, reverted)))
     }
 
@@ -328,7 +341,17 @@ impl ExecutorTile {
                     tracing::warn!(block.height, "shards conflicted, re-running sequentially");
                     self.sequential(block, payload)
                 }
-                Err(e) => Err(e),
+                // A shard can fail on a tx that depends on another shard's
+                // earlier tx; only a sequential run can tell.
+                Err(e) => {
+                    self.fallbacks += 1;
+                    tracing::warn!(
+                        block.height,
+                        reason = e.reason,
+                        "shard failed, re-running sequentially"
+                    );
+                    self.sequential(block, payload)
+                }
             }
         } else {
             self.sequential(block, payload)

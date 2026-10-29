@@ -17,6 +17,7 @@ pub struct StorageTile {
     disk: DiskIo,
     file: Option<FileToken>,
     bodies: FxHashMap<u64, (Block, Vec<u8>)>,
+    waiting: Vec<Finalized>,
     unsynced: Vec<(u64, u32, u64)>,
     stop_after_ns: Option<u64>,
     start_ns: u64,
@@ -34,6 +35,7 @@ impl StorageTile {
             disk: DiskIo::default(),
             file: None,
             bodies: FxHashMap::default(),
+            waiting: Vec::new(),
             unsynced: Vec::new(),
             stop_after_ns: stop_after_secs.map(|s| s * 1_000_000_000),
             start_ns: 0,
@@ -95,11 +97,13 @@ impl Tile<NodeSpine> for StorageTile {
         );
 
         let file = self.file.expect("opened in try_init");
-        let mut finalized = Vec::new();
+        let mut finalized = std::mem::take(&mut self.waiting);
         adapter.consume(|f: Finalized, _| finalized.push(f));
         let mut wrote = false;
         for f in finalized {
+            // The body can still be unread in its queue; retry next loop.
             let Some((block, payload)) = self.bodies.remove(&f.height) else {
+                self.waiting.push(f);
                 continue;
             };
             self.disk.write_with(file, |buf| {
