@@ -6,7 +6,7 @@ use std::{
 };
 
 use clap::{ArgMatches, FromArgMatches, Parser};
-use eyre::{Context as _, OptionExt, bail, ensure, eyre};
+use eyre::{Context as _, OptionExt, bail, ensure};
 use futures::TryStreamExt;
 use reth_cli_commands::download::{
     DownloadCommand, DownloadPlanArchive,
@@ -400,66 +400,30 @@ fn verify_consensus_directory(
         );
     }
 
-    let entries = fs::read_dir(root).wrap_err_with(|| {
-        format!(
-            "failed to read staged consensus snapshot {}",
-            root.display()
-        )
-    })?;
-    for partition in entries {
-        let partition = partition.wrap_err("failed to read staged consensus snapshot entry")?;
-        let partition_name = partition.file_name();
-        let partition_name = partition_name.to_string_lossy();
+    let partitions =
+        fs::read_dir(root).wrap_err_with(|| format!("failed to read {}", root.display()))?;
+    for partition in partitions {
+        let partition = partition?;
+        let name = partition.file_name();
+        let name = name.to_string_lossy();
         ensure!(
-            partition.file_name().to_str().is_some_and(|name| {
-                is_snapshot_storage_partition(tempo_consensus::PARTITION_PREFIX, name)
-            }),
-            "unsupported consensus snapshot partition: {partition_name}",
+            is_snapshot_storage_partition(tempo_consensus::PARTITION_PREFIX, &name),
+            "unsupported consensus snapshot partition: {name}",
         );
-        let partition_type = partition.file_type().wrap_err_with(|| {
-            format!("failed to read file type of consensus snapshot partition {partition_name}")
-        })?;
         ensure!(
-            partition_type.is_dir(),
-            "unsupported consensus snapshot file type: {partition_name}",
+            partition.file_type()?.is_dir(),
+            "unsupported consensus snapshot file type: {name}",
         );
 
-        let files = fs::read_dir(partition.path()).wrap_err_with(|| {
-            format!("failed to read consensus snapshot partition {partition_name}")
-        })?;
+        let files = fs::read_dir(partition.path())
+            .wrap_err_with(|| format!("failed to read consensus snapshot partition {name}"))?;
         for file in files {
-            let file = file.wrap_err_with(|| {
-                format!("failed to read entry in consensus snapshot partition {partition_name}")
-            })?;
-            let path = file.path();
-            let relative = path.strip_prefix(root).wrap_err_with(|| {
+            let file = file?;
+            verify_consensus_output_file(root, &file, &mut expected_files).wrap_err_with(|| {
+                let path = file.path();
                 format!(
-                    "consensus snapshot entry {} is outside {}",
-                    path.display(),
-                    root.display()
-                )
-            })?;
-            let file_type = file.file_type().wrap_err_with(|| {
-                format!(
-                    "failed to read file type of consensus snapshot entry {}",
-                    relative.display()
-                )
-            })?;
-            ensure!(
-                file_type.is_file(),
-                "unsupported consensus snapshot file type: {}",
-                relative.display(),
-            );
-            let expected = expected_files.remove(relative).ok_or_else(|| {
-                eyre!(
-                    "unexpected consensus archive output: {}",
-                    relative.display()
-                )
-            })?;
-            verify_consensus_output_file(&file, expected).wrap_err_with(|| {
-                format!(
-                    "failed to verify consensus archive output {}",
-                    expected.path
+                    "failed to verify consensus snapshot file {}",
+                    path.strip_prefix(root).unwrap_or(&path).display()
                 )
             })?;
         }
@@ -476,21 +440,26 @@ fn verify_consensus_directory(
     Ok(())
 }
 
-/// Verify that a staged regular file matches its manifest entry.
+/// Verify one staged partition file: it must be a regular file listed in the
+/// manifest with the listed size and checksum. Removes its manifest entry.
 fn verify_consensus_output_file(
+    root: &Path,
     file: &fs::DirEntry,
-    expected: &OutputFileChecksum,
+    expected_files: &mut BTreeMap<PathBuf, &OutputFileChecksum>,
 ) -> eyre::Result<()> {
-    let size = file
-        .metadata()
-        .wrap_err("failed to read file metadata")?
-        .len();
+    ensure!(file.file_type()?.is_file(), "not a regular file");
+    let path = file.path();
+    let expected = expected_files
+        .remove(path.strip_prefix(root)?)
+        .ok_or_eyre("not listed in the manifest")?;
+
+    let size = file.metadata()?.len();
     ensure!(
         size == expected.size,
         "size mismatch: expected {}, got {size}",
         expected.size,
     );
-    let actual = hash_file_blake3(&file.path()).wrap_err("failed to hash file")?;
+    let actual = hash_file_blake3(&path)?;
     ensure!(
         actual.eq_ignore_ascii_case(&expected.blake3),
         "checksum mismatch: expected {}, got {actual}",
@@ -844,10 +813,14 @@ mod tests {
 
             let error = verify_consensus_directory(staging.path(), &[]).unwrap_err();
 
-            assert_eq!(
-                error.to_string(),
+            let expected = if nested_directory {
+                format!(
+                    "failed to verify consensus snapshot file {invalid_path}: not a regular file"
+                )
+            } else {
                 format!("unsupported consensus snapshot file type: {invalid_path}")
-            );
+            };
+            assert_eq!(format!("{error:#}"), expected);
         }
     }
 
@@ -930,8 +903,8 @@ mod tests {
                 .await
                 .unwrap_err();
 
-            let error = error.to_string();
-            let alias_error = "unsupported consensus snapshot file type: engine-finalizations-by-height-metadata/alias";
+            let error = format!("{error:#}");
+            let alias_error = "failed to verify consensus snapshot file engine-finalizations-by-height-metadata/alias: not a regular file";
             assert!(
                 error == alias_error
                     || (redirect
@@ -962,7 +935,7 @@ mod tests {
         assert_eq!(
             format!("{error:#}"),
             format!(
-                "failed to verify consensus archive output {output_path}: checksum mismatch: expected {}, got {}",
+                "failed to verify consensus snapshot file {output_path}: checksum mismatch: expected {}, got {}",
                 blake3::hash(b"def").to_hex(),
                 blake3::hash(b"abc").to_hex(),
             )
@@ -994,8 +967,10 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(
-            error.to_string(),
-            format!("unexpected consensus archive output: {unlisted}")
+            format!("{error:#}"),
+            format!(
+                "failed to verify consensus snapshot file {unlisted}: not listed in the manifest"
+            )
         );
         assert_eq!(
             fs::read(target.path().join("existing")).unwrap(),
