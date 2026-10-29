@@ -29,10 +29,6 @@ pub struct BuilderTile {
     inflight: Option<(u64, Hash, Vec<(Address, u64, PendingTx)>)>,
     pending: Option<BuildRequest>,
     accepted_height: u64,
-    /// Height of the last rejected block. A second rejection at the same
-    /// height drops that block's txs, so a tx that always fails can't stall
-    /// the chain; its sender's later txs wait for a resubmitted nonce.
-    rejected_at: Option<u64>,
 }
 
 impl BuilderTile {
@@ -57,10 +53,19 @@ impl BuilderTile {
         }
     }
 
-    fn restore(&mut self, txs: Vec<(Address, u64, PendingTx)>) {
+    /// Returns a rejected block's txs to the pool, except `bad` (the tx that
+    /// failed) and its sender's later nonces, which can no longer apply.
+    fn restore(&mut self, txs: Vec<(Address, u64, PendingTx)>, bad: Hash) {
+        let culprit = txs
+            .iter()
+            .find(|(_, _, tx)| tx.hash == bad)
+            .map(|(s, n, _)| (*s, *n));
         for (sender, nonce, tx) in txs {
             let next = self.next_nonce.entry(sender).or_default();
             *next = (*next).min(nonce);
+            if culprit.is_some_and(|(s, n)| s == sender && nonce >= n) {
+                continue;
+            }
             if self
                 .by_sender
                 .entry(sender)
@@ -71,12 +76,18 @@ impl BuilderTile {
                 self.pooled += 1;
             }
         }
-    }
-
-    fn drop_txs(&mut self, txs: &[(Address, u64, PendingTx)]) {
-        for (sender, nonce, _) in txs {
-            let next = self.next_nonce.entry(*sender).or_default();
-            *next = (*next).min(*nonce);
+        if let Some((sender, nonce)) = culprit {
+            tracing::warn!(?sender, nonce, "dropping a tx that failed execution");
+            if let Some(pending) = self.by_sender.get_mut(&sender) {
+                let later: Vec<u64> = pending.range(nonce..).map(|(n, _)| *n).collect();
+                for n in later {
+                    pending.remove(&n);
+                    self.pooled -= 1;
+                }
+                if pending.is_empty() {
+                    self.by_sender.remove(&sender);
+                }
+            }
         }
     }
 
@@ -170,18 +181,9 @@ impl Tile<NodeSpine> for BuilderTile {
                 let (height, _, txs) = self.inflight.take().expect("checked");
                 if e.valid {
                     self.accepted_height = height;
-                    self.rejected_at = None;
-                } else if self.rejected_at == Some(height) {
-                    tracing::warn!(
-                        height,
-                        dropped = txs.len(),
-                        "block rejected twice, dropping its txs"
-                    );
-                    self.drop_txs(&txs);
                 } else {
                     tracing::warn!(height, "block rejected, returning its txs to the pool");
-                    self.rejected_at = Some(height);
-                    self.restore(txs);
+                    self.restore(txs, e.bad_tx);
                 }
             }
         }

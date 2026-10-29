@@ -63,6 +63,8 @@ pub struct Executed {
     pub state_root: Hash,
     pub gas_used: u64,
     pub valid: bool,
+    /// Hash of the transaction that made the block invalid; zero when unknown.
+    pub bad_tx: Hash,
 }
 
 /// Execution's state changes for one block. Payload: `accounts` account
@@ -76,6 +78,8 @@ pub struct StateDiff {
     pub accounts: u32,
     pub slots: u32,
     pub valid: bool,
+    /// Hash of the transaction that made the block invalid; zero when unknown.
+    pub bad_tx: Hash,
 }
 
 pub mod diff {

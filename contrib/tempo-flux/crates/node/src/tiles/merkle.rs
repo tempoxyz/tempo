@@ -142,6 +142,7 @@ impl Tile<NodeSpine> for MerkleTile {
                 state_root,
                 gas_used: d.gas_used,
                 valid: d.valid,
+                bad_tx: d.bad_tx,
             });
         }
     }

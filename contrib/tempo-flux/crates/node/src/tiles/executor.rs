@@ -32,6 +32,7 @@ type Acc = (u64, U256, B256);
 struct Changes {
     accounts: FxHashMap<Address, Option<Acc>>,
     storage: FxHashMap<Address, FxHashMap<U256, U256>>,
+    contracts: FxHashMap<B256, evm2::bytecode::Bytecode>,
 }
 
 struct ShardOut {
@@ -62,6 +63,17 @@ fn shard_of(sender: &[u8; 20], shards: usize) -> usize {
     (u64::from_le_bytes(sender[..8].try_into().unwrap()) % shards as u64) as usize
 }
 
+/// Why a block failed, naming the transaction when one caused it.
+#[derive(Debug)]
+struct Failure {
+    reason: String,
+    tx: Option<[u8; 32]>,
+}
+
+fn fail(reason: String) -> Failure {
+    Failure { reason, tx: None }
+}
+
 fn run_shard(
     config: &TempoEvmConfig,
     hardfork: TempoHardfork,
@@ -69,7 +81,7 @@ fn run_shard(
     block: &Block,
     payload: &[u8],
     shard: Option<(usize, usize)>,
-) -> Result<ShardOut, String> {
+) -> Result<ShardOut, Failure> {
     let env = tempo::env(hardfork, block.height, block.timestamp_ms / 1000);
     let evm = config.evm_with_database(StateView(state), env);
     let ctx = TempoBlockExecutionCtx {
@@ -89,25 +101,33 @@ fn run_shard(
     let mut executor = config.create_executor(evm, ctx);
     executor
         .apply_pre_execution_changes()
-        .map_err(|e| format!("pre-execution: {e}"))?;
+        .map_err(|e| fail(format!("pre-execution: {e}")))?;
     let (mut gas, mut reverted) = (0u64, 0u64);
     for (sender, mut raw) in body::iter(payload) {
         if shard.is_some_and(|(k, n)| shard_of(&sender, n) != k) {
             continue;
         }
-        let tx = TempoTxEnvelope::decode_2718(&mut raw).map_err(|e| e.to_string())?;
+        let tx = TempoTxEnvelope::decode_2718(&mut raw).map_err(|e| fail(e.to_string()))?;
         let tx = tempo::recovered(tx, Address::from(sender));
         let env = Recovered::new_unchecked(TempoTxEnv::from(tx.clone()), tx.signer());
         let out = executor
             .execute_transaction_without_commit((env, &tx))
-            .map_err(|e| format!("tx {}: {e}", tx.tx_hash()))?;
+            .map_err(|e| Failure {
+                reason: format!("tx {}: {e}", tx.tx_hash()),
+                tx: Some(tx.tx_hash().0),
+            })?;
         reverted += u64::from(!out.result().status);
         gas += executor
             .commit_transaction(out)
-            .map_err(|e| e.to_string())?
+            .map_err(|e| Failure {
+                reason: e.to_string(),
+                tx: Some(tx.tx_hash().0),
+            })?
             .tx_gas_used();
     }
-    let output = executor.finish().map_err(|e| format!("finish: {e}"))?;
+    let output = executor
+        .finish()
+        .map_err(|e| fail(format!("finish: {e}")))?;
     Ok(ShardOut {
         bundle: output.state,
         gas,
@@ -202,6 +222,11 @@ fn merge(bundles: &[BundleState], baseline: &BundleState) -> Option<Changes> {
             out.storage.entry(addr).or_default().insert(key, value);
         }
     }
+    for b in std::iter::once(baseline).chain(bundles) {
+        for (hash, code) in &b.contracts {
+            out.contracts.insert(*hash, code.clone());
+        }
+    }
     Some(out)
 }
 
@@ -227,7 +252,7 @@ impl ExecutorTile {
         }
     }
 
-    fn sequential(&self, block: &Block, payload: &[u8]) -> Result<(Changes, u64, u64), String> {
+    fn sequential(&self, block: &Block, payload: &[u8]) -> Result<(Changes, u64, u64), Failure> {
         let out = run_shard(
             &self.config,
             self.hardfork,
@@ -246,10 +271,10 @@ impl ExecutorTile {
         &self,
         block: &Block,
         payload: &[u8],
-    ) -> Result<Option<(Changes, u64, u64)>, String> {
+    ) -> Result<Option<(Changes, u64, u64)>, Failure> {
         let n = self.shards;
         // Shard `n` matches no sender: it runs only the block's system calls.
-        let results: Vec<Result<ShardOut, String>> = std::thread::scope(|s| {
+        let results: Vec<Result<ShardOut, Failure>> = std::thread::scope(|s| {
             let handles: Vec<_> = (0..=n)
                 .map(|k| {
                     let (config, state, hardfork) =
@@ -311,7 +336,8 @@ impl ExecutorTile {
         let (changes, gas, reverted) = match result {
             Ok(r) => r,
             Err(err) => {
-                tracing::warn!(block.height, err, "block failed execution");
+                tracing::warn!(block.height, reason = err.reason, "block failed execution");
+                out.bad_tx = err.tx.unwrap_or_default();
                 return out;
             }
         };
@@ -379,6 +405,9 @@ fn apply(state: &mut Cache, changes: &Changes, buf: &mut Vec<u8>) -> (u32, u32) 
             );
             slots += 1;
         }
+    }
+    for (hash, code) in &changes.contracts {
+        state.contracts.insert(*hash, code.clone());
     }
     (accounts, slots)
 }
