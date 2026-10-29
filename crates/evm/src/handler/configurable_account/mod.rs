@@ -69,9 +69,6 @@ impl TempoTxEnv {
     /// authorization that could change the account beside it.
     pub(crate) fn seed_upgrade_authority(&self) -> Result<(), TempoPrecompileError> {
         let aa = self.as_aa();
-        let direct = aa
-            .and_then(|aa| aa.signature().as_configurable_account())
-            .map_or(Address::ZERO, ConfigurableAccountSignature::account);
         let sole_call = match aa {
             None => {
                 self.kind() == TxKind::Call(CONFIGURABLE_ACCOUNT_ADDRESS)
@@ -95,6 +92,9 @@ impl TempoTxEnv {
         } else {
             UpgradeEligibility::PrimitiveRoot
         };
+        let direct = aa
+            .and_then(|aa| aa.signature().as_configurable_account())
+            .map_or(Address::ZERO, ConfigurableAccountSignature::account);
         ConfigurableAccount::new().set_authority(self.caller(), direct, eligibility)
     }
 
