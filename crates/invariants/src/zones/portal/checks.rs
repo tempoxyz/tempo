@@ -12,6 +12,8 @@ use super::{
     ZONE_MESSENGER_ADDRESS, ZoneMessenger, ZonePortal, deposits, enqueued, is_compressed_point,
     next_enablement_hash, portal_address, settled, submitted_prev_hashes, withdrawal_chain,
 };
+use tempo_contracts::precompiles::{IZoneFactory, ZONE_FACTORY_ADDRESS};
+
 use crate::{Check, Checked, Frame, Severity, StepChecked, Tx, Verdict, kept};
 
 /// The portal's views answer. Counted by runners that read the model, not judged by a check here.
@@ -1053,7 +1055,14 @@ const SEQUENCER_OPS: &[(&str, [u8; 4])] = &[
 /// `transferAdmin` from the admin sets the pending admin and each `acceptAdmin` from the pending
 /// admin makes it the admin.
 fn restricted_calls(s: &PortalStep, functions: &[(&str, [u8; 4])]) -> Vec<Named<Restricted>> {
-    let (mut admin, mut pending_admin) = (s.pre.admin, s.pre.pending_admin);
+    // A portal the factory created in this step starts with the admin its creation named, which
+    // no portal call frame sets.
+    let created = s
+        .events::<IZoneFactory::ZoneCreated>(ZONE_FACTORY_ADDRESS)
+        .into_iter()
+        .find(|e| e.portal == s.post.portal)
+        .map(|e| e.admin);
+    let (mut admin, mut pending_admin) = (created.unwrap_or(s.pre.admin), s.pre.pending_admin);
     let mut calls = Vec::new();
     for frame in portal_calls(s) {
         let Some(selector) = frame.selector() else {

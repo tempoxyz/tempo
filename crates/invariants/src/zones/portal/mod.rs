@@ -682,6 +682,49 @@ mod tests {
         }
     }
 
+    /// The admin a portal was created with governs it from the creating transaction on.
+    #[test]
+    fn a_portal_created_in_the_step_is_governed_by_its_initial_admin() {
+        let created = IZoneFactory::ZoneCreated {
+            zoneId: 1,
+            portal: PORTAL,
+            initialToken: Address::ZERO,
+            accessMode: false,
+            gatewayMode: false,
+            admin: ADMIN,
+            sequencers: Vec::new(),
+            threshold: 1,
+            verifier: Address::ZERO,
+        };
+        let log = Log {
+            address: ZONE_FACTORY_ADDRESS,
+            data: created.encode_log_data(),
+        };
+        let set_rate =
+            |caller| portal_call(caller, ZonePortal::setZoneGasRateCall { newZoneGasRate: 1 });
+        let post = Portal {
+            admin: ADMIN,
+            ..Portal::absent(PORTAL)
+        };
+        let valid = step(
+            Portal::absent(PORTAL),
+            post.clone(),
+            vec![log.clone()],
+            vec![set_rate(ADMIN)],
+        );
+        assert_eq!(judge(ADMIN_ONLY_GOVERNANCE, &valid), (1, vec![]));
+        let other = step(
+            Portal::absent(PORTAL),
+            post,
+            vec![log],
+            vec![set_rate(OTHER)],
+        );
+        assert_eq!(
+            judge(ADMIN_ONLY_GOVERNANCE, &other).1,
+            vec![format!("admin is {ADMIN}")]
+        );
+    }
+
     #[test]
     fn an_admin_handed_over_within_one_step_acts_as_admin_from_then_on() {
         let transfer = |to| portal_call(ADMIN, ZonePortal::transferAdminCall { newAdmin: to });
