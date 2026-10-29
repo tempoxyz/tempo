@@ -530,7 +530,7 @@ fn validate_key_authorization(
     }
 
     let signer = key_auth
-        .recover_account()
+        .authorizing_account()
         .map_err(|_| TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed)?;
     if !spec.is_t6() && signer != aa.signer() {
         return Err(TempoInvalidTransaction::KeyAuthorizationNotSignedByRoot {
@@ -740,7 +740,7 @@ fn prepare_keychain(
         && let Some(key_authorization) = key_authorization
     {
         let signer = key_authorization
-            .recover_account()
+            .authorizing_account()
             .map_err(|_| TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed)?;
         if signer != aa.signer() {
             let signature_type: u8 = key_authorization.signature.signature_type().into();

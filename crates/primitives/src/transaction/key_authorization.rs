@@ -462,7 +462,7 @@ impl SignedKeyAuthorization {
     ///
     /// For configurable account results, callers must verify the parent account, configuration and
     /// owner quorum against state. Primitive results still require grant-authority checks.
-    pub fn recover_account(&self) -> Result<Address, RecoveryError> {
+    pub fn authorizing_account(&self) -> Result<Address, RecoveryError> {
         match &self.signature {
             AccountSignature::Primitive(_) => self.recover_signer(),
             AccountSignature::ConfigurableAccount(signature) => Ok(signature.account()),

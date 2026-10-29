@@ -335,7 +335,7 @@ impl TempoAccessKey {
             ));
         }
         if authorization.account.is_none()
-            && authorization.recover_account().ok() != Some(self.account)
+            && authorization.authorizing_account().ok() != Some(self.account)
         {
             return Err(TempoAccessKeyError::InvalidAuthorization(
                 "signature does not recover the root account",
@@ -3043,7 +3043,8 @@ fn select_access_key(
             continue;
         }
         if key_authorization.as_ref().is_some_and(|authorization| {
-            authorization.account.is_none() && authorization.recover_account().ok() != Some(account)
+            authorization.account.is_none()
+                && authorization.authorizing_account().ok() != Some(account)
         }) {
             continue;
         }

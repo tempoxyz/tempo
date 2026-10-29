@@ -535,7 +535,7 @@ impl TempoPooledTransaction {
             .tx()
             .key_authorization
             .as_ref()
-            .and_then(|authorization| authorization.recover_account().ok());
+            .and_then(|authorization| authorization.authorizing_account().ok());
         let fee_payer = tx
             .tx()
             .fee_payer_signature
