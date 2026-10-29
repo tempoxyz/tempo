@@ -2,7 +2,7 @@ use std::{cmp::Ordering, collections::BTreeMap, num::NonZeroU32, sync::Arc};
 
 use alloy_consensus::{BlockHeader as _, Sealable};
 use bytes::{Buf, BufMut};
-use commonware_codec::{Decode as _, Encode as _, EncodeSize, Read, ReadExt as _, Write};
+use commonware_codec::{Encode as _, EncodeSize, Read, ReadExt as _, Write};
 use commonware_consensus::{
     CertifiableBlock as _, Heightable as _,
     marshal::{Update, core::DigestFallback},
@@ -958,13 +958,19 @@ where
         dealer_state: Option<&mut Dealer>,
         player_state: Option<&mut Player>,
         from: PublicKey,
-        message: IoBuf,
+        mut message: IoBuf,
     ) -> eyre::Result<()>
     where
         TStorageContext: BufferPooler + commonware_runtime::Metrics + Clock + Storage,
     {
-        let msg = Message::decode_cfg(message, &NZU32!(round.players().len() as u32))
-            .wrap_err("failed decoding p2p message")?;
+        let msg = Message::read_cfg(&mut message, &NZU32!(round.players().len() as u32))
+            .wrap_err("failed reading p2p message")?;
+        if message.has_remaining() {
+            warn!(
+                trailing_bytes = message.remaining(),
+                "p2p message has trailing bytes after a valid DKG message",
+            );
+        }
 
         match msg {
             Message::Dealer(pub_msg, priv_msg) => {

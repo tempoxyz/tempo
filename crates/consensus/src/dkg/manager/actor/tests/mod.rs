@@ -411,7 +411,7 @@ fn duplicate_and_late_acks_do_not_penalize_peers() {
 }
 
 #[test]
-fn dealings_with_trailing_bytes_are_dropped_without_penalizing_peers() {
+fn dealings_with_trailing_bytes_are_still_processed() {
     Runner::default().start(|mut context| async move {
         let (state, keys, _) = dkg_state(&mut context, Epoch::new(1), 2, true);
         let round = Round::from_state(&state, crate::config::NAMESPACE, true);
@@ -427,6 +427,10 @@ fn dealings_with_trailing_bytes_are_dropped_without_penalizing_peers() {
             .unwrap()
             .init_verified(state.clone())
             .await;
+        let mut player = storage
+            .create_player_for_round(keys[0].clone(), &round)
+            .unwrap()
+            .unwrap();
         let (_, public, private) =
             dkg::Dealer::start::<N3f1>(&mut context, round.info().clone(), keys[1].clone(), None)
                 .unwrap();
@@ -439,22 +443,19 @@ fn dealings_with_trailing_bytes_are_dropped_without_penalizing_peers() {
         padded.push(0);
         let mut sender = harness.sender().clone();
 
-        let error = actor
+        actor
             .handle_network_msg(
                 &round,
                 &mut sender,
                 &mut storage,
                 None,
-                None,
+                Some(&mut player),
                 keys[1].public_key(),
                 padded.into(),
             )
             .await
-            .unwrap_err();
-        assert!(matches!(
-            error.downcast_ref::<commonware_codec::Error>(),
-            Some(commonware_codec::Error::ExtraData(1))
-        ));
+            .unwrap();
+        assert_eq!(sender.send_count(), 1);
         assert!(harness.blocker.peers().is_empty());
     });
 }
