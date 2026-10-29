@@ -183,14 +183,12 @@ fn every_spec_lists_its_invariants_in_the_format() {
                     }
                 },
                 Coverage::Rust { path, function } => {
-                    let found = [format!("fn {function}("), format!("fn {function}<")];
-                    if let Err(error) = defines(&root, path, &found) {
+                    if let Err(error) = defines_rust_test(&root, path, function) {
                         errors.push(format!("{at}: {path}::{function}: {error}"));
                     }
                 }
                 Coverage::Solidity { path, function } => {
-                    let found = [format!("function {function}(")];
-                    if let Err(error) = defines(&root, path, &found) {
+                    if let Err(error) = defines_solidity(&root, path, function) {
                         errors.push(format!("{at}: {path}:{function}: {error}"));
                     }
                 }
@@ -233,9 +231,104 @@ fn specs(root: &Path) -> Vec<PathBuf> {
 }
 
 /// Whether the repo-relative `path` holds one of `found`.
-fn defines(root: &Path, path: &str, found: &[String]) -> Result<(), &'static str> {
+/// `source` with its comments blanked, line for line, so a commented-out function is not found.
+fn uncommented(source: &str) -> Vec<String> {
+    let mut block = false;
+    source
+        .lines()
+        .map(|line| {
+            let mut out = String::new();
+            let mut rest = line;
+            loop {
+                if block {
+                    match rest.find("*/") {
+                        Some(end) => {
+                            block = false;
+                            rest = &rest[end + 2..];
+                        }
+                        None => break,
+                    }
+                } else {
+                    let line_comment = rest.find("//");
+                    let block_comment = rest.find("/*");
+                    match (line_comment, block_comment) {
+                        (Some(l), Some(b)) if b < l => {
+                            out.push_str(&rest[..b]);
+                            block = true;
+                            rest = &rest[b + 2..];
+                        }
+                        (Some(l), _) => {
+                            out.push_str(&rest[..l]);
+                            break;
+                        }
+                        (None, Some(b)) => {
+                            out.push_str(&rest[..b]);
+                            block = true;
+                            rest = &rest[b + 2..];
+                        }
+                        (None, None) => {
+                            out.push_str(rest);
+                            break;
+                        }
+                    }
+                }
+            }
+            out
+        })
+        .collect()
+}
+
+/// Whether `path` defines `function` as a Rust test: an uncommented `fn` whose attributes,
+/// right above it, include a test attribute (`#[test]`, `#[tokio::test]`, ...). A helper a test calls
+/// does not count.
+fn defines_rust_test(root: &Path, path: &str, function: &str) -> Result<(), &'static str> {
     let source = fs::read_to_string(root.join(path)).map_err(|_| "no such file")?;
-    if found.iter().any(|found| source.contains(found.as_str())) {
+    let lines = uncommented(&source);
+    let signatures = [format!("fn {function}("), format!("fn {function}<")];
+    let mut found = false;
+    for (index, line) in lines.iter().enumerate() {
+        if !signatures
+            .iter()
+            .any(|signature| line.contains(signature.as_str()))
+        {
+            continue;
+        }
+        found = true;
+        let attributes = lines[..index]
+            .iter()
+            .rev()
+            .map(|line| line.trim())
+            .take_while(|line| {
+                line.is_empty()
+                    || line.starts_with("#[")
+                    || line.ends_with(']')
+                    || line.ends_with(',')
+            });
+        if attributes
+            .into_iter()
+            .any(|line| line.starts_with("#[") && line.contains("test"))
+        {
+            return Ok(());
+        }
+    }
+    Err(if found {
+        "the function is not a test"
+    } else {
+        "no such function in the file"
+    })
+}
+
+/// Whether `path`, a Foundry test file, defines `function` outside a comment.
+fn defines_solidity(root: &Path, path: &str, function: &str) -> Result<(), &'static str> {
+    if !path.ends_with(".t.sol") {
+        return Err("not a Foundry test file (*.t.sol)");
+    }
+    let source = fs::read_to_string(root.join(path)).map_err(|_| "no such file")?;
+    let signature = format!("function {function}(");
+    if uncommented(&source)
+        .iter()
+        .any(|line| line.contains(signature.as_str()))
+    {
         Ok(())
     } else {
         Err("no such function in the file")
@@ -587,4 +680,33 @@ fn the_parser_rejects_what_breaks_the_format() {
             "{body:?}: expected an error with {error:?}, got {errors:?}"
         );
     }
+}
+
+#[test]
+fn commented_out_functions_and_helpers_are_not_tests() {
+    let dir = std::env::temp_dir().join(format!("specs-lint-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("a.rs"),
+        "// #[test]\n// fn commented() {}\n/* #[test]\nfn blocked() {} */\nfn helper() {}\n#[test]\nfn real() {}\n#[tokio::test(flavor = \"multi_thread\")]\nasync fn real_async() {}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("a.t.sol"),
+        "// function testGone() public {}\nfunction testHere() public {}\n",
+    )
+    .unwrap();
+    fs::write(dir.join("a.sol"), "function testHere() public {}\n").unwrap();
+    assert!(defines_rust_test(&dir, "a.rs", "commented").is_err());
+    assert!(defines_rust_test(&dir, "a.rs", "blocked").is_err());
+    assert_eq!(
+        defines_rust_test(&dir, "a.rs", "helper"),
+        Err("the function is not a test")
+    );
+    assert!(defines_rust_test(&dir, "a.rs", "real").is_ok());
+    assert!(defines_rust_test(&dir, "a.rs", "real_async").is_ok());
+    assert!(defines_solidity(&dir, "a.t.sol", "testGone").is_err());
+    assert!(defines_solidity(&dir, "a.t.sol", "testHere").is_ok());
+    assert!(defines_solidity(&dir, "a.sol", "testHere").is_err());
+    fs::remove_dir_all(&dir).unwrap();
 }
