@@ -908,6 +908,9 @@ jobs:
             type=sha,prefix=sha-
             type=ref,event=pr
 
+      - name: Install cosign
+        uses: tempoxyz/gh-actions/vendor/sigstore/cosign-installer@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
       - name: Publish fixed companion image names
         env:
           XTASK_TAGS: ${{ steps.meta-tempo-zone-xtask.outputs.tags }}
@@ -916,14 +919,25 @@ jobs:
           BUILDER_REF: ${{ needs.build-and-push.outputs.builder_ref }}
         run: |
           set -euo pipefail
+          : > "$RUNNER_TEMP/prover-image-refs.txt"
           publish() {
-            local image="$1" metadata="$2" tag
+            local image="$1" metadata="$2" tag digest
             docker load --input "$RUNNER_TEMP/candidate-images/$image.tar"
             while IFS= read -r tag; do
               [[ -z "$tag" ]] && continue
               [[ "$tag" == "$REGISTRY/$image:"* || "$tag" == "docker.io/tempoxyz/$image:"* ]]
               docker tag "$image:candidate" "$tag"
-              docker push "$tag"
+              if [[ "$image" == tempo-zone-prover ]]; then
+                # Bind signing to this push receipt, never a mutable tag lookup.
+                digest="$(docker push --quiet "$tag")"
+                [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+                  echo "Invalid prover push digest for $tag: $digest" >&2
+                  exit 1
+                }
+                printf '%s@%s\n' "${tag%:*}" "$digest" >> "$RUNNER_TEMP/prover-image-refs.txt"
+              else
+                docker push "$tag"
+              fi
             done <<< "$metadata"
           }
           publish tempo-zone-xtask "$XTASK_TAGS"
@@ -935,6 +949,31 @@ jobs:
             docker tag tempo-zone-prover-eif-builder:local "$BUILDER_REF"
             docker push "$BUILDER_REF"
           fi
+
+      - name: Sign published prover image digests
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -s "$RUNNER_TEMP/prover-image-refs.txt" ]] || {
+            echo "No published prover image digests to sign" >&2
+            exit 1
+          }
+          sort -u "$RUNNER_TEMP/prover-image-refs.txt" > "$RUNNER_TEMP/prover-image-refs-unique.txt"
+
+          # Keyless signatures identify the publishing workflow, not human/VK
+          # approval or L1-approved PCRs. Tags already exist if signing fails.
+          while IFS= read -r ref; do
+            for attempt in 1 2 3; do
+              if cosign sign --yes "$ref"; then
+                break
+              fi
+              if [[ "$attempt" -eq 3 ]]; then
+                echo "Failed to sign $ref after $attempt attempts" >&2
+                exit 1
+              fi
+              sleep "$((attempt * 15))"
+            done
+          done < "$RUNNER_TEMP/prover-image-refs-unique.txt"
 
   production-reproducible-clean-rebuild:
     name: Rebuild production tempo-zone image without cache
