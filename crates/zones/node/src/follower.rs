@@ -16,6 +16,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_evm::consensus::validate_body_against_header;
 use tempo_precompiles::dispatch::abi_decoder_config_for_spec;
 use tempo_primitives::{Block, TempoHeader, TempoTxEnvelope};
 use tokio::sync::mpsc;
@@ -44,6 +45,7 @@ const BACKFILL_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 const BLOCK_INACTIVITY_TIMEOUT: Duration = Duration::from_secs(30);
 const PEER_ANCHOR_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_PENDING_BLOCKS: usize = 128;
+const MAX_PENDING_BYTES: usize = 64 * 1024 * 1024;
 /// Keep track of the backfill exactly. We'll buffer any live blocks received
 /// during backfill.
 struct BackfillProgress {
@@ -109,31 +111,28 @@ struct PendingPeerBlock {
 #[derive(Default)]
 struct PendingBlocks {
     blocks: BTreeMap<u64, PendingPeerBlock>,
+    bytes: usize,
 }
 
 impl PendingBlocks {
     /// Adds a block unless its height is already present. When full, retains blocks closest to
-    /// the local head and returns the height that was dropped.
-    fn insert(&mut self, number: u64, block: PendingPeerBlock) -> Option<u64> {
+    /// the local head and returns all dropped heights, farthest first.
+    fn insert(&mut self, number: u64, block: PendingPeerBlock) -> Vec<u64> {
         if self.blocks.contains_key(&number) {
-            return None;
+            return Vec::new();
         }
-        if self.blocks.len() < MAX_PENDING_BLOCKS {
-            self.blocks.insert(number, block);
-            return None;
+        if block.block.encoded_size > MAX_PENDING_BYTES {
+            return vec![number];
         }
-
-        let Some((&farthest, _)) = self.blocks.last_key_value() else {
-            self.blocks.insert(number, block);
-            return None;
-        };
-        if number < farthest {
-            self.blocks.pop_last();
-            self.blocks.insert(number, block);
-            Some(farthest)
-        } else {
-            Some(number)
+        self.bytes += block.block.encoded_size;
+        self.blocks.insert(number, block);
+        let mut dropped = Vec::new();
+        while self.blocks.len() > MAX_PENDING_BLOCKS || self.bytes > MAX_PENDING_BYTES {
+            let (height, block) = self.blocks.pop_last().expect("pending buffer is nonempty");
+            self.bytes -= block.block.encoded_size;
+            dropped.push(height);
         }
+        dropped
     }
 
     fn first_number(&self) -> Option<u64> {
@@ -141,7 +140,9 @@ impl PendingBlocks {
     }
 
     fn take_next_after(&mut self, head: u64) -> Option<PendingPeerBlock> {
-        self.blocks.remove(&head.saturating_add(1))
+        let block = self.blocks.remove(&head.saturating_add(1))?;
+        self.bytes -= block.block.encoded_size;
+        Some(block)
     }
 
     #[cfg(test)]
@@ -275,12 +276,19 @@ where
                                     continue;
                                 }
                             };
-                            inactivity
-                                .as_mut()
-                                .reset(tokio::time::Instant::now() + BLOCK_INACTIVITY_TIMEOUT);
+                            let previous_head = self.context.provider.best_block_number();
                             if !self.process_follower_block(block, None).await
                             {
                                 return;
+                            }
+                            match (previous_head, self.context.provider.best_block_number()) {
+                                (Ok(previous), Ok(current)) if current > previous => {
+                                    inactivity.as_mut().reset(tokio::time::Instant::now() + BLOCK_INACTIVITY_TIMEOUT);
+                                }
+                                (Err(err), _) | (_, Err(err)) => {
+                                    tracing::error!(target: "zone::p2p", %err, "Failed reading local head for inactivity tracking; leaving deadline unchanged");
+                                }
+                                (Ok(_), Ok(_)) => {}
                             }
                         }
                         BackfillResponse::Completed { peer, tip } => {
@@ -323,12 +331,19 @@ where
                                 }
                             };
                             let live_sender = Some(leader_ed25519_public_key);
-                            inactivity
-                                .as_mut()
-                                .reset(tokio::time::Instant::now() + BLOCK_INACTIVITY_TIMEOUT);
+                            let previous_head = self.context.provider.best_block_number();
                             if !self.process_follower_block(block, live_sender).await
                             {
                                 return;
+                            }
+                            match (previous_head, self.context.provider.best_block_number()) {
+                                (Ok(previous), Ok(current)) if current > previous => {
+                                    inactivity.as_mut().reset(tokio::time::Instant::now() + BLOCK_INACTIVITY_TIMEOUT);
+                                }
+                                (Err(err), _) | (_, Err(err)) => {
+                                    tracing::error!(target: "zone::p2p", %err, "Failed reading local head for inactivity tracking; leaving deadline unchanged");
+                                }
+                                (Ok(_), Ok(_)) => {}
                             }
                         }
                         P2pEvent::TransactionReceived { .. } => {
@@ -466,13 +481,15 @@ where
                 Ok(PeerBlockImportOutcome::Imported) => {}
                 Err(err) => {
                     tracing::error!(target: "zone::p2p", %err, "Rejected duplicate or conflicting peer block");
+                    self.backfill.needed = true;
                 }
             }
             return true;
         }
         self.backfill.observe_block(number, best);
-        if let Some(dropped) = self.pending.insert(number, peer_block) {
-            tracing::warn!(target: "zone::p2p", dropped, pending_limit = MAX_PENDING_BLOCKS, "Dropped far-future peer block because the pending block buffer is full");
+        let dropped = self.pending.insert(number, peer_block);
+        if !dropped.is_empty() {
+            tracing::warn!(target: "zone::p2p", ?dropped, pending_limit = MAX_PENDING_BLOCKS, pending_byte_limit = MAX_PENDING_BYTES, "Dropped far-future peer blocks because the pending block buffer is full");
         }
         if number > best.saturating_add(1) {
             info!(target: "zone::p2p", local_head = best, received = number, "Detected zone block gap; requesting backfill");
@@ -523,7 +540,6 @@ where
         let block_number = block.number();
         let hash = block.hash();
         let best_block = self.context.provider.best_block_number()?;
-        let tempo_import = decode_advance_tempo(&block)?;
 
         // 1. Block number is correct
         if block_number <= best_block {
@@ -535,9 +551,16 @@ where
                     eyre::eyre!("missing local canonical header at height {block_number}")
                 })?;
             if existing.hash() == hash {
+                // Live duplicates cannot advance local state. Ignore them before doing body-root
+                // work; backfill responses still reconcile a raced canonical import below.
+                if peer_block.live_sender.is_some() {
+                    debug!(target: "zone::p2p", block_number, ?hash, "Ignoring duplicate live block");
+                    return Ok(PeerBlockImportOutcome::Imported);
+                }
                 // This path bypasses `new_payload`, so verify the peer-supplied body against the
                 // canonical header before deriving queue mutations from it.
-                block.ensure_transaction_root_valid()?;
+                validate_body_against_header(block.body(), block.header())?;
+                let tempo_import = decode_advance_tempo(&block)?;
                 reconcile_canonical_import(&self.context.deposit_queue, &tempo_import)
                     .wrap_err_with(|| {
                         format!("cannot reconcile duplicate canonical peer block {block_number}")
@@ -571,6 +594,8 @@ where
                 block.parent_hash()
             );
         }
+
+        let tempo_import = decode_advance_tempo(&block)?;
 
         // 3. Require the block to import a non-empty contiguous L1 header range
         // beginning immediately after the local Tempo checkpoint.
@@ -637,6 +662,8 @@ where
                 format!("peer block {block_number} does not match observed portal events")
             })?;
         }
+
+        validate_body_against_header(block.body(), block.header())?;
 
         // Bind the received witness to this block. Its contents are trusted here; execution
         // still goes through the normal engine, without an additional stateless replay.
@@ -1517,6 +1544,7 @@ mod tests {
         PendingPeerBlock {
             block: crate::replication::PeerBlock {
                 witness: None,
+                encoded_size: 1,
                 block: Block {
                     header: TempoHeader {
                         inner: alloy_consensus::Header {
@@ -1536,13 +1564,13 @@ mod tests {
     fn pending_block_limit_keeps_blocks_closest_to_local_head() {
         let mut pending = PendingBlocks::default();
         for number in 100..100 + MAX_PENDING_BLOCKS as u64 {
-            assert_eq!(pending.insert(number, pending_block(number)), None);
+            assert!(pending.insert(number, pending_block(number)).is_empty());
         }
         assert_eq!(pending.len(), MAX_PENDING_BLOCKS);
         assert_eq!(pending.first_number(), Some(100));
 
         let farthest = 100 + MAX_PENDING_BLOCKS as u64 - 1;
-        assert_eq!(pending.insert(99, pending_block(99)), Some(farthest));
+        assert_eq!(pending.insert(99, pending_block(99)), vec![farthest]);
         assert_eq!(pending.len(), MAX_PENDING_BLOCKS);
         assert!(pending.contains(99));
         assert!(!pending.contains(farthest));
@@ -1550,7 +1578,7 @@ mod tests {
         let farther = farthest + 1;
         assert_eq!(
             pending.insert(farther, pending_block(farther)),
-            Some(farther)
+            vec![farther]
         );
         assert_eq!(pending.len(), MAX_PENDING_BLOCKS);
         assert!(!pending.contains(farther));
@@ -1561,6 +1589,35 @@ mod tests {
         assert_eq!(next.block.block.header.number(), 99);
         assert_eq!(pending.first_number(), Some(100));
     }
+
+    #[test]
+    fn pending_block_limit_counts_retained_bytes() {
+        let mut pending = PendingBlocks::default();
+        let mut far = pending_block(2);
+        far.block.encoded_size = MAX_PENDING_BYTES;
+        assert!(pending.insert(2, far).is_empty());
+        assert_eq!(pending.insert(1, pending_block(1)), vec![2]);
+        assert_eq!(pending.bytes, 1);
+        pending.take_next_after(0).unwrap();
+        assert_eq!(pending.bytes, 0);
+    }
+
+    #[test]
+    fn pending_byte_limit_reports_every_eviction() {
+        let mut pending = PendingBlocks::default();
+        for number in 2..=4 {
+            let mut block = pending_block(number);
+            block.block.encoded_size = MAX_PENDING_BYTES / 3;
+            assert!(pending.insert(number, block).is_empty());
+        }
+        let mut near = pending_block(1);
+        near.block.encoded_size = MAX_PENDING_BYTES;
+        assert_eq!(pending.insert(1, near), vec![4, 3, 2]);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending.bytes, MAX_PENDING_BYTES);
+        assert!(pending.contains(1));
+    }
+
     #[test]
     fn full_import_validates_deferred_and_current_portal_events() {
         let queue = DepositQueue::new();
