@@ -6,10 +6,11 @@ use crate::{
     transaction_error::{ConfigurableAccountError, RootKeyRole},
 };
 use alloy_consensus::Transaction as _;
-use alloy_primitives::{Address, B256, TxKind};
+use alloy_primitives::{Address, B256, IntoLogData as _, TxKind};
 use evm2::{
     Evm,
     evm::AccountInfo,
+    interpreter::gas::LOG,
     registry::{HandlerError, HandlerResult},
     version::{GasId, GasParams},
 };
@@ -17,10 +18,11 @@ use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{
     CONFIGURABLE_ACCOUNT_ADDRESS,
     configurable_account::{
-        ConfigurableAccount, UpgradeEligibility, valid_account, valid_account_code,
+        ConfigurableAccount, UpgradeEligibility, registration_event, valid_account,
+        valid_account_code,
     },
     error::TempoPrecompileError,
-    storage::{ConfigCommitmentWriteGas, StorageCtx, account_config_commitment},
+    storage::{StorageCtx, account_config_commitment},
 };
 use tempo_primitives::transaction::{
     ConfigurableAccountSignature, ConfigurableAccountStateError, TempoSignature,
@@ -165,10 +167,12 @@ pub(crate) fn verify(
     Ok(())
 }
 
-/// Registers the commitment of the signing configurable account when it has none yet.
+/// Registers the signing configurable account at its initial configuration when it has no
+/// commitment yet, emitting `ConfigurableAccountConfigUpdated` with version zero.
 ///
 /// Runs after validation, authorization and fee collection, outside the batch checkpoint: the
-/// initial registration persists on execution failure, while later owner updates stay inside it.
+/// initial registration and its event persist on execution failure, while later owner updates
+/// stay inside it.
 pub(crate) fn register_commitments(
     host: &mut Evm<'_, TempoEvmTypes>,
     aa: &TempoAaTx,
@@ -176,18 +180,15 @@ pub(crate) fn register_commitments(
     let Some(role) = aa.native_authorization() else {
         return Ok(());
     };
-    let (account, commitment) = (role.signature.account(), role.signature.config_commitment());
+    let signature = role.signature;
+    // `register` reads the commitment again rather than carrying it over from `validate_state`:
+    // nothing writes it in between, so this only registers accounts still unset.
     StorageCtx::enter_evm_without_tip1060_accounting(host, || {
-        // Read again rather than carried over from `validate_state`: nothing writes the
-        // commitment in between, so this only registers accounts still unset.
-        if StorageCtx.config_commitment(account)?.is_zero() {
-            StorageCtx.set_config_commitment(
-                account,
-                commitment,
-                ConfigCommitmentWriteGas::Intrinsic,
-            )?;
-        }
-        Ok::<(), TempoPrecompileError>(())
+        ConfigurableAccount::new().register(
+            signature.account(),
+            signature.config(),
+            signature.config_commitment(),
+        )
     })?;
     Ok(())
 }
@@ -280,6 +281,9 @@ fn validate_native_roles(
         let gas = &host.version().gas_params;
         // TIP-1108 prices the commitment write like account creation.
         extra_gas += gas.get(GasId::NewAccountCost);
+        // `register_commitments` emits the registration event without metering.
+        let event = registration_event(address, signature.config()).into_log_data();
+        extra_gas += u64::from(LOG) + gas.log_cost(event.topics().len() as u8, event.data.len());
         state_gas += gas.new_account_state_gas();
         // The sender's creation is free here only when another TIP-1000 charge pays it: the
         // nonce-zero charge of a protocol-nonce transaction, or the first-call CREATE charge of

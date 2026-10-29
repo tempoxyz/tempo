@@ -549,6 +549,18 @@ fn configurable_account_logs(result: &TxResult<TempoEvmTypes>) -> Vec<LogData> {
         .collect()
 }
 
+/// The event registering `f.account` at its version-zero configuration.
+fn registration_log(f: &Fixture) -> LogData {
+    IConfigurableAccount::ConfigurableAccountConfigUpdated {
+        account: f.account,
+        salt: f.config.salt,
+        version: 0,
+        threshold: f.config.threshold,
+        owners: abi_owners(&f.config),
+    }
+    .encode_log_data()
+}
+
 fn assert_upgraded(
     f: &mut Fixture,
     result: &TxResult<TempoEvmTypes>,
@@ -3620,6 +3632,11 @@ fn native_first_call_registration_and_retry() {
         .unwrap()
         .detach();
     assert!(!output.result.status);
+    // Registration runs before the batch checkpoint, so its event survives the revert.
+    assert_eq!(
+        configurable_account_logs(&output.result),
+        [registration_log(&f)]
+    );
     assert_eq!(
         decode_config_commitment(
             &output
@@ -3644,6 +3661,7 @@ fn native_first_call_registration_and_retry() {
     let tx = f.signed(4, vec![f.getter()]);
     let output = f.evm.transact(&tx_env(&tx, f.account)).unwrap().detach();
     assert!(output.result.status, "{:?}", output.result);
+    assert!(configurable_account_logs(&output.result).is_empty());
     assert_eq!(
         decode_config_commitment(
             &output
@@ -3778,7 +3796,8 @@ fn native_first_registration_preserves_existing_storage() {
     let tx = f.signed(3, vec![f.getter()]);
     let output = f.evm.transact(&tx_env(&tx, f.account)).unwrap().commit();
     assert!(output.status, "{output:?}");
-    assert_eq!(output.logs, []);
+    assert_eq!(output.logs.len(), 1);
+    assert_eq!(configurable_account_logs(&output), [registration_log(&f)]);
     assert_eq!(f.commitment(), f.config.commitment().unwrap());
     assert_eq!(
         f.evm
@@ -3810,7 +3829,8 @@ fn native_registration_survives_caught_reverting_subcall() {
     let tx = f.signed(3, vec![call]);
     let output = f.evm.transact(&tx_env(&tx, f.account)).unwrap().commit();
     assert!(output.status, "{output:?}");
-    assert_eq!(output.logs, []);
+    assert_eq!(output.logs.len(), 1);
+    assert_eq!(configurable_account_logs(&output), [registration_log(&f)]);
     assert_eq!(f.commitment(), f.config.commitment().unwrap());
     assert_eq!(
         f.evm
@@ -3838,7 +3858,8 @@ fn native_first_transaction_can_rotate_configuration() {
     let tx = f.signed(3, vec![Fixture::rotation(&f.config, &next), f.getter()]);
     let output = f.evm.transact(&tx_env(&tx, f.account)).unwrap().commit();
     assert!(output.status, "{output:?}");
-    assert_eq!(output.logs.len(), 1);
+    assert_eq!(output.logs.len(), 2);
+    assert_eq!(configurable_account_logs(&output)[0], registration_log(&f));
     assert_eq!(
         IConfigurableAccount::getConfigCommitmentCall::abi_decode_returns(&output.output).unwrap(),
         next.commitment().unwrap()
@@ -3942,7 +3963,14 @@ fn native_batch_rotation_failure(registered: bool, halt: bool) {
     let output = f.evm.transact(&tx_env(&tx, f.account)).unwrap().commit();
     assert_eq!(output.stop.is_halt(), halt);
     assert_eq!(output.stop.is_revert(), !halt);
-    assert_eq!(output.logs, []);
+    // Only a first registration's event survives the batch rollback.
+    let expected = if registered {
+        vec![]
+    } else {
+        vec![registration_log(&f)]
+    };
+    assert_eq!(configurable_account_logs(&output), expected);
+    assert_eq!(output.logs.len(), expected.len());
     assert_eq!(f.commitment(), f.config.commitment().unwrap());
     nonce += 1;
     assert_eq!(f.info(f.account).unwrap().nonce, nonce);
@@ -4087,7 +4115,7 @@ fn native_signer_with_code_is_rejected() {
 }
 
 /// A configurable-account signature adds its TIP-1114 verification cost `V - 3,000` to intrinsic
-/// gas, on top of the first-use account proof and the TIP-1108 registration write.
+/// gas, on top of the first-use account proof, the TIP-1108 registration write and its event.
 #[test]
 fn native_signature_verification_is_intrinsic_gas() {
     let calls = vec![Call {
@@ -4118,7 +4146,9 @@ fn native_signature_verification_is_intrinsic_gas() {
     let verification = calldata + keccak(75 + 21) + keccak(96);
     // First use: derivation K(68 + 21), plus the registration write, priced like account creation.
     let new_account = tempo_gas_params(TempoHardfork::T14).get(GasId::NewAccountCost);
-    let first_use = keccak(68 + 21) + new_account;
+    // The registration event: LOG2 over salt, version, threshold and one owner (224 bytes).
+    let registration_log = 375 + 2 * 375 + 8 * 224;
+    let first_use = keccak(68 + 21) + new_account + registration_log;
     assert_eq!(
         native.tx_gas_used() - primitive.tx_gas_used(),
         verification + first_use
