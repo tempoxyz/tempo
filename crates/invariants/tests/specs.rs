@@ -197,45 +197,64 @@ fn specs(root: &Path) -> Vec<PathBuf> {
 /// Whether the repo-relative `path` holds one of `found`.
 /// `source` with its comments blanked, line for line, so a commented-out function is not found.
 fn uncommented(source: &str) -> Vec<String> {
-    let mut block = false;
+    #[derive(PartialEq)]
+    enum In {
+        Code,
+        Str,
+        Block,
+    }
+    let mut state = In::Code;
     source
         .lines()
         .map(|line| {
+            let chars: Vec<char> = line.chars().collect();
             let mut out = String::new();
-            let mut rest = line;
-            loop {
-                if block {
-                    match rest.find("*/") {
-                        Some(end) => {
-                            block = false;
-                            rest = &rest[end + 2..];
-                        }
-                        None => break,
-                    }
-                } else {
-                    let line_comment = rest.find("//");
-                    let block_comment = rest.find("/*");
-                    match (line_comment, block_comment) {
-                        (Some(l), Some(b)) if b < l => {
-                            out.push_str(&rest[..b]);
-                            block = true;
-                            rest = &rest[b + 2..];
-                        }
-                        (Some(l), _) => {
-                            out.push_str(&rest[..l]);
-                            break;
-                        }
-                        (None, Some(b)) => {
-                            out.push_str(&rest[..b]);
-                            block = true;
-                            rest = &rest[b + 2..];
-                        }
-                        (None, None) => {
-                            out.push_str(rest);
-                            break;
+            let mut i = 0;
+            while i < chars.len() {
+                let c = chars[i];
+                let next = chars.get(i + 1).copied();
+                match state {
+                    In::Block => {
+                        if c == '*' && next == Some('/') {
+                            state = In::Code;
+                            i += 1;
                         }
                     }
+                    In::Str => {
+                        out.push(c);
+                        if c == '\\' {
+                            if let Some(escaped) = next {
+                                out.push(escaped);
+                                i += 1;
+                            }
+                        } else if c == '"' {
+                            state = In::Code;
+                        }
+                    }
+                    In::Code => match (c, next) {
+                        ('/', Some('/')) => break,
+                        ('/', Some('*')) => {
+                            state = In::Block;
+                            i += 1;
+                        }
+                        ('"', _) => {
+                            out.push(c);
+                            state = In::Str;
+                        }
+                        // A character literal such as '"' or '\'', not a lifetime.
+                        ('\'', Some(_)) => {
+                            let end = if next == Some('\\') { i + 3 } else { i + 2 };
+                            if chars.get(end) == Some(&'\'') {
+                                out.extend(&chars[i..=end]);
+                                i = end;
+                            } else {
+                                out.push(c);
+                            }
+                        }
+                        _ => out.push(c),
+                    },
                 }
+                i += 1;
             }
             out
         })
@@ -655,6 +674,12 @@ fn commented_out_functions_and_helpers_are_not_tests() {
         "// #[test]\n// fn commented() {}\n/* #[test]\nfn blocked() {} */\nfn helper() {}\n#[test]\nfn real() {}\n#[tokio::test(flavor = \"multi_thread\")]\nasync fn real_async() {}\n",
     )
     .unwrap();
+    fs::write(
+        dir.join("b.rs"),
+        "const A: &str = \"/* not a comment // either\";\nconst B: char = '\"';\n#[test]\nfn after_strings() {}\n",
+    )
+    .unwrap();
+    assert!(defines_rust_test(&dir, "b.rs", "after_strings").is_ok());
     fs::write(
         dir.join("a.t.sol"),
         "// function testGone() public {}\nfunction testHere() public {}\n",
