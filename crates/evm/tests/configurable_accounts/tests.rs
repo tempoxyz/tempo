@@ -4195,7 +4195,7 @@ fn configurable_account_is_rejected_before_t14() {
         unsupported,
         "configurable-account-signed grant"
     );
-    // Key type 3 in a primitive-signed grant: no native role is involved.
+    // Key type 3 in a primitive-signed grant: no configurable role is involved.
     let grant =
         KeyAuthorization::unrestricted(1, SignatureType::ConfigurableAccount, signer(5).address());
     let approval = f.owner.sign_hash_sync(&grant.signature_hash()).unwrap();
