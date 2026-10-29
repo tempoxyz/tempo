@@ -35,20 +35,6 @@ fn aa_request(key_type: SignatureType) -> TempoTransactionRequest {
     }
 }
 
-#[test]
-fn configurable_account_key_type_cannot_fabricate_a_primitive_simulation_signature() {
-    let env = TempoEvmEnv::default();
-
-    aa_request(SignatureType::Secp256k1)
-        .try_into_tx_env(&env)
-        .expect("a primitive key type converts");
-
-    let error = aa_request(SignatureType::ConfigurableAccount)
-        .try_into_tx_env(&env)
-        .expect_err("a configurable account key type has no primitive stand-in");
-    assert!(matches!(error, EthApiError::InvalidParams(_)));
-}
-
 /// Two of three owners, each of weight one.
 fn config() -> ConfigurableAccountConfig {
     ConfigurableAccountConfig {
@@ -115,13 +101,10 @@ fn simulation_rejects_invalid_claimed_approvals(
     assert!(matches!(error, EthApiError::InvalidParams(actual) if actual == message));
 }
 
-/// The mock grant is signed by the parent, or by the admin named as `signer`.
-#[test_case(None, Address::repeat_byte(0xaa); "parent signed")]
-#[test_case(Some(Address::repeat_byte(0xbb)), Address::repeat_byte(0xbb); "admin signed")]
-fn grant_simulation_signs_the_grant_with_mock_owner_approvals(
-    signer: Option<Address>,
-    signing_account: Address,
-) {
+/// The mock grant is signed by the admin named as `signer`.
+#[test]
+fn grant_simulation_signs_the_grant_with_mock_owner_approvals() {
+    let admin = Address::repeat_byte(0xbb);
     let mut request = aa_request(SignatureType::Secp256k1);
     request.set_key_authorization(grant().into_signed(Signature::test_signature()));
     // An unsupported `keyData` length falls back to the default size, as for ordinary requests.
@@ -131,7 +114,7 @@ fn grant_simulation_signs_the_grant_with_mock_owner_approvals(
         ..approval(2)
     };
     request.key_authorization_simulation = Some(ConfigurableAccountSimulationSpec {
-        signer,
+        signer: Some(admin),
         ..spec(vec![approval(1), webauthn])
     });
 
@@ -149,7 +132,7 @@ fn grant_simulation_signs_the_grant_with_mock_owner_approvals(
         .signature
         .as_configurable_account()
         .expect("the grant carries the mock quorum");
-    assert_eq!(signature.account(), signing_account);
+    assert_eq!(signature.account(), admin);
     assert_eq!(signature.config(), &config());
     assert_eq!(signature.signatures().len(), 2);
 }

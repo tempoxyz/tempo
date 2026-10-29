@@ -670,8 +670,10 @@ async fn configurable_account_rpc_registration_revert_retry_and_rotation() -> ey
     assert_eq!(commitment(&env, account.address).await?, B256::ZERO);
     let request = account.simulation_request();
     let provider = tempo_provider(&env);
-    let simulated = provider.call(request.clone()).latest().await?;
-    assert_eq!(simulated, Bytes::from(account.config.commitment().unwrap()));
+    assert_eq!(
+        provider.call(request.clone()).latest().await?,
+        Bytes::from(account.config.commitment().unwrap())
+    );
     let estimate = provider.estimate_gas(request).latest().await?;
     assert!(estimate > 0);
     assert_eq!(commitment(&env, account.address).await?, B256::ZERO);
@@ -747,10 +749,9 @@ async fn configurable_account_rpc_registration_revert_retry_and_rotation() -> ey
     account.submit(&mut env, tx, signature, true).await?;
     let initial = account.config.commitment().unwrap();
     assert_eq!(commitment(&env, account.address).await?, initial);
-    let initial_word: U256 = initial.into();
     assert_eq!(
         env.provider().get_storage_at(OBSERVER, U256::ZERO).await?,
-        initial_word
+        U256::from_be_bytes(initial.0)
     );
 
     let replacement = ConfigurableAccount::new(0x21, 2);
@@ -885,18 +886,19 @@ async fn configurable_account_rpc_historical_state_and_account_overrides() -> ey
     let signature = account.sign(&tx)?;
     account.submit(&mut env, tx, signature, true).await?;
     let current = next.commitment().unwrap();
-    let historical = provider
-        .call(old_request.clone())
-        .block(historical_block)
-        .await?;
-    assert_eq!(historical, Bytes::from(initial));
-    let stale = provider
-        .call(old_request.clone())
-        .latest()
-        .await
-        .unwrap_err();
+    assert_eq!(
+        provider
+            .call(old_request.clone())
+            .block(historical_block)
+            .await?,
+        Bytes::from(initial)
+    );
     assert_rpc_error(
-        &stale,
+        &provider
+            .call(old_request.clone())
+            .latest()
+            .await
+            .unwrap_err(),
         EthRpcErrorCode::TransactionRejected.code(),
         &TempoInvalidTransaction::ConfigurableAccount(
             ConfigurableAccountError::ConfigurationCommitmentMismatch {
@@ -906,37 +908,42 @@ async fn configurable_account_rpc_historical_state_and_account_overrides() -> ey
         )
         .to_string(),
     )?;
-    let historical_gas = provider
-        .estimate_gas(old_request)
-        .block(historical_block)
-        .await?;
-    assert!(historical_gas > 0);
+    assert!(
+        provider
+            .estimate_gas(old_request)
+            .block(historical_block)
+            .await?
+            > 0
+    );
 
     account.adopt(next, replacement);
     let request = account.simulation_request();
     // Ordinary account overrides must merge with, rather than erase, the stored extension.
-    let overrides = StateOverridesBuilder::default()
-        .with_balance(account.address, U256::ONE)
-        .with_nonce(account.address, 9)
-        .with_state_diff(account.address, [(B256::ZERO, B256::repeat_byte(0x42))])
-        .build();
-    let overridden = provider
-        .call(request.clone())
-        .latest()
-        .overrides(overrides)
-        .await?;
-    assert_eq!(overridden, Bytes::from(current));
-    let code_override = StateOverridesBuilder::default()
-        .with_code(account.address, Bytes::from_static(&[0x00]))
-        .build();
-    let error = provider
-        .call(request)
-        .latest()
-        .overrides(code_override)
-        .await
-        .unwrap_err();
+    assert_eq!(
+        provider
+            .call(request.clone())
+            .latest()
+            .overrides(
+                StateOverridesBuilder::default()
+                    .with_balance(account.address, U256::ONE)
+                    .with_nonce(account.address, 9)
+                    .with_state_diff(account.address, [(B256::ZERO, B256::repeat_byte(0x42))])
+                    .build()
+            )
+            .await?,
+        Bytes::from(current)
+    );
     assert_rpc_error(
-        &error,
+        &provider
+            .call(request)
+            .latest()
+            .overrides(
+                StateOverridesBuilder::default()
+                    .with_code(account.address, Bytes::from_static(&[0x00]))
+                    .build(),
+            )
+            .await
+            .unwrap_err(),
         EthRpcErrorCode::TransactionRejected.code(),
         &TempoInvalidTransaction::ConfigurableAccount(ConfigurableAccountError::InvalidAccount {
             account: account.address,
@@ -1020,8 +1027,9 @@ async fn configurable_account_rpc_fill_and_access_list_preserve_authority() -> e
     assert_eq!(tx.nonce, 0);
     assert_eq!(tx.chain_id, env.chain_id());
     assert_eq!(tx.calls[0].to, OBSERVER.into());
-    let raw: Bytes = from_value(filled["raw"].clone())?;
-    let TempoTxEnvelope::AA(unsigned) = TempoTxEnvelope::decode_2718(&mut raw.as_ref())? else {
+    let TempoTxEnvelope::AA(unsigned) =
+        TempoTxEnvelope::decode_2718(&mut from_value::<Bytes>(filled["raw"].clone())?.as_ref())?
+    else {
         panic!("configurable fill must retain the AA transaction type");
     };
     assert_eq!(unsigned.tx().key_authorization.as_ref(), Some(&grant));
@@ -1092,11 +1100,10 @@ async fn configurable_account_rpc_simulated_grant_estimate_covers_the_signed_gra
     request.set_key_authorization(grant.clone().into_signed(Signature::test_signature()));
     request.key_authorization_simulation =
         parent.simulation_request().configurable_account_simulation;
-    let estimate = tempo_provider(&env).estimate_gas(request).latest().await?;
+    tx.gas_limit = tempo_provider(&env).estimate_gas(request).latest().await?;
 
     let grant_signature = parent.quorum(grant.signature_hash(), false)?;
     tx.key_authorization = Some(grant.into_signed(grant_signature));
-    tx.gas_limit = estimate;
     let signature = delegate.as_delegate(&tx, parent.address, false)?;
     parent.submit(&mut env, tx, signature, true).await?;
     assert_eq!(
@@ -1276,23 +1283,28 @@ async fn configurable_account_rpc_maximum_mixed_quorums_and_validation_cost_orde
     // Only the last approval of the grant signs the wrong digest. Recovery rejects the
     // transaction before any state is read, so it never reaches the unfunded check above.
     let mut invalid_grant = tx.clone();
-    let invalid_quorum = parent.quorum(grant.signature_hash(), true)?;
-    invalid_grant.key_authorization = Some(grant.into_signed(invalid_quorum));
+    invalid_grant.key_authorization = Some(
+        grant
+            .clone()
+            .into_signed(parent.quorum(grant.signature_hash(), true)?),
+    );
     let signature = delegate.as_delegate(&invalid_grant, parent.address, false)?;
     let invalid: TempoTxEnvelope = invalid_grant.clone().into_signed(signature.clone()).into();
     invalid
         .recover_signer()
         .expect_err("recovery verifies the grant quorum");
-    let error = rejection(&env, invalid_grant, signature).await;
-    assert_rpc_error(&error, INVALID_PARAMS_CODE, "invalid transaction signature")?;
+    assert_rpc_error(
+        &rejection(&env, invalid_grant, signature).await,
+        INVALID_PARAMS_CODE,
+        "invalid transaction signature",
+    )?;
     env.fund_account(parent.address).await?;
     assert_eq!(commitment(&env, parent.address).await?, B256::ZERO);
     assert_eq!(commitment(&env, delegate.address).await?, B256::ZERO);
 
     // Two independent eight-owner witnesses include secp256k1, P256 and WebAuthn. Sponsorship
     // adds exactly one ordinary secp256k1 signature without giving the sponsor authority.
-    let sponsor = env.funder_signer.clone();
-    sign_fee_payer(&mut tx, parent.address, &sponsor)?;
+    sign_fee_payer(&mut tx, parent.address, &env.funder_signer)?;
     let before = ITIP20::new(DEFAULT_FEE_TOKEN, env.provider())
         .balanceOf(parent.address)
         .call()

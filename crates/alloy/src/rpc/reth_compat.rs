@@ -176,7 +176,7 @@ impl TryIntoTxEnv<Recovered<TempoTxEnv>, TempoEvmEnv> for TempoTransactionReques
 }
 
 impl TempoTransactionRequest {
-    /// Configurable account signatures for a call in a simulated block.
+    /// Configurable account signatures for a simulated call.
     ///
     /// Installs the mock grant described by `keyAuthorizationSimulation` and returns the mock
     /// outer signature described by `configurableAccountSimulation`, or `None` when the outer
@@ -220,25 +220,12 @@ impl TempoTransactionRequest {
                 "configurable account simulation signer does not match the role account",
             ));
         }
-        Ok(Some(configurable_account_tempo_sig(
-            spec.mock_signature(account)?,
-            self.key_id,
-            parent,
-        )))
-    }
-}
-
-/// Wraps a configurable account approval as the outer signature: a delegate under `key_id`, else
-/// the account itself.
-fn configurable_account_tempo_sig(
-    signature: ConfigurableAccountSignature,
-    key_id: Option<Address>,
-    caller_addr: Address,
-) -> TempoSignature {
-    if key_id.is_some() {
-        TempoSignature::Keychain(KeychainSignature::new(caller_addr, signature))
-    } else {
-        TempoSignature::ConfigurableAccount(signature)
+        let signature = spec.mock_signature(account)?;
+        Ok(Some(if self.key_id.is_some() {
+            TempoSignature::Keychain(KeychainSignature::new(parent, signature))
+        } else {
+            TempoSignature::ConfigurableAccount(signature)
+        }))
     }
 }
 
