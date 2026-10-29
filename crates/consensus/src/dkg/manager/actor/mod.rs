@@ -47,7 +47,7 @@ use futures::{
     stream::FuturesOrdered,
 };
 use rand_core::CryptoRng;
-use tempo_chainspec::TempoHardforks as _;
+use tempo_chainspec::{NetworkIdentity, TempoHardforks as _};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_primitives::TempoHeader;
 use tokio::select;
@@ -55,7 +55,6 @@ use tracing::{Level, Span, debug, info, info_span, instrument, warn};
 
 use crate::consensus::{Digest, block::Block};
 
-mod startup;
 mod state;
 #[cfg(test)]
 mod tests;
@@ -171,10 +170,15 @@ where
 
         // Authenticate with the original persisted identity before healing can
         // replace stale state with an outcome supplied by the snapshot.
-        startup::verify_finalized_tip(
+        let persisted_identity = storage.state().map(|state| NetworkIdentity {
+            from_epoch: state.epoch.get(),
+            identity: *state.output.public().public(),
+        });
+
+        crate::startup::verify_finalized_tip(
             &mut *context,
             &config.network_identity,
-            storage.state(),
+            persisted_identity.as_ref(),
             config
                 .finalized_tip
                 .as_ref()
