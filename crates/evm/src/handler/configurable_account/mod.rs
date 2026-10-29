@@ -403,11 +403,11 @@ fn granted_configurable_account_access_gas(
     host: &mut Evm<'_, TempoEvmTypes>,
     aa: &TempoAaTx,
     spec: TempoHardfork,
-    signers: &[Address],
+    accounts: &[Address],
 ) -> HandlerResult<u64> {
     if let Some(granted) = aa.granted_configurable_account()
         && granted != aa.signer()
-        && !signers.contains(&granted)
+        && !accounts.contains(&granted)
     {
         let loaded = load_account(host, granted, spec)?;
         return Ok(account_access_gas(
