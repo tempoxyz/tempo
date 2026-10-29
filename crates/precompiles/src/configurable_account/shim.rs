@@ -1,7 +1,8 @@
 //! Stateless dispatcher executed by the protocol-installed account marker.
 
 use crate::{
-    EncodePrecompileResult, input_cost, signature_verifier::SignatureVerifier, storage::StorageCtx,
+    EncodePrecompileResult, charge_input_cost, input_cost, signature_verifier::SignatureVerifier,
+    storage::StorageCtx,
 };
 use alloy::{
     primitives::{Address, Bytes, FixedBytes},
@@ -11,12 +12,13 @@ use evm2::{
     evm::precompile::PrecompileOutput,
     precompiles::{PrecompileError, PrecompileResult},
 };
-use tempo_contracts::precompiles::{
-    ISignatureVerifier, configurable_account::IConfigurableAccountShim,
-};
+use tempo_contracts::precompiles::configurable_account::IConfigurableAccountShim;
 
 /// Executes the account shim in `account`'s call context without writing state.
 pub fn call(account: Address, input: &[u8]) -> PrecompileResult {
+    if let Some(err) = charge_input_cost(&mut StorageCtx, input) {
+        return err;
+    }
     if input.is_empty() {
         return Ok(PrecompileOutput::new(Bytes::new()));
     }
@@ -27,17 +29,9 @@ pub fn call(account: Address, input: &[u8]) -> PrecompileResult {
                 .validate_allow_trailing_bytes(false),
         )
         .map_err(|_| PrecompileError::Revert(Bytes::new()))?;
-        let verifier_input = ISignatureVerifier::verifyConfigurableAccountCall {
-            account,
-            hash: call.hash,
-            signature: call.signature.clone(),
-        };
         let result: crate::Result<bool> = (|| {
-            // Match the verifier entrypoint's input and signature costs.
-            StorageCtx.deduct_gas(input_cost(
-                StorageCtx.spec(),
-                4 + verifier_input.abi_encoded_size(),
-            )?)?;
+            // Match the verifier entrypoint's costs: its input carries one more word, `account`.
+            StorageCtx.deduct_gas(input_cost(StorageCtx.spec(), 32)?)?;
             SignatureVerifier::new().verify_configurable_account(
                 account,
                 call.hash,

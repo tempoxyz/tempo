@@ -4754,4 +4754,35 @@ fn configurable_shim_matches_verifier_gas_and_propagates_oog() {
             evm2::precompiles::PrecompileHalt::OutOfGas
         ))
     ));
+    // The receive hook pays for its whole input before decoding it.
+    let receive = IConfigurableAccountShim::onERC721ReceivedCall {
+        operator: Address::ZERO,
+        from: Address::ZERO,
+        tokenId: U256::ZERO,
+        data: vec![0; 1 << 20].into(),
+    }
+    .abi_encode();
+    let receive_gas = input_cost(TempoHardfork::T14, receive.len()).unwrap();
+    let mut receive_with_gas = |gas_limit| {
+        let mut gas = evm2::interpreter::GasTracker::new(gas_limit);
+        let mut provider = tempo_precompiles::storage::evm::EvmPrecompileStorageProvider::new(
+            &mut f.evm,
+            &mut gas,
+            TempoHardfork::T14,
+            true,
+        );
+        StorageCtx::enter(&mut provider, || shim::call(account, &receive))
+    };
+    assert!(matches!(
+        receive_with_gas(receive_gas - 1),
+        Err(evm2::precompiles::PrecompileError::Halt(
+            evm2::precompiles::PrecompileHalt::OutOfGas
+        ))
+    ));
+    assert_eq!(
+        receive_with_gas(receive_gas).unwrap().bytes(),
+        IConfigurableAccountShim::onERC721ReceivedCall::abi_encode_returns(
+            &IConfigurableAccountShim::onERC721ReceivedCall::SELECTOR.into()
+        )
+    );
 }
