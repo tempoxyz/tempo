@@ -4294,7 +4294,6 @@ fn verify_configurable_account_before_and_after_rotation() {
     let unregistered_later =
         configurable_account_approval(account, &later, &f.owner, CONFIGURABLE_ACCOUNT_HASH);
     let invalid = Verdict::Invalid;
-    let label = "unregistered later version";
     check_configurable_account_verdict(
         &mut f,
         account,
@@ -4302,7 +4301,7 @@ fn verify_configurable_account_before_and_after_rotation() {
         false,
         cold,
         invalid,
-        label,
+        "unregistered later version",
     );
 
     // Registered by a rotation: only the new configuration matches, and the derivation is not
@@ -4363,7 +4362,6 @@ fn verify_configurable_account_false_cases_charge_before_they_check() {
     ] {
         let names_address =
             configurable_account_approval(address, &f.config, &f.owner, CONFIGURABLE_ACCOUNT_HASH);
-        let label = format!("invalid account {address}");
         check_configurable_account_verdict(
             &mut f,
             address,
@@ -4371,7 +4369,7 @@ fn verify_configurable_account_false_cases_charge_before_they_check() {
             false,
             access,
             invalid,
-            &label,
+            &format!("invalid account {address}"),
         );
     }
 
@@ -4520,8 +4518,7 @@ fn configurable_account_marker_dispatch() {
         value: U256::ZERO,
         input: Bytes::new(),
     };
-    let tx = f.signed(3, vec![receive.clone()]);
-    let result = f.run(&tx);
+    let result = f.run(&f.signed(3, vec![receive.clone()]));
     assert!(result.status, "{result:?}");
     assert!(result.output.is_empty());
     assert_eq!(
@@ -4631,8 +4628,7 @@ fn configurable_account_erc1271_propagates_verifier_reverts() {
             .into(),
     };
     let witness: Bytes = TempoSignature::ConfigurableAccount(signature).to_bytes();
-    let wrong_hash = call(B256::ZERO, witness);
-    let result = relayed(&mut f, wrong_hash, 1_000_000, None);
+    let result = relayed(&mut f, call(B256::ZERO, witness), 1_000_000, None);
     assert_reverts_with(
         &result,
         ISignatureVerifier::InvalidSignature {},
@@ -4663,8 +4659,7 @@ fn configurable_marker_is_gated_by_fork_and_commitment() {
                 info.extension = encode_config_commitment(B256::repeat_byte(1)).into()
             });
         }
-        let tx = f.primitive(3, vec![call]);
-        let result = f.run(&tx);
+        let result = f.run(&f.primitive(3, vec![call]));
         assert_eq!(result.stop, InstrStop::OpcodeNotFound);
         assert!(result.output.is_empty());
     }
@@ -4744,9 +4739,8 @@ fn configurable_shim_matches_verifier_gas_and_propagates_oog() {
         StorageCtx.gas_used()
     });
     let shim_gas = in_storage_ctx(&mut f.evm, || {
-        let result = shim::call(account, &input).unwrap();
         assert_eq!(
-            result.bytes(),
+            shim::call(account, &input).unwrap().bytes(),
             IConfigurableAccountShim::isValidSignatureCall::abi_encode_returns(
                 &[0x16, 0x26, 0xba, 0x7e].into()
             )

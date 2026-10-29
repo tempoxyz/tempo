@@ -147,15 +147,13 @@ pub fn configurable_account(cx: _) -> Result {
     }
     let source = cx.state.message().code_address;
     let spec = cx.state.host().config_spec_id();
-    let source_info = cx
+    let registered = cx
         .state
         .host()
         .read_account_info(&source)
-        .map_err(|error| cx.state.fail(error))?;
-    let registered = source_info
-        .as_ref()
+        .map_err(|error| cx.state.fail(error))?
         .map_or(Ok(false), |info| {
-            account_config_commitment(info, spec).map(|commitment| !commitment.is_zero())
+            account_config_commitment(&info, spec).map(|commitment| !commitment.is_zero())
         })
         .map_err(|error| cx.state.fail(ExecutionError::Fatal(AnyError::new(error))))?;
     if !registered {
@@ -165,8 +163,7 @@ pub fn configurable_account(cx: _) -> Result {
     let input = cx.state.message().input.clone();
     let mut storage =
         EvmPrecompileStorageProvider::new(cx.state.host(), cx.gas.tracker_mut(), spec, true);
-    let result = StorageCtx::enter(&mut storage, || shim::call(account, &input));
-    let (stop, output) = match result {
+    let (stop, output) = match StorageCtx::enter(&mut storage, || shim::call(account, &input)) {
         Ok(output) => (InstrStop::Return, output.into_bytes()),
         Err(PrecompileError::Revert(output)) => (InstrStop::Revert, output),
         Err(PrecompileError::Halt(PrecompileHalt::OutOfGas)) => {

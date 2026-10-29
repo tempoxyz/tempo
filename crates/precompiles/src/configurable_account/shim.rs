@@ -35,7 +35,7 @@ pub fn call(account: Address, input: &[u8]) -> PrecompileResult {
             DECODER_CONFIG,
         )
         .map_err(|_| PrecompileError::Revert(Bytes::new()))?;
-        let result: crate::Result<bool> = (|| {
+        return (|| -> crate::Result<bool> {
             // Match the verifier entrypoint's costs: its input carries one more word, `account`.
             StorageCtx.deduct_gas(input_cost(StorageCtx.spec(), 32)?)?;
             SignatureVerifier::new().verify_configurable_account(
@@ -43,8 +43,8 @@ pub fn call(account: Address, input: &[u8]) -> PrecompileResult {
                 call.hash,
                 &call.signature,
             )
-        })();
-        return result.encode_precompile_result(|valid| {
+        })()
+        .encode_precompile_result(|valid| {
             IConfigurableAccountShim::isValidSignatureCall::abi_encode_returns(
                 &FixedBytes::<4>::from(if valid {
                     IConfigurableAccountShim::isValidSignatureCall::SELECTOR

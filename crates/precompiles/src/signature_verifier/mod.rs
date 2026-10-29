@@ -142,14 +142,14 @@ impl SignatureVerifier {
         let Some(signature) = signature.as_configurable_account() else {
             return Err(SignatureVerifierError::invalid_format().into());
         };
-        let config = signature.config();
         let spec = self.storage.spec();
         let (commitment, code_hash) = self.storage.with_account_info(account, |info| {
             Ok((account_config_commitment(info, spec)?, info.code_hash))
         })?;
 
         let initial_proof_gas = if commitment.is_zero() {
-            config
+            signature
+                .config()
                 .derivation_gas()
                 .ok_or(TempoPrecompileError::OutOfGas)?
         } else {
