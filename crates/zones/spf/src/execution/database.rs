@@ -12,7 +12,8 @@ use evm2::{bytecode::Bytecode, evm::AccountInfo};
 use reth_evm::Database;
 use reth_primitives_traits::Account;
 use reth_trie_common::{HashedPostState, KeccakKeyHasher, bundle_state::BundleState};
-use tempo_primitives::TempoHeader;
+use tempo_contracts::TempoHardfork;
+use tempo_primitives::{TempoHeader, account::decode_config_commitment};
 use zone_precompiles::{L1StateError, L1StorageReader};
 
 use crate::{
@@ -307,6 +308,35 @@ impl L1StorageReader for TempoWitnessDatabase {
             }
         };
         Ok(value.into())
+    }
+
+    fn read_l1_config_commitment(
+        &self,
+        account: Address,
+        tempo_block_number: u64,
+    ) -> Result<B256, L1StateError> {
+        let unavailable = |reason: String| L1StateError::AccountUnavailable {
+            account,
+            block_number: tempo_block_number,
+            reason,
+        };
+        if tempo_block_number != self.tempo_block_number {
+            return Err(unavailable(
+                "witness has no root for the requested checkpoint".into(),
+            ));
+        }
+        let state = self.state.as_ref().ok_or_else(|| {
+            unavailable("witness does not include the checkpoint state root".into())
+        })?;
+        let trie_account = state.account(account).map_err(|error| {
+            unavailable(format!("incomplete or invalid Tempo witness: {error}"))
+        })?;
+        // A proven absence has no commitment. A present account's extension follows TIP-1108,
+        // which T14 accepts; earlier forks never write one.
+        trie_account.map_or(Ok(B256::ZERO), |trie_account| {
+            decode_config_commitment(&trie_account.extension, TempoHardfork::T14)
+                .map_err(|error| unavailable(format!("invalid Tempo account commitment: {error}")))
+        })
     }
 }
 

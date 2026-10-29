@@ -67,8 +67,8 @@ impl L1StateCache {
 /// at the current floor and ends at the latest finalized block whose receipts were processed.
 #[derive(Debug)]
 pub struct L1StateCacheInner {
-    /// Bounded per-slot value histories, promoted as a unit on access.
-    slots: LruMap<(Address, B256), BTreeMap<u64, B256>, ByVersionCount>,
+    /// Bounded per-slot and per-account-commitment value histories, promoted as a unit on access.
+    slots: LruMap<CacheKey, BTreeMap<u64, B256>, ByVersionCount>,
     /// Per-address block heights that prevent reuse across possible mutations.
     invalidations: HashMap<Address, BTreeSet<u64>>,
     /// Total number of retained mutation barriers.
@@ -112,15 +112,39 @@ impl L1StateCacheInner {
     /// only when the subscriber has processed receipts through `block_number` and no mutation
     /// barrier exists after the value was populated.
     pub fn get(&mut self, address: Address, slot: B256, block_number: u64) -> Option<B256> {
-        let (&cached_block, &value) = self
-            .slots
-            .get(&(address, slot))?
-            .range(..=block_number)
-            .next_back()?;
+        self.get_versioned(CacheKey::Storage(address, slot), address, block_number)
+            .map(|(_, value)| value)
+    }
+
+    /// Returns the cached TIP-1108 commitment of `account` at the given block number.
+    ///
+    /// Follows [`Self::get`], except that a zero commitment is never inherited from an earlier
+    /// height: initial registration writes a commitment without emitting an event, so no
+    /// mutation barrier would cover it.
+    pub fn get_commitment(&mut self, account: Address, block_number: u64) -> Option<B256> {
+        self.get_versioned(CacheKey::Commitment(account), account, block_number)
+            .filter(|&(cached_block, value)| cached_block == block_number || !value.is_zero())
+            .map(|(_, value)| value)
+    }
+
+    /// Sets the TIP-1108 commitment of `account` at the given block number, with the admission
+    /// rules of [`Self::set`].
+    pub fn set_commitment(&mut self, account: Address, block_number: u64, commitment: B256) {
+        self.set_versioned(CacheKey::Commitment(account), block_number, commitment);
+    }
+
+    /// Returns the value for `key` at `block_number` with the height it was cached at.
+    fn get_versioned(
+        &mut self,
+        key: CacheKey,
+        address: Address,
+        block_number: u64,
+    ) -> Option<(u64, B256)> {
+        let (&cached_block, &value) = self.slots.get(&key)?.range(..=block_number).next_back()?;
 
         // On exact match, just return the value
         if cached_block == block_number {
-            return Some(value);
+            return Some((cached_block, value));
         }
 
         // If we didn't yet process the requested block, we can't use the cached value
@@ -138,7 +162,7 @@ impl L1StateCacheInner {
             return None;
         }
 
-        Some(value)
+        Some((cached_block, value))
     }
 
     /// Sets a storage slot value in the forward cache at the given block number.
@@ -146,11 +170,14 @@ impl L1StateCacheInner {
     /// Values below the current coverage floor are deliberately not admitted, so historical
     /// reads cannot later be inherited by canonical execution.
     pub fn set(&mut self, address: Address, slot: B256, block_number: u64, value: B256) {
+        self.set_versioned(CacheKey::Storage(address, slot), block_number, value);
+    }
+
+    fn set_versioned(&mut self, key: CacheKey, block_number: u64, value: B256) {
         if block_number < *self.coverage.start() {
             return;
         }
 
-        let key = (address, slot);
         let mut history = self.slots.remove(&key).unwrap_or_default();
         history.insert(block_number, value);
 
@@ -213,6 +240,15 @@ impl L1StateCacheInner {
 
         self.coverage = *self.coverage.start()..=anchor;
     }
+}
+
+/// Versioned value cached for one Tempo account.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum CacheKey {
+    /// A storage slot of the account.
+    Storage(Address, B256),
+    /// The account's TIP-1108 configuration commitment.
+    Commitment(Address),
 }
 
 /// [`schnellru`] limiter which measures capacity by the number of versions in all slot histories.

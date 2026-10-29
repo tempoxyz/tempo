@@ -399,7 +399,8 @@ async fn collect_tempo_witness(
 
     let mut targets = BTreeMap::<Address, BTreeSet<B256>>::new();
     for read in reads {
-        targets.entry(read.account).or_default().insert(read.slot);
+        // An account-only read still needs the account proof, which every target carries.
+        targets.entry(read.account).or_default().extend(read.slot);
     }
     let targets = targets
         .into_iter()
@@ -1697,7 +1698,10 @@ mod tests {
             .erased();
         let account = Address::repeat_byte(0xaa);
         let slot = B256::repeat_byte(0xbb);
-        let reads = HashSet::from([zone_evm::TempoStorageRead { account, slot }]);
+        let reads = HashSet::from([zone_evm::TempoStorageRead {
+            account,
+            slot: Some(slot),
+        }]);
         let mut checkpoint = TempoHeader::default();
         checkpoint.inner.number = 10;
         let first_tx_input = IZoneInbox::advanceTempoCall {

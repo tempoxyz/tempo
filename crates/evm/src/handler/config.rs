@@ -104,6 +104,9 @@ pub struct TempoEvmExt {
     pub skip_valid_after_check: bool,
     /// Whether transaction-pool execution may skip the fee AMM liquidity check.
     pub skip_liquidity_check: bool,
+    /// Whether configuration commitments are read-only mirrors of another chain (TIP-1154 zones):
+    /// initial registration neither writes the commitment nor charges for the write.
+    pub mirrored_config_commitments: bool,
     /// Fee token resolved for the most recently handled transaction.
     pub resolved_fee_token: Option<ResolvedFeeToken>,
     /// Access-key expiry resolved for the most recently handled transaction.
@@ -118,6 +121,7 @@ impl Default for TempoEvmExt {
             non_creditable_slots: Rc::new(RefCell::new(NonCreditableSlots::empty())),
             skip_valid_after_check: false,
             skip_liquidity_check: false,
+            mirrored_config_commitments: false,
             resolved_fee_token: None,
             key_expiry: None,
         }

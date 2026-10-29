@@ -580,7 +580,7 @@ fn is_l1_storage_unavailable(error: &(dyn Error + 'static)) -> bool {
     while let Some(error) = current {
         if error
             .downcast_ref::<L1StateError>()
-            .is_some_and(L1StateError::is_storage_unavailable)
+            .is_some_and(L1StateError::is_unavailable)
             || error
                 .to_string()
                 .contains(L1_STORAGE_UNAVAILABLE_ERROR_PREFIX)

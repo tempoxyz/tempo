@@ -170,7 +170,7 @@ impl<DB: DynDatabase, L1: L1StorageReader> DynDatabase for L1OverlayDB<DB, L1> {
             .l1
             .read_l1_storage_unmetered(*address, B256::from(*slot), anchor)
             .map_err(|error| DatabaseError::new(error, true))?;
-        self.l1.note_registry_read(anchor);
+        self.l1.note_cache_read(Some(anchor));
         Ok(value.into())
     }
 

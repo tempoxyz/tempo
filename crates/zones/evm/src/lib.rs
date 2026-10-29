@@ -273,7 +273,9 @@ where
             self.zone_factory.portal_address,
         );
         let l1 = db.l1_state().clone();
-        let ext = TempoEvmExt::default().with_fee_manager(ZoneProtocolFeeManager::new());
+        let mut ext = TempoEvmExt::default().with_fee_manager(ZoneProtocolFeeManager::new());
+        // Zones mirror configuration commitments from Tempo and never register (TIP-1154).
+        ext.mirrored_config_commitments = true;
         let precompiles = ZonePrecompiles::<TempoEvmTypes, L1>::new(
             env.spec,
             ext.actions.clone(),
@@ -428,18 +430,40 @@ impl<L1: L1StorageReader> L1StorageReader for RecordingL1StorageReader<L1> {
         self.reads
             .lock()
             .expect("L1 read recorder lock poisoned")
-            .insert(TempoStorageRead { account, slot });
+            .insert(TempoStorageRead {
+                account,
+                slot: Some(slot),
+            });
         Ok(value)
+    }
+
+    fn read_l1_config_commitment(
+        &self,
+        account: Address,
+        block_number: u64,
+    ) -> Result<B256, zone_precompiles::L1StateError> {
+        let commitment = self
+            .inner
+            .read_l1_config_commitment(account, block_number)?;
+        self.reads
+            .lock()
+            .expect("L1 read recorder lock poisoned")
+            .insert(TempoStorageRead {
+                account,
+                slot: None,
+            });
+        Ok(commitment)
     }
 }
 
-/// A Tempo L1 storage slot accessed while replaying a Zone block.
+/// A Tempo L1 account, or one of its storage slots, accessed while replaying a Zone block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct TempoStorageRead {
     /// Tempo account whose storage was accessed.
     pub account: Address,
-    /// Storage slot that was accessed.
-    pub slot: B256,
+    /// Storage slot that was accessed, or `None` when only the account leaf (its TIP-1108
+    /// commitment) was read.
+    pub slot: Option<B256>,
 }
 
 #[cfg(test)]
@@ -486,7 +510,10 @@ mod tests {
         assert_eq!(reader.read_l1_storage(account, slot, 10).unwrap(), value);
         assert_eq!(
             reader.take_reads(),
-            HashSet::from_iter([TempoStorageRead { account, slot }])
+            HashSet::from_iter([TempoStorageRead {
+                account,
+                slot: Some(slot)
+            }])
         );
 
         let failing = RecordingL1StorageReader::new(MockL1Reader::failing_storage());
