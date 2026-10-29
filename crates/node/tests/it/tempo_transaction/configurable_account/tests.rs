@@ -781,10 +781,6 @@ async fn configurable_account_rpc_registration_revert_retry_and_rotation() -> ey
         .provider()
         .raw_request("eth_getAccount".into(), (account.address, "latest"))
         .await?;
-    let extension = account_info["extension"]
-        .as_str()
-        .expect("registered account extension missing");
-    assert_eq!(extension.len(), 2 + 66);
     assert_eq!(
         account_info["extension"],
         json!(encode_config_commitment(
@@ -929,12 +925,14 @@ async fn configurable_account_rpc_registration_revert_retry_and_rotation() -> ey
         read.return_data,
         Bytes::from(account.config.commitment().unwrap())
     );
-    let error = provider
-        .raw_request::<_, Vec<SimulatedBlock<Value>>>("eth_simulateV1".into(), (simulate(stale),))
-        .await
-        .expect_err("a configuration rotated by an earlier call must be stale");
     assert_rpc_error(
-        &error,
+        &provider
+            .raw_request::<_, Vec<SimulatedBlock<Value>>>(
+                "eth_simulateV1".into(),
+                (simulate(stale),),
+            )
+            .await
+            .expect_err("a configuration rotated by an earlier call must be stale"),
         EthRpcErrorCode::TransactionRejected.code(),
         &TempoInvalidTransaction::ConfigurableAccount(
             ConfigurableAccountError::ConfigurationCommitmentMismatch {
@@ -1058,16 +1056,15 @@ async fn configurable_account_rpc_fill_and_access_list_preserve_authority() -> e
         .iter()
         .map(|owner| {
             let signature = owner.sign(B256::ZERO)?;
-            let key_data = match &signature {
-                PrimitiveSignature::WebAuthn(signature) => Some(Bytes::from(
-                    u16::try_from(signature.webauthn_data.len())?.to_be_bytes(),
-                )),
-                _ => None,
-            };
             Ok(ConfigurableAccountSimulationApproval {
                 owner: owner.address(),
                 key_type: Some(signature.signature_type()),
-                key_data,
+                key_data: match &signature {
+                    PrimitiveSignature::WebAuthn(signature) => Some(Bytes::from(
+                        u16::try_from(signature.webauthn_data.len())?.to_be_bytes(),
+                    )),
+                    PrimitiveSignature::Secp256k1(_) | PrimitiveSignature::P256(_) => None,
+                },
             })
         })
         .collect::<eyre::Result<Vec<_>>>()?;
@@ -1241,17 +1238,20 @@ async fn configurable_account_rpc_maximum_mixed_quorums_and_validation_cost_orde
         ),
         "{error:?}"
     );
-    let error = rejection(
-        &env,
-        tx.clone(),
-        delegate.as_delegate(&tx, parent.address, false)?,
-    )
-    .await;
     let unfunded = RpcInvalidTransactionError::InsufficientFunds {
         cost: calc_gas_balance_spending(tx.gas_limit, tx.max_fee_per_gas),
         balance: U256::ZERO,
     };
-    assert_rpc_error(&error, unfunded.error_code(), &unfunded.to_string())?;
+    assert_rpc_error(
+        &rejection(
+            &env,
+            tx.clone(),
+            delegate.as_delegate(&tx, parent.address, false)?,
+        )
+        .await,
+        unfunded.error_code(),
+        &unfunded.to_string(),
+    )?;
 
     // Only the last approval of the grant signs the wrong digest. Recovery rejects the
     // transaction before any state is read, so it never reaches the unfunded check above.
@@ -1259,8 +1259,7 @@ async fn configurable_account_rpc_maximum_mixed_quorums_and_validation_cost_orde
     let invalid_quorum = parent.quorum(grant.signature_hash(), true)?;
     invalid_grant.key_authorization = Some(grant.into_signed(invalid_quorum));
     let signature = delegate.as_delegate(&invalid_grant, parent.address, false)?;
-    let invalid: TempoTxEnvelope = invalid_grant.clone().into_signed(signature.clone()).into();
-    invalid
+    TempoTxEnvelope::from(invalid_grant.clone().into_signed(signature.clone()))
         .recover_signer()
         .expect_err("recovery verifies the grant quorum");
     // Simulation skips recovery, so the RPC checks the grant quorum itself.
