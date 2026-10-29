@@ -146,3 +146,74 @@ async fn subscription_notification_carries_event() {
     assert_eq!(received_block, block);
     assert_eq!(seen, 42);
 }
+
+fn finalized_event() -> Arc<SharedEvent> {
+    SharedEvent::new(Event::Finalized {
+        block: CertifiedBlock {
+            epoch: 1,
+            view: 1,
+            digest: B256::ZERO,
+            certificate: "0x".to_string(),
+            block: SealedBlock::seal_slow(Block::default()).into(),
+        },
+        seen: 0,
+    })
+}
+
+#[tokio::test]
+async fn subscribe_is_rejected_as_busy_once_limit_is_reached() {
+    let (events_tx, _) = broadcast::channel(1);
+    let module = TempoConsensusRpc::with_max_subscriptions(
+        IdleFeed {
+            events_tx: events_tx.clone(),
+        },
+        1,
+    )
+    .into_rpc();
+
+    let first = module
+        .subscribe_unbounded("consensus_subscribe", EmptyServerParams::new())
+        .await
+        .unwrap();
+    wait_for_live_subscriptions(&events_tx, 1).await;
+
+    let err = module
+        .subscribe_unbounded("consensus_subscribe", EmptyServerParams::new())
+        .await
+        .expect_err("second subscription must be rejected");
+    let jsonrpsee::core::server::MethodsError::JsonRpc(err) = err else {
+        panic!("expected a JSON-RPC error, got {err:?}");
+    };
+    assert_eq!(err.code(), SERVER_IS_BUSY_CODE);
+    assert_eq!(events_tx.receiver_count(), 1);
+
+    // Dropping the live subscription frees its permit.
+    drop(first);
+    wait_for_live_subscriptions(&events_tx, 0).await;
+    let _again = module
+        .subscribe_unbounded("consensus_subscribe", EmptyServerParams::new())
+        .await
+        .unwrap();
+    wait_for_live_subscriptions(&events_tx, 1).await;
+}
+
+#[tokio::test]
+async fn subscriber_that_stops_reading_is_dropped() {
+    let (events_tx, _) = broadcast::channel(64);
+    let module = TempoConsensusRpc::new(IdleFeed {
+        events_tx: events_tx.clone(),
+    })
+    .into_rpc();
+
+    // Never read from the subscription, so its notifications pile up in the buffer.
+    let _subscription = module
+        .subscribe("consensus_subscribe", EmptyServerParams::new(), 64)
+        .await
+        .unwrap();
+    wait_for_live_subscriptions(&events_tx, 1).await;
+
+    for _ in 0..=MAX_PENDING_NOTIFICATIONS + 1 {
+        events_tx.send(finalized_event()).unwrap();
+    }
+    wait_for_live_subscriptions(&events_tx, 0).await;
+}
