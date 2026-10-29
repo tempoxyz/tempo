@@ -3994,6 +3994,24 @@ fn native_rotation_authorizes_next_transaction_in_same_block() {
 }
 
 #[test]
+fn simulation_of_registered_account_can_rotate_configuration() {
+    let mut f = Fixture::new();
+    assert!(f.run(&f.signed(3, vec![f.getter()])).status);
+    let next = ConfigurableAccountConfig {
+        version: 1,
+        ..f.config.clone()
+    };
+    // RPC simulation signs with a placeholder primitive signature, never an owner witness.
+    let tx = f.primitive(4, vec![Fixture::rotation(&f.config, &next)]);
+    let output = f
+        .evm
+        .transact(&simulation_env(&tx, f.account, None))
+        .unwrap()
+        .detach();
+    assert!(output.result.status, "{:?}", output.result);
+}
+
+#[test]
 fn native_batch_rotation_failures_roll_back_together() {
     for (registered, halt) in [(true, false), (true, true), (false, false), (false, true)] {
         native_batch_rotation_failure(registered, halt);
