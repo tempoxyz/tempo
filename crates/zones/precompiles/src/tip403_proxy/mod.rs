@@ -33,17 +33,25 @@ impl CallRules for Tip403Rules {
 mod tests {
     use super::*;
 
-    use alloy_evm::precompiles::DynPrecompile;
     use alloy_primitives::{Bytes, U256, address};
     use alloy_sol_types::SolCall;
-    use revm::precompile::{PrecompileError, PrecompileOutput};
+    use evm2::{
+        bytecode::Bytecode,
+        evm::precompile::PrecompileProvider,
+        interpreter::{GasTracker, Message},
+        precompiles::PrecompileError,
+    };
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{ITIP403Registry, TIP403_REGISTRY_ADDRESS};
+    use tempo_evm::TempoEvmTypes;
     use tempo_precompiles::{DelegateCallNotAllowed, storage::PrecompileStorageProvider};
 
     use crate::{
         tempo_state::slots::TEMPO_BLOCK_NUMBER,
-        test_utils::{TestContext, call_precompile, test_context, test_env, test_storage_provider},
+        test_utils::{
+            PrecompileOutput, TestContext, TestPrecompiles, call_precompile, test_context,
+            test_precompiles, test_storage_provider,
+        },
     };
 
     const ANCHOR: u64 = 77;
@@ -51,7 +59,7 @@ mod tests {
 
     struct RegistryHarness {
         ctx: TestContext,
-        precompile: DynPrecompile,
+        precompile: TestPrecompiles,
     }
 
     impl RegistryHarness {
@@ -65,14 +73,12 @@ mod tests {
                     U256::from(ANCHOR),
                 )
                 .unwrap();
-            let env = test_env(&ctx);
             Self {
-                ctx,
-                precompile: zone_precompile!(
-                    env,
-                    tempo_precompiles::tip403_registry::TIP403Registry,
-                    Tip403Rules
+                precompile: test_precompiles(
+                    &ctx,
+                    crate::L1State::new(Default::default(), Address::ZERO),
                 ),
+                ctx,
             }
         }
 
@@ -89,7 +95,7 @@ mod tests {
         ) -> Result<PrecompileOutput, PrecompileError> {
             call_precompile(
                 &mut self.ctx,
-                &self.precompile,
+                &mut self.precompile,
                 CALLER,
                 data,
                 gas,
@@ -129,14 +135,44 @@ mod tests {
     }
 
     #[test]
+    fn delegation_code_on_the_precompile_address_does_not_replace_it() {
+        // Delegation code on a precompile address, which a state override can set, does not
+        // replace the precompile: dispatch uses the called address.
+        let mut harness = RegistryHarness::new();
+        harness.ctx.sync();
+        let delegate = Address::repeat_byte(0xd1);
+        let message = Message::<TempoEvmTypes> {
+            gas_limit: u64::MAX,
+            caller: CALLER,
+            input: ITIP403Registry::policyIdCounterCall {}.abi_encode().into(),
+            destination: TIP403_REGISTRY_ADDRESS,
+            call_target: TIP403_REGISTRY_ADDRESS,
+            code_address: delegate,
+            code: Bytecode::new_eip7702(delegate),
+            ..Default::default()
+        };
+        let mut gas = GasTracker::new(message.gas_limit);
+        let result = harness
+            .precompile
+            .execute(harness.ctx.evm(), &message, &mut gas)
+            .expect("the precompile at the called address must run");
+        match result {
+            Err(PrecompileError::Revert(output)) => {
+                assert_eq!(output, Bytes::from(OnlyPrecompiles {}.abi_encode()));
+            }
+            other => panic!("expected OnlyPrecompiles, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn delegate_calls_revert_before_execution() -> eyre::Result<()> {
         let mut harness = RegistryHarness::new();
         let call = ITIP403Registry::policyIdCounterCall {}.abi_encode();
         let output = harness.call_as(
             &call,
             u64::MAX,
-            TIP403_REGISTRY_ADDRESS,
             Address::repeat_byte(0x44),
+            TIP403_REGISTRY_ADDRESS,
         )?;
 
         assert!(output.is_revert());

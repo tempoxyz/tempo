@@ -272,6 +272,44 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
+  jit:
+    name: JIT equivalence
+    runs-on: depot-ubuntu-latest-16
+    timeout-minutes: 30
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+      - uses: tempoxyz/gh-actions/actions/setup-mold@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          version: v0.15.0
+      - name: Install LLVM
+        run: .github/scripts/install_llvm.sh
+      - uses: ./.github/actions/native-libs # zizmor: ignore[self-repository] actionlint does not support $/ references yet.
+        with:
+          cargo-args: -p tempo --features jit
+      - uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          tool: nextest@0.9.127
+      # The out-of-process run uses the tempo binary as its compiler helper.
+      - name: Build tempo
+        run: cargo build --bin tempo --features jit
+      - name: Run in-process JIT tests
+        run: cargo nextest run --profile ci -p tempo-evm --lib --features jit -E 'test(/^jit::/)'
+      - name: Run out-of-process JIT tests
+        run: cargo nextest run --profile ci -p tempo-evm --lib --features jit -E 'test(/^jit::/)'
+        env:
+          EVM2_JIT_MODE: out-of-process
+          EVM2_JIT_HELPER_PATH: ${{ github.workspace }}/target/debug/tempo
+
   cli:
     name: CLI smoke tests
     needs: changes
@@ -369,6 +407,7 @@ jobs:
       - test
       - e2e
       - cli
+      - jit
       - msrv
       - genesis
     timeout-minutes: 30

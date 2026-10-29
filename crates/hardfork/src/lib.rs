@@ -30,11 +30,14 @@
 
 pub mod constants;
 
+#[cfg(feature = "evm")]
+pub mod gas_params;
+
 use crate::constants::gas;
 use alloy_eips::eip7825::MAX_TX_GAS_LIMIT_OSAKA;
-#[cfg(feature = "evm")]
-use alloy_evm::revm::primitives::hardfork::SpecId;
 use alloy_hardforks::hardfork;
+#[cfg(feature = "evm")]
+use evm2::SpecId;
 
 /// Single-source hardfork definition macro. Append a new variant and everything else is generated:
 ///
@@ -246,6 +249,10 @@ tempo_hardfork!(
         ///
         /// See <https://docs.tempo.xyz/docs/protocol/upgrades/t14>.
         T14,
+        /// T15 hardfork.
+        ///
+        /// See <https://docs.tempo.xyz/docs/protocol/upgrades/t15>.
+        T15,
     }
 );
 
@@ -403,6 +410,7 @@ impl TempoHardfork {
             Self::T12 => None,
             Self::T13 => None,
             Self::T14 => None,
+            Self::T15 => None,
         }
     }
 
@@ -429,6 +437,7 @@ impl TempoHardfork {
             Self::T12 => Some(MAINNET_T12_TIMESTAMP),
             Self::T13 => Some(MAINNET_T13_TIMESTAMP),
             Self::T14 => None,
+            Self::T15 => None,
         }
     }
 
@@ -455,6 +464,7 @@ impl TempoHardfork {
             Self::T12 => None,
             Self::T13 => None,
             Self::T14 => None,
+            Self::T15 => None,
         }
     }
 
@@ -481,6 +491,7 @@ impl TempoHardfork {
             Self::T12 => Some(MODERATO_T12_TIMESTAMP),
             Self::T13 => Some(MODERATO_T13_TIMESTAMP),
             Self::T14 => None,
+            Self::T15 => None,
         }
     }
 }

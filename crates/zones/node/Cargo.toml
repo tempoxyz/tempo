@@ -39,7 +39,8 @@ reth-chainspec = { workspace = true, default-features = true }
 reth-consensus.workspace = true
 reth-eth-wire-types.workspace = true
 reth-ethereum = { workspace = true, features = ["cli", "node"], optional = true }
-reth-evm.workspace = true
+reth-evm = { workspace = true, features = ["witness"] }
+reth-execution-types.workspace = true
 reth-node-api.workspace = true
 reth-node-builder.workspace = true
 reth-node-core.workspace = true
@@ -47,7 +48,6 @@ reth-payload-builder.workspace = true
 reth-payload-primitives.workspace = true
 reth-primitives-traits.workspace = true
 reth-provider.workspace = true
-reth-revm = { workspace = true, features = ["witness"] }
 reth-rpc.workspace = true
 reth-rpc-api.workspace = true
 reth-rpc-builder.workspace = true
@@ -69,7 +69,6 @@ reth-trie-db = { workspace = true, optional = true }
 alloy-chains.workspace = true
 alloy-consensus.workspace = true
 alloy-eips.workspace = true
-alloy-evm.workspace = true
 alloy-genesis.workspace = true
 alloy-network.workspace = true
 alloy-primitives.workspace = true
@@ -81,6 +80,7 @@ alloy-rpc-types-eth.workspace = true
 alloy-signer-local.workspace = true
 alloy-sol-types.workspace = true
 alloy-transport.workspace = true
+evm2.workspace = true
 
 # misc
 minicbor.workspace = true
@@ -122,12 +122,10 @@ reth-ethereum = { workspace = true, features = ["node", "test-utils"] }
 reth-tracing.workspace = true
 reth-trie-common = { workspace = true, features = ["std"] }
 reqwest = { workspace = true, features = ["json", "rustls"] }
-revm.workspace = true
 serde = { workspace = true, features = ["alloc", "derive"] }
 sha2 = { workspace = true, default-features = true }
 tempo-payload-types.workspace = true
 tempo-precompiles = { workspace = true, features = ["test-utils"] }
-tempo-revm.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
 tokio-tungstenite.workspace = true
@@ -138,13 +136,14 @@ url = "2"
 default = []
 asm-keccak = [
   "alloy/asm-keccak",
-  "alloy-evm/asm-keccak",
   "alloy-primitives/asm-keccak",
   "reth-node-core/asm-keccak",
-  "revm/asm-keccak",
   "tempo-alloy/asm-keccak",
   "tempo-node/asm-keccak",
   "zone-node/asm-keccak",
+  "evm2/asm-keccak",
+  "reth-ethereum?/asm-keccak",
+  "reth-evm/asm-keccak",
 ]
 cli = [
   "dep:reth-cli-commands",
@@ -166,7 +165,6 @@ cli = [
 jemalloc = [
   "reth-ethereum?/jemalloc",
   "reth-node-core/jemalloc",
-  "reth-provider/jemalloc",
   "tempo-node/jemalloc",
   "zone-node/jemalloc",
 ]
@@ -192,7 +190,6 @@ test-utils = [
   "tempo-transaction-pool/test-utils",
   "reth-chain-state/test-utils",
   "reth-evm/test-utils",
-  "reth-revm/test-utils",
   "reth-tasks/test-utils",
   "reth-trie-common/test-utils",
   "tempo-primitives/test-utils",

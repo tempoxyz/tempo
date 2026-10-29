@@ -25,7 +25,6 @@ reth-network-peers = { workspace = true, default-features = true }
 
 # alloy
 alloy-eips.workspace = true
-alloy-evm.workspace = true
 alloy-genesis.workspace = true
 alloy-primitives.workspace = true
 
