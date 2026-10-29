@@ -232,8 +232,12 @@ pub(crate) fn register_commitments(
     host: &mut Evm<'_, TempoEvmTypes>,
     aa: &TempoAaTx,
 ) -> HandlerResult<()> {
+    let roles = aa.configurable_roles();
+    if matches!(roles, [None, None]) {
+        return Ok(());
+    }
     StorageCtx::enter_evm_without_tip1060_accounting(host, || {
-        for role in aa.configurable_roles().into_iter().flatten() {
+        for role in roles.into_iter().flatten() {
             let account = role.signature.account();
             // Re-read to avoid threading `validate_state`'s value through: only this loop writes
             // the commitment in between, so an account signing both roles is registered by the

@@ -10,11 +10,12 @@ use alloy_provider::{
     fillers::{FillerControlFlow, GasFillable, GasFiller, TxFiller},
 };
 use alloy_transport::TransportResult;
-use tempo_primitives::transaction::{
-    ConfigurableAccountSignature, FEE_PAYER_SIGNATURE_MARKER, SignedKeyAuthorization,
-};
+use tempo_primitives::transaction::{FEE_PAYER_SIGNATURE_MARKER, SignedKeyAuthorization};
 
-use crate::{TempoNetwork, provider::TempoProviderExt, rpc::TempoTransactionRequest};
+use crate::{
+    TempoNetwork, accounts::authorization_accounts, provider::TempoProviderExt,
+    rpc::TempoTransactionRequest,
+};
 
 /// Gas that a fee payer signature adds from T14: one cold account access, equal to the cost the
 /// protocol charges for reading the fee payer's account.
@@ -233,20 +234,6 @@ fn validate_authorization(
         return Err(KeyAuthorizationError::AuthorizationExpired);
     }
     Ok(())
-}
-
-/// The accounts an authorization names without recovering a primitive signer: the account of its
-/// configurable account signature, which only signs its own grants, and its explicit account. A
-/// valid authorization names one account through all of them.
-pub(crate) fn authorization_accounts(
-    authorization: &SignedKeyAuthorization,
-) -> impl Iterator<Item = Address> {
-    authorization
-        .signature
-        .as_configurable_account()
-        .map(ConfigurableAccountSignature::account)
-        .into_iter()
-        .chain(authorization.account)
 }
 
 fn unix_now() -> u64 {
