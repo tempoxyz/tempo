@@ -638,7 +638,7 @@ impl AccountSignature {
             Some(SIGNATURE_TYPE_CONFIGURABLE_ACCOUNT) => {
                 decode_exact::<ConfigurableAccountSignature>(&data[1..])
                     .map(Self::ConfigurableAccount)
-                    .map_err(AccountSignatureError::InvalidConfigurableAccount)
+                    .map_err(|_| AccountSignatureError::InvalidConfigurableAccount)
             }
             _ => PrimitiveSignature::from_bytes(data)
                 .map(Self::Primitive)
@@ -704,18 +704,6 @@ impl AccountSignature {
         }
     }
 
-    /// Decodes the approval inside a keychain envelope of the given version.
-    fn from_keychain_bytes(
-        data: &[u8],
-        version: KeychainVersion,
-    ) -> Result<Self, AccountSignatureError> {
-        let signature = Self::from_bytes(data)?;
-        if version == KeychainVersion::V1 && signature.as_configurable_account().is_some() {
-            return Err(AccountSignatureError::ConfigurableAccountInKeychainV1);
-        }
-        Ok(signature)
-    }
-
     /// Full gas to verify the approval: [`PrimitiveSignature::verification_gas`] or
     /// [`ConfigurableAccountSignature::verification_gas`].
     ///
@@ -747,20 +735,6 @@ impl From<ConfigurableAccountSignature> for AccountSignature {
     }
 }
 
-impl TryFrom<TempoSignature> for AccountSignature {
-    type Error = AccountSignatureError;
-
-    fn try_from(signature: TempoSignature) -> Result<Self, Self::Error> {
-        match signature {
-            TempoSignature::Primitive(signature) => Ok(Self::Primitive(signature)),
-            TempoSignature::ConfigurableAccount(signature) => {
-                Ok(Self::ConfigurableAccount(signature))
-            }
-            TempoSignature::Keychain(_) => Err(AccountSignatureError::Keychain),
-        }
-    }
-}
-
 impl Encodable for AccountSignature {
     fn encode(&self, out: &mut dyn BufMut) {
         Header {
@@ -787,13 +761,13 @@ impl Decodable for AccountSignature {
     }
 }
 
-/// Why bytes or a [`TempoSignature`] are not a direct account approval.
+/// Why bytes are not a direct account approval.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AccountSignatureError {
     /// A keychain envelope where a direct approval is required.
     Keychain,
     /// A configurable account witness that does not decode.
-    InvalidConfigurableAccount(RlpError),
+    InvalidConfigurableAccount,
     /// A primitive signature that does not decode, with its message.
     Primitive(&'static str),
     /// A configurable account approval inside a keychain V1 envelope.
@@ -805,18 +779,12 @@ impl AccountSignatureError {
     const fn as_str(self) -> &'static str {
         match self {
             Self::Keychain => "keychain signatures are not account signatures",
-            Self::InvalidConfigurableAccount(_) => "Invalid configurable account signature RLP",
+            Self::InvalidConfigurableAccount => "Invalid configurable account signature RLP",
             Self::Primitive(message) => message,
             Self::ConfigurableAccountInKeychainV1 => {
                 "configurable account access keys require keychain V2"
             }
         }
-    }
-}
-
-impl core::fmt::Display for AccountSignatureError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str(self.as_str())
     }
 }
 
@@ -876,7 +844,11 @@ impl TempoSignature {
             let inner_sig_bytes = &sig_data[20..];
 
             // A bounded direct approval cannot contain another keychain.
-            let inner_signature = AccountSignature::from_keychain_bytes(inner_sig_bytes, version)?;
+            let inner_signature = AccountSignature::from_bytes(inner_sig_bytes)?;
+            if version == KeychainVersion::V1 && inner_signature.as_configurable_account().is_some()
+            {
+                return Err(AccountSignatureError::ConfigurableAccountInKeychainV1.into());
+            }
 
             return Ok(Self::Keychain(KeychainSignature {
                 user_address,

@@ -4,18 +4,6 @@ use tempo_primitives::transaction::{AccountSignature, TempoSignature};
 /// Additional gas for keychain signatures (key validation overhead: cold SLOAD + processing).
 const KEYCHAIN_VALIDATION_GAS: u64 = COLD_SLOAD_COST as u64 + 900;
 
-/// Verification cost beyond the baseline signature charge, without keychain processing.
-#[inline]
-fn account_signature_verification_gas(signature: &AccountSignature) -> u64 {
-    match signature {
-        AccountSignature::Primitive(signature) => signature.intrinsic_verification_gas(),
-        // Only a `u64` overflow fails; saturating keeps such a transaction unaffordable.
-        AccountSignature::ConfigurableAccount(signature) => {
-            signature.intrinsic_verification_gas().unwrap_or(u64::MAX)
-        }
-    }
-}
-
 /// Calculates the gas cost for verifying an AA signature.
 ///
 /// For keychain signatures, adds key validation overhead to the inner signature cost. Returns the
@@ -25,8 +13,14 @@ pub(crate) fn tempo_signature_verification_gas(signature: &TempoSignature) -> u6
     match signature {
         TempoSignature::Primitive(primitive_sig) => primitive_sig.intrinsic_verification_gas(),
         TempoSignature::Keychain(keychain_sig) => {
-            account_signature_verification_gas(&keychain_sig.signature)
-                .saturating_add(KEYCHAIN_VALIDATION_GAS)
+            match &keychain_sig.signature {
+                AccountSignature::Primitive(signature) => signature.intrinsic_verification_gas(),
+                // Only a `u64` overflow fails; saturating keeps such a transaction unaffordable.
+                AccountSignature::ConfigurableAccount(signature) => {
+                    signature.intrinsic_verification_gas().unwrap_or(u64::MAX)
+                }
+            }
+            .saturating_add(KEYCHAIN_VALIDATION_GAS)
         }
         TempoSignature::ConfigurableAccount(signature) => {
             signature.intrinsic_verification_gas().unwrap_or(u64::MAX)

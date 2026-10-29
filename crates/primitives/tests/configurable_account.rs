@@ -1302,6 +1302,11 @@ fn bounded_access_key_envelope_roundtrips_and_rejects_v1() {
     let mut legacy = encoded.to_vec();
     legacy[0] = SIGNATURE_TYPE_KEYCHAIN;
     assert!(TempoSignature::from_bytes(&legacy).is_err());
+    // A keychain envelope cannot nest inside another.
+    assert_eq!(
+        TempoSignature::from_bytes(&[&encoded[..21], &encoded].concat()),
+        Err("keychain signatures are not account signatures")
+    );
     assert!(decode_exact::<AccountSignature>(alloy_rlp::encode(&encoded)).is_err());
     #[cfg(feature = "serde")]
     {
