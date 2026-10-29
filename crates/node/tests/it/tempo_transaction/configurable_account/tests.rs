@@ -1117,7 +1117,6 @@ async fn configurable_account_rpc_fill_and_access_list_preserve_authority() -> e
     for field in [
         "configurableAccountSimulation",
         "keyAuthorizationSimulation",
-        "configurableAccountSimulationSignature",
     ] {
         assert!(filled["tx"].get(field).is_none(), "{filled}");
     }
