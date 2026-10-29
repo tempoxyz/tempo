@@ -108,7 +108,8 @@ const fn admin_key(stored_type: SignatureType) -> Option<Grant> {
 }
 
 /// Storage at T14 with `grant` registered and a commitment on each of `committed`, switched to
-/// `spec` afterwards so that earlier forks can see state that only T14 can write.
+/// `spec` afterwards so that earlier forks can see state that only T14 can write. Admin grants are
+/// written at T13, since T14 drops their creation (TIP-1137).
 fn storage_at(
     spec: TempoHardfork,
     account: Address,
@@ -116,18 +117,27 @@ fn storage_at(
     grant: Option<Grant>,
     committed: &[Address],
 ) -> HashMapStorageProvider {
-    let mut storage = HashMapStorageProvider::new_with_spec(1, T14);
+    let mut storage = HashMapStorageProvider::new_with_spec(1, T13);
     StorageCtx::enter(&mut storage, || {
         let mut keychain = AccountKeychain::new();
         keychain.initialize().unwrap();
+        if let Some(Grant {
+            stored_type,
+            admin: true,
+        }) = grant
+        {
+            keychain.set_tx_origin(account).unwrap();
+            keychain
+                .authorize_admin_key(account, key_id, stored_type, None)
+                .unwrap();
+        }
+    });
+    storage.set_spec(T14);
+    StorageCtx::enter(&mut storage, || {
+        let mut keychain = AccountKeychain::new();
         keychain.set_tx_origin(account).unwrap();
         match grant {
-            Some(Grant {
-                stored_type,
-                admin: true,
-            }) => keychain
-                .authorize_admin_key(account, key_id, stored_type, None)
-                .unwrap(),
+            Some(Grant { admin: true, .. }) | None => {}
             Some(Grant {
                 stored_type,
                 admin: false,
@@ -146,7 +156,6 @@ fn storage_at(
                     None,
                 )
                 .unwrap(),
-            None => {}
         }
         for address in committed {
             StorageCtx
@@ -200,16 +209,17 @@ fn keychain_verification_by_retired_roots_and_stored_key_types() {
         case(T14, Secp256k1, None, Nobody, (false, true)),
         case(T14, Secp256k1, None, Account, (false, false)),
         case(T13, Secp256k1, None, Account, (false, true)),
-        // An access key; a commitment on its own address retires it from T14.
+        // An access key; a commitment on its own address retires it from T14, and T14 turns
+        // admin keys into regular keys (TIP-1137).
         case(T14, Secp256k1, key(Secp256k1), Nobody, (true, false)),
-        case(T14, Secp256k1, admin_key(Secp256k1), Nobody, (true, true)),
+        case(T14, Secp256k1, admin_key(Secp256k1), Nobody, (true, false)),
         case(T14, Secp256k1, key(Secp256k1), Signer, (false, false)),
         case(T14, Secp256k1, admin_key(Secp256k1), Signer, (false, false)),
         case(T13, Secp256k1, key(Secp256k1), Signer, (true, false)),
         case(T13, Secp256k1, admin_key(Secp256k1), Signer, (true, true)),
         // A commitment on the granting account does not retire the grantee.
         case(T14, Secp256k1, key(Secp256k1), Account, (true, false)),
-        case(T14, Secp256k1, admin_key(Secp256k1), Account, (true, true)),
+        case(T14, Secp256k1, admin_key(Secp256k1), Account, (true, false)),
         // The stored type is compared with the signature type from T14.
         case(T14, P256, key(P256), Nobody, (true, false)),
         case(T14, P256, key(Secp256k1), Nobody, (false, false)),
