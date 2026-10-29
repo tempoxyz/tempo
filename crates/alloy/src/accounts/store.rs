@@ -2358,13 +2358,14 @@ fn validate_stored_authorization(
     Ok(())
 }
 
-/// The account an authorization names without recovering a primitive signer: its explicit
-/// account, else the account of its configurable account signature.
+/// The account an authorization names without recovering a primitive signer: the account of its
+/// configurable account signature, which only signs its own grants, else its explicit account.
 fn authorization_account(authorization: &SignedKeyAuthorization) -> Option<Address> {
-    authorization.account.or(authorization
+    authorization
         .signature
         .as_configurable_account()
-        .map(ConfigurableAccountSignature::account))
+        .map(ConfigurableAccountSignature::account)
+        .or(authorization.account)
 }
 
 struct EditableTempoCliStore {

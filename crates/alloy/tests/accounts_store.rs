@@ -47,21 +47,12 @@ fn configurable_authorization(
     )
 }
 
-#[test_case::test_case(false, false; "parent_signed")]
-#[test_case::test_case(true, false; "scoped_parent_signed")]
-#[test_case::test_case(false, true; "admin_signed")]
-fn configurable_account_authorization_round_trips(scoped: bool, admin: bool) {
+#[test_case::test_case(false; "parent_signed")]
+#[test_case::test_case(true; "scoped_parent_signed")]
+fn configurable_account_authorization_round_trips(scoped: bool) {
     let account = Address::repeat_byte(2);
     let signer = PrivateKeySigner::random();
-    let signing_account = if admin {
-        Address::repeat_byte(3)
-    } else {
-        account
-    };
-    let mut authorization = configurable_authorization(signing_account, &signer);
-    if admin {
-        authorization.authorization.account = Some(account);
-    }
+    let mut authorization = configurable_authorization(account, &signer);
     if scoped {
         authorization.authorization.allowed_calls = Some(vec![CallScope {
             target: Address::repeat_byte(4),
@@ -98,10 +89,15 @@ fn configurable_account_authorization_for_another_account_is_rejected() {
     let path = directory.join("store.json");
     let store = TempoAccountsStore::at(path.clone());
 
-    assert!(matches!(
-        store.upsert_secp256k1_access_key(account, &signer, &authorization),
-        Err(TempoAccountsError::InvalidAuthorization(_))
-    ));
+    // Naming the account does not let another configurable account sign its grant.
+    let mut named = authorization.clone();
+    named.authorization.account = Some(account);
+    for authorization in [&authorization, &named] {
+        assert!(matches!(
+            store.upsert_secp256k1_access_key(account, &signer, authorization),
+            Err(TempoAccountsError::InvalidAuthorization(_))
+        ));
+    }
 
     store
         .upsert_secp256k1_access_key(other, &signer, &authorization)

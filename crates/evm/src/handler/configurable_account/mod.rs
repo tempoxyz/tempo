@@ -288,8 +288,7 @@ fn validate_native_roles(
             accounts: Vec::new(),
         });
     }
-    // Grant signers may be admin access keys; key authorization validation binds them to the
-    // caller.
+    // Keychain validation rejects a grant signed by an account other than the caller.
     if let Some(signature) = aa.signature().as_configurable_account()
         && signature.account() != caller
     {

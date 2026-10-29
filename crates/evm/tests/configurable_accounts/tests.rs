@@ -1824,41 +1824,6 @@ fn retired_root_rejects_delegated_roles() {
     );
 }
 
-/// A primitive admin access key that migrated signs grants for its parent through its owner
-/// quorum.
-#[test]
-fn migrated_admin_delegate_signs_grants_through_its_quorum() {
-    let mut f = Fixture::with_parent(false);
-    let admin = signer(4);
-    let new_owner = signer(8);
-    let child = signer(7).address();
-    let account = f.account;
-    grant_kind(&mut f, 3, SigKind::Secp256k1, admin.address(), true);
-    seed_eoa(&mut f, admin.address(), 0);
-    let config = migrate_key(&mut f, &admin, 0, &new_owner);
-
-    let grant =
-        KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, child).with_account(account);
-    let approval =
-        configurable_account_approval(admin.address(), &config, &new_owner, grant.signature_hash());
-    let tx = TempoTransaction {
-        key_authorization: Some(grant.into_signed(AccountSignature::ConfigurableAccount(approval))),
-        ..aa_tx(4, vec![f.getter()])
-    };
-    let tx = delegate_keychain_signed(tx, account, admin.address(), &config, &new_owner);
-    let result = f.run(&tx);
-    assert!(result.status, "{result:?}");
-    let key = in_storage_ctx(&mut f.evm, || {
-        AccountKeychain::new().get_key(IAccountKeychain::getKeyCall {
-            account,
-            keyId: child,
-        })
-    })
-    .unwrap();
-    assert_eq!(key.keyId, child);
-    assert!(!key.isRevoked);
-}
-
 #[test]
 fn retired_root_keeps_owner_parent_and_sender_authority() {
     // What stays valid for a migrated account X.
@@ -3507,7 +3472,7 @@ fn native_commitment_only_account_evm_semantics() {
 
 #[test]
 fn native_rotation_rejects_access_keys_and_callbacks() {
-    for (access_key, admin) in [(true, false), (true, true), (false, false)] {
+    for access_key in [true, false] {
         let mut f = Fixture::new();
         let next = ConfigurableAccountConfig {
             version: 1,
@@ -3516,11 +3481,8 @@ fn native_rotation_rejects_access_keys_and_callbacks() {
         let rotation = Fixture::rotation(&f.config, &next);
         let tx = if access_key {
             let delegate = signer(2);
-            let mut authorization =
+            let authorization =
                 KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, delegate.address());
-            if admin {
-                authorization = authorization.into_admin(f.account);
-            }
             let approval = configurable_account_approval(
                 f.account,
                 &f.config,
@@ -4923,11 +4885,11 @@ fn native_delegate_grant_is_bound_to_the_transaction() {
     }
 }
 
-/// A configurable admin delegate of a primitive or configurable parent can sign an inline grant
-/// of a child key for the parent. The grant is rejected when another configurable account signs
-/// it, when it names another account, or when the delegate is not an admin.
+/// A configurable delegate of a primitive or configurable parent cannot sign an inline grant of a
+/// child key for the parent: it cannot be granted as an admin key, and as a regular access key it
+/// cannot authorize other keys.
 #[test]
-fn native_admin_delegate_signs_inline_grant() {
+fn native_delegate_cannot_sign_inline_grant() {
     let owner = signer(2);
     let config = ConfigurableAccountConfig {
         salt: B256::repeat_byte(2),
@@ -4939,51 +4901,16 @@ fn native_admin_delegate_signs_inline_grant() {
         }],
     };
     let delegate = config.derive_account().unwrap();
-    let other_owner = signer(3);
-    let other_config = ConfigurableAccountConfig {
-        salt: B256::repeat_byte(3),
-        owners: vec![ConfigurableAccountOwner {
-            owner: other_owner.address(),
-            weight: 1,
-        }],
-        ..config
-    };
-    let other = other_config.derive_account().unwrap();
     let child = signer(4).address();
-    let failed = |reason: &str| TempoInvalidTransaction::KeychainValidationFailed {
-        reason: reason.into(),
+    let invalid_key_id = TempoInvalidTransaction::KeychainPrecompileError {
+        reason: TempoPrecompileError::from(AccountKeychainError::invalid_key_id()).to_string(),
     };
     for parent_native in [false, true] {
-        for (label, admin, unrelated_signer, target, expected) in [
-            ("matching", true, false, None, None),
-            (
-                "unrelated signer",
-                true,
-                true,
-                None,
-                Some(failed(
-                    "admin-signed key authorization must be signed by transaction key",
-                )),
-            ),
-            (
-                "account mismatch",
-                true,
-                false,
-                Some(Address::repeat_byte(0x77)),
-                Some(failed("key authorization account mismatch")),
-            ),
-            (
-                "non-admin delegate",
-                false,
-                false,
-                None,
-                Some(TempoInvalidTransaction::AccessKeyCannotAuthorizeOtherKeys),
-            ),
-        ] {
-            let _case = Case(format!("{label}, parent_native={parent_native}"));
-            let mut f = Fixture::with_parent(parent_native);
-            let parent = f.account;
-            // The parent's root grants the delegate.
+        let _case = Case(format!("parent_native={parent_native}"));
+        let mut f = Fixture::with_parent(parent_native);
+        let parent = f.account;
+        // The parent's root grants the delegate, as an admin key and then as a regular one.
+        for admin in [true, false] {
             let mut grant =
                 KeyAuthorization::unrestricted(1, SignatureType::ConfigurableAccount, delegate);
             if admin {
@@ -5008,52 +4935,36 @@ fn native_admin_delegate_signs_inline_grant() {
             } else {
                 f.sign_primitive(tx)
             };
-            let result = f.run(&tx);
-            assert!(result.status, "{result:?}");
-
-            // The delegate signs a grant of the child for the parent and the transaction carrying it.
-            let grant = KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, child)
-                .with_account(target.unwrap_or(parent));
-            let approval = if unrelated_signer {
-                configurable_account_approval(
-                    other,
-                    &other_config,
-                    &other_owner,
-                    grant.signature_hash(),
-                )
+            if admin {
+                assert_eq!(rejection(&mut f, &tx, parent), invalid_key_id);
             } else {
-                configurable_account_approval(delegate, &config, &owner, grant.signature_hash())
-            };
-            let tx = TempoTransaction {
-                key_authorization: Some(
-                    grant.into_signed(AccountSignature::ConfigurableAccount(approval)),
-                ),
-                ..aa_tx(4, vec![f.getter()])
-            };
-            let digest = KeychainSignature::signing_hash(tx.signature_hash(), parent);
-            let signature = AccountSignature::ConfigurableAccount(configurable_account_approval(
-                delegate, &config, &owner, digest,
-            ));
-            let tx = tx.into_signed(TempoSignature::Keychain(KeychainSignature::new(
-                parent, signature,
-            )));
-            match expected {
-                None => {
-                    let result = f.run(&tx);
-                    assert!(result.status, "{result:?}");
-                    let key = in_storage_ctx(&mut f.evm, || {
-                        AccountKeychain::new().get_key(IAccountKeychain::getKeyCall {
-                            account: parent,
-                            keyId: child,
-                        })
-                    })
-                    .unwrap();
-                    assert_eq!(key.keyId, child);
-                    assert!(!key.isRevoked);
-                }
-                Some(error) => assert_eq!(rejection(&mut f, &tx, parent), error),
+                let result = f.run(&tx);
+                assert!(result.status, "{result:?}");
             }
         }
+
+        // The delegate signs a grant of the child for the parent and the transaction carrying it.
+        let grant =
+            KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, child).with_account(parent);
+        let approval =
+            configurable_account_approval(delegate, &config, &owner, grant.signature_hash());
+        let tx = TempoTransaction {
+            key_authorization: Some(
+                grant.into_signed(AccountSignature::ConfigurableAccount(approval)),
+            ),
+            ..aa_tx(4, vec![f.getter()])
+        };
+        let digest = KeychainSignature::signing_hash(tx.signature_hash(), parent);
+        let signature = AccountSignature::ConfigurableAccount(configurable_account_approval(
+            delegate, &config, &owner, digest,
+        ));
+        let tx = tx.into_signed(TempoSignature::Keychain(KeychainSignature::new(
+            parent, signature,
+        )));
+        assert_eq!(
+            rejection(&mut f, &tx, parent),
+            TempoInvalidTransaction::AccessKeyCannotAuthorizeOtherKeys
+        );
     }
 }
 
