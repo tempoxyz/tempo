@@ -3,7 +3,11 @@
 mod header;
 pub use header::TempoHeaderResponse;
 
+mod configurable_account;
 mod request;
+pub use configurable_account::{
+    ConfigurableAccountSimulationApproval, ConfigurableAccountSimulationSpec,
+};
 pub use request::{FeeToken, TempoCallBuilderExt, TempoTransactionRequest};
 
 mod receipt;

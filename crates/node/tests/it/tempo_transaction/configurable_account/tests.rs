@@ -1,21 +1,44 @@
 use super::*;
-use crate::tempo_transaction::helpers::{create_expiring_nonce_tx, sign_fee_payer};
+use crate::tempo_transaction::helpers::{
+    create_expiring_nonce_tx, create_transfer_call, parse_filled_tx, sign_fee_payer,
+};
 use alloy::{
     consensus::{BlockHeader, SignableTransaction, TxEip1559, TxLegacy},
+    primitives::Signature,
+    rpc::types::{
+        simulate::{SimBlock, SimulatePayload, SimulatedBlock},
+        state::StateOverridesBuilder,
+    },
     sol_types::{SolError, SolEvent},
+    transports::TransportError,
 };
-use alloy_eips::{BlockNumberOrTag, eip7702::Authorization};
+use alloy_eips::{BlockId, BlockNumberOrTag, Decodable2718, eip7702::Authorization};
+use evm2::registry::HandlerError;
 use eyre::OptionExt;
 use futures::{FutureExt, StreamExt};
 use jsonrpsee::types::error::INVALID_PARAMS_CODE;
 use reth_e2e_test_utils::{node::Finality, wait::WAIT_TIMEOUT};
-use reth_ethereum::pool::{TransactionEvent, TransactionPool};
-use reth_node_builder::BuiltPayload;
-use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
-use tempo_primitives::transaction::{
-    KeyAuthorization, KeychainSignature, PrimitiveSignature, SignedKeyAuthorization,
-    TempoSignedAuthorization,
+use reth_ethereum::{
+    pool::{
+        TransactionEvent, TransactionOrigin, TransactionPool,
+        error::{PoolError, PoolErrorKind},
+    },
+    primitives::SignerRecoverable,
 };
+use reth_node_builder::BuiltPayload;
+use reth_rpc_eth_types::RpcInvalidTransactionError;
+use serde_json::{from_value, json};
+use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
+use tempo_contracts::precompiles::{ACCOUNT_KEYCHAIN_ADDRESS, IAccountKeychain, ITIP20};
+use tempo_evm::transaction_error::ConfigurableAccountError;
+use tempo_primitives::{
+    account::encode_config_commitment,
+    transaction::{
+        KeyAuthorization, SignedKeyAuthorization, TempoSignedAuthorization, TokenLimit,
+        calc_gas_balance_spending,
+    },
+};
+use tempo_transaction_pool::transaction::TempoPoolTransactionError;
 use tokio::time::timeout;
 
 /// What a pending transaction needs from the root key of an account that migrates.
@@ -636,5 +659,660 @@ async fn eoa_migration_rpc_lifecycle() -> eyre::Result<()> {
             next.commitment().unwrap()
         );
     }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn configurable_account_rpc_registration_revert_retry_and_rotation() -> eyre::Result<()> {
+    let mut env = environment().await?;
+    let mut account = ConfigurableAccount::new(0x11, 2);
+    env.fund_account(account.address).await?;
+    assert_eq!(commitment(&env, account.address).await?, B256::ZERO);
+    let request = account.simulation_request();
+    let provider = tempo_provider(&env);
+    let simulated = provider.call(request.clone()).latest().await?;
+    assert_eq!(simulated, Bytes::from(account.config.commitment().unwrap()));
+    let estimate = provider.estimate_gas(request).latest().await?;
+    assert!(estimate > 0);
+    assert_eq!(commitment(&env, account.address).await?, B256::ZERO);
+    let before = ITIP20::new(DEFAULT_FEE_TOKEN, env.provider())
+        .balanceOf(account.address)
+        .call()
+        .await?;
+
+    let tx = account.transaction(
+        &env,
+        vec![Call {
+            to: CONFIGURABLE_ACCOUNT_ADDRESS.into(),
+            value: U256::ZERO,
+            input: Bytes::from_static(&[0xff, 0xff, 0xff, 0xff]),
+        }],
+    );
+    let signature = account.sign(&tx)?;
+    account.submit(&mut env, tx, signature, false).await?;
+    assert_eq!(
+        commitment(&env, account.address).await?,
+        account.config.commitment().unwrap()
+    );
+    let account_info: Value = env
+        .provider()
+        .raw_request("eth_getAccount".into(), (account.address, "latest"))
+        .await?;
+    let extension = account_info["extension"]
+        .as_str()
+        .expect("registered account extension missing");
+    assert_eq!(extension.len(), 2 + 66);
+    assert_eq!(
+        account_info["extension"],
+        json!(encode_config_commitment(
+            account.config.commitment().unwrap()
+        ))
+    );
+    // Registration installs the one-byte marker.
+    assert_eq!(
+        env.provider().get_code_at(account.address).await?,
+        Bytes::from_static(&[0xef])
+    );
+    assert_eq!(account_info["codeHash"], json!(keccak256([0xef])));
+    let registered_estimate = provider
+        .estimate_gas(account.simulation_request())
+        .latest()
+        .await?;
+    assert!(
+        registered_estimate < estimate,
+        "registered version zero avoids initial registration gas"
+    );
+    assert_eq!(
+        env.provider()
+            .get_transaction_count(account.address)
+            .await?,
+        1
+    );
+    assert!(
+        ITIP20::new(DEFAULT_FEE_TOKEN, env.provider())
+            .balanceOf(account.address)
+            .call()
+            .await?
+            < before
+    );
+
+    let tx = account.transaction(
+        &env,
+        vec![Call {
+            to: OBSERVER.into(),
+            ..noop()
+        }],
+    );
+    let signature = account.sign(&tx)?;
+    account.submit(&mut env, tx, signature, true).await?;
+    let initial = account.config.commitment().unwrap();
+    assert_eq!(commitment(&env, account.address).await?, initial);
+    let initial_word: U256 = initial.into();
+    assert_eq!(
+        env.provider().get_storage_at(OBSERVER, U256::ZERO).await?,
+        initial_word
+    );
+
+    let replacement = ConfigurableAccount::new(0x21, 2);
+    let (next, rotate) = account.rotate_to(&replacement);
+    // The current config signs transactions that wait in the pool behind the rotation: as the
+    // sender, as the grant signer of its access key and as the access key of another account.
+    let mut stale = account.transaction(&env, vec![noop()]);
+    stale.nonce += 1;
+    let signature = account.sign(&stale)?;
+    let stale: TempoTxEnvelope = stale.into_signed(signature).into();
+    let chain_id = env.chain_id();
+    let key = signer(0x34);
+    let parent = signer(0x40);
+    env.fund_account(parent.address()).await?;
+    let grant = KeyAuthorization::unrestricted(chain_id, SignatureType::Secp256k1, key.address())
+        .with_account(account.address);
+    let grant_signature = account.quorum(grant.signature_hash(), false)?;
+    let mut key_tx = account.transaction(&env, vec![noop()]);
+    key_tx.nonce += 2;
+    key_tx.key_authorization = Some(grant.into_signed(grant_signature));
+    let key_tx = key_signed(key_tx, account.address, &key)?;
+    let delegation = KeyAuthorization::unrestricted(
+        chain_id,
+        SignatureType::ConfigurableAccount,
+        account.address,
+    );
+    let signature =
+        PrimitiveSignature::Secp256k1(parent.sign_hash_sync(&delegation.signature_hash())?);
+    // Nothing sends the parent's first nonce, so no block includes this transaction.
+    let mut delegate_tx = create_basic_aa_tx(chain_id, 1, vec![noop()], GAS_LIMIT);
+    delegate_tx.key_authorization = Some(delegation.into_signed(signature));
+    let signature = account.as_delegate(&delegate_tx, parent.address(), false)?;
+    let delegate_tx: TempoTxEnvelope = delegate_tx.into_signed(signature).into();
+    let stale = pend(&env, &[&stale, &key_tx, &delegate_tx]).await?;
+    let tx = account.transaction(&env, vec![rotate]);
+    let signature = account.sign(&tx)?;
+    account.submit(&mut env, tx, signature, true).await?;
+    assert_eq!(
+        commitment(&env, account.address).await?,
+        next.commitment().unwrap()
+    );
+    // The rotation changes the commitment, so the pool revalidates the transactions and evicts
+    // them (TIP-1112).
+    env.setup.node.wait_for_pool_removal(stale).await?;
+    let tx = account.transaction(&env, vec![noop()]);
+    reject_with(
+        &env,
+        tx.clone(),
+        account.sign(&tx)?,
+        TempoInvalidTransaction::ConfigurableAccount(
+            ConfigurableAccountError::ConfigurationCommitmentMismatch {
+                expected: next.commitment().unwrap(),
+                actual: account.config.commitment().unwrap(),
+            },
+        ),
+    )
+    .await?;
+    account.adopt(next, replacement);
+    let signature = account.sign(&tx)?;
+    account.submit(&mut env, tx, signature, true).await?;
+
+    // A simulated block checks each call against the state the calls before it leave: once its
+    // first call rotates the configuration, the old one is stale and the new one signs. The
+    // rotation stays in the simulation's state (TIP-1114).
+    let stale = account.simulation_request();
+    let current = account.config.commitment().unwrap();
+    let replacement = ConfigurableAccount::new(0x22, 2);
+    let (next, rotate) = account.rotate_to(&replacement);
+    let mut rotation = stale.clone();
+    rotation.inner.input = rotate.input.into();
+    account.adopt(next, replacement);
+    let simulate = |call: TempoTransactionRequest| SimulatePayload {
+        block_state_calls: vec![SimBlock {
+            block_overrides: None,
+            state_overrides: None,
+            calls: vec![rotation.clone(), call],
+        }],
+        trace_transfers: false,
+        validation: false,
+        return_full_transactions: false,
+    };
+    let blocks: Vec<SimulatedBlock<Value>> = provider
+        .raw_request(
+            "eth_simulateV1".into(),
+            (simulate(account.simulation_request()),),
+        )
+        .await?;
+    let [rotated, read] = blocks[0].calls.as_slice() else {
+        panic!("{blocks:?}");
+    };
+    assert!(rotated.status, "{blocks:?}");
+    assert!(read.status, "{blocks:?}");
+    assert_eq!(
+        read.return_data,
+        Bytes::from(account.config.commitment().unwrap())
+    );
+    let error = provider
+        .raw_request::<_, Vec<SimulatedBlock<Value>>>("eth_simulateV1".into(), (simulate(stale),))
+        .await
+        .expect_err("a configuration rotated by an earlier call must be stale");
+    assert_rpc_error(
+        &error,
+        EthRpcErrorCode::TransactionRejected.code(),
+        &TempoInvalidTransaction::ConfigurableAccount(
+            ConfigurableAccountError::ConfigurationCommitmentMismatch {
+                expected: account.config.commitment().unwrap(),
+                actual: current,
+            },
+        )
+        .to_string(),
+    )?;
+    assert_eq!(commitment(&env, account.address).await?, current);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn configurable_account_rpc_historical_state_and_account_overrides() -> eyre::Result<()> {
+    let mut env = environment().await?;
+    let mut account = ConfigurableAccount::new(0x18, 2);
+    env.fund_account(account.address).await?;
+    let tx = account.transaction(&env, vec![noop()]);
+    let signature = account.sign(&tx)?;
+    let receipt = account.submit(&mut env, tx, signature, true).await?;
+    let historical_block = BlockId::number(receipt.block_number().unwrap());
+    let provider = tempo_provider(&env);
+    let initial = account.config.commitment().unwrap();
+    let old_request = account.simulation_request();
+
+    let replacement = ConfigurableAccount::new(0x28, 2);
+    let (next, rotate) = account.rotate_to(&replacement);
+    let tx = account.transaction(&env, vec![rotate]);
+    let signature = account.sign(&tx)?;
+    account.submit(&mut env, tx, signature, true).await?;
+    let current = next.commitment().unwrap();
+    let historical = provider
+        .call(old_request.clone())
+        .block(historical_block)
+        .await?;
+    assert_eq!(historical, Bytes::from(initial));
+    let stale = provider
+        .call(old_request.clone())
+        .latest()
+        .await
+        .unwrap_err();
+    assert_rpc_error(
+        &stale,
+        EthRpcErrorCode::TransactionRejected.code(),
+        &TempoInvalidTransaction::ConfigurableAccount(
+            ConfigurableAccountError::ConfigurationCommitmentMismatch {
+                expected: current,
+                actual: initial,
+            },
+        )
+        .to_string(),
+    )?;
+    let historical_gas = provider
+        .estimate_gas(old_request)
+        .block(historical_block)
+        .await?;
+    assert!(historical_gas > 0);
+
+    account.adopt(next, replacement);
+    let request = account.simulation_request();
+    // Ordinary account overrides must merge with, rather than erase, the stored extension.
+    let overrides = StateOverridesBuilder::default()
+        .with_balance(account.address, U256::ONE)
+        .with_nonce(account.address, 9)
+        .with_state_diff(account.address, [(B256::ZERO, B256::repeat_byte(0x42))])
+        .build();
+    let overridden = provider
+        .call(request.clone())
+        .latest()
+        .overrides(overrides)
+        .await?;
+    assert_eq!(overridden, Bytes::from(current));
+    let code_override = StateOverridesBuilder::default()
+        .with_code(account.address, Bytes::from_static(&[0x00]))
+        .build();
+    let error = provider
+        .call(request)
+        .latest()
+        .overrides(code_override)
+        .await
+        .unwrap_err();
+    assert_rpc_error(
+        &error,
+        EthRpcErrorCode::TransactionRejected.code(),
+        &TempoInvalidTransaction::ConfigurableAccount(ConfigurableAccountError::InvalidAccount {
+            account: account.address,
+        })
+        .to_string(),
+    )?;
+    assert_eq!(commitment(&env, account.address).await?, current);
+    assert_eq!(
+        env.provider()
+            .get_storage_at(account.address, U256::ZERO)
+            .await?,
+        U256::ZERO
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn configurable_account_rpc_fill_and_access_list_preserve_authority() -> eyre::Result<()> {
+    let mut env = environment().await?;
+    let mut account = ConfigurableAccount::new(0x19, 3);
+    env.fund_account(account.address).await?;
+    let provider = tempo_provider(&env);
+    let mut request = account.simulation_request();
+    // Model the same algorithms and WebAuthn length that will be submitted.
+    request
+        .configurable_account_simulation
+        .as_mut()
+        .expect("simulation request carries a quorum")
+        .approvals = account
+        .owners
+        .iter()
+        .map(|owner| {
+            let signature = owner.sign(B256::ZERO)?;
+            let key_data = match &signature {
+                PrimitiveSignature::WebAuthn(signature) => Some(Bytes::from(
+                    u16::try_from(signature.webauthn_data.len())?.to_be_bytes(),
+                )),
+                _ => None,
+            };
+            Ok(ConfigurableAccountSimulationApproval {
+                owner: owner.address(),
+                key_type: Some(signature.signature_type()),
+                key_data,
+            })
+        })
+        .collect::<eyre::Result<Vec<_>>>()?;
+    request.to = Some(OBSERVER.into());
+    request.input = Bytes::new().into();
+    let access = provider.create_access_list(&request).latest().await?;
+    assert!(access.is_ok(), "{access:?}");
+    assert!(
+        access
+            .access_list
+            .iter()
+            .any(|item| { item.address == OBSERVER && item.storage_keys.contains(&B256::ZERO) }),
+        "{access:?}"
+    );
+    assert_eq!(commitment(&env, account.address).await?, B256::ZERO);
+    assert_eq!(
+        env.provider().get_storage_at(OBSERVER, U256::ZERO).await?,
+        U256::ZERO
+    );
+
+    let delegate = PrivateKeySigner::random();
+    let grant = KeyAuthorization::unrestricted(
+        env.chain_id(),
+        SignatureType::Secp256k1,
+        delegate.address(),
+    )
+    .with_account(account.address);
+    let signature = account.quorum(grant.signature_hash(), false)?;
+    let grant = grant.into_signed(signature);
+    request.set_key_authorization(grant.clone());
+    let estimate = provider.estimate_gas(request.clone()).latest().await?;
+    let filled: Value = env
+        .provider()
+        .raw_request("eth_fillTransaction".into(), (request.clone(),))
+        .await?;
+    let mut tx = parse_filled_tx(&filled)?;
+    assert_eq!(tx.key_authorization.as_ref(), Some(&grant));
+    assert_eq!(tx.nonce, 0);
+    assert_eq!(tx.chain_id, env.chain_id());
+    assert_eq!(tx.calls[0].to, OBSERVER.into());
+    let raw: Bytes = from_value(filled["raw"].clone())?;
+    let TempoTxEnvelope::AA(unsigned) = TempoTxEnvelope::decode_2718(&mut raw.as_ref())? else {
+        panic!("configurable fill must retain the AA transaction type");
+    };
+    assert_eq!(unsigned.tx().key_authorization.as_ref(), Some(&grant));
+    for field in [
+        "configurableAccountSimulation",
+        "keyAuthorizationSimulation",
+        "configurableAccountSimulationSignature",
+    ] {
+        assert!(filled["tx"].get(field).is_none(), "{filled}");
+    }
+    // A simulated grant quorum replaces the attached grant's signature with mock approvals.
+    request.key_authorization_simulation = request.configurable_account_simulation.clone();
+    let filled = provider.fill_transaction(request).await?;
+    let simulated = filled
+        .tx
+        .as_aa()
+        .ok_or_eyre("configurable fill must retain the AA transaction type")?
+        .tx()
+        .key_authorization
+        .as_ref()
+        .ok_or_eyre("the fill keeps the grant")?;
+    assert_eq!(simulated.authorization, grant.authorization);
+    assert_ne!(
+        simulated, &grant,
+        "the mock approvals replace the signed ones"
+    );
+    let quorum = simulated
+        .signature
+        .as_configurable_account()
+        .ok_or_eyre("the grant carries the mock quorum")?;
+    assert_eq!(quorum.account(), account.address);
+    assert_eq!(quorum.config(), &account.config);
+    assert_eq!(quorum.signatures().len(), account.owners.len());
+    assert_eq!(commitment(&env, account.address).await?, B256::ZERO);
+    tx.gas_limit = estimate;
+    let signature = account.sign(&tx)?;
+    account.submit(&mut env, tx, signature, true).await?;
+    assert_eq!(
+        commitment(&env, account.address).await?,
+        account.config.commitment().unwrap()
+    );
+    Ok(())
+}
+
+/// `keyAuthorizationSimulation` lets a wallet estimate a transaction that grants a delegate and
+/// uses it before the parent's owners sign the grant; the estimate covers the signed transaction.
+#[tokio::test(flavor = "multi_thread")]
+async fn configurable_account_rpc_simulated_grant_estimate_covers_the_signed_grant()
+-> eyre::Result<()> {
+    let mut env = environment().await?;
+    let mut parent = ConfigurableAccount::new(0x1a, 2);
+    let delegate = ConfigurableAccount::new(0x2a, 2);
+    env.fund_account(parent.address).await?;
+    let grant = KeyAuthorization::unrestricted(
+        env.chain_id(),
+        SignatureType::ConfigurableAccount,
+        delegate.address,
+    )
+    .with_account(parent.address);
+    let mut tx = parent.transaction(&env, vec![noop()]);
+    let mut request = TempoTransactionRequest::from(tx.clone());
+    request.inner.from = Some(parent.address);
+    request.key_id = Some(delegate.address);
+    request.configurable_account_simulation = delegate
+        .simulation_request()
+        .configurable_account_simulation;
+    // No owner has signed the grant yet: the simulated quorum replaces this placeholder.
+    request.set_key_authorization(grant.clone().into_signed(Signature::test_signature()));
+    request.key_authorization_simulation =
+        parent.simulation_request().configurable_account_simulation;
+    let estimate = tempo_provider(&env).estimate_gas(request).latest().await?;
+
+    let grant_signature = parent.quorum(grant.signature_hash(), false)?;
+    tx.key_authorization = Some(grant.into_signed(grant_signature));
+    tx.gas_limit = estimate;
+    let signature = delegate.as_delegate(&tx, parent.address, false)?;
+    parent.submit(&mut env, tx, signature, true).await?;
+    assert_eq!(
+        commitment(&env, parent.address).await?,
+        parent.config.commitment().unwrap()
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn configurable_account_rpc_delegate_rotation_preserves_grant_and_spending()
+-> eyre::Result<()> {
+    let mut env = environment().await?;
+    let mut parent = ConfigurableAccount::new(0x31, 2);
+    let mut delegate = ConfigurableAccount::new(0x41, 2);
+    env.fund_account(parent.address).await?;
+    env.fund_account(delegate.address).await?;
+    let limit = U256::from(100_000_000_000u64);
+    let grant = KeyAuthorization::unrestricted(
+        env.chain_id(),
+        SignatureType::ConfigurableAccount,
+        delegate.address,
+    )
+    .with_account(parent.address)
+    .with_limits(vec![TokenLimit {
+        token: DEFAULT_FEE_TOKEN,
+        limit,
+        period: 0,
+    }]);
+    let grant_signature = parent.quorum(grant.signature_hash(), false)?;
+    let mut tx = parent.transaction(
+        &env,
+        vec![create_transfer_call(
+            DEFAULT_FEE_TOKEN,
+            Address::repeat_byte(0x74),
+            U256::from(100),
+        )],
+    );
+    tx.key_authorization = Some(grant.into_signed(grant_signature));
+    let signature = delegate.as_delegate(&tx, parent.address, false)?;
+    parent.submit(&mut env, tx, signature, true).await?;
+    assert_eq!(
+        commitment(&env, parent.address).await?,
+        parent.config.commitment().unwrap()
+    );
+    assert_eq!(
+        commitment(&env, delegate.address).await?,
+        delegate.config.commitment().unwrap()
+    );
+    let keychain = IAccountKeychain::new(ACCOUNT_KEYCHAIN_ADDRESS, env.provider().clone());
+    let before_rotation = keychain
+        .getRemainingLimitWithPeriod(parent.address, delegate.address, DEFAULT_FEE_TOKEN)
+        .call()
+        .await?
+        .remaining;
+    assert!(before_rotation < limit);
+    let key_before = keychain
+        .getKey(parent.address, delegate.address)
+        .call()
+        .await?;
+
+    let replacement = ConfigurableAccount::new(0x51, 2);
+    let (next, rotate) = delegate.rotate_to(&replacement);
+    let tx = delegate.transaction(&env, vec![rotate]);
+    let signature = delegate.sign(&tx)?;
+    delegate.submit(&mut env, tx, signature, true).await?;
+    assert_eq!(
+        keychain
+            .getRemainingLimitWithPeriod(parent.address, delegate.address, DEFAULT_FEE_TOKEN)
+            .call()
+            .await?
+            .remaining,
+        before_rotation
+    );
+    assert_eq!(
+        keychain
+            .getKey(parent.address, delegate.address)
+            .call()
+            .await?,
+        key_before
+    );
+
+    let tx = parent.transaction(
+        &env,
+        vec![create_transfer_call(
+            DEFAULT_FEE_TOKEN,
+            Address::repeat_byte(0x74),
+            U256::from(100),
+        )],
+    );
+    reject_with(
+        &env,
+        tx.clone(),
+        delegate.as_delegate(&tx, parent.address, false)?,
+        TempoInvalidTransaction::ConfigurableAccount(
+            ConfigurableAccountError::ConfigurationCommitmentMismatch {
+                expected: next.commitment().unwrap(),
+                actual: delegate.config.commitment().unwrap(),
+            },
+        ),
+    )
+    .await?;
+    delegate.adopt(next, replacement);
+    let signature = delegate.as_delegate(&tx, parent.address, false)?;
+    parent.submit(&mut env, tx, signature, true).await?;
+    assert!(
+        keychain
+            .getRemainingLimitWithPeriod(parent.address, delegate.address, DEFAULT_FEE_TOKEN)
+            .call()
+            .await?
+            .remaining
+            < before_rotation
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn configurable_account_rpc_maximum_mixed_quorums_and_validation_cost_order()
+-> eyre::Result<()> {
+    let mut env = environment().await?;
+    let mut parent = ConfigurableAccount::new(0x61, 8);
+    let delegate = ConfigurableAccount::new(0x81, 8);
+    let grant = KeyAuthorization::unrestricted(
+        env.chain_id(),
+        SignatureType::ConfigurableAccount,
+        delegate.address,
+    )
+    .with_account(parent.address);
+    let mut tx = parent.transaction(&env, vec![noop()]);
+    tx.key_authorization = Some(
+        grant
+            .clone()
+            .into_signed(parent.quorum(grant.signature_hash(), false)?),
+    );
+
+    // The pool and the RPC check intrinsic gas, then the fee balance, of a transaction whose
+    // delegate and grant quorums both recovered.
+    let mut low_gas = tx.clone();
+    low_gas.gas_limit = 21_000;
+    let signature = delegate.as_delegate(&low_gas, parent.address, false)?;
+    let low_gas: TempoTxEnvelope = low_gas.into_signed(signature).into();
+    let PoolError {
+        kind: PoolErrorKind::InvalidTransaction(error),
+        ..
+    } = env
+        .setup
+        .node
+        .inner
+        .pool
+        .add_consensus_transaction(low_gas.try_into_recovered()?, TransactionOrigin::External)
+        .await
+        .unwrap_err()
+    else {
+        panic!("the pool must reject the transaction as invalid");
+    };
+    assert!(
+        matches!(
+            error.downcast_other_ref::<TempoPoolTransactionError>(),
+            Some(TempoPoolTransactionError::Evm(
+                HandlerError::IntrinsicGasTooLow { .. }
+            ))
+        ),
+        "{error:?}"
+    );
+    let error = rejection(
+        &env,
+        tx.clone(),
+        delegate.as_delegate(&tx, parent.address, false)?,
+    )
+    .await;
+    let unfunded = RpcInvalidTransactionError::InsufficientFunds {
+        cost: calc_gas_balance_spending(tx.gas_limit, tx.max_fee_per_gas),
+        balance: U256::ZERO,
+    };
+    assert_rpc_error(&error, unfunded.error_code(), &unfunded.to_string())?;
+
+    // Only the last approval of the grant signs the wrong digest. Recovery rejects the
+    // transaction before any state is read, so it never reaches the unfunded check above.
+    let mut invalid_grant = tx.clone();
+    let invalid_quorum = parent.quorum(grant.signature_hash(), true)?;
+    invalid_grant.key_authorization = Some(grant.into_signed(invalid_quorum));
+    let signature = delegate.as_delegate(&invalid_grant, parent.address, false)?;
+    let invalid: TempoTxEnvelope = invalid_grant.clone().into_signed(signature.clone()).into();
+    invalid
+        .recover_signer()
+        .expect_err("recovery verifies the grant quorum");
+    let error = rejection(&env, invalid_grant, signature).await;
+    assert_rpc_error(&error, INVALID_PARAMS_CODE, "invalid transaction signature")?;
+    env.fund_account(parent.address).await?;
+    assert_eq!(commitment(&env, parent.address).await?, B256::ZERO);
+    assert_eq!(commitment(&env, delegate.address).await?, B256::ZERO);
+
+    // Two independent eight-owner witnesses include secp256k1, P256 and WebAuthn. Sponsorship
+    // adds exactly one ordinary secp256k1 signature without giving the sponsor authority.
+    let sponsor = env.funder_signer.clone();
+    sign_fee_payer(&mut tx, parent.address, &sponsor)?;
+    let before = ITIP20::new(DEFAULT_FEE_TOKEN, env.provider())
+        .balanceOf(parent.address)
+        .call()
+        .await?;
+    let signature = delegate.as_delegate(&tx, parent.address, false)?;
+    parent.submit(&mut env, tx, signature, true).await?;
+    assert_eq!(
+        ITIP20::new(DEFAULT_FEE_TOKEN, env.provider())
+            .balanceOf(parent.address)
+            .call()
+            .await?,
+        before
+    );
+    assert_eq!(
+        commitment(&env, parent.address).await?,
+        parent.config.commitment().unwrap()
+    );
+    assert_eq!(
+        commitment(&env, delegate.address).await?,
+        delegate.config.commitment().unwrap()
+    );
     Ok(())
 }
