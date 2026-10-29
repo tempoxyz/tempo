@@ -86,7 +86,7 @@ pub trait TempoConsensusApi {
 ///
 /// The feed is meant for followers and indexers, and every subscription receives a copy of each
 /// finalized block, so it gets a far lower cap than jsonrpsee's generic per-connection limit.
-pub const DEFAULT_MAX_SUBSCRIPTIONS: usize = 256;
+const DEFAULT_MAX_SUBSCRIPTIONS: usize = 256;
 
 /// Notifications a subscription may have queued on its connection before it is dropped.
 ///
@@ -107,14 +107,14 @@ pub struct TempoConsensusRpc<I> {
 }
 
 impl<I: ConsensusFeed> TempoConsensusRpc<I> {
-    /// Create a new consensus RPC handler allowing [`DEFAULT_MAX_SUBSCRIPTIONS`] subscriptions.
+    /// Create a new consensus RPC handler allowing at most 256 concurrent subscriptions.
     pub fn new(consensus_feed: I) -> Self {
         Self::with_max_subscriptions(consensus_feed, DEFAULT_MAX_SUBSCRIPTIONS)
     }
 
     /// Create a new consensus RPC handler allowing at most `max_subscriptions` concurrent
     /// subscriptions; further subscribe requests are rejected as busy.
-    pub fn with_max_subscriptions(consensus_feed: I, max_subscriptions: usize) -> Self {
+    fn with_max_subscriptions(consensus_feed: I, max_subscriptions: usize) -> Self {
         Self {
             consensus_feed,
             subscriptions: Arc::new(Semaphore::new(max_subscriptions)),
