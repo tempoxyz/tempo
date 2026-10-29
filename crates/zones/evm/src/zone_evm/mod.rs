@@ -96,8 +96,10 @@ impl<L1: L1StorageReader> ZoneTxHandler<L1> {
                 B256::repeat_byte(0xff),
                 tx_context::ExecutionOrigin::Simulation,
             ),
-            // Only prewarming (the zone builder's and reth's engine prewarming) disables both
-            // checks, so a transaction funded or sequenced by an earlier one still executes.
+            // Prewarming (the zone builder's and reth's engine prewarming) disables both checks, so
+            // a transaction funded or sequenced by an earlier one still executes. Tempo envs never
+            // enable the balance check, so pool validation, which disables only the nonce check,
+            // lands here too and its L1 misses are bounded like prewarming's.
             ExecutionContext::Transaction { tx_hash }
                 if !request.host.feature(EvmFeatures::NONCE_CHECK)
                     && !request.host.feature(EvmFeatures::BALANCE_CHECK) =>
@@ -177,6 +179,7 @@ pub(crate) mod tests {
     use tempo_chainspec::{hardfork::TempoHardfork, spec::DEV};
     use tempo_evm::{
         ResolvedFeeToken, TempoEvmEnv, TempoEvmTypes, TempoInvalidTransaction, TempoTxEnv,
+        tempo_execution_config,
     };
     use tempo_precompiles::TIP403_REGISTRY_ADDRESS;
     use tempo_primitives::{
@@ -436,7 +439,9 @@ pub(crate) mod tests {
         );
         let simulation =
             TempoTxEnv::from_tx_with_encoded(WithEncoded::new(Bytes::new(), signed.clone()));
-        let checks = EvmFeatures::NONCE_CHECK | EvmFeatures::BALANCE_CHECK;
+        // Production envs, including canonical ones, never enable the balance check.
+        let production = *tempo_execution_config(spec, DEV.chain_id()).version();
+        assert!(!production.features.contains(EvmFeatures::BALANCE_CHECK));
         for (tx_env, disabled_checks, origin) in [
             (
                 simulation,
@@ -451,14 +456,15 @@ pub(crate) mod tests {
             // Engine prewarming and the zone builder's prewarming disable both checks.
             (
                 TempoTxEnv::from(signed.clone()),
-                checks,
+                EvmFeatures::NONCE_CHECK | EvmFeatures::BALANCE_CHECK,
                 ExecutionOrigin::Prewarming,
             ),
-            // Disabling only the nonce check, as RPC calls do, is not prewarming.
+            // Pool validation disables only the nonce and base fee checks, and counts as
+            // prewarming because the balance check is already off.
             (
                 TempoTxEnv::from(signed.clone()),
-                EvmFeatures::NONCE_CHECK,
-                ExecutionOrigin::Canonical,
+                EvmFeatures::NONCE_CHECK | EvmFeatures::BASE_FEE_CHECK,
+                ExecutionOrigin::Prewarming,
             ),
         ] {
             let mut evm = test_evm(InMemoryDB::default());
@@ -494,7 +500,7 @@ pub(crate) mod tests {
                     l1,
                 },
             );
-            let mut version = *evm.version();
+            let mut version = production;
             version.features.remove(disabled_checks);
             evm.set_execution_config(
                 super::zone_execution_config(spec, version),

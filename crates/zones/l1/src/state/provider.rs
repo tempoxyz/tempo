@@ -9,8 +9,9 @@
 //! ([`L1StateProvider::get_storage_async`]) entry point are provided. The synchronous variant is
 //! intended for use inside EVM precompiles where async is unavailable — it retries the RPC
 //! call indefinitely with exponential backoff to avoid bricking the chain on transient outages.
-//! RPC simulations and cache prewarming instead make one time-limited attempt, so an outage fails
-//! them rather than holding RPC permits or prewarming threads. A WebSocket transport keeps a
+//! RPC simulations, cache prewarming and transaction-pool validation instead make one time-limited
+//! attempt, so an outage fails them rather than holding RPC permits, prewarming threads or
+//! submissions. A WebSocket transport keeps a
 //! request until L1 answers it, so the number of those attempts still awaiting L1 is capped.
 
 use alloy_primitives::{Address, B256, U256};
@@ -195,9 +196,10 @@ impl L1StateProvider {
     /// transient L1 RPC outage stalls block production rather than bricking the chain with a hard
     /// precompile error.
     ///
-    /// During an RPC simulation or cache prewarming (any origin but [`ExecutionOrigin::Canonical`])
-    /// it makes one attempt limited to 5s and returns an error if that fails, since retrying would
-    /// only hold an RPC permit or a prewarming thread. It also fails without a request while 256 such
+    /// During an RPC simulation, cache prewarming or transaction-pool validation (any origin but
+    /// [`ExecutionOrigin::Canonical`]) it makes one attempt limited to 5s and returns an error if
+    /// that fails, since retrying would only hold an RPC permit, a prewarming thread or a
+    /// submission. It also fails without a request while 256 such
     /// fetches, including timed-out ones, are still awaiting L1.
     ///
     /// # Panics

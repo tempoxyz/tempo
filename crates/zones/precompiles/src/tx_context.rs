@@ -17,7 +17,8 @@ thread_local! {
 pub enum ExecutionOrigin {
     /// Block building or validation, whose L1 reads must eventually succeed.
     Canonical,
-    /// Cache prewarming, whose execution output is discarded.
+    /// Cache prewarming, whose execution output is discarded. Transaction-pool validation also
+    /// reports this origin, since the Zone EVM cannot tell the two apart.
     Prewarming,
     /// A non-committing RPC simulation.
     Simulation,
