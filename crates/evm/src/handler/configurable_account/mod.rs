@@ -388,7 +388,7 @@ fn validate_root_keys(
         check(host, fee_payer, RootKeyRole::FeePayer)?;
     }
     if let Some(keychain) = aa.signature().as_keychain()
-        && keychain.signature.as_configurable_account().is_none()
+        && !keychain.signature.is_configurable_account()
         && let Some(key_id) = access_key_id(aa)?
     {
         check(host, key_id, RootKeyRole::AccessKey)?;

@@ -532,7 +532,7 @@ impl KeychainSignature {
         &self,
         sig_hash: &B256,
     ) -> Result<Address, alloy_consensus::crypto::RecoveryError> {
-        if self.is_legacy() && self.signature.as_configurable_account().is_some() {
+        if self.is_legacy() && self.signature.is_configurable_account() {
             return Err(RecoveryError::new());
         }
         // Check if already cached
@@ -703,6 +703,11 @@ impl AccountSignature {
             Self::ConfigurableAccount(signature) => signature.size(),
         }
     }
+
+    /// Whether this is a configurable account approval.
+    pub const fn is_configurable_account(&self) -> bool {
+        matches!(self, Self::ConfigurableAccount(_))
+    }
 }
 
 impl From<Signature> for AccountSignature {
@@ -807,8 +812,7 @@ impl TempoSignature {
 
             // A bounded direct approval cannot contain another keychain.
             let inner_signature = AccountSignature::from_bytes(inner_sig_bytes)?;
-            if version == KeychainVersion::V1 && inner_signature.as_configurable_account().is_some()
-            {
+            if version == KeychainVersion::V1 && inner_signature.is_configurable_account() {
                 return Err(AccountSignatureError::ConfigurableAccountInKeychainV1.into());
             }
 
