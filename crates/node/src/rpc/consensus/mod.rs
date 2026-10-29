@@ -11,17 +11,11 @@ pub mod types;
 #[cfg(test)]
 mod tests;
 
-use std::{sync::Arc, time::Duration};
-
 use jsonrpsee::{
     core::RpcResult,
     proc_macros::rpc,
-    types::{
-        ErrorObject,
-        error::{INTERNAL_ERROR_CODE, SERVER_IS_BUSY_CODE},
-    },
+    types::{ErrorObject, error::INTERNAL_ERROR_CODE},
 };
-use tokio::sync::Semaphore;
 
 pub use types::{CertifiedBlock, ConsensusFeed, ConsensusState, Event, Query, SharedEvent};
 
@@ -82,43 +76,16 @@ pub trait TempoConsensusApi {
     async fn subscribe_events(&self) -> jsonrpsee::core::SubscriptionResult;
 }
 
-/// Default cap on concurrent `consensus_subscribe` subscriptions across all connections.
-///
-/// The feed is meant for followers and indexers, and every subscription receives a copy of each
-/// finalized block, so it gets a far lower cap than jsonrpsee's generic per-connection limit.
-pub const DEFAULT_MAX_SUBSCRIPTIONS: usize = 256;
-
-/// Notifications a subscription may have queued on its connection before it is dropped.
-///
-/// Each notification carries a full block, and jsonrpsee queues up to 1024 messages per
-/// connection, so a client that stops reading would otherwise pin up to 1024 block copies.
-const MAX_PENDING_NOTIFICATIONS: usize = 8;
-
-/// How long a notification may wait for room on the connection before the subscription is
-/// dropped.
-const SEND_TIMEOUT: Duration = Duration::from_secs(5);
-
 /// Tempo consensus RPC implementation.
 #[derive(Debug, Clone)]
 pub struct TempoConsensusRpc<I> {
     consensus_feed: I,
-    /// One permit per live subscription, shared by every connection.
-    subscriptions: Arc<Semaphore>,
 }
 
 impl<I: ConsensusFeed> TempoConsensusRpc<I> {
-    /// Create a new consensus RPC handler allowing [`DEFAULT_MAX_SUBSCRIPTIONS`] subscriptions.
+    /// Create a new consensus RPC handler.
     pub fn new(consensus_feed: I) -> Self {
-        Self::with_max_subscriptions(consensus_feed, DEFAULT_MAX_SUBSCRIPTIONS)
-    }
-
-    /// Create a new consensus RPC handler allowing at most `max_subscriptions` concurrent
-    /// subscriptions; further subscribe requests are rejected as busy.
-    pub fn with_max_subscriptions(consensus_feed: I, max_subscriptions: usize) -> Self {
-        Self {
-            consensus_feed,
-            subscriptions: Arc::new(Semaphore::new(max_subscriptions)),
-        }
+        Self { consensus_feed }
     }
 }
 
@@ -136,27 +103,12 @@ impl<I: ConsensusFeed> TempoConsensusApiServer for TempoConsensusRpc<I> {
         &self,
         pending: jsonrpsee::PendingSubscriptionSink,
     ) -> jsonrpsee::core::SubscriptionResult {
-        // Reject before accepting, so the client gets an error for its subscribe call instead of
-        // a subscription that ends at once.
-        let Ok(permit) = self.subscriptions.clone().try_acquire_owned() else {
-            pending
-                .reject(ErrorObject::owned(
-                    SERVER_IS_BUSY_CODE,
-                    "consensus subscription limit reached, try again later",
-                    None::<()>,
-                ))
-                .await;
-            return Ok(());
-        };
-
         let sink = pending.accept().await?;
         let mut rx = self.consensus_feed.subscribe().await.ok_or_else(|| {
             ErrorObject::owned(INTERNAL_ERROR_CODE, "Failed to subscribe", None::<()>)
         })?;
 
         tokio::spawn(async move {
-            // Released when the task exits.
-            let _permit = permit;
             loop {
                 // Events only arrive on finalization, so a failed `send` alone would not detect
                 // a disconnect or unsubscribe while finalization is stalled. Race against
@@ -167,19 +119,13 @@ impl<I: ConsensusFeed> TempoConsensusApiServer for TempoConsensusRpc<I> {
                 };
                 match recv {
                     Ok(event) => {
-                        // A client that is not reading would queue a full block per event: drop
-                        // it before copying another one. It can resubscribe and backfill with
-                        // `consensus_getFinalization`.
-                        if sink.max_capacity() - sink.capacity() > MAX_PENDING_NOTIFICATIONS {
-                            break;
-                        }
                         let msg = jsonrpsee::SubscriptionMessage::new(
                             sink.method_name(),
                             sink.subscription_id().clone(),
                             &event.json().await,
                         )
                         .expect("Event should be serializable");
-                        if sink.send_timeout(msg, SEND_TIMEOUT).await.is_err() {
+                        if sink.send(msg).await.is_err() {
                             break;
                         }
                     }
