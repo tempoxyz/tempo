@@ -216,7 +216,7 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
         // T14 root-key checks: a configurable account's primitive key no longer signs. A
         // sender-only check charges no gas.
         let spec = host.config_spec_id();
-        // Non-AA transactions have no native roles, so validation charges no state gas.
+        // Non-AA transactions have no configurable roles, so validation charges no state gas.
         let (validation_gas, _) = configurable_account::validate_state(host, envelope, spec)?;
         let new_accounts = zero_nonce_authorizations.saturating_add(u64::from(nonce == 0));
         *intrinsic = intrinsic.saturating_add(validation_gas);
