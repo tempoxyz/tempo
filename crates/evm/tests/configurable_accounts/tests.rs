@@ -4456,14 +4456,7 @@ fn native_grant_delegate_access_is_charged_once() {
         };
         let tx = match user {
             GrantUser::Root => f.sign_primitive(tx),
-            GrantUser::Delegate => {
-                let digest = KeychainSignature::signing_hash(tx.signature_hash(), parent);
-                let signature = configurable_account_approval(delegate, &config, &owner, digest);
-                tx.into_signed(TempoSignature::Keychain(KeychainSignature::new(
-                    parent,
-                    AccountSignature::ConfigurableAccount(signature),
-                )))
-            }
+            GrantUser::Delegate => delegate_keychain_signed(tx, parent, delegate, &config, &owner),
             GrantUser::AccessKey => keychain_signed(tx, &access_key, parent),
         };
         let result = f.run(&tx);

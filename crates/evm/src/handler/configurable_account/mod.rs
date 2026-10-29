@@ -77,7 +77,7 @@ impl TempoAaTx {
     }
 
     /// The configurable account delegate named by an inline key authorization, if any.
-    pub(crate) fn grant_delegate(&self) -> Option<Address> {
+    pub fn grant_delegate(&self) -> Option<Address> {
         self.tx()
             .key_authorization
             .as_ref()
