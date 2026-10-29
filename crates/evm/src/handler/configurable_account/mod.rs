@@ -24,14 +24,21 @@ use tempo_precompiles::{
 };
 use tempo_primitives::transaction::{
     ConfigurableAccountSignature, ConfigurableAccountStateError, KeychainSignature, SignatureType,
-    TempoSignature,
+    SignedKeyAuthorization, TempoSignature,
 };
 
 /// An independently signed role. Repeated accounts still require both role digests.
 struct ConfigurableRole<'a> {
     signature: &'a ConfigurableAccountSignature,
-    /// Role digest before configurable account domain separation.
-    inner_digest: B256,
+    signed: ConfigurableRoleSigned<'a>,
+}
+
+/// What a configurable role signs, hashed into its digest only for quorum verification.
+enum ConfigurableRoleSigned<'a> {
+    Transaction,
+    /// The transaction, on behalf of a keychain user address.
+    Keychain(Address),
+    Grant(&'a SignedKeyAuthorization),
 }
 
 /// What [`validate_configurable_roles`] charges and loads for the configurable roles of a
@@ -59,24 +66,21 @@ impl TempoAaTx {
             match self.signature() {
                 TempoSignature::ConfigurableAccount(signature) => Some(ConfigurableRole {
                     signature,
-                    inner_digest: self.signature_hash(),
+                    signed: ConfigurableRoleSigned::Transaction,
                 }),
                 TempoSignature::Keychain(keychain) => keychain
                     .signature
                     .as_configurable_account()
                     .map(|signature| ConfigurableRole {
                         signature,
-                        inner_digest: KeychainSignature::signing_hash(
-                            self.signature_hash(),
-                            keychain.user_address,
-                        ),
+                        signed: ConfigurableRoleSigned::Keychain(keychain.user_address),
                     }),
                 TempoSignature::Primitive(_) => None,
             },
             self.tx().key_authorization.as_ref().and_then(|auth| {
                 Some(ConfigurableRole {
                     signature: auth.signature.as_configurable_account()?,
-                    inner_digest: auth.signature_hash(),
+                    signed: ConfigurableRoleSigned::Grant(auth),
                 })
             }),
         ]
@@ -198,7 +202,13 @@ pub(crate) fn verify(
         ExecutionContext::Transaction { .. } => {
             for role in aa.configurable_roles().into_iter().flatten() {
                 role.signature
-                    .verify_approvals(role.inner_digest)
+                    .verify_approvals(match role.signed {
+                        ConfigurableRoleSigned::Transaction => aa.signature_hash(),
+                        ConfigurableRoleSigned::Keychain(user_address) => {
+                            KeychainSignature::signing_hash(aa.signature_hash(), user_address)
+                        }
+                        ConfigurableRoleSigned::Grant(auth) => auth.signature_hash(),
+                    })
                     .map_err(ConfigurableAccountError::Quorum)?;
             }
         }
