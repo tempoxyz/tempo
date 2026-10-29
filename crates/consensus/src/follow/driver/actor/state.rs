@@ -12,14 +12,17 @@ use tempo_chainspec::NetworkIdentity;
 use tracing::instrument;
 
 /// Identity transitions observed by the driver.
-pub(super) struct State<C: Clock + Metrics + Storage + BufferPooler> {
+pub(in crate::follow::driver) struct State<C: Clock + Metrics + Storage + BufferPooler> {
     storage: Option<metadata::Metadata<C, u64, StoredIdentity>>,
     identity: Option<NetworkIdentity>,
 }
 
 impl<C: Clock + Metrics + Storage + BufferPooler> State<C> {
     #[instrument(skip_all, err)]
-    pub(super) async fn init(context: C, partition_prefix: &str) -> eyre::Result<Self> {
+    pub(in crate::follow::driver) async fn init(
+        context: C,
+        partition_prefix: &str,
+    ) -> eyre::Result<Self> {
         let states_metadata_partition = format!("{partition_prefix}_states_metadata");
         let storage = metadata::Metadata::<_, u64, StoredIdentity>::init(
             context,
@@ -38,14 +41,17 @@ impl<C: Clock + Metrics + Storage + BufferPooler> State<C> {
         })
     }
 
-    pub(super) fn identity(&self) -> Option<&NetworkIdentity> {
+    pub(in crate::follow::driver) fn identity(&self) -> Option<&NetworkIdentity> {
         self.identity.as_ref()
     }
 
     /// Persist a registered key change, retaining the original epoch when the key is unchanged.
     /// The caller must validate identity conflicts and epoch ordering before calling.
     #[instrument(skip_all, err)]
-    pub(super) async fn observe(&mut self, identity: NetworkIdentity) -> eyre::Result<()> {
+    pub(in crate::follow::driver) async fn observe(
+        &mut self,
+        identity: NetworkIdentity,
+    ) -> eyre::Result<()> {
         if self
             .identity
             .as_ref()

@@ -38,7 +38,6 @@ use crate::{
 
 mod actor;
 mod ingress;
-mod state;
 
 #[cfg(test)]
 mod test;
