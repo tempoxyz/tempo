@@ -28,17 +28,18 @@ use tempo_primitives::transaction::{
 };
 
 /// An independently signed role.
-struct NativeAuthorization<'a> {
+struct ConfigurableRole<'a> {
     signature: &'a ConfigurableAccountSignature,
     /// Role digest before configurable account domain separation.
     inner_digest: B256,
 }
 
-/// What [`validate_native_roles`] charges and loads for the native roles of a transaction.
-struct NativeRoles {
+/// What [`validate_configurable_roles`] charges and loads for the configurable roles of a
+/// transaction.
+struct ConfigurableRoles {
     extra_gas: u64,
     state_gas: u64,
-    /// Native role accounts already loaded, in role order.
+    /// Configurable role accounts already loaded, in role order.
     accounts: Vec<Address>,
 }
 
@@ -53,9 +54,9 @@ struct LoadedAccount {
 
 impl TempoAaTx {
     /// The outer (direct or delegated) role, when a configurable account signs the transaction.
-    fn native_authorization(&self) -> Option<NativeAuthorization<'_>> {
+    fn configurable_role(&self) -> Option<ConfigurableRole<'_>> {
         match self.signature() {
-            TempoSignature::ConfigurableAccount(signature) => Some(NativeAuthorization {
+            TempoSignature::ConfigurableAccount(signature) => Some(ConfigurableRole {
                 signature,
                 inner_digest: self.signature_hash(),
             }),
@@ -63,7 +64,7 @@ impl TempoAaTx {
                 keychain
                     .signature
                     .as_configurable_account()
-                    .map(|signature| NativeAuthorization {
+                    .map(|signature| ConfigurableRole {
                         signature,
                         inner_digest: KeychainSignature::signing_hash(
                             self.signature_hash(),
@@ -135,7 +136,7 @@ impl TempoTxEnv {
 /// that T14 key-authorization and access-key identities are recovered to name the accounts
 /// whose root-key retirement is checked.
 ///
-/// Native roles are checked first. At T14, bare primitive authority is then rejected with
+/// Configurable roles are checked first. At T14, bare primitive authority is then rejected with
 /// [`TempoInvalidTransaction::RootKeyRetired`] for any account with a nonzero configuration
 /// commitment, in the order sender, key authorization signer, fee payer, access key. RPC
 /// simulation skips only the sender check.
@@ -148,14 +149,14 @@ pub(crate) fn validate_state(
     envelope: &TempoTxEnv,
     spec: TempoHardfork,
 ) -> HandlerResult<(u64, u64)> {
-    let NativeRoles {
+    let ConfigurableRoles {
         mut extra_gas,
         state_gas,
         mut accounts,
     } = match envelope.as_aa() {
-        Some(aa) => validate_native_roles(host, aa, spec)?,
-        // Non-AA transactions have no native roles or granted configurable account.
-        None => NativeRoles {
+        Some(aa) => validate_configurable_roles(host, aa, spec)?,
+        // Non-AA transactions have no configurable roles or granted configurable account.
+        None => ConfigurableRoles {
             extra_gas: 0,
             state_gas: 0,
             accounts: Vec::new(),
@@ -180,7 +181,7 @@ pub(crate) fn verify(
 ) -> Result<(), TempoInvalidTransaction> {
     match context {
         ExecutionContext::Transaction { .. } => {
-            if let Some(role) = aa.native_authorization() {
+            if let Some(role) = aa.configurable_role() {
                 role.signature
                     .verify_approvals(role.inner_digest)
                     .map_err(ConfigurableAccountError::Quorum)?;
@@ -199,7 +200,7 @@ pub(crate) fn register_commitments(
     host: &mut Evm<'_, TempoEvmTypes>,
     aa: &TempoAaTx,
 ) -> HandlerResult<()> {
-    let Some(role) = aa.native_authorization() else {
+    let Some(role) = aa.configurable_role() else {
         return Ok(());
     };
     let (account, commitment) = (role.signature.account(), role.signature.config_commitment());
@@ -247,15 +248,15 @@ fn load_account(
     })
 }
 
-/// Native roles only: returns extra gas, state gas, and the native role accounts already loaded.
-fn validate_native_roles(
+/// Configurable roles only: returns extra gas, state gas, and the role accounts already loaded.
+fn validate_configurable_roles(
     host: &mut Evm<'_, TempoEvmTypes>,
     aa: &TempoAaTx,
     spec: TempoHardfork,
-) -> HandlerResult<NativeRoles> {
+) -> HandlerResult<ConfigurableRoles> {
     let caller = aa.signer();
     let tx = aa.tx();
-    let role = aa.native_authorization();
+    let role = aa.configurable_role();
     // Context rejection must not depend on account reads.
     if role.is_some() && !spec.is_t14() {
         return Err(ConfigurableAccountError::UnsupportedContext.into());
@@ -267,7 +268,7 @@ fn validate_native_roles(
         }
     }
     let Some(role) = role else {
-        return Ok(NativeRoles {
+        return Ok(ConfigurableRoles {
             extra_gas: 0,
             state_gas: 0,
             accounts: Vec::new(),
@@ -331,7 +332,7 @@ fn validate_native_roles(
             state_gas += gas.new_account_state_gas();
         }
     }
-    Ok(NativeRoles {
+    Ok(ConfigurableRoles {
         extra_gas,
         state_gas,
         accounts: vec![address],
@@ -341,9 +342,8 @@ fn validate_native_roles(
 /// Rejects bare primitive authority of accounts with a nonzero commitment (TIP-1112).
 ///
 /// Each distinct non-caller account is charged one account access, deduplicated against
-/// `accounts` (which collects every charged account). Configurable account signers and delegates
-/// are native accounts that always carry a commitment and are never primitive roots, so only
-/// primitive signatures are checked.
+/// `accounts` (which collects every charged account). Configurable signers and delegates always
+/// carry a commitment and are never primitive roots, so only primitive signatures are checked.
 fn validate_root_keys(
     host: &mut Evm<'_, TempoEvmTypes>,
     envelope: &TempoTxEnv,
@@ -397,7 +397,7 @@ fn validate_root_keys(
 }
 
 /// The inline grant's code check runs with intrinsic-only metering. Charge its account load
-/// here, unless caller loading or a native signing role already accounts for that address.
+/// here, unless caller loading or a configurable signing role already accounts for that address.
 /// Merely naming a recipient neither validates an owner witness nor registers a commitment.
 fn granted_configurable_account_access_gas(
     host: &mut Evm<'_, TempoEvmTypes>,

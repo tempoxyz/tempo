@@ -236,7 +236,7 @@ pub enum TempoInvalidTransaction {
     #[error("{0}")]
     CallsValidation(&'static str),
 
-    /// Native account authorization failure.
+    /// Configurable authorization failure.
     #[error(transparent)]
     ConfigurableAccount(#[from] ConfigurableAccountError),
 
@@ -310,27 +310,27 @@ impl TempoInvalidTransaction {
     }
 }
 
-/// Native account authorization failure (TIP-1112).
+/// Configurable authorization failure (TIP-1112).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum ConfigurableAccountError {
-    /// Native authorization is not active in this execution context.
+    /// Configurable authorization is not active in this execution context.
     #[error("configurable account is unavailable in this execution context")]
     UnsupportedContext,
-    /// A native signature appears in a role that forbids it.
+    /// A configurable signature appears in a role that forbids it.
     #[error("configurable account signature is forbidden in this transaction role")]
     InvalidSignatureContext,
-    /// The account cannot hold a native configuration.
+    /// The account cannot hold a configuration.
     #[error("invalid configurable account {account}")]
     InvalidAccount {
         /// Rejected account.
         account: Address,
     },
-    /// The native signature names an account other than the transaction sender.
+    /// The configurable signature names an account other than the transaction sender.
     #[error("configurable account signer mismatch: expected {expected}, actual {actual}")]
     AccountMismatch {
         /// Transaction sender.
         expected: Address,
-        /// Account named by the native signature.
+        /// Account named by the configurable signature.
         actual: Address,
     },
     /// The supplied configuration does not match the stored commitment.
