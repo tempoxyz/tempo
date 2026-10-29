@@ -37,6 +37,28 @@ impl RpcModuleValidator for TempoRpcModuleValidator {
     }
 }
 
+/// Returns the RPC module flags of the enabled HTTP and WS transports whose
+/// selection does not include the `consensus` module, such as `["--ws.api"]`.
+///
+/// `None` means the transport is disabled. IPC is not checked: it has no
+/// module flag and is only reachable locally.
+// TODO: remove once implicit activation of the consensus module is dropped
+// and it is registered with `merge_if_module_configured`.
+pub(crate) fn rpc_api_flags_missing_consensus(
+    http: Option<&RpcModuleSelection>,
+    ws: Option<&RpcModuleSelection>,
+) -> Vec<&'static str> {
+    let consensus = RethRpcModule::Other("consensus".to_owned());
+    [("--http.api", http), ("--ws.api", ws)]
+        .into_iter()
+        .filter_map(|(flag, selection)| {
+            selection
+                .is_some_and(|selection| !selection.contains(&consensus))
+                .then_some(flag)
+        })
+        .collect()
+}
+
 // TODO: migrate this to tempo_node eventually.
 #[derive(Debug, Clone, clap::Args)]
 pub struct TempoArgs {
@@ -150,4 +172,49 @@ pub(crate) struct PyroscopeArgs {
     /// Sample rate for profiling (default: 100 Hz)
     #[arg(long = "pyroscope.sample-rate", default_value_t = 100)]
     pub(crate) sample_rate: u32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn selection(modules: &str) -> RpcModuleSelection {
+        TempoRpcModuleValidator::parse_selection(modules).unwrap()
+    }
+
+    #[test]
+    fn rpc_api_flags_missing_consensus_flags_enabled_transports_without_it() {
+        let standard = RpcModuleSelection::Standard;
+        assert_eq!(
+            rpc_api_flags_missing_consensus(Some(&standard), Some(&selection("eth,net,web3"))),
+            ["--http.api", "--ws.api"],
+        );
+        assert_eq!(
+            rpc_api_flags_missing_consensus(
+                Some(&selection("eth,consensus")),
+                Some(&selection("eth"))
+            ),
+            ["--ws.api"],
+        );
+    }
+
+    #[test]
+    fn rpc_api_flags_missing_consensus_accepts_explicit_or_all() {
+        assert!(
+            rpc_api_flags_missing_consensus(
+                Some(&selection("eth,consensus")),
+                Some(&selection("all"))
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn rpc_api_flags_missing_consensus_ignores_disabled_transports() {
+        assert!(rpc_api_flags_missing_consensus(None, None).is_empty());
+        assert_eq!(
+            rpc_api_flags_missing_consensus(None, Some(&selection("eth"))),
+            ["--ws.api"],
+        );
+    }
 }
