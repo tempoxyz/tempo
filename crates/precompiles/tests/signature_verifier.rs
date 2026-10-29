@@ -20,7 +20,7 @@ use tempo_precompiles::{
     Precompile,
     account_keychain::AccountKeychain,
     signature_verifier::SignatureVerifier,
-    storage::{ConfigCommitmentWriteGas, StorageCtx, hashmap::HashMapStorageProvider},
+    storage::{StorageCtx, hashmap::HashMapStorageProvider},
 };
 use tempo_primitives::{
     MAX_WEBAUTHN_SIGNATURE_LENGTH,
@@ -168,7 +168,7 @@ fn storage_at(
         }
         for address in committed {
             StorageCtx
-                .set_config_commitment(*address, COMMITMENT, ConfigCommitmentWriteGas::Intrinsic)
+                .set_config_commitment(*address, COMMITMENT)
                 .unwrap();
         }
     });
@@ -335,6 +335,38 @@ fn implicit_root_admin_status_ends_with_the_commitment_from_t14() {
     }
 }
 
+/// Storage at T14 with `commitment` stored for `account`, unless it is zero.
+fn configurable_account_storage(account: Address, commitment: B256) -> HashMapStorageProvider {
+    let mut storage = HashMapStorageProvider::new_with_spec(1, T14);
+    if !commitment.is_zero() {
+        StorageCtx::enter(&mut storage, || {
+            StorageCtx
+                .set_config_commitment(account, commitment)
+                .unwrap();
+        });
+    }
+    storage
+}
+
+/// Calls `verifyConfigurableAccount` for `account` over [`HASH`] and decodes its result.
+fn verify_configurable_account(
+    storage: &mut HashMapStorageProvider,
+    account: Address,
+    signature: Bytes,
+) -> bool {
+    let calldata = ISignatureVerifier::verifyConfigurableAccountCall {
+        account,
+        hash: HASH,
+        signature,
+    }
+    .abi_encode();
+    let output = StorageCtx::enter(storage, || {
+        SignatureVerifier::new().call(&calldata, Address::ZERO)
+    })
+    .unwrap_or_else(|error| panic!("{error:?}"));
+    bool::abi_decode(output.bytes()).unwrap()
+}
+
 #[test]
 fn verify_configurable_account_accepts_calldata_beyond_the_primitive_cap_at_t14() {
     // Eight P256 approvals over a full owner list encode longer than any primitive signature.
@@ -352,11 +384,12 @@ fn verify_configurable_account_accepts_calldata_beyond_the_primitive_cap_at_t14(
     owners.sort_by_key(|owner| owner.owner);
     let config = ConfigurableAccountConfig {
         salt: B256::ZERO,
-        version: 0,
+        version: 1,
         threshold: u8::try_from(signers.len()).unwrap(),
         owners,
     };
-    let account = config.derive_account().unwrap();
+    let account = Address::repeat_byte(0x0c);
+    let commitment = config.commitment().unwrap();
     let digest = configurable_account_digest(HASH, account, config.version);
     let approvals = signers.iter().map(|signer| signer.sign(digest)).collect();
     let signature = TempoSignature::ConfigurableAccount(
@@ -365,16 +398,54 @@ fn verify_configurable_account_accepts_calldata_beyond_the_primitive_cap_at_t14(
     .to_bytes();
     assert!(signature.len() > (MAX_WEBAUTHN_SIGNATURE_LENGTH + 1).next_multiple_of(32));
 
-    let calldata = ISignatureVerifier::verifyConfigurableAccountCall {
+    let mut storage = configurable_account_storage(account, commitment);
+    assert!(verify_configurable_account(
+        &mut storage,
         account,
-        hash: HASH,
-        signature,
+        signature
+    ));
+}
+
+#[test]
+fn verify_configurable_account_rejects_an_account_without_a_commitment() {
+    let owner = Key::random(Secp256k1);
+    let account = Address::repeat_byte(0x0c);
+    let signature = |version: u64| {
+        let config = ConfigurableAccountConfig {
+            salt: B256::ZERO,
+            version,
+            threshold: 1,
+            owners: vec![ConfigurableAccountOwner {
+                owner: owner.address(),
+                weight: 1,
+            }],
+        };
+        let approval = owner.sign(configurable_account_digest(HASH, account, version));
+        let commitment = config.commitment().unwrap();
+        let signature = TempoSignature::ConfigurableAccount(
+            ConfigurableAccountSignature::try_new(account, config, vec![approval]).unwrap(),
+        )
+        .to_bytes();
+        (signature, commitment)
+    };
+
+    // A valid owner quorum is accepted once the account holds its commitment.
+    let (current, commitment) = signature(1);
+    let mut storage = configurable_account_storage(account, commitment);
+    assert!(verify_configurable_account(
+        &mut storage,
+        account,
+        current.clone()
+    ));
+
+    // Without a commitment the account is not configurable, at any version: no witness, not even
+    // a version 0 configuration, registers it.
+    for (signature, _) in [signature(0), (current, commitment)] {
+        let mut storage = configurable_account_storage(account, B256::ZERO);
+        assert!(!verify_configurable_account(
+            &mut storage,
+            account,
+            signature
+        ));
     }
-    .abi_encode();
-    let mut storage = HashMapStorageProvider::new_with_spec(1, T14);
-    let output = StorageCtx::enter(&mut storage, || {
-        SignatureVerifier::new().call(&calldata, Address::ZERO)
-    })
-    .unwrap_or_else(|error| panic!("{error:?}"));
-    assert!(bool::abi_decode(output.bytes()).unwrap());
 }

@@ -5,26 +5,22 @@ use alloy::{
     primitives::{Address, B256, Bytes, address, keccak256},
     sol_types::{SolCall, SolEvent, SolInterface},
 };
-use evm2::evm::{InMemoryDB, precompile::NoPrecompiles};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
     AccountKeychainError, CONFIGURABLE_ACCOUNT_ADDRESS, ConfigurableAccountError,
     IAccountKeychain::{KeyRestrictions, SignatureType},
     IConfigurableAccount,
 };
-use tempo_evm::{TempoEvmExt, build_tempo_evm};
 use tempo_precompiles::{
     Precompile,
     account_keychain::AccountKeychain,
     configurable_account::{
         CONFIGURABLE_ACCOUNT_CODE, ConfigurableAccount, UpgradeEligibility, config, valid_account,
     },
-    input_cost,
-    storage::{ConfigCommitmentWriteGas, StorageCtx, hashmap::HashMapStorageProvider},
+    storage::{StorageCtx, hashmap::HashMapStorageProvider},
 };
 use tempo_primitives::{
-    MasterId, TempoAddressExt, TempoBlockEnv, UserTag,
-    gas::keccak_gas,
+    MasterId, TempoAddressExt, UserTag,
     transaction::configurable_account::{
         CONFIGURABLE_ACCOUNT_UPGRADE_DOMAIN, MAX_CONFIGURABLE_ACCOUNT_OWNERS,
     },
@@ -36,6 +32,8 @@ use common::{PrecompileOutput, PrecompileStatus};
 
 const OWNER: Address = Address::repeat_byte(0x22);
 const EOA: Address = Address::repeat_byte(0x33);
+/// A configurable account whose commitment tests seed directly.
+const ACCOUNT: Address = Address::repeat_byte(0x66);
 
 fn t14_storage() -> HashMapStorageProvider {
     HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14)
@@ -69,21 +67,6 @@ fn assert_reverts(output: PrecompileOutput, expected: ConfigurableAccountError) 
         Bytes::from(expected.abi_encode()),
         "{expected:?}"
     );
-}
-
-fn derive(
-    salt: B256,
-    threshold: u8,
-    owners: &[IConfigurableAccount::ConfigurableAccountOwner],
-) -> Address {
-    returns::<IConfigurableAccount::deriveAccountCall>(call(
-        Address::ZERO,
-        IConfigurableAccount::deriveAccountCall {
-            salt,
-            threshold,
-            owners: owners.to_vec(),
-        },
-    ))
 }
 
 fn commitment_of(account: Address) -> B256 {
@@ -131,7 +114,7 @@ fn seed_authority(origin: Address, directly_authorized: Address, eligibility: Up
 
 fn seed_commitment(account: Address, commitment: B256) {
     StorageCtx
-        .set_config_commitment(account, commitment, ConfigCommitmentWriteGas::Intrinsic)
+        .set_config_commitment(account, commitment)
         .unwrap();
 }
 
@@ -159,84 +142,11 @@ fn account_namespace_excludes_reserved_addresses() {
 }
 
 #[test]
-fn derive_account_matches_the_config_derivation() {
-    let mut storage = t14_storage();
-    StorageCtx::enter(&mut storage, || {
-        let salt = B256::repeat_byte(5);
-        let owners = weighted_owners(&[(Address::repeat_byte(0x11), 1), (OWNER, 2)]);
-        assert_eq!(
-            derive(salt, 2, &owners),
-            config(salt, 0, 2, &owners).derive_account().unwrap()
-        );
-        assert_ne!(derive(salt, 2, &owners), derive(salt, 1, &owners));
-    });
-}
-
-#[test]
-fn derive_account_charges_input_and_derivation_gas() {
-    let block = TempoBlockEnv::default();
-    let mut evm = build_tempo_evm(
-        TempoHardfork::T14,
-        1,
-        block,
-        InMemoryDB::default(),
-        NoPrecompiles::default(),
-        TempoEvmExt::default(),
-    );
-    StorageCtx::enter_evm(&mut evm, || {
-        let keccak = |len: usize| keccak_gas(len).unwrap();
-        for owners in [
-            weighted_owners(&[(OWNER, 1)]),
-            weighted_owners(&[(Address::repeat_byte(0x11), 1), (OWNER, 1)]),
-        ] {
-            let config = config(B256::ZERO, 0, 1, &owners);
-            let derivation_gas = keccak(config.account_preimage_len());
-
-            let calldata = IConfigurableAccount::deriveAccountCall {
-                salt: B256::ZERO,
-                threshold: 1,
-                owners,
-            }
-            .abi_encode();
-            let before = StorageCtx.gas_used();
-            let output = ConfigurableAccount::new()
-                .call(&calldata, Address::ZERO)
-                .unwrap();
-            assert_eq!(
-                IConfigurableAccount::deriveAccountCall::abi_decode_returns(output.bytes())
-                    .unwrap(),
-                config.derive_account().unwrap()
-            );
-            assert_eq!(
-                StorageCtx.gas_used() - before,
-                input_cost(TempoHardfork::T14, calldata.len()).unwrap() + derivation_gas
-            );
-        }
-
-        // An invalid configuration is rejected before the hashing charge.
-        let calldata = IConfigurableAccount::deriveAccountCall {
-            salt: B256::ZERO,
-            threshold: 0,
-            owners: weighted_owners(&[(OWNER, 1)]),
-        }
-        .abi_encode();
-        let before = StorageCtx.gas_used();
-        let output =
-            PrecompileOutput::new(ConfigurableAccount::new().call(&calldata, Address::ZERO), 0);
-        assert_reverts(output, ConfigurableAccountError::invalid_threshold());
-        assert_eq!(
-            StorageCtx.gas_used() - before,
-            input_cost(TempoHardfork::T14, calldata.len()).unwrap()
-        );
-    });
-}
-
-#[test]
-fn rotation_requires_registered_current_leaf_and_direct_authority() {
+fn rotation_requires_committed_current_leaf_and_direct_authority() {
     let mut storage = t14_storage();
     let (account, owners) = StorageCtx::enter(&mut storage, || {
         let owners = weighted_owners(&[(OWNER, 1)]);
-        let account = derive(B256::ZERO, 1, &owners);
+        let account = ACCOUNT;
         let mut current = IConfigurableAccount::ConfigurableAccountConfig {
             salt: B256::ZERO,
             version: 0,
@@ -291,7 +201,7 @@ fn update_config_requires_the_sender_as_direct_authority() {
     let mut storage = t14_storage();
     StorageCtx::enter(&mut storage, || {
         let owners = weighted_owners(&[(OWNER, 1)]);
-        let account = derive(B256::ZERO, 1, &owners);
+        let account = ACCOUNT;
         let current = IConfigurableAccount::ConfigurableAccountConfig {
             salt: B256::ZERO,
             version: 0,
@@ -327,18 +237,17 @@ fn update_config_rejects_invalid_current_and_next_configs() {
     let mut storage = t14_storage();
     StorageCtx::enter(&mut storage, || {
         let owners = weighted_owners(&[(OWNER, 1)]);
-        let account = derive(B256::ZERO, 1, &owners);
+        let account = ACCOUNT;
         seed_authority(account, account, UpgradeEligibility::NotSoleCall);
         let initial = config(B256::ZERO, 0, 1, &owners).commitment().unwrap();
         seed_commitment(account, initial);
 
         // A current configuration that fails validation is stale, so it gets `InvalidConfig`.
-        let self_owned = weighted_owners(&[(account, 1)]);
         let current = IConfigurableAccount::ConfigurableAccountConfig {
             salt: B256::ZERO,
             version: 0,
-            threshold: 1,
-            owners: self_owned,
+            threshold: 0,
+            owners: owners.clone(),
         };
         assert_reverts(
             update(account, &current, 1, &owners),
@@ -391,7 +300,6 @@ fn update_config_rejects_invalid_current_and_next_configs() {
                 config(B256::ZERO, u64::MAX, 1, &owners)
                     .commitment()
                     .unwrap(),
-                ConfigCommitmentWriteGas::Precompile,
             )
             .unwrap();
         assert_reverts(
@@ -405,6 +313,19 @@ fn update_config_rejects_invalid_current_and_next_configs() {
 fn config_error_precedence_through_abi() {
     let mut storage = t14_storage();
     StorageCtx::enter(&mut storage, || {
+        // The next configuration of an account at a valid current one is validated in full.
+        let current_owners = weighted_owners(&[(OWNER, 1)]);
+        let current = IConfigurableAccount::ConfigurableAccountConfig {
+            salt: B256::ZERO,
+            version: 1,
+            threshold: 1,
+            owners: current_owners.clone(),
+        };
+        let initial = config(B256::ZERO, 1, 1, &current_owners)
+            .commitment()
+            .unwrap();
+        seed_authority(ACCOUNT, ACCOUNT, UpgradeEligibility::NotSoleCall);
+        seed_commitment(ACCOUNT, initial);
         struct Case {
             name: &'static str,
             threshold: u8,
@@ -460,26 +381,20 @@ fn config_error_precedence_through_abi() {
                 expected: ConfigurableAccountError::invalid_owner_order(),
             },
         ] {
-            let call = IConfigurableAccount::deriveAccountCall {
-                salt: B256::ZERO,
-                threshold,
-                owners: owners
-                    .into_iter()
-                    .map(
-                        |(owner, weight)| IConfigurableAccount::ConfigurableAccountOwner {
-                            owner: Address::repeat_byte(owner),
-                            weight,
-                        },
-                    )
-                    .collect(),
-            };
-            let result = PrecompileOutput::new(
-                ConfigurableAccount::new().call(&call.abi_encode(), Address::ZERO),
-                0,
-            );
+            let owners: Vec<_> = owners
+                .into_iter()
+                .map(
+                    |(owner, weight)| IConfigurableAccount::ConfigurableAccountOwner {
+                        owner: Address::repeat_byte(owner),
+                        weight,
+                    },
+                )
+                .collect();
+            let result = update(ACCOUNT, &current, threshold, &owners);
             assert_eq!(result.status, PrecompileStatus::Revert, "{case}");
             assert_eq!(result.bytes, expected.abi_encode(), "{case}");
         }
+        assert_eq!(commitment_of(ACCOUNT), initial);
     });
 }
 
@@ -489,7 +404,7 @@ fn mutating_calls_reject_static_context() {
     storage.set_is_static(true);
     StorageCtx::enter(&mut storage, || {
         let owners = weighted_owners(&[(OWNER, 1)]);
-        let account = derive(B256::ZERO, 1, &owners);
+        let account = ACCOUNT;
         assert_eq!(commitment_of(account), B256::ZERO);
         let current = IConfigurableAccount::ConfigurableAccountConfig {
             salt: B256::ZERO,
@@ -606,7 +521,7 @@ fn upgrade_account_installs_a_version_one_commitment() {
             ConfigurableAccountError::account_already_configurable(),
         );
 
-        // The upgraded account rotates like any registered one.
+        // The upgraded account rotates like any other configurable account.
         let current = IConfigurableAccount::ConfigurableAccountConfig {
             salt,
             version: 1,
@@ -642,7 +557,7 @@ fn upgrade_account_installs_a_version_one_commitment() {
     );
 }
 
-/// Registered parents keep grant authority with the protocol marker; incompatible code is rejected.
+/// Committed parents keep grant authority with the protocol marker; incompatible code is rejected.
 /// Uncommitted parents retain their existing grant behavior.
 #[test]
 fn committed_parent_requires_protocol_marker_to_authorize_keys() {

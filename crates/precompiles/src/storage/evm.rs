@@ -2,8 +2,9 @@ use crate::{
     configurable_account::CONFIGURABLE_ACCOUNT_CODE,
     error::TempoPrecompileError,
     storage::{
-        ConfigCommitmentWriteGas, PrecompileStorageProvider, StorageActions,
-        account_config_commitment, actions::StorageAction,
+        CONFIG_COMMITMENT_UPDATE_GAS, PrecompileStorageProvider, StorageActions,
+        account_config_commitment, actions::StorageAction, config_commitment_write_dynamic_gas,
+        config_commitment_write_state_gas,
     },
     storage_credits::{NonCreditableSlots, StorageCreditsBackend, sstore_storage_credits},
 };
@@ -650,14 +651,13 @@ where
         &mut self,
         address: Address,
         commitment: B256,
-        gas: ConfigCommitmentWriteGas,
     ) -> Result<(), TempoPrecompileError> {
         // Reject before any read or gas charge, so a rejected write is never charged.
         if !self.spec.is_t14() || self.is_static || commitment.is_zero() {
             return Err(TempoPrecompileError::InvalidConfigCommitmentWrite);
         }
-        self.deduct_gas(gas.static_cost())?;
-        // The authorization read already charged account access (or was intrinsic).
+        self.deduct_gas(CONFIG_COMMITMENT_UPDATE_GAS)?;
+        // The authorization read already charged account access.
         let spec = self.spec;
         let (previous, creates_account) = {
             let account = self.evm.state_mut().account(&address)?;
@@ -666,19 +666,22 @@ where
                 None => (B256::ZERO, true),
             }
         };
-        self.deduct_gas(gas.dynamic_cost(previous, &self.version.gas_params)?)?;
-        self.deduct_state_gas(gas.state_cost(previous, &self.version.gas_params))?;
-        // The write makes an empty account permanent; an intrinsic write was priced with the
-        // transaction, creation included.
-        if creates_account && gas == ConfigCommitmentWriteGas::Precompile {
-            self.deduct_gas(u64::from(
-                self.version.gas_params.get(GasId::NewAccountCost),
-            ))?;
+        self.deduct_gas(config_commitment_write_dynamic_gas(
+            previous,
+            &self.version.gas_params,
+        ))?;
+        self.deduct_state_gas(config_commitment_write_state_gas(
+            previous,
+            &self.version.gas_params,
+        ))?;
+        // The write makes an empty account permanent.
+        if creates_account {
+            self.deduct_gas(self.version.gas_params.get(GasId::NewAccountCost))?;
             self.deduct_state_gas(self.version.gas_params.new_account_state_gas())?;
         }
         let mut account = self.evm.state_mut().account(&address)?;
         if previous.is_zero() {
-            // Registration and migration pay for the commitment write, including this marker.
+            // Migration pays for the commitment write, including this marker.
             account.set_code_slow(Bytecode::new_raw(CONFIGURABLE_ACCOUNT_CODE));
         }
         account.set_extension(AccountExtension::from(encode_config_commitment(commitment)));

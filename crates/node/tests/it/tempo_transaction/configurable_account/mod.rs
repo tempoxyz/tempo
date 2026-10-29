@@ -1,6 +1,6 @@
 //! Signed configurable account transactions through a local node's public RPC.
 use super::{
-    helpers::{create_basic_aa_tx, sign_p256_primitive, sign_webauthn_primitive},
+    helpers::{create_basic_aa_tx, sign_fee_payer, sign_p256_primitive, sign_webauthn_primitive},
     local::Localnet,
     types::TestEnv,
 };
@@ -55,6 +55,8 @@ struct ConfigurableAccount {
 }
 
 impl ConfigurableAccount {
+    /// Owners and a threshold for count owners from seed, without an account: rotations use it
+    /// as the replacement configuration. Self::create makes an account.
     fn new(seed: u8, count: u8) -> Self {
         let mut owners = (0..count)
             .map(|index| {
@@ -69,7 +71,7 @@ impl ConfigurableAccount {
         owners.sort_by_key(OwnerKey::address);
         let config = ConfigurableAccountConfig {
             salt: B256::repeat_byte(seed),
-            version: 0,
+            version: 1,
             threshold: count,
             owners: owners
                 .iter()
@@ -79,9 +81,8 @@ impl ConfigurableAccount {
                 })
                 .collect(),
         };
-        let address = config.derive_account().unwrap();
         Self {
-            address,
+            address: Address::ZERO,
             config,
             owners,
             nonce: 0,
@@ -97,6 +98,24 @@ impl ConfigurableAccount {
             keccak256([CONFIGURABLE_ACCOUNT_UPGRADE_DOMAIN, address.as_slice()].concat());
         account.config.version = 1;
         account
+    }
+
+    /// A configurable account with count owners from seed: a fresh secp256k1 key migrates its
+    /// address in a transaction the funder sponsors, so the account holds no funds.
+    async fn create(env: &mut Localnet, seed: u8, count: u8) -> eyre::Result<Self> {
+        let root = signer(seed.wrapping_add(0x80));
+        let mut account = Self::migrated(root.address(), seed, count);
+        let mut tx = account.transaction(env, vec![account.upgrade_call()]);
+        sign_fee_payer(&mut tx, account.address, &env.funder_signer.clone())?;
+        let signature = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+            root.sign_hash_sync(&tx.signature_hash())?,
+        ));
+        account.submit(env, tx, signature, true).await?;
+        assert_eq!(
+            commitment(env, account.address).await?,
+            account.config.commitment().unwrap()
+        );
+        Ok(account)
     }
 
     /// The `upgradeAccount` call that commits this configuration for its address.

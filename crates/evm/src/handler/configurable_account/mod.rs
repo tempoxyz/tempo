@@ -12,18 +12,15 @@ use alloy_primitives::{Address, B256, TxKind, U256};
 use evm2::{
     Evm,
     ethereum::{LazyAuthorization, LazyTxEip7702},
-    evm::AccountInfo,
     registry::{HandlerError, HandlerResult},
     version::{GasId, GasParams},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{
     CONFIGURABLE_ACCOUNT_ADDRESS,
-    configurable_account::{
-        ConfigurableAccount, UpgradeEligibility, valid_account, valid_account_code,
-    },
+    configurable_account::{ConfigurableAccount, UpgradeEligibility, valid_account_code},
     error::TempoPrecompileError,
-    storage::{ConfigCommitmentWriteGas, StorageCtx, account_config_commitment},
+    storage::account_config_commitment,
 };
 use tempo_primitives::transaction::{
     ConfigurableAccountSignature, ConfigurableAccountStateError, KeychainSignature, SignatureType,
@@ -40,7 +37,6 @@ struct NativeAuthorization<'a> {
 /// What [`validate_native_roles`] charges and loads for the native roles of a transaction.
 struct NativeRoles {
     extra_gas: u64,
-    state_gas: u64,
     /// Native role accounts already loaded, in role order.
     accounts: Vec<Address>,
 }
@@ -49,8 +45,6 @@ struct NativeRoles {
 struct LoadedAccount {
     was_cold: bool,
     invalid_code: bool,
-    is_empty: bool,
-    nonce: u64,
     commitment: B256,
 }
 
@@ -140,7 +134,7 @@ impl TempoTxEnv {
     }
 }
 
-/// Validates the account state every transaction role depends on, returning regular and state
+/// Validates the account state every transaction role depends on, returning extra regular
 /// intrinsic gas. Does no signature or quorum verification of its own (see [`verify`]), except
 /// that T14 key-authorization and access-key identities are recovered to name the accounts
 /// whose root-key retirement is checked.
@@ -149,25 +143,22 @@ impl TempoTxEnv {
 /// [`TempoInvalidTransaction::RootKeyRetired`] for any account with a nonzero configuration
 /// commitment, in the order sender, key authorization signer, fee payer, access key. RPC
 /// simulation skips only the sender check.
-/// Loads and warms accounts, but does not register commitments.
-/// Caller must charge both components.
+/// Loads and warms accounts, but writes nothing. Caller must charge the returned gas.
 /// Transaction access-list and beneficiary warmth must be initialized before loading non-caller
 /// accounts.
 pub(crate) fn validate_state(
     host: &mut Evm<'_, TempoEvmTypes>,
     envelope: &TempoTxEnv,
     spec: TempoHardfork,
-) -> HandlerResult<(u64, u64)> {
+) -> HandlerResult<u64> {
     let NativeRoles {
         mut extra_gas,
-        state_gas,
         mut accounts,
     } = match envelope.as_aa() {
         Some(aa) => validate_native_roles(host, aa, spec)?,
         // Non-AA transactions have no native roles or grant delegate.
         None => NativeRoles {
             extra_gas: 0,
-            state_gas: 0,
             accounts: Vec::new(),
         },
     };
@@ -177,7 +168,7 @@ pub(crate) fn validate_state(
     if let Some(aa) = envelope.as_aa() {
         extra_gas += grant_delegate_access_gas(host, aa, spec, &accounts)?;
     }
-    Ok((extra_gas, state_gas))
+    Ok(extra_gas)
 }
 
 /// Returns `authorizations` with every entry the T14 rule skips replaced by an invalid recovered
@@ -258,41 +249,6 @@ pub(crate) fn verify(
     Ok(())
 }
 
-/// Registers the commitment of each signing configurable account that has none yet.
-///
-/// Runs after validation, authorization and fee collection, outside the batch checkpoint: the
-/// initial registration persists on execution failure, while later owner updates stay inside it.
-pub(crate) fn register_commitments(
-    host: &mut Evm<'_, TempoEvmTypes>,
-    aa: &TempoAaTx,
-) -> HandlerResult<()> {
-    let roles = aa
-        .native_authorizations()
-        .into_iter()
-        .flatten()
-        .map(|role| (role.signature.account(), role.signature.config_commitment()));
-    StorageCtx::enter_evm_without_tip1060_accounting(host, || {
-        let mut seen = Vec::with_capacity(2);
-        for (account, commitment) in roles {
-            if seen.contains(&account) {
-                continue;
-            }
-            seen.push(account);
-            // Read again rather than carried over from `validate_state`: nothing writes the
-            // commitment in between, so this only registers accounts still unset.
-            if StorageCtx.config_commitment(account)?.is_zero() {
-                StorageCtx.set_config_commitment(
-                    account,
-                    commitment,
-                    ConfigCommitmentWriteGas::Intrinsic,
-                )?;
-            }
-        }
-        Ok::<(), TempoPrecompileError>(())
-    })?;
-    Ok(())
-}
-
 /// Gas for loading one account: a warm read, plus the cold surcharge when it was not yet accessed.
 pub fn account_access_gas(gas: &GasParams, is_cold: bool) -> u64 {
     u64::from(gas.get(GasId::WarmStorageReadCost))
@@ -303,7 +259,7 @@ pub fn account_access_gas(gas: &GasParams, is_cold: bool) -> u64 {
         }
 }
 
-/// Loads and warms `address` once, reading its code, emptiness, nonce and commitment.
+/// Loads and warms `address` once, reading its code and commitment.
 fn load_account(
     host: &mut Evm<'_, TempoEvmTypes>,
     address: Address,
@@ -316,20 +272,17 @@ fn load_account(
     Ok(LoadedAccount {
         was_cold,
         invalid_code: !valid_account_code(account.code_hash(), commitment),
-        is_empty: info.is_none_or(AccountInfo::is_empty),
-        nonce: account.nonce(),
         commitment,
     })
 }
 
-/// Native roles only: returns extra gas, state gas, and the native role accounts already loaded.
+/// Native roles only: returns extra gas and the native role accounts already loaded.
 fn validate_native_roles(
     host: &mut Evm<'_, TempoEvmTypes>,
     aa: &TempoAaTx,
     spec: TempoHardfork,
 ) -> HandlerResult<NativeRoles> {
     let caller = aa.signer();
-    let tx = aa.tx();
     let roles = aa.native_authorizations();
     // Context rejection must not depend on account reads.
     if roles.iter().any(Option::is_some) && !spec.is_t14() {
@@ -344,7 +297,6 @@ fn validate_native_roles(
     if roles.iter().all(Option::is_none) {
         return Ok(NativeRoles {
             extra_gas: 0,
-            state_gas: 0,
             accounts: Vec::new(),
         });
     }
@@ -361,13 +313,9 @@ fn validate_native_roles(
     }
     let mut accounts = Vec::with_capacity(2);
     let mut extra_gas = 0;
-    let mut state_gas = 0;
     for role in roles.into_iter().flatten() {
         let signature = role.signature;
         let address = signature.account();
-        if !valid_account(address, spec) {
-            return Err(ConfigurableAccountError::InvalidAccount { account: address }.into());
-        }
         let account = load_account(host, address, spec)?;
         if account.invalid_code {
             return Err(ConfigurableAccountError::InvalidAccount { account: address }.into());
@@ -386,40 +334,13 @@ fn validate_native_roles(
                         actual,
                     })
                 }
-                ConfigurableAccountStateError::UnregisteredVersion { .. }
-                | ConfigurableAccountStateError::InitialAccountMismatch { .. } => {
-                    ConfigurableAccountError::InvalidAccount { account: address }.into()
+                ConfigurableAccountStateError::NotConfigurable => {
+                    ConfigurableAccountError::NotConfigurable { account: address }.into()
                 }
             })?;
-        if account.commitment.is_zero() {
-            extra_gas += signature
-                .config()
-                .derivation_gas()
-                .ok_or(TempoPrecompileError::OutOfGas)?;
-            if first {
-                let gas = &host.version().gas_params;
-                // TIP-1108 prices the commitment write like account creation.
-                extra_gas += u64::from(gas.get(GasId::NewAccountCost));
-                state_gas += gas.new_account_state_gas();
-                // The sender's creation is free here only when another TIP-1000 charge pays it:
-                // the nonce-zero charge of a protocol-nonce transaction, or the first-call CREATE
-                // charge of a 2D or expiring nonce key.
-                let pays_nonce_zero_account_gas = tx.nonce_key.is_zero() && tx.nonce == 0;
-                let pays_first_call_create_account_gas = !tx.nonce_key.is_zero()
-                    && tx.calls.first().is_some_and(|call| call.to.is_create())
-                    && account.nonce == 0;
-                let sender_creation_paid = address == caller
-                    && (pays_nonce_zero_account_gas || pays_first_call_create_account_gas);
-                if account.is_empty && !sender_creation_paid {
-                    extra_gas += u64::from(gas.get(GasId::NewAccountCost));
-                    state_gas += gas.new_account_state_gas();
-                }
-            }
-        }
     }
     Ok(NativeRoles {
         extra_gas,
-        state_gas,
         accounts,
     })
 }
@@ -490,7 +411,7 @@ fn validate_root_keys(
 
 /// The inline grant's code check runs with intrinsic-only metering. Charge its account load
 /// here, unless caller loading or a native signing role already accounts for that address.
-/// Merely naming a recipient neither validates an owner witness nor registers a commitment.
+/// Merely naming a recipient does not validate an owner witness.
 fn grant_delegate_access_gas(
     host: &mut Evm<'_, TempoEvmTypes>,
     aa: &TempoAaTx,

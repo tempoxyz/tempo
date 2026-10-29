@@ -4,8 +4,8 @@ pub mod dispatch;
 pub mod shim;
 
 use crate::{
-    error::{Result, TempoPrecompileError},
-    storage::{ConfigCommitmentWriteGas, Handler, account_config_commitment},
+    error::Result,
+    storage::{Handler, account_config_commitment},
 };
 use alloy::primitives::{Address, B256, Bytes, KECCAK256_EMPTY, b256};
 pub use tempo_chainspec::is_valid_native_account as valid_account;
@@ -46,27 +46,6 @@ impl ConfigurableAccount {
         self.directly_authorized_account
             .t_write(directly_authorized)?;
         self.upgrade_eligibility.t_write(upgrade_eligibility)
-    }
-
-    fn derive_account(
-        &self,
-        salt: B256,
-        threshold: u8,
-        owners: &[IConfigurableAccount::ConfigurableAccountOwner],
-    ) -> Result<Address> {
-        let config = config(salt, 0, threshold, owners);
-        // Reject an invalid configuration before charging the derivation gas.
-        config.validate()?;
-        self.storage.deduct_gas(
-            config
-                .derivation_gas()
-                .ok_or(TempoPrecompileError::OutOfGas)?,
-        )?;
-        let account = config.derive_account()?;
-        if !valid_account(account, self.storage.spec()) {
-            return Err(ConfigurableAccountError::invalid_account().into());
-        }
-        Ok(account)
     }
 
     fn get_config_commitment(&self, account: Address) -> Result<B256> {
@@ -110,13 +89,12 @@ impl ConfigurableAccount {
             .checked_add(1)
             .ok_or_else(ConfigurableAccountError::invalid_config)?;
         let next = config(current.salt, version, threshold, &owners);
-        next.validate_for_account(sender)?;
+        next.validate()?;
         let hash = self.storage.keccak256(&next.commitment_preimage()?)?;
         if hash.is_zero() {
             return Err(ConfigurableAccountError::invalid_config().into());
         }
-        self.storage
-            .set_config_commitment(sender, hash, ConfigCommitmentWriteGas::Precompile)?;
+        self.storage.set_config_commitment(sender, hash)?;
         self.emit_event(
             ConfigurableAccountEvent::configurable_account_config_updated(
                 sender, next.salt, version, threshold, owners,
@@ -166,7 +144,7 @@ impl ConfigurableAccount {
             .keccak256(&[CONFIGURABLE_ACCOUNT_UPGRADE_DOMAIN, sender.as_slice()].concat())?;
         let upgraded = config(salt, 1, threshold, &owners);
         upgraded
-            .validate_for_account(sender)
+            .validate()
             .map_err(|_| ConfigurableAccountError::invalid_config())?;
         let hash = self.storage.keccak256(
             &upgraded
@@ -176,8 +154,7 @@ impl ConfigurableAccount {
         if hash.is_zero() {
             return Err(ConfigurableAccountError::invalid_config().into());
         }
-        self.storage
-            .set_config_commitment(sender, hash, ConfigCommitmentWriteGas::Precompile)?;
+        self.storage.set_config_commitment(sender, hash)?;
         self.emit_event(ConfigurableAccountEvent::account_upgraded(
             sender, hash, salt, threshold, owners,
         ))?;
@@ -226,14 +203,15 @@ pub fn config(
     }
 }
 
-/// Shared protocol-installed code for registered configurable accounts.
+/// Shared protocol-installed code for configurable accounts.
 pub const CONFIGURABLE_ACCOUNT_CODE: Bytes = Bytes::from_static(&[0xef]);
 
 /// Keccak-256 of [`CONFIGURABLE_ACCOUNT_CODE`], compared without loading code bytes.
 pub const CONFIGURABLE_ACCOUNT_CODE_HASH: B256 =
     b256!("309b8896ee4c1ff7ec1966155373dee42663b6b40c3fedc70ba501684848d2a3");
 
-/// Whether code matches the account's registration state.
+/// Whether code matches the account's configuration state: empty without a commitment, the
+/// account code marker with one.
 pub fn valid_account_code(code_hash: B256, commitment: B256) -> bool {
     code_hash
         == if commitment.is_zero() {

@@ -31,9 +31,6 @@ pub const MAX_CONFIGURABLE_ACCOUNT_SIGNATURES: usize = 8;
 /// Maximum encoded byte length for one primitive owner approval.
 pub const MAX_CONFIGURABLE_ACCOUNT_OWNER_SIGNATURE_BYTES: usize = 1 + MAX_WEBAUTHN_SIGNATURE_LENGTH;
 
-/// Domain prefix for configurable account address derivation.
-pub const CONFIGURABLE_ACCOUNT_DOMAIN: &[u8] = b"tempo:configurable-account:account";
-
 /// Domain prefix for the salt of an account migrated in place (TIP-1113).
 pub const CONFIGURABLE_ACCOUNT_UPGRADE_DOMAIN: &[u8] = b"tempo:configurable-account:upgrade";
 
@@ -70,94 +67,6 @@ impl ConfigurableAccountConfig {
     /// Validates owner count, ordering, addresses, weights, and threshold reachability, returning
     /// the total owner weight.
     pub fn validate(&self) -> Result<u8, ConfigurableAccountConfigError> {
-        self.validate_inner(None)
-    }
-
-    /// Performs [`Self::validate`] and rejects initial self-ownership.
-    pub fn validate_for_account(
-        &self,
-        account: Address,
-    ) -> Result<u8, ConfigurableAccountConfigError> {
-        self.validate_inner(Some(account))
-    }
-
-    /// Derives the account address from the initial configuration.
-    ///
-    /// Reserved namespace checks belong to the caller's chain context.
-    pub fn derive_account(&self) -> Result<Address, ConfigurableAccountConfigError> {
-        self.validate()?;
-        let account = self.account_address()?;
-        if account.is_zero() {
-            return Err(ConfigurableAccountConfigError::DerivedAccountZero);
-        }
-        if self.owner_weight(account).is_some() {
-            return Err(ConfigurableAccountConfigError::AccountIsOwner);
-        }
-        Ok(account)
-    }
-
-    /// Computes the persisted commitment for this configuration.
-    pub fn commitment(&self) -> Result<B256, ConfigurableAccountConfigError> {
-        self.validate()?;
-        Ok(self.commitment_validated())
-    }
-
-    /// Returns the configured weight for an owner, if present.
-    pub fn owner_weight(&self, owner: Address) -> Option<u8> {
-        self.owners
-            .binary_search_by_key(&owner, |entry| entry.owner)
-            .ok()
-            .map(|idx| self.owners[idx].weight)
-    }
-    /// Byte length of the account preimage: domain, 32-byte salt, 1-byte threshold,
-    /// 1-byte owner count, and a 20-byte address plus 1-byte weight per owner.
-    pub const fn account_preimage_len(&self) -> usize {
-        CONFIGURABLE_ACCOUNT_DOMAIN.len() + 32 + 2 + self.owners.len() * 21
-    }
-
-    /// Hashing gas to derive the account address from this configuration (TIP-1114).
-    /// Returns `None` if the cost overflows `u64`.
-    pub fn derivation_gas(&self) -> Option<u64> {
-        keccak_gas(self.account_preimage_len())
-    }
-
-    /// Byte length of the commitment preimage: domain, 32-byte salt, 8-byte version, 1-byte
-    /// threshold, 1-byte owner count, and a 20-byte address plus 1-byte weight per owner.
-    pub const fn commitment_preimage_len(&self) -> usize {
-        CONFIGURABLE_ACCOUNT_CONFIG_DOMAIN.len() + 32 + 8 + 2 + self.owners.len() * 21
-    }
-
-    /// Encodes the canonical account preimage.
-    ///
-    /// This checks that the owner count is encodable; callers must separately validate the config
-    /// before relying on the resulting hash.
-    pub fn account_preimage(&self) -> Result<Vec<u8>, ConfigurableAccountConfigError> {
-        let owner_count = self.encoded_owner_count()?;
-        let mut input = Vec::with_capacity(self.account_preimage_len());
-        input.extend_from_slice(CONFIGURABLE_ACCOUNT_DOMAIN);
-        input.extend_from_slice(self.salt.as_slice());
-        self.append_owner_set(&mut input, owner_count);
-        Ok(input)
-    }
-
-    /// Encodes the canonical configuration-commitment preimage.
-    ///
-    /// This checks that the owner count is encodable; callers must separately validate the config
-    /// before relying on the resulting hash.
-    pub fn commitment_preimage(&self) -> Result<Vec<u8>, ConfigurableAccountConfigError> {
-        let owner_count = self.encoded_owner_count()?;
-        let mut input = Vec::with_capacity(self.commitment_preimage_len());
-        input.extend_from_slice(CONFIGURABLE_ACCOUNT_CONFIG_DOMAIN);
-        input.extend_from_slice(self.salt.as_slice());
-        input.extend_from_slice(&self.version.to_be_bytes());
-        self.append_owner_set(&mut input, owner_count);
-        Ok(input)
-    }
-
-    fn validate_inner(
-        &self,
-        account: Option<Address>,
-    ) -> Result<u8, ConfigurableAccountConfigError> {
         if self.owners.is_empty() {
             return Err(ConfigurableAccountConfigError::EmptyOwners);
         }
@@ -168,13 +77,8 @@ impl ConfigurableAccountConfig {
             return Err(ConfigurableAccountConfigError::ZeroThreshold);
         }
         // TIP-1109 orders errors across the entire owner list, not within each owner.
-        for owner in &self.owners {
-            if owner.owner.is_zero() {
-                return Err(ConfigurableAccountConfigError::ZeroOwner);
-            }
-            if self.version == 0 && account == Some(owner.owner) {
-                return Err(ConfigurableAccountConfigError::AccountIsOwner);
-            }
+        if self.owners.iter().any(|owner| owner.owner.is_zero()) {
+            return Err(ConfigurableAccountConfigError::ZeroOwner);
         }
         if self.owners.iter().any(|owner| owner.weight == 0) {
             return Err(ConfigurableAccountConfigError::ZeroWeight);
@@ -215,6 +119,39 @@ impl ConfigurableAccountConfig {
         Ok(total_weight)
     }
 
+    /// Computes the persisted commitment for this configuration.
+    pub fn commitment(&self) -> Result<B256, ConfigurableAccountConfigError> {
+        self.validate()?;
+        Ok(self.commitment_validated())
+    }
+
+    /// Returns the configured weight for an owner, if present.
+    pub fn owner_weight(&self, owner: Address) -> Option<u8> {
+        self.owners
+            .binary_search_by_key(&owner, |entry| entry.owner)
+            .ok()
+            .map(|idx| self.owners[idx].weight)
+    }
+    /// Byte length of the commitment preimage: domain, 32-byte salt, 8-byte version, 1-byte
+    /// threshold, 1-byte owner count, and a 20-byte address plus 1-byte weight per owner.
+    pub const fn commitment_preimage_len(&self) -> usize {
+        CONFIGURABLE_ACCOUNT_CONFIG_DOMAIN.len() + 32 + 8 + 2 + self.owners.len() * 21
+    }
+
+    /// Encodes the canonical configuration-commitment preimage.
+    ///
+    /// This checks that the owner count is encodable; callers must separately validate the config
+    /// before relying on the resulting hash.
+    pub fn commitment_preimage(&self) -> Result<Vec<u8>, ConfigurableAccountConfigError> {
+        let owner_count = self.encoded_owner_count()?;
+        let mut input = Vec::with_capacity(self.commitment_preimage_len());
+        input.extend_from_slice(CONFIGURABLE_ACCOUNT_CONFIG_DOMAIN);
+        input.extend_from_slice(self.salt.as_slice());
+        input.extend_from_slice(&self.version.to_be_bytes());
+        self.append_owner_set(&mut input, owner_count);
+        Ok(input)
+    }
+
     fn commitment_validated(&self) -> B256 {
         keccak256(
             self.commitment_preimage()
@@ -237,10 +174,6 @@ impl ConfigurableAccountConfig {
             input.push(owner.weight);
         }
     }
-
-    fn account_address(&self) -> Result<Address, ConfigurableAccountConfigError> {
-        Ok(Address::from_word(keccak256(self.account_preimage()?)))
-    }
 }
 
 /// Configurable account transaction signature.
@@ -249,8 +182,7 @@ impl ConfigurableAccountConfig {
 pub struct ConfigurableAccountSignature {
     /// Configurable account authorized by this signature.
     ///
-    /// This is explicit because a versioned configuration cannot derive the account's stable
-    /// address.
+    /// This is explicit because an account's address is not derived from its configuration.
     account: Address,
     /// Complete applicable account configuration.
     config: ConfigurableAccountConfig,
@@ -287,8 +219,8 @@ impl core::hash::Hash for ConfigurableAccountSignature {
 impl ConfigurableAccountSignature {
     /// Constructs a bounded primitive-owner witness.
     ///
-    /// The named account remains untrusted: derived identity or the stored commitment,
-    /// account code, and the owner quorum must be checked against state.
+    /// The named account remains untrusted: the stored commitment, account code, and the owner
+    /// quorum must be checked against state.
     pub fn try_new(
         account: Address,
         config: ConfigurableAccountConfig,
@@ -333,7 +265,7 @@ impl ConfigurableAccountSignature {
         if self.account().is_zero() {
             return Err(ConfigurableAccountSignatureError::ZeroAccount);
         }
-        self.config.validate_for_account(self.account())?;
+        self.config.validate()?;
         if self.signatures.is_empty() {
             return Err(ConfigurableAccountSignatureError::EmptySignatures);
         }
@@ -381,45 +313,28 @@ impl ConfigurableAccountSignature {
 
     /// Verifies the owner quorum over `inner_digest` and returns the named account.
     ///
-    /// Stateless: the account's code, commitment or initial derivation must still be checked
-    /// against state.
+    /// Stateless: the account's code and commitment must still be checked against state.
     pub fn recover_account(&self, inner_digest: B256) -> Result<Address, RecoveryError> {
         self.verify_approvals(inner_digest)
             .map_err(|_| RecoveryError::new())?;
         Ok(self.account)
     }
 
-    /// Checks the stored commitment or, on first use, derives the named account.
+    /// Checks the configuration against the account's stored commitment, which must be nonzero.
     /// Does not read state, inspect code, or verify owner approvals.
     pub fn validate_account_commitment(
         &self,
         stored: B256,
     ) -> Result<(), ConfigurableAccountStateError> {
+        if stored.is_zero() {
+            return Err(ConfigurableAccountStateError::NotConfigurable);
+        }
         let actual = self.config_commitment();
-        if actual.is_zero() || (!stored.is_zero() && stored != actual) {
+        if stored != actual {
             return Err(ConfigurableAccountStateError::CommitmentMismatch {
                 expected: stored,
                 actual,
             });
-        }
-        if stored.is_zero() {
-            if self.config.version != 0 {
-                return Err(ConfigurableAccountStateError::UnregisteredVersion {
-                    actual: self.config.version,
-                });
-            }
-            // The config was validated against `account` at construction, which excludes a zero or
-            // owner account, so a derived collision with either is reported as a mismatch.
-            let expected = self
-                .config
-                .account_address()
-                .expect("validated account config has an encodable owner count");
-            if expected != self.account {
-                return Err(ConfigurableAccountStateError::InitialAccountMismatch {
-                    expected,
-                    actual: self.account,
-                });
-            }
         }
         Ok(())
     }
@@ -447,11 +362,11 @@ impl ConfigurableAccountSignature {
                 .sum::<usize>()
     }
 
-    /// Full owner quorum verification cost for a registered account, before account access:
-    /// each approval, the calldata of the account and config witness, and the hashes of the
-    /// config commitment and the approval digest preimages.
+    /// Full owner quorum verification cost, before account access: each approval, the calldata of
+    /// the account and config witness, and the hashes of the config commitment and the approval
+    /// digest preimages.
     ///
-    /// Initial address derivation is not included. Returns `None` if the cost overflows `u64`.
+    /// Returns `None` if the cost overflows `u64`.
     pub fn verification_gas(&self) -> Option<u64> {
         let mut witness = alloy_rlp::encode(self.account);
         self.config.encode(&mut witness);
@@ -511,10 +426,6 @@ pub enum ConfigurableAccountConfigError {
     TotalWeightExceedsMax,
     /// The threshold exceeds the weight reachable within the approval limit.
     ThresholdExceedsWeight,
-    /// The derived configurable account address is zero.
-    DerivedAccountZero,
-    /// The configurable account is included in its own owner set.
-    AccountIsOwner,
 }
 
 impl ConfigurableAccountConfigError {
@@ -534,8 +445,6 @@ impl ConfigurableAccountConfigError {
             Self::ThresholdExceedsWeight => {
                 "configurable account threshold cannot be reached within the owner approval limit"
             }
-            Self::DerivedAccountZero => "configurable account cannot be zero",
-            Self::AccountIsOwner => "configurable account cannot own itself",
         }
     }
 }
@@ -591,25 +500,15 @@ impl From<ConfigurableAccountConfigError> for ConfigurableAccountSignatureError 
 /// Why a witness does not match the current account commitment.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ConfigurableAccountStateError {
-    /// The witness hash differs from the stored hash or is zero.
+    /// The witness hash differs from the stored hash.
     CommitmentMismatch {
         /// Stored hash.
         expected: B256,
         /// Witness hash.
         actual: B256,
     },
-    /// First use requires version zero.
-    UnregisteredVersion {
-        /// Witness version.
-        actual: u64,
-    },
-    /// The initial configuration derives a different address.
-    InitialAccountMismatch {
-        /// Derived account.
-        expected: Address,
-        /// Account named in the witness.
-        actual: Address,
-    },
+    /// The account has no configuration commitment, so it is not a configurable account.
+    NotConfigurable,
 }
 
 impl core::fmt::Display for ConfigurableAccountStateError {
@@ -619,17 +518,8 @@ impl core::fmt::Display for ConfigurableAccountStateError {
                 f,
                 "account configuration commitment mismatch: expected {expected}, actual {actual}"
             ),
-            Self::UnregisteredVersion { actual } => {
-                write!(
-                    f,
-                    "unregistered configuration version mismatch: expected 0, actual {actual}"
-                )
-            }
-            Self::InitialAccountMismatch { expected, actual } => {
-                write!(
-                    f,
-                    "initial configurable account mismatch: expected {expected}, actual {actual}"
-                )
+            Self::NotConfigurable => {
+                f.write_str("account has no configuration commitment and is not configurable")
             }
         }
     }
@@ -829,12 +719,13 @@ mod arbitrary_impl {
                 threshold: 1,
                 owners: vec![ConfigurableAccountOwner { owner, weight: 1 }],
             };
-            // A single nonzero owner of weight 1 at threshold 1 is valid, a derived account equals
-            // zero or that owner only by a hash collision, and every approval is within the owner
-            // size cap: a failure here is a generator bug that fuzzing must surface, not skip.
-            let account = config
-                .derive_account()
-                .expect("generated single-owner account config is valid");
+            let mut account = Address::arbitrary(u)?;
+            if account.is_zero() {
+                account = Address::repeat_byte(2);
+            }
+            // A single nonzero owner of weight 1 at threshold 1 is valid, the account is nonzero,
+            // and every approval is within the owner size cap: a failure here is a generator bug
+            // that fuzzing must surface, not skip.
             Ok(Self::try_new(account, config, signatures)
                 .expect("generated configurable account signature satisfies its shape limits"))
         }
