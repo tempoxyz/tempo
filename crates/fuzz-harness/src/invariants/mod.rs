@@ -9,7 +9,7 @@
 use alloy_primitives::{Address, Log};
 use invariants_core::{Report, SlotChange, Step};
 use tempo_contracts::precompiles::{
-    CONFIGURABLE_ACCOUNT_ADDRESS, STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    CONFIGURABLE_ACCOUNT_ADDRESS, IStablecoinDEX, STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
 };
 use tempo_evm::{TempoEvmConfig, TempoEvmEnv};
 use tempo_fuzz_types::{InvariantFailure, InvariantScope};
@@ -22,6 +22,9 @@ use reader::Reader;
 
 mod reader;
 mod views;
+
+/// How many of the newest DEX orders the books are read over.
+const MAX_ORDERS: u128 = 256;
 
 /// What a transaction step did: its net state changes, already written to the database, and its
 /// logs.
@@ -153,11 +156,20 @@ pub(crate) fn check(
         reader.check::<fee_amm::Books>(&mut step, at, TIP_FEE_MANAGER_ADDRESS, fee_amm::VIEW);
     }
     if selected(&STABLECOIN_DEX_ADDRESS) {
+        // The newest orders the DEX numbered (ids start at 1), so DEX10 counts their escrow.
+        let mut views = views::EvmViews::new(db.view(), evm_config, env.clone(), &db.pre);
+        let next = invariants_core::view(
+            &mut views,
+            STABLECOIN_DEX_ADDRESS,
+            IStablecoinDEX::nextOrderIdCall {},
+        )
+        .unwrap_or(0);
+        let orders: Vec<u128> = (next.saturating_sub(MAX_ORDERS).max(1)..next).collect();
         let at = dex::At {
             dex: STABLECOIN_DEX_ADDRESS,
             tokens: &tokens,
             users: &all_holders,
-            orders: &[],
+            orders: &orders,
         };
         reader.check::<dex::Books>(&mut step, at, STABLECOIN_DEX_ADDRESS, dex::VIEW);
     }
