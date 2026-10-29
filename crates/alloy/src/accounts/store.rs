@@ -38,11 +38,12 @@ use tempo_primitives::{
     },
 };
 
-use super::p256::{P256Jwk, P256SignerError, TempoP256Signer};
+use super::{
+    authorization_accounts,
+    p256::{P256Jwk, P256SignerError, TempoP256Signer},
+};
 use crate::{
-    TempoNetwork,
-    fillers::gas::{authorization_accounts, resolve_key_authorization},
-    provider::keychain::call_scopes_allow,
+    TempoNetwork, fillers::gas::resolve_key_authorization, provider::keychain::call_scopes_allow,
     rpc::TempoTransactionRequest,
 };
 
