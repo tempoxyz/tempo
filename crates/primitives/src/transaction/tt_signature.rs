@@ -532,7 +532,7 @@ impl KeychainSignature {
         &self,
         sig_hash: &B256,
     ) -> Result<Address, alloy_consensus::crypto::RecoveryError> {
-        if self.is_legacy() && self.signature.as_configurable_account().is_some() {
+        if self.is_legacy() && self.signature.is_configurable_account() {
             return Err(RecoveryError::new());
         }
         // Check if already cached
@@ -663,7 +663,7 @@ impl AccountSignature {
     }
 
     /// Returns the signature's access-key type, including configurable account.
-    pub fn key_type(&self) -> SignatureType {
+    pub fn signature_type(&self) -> SignatureType {
         match self {
             Self::Primitive(signature) => signature.signature_type(),
             Self::ConfigurableAccount(_) => SignatureType::ConfigurableAccount,
@@ -702,6 +702,11 @@ impl AccountSignature {
             Self::Primitive(signature) => signature.size(),
             Self::ConfigurableAccount(signature) => signature.size(),
         }
+    }
+
+    /// Whether this is a configurable account approval.
+    pub const fn is_configurable_account(&self) -> bool {
+        matches!(self, Self::ConfigurableAccount(_))
     }
 
     /// Full gas to verify the approval: [`PrimitiveSignature::verification_gas`] or
@@ -845,8 +850,7 @@ impl TempoSignature {
 
             // A bounded direct approval cannot contain another keychain.
             let inner_signature = AccountSignature::from_bytes(inner_sig_bytes)?;
-            if version == KeychainVersion::V1 && inner_signature.as_configurable_account().is_some()
-            {
+            if version == KeychainVersion::V1 && inner_signature.is_configurable_account() {
                 return Err(AccountSignatureError::ConfigurableAccountInKeychainV1.into());
             }
 
@@ -1025,6 +1029,11 @@ impl TempoSignature {
     /// Check if this is a configurable account signature.
     pub const fn is_configurable_account(&self) -> bool {
         matches!(self, Self::ConfigurableAccount(_))
+    }
+
+    /// Whether a configurable account signs, directly or inside a keychain envelope.
+    pub fn signed_by_configurable_account(&self) -> bool {
+        self.primitive_signature_type().is_none()
     }
 }
 

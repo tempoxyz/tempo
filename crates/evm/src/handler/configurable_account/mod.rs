@@ -36,7 +36,7 @@ struct ConfigurableRole<'a> {
 
 /// What [`validate_configurable_roles`] charges and loads for the configurable roles of a
 /// transaction.
-struct ConfigurableRoles {
+struct ConfigurableRoleCharges {
     extra_gas: u64,
     state_gas: u64,
     /// Configurable role accounts already loaded, in role order.
@@ -155,14 +155,14 @@ pub(crate) fn validate_state(
     envelope: &TempoTxEnv,
     spec: TempoHardfork,
 ) -> HandlerResult<(u64, u64)> {
-    let ConfigurableRoles {
+    let ConfigurableRoleCharges {
         mut extra_gas,
         state_gas,
         mut accounts,
     } = match envelope.as_aa() {
         Some(aa) => validate_configurable_roles(host, aa, spec)?,
         // Non-AA transactions have no configurable roles or granted configurable account.
-        None => ConfigurableRoles {
+        None => ConfigurableRoleCharges {
             extra_gas: 0,
             state_gas: 0,
             accounts: Vec::new(),
@@ -259,7 +259,7 @@ fn validate_configurable_roles(
     host: &mut Evm<'_, TempoEvmTypes>,
     aa: &TempoAaTx,
     spec: TempoHardfork,
-) -> HandlerResult<ConfigurableRoles> {
+) -> HandlerResult<ConfigurableRoleCharges> {
     let caller = aa.signer();
     let tx = aa.tx();
     let roles = aa.configurable_roles();
@@ -341,7 +341,7 @@ fn validate_configurable_roles(
             }
         }
     }
-    Ok(ConfigurableRoles {
+    Ok(ConfigurableRoleCharges {
         extra_gas,
         state_gas,
         accounts,
@@ -399,7 +399,7 @@ fn validate_root_keys(
         check(host, fee_payer, RootKeyRole::FeePayer)?;
     }
     if let Some(keychain) = aa.signature().as_keychain()
-        && keychain.signature.as_configurable_account().is_none()
+        && !keychain.signature.is_configurable_account()
         && let Some(key_id) = access_key_id(aa)?
     {
         check(host, key_id, RootKeyRole::AccessKey)?;
@@ -414,11 +414,11 @@ fn granted_configurable_account_access_gas(
     host: &mut Evm<'_, TempoEvmTypes>,
     aa: &TempoAaTx,
     spec: TempoHardfork,
-    signers: &[Address],
+    accounts: &[Address],
 ) -> HandlerResult<u64> {
     if let Some(granted) = aa.granted_configurable_account()
         && granted != aa.signer()
-        && !signers.contains(&granted)
+        && !accounts.contains(&granted)
     {
         let loaded = load_account(host, granted, spec)?;
         return Ok(account_access_gas(

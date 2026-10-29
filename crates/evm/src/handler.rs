@@ -493,7 +493,7 @@ fn validate_key_authorization(
         && signed
             .signature()
             .as_keychain()
-            .is_some_and(|signature| key_auth.key_type != signature.signature.key_type())
+            .is_some_and(|signature| key_auth.key_type != signature.signature.signature_type())
     {
         return Err(TempoInvalidTransaction::KeychainValidationFailed {
             reason: "key authorization key_type does not match the keychain signature type".into(),
@@ -582,7 +582,8 @@ fn validate_key_authorization(
                         .into(),
                 });
             }
-            if key_auth.signature.key_type() != keychain_signature.signature.key_type() {
+            if key_auth.signature.signature_type() != keychain_signature.signature.signature_type()
+            {
                 return Err(TempoInvalidTransaction::KeychainValidationFailed {
                     reason: "admin-signed key authorization signature type does not match transaction key signature type".into(),
                 });
@@ -695,7 +696,7 @@ fn prepare_keychain(
         // with historical blocks during re-execution.
         let expected_signature_type = (key_authorization.is_some()
             || host.config_spec_id().is_t1())
-        .then_some(u8::from(keychain_signature.signature.key_type()));
+        .then_some(u8::from(keychain_signature.signature.signature_type()));
         let loaded = StorageCtx::enter_evm_without_tip1060_accounting(host, || {
             let mut keychain = AccountKeychain::new();
             let key = keychain
@@ -742,7 +743,7 @@ fn prepare_keychain(
             .recover_account()
             .map_err(|_| TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed)?;
         if signer != aa.signer() {
-            let signature_type: u8 = key_authorization.signature.key_type().into();
+            let signature_type: u8 = key_authorization.signature.signature_type().into();
             let signer_is_admin = state.loaded_key.as_ref().is_some_and(|loaded| {
                 loaded.key_id == signer
                     && loaded.key.signature_type as u8 == signature_type
@@ -1358,12 +1359,11 @@ fn prepare_aa(
     }
 
     // A configurable-account quorum cannot sign an EIP-7702 delegation.
-    if tx.tempo_authorization_list.iter().any(|authorization| {
-        authorization
-            .signature()
-            .primitive_signature_type()
-            .is_none()
-    }) {
+    if tx
+        .tempo_authorization_list
+        .iter()
+        .any(|authorization| authorization.signature().signed_by_configurable_account())
+    {
         return Err(ConfigurableAccountError::InvalidSignatureContext.into());
     }
     // Validate AA transaction structure (calls list, CREATE rules)

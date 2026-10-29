@@ -70,10 +70,10 @@ impl CallRules for AccountKeychainRules {
                 check_caller(caller, &[call.account])
             }
             IAccountKeychain::IAccountKeychainCalls::authorizeKey_1(call) => {
-                check_key_type(call.signatureType, spec)
+                reject_configurable_account_key_type(call.signatureType, spec)
             }
             IAccountKeychain::IAccountKeychainCalls::authorizeKey_2(call) => {
-                check_key_type(call.signatureType, spec)
+                reject_configurable_account_key_type(call.signatureType, spec)
             }
             IAccountKeychain::IAccountKeychainCalls::authorizeKey_0(_)
             | IAccountKeychain::IAccountKeychainCalls::authorizeAdminKey(_)
@@ -88,7 +88,10 @@ impl CallRules for AccountKeychainRules {
 }
 
 /// Rejects configurable account delegates until zones sync configurations (TIP-1114 Zones).
-fn check_key_type(key_type: IAccountKeychain::SignatureType, spec: TempoHardfork) -> CallCheck {
+fn reject_configurable_account_key_type(
+    key_type: IAccountKeychain::SignatureType,
+    spec: TempoHardfork,
+) -> CallCheck {
     if spec.is_t14() && key_type == IAccountKeychain::SignatureType::ConfigurableAccount {
         CallCheck::Revert(
             IAccountKeychain::InvalidSignatureType {}

@@ -38,9 +38,7 @@ pub fn validate_transaction(
     // Configurable accounts stay blocked until zones sync configurations (TIP-1114 Zones).
     if spec.is_t14()
         && (tx.as_aa().is_some_and(|aa| {
-            // An outer or keychain-inner signature without a primitive type is a configurable
-            // account.
-            aa.signature().primitive_signature_type().is_none()
+            aa.signature().signed_by_configurable_account()
                 || aa.tx().key_authorization.as_ref().is_some_and(|auth| {
                     auth.key_type == SignatureType::ConfigurableAccount
                         || auth.signature.as_configurable_account().is_some()
