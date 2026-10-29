@@ -55,6 +55,7 @@ pub struct ExecutorTile {
     diff: Vec<u8>,
     pub reverted: u64,
     pub fallbacks: u64,
+    head: (u64, [u8; 32]),
 }
 
 fn shard_of(sender: &[u8; 20], shards: usize) -> usize {
@@ -222,6 +223,7 @@ impl ExecutorTile {
             diff: Vec::new(),
             reverted: 0,
             fallbacks: 0,
+            head: (0, [0; 32]),
         }
     }
 
@@ -285,6 +287,14 @@ impl ExecutorTile {
             ..Default::default()
         };
         self.diff.clear();
+        if (block.height, block.parent) != (self.head.0 + 1, self.head.1) {
+            tracing::warn!(
+                block.height,
+                head = self.head.0,
+                "block does not extend the executed head"
+            );
+            return out;
+        }
         let result = if self.shards > 1 {
             match self.parallel(block, payload) {
                 Ok(Some(r)) => Ok(r),
@@ -319,6 +329,7 @@ impl ExecutorTile {
         self.reverted += reverted;
         (out.accounts, out.slots) = apply(&mut self.state, &changes, &mut self.diff);
         out.valid = true;
+        self.head = (block.height, block.hash);
         out
     }
 }

@@ -5,7 +5,7 @@ use flux::{
     tile::Tile,
 };
 use rustc_hash::FxHashMap;
-use tempo_flux_primitives::{Address, Block, BuildRequest, Hash, ValidTx, body};
+use tempo_flux_primitives::{Address, Block, BuildRequest, Executed, Hash, ValidTx, body};
 
 use crate::spine::NodeSpine;
 
@@ -22,10 +22,13 @@ pub struct BuilderTile {
     next_nonce: FxHashMap<Address, u64>,
     pooled: usize,
     picked: Vec<(Address, u64)>,
-    /// The last built block's transactions, kept until consensus moves past
-    /// its height. A request for the same height again means the block was
-    /// rejected, so they go back into the pool.
-    inflight: Option<(u64, Vec<(Address, u64, PendingTx)>)>,
+    /// The last built block (height, hash, txs), held until its execution
+    /// verdict arrives: accepted drops them, rejected returns them to the pool.
+    /// While it is unresolved no other block is built, so a retried request
+    /// can never put two blocks at one height.
+    inflight: Option<(u64, Hash, Vec<(Address, u64, PendingTx)>)>,
+    pending: Option<BuildRequest>,
+    accepted_height: u64,
 }
 
 impl BuilderTile {
@@ -68,15 +71,6 @@ impl BuilderTile {
 
     fn build(&mut self, req: BuildRequest, adapter: &mut SpineAdapter<NodeSpine>) {
         tracing::debug!(req.height, pooled = self.pooled, "building");
-        if let Some((height, txs)) = self.inflight.take()
-            && req.height <= height
-        {
-            tracing::warn!(
-                height,
-                "block was not finalized, returning its txs to the pool"
-            );
-            self.restore(txs);
-        }
         self.picked.clear();
         let max = req.max_txs as usize;
         for (sender, txs) in &self.by_sender {
@@ -115,6 +109,7 @@ impl BuilderTile {
         let payload = (len > 0).then_some((len, |buf: &mut [u8]| {
             body::write(buf, txs.iter().map(|(s, t)| (*s, t.bytes.as_slice())));
         }));
+        let hash = block.hash;
         adapter
             .produce_with_dcache(block, payload)
             .expect("block body fits the dcache");
@@ -132,7 +127,7 @@ impl BuilderTile {
             self.next_nonce.insert(*sender, nonce + 1);
             self.pooled -= 1;
         }
-        self.inflight = Some((req.height, taken));
+        self.inflight = Some((req.height, hash, taken));
     }
 }
 
@@ -153,9 +148,34 @@ impl Tile<NodeSpine> for BuilderTile {
             self.insert(tx, &bytes);
         }
 
-        let mut req = None;
-        adapter.consume(|r: BuildRequest, _| req = Some(r));
-        if let Some(r) = req {
+        let mut verdicts = Vec::new();
+        adapter.consume(|e: Executed, _| verdicts.push(e));
+        for e in verdicts {
+            if self
+                .inflight
+                .as_ref()
+                .is_some_and(|(h, hash, _)| *h == e.height && *hash == e.hash)
+            {
+                let (height, _, txs) = self.inflight.take().expect("checked");
+                if e.valid {
+                    self.accepted_height = height;
+                } else {
+                    tracing::warn!(height, "block rejected, returning its txs to the pool");
+                    self.restore(txs);
+                }
+            }
+        }
+
+        adapter.consume(|r: BuildRequest, _| self.pending = Some(r));
+        if self
+            .pending
+            .is_some_and(|r| r.height <= self.accepted_height)
+        {
+            self.pending = None;
+        }
+        if self.inflight.is_none()
+            && let Some(r) = self.pending.take()
+        {
             self.build(r, adapter);
         }
     }
