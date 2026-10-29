@@ -74,7 +74,7 @@ impl TempoSignedAuthorization {
     ///
     /// Implementers should check that the authority has no code.
     pub fn recover_authority(&self) -> Result<Address, alloy_consensus::crypto::RecoveryError> {
-        if self.signature.primitive_signature_type().is_none() {
+        if self.signature.signed_by_configurable_account() {
             return Err(RecoveryError::new());
         }
         let sig_hash = self.signature_hash();
