@@ -526,9 +526,8 @@ async fn eoa_migration_rpc_lifecycle() -> eyre::Result<()> {
         let request = call_request(account.address, call.input.clone());
 
         // A simulation returns the commitment and the gas, and writes nothing.
-        let simulated = env.provider().call(request.clone()).latest().await?;
         assert_eq!(
-            simulated,
+            env.provider().call(request.clone()).latest().await?,
             Bytes::from(IConfigurableAccount::upgradeAccountCall::abi_encode_returns(&expected))
         );
         assert!(
@@ -562,9 +561,8 @@ async fn eoa_migration_rpc_lifecycle() -> eyre::Result<()> {
             .map(|log| IConfigurableAccount::AccountUpgraded::decode_log(&log.inner))
             .collect::<Result<Vec<_>, _>>()?;
         assert_eq!(upgraded.len(), 1);
-        let event = &upgraded[0].data;
         assert_eq!(
-            *event,
+            upgraded[0].data,
             IConfigurableAccount::AccountUpgraded {
                 account: account.address,
                 commitment: expected,
@@ -617,9 +615,8 @@ async fn eoa_migration_rpc_lifecycle() -> eyre::Result<()> {
             .abi_encode()
             .into(),
         );
-        let output = env.provider().call(request.clone()).latest().await?;
         assert_eq!(
-            output,
+            env.provider().call(request.clone()).latest().await?,
             Bytes::from(
                 IConfigurableAccount::getConfigCommitmentCall::abi_encode_returns(
                     &account.config.commitment().unwrap()

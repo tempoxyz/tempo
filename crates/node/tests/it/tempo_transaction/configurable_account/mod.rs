@@ -195,6 +195,9 @@ impl OwnerKey {
             SignatureType::WebAuthn => |digest, key, x, y| {
                 sign_webauthn_primitive(digest, key, x, y, "https://native.example")
             },
+            SignatureType::ConfigurableAccount => {
+                panic!("fixture owners must use primitive signatures")
+            }
         };
         let key = SigningKey::from_bytes(&[seed; 32].into()).unwrap();
         let point = key.verifying_key().to_encoded_point(false);
@@ -334,9 +337,8 @@ async fn reject_with(
     signature: TempoSignature,
     invalid: TempoInvalidTransaction,
 ) -> eyre::Result<()> {
-    let error = rejection(env, tx, signature).await;
     assert_rpc_error(
-        &error,
+        &rejection(env, tx, signature).await,
         EthRpcErrorCode::InvalidInput.code(),
         &invalid.to_string(),
     )

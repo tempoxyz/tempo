@@ -44,13 +44,13 @@ use tempo_precompiles::{
         AccountKeychain, AuthorizedKey, CallScope as PrecompileCallScope, KeyRestrictions,
         SelectorRule as PrecompileSelectorRule, TokenLimit,
     },
-    configurable_account::valid_account_code,
+    configurable_account::CONFIGURABLE_ACCOUNT_CODE_HASH,
     error::TempoPrecompileError,
     nonce::{INonce::getNonceCall, NonceManager},
     storage::{Handler as _, StorageCtx, account_config_commitment},
 };
 use tempo_primitives::transaction::{
-    SignedKeyAuthorization, TEMPO_EXPIRING_NONCE_KEY, validate_calls,
+    SignedKeyAuthorization, TEMPO_EXPIRING_NONCE_KEY, TempoTransaction, validate_calls,
 };
 
 /// Base gas for KeyAuthorization (22k storage + 5k buffer), signature gas added at runtime
@@ -478,6 +478,9 @@ fn validate_key_authorization(
     let Some(key_auth) = tx.key_authorization.as_ref() else {
         return Ok(());
     };
+    if aa.granted_configurable_account().is_some() && !spec.is_t14() {
+        return Err(ConfigurableAccountError::UnsupportedContext.into());
+    }
 
     let access_key = access_key_id(aa)?;
     let same_tx_auth_use = access_key == Some(key_auth.key_id);
@@ -685,9 +688,10 @@ fn prepare_keychain(
         //   the loaded admin/signature-type facts below when the sidecar signer is the same key
         let timestamp = host.block().timestamp.saturating_to::<u64>();
 
-        // Extract the signature type from the inner signature to validate it matches
-        // the key_type stored in the keychain. This prevents using a signature of one
-        // type to authenticate as a key registered with a different type.
+        // Extract the signature type from the inner signature to validate it against
+        // the key_type stored in the keychain: a signature must have the key's stored type,
+        // except a migrated delegate's owner quorum on its primitive grant (see
+        // `AccountKeychain::accepts_signature_type`).
         // Only validate signature type on T1+ to maintain backward compatibility
         // with historical blocks during re-execution.
         let expected_signature_type = (key_authorization.is_some()
@@ -1087,22 +1091,23 @@ fn apply_nonce(
     let eip3607 = host.feature(EvmFeatures::EIP3607);
     let nonce_check = host.feature(EvmFeatures::NONCE_CHECK);
     let mut account = host.state_mut().account(&caller)?;
-    let configurable_sender = if spec.is_t14()
-        && (aa.signature().as_configurable_account().is_some()
-            || aa.signature().is_keychain()
-            || matches!(envelope.execution_context(), ExecutionContext::Simulation))
-    {
-        let commitment = account
-            .get()
-            .map_or(Ok(B256::ZERO), |info| account_config_commitment(info, spec))?;
-        !commitment.is_zero() && valid_account_code(account.code_hash(), commitment)
-    } else {
-        false
-    };
-    if eip3607 && !configurable_sender && account.code_hash() != KECCAK256_EMPTY {
-        let code = account.load_code()?;
-        if !code.is_empty() && !code.is_eip7702() {
-            return Err(HandlerError::RejectCallerWithCode);
+    if eip3607 && account.code_hash() != KECCAK256_EMPTY {
+        // From T14 a registered configurable account carries the `0xef` marker (TIP-1114) and may
+        // still send owner-signed, keychain-signed or simulated transactions.
+        let configurable_sender = spec.is_t14()
+            && account.code_hash() == CONFIGURABLE_ACCOUNT_CODE_HASH
+            && (aa.signature().is_configurable_account()
+                || aa.signature().is_keychain()
+                || matches!(envelope.execution_context(), ExecutionContext::Simulation))
+            && !account
+                .get()
+                .map_or(Ok(B256::ZERO), |info| account_config_commitment(info, spec))?
+                .is_zero();
+        if !configurable_sender {
+            let code = account.load_code()?;
+            if !code.is_empty() && !code.is_eip7702() {
+                return Err(HandlerError::RejectCallerWithCode);
+            }
         }
     }
     account.touch();
@@ -1175,6 +1180,9 @@ fn apply_nonce(
                                 "expiring nonce valid_before ({valid_before}) too far in the future: must be within {max_expiry_secs}s of block timestamp ({timestamp}), max allowed is {max_allowed}"
                             )).into()
                         }
+                    }
+                    TempoPrecompileError::NonceError(NonceError::ExpiringNonceReplay(_)) => {
+                        TempoInvalidTransaction::ExpiringNonceReplay.into()
                     }
                     error => nonce_error(error),
                 })?;
@@ -1354,12 +1362,11 @@ fn prepare_aa(
     }
 
     // A configurable-account quorum cannot sign an EIP-7702 delegation.
-    if tx.tempo_authorization_list.iter().any(|authorization| {
-        authorization
-            .signature()
-            .primitive_signature_type()
-            .is_none()
-    }) {
+    if tx
+        .tempo_authorization_list
+        .iter()
+        .any(|authorization| authorization.signature().is_or_wraps_configurable_account())
+    {
         return Err(ConfigurableAccountError::InvalidSignatureContext.into());
     }
     // Validate AA transaction structure (calls list, CREATE rules)
@@ -1439,18 +1446,19 @@ fn prepare_aa(
         timestamp,
     )?;
 
-    // Configurable-account state checks load more accounts, so transaction warmth goes first.
-    request.host.state_mut().prewarm(&caller);
-    warm_base_accounts(request.host, tx.calls[0].to);
-    warm_access_list(request.host, &tx.access_list);
-    let (native_gas, native_state_gas) =
+    // From T14, configurable-account state checks load more accounts, so transaction warmth
+    // goes first.
+    if spec.is_t14() {
+        warm_aa_accounts(request.host, caller, tx);
+    }
+    let (configurable_gas, configurable_state_gas) =
         configurable_account::validate_state(request.host, request.envelope, spec)?;
 
     // Route to the AA gas calculation and validation path.
     let (mut intrinsic, mut initial_state_gas, floor_gas) =
         intrinsic_gas(request.host, request.tx.inner())?;
-    intrinsic = intrinsic.saturating_add(native_gas);
-    initial_state_gas = initial_state_gas.saturating_add(native_state_gas);
+    intrinsic = intrinsic.saturating_add(configurable_gas);
+    initial_state_gas = initial_state_gas.saturating_add(configurable_state_gas);
     let (nonce_gas, nonce_state_gas) = nonce_intrinsic_gas(request.host, request.tx.inner());
 
     // For T0+, include 2D nonce gas in validation (charged upfront)
@@ -1498,6 +1506,10 @@ fn prepare_aa(
     }
 
     validate_execution_gas_limit_cap(request.host.version(), tx.gas_limit, intrinsic, floor_gas)?;
+
+    if !spec.is_t14() {
+        warm_aa_accounts(request.host, caller, tx);
+    }
 
     // Collect fees for the transaction.
     let fee_context = TempoHandlerHooks::resolve_fee_context(request.host, request.envelope)?;
@@ -1572,6 +1584,13 @@ fn prepare_aa(
         regular_refund,
         result,
     })
+}
+
+/// Warms the AA transaction's caller, base accounts and access list.
+fn warm_aa_accounts(host: &mut Evm<'_, TempoEvmTypes>, caller: Address, tx: &TempoTransaction) {
+    host.state_mut().prewarm(&caller);
+    warm_base_accounts(host, tx.calls[0].to);
+    warm_access_list(host, &tx.access_list);
 }
 
 fn execute_aa(

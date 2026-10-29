@@ -36,19 +36,19 @@ pub fn validate_transaction(
 
     // Configurable accounts stay blocked until zones sync configurations (TIP-1114 Zones).
     if spec.is_t14()
-        && (tx
-            .as_aa()
-            .is_some_and(|aa| aa.signature().is_configurable_account())
-            || tx.calls().any(|(kind, input)| {
-                kind == TxKind::Call(CONFIGURABLE_ACCOUNT_ADDRESS)
-                    && matches!(
-                        input.first_chunk(),
-                        Some(
-                            &IConfigurableAccount::updateConfigCall::SELECTOR
-                                | &IConfigurableAccount::upgradeAccountCall::SELECTOR
-                        )
+        && (tx.as_aa().is_some_and(|aa| {
+            aa.signature().is_or_wraps_configurable_account()
+                || aa.granted_configurable_account().is_some()
+        }) || tx.calls().any(|(kind, input)| {
+            kind == TxKind::Call(CONFIGURABLE_ACCOUNT_ADDRESS)
+                && matches!(
+                    input.first_chunk(),
+                    Some(
+                        &IConfigurableAccount::updateConfigCall::SELECTOR
+                            | &IConfigurableAccount::upgradeAccountCall::SELECTOR
                     )
-            }))
+                )
+        }))
     {
         return Err(ConfigurableAccountError::UnsupportedContext.into());
     }
