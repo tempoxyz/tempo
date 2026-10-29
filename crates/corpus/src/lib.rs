@@ -4,3 +4,4 @@
 pub mod code;
 pub mod store;
 pub mod types;
+pub mod view;

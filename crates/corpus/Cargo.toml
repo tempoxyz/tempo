@@ -19,6 +19,8 @@ workspace = true
 [dependencies]
 alloy-primitives.workspace = true
 reth-primitives-traits.workspace = true
+reth-execution-types.workspace = true
+evm2.workspace = true
 
 async-trait.workspace = true
 aws-config = "=1.8.15"
