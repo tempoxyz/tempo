@@ -5,7 +5,7 @@
 //! EVM against historical state, answering as any caller for the privacy getters. Their Tempo
 //! reads never wait out an L1 outage (see [`ViewEvm`]).
 
-use std::{collections::BTreeSet, convert::Infallible, num::NonZeroU32};
+use std::{collections::BTreeSet, convert::Infallible, num::NonZeroU32, time::Duration};
 
 use alloy_consensus::{BlockHeader as _, Transaction as _, TxReceipt as _};
 use alloy_contract::CallBuilder;
@@ -42,6 +42,9 @@ use crate::telemetry::CheckerMetrics;
 /// block with many transfers costs.
 const MAX_PRIVACY_READS: usize = 64;
 
+/// How long a view call's Tempo read waits for L1 on a cache miss before it answers nothing.
+const L1_READ_DEADLINE: Duration = Duration::from_secs(1);
+
 /// A node EVM configuration the checker can make view calls with.
 pub trait ViewEvm: ConfigureEvm<Primitives = TempoPrimitives> {
     /// The EVM over `db` with `header`'s environment, for the invariant view calls. Its
@@ -54,18 +57,22 @@ pub trait ViewEvm: ConfigureEvm<Primitives = TempoPrimitives> {
     ) -> Result<TempoEvm<'a>, Self::Error>;
 }
 
-/// Tempo reads go through the node's L1 cache with one RPC attempt per miss, where the node's
-/// own execution retries a miss forever: a failed read makes its view answer nothing, so an L1
-/// outage leaves the checks reading it (such as refunds asked as a third party, which read the
-/// portal's roles) unjudged instead of stalling the checker.
+/// Tempo reads go through the node's L1 cache with one RPC attempt per miss, given up after
+/// [`L1_READ_DEADLINE`], where the node's own execution retries a miss forever: a failed or
+/// unanswered read makes its view answer nothing, so an L1 outage leaves the checks reading it
+/// (such as refunds asked as a third party, which read the portal's roles) unjudged instead of
+/// stalling the checker.
 impl ViewEvm for ZoneEvmConfig {
     fn view_evm<'a>(
         &self,
         db: impl Database + 'a,
         header: &TempoHeader,
     ) -> Result<TempoEvm<'a>, TempoEvmError> {
-        self.with_l1_reader(self.l1_reader().with_max_sync_attempts(NonZeroU32::MIN))
-            .evm_for_block(db, header)
+        self.with_l1_reader(
+            self.l1_reader()
+                .with_sync_limits(NonZeroU32::MIN, L1_READ_DEADLINE),
+        )
+        .evm_for_block(db, header)
     }
 }
 

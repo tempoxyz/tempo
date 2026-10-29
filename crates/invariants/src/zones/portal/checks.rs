@@ -12,7 +12,7 @@ use super::{
     ZONE_MESSENGER_ADDRESS, ZoneMessenger, ZonePortal, deposits, enqueued, is_compressed_point,
     next_enablement_hash, portal_address, settled, submitted_prev_hashes, withdrawal_chain,
 };
-use crate::{Check, Checked, Severity, StepChecked, Tx, Verdict};
+use crate::{Check, Checked, Frame, Severity, StepChecked, Tx, Verdict, kept};
 
 /// The portal's views answer. Counted by runners that read the model, not judged by a check here.
 pub const VIEW: &str = "TEMPO-ZONE-PORTAL-VIEW";
@@ -277,16 +277,18 @@ pub const STEP_CHECKS: &[Check<PortalStep>] = &[
         tip: SPEC,
         severity: Severity::Medium,
         since: SINCE,
-        over: |s: &PortalStep| queued(s),
+        over: |s: &PortalStep| rated_deposits(s),
         judge: |s, deposit| {
-            let d = &deposit.value;
-            let fees = [s.pre.zone_gas_rate, s.post.zone_gas_rate]
-                .map(|rate| FIXED_DEPOSIT_GAS.checked_mul(rate));
-            if !fees.contains(&Some(d.fee)) {
-                return Some(Verdict::Broken(format!(
-                    "fee {}, zoneGasRate before {} after {}",
-                    d.fee, s.pre.zone_gas_rate, s.post.zone_gas_rate
-                )));
+            let (d, rate) = &deposit.value;
+            let rates = rate.map_or([s.pre.zone_gas_rate, s.post.zone_gas_rate], |rate| [rate; 2]);
+            if !rates.map(|rate| FIXED_DEPOSIT_GAS.checked_mul(rate)).contains(&Some(d.fee)) {
+                return broken(match rate {
+                    Some(rate) => format!("fee {}, zoneGasRate {rate} when it ran", d.fee),
+                    None => format!(
+                        "fee {}, zoneGasRate before {} after {}",
+                        d.fee, s.pre.zone_gas_rate, s.post.zone_gas_rate
+                    ),
+                });
             }
             if d.fee == 0 {
                 return Some(Verdict::Holds);
@@ -432,19 +434,13 @@ pub const STEP_CHECKS: &[Check<PortalStep>] = &[
         since: SINCE,
         when: |s: &PortalStep| s.traced(),
         over: |s: &PortalStep| restricted_calls(s, GOVERNANCE),
-        judge: |s, call| {
-            let allowed = if call.value.selector == ZonePortal::acceptAdminCall::SELECTOR {
-                // A pending admin the step itself set may accept within it.
-                s.calls_of::<ZonePortal::transferAdminCall>(s.post.portal)
-                    .into_iter()
-                    .filter(|(frame, _)| frame.success)
-                    .map(|(_, call)| call.newAdmin)
-                    .chain([s.pre.pending_admin])
-                    .collect()
+        judge: |_s, call| {
+            let Restricted { selector, caller, admin, pending_admin } = call.value;
+            if selector == ZonePortal::acceptAdminCall::SELECTOR {
+                ensure!(accepts(caller, pending_admin), "pending admin is {pending_admin}")
             } else {
-                vec![s.pre.admin, s.post.admin]
-            };
-            ensure!(allowed.contains(&call.value.caller), "admin is {}", s.pre.admin)
+                ensure!(caller == admin, "admin is {admin}")
+            }
         },
     },
     check! {
@@ -464,7 +460,7 @@ pub const STEP_CHECKS: &[Check<PortalStep>] = &[
             ]
             .contains(&call.value.selector);
             ensure!(
-                sequencer || (admin_too && [s.pre.admin, s.post.admin].contains(&caller)),
+                sequencer || (admin_too && caller == call.value.admin),
                 "the caller is not a sequencer{}",
                 if admin_too { " or the admin" } else { "" }
             )
@@ -534,6 +530,33 @@ fn queued(s: &PortalStep) -> Vec<Named<ZonePortal::DepositMade>> {
     deposits(s)
         .into_iter()
         .map(|d| Named::new(format!("deposit {} of {}", d.depositNumber, d.token), d))
+        .collect()
+}
+
+/// The deposits the step queued, each named by its number, with the `zoneGasRate` when it ran:
+/// the rate before the step, as each earlier kept `setZoneGasRate` call into the portal set it.
+/// The rate is `None` when the step's kept `deposit` and `depositEncrypted` calls do not pair one
+/// to one with its `DepositMade` events, as when the step is untraced.
+fn rated_deposits(s: &PortalStep) -> Vec<Named<(ZonePortal::DepositMade, Option<u128>)>> {
+    let deposit = [
+        ZonePortal::depositCall::SELECTOR,
+        ZonePortal::depositEncryptedCall::SELECTOR,
+    ];
+    let mut rate = s.pre.zone_gas_rate;
+    let mut rates = Vec::new();
+    for frame in portal_calls(s) {
+        if let Some(call) = frame.decode::<ZonePortal::setZoneGasRateCall>() {
+            rate = call.newZoneGasRate;
+        } else if frame.selector().is_some_and(|s| deposit.contains(&s)) {
+            rates.push(rate);
+        }
+    }
+    let deposits = queued(s);
+    let paired = rates.len() == deposits.len();
+    deposits
+        .into_iter()
+        .enumerate()
+        .map(|(k, d)| Named::new(d.name, (d.value, paired.then(|| rates[k]))))
         .collect()
 }
 
@@ -829,19 +852,38 @@ fn dequeue_auth(s: &PortalStep) -> Option<Verdict> {
     if !s.tx.is_some_and(|tx| tx.success) {
         return None;
     }
-    let calls: Vec<_> = s
-        .calls_of::<ZonePortal::processWithdrawalsCall>(s.post.portal)
-        .into_iter()
-        .filter(|(frame, _)| frame.success)
+    let calls: Vec<&Frame> = portal_calls(s).collect();
+    let processed: Vec<_> = calls
+        .iter()
+        .enumerate()
+        .filter_map(|(k, frame)| Some((k, frame.decode::<ZonePortal::processWithdrawalsCall>()?)))
         .collect();
-    let [(_, call)] = calls.as_slice() else {
+    let [(position, call)] = processed.as_slice() else {
         return None;
     };
     if call.withdrawals.is_empty() {
         return None;
     }
     let head = s.pre.queue.head;
-    let slot = *s.pre.queue.slots.get(&head)?;
+    let slot = if head < s.pre.queue.tail {
+        *s.pre.queue.slots.get(&head)?
+    } else {
+        // The queue was empty before the step, so only a batch the step settled before this call
+        // filled the head slot. Each kept `submitBatch` call emits one `BatchSubmitted` event.
+        let submit = [
+            ZonePortal::submitBatch_0Call::SELECTOR,
+            ZonePortal::submitBatch_1Call::SELECTOR,
+        ];
+        let batches_before = calls[..*position]
+            .iter()
+            .filter(|frame| frame.selector().is_some_and(|s| submit.contains(&s)))
+            .count();
+        settled(s)
+            .into_iter()
+            .take(batches_before)
+            .find(|batch| batch.queue_index == head)
+            .map_or(B256::ZERO, |batch| batch.withdrawal_queue_hash)
+    };
     let chain = withdrawal_chain(&call.withdrawals, call.remainingQueue);
     if slot != chain {
         return broken(format!(
@@ -948,11 +990,16 @@ fn solvency(s: &PortalStep, token: Address) -> Option<Verdict> {
     )
 }
 
-/// A call into the portal that only some accounts may make, and who made it.
+/// A call into the portal that only some accounts may make, who made it, and who held the admin
+/// roles when it ran.
 #[derive(Debug, Clone, Copy)]
 pub struct Restricted {
     pub selector: [u8; 4],
     pub caller: Address,
+    /// The portal's `admin` when the call ran.
+    pub admin: Address,
+    /// The portal's `pendingAdmin` when the call ran.
+    pub pending_admin: Address,
 }
 
 const GOVERNANCE: &[(&str, [u8; 4])] = &[
@@ -1001,18 +1048,49 @@ const SEQUENCER_OPS: &[(&str, [u8; 4])] = &[
     ("setLeader", ZonePortal::setLeaderCall::SELECTOR),
 ];
 
-/// The step's calls into the portal that returned and whose selector `functions` lists.
+/// The step's kept calls into the portal whose selector `functions` lists, in order, each with the
+/// admin and pending admin when it ran: from those before the step, each earlier kept
+/// `transferAdmin` from the admin sets the pending admin and each `acceptAdmin` from the pending
+/// admin makes it the admin.
 fn restricted_calls(s: &PortalStep, functions: &[(&str, [u8; 4])]) -> Vec<Named<Restricted>> {
-    s.calls_to(s.post.portal)
-        .filter(|frame| frame.success)
-        .filter_map(|frame| {
-            let selector = frame.selector()?;
-            let (name, _) = functions.iter().find(|(_, s)| *s == selector)?;
+    let (mut admin, mut pending_admin) = (s.pre.admin, s.pre.pending_admin);
+    let mut calls = Vec::new();
+    for frame in portal_calls(s) {
+        let Some(selector) = frame.selector() else {
+            continue;
+        };
+        if let Some((name, _)) = functions.iter().find(|(_, s)| *s == selector) {
             let call = Restricted {
                 selector,
                 caller: frame.caller,
+                admin,
+                pending_admin,
             };
-            Some(Named::new(format!("{name} from {}", frame.caller), call))
-        })
-        .collect()
+            calls.push(Named::new(format!("{name} from {}", frame.caller), call));
+        }
+        // Only handovers the rules allow move the roles, so one the check reports is not
+        // reported again through the calls after it.
+        if let Some(call) = frame.decode::<ZonePortal::transferAdminCall>()
+            && frame.caller == admin
+        {
+            pending_admin = call.newAdmin;
+        } else if selector == ZonePortal::acceptAdminCall::SELECTOR
+            && accepts(frame.caller, pending_admin)
+        {
+            admin = pending_admin;
+            pending_admin = Address::ZERO;
+        }
+    }
+    calls
+}
+
+/// Whether `caller` may accept the admin role while `pending_admin` is pending: only the pending
+/// admin, and only when one is pending.
+fn accepts(caller: Address, pending_admin: Address) -> bool {
+    !pending_admin.is_zero() && caller == pending_admin
+}
+
+/// The step's kept calls into its portal, in entry order.
+fn portal_calls(s: &PortalStep) -> impl Iterator<Item = &Frame> {
+    kept(&s.calls).filter(|frame| frame.enters(s.post.portal))
 }

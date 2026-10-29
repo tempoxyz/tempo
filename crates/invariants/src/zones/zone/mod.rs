@@ -45,7 +45,8 @@ pub use checks::{
 };
 
 /// The account privacy reads are asked as: no key is known for it, so it owns no account, is no
-/// sequencer and holds no role.
+/// sequencer and holds no role. Others can still make it a party to a getter, by sending it tokens
+/// or approving it as a spender, and such a getter is its to read, so the checks skip it.
 pub const THIRD_PARTY: Address = address!("0x7a1d000000000000000000000000000000000bad");
 
 /// Every zone-side check, whatever its context.
@@ -366,6 +367,15 @@ impl Getter {
         match *self {
             Self::Balance { account } | Self::Nonce { account } | Self::Key { account } => account,
             Self::Allowance { owner, .. } | Self::Refund { owner, .. } => owner,
+        }
+    }
+
+    /// Whether `account` is a party to the getter, and so may read it: the account it reads, or an
+    /// allowance's spender.
+    fn involves(&self, account: Address) -> bool {
+        match *self {
+            Self::Allowance { owner, spender } => account == owner || account == spender,
+            _ => account == self.owner(),
         }
     }
 }

@@ -605,13 +605,16 @@ pub fn is_compressed_point(x: B256, y_parity: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Report;
-    use alloy_primitives::{address, b256};
+    use crate::{Report, Tx};
+    use alloy_primitives::{Log, address, b256};
     use invariants_core::{CallKind, Frame};
 
     const PORTAL: Address = Address::repeat_byte(0x90);
     const ADMIN: Address = Address::repeat_byte(0xad);
     const NEXT_ADMIN: Address = Address::repeat_byte(0xae);
+    const OTHER: Address = Address::repeat_byte(0x0e);
+    const SEQUENCER: Address = Address::repeat_byte(0x5e);
+    const TOKEN: Address = Address::repeat_byte(0x20);
 
     /// A successful top-level call of `call` on [`PORTAL`] from `caller`.
     fn portal_call(caller: Address, call: impl SolCall) -> Frame {
@@ -627,10 +630,38 @@ mod tests {
         }
     }
 
-    /// The violations of check `id` on a step from a portal administered by [`ADMIN`] to
-    /// one administered by `post_admin`, making `calls`.
-    fn violations(id: &str, post_admin: Address, calls: Vec<Frame>) -> Vec<String> {
-        let calls_made = calls.len() as u64;
+    /// How many subjects check `id` judged on `step`, and its violations.
+    fn judge(id: &str, step: &PortalStep) -> (u64, Vec<String>) {
+        let mut report = Report::default();
+        report.run(STEP_CHECKS, step);
+        let armed = report.counts.get(id).map_or(0, |c| c.armed);
+        let fired = report
+            .violations
+            .into_iter()
+            .filter(|v| v.id == id)
+            .map(|v| v.detail)
+            .collect();
+        (armed, fired)
+    }
+
+    /// A successful transaction's step from `pre` to `post`, emitting `logs` and making `calls`.
+    fn step(pre: Portal, post: Portal, logs: Vec<Log>, calls: Vec<Frame>) -> PortalStep {
+        PortalStep {
+            pre,
+            post,
+            changes: Vec::new(),
+            logs,
+            calls,
+            tx: Some(Tx {
+                sender: ADMIN,
+                success: true,
+            }),
+        }
+    }
+
+    /// A step from a portal administered by [`ADMIN`] to one administered by `post_admin`,
+    /// making `calls`.
+    fn admin_step(post_admin: Address, calls: Vec<Frame>) -> PortalStep {
         let pre = Portal {
             admin: ADMIN,
             ..Portal::absent(PORTAL)
@@ -639,58 +670,218 @@ mod tests {
             admin: post_admin,
             ..Portal::absent(PORTAL)
         };
-        let mut report = Report::default();
-        report.run(
-            STEP_CHECKS,
-            &PortalStep {
-                pre,
-                post,
-                changes: Vec::new(),
-                logs: Vec::new(),
-                calls,
-                tx: None,
-            },
-        );
-        assert_eq!(report.counts[id].armed, calls_made, "{id}");
-        report
-            .violations
-            .into_iter()
-            .filter(|v| v.id == id)
-            .map(|v| v.detail)
-            .collect()
+        step(pre, post, Vec::new(), calls)
+    }
+
+    /// The selector of `C` alone as a successful top-level call on [`PORTAL`] from `caller`, for
+    /// checks that read only which function a call ran.
+    fn selector_call<C: SolCall>(caller: Address) -> Frame {
+        Frame {
+            input: C::SELECTOR.to_vec().into(),
+            ..portal_call(caller, ZonePortal::acceptAdminCall {})
+        }
     }
 
     #[test]
-    fn an_admin_handed_over_within_one_step_acts_as_admin() {
-        let transfer = portal_call(
-            ADMIN,
-            ZonePortal::transferAdminCall {
-                newAdmin: NEXT_ADMIN,
+    fn an_admin_handed_over_within_one_step_acts_as_admin_from_then_on() {
+        let transfer = |to| portal_call(ADMIN, ZonePortal::transferAdminCall { newAdmin: to });
+        let accept = || portal_call(NEXT_ADMIN, ZonePortal::acceptAdminCall {});
+        let set_leader = |caller| {
+            portal_call(
+                caller,
+                ZonePortal::setLeaderCall {
+                    newLeader: NEXT_ADMIN,
+                    expectedEpoch: 0,
+                },
+            )
+        };
+        let set_rate = portal_call(ADMIN, ZonePortal::setZoneGasRateCall { newZoneGasRate: 1 });
+        let governance = |calls| judge(ADMIN_ONLY_GOVERNANCE, &admin_step(NEXT_ADMIN, calls));
+        let not_pending = |pending: Address| vec![format!("pending admin is {pending}")];
+
+        assert_eq!(
+            governance(vec![transfer(NEXT_ADMIN), accept()]),
+            (2, vec![])
+        );
+        assert_eq!(governance(vec![accept()]), (1, not_pending(Address::ZERO)));
+        // Accepting before the transfer that names it, or after a later transfer replaced it.
+        assert_eq!(
+            governance(vec![accept(), transfer(NEXT_ADMIN)]),
+            (2, not_pending(Address::ZERO))
+        );
+        assert_eq!(
+            governance(vec![transfer(NEXT_ADMIN), transfer(OTHER), accept()]),
+            (3, not_pending(OTHER))
+        );
+        // The old admin has handed over.
+        assert_eq!(
+            governance(vec![transfer(NEXT_ADMIN), accept(), set_rate]),
+            (3, vec![format!("admin is {NEXT_ADMIN}")])
+        );
+
+        let ops = |post_admin, calls| judge(SEQUENCER_ONLY_OPS, &admin_step(post_admin, calls));
+        let not_admin = vec!["the caller is not a sequencer or the admin".to_string()];
+        assert_eq!(
+            ops(
+                NEXT_ADMIN,
+                vec![transfer(NEXT_ADMIN), accept(), set_leader(NEXT_ADMIN)]
+            ),
+            (1, vec![])
+        );
+        // Acting before becoming admin.
+        assert_eq!(
+            ops(
+                NEXT_ADMIN,
+                vec![set_leader(NEXT_ADMIN), transfer(NEXT_ADMIN), accept()]
+            ),
+            (1, not_admin.clone())
+        );
+        assert_eq!(
+            ops(NEXT_ADMIN, vec![set_leader(NEXT_ADMIN)]),
+            (1, not_admin)
+        );
+    }
+
+    #[test]
+    fn a_dequeue_may_take_the_batch_queued_earlier_in_its_step() {
+        let withdrawal = ZonePortal::Withdrawal {
+            token: TOKEN,
+            senderTag: B256::ZERO,
+            to: OTHER,
+            amount: 1,
+            memo: B256::ZERO,
+            gasLimit: 0,
+            fallbackNonce: 1,
+            callbackData: Bytes::new(),
+            encryptedSender: Bytes::new(),
+        };
+        let chain = withdrawal_chain(std::slice::from_ref(&withdrawal), B256::ZERO);
+        let queue = |head: u64, slots: &[u64]| WithdrawalQueue {
+            head: U256::from(head),
+            tail: U256::from(head),
+            slots: slots.iter().map(|&i| (U256::from(i), B256::ZERO)).collect(),
+        };
+        // An empty queue; the batch takes slot 0 and the dequeue empties it again.
+        let pre = Portal {
+            queue: queue(0, &[0]),
+            ..Portal::absent(PORTAL)
+        };
+        let post = Portal {
+            queue: WithdrawalQueue {
+                tail: U256::ONE,
+                ..queue(1, &[0, 1])
+            },
+            ..Portal::absent(PORTAL)
+        };
+        let batch = ZonePortal::BatchSubmitted_1 {
+            withdrawalBatchIndex: 1,
+            withdrawalQueueIndex: U256::ZERO,
+            nextProcessedDepositQueueHash: B256::ZERO,
+            nextBlockHash: B256::ZERO,
+            withdrawalQueueHash: chain,
+            lastProcessedDepositNumber: 0,
+            lastProcessedEnabledTokenCount: 0,
+        };
+        let logs = vec![Log {
+            address: PORTAL,
+            data: batch.encode_log_data(),
+        }];
+        let submit = selector_call::<ZonePortal::submitBatch_1Call>(SEQUENCER);
+        let process = portal_call(
+            SEQUENCER,
+            ZonePortal::processWithdrawalsCall {
+                withdrawals: vec![withdrawal],
+                remainingQueue: B256::ZERO,
             },
         );
-        let accept = portal_call(NEXT_ADMIN, ZonePortal::acceptAdminCall {});
-        let set_leader = portal_call(
-            NEXT_ADMIN,
-            ZonePortal::setLeaderCall {
-                newLeader: NEXT_ADMIN,
-                expectedEpoch: 0,
+        let dequeue = |calls| {
+            judge(
+                WITHDRAWAL_DEQUEUE_AUTH,
+                &step(pre.clone(), post.clone(), logs.clone(), calls),
+            )
+        };
+
+        assert_eq!(dequeue(vec![submit.clone(), process.clone()]), (1, vec![]));
+        // Dequeued before the batch queued anything.
+        assert_eq!(
+            dequeue(vec![process, submit]),
+            (
+                1,
+                vec![format!(
+                    "dequeued 1 withdrawals hashing to {chain}, head slot 0 held {}",
+                    B256::ZERO
+                )]
+            )
+        );
+    }
+
+    #[test]
+    fn a_deposit_pays_the_zone_gas_rate_in_force_when_it_ran() {
+        let fee = FIXED_DEPOSIT_GAS * 2;
+        let portal = Portal {
+            admin: ADMIN,
+            zone_gas_rate: 1,
+            ..Portal::absent(PORTAL)
+        };
+        let deposit = ZonePortal::DepositMade {
+            newCurrentDepositQueueHash: B256::ZERO,
+            sender: OTHER,
+            token: TOKEN,
+            netAmount: 1,
+            fee,
+            keyIndex: U256::ZERO,
+            ephemeralPubkeyX: B256::ZERO,
+            ephemeralPubkeyYParity: 2,
+            ciphertext: Bytes::new(),
+            nonce: Default::default(),
+            tag: Default::default(),
+            tempoRefundRecipient: OTHER,
+            depositNumber: 1,
+        };
+        let paid = ITIP20::Transfer {
+            from: PORTAL,
+            to: ADMIN,
+            amount: U256::from(fee),
+        };
+        let logs = vec![
+            Log {
+                address: PORTAL,
+                data: deposit.encode_log_data(),
             },
-        );
-        let handover = violations(
-            ADMIN_ONLY_GOVERNANCE,
-            NEXT_ADMIN,
-            vec![transfer, accept.clone()],
-        );
-        assert!(handover.is_empty(), "{handover:?}");
+            Log {
+                address: TOKEN,
+                data: paid.encode_log_data(),
+            },
+        ];
+        let set_rate = |rate| {
+            portal_call(
+                ADMIN,
+                ZonePortal::setZoneGasRateCall {
+                    newZoneGasRate: rate,
+                },
+            )
+        };
+        let deposit_call = selector_call::<ZonePortal::depositCall>(OTHER);
+        let snapshot = |calls| {
+            judge(
+                DEPOSIT_FEE_SNAPSHOT,
+                &step(portal.clone(), portal.clone(), logs.clone(), calls),
+            )
+        };
+
+        // The rate is 2 only while the deposit runs, 1 before and after the step.
         assert_eq!(
-            violations(ADMIN_ONLY_GOVERNANCE, NEXT_ADMIN, vec![accept]),
-            [format!("admin is {ADMIN}")]
+            snapshot(vec![set_rate(2), deposit_call.clone(), set_rate(1)]),
+            (1, vec![])
         );
-        let leader = violations(SEQUENCER_ONLY_OPS, NEXT_ADMIN, vec![set_leader.clone()]);
-        assert!(leader.is_empty(), "{leader:?}");
         assert_eq!(
-            violations(SEQUENCER_ONLY_OPS, ADMIN, vec![set_leader]),
-            ["the caller is not a sequencer or the admin"]
+            snapshot(vec![deposit_call, set_rate(2), set_rate(1)]),
+            (1, vec![format!("fee {fee}, zoneGasRate 1 when it ran")])
+        );
+        // Untraced, the rate before or after the step is all there is to go on.
+        assert_eq!(
+            snapshot(vec![]),
+            (1, vec![format!("fee {fee}, zoneGasRate before 1 after 1")])
         );
     }
 

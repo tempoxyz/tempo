@@ -820,6 +820,58 @@ fn privacy_getters_asked_as_a_third_party() {
 }
 
 #[test]
+fn privacy_getters_the_third_party_is_a_party_to_are_not_judged() {
+    let value = Bytes::from(U256::from(42).to_be_bytes_vec());
+    // Each getter with the owner who reads it and whether the third party may read it too.
+    let getters = [
+        (
+            Getter::Allowance {
+                owner: ALICE,
+                spender: THIRD_PARTY,
+            },
+            ALICE,
+            true,
+        ),
+        (
+            Getter::Balance {
+                account: THIRD_PARTY,
+            },
+            THIRD_PARTY,
+            true,
+        ),
+        (
+            Getter::Allowance {
+                owner: ALICE,
+                spender: BOB,
+            },
+            ALICE,
+            false,
+        ),
+    ];
+    for (getter, owner, party) in getters {
+        let mut views = Stub::default()
+            .answer_from(owner, TOKEN, getter.input(), Outcome::Return(value.clone()))
+            .answer_from(
+                THIRD_PARTY,
+                TOKEN,
+                getter.input(),
+                Outcome::Return(value.clone()),
+            );
+        let at = PrivacyAt {
+            asker: THIRD_PARTY,
+            getters: &[(TOKEN, getter)],
+        };
+        let privacy = Privacy::observe(&mut views, at).unwrap();
+        let (armed, fired) = judge(PRIVACY_CHECKS, &privacy, BALANCE_ALLOWANCE_PRIVACY);
+        assert_eq!(
+            (armed, fired.is_empty()),
+            (u64::from(!party), party),
+            "{getter}"
+        );
+    }
+}
+
+#[test]
 fn anchored_checks_compare_the_zone_with_the_portal() {
     let imported = step(
         zone(1, 0, 0, 0),

@@ -504,8 +504,12 @@ fn supply_moves(
 }
 
 /// A third party's read reveals nothing when it reverts, returns zero, or returns other than
-/// what the owner reads.
+/// what the owner reads. A getter the asker is a party to (as the account read, or an allowance's
+/// spender after an approval) is its to read, so it is not judged.
 fn private(p: &Privacy, read: &PrivateRead) -> Option<Verdict> {
+    if read.getter.involves(p.asker) {
+        return None;
+    }
     let asked = read.asked.as_ref()?;
     let Outcome::Return(value) = asked else {
         return Some(Verdict::Holds);

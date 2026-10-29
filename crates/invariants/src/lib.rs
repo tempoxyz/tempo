@@ -69,6 +69,20 @@ pub fn applies_at(meta: &Meta, fork: TempoHardfork) -> bool {
     known(meta.since) && known(meta.until) && meta.applies(fork_position, current)
 }
 
+/// The frames of `calls` (in entry order) that returned, as did every frame they were called from.
+pub(crate) fn kept(calls: &[Frame]) -> impl Iterator<Item = &Frame> {
+    // The open frames' depths, and whether each is kept.
+    let mut open: Vec<(usize, bool)> = Vec::new();
+    calls.iter().filter(move |frame| {
+        while open.last().is_some_and(|(depth, _)| *depth >= frame.depth) {
+            open.pop();
+        }
+        let kept = frame.success && open.last().is_none_or(|(_, kept)| *kept);
+        open.push((frame.depth, kept));
+        kept
+    })
+}
+
 /// `value` as text, `missing` when there is none.
 fn or_text(value: Option<U256>, missing: &str) -> String {
     value.map_or_else(|| missing.to_string(), |value| value.to_string())

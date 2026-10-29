@@ -15,7 +15,7 @@ use alloy_provider::{DynProvider, Provider, ProviderBuilder};
 use alloy_rpc_client::RpcClient;
 use alloy_transport::layers::RetryBackoffLayer;
 use eyre::Result;
-use std::num::NonZeroU32;
+use std::{num::NonZeroU32, time::Duration};
 use tempo_alloy::TempoNetwork;
 use tracing::{debug, info, warn};
 use zone_precompiles::{L1StateError, L1StorageReader};
@@ -89,6 +89,9 @@ pub struct L1StateProvider {
     runtime_handle: tokio::runtime::Handle,
     /// Optional finite attempt limit for synchronous cache-miss fallback.
     max_sync_attempts: Option<NonZeroU32>,
+    /// How long each synchronous cache-miss attempt waits for its answer; `None` waits as long as
+    /// the transport does, which over a reconnecting WebSocket is forever.
+    sync_deadline: Option<Duration>,
 }
 
 impl L1StateProvider {
@@ -137,6 +140,7 @@ impl L1StateProvider {
             provider,
             runtime_handle,
             max_sync_attempts: config.max_sync_attempts,
+            sync_deadline: None,
         })
     }
 
@@ -156,14 +160,16 @@ impl L1StateProvider {
             provider,
             runtime_handle,
             max_sync_attempts: config.max_sync_attempts,
+            sync_deadline: None,
         }
     }
 
-    /// Clones this provider with at most `attempts` synchronous RPC attempts per cache miss,
-    /// sharing its cache and RPC connection.
-    pub fn with_max_sync_attempts(&self, attempts: NonZeroU32) -> Self {
+    /// Clones this provider with at most `attempts` synchronous RPC attempts per cache miss, each
+    /// given up after `deadline` without an answer, sharing its cache and RPC connection.
+    pub fn with_sync_limits(&self, attempts: NonZeroU32, deadline: Duration) -> Self {
         Self {
             max_sync_attempts: Some(attempts),
+            sync_deadline: Some(deadline),
             ..self.clone()
         }
     }
@@ -195,8 +201,19 @@ impl L1StateProvider {
             attempt += 1;
             let start = std::time::Instant::now();
             let result = tokio::task::block_in_place(|| {
-                self.runtime_handle
-                    .block_on(self.fetch_slot(address, slot, block_number))
+                self.runtime_handle.block_on(async {
+                    let fetch = self.fetch_slot(address, slot, block_number);
+                    match self.sync_deadline {
+                        Some(deadline) => tokio::time::timeout(deadline, fetch)
+                            .await
+                            .unwrap_or_else(|_| {
+                                Err(eyre::eyre!(
+                                    "eth_getStorageAt gave no answer within {deadline:?}"
+                                ))
+                            }),
+                        None => fetch.await,
+                    }
+                })
             });
             let elapsed = start.elapsed();
 
@@ -334,7 +351,7 @@ mod tests {
             .cache()
             .lock()
             .set(Address::ZERO, B256::ZERO, 7, cached);
-        let bounded = unbounded.with_max_sync_attempts(NonZeroU32::MIN);
+        let bounded = unbounded.with_sync_limits(NonZeroU32::MIN, Duration::from_secs(1));
 
         let (hit, miss) = tokio::task::spawn_blocking(move || {
             (
@@ -349,5 +366,36 @@ mod tests {
             .expect_err("a miss on a failing endpoint must fail after one attempt")
             .to_string();
         assert!(message.contains("after 1 attempts"), "{message}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn bounded_clone_gives_up_on_an_endpoint_that_never_answers() {
+        // A listener that never accepts: requests connect and then wait for an answer forever.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a free local port");
+        let url = format!("http://{}", listener.local_addr().expect("a bound address"));
+        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+            .connect(&url)
+            .await
+            .expect("HTTP transport construction is lazy")
+            .erased();
+        let bounded = L1StateProvider::new_raw(
+            L1StateProviderConfig::default(),
+            L1StateCache::default(),
+            provider,
+            tokio::runtime::Handle::current(),
+        )
+        .with_sync_limits(NonZeroU32::MIN, Duration::from_millis(100));
+
+        let read =
+            tokio::task::spawn_blocking(move || bounded.get_storage(Address::ZERO, B256::ZERO, 7));
+        let miss = tokio::time::timeout(Duration::from_secs(10), read)
+            .await
+            .expect("a bounded read must not wait out a silent endpoint")
+            .expect("storage task must not panic");
+        let message = miss
+            .expect_err("a silent endpoint must fail after one attempt")
+            .to_string();
+        assert!(message.contains("after 1 attempts"), "{message}");
+        assert!(message.contains("no answer within 100ms"), "{message}");
     }
 }

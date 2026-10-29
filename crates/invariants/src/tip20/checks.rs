@@ -6,7 +6,7 @@ use alloy_primitives::{Address, U256};
 use invariants_core::{check, ensure};
 
 use super::{ITIP20, Ledger, Transfer, transfer};
-use crate::{Check, Checked, Frame, Replay, Severity, Step, StepChecked, Tx, Verdict, or_text};
+use crate::{Check, Checked, Replay, Severity, Step, StepChecked, Tx, Verdict, kept, or_text};
 
 /// A TIP-20's views answer. Counted by runners that read the model, not judged by a check here.
 pub const VIEW: &str = "TEMPO-TIP20-VIEW";
@@ -162,20 +162,6 @@ fn transfer_calls(step: &Step<Ledger, Option<Tx>>) -> Vec<TransferCall> {
         .collect()
 }
 
-/// The frames of `calls` (in entry order) that returned, as did every frame they were called from.
-fn kept(calls: &[Frame]) -> impl Iterator<Item = &Frame> {
-    // The open frames' depths, and whether each is kept.
-    let mut open: Vec<(usize, bool)> = Vec::new();
-    calls.iter().filter(move |frame| {
-        while open.last().is_some_and(|(depth, _)| *depth >= frame.depth) {
-            open.pop();
-        }
-        let kept = frame.success && open.last().is_none_or(|(_, kept)| *kept);
-        open.push((frame.depth, kept));
-        kept
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -185,7 +171,7 @@ mod tests {
     use invariants_core::Report;
 
     use super::*;
-    use crate::CallKind;
+    use crate::{CallKind, Frame};
 
     const TOKEN: Address = Address::repeat_byte(0x20);
     const SENDER: Address = Address::repeat_byte(0x01);
@@ -319,7 +305,7 @@ mod transfer_call_tests {
 
     use alloy_primitives::{Bytes, Log, address};
     use alloy_sol_types::{SolCall, SolEvent};
-    use invariants_core::{CallKind, Report};
+    use invariants_core::{CallKind, Frame, Report};
 
     use super::*;
 
