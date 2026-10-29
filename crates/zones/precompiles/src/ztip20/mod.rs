@@ -5,12 +5,11 @@
 //! `ReceivePolicyGuard`. Before forwarding a call to Tempo, `TIP20Rules` applies only zone-specific
 //! checks: privacy-gated reads, fixed gas for selected selectors, blocked system/admin entry
 //! points, a ban on Permit2 and Multicall3 moving funds or approving spenders, and, for
-//! zone-internal transfers, the portal admin's opt-in, the token's L1 pause flag, and that
-//! receive-policy check.
+//! zone-internal transfers, the portal admin's opt-in and that receive-policy check.
 //!
 //! Accepted calldata and callers are forwarded unchanged to Tempo. Ordinary token state remains
-//! Zone-local while the EVM context's database adapter exposes selected policy values from the
-//! finalized Tempo L1 state.
+//! Zone-local while the EVM context's database adapter exposes selected policy values and, from
+//! T15, the token's pause flag from the finalized Tempo L1 state.
 
 use alloy_primitives::Address;
 use alloy_sol_types::{SolCall, SolError, SolInterface};
@@ -20,7 +19,7 @@ use tempo_precompiles::{
     address_registry::AddressRegistry,
     dispatch::abi_decoder_config_for_spec,
     error::Result,
-    tip20::{self, IRolesAuth, ITIP20, TIP20Error},
+    tip20::{IRolesAuth, ITIP20, TIP20Error},
     tip403_registry::TIP403Registry,
 };
 
@@ -28,7 +27,7 @@ use crate::{
     L1State, L1StorageReader,
     execution::{CallCheck, CallRules},
     privacy::check_caller,
-    storage::{Slot, StorageCtx},
+    storage::StorageCtx,
 };
 
 /// Fixed gas charged for TIP20 transfer and approval selectors on the zone.
@@ -56,17 +55,16 @@ pub(crate) const TIP20_FIXED_GAS_SELECTORS: &[[u8; 4]] = &[
 pub(crate) struct TIP20Rules<P> {
     /// Zone TIP-20 token these rules guard, at the same address as its Tempo L1 token.
     pub(crate) token: Address,
-    /// Finalized Tempo state, used to read the portal's transfer opt-in and the L1 pause flag.
+    /// Finalized Tempo state, used to read the portal's transfer opt-in.
     pub(crate) l1: L1State<P>,
 }
 
 impl<P: L1StorageReader> TIP20Rules<P> {
     /// Admits a transfer-family call by `caller` that moves `from`'s funds to `to`.
     ///
-    /// Transfers require T15 and the portal admin's opt-in. They also revert when the token is
-    /// paused on Tempo L1, and when `to`'s receive policy blocks `from`. Upstream would divert
-    /// receive-policy-blocked funds to `ReceivePolicyGuard`, where a recovery authority without a
-    /// Zone key could never claim them.
+    /// Transfers require T15 and the portal admin's opt-in. They also revert when `to`'s receive
+    /// policy blocks `from`. Upstream would divert receive-policy-blocked funds to
+    /// `ReceivePolicyGuard`, where a recovery authority without a Zone key could never claim them.
     fn admit_transfer(&self, caller: Address, from: Address, to: Address) -> Result<CallCheck> {
         let unauthorized = || Ok(CallCheck::Revert(Unauthorized {}.abi_encode().into()));
         if !StorageCtx::default().spec().is_t15() {
@@ -83,13 +81,6 @@ impl<P: L1StorageReader> TIP20Rules<P> {
             || !self.l1.read_portal(|portal| &portal.transfers_enabled)?
         {
             return unauthorized();
-        }
-        // Zone-local `paused` is never set because `pause` is blocked on the Zone.
-        if self
-            .l1
-            .read_l1(&Slot::<bool>::new(tip20::slots::PAUSED, self.token))?
-        {
-            return Err(TIP20Error::contract_paused().into());
         }
         let receiver = AddressRegistry::new().resolve_recipient(to)?;
         if TIP403Registry::new()
@@ -695,30 +686,6 @@ mod tests {
             );
         }
         Ok(())
-    }
-
-    #[test]
-    fn transfers_revert_while_token_is_paused_on_l1() -> eyre::Result<()> {
-        let mut harness = PrecompileHarness::new_at(TempoHardfork::T15)?;
-        harness.set_transfers_enabled(true)?;
-        harness.l1_reader.insert(
-            harness.token,
-            tip20::slots::PAUSED,
-            TEMPO_BLOCK_NUMBER,
-            U256::ONE,
-        );
-
-        for (caller, calldata) in harness.transfer_calls(harness.bob) {
-            let result = harness.call(caller, calldata, TIP20_FIXED_TRANSFER_GAS, false)?;
-            assert!(result.is_revert());
-            assert_eq!(
-                result.bytes,
-                Bytes::from(TIP20Error::contract_paused().abi_encode())
-            );
-            assert_eq!(result.gas_used, TIP20_FIXED_TRANSFER_GAS);
-        }
-
-        harness.assert_no_funds_moved(harness.bob)
     }
 
     #[test]

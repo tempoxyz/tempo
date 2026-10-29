@@ -271,6 +271,7 @@ where
             db,
             self.zone_factory.l1_reader.clone(),
             self.zone_factory.portal_address,
+            env.spec,
         );
         let l1 = db.l1_state().clone();
         let ext = TempoEvmExt::default().with_fee_manager(ZoneProtocolFeeManager::new());
@@ -463,6 +464,7 @@ mod tests {
     use tempo_precompiles::{
         TIP403_REGISTRY_ADDRESS,
         storage::StorageKey,
+        tip20::{self, ITIP20},
         tip403_registry::{ITIP403Registry, tip403_registry_slots},
         zone_factory::ZonePortalStorage,
     };
@@ -575,64 +577,13 @@ mod tests {
                 .abi_encode()
                 .into(),
         );
-        let genesis = TempoHeader::default();
-        let genesis_hash = genesis.hash_slow();
-        let child = TempoHeader {
-            inner: alloy_consensus::Header {
-                parent_hash: genesis_hash,
-                number: CHILD,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let mut db = InMemoryDB::default();
-        db.insert_account_info(&TEMPO_STATE_ADDRESS, Default::default());
-        db.insert_account_info(
-            &token,
-            AccountInfo::default().with_code(Bytecode::new_raw(Bytes::from_static(&[0xef]))),
-        );
-        db.insert_account_info(
-            &TIP403_REGISTRY_ADDRESS,
-            AccountInfo::default().with_code(Bytecode::new_raw(Bytes::from_static(&[0xef]))),
-        );
-        db.insert_account_storage(
-            &TEMPO_STATE_ADDRESS,
-            &TEMPO_BLOCK_HASH,
-            &genesis_hash.into(),
-        );
-        db.insert_account_storage(
-            &TEMPO_STATE_ADDRESS,
-            &TEMPO_BLOCK_NUMBER_SLOT,
-            &U256::from(PARENT),
-        );
-
-        let mut zone_genesis = tempo_chainspec::spec::DEV.genesis().clone();
-        zone_genesis.config.chain_id =
-            zone_chain_id(tempo_chainspec::spec::DEV.chain_id(), 1).unwrap();
-        let config = ZoneEvmConfig::new(
-            Arc::new(ZoneChainSpec::from_genesis(zone_genesis).unwrap()),
-            reader.clone(),
-            portal,
-        );
+        let child = child_header(TempoHeader::default().hash_slow(), CHILD);
         // T9 initializes tokens through the registry, which `enable_tokens` then restores.
-        let mut env = TempoEvmEnv {
-            spec: TempoHardfork::T9,
-            ..Default::default()
-        };
-        env.block.timestamp = U256::from(child.inner.timestamp);
-        env.block.ext.timestamp_millis_part = child.timestamp_millis_part;
-        let mut evm = BlockExecutorFactory::evm_with_env(&config, db, env);
+        let mut evm = genesis_zone_evm(&reader, portal, token, TempoHardfork::T9);
         let counter_tx = system_tx_env(
             TIP403_REGISTRY_ADDRESS,
             ITIP403Registry::policyIdCounterCall {}.abi_encode().into(),
         );
-        let calldata = IZoneInbox::advanceTempoCall {
-            header: alloy_rlp::encode(&child).into(),
-            deposits: Vec::new(),
-            decryptions: Vec::new(),
-            enabledTokens: vec![enabled_token],
-        }
-        .abi_encode();
 
         if warm_parent_cache {
             let result = evm.transact(&policy_id_tx).unwrap().discard();
@@ -640,7 +591,7 @@ mod tests {
         }
         let reads_before_advance = reader.storage_requests().len();
 
-        let tx = system_tx_env(ZONE_INBOX_ADDRESS, calldata.into());
+        let tx = advance_tempo_tx(&child, vec![enabled_token]);
         let executed = evm
             .transact(&tx)
             .expect("advanceTempo execution must not fail");
@@ -708,6 +659,119 @@ mod tests {
             assert!(evm.transact(tx).unwrap().discard().status);
         }
         assert_eq!(reader.storage_requests().len(), reads_before);
+    }
+
+    #[test]
+    fn tip20_pause_flag_follows_l1_at_the_active_anchor_from_t15() {
+        const CHILD: u64 = 1;
+        const GRANDCHILD: u64 = 2;
+        let portal = Address::repeat_byte(0x42);
+        let token = address!("0x20C00000000000000000000000000000000000AA");
+        let enabled_token = IZoneInbox::EnabledToken {
+            token,
+            name: "Paused Token".into(),
+            symbol: "PSD".into(),
+            currency: "USD".into(),
+        };
+        let reader = MockL1Reader::default();
+        let enablement_hash = ZonePortalStorage::new(portal).token_enablement_hash.slot();
+        for anchor in [CHILD, GRANDCHILD] {
+            reader.insert(
+                portal,
+                enablement_hash,
+                anchor,
+                enabled_token.hash_with_previous(B256::ZERO).into(),
+            );
+        }
+        // Paused at the child checkpoint and unpaused again at the grandchild.
+        reader.insert(token, tip20::slots::PAUSED, CHILD, U256::ONE);
+
+        let child = child_header(TempoHeader::default().hash_slow(), CHILD);
+        let grandchild = child_header(child.hash_slow(), GRANDCHILD);
+        let paused_tx = system_tx_env(token, ITIP20::pausedCall {}.abi_encode().into());
+        let paused = |evm: &mut ZoneEvm<'_>| {
+            let result = evm.transact(&paused_tx).unwrap().discard();
+            assert!(result.status, "paused() reverted: {result:?}");
+            ITIP20::pausedCall::abi_decode_returns(&result.output).unwrap()
+        };
+        for (spec, paused_at_child) in [(TempoHardfork::T14, false), (TempoHardfork::T15, true)] {
+            let mut evm = genesis_zone_evm(&reader, portal, token, spec);
+            let tx = advance_tempo_tx(&child, vec![enabled_token.clone()]);
+            assert!(evm.transact(&tx).unwrap().commit().status);
+            assert_eq!(paused(&mut evm), paused_at_child, "{spec:?}");
+
+            // The flag cached at the child anchor must not hide the unpause.
+            let tx = advance_tempo_tx(&grandchild, Vec::new());
+            assert!(evm.transact(&tx).unwrap().commit().status);
+            assert!(!paused(&mut evm), "{spec:?}");
+        }
+    }
+
+    /// Returns a Tempo header for checkpoint `number` whose parent hashes to `parent_hash`.
+    fn child_header(parent_hash: B256, number: u64) -> TempoHeader {
+        TempoHeader {
+            inner: alloy_consensus::Header {
+                parent_hash,
+                number,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    /// Returns a Zone EVM at `spec` anchored to the default Tempo genesis header, with `token`
+    /// and the TIP-403 registry deployed.
+    fn genesis_zone_evm(
+        reader: &MockL1Reader,
+        portal: Address,
+        token: Address,
+        spec: TempoHardfork,
+    ) -> ZoneEvm<'static> {
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(&TEMPO_STATE_ADDRESS, Default::default());
+        db.insert_account_info(
+            &token,
+            AccountInfo::default().with_code(Bytecode::new_raw(Bytes::from_static(&[0xef]))),
+        );
+        db.insert_account_info(
+            &TIP403_REGISTRY_ADDRESS,
+            AccountInfo::default().with_code(Bytecode::new_raw(Bytes::from_static(&[0xef]))),
+        );
+        db.insert_account_storage(
+            &TEMPO_STATE_ADDRESS,
+            &TEMPO_BLOCK_HASH,
+            &TempoHeader::default().hash_slow().into(),
+        );
+        db.insert_account_storage(&TEMPO_STATE_ADDRESS, &TEMPO_BLOCK_NUMBER_SLOT, &U256::ZERO);
+
+        let mut zone_genesis = tempo_chainspec::spec::DEV.genesis().clone();
+        zone_genesis.config.chain_id =
+            zone_chain_id(tempo_chainspec::spec::DEV.chain_id(), 1).unwrap();
+        let config = ZoneEvmConfig::new(
+            Arc::new(ZoneChainSpec::from_genesis(zone_genesis).unwrap()),
+            reader.clone(),
+            portal,
+        );
+        let env = TempoEvmEnv {
+            spec,
+            ..Default::default()
+        };
+        BlockExecutorFactory::evm_with_env(&config, db, env)
+    }
+
+    /// Returns the system `advanceTempo` transaction importing `header`.
+    fn advance_tempo_tx(
+        header: &TempoHeader,
+        enabled_tokens: Vec<IZoneInbox::EnabledToken>,
+    ) -> Recovered<TempoTxEnv> {
+        let calldata = IZoneInbox::advanceTempoCall {
+            header: alloy_rlp::encode(header).into(),
+            deposits: Vec::new(),
+            decryptions: Vec::new(),
+            enabledTokens: enabled_tokens,
+        }
+        .abi_encode();
+        system_tx_env(ZONE_INBOX_ADDRESS, calldata.into())
     }
 
     #[test]

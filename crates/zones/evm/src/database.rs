@@ -9,6 +9,8 @@ use evm2::{
     bytecode::Bytecode,
     evm::{AccountChangeRef, AccountInfo, DynDatabase, State, StateChangeSink, StorageChange},
 };
+use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_precompiles::tip20::{self, is_tip20_prefix};
 use thiserror::Error;
 use zone_precompiles::{
     TIP403_REGISTRY_ADDRESS,
@@ -17,17 +19,23 @@ use zone_precompiles::{
 
 /// Resolves mirrored L1 reads at the active Tempo anchor and forwards all other database
 /// operations to the caller-provided Zone database.
+///
+/// The whole TIP-403 registry is mirrored. From T15, each TIP-20 token's pause flag is mirrored
+/// too, so upstream pause checks block on the Zone exactly what they block on Tempo.
 pub struct L1OverlayDB<DB, L1> {
     inner: DB,
     l1: L1State<L1>,
+    /// Whether TIP-20 pause flags are read from L1 rather than Zone storage.
+    mirror_tip20_pause: bool,
 }
 
 impl<DB, L1> L1OverlayDB<DB, L1> {
-    /// Creates an adapter around the caller-provided database.
-    pub fn new(inner: DB, l1: L1, portal_address: Address) -> Self {
+    /// Creates an adapter around the caller-provided database for execution at `spec`.
+    pub fn new(inner: DB, l1: L1, portal_address: Address, spec: TempoHardfork) -> Self {
         Self {
             inner,
             l1: L1State::new(l1, portal_address),
+            mirror_tip20_pause: spec.is_t15(),
         }
     }
 
@@ -159,24 +167,32 @@ impl<DB: DynDatabase, L1: L1StorageReader> DynDatabase for L1OverlayDB<DB, L1> {
     }
 
     fn get_storage(&mut self, address: &Address, slot: &U256) -> Result<U256, DatabaseError> {
-        if *address != TIP403_REGISTRY_ADDRESS {
+        if *address != TIP403_REGISTRY_ADDRESS
+            && !(self.mirror_tip20_pause && is_tip20_pause_slot(address, slot))
+        {
             return self.inner.get_storage(address, slot);
         }
 
         let anchor = self.anchor()?;
-        // The EVM already charges this TIP-403 SLOAD; the host-side L1 fetch must not be charged
-        // again.
+        // The EVM already charges this SLOAD; the host-side L1 fetch must not be charged again.
         let value = self
             .l1
             .read_l1_storage_unmetered(*address, B256::from(*slot), anchor)
             .map_err(|error| DatabaseError::new(error, true))?;
-        self.l1.note_registry_read(anchor);
+        self.l1.note_mirrored_read(anchor);
         Ok(value.into())
     }
 
     fn get_block_hash(&mut self, number: &U256) -> Result<B256, DatabaseError> {
         self.inner.get_block_hash(number)
     }
+}
+
+/// Returns whether `slot` is the pause flag of the TIP-20 token at `address`.
+///
+/// The Zone never writes it: `TIP20Rules` blocks `pause` and `unpause` for every caller.
+pub(crate) fn is_tip20_pause_slot(address: &Address, slot: &U256) -> bool {
+    is_tip20_prefix(*address) && *slot == tip20::slots::PAUSED
 }
 
 /// Database error produced by [`L1OverlayDB`].
@@ -198,6 +214,7 @@ mod tests {
     use super::*;
     use evm2::evm::{InMemoryDB, StateChangeSource};
     use reth_execution_types::{BlockState, BundleSource, TransactionChanges};
+    use tempo_precompiles::PATH_USD_ADDRESS;
     use zone_precompiles::{
         storage::L1StateError, tempo_state::TEMPO_BLOCK_NUMBER_SLOT,
         test_utils::MockL1Reader as TestL1,
@@ -216,7 +233,12 @@ mod tests {
 
     fn test_overlay(anchor: u64, reader: TestL1) -> L1OverlayDB<InMemoryDB, TestL1> {
         // The backing database can lag the checkpoint already committed in the EVM overlay.
-        let db = L1OverlayDB::new(test_db(anchor.saturating_sub(1)), reader, Address::ZERO);
+        let db = L1OverlayDB::new(
+            test_db(anchor.saturating_sub(1)),
+            reader,
+            Address::ZERO,
+            TempoHardfork::T15,
+        );
         db.l1_state().begin_transaction(U256::from(anchor));
         db
     }
@@ -303,7 +325,7 @@ mod tests {
         let mut inner = test_db(anchor);
         inner.insert_account_info(&TIP403_REGISTRY_ADDRESS, Default::default());
         inner.insert_account_storage(&TIP403_REGISTRY_ADDRESS, &slot, &local);
-        let mut db = L1OverlayDB::new(inner, l1, Address::ZERO);
+        let mut db = L1OverlayDB::new(inner, l1, Address::ZERO, TempoHardfork::T15);
         db.l1_state().begin_transaction(U256::from(anchor));
         let observed = DynDatabase::get_storage(&mut db, &TIP403_REGISTRY_ADDRESS, &slot).unwrap();
         assert_eq!(observed, l1_value);
@@ -327,6 +349,73 @@ mod tests {
             DynDatabase::get_storage(&mut inner, &TIP403_REGISTRY_ADDRESS, &slot).unwrap(),
             local
         );
+    }
+
+    #[test]
+    fn tip20_pause_flag_is_mirrored_from_t15() {
+        let anchor = 42;
+        let token = PATH_USD_ADDRESS;
+        let supply = tip20::slots::TOTAL_SUPPLY;
+        let l1 = TestL1::default();
+        l1.insert(token, tip20::slots::PAUSED, anchor, U256::ONE);
+        l1.insert(token, supply, anchor, U256::from(99));
+        for (spec, paused) in [
+            (TempoHardfork::T14, U256::ZERO),
+            (TempoHardfork::T15, U256::ONE),
+        ] {
+            let mut inner = test_db(anchor);
+            inner.insert_account_storage(&token, &supply, &U256::from(5));
+            let mut db = L1OverlayDB::new(inner, l1.clone(), Address::ZERO, spec);
+            db.l1_state().begin_transaction(U256::from(anchor));
+
+            assert_eq!(
+                db.get_storage(&token, &tip20::slots::PAUSED).unwrap(),
+                paused,
+                "{spec:?}"
+            );
+            // Every other token slot stays Zone-local.
+            assert_eq!(db.get_storage(&token, &supply).unwrap(), U256::from(5));
+        }
+        assert_eq!(
+            l1.storage_requests(),
+            [(token, B256::from(tip20::slots::PAUSED), anchor)]
+        );
+    }
+
+    #[test]
+    fn tip20_pause_overlay_is_removed_from_canonical_transition() {
+        let anchor = 42;
+        let token = PATH_USD_ADDRESS;
+        let (paused, supply) = (tip20::slots::PAUSED, tip20::slots::TOTAL_SUPPLY);
+        let l1 = TestL1::default();
+        l1.insert(token, paused, anchor, U256::ONE);
+        let mut inner = test_db(anchor);
+        inner.insert_account_info(&token, Default::default());
+        let mut db = L1OverlayDB::new(inner, l1, Address::ZERO, TempoHardfork::T15);
+        db.l1_state().begin_transaction(U256::from(anchor));
+        let observed = db.get_storage(&token, &paused).unwrap();
+        assert_eq!(observed, U256::ONE);
+
+        // The token account also changes Zone-local storage in the same transaction.
+        let account = db.get_account(&token).unwrap();
+        let mut state = PendingState::default();
+        state.insert_account(token, account.clone(), account);
+        state.insert_storage(token, paused, observed, observed);
+        state.insert_storage(token, supply, U256::ZERO, U256::from(7));
+        validate_pending_state(&state).unwrap();
+
+        let mut block = BlockState::new();
+        let mut changes = TransactionChanges::default();
+        state.visit(&mut changes).unwrap();
+        block.commit(&changes);
+        let state = block.into_bundle();
+        let storage = &state.state()[&token].storage;
+        assert!(!storage.contains_key(&paused));
+        assert!(storage.contains_key(&supply));
+        let mut inner = db.into_inner();
+        inner.commit_source(&BundleSource(&state));
+        assert_eq!(inner.get_storage(&token, &paused).unwrap(), U256::ZERO);
+        assert_eq!(inner.get_storage(&token, &supply).unwrap(), U256::from(7));
     }
 
     #[test]
@@ -357,7 +446,7 @@ mod tests {
         let value = U256::from(5);
         let mut inner = test_db(1);
         inner.insert_account_storage(&address, &slot, &value);
-        let mut db = L1OverlayDB::new(inner, TestL1::default(), Address::ZERO);
+        let mut db = L1OverlayDB::new(inner, TestL1::default(), Address::ZERO, TempoHardfork::T15);
 
         assert_eq!(
             DynDatabase::get_storage(&mut db, &address, &slot).unwrap(),
