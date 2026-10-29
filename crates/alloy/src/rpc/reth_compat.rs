@@ -12,8 +12,9 @@ use tempo_primitives::{
     SignatureType, TempoHeader, TempoSignature, TempoTxEnvelope, TempoTxType,
     transaction::{
         ConfigurableAccountQuorumError, ConfigurableAccountSignature,
-        ConfigurableAccountWeightAccumulator, KeychainSignature, MAX_WEBAUTHN_SIGNATURE_LENGTH,
-        PrimitiveSignature, tt_signature::WebAuthnSignature,
+        ConfigurableAccountWeightAccumulator, KeychainSignature,
+        MAX_CONFIGURABLE_ACCOUNT_SIGNATURES, MAX_WEBAUTHN_SIGNATURE_LENGTH, PrimitiveSignature,
+        tt_signature::WebAuthnSignature,
     },
 };
 
@@ -237,7 +238,11 @@ impl ConfigurableAccountSimulationSpec {
             |error: ConfigurableAccountQuorumError| EthApiError::InvalidParams(error.to_string());
         let mut weight = ConfigurableAccountWeightAccumulator::new(self.config.threshold)
             .map_err(quorum_error)?;
-        let mut signatures = Vec::with_capacity(self.approvals.len());
+        let mut signatures = Vec::with_capacity(
+            self.approvals
+                .len()
+                .min(MAX_CONFIGURABLE_ACCOUNT_SIGNATURES),
+        );
         for approval in &self.approvals {
             let owner_weight = self
                 .config
