@@ -320,10 +320,8 @@ impl Verifier {
 #[derive(Clone, Copy, Debug)]
 enum KeychainCheck {
     VerifyAccessKey,
-    VerifyAdminAccessKey,
     VerifyAdminRoot,
     IsAdminRoot,
-    IsAdminAccessKey { key_committed: bool },
 }
 
 /// The gas parameters of `spec`'s EVM version.
@@ -1447,7 +1445,7 @@ fn sponsored(
     tx
 }
 
-/// A grant of `key` for the account, signed by `signer` (a primitive root or admin key).
+/// A grant of `key` for the account, signed by `signer`.
 fn grant_by(signer: &PrivateKeySigner, key: Address) -> SignedKeyAuthorization {
     let grant = KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key);
     let signature = signer.sign_hash_sync(&grant.signature_hash()).unwrap();
@@ -1568,39 +1566,23 @@ fn retired_root_rejects_delegated_roles() {
         }
     }
 
-    // An admin access key that migrated can neither sign a grant nor sign
-    // transactions; its parent is not affected.
+    // An access key that migrated can no longer sign transactions; its parent is not affected.
     let mut f = Fixture::new();
-    let admin = signer(4);
-    grant_key(&mut f, 3, &admin, 0);
+    let key = signer(4);
+    grant_key(&mut f, 3, &key, 0);
     let account = f.account;
-    let admin_grant = |f: &Fixture| {
-        let grant = KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, new_key.address())
-            .with_account(f.account);
-        let signature = admin.sign_hash_sync(&grant.signature_hash()).unwrap();
-        grant.into_signed(PrimitiveSignature::Secp256k1(signature))
-    };
-    let tx = TempoTransaction {
-        key_authorization: Some(admin_grant(&f)),
-        ..aa_tx(4, vec![f.getter()])
-    };
-    let tx = keychain_signed(tx, &admin, account);
-    // Control: the admin key still works while it has no commitment.
+    let tx = keychain_signed(aa_tx(4, vec![f.getter()]), &key, account);
+    // Control: the access key still works while it has no commitment.
     let output = f
         .evm
         .transact(&env_of(&tx, account, false))
         .unwrap()
         .detach();
     assert!(output.result.status, "{:?}", output.result);
-    retire(&mut f, admin.address());
+    retire(&mut f, key.address());
     assert_eq!(
         rejection(&mut f, &tx, account),
-        retired(admin.address(), RootKeyRole::KeyAuthorizationSigner)
-    );
-    let tx = keychain_signed(aa_tx(4, vec![f.getter()]), &admin, account);
-    assert_eq!(
-        rejection(&mut f, &tx, account),
-        retired(admin.address(), RootKeyRole::AccessKey)
+        retired(key.address(), RootKeyRole::AccessKey)
     );
 
     // A sponsor that migrates after signing can no longer pay, even for a transaction
@@ -1723,10 +1705,10 @@ fn retired_root_error_order_and_access_gas() {
         retire(&mut f, address);
     }
     let target = signer(7).address();
-    // A root-signed grant for a root-signed transaction; an admin-signed grant must travel with
-    // its own admin key.
+    // A root-signed grant for a root-signed transaction; a grant signed by an access key must
+    // travel with that key.
     let root_grant = grant_by(&f.owner, target);
-    let admin_grant = {
+    let key_grant = {
         let grant = KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, target)
             .with_account(account);
         let signature = signer_s.sign_hash_sync(&grant.signature_hash()).unwrap();
@@ -1745,7 +1727,7 @@ fn retired_root_error_order_and_access_gas() {
     );
     let tx = keychain_signed(
         sponsor(TempoTransaction {
-            key_authorization: Some(admin_grant),
+            key_authorization: Some(key_grant),
             ..aa_tx(3, vec![f.getter()])
         }),
         &signer_s,
@@ -2904,34 +2886,29 @@ fn bool_query(f: &mut Fixture, call: Call, warm: Option<Address>, label: &str) -
 fn retired_root_keychain_verifiers_reject() {
     let hash = B256::repeat_byte(0x42);
     for kind in KEY_KINDS {
-        for function in [Verifier::Keychain, Verifier::KeychainAdmin] {
-            let admin = matches!(function, Verifier::KeychainAdmin);
-            // An access key granted by the account: a committed key ID is rejected, an uncommitted
-            // one under a committed account is not.
-            for (key_committed, account_committed) in [(false, false), (true, false), (false, true)]
-            {
-                let expected = !key_committed;
-                let label = format!(
-                    "{kind:?} {function:?} key committed {key_committed}, account committed \
-                     {account_committed}"
-                );
-                let mut f = Fixture::new();
-                let account = f.account;
-                let (key, signature) = keychain_signature(kind, 7, account, hash);
-                grant_kind(&mut f, 3, kind, key, admin);
-                if key_committed {
-                    retire(&mut f, key);
-                }
-                if account_committed {
-                    retire(&mut f, account);
-                }
-                let call = function.call(account, hash, signature);
-                assert_eq!(
-                    bool_query(&mut f, call, None, &label).0,
-                    expected,
-                    "{label}"
-                );
+        // An access key granted by the account: a committed key ID is rejected, an uncommitted one
+        // under a committed account is not.
+        for (key_committed, account_committed) in [(false, false), (true, false), (false, true)] {
+            let expected = !key_committed;
+            let label = format!(
+                "{kind:?} key committed {key_committed}, account committed {account_committed}"
+            );
+            let mut f = Fixture::new();
+            let account = f.account;
+            let (key, signature) = keychain_signature(kind, 7, account, hash);
+            grant_kind(&mut f, 3, kind, key, false);
+            if key_committed {
+                retire(&mut f, key);
             }
+            if account_committed {
+                retire(&mut f, account);
+            }
+            let call = Verifier::Keychain.call(account, hash, signature);
+            assert_eq!(
+                bool_query(&mut f, call, None, &label).0,
+                expected,
+                "{label}"
+            );
         }
         // The root key of its own address: the implicit admin, or a stored row of its own.
         for committed in [false, true] {
@@ -2966,13 +2943,11 @@ fn retired_root_keychain_verifiers_reject() {
 
 #[test]
 fn retired_root_is_not_an_implicit_admin_key() {
-    let key = signer(7);
     for committed in [false, true] {
         let mut f = Fixture::new();
         let account = f.account;
         // A stored non-admin row of the root's own address never makes it an admin key.
         grant_kind(&mut f, 3, SigKind::Secp256k1, account, false);
-        grant_kind(&mut f, 4, SigKind::Secp256k1, key.address(), true);
         if committed {
             retire(&mut f, account);
         }
@@ -2993,15 +2968,6 @@ fn retired_root_is_not_an_implicit_admin_key() {
             assert!(!admin, "{label}");
             assert_eq!(root_gas, unknown_gas + 100, "{label}");
         }
-        // An admin access key keeps its stored row, whether or not its account is retired.
-        let label = format!("(X, K), X committed {committed}");
-        let call = is_admin_key_call(account, key.address());
-        assert!(bool_query(&mut f, call, None, &label).0, "{label}");
-        // So does one whose own address is committed: only the root of an address is retired.
-        retire(&mut f, key.address());
-        let label = format!("(X, K), X committed {committed}, K committed");
-        let call = is_admin_key_call(account, key.address());
-        assert!(bool_query(&mut f, call, None, &label).0, "{label}");
     }
 }
 
@@ -3073,9 +3039,8 @@ fn retired_root_keychain_checks_are_unchanged_before_t14() {
     assert!(bool_query(&mut f, call, None, "isAdminKey").0);
 }
 
-/// Gas of one `check` at `spec` with the queried account (or the access key's, for the
-/// `IsAdminAccessKey` check) listed in the access list (warm) or not (cold). Each check returns
-/// true.
+/// Gas of one `check` at `spec` with the address whose commitment it reads listed in the access
+/// list (warm) or not (cold). Each check returns true.
 fn keychain_check_gas(spec: TempoHardfork, check: KeychainCheck, warm: bool) -> u64 {
     let hash = B256::repeat_byte(0x42);
     let mut f = Fixture::with_spec(spec);
@@ -3086,22 +3051,11 @@ fn keychain_check_gas(spec: TempoHardfork, check: KeychainCheck, warm: bool) -> 
             grant_kind(&mut f, 3, SigKind::Secp256k1, key, false);
             (Verifier::Keychain.call(account, hash, signature), key)
         }
-        KeychainCheck::VerifyAdminAccessKey => {
-            grant_kind(&mut f, 3, SigKind::Secp256k1, key, true);
-            (Verifier::KeychainAdmin.call(account, hash, signature), key)
-        }
         KeychainCheck::VerifyAdminRoot => {
             let (root, signature) = root_keychain_signature(SigKind::Secp256k1, 1, hash);
             (Verifier::KeychainAdmin.call(root, hash, signature), root)
         }
         KeychainCheck::IsAdminRoot => (is_admin_key_call(account, account), account),
-        KeychainCheck::IsAdminAccessKey { key_committed } => {
-            grant_kind(&mut f, 3, SigKind::Secp256k1, key, true);
-            if key_committed {
-                retire(&mut f, key);
-            }
-            (is_admin_key_call(account, key), key)
-        }
     };
     let label = format!("{check:?} at {spec:?}, warm {warm}");
     let (returned, gas) = bool_query(&mut f, call, warm.then_some(warm_account), &label);
@@ -3113,7 +3067,6 @@ fn keychain_check_gas(spec: TempoHardfork, check: KeychainCheck, warm: bool) -> 
 fn retired_root_keychain_checks_cost_the_commitment_read() {
     for check in [
         KeychainCheck::VerifyAccessKey,
-        KeychainCheck::VerifyAdminAccessKey,
         KeychainCheck::VerifyAdminRoot,
         KeychainCheck::IsAdminRoot,
     ] {
@@ -3126,80 +3079,43 @@ fn retired_root_keychain_checks_cost_the_commitment_read() {
             assert_eq!(after - before, read, "{check:?}, warm: {warm}");
         }
     }
-    // `isAdminKey(P, K)` never reads K's commitment: committed or not, at T13 or T14, the gas of
-    // an admin access key with a stored row is the same.
-    for warm in [false, true] {
-        let expected = keychain_check_gas(
-            TempoHardfork::T13,
-            KeychainCheck::IsAdminAccessKey {
-                key_committed: false,
-            },
-            warm,
-        );
-        for (spec, key_committed) in [
-            (TempoHardfork::T13, true),
-            (TempoHardfork::T14, false),
-            (TempoHardfork::T14, true),
-        ] {
-            assert_eq!(
-                keychain_check_gas(
-                    spec,
-                    KeychainCheck::IsAdminAccessKey { key_committed },
-                    warm
-                ),
-                expected,
-                "{spec:?}, key committed {key_committed}, warm: {warm}"
-            );
-        }
-    }
 }
 
-/// The result and gas of `function` for a signature of an admin access key of the fixture's
+/// The result and gas of `verifyKeychain` for a signature of an access key of the fixture's
 /// account whose own address is committed (and so retired at T14 only), checked against that
 /// account or, when `mismatched`, against another one than the signature names.
-fn retired_key_check(spec: TempoHardfork, function: Verifier, mismatched: bool) -> (bool, u64) {
+fn retired_key_check(spec: TempoHardfork, mismatched: bool) -> (bool, u64) {
     let hash = B256::repeat_byte(0x42);
     let mut f = Fixture::with_spec(spec);
     let account = f.account;
     let (key, signature) = keychain_signature(SigKind::Secp256k1, 7, account, hash);
-    grant_kind(&mut f, 3, SigKind::Secp256k1, key, true);
+    grant_kind(&mut f, 3, SigKind::Secp256k1, key, false);
     retire(&mut f, key);
     let checked = if mismatched {
         signer(5).address()
     } else {
         account
     };
-    let call = function.call(checked, hash, signature);
-    bool_query(
-        &mut f,
-        call,
-        None,
-        &format!("{function:?}, mismatched: {mismatched}"),
-    )
+    let call = Verifier::Keychain.call(checked, hash, signature);
+    bool_query(&mut f, call, None, &format!("mismatched: {mismatched}"))
 }
 
 #[test]
 fn retired_root_keychain_verifiers_check_in_order() {
     // Cold reads: the key's commitment, and the keychain slot of its grant.
     let (read, lookup) = (2600, 2100);
-    for function in [Verifier::Keychain, Verifier::KeychainAdmin] {
-        // A signature naming another account is rejected before the key's commitment is read:
-        // the same result and the same gas as at T13, where no commitment is read at all.
-        let after = retired_key_check(TempoHardfork::T14, function, true);
-        assert!(!after.0, "{function:?}");
-        assert_eq!(
-            after,
-            retired_key_check(TempoHardfork::T13, function, true),
-            "{function:?}"
-        );
-        // A retired key is rejected before its grant is looked up: the commitment read replaces
-        // the grant lookup that accepts the same signature at T13.
-        let (accepted, before) = retired_key_check(TempoHardfork::T13, function, false);
-        let (rejected, after) = retired_key_check(TempoHardfork::T14, function, false);
-        assert!(accepted, "{function:?}");
-        assert!(!rejected, "{function:?}");
-        assert_eq!(after + lookup, before + read, "{function:?}");
-    }
+    // A signature naming another account is rejected before the key's commitment is read: the
+    // same result and the same gas as at T13, where no commitment is read at all.
+    let after = retired_key_check(TempoHardfork::T14, true);
+    assert!(!after.0);
+    assert_eq!(after, retired_key_check(TempoHardfork::T13, true));
+    // A retired key is rejected before its grant is looked up: the commitment read replaces the
+    // grant lookup that accepts the same signature at T13.
+    let (accepted, before) = retired_key_check(TempoHardfork::T13, false);
+    let (rejected, after) = retired_key_check(TempoHardfork::T14, false);
+    assert!(accepted);
+    assert!(!rejected);
+    assert_eq!(after + lookup, before + read);
 }
 
 #[test]
