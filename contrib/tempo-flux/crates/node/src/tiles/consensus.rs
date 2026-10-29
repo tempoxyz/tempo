@@ -18,6 +18,9 @@ pub struct ConsensusTile {
     next_slot_ns: u64,
     inflight: Option<Block>,
     requested_ns: u64,
+    /// A verdict can arrive before consensus has read its block from the
+    /// queue; keep it until the block shows up.
+    verdict: Option<Executed>,
 }
 
 impl ConsensusTile {
@@ -30,6 +33,7 @@ impl ConsensusTile {
             next_slot_ns: 0,
             inflight: None,
             requested_ns: 0,
+            verdict: None,
         }
     }
 }
@@ -46,9 +50,9 @@ impl Tile<NodeSpine> for ConsensusTile {
             },
         );
 
-        let mut executed = None;
-        adapter.consume(|e: Executed, _| executed = Some(e));
-        if let (Some(e), Some(b)) = (executed, self.inflight) {
+        let verdict = &mut self.verdict;
+        adapter.consume(|e: Executed, _| *verdict = Some(e));
+        if let (Some(e), Some(b)) = (self.verdict, self.inflight) {
             if e.height == b.height && e.hash == b.hash {
                 if e.valid {
                     self.height = b.height;
@@ -62,6 +66,9 @@ impl Tile<NodeSpine> for ConsensusTile {
                     });
                 }
                 self.inflight = None;
+                self.verdict = None;
+            } else if e.height <= self.height {
+                self.verdict = None;
             }
         }
 
