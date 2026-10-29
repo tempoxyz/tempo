@@ -20,7 +20,7 @@ thread_local! {
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// The checks the harness runs: [`all`], and in tests those a test [`ADDED`].
+/// The checks the harness runs: [`all`], and in tests those a test `ADDED`.
 fn checks() -> impl Iterator<Item = &'static dyn AnyCheck> {
     #[cfg(test)]
     let added = ADDED.with(|added| added.borrow().clone());
