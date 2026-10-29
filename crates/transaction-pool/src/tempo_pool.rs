@@ -51,6 +51,9 @@ const ADMISSION_ATTEMPTS: usize = 3;
 /// validated before older ones are revalidated.
 const RETAINED_CONFIG_COMMITMENT_CHANGES: usize = 64;
 
+/// Result index and origin of each transaction in an admission batch.
+type AdmissionSlots = Vec<(usize, TransactionOrigin)>;
+
 /// Transaction pool operations for Tempo nonce lanes.
 pub trait TempoTransactionPoolExt: TransactionPool {
     /// Returns pending transactions in the address's sequential 2D nonce lane.
@@ -577,33 +580,27 @@ where
         max_attempts: usize,
     ) -> Vec<PoolResult<AddedTransactionOutcome>> {
         let mut results: Vec<_> = transactions.iter().map(|_| None).collect();
-        let mut pending: Vec<_> = transactions
-            .into_iter()
+        let mut slots: Vec<_> = transactions
+            .iter()
+            .map(|(origin, _)| *origin)
             .enumerate()
-            .map(|(index, (origin, tx))| ((index, origin), tx))
             .collect();
+        let mut batch = transactions;
         for _ in 0..max_attempts {
-            if pending.is_empty() {
+            if batch.is_empty() {
                 break;
             }
             // Read before the validator acquires its state provider.
             let epoch = self.config_commitment_changes.read().epoch;
-            let (slots, transactions): (Vec<_>, Vec<_>) = pending
-                .into_iter()
-                .map(|((index, origin), tx)| ((index, origin), (origin, tx)))
-                .unzip();
             let outcomes = self
                 .protocol_pool
                 .validator()
-                .validate_transactions(transactions)
+                .validate_transactions(batch)
                 .await;
-            pending = self.add_validated_at_config_commitment_epoch(
-                epoch,
-                slots.into_iter().zip(outcomes),
-                &mut results,
-            );
+            (slots, batch) =
+                self.add_validated_at_config_commitment_epoch(epoch, slots, outcomes, &mut results);
         }
-        for ((index, _), tx) in pending {
+        for ((index, _), (_, tx)) in slots.into_iter().zip(batch) {
             results[index] = Some(Err(PoolError::other(
                 *tx.hash(),
                 "config commitment changed during validation; retry transaction",
@@ -615,57 +612,63 @@ where
             .collect()
     }
 
-    /// Inserts outcomes validated at config commitment epoch `epoch` into `results`.
+    /// Inserts outcomes validated at config commitment epoch `epoch` into `results`, at the
+    /// indices `slots` gives with their origins.
     ///
-    /// Returns the transactions of valid outcomes whose authorities' commitments changed since,
-    /// for revalidation; every other outcome is final.
+    /// Returns the slots and transactions of valid outcomes whose authorities' commitments
+    /// changed since, for revalidation; every other outcome is final.
     fn add_validated_at_config_commitment_epoch(
         &self,
         epoch: usize,
-        outcomes: impl IntoIterator<
-            Item = (
-                (usize, TransactionOrigin),
-                TransactionValidationOutcome<TempoPooledTransaction>,
-            ),
-        >,
+        slots: AdmissionSlots,
+        outcomes: Vec<TransactionValidationOutcome<TempoPooledTransaction>>,
         results: &mut [Option<PoolResult<AddedTransactionOutcome>>],
-    ) -> Vec<((usize, TransactionOrigin), TempoPooledTransaction)> {
+    ) -> (
+        AdmissionSlots,
+        Vec<(TransactionOrigin, TempoPooledTransaction)>,
+    ) {
+        // Reth inserts protocol-only batches under one pool lock.
+        let has_aa_2d = outcomes.iter().any(|outcome| {
+            matches!(outcome, TransactionValidationOutcome::Valid { transaction, .. }
+                if transaction.transaction().is_aa_2d())
+        });
         // Holding the read lock across insertion makes a concurrent maintenance scan see them.
         let changes = self.config_commitment_changes.read();
-        let mut pending = Vec::new();
-        let (indices, outcomes): (Vec<_>, Vec<_>) = outcomes
+        let (mut stale_slots, mut stale) = (Vec::new(), Vec::new());
+        let fresh = slots
             .into_iter()
+            .zip(outcomes)
             .filter_map(|((index, origin), outcome)| match outcome {
                 TransactionValidationOutcome::Valid { transaction, .. }
                     if changes.affects(epoch, transaction.transaction()) =>
                 {
-                    pending.push((
-                        (index, origin),
+                    stale_slots.push((index, origin));
+                    stale.push((
+                        origin,
                         transaction.into_transaction().with_discarded_caches(),
                     ));
                     None
                 }
-                outcome => Some((index, (origin, outcome))),
-            })
-            .unzip();
-        // Reth inserts protocol-only batches under one pool lock.
-        let added: Vec<_> = if outcomes.iter().any(|(_, outcome)| {
-            matches!(outcome, TransactionValidationOutcome::Valid { transaction, .. }
-                if transaction.transaction().is_aa_2d())
-        }) {
-            outcomes
-                .into_iter()
-                .map(|(origin, outcome)| self.add_validated_transaction(origin, outcome))
-                .collect()
+                outcome => Some((index, origin, outcome)),
+            });
+        if has_aa_2d {
+            for (index, origin, outcome) in fresh {
+                results[index] = Some(self.add_validated_transaction(origin, outcome));
+            }
         } else {
-            self.protocol_pool
+            let mut indices = Vec::new();
+            let added = self
+                .protocol_pool
                 .inner()
-                .add_transactions_with_origins(outcomes)
-        };
-        for (index, result) in indices.into_iter().zip(added) {
-            results[index] = Some(result);
+                .add_transactions_with_origins(fresh.map(|(index, origin, outcome)| {
+                    indices.push(index);
+                    (origin, outcome)
+                }));
+            for (index, result) in indices.into_iter().zip(added) {
+                results[index] = Some(result);
+            }
         }
-        pending
+        (stale_slots, stale)
     }
 
     /// Adds a validated transaction to the subpool derived from its type and nonce key.
@@ -1908,37 +1911,32 @@ mod tests {
             .build();
         let protocol = crate::test_utils::TxBuilder::aa(Address::random()).build();
         let invalid = crate::test_utils::TxBuilder::aa(changed).build();
-        let valid = |index, pooled: &TempoPooledTransaction| {
-            (
-                (index, TransactionOrigin::External),
-                valid_outcome(pooled.clone()),
-            )
+        let slots = |count| {
+            (0..count)
+                .map(|index| (index, TransactionOrigin::External))
+                .collect()
         };
         let mut results = vec![None, None, None];
 
         // Only the valid outcome of the changed authority is revalidated.
         pool.record_config_commitment_changes(AddressSet::from_iter([changed]));
-        let pending = pool.add_validated_at_config_commitment_epoch(
+        let (stale_slots, stale) = pool.add_validated_at_config_commitment_epoch(
             0,
-            [
-                valid(0, &aa_2d),
-                valid(1, &protocol),
-                (
-                    (2, TransactionOrigin::External),
-                    TransactionValidationOutcome::Invalid(
-                        invalid,
-                        InvalidPoolTransactionError::Underpriced,
-                    ),
+            slots(3),
+            vec![
+                valid_outcome(aa_2d.clone()),
+                valid_outcome(protocol.clone()),
+                TransactionValidationOutcome::Invalid(
+                    invalid,
+                    InvalidPoolTransactionError::Underpriced,
                 ),
             ],
             &mut results,
         );
+        assert_eq!(stale_slots, [(0, TransactionOrigin::External)]);
         assert_eq!(
-            pending
-                .iter()
-                .map(|((index, _), tx)| (*index, *tx.hash()))
-                .collect::<Vec<_>>(),
-            [(0, *aa_2d.hash())]
+            stale.iter().map(|(_, tx)| *tx.hash()).collect::<Vec<_>>(),
+            [*aa_2d.hash()]
         );
         assert!(results[0].is_none() && !pool.contains(aa_2d.hash()));
         assert_eq!(
@@ -1948,22 +1946,26 @@ mod tests {
         assert!(results[2].as_ref().is_some_and(Result::is_err));
 
         // A current outcome is inserted.
-        assert!(
-            pool.add_validated_at_config_commitment_epoch(1, [valid(0, &aa_2d)], &mut results)
-                .is_empty()
+        let (stale_slots, _) = pool.add_validated_at_config_commitment_epoch(
+            1,
+            slots(1),
+            vec![valid_outcome(aa_2d.clone())],
+            &mut results,
         );
-        assert!(pool.contains(aa_2d.hash()));
+        assert!(stale_slots.is_empty() && pool.contains(aa_2d.hash()));
 
         // Once its changes are pruned, any valid outcome is revalidated.
         for _ in 0..RETAINED_CONFIG_COMMITMENT_CHANGES {
             pool.record_config_commitment_changes(AddressSet::default());
         }
         let unrelated = crate::test_utils::TxBuilder::aa(Address::random()).build();
-        assert_eq!(
-            pool.add_validated_at_config_commitment_epoch(0, [valid(0, &unrelated)], &mut results)
-                .len(),
-            1
+        let (stale_slots, _) = pool.add_validated_at_config_commitment_epoch(
+            0,
+            slots(1),
+            vec![valid_outcome(unrelated)],
+            &mut results,
         );
+        assert_eq!(stale_slots.len(), 1);
     }
 
     #[test]
