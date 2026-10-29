@@ -41,6 +41,19 @@ enum ConfigurableRoleSigned<'a> {
     Grant(&'a SignedKeyAuthorization),
 }
 
+impl ConfigurableRoleSigned<'_> {
+    /// Returns the digest this role signs, before configurable account domain separation.
+    fn inner_digest(&self, aa: &TempoAaTx) -> B256 {
+        match self {
+            Self::Transaction => aa.signature_hash(),
+            Self::Keychain(user_address) => {
+                KeychainSignature::signing_hash(aa.signature_hash(), *user_address)
+            }
+            Self::Grant(auth) => auth.signature_hash(),
+        }
+    }
+}
+
 /// What [`validate_configurable_roles`] charges and loads for the configurable roles of a
 /// transaction.
 struct ConfigurableRoleCharges {
@@ -202,13 +215,7 @@ pub(crate) fn verify(
         ExecutionContext::Transaction { .. } => {
             for role in aa.configurable_roles().into_iter().flatten() {
                 role.signature
-                    .verify_approvals(match role.signed {
-                        ConfigurableRoleSigned::Transaction => aa.signature_hash(),
-                        ConfigurableRoleSigned::Keychain(user_address) => {
-                            KeychainSignature::signing_hash(aa.signature_hash(), user_address)
-                        }
-                        ConfigurableRoleSigned::Grant(auth) => auth.signature_hash(),
-                    })
+                    .verify_approvals(role.signed.inner_digest(aa))
                     .map_err(ConfigurableAccountError::Quorum)?;
             }
         }
