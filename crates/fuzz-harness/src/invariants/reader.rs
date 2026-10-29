@@ -2,7 +2,7 @@
 
 use std::fmt::Display;
 
-use alloy_primitives::Address;
+use alloy_primitives::{Address, KECCAK256_EMPTY};
 use invariants_core::{Observe, ObserveError, Report, Violation};
 use tempo_evm::{TempoEvmConfig, TempoEvmEnv};
 use tempo_invariants::all;
@@ -41,6 +41,14 @@ impl Reader<'_> {
         let Some(effects) = self.effects else {
             return;
         };
+        // A contract the step deployed has no state before it to read.
+        if effects.net.get(&contract).is_some_and(|account| {
+            account
+                .original()
+                .is_none_or(|info| info.code_hash == KECCAK256_EMPTY)
+        }) {
+            return;
+        }
         let before = PreView {
             reader: self.db.view(),
             net: effects.net,
