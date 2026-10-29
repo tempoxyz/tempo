@@ -409,15 +409,29 @@ pub fn genesis_diff(state: &Cache) -> (StateDiff, Vec<u8>) {
 impl Tile<NodeSpine> for ExecutorTile {
     fn loop_body(&mut self, adapter: &mut SpineAdapter<NodeSpine>) {
         let mut blocks = Vec::new();
+        let mut lost = Vec::new();
         adapter.consume_with_dcache::<Block, Vec<u8>, _, _>(
             |_, payload| payload.to_vec(),
             |res, _| match res {
                 DCacheRead::Ok((b, payload)) => blocks.push((b, payload)),
                 DCacheRead::NoRef(b) => blocks.push((b, Vec::new())),
-                DCacheRead::Lost(b) => tracing::error!(b.height, "block body lost"),
+                DCacheRead::Lost(b) => lost.push(b),
                 DCacheRead::SpedPast => tracing::error!("executor lapped on blocks"),
             },
         );
+        // State is untouched, so consensus can treat a lost body as a rejected
+        // block and the builder requeues its transactions.
+        for b in lost {
+            tracing::error!(b.height, "block body lost, rejecting it");
+            let out = StateDiff {
+                height: b.height,
+                hash: b.hash,
+                ..Default::default()
+            };
+            adapter
+                .produce_with_dcache(out, None::<(usize, fn(&mut [u8]))>)
+                .expect("no payload");
+        }
         for (block, payload) in blocks {
             let start = crate::now_ns();
             let out = self.execute(&block, &payload);
