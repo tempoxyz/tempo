@@ -73,7 +73,7 @@ use zone_rpc::{
         DecryptionKeyCandidate, DecryptionKeyStatus, JsonRpcError, LocalSequencerInfo, PeerTipInfo,
         SequencerInfoResponse, SequencerPeerInfo, SequencerProgress, SequencerReadiness,
         SetLeaderResponse, ZoneExecutionWitness, ZoneInfoResponse, internal, raw_null, raw_zero,
-        to_raw,
+        to_raw, to_raw_bounded,
     },
 };
 
@@ -1173,7 +1173,7 @@ where
                 .await
                 .map_err(internal)?;
             let filtered = zone_rpc::filter::filter_logs(logs, &auth.caller);
-            to_raw(&filtered)
+            to_raw_bounded(&filtered, self.config.max_response_size)
         })
     }
 
@@ -1204,7 +1204,7 @@ where
                 .map_err(map_eth_filter_error)?;
 
             let filtered = zone_rpc::filter::filter_logs(logs, &auth.caller);
-            to_raw(&filtered)
+            to_raw_bounded(&filtered, self.config.max_response_size)
         })
     }
 
@@ -1221,9 +1221,12 @@ where
             match changes {
                 FilterChanges::Logs(logs) => {
                     let filtered = zone_rpc::filter::filter_logs(logs, &auth.caller);
-                    to_raw(&FilterChanges::<
-                        alloy_rpc_types_eth::Transaction<TempoTxEnvelope>,
-                    >::Logs(filtered))
+                    to_raw_bounded(
+                        &FilterChanges::<alloy_rpc_types_eth::Transaction<TempoTxEnvelope>>::Logs(
+                            filtered,
+                        ),
+                        self.config.max_response_size,
+                    )
                 }
                 FilterChanges::Hashes(hashes) => to_raw(&FilterChanges::<
                     alloy_rpc_types_eth::Transaction<TempoTxEnvelope>,

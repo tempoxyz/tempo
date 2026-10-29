@@ -34,8 +34,6 @@ use zone_sequencer::{
     HardforkProverAddress, MAX_WITHDRAWAL_BATCH_GAS, ProverAddresses, WithdrawalBatchLimits,
 };
 
-const MAX_LOGS_PER_RESPONSE: u64 = 1_000_000;
-const MAX_BLOCKS_PER_FILTER: u64 = 1_000_000;
 const L1_OFFLINE: &str = "l1.offline";
 /// Subcommands that build the CLI EVM config to execute zone blocks.
 const BLOCK_EXECUTION_SUBCOMMANDS: [&str; 3] = ["import", "re-execute", "stage"];
@@ -214,8 +212,6 @@ fn run_node(mut cli: ZoneNodeCli, l1_access: CliL1Access) -> eyre::Result<()> {
 
         builder.config_mut().network.discovery.disable_discovery = true;
         builder.config_mut().rpc.disable_auth_server = true;
-        builder.config_mut().rpc.rpc_max_logs_per_response = MAX_LOGS_PER_RESPONSE.into();
-        builder.config_mut().rpc.rpc_max_blocks_per_filter = MAX_BLOCKS_PER_FILTER.into();
 
         let mut node = ZoneNode::new(
             args.l1_rpc_url.clone(),

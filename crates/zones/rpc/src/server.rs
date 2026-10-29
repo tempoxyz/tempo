@@ -135,20 +135,20 @@ pub(crate) fn serialize_response_with_limit(
 }
 
 /// Writer that refuses to buffer more than the configured response size.
-struct BoundedWriter {
+pub(crate) struct BoundedWriter {
     max_len: usize,
     bytes: Vec<u8>,
 }
 
 impl BoundedWriter {
-    fn new(max_len: usize) -> Self {
+    pub(crate) fn new(max_len: usize) -> Self {
         Self {
             max_len,
             bytes: Vec::with_capacity(128.min(max_len)),
         }
     }
 
-    fn into_bytes(self) -> Vec<u8> {
+    pub(crate) fn into_bytes(self) -> Vec<u8> {
         self.bytes
     }
 }
