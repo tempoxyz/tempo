@@ -2050,14 +2050,16 @@ impl TryFrom<PersistedAuthorizationSignature> for AccountSignature {
     type Error = PersistedKeyError;
 
     fn try_from(value: PersistedAuthorizationSignature) -> Result<Self, Self::Error> {
-        Ok(Self::Primitive(match value {
+        match value {
             PersistedAuthorizationSignature::Secp256k1 { signature } => {
                 let parity = match signature.y_parity.0 {
                     U256::ZERO => false,
                     U256::ONE => true,
                     _ => return Err(PersistedKeyError::InvalidYParity),
                 };
-                PrimitiveSignature::Secp256k1(Signature::new(signature.r.0, signature.s.0, parity))
+                Ok(Self::Primitive(PrimitiveSignature::Secp256k1(
+                    Signature::new(signature.r.0, signature.s.0, parity),
+                )))
             }
             PersistedAuthorizationSignature::P256 {
                 signature,
@@ -2065,13 +2067,15 @@ impl TryFrom<PersistedAuthorizationSignature> for AccountSignature {
                 prehash,
             } => {
                 public_key.validate_prefix()?;
-                PrimitiveSignature::P256(P256SignatureWithPreHash {
-                    r: signature.r.into_b256(),
-                    s: signature.s.into_b256(),
-                    pub_key_x: public_key.x.into_b256(),
-                    pub_key_y: public_key.y.into_b256(),
-                    pre_hash: prehash,
-                })
+                Ok(Self::Primitive(PrimitiveSignature::P256(
+                    P256SignatureWithPreHash {
+                        r: signature.r.into_b256(),
+                        s: signature.s.into_b256(),
+                        pub_key_x: public_key.x.into_b256(),
+                        pub_key_y: public_key.y.into_b256(),
+                        pre_hash: prehash,
+                    },
+                )))
             }
             PersistedAuthorizationSignature::WebAuthn {
                 signature,
@@ -2081,23 +2085,25 @@ impl TryFrom<PersistedAuthorizationSignature> for AccountSignature {
                 public_key.validate_prefix()?;
                 let mut webauthn_data = metadata.authenticator_data.to_vec();
                 webauthn_data.extend_from_slice(&metadata.client_data_json.0);
-                PrimitiveSignature::WebAuthn(WebAuthnSignature {
-                    r: signature.r.into_b256(),
-                    s: signature.s.into_b256(),
-                    pub_key_x: public_key.x.into_b256(),
-                    pub_key_y: public_key.y.into_b256(),
-                    webauthn_data: webauthn_data.into(),
-                })
+                Ok(Self::Primitive(PrimitiveSignature::WebAuthn(
+                    WebAuthnSignature {
+                        r: signature.r.into_b256(),
+                        s: signature.s.into_b256(),
+                        pub_key_x: public_key.x.into_b256(),
+                        pub_key_y: public_key.y.into_b256(),
+                        webauthn_data: webauthn_data.into(),
+                    },
+                )))
             }
             PersistedAuthorizationSignature::ConfigurableAccount { signature } => {
-                return alloy_rlp::decode_exact(&signature)
+                alloy_rlp::decode_exact(&signature)
                     .map(Self::ConfigurableAccount)
-                    .map_err(PersistedKeyError::InvalidConfigurableAccountSignature);
+                    .map_err(PersistedKeyError::InvalidConfigurableAccountSignature)
             }
             PersistedAuthorizationSignature::Unsupported => {
-                return Err(PersistedKeyError::UnsupportedAuthorizationSignature);
+                Err(PersistedKeyError::UnsupportedAuthorizationSignature)
             }
-        }))
+        }
     }
 }
 
