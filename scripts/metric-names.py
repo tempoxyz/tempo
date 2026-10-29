@@ -137,6 +137,14 @@ def collect(path: Path, metrics: dict[str, set[str]], errors: list[str]) -> None
     rel = path.relative_to(ROOT).as_posix()
     prefix = "" if rel.startswith(UNPREFIXED) else PREFIX
 
+    matched = {attr.start() for attr in METRICS_ATTR.finditer(masked)}
+    for start in (i for i in range(len(masked)) if masked.startswith("#[metrics(", i)):
+        if start not in matched:
+            errors.append(
+                f"{rel}:{line_of(src, start)}: unsupported `#[metrics(...)]` form; "
+                "extend scripts/metric-names.py so the inventory tracks it"
+            )
+
     for attr in METRICS_ATTR.finditer(masked):
         where = f"{rel}:{line_of(src, attr.start())}"
         args = src[attr.start(1) : attr.end(1)]
