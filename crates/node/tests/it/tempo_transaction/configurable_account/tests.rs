@@ -29,7 +29,7 @@ use reth_node_builder::BuiltPayload;
 use reth_rpc_eth_types::RpcInvalidTransactionError;
 use serde_json::{from_value, json};
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
-use tempo_contracts::precompiles::{ACCOUNT_KEYCHAIN_ADDRESS, IAccountKeychain, ITIP20};
+use tempo_contracts::precompiles::{ACCOUNT_KEYCHAIN_ADDRESS, IAccountKeychain};
 use tempo_evm::transaction_error::ConfigurableAccountError;
 use tempo_primitives::{
     account::encode_config_commitment,
@@ -758,10 +758,7 @@ async fn configurable_account_rpc_registration_revert_retry_and_rotation() -> ey
     let estimate = provider.estimate_gas(request).latest().await?;
     assert!(estimate > 0);
     assert_eq!(commitment(&env, account.address).await?, B256::ZERO);
-    let before = ITIP20::new(DEFAULT_FEE_TOKEN, env.provider())
-        .balanceOf(account.address)
-        .call()
-        .await?;
+    let before = fee_balance(&env, account.address).await?;
 
     let tx = account.transaction(
         &env,
@@ -807,13 +804,7 @@ async fn configurable_account_rpc_registration_revert_retry_and_rotation() -> ey
             .await?,
         1
     );
-    assert!(
-        ITIP20::new(DEFAULT_FEE_TOKEN, env.provider())
-            .balanceOf(account.address)
-            .call()
-            .await?
-            < before
-    );
+    assert!(fee_balance(&env, account.address).await? < before);
 
     let tx = account.transaction(
         &env,
@@ -1296,19 +1287,10 @@ async fn configurable_account_rpc_maximum_mixed_quorums_and_validation_cost_orde
     // Two independent eight-owner witnesses include secp256k1, P256 and WebAuthn. Sponsorship
     // adds exactly one ordinary secp256k1 signature without giving the sponsor authority.
     sign_fee_payer(&mut tx, parent.address, &env.funder_signer)?;
-    let before = ITIP20::new(DEFAULT_FEE_TOKEN, env.provider())
-        .balanceOf(parent.address)
-        .call()
-        .await?;
+    let before = fee_balance(&env, parent.address).await?;
     let signature = delegate.as_delegate(&tx, parent.address, false)?;
     parent.submit(&mut env, tx, signature, true).await?;
-    assert_eq!(
-        ITIP20::new(DEFAULT_FEE_TOKEN, env.provider())
-            .balanceOf(parent.address)
-            .call()
-            .await?,
-        before
-    );
+    assert_eq!(fee_balance(&env, parent.address).await?, before);
     assert_eq!(
         commitment(&env, parent.address).await?,
         parent.config.commitment().unwrap()

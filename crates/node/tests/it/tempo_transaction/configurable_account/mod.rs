@@ -29,7 +29,7 @@ use tempo_alloy::{
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
-    CONFIGURABLE_ACCOUNT_ADDRESS, DEFAULT_FEE_TOKEN, IConfigurableAccount,
+    CONFIGURABLE_ACCOUNT_ADDRESS, DEFAULT_FEE_TOKEN, IConfigurableAccount, ITIP20,
 };
 use tempo_evm::{TempoInvalidTransaction, transaction_error::RootKeyRole};
 use tempo_primitives::{
@@ -339,6 +339,13 @@ async fn commitment(env: &Localnet, account: Address) -> eyre::Result<B256> {
             .call()
             .await?,
     )
+}
+
+async fn fee_balance(env: &Localnet, account: Address) -> eyre::Result<U256> {
+    Ok(ITIP20::new(DEFAULT_FEE_TOKEN, env.provider())
+        .balanceOf(account)
+        .call()
+        .await?)
 }
 
 /// Typed Tempo view of the node's RPC, which can carry the simulation fields and AA receipts.
