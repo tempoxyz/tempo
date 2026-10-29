@@ -88,6 +88,17 @@ fn grant() -> KeyAuthorization {
     "configurable account owner signature too large";
     "oversized webauthn"
 )]
+#[test_case(
+    vec![
+        ConfigurableAccountSimulationApproval {
+            key_type: Some(SignatureType::ConfigurableAccount),
+            ..approval(1)
+        },
+        approval(2),
+    ],
+    "configurable account owners must use primitive signatures";
+    "configurable owner"
+)]
 fn simulation_rejects_invalid_claimed_approvals(
     approvals: Vec<ConfigurableAccountSimulationApproval>,
     message: &str,
