@@ -22,9 +22,10 @@ default.
 RPC mode reads `eth_chainId`, `tempo_forkSchedule`, and the latest L1 header. The
 RPC chain ID must match the parent encoded in the Zone chain ID. The schedule only
 validates the anchor and picks the fork for the initialization EVM; genesis writes
-no Tempo fork fields. Zone nodes ignore Tempo fork fields in genesis: on mainnet
-and testnet they use the parent schedule compiled into the binary, and on other
-parents they read `tempo_forkSchedule` from `--l1.rpc-url` once at startup, so L1
+no Tempo fork fields. On mainnet and testnet, Zone nodes inherit missing fork
+fields from the parent schedule compiled into the binary, while explicit genesis
+fields still win. On other parents they ignore Tempo fork fields in genesis and
+read `tempo_forkSchedule` from `--l1.rpc-url` once at startup. Either way L1
 upgrades need no genesis change, only a node upgrade or restart. Offline tools
 (`import`, `stage`, `re-execute`) still execute from the genesis schedule.
 The genesis timestamp comes from the anchor header. With the same anchor and

@@ -105,10 +105,9 @@ impl ResolvedForks {
 
     /// Writes Tempo fork activations into a Zone genesis config.
     ///
-    /// RPC-resolved schedules write no fork fields: Zone nodes ignore Tempo fork fields in
-    /// genesis and take their parent's schedule, compiled in for mainnet and testnet and read
-    /// from the L1's `tempo_forkSchedule` at startup otherwise, so later L1 upgrades need no
-    /// genesis change. Offline caps are written explicitly, with `null` for
+    /// RPC-resolved schedules write no fork fields: Zone nodes take their parent's schedule,
+    /// compiled in for mainnet and testnet and read from the L1's `tempo_forkSchedule` at
+    /// startup otherwise, so later L1 upgrades need no genesis change. Offline caps are written explicitly, with `null` for
     /// disabled forks, for offline tools that execute from genesis alone.
     pub(crate) fn write_to(&self, config: &mut ChainConfig) {
         for &fork in TempoHardfork::VARIANTS {
