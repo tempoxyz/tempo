@@ -2040,9 +2040,7 @@ enum PersistedAuthorizationSignature {
         metadata: PersistedWebAuthnMetadata,
     },
     #[serde(rename = "configurableAccount")]
-    ConfigurableAccount {
-        signature: ConfigurableAccountSignature,
-    },
+    ConfigurableAccount { signature: Bytes },
     #[serde(other)]
     Unsupported,
 }
@@ -2091,7 +2089,9 @@ impl TryFrom<PersistedAuthorizationSignature> for AccountSignature {
                 })
             }
             PersistedAuthorizationSignature::ConfigurableAccount { signature } => {
-                return Ok(Self::ConfigurableAccount(signature));
+                return alloy_rlp::decode_exact(&signature)
+                    .map(Self::ConfigurableAccount)
+                    .map_err(PersistedKeyError::InvalidConfigurableAccountSignature);
             }
             PersistedAuthorizationSignature::Unsupported => {
                 return Err(PersistedKeyError::UnsupportedAuthorizationSignature);
@@ -2248,6 +2248,8 @@ enum PersistedKeyError {
     InvalidYParity,
     #[error("P-256 public key prefix must be uncompressed (4)")]
     InvalidPublicKeyPrefix,
+    #[error("invalid configurable-account signature: {0}")]
+    InvalidConfigurableAccountSignature(alloy_rlp::Error),
 }
 
 #[derive(Clone, Copy)]
