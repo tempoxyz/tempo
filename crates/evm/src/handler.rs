@@ -1091,12 +1091,12 @@ fn apply_nonce(
         && (aa.signature().as_configurable_account().is_some()
             || aa.signature().is_keychain()
             || matches!(envelope.execution_context(), ExecutionContext::Simulation))
-        && {
-            let commitment = account
-                .get()
-                .map_or(Ok(B256::ZERO), |info| account_config_commitment(info, spec))?;
-            !commitment.is_zero() && valid_account_code(account.code_hash(), commitment)
-        };
+        && account
+            .get()
+            .map_or(Ok(B256::ZERO), |info| account_config_commitment(info, spec))
+            .map(|commitment| {
+                !commitment.is_zero() && valid_account_code(account.code_hash(), commitment)
+            })?;
     if eip3607 && !configurable_sender && account.code_hash() != KECCAK256_EMPTY {
         let code = account.load_code()?;
         if !code.is_empty() && !code.is_eip7702() {
