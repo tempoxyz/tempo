@@ -219,7 +219,8 @@ fn create_mock_primitive_signature(
             }
             .clamp(MIN_WEBAUTHN_SIZE, MAX_WEBAUTHN_SIZE);
 
-            let mut webauthn_data = vec![0u8; AUTH_DATA_SIZE];
+            // Price every authenticator byte as nonzero; real RP-ID hashes and counters vary.
+            let mut webauthn_data = vec![0xff; AUTH_DATA_SIZE];
             webauthn_data[32] = 0x01;
 
             let additional_bytes = size - MIN_WEBAUTHN_SIZE;
