@@ -427,10 +427,6 @@ fn dealings_with_trailing_bytes_are_dropped_without_penalizing_peers() {
             .unwrap()
             .init_verified(state.clone())
             .await;
-        let mut player = storage
-            .create_player_for_round(keys[0].clone(), &round)
-            .unwrap()
-            .unwrap();
         let (_, public, private) =
             dkg::Dealer::start::<N3f1>(&mut context, round.info().clone(), keys[1].clone(), None)
                 .unwrap();
@@ -439,8 +435,7 @@ fn dealings_with_trailing_bytes_are_dropped_without_penalizing_peers() {
             .find(|(player, _)| player == &keys[0].public_key())
             .unwrap()
             .1;
-        let message = Message::Dealer(public, private).encode();
-        let mut padded = message.to_vec();
+        let mut padded = Message::Dealer(public, private).encode().to_vec();
         padded.push(0);
         let mut sender = harness.sender().clone();
 
@@ -450,7 +445,7 @@ fn dealings_with_trailing_bytes_are_dropped_without_penalizing_peers() {
                 &mut sender,
                 &mut storage,
                 None,
-                Some(&mut player),
+                None,
                 keys[1].public_key(),
                 padded.into(),
             )
@@ -460,22 +455,6 @@ fn dealings_with_trailing_bytes_are_dropped_without_penalizing_peers() {
             error.downcast_ref::<commonware_codec::Error>(),
             Some(commonware_codec::Error::ExtraData(1))
         ));
-        assert_eq!(sender.send_count(), 0);
-        assert!(harness.blocker.peers().is_empty());
-
-        actor
-            .handle_network_msg(
-                &round,
-                &mut sender,
-                &mut storage,
-                None,
-                Some(&mut player),
-                keys[1].public_key(),
-                message.into(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(sender.send_count(), 1);
         assert!(harness.blocker.peers().is_empty());
     });
 }

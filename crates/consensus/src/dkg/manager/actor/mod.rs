@@ -963,8 +963,6 @@ where
     where
         TStorageContext: BufferPooler + commonware_runtime::Metrics + Clock + Storage,
     {
-        // The mux delivers raw bytes, so reject trailing bytes as
-        // `commonware_p2p::utils::codec::wrap` does for typed channels.
         let msg = Message::decode_cfg(message, &NZU32!(round.players().len() as u32))
             .wrap_err("failed decoding p2p message")?;
 
