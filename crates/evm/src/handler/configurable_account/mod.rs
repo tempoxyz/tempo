@@ -205,8 +205,8 @@ pub(crate) fn register_commitments(
     };
     let (account, commitment) = (role.signature.account(), role.signature.config_commitment());
     StorageCtx::enter_evm_without_tip1060_accounting(host, || {
-        // Read again rather than carried over from `validate_state`: nothing writes the
-        // commitment in between, so this only registers accounts still unset.
+        // Re-read to avoid threading `validate_state`'s value through: nothing writes the
+        // commitment in between, so both reads agree.
         if StorageCtx.config_commitment(account)?.is_zero() {
             StorageCtx.set_config_commitment(
                 account,
