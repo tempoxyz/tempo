@@ -270,7 +270,9 @@ contract StorageCreditsInvariantTest is InvariantBase {
         super.setUp();
 
         vm.startPrank(admin);
-        for (uint256 i = 0; i < actors.length; i++) pathUSD.mint(actors[i], 100_000_000e6);
+        for (uint256 i = 0; i < actors.length; i++) {
+            pathUSD.mint(actors[i], 100_000_000e6);
+        }
         vm.stopPrank();
 
         harness = new StorageCreditsHarness(0);
