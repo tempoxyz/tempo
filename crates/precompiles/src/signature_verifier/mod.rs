@@ -163,10 +163,8 @@ impl SignatureVerifier {
         if signature.account() != account
             || !valid_account(account, spec)
             || !valid_account_code(code_hash, commitment)
+            || signature.validate_account_commitment(commitment).is_err()
         {
-            return Ok(false);
-        }
-        if signature.validate_account_commitment(commitment).is_err() {
             return Ok(false);
         }
 

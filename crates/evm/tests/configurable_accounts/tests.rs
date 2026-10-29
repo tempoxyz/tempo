@@ -4170,12 +4170,10 @@ enum Access {
 
 /// An existing relayer, so that the new-account charge of its first transaction does not enter
 /// the gas of the checks that it sends.
-fn seed_relayer(f: &mut Fixture) -> Address {
-    let relayer = signer(9).address();
+fn seed_relayer(f: &mut Fixture) {
     f.evm
         .overlay_db_mut()
-        .insert_account_info(&relayer, AccountInfo::default().with_nonce(1));
-    relayer
+        .insert_account_info(&signer(9).address(), AccountInfo::default().with_nonce(1));
 }
 
 /// Executes `call` from the relayer with `gas_limit` and `warm` in the access list.
@@ -4238,11 +4236,11 @@ fn check_configurable_account_verdict(
     let call = verify_configurable_account_call(account, CONFIGURABLE_ACCOUNT_HASH, signature);
     let zeros = call.input.iter().filter(|byte| **byte == 0).count() as u64;
     let nonzeros = call.input.len() as u64 - zeros;
-    // Intrinsic gas: 21000 plus 4 per zero and 16 per non-zero calldata byte. A transaction
-    // uses at least its calldata floor: 21000 plus 10 per zero and 40 per non-zero byte.
     let listed = matches!(access, Access::Listed).then_some(account);
     // Each address in the access list costs 2400 intrinsic gas.
     let access_list = if listed.is_some() { 2_400 } else { 0 };
+    // Intrinsic gas: 21000 plus 4 per zero and 16 per non-zero calldata byte. A transaction
+    // uses at least its calldata floor: 21000 plus 10 per zero and 40 per non-zero byte.
     let execution = 21_000
         + 4 * zeros
         + 16 * nonzeros
@@ -4627,7 +4625,7 @@ fn configurable_account_erc1271_propagates_verifier_reverts() {
             .abi_encode()
             .into(),
     };
-    let witness: Bytes = TempoSignature::ConfigurableAccount(signature).to_bytes();
+    let witness = TempoSignature::ConfigurableAccount(signature).to_bytes();
     let result = relayed(&mut f, call(B256::ZERO, witness), 1_000_000, None);
     assert_reverts_with(
         &result,
@@ -4716,7 +4714,7 @@ fn configurable_shim_matches_verifier_gas_and_propagates_oog() {
     let account = f.account;
     let approval =
         configurable_account_approval(account, &f.config, &f.owner, CONFIGURABLE_ACCOUNT_HASH);
-    let signature: Bytes = TempoSignature::ConfigurableAccount(approval).to_bytes();
+    let signature = TempoSignature::ConfigurableAccount(approval).to_bytes();
     let direct = ISignatureVerifier::verifyConfigurableAccountCall {
         account,
         hash: CONFIGURABLE_ACCOUNT_HASH,
@@ -4748,20 +4746,17 @@ fn configurable_shim_matches_verifier_gas_and_propagates_oog() {
         StorageCtx.gas_used()
     });
     assert_eq!(shim_gas, direct_gas);
-    let mut gas = evm2::interpreter::GasTracker::new(shim_gas - 1);
-    let mut provider = tempo_precompiles::storage::evm::EvmPrecompileStorageProvider::new(
-        &mut f.evm,
-        &mut gas,
-        TempoHardfork::T14,
-        true,
-    );
-    let result = StorageCtx::enter(&mut provider, || shim::call(account, &input));
-    assert!(matches!(
-        result,
-        Err(evm2::precompiles::PrecompileError::Halt(
-            evm2::precompiles::PrecompileHalt::OutOfGas
-        ))
-    ));
+    let mut shim_with_gas = |gas_limit, input: &[u8]| {
+        let mut gas = evm2::interpreter::GasTracker::new(gas_limit);
+        let mut provider = tempo_precompiles::storage::evm::EvmPrecompileStorageProvider::new(
+            &mut f.evm,
+            &mut gas,
+            TempoHardfork::T14,
+            true,
+        );
+        StorageCtx::enter(&mut provider, || shim::call(account, input))
+    };
+    assert!(shim_with_gas(shim_gas - 1, &input).is_err_and(|error| error.is_oog()));
     // The receive hook pays for its whole input before decoding it.
     let receive = IConfigurableAccountShim::onERC721ReceivedCall {
         operator: Address::ZERO,
@@ -4771,24 +4766,9 @@ fn configurable_shim_matches_verifier_gas_and_propagates_oog() {
     }
     .abi_encode();
     let receive_gas = input_cost(TempoHardfork::T14, receive.len()).unwrap();
-    let mut receive_with_gas = |gas_limit| {
-        let mut gas = evm2::interpreter::GasTracker::new(gas_limit);
-        let mut provider = tempo_precompiles::storage::evm::EvmPrecompileStorageProvider::new(
-            &mut f.evm,
-            &mut gas,
-            TempoHardfork::T14,
-            true,
-        );
-        StorageCtx::enter(&mut provider, || shim::call(account, &receive))
-    };
-    assert!(matches!(
-        receive_with_gas(receive_gas - 1),
-        Err(evm2::precompiles::PrecompileError::Halt(
-            evm2::precompiles::PrecompileHalt::OutOfGas
-        ))
-    ));
+    assert!(shim_with_gas(receive_gas - 1, &receive).is_err_and(|error| error.is_oog()));
     assert_eq!(
-        receive_with_gas(receive_gas).unwrap().bytes(),
+        shim_with_gas(receive_gas, &receive).unwrap().bytes(),
         IConfigurableAccountShim::onERC721ReceivedCall::abi_encode_returns(
             &IConfigurableAccountShim::onERC721ReceivedCall::SELECTOR.into()
         )

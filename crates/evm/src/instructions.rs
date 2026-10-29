@@ -140,13 +140,11 @@ pub fn sstore(cx: _, [key, value]: [Word]) -> Result {
 /// Executes the reserved one-byte account marker at T14. Other uses of 0xef stay invalid.
 #[instruction(EvmTypes = TempoEvmTypes, dynamic_gas)]
 pub fn configurable_account(cx: _) -> Result {
-    if !cx.state.host().config_spec_id().is_t14()
-        || cx.state.message().code.original_bytes() != CONFIGURABLE_ACCOUNT_CODE
-    {
+    let spec = cx.state.host().config_spec_id();
+    if !spec.is_t14() || cx.state.message().code.original_bytes() != CONFIGURABLE_ACCOUNT_CODE {
         return Err(InstrStop::OpcodeNotFound);
     }
     let source = cx.state.message().code_address;
-    let spec = cx.state.host().config_spec_id();
     let registered = cx
         .state
         .host()

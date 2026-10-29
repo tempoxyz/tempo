@@ -385,6 +385,6 @@ fn verify_configurable_account_accepts_calldata_beyond_the_primitive_cap_at_t14(
     let output = StorageCtx::enter(&mut storage, || {
         SignatureVerifier::new().call(&calldata, Address::ZERO)
     })
-    .unwrap_or_else(|error| panic!("{error:?}"));
+    .unwrap();
     assert!(bool::abi_decode(output.bytes()).unwrap());
 }
