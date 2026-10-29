@@ -442,6 +442,26 @@ where
         self.with_loaded_account(address, |info| f(info))
     }
 
+    fn with_warm_caller_info(
+        &mut self,
+        address: Address,
+        f: &mut dyn FnMut(&AccountInfo),
+    ) -> Result<(), TempoPrecompileError> {
+        // The provider has no transaction origin; the caller check is the call site's.
+        let account = self
+            .evm
+            .state_mut()
+            .account_with_skip(&address, true)
+            .map_err(|error| {
+                TempoPrecompileError::Fatal(format!(
+                    "caller account must already be warm: {error:?}"
+                ))
+            })?;
+        let default = AccountInfo::default();
+        f(account.get().unwrap_or(&default));
+        Ok(())
+    }
+
     #[inline]
     fn sstore(
         &mut self,
@@ -680,26 +700,6 @@ where
             account.set_code_slow(Bytecode::new_raw(CONFIGURABLE_ACCOUNT_CODE));
         }
         account.set_extension(AccountExtension::from(encode_config_commitment(commitment)));
-        Ok(())
-    }
-
-    fn with_warm_caller_info(
-        &mut self,
-        address: Address,
-        f: &mut dyn FnMut(&AccountInfo),
-    ) -> Result<(), TempoPrecompileError> {
-        // The provider has no transaction origin; the caller check is the call site's.
-        let account = self
-            .evm
-            .state_mut()
-            .account_with_skip(&address, true)
-            .map_err(|error| {
-                TempoPrecompileError::Fatal(format!(
-                    "caller account must already be warm: {error:?}"
-                ))
-            })?;
-        let default = AccountInfo::default();
-        f(account.get().unwrap_or(&default));
         Ok(())
     }
 }
