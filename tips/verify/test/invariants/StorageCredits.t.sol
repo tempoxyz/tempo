@@ -269,6 +269,10 @@ contract StorageCreditsInvariantTest is InvariantBase {
     function setUp() public override {
         super.setUp();
 
+        vm.startPrank(admin);
+        for (uint256 i = 0; i < actors.length; i++) pathUSD.mint(actors[i], 100_000_000e6);
+        vm.stopPrank();
+
         harness = new StorageCreditsHarness(0);
         peerHarness = new StorageCreditsHarness(0);
         budgetHarness = new StorageCreditsHarness(1);
