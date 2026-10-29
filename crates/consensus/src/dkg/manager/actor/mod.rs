@@ -965,8 +965,14 @@ where
     {
         let msg = Message::read_cfg(&mut message, &NZU32!(round.players().len() as u32))
             .wrap_err("failed reading p2p message")?;
+        // TODO: reject messages with trailing bytes once this warning has stayed quiet in production.
         if message.has_remaining() {
+            let kind = match &msg {
+                Message::Dealer(..) => "dealer",
+                Message::Ack(..) => "ack",
+            };
             warn!(
+                kind,
                 trailing_bytes = message.remaining(),
                 "p2p message has trailing bytes after a valid DKG message",
             );
