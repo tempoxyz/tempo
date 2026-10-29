@@ -988,6 +988,11 @@ impl TempoSignature {
     pub const fn is_configurable_account(&self) -> bool {
         matches!(self, Self::ConfigurableAccount(_))
     }
+
+    /// Whether a configurable account signs, directly or inside a keychain envelope.
+    pub fn signed_by_configurable_account(&self) -> bool {
+        self.primitive_signature_type().is_none()
+    }
 }
 
 impl Default for TempoSignature {

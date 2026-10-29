@@ -36,7 +36,7 @@ struct ConfigurableRole<'a> {
 
 /// What [`validate_configurable_roles`] charges and loads for the configurable roles of a
 /// transaction.
-struct ConfigurableRoles {
+struct ConfigurableRoleCharges {
     extra_gas: u64,
     state_gas: u64,
     /// Configurable role accounts already loaded, in role order.
@@ -149,14 +149,14 @@ pub(crate) fn validate_state(
     envelope: &TempoTxEnv,
     spec: TempoHardfork,
 ) -> HandlerResult<(u64, u64)> {
-    let ConfigurableRoles {
+    let ConfigurableRoleCharges {
         mut extra_gas,
         state_gas,
         mut accounts,
     } = match envelope.as_aa() {
         Some(aa) => validate_configurable_roles(host, aa, spec)?,
         // Non-AA transactions have no configurable roles or granted configurable account.
-        None => ConfigurableRoles {
+        None => ConfigurableRoleCharges {
             extra_gas: 0,
             state_gas: 0,
             accounts: Vec::new(),
@@ -253,7 +253,7 @@ fn validate_configurable_roles(
     host: &mut Evm<'_, TempoEvmTypes>,
     aa: &TempoAaTx,
     spec: TempoHardfork,
-) -> HandlerResult<ConfigurableRoles> {
+) -> HandlerResult<ConfigurableRoleCharges> {
     let caller = aa.signer();
     let tx = aa.tx();
     let role = aa.configurable_role();
@@ -268,7 +268,7 @@ fn validate_configurable_roles(
         }
     }
     let Some(role) = role else {
-        return Ok(ConfigurableRoles {
+        return Ok(ConfigurableRoleCharges {
             extra_gas: 0,
             state_gas: 0,
             accounts: Vec::new(),
@@ -332,7 +332,7 @@ fn validate_configurable_roles(
             state_gas += gas.new_account_state_gas();
         }
     }
-    Ok(ConfigurableRoles {
+    Ok(ConfigurableRoleCharges {
         extra_gas,
         state_gas,
         accounts: vec![address],
