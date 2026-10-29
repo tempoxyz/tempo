@@ -23,7 +23,8 @@ use tempo_precompiles::{
     storage::{ConfigCommitmentWriteGas, StorageCtx, account_config_commitment},
 };
 use tempo_primitives::transaction::{
-    ConfigurableAccountSignature, ConfigurableAccountStateError, TempoSignature,
+    ConfigurableAccountSignature, ConfigurableAccountStateError, KeychainSignature, SignatureType,
+    TempoSignature,
 };
 
 /// An independently signed role.
@@ -52,14 +53,36 @@ struct LoadedAccount {
 }
 
 impl TempoAaTx {
-    /// The direct sender role, when a configurable account signs the transaction.
+    /// The outer (direct or delegated) role, when a configurable account signs the transaction.
     fn configurable_role(&self) -> Option<ConfigurableRole<'_>> {
-        self.signature()
-            .as_configurable_account()
-            .map(|signature| ConfigurableRole {
+        match self.signature() {
+            TempoSignature::ConfigurableAccount(signature) => Some(ConfigurableRole {
                 signature,
                 inner_digest: self.signature_hash(),
-            })
+            }),
+            TempoSignature::Keychain(keychain) => {
+                keychain
+                    .signature
+                    .as_configurable_account()
+                    .map(|signature| ConfigurableRole {
+                        signature,
+                        inner_digest: KeychainSignature::signing_hash(
+                            self.signature_hash(),
+                            keychain.user_address,
+                        ),
+                    })
+            }
+            TempoSignature::Primitive(_) => None,
+        }
+    }
+
+    /// The configurable account an inline key authorization grants as an access key, if any.
+    pub fn granted_configurable_account(&self) -> Option<Address> {
+        self.tx()
+            .key_authorization
+            .as_ref()
+            .filter(|auth| auth.key_type == SignatureType::ConfigurableAccount)
+            .map(|auth| auth.key_id)
     }
 }
 
@@ -141,7 +164,7 @@ pub(crate) fn validate_state(
         mut accounts,
     } = match envelope.as_aa() {
         Some(aa) => validate_configurable_roles(host, aa, spec)?,
-        // Non-AA transactions have no configurable roles.
+        // Non-AA transactions have no configurable roles or granted configurable account.
         None => ConfigurableRoleCharges {
             extra_gas: 0,
             state_gas: 0,
@@ -150,6 +173,9 @@ pub(crate) fn validate_state(
     };
     if spec.is_t14() {
         extra_gas += validate_root_keys(host, envelope, spec, &mut accounts)?;
+        if let Some(aa) = envelope.as_aa() {
+            extra_gas += granted_configurable_account_access_gas(host, aa, spec, &accounts)?;
+        }
     }
     Ok((extra_gas, state_gas))
 }
@@ -239,20 +265,27 @@ fn validate_configurable_roles(
 ) -> HandlerResult<ConfigurableRoleCharges> {
     let caller = aa.signer();
     let tx = aa.tx();
-    let Some(role) = aa.configurable_role() else {
+    let role = aa.configurable_role();
+    // Context rejection must not depend on account reads.
+    if role.is_some() && !spec.is_t14() {
+        return Err(ConfigurableAccountError::UnsupportedContext.into());
+    }
+    if spec.is_t14() && aa.signature().is_keychain() {
+        let account = load_account(host, caller, spec)?;
+        if !account.commitment.is_zero() && account.invalid_code {
+            return Err(ConfigurableAccountError::InvalidAccount { account: caller }.into());
+        }
+    }
+    let Some(role) = role else {
         return Ok(ConfigurableRoleCharges {
             extra_gas: 0,
             state_gas: 0,
             accounts: Vec::new(),
         });
     };
-    // Context rejection must not depend on account reads.
-    if !spec.is_t14() {
-        return Err(ConfigurableAccountError::UnsupportedContext.into());
-    }
     let signature = role.signature;
     let address = signature.account();
-    if address != caller {
+    if aa.signature().is_configurable_account() && address != caller {
         return Err(ConfigurableAccountError::AccountMismatch {
             expected: caller,
             actual: address,
@@ -265,6 +298,11 @@ fn validate_configurable_roles(
     let account = load_account(host, address, spec)?;
     if account.invalid_code {
         return Err(ConfigurableAccountError::InvalidAccount { account: address }.into());
+    }
+    let mut extra_gas = 0;
+    let mut state_gas = 0;
+    if address != caller {
+        extra_gas += account_access_gas(&host.version().gas_params, account.was_cold);
     }
     signature
         .validate_account_commitment(account.commitment)
@@ -280,8 +318,6 @@ fn validate_configurable_roles(
                 ConfigurableAccountError::InvalidAccount { account: address }.into()
             }
         })?;
-    let mut extra_gas = 0;
-    let mut state_gas = 0;
     if account.commitment.is_zero() {
         extra_gas += signature
             .config()
@@ -298,8 +334,9 @@ fn validate_configurable_roles(
         let pays_first_call_create_account_gas = !tx.nonce_key.is_zero()
             && tx.calls.first().is_some_and(|call| call.to.is_create())
             && account.nonce == 0;
-        if account.is_empty && !(pays_nonce_zero_account_gas || pays_first_call_create_account_gas)
-        {
+        let sender_creation_paid = address == caller
+            && (pays_nonce_zero_account_gas || pays_first_call_create_account_gas);
+        if account.is_empty && !sender_creation_paid {
             extra_gas += gas.get(GasId::NewAccountCost);
             state_gas += gas.new_account_state_gas();
         }
@@ -314,8 +351,8 @@ fn validate_configurable_roles(
 /// Rejects bare primitive authority of accounts with a nonzero commitment (TIP-1112).
 ///
 /// Each distinct non-caller account is charged one account access, deduplicated against
-/// `accounts` (which collects every charged account). A configurable sender always carries a
-/// commitment and is never a primitive root, so it is not checked.
+/// `accounts` (which collects every charged account). Configurable signers and delegates always
+/// carry a commitment and are never primitive roots, so only primitive signatures are checked.
 fn validate_root_keys(
     host: &mut Evm<'_, TempoEvmTypes>,
     envelope: &TempoTxEnv,
@@ -359,8 +396,33 @@ fn validate_root_keys(
             .map_err(|_| TempoInvalidTransaction::InvalidFeePayerSignature)?;
         check(host, fee_payer, RootKeyRole::FeePayer)?;
     }
-    if let Some(key_id) = access_key_id(aa)? {
+    if let Some(keychain) = aa.signature().as_keychain()
+        && !keychain.signature.is_configurable_account()
+        && let Some(key_id) = access_key_id(aa)?
+    {
         check(host, key_id, RootKeyRole::AccessKey)?;
     }
     Ok(extra_gas)
+}
+
+/// The inline grant's code check runs with intrinsic-only metering. Charge its account load
+/// here, unless caller loading or a configurable signing role already accounts for that address.
+/// Merely naming a recipient neither validates an owner witness nor registers a commitment.
+fn granted_configurable_account_access_gas(
+    host: &mut Evm<'_, TempoEvmTypes>,
+    aa: &TempoAaTx,
+    spec: TempoHardfork,
+    accounts: &[Address],
+) -> HandlerResult<u64> {
+    if let Some(granted) = aa.granted_configurable_account()
+        && granted != aa.signer()
+        && !accounts.contains(&granted)
+    {
+        let loaded = load_account(host, granted, spec)?;
+        return Ok(account_access_gas(
+            &host.version().gas_params,
+            loaded.was_cold,
+        ));
+    }
+    Ok(0)
 }

@@ -17,6 +17,10 @@ use tempo_primitives::{SignatureType, TempoHeader, TempoSignature, TempoTxEnvelo
 /// fixed sentinel instead of deriving a misleading future channel id from the simulated payload.
 const RPC_SIMULATION_UNIQUE_TX_IDENTIFIER: B256 = B256::new(*b"TEMPO_RPC_SIMULATION_MPP_CONTEXT");
 
+/// Error text for a configurable account call simulated without its configuration witness.
+const MISSING_CONFIGURATION_WITNESS: &str =
+    "configurable account simulation requires a configuration witness";
+
 impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
     fn try_into_sim_tx(self) -> Result<TempoTxEnvelope, ValueError<Self>> {
         match self.output_tx_type() {
@@ -135,7 +139,8 @@ impl TryIntoTxEnv<Recovered<TempoTxEnv>, TempoEvmEnv> for TempoTransactionReques
             key_id,
             caller_addr,
             evm_env.spec.is_t1c(),
-        );
+        )
+        .ok_or_else(|| EthApiError::InvalidParams(MISSING_CONFIGURATION_WITNESS.into()))?;
 
         let env = TempoTxEnv::from(Recovered::new_unchecked(
             TempoTxEnvelope::AA(tx.into_signed(signature)),
@@ -147,16 +152,19 @@ impl TryIntoTxEnv<Recovered<TempoTxEnv>, TempoEvmEnv> for TempoTransactionReques
 }
 
 /// Creates a mock AA signature for gas estimation based on key type hints.
+///
+/// Returns `None` for a configurable-account key type: a primitive placeholder cannot stand in for
+/// its configuration witness.
 fn create_mock_tempo_sig(
     key_type: &SignatureType,
     key_data: Option<&Bytes>,
     key_id: Option<Address>,
     caller_addr: Address,
     is_t1c: bool,
-) -> TempoSignature {
+) -> Option<TempoSignature> {
     use tempo_primitives::transaction::tt_signature::{KeychainSignature, TempoSignature};
 
-    let inner_sig = create_mock_primitive_signature(key_type, key_data.cloned());
+    let inner_sig = create_mock_primitive_signature(key_type, key_data.cloned())?;
 
     if key_id.is_some() {
         let keychain_sig = if is_t1c {
@@ -164,9 +172,9 @@ fn create_mock_tempo_sig(
         } else {
             KeychainSignature::new_v1(caller_addr, inner_sig)
         };
-        TempoSignature::Keychain(keychain_sig)
+        Some(TempoSignature::Keychain(keychain_sig))
     } else {
-        TempoSignature::Primitive(inner_sig)
+        Some(TempoSignature::Primitive(inner_sig))
     }
 }
 
@@ -174,12 +182,13 @@ fn create_mock_tempo_sig(
 fn create_mock_primitive_signature(
     sig_type: &SignatureType,
     key_data: Option<Bytes>,
-) -> tempo_primitives::transaction::tt_signature::PrimitiveSignature {
+) -> Option<tempo_primitives::transaction::tt_signature::PrimitiveSignature> {
     use tempo_primitives::transaction::tt_signature::{
         P256SignatureWithPreHash, PrimitiveSignature, WebAuthnSignature,
     };
 
-    match sig_type {
+    Some(match sig_type {
+        SignatureType::ConfigurableAccount => return None,
         SignatureType::Secp256k1 => {
             PrimitiveSignature::Secp256k1(Signature::new(U256::ZERO, U256::ZERO, false))
         }
@@ -230,7 +239,7 @@ fn create_mock_primitive_signature(
                 pub_key_y: B256::ZERO,
             })
         }
-    }
+    })
 }
 
 impl SignableTxRequest<TempoTxEnvelope> for TempoTransactionRequest {
@@ -238,6 +247,9 @@ impl SignableTxRequest<TempoTxEnvelope> for TempoTransactionRequest {
         self,
         signer: impl TxSigner<Signature> + Send,
     ) -> Result<TempoTxEnvelope, SignTxRequestError> {
+        if self.key_type == Some(SignatureType::ConfigurableAccount) {
+            return Err(SignTxRequestError::InvalidTransactionRequest);
+        }
         if self.output_tx_type() == TempoTxType::AA {
             let mut tx = self
                 .build_aa()
@@ -546,7 +558,8 @@ mod tests {
         // Attempt to create a signature with u32::MAX size (would be ~4GB without fix)
         let malicious_key_data = Bytes::from(0xFFFFFFFFu32.to_be_bytes());
         let sig =
-            create_mock_primitive_signature(&SignatureType::WebAuthn, Some(malicious_key_data));
+            create_mock_primitive_signature(&SignatureType::WebAuthn, Some(malicious_key_data))
+                .unwrap();
 
         // Extract webauthn_data and verify it's clamped to MAX_WEBAUTHN_SIZE (8192)
         let PrimitiveSignature::WebAuthn(webauthn_sig) = sig else {
@@ -565,7 +578,8 @@ mod tests {
     fn test_webauthn_size_respects_minimum() {
         // Attempt to create a signature with size 0
         let key_data = Bytes::from(vec![0u8]);
-        let sig = create_mock_primitive_signature(&SignatureType::WebAuthn, Some(key_data));
+        let sig =
+            create_mock_primitive_signature(&SignatureType::WebAuthn, Some(key_data)).unwrap();
 
         let PrimitiveSignature::WebAuthn(webauthn_sig) = sig else {
             panic!("Expected WebAuthn signature");
@@ -582,7 +596,7 @@ mod tests {
     #[test]
     fn test_webauthn_default_size() {
         // No key_data should use default size (800)
-        let sig = create_mock_primitive_signature(&SignatureType::WebAuthn, None);
+        let sig = create_mock_primitive_signature(&SignatureType::WebAuthn, None).unwrap();
 
         let PrimitiveSignature::WebAuthn(webauthn_sig) = sig else {
             panic!("Expected WebAuthn signature");

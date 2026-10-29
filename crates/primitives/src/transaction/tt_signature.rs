@@ -7,9 +7,10 @@ use super::{
 };
 use crate::gas::{P256_VERIFY_GAS, SECP256K1_VERIFY_GAS, WEBAUTHN_VERIFY_GAS};
 use alloc::vec::Vec;
+use alloy_consensus::crypto::RecoveryError;
 use alloy_eips::eip7623::{STANDARD_TOKEN_COST, tokens_in_calldata};
 use alloy_primitives::{Address, B256, Bytes, Signature, U256, keccak256, uint};
-use alloy_rlp::decode_exact;
+use alloy_rlp::{BufMut, decode_exact};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use sha2::{Digest, Sha256};
 
@@ -444,6 +445,8 @@ pub enum KeychainVersionError {
 
 /// Keychain signature wrapping another signature with a user address.
 /// This allows an access key to sign on behalf of a root account.
+/// V1 accepts only primitive signatures; V2 also accepts configurable account signatures.
+/// Serde permits V1 + configurable account values; `key_id()` and execution validation reject them.
 ///
 /// No `Compact` impl — always wrapped in [`TempoSignature`] whose `Compact` delegates
 /// to `to_bytes()`/`from_bytes()` which encodes the version via the wire type byte
@@ -461,8 +464,8 @@ pub enum KeychainVersionError {
 pub struct KeychainSignature {
     /// Root account address that this transaction is being executed for
     pub user_address: Address,
-    /// The actual signature from the access key (can be Secp256k1, P256, or WebAuthn, but NOT another Keychain)
-    pub signature: PrimitiveSignature,
+    /// Direct primitive approval or configurable account owner quorum from the access key.
+    pub signature: AccountSignature,
     /// Keychain signature version (V1 = legacy, V2 = includes user_address in sig hash)
     #[cfg_attr(feature = "serde", serde(default))]
     pub version: KeychainVersion,
@@ -485,10 +488,10 @@ impl KeychainSignature {
     /// Create a new V2 KeychainSignature (recommended).
     ///
     /// V2 signatures include the user_address in the signature hash.
-    pub fn new(user_address: Address, signature: PrimitiveSignature) -> Self {
+    pub fn new(user_address: Address, signature: impl Into<AccountSignature>) -> Self {
         Self {
             user_address,
-            signature,
+            signature: signature.into(),
             version: KeychainVersion::V2,
             cached_key_id: OnceLock::new(),
         }
@@ -501,7 +504,7 @@ impl KeychainSignature {
     pub fn new_v1(user_address: Address, signature: PrimitiveSignature) -> Self {
         Self {
             user_address,
-            signature,
+            signature: signature.into(),
             version: KeychainVersion::V1,
             cached_key_id: OnceLock::new(),
         }
@@ -520,15 +523,18 @@ impl KeychainSignature {
 
     /// Get the access key ID for Keychain signatures.
     ///
-    /// For Keychain signatures, this returns the access key address that signed the transaction.
-    /// The key_id is recovered from the inner signature on first access and cached for
-    /// subsequent calls. Returns None for non-Keychain signatures.
+    /// Verifies a primitive approval or a configurable account delegate's owner quorum, caching
+    /// its ID. A configurable account ID still requires account binding and state checks by the
+    /// caller.
     ///
     /// This follows the pattern used in alloy for lazy hash computation.
     pub fn key_id(
         &self,
         sig_hash: &B256,
     ) -> Result<Address, alloy_consensus::crypto::RecoveryError> {
+        if self.is_legacy() && self.signature.is_configurable_account() {
+            return Err(RecoveryError::new());
+        }
         // Check if already cached
         if let Some(cached) = self.cached_key_id.get() {
             return Ok(*cached);
@@ -536,7 +542,7 @@ impl KeychainSignature {
 
         // Not cached - recover and cache
         let effective_hash = self.effective_sig_hash(sig_hash);
-        let key_id = self.signature.recover_signer(&effective_hash)?;
+        let key_id = self.signature.recover_account(&effective_hash)?;
         #[allow(clippy::useless_conversion)]
         let _ = self.cached_key_id.set(key_id.into());
         Ok(key_id)
@@ -586,10 +592,15 @@ impl core::hash::Hash for KeychainSignature {
 #[cfg(any(test, feature = "arbitrary"))]
 impl<'a> arbitrary::Arbitrary<'a> for KeychainSignature {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        let version = u.arbitrary()?;
         Ok(Self {
             user_address: u.arbitrary()?,
-            signature: u.arbitrary()?,
-            version: u.arbitrary()?,
+            signature: if version == KeychainVersion::V1 {
+                AccountSignature::Primitive(u.arbitrary()?)
+            } else {
+                u.arbitrary()?
+            },
+            version,
             cached_key_id: OnceLock::new(), // Always start with empty cache
         })
     }
@@ -602,6 +613,151 @@ fn type_identifier(data: &[u8]) -> Option<u8> {
     match data {
         [type_id, _, ..] if data.len() != SECP256K1_SIGNATURE_LENGTH => Some(*type_id),
         _ => None,
+    }
+}
+
+/// Primitive or configurable account approval; excludes keychain envelopes.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(untagged))]
+#[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
+pub enum AccountSignature {
+    /// An existing primitive approval.
+    Primitive(PrimitiveSignature),
+    /// An account's primitive-owner quorum.
+    ConfigurableAccount(ConfigurableAccountSignature),
+}
+
+impl AccountSignature {
+    /// Decodes a direct approval, rejecting recursive keychain envelopes.
+    fn from_bytes(data: &[u8]) -> Result<Self, AccountSignatureError> {
+        match type_identifier(data) {
+            Some(SIGNATURE_TYPE_KEYCHAIN | SIGNATURE_TYPE_KEYCHAIN_V2) => {
+                Err(AccountSignatureError::Keychain)
+            }
+            Some(SIGNATURE_TYPE_CONFIGURABLE_ACCOUNT) => {
+                decode_exact::<ConfigurableAccountSignature>(&data[1..])
+                    .map(Self::ConfigurableAccount)
+                    .map_err(|_| AccountSignatureError::InvalidConfigurableAccount)
+            }
+            _ => PrimitiveSignature::from_bytes(data)
+                .map(Self::Primitive)
+                .map_err(AccountSignatureError::Primitive),
+        }
+    }
+
+    /// Writes the direct approval without allocating an intermediate buffer.
+    fn encode_bytes_into(&self, out: &mut dyn BufMut) {
+        match self {
+            Self::Primitive(signature) => signature.encode_bytes_into(out),
+            Self::ConfigurableAccount(signature) => signature.encode_bytes_into(out),
+        }
+    }
+
+    /// Returns the encoded byte length.
+    fn encoded_length(&self) -> usize {
+        match self {
+            Self::Primitive(signature) => signature.encoded_length(),
+            Self::ConfigurableAccount(signature) => signature.encoded_length(),
+        }
+    }
+
+    /// Returns the signature's access-key type, including configurable account.
+    pub fn signature_type(&self) -> SignatureType {
+        match self {
+            Self::Primitive(signature) => signature.signature_type(),
+            Self::ConfigurableAccount(_) => SignatureType::ConfigurableAccount,
+        }
+    }
+
+    /// Returns the primitive algorithm, when applicable.
+    pub fn primitive_signature_type(&self) -> Option<SignatureType> {
+        match self {
+            Self::Primitive(signature) => Some(signature.signature_type()),
+            Self::ConfigurableAccount(_) => None,
+        }
+    }
+
+    /// Returns the configurable account witness, when applicable.
+    pub const fn as_configurable_account(&self) -> Option<&ConfigurableAccountSignature> {
+        match self {
+            Self::ConfigurableAccount(signature) => Some(signature),
+            Self::Primitive(_) => None,
+        }
+    }
+
+    /// Recovers a primitive signer or verifies a configurable account's owner quorum.
+    ///
+    /// A returned configurable account is untrusted until its commitment is checked against state.
+    fn recover_account(&self, digest: &B256) -> Result<Address, RecoveryError> {
+        match self {
+            Self::Primitive(signature) => signature.recover_signer(digest),
+            Self::ConfigurableAccount(signature) => signature.recover_account(*digest),
+        }
+    }
+
+    /// Returns a heuristic in-memory size.
+    pub(crate) fn size(&self) -> usize {
+        match self {
+            Self::Primitive(signature) => signature.size(),
+            Self::ConfigurableAccount(signature) => signature.size(),
+        }
+    }
+
+    /// Whether this is a configurable account approval.
+    pub const fn is_configurable_account(&self) -> bool {
+        matches!(self, Self::ConfigurableAccount(_))
+    }
+}
+
+impl From<Signature> for AccountSignature {
+    fn from(signature: Signature) -> Self {
+        Self::Primitive(PrimitiveSignature::Secp256k1(signature))
+    }
+}
+
+impl From<PrimitiveSignature> for AccountSignature {
+    fn from(signature: PrimitiveSignature) -> Self {
+        Self::Primitive(signature)
+    }
+}
+
+impl From<ConfigurableAccountSignature> for AccountSignature {
+    fn from(signature: ConfigurableAccountSignature) -> Self {
+        Self::ConfigurableAccount(signature)
+    }
+}
+
+/// Why bytes are not a direct account approval.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AccountSignatureError {
+    /// A keychain envelope where a direct approval is required.
+    Keychain,
+    /// A configurable account witness that does not decode.
+    InvalidConfigurableAccount,
+    /// A primitive signature that does not decode, with its message.
+    Primitive(&'static str),
+    /// A configurable account approval inside a keychain V1 envelope.
+    ConfigurableAccountInKeychainV1,
+}
+
+impl AccountSignatureError {
+    /// Returns the stable validation message for this error.
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Keychain => "keychain signatures are not account signatures",
+            Self::InvalidConfigurableAccount => "Invalid configurable account signature RLP",
+            Self::Primitive(message) => message,
+            Self::ConfigurableAccountInKeychainV1 => {
+                "configurable account access keys require keychain V2"
+            }
+        }
+    }
+}
+
+impl From<AccountSignatureError> for &'static str {
+    fn from(error: AccountSignatureError) -> Self {
+        error.as_str()
     }
 }
 
@@ -618,10 +774,8 @@ pub enum TempoSignature {
     /// Primitive signature types: Secp256k1, P256, or WebAuthn
     Primitive(PrimitiveSignature),
 
-    /// Keychain signature - wraps another signature with a key identifier
-    /// Format: key_id (20 bytes) + inner signature
-    /// IMP: The inner signature MUST NOT be another Keychain (validated at runtime)
-    /// Note: Recursion is prevented by KeychainSignature's custom Arbitrary impl
+    /// Parent address plus a direct primitive or configurable account approval.
+    /// The inner signature type and decoder exclude nested keychains.
     Keychain(KeychainSignature),
 
     /// Configurable account signature.
@@ -656,9 +810,11 @@ impl TempoSignature {
             let user_address = Address::from_slice(&sig_data[0..20]);
             let inner_sig_bytes = &sig_data[20..];
 
-            // Parse inner signature using PrimitiveSignature (which doesn't support Keychain)
-            // This automatically prevents recursive keychain signatures at compile time
-            let inner_signature = PrimitiveSignature::from_bytes(inner_sig_bytes)?;
+            // A bounded direct approval cannot contain another keychain.
+            let inner_signature = AccountSignature::from_bytes(inner_sig_bytes)?;
+            if version == KeychainVersion::V1 && inner_signature.is_configurable_account() {
+                return Err(AccountSignatureError::ConfigurableAccountInKeychainV1.into());
+            }
 
             return Ok(Self::Keychain(KeychainSignature {
                 user_address,
@@ -668,15 +824,7 @@ impl TempoSignature {
             }));
         }
 
-        if let Some(SIGNATURE_TYPE_CONFIGURABLE_ACCOUNT) = type_identifier(data) {
-            return decode_exact::<ConfigurableAccountSignature>(&data[1..])
-                .map(Self::ConfigurableAccount)
-                .map_err(|_| "Invalid configurable account signature RLP");
-        }
-
-        // For all other signatures, delegate to PrimitiveSignature
-        let primitive = PrimitiveSignature::from_bytes(data)?;
-        Ok(Self::Primitive(primitive))
+        Ok(AccountSignature::from_bytes(data)?.into())
     }
 
     /// Encode signature to bytes
@@ -735,7 +883,7 @@ impl TempoSignature {
     pub fn primitive_signature_type(&self) -> Option<SignatureType> {
         match self {
             Self::Primitive(primitive_sig) => Some(primitive_sig.signature_type()),
-            Self::Keychain(keychain_sig) => Some(keychain_sig.signature.signature_type()),
+            Self::Keychain(keychain_sig) => keychain_sig.signature.primitive_signature_type(),
             Self::ConfigurableAccount(_) => None,
         }
     }
@@ -759,7 +907,8 @@ impl TempoSignature {
     /// - WebAuthn: Parses WebAuthn data, verifies P256 signature, derives address
     /// - Keychain: Validates inner signature and returns user_address
     ///
-    /// For Keychain signatures, this performs full validation of the inner signature.
+    /// For Keychain signatures, this verifies the inner primitive signature or configurable account
+    /// delegate quorum.
     /// The access key address is cached in the KeychainSignature for later use.
     /// Note: This pattern has a big footgun, that someone using recover_signer, cannot assume
     /// that the signature is valid for the keychain. They also need to check the access key is authorized
@@ -843,6 +992,11 @@ impl TempoSignature {
     pub const fn is_configurable_account(&self) -> bool {
         matches!(self, Self::ConfigurableAccount(_))
     }
+
+    /// Whether a configurable account signs, directly or inside a keychain envelope.
+    pub fn is_or_wraps_configurable_account(&self) -> bool {
+        self.primitive_signature_type().is_none()
+    }
 }
 
 impl Default for TempoSignature {
@@ -880,6 +1034,17 @@ impl alloy_rlp::Decodable for TempoSignature {
 impl From<Signature> for TempoSignature {
     fn from(signature: Signature) -> Self {
         Self::Primitive(PrimitiveSignature::Secp256k1(signature))
+    }
+}
+
+impl From<AccountSignature> for TempoSignature {
+    fn from(signature: AccountSignature) -> Self {
+        match signature {
+            AccountSignature::Primitive(signature) => Self::Primitive(signature),
+            AccountSignature::ConfigurableAccount(signature) => {
+                Self::ConfigurableAccount(signature)
+            }
+        }
     }
 }
 

@@ -12,7 +12,7 @@ use tempo_contracts::precompiles::SignatureVerifierError;
 use tempo_precompiles_macros::contract;
 use tempo_primitives::transaction::{
     SignatureType,
-    tt_signature::{KeychainSignature, PrimitiveSignature, TempoSignature},
+    tt_signature::{AccountSignature, KeychainSignature, PrimitiveSignature, TempoSignature},
 };
 use tracing::trace;
 
@@ -118,14 +118,16 @@ impl SignatureVerifier {
         if keychain_sig.is_legacy() {
             return Err(SignatureVerifierError::invalid_format().into());
         }
+        let AccountSignature::Primitive(signature) = &keychain_sig.signature else {
+            return Err(SignatureVerifierError::invalid_format().into());
+        };
 
         let signing_hash = KeychainSignature::signing_hash(hash, keychain_sig.user_address);
-        let inner = &keychain_sig.signature;
-        let key_id = self.recover(signing_hash, inner.to_bytes())?;
+        let key_id = self.recover(signing_hash, signature.to_bytes())?;
         Ok(RecoveredKeychainKey {
             account: keychain_sig.user_address,
             key_id,
-            signature_type: inner.signature_type(),
+            signature_type: signature.signature_type(),
         })
     }
 

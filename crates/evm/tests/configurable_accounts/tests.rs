@@ -37,10 +37,10 @@ use sha2::{Digest, Sha256};
 use std::{num::NonZeroU64, sync::Arc};
 use tempo_chainspec::{TempoChainSpec, spec::DEV};
 use tempo_contracts::precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, ISignatureVerifier, ITIP20ChannelReserve, PATH_USD_ADDRESS,
-    SIGNATURE_VERIFIER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, ZONE_PORTAL_PREFIX,
-    account_keychain::IAccountKeychain, configurable_account::IConfigurableAccountShim,
-    nonce::INonce, tip20::ITIP20,
+    ACCOUNT_KEYCHAIN_ADDRESS, AccountKeychainError, ISignatureVerifier, ITIP20ChannelReserve,
+    PATH_USD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
+    ZONE_PORTAL_PREFIX, account_keychain::IAccountKeychain,
+    configurable_account::IConfigurableAccountShim, nonce::INonce, tip20::ITIP20,
 };
 use tempo_evm::{
     TempoEvmConfig, TempoInvalidTransaction,
@@ -1401,6 +1401,43 @@ fn migrate_key(
     config
 }
 
+/// `tx` signed as an access key of `parent` by the configurable account `delegate`, whose owner
+/// quorum under `config` is `owner`.
+fn delegate_keychain_signed(
+    tx: TempoTransaction,
+    parent: Address,
+    delegate: Address,
+    config: &ConfigurableAccountConfig,
+    owner: &PrivateKeySigner,
+) -> AASigned {
+    let digest = KeychainSignature::signing_hash(tx.signature_hash(), parent);
+    tx.into_signed(TempoSignature::Keychain(KeychainSignature::new(
+        parent,
+        configurable_account_approval(delegate, config, owner, digest),
+    )))
+}
+
+/// A transaction of the fixture's account, signed by its root, that grants `key` as `key_type`.
+fn grant_tx(f: &Fixture, nonce: u64, key_type: SignatureType, key: Address) -> AASigned {
+    let grant = KeyAuthorization::unrestricted(1, key_type, key);
+    let signature = f.owner.sign_hash_sync(&grant.signature_hash()).unwrap();
+    f.sign_primitive(TempoTransaction {
+        key_authorization: Some(grant.into_signed(PrimitiveSignature::Secp256k1(signature))),
+        ..aa_tx(nonce, vec![f.getter()])
+    })
+}
+
+/// The keychain's rejection of a `signature` type for a key stored as `stored`.
+fn type_mismatch(stored: SignatureType, signature: SignatureType) -> TempoInvalidTransaction {
+    let error = TempoPrecompileError::from(AccountKeychainError::signature_type_mismatch(
+        stored.into(),
+        signature.into(),
+    ));
+    TempoInvalidTransaction::KeychainValidationFailed {
+        reason: format!("{error:?}"),
+    }
+}
+
 /// The environment of `tx` sent by `sender`, optionally as a plain RPC simulation request.
 fn env_of<T>(tx: &T, sender: Address, simulation: bool) -> Recovered<TempoTxEnv>
 where
@@ -1593,6 +1630,22 @@ fn retired_root_rejects_delegated_roles() {
         }
     }
 
+    // A native transaction of the migrated account may not carry a grant signed by its
+    // retired root; the configurable-account-signed grant is accepted (see the guard test).
+    let mut f = Fixture::with_parent(false);
+    let root = f.owner.address();
+    f.config = migrate(&mut f, 3, root);
+    let account = f.account;
+    let tx = TempoTransaction {
+        key_authorization: Some(grant_by(&f.owner, new_key.address())),
+        ..aa_tx(4, vec![f.getter()])
+    };
+    let tx = configurable_account_signed(&f, tx);
+    assert_eq!(
+        rejection(&mut f, &tx, account),
+        retired(account, RootKeyRole::KeyAuthorizationSigner)
+    );
+
     // An access key that migrated can no longer sign transactions; its parent is not affected.
     let mut f = Fixture::with_parent(false);
     let key = signer(4);
@@ -1683,7 +1736,7 @@ fn retired_root_rejects_delegated_roles() {
     assert_eq!(remaining(&mut f), U256::from(70));
 
     seed_eoa(&mut f, key.address(), 0);
-    migrate_key(&mut f, &key, 0, &new_owner);
+    let key_config = migrate_key(&mut f, &key, 0, &new_owner);
 
     // Its retired root no longer signs for A, whether recovered or named by a simulation.
     let tx = keychain_tx(&f, &key, 5, vec![spend(20)]);
@@ -1704,6 +1757,150 @@ fn retired_root_rejects_delegated_roles() {
         error.external_ref::<TempoInvalidTransaction>() == Some(&expected),
         "{error:?}"
     );
+
+    // Its owner quorum uses the same grant: the limit and the spent counter carry over.
+    let tx = delegate_keychain_signed(
+        aa_tx(5, vec![spend(20)]),
+        account,
+        key.address(),
+        &key_config,
+        &new_owner,
+    );
+    let result = f.run(&tx);
+    assert!(result.status, "{result:?}");
+    assert_eq!(remaining(&mut f), U256::from(50));
+
+    // The treasury cannot register the migrated key ID again, as either type: the grant is
+    // rejected as a reuse.
+    for key_type in [SignatureType::Secp256k1, SignatureType::ConfigurableAccount] {
+        let regrant = grant_tx(&f, 6, key_type, key.address());
+        assert_eq!(
+            rejection(&mut f, &regrant, account),
+            TempoInvalidTransaction::KeychainPrecompileError {
+                reason: TempoPrecompileError::from(AccountKeychainError::key_already_exists())
+                    .to_string()
+            },
+            "{key_type:?}"
+        );
+    }
+
+    // A primitive grant whose key ID has no commitment does not accept a quorum signature: its
+    // delegate has not migrated.
+    let unmigrated_owner = signer(9);
+    let unmigrated_config = ConfigurableAccountConfig {
+        salt: B256::repeat_byte(9),
+        version: 0,
+        threshold: 1,
+        owners: owner_set(vec![unmigrated_owner.address()]),
+    };
+    let unmigrated = unmigrated_config.derive_account().unwrap();
+    let tx = grant_tx(&f, 6, SignatureType::Secp256k1, unmigrated);
+    let result = f.run(&tx);
+    assert!(result.status, "{result:?}");
+    let tx = delegate_keychain_signed(
+        aa_tx(7, vec![f.getter()]),
+        account,
+        unmigrated,
+        &unmigrated_config,
+        &unmigrated_owner,
+    );
+    assert_eq!(
+        rejection(&mut f, &tx, account),
+        type_mismatch(SignatureType::Secp256k1, SignatureType::ConfigurableAccount)
+    );
+
+    // A configurable delegate grant does not accept a primitive signature that recovers to its
+    // key ID.
+    let primitive_delegate = signer(10);
+    let tx = grant_tx(
+        &f,
+        7,
+        SignatureType::ConfigurableAccount,
+        primitive_delegate.address(),
+    );
+    let result = f.run(&tx);
+    assert!(result.status, "{result:?}");
+    let tx = keychain_tx(&f, &primitive_delegate, 8, vec![f.getter()]);
+    assert_eq!(
+        rejection(&mut f, &tx, account),
+        type_mismatch(SignatureType::ConfigurableAccount, SignatureType::Secp256k1)
+    );
+}
+
+#[test]
+fn retired_root_keeps_owner_parent_and_sender_authority() {
+    // What stays valid for a migrated account X.
+    let mut f = Fixture::with_parent(false);
+    let old_key = signer(2);
+    grant_key(&mut f, 3, &old_key, 0);
+    // X lists its retired root as the owner of its new configuration.
+    let root = f.owner.address();
+    f.config = migrate(&mut f, 4, root);
+    let account = f.account;
+    fund(&mut f, account, 50_000_000);
+    let transfer = Call {
+        to: TxKind::Call(PATH_USD_ADDRESS),
+        value: U256::ZERO,
+        input: ITIP20::transferCall {
+            to: Address::repeat_byte(0x66),
+            amount: U256::from(10),
+        }
+        .abi_encode()
+        .into(),
+    };
+    let revoke = Call {
+        to: TxKind::Call(ACCOUNT_KEYCHAIN_ADDRESS),
+        value: U256::ZERO,
+        input: IAccountKeychain::revokeKeyCall {
+            keyId: old_key.address(),
+        }
+        .abi_encode()
+        .into(),
+    };
+
+    // X's old uncommitted access key still signs for X.
+    let tx = keychain_tx(&f, &old_key, 5, vec![f.getter()]);
+    let result = f.run(&tx);
+    assert!(result.status, "{result:?}");
+
+    // X pays its own fees in a configurable account transaction, and its calls authenticate as X.
+    let before = balance(&mut f, account);
+    let tx = configurable_account_signed(
+        &f,
+        TempoTransaction {
+            max_fee_per_gas: 1,
+            max_priority_fee_per_gas: 1,
+            fee_token: Some(PATH_USD_ADDRESS),
+            ..aa_tx(6, vec![transfer])
+        },
+    );
+    let result = f.run(&tx);
+    assert!(result.status, "{result:?}");
+    let fee = calc_gas_balance_spending(result.tx_gas_used(), 1);
+    assert!(fee > U256::ZERO);
+    assert_eq!(
+        balance(&mut f, account),
+        before - fee - U256::from(10),
+        "the transfer and the fee both come from X"
+    );
+    // Root-level keychain administration (no access key) is still X's to use.
+    let tx = f.signed(7, vec![revoke]);
+    let result = f.run(&tx);
+    assert!(result.status, "{result:?}");
+    let tx = keychain_tx(&f, &old_key, 8, vec![f.getter()]);
+    // The revocation took effect: the keychain, not the retirement, now rejects the key.
+    assert!(matches!(
+        rejection(&mut f, &tx, account),
+        TempoInvalidTransaction::KeychainValidationFailed { .. }
+    ));
+
+    // Another configurable account M that lists the retired X accepts X's approval.
+    let mut m = Fixture::new();
+    let owner = m.owner.address();
+    retire(&mut m, owner);
+    let tx = m.signed(3, vec![m.getter()]);
+    let result = m.run(&tx);
+    assert!(result.status, "{result:?}");
 }
 
 /// Gas used by `tx` at `spec` on a fresh unmigrated fixture with the access key `key` granted.
@@ -3060,6 +3257,32 @@ fn retired_root_signatures_still_recover_and_keychain_format_is_unchanged() {
         .into(),
     };
     assert!(bool_query(&mut f, verify, None, "verify").0);
+    // A V2 keychain signature whose inner signature is a configurable account one is not a
+    // keychain one, retired key or not, whether the configurable account names the parent account
+    // or another.
+    let signing_hash = KeychainSignature::signing_hash(hash, account);
+    let other_owner = signer(3);
+    let other_config = ConfigurableAccountConfig {
+        owners: vec![ConfigurableAccountOwner {
+            owner: other_owner.address(),
+            weight: 1,
+        }],
+        ..f.config.clone()
+    };
+    for named in [account, signer(2).address()] {
+        let approval =
+            configurable_account_approval(named, &other_config, &other_owner, signing_hash);
+        let signature = TempoSignature::Keychain(KeychainSignature::new(account, approval));
+        for function in [Verifier::Keychain, Verifier::KeychainAdmin] {
+            let call = function.call(account, hash, signature.to_bytes());
+            let result = send(&mut f, signer(9).address(), vec![call]);
+            assert_reverts_with(
+                &result,
+                ISignatureVerifier::InvalidFormat {},
+                &format!("{function:?} naming {named}"),
+            );
+        }
+    }
 }
 
 #[test]
@@ -4670,5 +4893,120 @@ fn configurable_shim_matches_verifier_gas_and_propagates_oog() {
         IConfigurableAccountShim::onERC721ReceivedCall::abi_encode_returns(
             &IConfigurableAccountShim::onERC721ReceivedCall::SELECTOR.into()
         )
+    );
+}
+
+/// A registered parent with incompatible code cannot act through its access keys.
+#[test]
+fn native_committed_keychain_parent_with_incompatible_code_is_rejected() {
+    let mut f = Fixture::with_parent(false);
+    let key = signer(2);
+    grant_key(&mut f, 3, &key, 0);
+    let root = f.owner.address();
+    f.config = migrate(&mut f, 4, root);
+    let account = f.account;
+    let result = f.run(&keychain_tx(&f, &key, 5, vec![f.getter()]));
+    assert!(result.status, "{result:?}");
+
+    f.update_account(account, |info| {
+        *info = info
+            .clone()
+            .with_code(Bytecode::new_eip7702(Address::repeat_byte(0x74)));
+    });
+    let tx = keychain_tx(&f, &key, 6, vec![f.getter()]);
+    assert_eq!(
+        rejection(&mut f, &tx, account),
+        TempoInvalidTransaction::ConfigurableAccount(ConfigurableAccountError::InvalidAccount {
+            account
+        })
+    );
+}
+
+/// A grant naming a configurable delegate that does not sign charges one access to it, cold or
+/// access-listed. Used by the delegate in the same transaction, the grant costs as much as one
+/// used by a primitive access key: no access beyond the signing key's own.
+#[test]
+fn native_granted_configurable_account_access_is_charged_once() {
+    /// The signer of the transaction that carries or uses the grant.
+    #[derive(Clone, Copy)]
+    enum GrantUser {
+        /// The parent's root key, granting the configurable delegate.
+        Root,
+        /// The configurable delegate.
+        Delegate,
+        /// A primitive access key.
+        AccessKey,
+    }
+    let params = tempo_gas_params(TempoHardfork::T14);
+    let warm = params.get(GasId::WarmStorageReadCost);
+    let cold = warm + params.cold_account_additional_cost();
+    let owner = signer(2);
+    let config = ConfigurableAccountConfig {
+        salt: B256::repeat_byte(2),
+        version: 0,
+        threshold: 1,
+        owners: vec![ConfigurableAccountOwner {
+            owner: owner.address(),
+            weight: 1,
+        }],
+    };
+    let delegate = config.derive_account().unwrap();
+    let access_key = signer(3);
+    // Gas of a transaction signed by `user`, with the grant inline or in an earlier transaction.
+    let gas = |user: GrantUser, inline: bool, listed: bool| {
+        let mut f = Fixture::with_parent(false);
+        let parent = f.account;
+        let grant = match user {
+            GrantUser::Root | GrantUser::Delegate => {
+                KeyAuthorization::unrestricted(1, SignatureType::ConfigurableAccount, delegate)
+            }
+            GrantUser::AccessKey => {
+                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, access_key.address())
+            }
+        };
+        let approval = f.owner.sign_hash_sync(&grant.signature_hash()).unwrap();
+        let grant = grant.into_signed(PrimitiveSignature::Secp256k1(approval));
+        let mut nonce = 3;
+        if !inline {
+            let tx = f.sign_primitive(TempoTransaction {
+                key_authorization: Some(grant.clone()),
+                ..aa_tx(nonce, vec![f.getter()])
+            });
+            let result = f.run(&tx);
+            assert!(result.status, "{result:?}");
+            nonce += 1;
+        }
+        let tx = TempoTransaction {
+            key_authorization: inline.then_some(grant),
+            access_list: AccessList(
+                listed
+                    .then_some(AccessListItem {
+                        address: delegate,
+                        storage_keys: Vec::new(),
+                    })
+                    .into_iter()
+                    .collect(),
+            ),
+            ..aa_tx(nonce, vec![f.getter()])
+        };
+        let tx = match user {
+            GrantUser::Root => f.sign_primitive(tx),
+            GrantUser::Delegate => delegate_keychain_signed(tx, parent, delegate, &config, &owner),
+            GrantUser::AccessKey => keychain_signed(tx, &access_key, parent),
+        };
+        let result = f.run(&tx);
+        assert!(result.status, "{result:?}");
+        // Before the minimum-gas floor, which hides small differences.
+        result.total_gas_spent
+    };
+    // Listing the delegate costs 2400 and turns its one cold access into a warm one.
+    assert_eq!(
+        gas(GrantUser::Root, true, false) + 2_400 + warm,
+        gas(GrantUser::Root, true, true) + cold
+    );
+    // Using the grant in the transaction that carries it adds the same for both keys.
+    assert_eq!(
+        gas(GrantUser::Delegate, true, false) + gas(GrantUser::AccessKey, false, false),
+        gas(GrantUser::AccessKey, true, false) + gas(GrantUser::Delegate, false, false)
     );
 }
