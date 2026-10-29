@@ -212,14 +212,10 @@ pub(crate) fn register_commitments(
         .flatten()
         .map(|role| (role.signature.account(), role.signature.config_commitment()));
     StorageCtx::enter_evm_without_tip1060_accounting(host, || {
-        let mut seen = Vec::with_capacity(2);
         for (account, commitment) in roles {
-            if seen.contains(&account) {
-                continue;
-            }
-            seen.push(account);
-            // Read again rather than carried over from `validate_state`: nothing writes the
-            // commitment in between, so this only registers accounts still unset.
+            // Read again rather than carried over from `validate_state`: nothing else writes the
+            // commitment in between, so this only registers accounts still unset, and an account
+            // signing both roles is registered by the first.
             if StorageCtx.config_commitment(account)?.is_zero() {
                 StorageCtx.set_config_commitment(
                     account,

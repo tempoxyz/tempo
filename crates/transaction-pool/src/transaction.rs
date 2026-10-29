@@ -1228,13 +1228,8 @@ mod tests {
         mut tx: TempoTransaction,
     ) -> (TempoPooledTransaction, TempoTxEnvelope, Address, usize) {
         // Recovery verifies a configurable grant quorum, which arbitrary approvals never reach.
-        if tx
-            .key_authorization
-            .as_ref()
-            .is_some_and(|auth| auth.signature.as_configurable_account().is_some())
-        {
-            tx.key_authorization = None;
-        }
+        tx.key_authorization
+            .take_if(|auth| auth.signature.as_configurable_account().is_some());
         let (envelope, sender) = signed_aa_envelope(tx);
         let mut raw = Vec::with_capacity(envelope.encode_2718_len());
         envelope.encode_2718(&mut raw);
