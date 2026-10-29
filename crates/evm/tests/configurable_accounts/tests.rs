@@ -3166,11 +3166,11 @@ fn native_commitment_only_account_evm_semantics() {
             let mut gas = Vec::new();
             for (nonce, extension) in [(1, B256::ZERO), (0, commitment), (0, B256::ZERO)] {
                 let mut f = Fixture::new();
-                let mut info = AccountInfo {
+                let info = AccountInfo {
                     nonce,
+                    extension: encode_config_commitment(extension).into(),
                     ..Default::default()
                 };
-                info.extension = encode_config_commitment(extension).into();
                 f.evm.overlay_db_mut().insert_account_info(&target, info);
                 let mut code = if operation == 0xf1 {
                     vec![0x5f, 0x5f, 0x5f, 0x5f, 0x60, value, 0x73]
@@ -3187,8 +3187,7 @@ fn native_commitment_only_account_evm_semantics() {
                 let contract = Address::repeat_byte(0x55);
                 let call = f.install_contract(contract, code);
                 f.update_account(contract, |info| info.balance = U256::from(value));
-                let tx = f.signed(3, vec![call]);
-                let output = f.evm.transact(&tx_env(&tx, f.account)).unwrap().commit();
+                let output = f.run(&f.signed(3, vec![call]));
                 assert!(output.status, "{output:?}");
                 if operation == 0x3f {
                     let expected = if nonce != 0 || !extension.is_zero() {
@@ -3223,6 +3222,9 @@ fn native_commitment_activation_database_lifecycle() {
     let factory = create_test_provider_factory();
     let mut fixture = Fixture::new();
     let config = activation_config();
+    let commitment = fixture.config.commitment().unwrap();
+    // The account registers its commitment in block 1.
+    let expected = |block: u64| if block == 0 { B256::ZERO } else { commitment };
     let mut roots = Vec::new();
     let mut parent_hash = B256::ZERO;
     for block in 0..=2 {
@@ -3246,7 +3248,13 @@ fn native_commitment_activation_database_lifecycle() {
             })
             .seal_slow();
             let mut executor = config
-                .executor_for_block(fixture.chain_db(), &block_env)
+                .executor_for_block(
+                    InMemoryDB {
+                        cache: fixture.evm.overlay_db().cache.clone(),
+                        ..Default::default()
+                    },
+                    &block_env,
+                )
                 .unwrap();
             assert_eq!(executor.evm().config_spec_id(), TempoHardfork::T14);
             executor.apply_pre_execution_changes().unwrap();
@@ -3269,14 +3277,15 @@ fn native_commitment_activation_database_lifecycle() {
             .unwrap()
             .state_root_with_updates(hashed.clone())
             .unwrap();
-        let mut header = Header {
+        let chain_block = EthereumBlock::uncle(Header {
             number: block,
             timestamp: 9 + block,
             state_root: root,
+            parent_hash,
             ..Default::default()
-        };
-        header.parent_hash = parent_hash;
-        let chain_block = EthereumBlock::uncle(header).try_into_recovered().unwrap();
+        })
+        .try_into_recovered()
+        .unwrap();
         parent_hash = chain_block.hash();
         let provider = factory.provider_rw().unwrap();
         provider.insert_block(&chain_block).unwrap();
@@ -3297,14 +3306,9 @@ fn native_commitment_activation_database_lifecycle() {
             .basic_account(&fixture.account)
             .unwrap()
             .unwrap_or_else(|| panic!("persisted account missing at {block}"));
-        let expected = if block == 0 {
-            B256::ZERO
-        } else {
-            fixture.config.commitment().unwrap()
-        };
         assert_eq!(
             decode_config_commitment(&account.extension, TempoHardfork::T14).unwrap(),
-            expected
+            expected(block)
         );
         assert_eq!(latest.state_root(Default::default()).unwrap(), root);
         roots.push(root);
@@ -3315,14 +3319,9 @@ fn native_commitment_activation_database_lifecycle() {
         for block in [0, 1] {
             let historical = blockchain.history_by_block_number(block).unwrap();
             let account = historical.basic_account(&fixture.account).unwrap().unwrap();
-            let expected = if block == 0 {
-                B256::ZERO
-            } else {
-                fixture.config.commitment().unwrap()
-            };
             assert_eq!(
                 decode_config_commitment(&account.extension, TempoHardfork::T14).unwrap(),
-                expected
+                expected(block)
             );
         }
     }
@@ -3335,7 +3334,7 @@ fn native_commitment_activation_database_lifecycle() {
     assert_eq!(
         decode_config_commitment(&before_second.info.unwrap().extension, TempoHardfork::T14)
             .unwrap(),
-        fixture.config.commitment().unwrap()
+        commitment
     );
     for block in [1, 0] {
         let provider = factory.unwind_provider_rw().unwrap();
@@ -3343,14 +3342,9 @@ fn native_commitment_activation_database_lifecycle() {
         provider.commit().unwrap();
         let latest = factory.latest().unwrap();
         let account = latest.basic_account(&fixture.account).unwrap().unwrap();
-        let expected = if block == 0 {
-            B256::ZERO
-        } else {
-            fixture.config.commitment().unwrap()
-        };
         assert_eq!(
             decode_config_commitment(&account.extension, TempoHardfork::T14).unwrap(),
-            expected
+            expected(block)
         );
         assert_eq!(
             latest.state_root(Default::default()).unwrap(),
@@ -3685,8 +3679,7 @@ fn native_first_registration_preserves_existing_storage() {
     f.evm
         .overlay_db_mut()
         .insert_account_storage(&f.account, &slot, &value);
-    let tx = f.signed(3, vec![f.getter()]);
-    let output = f.evm.transact(&tx_env(&tx, f.account)).unwrap().commit();
+    let output = f.run(&f.signed(3, vec![f.getter()]));
     assert!(output.status, "{output:?}");
     assert_eq!(output.logs, []);
     assert_eq!(f.commitment(), f.config.commitment().unwrap());
@@ -3717,8 +3710,7 @@ fn native_registration_survives_caught_reverting_subcall() {
     ]
     .concat();
     let call = f.install_contract(catcher, code);
-    let tx = f.signed(3, vec![call]);
-    let output = f.evm.transact(&tx_env(&tx, f.account)).unwrap().commit();
+    let output = f.run(&f.signed(3, vec![call]));
     assert!(output.status, "{output:?}");
     assert_eq!(output.logs, []);
     assert_eq!(f.commitment(), f.config.commitment().unwrap());
@@ -3745,8 +3737,7 @@ fn native_first_transaction_can_rotate_configuration() {
         version: 1,
         ..f.config.clone()
     };
-    let tx = f.signed(3, vec![Fixture::rotation(&f.config, &next), f.getter()]);
-    let output = f.evm.transact(&tx_env(&tx, f.account)).unwrap().commit();
+    let output = f.run(&f.signed(3, vec![Fixture::rotation(&f.config, &next), f.getter()]));
     assert!(output.status, "{output:?}");
     assert_eq!(output.logs.len(), 1);
     assert_eq!(
@@ -3769,12 +3760,7 @@ fn native_rotation_authorizes_next_transaction_in_same_block() {
         }],
         ..f.config.clone()
     };
-    let rotate = f.signed(3, vec![Fixture::rotation(&f.config, &next)]);
-    let output = f
-        .evm
-        .transact(&tx_env(&rotate, f.account))
-        .unwrap()
-        .commit();
+    let output = f.run(&f.signed(3, vec![Fixture::rotation(&f.config, &next)]));
     assert!(output.status, "{output:?}");
     let stale = f.signed(4, vec![f.getter()]);
     let error = f.evm.transact(&tx_env(&stale, f.account)).unwrap_err();
@@ -3789,8 +3775,7 @@ fn native_rotation_authorizes_next_transaction_in_same_block() {
     );
     f.config = next;
     f.owner = next_owner;
-    let tx = f.signed(4, vec![f.getter()]);
-    let output = f.evm.transact(&tx_env(&tx, f.account)).unwrap().commit();
+    let output = f.run(&f.signed(4, vec![f.getter()]));
     assert!(output.status, "{output:?}");
     assert_eq!(f.commitment(), f.config.commitment().unwrap());
     assert_eq!(f.evm.block().number, block.number);
@@ -3809,12 +3794,7 @@ fn native_batch_rotation_failure(registered: bool, halt: bool) {
     let mut f = Fixture::new();
     let mut nonce = 3;
     if registered {
-        let register = f.signed(nonce, vec![f.getter()]);
-        let output = f
-            .evm
-            .transact(&tx_env(&register, f.account))
-            .unwrap()
-            .commit();
+        let output = f.run(&f.signed(nonce, vec![f.getter()]));
         assert!(output.status);
         nonce += 1;
     }
@@ -3848,8 +3828,7 @@ fn native_batch_rotation_failure(registered: bool, halt: bool) {
     ];
     let mut calls = rotations.clone();
     calls.push(revert);
-    let tx = f.signed(nonce, calls);
-    let output = f.evm.transact(&tx_env(&tx, f.account)).unwrap().commit();
+    let output = f.run(&f.signed(nonce, calls));
     assert_eq!(output.stop.is_halt(), halt);
     assert_eq!(output.stop.is_revert(), !halt);
     assert_eq!(output.logs, []);
@@ -3858,8 +3837,7 @@ fn native_batch_rotation_failure(registered: bool, halt: bool) {
     assert_eq!(f.info(f.account).unwrap().nonce, nonce);
     // The original witness remains valid. Each successful update must read the
     // previous call's journaled commitment, not the transaction-start leaf.
-    let retry = f.signed(nonce, rotations);
-    let output = f.evm.transact(&tx_env(&retry, f.account)).unwrap().commit();
+    let output = f.run(&f.signed(nonce, rotations));
     assert!(output.status, "{output:?}");
     assert_eq!(output.logs.len(), 2);
     assert_eq!(f.commitment(), v2.commitment().unwrap());
