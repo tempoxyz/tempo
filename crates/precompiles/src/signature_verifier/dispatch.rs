@@ -1,6 +1,6 @@
 use super::SignatureVerifier;
 use crate::{Precompile, charge_input_cost, dispatch, view};
-use alloy::primitives::Address;
+use alloy::{primitives::Address, sol_types::SolCall};
 use evm2::precompiles::PrecompileResult;
 use tempo_contracts::precompiles::{ISignatureVerifier, SignatureVerifierError};
 use tempo_primitives::MAX_WEBAUTHN_SIGNATURE_LENGTH;
@@ -17,7 +17,12 @@ impl Precompile for SignatureVerifier {
             return err;
         }
 
-        if calldata.len() > MAX_CALLDATA_LEN {
+        // `verifyConfigurableAccount` input is bounded by its decoder and already charged.
+        if calldata.len() > MAX_CALLDATA_LEN
+            && !(self.storage.spec().is_t14()
+                && calldata
+                    .starts_with(&ISignatureVerifier::verifyConfigurableAccountCall::SELECTOR))
+        {
             return self
                 .storage
                 .abi_revert(SignatureVerifierError::invalid_format());
@@ -38,6 +43,10 @@ impl Precompile for SignatureVerifier {
                     #[schedule(since = T6)]
                     verifyKeychainAdmin(call) => view(call, |c| {
                         self.verify_keychain_admin(c.account, c.hash, c.signature)
+                    }),
+                    #[schedule(since = T14)]
+                    verifyConfigurableAccount(call) => view(call, |c| {
+                        self.verify_configurable_account(c.account, c.hash, &c.signature)
                     }),
                 }
             }
@@ -121,7 +130,7 @@ mod tests {
 
     #[test]
     fn test_signature_verifier_selector_coverage() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
         StorageCtx::enter(&mut storage, || {
             let mut verifier = SignatureVerifier::new();
 

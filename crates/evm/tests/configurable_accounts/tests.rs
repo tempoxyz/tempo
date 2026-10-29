@@ -10,12 +10,13 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use evm2::{
     EvmFeatures,
     evm::{DynDatabase, registry::HandlerError},
+    interpreter::InstrStop,
     version::{GasId, GasParams},
 };
 use p256::ecdsa::{SigningKey, signature::hazmat::PrehashSigner};
 use reth_chainspec::EthChainSpec;
 use reth_ethereum_primitives::Block as EthereumBlock;
-use reth_evm::{BlockExecutor, ConfigureEvm, Evm as _};
+use reth_evm::{BlockExecutor, ConfigureEvm};
 use reth_execution_types::{BundleSource, ExecutionOutcome};
 use reth_primitives_traits::{Block as _, SignedTransaction};
 use reth_provider::{
@@ -38,16 +39,20 @@ use tempo_chainspec::{TempoChainSpec, spec::DEV};
 use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, AccountKeychainError, ISignatureVerifier, ITIP20ChannelReserve,
     PATH_USD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
-    account_keychain::IAccountKeychain, nonce::INonce, tip20::ITIP20,
+    ZONE_PORTAL_PREFIX, account_keychain::IAccountKeychain,
+    configurable_account::IConfigurableAccountShim, nonce::INonce, tip20::ITIP20,
 };
 use tempo_evm::{
     TempoEvmConfig, TempoInvalidTransaction,
     transaction_error::{ConfigurableAccountError, FeePaymentError, RootKeyRole},
 };
 use tempo_precompiles::{
-    configurable_account::{CONFIGURABLE_ACCOUNT_CODE, CONFIGURABLE_ACCOUNT_CODE_HASH},
+    Precompile,
+    configurable_account::{CONFIGURABLE_ACCOUNT_CODE, CONFIGURABLE_ACCOUNT_CODE_HASH, shim},
     error::TempoPrecompileError,
+    input_cost,
     nonce::NonceManager,
+    signature_verifier::SignatureVerifier,
     storage::keccak_cost,
     tip20::{PERMIT_TYPEHASH, TIP20Token},
     tip20_channel_reserve::TIP20ChannelReserve,
@@ -313,6 +318,7 @@ enum SignedAction {
 enum Verifier {
     Keychain,
     KeychainAdmin,
+    ConfigurableAccount,
 }
 
 impl Verifier {
@@ -325,6 +331,12 @@ impl Verifier {
             }
             .abi_encode(),
             Self::KeychainAdmin => ISignatureVerifier::verifyKeychainAdminCall {
+                account,
+                hash,
+                signature,
+            }
+            .abi_encode(),
+            Self::ConfigurableAccount => ISignatureVerifier::verifyConfigurableAccountCall {
                 account,
                 hash,
                 signature,
@@ -2543,6 +2555,32 @@ fn send_listed(
     f.run_as(sender, &tx)
 }
 
+/// An existing relayer, so that the new-account charge of its first transaction does not enter
+/// the gas of the checks that it sends.
+fn seed_relayer(f: &mut Fixture) {
+    f.evm
+        .overlay_db_mut()
+        .insert_account_info(&signer(9).address(), AccountInfo::default().with_nonce(1));
+}
+
+/// Executes `call` from the relayer with `gas_limit` and `warm` in the access list.
+fn relayed(
+    f: &mut Fixture,
+    call: Call,
+    gas_limit: u64,
+    warm: Option<Address>,
+) -> TxResult<TempoEvmTypes> {
+    let access_list = AccessList(
+        warm.into_iter()
+            .map(|address| AccessListItem {
+                address,
+                storage_keys: Vec::new(),
+            })
+            .collect(),
+    );
+    send_listed(f, signer(9).address(), vec![call], access_list, gas_limit)
+}
+
 /// Asserts that `result` reverted with exactly `error` and logged nothing.
 fn assert_reverts_with(result: &TxResult<TempoEvmTypes>, error: impl SolError, label: &str) {
     assert!(result.stop.is_revert(), "{label}: {result:?}");
@@ -3762,58 +3800,89 @@ fn native_commitment_persisted_storage_trie_resume_and_proof() {
     assert!(wrong_commitment.verify(expected_root).is_err());
 }
 
+/// The first valid transaction registers the configuration whatever its calls do, keeps the
+/// account's balance and storage, and the next transaction runs against the registered
+/// commitment. Transactions rejected for too little intrinsic gas or an unpaid fee register
+/// nothing.
 #[test]
-fn native_first_call_registration_and_retry() {
-    let mut f = Fixture::new();
-    let revert = f.install_contract(Address::repeat_byte(0x55), bytes!("60006000fd").to_vec());
-    let failed = f.signed(3, vec![f.getter(), revert]);
-    let output = f
-        .evm
-        .transact(&tx_env(&failed, f.account))
-        .unwrap()
-        .detach();
-    assert!(!output.result.status);
-    assert_eq!(
-        decode_config_commitment(
-            &output
-                .pending_state
-                .account_info(&f.account)
-                .unwrap()
-                .extension,
-            TempoHardfork::T14
-        )
-        .unwrap(),
-        f.config.commitment().unwrap()
-    );
-    assert_eq!(
-        output
-            .pending_state
-            .account_info(&f.account)
-            .unwrap()
-            .code_hash,
-        CONFIGURABLE_ACCOUNT_CODE_HASH
-    );
-    f.evm.commit_state(&output.pending_state);
-    let tx = f.signed(4, vec![f.getter()]);
-    let output = f.evm.transact(&tx_env(&tx, f.account)).unwrap().detach();
-    assert!(output.result.status, "{:?}", output.result);
-    assert_eq!(
-        decode_config_commitment(
-            &output
-                .pending_state
-                .account_info(&f.account)
-                .unwrap()
-                .extension,
-            TempoHardfork::T14
-        )
-        .unwrap(),
-        f.config.commitment().unwrap()
-    );
-    assert_eq!(
-        IConfigurableAccount::getConfigCommitmentCall::abi_decode_returns(&output.result.output)
-            .unwrap(),
-        f.config.commitment().unwrap()
-    );
+fn native_first_transaction_registers() {
+    for caught in [false, true] {
+        let mut f = Fixture::new();
+        let account = f.account;
+        let (slot, value) = (U256::from(7), U256::from(91));
+        f.evm
+            .overlay_db_mut()
+            .insert_account_storage(&account, &slot, &value);
+        let before = f.info(account).unwrap();
+
+        let low_gas = configurable_account_signed(
+            &f,
+            TempoTransaction {
+                gas_limit: 21_000,
+                ..aa_tx(3, vec![f.getter()])
+            },
+        );
+        let error = handler_rejection(&mut f, &low_gas, account);
+        assert!(
+            matches!(error, HandlerError::IntrinsicGasTooLow { .. }),
+            "{error:?}"
+        );
+        // The account holds no fee token, so collecting the fee fails after validation.
+        let unpaid = configurable_account_signed(
+            &f,
+            TempoTransaction {
+                max_fee_per_gas: 1_000_000_000_000,
+                fee_token: Some(PATH_USD_ADDRESS),
+                ..aa_tx(3, vec![f.getter()])
+            },
+        );
+        let error = rejection(&mut f, &unpaid, account);
+        assert!(
+            matches!(error, TempoInvalidTransaction::CollectFeePreTx(_)),
+            "{error:?}"
+        );
+        assert!(f.commitment().is_zero());
+
+        // The child writes slot zero, then reverts: the batch fails, or its parent catches the
+        // failed CALL and persists that in its own slot zero.
+        let reverter = Address::repeat_byte(0x55);
+        let revert = f.install_contract(reverter, bytes!("600160005560006000fd").to_vec());
+        let catcher = Address::repeat_byte(0x56);
+        let calls = if caught {
+            let code = [
+                bytes!("6000600060006000600073").as_ref(),
+                reverter.as_slice(),
+                bytes!("5af11560005500").as_ref(),
+            ]
+            .concat();
+            vec![f.install_contract(catcher, code)]
+        } else {
+            vec![f.getter(), revert]
+        };
+        let result = f.run(&f.signed(3, calls));
+        assert_eq!(result.status, caught, "caught {caught}: {result:?}");
+        assert_eq!(result.logs, []);
+        assert_eq!(f.commitment(), f.config.commitment().unwrap());
+        let after = f.info(account).unwrap();
+        assert_eq!(after.code_hash, CONFIGURABLE_ACCOUNT_CODE_HASH);
+        assert_eq!(
+            (after.balance, after.nonce),
+            (before.balance, before.nonce + 1)
+        );
+        let mut storage =
+            |address, slot| f.evm.overlay_db_mut().get_storage(&address, &slot).unwrap();
+        assert_eq!(storage(account, slot), value);
+        assert_eq!(storage(reverter, U256::ZERO), U256::ZERO);
+        assert_eq!(storage(catcher, U256::ZERO), U256::from(caught));
+
+        let result = f.run(&f.signed(4, vec![f.getter()]));
+        assert!(result.status, "{result:?}");
+        assert_eq!(
+            IConfigurableAccount::getConfigCommitmentCall::abi_decode_returns(&result.output)
+                .unwrap(),
+            f.config.commitment().unwrap()
+        );
+    }
 }
 
 /// Gas of a first registration of the sender on `lane` (at transaction nonce zero, except on the
@@ -3906,86 +3975,6 @@ fn registration_charges_the_new_account_cost_once_for_every_nonce_type() {
 }
 
 #[test]
-fn native_first_registration_preserves_existing_storage() {
-    let mut f = Fixture::new();
-    let info = f.info(f.account).unwrap();
-    let slot = U256::from(7);
-    let value = U256::from(91);
-    f.evm
-        .overlay_db_mut()
-        .insert_account_info(&f.account, info.clone());
-    f.evm
-        .overlay_db_mut()
-        .insert_account_storage(&f.account, &slot, &value);
-    let output = f.run(&f.signed(3, vec![f.getter()]));
-    assert!(output.status, "{output:?}");
-    assert_eq!(output.logs, []);
-    assert_eq!(f.commitment(), f.config.commitment().unwrap());
-    assert_eq!(
-        f.evm
-            .overlay_db_mut()
-            .get_storage(&f.account, &slot)
-            .unwrap(),
-        value
-    );
-    let after = f.info(f.account).unwrap();
-    assert_eq!(after.balance, info.balance);
-    assert_eq!(after.nonce, info.nonce + 1);
-}
-
-#[test]
-fn native_registration_survives_caught_reverting_subcall() {
-    let mut f = Fixture::new();
-    let reverter = Address::repeat_byte(0x55);
-    // The child writes slot zero, then reverts. Its parent catches the failed CALL.
-    f.install_contract(reverter, bytes!("600160005560006000fd").to_vec());
-    let catcher = Address::repeat_byte(0x56);
-    // GAS CALL ISZERO; persist the caught failure in the parent's slot zero.
-    let code = [
-        bytes!("6000600060006000600073").as_ref(),
-        reverter.as_slice(),
-        bytes!("5af11560005500").as_ref(),
-    ]
-    .concat();
-    let call = f.install_contract(catcher, code);
-    let output = f.run(&f.signed(3, vec![call]));
-    assert!(output.status, "{output:?}");
-    assert_eq!(output.logs, []);
-    assert_eq!(f.commitment(), f.config.commitment().unwrap());
-    assert_eq!(
-        f.evm
-            .overlay_db_mut()
-            .get_storage(&reverter, &U256::ZERO)
-            .unwrap(),
-        U256::ZERO
-    );
-    assert_eq!(
-        f.evm
-            .overlay_db_mut()
-            .get_storage(&catcher, &U256::ZERO)
-            .unwrap(),
-        U256::ONE
-    );
-}
-
-#[test]
-fn native_first_transaction_can_rotate_configuration() {
-    let mut f = Fixture::new();
-    let next = ConfigurableAccountConfig {
-        version: 1,
-        ..f.config.clone()
-    };
-    let output = f.run(&f.signed(3, vec![Fixture::rotation(&f.config, &next), f.getter()]));
-    assert!(output.status, "{output:?}");
-    assert_eq!(output.logs.len(), 1);
-    assert_eq!(
-        IConfigurableAccount::getConfigCommitmentCall::abi_decode_returns(&output.output).unwrap(),
-        next.commitment().unwrap()
-    );
-    assert_eq!(f.commitment(), next.commitment().unwrap());
-}
-
-#[test]
 fn native_rotation_rejects_access_keys_and_callbacks() {
     for access_key in [true, false] {
         let mut f = Fixture::new();
@@ -4027,39 +4016,58 @@ fn native_rotation_rejects_access_keys_and_callbacks() {
     }
 }
 
+/// A native or migrated configurable account rotates its owners in a batch whose later calls see
+/// the new commitment, and the next transaction in the same block must use the new configuration.
 #[test]
-fn native_rotation_authorizes_next_transaction_in_same_block() {
-    let mut f = Fixture::new();
-    let block = *f.evm.block();
-    let next_owner = signer(2);
-    let next = ConfigurableAccountConfig {
-        version: 1,
-        owners: vec![ConfigurableAccountOwner {
-            owner: next_owner.address(),
-            weight: 1,
-        }],
-        ..f.config.clone()
-    };
-    let output = f.run(&f.signed(3, vec![Fixture::rotation(&f.config, &next)]));
-    assert!(output.status, "{output:?}");
-    let stale = f.signed(4, vec![f.getter()]);
-    let error = f.evm.transact(&tx_env(&stale, f.account)).unwrap_err();
-    assert!(
-        matches!(
-            error.external_ref::<TempoInvalidTransaction>(),
-            Some(TempoInvalidTransaction::ConfigurableAccount(
-                ConfigurableAccountError::ConfigurationCommitmentMismatch { .. }
-            ))
-        ),
-        "{error}"
-    );
-    f.config = next;
-    f.owner = next_owner;
-    let output = f.run(&f.signed(4, vec![f.getter()]));
-    assert!(output.status, "{output:?}");
-    assert_eq!(f.commitment(), f.config.commitment().unwrap());
-    assert_eq!(f.evm.block().number, block.number);
-    assert_eq!(f.evm.block().timestamp, block.timestamp);
+fn configurable_account_rotation() {
+    for migrated in [false, true] {
+        let mut f = if migrated {
+            let mut f = Fixture::with_parent(false);
+            let owner = f.owner.address();
+            f.config = migrate(&mut f, 3, owner);
+            f
+        } else {
+            Fixture::new()
+        };
+        let (account, nonce, block) = (f.account, 3 + u64::from(migrated), *f.evm.block());
+        let next_owner = signer(2);
+        let next = ConfigurableAccountConfig {
+            version: f.config.version + 1,
+            owners: owner_set(vec![next_owner.address()]),
+            ..f.config.clone()
+        };
+        let result = f.run(&f.signed(nonce, vec![Fixture::rotation(&f.config, &next), f.getter()]));
+        assert!(result.status, "migrated {migrated}: {result:?}");
+        assert_eq!(result.logs.len(), 1);
+        assert_eq!(
+            IConfigurableAccount::getConfigCommitmentCall::abi_decode_returns(&result.output)
+                .unwrap(),
+            next.commitment().unwrap()
+        );
+        assert_eq!(f.commitment(), next.commitment().unwrap());
+
+        let stale = f.signed(nonce + 1, vec![f.getter()]);
+        let error = rejection(&mut f, &stale, account);
+        assert!(
+            matches!(
+                error,
+                TempoInvalidTransaction::ConfigurableAccount(
+                    ConfigurableAccountError::ConfigurationCommitmentMismatch { .. }
+                )
+            ),
+            "migrated {migrated}: {error:?}"
+        );
+        f.config = next;
+        f.owner = next_owner;
+        assert!(
+            f.run(&f.signed(nonce + 1, vec![f.getter()])).status,
+            "migrated {migrated}"
+        );
+        assert_eq!(
+            (f.evm.block().number, f.evm.block().timestamp),
+            (block.number, block.timestamp)
+        );
+    }
 }
 
 #[test]
@@ -4152,154 +4160,151 @@ fn native_batch_rotation_failure(registered: bool, halt: bool) {
     assert_eq!(f.commitment(), v2.commitment().unwrap());
 }
 
+/// Each configurable sender check rejects the transaction without consuming its nonce or
+/// registering the account, so the owners' approval of the same nonce still runs afterwards.
 #[test]
-fn eoa_migration_then_configurable_account_and_rotation() {
-    let mut f = Fixture::with_parent(false);
-    let owner = f.owner.address();
-    let config = migrate(&mut f, 3, owner);
-
-    // The next transaction's witness uses the event's salt at version 1.
-    f.config = config.clone();
-    let result = f.run(&f.signed(4, vec![f.getter()]));
-    assert_eq!(
-        IConfigurableAccount::getConfigCommitmentCall::abi_decode_returns(&result.output).unwrap(),
-        config.commitment().unwrap()
-    );
-
-    // Version 1 rotates to version 2 with a new owner.
-    let next_owner = signer(2);
-    let next = ConfigurableAccountConfig {
-        version: 2,
-        owners: owner_set(vec![next_owner.address()]),
-        ..config
-    };
-    let result = f.run(&f.signed(5, vec![Fixture::rotation(&config, &next), f.getter()]));
-    assert!(result.status, "{result:?}");
-    assert_eq!(result.logs.len(), 1);
-    assert_eq!(f.commitment(), next.commitment().unwrap());
-
-    let stale = f.signed(6, vec![f.getter()]);
-    let error = f.evm.transact(&tx_env(&stale, f.account)).unwrap_err();
-    assert!(
-        matches!(
-            error.external_ref::<TempoInvalidTransaction>(),
-            Some(TempoInvalidTransaction::ConfigurableAccount(
-                ConfigurableAccountError::ConfigurationCommitmentMismatch { .. }
-            ))
-        ),
-        "{error}"
-    );
-    f.config = next;
-    f.owner = next_owner;
-    assert!(f.run(&f.signed(6, vec![f.getter()])).status);
-}
-
-#[test]
-fn configurable_account_is_rejected_before_t14() {
-    let unsupported =
-        TempoInvalidTransaction::ConfigurableAccount(ConfigurableAccountError::UnsupportedContext);
-    let mut f = Fixture::with_spec(true, TempoHardfork::T13);
-    let account = f.account;
-    // Signature type `0x05`.
-    let tx = f.signed(3, vec![f.getter()]);
-    assert_eq!(rejection(&mut f, &tx, account), unsupported, "0x05");
-    // A configurable-account-signed key authorization under a primitive transaction signature.
-    let tx = f.sign_primitive(TempoTransaction {
-        key_authorization: Some(configurable_grant(&f, signer(5).address())),
-        ..aa_tx(3, vec![f.getter()])
-    });
-    assert_eq!(
-        rejection(&mut f, &tx, account),
-        unsupported,
-        "configurable-account-signed grant"
-    );
-    // Key type 3 in a primitive-signed grant: no configurable role is involved.
-    let grant =
-        KeyAuthorization::unrestricted(1, SignatureType::ConfigurableAccount, signer(5).address());
-    let approval = f.owner.sign_hash_sync(&grant.signature_hash()).unwrap();
-    let tx = f.sign_primitive(TempoTransaction {
-        key_authorization: Some(grant.into_signed(approval)),
-        ..aa_tx(3, vec![f.getter()])
-    });
-    assert_eq!(
-        rejection(&mut f, &tx, account),
-        unsupported,
-        "key type 3 grant"
-    );
-}
-
-#[test]
-fn configurable_account_is_rejected_where_it_cannot_sign() {
-    let context = TempoInvalidTransaction::ConfigurableAccount(
-        ConfigurableAccountError::InvalidSignatureContext,
-    );
+fn configurable_sender_rejections() {
+    use ConfigurableAccountError::*;
+    let invalid = TempoInvalidTransaction::ConfigurableAccount;
     // An authorization-list entry signed by a configurable account, whatever the hardfork.
-    for spec in [TempoHardfork::T13, TempoHardfork::T14] {
-        let mut f = Fixture::with_spec(true, spec);
-        let account = f.account;
+    let authorized = |f: &Fixture| {
         let authorization = Authorization {
             chain_id: U256::ONE,
             address: Address::ZERO,
             nonce: 0,
         };
         let approval = configurable_account_approval(
-            account,
+            f.account,
             &f.config,
             &f.owner,
             authorization.signature_hash(),
         );
-        let tx = f.sign_primitive(TempoTransaction {
+        f.sign_primitive(TempoTransaction {
             tempo_authorization_list: vec![TempoSignedAuthorization::new_unchecked(
                 authorization,
                 TempoSignature::ConfigurableAccount(approval),
             )],
             ..aa_tx(3, vec![f.getter()])
-        });
-        assert_eq!(rejection(&mut f, &tx, account), context, "{spec:?}");
-    }
-}
+        })
+    };
+    let mut t13 = Fixture::with_spec(true, TempoHardfork::T13);
+    let account = t13.account;
+    let tx = t13.signed(3, vec![t13.getter()]);
+    assert_eq!(
+        rejection(&mut t13, &tx, account),
+        invalid(UnsupportedContext),
+        "0x05 at T13"
+    );
+    let tx = authorized(&t13);
+    let label = "authorization at T13";
+    assert_eq!(
+        rejection(&mut t13, &tx, account),
+        invalid(InvalidSignatureContext),
+        "{label}"
+    );
+    // A configurable-account-signed key authorization under a primitive transaction signature.
+    let tx = t13.sign_primitive(TempoTransaction {
+        key_authorization: Some(configurable_grant(&t13, signer(5).address())),
+        ..aa_tx(3, vec![t13.getter()])
+    });
+    assert_eq!(
+        rejection(&mut t13, &tx, account),
+        invalid(UnsupportedContext),
+        "configurable-account-signed grant at T13"
+    );
+    // Key type 3 in a primitive-signed grant: no configurable role is involved.
+    let grant =
+        KeyAuthorization::unrestricted(1, SignatureType::ConfigurableAccount, signer(5).address());
+    let approval = t13.owner.sign_hash_sync(&grant.signature_hash()).unwrap();
+    let tx = t13.sign_primitive(TempoTransaction {
+        key_authorization: Some(grant.into_signed(approval)),
+        ..aa_tx(3, vec![t13.getter()])
+    });
+    assert_eq!(
+        rejection(&mut t13, &tx, account),
+        invalid(UnsupportedContext),
+        "key type 3 grant at T13"
+    );
 
-#[test]
-fn native_signature_must_name_the_sender() {
     let mut f = Fixture::new();
     let account = f.account;
     let other = signer(9).address();
     seed_account(&mut f, other, false);
-    let tx = f.signed(3, vec![f.getter()]);
-    let mismatch =
-        TempoInvalidTransaction::ConfigurableAccount(ConfigurableAccountError::AccountMismatch {
-            expected: other,
-            actual: account,
-        });
-    // In a signed transaction and in RPC simulation alike, the account the configurable
-    // account signature names must be the sender.
-    assert_eq!(rejection(&mut f, &tx, other), mismatch, "transaction");
-    let error = transact_err(&mut f, &simulation_env(&tx, other, None));
+    let signed = f.signed(3, vec![f.getter()]);
+    // In a signed transaction and in RPC simulation alike, the account the signature names must
+    // be the sender.
+    let mismatch = invalid(AccountMismatch {
+        expected: other,
+        actual: account,
+    });
+    let error = transact_err(&mut f, &simulation_env(&signed, other, None));
     assert_eq!(
-        error.external_ref::<TempoInvalidTransaction>(),
+        error.external_ref(),
         Some(&mismatch),
         "simulation: {error:?}"
     );
-    // Neither rejection consumed the nonce.
-    let result = f.run(&tx);
-    assert!(result.status, "{result:?}");
-}
-
-#[test]
-fn native_signer_with_code_is_rejected() {
-    let mut f = Fixture::new();
-    let account = f.account;
-    f.update_account(account, |info| {
-        *info = info
-            .clone()
-            .with_code(Bytecode::new_eip7702(Address::repeat_byte(0x74)));
-    });
-    let tx = f.signed(3, vec![f.getter()]);
+    // A block carries the sender, so execution checks the quorum itself.
+    let stranger = configurable_account_signed_by(
+        account,
+        &f.config,
+        &signer(0x77),
+        aa_tx(3, vec![f.getter()]),
+    );
+    for (label, tx, sender, expected) in [
+        (
+            "authorization",
+            authorized(&f),
+            account,
+            invalid(InvalidSignatureContext),
+        ),
+        ("names another sender", signed.clone(), other, mismatch),
+        (
+            "non-owner approval",
+            stranger,
+            account,
+            invalid(Quorum(ConfigurableAccountQuorumError::SignerNotOwner)),
+        ),
+    ] {
+        assert_eq!(rejection(&mut f, &tx, sender), expected, "{label}");
+    }
+    let info = f.info(account).unwrap();
+    let delegated = info
+        .clone()
+        .with_code(Bytecode::new_eip7702(Address::repeat_byte(0x74)));
+    f.evm
+        .overlay_db_mut()
+        .insert_account_info(&account, delegated);
     assert_eq!(
-        rejection(&mut f, &tx, account),
-        TempoInvalidTransaction::ConfigurableAccount(ConfigurableAccountError::InvalidAccount {
-            account
-        })
+        rejection(&mut f, &signed, account),
+        invalid(InvalidAccount { account }),
+        "code"
+    );
+    f.evm.overlay_db_mut().insert_account_info(&account, info);
+    assert!(f.commitment().is_zero());
+    let result = f.run(&signed);
+    assert!(result.status, "{result:?}");
+
+    // Once registered, another configuration fails with the mismatch the account state reports,
+    // worded as the state error is.
+    let registered = f.commitment();
+    let stale = ConfigurableAccountConfig {
+        salt: B256::repeat_byte(0x5b),
+        ..f.config.clone()
+    };
+    let tx = configurable_account_signed_by(account, &stale, &f.owner, aa_tx(4, vec![f.getter()]));
+    let error = rejection(&mut f, &tx, account);
+    let TempoInvalidTransaction::ConfigurableAccount(ConfigurationCommitmentMismatch {
+        expected,
+        actual,
+    }) = error
+    else {
+        panic!("{error:?}");
+    };
+    assert_eq!(expected, registered);
+    assert_ne!(actual, registered);
+    assert_eq!(
+        error.to_string(),
+        ConfigurableAccountStateError::CommitmentMismatch { expected, actual }.to_string()
     );
 }
 
@@ -4338,36 +4343,6 @@ fn native_signature_verification_is_intrinsic_gas() {
     assert_eq!(
         native.tx_gas_used() - primitive.tx_gas_used(),
         verification + first_use
-    );
-}
-
-/// A registered account signing with another configuration fails with the commitment mismatch
-/// that the account state reports, worded as the state error is.
-#[test]
-fn native_commitment_mismatch_reads_as_the_state_error() {
-    let mut f = Fixture::new();
-    let account = f.account;
-    let result = f.run(&f.signed(3, vec![f.getter()]));
-    assert!(result.status, "{result:?}");
-    let registered = f.commitment();
-
-    let stale = ConfigurableAccountConfig {
-        salt: B256::repeat_byte(0x5b),
-        ..f.config.clone()
-    };
-    let tx = configurable_account_signed_by(account, &stale, &f.owner, aa_tx(4, vec![f.getter()]));
-    let error = rejection(&mut f, &tx, account);
-    let TempoInvalidTransaction::ConfigurableAccount(
-        ConfigurableAccountError::ConfigurationCommitmentMismatch { expected, actual },
-    ) = error
-    else {
-        panic!("{error:?}");
-    };
-    assert_eq!(expected, registered);
-    assert_ne!(actual, registered);
-    assert_eq!(
-        error.to_string(),
-        ConfigurableAccountStateError::CommitmentMismatch { expected, actual }.to_string()
     );
 }
 
@@ -4411,62 +4386,605 @@ fn native_threshold_above_eight_is_met_by_eight_approvals() {
     );
 }
 
-/// A transaction rejected for too little intrinsic gas or an unpaid fee does not register the
-/// account's configuration; the first valid one does.
+/// The hash that the configurable account verification tests approve.
+const CONFIGURABLE_ACCOUNT_HASH: B256 = B256::repeat_byte(0x42);
+
+#[derive(Clone, Copy, Debug)]
+enum Verdict {
+    Valid,
+    Invalid,
+    Reverts,
+}
+
+/// How the verified account is loaded.
+#[derive(Clone, Copy, Debug)]
+enum Access {
+    Cold,
+    /// In the access list of the transaction.
+    Listed,
+    /// An EVM precompile.
+    Warm,
+}
+
+/// The `verifyConfigurableAccount` call of `signature`.
+fn verify_configurable_account_call(
+    account: Address,
+    hash: B256,
+    signature: &ConfigurableAccountSignature,
+) -> Call {
+    Verifier::ConfigurableAccount.call(
+        account,
+        hash,
+        TempoSignature::ConfigurableAccount(signature.clone()).to_bytes(),
+    )
+}
+
+/// Checks what `verifyConfigurableAccount` returns for `signature` and the gas of the transaction:
+/// its calldata, the ABI input, and the charge for `signature`: the account access, the
+/// verification and, while the account is unregistered, the derivation of its address.
+fn check_configurable_account_verdict(
+    f: &mut Fixture,
+    account: Address,
+    signature: &ConfigurableAccountSignature,
+    registered: bool,
+    access: Access,
+    verdict: Verdict,
+    label: &str,
+) {
+    let spec = TempoHardfork::T14;
+    let params = tempo_gas_params(spec);
+    let cold_extra = match access {
+        Access::Cold => params.cold_account_additional_cost(),
+        Access::Listed | Access::Warm => 0,
+    };
+    let access_gas = params.get(GasId::WarmStorageReadCost) + cold_extra;
+    let initial = if registered {
+        0
+    } else {
+        signature.config().derivation_gas().unwrap()
+    };
+    let charge = access_gas + signature.verification_gas().unwrap() + initial;
+
+    let call = verify_configurable_account_call(account, CONFIGURABLE_ACCOUNT_HASH, signature);
+    let zeros = call.input.iter().filter(|byte| **byte == 0).count() as u64;
+    let nonzeros = call.input.len() as u64 - zeros;
+    let listed = matches!(access, Access::Listed).then_some(account);
+    // Each address in the access list costs 2400 intrinsic gas.
+    let access_list = if listed.is_some() { 2_400 } else { 0 };
+    // Intrinsic gas: 21000 plus 4 per zero and 16 per non-zero calldata byte. A transaction
+    // uses at least its calldata floor: 21000 plus 10 per zero and 40 per non-zero byte.
+    let execution = 21_000
+        + 4 * zeros
+        + 16 * nonzeros
+        + access_list
+        + input_cost(spec, call.input.len()).unwrap()
+        + charge;
+    let floor = 21_000 + 10 * zeros + 40 * nonzeros;
+    let result = relayed(f, call, 1_000_000, listed);
+    assert_eq!(result.tx_gas_used(), execution.max(floor), "{label}: gas");
+    match verdict {
+        Verdict::Valid | Verdict::Invalid => {
+            assert!(result.status, "{label}: {result:?}");
+            let valid = matches!(verdict, Verdict::Valid);
+            assert_eq!(bool::abi_decode(&result.output).unwrap(), valid, "{label}");
+        }
+        Verdict::Reverts => {
+            assert_reverts_with(&result, ISignatureVerifier::InvalidSignature {}, label)
+        }
+    }
+}
+
 #[test]
-fn native_rejected_transaction_does_not_register() {
+fn verify_configurable_account_before_and_after_rotation() {
+    let mut f = Fixture::new();
+    seed_relayer(&mut f);
+    let account = f.account;
+    let (cold, listed) = (Access::Cold, Access::Listed);
+
+    // Unregistered: the initial configuration derives the account, and nothing is written.
+    let initial =
+        configurable_account_approval(account, &f.config, &f.owner, CONFIGURABLE_ACCOUNT_HASH);
+    assert_eq!(initial.verification_gas().unwrap(), 4_024);
+    let valid = Verdict::Valid;
+    check_configurable_account_verdict(
+        &mut f,
+        account,
+        &initial,
+        false,
+        cold,
+        valid,
+        "unregistered",
+    );
+    assert_eq!(f.commitment(), B256::ZERO);
+    // An initial configuration is version 0: a later version has no commitment to match.
+    let later = ConfigurableAccountConfig {
+        version: 1,
+        ..f.config.clone()
+    };
+    let unregistered_later =
+        configurable_account_approval(account, &later, &f.owner, CONFIGURABLE_ACCOUNT_HASH);
+    let invalid = Verdict::Invalid;
+    check_configurable_account_verdict(
+        &mut f,
+        account,
+        &unregistered_later,
+        false,
+        cold,
+        invalid,
+        "unregistered later version",
+    );
+
+    // Registered by a rotation: only the new configuration matches, and the derivation is not
+    // charged any more.
+    let next_owner = signer(2);
+    let next = ConfigurableAccountConfig {
+        version: 1,
+        owners: vec![ConfigurableAccountOwner {
+            owner: next_owner.address(),
+            weight: 1,
+        }],
+        ..f.config.clone()
+    };
+    let rotate = f.signed(3, vec![Fixture::rotation(&f.config, &next)]);
+    assert!(f.run(&rotate).status);
+    assert_eq!(f.commitment(), next.commitment().unwrap());
+    let current =
+        configurable_account_approval(account, &next, &next_owner, CONFIGURABLE_ACCOUNT_HASH);
+    check_configurable_account_verdict(&mut f, account, &current, true, cold, valid, "rotated");
+    let label = "rotated, listed account";
+    check_configurable_account_verdict(&mut f, account, &current, true, listed, valid, label);
+    let stale =
+        configurable_account_approval(account, &f.config, &f.owner, CONFIGURABLE_ACCOUNT_HASH);
+    let label = "stale configuration";
+    check_configurable_account_verdict(&mut f, account, &stale, true, cold, invalid, label);
+}
+
+#[test]
+fn verify_configurable_account_false_cases_charge_before_they_check() {
+    let mut f = Fixture::new();
+    seed_relayer(&mut f);
+    let account = f.account;
+    let (cold, invalid) = (Access::Cold, Verdict::Invalid);
+    let valid =
+        configurable_account_approval(account, &f.config, &f.owner, CONFIGURABLE_ACCOUNT_HASH);
+
+    // The signature names another account than the one checked.
+    let names_other = configurable_account_approval(
+        signer(5).address(),
+        &f.config,
+        &f.owner,
+        CONFIGURABLE_ACCOUNT_HASH,
+    );
+    let label = "account mismatch";
+    check_configurable_account_verdict(&mut f, account, &names_other, false, cold, invalid, label);
+
+    // Accounts that cannot be configurable accounts, even when the signature names them: a
+    // Tempo and an EVM precompile, a virtual address and a zone portal.
+    let mut virtual_address = Address::ZERO;
+    virtual_address.0[4..14].fill(0xfd);
+    let mut zone_portal = Address::with_last_byte(1);
+    zone_portal.0[..12].copy_from_slice(ZONE_PORTAL_PREFIX.as_slice());
+    for (address, access) in [
+        (CONFIGURABLE_ACCOUNT_ADDRESS, cold),
+        (Address::with_last_byte(1), Access::Warm),
+        (virtual_address, cold),
+        (zone_portal, cold),
+    ] {
+        let names_address =
+            configurable_account_approval(address, &f.config, &f.owner, CONFIGURABLE_ACCOUNT_HASH);
+        check_configurable_account_verdict(
+            &mut f,
+            address,
+            &names_address,
+            false,
+            access,
+            invalid,
+            &format!("invalid account {address}"),
+        );
+    }
+
+    // A signature that derives another account than the one it names.
+    let other_salt = ConfigurableAccountConfig {
+        salt: B256::repeat_byte(1),
+        ..f.config.clone()
+    };
+    let misderived =
+        configurable_account_approval(account, &other_salt, &f.owner, CONFIGURABLE_ACCOUNT_HASH);
+    let label = "initial account mismatch";
+    check_configurable_account_verdict(&mut f, account, &misderived, false, cold, invalid, label);
+
+    // An account with non-marker code is rejected, however well signed.
+    let label = "valid";
+    check_configurable_account_verdict(&mut f, account, &valid, false, cold, Verdict::Valid, label);
+    let info = f.info(account).unwrap();
+    f.evm
+        .overlay_db_mut()
+        .insert_account_info(&account, info.with_code(Bytecode::new_legacy(bytes!("00"))));
+    let label = "account with code";
+    check_configurable_account_verdict(&mut f, account, &valid, false, cold, invalid, label);
+}
+
+#[test]
+fn verify_configurable_account_reverts() {
+    let mut f = Fixture::new();
+    seed_relayer(&mut f);
+    let account = f.account;
+
+    // Anything that is not a configurable account signature is a format error.
+    let secp =
+        PrimitiveSignature::Secp256k1(f.owner.sign_hash_sync(&CONFIGURABLE_ACCOUNT_HASH).unwrap());
+    let keychain = TempoSignature::Keychain(KeychainSignature::new(account, secp.clone()));
+    for (label, signature) in [
+        ("primitive", secp.to_bytes()),
+        ("keychain", keychain.to_bytes()),
+        ("empty", Bytes::new()),
+        ("truncated", Bytes::from_static(&[0x05, 0xc0])),
+    ] {
+        let call =
+            Verifier::ConfigurableAccount.call(account, CONFIGURABLE_ACCOUNT_HASH, signature);
+        let result = relayed(&mut f, call, 1_000_000, None);
+        assert_reverts_with(&result, ISignatureVerifier::InvalidFormat {}, label);
+    }
+
+    // Approvals that do not verify revert after the charge: another hash, and a key outside the
+    // configuration.
+    let other_hash =
+        configurable_account_approval(account, &f.config, &f.owner, B256::repeat_byte(0x43));
+    let stranger =
+        configurable_account_approval(account, &f.config, &signer(7), CONFIGURABLE_ACCOUNT_HASH);
+    for (label, signature) in [("other hash", &other_hash), ("unknown owner", &stranger)] {
+        check_configurable_account_verdict(
+            &mut f,
+            account,
+            signature,
+            false,
+            Access::Cold,
+            Verdict::Reverts,
+            label,
+        );
+    }
+    assert_eq!(f.commitment(), B256::ZERO);
+}
+
+#[test]
+fn verify_configurable_account_runs_in_a_staticcall() {
+    let mut f = Fixture::new();
+    seed_relayer(&mut f);
+    let account = f.account;
+    // Returns the result of a STATICCALL to the verifier, and reverts with its revert data.
+    let code = [
+        bytes!("365f5f375f5f365f73").as_ref(),
+        SIGNATURE_VERIFIER_ADDRESS.as_slice(),
+        bytes!("5afa3d5f5f3e6029573d5ffd5b3d5ff3").as_ref(),
+    ]
+    .concat();
+    let proxy = f.install_contract(Address::repeat_byte(0x56), code);
+    let through_proxy = |signature: &ConfigurableAccountSignature, hash| Call {
+        input: verify_configurable_account_call(account, hash, signature).input,
+        ..proxy.clone()
+    };
+
+    let valid =
+        configurable_account_approval(account, &f.config, &f.owner, CONFIGURABLE_ACCOUNT_HASH);
+    let result = relayed(
+        &mut f,
+        through_proxy(&valid, CONFIGURABLE_ACCOUNT_HASH),
+        1_000_000,
+        None,
+    );
+    assert!(result.status, "{result:?}");
+    assert!(bool::abi_decode(&result.output).unwrap());
+    // The unregistered account is read, not registered.
+    assert_eq!(f.commitment(), B256::ZERO);
+    let other_hash = B256::repeat_byte(0x43);
+    let result = relayed(&mut f, through_proxy(&valid, other_hash), 1_000_000, None);
+    assert_reverts_with(
+        &result,
+        ISignatureVerifier::InvalidSignature {},
+        "other hash",
+    );
+}
+
+#[test]
+fn verify_configurable_account_needs_its_gas() {
+    for registered in [false, true] {
+        let mut f = Fixture::new();
+        seed_relayer(&mut f);
+        let account = f.account;
+        if registered {
+            let next = ConfigurableAccountConfig {
+                version: 1,
+                ..f.config.clone()
+            };
+            let rotate = f.signed(3, vec![Fixture::rotation(&f.config, &next)]);
+            assert!(f.run(&rotate).status);
+            f.config = next;
+        }
+        let signature =
+            configurable_account_approval(account, &f.config, &f.owner, CONFIGURABLE_ACCOUNT_HASH);
+        let call = verify_configurable_account_call(account, CONFIGURABLE_ACCOUNT_HASH, &signature);
+        // The gas the call uses when it has plenty is exactly what it needs.
+        let result = relayed(&mut f, call.clone(), 1_000_000, None);
+        assert!(result.status, "{result:?}");
+        let needed = result.tx_gas_used();
+        let result = relayed(&mut f, call.clone(), needed, None);
+        assert!(result.status, "registered: {registered}: {result:?}");
+        let result = relayed(&mut f, call, needed - 1, None);
+        assert!(
+            matches!(result.stop, InstrStop::PrecompileOOG),
+            "registered: {registered}: {result:?}"
+        );
+    }
+}
+
+/// Registration exposes the marker immediately and dispatches only the selected read-only hooks.
+#[test]
+fn configurable_account_marker_dispatch() {
     let mut f = Fixture::new();
     let account = f.account;
-    let low_gas = configurable_account_signed(
-        &f,
-        TempoTransaction {
-            gas_limit: 21_000,
-            ..aa_tx(3, vec![f.getter()])
-        },
-    );
-    let error = handler_rejection(&mut f, &low_gas, account);
-    assert!(
-        matches!(error, HandlerError::IntrinsicGasTooLow { .. }),
-        "{error:?}"
-    );
-    // The account holds no fee token, so collecting the fee fails after validation.
-    let unpaid = configurable_account_signed(
-        &f,
-        TempoTransaction {
-            max_fee_per_gas: 1_000_000_000_000,
-            fee_token: Some(PATH_USD_ADDRESS),
-            ..aa_tx(3, vec![f.getter()])
-        },
-    );
-    let error = rejection(&mut f, &unpaid, account);
-    assert!(
-        matches!(error, TempoInvalidTransaction::CollectFeePreTx(_)),
-        "{error:?}"
-    );
-    assert!(f.commitment().is_zero());
-    let result = f.run(&f.signed(3, vec![f.getter()]));
+    assert_eq!(f.info(account).unwrap().code_hash, KECCAK256_EMPTY);
+    let receive = Call {
+        to: TxKind::Call(account),
+        value: U256::ZERO,
+        input: Bytes::new(),
+    };
+    let result = f.run(&f.signed(3, vec![receive.clone()]));
     assert!(result.status, "{result:?}");
+    assert!(result.output.is_empty());
+    assert_eq!(
+        f.info(account).unwrap().code_hash,
+        CONFIGURABLE_ACCOUNT_CODE_HASH
+    );
+    assert_eq!(
+        keccak256(&CONFIGURABLE_ACCOUNT_CODE),
+        CONFIGURABLE_ACCOUNT_CODE_HASH
+    );
+    let hook = IConfigurableAccountShim::onERC721ReceivedCall {
+        operator: Address::ZERO,
+        from: Address::ZERO,
+        tokenId: U256::ONE,
+        data: bytes!("1234"),
+    }
+    .abi_encode();
+    // Like a Solidity callee, the hook accepts trailing data and a final `bytes` without its
+    // padding, but not a cut into the `bytes` value itself.
+    let mut trailing = hook.clone();
+    trailing.push(0);
+    let unpadded = hook[..hook.len() - 30].to_vec();
+    let truncated = hook[..hook.len() - 31].to_vec();
+    for (offset, input) in [trailing, unpadded].into_iter().enumerate() {
+        let result = f.run(&f.signed(
+            4 + offset as u64,
+            vec![Call {
+                input: input.into(),
+                ..receive.clone()
+            }],
+        ));
+        assert!(result.status, "{result:?}");
+        assert_eq!(
+            result.output,
+            IConfigurableAccountShim::onERC721ReceivedCall::abi_encode_returns(
+                &IConfigurableAccountShim::onERC721ReceivedCall::SELECTOR.into()
+            )
+        );
+    }
+    for (offset, input) in [
+        bytes!("01"),
+        bytes!("ffffffff"),
+        bytes!("01ffc9a7"),
+        bytes!("f23a6e61"),
+        bytes!("bc197c81"),
+        bytes!("1626ba7e"),
+        truncated.into(),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let result = f.run(&f.signed(
+            6 + offset as u64,
+            vec![Call {
+                input,
+                ..receive.clone()
+            }],
+        ));
+        assert!(result.stop.is_revert(), "{result:?}");
+        assert!(result.output.is_empty());
+        assert_eq!(
+            f.info(account).unwrap().code_hash,
+            CONFIGURABLE_ACCOUNT_CODE_HASH
+        );
+    }
+    // An ERC-1271 call without the signature's padding, as Solady sends it, is still answered.
+    seed_relayer(&mut f);
+    let approval =
+        configurable_account_approval(account, &f.config, &f.owner, CONFIGURABLE_ACCOUNT_HASH);
+    let signature = TempoSignature::ConfigurableAccount(approval).to_bytes();
+    assert_ne!(signature.len() % 32, 0);
+    let unpadded_len = 4 + 3 * 32 + signature.len();
+    let mut input = IConfigurableAccountShim::isValidSignatureCall {
+        hash: CONFIGURABLE_ACCOUNT_HASH,
+        signature,
+    }
+    .abi_encode();
+    input.truncate(unpadded_len);
+    let call = Call {
+        input: input.into(),
+        ..receive
+    };
+    let result = relayed(&mut f, call, 1_000_000, None);
+    assert!(result.status, "{result:?}");
+    assert_eq!(
+        result.output,
+        IConfigurableAccountShim::isValidSignatureCall::abi_encode_returns(
+            &[0x16, 0x26, 0xba, 0x7e].into()
+        )
+    );
+}
+
+/// A failing verification reverts through the shim exactly as the verifier does.
+#[test]
+fn configurable_account_erc1271_propagates_verifier_reverts() {
+    let mut f = Fixture::new();
+    let account = f.account;
+    assert!(f.run(&f.signed(3, vec![f.getter()])).status);
+    seed_relayer(&mut f);
+    let signature =
+        configurable_account_approval(account, &f.config, &f.owner, CONFIGURABLE_ACCOUNT_HASH);
+    let call = |hash, signature: Bytes| Call {
+        to: TxKind::Call(account),
+        value: U256::ZERO,
+        input: IConfigurableAccountShim::isValidSignatureCall { hash, signature }
+            .abi_encode()
+            .into(),
+    };
+    let witness = TempoSignature::ConfigurableAccount(signature).to_bytes();
+    let result = relayed(&mut f, call(B256::ZERO, witness), 1_000_000, None);
+    assert_reverts_with(
+        &result,
+        ISignatureVerifier::InvalidSignature {},
+        "invalid owner signature",
+    );
+    let malformed = call(CONFIGURABLE_ACCOUNT_HASH, Bytes::new());
+    let result = relayed(&mut f, malformed, 1_000_000, None);
+    assert_reverts_with(
+        &result,
+        ISignatureVerifier::InvalidFormat {},
+        "malformed witness",
+    );
+}
+
+/// The marker is reserved for registered accounts and must remain an invalid opcode elsewhere.
+#[test]
+fn configurable_marker_is_gated_by_fork_and_commitment() {
+    for (spec, committed, code) in [
+        (TempoHardfork::T13, true, bytes!("ef")),
+        (TempoHardfork::T14, false, bytes!("ef")),
+        (TempoHardfork::T14, true, bytes!("ef00")),
+    ] {
+        let mut f = Fixture::with_spec(false, spec);
+        let target = Address::repeat_byte(0x55);
+        let call = f.install_contract(target, code.to_vec());
+        if committed {
+            f.update_account(target, |info| {
+                info.extension = encode_config_commitment(B256::repeat_byte(1)).into()
+            });
+        }
+        let result = f.run(&f.primitive(3, vec![call]));
+        assert_eq!(result.stop, InstrStop::OpcodeNotFound);
+        assert!(result.output.is_empty());
+    }
+}
+
+/// Calls through the marker use the storage context of the EVM call kind.
+#[test]
+fn configurable_marker_static_and_delegate_calls() {
+    let mut f = Fixture::new();
+    let account = f.account;
+    assert!(f.run(&f.signed(3, vec![f.getter()])).status);
+    seed_relayer(&mut f);
+    let approval =
+        configurable_account_approval(account, &f.config, &f.owner, CONFIGURABLE_ACCOUNT_HASH);
+    let input = IConfigurableAccountShim::isValidSignatureCall {
+        hash: CONFIGURABLE_ACCOUNT_HASH,
+        signature: TempoSignature::ConfigurableAccount(approval).to_bytes(),
+    }
+    .abi_encode();
+    for kind in [0xfa, 0xf4, 0xf2] {
+        let prefix = if kind == 0xf2 {
+            bytes!("365f5f375f5f365f5f73")
+        } else {
+            bytes!("365f5f375f5f365f73")
+        };
+        let code = [
+            prefix.as_ref(),
+            account.as_slice(),
+            &[0x5a, kind],
+            bytes!("503d5f5f3e3d5ff3").as_ref(),
+        ]
+        .concat();
+        let mut call = f.install_contract(Address::repeat_byte(kind), code);
+        call.input = input.clone().into();
+        let result = relayed(&mut f, call, 1_000_000, None);
+        assert!(result.status, "{result:?}");
+        let expected = if kind == 0xfa {
+            [0x16, 0x26, 0xba, 0x7e]
+        } else {
+            [0xff; 4]
+        };
+        assert_eq!(
+            result.output,
+            IConfigurableAccountShim::isValidSignatureCall::abi_encode_returns(&expected.into())
+        );
+    }
     assert_eq!(f.commitment(), f.config.commitment().unwrap());
 }
 
 #[test]
-fn native_invalid_quorum_is_rejected_at_block() {
+fn configurable_shim_matches_verifier_gas_and_propagates_oog() {
     let mut f = Fixture::new();
+    assert!(f.run(&f.signed(3, vec![f.getter()])).status);
     let account = f.account;
-    // A block carries the sender, so execution checks the quorum itself: an approval from a key
-    // that is not an owner must not authorize the transaction.
-    let stranger = signer(0x77);
-    let tx =
-        configurable_account_signed_by(account, &f.config, &stranger, aa_tx(3, vec![f.getter()]));
+    let approval =
+        configurable_account_approval(account, &f.config, &f.owner, CONFIGURABLE_ACCOUNT_HASH);
+    let signature = TempoSignature::ConfigurableAccount(approval).to_bytes();
+    let direct = ISignatureVerifier::verifyConfigurableAccountCall {
+        account,
+        hash: CONFIGURABLE_ACCOUNT_HASH,
+        signature: signature.clone(),
+    }
+    .abi_encode();
+    let input = IConfigurableAccountShim::isValidSignatureCall {
+        hash: CONFIGURABLE_ACCOUNT_HASH,
+        signature,
+    }
+    .abi_encode();
+    let direct_gas = in_storage_ctx(&mut f.evm, || {
+        let result = SignatureVerifier::new()
+            .call(&direct, Address::ZERO)
+            .unwrap();
+        assert!(
+            ISignatureVerifier::verifyConfigurableAccountCall::abi_decode_returns(result.bytes())
+                .unwrap()
+        );
+        StorageCtx.gas_used()
+    });
+    let shim_gas = in_storage_ctx(&mut f.evm, || {
+        assert_eq!(
+            shim::call(account, &input).unwrap().bytes(),
+            IConfigurableAccountShim::isValidSignatureCall::abi_encode_returns(
+                &[0x16, 0x26, 0xba, 0x7e].into()
+            )
+        );
+        StorageCtx.gas_used()
+    });
+    assert_eq!(shim_gas, direct_gas);
+    let mut shim_with_gas = |gas_limit, input: &[u8]| {
+        let mut gas = evm2::interpreter::GasTracker::new(gas_limit);
+        let mut provider = tempo_precompiles::storage::evm::EvmPrecompileStorageProvider::new(
+            &mut f.evm,
+            &mut gas,
+            TempoHardfork::T14,
+            true,
+        );
+        StorageCtx::enter(&mut provider, || shim::call(account, input))
+    };
+    assert!(shim_with_gas(shim_gas - 1, &input).is_err_and(|error| error.is_oog()));
+    // The receive hook pays for its whole input before decoding it.
+    let receive = IConfigurableAccountShim::onERC721ReceivedCall {
+        operator: Address::ZERO,
+        from: Address::ZERO,
+        tokenId: U256::ZERO,
+        data: vec![0; 1 << 20].into(),
+    }
+    .abi_encode();
+    let receive_gas = input_cost(TempoHardfork::T14, receive.len()).unwrap();
+    assert!(shim_with_gas(receive_gas - 1, &receive).is_err_and(|error| error.is_oog()));
     assert_eq!(
-        rejection(&mut f, &tx, account),
-        TempoInvalidTransaction::ConfigurableAccount(ConfigurableAccountError::Quorum(
-            tempo_primitives::transaction::ConfigurableAccountQuorumError::SignerNotOwner
-        ))
+        shim_with_gas(receive_gas, &receive).unwrap().bytes(),
+        IConfigurableAccountShim::onERC721ReceivedCall::abi_encode_returns(
+            &IConfigurableAccountShim::onERC721ReceivedCall::SELECTOR.into()
+        )
     );
-    // The rejection consumed no nonce, so the owners' approval of the same nonce still runs.
-    let result = f.run(&f.signed(3, vec![f.getter()]));
-    assert!(result.status, "{result:?}");
 }
 
 /// A registered parent with incompatible code cannot act through its access keys.
