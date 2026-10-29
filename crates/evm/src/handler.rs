@@ -1361,7 +1361,7 @@ fn prepare_aa(
     if tx
         .tempo_authorization_list
         .iter()
-        .any(|authorization| authorization.signature().signed_by_configurable_account())
+        .any(|authorization| authorization.signature().is_configurable_account())
     {
         return Err(ConfigurableAccountError::InvalidSignatureContext.into());
     }
