@@ -72,7 +72,8 @@ pub const STEP_CHECKS: &[Check<Step<Zone, ZoneBlock>>] = &[
             )
         },
     },
-    // Judged on blocks that advance Tempo at all.
+    // Judged on blocks that advance Tempo at all: only a successful call advances it, so a
+    // reverted lookalike (any sender but the system one reverts) does not count.
     check! {
         id: ADVANCE_TEMPO_FIRST,
         doc: "When present, `advanceTempo` is the first transaction in a zone block.",
@@ -84,7 +85,8 @@ pub const STEP_CHECKS: &[Check<Step<Zone, ZoneBlock>>] = &[
                 .iter()
                 .enumerate()
                 .filter(|(_, tx)| {
-                    tx.to == Some(ZONE_INBOX_ADDRESS)
+                    tx.success
+                        && tx.to == Some(ZONE_INBOX_ADDRESS)
                         && tx.selector().is_some_and(|s| {
                             s == IZoneInbox::advanceTempoCall::SELECTOR
                                 || s == IZoneInbox::advanceTempoHeadersCall::SELECTOR
@@ -161,9 +163,11 @@ pub const STEP_CHECKS: &[Check<Step<Zone, ZoneBlock>>] = &[
             ensure!(wrong.is_empty(), "{}", wrong.join("; "))
         },
     },
-    // Judged on blocks that move the finalized Tempo block. Each `TempoBlockFinalized` must
-    // continue the previous one by number, and each imported header the previous header by
-    // parent hash and number, from the block finalized before to the one finalized after.
+    // Judged on blocks that move the finalized Tempo block. Each imported header must continue
+    // the previous header by parent hash and number, from the block finalized before to the one
+    // finalized after. One `TempoBlockFinalized` reports a whole call's headers by its last, so
+    // each must move past the previous one and, when the headers were decoded, land on one of
+    // them.
     check! {
         id: TEMPO_HEADER_CONTINUITY,
         doc: "`TempoState.finalizeTempo` only accepts headers whose parent hash and block number continue from the previous finalized Tempo header.",
@@ -177,10 +181,14 @@ pub const STEP_CHECKS: &[Check<Step<Zone, ZoneBlock>>] = &[
             }
             let mut number = pre.number;
             for e in &finalized {
-                if number.checked_add(1) != Some(e.blockNumber) {
+                let landed = b.imported.is_empty()
+                    || b.imported
+                        .iter()
+                        .any(|h| h.number == e.blockNumber && h.hash == e.blockHash);
+                if e.blockNumber <= number || !landed {
                     return Some(Verdict::Broken(format!(
-                        "finalized Tempo block {} after {number}",
-                        e.blockNumber
+                        "finalized Tempo block {} ({}) after {number}",
+                        e.blockNumber, e.blockHash
                     )));
                 }
                 number = e.blockNumber;

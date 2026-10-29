@@ -605,7 +605,94 @@ pub fn is_compressed_point(x: B256, y_parity: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Report;
     use alloy_primitives::{address, b256};
+    use invariants_core::{CallKind, Frame};
+
+    const PORTAL: Address = Address::repeat_byte(0x90);
+    const ADMIN: Address = Address::repeat_byte(0xad);
+    const NEXT_ADMIN: Address = Address::repeat_byte(0xae);
+
+    /// A successful top-level call of `call` on [`PORTAL`] from `caller`.
+    fn portal_call(caller: Address, call: impl SolCall) -> Frame {
+        Frame {
+            depth: 0,
+            kind: CallKind::Call,
+            caller,
+            target: PORTAL,
+            input: call.abi_encode().into(),
+            value: U256::ZERO,
+            success: true,
+            output: Bytes::new(),
+        }
+    }
+
+    /// The violations of check `id` on a step from a portal administered by [`ADMIN`] to
+    /// one administered by `post_admin`, making `calls`.
+    fn violations(id: &str, post_admin: Address, calls: Vec<Frame>) -> Vec<String> {
+        let calls_made = calls.len() as u64;
+        let pre = Portal {
+            admin: ADMIN,
+            ..Portal::absent(PORTAL)
+        };
+        let post = Portal {
+            admin: post_admin,
+            ..Portal::absent(PORTAL)
+        };
+        let mut report = Report::default();
+        report.run(
+            STEP_CHECKS,
+            &PortalStep {
+                pre,
+                post,
+                changes: Vec::new(),
+                logs: Vec::new(),
+                calls,
+                tx: None,
+            },
+        );
+        assert_eq!(report.counts[id].armed, calls_made, "{id}");
+        report
+            .violations
+            .into_iter()
+            .filter(|v| v.id == id)
+            .map(|v| v.detail)
+            .collect()
+    }
+
+    #[test]
+    fn an_admin_handed_over_within_one_step_acts_as_admin() {
+        let transfer = portal_call(
+            ADMIN,
+            ZonePortal::transferAdminCall {
+                newAdmin: NEXT_ADMIN,
+            },
+        );
+        let accept = portal_call(NEXT_ADMIN, ZonePortal::acceptAdminCall {});
+        let set_leader = portal_call(
+            NEXT_ADMIN,
+            ZonePortal::setLeaderCall {
+                newLeader: NEXT_ADMIN,
+                expectedEpoch: 0,
+            },
+        );
+        let handover = violations(
+            ADMIN_ONLY_GOVERNANCE,
+            NEXT_ADMIN,
+            vec![transfer, accept.clone()],
+        );
+        assert!(handover.is_empty(), "{handover:?}");
+        assert_eq!(
+            violations(ADMIN_ONLY_GOVERNANCE, NEXT_ADMIN, vec![accept]),
+            [format!("admin is {ADMIN}")]
+        );
+        let leader = violations(SEQUENCER_ONLY_OPS, NEXT_ADMIN, vec![set_leader.clone()]);
+        assert!(leader.is_empty(), "{leader:?}");
+        assert_eq!(
+            violations(SEQUENCER_ONLY_OPS, ADMIN, vec![set_leader]),
+            ["the caller is not a sequencer or the admin"]
+        );
+    }
 
     #[test]
     fn portal_addresses_carry_the_zone_id_big_endian() {

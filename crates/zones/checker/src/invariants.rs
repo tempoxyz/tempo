@@ -2,9 +2,10 @@
 //!
 //! The fuzz harness executes Tempo blocks only, so the checks in [`tempo_invariants::zones::zone`]
 //! run here, over the exact state each Zone block leaves: view calls run in the node's own Zone
-//! EVM against historical state, answering as any caller for the privacy getters.
+//! EVM against historical state, answering as any caller for the privacy getters. Their Tempo
+//! reads never wait out an L1 outage (see [`ViewEvm`]).
 
-use std::{collections::BTreeSet, convert::Infallible};
+use std::{collections::BTreeSet, convert::Infallible, num::NonZeroU32};
 
 use alloy_consensus::{BlockHeader as _, Transaction as _, TxReceipt as _};
 use alloy_contract::CallBuilder;
@@ -16,12 +17,12 @@ use alloy_rpc_types_eth::Filter;
 use alloy_sol_types::{SolCall as _, SolEvent as _};
 use evm2::evm::SystemTx;
 use futures::future;
-use reth_evm::{BlockExecutorFactory, ConfigureEvm, Database, database::StateProviderDatabase};
+use reth_evm::{ConfigureEvm, Database, database::StateProviderDatabase};
 use reth_primitives_traits::RecoveredBlock;
 use reth_storage_api::{EvmStateProviderAdapter, HeaderProvider, StateProviderFactory};
 use tempo_alloy::TempoNetwork;
 use tempo_contracts::zones::{ZONE_TOKEN_ADDRESS, ZonePortal};
-use tempo_evm::TempoEvm;
+use tempo_evm::{TempoEvm, TempoEvmError};
 use tempo_invariants::{
     Observe, Report, Step, Views,
     tip20::{ITIP20, transfer},
@@ -33,6 +34,7 @@ use tempo_invariants::{
     },
 };
 use tempo_primitives::{Block, TempoHeader, TempoPrimitives, TempoReceipt, is_tip20_prefix};
+use zone_evm::ZoneEvmConfig;
 
 use crate::telemetry::CheckerMetrics;
 
@@ -40,9 +42,11 @@ use crate::telemetry::CheckerMetrics;
 /// block with many transfers costs.
 const MAX_PRIVACY_READS: usize = 64;
 
-/// A node EVM configuration whose EVM is Tempo's, so the checker can make view calls with it.
+/// A node EVM configuration the checker can make view calls with.
 pub trait ViewEvm: ConfigureEvm<Primitives = TempoPrimitives> {
-    /// The EVM over `db` with `header`'s environment.
+    /// The EVM over `db` with `header`'s environment, for the invariant view calls. Its
+    /// Tempo reads must give up rather than wait for L1, since the checker's ExEx loop waits on
+    /// every view call.
     fn view_evm<'a>(
         &self,
         db: impl Database + 'a,
@@ -50,17 +54,18 @@ pub trait ViewEvm: ConfigureEvm<Primitives = TempoPrimitives> {
     ) -> Result<TempoEvm<'a>, Self::Error>;
 }
 
-impl<E> ViewEvm for E
-where
-    E: ConfigureEvm<Primitives = TempoPrimitives>,
-    for<'a> E::BlockExecutorFactory: BlockExecutorFactory<Evm<'a> = TempoEvm<'a>>,
-{
+/// Tempo reads go through the node's L1 cache with one RPC attempt per miss, where the node's
+/// own execution retries a miss forever: a failed read makes its view answer nothing, so an L1
+/// outage leaves the checks reading it (such as refunds asked as a third party, which read the
+/// portal's roles) unjudged instead of stalling the checker.
+impl ViewEvm for ZoneEvmConfig {
     fn view_evm<'a>(
         &self,
         db: impl Database + 'a,
         header: &TempoHeader,
-    ) -> Result<TempoEvm<'a>, Self::Error> {
-        self.evm_for_block(db, header)
+    ) -> Result<TempoEvm<'a>, TempoEvmError> {
+        self.with_l1_reader(self.l1_reader().with_max_sync_attempts(NonZeroU32::MIN))
+            .evm_for_block(db, header)
     }
 }
 
@@ -92,7 +97,8 @@ impl ZoneInvariants {
         self.last
     }
 
-    /// Every verdict since the first block checked, by check.
+    /// Every verdict count since the first block checked, by check. It keeps no violations:
+    /// each block's report carries its own.
     pub const fn totals(&self) -> &Report {
         &self.totals
     }
@@ -102,7 +108,8 @@ impl ZoneInvariants {
     /// provider and the zone's portal) [`ANCHOR_CHECKS`] against the portal at the Tempo block
     /// it imported and [`BATCH_CHECKS`] on every batch the portal accepted in the Tempo blocks it
     /// imported. Fails when local state cannot be opened or an answer is malformed; a view the EVM
-    /// cannot run, or a Tempo read that fails, leaves its checks unjudged.
+    /// cannot run, a Tempo read that fails, or a batch whose state cannot be read leaves its
+    /// checks unjudged.
     pub async fn check<P, E>(
         &mut self,
         provider: &P,
@@ -130,8 +137,17 @@ impl ZoneInvariants {
             match submissions(l1, portal, &step).await {
                 Ok(submissions) => {
                     for submission in submissions {
-                        if let Some(batch) = self.check_batch(provider, evm_config, submission)? {
-                            report.merge(batch);
+                        let next_block_hash = submission.next_block_hash;
+                        match self.check_batch(provider, evm_config, submission) {
+                            Ok(Some(batch)) => report.merge(batch),
+                            Ok(None) => {}
+                            Err(error) => tracing::warn!(
+                                target: "zone::checker",
+                                error = %format_args!("{error:#}"),
+                                zone_block = block.number(),
+                                %next_block_hash,
+                                "cannot check a submitted batch; its batch invariants unjudged"
+                            ),
                         }
                     }
                 }
@@ -144,7 +160,10 @@ impl ZoneInvariants {
             }
         }
         self.last = Some(block.num_hash());
-        self.totals.merge(report.clone());
+        self.totals.merge(Report {
+            counts: report.counts.clone(),
+            violations: Vec::new(),
+        });
         Ok(report)
     }
 
@@ -517,10 +536,10 @@ impl Views for StateViews<'_> {
     }
 }
 
-/// The Tempo headers a block's first transaction imports, when it is `advanceTempo` or
-/// `advanceTempoHeaders` and every header decodes; empty otherwise.
+/// The Tempo headers a block's first transaction imports, when it is a successful
+/// `advanceTempo` or `advanceTempoHeaders` and every header decodes; empty otherwise.
 fn imported_headers(tx: &ZoneTx) -> Vec<ImportedHeader> {
-    if tx.to != Some(ZONE_INBOX_ADDRESS) {
+    if !tx.success || tx.to != Some(ZONE_INBOX_ADDRESS) {
         return Vec::new();
     }
     let headers = if let Ok(call) = IZoneInbox::advanceTempoCall::abi_decode(&tx.input) {

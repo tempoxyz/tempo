@@ -16737,6 +16737,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+ "zone-evm",
  "zone-l1",
  "zone-precompiles",
  "zone-primitives",

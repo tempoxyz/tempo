@@ -49,6 +49,7 @@ tempo-primitives = { workspace = true, features = ["reth-codec"] }
 zone-precompiles.workspace = true
 zone-primitives.workspace = true
 zone-l1.workspace = true
+zone-evm.workspace = true
 
 # misc
 evm2.workspace = true

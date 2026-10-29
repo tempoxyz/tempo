@@ -434,7 +434,13 @@ pub const STEP_CHECKS: &[Check<PortalStep>] = &[
         over: |s: &PortalStep| restricted_calls(s, GOVERNANCE),
         judge: |s, call| {
             let allowed = if call.value.selector == ZonePortal::acceptAdminCall::SELECTOR {
-                vec![s.pre.pending_admin]
+                // A pending admin the step itself set may accept within it.
+                s.calls_of::<ZonePortal::transferAdminCall>(s.post.portal)
+                    .into_iter()
+                    .filter(|(frame, _)| frame.success)
+                    .map(|(_, call)| call.newAdmin)
+                    .chain([s.pre.pending_admin])
+                    .collect()
             } else {
                 vec![s.pre.admin, s.post.admin]
             };
@@ -458,7 +464,7 @@ pub const STEP_CHECKS: &[Check<PortalStep>] = &[
             ]
             .contains(&call.value.selector);
             ensure!(
-                sequencer || (admin_too && caller == s.pre.admin),
+                sequencer || (admin_too && [s.pre.admin, s.post.admin].contains(&caller)),
                 "the caller is not a sequencer{}",
                 if admin_too { " or the admin" } else { "" }
             )

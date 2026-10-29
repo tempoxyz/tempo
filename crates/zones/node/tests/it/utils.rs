@@ -660,6 +660,7 @@ where
             let provider = self.node.provider();
             let evm_config = self.node.evm_config();
             let mut invariants = zone_checker::ZoneInvariants::default();
+            let mut violations = Vec::new();
             for number in 1..=provider.best_block_number()? {
                 let block = provider
                     .recovered_block(number.into(), TransactionVariant::WithHash)?
@@ -667,7 +668,7 @@ where
                 let receipts = provider
                     .receipts_by_block(number.into())?
                     .ok_or_else(|| eyre::eyre!("receipts of zone block {number} not found"))?;
-                invariants
+                let report = invariants
                     .check(
                         provider,
                         evm_config,
@@ -676,8 +677,12 @@ where
                         &receipts,
                     )
                     .await?;
+                violations.extend(report.violations);
             }
-            Ok(invariants.totals().clone())
+            Ok(tempo_invariants::Report {
+                counts: invariants.totals().counts.clone(),
+                violations,
+            })
         })
     }
 }
@@ -1633,7 +1638,8 @@ impl ZoneTestNode {
 pub(crate) struct L1TestNode {
     http_url: url::Url,
     ws_url: url::Url,
-    _node_handle: Box<dyn TestNodeHandle>,
+    // Held only to keep the node running.
+    _node_handle: Box<dyn std::any::Any + Send>,
     _tasks: Runtime,
 }
 

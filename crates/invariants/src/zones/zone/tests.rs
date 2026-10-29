@@ -321,6 +321,43 @@ fn advance_tempo_first() {
     );
     assert_eq!(judge(STEP_CHECKS, &first, ADVANCE_TEMPO_FIRST), (1, vec![]));
 
+    // Reverted user lookalikes of either call advance nothing, wherever they sit.
+    let mut lookalike = tx(Some(ZONE_INBOX_ADDRESS), advance_input(), 0..0);
+    lookalike.success = false;
+    let mut headers_lookalike = tx(
+        Some(ZONE_INBOX_ADDRESS),
+        IZoneInbox::advanceTempoHeadersCall { headers: vec![] }
+            .abi_encode()
+            .into(),
+        0..0,
+    );
+    headers_lookalike.success = false;
+    let reverted = step(
+        zone(1, 0, 0, 0),
+        zone(1, 0, 0, 0),
+        vec![],
+        block(vec![
+            advance.clone(),
+            transfer.clone(),
+            lookalike.clone(),
+            headers_lookalike.clone(),
+        ]),
+    );
+    assert_eq!(
+        judge(STEP_CHECKS, &reverted, ADVANCE_TEMPO_FIRST),
+        (1, vec![])
+    );
+    let only_lookalikes = step(
+        zone(1, 0, 0, 0),
+        zone(1, 0, 0, 0),
+        vec![],
+        block(vec![transfer.clone(), lookalike, headers_lookalike]),
+    );
+    assert_eq!(
+        judge(STEP_CHECKS, &only_lookalikes, ADVANCE_TEMPO_FIRST).0,
+        0
+    );
+
     let second = step(
         zone(1, 0, 0, 0),
         zone(1, 0, 0, 0),
@@ -443,26 +480,37 @@ fn mint_burn_authority() {
 
 #[test]
 fn tempo_header_continuity() {
-    let advance = tx(Some(ZONE_INBOX_ADDRESS), advance_input(), 0..2);
+    let header = |number: u64| TempoHeader {
+        number,
+        hash: tempo_hash(number),
+        parent_hash: tempo_hash(number - 1),
+    };
+    // One call importing two headers finalizes once, at the last.
+    let advance = tx(Some(ZONE_INBOX_ADDRESS), advance_input(), 0..1);
     let mut s = step(
         zone(1, 0, 0, 0),
         zone(3, 0, 0, 0),
-        vec![tempo_finalized(2), tempo_finalized(3)],
+        vec![tempo_finalized(3)],
         block(vec![advance]),
     );
-    s.tx.imported = vec![
-        TempoHeader {
-            number: 2,
-            hash: tempo_hash(2),
-            parent_hash: tempo_hash(1),
-        },
-        TempoHeader {
-            number: 3,
-            hash: tempo_hash(3),
-            parent_hash: tempo_hash(2),
-        },
-    ];
+    s.tx.imported = vec![header(2), header(3)];
     assert_eq!(judge(STEP_CHECKS, &s, TEMPO_HEADER_CONTINUITY), (1, vec![]));
+
+    // The same import when the runner did not decode the headers.
+    let mut undecoded = s.clone();
+    undecoded.tx.imported.clear();
+    assert_eq!(
+        judge(STEP_CHECKS, &undecoded, TEMPO_HEADER_CONTINUITY),
+        (1, vec![])
+    );
+
+    // Calls importing one header each finalize once per header.
+    let mut each = s.clone();
+    each.logs = vec![tempo_finalized(2), tempo_finalized(3)];
+    assert_eq!(
+        judge(STEP_CHECKS, &each, TEMPO_HEADER_CONTINUITY),
+        (1, vec![])
+    );
 
     // A header whose parent is not the one finalized before.
     let mut forked = s.clone();
@@ -472,11 +520,44 @@ fn tempo_header_continuity() {
         1
     );
 
-    // A finalized block that skips one.
-    let mut gap = s;
-    gap.tx.imported.clear();
-    gap.logs = vec![tempo_finalized(3)];
+    // A header that skips one.
+    let mut gap = s.clone();
+    gap.tx.imported = vec![TempoHeader {
+        parent_hash: tempo_hash(1),
+        ..header(3)
+    }];
     assert_eq!(judge(STEP_CHECKS, &gap, TEMPO_HEADER_CONTINUITY).1.len(), 1);
+
+    // A finalized block that is none of the imported headers.
+    let mut stray = s;
+    stray.logs = vec![
+        log(
+            TEMPO_STATE_ADDRESS,
+            TempoState::TempoBlockFinalized {
+                blockHash: B256::repeat_byte(0x66),
+                blockNumber: 2,
+                stateRoot: B256::ZERO,
+            }
+            .encode_log_data(),
+        ),
+        tempo_finalized(3),
+    ];
+    assert_eq!(
+        judge(STEP_CHECKS, &stray, TEMPO_HEADER_CONTINUITY).1.len(),
+        1
+    );
+
+    // A finalized block that does not move past the one before.
+    let back = step(
+        zone(1, 0, 0, 0),
+        zone(1, 0, 0, 0),
+        vec![tempo_finalized(1)],
+        block(vec![]),
+    );
+    assert_eq!(
+        judge(STEP_CHECKS, &back, TEMPO_HEADER_CONTINUITY).1.len(),
+        1
+    );
 
     // A block that leaves Tempo alone is not judged.
     let idle = step(zone(1, 0, 0, 0), zone(1, 0, 0, 0), vec![], block(vec![]));

@@ -159,6 +159,15 @@ impl L1StateProvider {
         }
     }
 
+    /// Clones this provider with at most `attempts` synchronous RPC attempts per cache miss,
+    /// sharing its cache and RPC connection.
+    pub fn with_max_sync_attempts(&self, attempts: NonZeroU32) -> Self {
+        Self {
+            max_sync_attempts: Some(attempts),
+            ..self.clone()
+        }
+    }
+
     /// Read a storage slot synchronously at a specific L1 block — cache first, RPC fallback.
     ///
     /// This method is designed for use inside EVM precompiles that run on a **blocking thread**.
@@ -278,6 +287,7 @@ impl L1StorageReader for L1StateProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_transport::mock::Asserter;
 
     #[tokio::test(flavor = "multi_thread")]
     async fn finite_sync_attempt_limit_returns_diagnostic_error() {
@@ -305,5 +315,39 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains("after 1 attempts"), "{message}");
         assert!(message.contains("block=7"), "{message}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn bounded_clone_shares_the_cache_and_gives_up_on_a_miss() {
+        // An asserter with no queued responses fails every RPC.
+        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+            .connect_mocked_client(Asserter::new())
+            .erased();
+        let unbounded = L1StateProvider::new_raw(
+            L1StateProviderConfig::default(),
+            L1StateCache::default(),
+            provider,
+            tokio::runtime::Handle::current(),
+        );
+        let cached = B256::repeat_byte(0xc0);
+        unbounded
+            .cache()
+            .lock()
+            .set(Address::ZERO, B256::ZERO, 7, cached);
+        let bounded = unbounded.with_max_sync_attempts(NonZeroU32::MIN);
+
+        let (hit, miss) = tokio::task::spawn_blocking(move || {
+            (
+                bounded.get_storage(Address::ZERO, B256::ZERO, 7),
+                bounded.get_storage(Address::ZERO, B256::with_last_byte(1), 7),
+            )
+        })
+        .await
+        .expect("storage task must not panic");
+        assert_eq!(hit.expect("a cached slot needs no RPC"), cached);
+        let message = miss
+            .expect_err("a miss on a failing endpoint must fail after one attempt")
+            .to_string();
+        assert!(message.contains("after 1 attempts"), "{message}");
     }
 }
