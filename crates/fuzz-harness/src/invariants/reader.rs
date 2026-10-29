@@ -3,15 +3,31 @@
 use std::fmt::Display;
 
 use alloy_primitives::{Address, KECCAK256_EMPTY};
-use invariants_core::{Observe, ObserveError, Report, Violation};
+use invariants_core::{AnyCheck, Observe, ObserveError, Report, Violation};
 use tempo_evm::{TempoEvmConfig, TempoEvmEnv};
-use tempo_invariants::all;
+use tempo_invariants::{all, applies_at};
 
 use super::{
     StepEffects,
     views::{EvmViews, PreView, ViewFailed},
 };
 use crate::state::Db;
+
+#[cfg(test)]
+thread_local! {
+    /// Checks a test runs besides [`all`], on this thread.
+    pub(crate) static ADDED: std::cell::RefCell<Vec<&'static dyn AnyCheck>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The checks the harness runs: [`all`], and in tests those a test [`ADDED`].
+fn checks() -> impl Iterator<Item = &'static dyn AnyCheck> {
+    #[cfg(test)]
+    let added = ADDED.with(|added| added.borrow().clone());
+    #[cfg(not(test))]
+    let added = Vec::new();
+    all().chain(added)
+}
 
 /// Reads models from the state after a step and, with its `effects`, from the state before it.
 pub(super) struct Reader<'a> {
@@ -23,8 +39,9 @@ pub(super) struct Reader<'a> {
 
 impl Reader<'_> {
     /// Reads the model `at` names at `contract` after the step and checks it into `report`; with
-    /// the step's effects, also reads it before the step and checks the step. A read that fails
-    /// is counted under `view` as [`observed`] does.
+    /// the step's effects, also reads it before the step and checks the step. Only the checks that
+    /// apply at the block's fork run. A read that fails is counted under `view` as [`observed`]
+    /// does.
     pub(super) fn check<M: Observe + 'static>(
         &self,
         report: &mut Report,
@@ -37,7 +54,8 @@ impl Reader<'_> {
         let Some(post) = observed(report, view, contract, M::observe(&mut { after }, at)) else {
             return;
         };
-        report.run_any(all(), &post);
+        let applies = |meta: &_| applies_at(meta, self.env.spec);
+        report.run_any_where(checks(), &post, applies);
         let Some(effects) = self.effects else {
             return;
         };
@@ -68,7 +86,7 @@ impl Reader<'_> {
         let Some(pre) = observed(report, view, subject, read) else {
             return;
         };
-        report.run_any(all(), &effects.step(contract, pre, post));
+        report.run_any_where(checks(), &effects.step(contract, pre, post), applies);
     }
 }
 

@@ -792,3 +792,119 @@ fn the_c_abi_round_trips_and_rejects_what_does_not_decode() {
         TempoHardfork::VARIANTS
     );
 }
+
+/// A contract that forwards its calldata to pathUSD and returns or reverts with pathUSD's answer.
+const FORWARDER: Address = address!("00000000000000000000000000000000000000f0");
+
+/// The code of [`FORWARDER`].
+fn forwarder_code() -> Bytes {
+    let mut code = vec![
+        0x36, 0x5f, 0x5f, 0x37, // calldatacopy(0, 0, calldatasize)
+        0x5f, 0x5f, 0x36, 0x5f, 0x5f, 0x73, // call(.., pathUSD, 0, 0, calldatasize, 0, 0)
+    ];
+    code.extend_from_slice(PATH_USD_ADDRESS.as_slice());
+    code.extend_from_slice(&[
+        0x5a, 0xf1, // gas, call
+        0x3d, 0x5f, 0x5f, 0x3e, // returndatacopy(0, 0, returndatasize)
+        0x60, 0x2a, 0x57, // jumpi(42, success)
+        0x3d, 0x5f, 0xfd, // revert(0, returndatasize)
+        0x5b, 0x3d, 0x5f, 0xf3, // 42: return(0, returndatasize)
+    ]);
+    code.into()
+}
+
+/// The dev genesis with [`FORWARDER`] deployed.
+fn genesis_with_forwarder() -> PreState {
+    let forwarder = AccountInput {
+        code: forwarder_code(),
+        ..Default::default()
+    };
+    PreState::Genesis(one_account(FORWARDER, forwarder))
+}
+
+/// How many subjects the invariant `id` judged, was armed for and fired on in `outcome`.
+fn counts(outcome: &TempoExecutionOutcome, id: &str) -> (u64, u64, u64) {
+    let counts = &outcome.invariant_counts[id];
+    (counts.evaluated, counts.armed, counts.fired)
+}
+
+#[test]
+fn transfer_calls_are_traced_into_precompiles_at_any_depth() {
+    // The sender funds the forwarder, then has it transfer on: the second transfer is a call
+    // from the forwarder's code into the pathUSD precompile, one frame down.
+    let forwarded = ITIP20::transferCall {
+        to: RECIPIENT,
+        amount: U256::from(3),
+    };
+    let txs = vec![
+        tip20_transfer(0, FORWARDER, U256::from(7), 1_000_000),
+        call(1, FORWARDER, forwarded.abi_encode().into(), 1_000_000),
+    ];
+    let outcome = run(genesis_with_forwarder(), vec![t4_block(txs)]);
+
+    assert_eq!(outcome.error, ErrorClass::None);
+    assert!(
+        outcome
+            .receipts
+            .iter()
+            .all(|receipt| receipt.outcome == TxOutcome::Success),
+        "{:?}",
+        outcome.receipts
+    );
+    assert!(
+        outcome.invariant_failures.is_empty(),
+        "{:?}",
+        outcome.invariant_failures
+    );
+    assert_eq!(
+        counts(&outcome, tempo_invariants::tip20::TRANSFER_CALL),
+        (2, 2, 0)
+    );
+}
+
+#[test]
+fn a_reverted_transfer_call_arms_nothing() {
+    // The forwarder holds no pathUSD, so the transfer it forwards reverts, and so does the
+    // transaction.
+    let forwarded = ITIP20::transferCall {
+        to: RECIPIENT,
+        amount: U256::from(3),
+    };
+    let tx = call(0, FORWARDER, forwarded.abi_encode().into(), 1_000_000);
+    let outcome = run(genesis_with_forwarder(), vec![t4_block(vec![tx])]);
+
+    assert_eq!(outcome.receipts[0].outcome, TxOutcome::Revert);
+    assert_eq!(
+        counts(&outcome, tempo_invariants::tip20::TRANSFER_CALL).1,
+        0
+    );
+}
+
+#[test]
+fn checks_run_only_at_the_forks_they_apply_at() {
+    use invariants_core::{AnyCheck, Check, Verdict, check};
+    use tempo_invariants::tip20::Ledger;
+
+    /// A token check from T14 that holds whenever it runs.
+    static FROM_T14: Check<Ledger> = check! {
+        id: "TEST-FROM-T14",
+        doc: "Holds from T14.",
+        since: "T14",
+        judge: |_ledger: &Ledger| Some(Verdict::Holds),
+    };
+    crate::invariants::ADDED.with(|added| added.borrow_mut().push(&FROM_T14 as &dyn AnyCheck));
+    let at = |fork| {
+        let header = BlockHeaderInput::Context(context(fork, 0));
+        let outcome = run(genesis(), vec![block(header, vec![transfer(0, 7)])]);
+        assert_eq!(outcome.error, ErrorClass::None);
+        outcome
+    };
+    let (before, from) = (at(TempoHardfork::T13), at(TempoHardfork::T14));
+    crate::invariants::ADDED.with(|added| added.borrow_mut().clear());
+
+    // Both read pathUSD's ledger, but only T14 runs the check.
+    let ledger = tempo_invariants::tip20::SUPPLY_CAP;
+    assert!(counts(&before, ledger).0 > 0 && counts(&from, ledger).0 > 0);
+    assert_eq!(before.invariant_counts.get("TEST-FROM-T14"), None);
+    assert!(counts(&from, "TEST-FROM-T14").1 > 0);
+}

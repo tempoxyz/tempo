@@ -8,7 +8,7 @@ use alloy_consensus::{
 use alloy_eips::Decodable2718 as _;
 use alloy_primitives::{Address, Log};
 use evm2::bytecode::Bytecode;
-use invariants_core::Report;
+use invariants_core::{Frame, Report};
 use reth_consensus::{Consensus as _, HeaderValidator as _};
 use reth_evm::{
     BlockExecutionError, BlockExecutor as _, BlockExecutorFactory as _, ConfigureEvm as _,
@@ -352,11 +352,16 @@ fn execute_txs(
     );
 
     let basefee = block.header().base_fee_per_gas();
+    let tracer = invariants::Tracer::default();
     for (tx_index, tx) in block.transactions_recovered().enumerate() {
         let tx_index = tx_index as u64;
         let sender = tx.signer();
         let effective_gas_price = tx.effective_gas_price(basefee);
-        let result = executor.execute_transaction_without_commit(tx)?;
+        executor.evm_mut().set_inspector(tracer.clone());
+        let result = executor.execute_transaction_without_commit(tx);
+        executor.evm_mut().clear_inspector();
+        let calls = tracer.take();
+        let result = result?;
         let execution = result.result();
         let outcome = if execution.status {
             TxOutcome::Success
@@ -403,7 +408,7 @@ fn execute_txs(
             db,
             hooked,
             scope,
-            Some((tx, &receipt.logs)),
+            Some((tx, &receipt.logs, &calls)),
             updates,
             &mut outputs.invariant_failures,
             &mut outputs.invariant_report,
@@ -419,8 +424,8 @@ fn take(hooked: &Updates) -> Vec<StateUpdate> {
 }
 
 /// Ends an execution step: writes its changes to `db`, checks invariants at `scope`, and returns the
-/// step's changes. A transaction's step, given the transaction and its logs as `tx`, is checked only
-/// for the contracts it changed, and also on what it did.
+/// step's changes. A transaction's step, given the transaction, its logs and its call frames as
+/// `tx`, is checked only for the contracts it changed or called, and also on what it did.
 #[allow(clippy::too_many_arguments)]
 fn step(
     evm_config: &TempoEvmConfig,
@@ -428,7 +433,7 @@ fn step(
     db: &Db,
     hooked: &Updates,
     scope: InvariantScope,
-    tx: Option<(Tx, &[Log])>,
+    tx: Option<(Tx, &[Log], &[Frame])>,
     updates: &mut Vec<StateUpdate>,
     failures: &mut Vec<InvariantFailure>,
     report: &mut Report,
@@ -442,10 +447,18 @@ fn step(
         let cache = db.cache.borrow();
         state::changes(&net, &Contracts(&[&overlay.contracts, &cache.contracts]))
     };
-    let selected = |contract: &_| tx.is_none() || net.contains(contract);
-    let effects = tx.map(|(tx, logs)| invariants::StepEffects {
+    // A contract the transaction called is checked too, even when the call changed nothing: a call
+    // that should have changed it, such as a transfer that returned but moved nothing, breaks a
+    // step check.
+    let selected = |contract: &Address| {
+        tx.is_none_or(|(_, _, calls)| {
+            net.contains(contract) || calls.iter().any(|frame| frame.enters(*contract))
+        })
+    };
+    let effects = tx.map(|(tx, logs, calls)| invariants::StepEffects {
         net: &net,
         logs,
+        calls,
         tx,
     });
     let evm = executor.evm();

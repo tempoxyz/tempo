@@ -3,7 +3,7 @@
 use invariants_core::{check, ensure};
 
 use super::{Books, Escrow};
-use crate::{Check, Checked, Step, StepChecked, Tx};
+use crate::{Check, Checked, Severity, Step, StepChecked, Tx};
 
 /// The DEX's views answer. Counted by runners that read the model, not judged by a check here.
 pub const VIEW: &str = "TEMPO-DEX-VIEW";
@@ -15,6 +15,8 @@ pub const CHECKS: &[Check<Books>] = &[
     // orders' escrow in it.
     check! {
         id: DEX_CUSTODY,
+        doc: "The stablecoin DEX holds, of each token, at least its users' internal balances of it plus its live orders' escrow in it.",
+        severity: Severity::Critical,
         over: |books: &Books| books.holdings.keys(),
         judge: |b, token| {
             let token = **token;
@@ -39,6 +41,8 @@ pub const STEP_CHECKS: &[Check<Step<Books, Option<Tx>>>] = &[
     // than it comes to owe, such as a plain transfer to it.
     check! {
         id: CUSTODY_STEP,
+        doc: "The stablecoin DEX's holdings of a token never fall by more than what it owes in that token.",
+        severity: Severity::Critical,
         over: |step: &Step<Books, Option<Tx>>| step.post.holdings.keys(),
         judge: |s, token| {
             let token = **token;
