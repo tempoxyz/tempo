@@ -4567,10 +4567,28 @@ fn configurable_account_marker_dispatch() {
         data: bytes!("1234"),
     }
     .abi_encode();
+    // Like a Solidity callee, the hook accepts trailing data and a final `bytes` without its
+    // padding, but not a cut into the `bytes` value itself.
     let mut trailing = hook.clone();
     trailing.push(0);
-    let mut malformed = hook;
-    malformed.pop();
+    let unpadded = hook[..hook.len() - 30].to_vec();
+    let truncated = hook[..hook.len() - 31].to_vec();
+    for (offset, input) in [trailing, unpadded].into_iter().enumerate() {
+        let result = f.run(&f.signed(
+            4 + offset as u64,
+            vec![Call {
+                input: input.into(),
+                ..receive.clone()
+            }],
+        ));
+        assert!(result.status, "{result:?}");
+        assert_eq!(
+            result.output,
+            IConfigurableAccountShim::onERC721ReceivedCall::abi_encode_returns(
+                &IConfigurableAccountShim::onERC721ReceivedCall::SELECTOR.into()
+            )
+        );
+    }
     for (offset, input) in [
         bytes!("01"),
         bytes!("ffffffff"),
@@ -4578,14 +4596,13 @@ fn configurable_account_marker_dispatch() {
         bytes!("f23a6e61"),
         bytes!("bc197c81"),
         bytes!("1626ba7e"),
-        trailing.into(),
-        malformed.into(),
+        truncated.into(),
     ]
     .into_iter()
     .enumerate()
     {
         let result = f.run(&f.signed(
-            4 + offset as u64,
+            6 + offset as u64,
             vec![Call {
                 input,
                 ..receive.clone()
@@ -4598,6 +4615,31 @@ fn configurable_account_marker_dispatch() {
             CONFIGURABLE_ACCOUNT_CODE_HASH
         );
     }
+    // An ERC-1271 call without the signature's padding, as Solady sends it, is still answered.
+    seed_relayer(&mut f);
+    let approval =
+        configurable_account_approval(account, &f.config, &f.owner, CONFIGURABLE_ACCOUNT_HASH);
+    let signature = TempoSignature::ConfigurableAccount(approval).to_bytes();
+    assert_ne!(signature.len() % 32, 0);
+    let unpadded_len = 4 + 3 * 32 + signature.len();
+    let mut input = IConfigurableAccountShim::isValidSignatureCall {
+        hash: CONFIGURABLE_ACCOUNT_HASH,
+        signature,
+    }
+    .abi_encode();
+    input.truncate(unpadded_len);
+    let call = Call {
+        input: input.into(),
+        ..receive
+    };
+    let result = relayed(&mut f, call, 1_000_000, None);
+    assert!(result.status, "{result:?}");
+    assert_eq!(
+        result.output,
+        IConfigurableAccountShim::isValidSignatureCall::abi_encode_returns(
+            &[0x16, 0x26, 0xba, 0x7e].into()
+        )
+    );
 }
 
 /// A failing verification reverts through the shim exactly as the verifier does.

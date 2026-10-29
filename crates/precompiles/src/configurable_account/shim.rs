@@ -1,18 +1,25 @@
 //! Stateless dispatcher executed by the protocol-installed account marker.
 
 use crate::{
-    EncodePrecompileResult, charge_input_cost, input_cost, signature_verifier::SignatureVerifier,
-    storage::StorageCtx,
+    EncodePrecompileResult, charge_input_cost, dispatch::ABI_DECODER_MEMORY_LIMIT, input_cost,
+    signature_verifier::SignatureVerifier, storage::StorageCtx,
 };
 use alloy::{
     primitives::{Address, Bytes, FixedBytes},
-    sol_types::SolCall,
+    sol_types::{SolCall, abi::AbiDecoderConfig},
 };
 use evm2::{
     evm::precompile::PrecompileOutput,
     precompiles::{PrecompileError, PrecompileResult},
 };
 use tempo_contracts::precompiles::configurable_account::IConfigurableAccountShim;
+
+/// Hook decoder configuration, matching Solidity callees: values are validated, but unlike
+/// precompile dispatch, trailing data and a final `bytes` without its padding are accepted, since
+/// ERC-1271 and ERC-721 caller libraries send them. Truncated input still fails.
+const DECODER_CONFIG: AbiDecoderConfig = AbiDecoderConfig::new()
+    .memory_limit(ABI_DECODER_MEMORY_LIMIT)
+    .validate(true);
 
 /// Executes the account shim in `account`'s call context without writing state.
 pub fn call(account: Address, input: &[u8]) -> PrecompileResult {
@@ -25,8 +32,7 @@ pub fn call(account: Address, input: &[u8]) -> PrecompileResult {
     if input.starts_with(&IConfigurableAccountShim::isValidSignatureCall::SELECTOR) {
         let call = IConfigurableAccountShim::isValidSignatureCall::abi_decode_with_config(
             input,
-            crate::dispatch::abi_decoder_config_for_spec(StorageCtx.spec())
-                .validate_allow_trailing_bytes(false),
+            DECODER_CONFIG,
         )
         .map_err(|_| PrecompileError::Revert(Bytes::new()))?;
         let result: crate::Result<bool> = (|| {
@@ -52,8 +58,7 @@ pub fn call(account: Address, input: &[u8]) -> PrecompileResult {
     if input.starts_with(&IConfigurableAccountShim::onERC721ReceivedCall::SELECTOR) {
         IConfigurableAccountShim::onERC721ReceivedCall::abi_decode_with_config(
             input,
-            crate::dispatch::abi_decoder_config_for_spec(StorageCtx.spec())
-                .validate_allow_trailing_bytes(false),
+            DECODER_CONFIG,
         )
         .map_err(|_| PrecompileError::Revert(Bytes::new()))?;
         return Ok(PrecompileOutput::new(
