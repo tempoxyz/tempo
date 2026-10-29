@@ -385,7 +385,7 @@ fn validate_root_keys(
         return Ok(extra_gas);
     };
     if let Some(auth) = &aa.tx().key_authorization
-        && auth.signature.as_configurable_account().is_none()
+        && !auth.signature.is_configurable_account()
     {
         let signer = auth
             .recover_signer()

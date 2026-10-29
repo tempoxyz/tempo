@@ -41,7 +41,7 @@ pub fn validate_transaction(
             aa.signature().signed_by_configurable_account()
                 || aa.tx().key_authorization.as_ref().is_some_and(|auth| {
                     auth.key_type == SignatureType::ConfigurableAccount
-                        || auth.signature.as_configurable_account().is_some()
+                        || auth.signature.is_configurable_account()
                 })
         }) || tx.calls().any(|(kind, input)| {
             kind == TxKind::Call(CONFIGURABLE_ACCOUNT_ADDRESS)
