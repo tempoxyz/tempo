@@ -23,8 +23,22 @@ pub struct KeyRestrictions {
     expiry: Option<u64>,
     /// Optional token spending limits. `None` means unlimited spending.
     limits: Option<Vec<TokenLimit>>,
-    /// Optional call scopes. `None` means unrestricted calls.
-    allowed_calls: Option<Vec<CallScope>>,
+    /// Call-scope restrictions. Defaults to `CallRestrictions::Tip20Limits`.
+    allowed_calls: CallRestrictions,
+}
+
+/// Which calls an access key may make.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+enum CallRestrictions {
+    /// TIP-20 `transfer`, `transferWithMemo` and `approve` on each token with a spending
+    /// limit, so the key cannot reach calls its limits do not meter (such as
+    /// `setReceivePolicy`). Unrestricted when no limits are set.
+    #[default]
+    Tip20Limits,
+    /// Any call is allowed.
+    Unrestricted,
+    /// Only the listed scopes are allowed. An empty list denies all calls.
+    Scoped(Vec<CallScope>),
 }
 
 impl KeyRestrictions {
@@ -42,7 +56,16 @@ impl KeyRestrictions {
 
     /// Set call-scope restrictions.
     pub fn with_allowed_calls(mut self, allowed_calls: Vec<CallScope>) -> Self {
-        self.allowed_calls = Some(allowed_calls);
+        self.allowed_calls = CallRestrictions::Scoped(allowed_calls);
+        self
+    }
+
+    /// Allow any call, opting out of the default TIP-20 call scopes.
+    ///
+    /// Unrestricted keys can call account-management precompiles such as `setReceivePolicy`,
+    /// which spending limits do not meter. Prefer explicit scopes.
+    pub fn with_unrestricted_calls(mut self) -> Self {
+        self.allowed_calls = CallRestrictions::Unrestricted;
         self
     }
 
@@ -54,13 +77,13 @@ impl KeyRestrictions {
 
     /// Deny all calls (scoped mode with an empty allowlist).
     pub fn with_no_calls(mut self) -> Self {
-        self.allowed_calls = Some(Vec::new());
+        self.allowed_calls = CallRestrictions::Scoped(Vec::new());
         self
     }
 
     /// Returns `true` if calls are unrestricted (no call-scope allowlist set).
     pub fn is_unrestricted(&self) -> bool {
-        self.allowed_calls.is_none()
+        self.allowed_calls().is_none()
     }
 
     /// Returns `true` if a call to `target` with the given `input` is allowed.
@@ -73,7 +96,7 @@ impl KeyRestrictions {
     /// - Rule has no recipients → any recipient is allowed.
     /// - Otherwise the first ABI word after the selector must match an allowed recipient.
     pub fn is_call_allowed(&self, target: &Address, input: &[u8]) -> bool {
-        call_scopes_allow(self.allowed_calls.as_deref(), target, input)
+        call_scopes_allow(self.allowed_calls().as_deref(), target, input)
     }
 
     /// Returns the expiry timestamp, if one is set.
@@ -86,9 +109,32 @@ impl KeyRestrictions {
         self.limits.as_deref()
     }
 
-    /// Returns the call scope allowlist, if any.
-    pub fn allowed_calls(&self) -> Option<&[CallScope]> {
-        self.allowed_calls.as_deref()
+    /// Returns the effective call scope allowlist, or `None` when calls are unrestricted.
+    ///
+    /// By default, a key with spending limits may only call TIP-20 `transfer`,
+    /// `transferWithMemo` and `approve` on each limited token; a key without limits is
+    /// unrestricted.
+    pub fn allowed_calls(&self) -> Option<Vec<CallScope>> {
+        match &self.allowed_calls {
+            CallRestrictions::Unrestricted => None,
+            CallRestrictions::Scoped(scopes) => Some(scopes.clone()),
+            CallRestrictions::Tip20Limits => self.limits.as_ref().map(|limits| {
+                let mut scopes: Vec<CallScope> = Vec::with_capacity(limits.len());
+                for limit in limits {
+                    if scopes.iter().any(|scope| scope.target == limit.token) {
+                        continue;
+                    }
+                    scopes.push(
+                        CallScopeBuilder::new(limit.token)
+                            .transfer(vec![])
+                            .transfer_with_memo(vec![])
+                            .approve(vec![])
+                            .build(),
+                    );
+                }
+                scopes
+            }),
+        }
     }
 
     fn has_periodic_limits(&self) -> bool {
@@ -97,8 +143,10 @@ impl KeyRestrictions {
             .is_some_and(|limits| limits.iter().any(|limit| limit.period != 0))
     }
 
+    /// Whether explicit call scopes were requested. The default TIP-20 scopes are not counted,
+    /// since pre-T3 keys cannot carry scopes at all.
     fn has_call_scopes(&self) -> bool {
-        self.allowed_calls.is_some()
+        matches!(self.allowed_calls, CallRestrictions::Scoped(_))
     }
 }
 
@@ -136,11 +184,8 @@ pub(crate) fn call_scopes_allow(
 
 impl From<KeyRestrictions> for AbiKeyRestrictions {
     fn from(restrictions: KeyRestrictions) -> Self {
-        let KeyRestrictions {
-            expiry,
-            limits,
-            allowed_calls,
-        } = restrictions;
+        let allowed_calls = restrictions.allowed_calls();
+        let KeyRestrictions { expiry, limits, .. } = restrictions;
 
         Self {
             expiry: expiry.unwrap_or(u64::MAX),
@@ -429,6 +474,105 @@ mod tests {
         assert!(decoded.config.limits.is_empty());
         assert!(decoded.config.allowAnyCalls);
         assert!(decoded.config.allowedCalls.is_empty());
+    }
+
+    #[test]
+    fn test_authorize_key_t3_limits_default_to_tip20_selectors() {
+        let token = address!("0x20c0000000000000000000000000000000000001");
+        let other = address!("0x20c0000000000000000000000000000000000002");
+        let limit = |token| TokenLimit {
+            token,
+            limit: U256::ONE,
+            period: 0,
+        };
+        let restrictions =
+            KeyRestrictions::default().with_limits(vec![limit(token), limit(other), limit(token)]);
+        assert!(!restrictions.is_unrestricted());
+
+        let call = authorize_key(
+            Address::repeat_byte(0x11),
+            SignatureType::Secp256k1,
+            restrictions,
+        );
+        let decoded = authorizeKeyCall::abi_decode(&call.input).expect("decode authorizeKey");
+        assert!(!decoded.config.allowAnyCalls);
+        let targets: Vec<_> = decoded
+            .config
+            .allowedCalls
+            .iter()
+            .map(|scope| scope.target)
+            .collect();
+        assert_eq!(targets, vec![token, other]);
+        for scope in &decoded.config.allowedCalls {
+            let selectors: Vec<[u8; 4]> = scope
+                .selectorRules
+                .iter()
+                .map(|rule| {
+                    assert!(rule.recipients.is_empty());
+                    *rule.selector
+                })
+                .collect();
+            assert_eq!(
+                selectors,
+                vec![
+                    ITIP20::transferCall::SELECTOR,
+                    ITIP20::transferWithMemoCall::SELECTOR,
+                    ITIP20::approveCall::SELECTOR,
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn test_default_scopes_block_non_tip20_calls() {
+        let token = address!("0x20c0000000000000000000000000000000000001");
+        let r = KeyRestrictions::default().with_limits(vec![TokenLimit {
+            token,
+            limit: U256::ONE,
+            period: 0,
+        }]);
+        assert!(r.is_call_allowed(&token, &ITIP20::transferCall::SELECTOR));
+        assert!(r.is_call_allowed(&token, &ITIP20::approveCall::SELECTOR));
+        assert!(!r.is_call_allowed(&token, &[0xaa, 0xbb, 0xcc, 0xdd]));
+        assert!(!r.is_call_allowed(
+            &tempo_contracts::precompiles::TIP403_REGISTRY_ADDRESS,
+            &[0xaa, 0xbb, 0xcc, 0xdd]
+        ));
+
+        let empty = KeyRestrictions::default().with_no_spending();
+        assert!(!empty.is_call_allowed(&token, &ITIP20::transferCall::SELECTOR));
+    }
+
+    #[test]
+    fn test_unrestricted_calls_opt_out() {
+        let r = KeyRestrictions::default()
+            .with_limits(vec![TokenLimit {
+                token: address!("0x20c0000000000000000000000000000000000001"),
+                limit: U256::ONE,
+                period: 0,
+            }])
+            .with_unrestricted_calls();
+        assert!(r.is_unrestricted());
+        let decoded = authorizeKeyCall::abi_decode(
+            &authorize_key(Address::repeat_byte(0x11), SignatureType::Secp256k1, r).input,
+        )
+        .expect("decode authorizeKey");
+        assert!(decoded.config.allowAnyCalls);
+        assert!(decoded.config.allowedCalls.is_empty());
+    }
+
+    #[test]
+    fn test_authorize_key_legacy_accepts_default_scopes() {
+        authorize_key_legacy(
+            Address::repeat_byte(0x11),
+            SignatureType::Secp256k1,
+            KeyRestrictions::default().with_limits(vec![TokenLimit {
+                token: address!("0x20c0000000000000000000000000000000000001"),
+                limit: U256::ONE,
+                period: 0,
+            }]),
+        )
+        .expect("default TIP-20 scopes are not encoded pre-T3");
     }
 
     #[test]
