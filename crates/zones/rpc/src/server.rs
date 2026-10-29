@@ -327,8 +327,9 @@ pub(crate) async fn authenticate_token(
 
     let signature =
         TempoSignature::from_bytes(&token.signature).map_err(|_| AuthError::InvalidSignature)?;
-    // Zone auth cannot check a configurable account's commitment against state.
-    if signature.is_configurable_account() {
+    // Zone auth cannot check a configurable account's commitment against state, so reject a
+    // configurable signer, direct or keychain-wrapped, before verifying its quorum.
+    if signature.signed_by_configurable_account() {
         return Err(AuthError::InvalidSignature.into());
     }
     let caller = signature
