@@ -31,7 +31,7 @@ env:
   RUSTC_WRAPPER: "sccache"
   # Foundry's evm2 migration (foundry-rs/foundry#17541). Pin to a commit and move the pin to
   # Foundry master once that PR merges.
-  FOUNDRY_REF: 829ed4f0858fb62a727bafb4b04c0cf411295123
+  FOUNDRY_REF: bc5b13da125a3877e07d960e247fc1b270073cca
 
 jobs:
   check-specs-changes:
