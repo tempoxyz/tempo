@@ -22,14 +22,17 @@ use reth_tracing::init_test_tracing;
 use serde_json::{Value, from_str, json, to_string};
 use tempo_alloy::{TempoNetwork, rpc::TempoTransactionReceipt};
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_contracts::precompiles::{CONFIGURABLE_ACCOUNT_ADDRESS, IConfigurableAccount};
+use tempo_contracts::precompiles::{
+    CONFIGURABLE_ACCOUNT_ADDRESS, DEFAULT_FEE_TOKEN, IConfigurableAccount,
+};
 use tempo_evm::{TempoInvalidTransaction, transaction_error::RootKeyRole};
 use tempo_primitives::{
     SignatureType, TempoTransaction, TempoTxEnvelope,
     transaction::{
         CONFIGURABLE_ACCOUNT_UPGRADE_DOMAIN, Call, ConfigurableAccountConfig,
-        ConfigurableAccountOwner, ConfigurableAccountSignature, PrimitiveSignature, TempoSignature,
-        configurable_account_digest, tt_signature::derive_p256_address,
+        ConfigurableAccountOwner, ConfigurableAccountSignature, KeychainSignature,
+        PrimitiveSignature, TempoSignature, configurable_account_digest,
+        tt_signature::derive_p256_address,
     },
 };
 
@@ -136,6 +139,27 @@ impl ConfigurableAccount {
         Ok(TempoSignature::ConfigurableAccount(
             self.quorum(tx.signature_hash(), false)?,
         ))
+    }
+
+    fn as_delegate(
+        &self,
+        tx: &TempoTransaction,
+        parent: Address,
+        invalid_final: bool,
+    ) -> eyre::Result<TempoSignature> {
+        Ok(TempoSignature::Keychain(KeychainSignature::new(
+            parent,
+            self.quorum(
+                KeychainSignature::signing_hash(tx.signature_hash(), parent),
+                invalid_final,
+            )?,
+        )))
+    }
+
+    /// Makes the rotation to `replacement`, whose configuration is `next`, the account's own.
+    fn adopt(&mut self, next: ConfigurableAccountConfig, replacement: Self) {
+        self.config = next;
+        self.owners = replacement.owners;
     }
 
     fn rotate_to(&self, replacement: &Self) -> (ConfigurableAccountConfig, Call) {
