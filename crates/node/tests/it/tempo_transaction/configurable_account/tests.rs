@@ -663,6 +663,87 @@ async fn eoa_migration_rpc_lifecycle() -> eyre::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn configurable_account_rpc_delegate_rotation_preserves_grant_and_spending()
+-> eyre::Result<()> {
+    let mut env = environment().await?;
+    let mut parent = ConfigurableAccount::new(0x31, 2);
+    let mut delegate = ConfigurableAccount::new(0x41, 2);
+    env.fund_account(parent.address).await?;
+    env.fund_account(delegate.address).await?;
+    let limit = U256::from(100_000_000_000u64);
+    let grant = KeyAuthorization::unrestricted(
+        env.chain_id(),
+        SignatureType::ConfigurableAccount,
+        delegate.address,
+    )
+    .with_account(parent.address)
+    .with_limits(vec![TokenLimit {
+        token: DEFAULT_FEE_TOKEN,
+        limit,
+        period: 0,
+    }]);
+    let grant_signature = parent.quorum(grant.signature_hash(), false)?;
+    let transfer = create_transfer_call(
+        DEFAULT_FEE_TOKEN,
+        Address::repeat_byte(0x74),
+        U256::from(100),
+    );
+    let mut tx = parent.transaction(&env, vec![transfer.clone()]);
+    tx.key_authorization = Some(grant.into_signed(grant_signature));
+    let signature = delegate.as_delegate(&tx, parent.address, false)?;
+    parent.submit(&mut env, tx, signature, true).await?;
+    assert_eq!(
+        commitment(&env, parent.address).await?,
+        parent.config.commitment().unwrap()
+    );
+    assert_eq!(
+        commitment(&env, delegate.address).await?,
+        delegate.config.commitment().unwrap()
+    );
+    let keychain = IAccountKeychain::new(ACCOUNT_KEYCHAIN_ADDRESS, env.provider().clone());
+    let (account, key) = (parent.address, delegate.address);
+    let remaining = async || {
+        eyre::Ok(
+            keychain
+                .getRemainingLimitWithPeriod(account, key, DEFAULT_FEE_TOKEN)
+                .call()
+                .await?
+                .remaining,
+        )
+    };
+    let before_rotation = remaining().await?;
+    assert!(before_rotation < limit);
+    let key_before = keychain.getKey(account, key).call().await?;
+
+    let replacement = ConfigurableAccount::new(0x51, 2);
+    let (next, rotate) = delegate.rotate_to(&replacement);
+    let tx = delegate.transaction(&env, vec![rotate]);
+    let signature = delegate.sign(&tx)?;
+    delegate.submit(&mut env, tx, signature, true).await?;
+    assert_eq!(remaining().await?, before_rotation);
+    assert_eq!(keychain.getKey(account, key).call().await?, key_before);
+
+    let tx = parent.transaction(&env, vec![transfer]);
+    reject_with(
+        &env,
+        tx.clone(),
+        delegate.as_delegate(&tx, parent.address, false)?,
+        TempoInvalidTransaction::ConfigurableAccount(
+            ConfigurableAccountError::ConfigurationCommitmentMismatch {
+                expected: next.commitment().unwrap(),
+                actual: delegate.config.commitment().unwrap(),
+            },
+        ),
+    )
+    .await?;
+    delegate.adopt(next, replacement);
+    let signature = delegate.as_delegate(&tx, parent.address, false)?;
+    parent.submit(&mut env, tx, signature, true).await?;
+    assert!(remaining().await? < before_rotation);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn configurable_account_rpc_registration_revert_retry_and_rotation() -> eyre::Result<()> {
     let mut env = environment().await?;
     let mut account = ConfigurableAccount::new(0x11, 2);
@@ -1109,113 +1190,6 @@ async fn configurable_account_rpc_simulated_grant_estimate_covers_the_signed_gra
     assert_eq!(
         commitment(&env, parent.address).await?,
         parent.config.commitment().unwrap()
-    );
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn configurable_account_rpc_delegate_rotation_preserves_grant_and_spending()
--> eyre::Result<()> {
-    let mut env = environment().await?;
-    let mut parent = ConfigurableAccount::new(0x31, 2);
-    let mut delegate = ConfigurableAccount::new(0x41, 2);
-    env.fund_account(parent.address).await?;
-    env.fund_account(delegate.address).await?;
-    let limit = U256::from(100_000_000_000u64);
-    let grant = KeyAuthorization::unrestricted(
-        env.chain_id(),
-        SignatureType::ConfigurableAccount,
-        delegate.address,
-    )
-    .with_account(parent.address)
-    .with_limits(vec![TokenLimit {
-        token: DEFAULT_FEE_TOKEN,
-        limit,
-        period: 0,
-    }]);
-    let grant_signature = parent.quorum(grant.signature_hash(), false)?;
-    let mut tx = parent.transaction(
-        &env,
-        vec![create_transfer_call(
-            DEFAULT_FEE_TOKEN,
-            Address::repeat_byte(0x74),
-            U256::from(100),
-        )],
-    );
-    tx.key_authorization = Some(grant.into_signed(grant_signature));
-    let signature = delegate.as_delegate(&tx, parent.address, false)?;
-    parent.submit(&mut env, tx, signature, true).await?;
-    assert_eq!(
-        commitment(&env, parent.address).await?,
-        parent.config.commitment().unwrap()
-    );
-    assert_eq!(
-        commitment(&env, delegate.address).await?,
-        delegate.config.commitment().unwrap()
-    );
-    let keychain = IAccountKeychain::new(ACCOUNT_KEYCHAIN_ADDRESS, env.provider().clone());
-    let before_rotation = keychain
-        .getRemainingLimitWithPeriod(parent.address, delegate.address, DEFAULT_FEE_TOKEN)
-        .call()
-        .await?
-        .remaining;
-    assert!(before_rotation < limit);
-    let key_before = keychain
-        .getKey(parent.address, delegate.address)
-        .call()
-        .await?;
-
-    let replacement = ConfigurableAccount::new(0x51, 2);
-    let (next, rotate) = delegate.rotate_to(&replacement);
-    let tx = delegate.transaction(&env, vec![rotate]);
-    let signature = delegate.sign(&tx)?;
-    delegate.submit(&mut env, tx, signature, true).await?;
-    assert_eq!(
-        keychain
-            .getRemainingLimitWithPeriod(parent.address, delegate.address, DEFAULT_FEE_TOKEN)
-            .call()
-            .await?
-            .remaining,
-        before_rotation
-    );
-    assert_eq!(
-        keychain
-            .getKey(parent.address, delegate.address)
-            .call()
-            .await?,
-        key_before
-    );
-
-    let tx = parent.transaction(
-        &env,
-        vec![create_transfer_call(
-            DEFAULT_FEE_TOKEN,
-            Address::repeat_byte(0x74),
-            U256::from(100),
-        )],
-    );
-    reject_with(
-        &env,
-        tx.clone(),
-        delegate.as_delegate(&tx, parent.address, false)?,
-        TempoInvalidTransaction::ConfigurableAccount(
-            ConfigurableAccountError::ConfigurationCommitmentMismatch {
-                expected: next.commitment().unwrap(),
-                actual: delegate.config.commitment().unwrap(),
-            },
-        ),
-    )
-    .await?;
-    delegate.adopt(next, replacement);
-    let signature = delegate.as_delegate(&tx, parent.address, false)?;
-    parent.submit(&mut env, tx, signature, true).await?;
-    assert!(
-        keychain
-            .getRemainingLimitWithPeriod(parent.address, delegate.address, DEFAULT_FEE_TOKEN)
-            .call()
-            .await?
-            .remaining
-            < before_rotation
     );
     Ok(())
 }
