@@ -5,7 +5,12 @@
 //! EVM against historical state, answering as any caller for the privacy getters. Their Tempo
 //! reads never wait out an L1 outage (see [`ViewEvm`]).
 
-use std::{collections::BTreeSet, convert::Infallible, num::NonZeroU32, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    convert::Infallible,
+    num::NonZeroU32,
+    time::Duration,
+};
 
 use alloy_consensus::{BlockHeader as _, Transaction as _, TxReceipt as _};
 use alloy_contract::CallBuilder;
@@ -605,5 +610,62 @@ fn privacy_getters(step: &Step<Zone, ZoneBlock>, tokens: &[Address]) -> Vec<(Add
         ));
         getters.insert((ACCOUNT_KEYCHAIN_ADDRESS, Getter::Key { account: tx.sender }));
     }
-    getters.into_iter().take(MAX_PRIVACY_READS).collect()
+    within_budget(getters, MAX_PRIVACY_READS)
+}
+
+/// At most `max` of `getters`, taken round-robin across their targets, so a busy block's many
+/// reads of one contract (refunds on the inbox, say) cannot crowd out every read of another.
+fn within_budget(getters: BTreeSet<(Address, Getter)>, max: usize) -> Vec<(Address, Getter)> {
+    let mut by_target: BTreeMap<Address, VecDeque<Getter>> = BTreeMap::new();
+    for (target, getter) in getters {
+        by_target.entry(target).or_default().push_back(getter);
+    }
+    let mut picked = Vec::new();
+    while picked.len() < max && !by_target.is_empty() {
+        by_target.retain(|&target, queue| {
+            if picked.len() < max
+                && let Some(getter) = queue.pop_front()
+            {
+                picked.push((target, getter));
+            }
+            !queue.is_empty()
+        });
+    }
+    picked
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+
+    /// Many refund reads on the inbox leave room for the nonce and key reads of other targets.
+    #[test]
+    fn the_read_budget_reaches_every_target() {
+        let mut getters = BTreeSet::new();
+        for byte in 1..=100u8 {
+            let owner = Address::with_last_byte(byte);
+            getters.insert((
+                ZONE_INBOX_ADDRESS,
+                Getter::Refund {
+                    token: Address::ZERO,
+                    owner,
+                },
+            ));
+        }
+        let sender = Address::with_last_byte(0xee);
+        getters.insert((NONCE_PRECOMPILE_ADDRESS, Getter::Nonce { account: sender }));
+        getters.insert((ACCOUNT_KEYCHAIN_ADDRESS, Getter::Key { account: sender }));
+        let picked = within_budget(getters, MAX_PRIVACY_READS);
+        assert_eq!(picked.len(), MAX_PRIVACY_READS);
+        assert!(
+            picked
+                .iter()
+                .any(|(target, _)| *target == NONCE_PRECOMPILE_ADDRESS)
+        );
+        assert!(
+            picked
+                .iter()
+                .any(|(target, _)| *target == ACCOUNT_KEYCHAIN_ADDRESS)
+        );
+    }
 }
