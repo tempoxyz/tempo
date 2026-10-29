@@ -14249,6 +14249,7 @@ dependencies = [
  "tempo-consensus",
  "tempo-consensus-config",
  "tempo-contracts",
+ "tempo-corpus",
  "tempo-dkg-onchain-artifacts",
  "tempo-evm",
  "tempo-ext",
