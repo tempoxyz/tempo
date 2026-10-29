@@ -2452,7 +2452,7 @@ over zone blocks. The rest name a test, or none where nothing tests them yet.
   - Checked by: none
 - `TEMPO-ZONE-BATCH-DEPOSIT-TRANSITION`: Deposit transition starts from the inbox's previous processed hash/number and ends at the post-batch processed hash/number.
   - Checked by: none
-- `TEMPO-ZONE-BATCH-WITHDRAWAL-COMMITMENT`: Submitted `withdrawalQueueHash` equals `ZoneOutbox.lastBatch.withdrawalQueueHash` from the proven post-state.
+- `TEMPO-ZONE-BATCH-WITHDRAWAL-COMMITMENT`: Submitted `withdrawalQueueHash` and `withdrawalBatchIndex` equal `ZoneOutbox.lastBatch` from the proven post-state.
   - Checked by: check
 - `TEMPO-ZONE-BATCH-ANCHOR-BLOCK`: Anchor block number/hash passed to the verifier matches either the direct Tempo binding or a valid ancestry chain to a recent Tempo block; when non-zero, `recentTempoBlockNumber > tempoBlockNumber`.
   - Checked by: `crates/zones/contracts/test/tempo/ZonePortal.t.sol:test_submitBatch_revertsIfRecentTempoBlockNumberNotGreater`

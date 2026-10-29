@@ -385,15 +385,19 @@ pub const ANCHOR_CHECKS: &[Check<Anchored>] = &[
 /// A batch the portal accepted, paired with the zone block it proves.
 pub const BATCH_CHECKS: &[Check<Proven>] = &[check! {
     id: BATCH_WITHDRAWAL_COMMITMENT,
-    doc: "Submitted `withdrawalQueueHash` equals `ZoneOutbox.lastBatch.withdrawalQueueHash` from the proven post-state.",
+    doc: "Submitted `withdrawalQueueHash` and `withdrawalBatchIndex` equal `ZoneOutbox.lastBatch` from the proven post-state.",
     severity: Severity::Critical,
     over: |p: &Proven| [&p.right],
     judge: |p, submitted| {
         let batch = p.left.outbox.as_ref()?;
+        // The index matters as much as the hash: every zero-withdrawal batch commits to the zero
+        // hash, so a proven block that never finalized its batch still carries a matching one.
         ensure!(
-            batch.withdrawalQueueHash == submitted.withdrawal_queue_hash,
-            "submitted {}, lastBatch {} (index {})",
+            batch.withdrawalQueueHash == submitted.withdrawal_queue_hash
+                && batch.withdrawalBatchIndex == submitted.withdrawal_batch_index,
+            "submitted {} (index {}), lastBatch {} (index {})",
             submitted.withdrawal_queue_hash,
+            submitted.withdrawal_batch_index,
             batch.withdrawalQueueHash,
             batch.withdrawalBatchIndex
         )

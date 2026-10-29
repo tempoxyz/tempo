@@ -965,4 +965,22 @@ fn batch_withdrawal_commitment() {
             .len(),
         1
     );
+
+    // A block that never finalized batch 5 still holds batch 4; with zero withdrawals both commit
+    // to the zero hash, so only the index tells them apart.
+    let mut stale = zone(1, 0, 4, 0);
+    stale.outbox.as_mut().unwrap().withdrawalQueueHash = B256::ZERO;
+    let empty = Submission {
+        withdrawal_queue_hash: B256::ZERO,
+        ..submission
+    };
+    let (_, fired) = judge(
+        BATCH_CHECKS,
+        &Pair {
+            left: stale,
+            right: empty,
+        },
+        BATCH_WITHDRAWAL_COMMITMENT,
+    );
+    assert_eq!(fired.len(), 1, "{fired:?}");
 }
