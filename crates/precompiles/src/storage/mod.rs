@@ -37,21 +37,12 @@ const CONFIG_COMMITMENT_UPDATE_GAS: u64 = 5_000;
 
 /// Regular gas of a commitment write once the previous commitment is known, on top of
 /// [`CONFIG_COMMITMENT_UPDATE_GAS`]. A first write is priced like account creation, since the
-/// commitment is permanent account state; its state gas is
-/// [`config_commitment_write_state_gas`]. TIP-1000's new-account cost is charged on top when the
-/// write finds the account still empty.
+/// commitment is permanent account state, which also charges account-creation state gas.
+/// TIP-1000's new-account cost is charged on top when the write finds the account still empty.
 fn config_commitment_write_dynamic_gas(previous: B256, gas: &GasParams) -> u64 {
     if previous.is_zero() {
-        gas.get(GasId::NewAccountCost).saturating_sub(CONFIG_COMMITMENT_UPDATE_GAS)
-    } else {
-        0
-    }
-}
-
-/// State gas of a commitment write: account-creation state gas for a first write.
-fn config_commitment_write_state_gas(previous: B256, gas: &GasParams) -> u64 {
-    if previous.is_zero() {
-        gas.new_account_state_gas()
+        gas.get(GasId::NewAccountCost)
+            .saturating_sub(CONFIG_COMMITMENT_UPDATE_GAS)
     } else {
         0
     }

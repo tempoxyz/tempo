@@ -4,7 +4,6 @@ use crate::{
     storage::{
         CONFIG_COMMITMENT_UPDATE_GAS, PrecompileStorageProvider, StorageActions,
         account_config_commitment, actions::StorageAction, config_commitment_write_dynamic_gas,
-        config_commitment_write_state_gas,
     },
     storage_credits::{NonCreditableSlots, StorageCreditsBackend, sstore_storage_credits},
 };
@@ -670,10 +669,9 @@ where
             previous,
             &self.version.gas_params,
         ))?;
-        self.deduct_state_gas(config_commitment_write_state_gas(
-            previous,
-            &self.version.gas_params,
-        ))?;
+        if previous.is_zero() {
+            self.deduct_state_gas(self.version.gas_params.new_account_state_gas())?;
+        }
         // The write makes an empty account permanent.
         if creates_account {
             self.deduct_gas(self.version.gas_params.get(GasId::NewAccountCost))?;
