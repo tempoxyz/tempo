@@ -606,10 +606,13 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
 
                     if has_consensus_engine {
                         let module_config = ctx.modules.module_config();
-                        let missing = cli::rpc_api_flags_missing_consensus(
-                            module_config.http(),
-                            module_config.ws(),
-                        );
+                        let mut missing = Vec::new();
+                        if cli::selection_lacks_consensus(module_config.http()) {
+                            missing.push("--http.api");
+                        }
+                        if cli::selection_lacks_consensus(module_config.ws()) {
+                            missing.push("--ws.api");
+                        }
                         if !missing.is_empty() {
                             warn!(
                                 flags = %missing.join(", "),
