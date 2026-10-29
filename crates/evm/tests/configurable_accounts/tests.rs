@@ -3289,10 +3289,9 @@ fn native_commitment_activation_database_lifecycle() {
         parent_hash = chain_block.hash();
         let provider = factory.provider_rw().unwrap();
         provider.insert_block(&chain_block).unwrap();
-        let outcome = ExecutionOutcome::new(bundle, vec![vec![]], block, vec![]);
         provider
             .write_state(
-                &outcome,
+                &ExecutionOutcome::new(bundle, vec![vec![]], block, vec![]),
                 OriginalValuesKnown::Yes,
                 StateWriteConfig::default(),
             )
@@ -3421,7 +3420,7 @@ fn native_commitment_persisted_storage_trie_resume_and_proof() {
                 commitment
             );
         }
-        let progress = with_adapter!(&provider, |A| {
+        match with_adapter!(&provider, |A| {
             StateRoot::<DatabaseTrieCursorFactory<_, A>, DatabaseHashedCursorFactory<_>>::from_tx(
                 provider.tx_ref(),
             )
@@ -3429,8 +3428,8 @@ fn native_commitment_persisted_storage_trie_resume_and_proof() {
             .with_threshold(4)
             .root_with_progress()
         })
-        .unwrap();
-        match progress {
+        .unwrap()
+        {
             StateRootProgress::Progress(state, _, updates) => {
                 provider.write_trie_updates(updates).unwrap();
                 let mut checkpoint = MerkleCheckpoint::new(
@@ -3851,8 +3850,7 @@ fn eoa_migration_then_configurable_account_and_rotation() {
 
     // The next transaction's witness uses the event's salt at version 1.
     f.config = config.clone();
-    let tx = f.signed(4, vec![f.getter()]);
-    let result = f.run(&tx);
+    let result = f.run(&f.signed(4, vec![f.getter()]));
     assert_eq!(
         IConfigurableAccount::getConfigCommitmentCall::abi_decode_returns(&result.output).unwrap(),
         config.commitment().unwrap()
@@ -3865,8 +3863,7 @@ fn eoa_migration_then_configurable_account_and_rotation() {
         owners: owner_set(vec![next_owner.address()]),
         ..config
     };
-    let tx = f.signed(5, vec![Fixture::rotation(&config, &next), f.getter()]);
-    let result = f.run(&tx);
+    let result = f.run(&f.signed(5, vec![Fixture::rotation(&config, &next), f.getter()]));
     assert!(result.status, "{result:?}");
     assert_eq!(result.logs.len(), 1);
     assert_eq!(f.commitment(), next.commitment().unwrap());
@@ -3884,8 +3881,7 @@ fn eoa_migration_then_configurable_account_and_rotation() {
     );
     f.config = next;
     f.owner = next_owner;
-    let tx = f.signed(6, vec![f.getter()]);
-    assert!(f.run(&tx).status);
+    assert!(f.run(&f.signed(6, vec![f.getter()])).status);
 }
 
 #[test]
@@ -3991,8 +3987,7 @@ fn native_signature_verification_is_intrinsic_gas() {
 
     let mut f = Fixture::new();
     let witness = [alloy_rlp::encode(f.account), alloy_rlp::encode(&f.config)].concat();
-    let tx = f.signed(3, calls);
-    let native = f.run(&tx);
+    let native = f.run(&f.signed(3, calls));
     assert!(native.status, "{native:?}");
     assert!(!f.commitment().is_zero());
 
@@ -4019,8 +4014,7 @@ fn native_signature_verification_is_intrinsic_gas() {
 fn native_commitment_mismatch_reads_as_the_state_error() {
     let mut f = Fixture::new();
     let account = f.account;
-    let tx = f.signed(3, vec![f.getter()]);
-    let result = f.run(&tx);
+    let result = f.run(&f.signed(3, vec![f.getter()]));
     assert!(result.status, "{result:?}");
     let registered = f.commitment();
 
