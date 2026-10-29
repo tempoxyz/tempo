@@ -1087,18 +1087,16 @@ fn apply_nonce(
     let eip3607 = host.feature(EvmFeatures::EIP3607);
     let nonce_check = host.feature(EvmFeatures::NONCE_CHECK);
     let mut account = host.state_mut().account(&caller)?;
-    let configurable_sender = if spec.is_t14()
+    let configurable_sender = spec.is_t14()
         && (aa.signature().as_configurable_account().is_some()
             || aa.signature().is_keychain()
             || matches!(envelope.execution_context(), ExecutionContext::Simulation))
-    {
-        let commitment = account
-            .get()
-            .map_or(Ok(B256::ZERO), |info| account_config_commitment(info, spec))?;
-        !commitment.is_zero() && valid_account_code(account.code_hash(), commitment)
-    } else {
-        false
-    };
+        && {
+            let commitment = account
+                .get()
+                .map_or(Ok(B256::ZERO), |info| account_config_commitment(info, spec))?;
+            !commitment.is_zero() && valid_account_code(account.code_hash(), commitment)
+        };
     if eip3607 && !configurable_sender && account.code_hash() != KECCAK256_EMPTY {
         let code = account.load_code()?;
         if !code.is_empty() && !code.is_eip7702() {
