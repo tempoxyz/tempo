@@ -7,9 +7,7 @@ use reth_rpc_convert::{
     FromConsensusHeader, SignTxRequestError, SignableTxRequest, TryIntoSimTx, TryIntoTxEnv,
 };
 use reth_rpc_eth_types::EthApiError;
-use tempo_evm::{
-    RecoveredTxEnvelope, TempoEvmEnv, TempoTxEnv, transaction_error::ConfigurableAccountError,
-};
+use tempo_evm::{RecoveredTxEnvelope, TempoEvmEnv, TempoTxEnv};
 use tempo_primitives::{
     SignatureType, TempoHeader, TempoSignature, TempoTxEnvelope, TempoTxType,
     transaction::{
@@ -200,9 +198,7 @@ impl TempoTransactionRequest {
         {
             signature
                 .verify_approvals(grant.signature_hash())
-                .map_err(|error| {
-                    EthApiError::InvalidParams(ConfigurableAccountError::Quorum(error).to_string())
-                })?;
+                .map_err(|error| EthApiError::InvalidParams(error.to_string()))?;
         }
         let Some(spec) = self.configurable_account_simulation.as_ref() else {
             return if self.key_type == Some(SignatureType::ConfigurableAccount) {
