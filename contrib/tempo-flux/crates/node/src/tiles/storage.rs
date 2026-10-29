@@ -16,7 +16,8 @@ pub struct StorageTile {
     path: PathBuf,
     disk: DiskIo,
     file: Option<FileToken>,
-    bodies: FxHashMap<u64, (Block, Vec<u8>)>,
+    /// Proposals keyed by hash: a rejected block and its replacement share a height.
+    bodies: FxHashMap<[u8; 32], (Block, Vec<u8>)>,
     waiting: Vec<Finalized>,
     unsynced: Vec<(u64, u32, u64)>,
     stop_after_ns: Option<u64>,
@@ -87,10 +88,10 @@ impl Tile<NodeSpine> for StorageTile {
             |_, payload| payload.to_vec(),
             |res, _| match res {
                 DCacheRead::Ok((b, payload)) => {
-                    bodies.insert(b.height, (b, payload));
+                    bodies.insert(b.hash, (b, payload));
                 }
                 DCacheRead::NoRef(b) => {
-                    bodies.insert(b.height, (b, Vec::new()));
+                    bodies.insert(b.hash, (b, Vec::new()));
                 }
                 _ => tracing::error!("storage lost a block body"),
             },
@@ -102,7 +103,7 @@ impl Tile<NodeSpine> for StorageTile {
         let mut wrote = false;
         for f in finalized {
             // The body can still be unread in its queue; retry next loop.
-            let Some((block, payload)) = self.bodies.remove(&f.height) else {
+            let Some((block, payload)) = self.bodies.remove(&f.hash) else {
                 self.waiting.push(f);
                 continue;
             };
@@ -117,6 +118,8 @@ impl Tile<NodeSpine> for StorageTile {
                 .push((f.height, f.tx_count, f.oldest_ingress_ns));
             wrote = true;
         }
+        let finalized_height = self.height.max(self.unsynced.last().map_or(0, |u| u.0));
+        self.bodies.retain(|_, (b, _)| b.height > finalized_height);
         if wrote {
             let _ = self.disk.sync_data(file);
         }
