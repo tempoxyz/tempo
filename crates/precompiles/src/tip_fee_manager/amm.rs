@@ -120,7 +120,9 @@ impl Pool {
 
     /// Returns whether the pool has enough reserve validator token to cover the given amount.
     pub fn has_enough_reserve_validator_token(&self, amount: U256) -> bool {
-        U256::from(self.reserve_validator_token) >= amount
+        // An empty pool takes no swap, even one whose output rounds to zero: the input would
+        // land in a pool nobody holds LP tokens for (CYCLOPS-3683).
+        self.reserve_validator_token != 0 && U256::from(self.reserve_validator_token) >= amount
     }
 }
 
@@ -2003,6 +2005,23 @@ mod tests {
             let result = amm.burn(admin, user_token, validator_token, liquidity, recipient);
             assert!(result.is_ok());
 
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_empty_pool_rejects_zero_output_fee_swap() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let user_token = TIP20Setup::create("U", "U", admin).apply()?.address();
+            let validator_token = TIP20Setup::create("V", "V", admin).apply()?.address();
+            let amm = TipFeeManager::new();
+
+            // A 1-unit fee swaps to 0 output, which an empty pool used to accept.
+            assert_eq!(compute_amount_out(U256::ONE)?, U256::ZERO);
+            let (route, ..) = amm.plan_fee_route(user_token, validator_token, U256::ONE)?;
+            assert!(route.is_none());
             Ok(())
         })
     }
