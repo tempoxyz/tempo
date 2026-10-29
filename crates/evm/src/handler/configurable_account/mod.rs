@@ -81,8 +81,8 @@ impl TempoAaTx {
         [outer, grant]
     }
 
-    /// The configurable account delegate named by an inline key authorization, if any.
-    pub fn grant_delegate(&self) -> Option<Address> {
+    /// The configurable account an inline key authorization grants as an access key, if any.
+    pub fn granted_configurable_account(&self) -> Option<Address> {
         self.tx()
             .key_authorization
             .as_ref()
@@ -160,7 +160,7 @@ pub(crate) fn validate_state(
         mut accounts,
     } = match envelope.as_aa() {
         Some(aa) => validate_native_roles(host, aa, spec)?,
-        // Non-AA transactions have no native roles or grant delegate.
+        // Non-AA transactions have no native roles or granted configurable account.
         None => NativeRoles {
             extra_gas: 0,
             state_gas: 0,
@@ -170,7 +170,7 @@ pub(crate) fn validate_state(
     if spec.is_t14() {
         extra_gas += validate_root_keys(host, envelope, spec, &mut accounts)?;
         if let Some(aa) = envelope.as_aa() {
-            extra_gas += grant_delegate_access_gas(host, aa, spec, &accounts)?;
+            extra_gas += granted_configurable_account_access_gas(host, aa, spec, &accounts)?;
         }
     }
     Ok((extra_gas, state_gas))
@@ -410,17 +410,17 @@ fn validate_root_keys(
 /// The inline grant's code check runs with intrinsic-only metering. Charge its account load
 /// here, unless caller loading or a native signing role already accounts for that address.
 /// Merely naming a recipient neither validates an owner witness nor registers a commitment.
-fn grant_delegate_access_gas(
+fn granted_configurable_account_access_gas(
     host: &mut Evm<'_, TempoEvmTypes>,
     aa: &TempoAaTx,
     spec: TempoHardfork,
     signers: &[Address],
 ) -> HandlerResult<u64> {
-    if let Some(delegate) = aa.grant_delegate()
-        && delegate != aa.signer()
-        && !signers.contains(&delegate)
+    if let Some(granted) = aa.granted_configurable_account()
+        && granted != aa.signer()
+        && !signers.contains(&granted)
     {
-        let loaded = load_account(host, delegate, spec)?;
+        let loaded = load_account(host, granted, spec)?;
         return Ok(account_access_gas(
             &host.version().gas_params,
             loaded.was_cold,
