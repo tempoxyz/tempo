@@ -190,7 +190,7 @@ impl TempoTxEnvelope {
             Self::Eip2930(tx) => unique_tx_identifier_from_signable(tx.tx(), sender),
             Self::Eip1559(tx) => unique_tx_identifier_from_signable(tx.tx(), sender),
             Self::Eip7702(tx) => unique_tx_identifier_from_signable(tx.tx(), sender),
-            Self::AA(tx) => unique_tx_identifier_from_signable(tx.tx(), sender),
+            Self::AA(tx) => tx.expiring_nonce_hash(sender),
         }
     }
 
