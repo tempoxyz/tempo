@@ -6,11 +6,15 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use alloy_network::NetworkWallet;
+use alloy_network::{NetworkWallet, TransactionBuilder};
 use alloy_primitives::{Address, B256};
+use alloy_provider::{ProviderBuilder, fillers::TxFiller, mock::Asserter};
 use alloy_signer_local::PrivateKeySigner;
-use tempo_alloy::accounts::{
-    TempoAccessKey, TempoAccountsError, TempoAccountsStore, TempoAccountsWallet,
+use tempo_alloy::{
+    TempoNetwork,
+    accounts::{TempoAccessKey, TempoAccountsError, TempoAccountsStore, TempoAccountsWallet},
+    fillers::TempoGasFiller,
+    rpc::TempoTransactionRequest,
 };
 use tempo_primitives::{
     SignatureType, TempoTransaction,
@@ -128,6 +132,26 @@ async fn configurable_account_authorization_for_another_account_is_rejected() {
             .unwrap_err()
             .to_string()
             .contains("account does not match the selected key")
+    );
+    // Gas filling rejects the grant before estimating, as the chain would.
+    assert!(
+        TempoGasFiller::default()
+            .prepare(
+                &ProviderBuilder::new_with_network::<TempoNetwork>()
+                    .connect_mocked_client(Asserter::new()),
+                &TempoTransactionRequest {
+                    key_authorization: Some(authorization.clone()),
+                    ..TempoTransactionRequest::default()
+                        .with_from(account)
+                        .with_chain_id(4217)
+                },
+            )
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains(&format!(
+                "Tempo key authorization account is {other}, expected {account}"
+            ))
     );
 
     store

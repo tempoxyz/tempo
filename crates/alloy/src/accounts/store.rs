@@ -40,7 +40,9 @@ use tempo_primitives::{
 
 use super::p256::{P256Jwk, P256SignerError, TempoP256Signer};
 use crate::{
-    TempoNetwork, fillers::gas::resolve_key_authorization, provider::keychain::call_scopes_allow,
+    TempoNetwork,
+    fillers::gas::{authorization_accounts, resolve_key_authorization},
+    provider::keychain::call_scopes_allow,
     rpc::TempoTransactionRequest,
 };
 
@@ -2344,18 +2346,6 @@ fn validate_stored_authorization(
         ));
     }
     Ok(())
-}
-
-/// The accounts an authorization names without recovering a primitive signer: the account of its
-/// configurable account signature, which only signs its own grants, and its explicit account. A
-/// valid authorization names one account through all of them.
-fn authorization_accounts(authorization: &SignedKeyAuthorization) -> impl Iterator<Item = Address> {
-    authorization
-        .signature
-        .as_configurable_account()
-        .map(ConfigurableAccountSignature::account)
-        .into_iter()
-        .chain(authorization.account)
 }
 
 struct EditableTempoCliStore {
