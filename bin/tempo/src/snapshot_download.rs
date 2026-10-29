@@ -400,27 +400,53 @@ fn verify_consensus_directory(
         );
     }
 
-    for partition in fs::read_dir(root)? {
-        let partition = partition?;
+    let entries = fs::read_dir(root).wrap_err_with(|| {
+        format!(
+            "failed to read staged consensus snapshot {}",
+            root.display()
+        )
+    })?;
+    for partition in entries {
+        let partition = partition.wrap_err("failed to read staged consensus snapshot entry")?;
+        let partition_name = partition.file_name();
+        let partition_name = partition_name.to_string_lossy();
         ensure!(
             partition.file_name().to_str().is_some_and(|name| {
                 is_snapshot_storage_partition(tempo_consensus::PARTITION_PREFIX, name)
             }),
-            "unsupported consensus snapshot partition: {}",
-            partition.file_name().to_string_lossy(),
+            "unsupported consensus snapshot partition: {partition_name}",
         );
+        let partition_type = partition.file_type().wrap_err_with(|| {
+            format!("failed to read file type of consensus snapshot partition {partition_name}")
+        })?;
         ensure!(
-            partition.file_type()?.is_dir(),
-            "unsupported consensus snapshot file type: {}",
-            partition.file_name().to_string_lossy(),
+            partition_type.is_dir(),
+            "unsupported consensus snapshot file type: {partition_name}",
         );
 
-        for file in fs::read_dir(partition.path())? {
-            let file = file?;
+        let files = fs::read_dir(partition.path()).wrap_err_with(|| {
+            format!("failed to read consensus snapshot partition {partition_name}")
+        })?;
+        for file in files {
+            let file = file.wrap_err_with(|| {
+                format!("failed to read entry in consensus snapshot partition {partition_name}")
+            })?;
             let path = file.path();
-            let relative = path.strip_prefix(root)?;
+            let relative = path.strip_prefix(root).wrap_err_with(|| {
+                format!(
+                    "consensus snapshot entry {} is outside {}",
+                    path.display(),
+                    root.display()
+                )
+            })?;
+            let file_type = file.file_type().wrap_err_with(|| {
+                format!(
+                    "failed to read file type of consensus snapshot entry {}",
+                    relative.display()
+                )
+            })?;
             ensure!(
-                file.file_type()?.is_file(),
+                file_type.is_file(),
                 "unsupported consensus snapshot file type: {}",
                 relative.display(),
             );
@@ -430,23 +456,12 @@ fn verify_consensus_directory(
                     relative.display()
                 )
             })?;
-
-            let size = file.metadata()?.len();
-            ensure!(
-                size == expected.size,
-                "consensus archive output size mismatch for {}: expected {}, got {}",
-                expected.path,
-                expected.size,
-                size,
-            );
-            let actual = hash_file_blake3(&path)?;
-            ensure!(
-                actual.eq_ignore_ascii_case(&expected.blake3),
-                "consensus archive output checksum mismatch for {}: expected {}, got {}",
-                expected.path,
-                expected.blake3,
-                actual,
-            );
+            verify_consensus_output_file(&file, expected).wrap_err_with(|| {
+                format!(
+                    "failed to verify consensus archive output {}",
+                    expected.path
+                )
+            })?;
         }
     }
 
@@ -458,6 +473,29 @@ fn verify_consensus_directory(
         "consensus archive output metadata is empty",
     );
 
+    Ok(())
+}
+
+/// Verify that a staged regular file matches its manifest entry.
+fn verify_consensus_output_file(
+    file: &fs::DirEntry,
+    expected: &OutputFileChecksum,
+) -> eyre::Result<()> {
+    let size = file
+        .metadata()
+        .wrap_err("failed to read file metadata")?
+        .len();
+    ensure!(
+        size == expected.size,
+        "size mismatch: expected {}, got {size}",
+        expected.size,
+    );
+    let actual = hash_file_blake3(&file.path()).wrap_err("failed to hash file")?;
+    ensure!(
+        actual.eq_ignore_ascii_case(&expected.blake3),
+        "checksum mismatch: expected {}, got {actual}",
+        expected.blake3,
+    );
     Ok(())
 }
 
@@ -922,9 +960,9 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(
-            error.to_string(),
+            format!("{error:#}"),
             format!(
-                "consensus archive output checksum mismatch for {output_path}: expected {}, got {}",
+                "failed to verify consensus archive output {output_path}: checksum mismatch: expected {}, got {}",
                 blake3::hash(b"def").to_hex(),
                 blake3::hash(b"abc").to_hex(),
             )
