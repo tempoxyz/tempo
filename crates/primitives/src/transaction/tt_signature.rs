@@ -703,18 +703,6 @@ impl AccountSignature {
             Self::ConfigurableAccount(signature) => signature.size(),
         }
     }
-
-    /// Decodes the approval inside a keychain envelope of the given version.
-    fn from_keychain_bytes(
-        data: &[u8],
-        version: KeychainVersion,
-    ) -> Result<Self, AccountSignatureError> {
-        let signature = Self::from_bytes(data)?;
-        if version == KeychainVersion::V1 && signature.as_configurable_account().is_some() {
-            return Err(AccountSignatureError::ConfigurableAccountInKeychainV1);
-        }
-        Ok(signature)
-    }
 }
 
 impl From<Signature> for AccountSignature {
@@ -818,7 +806,11 @@ impl TempoSignature {
             let inner_sig_bytes = &sig_data[20..];
 
             // A bounded direct approval cannot contain another keychain.
-            let inner_signature = AccountSignature::from_keychain_bytes(inner_sig_bytes, version)?;
+            let inner_signature = AccountSignature::from_bytes(inner_sig_bytes)?;
+            if version == KeychainVersion::V1 && inner_signature.as_configurable_account().is_some()
+            {
+                return Err(AccountSignatureError::ConfigurableAccountInKeychainV1.into());
+            }
 
             return Ok(Self::Keychain(KeychainSignature {
                 user_address,
