@@ -25,7 +25,7 @@ use reth_node_builder::{
     },
     rpc::{
         EngineValidatorAddOn, NoopEngineApiBuilder, PayloadValidatorBuilder, RethRpcAddOns,
-        RpcAddOns, RpcHandle, RpcHooks,
+        RpcAddOns, RpcHandle, RpcHooks, RpcNodeCoreFor,
     },
 };
 use reth_node_core::args::JitArgs;
@@ -93,8 +93,9 @@ pub struct TempoNodeArgs {
     #[arg(long = "txpool.max-txs-per-lane", default_value_t = DEFAULT_MAX_TXS_PER_LANE)]
     pub max_txs_per_lane: usize,
 
-    /// Comma-separated addresses or a file containing comma/newline-separated addresses used for
-    /// transaction sender and direct call target checks.
+    /// Comma-separated addresses or a file containing comma/newline-separated addresses checked
+    /// against each transaction's sender, fee payer, direct call targets, authorization delegates
+    /// and authorities, and access list entries.
     #[arg(
         long = "txpool.filter",
         value_name = "ADDRESSES_OR_FILE",
@@ -428,7 +429,7 @@ impl<N> NodeAddOns<NodeAdapter<N>> for TempoAddOns<N>
 where
     N: FullNodeTypes<Types = TempoNode>,
 {
-    type Handle = RpcHandle<NodeAdapter<N>, TempoEthApi<NodeAdapter<N>>>;
+    type Handle = RpcHandle<NodeAdapter<N>, TempoEthApi<RpcNodeCoreFor<NodeAdapter<N>>>>;
 
     async fn launch_add_ons(
         self,
@@ -475,7 +476,7 @@ impl<N> RethRpcAddOns<NodeAdapter<N>> for TempoAddOns<N>
 where
     N: FullNodeTypes<Types = TempoNode>,
 {
-    type EthApi = TempoEthApi<NodeAdapter<N>>;
+    type EthApi = TempoEthApi<RpcNodeCoreFor<NodeAdapter<N>>>;
 
     fn hooks_mut(&mut self) -> &mut RpcHooks<NodeAdapter<N>, Self::EthApi> {
         self.inner.hooks_mut()
@@ -762,7 +763,7 @@ pub struct TempoPoolBuilder {
     pub max_txs_per_lane: usize,
     /// Whether to skip the FeeAMM liquidity check during pool admission.
     pub disable_fee_amm_check: bool,
-    /// Addresses checked against transaction senders and direct call targets.
+    /// Addresses checked during pool admission; see [`AddressFilter`] for what it checks.
     pub address_filter: AddressFilter,
     /// Optional additional stateless validation check forwarded to the inner ETH validator.
     pub additional_stateless_validation: Option<StatelessValidationFn<TempoPooledTransaction>>,
@@ -795,7 +796,7 @@ impl TempoPoolBuilder {
         self
     }
 
-    /// Configures transaction sender and direct call target checks.
+    /// Configures the [`AddressFilter`] checked during pool admission.
     pub fn with_address_filter(mut self, address_filter: AddressFilter) -> Self {
         self.address_filter = address_filter;
         self

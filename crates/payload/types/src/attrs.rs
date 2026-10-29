@@ -4,7 +4,7 @@ use alloy_rpc_types_eth::Withdrawal;
 use reth_ethereum_engine_primitives::EthPayloadAttributes;
 use reth_node_api::PayloadAttributes;
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tempo_primitives::TempoConsensusContext;
 
 /// Container type for all components required to build a payload.
@@ -26,13 +26,13 @@ pub struct TempoPayloadAttributes {
     #[deref_mut]
     #[serde(flatten)]
     inner: EthPayloadAttributes,
-    /// Remaining local proposal budget available to this payload build.
+    /// Local proposal budget and the monotonic clock reading when it was set.
     ///
     /// Consensus sets this to the proposal return budget left when it dispatches
     /// the build. `None` means the build was not requested by consensus, so the
     /// builder should not stop early for block pacing.
     #[serde(skip)]
-    payload_build_budget: Option<Duration>,
+    payload_build_budget: Option<(Duration, Instant)>,
     /// Milliseconds portion of the timestamp.
     timestamp_millis_part: u64,
     /// DKG ceremony data to include in the block's extra_data header field.
@@ -99,19 +99,22 @@ impl TempoPayloadAttributes {
     ///
     /// The value should already account for any time spent before the build was
     /// requested. The builder treats it as a shared budget for leader
-    /// build/persist work and validator replay/persist work.
+    /// build/persist work and validator replay/persist work. Time between setting
+    /// this budget and starting the build counts against it.
     pub fn with_payload_build_budget(mut self, budget: Duration) -> Self {
-        self.payload_build_budget = Some(budget);
+        self.payload_build_budget = Some((budget, Instant::now()));
         self
     }
 
-    /// Returns the consensus-provided build budget, if this is a paced build.
+    /// Returns the remaining consensus-provided build budget, accounting for time
+    /// since it was set. An exhausted paced budget returns zero.
     ///
     /// `None` is intentional for non-consensus builds such as dev or external
     /// payload requests; those builds are not constrained by the consensus
     /// block-time budget.
     pub fn payload_build_budget(&self) -> Option<Duration> {
         self.payload_build_budget
+            .map(|(budget, observed)| budget.saturating_sub(observed.elapsed()))
     }
 
     /// Returns the milliseconds portion of the timestamp.

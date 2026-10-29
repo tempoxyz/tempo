@@ -39,6 +39,7 @@ use tempo_evm::{
     TempoStateAccess,
 };
 use tempo_precompiles::{
+    configurable_account::CONFIGURABLE_ACCOUNT_CODE_HASH,
     nonce::{INonce, NonceManager},
     storage::StorageActions,
 };
@@ -101,7 +102,7 @@ pub struct TempoTransactionValidator<Client, EvmConfig = TempoEvmConfig> {
     pub(crate) disable_fee_amm_check: bool,
     /// Minimum fee cap accepted by this chain's pool.
     minimum_fee_cap: u128,
-    /// Addresses checked against transaction senders and direct call targets.
+    /// Addresses checked during pool admission; see [`AddressFilter`] for what it checks.
     address_filter: AddressFilter,
     /// Cached EVM environment from the latest tip block, updated on each `on_new_head_block`.
     cached_evm_env: RwLock<TempoEvmEnv>,
@@ -170,7 +171,7 @@ where
         self
     }
 
-    /// Configures transaction sender and direct call target checks.
+    /// Configures the [`AddressFilter`] checked during pool admission.
     pub fn with_address_filter(mut self, address_filter: AddressFilter) -> Self {
         self.address_filter = address_filter;
         self
@@ -612,8 +613,27 @@ where
         // Delegate to the inner ETH validator for remaining checks
         // (chain_id, EIP-3607 code check, protocol nonce, etc.) and to produce
         // the Valid outcome with state_nonce and balance for pool ordering.
+        // The Tempo pipeline has already checked the commitment, marker and signature authority.
+        // Exempt that sender from the inner validator's Ethereum-only EIP-3607 rule.
+        let configurable_sender = if evm.config_spec_id().is_t14() {
+            match evm.read_account_info(transaction.sender_ref()) {
+                Ok(Some(info)) if info.code_hash == CONFIGURABLE_ACCOUNT_CODE_HASH => {
+                    Some(*transaction.sender_ref())
+                }
+                Ok(_) => None,
+                Err(error) => {
+                    return TransactionValidationOutcome::Error(
+                        *transaction.hash(),
+                        Box::new(error),
+                    );
+                }
+            }
+        } else {
+            None
+        };
         let inner_validation = {
-            let cached_state_provider = CachedAccountInfoReader::new(evm.overlay_db_mut());
+            let cached_state_provider =
+                CachedAccountInfoReader::new(evm.overlay_db_mut(), configurable_sender);
             self.inner
                 .validate_one_with_state_provider(origin, transaction, &cached_state_provider)
         };
@@ -627,6 +647,9 @@ where
                 propagate,
                 authorities,
             } => {
+                let bytecode_hash = configurable_sender
+                    .map(|_| CONFIGURABLE_ACCOUNT_CODE_HASH)
+                    .or(bytecode_hash);
                 let mut authorities = authorities;
                 if let Some(aa_tx) = transaction.transaction().inner().as_aa() {
                     let mut recovered_aa_authorities = aa_tx
@@ -644,6 +667,16 @@ where
                             None => authorities = Some(recovered_aa_authorities),
                         }
                     }
+                }
+
+                if let Err(err) = self.address_filter.check_recovered(
+                    transaction.transaction(),
+                    authorities.as_deref().unwrap_or_default(),
+                ) {
+                    return TransactionValidationOutcome::Invalid(
+                        transaction.into_transaction(),
+                        InvalidPoolTransactionError::other(err),
+                    );
                 }
 
                 // Additional nonce validations for non-protocol nonce keys
@@ -817,12 +850,14 @@ where
 /// expected by the inner ETH transaction validator.
 struct CachedAccountInfoReader<DB> {
     db: RefCell<DB>,
+    configurable_sender: Option<Address>,
 }
 
 impl<DB> CachedAccountInfoReader<DB> {
-    const fn new(db: DB) -> Self {
+    const fn new(db: DB, configurable_sender: Option<Address>) -> Self {
         Self {
             db: RefCell::new(db),
+            configurable_sender,
         }
     }
 }
@@ -837,7 +872,15 @@ where
             .borrow_mut()
             .get_account(address)
             .map_err(ProviderError::other)?
-            .map(Account::from))
+            .map(|info| {
+                let exempt = self.configurable_sender == Some(*address)
+                    && info.code_hash == CONFIGURABLE_ACCOUNT_CODE_HASH;
+                let mut account = Account::from(info);
+                if exempt {
+                    account.bytecode_hash = None;
+                }
+                account
+            }))
     }
 }
 
@@ -989,7 +1032,8 @@ mod tests {
             bytecode_reads: bytecode_reads.clone(),
         };
         let cache = StateCache::default();
-        let cached = CachedAccountInfoReader::new(Db::new(StateCacheDb::new(&cache, provider)));
+        let cached =
+            CachedAccountInfoReader::new(Db::new(StateCacheDb::new(&cache, provider)), None);
 
         assert_eq!(
             cached.basic_account(&address).unwrap(),
@@ -1202,6 +1246,54 @@ mod tests {
                     err.downcast_other_ref::<TempoPoolTransactionError>(),
                     Some(TempoPoolTransactionError::AddressCheck { address })
                         if *address == checked_address
+                ));
+            }
+            _ => panic!("Expected Invalid outcome with address check error, got: {outcome:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn address_filter_checks_recovered_authorization_authority() {
+        use alloy_eips::eip7702::Authorization;
+        use alloy_signer::SignerSync;
+        use alloy_signer_local::PrivateKeySigner;
+        use tempo_primitives::transaction::TempoSignedAuthorization;
+
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let authority_signer = PrivateKeySigner::random();
+        let authority = authority_signer.address();
+        let authorization = Authorization {
+            chain_id: U256::ONE,
+            nonce: 0,
+            address: Address::random(),
+        };
+        let signature = authority_signer
+            .sign_hash_sync(&authorization.signature_hash())
+            .expect("authorization signing should succeed");
+        let transaction = TxBuilder::aa(Address::random())
+            .fee_token(PATH_USD_ADDRESS)
+            .authorization_list(vec![TempoSignedAuthorization::new_unchecked(
+                authorization,
+                signature.into(),
+            )])
+            .build();
+        let validator = setup_validator(&transaction, current_time)
+            .with_address_filter(AddressFilter::new([authority]));
+
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+
+        match outcome {
+            TransactionValidationOutcome::Invalid(_, ref err) => {
+                assert!(matches!(
+                    err.downcast_other_ref::<TempoPoolTransactionError>(),
+                    Some(TempoPoolTransactionError::AddressCheck { address })
+                        if *address == authority
                 ));
             }
             _ => panic!("Expected Invalid outcome with address check error, got: {outcome:?}"),

@@ -70,7 +70,7 @@ impl Precompile for AccountKeychain {
                     authorizeKey_2(call) => mutate(call, msg_sender, |sender, c| {
                         self.authorize_key(sender, c.keyId, c.signatureType, c.config, Some(c.witness))
                     }),
-                    #[schedule(since = T6)]
+                    #[schedule(since = T6, until = T14)]
                     authorizeAdminKey(call) => mutate(call, msg_sender, |sender, c| {
                         self.authorize_admin_key(sender, c.keyId, c.signatureType, Some(c.witness))
                     }),

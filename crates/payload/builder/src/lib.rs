@@ -56,8 +56,8 @@ use std::{
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_evm::{
-    StorageActionReplayError, TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess,
-    TempoTxResult,
+    StorageActionReplayError, TempoEvmConfig, TempoInvalidTransaction, TempoNextBlockEnvAttributes,
+    TempoStateAccess, TempoTxResult,
 };
 use tempo_payload_types::{
     Estimator, TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload,
@@ -292,6 +292,8 @@ where
         check_cancel!();
 
         let start = Instant::now();
+        // Snapshot before setup: the stop decision already charges start.elapsed().
+        let payload_build_budget = attributes.payload_build_budget();
 
         let block_time_millis =
             (attributes.timestamp_millis() - parent_header.timestamp_millis()) as f64;
@@ -463,7 +465,6 @@ where
         // Consensus builds carry a remaining proposal budget. When present, the
         // builder stops pool tx execution before projected proposer and validator
         // work would consume that window.
-        let payload_build_budget = attributes.payload_build_budget();
         // Snapshot the shared estimator once so every stop decision in this
         // build uses the same multiplier, dry build finish and validation feedback.
         let build_plan = payload_build_budget
@@ -630,6 +631,15 @@ where
                             // if the nonce is too low, we can skip this transaction
                             trace!(%error, tx = %tx_debug_repr, "skipping nonce too low transaction");
                             self.metrics.inc_pool_tx_skipped("nonce_too_low");
+                        } else if matches!(
+                            TempoInvalidTransaction::from_invalid_tx_error(error.as_ref()),
+                            Some(TempoInvalidTransaction::ExpiringNonceReplay)
+                        ) {
+                            // This exact transaction is already included, typically in the parent
+                            // block before pool maintenance evicted it. Skip it without marking it
+                            // invalid.
+                            trace!(%error, tx = %tx_debug_repr, "skipping already included expiring nonce transaction");
+                            self.metrics.inc_pool_tx_skipped("expiring_nonce_replay");
                         } else {
                             // if the transaction is invalid, we can skip it and all of its
                             // descendants

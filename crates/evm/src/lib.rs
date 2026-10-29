@@ -39,8 +39,8 @@ pub use fee_manager::{
 };
 pub use handler::{
     TempoBlockEnv, TempoBlockExt, TempoConfig, TempoConfigSelector, TempoEvmExt, TempoEvmTypes,
-    TempoTxResultExt, build_tempo_evm, tempo_execution_config, tempo_opcode_config,
-    tempo_tx_registry,
+    TempoTxResultExt, build_tempo_evm, configurable_account::account_access_gas,
+    tempo_execution_config, tempo_opcode_config, tempo_tx_registry,
 };
 pub use transaction::{ExecutionContext, RecoveredTxEnvelope, TempoAaTx, TempoEvmTx, TempoTxEnv};
 pub use transaction_error::{FeePaymentError, TempoInvalidTransaction};
@@ -254,10 +254,6 @@ impl ConfigureEvm for TempoEvmConfig {
                     .epoch_length()
                     .unwrap_or(NonZeroU64::MIN),
                 proposer_public_key: header.consensus_context.map(|ctx| ctx.proposer),
-                configurable_account_recovery_factory: self
-                    .chain_spec()
-                    .info
-                    .configurable_account_recovery_factory(),
             },
             _non_exhaustive: (),
         };
@@ -301,10 +297,6 @@ impl ConfigureEvm for TempoEvmConfig {
                     .epoch_length()
                     .unwrap_or(NonZeroU64::MIN),
                 proposer_public_key: attributes.consensus_context.map(|ctx| ctx.proposer),
-                configurable_account_recovery_factory: self
-                    .chain_spec()
-                    .info
-                    .configurable_account_recovery_factory(),
             },
             _non_exhaustive: (),
         };

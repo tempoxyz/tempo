@@ -3509,6 +3509,66 @@ fn test_expiring_nonce_discriminator_activation() -> eyre::Result<()> {
     Ok(())
 }
 
+/// The block executor reports a replayed expiring nonce tx as a typed invalid-tx error that the
+/// payload builder can tell apart from other invalid txs.
+#[test]
+fn test_block_executor_expiring_nonce_replay_error() -> eyre::Result<()> {
+    use crate::test_utils::{TestExecutorBuilder, test_chainspec};
+    use reth_chainspec::EthChainSpec;
+    use reth_evm::{BlockExecutionError, BlockExecutor, BlockValidationError};
+    use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
+
+    let key_pair = P256KeyPair::random();
+    let caller = key_pair.address;
+    let timestamp = 1_000u64;
+    let chainspec = test_chainspec();
+
+    let mut tx = TxBuilder::new()
+        .call_identity(&[])
+        .nonce_key(TEMPO_EXPIRING_NONCE_KEY)
+        .valid_before(Some(timestamp + 30))
+        .gas_limit(500_000)
+        .build();
+    tx.chain_id = chainspec.chain().id();
+    let tx = TempoTxEnvelope::AA(key_pair.sign_tx(tx)?);
+
+    let mut db = InMemoryDB::default();
+    db.insert_account_info(
+        &STORAGE_CREDITS_ADDRESS,
+        AccountInfo::default().with_nonce(1),
+    );
+    db.insert_account_info(
+        &caller,
+        AccountInfo {
+            balance: U256::from(DEFAULT_BALANCE),
+            ..Default::default()
+        },
+    );
+    let mut executor = TestExecutorBuilder::default()
+        .with_spec(TempoHardfork::T7)
+        .build(&mut db, &chainspec);
+    executor.evm_mut().set_block(TempoBlockEnv {
+        timestamp: U256::from(timestamp),
+        gas_limit: U256::from(30_000_000),
+        ..Default::default()
+    });
+
+    executor.execute_transaction(Recovered::new_unchecked(tx.clone(), caller))?;
+
+    let err = executor
+        .execute_transaction(Recovered::new_unchecked(tx, caller))
+        .unwrap_err();
+    let BlockExecutionError::Validation(BlockValidationError::InvalidTx { error, .. }) = err else {
+        panic!("expected an invalid-tx error, got {err:?}");
+    };
+    assert_eq!(
+        TempoInvalidTransaction::from_invalid_tx_error(error.as_ref()),
+        Some(&TempoInvalidTransaction::ExpiringNonceReplay)
+    );
+
+    Ok(())
+}
+
 /// 2D nonce writes are charged manually by intrinsic gas and must not use TIP-1060 accounting.
 #[test]
 fn test_2d_nonce_preexecution_does_not_settle_nonce_storage_credits() -> eyre::Result<()> {
