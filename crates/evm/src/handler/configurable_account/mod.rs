@@ -209,9 +209,9 @@ pub(crate) fn register_commitments(
     StorageCtx::enter_evm_without_tip1060_accounting(host, || {
         for role in aa.native_authorizations().into_iter().flatten() {
             let account = role.signature.account();
-            // Read again rather than carried over from `validate_state`: nothing else writes the
-            // commitment in between, so this only registers accounts still unset, and an account
-            // signing both roles is registered by the first.
+            // Re-read to avoid threading `validate_state`'s value through: only this loop writes
+            // the commitment in between, so an account signing both roles is registered by the
+            // first.
             if StorageCtx.config_commitment(account)?.is_zero() {
                 StorageCtx.set_config_commitment(
                     account,

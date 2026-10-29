@@ -44,7 +44,7 @@ use tempo_precompiles::{
         AccountKeychain, AuthorizedKey, CallScope as PrecompileCallScope, KeyRestrictions,
         SelectorRule as PrecompileSelectorRule, TokenLimit,
     },
-    configurable_account::valid_account_code,
+    configurable_account::CONFIGURABLE_ACCOUNT_CODE_HASH,
     error::TempoPrecompileError,
     nonce::{INonce::getNonceCall, NonceManager},
     storage::{Handler as _, StorageCtx, account_config_commitment},
@@ -1090,20 +1090,23 @@ fn apply_nonce(
     let eip3607 = host.feature(EvmFeatures::EIP3607);
     let nonce_check = host.feature(EvmFeatures::NONCE_CHECK);
     let mut account = host.state_mut().account(&caller)?;
-    let configurable_sender = spec.is_t14()
-        && (aa.signature().as_configurable_account().is_some()
-            || aa.signature().is_keychain()
-            || matches!(envelope.execution_context(), ExecutionContext::Simulation))
-        && account
-            .get()
-            .map_or(Ok(B256::ZERO), |info| account_config_commitment(info, spec))
-            .map(|commitment| {
-                !commitment.is_zero() && valid_account_code(account.code_hash(), commitment)
-            })?;
-    if eip3607 && !configurable_sender && account.code_hash() != KECCAK256_EMPTY {
-        let code = account.load_code()?;
-        if !code.is_empty() && !code.is_eip7702() {
-            return Err(HandlerError::RejectCallerWithCode);
+    if eip3607 && account.code_hash() != KECCAK256_EMPTY {
+        // From T14 a registered configurable account carries the `0xef` marker (TIP-1114) and may
+        // still send owner-signed, keychain-signed or simulated transactions.
+        let configurable_sender = spec.is_t14()
+            && account.code_hash() == CONFIGURABLE_ACCOUNT_CODE_HASH
+            && (aa.signature().is_configurable_account()
+                || aa.signature().is_keychain()
+                || matches!(envelope.execution_context(), ExecutionContext::Simulation))
+            && !account
+                .get()
+                .map_or(Ok(B256::ZERO), |info| account_config_commitment(info, spec))?
+                .is_zero();
+        if !configurable_sender {
+            let code = account.load_code()?;
+            if !code.is_empty() && !code.is_eip7702() {
+                return Err(HandlerError::RejectCallerWithCode);
+            }
         }
     }
     account.touch();
