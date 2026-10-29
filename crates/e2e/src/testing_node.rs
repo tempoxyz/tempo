@@ -347,7 +347,10 @@ where
             views_to_track: 10,
             // Floor (2s nullify rebroadcast) plus one 1s proposal wait.
             inactive_time_before_leader_skip: Duration::from_secs(3),
-            proposal_return_budget: self.proposal_return_budget,
+            proposal_budget: consensus::ProposalBudget::new(
+                self.proposal_return_budget + Duration::from_millis(50),
+                Duration::from_millis(50),
+            ),
             estimator: self.estimator.clone(),
             fcu_heartbeat_interval: Duration::from_secs(3),
             feed_state: self.feed_state.clone(),

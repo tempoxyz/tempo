@@ -212,7 +212,7 @@ impl L1StateProvider {
             }
         }
 
-        // Published by `ZoneEvm::transact_raw` on the EVM thread. Any other caller reads
+        // Published by the Zone EVM's transaction handler on the EVM thread. Any other caller reads
         // `Canonical` and keeps the unbounded retry.
         let origin = tx_context::execution_origin();
         self.metrics.record_cache_miss(origin);

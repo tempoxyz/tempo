@@ -1,9 +1,8 @@
 use super::*;
 
-use alloy_evm::precompiles::DynPrecompile;
 use alloy_primitives::{Bytes, address};
 use alloy_sol_types::{SolCall, SolInterface};
-use revm::precompile::{PrecompileHalt, PrecompileResult, PrecompileStatus};
+use evm2::precompiles::PrecompileHalt;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::zones::IZoneOutbox as ZoneOutboxAbi;
 use tempo_precompiles::{
@@ -14,11 +13,10 @@ use tempo_precompiles::{
 use zone_primitives::constants::TEMPO_STATE_ADDRESS;
 
 use crate::{
-    create_outbox_precompile,
     tempo_state::TEMPO_BLOCK_NUMBER_SLOT,
     test_utils::{
-        MockL1Reader, TestContext, call_precompile, test_context_with_hardfork, test_env,
-        test_storage_provider,
+        MockL1Reader, PrecompileResult, PrecompileStatus, TestContext, TestPrecompiles,
+        call_precompile, test_context_with_hardfork, test_precompiles, test_storage_provider,
     },
     tx_context,
 };
@@ -36,7 +34,7 @@ const GATEWAY: Address = Address::with_last_byte(0xe5);
 
 struct Harness {
     ctx: TestContext,
-    precompile: DynPrecompile,
+    precompile: TestPrecompiles,
     l1: MockL1Reader,
     token: Address,
 }
@@ -90,8 +88,7 @@ impl Harness {
             })?;
         }
 
-        let env = test_env(&ctx);
-        let precompile = create_outbox_precompile(L1State::new(l1.clone(), PORTAL), &env);
+        let precompile = test_precompiles(&ctx, L1State::new(l1.clone(), PORTAL));
 
         Ok(Self {
             ctx,
@@ -105,7 +102,7 @@ impl Harness {
     fn call_inner(&mut self, caller: Address, fee_payer: Address, data: impl AsRef<[u8]>, with_context: bool, is_static: bool) -> PrecompileResult {
         let _guard = with_context.then(|| tx_context::set_current_transaction(TX_HASH, fee_payer, tx_context::ExecutionOrigin::Canonical));
         call_precompile(
-            &mut self.ctx, &self.precompile, caller, data.as_ref(), GAS, is_static, ZONE_OUTBOX_ADDRESS, ZONE_OUTBOX_ADDRESS
+            &mut self.ctx, &mut self.precompile, caller, data.as_ref(), GAS, is_static, ZONE_OUTBOX_ADDRESS, ZONE_OUTBOX_ADDRESS
         )
     }
 
@@ -940,8 +937,8 @@ fn static_mutation_halts_without_changing_state() -> eyre::Result<()> {
     )?;
     assert_eq!(
         output.status,
-        PrecompileStatus::Halt(PrecompileHalt::other_static(
-            "state change during static call"
+        PrecompileStatus::Halt(PrecompileHalt::Other(
+            "state change during static call".into()
         ))
     );
     assert!(output.bytes.is_empty());
@@ -981,8 +978,8 @@ fn fallback_recipient_nonce_is_private_and_consumed_once_by_inbox() -> eyre::Res
     let output = harness.call_static(ZONE_INBOX_ADDRESS, &calldata)?;
     assert_eq!(
         output.status,
-        PrecompileStatus::Halt(PrecompileHalt::other_static(
-            "state change during static call"
+        PrecompileStatus::Halt(PrecompileHalt::Other(
+            "state change during static call".into()
         ))
     );
     assert!(output.bytes.is_empty());

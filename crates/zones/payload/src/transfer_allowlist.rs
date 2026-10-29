@@ -9,11 +9,11 @@
 
 use alloy_primitives::{Address, B256};
 use alloy_sol_types::SolEvent;
-use reth_evm::block::TxResult;
+use evm2::{TxResultWithState, registry::HandlerError};
 use reth_transaction_pool::error::InvalidPoolTransactionError;
 use std::fmt;
 use tempo_contracts::precompiles::ITIP20;
-use tempo_evm::TempoInvalidTransaction;
+use tempo_evm::TempoEvmTypes;
 use tempo_primitives::TempoAddressExt as _;
 use tempo_transaction_pool::transaction::TempoPoolTransactionError;
 use zone_precompiles::ZoneOutbox;
@@ -52,11 +52,9 @@ pub trait TransferAllowlist: fmt::Debug + Send + Sync + 'static {
 /// Pool error for a transaction that moves Zone funds to or from an account the allowlist does
 /// not allow. It does not say which account failed the check.
 pub fn unlisted_transfer_error() -> InvalidPoolTransactionError {
-    InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(
-        TempoInvalidTransaction::EthInvalidTransaction(
-            "transfer sender or recipient is not allowlisted".into(),
-        ),
-    ))
+    InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(HandlerError::External(
+        "transfer sender or recipient is not allowlisted".into(),
+    )))
 }
 
 /// Whether every TIP-20 transfer and withdrawal fallback recipient in the executed transaction
@@ -68,10 +66,9 @@ pub fn unlisted_transfer_error() -> InvalidPoolTransactionError {
 pub(crate) fn allows_executed(
     allowlist: &dyn TransferAllowlist,
     beneficiary: Address,
-    result: &impl TxResult,
+    result: &TxResultWithState<TempoEvmTypes>,
 ) -> bool {
-    let result = result.result();
-    result.result.logs().iter().all(|log| {
+    result.result.logs.iter().all(|log| {
         // An event that matches but fails to decode is treated as a violation.
         if log.address.is_tip20() && log.topics().first() == Some(&ITIP20::Transfer::SIGNATURE_HASH)
         {
@@ -98,11 +95,11 @@ pub(crate) fn allows_executed(
         // as the zero address, which is never allowed, so the transaction is left out.
         let slot = ZoneOutbox::new().fallback_recipient_slot(withdrawal.fallbackNonce);
         let fallback_recipient = result
-            .state
-            .get(&ZONE_OUTBOX_ADDRESS)
-            .and_then(|outbox| outbox.storage.get(&slot))
+            .pending_state
+            .account_changes_for(&ZONE_OUTBOX_ADDRESS)
+            .and_then(|outbox| outbox.storage.slots.get(&slot))
             .map_or(Address::ZERO, |value| {
-                Address::from_word(B256::from(value.present_value))
+                Address::from_word(B256::from(value.value.current))
             });
         allowlist.allows_withdrawal_fallback(withdrawal.sender, fallback_recipient)
     })
@@ -112,10 +109,7 @@ pub(crate) fn allows_executed(
 mod tests {
     use super::*;
     use alloy_primitives::{Bytes, IntoLogData, Log, LogData, U256, address};
-    use reth_revm::revm::{
-        context::result::{ExecutionResult, HaltReason, ResultAndState},
-        state::{Account, EvmState, EvmStorageSlot, TransactionId},
-    };
+    use evm2::{PendingState, TxResult};
     use std::{
         collections::BTreeSet,
         sync::atomic::{AtomicBool, Ordering},
@@ -166,20 +160,6 @@ mod tests {
         assert!(!Swapping::default().allows_withdrawal_fallback(ALICE, BOB));
     }
 
-    struct Executed(ResultAndState<HaltReason>);
-
-    impl TxResult for Executed {
-        type HaltReason = HaltReason;
-
-        fn result(&self) -> &ResultAndState<HaltReason> {
-            &self.0
-        }
-
-        fn into_result(self) -> ResultAndState<HaltReason> {
-            self.0
-        }
-    }
-
     fn alice_and_bob() -> Listed {
         Listed(BTreeSet::from([ALICE, BOB]))
     }
@@ -217,40 +197,45 @@ mod tests {
     }
 
     /// Outbox state after `requestWithdrawal` stored `recipient` under `fallback_nonce`.
-    fn fallback_recipient(fallback_nonce: u64, recipient: Address) -> EvmState {
-        let mut outbox = Account::default();
-        outbox.storage.insert(
+    fn fallback_recipient(fallback_nonce: u64, recipient: Address) -> PendingState {
+        let mut state = PendingState::default();
+        state.insert_account(ZONE_OUTBOX_ADDRESS, None, Some(Default::default()));
+        state.insert_storage(
+            ZONE_OUTBOX_ADDRESS,
             ZoneOutbox::new().fallback_recipient_slot(fallback_nonce),
-            EvmStorageSlot::new_changed(
-                U256::ZERO,
-                U256::from_be_slice(recipient.as_slice()),
-                TransactionId::ZERO,
-            ),
+            U256::ZERO,
+            U256::from_be_slice(recipient.as_slice()),
         );
-        EvmState::from_iter([(ZONE_OUTBOX_ADDRESS, outbox)])
+        state
     }
 
-    fn allows(logs: Vec<Log>, state: EvmState) -> bool {
-        let result = Executed(ResultAndState::new(
-            ExecutionResult::Revert {
-                gas: Default::default(),
+    fn allows(logs: Vec<Log>, pending_state: PendingState) -> bool {
+        let result = TxResultWithState {
+            result: TxResult::<TempoEvmTypes> {
                 logs,
-                output: Bytes::new(),
+                ..Default::default()
             },
-            state,
-        ));
+            pending_state,
+            ..Default::default()
+        };
         allows_executed(&alice_and_bob(), SEQUENCER, &result)
     }
 
     #[test]
     fn transfers_need_both_parties_listed() {
-        assert!(allows(vec![transfer(ALICE, BOB)], EvmState::default()));
-        assert!(!allows(vec![transfer(ALICE, CAROL)], EvmState::default()));
-        assert!(!allows(vec![transfer(CAROL, ALICE)], EvmState::default()));
+        assert!(allows(vec![transfer(ALICE, BOB)], PendingState::default()));
+        assert!(!allows(
+            vec![transfer(ALICE, CAROL)],
+            PendingState::default()
+        ));
+        assert!(!allows(
+            vec![transfer(CAROL, ALICE)],
+            PendingState::default()
+        ));
         // One unlisted transfer leaves out the whole transaction, e.g. an AA batch.
         assert!(!allows(
             vec![transfer(ALICE, BOB), transfer(BOB, CAROL)],
-            EvmState::default()
+            PendingState::default()
         ));
     }
 
@@ -262,7 +247,7 @@ mod tests {
             transfer(ZONE_OUTBOX_ADDRESS, Address::ZERO),
             transfer(Address::ZERO, CAROL),
         ] {
-            assert!(allows(vec![log], EvmState::default()));
+            assert!(allows(vec![log], PendingState::default()));
         }
     }
 
@@ -270,14 +255,14 @@ mod tests {
     fn transfer_events_from_other_contracts_are_ignored() {
         let mut log = transfer(ALICE, CAROL);
         log.address = CAROL;
-        assert!(allows(vec![log], EvmState::default()));
+        assert!(allows(vec![log], PendingState::default()));
     }
 
     #[test]
     fn malformed_transfer_events_are_left_out() {
         let mut log = transfer(ALICE, BOB);
         log.data = LogData::new_unchecked(vec![ITIP20::Transfer::SIGNATURE_HASH], Bytes::new());
-        assert!(!allows(vec![log], EvmState::default()));
+        assert!(!allows(vec![log], PendingState::default()));
     }
 
     #[test]
@@ -307,7 +292,7 @@ mod tests {
         // Deposit bounce-backs have no sender.
         assert!(allows(
             vec![withdrawal(Address::ZERO, 0)],
-            EvmState::default()
+            PendingState::default()
         ));
     }
 }

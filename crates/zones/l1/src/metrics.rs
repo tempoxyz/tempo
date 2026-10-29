@@ -42,6 +42,9 @@ pub(crate) struct L1SubscriberMetrics {
 
     /// Number of reconnect attempts after the subscriber exits or errors.
     pub reconnects: Counter,
+
+    /// Number of finalized batch submissions dropped because the shadow prover observer was full.
+    pub finalized_batch_submissions_dropped: Counter,
 }
 
 /// Metrics for Tempo L1 storage reads made during Zone execution, labelled by `origin`.

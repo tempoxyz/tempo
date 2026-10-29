@@ -10,11 +10,10 @@ use crate::{
     storage::{L1State, L1StorageReader},
 };
 use alloy_consensus::BlockHeader;
-use alloy_evm::precompiles::DynPrecompile;
 use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
 use alloy_rlp::Decodable as _;
 use alloy_sol_types::SolError;
-use revm::precompile::PrecompileResult;
+use evm2::precompiles::PrecompileResult;
 use tempo_contracts::zones::{StaticCallNotAllowed, TempoState as TempoStateAbi, TempoStateError};
 use tempo_precompiles::{
     EncodePrecompileResult, charge_input_cost, dispatch, error::TempoPrecompileError,
@@ -36,21 +35,6 @@ pub struct TempoState {
 pub use slots::TEMPO_BLOCK_NUMBER as TEMPO_BLOCK_NUMBER_SLOT;
 
 impl TempoState {
-    /// Creates the direct-call-only `TempoState` precompile with checkpoint storage.
-    ///
-    /// The shared L1 storage state is anchored by this precompile's finalized checkpoint.
-    pub fn create<P: L1StorageReader>(
-        l1: L1State<P>,
-        env: &crate::ZonePrecompileEnv,
-    ) -> DynPrecompile {
-        crate::execution::create_precompile(
-            "TempoState",
-            env,
-            crate::execution::NoCallRules,
-            move |data, caller| Self::new().call_with_l1_state(&l1, data, caller),
-        )
-    }
-
     /// Initializes the predeploy account code and checkpoint from the genesis Tempo header.
     pub fn initialize(&mut self, header_rlp: &[u8]) -> tempo_precompiles::Result<()> {
         self.__initialize()?;
@@ -78,7 +62,7 @@ impl TempoState {
     }
 
     fn revert_error<E: SolError>(&self, error: E) -> PrecompileResult {
-        Ok(self.storage.revert_output(error.abi_encode().into()))
+        self.storage.revert_result(error.abi_encode().into())
     }
 
     /// Validate and apply a finalized Tempo checkpoint transition.
@@ -132,7 +116,7 @@ impl TempoState {
             let final_timestamp_millis = U256::from(final_timestamp)
                 .saturating_mul(U256::from(1000))
                 .saturating_add(U256::from(final_timestamp_millis_part));
-            if zone_block.timestamp_millis() < final_timestamp_millis {
+            if zone_block.ext.timestamp_millis(zone_block.timestamp) < final_timestamp_millis {
                 return Err(TempoStateError::invalid_timestamp());
             }
             Ok(())
@@ -162,7 +146,7 @@ impl TempoState {
         }
 
         self.finalize_checkpoints(l1, headers)
-            .encode_precompile_result(0, 0, |()| Bytes::new())
+            .encode_precompile_result(|()| Bytes::new())
     }
 
     /// Returns the currently finalized Tempo block number from Zone state.
@@ -212,12 +196,11 @@ mod tests {
     use super::*;
 
     use crate::test_utils::{
-        MockL1Reader, TestContext, call_precompile, test_context, test_context_with_hardfork,
-        test_env, test_storage_provider,
+        MockL1Reader, PrecompileResult, TestContext, TestPrecompiles, call_precompile,
+        test_context, test_context_with_hardfork, test_precompiles, test_storage_provider,
     };
     use alloc::{vec, vec::Vec};
     use alloy_consensus::Sealable as _;
-    use alloy_evm::precompiles::DynPrecompile;
     use alloy_primitives::address;
     use alloy_sol_types::SolCall;
     use tempo_chainspec::hardfork::TempoHardfork;
@@ -227,7 +210,7 @@ mod tests {
     struct TempoStateHarness {
         ctx: TestContext,
         l1: L1State<MockL1Reader>,
-        precompile: DynPrecompile,
+        precompile: TestPrecompiles,
     }
 
     impl TempoStateHarness {
@@ -246,7 +229,7 @@ mod tests {
                 StorageCtx::enter(&mut storage, || TempoState::new().initialize(&encoded))?;
             }
             let l1 = L1State::new(MockL1Reader::default(), Address::ZERO);
-            let precompile = TempoState::create(l1.clone(), &test_env(&ctx));
+            let precompile = test_precompiles(&ctx, l1.clone());
             Ok(Self {
                 ctx,
                 l1,
@@ -255,8 +238,8 @@ mod tests {
         }
 
         fn set_block_timestamp(&mut self, header: &TempoHeader) {
-            self.ctx.block.inner.timestamp = U256::from(header.timestamp());
-            self.ctx.block.timestamp_millis_part = header.timestamp_millis_part;
+            self.ctx.block.timestamp = U256::from(header.timestamp());
+            self.ctx.block.ext.timestamp_millis_part = header.timestamp_millis_part;
         }
 
         fn call(
@@ -285,7 +268,7 @@ mod tests {
             let calldata = calldata.into();
             call_precompile(
                 &mut self.ctx,
-                &self.precompile,
+                &mut self.precompile,
                 caller,
                 &calldata,
                 u64::MAX,
@@ -473,7 +456,7 @@ mod tests {
         let mut harness = TempoStateHarness::new(&genesis)?;
         let child = child_header(genesis_hash, 1);
         harness.set_block_timestamp(&child);
-        harness.ctx.block.inner.timestamp += U256::ONE;
+        harness.ctx.block.timestamp += U256::ONE;
 
         let output = harness.finalize(ZONE_INBOX_ADDRESS, &child, false)?;
         assert!(output.is_success());
@@ -487,7 +470,7 @@ mod tests {
         let mut harness = TempoStateHarness::new(&genesis)?;
         let child = child_header(genesis_hash, 1);
         harness.set_block_timestamp(&child);
-        harness.ctx.block.inner.timestamp -= U256::ONE;
+        harness.ctx.block.timestamp -= U256::ONE;
 
         let output = harness.finalize(ZONE_INBOX_ADDRESS, &child, false)?;
         assert!(output.is_revert());
@@ -506,7 +489,7 @@ mod tests {
         let mut harness = TempoStateHarness::new(&genesis)?;
         let child = child_header(genesis_hash, 1);
         harness.set_block_timestamp(&child);
-        harness.ctx.block.timestamp_millis_part -= 1;
+        harness.ctx.block.ext.timestamp_millis_part -= 1;
 
         let output = harness.finalize(ZONE_INBOX_ADDRESS, &child, false)?;
         assert!(output.is_revert());
@@ -536,8 +519,8 @@ mod tests {
             Address::ZERO,
             TempoStateAbi::tempoBlockHashCall {}.abi_encode(),
             true,
-            TEMPO_STATE_ADDRESS,
             address!("0x000000000000000000000000000000000000dEaD"),
+            TEMPO_STATE_ADDRESS,
         )?;
 
         assert!(output.is_revert());

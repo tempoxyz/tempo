@@ -1,6 +1,7 @@
 use super::{tempo_transaction::MAX_WEBAUTHN_SIGNATURE_LENGTH, tt_signature::PrimitiveSignature};
+use crate::gas::keccak_gas;
 use alloc::vec::Vec;
-use alloy_primitives::{Address, B256, Keccak256, b256, keccak256};
+use alloy_primitives::{Address, B256, Keccak256, keccak256};
 use alloy_rlp::{Decodable, Error as RlpError};
 
 /// Tempo signature type byte for configurable account signatures.
@@ -18,23 +19,11 @@ pub const MAX_CONFIGURABLE_ACCOUNT_SIGNATURES: usize = 8;
 /// Maximum encoded byte length for one primitive owner approval.
 pub const MAX_CONFIGURABLE_ACCOUNT_OWNER_SIGNATURE_BYTES: usize = 1 + MAX_WEBAUTHN_SIGNATURE_LENGTH;
 
-/// Domain prefix for configurable account CREATE2 salt derivation.
+/// Domain prefix for configurable account address derivation.
 pub const CONFIGURABLE_ACCOUNT_DOMAIN: &[u8] = b"tempo:configurable-account:account";
 
 /// Domain prefix for the salt of an account migrated in place (TIP-1113).
 pub const CONFIGURABLE_ACCOUNT_UPGRADE_DOMAIN: &[u8] = b"tempo:configurable-account:upgrade";
-
-/// Keccak-256 of the account proxy creation code. The creation code is identical for every
-/// account, takes no constructor arguments and embeds the beacon address as a constant.
-///
-/// Placeholder until the canonical account proxy is final: TIP-1110 leaves the value TBD.
-// TODO: replace with the canonical account proxy init-code hash before T14 activation
-pub const ACCOUNT_PROXY_INIT_CODE_HASH: B256 =
-    b256!("583cc63a2e37f645b43eac911b1a6d6de08b83abdc308c61364edda8cfc3bd37");
-
-/// CREATE2 preimage length: 1-byte `0xff` + 20-byte factory + 32-byte salt +
-/// 32-byte init-code hash.
-pub const CONFIGURABLE_ACCOUNT_CREATE2_PREIMAGE_LEN: usize = 1 + 20 + 32 + 32;
 
 /// Domain prefix for configurable account configuration commitments.
 pub const CONFIGURABLE_ACCOUNT_CONFIG_DOMAIN: &[u8] = b"tempo:configurable-account:config";
@@ -80,16 +69,19 @@ impl ConfigurableAccountConfig {
         self.validate_inner(Some(account))
     }
 
-    /// Derives the account using the caller's committed recovery factory address.
+    /// Derives the account address from the initial configuration.
     ///
-    /// TIP-1110 has not selected the production factory address. No default is supplied here.
     /// Reserved namespace checks belong to the caller's chain context.
-    pub fn derive_account(
-        &self,
-        factory: Address,
-    ) -> Result<Address, ConfigurableAccountConfigError> {
+    pub fn derive_account(&self) -> Result<Address, ConfigurableAccountConfigError> {
         self.validate()?;
-        self.derive_account_validated(factory)
+        let account = self.account_address()?;
+        if account.is_zero() {
+            return Err(ConfigurableAccountConfigError::DerivedAccountZero);
+        }
+        if self.owner_weight(account).is_some() {
+            return Err(ConfigurableAccountConfigError::AccountIsOwner);
+        }
+        Ok(account)
     }
 
     /// Computes the persisted commitment for this configuration.
@@ -105,10 +97,16 @@ impl ConfigurableAccountConfig {
             .ok()
             .map(|idx| self.owners[idx].weight)
     }
-    /// Byte length of the account-salt preimage: domain, 32-byte salt, 1-byte threshold,
+    /// Byte length of the account preimage: domain, 32-byte salt, 1-byte threshold,
     /// 1-byte owner count, and a 20-byte address plus 1-byte weight per owner.
-    pub const fn account_salt_preimage_len(&self) -> usize {
+    pub const fn account_preimage_len(&self) -> usize {
         CONFIGURABLE_ACCOUNT_DOMAIN.len() + 32 + 2 + self.owners.len() * 21
+    }
+
+    /// Hashing gas to derive the account address from this configuration (TIP-1114).
+    /// Returns `None` if the cost overflows `u64`.
+    pub fn derivation_gas(&self) -> Option<u64> {
+        keccak_gas(self.account_preimage_len())
     }
 
     /// Byte length of the commitment preimage: domain, 32-byte salt, 8-byte version, 1-byte
@@ -117,13 +115,13 @@ impl ConfigurableAccountConfig {
         CONFIGURABLE_ACCOUNT_CONFIG_DOMAIN.len() + 32 + 8 + 2 + self.owners.len() * 21
     }
 
-    /// Encodes the canonical account-salt preimage.
+    /// Encodes the canonical account preimage.
     ///
     /// This checks that the owner count is encodable; callers must separately validate the config
     /// before relying on the resulting hash.
-    pub fn account_salt_preimage(&self) -> Result<Vec<u8>, ConfigurableAccountConfigError> {
+    pub fn account_preimage(&self) -> Result<Vec<u8>, ConfigurableAccountConfigError> {
         let owner_count = self.encoded_owner_count()?;
-        let mut input = Vec::with_capacity(self.account_salt_preimage_len());
+        let mut input = Vec::with_capacity(self.account_preimage_len());
         input.extend_from_slice(CONFIGURABLE_ACCOUNT_DOMAIN);
         input.extend_from_slice(self.salt.as_slice());
         self.append_owner_set(&mut input, owner_count);
@@ -205,27 +203,6 @@ impl ConfigurableAccountConfig {
         Ok(total_weight)
     }
 
-    fn account_salt_validated(&self) -> B256 {
-        keccak256(
-            self.account_salt_preimage()
-                .expect("validated account config has an encodable owner count"),
-        )
-    }
-
-    fn derive_account_validated(
-        &self,
-        factory: Address,
-    ) -> Result<Address, ConfigurableAccountConfigError> {
-        let account = configurable_account_address(factory, self.account_salt_validated());
-        if account.is_zero() {
-            return Err(ConfigurableAccountConfigError::DerivedAccountZero);
-        }
-        if self.owner_weight(account).is_some() {
-            return Err(ConfigurableAccountConfigError::AccountIsOwner);
-        }
-        Ok(account)
-    }
-
     fn commitment_validated(&self) -> B256 {
         keccak256(
             self.commitment_preimage()
@@ -247,6 +224,10 @@ impl ConfigurableAccountConfig {
             input.extend_from_slice(owner.owner.as_slice());
             input.push(owner.weight);
         }
+    }
+
+    fn account_address(&self) -> Result<Address, ConfigurableAccountConfigError> {
+        Ok(Address::from_word(keccak256(self.account_preimage()?)))
     }
 }
 
@@ -270,7 +251,7 @@ pub struct ConfigurableAccountSignature {
 impl ConfigurableAccountSignature {
     /// Constructs a bounded primitive-owner witness.
     ///
-    /// The named account remains untrusted: factory-derived identity or the stored commitment,
+    /// The named account remains untrusted: derived identity or the stored commitment,
     /// account code, and the owner quorum must be checked against state.
     pub fn try_new(
         account: Address,
@@ -358,7 +339,6 @@ impl ConfigurableAccountSignature {
     pub fn validate_account_commitment(
         &self,
         stored: B256,
-        factory: Option<Address>,
     ) -> Result<(), ConfigurableAccountStateError> {
         let actual = self.config_commitment();
         if actual.is_zero() || (!stored.is_zero() && stored != actual) {
@@ -373,11 +353,12 @@ impl ConfigurableAccountSignature {
                     actual: self.config.version,
                 });
             }
-            let factory = factory.ok_or(ConfigurableAccountStateError::FactoryNotConfigured)?;
             // The config was validated against `account` at construction, which excludes a zero or
             // owner account, so a derived collision with either is reported as a mismatch.
-            let expected =
-                configurable_account_address(factory, self.config.account_salt_validated());
+            let expected = self
+                .config
+                .account_address()
+                .expect("validated account config has an encodable owner count");
             if expected != self.account {
                 return Err(ConfigurableAccountStateError::InitialAccountMismatch {
                     expected,
@@ -518,8 +499,6 @@ pub enum ConfigurableAccountStateError {
         /// Witness version.
         actual: u64,
     },
-    /// First use requires a configured recovery factory.
-    FactoryNotConfigured,
     /// The initial configuration derives a different address.
     InitialAccountMismatch {
         /// Derived account.
@@ -542,7 +521,6 @@ impl core::fmt::Display for ConfigurableAccountStateError {
                     "unregistered configuration version mismatch: expected 0, actual {actual}"
                 )
             }
-            Self::FactoryNotConfigured => f.write_str("recovery factory is not configured"),
             Self::InitialAccountMismatch { expected, actual } => {
                 write!(
                     f,
@@ -683,11 +661,6 @@ pub fn configurable_account_digest(
     hasher.finalize()
 }
 
-/// Returns the configurable account for a committed factory and precomputed account salt.
-fn configurable_account_address(factory: Address, account_salt: B256) -> Address {
-    factory.create2(account_salt, ACCOUNT_PROXY_INIT_CODE_HASH)
-}
-
 #[cfg(feature = "serde")]
 mod serde_impls {
     use super::ConfigurableAccountSignature;
@@ -752,11 +725,11 @@ mod arbitrary_impl {
                 threshold: 1,
                 owners: vec![ConfigurableAccountOwner { owner, weight: 1 }],
             };
-            // A single nonzero owner of weight 1 at threshold 1 is valid, a CREATE2 account equals
+            // A single nonzero owner of weight 1 at threshold 1 is valid, a derived account equals
             // zero or that owner only by a hash collision, and every approval is within the owner
             // size cap: a failure here is a generator bug that fuzzing must surface, not skip.
             let account = config
-                .derive_account(Address::repeat_byte(0x99))
+                .derive_account()
                 .expect("generated single-owner account config is valid");
             Ok(Self::try_new(account, config, signatures)
                 .expect("generated configurable account signature satisfies its shape limits"))
