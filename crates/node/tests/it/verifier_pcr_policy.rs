@@ -66,7 +66,7 @@ async fn verifier_pcr_policy_reports_expected_values_before_any_batch() -> eyre:
         serde_json::Value::Null
     );
     let genesis = provider.get_verifier_pcr_policy(Some("Genesis")).await?;
-    assert_eq!(genesis.history, [genesis.selected.clone()]);
+    assert_eq!(genesis.history, std::slice::from_ref(&genesis.selected));
     assert_eq!(genesis.selected.activation_time, None);
     assert_eq!(genesis.selected.pcrs, None);
 
