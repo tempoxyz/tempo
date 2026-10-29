@@ -263,3 +263,43 @@ async fn server_ended_subscription_closes_client_stream() {
     assert!(next.is_none(), "expected the stream to end, got {next:?}");
     assert!(client.is_connected());
 }
+
+#[tokio::test]
+async fn subscriptions_are_capped_per_connection() {
+    let (events_tx, _) = broadcast::channel(1);
+    let module = TempoConsensusRpc::new(IdleFeed {
+        events_tx: events_tx.clone(),
+    })
+    .into_rpc();
+
+    let server = Server::builder().build("127.0.0.1:0").await.unwrap();
+    let addr = server.local_addr().unwrap();
+    let _handle = server.start(module);
+    let connect = || WsClientBuilder::default().build(format!("ws://{addr}"));
+
+    let first = connect().await.unwrap();
+    let mut held = Vec::new();
+    for _ in 0..MAX_SUBSCRIPTIONS_PER_CONNECTION {
+        held.push(first.subscribe_events().await.unwrap());
+    }
+    wait_for_live_subscriptions(&events_tx, MAX_SUBSCRIPTIONS_PER_CONNECTION).await;
+
+    let jsonrpsee::core::client::Error::Call(err) = first
+        .subscribe_events()
+        .await
+        .expect_err("subscription over the per-connection cap must be rejected")
+    else {
+        panic!("expected a JSON-RPC error");
+    };
+    assert_eq!(err.code(), TOO_MANY_SUBSCRIPTIONS_CODE);
+
+    // Another connection still gets its own share.
+    let second = connect().await.unwrap();
+    let _other = second.subscribe_events().await.unwrap();
+    wait_for_live_subscriptions(&events_tx, MAX_SUBSCRIPTIONS_PER_CONNECTION + 1).await;
+
+    // Ending one subscription frees a slot on the first connection.
+    held.pop().unwrap().unsubscribe().await.unwrap();
+    wait_for_live_subscriptions(&events_tx, MAX_SUBSCRIPTIONS_PER_CONNECTION).await;
+    let _again = first.subscribe_events().await.unwrap();
+}

@@ -11,16 +11,18 @@ pub mod types;
 #[cfg(test)]
 mod tests;
 
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use jsonrpsee::{
+    ConnectionId,
     core::RpcResult,
     proc_macros::rpc,
     types::{
         ErrorObject,
-        error::{INTERNAL_ERROR_CODE, SERVER_IS_BUSY_CODE},
+        error::{INTERNAL_ERROR_CODE, SERVER_IS_BUSY_CODE, TOO_MANY_SUBSCRIPTIONS_CODE},
     },
 };
+use parking_lot::Mutex;
 use tokio::sync::Semaphore;
 
 pub use types::{CertifiedBlock, ConsensusFeed, ConsensusState, Event, Query, SharedEvent};
@@ -88,11 +90,22 @@ pub trait TempoConsensusApi {
 /// finalized block, so it gets a far lower cap than jsonrpsee's generic per-connection limit.
 const DEFAULT_MAX_SUBSCRIPTIONS: usize = 256;
 
-/// Notifications a subscription may have queued on its connection before it is dropped.
+/// Cap on concurrent `consensus_subscribe` subscriptions on one connection, so a single client
+/// cannot take every slot of [`DEFAULT_MAX_SUBSCRIPTIONS`].
+const MAX_SUBSCRIPTIONS_PER_CONNECTION: usize = 4;
+
+/// Messages that may be queued on a subscription's connection before the subscription is dropped.
 ///
-/// Each notification carries a full block, and jsonrpsee queues up to 1024 messages per
-/// connection, so a client that stops reading would otherwise pin up to 1024 block copies.
-const MAX_PENDING_NOTIFICATIONS: usize = 8;
+/// jsonrpsee exposes only the connection's send buffer, which every subscription and method
+/// response on that connection shares, so this counts the whole connection's backlog, not this
+/// subscription's. It is set well above what a healthy client sharing its connection with other
+/// subscriptions queues, while still bounding a client that stops reading to a few dozen block
+/// copies instead of jsonrpsee's 1024.
+///
+/// Known limitation: reth's IPC server moves messages out of that buffer into an unbounded queue
+/// per connection as soon as they arrive, so on IPC neither this check nor [`SEND_TIMEOUT`] fires
+/// and a local IPC client that stops reading is never dropped.
+const MAX_PENDING_NOTIFICATIONS: usize = 32;
 
 /// How long a notification may wait for room on the connection before the subscription is
 /// dropped.
@@ -104,6 +117,44 @@ pub struct TempoConsensusRpc<I> {
     consensus_feed: I,
     /// One permit per live subscription, shared by every connection.
     subscriptions: Arc<Semaphore>,
+    /// Live subscriptions per connection, capped at [`MAX_SUBSCRIPTIONS_PER_CONNECTION`].
+    per_connection: Arc<Mutex<HashMap<ConnectionId, usize>>>,
+}
+
+/// One subscription's claim on its connection's share; released on drop.
+struct ConnectionSlot {
+    counts: Arc<Mutex<HashMap<ConnectionId, usize>>>,
+    connection: ConnectionId,
+}
+
+impl ConnectionSlot {
+    fn try_claim(
+        counts: &Arc<Mutex<HashMap<ConnectionId, usize>>>,
+        connection: ConnectionId,
+    ) -> Option<Self> {
+        let mut guard = counts.lock();
+        let count = guard.entry(connection).or_default();
+        if *count >= MAX_SUBSCRIPTIONS_PER_CONNECTION {
+            return None;
+        }
+        *count += 1;
+        Some(Self {
+            counts: counts.clone(),
+            connection,
+        })
+    }
+}
+
+impl Drop for ConnectionSlot {
+    fn drop(&mut self) {
+        let mut guard = self.counts.lock();
+        if let Some(count) = guard.get_mut(&self.connection) {
+            *count -= 1;
+            if *count == 0 {
+                guard.remove(&self.connection);
+            }
+        }
+    }
 }
 
 impl<I: ConsensusFeed> TempoConsensusRpc<I> {
@@ -118,6 +169,7 @@ impl<I: ConsensusFeed> TempoConsensusRpc<I> {
         Self {
             consensus_feed,
             subscriptions: Arc::new(Semaphore::new(max_subscriptions)),
+            per_connection: Default::default(),
         }
     }
 }
@@ -138,6 +190,17 @@ impl<I: ConsensusFeed> TempoConsensusApiServer for TempoConsensusRpc<I> {
     ) -> jsonrpsee::core::SubscriptionResult {
         // Reject before accepting, so the client gets an error for its subscribe call instead of
         // a subscription that ends at once.
+        let Some(slot) = ConnectionSlot::try_claim(&self.per_connection, pending.connection_id())
+        else {
+            pending
+                .reject(ErrorObject::owned(
+                    TOO_MANY_SUBSCRIPTIONS_CODE,
+                    "too many consensus subscriptions on this connection",
+                    Some(MAX_SUBSCRIPTIONS_PER_CONNECTION),
+                ))
+                .await;
+            return Ok(());
+        };
         let Ok(permit) = self.subscriptions.clone().try_acquire_owned() else {
             pending
                 .reject(ErrorObject::owned(
@@ -149,7 +212,13 @@ impl<I: ConsensusFeed> TempoConsensusApiServer for TempoConsensusRpc<I> {
             return Ok(());
         };
 
-        let sink = pending.accept().await?;
+        // Accepting writes the subscription ID to the connection, which blocks while a client that
+        // stops reading has filled its buffer. Bound it, so a stalled client cannot hold permits
+        // in accept().
+        let Ok(accepted) = tokio::time::timeout(SEND_TIMEOUT, pending.accept()).await else {
+            return Ok(());
+        };
+        let sink = accepted?;
         let mut rx = self.consensus_feed.subscribe().await.ok_or_else(|| {
             ErrorObject::owned(INTERNAL_ERROR_CODE, "Failed to subscribe", None::<()>)
         })?;
@@ -158,7 +227,7 @@ impl<I: ConsensusFeed> TempoConsensusApiServer for TempoConsensusRpc<I> {
         // when it returns an error, sends the client a close notification so it can resubscribe
         // and backfill with `consensus_getFinalization`. Holding `permit` here releases it when the
         // subscription ends.
-        let _permit = permit;
+        let _permit = (permit, slot);
         loop {
             // Events only arrive on finalization, so a failed `send` alone would not detect a
             // disconnect or unsubscribe while finalization is stalled. Race against `closed()` so
