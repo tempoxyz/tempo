@@ -34,8 +34,9 @@ use tempo_contracts::precompiles::{
 use tempo_primitives::{SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType};
 use tracing::trace;
 
+/// Transaction ordering section of a block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum BlockSection {
+pub enum BlockSection {
     /// Start of block system transactions.
     StartOfBlock,
     /// Basic section of the block. Includes arbitrary transactions chosen by the proposer.
@@ -46,6 +47,100 @@ pub(crate) enum BlockSection {
     GasIncentive,
     /// End of block system transactions.
     System { seen_subblocks_signatures: bool },
+}
+
+/// Block-level counters needed to execute one transaction from its exact prestate.
+///
+/// Holds no database state, EVM environment or prior receipts: restoring it supports executing
+/// a single transaction, not finalizing a block. The inner executor's separate regular/state
+/// block gas counters are not restorable from Tempo; they only gate block-gas admission, which a
+/// canonical transaction passes either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TempoTransactionBoundary {
+    /// Section the next transaction is validated against.
+    pub section: BlockSection,
+    /// Gas left for non-shared transactions.
+    pub non_shared_gas_left: u64,
+    /// Gas left for non-payment transactions.
+    pub non_payment_gas_left: u64,
+    /// Incentive-section gas used by real transactions.
+    pub incentive_gas_used: u64,
+    /// Block gas used so far.
+    pub block_gas_used: u64,
+    /// Cumulative receipt gas used so far.
+    pub cumulative_gas_used: u64,
+    /// Blob gas used so far.
+    pub blob_gas_used: u64,
+}
+
+impl TempoTransactionBoundary {
+    /// Encoded size in bytes.
+    pub const ENCODED_LEN: usize = 1 + 6 * 8;
+
+    /// Encodes the boundary as a section tag followed by big-endian counters.
+    pub fn encode(&self) -> [u8; Self::ENCODED_LEN] {
+        let mut bytes = [0; Self::ENCODED_LEN];
+        bytes[0] = match self.section {
+            BlockSection::StartOfBlock => 0,
+            BlockSection::NonShared => 1,
+            BlockSection::GasIncentive => 2,
+            BlockSection::System {
+                seen_subblocks_signatures: false,
+            } => 3,
+            BlockSection::System {
+                seen_subblocks_signatures: true,
+            } => 4,
+        };
+        for (i, value) in [
+            self.non_shared_gas_left,
+            self.non_payment_gas_left,
+            self.incentive_gas_used,
+            self.block_gas_used,
+            self.cumulative_gas_used,
+            self.blob_gas_used,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            bytes[1 + i * 8..9 + i * 8].copy_from_slice(&value.to_be_bytes());
+        }
+        bytes
+    }
+
+    /// Decodes a boundary produced by [`Self::encode`].
+    pub fn decode(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() != Self::ENCODED_LEN {
+            return None;
+        }
+        let section = match bytes[0] {
+            0 => BlockSection::StartOfBlock,
+            1 => BlockSection::NonShared,
+            2 => BlockSection::GasIncentive,
+            3 => BlockSection::System {
+                seen_subblocks_signatures: false,
+            },
+            4 => BlockSection::System {
+                seen_subblocks_signatures: true,
+            },
+            _ => return None,
+        };
+        let value = |i: usize| {
+            u64::from_be_bytes(
+                bytes[1 + i * 8..9 + i * 8]
+                    .try_into()
+                    .expect("checked length"),
+            )
+        };
+        Some(Self {
+            section,
+            non_shared_gas_left: value(0),
+            non_payment_gas_left: value(1),
+            incentive_gas_used: value(2),
+            block_gas_used: value(3),
+            cumulative_gas_used: value(4),
+            blob_gas_used: value(5),
+        })
+    }
 }
 
 /// Builder for [`TempoReceipt`].
@@ -237,6 +332,34 @@ impl<'a> TempoBlockExecutor<'a> {
             section: BlockSection::StartOfBlock,
             replay_state: StorageActionReplayState::default(),
         }
+    }
+
+    /// Captures the block-level counters after all prior transactions were committed.
+    pub fn transaction_boundary(&self) -> TempoTransactionBoundary {
+        TempoTransactionBoundary {
+            section: self.section,
+            non_shared_gas_left: self.non_shared_gas_left,
+            non_payment_gas_left: self.non_payment_gas_left,
+            incentive_gas_used: self.incentive_gas_used,
+            block_gas_used: self.block_gas_used,
+            cumulative_gas_used: self.inner.cumulative_gas_used,
+            blob_gas_used: self.inner.blob_gas_used,
+        }
+    }
+
+    /// Restores block-level counters into a fresh executor over the matching prestate.
+    ///
+    /// Do not apply pre-execution changes again or finalize this executor. Storage-action
+    /// replay memoization is reset: an isolated transaction always executes normally.
+    pub fn restore_transaction_boundary(&mut self, boundary: TempoTransactionBoundary) {
+        self.section = boundary.section;
+        self.non_shared_gas_left = boundary.non_shared_gas_left;
+        self.non_payment_gas_left = boundary.non_payment_gas_left;
+        self.incentive_gas_used = boundary.incentive_gas_used;
+        self.block_gas_used = boundary.block_gas_used;
+        self.inner.cumulative_gas_used = boundary.cumulative_gas_used;
+        self.inner.blob_gas_used = boundary.blob_gas_used;
+        self.replay_state = StorageActionReplayState::default();
     }
 
     /// Deploys `0xEF` marker bytecode and initializes storage at a precompile address.
