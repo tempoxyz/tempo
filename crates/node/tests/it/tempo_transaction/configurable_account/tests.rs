@@ -795,9 +795,7 @@ async fn configurable_account_rpc_registration_revert_retry_and_rotation() -> ey
     let hash = B256::repeat_byte(0x5a);
     let is_valid_signature = IConfigurableAccountShim::isValidSignatureCall {
         hash,
-        signature: TempoSignature::ConfigurableAccount(account.quorum(hash, false)?)
-            .to_bytes()
-            .into(),
+        signature: TempoSignature::ConfigurableAccount(account.quorum(hash, false)?).to_bytes(),
     };
     let address = account.address;
     let shim_call = move |input: Vec<u8>| {
