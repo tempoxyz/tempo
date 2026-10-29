@@ -442,8 +442,8 @@ impl SignedKeyAuthorization {
         }
     }
 
-    /// Cryptographically verifies a primitive signature; a configurable account requires
-    /// stateful validation.
+    /// Recover the signer of the [`KeyAuthorization`]. Returns `Err` for a configurable account
+    /// signature, which has no single signer.
     pub fn recover_signer(&self) -> Result<Address, RecoveryError> {
         let AccountSignature::Primitive(signature) = &self.signature else {
             return Err(RecoveryError::new());
@@ -460,8 +460,10 @@ impl SignedKeyAuthorization {
 
     /// Recovers a primitive signer or returns the named configurable account.
     ///
-    /// For configurable account results, callers must verify the parent account, configuration and
-    /// owner quorum against state. Primitive results still require grant-authority checks.
+    /// For configurable account results, the owner quorum needs only stateless verification
+    /// ([`verify_approvals`](crate::transaction::ConfigurableAccountSignature::verify_approvals));
+    /// only the account's configuration commitment and code must be checked against state.
+    /// Primitive results still require grant-authority checks.
     pub fn authorizing_account(&self) -> Result<Address, RecoveryError> {
         match &self.signature {
             AccountSignature::Primitive(_) => self.recover_signer(),
