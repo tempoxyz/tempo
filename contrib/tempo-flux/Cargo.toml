@@ -1,0 +1,61 @@
+[workspace]
+members = ["crates/primitives", "crates/node"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+tempo-flux-primitives = { path = "crates/primitives" }
+flux = { git = "https://github.com/gattaca-com/flux", rev = "cb8ebf802c04376ea8b221e966bb0909854b365e" }
+flux-disk = { git = "https://github.com/gattaca-com/flux", rev = "cb8ebf802c04376ea8b221e966bb0909854b365e" }
+flux-timing = { git = "https://github.com/gattaca-com/flux", rev = "cb8ebf802c04376ea8b221e966bb0909854b365e" }
+flux-utils = { git = "https://github.com/gattaca-com/flux", rev = "cb8ebf802c04376ea8b221e966bb0909854b365e" }
+spine-derive = { git = "https://github.com/gattaca-com/flux", rev = "cb8ebf802c04376ea8b221e966bb0909854b365e" }
+type-hash = { git = "https://github.com/gattaca-com/flux", rev = "cb8ebf802c04376ea8b221e966bb0909854b365e" }
+type-hash-derive = { git = "https://github.com/gattaca-com/flux", rev = "cb8ebf802c04376ea8b221e966bb0909854b365e" }
+alloy-trie = "0.9"
+alloy-consensus = { version = "2.5.0", features = ["k256"] }
+alloy-eips = "2.5.0"
+alloy-primitives = { version = "1.7.3", features = ["k256", "asm-keccak"] }
+alloy-signer = "2.5.0"
+alloy-signer-local = "2.5.0"
+alloy-rlp = "0.3.16"
+alloy-sol-types = "1.7.3"
+evm2 = { git = "https://github.com/alloy-rs/evm2", rev = "5652ca0a1e5a13639fb6e65427292b2e7d259df2", default-features = false, features = ["std"] }
+reth-evm = { git = "https://github.com/paradigmxyz/reth", rev = "9d1638f32855dd0cffd98f28675ed584bf4920ef", features = ["account-ext"] }
+reth-evm-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "9d1638f32855dd0cffd98f28675ed584bf4920ef" }
+tempo-evm = { git = "https://github.com/tempoxyz/tempo", rev = "f1e700d8abe46230d57fbf5ec309f62cf71be083" }
+tempo-precompiles = { git = "https://github.com/tempoxyz/tempo", rev = "f1e700d8abe46230d57fbf5ec309f62cf71be083" }
+tempo-primitives = { git = "https://github.com/tempoxyz/tempo", rev = "f1e700d8abe46230d57fbf5ec309f62cf71be083", features = ["reth"] }
+tempo-chainspec = { git = "https://github.com/tempoxyz/tempo", rev = "f1e700d8abe46230d57fbf5ec309f62cf71be083", features = ["reth"] }
+tempo-contracts = { git = "https://github.com/tempoxyz/tempo", rev = "f1e700d8abe46230d57fbf5ec309f62cf71be083" }
+core_affinity = "0.8"
+clap = { version = "4", features = ["derive"] }
+rustc-hash = "2"
+serde = { version = "1", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+debug = 1
+lto = "thin"
+codegen-units = 16
+
+[patch.crates-io]
+
+reth-codecs = { git = "https://github.com/paradigmxyz/reth-core", rev = "bd0edad994bfbb1e5cea8ca5b4da5d8813baa5f1" }
+reth-codecs-derive = { git = "https://github.com/paradigmxyz/reth-core", rev = "bd0edad994bfbb1e5cea8ca5b4da5d8813baa5f1" }
+reth-primitives-traits = { git = "https://github.com/paradigmxyz/reth-core", rev = "bd0edad994bfbb1e5cea8ca5b4da5d8813baa5f1" }
+reth-rpc-traits = { git = "https://github.com/paradigmxyz/reth-core", rev = "bd0edad994bfbb1e5cea8ca5b4da5d8813baa5f1" }
+reth-zstd-compressors = { git = "https://github.com/paradigmxyz/reth-core", rev = "bd0edad994bfbb1e5cea8ca5b4da5d8813baa5f1" }
+
+[patch."https://github.com/alloy-rs/evm2"]
+evm2 = { git = "https://github.com/DaniPopes/evm2", rev = "5652ca0a1e5a13639fb6e65427292b2e7d259df2" }
+evm2-inspectors = { git = "https://github.com/DaniPopes/evm2", rev = "5652ca0a1e5a13639fb6e65427292b2e7d259df2" }
+evm2-macros = { git = "https://github.com/DaniPopes/evm2", rev = "5652ca0a1e5a13639fb6e65427292b2e7d259df2" }
+
