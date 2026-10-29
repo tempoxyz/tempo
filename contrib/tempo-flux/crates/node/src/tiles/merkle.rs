@@ -107,7 +107,9 @@ impl Tile<NodeSpine> for MerkleTile {
             |res, _| match res {
                 DCacheRead::Ok((d, p)) => diffs.push((d, p)),
                 DCacheRead::NoRef(d) => diffs.push((d, Vec::new())),
-                _ => tracing::error!("merkle lost a state diff"),
+                // Execution already applied this block and can't redo it, so
+                // stop loudly instead of leaving consensus waiting forever.
+                _ => panic!("merkle lost a state diff; the state root can no longer be computed"),
             },
         );
         for (d, payload) in diffs {

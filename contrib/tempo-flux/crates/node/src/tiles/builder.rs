@@ -29,6 +29,10 @@ pub struct BuilderTile {
     inflight: Option<(u64, Hash, Vec<(Address, u64, PendingTx)>)>,
     pending: Option<BuildRequest>,
     accepted_height: u64,
+    /// Height of the last rejected block. A second rejection at the same
+    /// height drops that block's txs, so a tx that always fails can't stall
+    /// the chain; its sender's later txs wait for a resubmitted nonce.
+    rejected_at: Option<u64>,
 }
 
 impl BuilderTile {
@@ -66,6 +70,13 @@ impl BuilderTile {
             {
                 self.pooled += 1;
             }
+        }
+    }
+
+    fn drop_txs(&mut self, txs: &[(Address, u64, PendingTx)]) {
+        for (sender, nonce, _) in txs {
+            let next = self.next_nonce.entry(*sender).or_default();
+            *next = (*next).min(*nonce);
         }
     }
 
@@ -159,8 +170,17 @@ impl Tile<NodeSpine> for BuilderTile {
                 let (height, _, txs) = self.inflight.take().expect("checked");
                 if e.valid {
                     self.accepted_height = height;
+                    self.rejected_at = None;
+                } else if self.rejected_at == Some(height) {
+                    tracing::warn!(
+                        height,
+                        dropped = txs.len(),
+                        "block rejected twice, dropping its txs"
+                    );
+                    self.drop_txs(&txs);
                 } else {
                     tracing::warn!(height, "block rejected, returning its txs to the pool");
+                    self.rejected_at = Some(height);
                     self.restore(txs);
                 }
             }
