@@ -1,0 +1,42 @@
+[package]
+name = "tempo-corpus"
+description = "Historical execution corpus: capture and database-free replay of archive ranges"
+
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+alloy-primitives.workspace = true
+reth-primitives-traits.workspace = true
+
+async-trait.workspace = true
+aws-config = "=1.8.15"
+aws-credential-types = "=1.2.14"
+blake3.workspace = true
+bytes.workspace = true
+eyre.workspace = true
+futures.workspace = true
+object_store = { version = "=0.14.2", features = ["aws"] }
+parking_lot.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+slatedb = { version = "=0.17.0", default-features = false, features = ["aws", "moka", "zstd"] }
+tokio.workspace = true
+tracing.workspace = true
+url.workspace = true
+wincode = { version = "=0.6.1", features = ["derive"] }
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+
+[dev-dependencies]
+proptest.workspace = true
