@@ -66,24 +66,35 @@ fi
 # ── 2. Replace Foundry's direct Tempo git dependencies ──────────────────────
 # [patch] entries do not always dislodge old git-sourced lockfile packages when
 # the local checkout has a different crate version. Rewrite Foundry's direct
-# tempo-* dependencies to local paths first, preserving any feature flags.
-while IFS=$'\t' read -r crate path; do
-  [[ -n "$crate" ]] || continue
-  local_path="${TEMPO_ROOT}/${path}"
-  tmp_cargo="$(mktemp "${FOUNDRY_CARGO}.XXXXXX")"
-  awk -v crate="$crate" -v local_path="$local_path" '
-    index($0, crate " = {") == 1 && index($0, "git = \"https://github.com/tempoxyz/tempo\"") {
-      sub(/\{[[:space:]]*/, "{ path = \"" local_path "\", ")
-      gsub(/[[:space:]]*git = "https:\/\/github.com\/tempoxyz\/tempo",[[:space:]]*/, "")
+# tempo-* dependencies (including `package = "tempo-*"` aliases) to local
+# paths first, preserving any feature flags. Foundry may take these from
+# tempoxyz/tempo or from a fork.
+patches_file="$(mktemp)"
+printf '%s\n' "$PATCHES" > "$patches_file"
+tmp_cargo="$(mktemp "${FOUNDRY_CARGO}.XXXXXX")"
+awk -v root="$TEMPO_ROOT" -v patches_file="$patches_file" '
+  BEGIN {
+    while ((getline line < patches_file) > 0) {
+      split(line, parts, "\t")
+      if (parts[1] != "") paths[parts[1]] = root "/" parts[2]
+    }
+  }
+  /^[A-Za-z0-9_-]+ = \{/ && /git = "https:\/\/github.com\/(tempoxyz|mablr)\/tempo"/ {
+    crate = $1
+    if (match($0, /package = "[^"]+"/)) {
+      crate = substr($0, RSTART + 11, RLENGTH - 12)
+    }
+    if (crate in paths) {
+      sub(/\{[[:space:]]*/, "{ path = \"" paths[crate] "\", ")
+      gsub(/[[:space:]]*git = "https:\/\/github.com\/(tempoxyz|mablr)\/tempo",[[:space:]]*/, "")
       gsub(/[[:space:]]*rev = "[^"]+",?[[:space:]]*/, "")
       gsub(/,[[:space:]]*}/, " }")
-      print
-      next
     }
-    { print }
-  ' "$FOUNDRY_CARGO" > "$tmp_cargo"
-  mv "$tmp_cargo" "$FOUNDRY_CARGO"
-done <<< "$PATCHES"
+  }
+  { print }
+' "$FOUNDRY_CARGO" > "$tmp_cargo"
+mv "$tmp_cargo" "$FOUNDRY_CARGO"
+rm -f "$patches_file"
 
 # ── 3. Patch [patch."https://github.com/tempoxyz/tempo"] ────────────────────
 if [[ "$has_tempo_git_patch" == "true" ]]; then
@@ -100,11 +111,23 @@ fi
 
 # ── 4. Patch [patch.crates-io] ──────────────────────────────────────────────
 # Upstream foundry pins some tempo crates to git revisions in [patch.crates-io].
-# Replace those with local paths so Cargo doesn't conflict.
-while IFS=$'\t' read -r crate path; do
+# Replace those with local paths so Cargo doesn't conflict. Tempo's own git
+# patches for other crates (e.g. reth-core) only apply inside the Tempo
+# workspace, so carry them over too.
+CRATES_IO_PATCHES="$({
+  while IFS=$'\t' read -r crate path; do
+    [[ -n "$crate" ]] || continue
+    printf '%s\t%s = { path = "%s/%s" }\n' "$crate" "$crate" "$TEMPO_ROOT" "$path"
+  done <<< "$PATCHES"
+  awk '
+    /^\[patch\.crates-io\]/ { in_section = 1; next }
+    in_section && /^\[/ { exit }
+    in_section && $1 !~ /^tempo-/ && /^[A-Za-z0-9_-]+ = \{ git = / { print $1 "\t" $0 }
+  ' "$TEMPO_CARGO"
+})"
+
+while IFS=$'\t' read -r crate replacement; do
   [[ -n "$crate" ]] || continue
-  local_path="${TEMPO_ROOT}/${path}"
-  replacement="${crate} = { path = \"${local_path}\" }"
   tmp_cargo="$(mktemp "${FOUNDRY_CARGO}.XXXXXX")"
   awk -v crate="$crate" -v replacement="$replacement" '
     /^\[patch\.crates-io\]/ {
@@ -139,7 +162,32 @@ while IFS=$'\t' read -r crate path; do
     }
   ' "$FOUNDRY_CARGO" > "$tmp_cargo"
   mv "$tmp_cargo" "$FOUNDRY_CARGO"
-done <<< "$PATCHES"
+done <<< "$CRATES_IO_PATCHES"
+
+# ── 5. Patch evm2 ────────────────────────────────────────────────────────────
+# Tempo's reth crates resolve evm2 through the alloy-rs/evm2 git patch declared
+# in Tempo's root Cargo.toml. Foundry may depend on a fork of evm2 directly, so
+# apply the same patch to every evm2 source in the graph to keep a single evm2.
+EVM2_PATCH_URL="https://github.com/alloy-rs/evm2"
+EVM2_PATCHES="$(awk -v url="[patch.\"$EVM2_PATCH_URL\"]" '
+  $0 == url { in_section = 1; next }
+  in_section && /^\[/ { exit }
+  in_section && /^evm2[A-Za-z0-9_-]* = \{ git = / { print }
+' "$TEMPO_CARGO")"
+
+if [[ -n "$EVM2_PATCHES" ]]; then
+  evm2_sources=("$EVM2_PATCH_URL")
+  if grep -Eq '^evm2[A-Za-z0-9_-]* = \{.*git = "https://github.com/mablr/evm2"' "$FOUNDRY_CARGO"; then
+    evm2_sources+=("https://github.com/mablr/evm2")
+  fi
+  for source in "${evm2_sources[@]}"; do
+    if grep -qF "[patch.\"$source\"]" "$FOUNDRY_CARGO"; then
+      echo "Foundry Cargo.toml already patches $source – keeping existing section."
+      continue
+    fi
+    printf '\n[patch."%s"]\n%s\n' "$source" "$EVM2_PATCHES" >> "$FOUNDRY_CARGO"
+  done
+fi
 
 echo "Updated Cargo.toml patch sections:"
 sed -n '/^\[patch\./,$p' "$FOUNDRY_CARGO"
@@ -148,8 +196,8 @@ sed -n '/^\[patch\./,$p' "$FOUNDRY_CARGO"
 # tempoxyz/tempo git revisions after the Cargo.toml patches above are written.
 # `cargo metadata` may fail before it can rewrite those entries if an old Tempo
 # revision carries incompatible transitive constraints, so refresh only those
-# stale Tempo packages first. The name@version form keeps the update targeted
-# and unambiguous when the lockfile contains multiple versions of a crate.
+# stale Tempo packages first. The source#name@version form keeps the update targeted
+# and unambiguous when the lockfile contains several versions or revisions of a crate.
 update_stale_tempo_git_packages() {
   local stale_tempo_pkgs
   stale_tempo_pkgs="$(
@@ -169,9 +217,12 @@ update_stale_tempo_git_packages() {
         gsub(/"/, "", version)
         next
       }
-      /^source = "git\+https:\/\/github.com\/tempoxyz\/tempo\?rev=/ {
+      /^source = "git\+https:\/\/github.com\/(tempoxyz|mablr)\/tempo\?rev=/ {
         if (name != "" && version != "") {
-          print name "@" version
+          source = $3
+          gsub(/"/, "", source)
+          sub(/#.*/, "", source)
+          print source "#" name "@" version
         }
       }
     ' Cargo.lock | sort -u
@@ -228,9 +279,10 @@ assert_lock_versions_match() {
   echo "$package lock aligned at $tempo_versions"
 }
 
-# ── 5. Re-resolve the lockfile without upgrading unrelated crates ──────────
+# ── 6. Re-resolve the lockfile without upgrading unrelated crates ──────────
 # `cargo update` can pull newer upstream deps from Foundry's workspace, which is non-deterministic.
-# A normal resolver pass is enough to rewrite the lockfile entries for the tempo path overrides.
+# A workspace-only `cargo update` re-resolves the lockfile for the tempo path overrides without
+# downloading crates, so a blocked or unrelated Foundry dependency cannot fail the resolver check.
 # Keep this aligned with the CI Forge build so Optimism-only dependencies do not re-enter resolution.
 #
 # When tempo's reth bump introduces a stricter constraint on a transitive crate
@@ -247,7 +299,7 @@ pushd "$FOUNDRY_ROOT" >/dev/null
 update_stale_tempo_git_packages
 prev_conflict_pkg=""
 while true; do
-  err="$(cargo metadata --format-version=1 --no-default-features 2>&1 >/dev/null)" && break
+  err="$(cargo update --workspace 2>&1 >/dev/null)" && break
   clean_err="$(printf '%s\n' "$err" | sed -E 's/\x1b\[[0-9;]*[[:alpha:]]//g')"
   conflict_pkg="$(printf '%s\n' "$clean_err" | sed -nE 's/^error: failed to select a version for `([^`]+)`.*/\1/p' | head -n1)"
   selected_version="$(printf '%s\n' "$clean_err" | sed -nE 's/^[[:space:]]*previously selected package `[^ ]+ v([^`]+)`.*/\1/p' | head -n1)"
@@ -259,21 +311,27 @@ while true; do
   if [[ -n "$selected_version" ]]; then
     update_pkg="${conflict_pkg}@${selected_version}"
   fi
-  echo "cargo metadata failed on '$conflict_pkg' constraint; running 'cargo update -p $update_pkg' and retrying"
+  echo "cargo update --workspace failed on '$conflict_pkg' constraint; running 'cargo update -p $update_pkg' and retrying"
   cargo update -p "$update_pkg" >/dev/null
   prev_conflict_pkg="$conflict_pkg"
 done
 
 update_stale_tempo_git_packages
-cargo metadata --format-version=1 --no-default-features >/dev/null
-for package in alloy-primitives alloy-sol-types revm; do
+cargo update --workspace >/dev/null
+for package in alloy-primitives alloy-sol-types evm2; do
   assert_lock_versions_match "$package"
 done
+# Version equality cannot tell two evm2 sources apart; a split graph has two entries.
+evm2_entries="$(grep -c '^name = "evm2"$' Cargo.lock || true)"
+if [[ "$evm2_entries" != "1" ]]; then
+  echo "ERROR: expected exactly one evm2 package in Foundry's Cargo.lock, found $evm2_entries" >&2
+  exit 1
+fi
 popd >/dev/null
 
-if grep -q '^source = "git+https://github.com/tempoxyz/tempo?rev=' "$FOUNDRY_ROOT/Cargo.lock"; then
+if grep -Eq '^source = "git\+https://github.com/(tempoxyz|mablr)/tempo\?rev=' "$FOUNDRY_ROOT/Cargo.lock"; then
   echo "ERROR: Tempo git sources still present in Cargo.lock after patching:" >&2
-  grep '^source = "git+https://github.com/tempoxyz/tempo?rev=' "$FOUNDRY_ROOT/Cargo.lock" >&2
+  grep -E '^source = "git\+https://github.com/(tempoxyz|mablr)/tempo\?rev=' "$FOUNDRY_ROOT/Cargo.lock" >&2
   echo "Expected all Tempo crates to resolve locally after patching" >&2
   exit 1
 fi

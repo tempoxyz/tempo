@@ -147,7 +147,11 @@ build() {
     mkdir -p "$dir/out"
     local rocksdb jemalloc
     rocksdb=$(out_dir librocksdb-sys)
-    cp "$rocksdb/librocksdb.a" "$rocksdb/libsnappy.a" "$dir/out/"
+    cp "$rocksdb/librocksdb.a" "$dir/out/"
+    # Snappy is only built when the selection enables rocksdb's `snappy` feature.
+    if [[ -f $rocksdb/libsnappy.a ]]; then
+        cp "$rocksdb/libsnappy.a" "$dir/out/"
+    fi
     jemalloc=$(out_dir tikv-jemalloc-sys)
     if [[ -n $jemalloc ]]; then
         cp "$jemalloc/lib/libjemalloc.a" "$dir/out/"
@@ -167,8 +171,10 @@ cmd_env() {
     {
         echo "ROCKSDB_LIB_DIR=$out"
         echo "ROCKSDB_STATIC=1"
-        echo "SNAPPY_LIB_DIR=$out"
-        echo "SNAPPY_STATIC=1"
+        if [[ -f $out/libsnappy.a ]]; then
+            echo "SNAPPY_LIB_DIR=$out"
+            echo "SNAPPY_STATIC=1"
+        fi
         echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=$dir/bin/cc-stdcxx"
         if [[ -f $out/libjemalloc.a ]]; then
             echo "JEMALLOC_OVERRIDE=$out/libjemalloc.a"
