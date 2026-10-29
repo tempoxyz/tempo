@@ -115,7 +115,7 @@ fn network_storage_failures_panic_and_allow_recovery() {
             }
             // Rejected protocol messages must not attempt a write or stop the
             // actor, even when every storage operation would fail.
-            for invalid in invalid_messages {
+            for (index, invalid) in invalid_messages.into_iter().enumerate() {
                 assert!(
                     sender
                         .send(
@@ -127,7 +127,34 @@ fn network_storage_failures_panic_and_allow_recovery() {
                         .accepted()
                 );
                 context.sleep(Duration::from_millis(1)).await;
-                assert!(!harness.has_dealer_log(state.epoch).await);
+                if index == 1 {
+                    let blocker = harness.blocker.clone();
+                    let timer = context.child("penalty_wait");
+                    context
+                        .timeout(Duration::from_secs(1), async move {
+                            while blocker.peers().is_empty() {
+                                timer.sleep(Duration::from_millis(1)).await;
+                            }
+                        })
+                        .await
+                        .expect("invalid private share must penalize its sender");
+                }
+                assert_eq!(
+                    harness.blocker.peers(),
+                    vec![keys[1].public_key(); usize::from(index >= 1)]
+                );
+                let mailbox = harness.mailbox().clone();
+                let epoch = state.epoch;
+                assert!(
+                    context
+                        .timeout(Duration::from_secs(1), async move {
+                            mailbox.get_dealer_log(epoch).await
+                        })
+                        .await
+                        .expect("actor must remain responsive after invalid network messages")
+                        .unwrap()
+                        .is_none()
+                );
                 assert!(receiver.recv().now_or_never().is_none());
             }
             assert!(
@@ -149,6 +176,7 @@ fn network_storage_failures_panic_and_allow_recovery() {
                 })
                 .await
                 .expect("a network storage failure must panic immediately");
+            assert_eq!(harness.blocker.peers(), vec![keys[1].public_key()]);
             assert!(
                 receiver.recv().now_or_never().is_none(),
                 "a dealing must be persisted before its ACK is sent",
@@ -197,9 +225,189 @@ fn network_storage_failures_panic_and_allow_recovery() {
                 Message::read_cfg(&mut ack, &NZU32!(2)).unwrap(),
                 Message::Ack(_)
             ));
+            assert_eq!(harness.blocker.peers(), vec![keys[1].public_key()]);
             harness.stop().await;
         });
     }
+}
+
+#[test]
+fn invalid_acks_are_checked_once_without_penalizing_peers() {
+    Runner::default().start(|mut context| async move {
+        let (state, keys, _) = dkg_state(&mut context, Epoch::new(1), 4, true);
+        let round = Round::from_state(&state, crate::config::NAMESPACE, true);
+        let mut harness = Harness::builder(context.child("actor"), "invalid_acks_checked_once")
+            .initial_state(state.clone())
+            .identity(keys[0].clone())
+            .build()
+            .await;
+        let (mut actor, _mailbox) = harness.init().await.unwrap();
+        let mut storage = actor
+            .storage
+            .take()
+            .unwrap()
+            .init_verified(state.clone())
+            .await;
+        let mut dealer = storage
+            .create_dealer_for_round(
+                keys[0].clone(),
+                round.clone(),
+                state.share.clone(),
+                state.seed,
+            )
+            .unwrap()
+            .unwrap();
+        let messages = dealer
+            .shares_to_distribute()
+            .map(|(player, public, private)| {
+                let key = keys.iter().find(|key| key.public_key() == player).unwrap();
+                let ack = dkg::Player::new(round.info().clone(), key.clone())
+                    .unwrap()
+                    .dealer_message::<N3f1>(keys[0].public_key(), public, private)
+                    .unwrap()
+                    .unwrap();
+                (player, Message::Ack(ack).encode())
+            })
+            .collect::<Vec<_>>();
+        let rejected = keys[1].public_key();
+        let invalid = messages
+            .iter()
+            .find(|(player, _)| player == &keys[0].public_key())
+            .unwrap()
+            .1
+            .clone();
+        let mut sender = harness.sender().clone();
+        for attempt in 0..2 {
+            let result = actor
+                .handle_network_msg(
+                    &round,
+                    &mut sender,
+                    &mut storage,
+                    Some(&mut dealer),
+                    None,
+                    rejected.clone(),
+                    invalid.clone().into(),
+                )
+                .await;
+            if attempt == 0 {
+                assert!(matches!(
+                    result.unwrap_err().downcast_ref::<dkg::PlayerAckError>(),
+                    Some(dkg::PlayerAckError::InvalidAck)
+                ));
+            } else {
+                result.unwrap();
+            }
+            assert!(harness.blocker.peers().is_empty());
+        }
+
+        // Even a valid ACK from this player is ignored after the first rejection.
+        for (player, message) in messages {
+            actor
+                .handle_network_msg(
+                    &round,
+                    &mut sender,
+                    &mut storage,
+                    Some(&mut dealer),
+                    None,
+                    player,
+                    message.into(),
+                )
+                .await
+                .unwrap();
+        }
+        assert!(dealer.shares_to_distribute().next().is_none());
+        assert!(harness.blocker.peers().is_empty());
+
+        // Only successful ACKs are persisted; restart permits another attempt.
+        let replayed = storage
+            .create_dealer_for_round(keys[0].clone(), round.clone(), state.share, state.seed)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            replayed
+                .shares_to_distribute()
+                .map(|(player, _, _)| player)
+                .collect::<Vec<_>>(),
+            vec![rejected.clone()]
+        );
+        dealer.finalize();
+        let (_, log) = dealer.finalized().unwrap().check(round.info()).unwrap();
+        let dkg::DealerLogSummary::Ok { acks, reveals } = log.summary() else {
+            panic!("one rejected player must stay within the reveal limit");
+        };
+        assert_eq!(
+            reveals.iter().cloned().collect::<Vec<_>>(),
+            vec![rejected.clone()]
+        );
+        assert_eq!(acks.len(), keys.len() - 1);
+        assert!(acks.position(&rejected).is_none());
+    });
+}
+
+#[test]
+fn duplicate_and_late_acks_do_not_penalize_peers() {
+    Runner::default().start(|mut context| async move {
+        let (state, keys, _) = dkg_state(&mut context, Epoch::new(1), 3, true);
+        let round = Round::from_state(&state, crate::config::NAMESPACE, true);
+        let mut harness = Harness::builder(context.child("actor"), "duplicate_and_late_acks")
+            .initial_state(state.clone())
+            .identity(keys[0].clone())
+            .build()
+            .await;
+        let (mut actor, _mailbox) = harness.init().await.unwrap();
+        let mut storage = actor
+            .storage
+            .take()
+            .unwrap()
+            .init_verified(state.clone())
+            .await;
+        let mut dealer = storage
+            .create_dealer_for_round(keys[0].clone(), round.clone(), state.share, state.seed)
+            .unwrap()
+            .unwrap();
+        let (_, public, private) = dealer
+            .shares_to_distribute()
+            .find(|(player, _, _)| player == &keys[1].public_key())
+            .unwrap();
+        let ack = dkg::Player::new(round.info().clone(), keys[1].clone())
+            .unwrap()
+            .dealer_message::<N3f1>(keys[0].public_key(), public, private)
+            .unwrap()
+            .unwrap();
+        let message = Message::Ack(ack).encode();
+        let mut sender = harness.sender().clone();
+        actor
+            .handle_network_msg(
+                &round,
+                &mut sender,
+                &mut storage,
+                Some(&mut dealer),
+                None,
+                keys[1].public_key(),
+                message.clone().into(),
+            )
+            .await
+            .unwrap();
+
+        for (late, player) in [(false, keys[1].public_key()), (true, keys[2].public_key())] {
+            if late {
+                dealer.finalize();
+            }
+            actor
+                .handle_network_msg(
+                    &round,
+                    &mut sender,
+                    &mut storage,
+                    Some(&mut dealer),
+                    None,
+                    player,
+                    message.clone().into(),
+                )
+                .await
+                .unwrap();
+            assert!(harness.blocker.peers().is_empty());
+        }
+    });
 }
 
 #[test]
