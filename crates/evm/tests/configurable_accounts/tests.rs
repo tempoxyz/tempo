@@ -2331,6 +2331,32 @@ fn send_listed(
     f.run_as(sender, &tx)
 }
 
+/// An existing relayer, so that the new-account charge of its first transaction does not enter
+/// the gas of the checks that it sends.
+fn seed_relayer(f: &mut Fixture) {
+    f.evm
+        .overlay_db_mut()
+        .insert_account_info(&signer(9).address(), AccountInfo::default().with_nonce(1));
+}
+
+/// Executes `call` from the relayer with `gas_limit` and `warm` in the access list.
+fn relayed(
+    f: &mut Fixture,
+    call: Call,
+    gas_limit: u64,
+    warm: Option<Address>,
+) -> TxResult<TempoEvmTypes> {
+    let access_list = AccessList(
+        warm.into_iter()
+            .map(|address| AccessListItem {
+                address,
+                storage_keys: Vec::new(),
+            })
+            .collect(),
+    );
+    send_listed(f, signer(9).address(), vec![call], access_list, gas_limit)
+}
+
 /// Asserts that `result` reverted with exactly `error` and logged nothing.
 fn assert_reverts_with(result: &TxResult<TempoEvmTypes>, error: impl SolError, label: &str) {
     assert!(result.stop.is_revert(), "{label}: {result:?}");
@@ -4166,32 +4192,6 @@ enum Access {
     Listed,
     /// An EVM precompile.
     Warm,
-}
-
-/// An existing relayer, so that the new-account charge of its first transaction does not enter
-/// the gas of the checks that it sends.
-fn seed_relayer(f: &mut Fixture) {
-    f.evm
-        .overlay_db_mut()
-        .insert_account_info(&signer(9).address(), AccountInfo::default().with_nonce(1));
-}
-
-/// Executes `call` from the relayer with `gas_limit` and `warm` in the access list.
-fn relayed(
-    f: &mut Fixture,
-    call: Call,
-    gas_limit: u64,
-    warm: Option<Address>,
-) -> TxResult<TempoEvmTypes> {
-    let access_list = AccessList(
-        warm.into_iter()
-            .map(|address| AccessListItem {
-                address,
-                storage_keys: Vec::new(),
-            })
-            .collect(),
-    );
-    send_listed(f, signer(9).address(), vec![call], access_list, gas_limit)
 }
 
 /// The `verifyConfigurableAccount` call of `signature`.
