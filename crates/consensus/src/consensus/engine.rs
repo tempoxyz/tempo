@@ -292,6 +292,7 @@ where
                 marshal: marshal_mailbox.clone(),
                 namespace: crate::config::NAMESPACE.to_vec(),
                 me: self.signer.clone(),
+                blocker: self.blocker.clone(),
                 partition_prefix: format!("{}_dkg_manager", self.partition_prefix),
             },
         )
@@ -389,7 +390,7 @@ where
     broadcast: buffered::Engine<TContext, PublicKey, Block, peer_manager::Mailbox>,
     broadcast_mailbox: buffered::Mailbox<PublicKey, Block>,
 
-    dkg_manager: dkg::manager::Actor<TContext>,
+    dkg_manager: dkg::manager::Actor<TContext, TBlocker>,
     dkg_manager_mailbox: dkg::manager::Mailbox,
 
     /// Responsible for keeping the consensus layer state and execution layer
@@ -571,6 +572,7 @@ where
             self.broadcast_mailbox,
             resolver,
         );
+
         let (epoch_manager, epoch_manager_mailbox) = epoch::manager::init(
             self.context.child("epoch_manager"),
             self.epoch_manager_config,
