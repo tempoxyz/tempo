@@ -76,13 +76,15 @@ pub const STEP_CHECKS: &[Check<Step<Ledger, Option<Tx>>>] = &[
             Some(Verdict::Broken(format!("{} transfers; {detail}", transfers.len())))
         },
     },
-    // Each `transfer` call to the token that the step kept (it returned, as did every frame it was
-    // called from and the transaction) emitted a `Transfer` from its caller for its amount. The
+    // Each call that moves the token (`transfer`, `transferWithMemo`, `transferFrom`,
+    // `transferFromWithMemo`) that the step kept (it returned, as did every frame it was called from
+    // and the transaction) emitted a `Transfer` from the account it debits for its amount. Every
+    // such call counts, so another call's event cannot stand in for a missing one. The
     // recipient is not compared: a virtual address (TIP-1022) forwards to its master, and a receive
     // policy (TIP-1028) redirects a blocked transfer to the guard.
     check! {
         id: TRANSFER_CALL,
-        doc: "A `transfer` call to a TIP-20 token that returns emits a `Transfer` event from its caller for the amount it names.",
+        doc: "Each `transfer`, `transferWithMemo`, `transferFrom` or `transferFromWithMemo` call to a TIP-20 token that returns emits its own `Transfer` event from the account it debits for the amount it names.",
         tip: "TIP-20",
         severity: Severity::Medium,
         over: |step: &Step<Ledger, Option<Tx>>| transfer_calls(step),
@@ -135,7 +137,8 @@ impl StepChecked<Option<Tx>> for Ledger {
     const STEP_CHECKS: &'static [Check<Step<Self, Option<Tx>>>] = STEP_CHECKS;
 }
 
-/// The step's `transfer` calls to its token whose logs it kept.
+/// The step's calls to its token that move a balance (`transfer`, `transferWithMemo`,
+/// `transferFrom`, `transferFromWithMemo`) and whose logs it kept, each with the account it debits.
 fn transfer_calls(step: &Step<Ledger, Option<Tx>>) -> Vec<TransferCall> {
     if !step.tx.is_some_and(|tx| tx.success) {
         return Vec::new();
@@ -144,12 +147,17 @@ fn transfer_calls(step: &Step<Ledger, Option<Tx>>) -> Vec<TransferCall> {
     kept(&step.calls)
         .filter(|frame| frame.enters(token))
         .filter_map(|frame| {
-            let call = frame.decode::<ITIP20::transferCall>()?;
-            Some(TransferCall {
-                from: frame.caller,
-                to: call.to,
-                amount: call.amount,
-            })
+            let (from, to, amount) = if let Some(c) = frame.decode::<ITIP20::transferCall>() {
+                (frame.caller, c.to, c.amount)
+            } else if let Some(c) = frame.decode::<ITIP20::transferWithMemoCall>() {
+                (frame.caller, c.to, c.amount)
+            } else if let Some(c) = frame.decode::<ITIP20::transferFromCall>() {
+                (c.from, c.to, c.amount)
+            } else {
+                let c = frame.decode::<ITIP20::transferFromWithMemoCall>()?;
+                (c.from, c.to, c.amount)
+            };
+            Some(TransferCall { from, to, amount })
         })
         .collect()
 }
@@ -302,5 +310,91 @@ mod tests {
         );
         // A runner that does not trace calls arms nothing.
         assert_eq!(check(vec![], vec![], true).0, 0);
+    }
+}
+
+#[cfg(test)]
+mod transfer_call_tests {
+    use std::collections::BTreeMap;
+
+    use alloy_primitives::{Bytes, Log, address};
+    use alloy_sol_types::{SolCall, SolEvent};
+    use invariants_core::{CallKind, Report};
+
+    use super::*;
+
+    const TOKEN: Address = address!("0x20c0000000000000000000000000000000000001");
+    const CALLER: Address = address!("0x00000000000000000000000000000000000000c0");
+
+    fn frame(input: Vec<u8>) -> Frame {
+        Frame {
+            depth: 1,
+            kind: CallKind::Call,
+            caller: CALLER,
+            target: TOKEN,
+            input: input.into(),
+            value: U256::ZERO,
+            success: true,
+            output: Bytes::new(),
+        }
+    }
+
+    fn step(calls: Vec<Frame>, transfers: &[(Address, U256)]) -> Step<Ledger, Option<Tx>> {
+        let ledger = Ledger {
+            token: TOKEN,
+            supply: U256::from(100),
+            supply_cap: None,
+            balances: BTreeMap::new(),
+        };
+        let logs = transfers
+            .iter()
+            .map(|&(to, amount)| {
+                let event = Transfer {
+                    from: CALLER,
+                    to,
+                    amount,
+                };
+                Log {
+                    address: TOKEN,
+                    data: event.encode_log_data(),
+                }
+            })
+            .collect();
+        Step {
+            pre: ledger.clone(),
+            post: ledger,
+            changes: vec![],
+            logs,
+            calls,
+            tx: Some(Tx {
+                sender: CALLER,
+                success: true,
+            }),
+        }
+    }
+
+    fn fired(step: &Step<Ledger, Option<Tx>>) -> u64 {
+        let mut report = Report::default();
+        report.run(STEP_CHECKS, step);
+        report.counts[TRANSFER_CALL].fired
+    }
+
+    /// A memo transfer's event cannot stand in for a plain transfer that emitted none.
+    #[test]
+    fn every_transfer_call_needs_its_own_event() {
+        let five = U256::from(5);
+        let (b, c) = (Address::with_last_byte(0xb), Address::with_last_byte(0xc));
+        let memo = ITIP20::transferWithMemoCall {
+            to: c,
+            amount: five,
+            memo: Default::default(),
+        };
+        let plain = ITIP20::transferCall {
+            to: b,
+            amount: five,
+        };
+        let calls = vec![frame(memo.abi_encode()), frame(plain.abi_encode())];
+        assert_eq!(fired(&step(calls.clone(), &[(c, five), (b, five)])), 0);
+        assert!(fired(&step(calls, &[(c, five)])) > 0);
     }
 }

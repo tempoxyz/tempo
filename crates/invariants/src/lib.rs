@@ -61,7 +61,8 @@ pub fn fork_position(name: &str) -> Option<usize> {
 /// `until`. A bound naming no Tempo fork never admits the check, and a test fails on it.
 pub fn applies_at(meta: &Meta, fork: TempoHardfork) -> bool {
     let current = fork_position(&fork.to_string()).expect("a fork has a position");
-    meta.applies(fork_position, current)
+    let known = |bound: Option<&str>| bound.is_none_or(|name| fork_position(name).is_some());
+    known(meta.since) && known(meta.until) && meta.applies(fork_position, current)
 }
 
 /// `value` as text, `missing` when there is none.
@@ -105,5 +106,10 @@ mod tests {
             ..Meta::EMPTY
         };
         assert!(!applies_at(&unknown, TempoHardfork::T15));
+        let unknown_until = Meta {
+            until: Some("T99"),
+            ..Meta::EMPTY
+        };
+        assert!(!applies_at(&unknown_until, TempoHardfork::T12));
     }
 }
