@@ -93,9 +93,18 @@ impl TempoTxEnv {
         } else {
             UpgradeEligibility::PrimitiveRoot
         };
-        let direct = aa
-            .and_then(|aa| aa.signature().as_configurable_account())
-            .map_or(Address::ZERO, ConfigurableAccountSignature::account);
+        let direct = match aa.and_then(|aa| aa.signature().as_configurable_account()) {
+            Some(signature) => signature.account(),
+            // RPC simulation has no owner witness: a registered caller without an access-key
+            // override stands in for its own quorum.
+            None if matches!(self.execution_context(), ExecutionContext::Simulation)
+                && aa.is_none_or(|aa| aa.override_key_id().is_none())
+                && !StorageCtx.config_commitment(self.caller())?.is_zero() =>
+            {
+                self.caller()
+            }
+            None => Address::ZERO,
+        };
         ConfigurableAccount::new().set_authority(self.caller(), direct, eligibility)
     }
 
