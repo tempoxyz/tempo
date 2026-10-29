@@ -137,7 +137,8 @@ fn grant_simulation_signs_the_grant_with_mock_owner_approvals() {
     assert_eq!(signature.signatures().len(), 2);
 }
 
-/// `eth_simulateV1` and `eth_call` reject an inconsistent simulated role alike.
+/// `eth_simulateV1` and `eth_call` reject an inconsistent simulated role alike. Simulation skips
+/// owner cryptography, so they also verify a real configurable grant first.
 #[test_case(
     |request| request.set_key_type(SignatureType::ConfigurableAccount),
     "configurable account simulation requires a configuration witness";
@@ -166,10 +167,19 @@ fn grant_simulation_signs_the_grant_with_mock_owner_approvals() {
     "keyAuthorizationSimulation requires keyAuthorization";
     "grant simulation without a grant"
 )]
-fn simulation_rejects_inconsistent_roles(
-    configure: fn(&mut TempoTransactionRequest),
-    message: &str,
-) {
+#[test_case(
+    |request| request.set_key_authorization(grant().into_signed(
+        ConfigurableAccountSignature::try_new(
+            Address::repeat_byte(0xaa),
+            config(),
+            vec![PrimitiveSignature::Secp256k1(Signature::new(U256::ZERO, U256::ZERO, false)); 2],
+        )
+        .unwrap(),
+    )),
+    "invalid configurable account owner signature";
+    "configurable grant with invalid approvals"
+)]
+fn simulation_rejects_invalid_roles(configure: fn(&mut TempoTransactionRequest), message: &str) {
     let mut request = aa_request(SignatureType::Secp256k1);
     configure(&mut request);
 
@@ -179,30 +189,5 @@ fn simulation_rejects_inconsistent_roles(
     let error = request
         .try_into_tx_env(&TempoEvmEnv::default())
         .expect_err("eth_call rejects the role");
-    assert!(matches!(error, EthApiError::InvalidParams(actual) if actual == message));
-}
-
-/// Simulation skips owner cryptography, so `eth_simulateV1`, `eth_call` and `eth_estimateGas`
-/// verify a real configurable grant first.
-#[test]
-fn simulation_rejects_a_configurable_grant_with_invalid_approvals() {
-    let unrecoverable =
-        PrimitiveSignature::Secp256k1(Signature::new(U256::ZERO, U256::ZERO, false));
-    let signature = ConfigurableAccountSignature::try_new(
-        Address::repeat_byte(0xaa),
-        config(),
-        vec![unrecoverable; 2],
-    )
-    .unwrap();
-    let mut request = aa_request(SignatureType::Secp256k1);
-    request.set_key_authorization(grant().into_signed(signature));
-
-    let message = "invalid configurable account owner signature";
-    let error = TryIntoSimTx::<TempoTxEnvelope>::try_into_sim_tx(request.clone())
-        .expect_err("dummy owner approvals must not authorize a grant in a simulated block");
-    assert_eq!(error.to_string(), message);
-    let error = request
-        .try_into_tx_env(&TempoEvmEnv::default())
-        .expect_err("dummy owner approvals must not authorize a grant in a call");
     assert!(matches!(error, EthApiError::InvalidParams(actual) if actual == message));
 }
