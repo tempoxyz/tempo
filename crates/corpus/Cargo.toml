@@ -24,6 +24,10 @@ evm2.workspace = true
 tempo-evm = { workspace = true, features = ["default"] }
 tempo-primitives = { workspace = true, features = ["default"] }
 reth-evm.workspace = true
+reth-provider.workspace = true
+reth-chainspec.workspace = true
+reth-cli-util.workspace = true
+crossbeam-channel.workspace = true
 reth-consensus.workspace = true
 reth-trie-common.workspace = true
 reth-storage-api = { workspace = true, features = ["db-api"] }
