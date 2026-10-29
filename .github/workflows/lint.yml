@@ -45,6 +45,7 @@ jobs:
             rust:
               - '{bin,crates,examples,scripts,xtask,tips/verify}/**'
               - 'Cargo.lock'
+              - 'docs/metric-names.txt'
               - '*-network-identity.json'
               - '*.toml'
               - '{.cargo,.config,.github/actions}/**'
