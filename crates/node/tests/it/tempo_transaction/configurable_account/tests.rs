@@ -1223,7 +1223,30 @@ async fn configurable_account_rpc_simulated_grant_estimate_covers_the_signed_gra
     request.set_key_authorization(grant.clone().into_signed(Signature::test_signature()));
     request.key_authorization_simulation =
         parent.simulation_request().configurable_account_simulation;
-    tx.gas_limit = tempo_provider(&env).estimate_gas(request).latest().await?;
+    let provider = tempo_provider(&env);
+    // A simulated block names the delegate as `eth_call` does, without recovering its mock
+    // approvals. `eth_simulateV1` turns a request without `to` into a create, so the call moves
+    // there.
+    let mut call = request.clone();
+    call.calls.clear();
+    call.inner.to = Some(noop().to);
+    let blocks: Vec<SimulatedBlock<Value>> = provider
+        .raw_request(
+            "eth_simulateV1".into(),
+            (SimulatePayload {
+                block_state_calls: vec![SimBlock {
+                    block_overrides: None,
+                    state_overrides: None,
+                    calls: vec![call],
+                }],
+                trace_transfers: false,
+                validation: false,
+                return_full_transactions: false,
+            },),
+        )
+        .await?;
+    assert!(blocks[0].calls[0].status, "{blocks:?}");
+    tx.gas_limit = provider.estimate_gas(request).latest().await?;
 
     let grant_signature = parent.quorum(grant.signature_hash(), false)?;
     tx.key_authorization = Some(grant.into_signed(grant_signature));

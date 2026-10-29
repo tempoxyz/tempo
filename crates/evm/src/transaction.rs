@@ -559,6 +559,17 @@ impl FromTxWithEncoded<TempoTxEnvelope> for TempoTxEnv {
         let mut tx_env = Self::from_recovered_tx(tx.1);
         if is_simulation {
             tx_env.execution_context = ExecutionContext::Simulation;
+            // A simulated configurable delegate carries placeholder owner approvals: name the
+            // delegate instead of recovering it from them.
+            if let TempoEvmTx::AA(aa) = &mut tx_env.evm_tx
+                && let Some(delegate) = aa
+                    .signature()
+                    .as_keychain()
+                    .and_then(|keychain| keychain.signature.as_configurable_account())
+                    .map(|signature| signature.account())
+            {
+                aa.set_override_key_id(Some(delegate));
+            }
         }
         tx_env
     }
