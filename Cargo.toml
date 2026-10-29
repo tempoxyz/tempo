@@ -189,7 +189,7 @@ reth-trie-sparse = { git = "https://github.com/paradigmxyz/reth", rev = "9d1638f
 alloy-chains = "0.2.36"
 alloy-rpc-types-debug = "2.5.0"
 bincode = "1.3.3"
-invariants-core = { git = "https://github.com/tempoxyz/invariants-core", rev = "ec72d5f" }
+invariants-core = { git = "https://github.com/tempoxyz/invariants-core", rev = "163dca0" }
 minicbor = { version = "=2.3.0", default-features = false, features = ["alloc"] }
 minicbor-serde = { version = "=0.7.1", default-features = false, features = ["alloc"] }
 libc = "0.2.186"
