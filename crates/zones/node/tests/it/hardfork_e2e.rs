@@ -10,7 +10,7 @@ use alloy_rpc_types_eth::{Filter, TransactionRequest};
 use alloy_sol_types::{SolCall, SolError, SolEvent};
 use tempo_chainspec::{hardfork::TempoHardfork, spec::TempoHardforks};
 use tempo_contracts::{
-    precompiles::UnknownFunctionSelector,
+    precompiles::{CONFIGURABLE_ACCOUNT_ADDRESS, UnknownFunctionSelector},
     zones::{
         IZoneInbox, IZoneOutbox, LegacyTempoAdvanced, TEMPO_STATE_ADDRESS, TempoAdvanced,
         ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS, finalizeTempoCall, legacyFinalizeTempoCall,
@@ -222,6 +222,94 @@ async fn test_t12_to_t13_tip1096_activation() -> eyre::Result<()> {
     assert_eq!(advanced.lastProcessedDepositNumber, 2);
     assert_eq!(advanced.depositsProcessed, U256::ONE);
     assert_eq!(advanced.tempoBlockNumber, 4);
+    Ok(())
+}
+
+/// A Zone created before T14 must install the ConfigurableAccount `0xef` marker when T14
+/// activates, as Tempo does at its fork boundary.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_t13_to_t14_configurable_account_marker() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let activation = now_secs() + 15;
+    let mut genesis = zone_node::genesis::genesis_template()?;
+    // A genesis generated before T14 carries no marker at the precompile address.
+    assert!(
+        genesis
+            .alloc
+            .remove(&CONFIGURABLE_ACCOUNT_ADDRESS)
+            .is_some()
+    );
+    set_tempo_fork(&mut genesis, TempoHardfork::T14, activation);
+    genesis.config.chain_id = zone_primitives::constants::zone_chain_id(1_337, 1014)?;
+    let spec = ZoneChainSpec::from_genesis(genesis.clone())?;
+    assert_eq!(spec.tempo_hardfork_at(activation - 1), TempoHardfork::T13);
+    assert_eq!(spec.tempo_hardfork_at(activation), TempoHardfork::T14);
+
+    let (zone, mut fixture) =
+        start_local_zone_with_fixture_and_withdrawal_batch_interval(1014, 4, 1, genesis).await?;
+
+    let t13 = fixture.next_block_at(now_secs());
+    fixture.enqueue(&t13, zone.deposit_queue(), vec![]);
+    zone.wait_for_block_number(1, DEFAULT_TIMEOUT).await?;
+    assert!(
+        assert_full_import(&zone, 1, &t13.header).await? < activation,
+        "the first Zone block must execute under T13"
+    );
+    assert_eq!(
+        zone.provider()
+            .get_code_at(CONFIGURABLE_ACCOUNT_ADDRESS)
+            .number(1)
+            .await?,
+        Bytes::new()
+    );
+
+    tokio::time::sleep(Duration::from_secs(activation.saturating_sub(now_secs()))).await;
+    let t14 = fixture.next_block_at(activation);
+    fixture.enqueue(&t14, zone.deposit_queue(), vec![]);
+    zone.wait_for_block_number(2, DEFAULT_TIMEOUT).await?;
+    assert_full_import(&zone, 2, &t14.header).await?;
+    assert_configurable_account_marker(&zone, 2).await
+}
+
+/// A Zone created at T14 keeps its genesis ConfigurableAccount marker unchanged.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_t14_genesis_configurable_account_marker_unchanged() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let mut genesis = zone_node::genesis::genesis_template()?;
+    set_tempo_fork(&mut genesis, TempoHardfork::T14, 0);
+    genesis.config.chain_id = zone_primitives::constants::zone_chain_id(1_337, 1015)?;
+
+    let (zone, mut fixture) =
+        start_local_zone_with_fixture_and_withdrawal_batch_interval(1015, 4, 1, genesis).await?;
+    assert_configurable_account_marker(&zone, 0).await?;
+
+    let block = fixture.next_block_at(now_secs());
+    fixture.enqueue(&block, zone.deposit_queue(), vec![]);
+    zone.wait_for_block_number(1, DEFAULT_TIMEOUT).await?;
+    assert_full_import(&zone, 1, &block.header).await?;
+    assert_configurable_account_marker(&zone, 1).await
+}
+
+/// Asserts the ConfigurableAccount address holds the `0xef` marker with nonce 0 at `block`.
+async fn assert_configurable_account_marker(zone: &ZoneTestNode, block: u64) -> eyre::Result<()> {
+    let provider = zone.provider();
+    assert_eq!(
+        provider
+            .get_code_at(CONFIGURABLE_ACCOUNT_ADDRESS)
+            .number(block)
+            .await?,
+        Bytes::from_static(&[0xef]),
+        "missing marker at block {block}"
+    );
+    assert_eq!(
+        provider
+            .get_transaction_count(CONFIGURABLE_ACCOUNT_ADDRESS)
+            .number(block)
+            .await?,
+        0
+    );
     Ok(())
 }
 

@@ -29,7 +29,9 @@ pub use action_replay::{
     StorageActionReplayState,
 };
 pub use assemble::TempoBlockAssembler;
-pub use block::{TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult};
+pub use block::{
+    TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult, precompile_deployment_state,
+};
 pub use common::{TempoStateAccess, TempoTx};
 pub use context::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
 pub use error::TempoEvmError;

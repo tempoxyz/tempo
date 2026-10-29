@@ -195,7 +195,7 @@ impl GenerateZoneGenesis {
             println!("Initializing TIP-1028 ReceivePolicyGuard");
             ReceivePolicyGuard::new().initialize()?;
 
-            // Zone blocks run no fork-boundary deploys, so only genesis installs this marker.
+            // Zones that activate T14 later install this marker in their first T14 block.
             if t14_at_genesis {
                 println!("Initializing configurable account (T14 active at genesis)");
                 ConfigurableAccount::new().initialize()?;

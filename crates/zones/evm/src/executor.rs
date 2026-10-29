@@ -20,8 +20,13 @@ use reth_evm::{
 use reth_evm_ethereum::{EthBlockExecutor, EthTransactionResultWithState};
 use reth_execution_types::StateUpdate;
 use std::sync::Arc;
-use tempo_contracts::zones::{IZoneOutbox, TempoAdvanced};
-use tempo_evm::{TempoBlockExecutionCtx, TempoEvmTypes, TempoReceiptBuilder};
+use tempo_contracts::{
+    precompiles::CONFIGURABLE_ACCOUNT_ADDRESS,
+    zones::{IZoneOutbox, TempoAdvanced},
+};
+use tempo_evm::{
+    TempoBlockExecutionCtx, TempoEvmTypes, TempoReceiptBuilder, precompile_deployment_state,
+};
 use tempo_primitives::{TempoReceipt, TempoTxEnvelope, TempoTxType};
 use zone_chainspec::ZoneChainSpec;
 use zone_precompiles::{ADVANCE_TEMPO_HEADERS_SELECTOR, ADVANCE_TEMPO_SELECTOR};
@@ -215,6 +220,16 @@ impl<'a> BlockExecutor for ZoneBlockExecutor<'a> {
                     .map_err(map_handler_error)?
                     .detach();
                 self.inner.commit_pending_state(&result.pending_state);
+            }
+            // Deploy 0xEF marker bytecode to precompiles at their activation hardforks.
+            if self.inner.evm().config_spec_id().is_t14()
+                && let Some(state) = precompile_deployment_state(
+                    self.inner.evm_mut(),
+                    CONFIGURABLE_ACCOUNT_ADDRESS,
+                    &[],
+                )?
+            {
+                self.inner.commit_pending_state(&state);
             }
             Ok(())
         } else {

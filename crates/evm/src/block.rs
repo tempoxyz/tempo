@@ -248,33 +248,9 @@ impl<'a> TempoBlockExecutor<'a> {
         address: Address,
         storage: &[(U256, U256)],
     ) -> Result<(), BlockExecutionError> {
-        let original = match self.evm_mut().state_mut().account_info_untracked(&address) {
-            Ok(info) => info,
-            Err(error) => return Err(map_database_error(error)),
-        };
-        if original
-            .as_ref()
-            .is_some_and(|info| !info.is_empty_code_hash())
-        {
-            return Ok(());
+        if let Some(state) = precompile_deployment_state(self.evm_mut(), address, storage)? {
+            self.inner.commit_pending_state(&state);
         }
-
-        let code = Bytecode::new_raw(Bytes::from_static(&[0xef]));
-        let current = original.clone().unwrap_or_default().with_code(code);
-        let mut state = PendingState::default();
-        state.insert_account(address, original, Some(current));
-        for &(slot, value) in storage {
-            let original = match self
-                .evm_mut()
-                .state_mut()
-                .storage_slot_untracked(&address, &slot)
-            {
-                Ok(value) => value,
-                Err(error) => return Err(map_database_error(error)),
-            };
-            state.insert_storage(address, slot, original, value);
-        }
-        self.inner.commit_pending_state(&state);
         Ok(())
     }
 
@@ -913,6 +889,42 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
     fn take_block_access_list(&mut self) -> Option<BlockAccessList> {
         self.inner.take_block_access_list()
     }
+}
+
+/// Returns the state change that deploys `0xEF` marker bytecode and initializes `storage` at the
+/// precompile `address`, or `None` when the address already has code.
+///
+/// Block executors commit the returned state at a precompile's activation hardfork. Once
+/// committed, later calls return `None`, so running it at every block from activation onward
+/// deploys the precompile exactly once and leaves genesis allocations untouched.
+pub fn precompile_deployment_state(
+    evm: &mut TempoEvm<'_>,
+    address: Address,
+    storage: &[(U256, U256)],
+) -> Result<Option<PendingState>, BlockExecutionError> {
+    let original = match evm.state_mut().account_info_untracked(&address) {
+        Ok(info) => info,
+        Err(error) => return Err(map_database_error(error)),
+    };
+    if original
+        .as_ref()
+        .is_some_and(|info| !info.is_empty_code_hash())
+    {
+        return Ok(None);
+    }
+
+    let code = Bytecode::new_raw(Bytes::from_static(&[0xef]));
+    let current = original.clone().unwrap_or_default().with_code(code);
+    let mut state = PendingState::default();
+    state.insert_account(address, original, Some(current));
+    for &(slot, value) in storage {
+        let original = match evm.state_mut().storage_slot_untracked(&address, &slot) {
+            Ok(value) => value,
+            Err(error) => return Err(map_database_error(error)),
+        };
+        state.insert_storage(address, slot, original, value);
+    }
+    Ok(Some(state))
 }
 
 // Test-only methods to set internal state without exposing fields as pub(crate)
