@@ -5,8 +5,8 @@
 use std::collections::BTreeMap;
 
 use alloy_primitives::{Address, B256, Bytes, Log, U256};
+use evm2::interpreter::InstrStop;
 pub use invariants_core::Counts;
-use revm::context::result::{HaltReason, ResultGas};
 use serde::{Deserialize, Serialize};
 use tempo_hardfork::{TempoHardfork, constants::moderato::MODERATO_CHAIN_ID};
 
@@ -355,7 +355,32 @@ pub struct AccountDiff {
 pub enum TxOutcome {
     Success,
     Revert,
-    Halt(HaltReason),
+    Halt(InstrStop),
+}
+
+/// The gas a transaction spent.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub struct ResultGas {
+    /// Gas spent before the refund, execution and state gas together.
+    pub total_gas_spent: u64,
+    /// The part of `total_gas_spent` spent on state growth.
+    pub state_gas_spent: u64,
+    /// Gas refunded, before the floor applies.
+    pub refunded: u64,
+    /// The calldata floor.
+    pub floor_gas: u64,
+}
+
+impl ResultGas {
+    /// The gas the receipt reports: spent gas less the refund, but at least the floor.
+    pub const fn tx_gas_used(&self) -> u64 {
+        let spent = self.total_gas_spent.saturating_sub(self.refunded);
+        if spent > self.floor_gas {
+            spent
+        } else {
+            self.floor_gas
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]

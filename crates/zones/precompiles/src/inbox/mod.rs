@@ -18,7 +18,6 @@ mod tests;
 
 use alloc::vec::Vec;
 
-use alloy_evm::precompiles::DynPrecompile;
 use alloy_primitives::{Address, B256, U256};
 use alloy_sol_types::{SolCall, SolValue, abi::AbiDecoderConfig};
 use tempo_contracts::zones::{
@@ -39,7 +38,6 @@ use zone_primitives::constants::{ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS};
 use crate::{
     ZonePrecompileError, ZoneResult, aes_gcm, chaum_pedersen,
     ecies::{ENCRYPTED_PAYLOAD_PLAINTEXT_SIZE, hkdf_info, hkdf_sha256},
-    execution::NoCallRules,
     outbox::ZoneOutbox,
     storage::{L1State, L1StorageReader},
     tempo_state::TempoState,
@@ -69,16 +67,6 @@ impl ZoneInbox {
     /// Initialize the precompile account marker without changing protocol storage.
     pub fn initialize(&mut self) -> tempo_precompiles::Result<()> {
         self.__initialize()
-    }
-
-    /// Create the direct-call-only native Inbox precompile.
-    pub fn create<P>(l1: L1State<P>, env: &crate::ZonePrecompileEnv) -> DynPrecompile
-    where
-        P: L1StorageReader,
-    {
-        crate::execution::create_precompile("ZoneInbox", env, NoCallRules, move |data, caller| {
-            Self::new().call(&l1, data, caller)
-        })
     }
 
     fn advance_tempo<P: L1StorageReader>(

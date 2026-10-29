@@ -6,28 +6,27 @@
 //! subset of accounts, and a view that reads a key the pre-state lacks answers nothing rather than
 //! failing.
 
-use alloy_evm::EvmEnv;
 use alloy_primitives::{Address, Log};
 use invariants_core::{Report, SlotChange, Step};
-use revm::database::TransitionState;
-use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
     CONFIGURABLE_ACCOUNT_ADDRESS, STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
 };
+use tempo_evm::{TempoEvmConfig, TempoEvmEnv};
 use tempo_fuzz_types::{InvariantFailure, InvariantScope};
 use tempo_invariants::{Tx, account, all, dex, fee_amm, tip20};
-use tempo_primitives::{TempoBlockEnv, is_tip20_prefix};
+use tempo_primitives::is_tip20_prefix;
 
-use crate::state::Db;
+use crate::state::{Db, Net};
 
 use reader::Reader;
 
 mod reader;
 mod views;
 
-/// What a transaction step did: its state transitions, not yet applied to the bundle, and its logs.
+/// What a transaction step did: its net state changes, already written to the database, and its
+/// logs.
 pub(crate) struct StepEffects<'a> {
-    pub(crate) transitions: &'a TransitionState,
+    pub(crate) net: &'a Net,
     pub(crate) logs: &'a [Log],
     pub(crate) tx: Tx,
 }
@@ -36,12 +35,10 @@ impl StepEffects<'_> {
     /// The step from `pre` to `post`, models of `contract`.
     fn step<M>(&self, contract: Address, pre: M, post: M) -> Step<M, Option<Tx>> {
         let changes = self
-            .transitions
-            .transitions
+            .net
             .get(&contract)
             .into_iter()
-            .flat_map(|account| &account.storage)
-            .filter(|(_, slot)| slot.is_changed())
+            .flat_map(|account| account.changed_slots())
             .map(|(slot, value)| SlotChange {
                 address: contract,
                 slot: *slot,
@@ -72,13 +69,14 @@ pub(crate) fn logged_addresses<'a>(
 /// Appends to `failures` each invariant `db` breaks, at `scope`, over the accounts `db` holds,
 /// and adds how many subjects each judged, was armed for and found broken to `report`; `holders`
 /// are read as balance holders too, but never checked as contracts. `env` is the block's
-/// environment. Only contracts for which `selected` holds are checked, e.g. those whose state
+/// environment, which the views run in. Only contracts for which `selected` holds are checked, e.g. those whose state
 /// changed, as no other contract's invariants can have broken. With `effects`, a token's step
 /// checks also run on its ledger before the step against its ledger after it.
 #[expect(clippy::too_many_arguments)]
 pub(crate) fn check(
     db: &Db,
-    env: &EvmEnv<TempoHardfork, TempoBlockEnv>,
+    evm_config: &TempoEvmConfig,
+    env: TempoEvmEnv,
     scope: &InvariantScope,
     selected: impl Fn(&Address) -> bool,
     holders: &[Address],
@@ -86,13 +84,13 @@ pub(crate) fn check(
     failures: &mut Vec<InvariantFailure>,
     report: &mut Report,
 ) {
-    let pre_state = &db.database.0;
-    let missed = pre_state.missed();
+    let missed = db.pre.missed();
     let mut accounts: Vec<Address> = db
         .cache
+        .borrow()
         .accounts
         .iter()
-        .filter(|(_, account)| account.account.is_some())
+        .filter(|(_, account)| account.is_some())
         .map(|(address, _)| *address)
         .collect();
     accounts.sort_unstable();
@@ -115,8 +113,8 @@ pub(crate) fn check(
 
     let reader = Reader {
         db,
-        env,
-        pre_state,
+        evm_config,
+        env: &env,
         effects: effects.as_ref(),
     };
     let mut step = Report::default();
@@ -142,7 +140,7 @@ pub(crate) fn check(
             fee_manager: TIP_FEE_MANAGER_ADDRESS,
             tokens: &tokens,
             pairs: &pairs,
-            validators: &[env.block_env.inner.beneficiary],
+            validators: &[env.block.beneficiary],
             holders: &all_holders,
         };
         reader.check::<fee_amm::Books>(&mut step, at, TIP_FEE_MANAGER_ADDRESS, fee_amm::VIEW);
@@ -160,9 +158,8 @@ pub(crate) fn check(
         // A transaction changes a commitment only by changing its account, so the accounts it
         // changed and its sender are all it can have moved.
         let mut changed: Vec<Address> = effects
-            .transitions
-            .transitions
-            .keys()
+            .net
+            .addresses()
             .copied()
             .chain([effects.tx.sender])
             .collect();
@@ -182,5 +179,5 @@ pub(crate) fn check(
         scope: scope.clone(),
     }));
     report.merge(step);
-    pre_state.restore_missed(missed);
+    db.pre.restore_missed(missed);
 }

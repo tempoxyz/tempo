@@ -2,24 +2,22 @@
 
 use std::fmt::Display;
 
-use alloy_evm::EvmEnv;
 use alloy_primitives::Address;
 use invariants_core::{Observe, ObserveError, Report, Violation};
-use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_evm::{TempoEvmConfig, TempoEvmEnv};
 use tempo_invariants::all;
-use tempo_primitives::TempoBlockEnv;
 
 use super::{
     StepEffects,
     views::{EvmViews, PreView, ViewFailed},
 };
-use crate::state::{Db, PreStateDb};
+use crate::state::Db;
 
 /// Reads models from the state after a step and, with its `effects`, from the state before it.
 pub(super) struct Reader<'a> {
     pub(super) db: &'a Db,
-    pub(super) env: &'a EvmEnv<TempoHardfork, TempoBlockEnv>,
-    pub(super) pre_state: &'a PreStateDb,
+    pub(super) evm_config: &'a TempoEvmConfig,
+    pub(super) env: &'a TempoEvmEnv,
     pub(super) effects: Option<&'a StepEffects<'a>>,
 }
 
@@ -34,7 +32,8 @@ impl Reader<'_> {
         contract: Address,
         view: &'static str,
     ) {
-        let after = EvmViews::new(self.db, self.env, self.pre_state);
+        let pre_state = &self.db.pre;
+        let after = EvmViews::new(self.db.view(), self.evm_config, self.env.clone(), pre_state);
         let Some(post) = observed(report, view, contract, M::observe(&mut { after }, at)) else {
             return;
         };
@@ -43,10 +42,10 @@ impl Reader<'_> {
             return;
         };
         let before = PreView {
-            db: self.db,
-            transitions: effects.transitions,
+            reader: self.db.view(),
+            net: effects.net,
         };
-        let before = EvmViews::new(before, self.env, self.pre_state);
+        let before = EvmViews::new(before, self.evm_config, self.env.clone(), pre_state);
         let subject = format!("{contract} before the step");
         let Some(pre) = observed(report, view, subject, M::observe(&mut { before }, at)) else {
             return;

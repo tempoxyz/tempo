@@ -1,37 +1,33 @@
 //! Executing a harness input.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use alloy_consensus::{
     BlockHeader as _, proofs::calculate_transaction_root, transaction::Transaction as _,
 };
 use alloy_eips::Decodable2718 as _;
-use alloy_evm::{
-    Evm as _, EvmEnv,
-    block::{BlockExecutionError, BlockExecutor, TxResult as _},
-};
 use alloy_primitives::{Address, Log};
+use evm2::bytecode::Bytecode;
 use invariants_core::Report;
 use reth_consensus::{Consensus as _, HeaderValidator as _};
-use reth_evm::ConfigureEvm;
-use reth_primitives_traits::{RecoveredBlock, transaction::signed::SignedTransaction as _};
-use revm::{
-    context::result::ExecutionResult,
-    database::{BundleState, states::bundle_state::BundleRetention},
+use reth_evm::{
+    BlockExecutionError, BlockExecutor as _, BlockExecutorFactory as _, ConfigureEvm as _,
 };
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
-use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus, evm::TempoEvm};
+use reth_execution_types::StateUpdate;
+use reth_primitives_traits::{RecoveredBlock, transaction::signed::SignedTransaction as _};
+use tempo_chainspec::TempoChainSpec;
+use tempo_evm::{TempoBlockExecutor, TempoEvmConfig, TempoEvmEnv, consensus::TempoConsensus};
 use tempo_fuzz_types::{
     BlockChanges, BlockHeaderInput, ChainSpecInput, ErrorClass, InvariantFailure, InvariantScope,
-    PreState, StateChanges, TempoBlock, TempoExecutionOutcome, TempoHarnessInput,
+    PreState, ResultGas, StateChanges, TempoBlock, TempoExecutionOutcome, TempoHarnessInput,
     TempoHarnessOutcome, TempoTransactionInput, TransactionOutcome, TxOutcome, TxReceiptOutput,
 };
 use tempo_invariants::Tx;
-use tempo_primitives::{Block, BlockBody, TempoBlockEnv, TempoReceipt, TempoTxEnvelope};
+use tempo_primitives::{Block, BlockBody, TempoTxEnvelope};
 
 use crate::{
     chain, invariants,
-    state::{self, Db},
+    state::{self, Contracts, Db, Net},
 };
 
 type ExecutionBlock = RecoveredBlock<Block>;
@@ -107,7 +103,7 @@ fn execute(
         let db = state::seed(pre_state)?;
         Ok((Arc::new(spec), blocks, db))
     });
-    let (spec, blocks, mut db) = match prepared {
+    let (spec, blocks, db) = match prepared {
         Ok(prepared) => prepared,
         Err(error) => {
             return TempoExecutionOutcome {
@@ -117,11 +113,11 @@ fn execute(
         }
     };
 
-    let pre = db.cache.clone();
+    let pre = db.cache.borrow().clone();
     let evm_config = TempoEvmConfig::new(Arc::clone(&spec));
     let consensus = TempoConsensus::new(spec);
     let mut outcome = TempoExecutionOutcome::default();
-    let applied = execute_blocks(&evm_config, &consensus, &mut db, &blocks, &mut outcome);
+    let applied = execute_blocks(&evm_config, &consensus, &db, &blocks, &mut outcome);
     if !outcome.invariant_failures.is_empty() {
         let invariant_failures = broken_start(&evm_config, pre_state, &blocks[0], &db, &outcome);
         if !invariant_failures.is_empty() {
@@ -133,22 +129,22 @@ fn execute(
         }
     }
 
-    let contracts = &db.cache.contracts;
+    let cache = db.cache.borrow();
+    let contracts = Contracts(&[&cache.contracts]);
     let after = state::after(&pre, &applied);
-    outcome.state_diff.total = state::bundle_changes(&applied, contracts);
+    outcome.state_diff.total = state::changes(&applied, &contracts);
     outcome.state_root =
         matches!(pre_state, PreState::Genesis(_)).then(|| state::state_root(&after));
-    outcome.final_state = state::encode(&after, contracts);
+    outcome.final_state = state::encode(&after, &contracts);
     outcome
 }
 
 /// The invariants `pre_state` already breaks, summing balances over every account `db` came to hold
 /// after execution and every address in a log topic of `outcome`'s receipts (such as a holder whose
 /// balance only a transaction touched, or one `transferFrom` or `burnBlocked` moved without loading
-/// it). A
-/// pre-state that breaks one is not a reachable state, so nothing executed on it is a finding: the
-/// input is invalid, and these failures are reported at `Execution` scope. Only the accounts it
-/// lists can break one.
+/// it). A pre-state that breaks one is not a reachable state, so nothing executed on it is a
+/// finding: the input is invalid, and these failures are reported at `Execution` scope. Only the
+/// accounts it lists can break one.
 fn broken_start(
     evm_config: &TempoEvmConfig,
     pre_state: &PreState,
@@ -163,6 +159,7 @@ fn broken_start(
     let logged = outcome.receipts.iter().flat_map(|receipt| &receipt.logs);
     let holders: Vec<Address> = db
         .cache
+        .borrow()
         .accounts
         .keys()
         .copied()
@@ -171,7 +168,8 @@ fn broken_start(
     let mut failures = Vec::new();
     invariants::check(
         &start,
-        &env,
+        evm_config,
+        env,
         &InvariantScope::Execution,
         |address| listed.accounts.contains_key(address),
         &holders,
@@ -222,22 +220,24 @@ pub(crate) fn recover_block(
 pub(crate) fn execute_blocks(
     evm_config: &TempoEvmConfig,
     consensus: &TempoConsensus,
-    db: &mut Db,
+    db: &Db,
     blocks: &[ExecutionBlock],
     outcome: &mut TempoExecutionOutcome,
-) -> BundleState {
-    let mut applied = BundleState::default();
+) -> Net {
+    let mut applied = Net::default();
     for (index, block) in blocks.iter().enumerate() {
         let executed = execute_block(evm_config, consensus, db, block, index as u64);
         // A read the pre-state could not answer makes the result meaningless,
         // even when the error was swallowed on its way up.
         let executed = match executed {
-            _ if db.database.0.missed() => Err(ErrorClass::IncompletePreState),
+            _ if db.pre.missed() => Err(ErrorClass::IncompletePreState),
             executed => executed,
         };
         match executed {
-            Ok((changes, outputs)) => {
-                applied.extend(changes);
+            Ok((updates, outputs)) => {
+                for update in &updates {
+                    applied.apply(update);
+                }
                 outcome.receipts.extend(outputs.receipts);
                 outcome.state_diff.blocks.push(outputs.changes);
                 outcome
@@ -269,14 +269,17 @@ struct BlockOutputs {
     invariant_report: Report,
 }
 
-/// Executes `block` on `db`. Returns its changes and what it produced.
+/// The state updates an executor has emitted since they were last taken.
+type Updates = Arc<Mutex<Vec<StateUpdate>>>;
+
+/// Executes `block` on `db`. Returns the updates it made to state and what it produced.
 fn execute_block(
     evm_config: &TempoEvmConfig,
     consensus: &TempoConsensus,
-    db: &mut Db,
+    db: &Db,
     block: &ExecutionBlock,
     block_index: u64,
-) -> Result<(BundleState, BlockOutputs), ErrorClass> {
+) -> Result<(Vec<StateUpdate>, BlockOutputs), ErrorClass> {
     consensus
         .validate_header(block.sealed_block().sealed_header())
         .map_err(|_| ErrorClass::Rejected)?;
@@ -284,54 +287,66 @@ fn execute_block(
         .validate_block_pre_execution(block.sealed_block())
         .map_err(|_| ErrorClass::Rejected)?;
     let evm = evm_config
-        .evm_for_block(&mut *db, block.header())
+        .evm_for_block(db.reader(), block.header())
         .map_err(|_| ErrorClass::Rejected)?;
     let ctx = evm_config
         .context_for_block(block.sealed_block())
         .map_err(|_| ErrorClass::Rejected)?;
     let mut executor = evm_config.create_executor(evm, ctx);
+    let hooked = Updates::default();
+    let installed = executor.set_state_hook({
+        let hooked = Arc::clone(&hooked);
+        move |update| hooked.lock().expect("the hook does not panic").push(update)
+    });
+    assert!(installed, "Tempo's block executor takes a state hook");
 
     let mut outputs = BlockOutputs::default();
-    let mut changes = BundleState::default();
+    let mut updates = Vec::new();
     execute_txs(
+        evm_config,
         &mut executor,
+        db,
+        &hooked,
         block,
         block_index,
-        &mut changes,
+        &mut updates,
         &mut outputs,
     )
     .map_err(|err| class(&err))?;
-    let (mut evm, _) = executor.finish().map_err(|err| class(&err))?;
-    let post_block = state::drain(evm.db_mut());
-    outputs.changes.post_block = state::transition_changes(&post_block, &evm.db().cache.contracts);
-    changes.apply_transitions_and_create_reverts(post_block, BundleRetention::PlainState);
-    Ok((changes, outputs))
+    let output = executor.finish().map_err(|err| class(&err))?;
+    let post_block = take(&hooked);
+    let net = Net::of(&post_block);
+    let cache = db.cache.borrow();
+    let contracts = Contracts(&[&output.state.contracts, &cache.contracts]);
+    outputs.changes.post_block = state::changes(&net, &contracts);
+    drop(cache);
+    db.commit(&net, |hash| output.state.contracts.get(hash).cloned());
+    updates.extend(post_block);
+    Ok((updates, outputs))
 }
 
 /// Applies the block's pre-execution changes and its transactions, recording each transaction's
 /// receipt and each step's changes, and checking invariants after each step.
-fn execute_txs<'db, E>(
-    executor: &mut E,
+#[allow(clippy::too_many_arguments)]
+fn execute_txs(
+    evm_config: &TempoEvmConfig,
+    executor: &mut TempoBlockExecutor<'_>,
+    db: &Db,
+    hooked: &Updates,
     block: &ExecutionBlock,
     block_index: u64,
-    changes: &mut BundleState,
+    updates: &mut Vec<StateUpdate>,
     outputs: &mut BlockOutputs,
-) -> Result<(), BlockExecutionError>
-where
-    E: BlockExecutor<
-            Transaction = TempoTxEnvelope,
-            Receipt = TempoReceipt,
-            Evm = TempoEvm<&'db mut Db>,
-        >,
-{
-    let env = executor.evm().evm_env();
+) -> Result<(), BlockExecutionError> {
     executor.apply_pre_execution_changes()?;
     outputs.changes.pre_block = step(
+        evm_config,
         executor,
-        &env,
+        db,
+        hooked,
         InvariantScope::Block { block_index },
         None,
-        changes,
+        updates,
         &mut outputs.invariant_failures,
         &mut outputs.invariant_report,
     );
@@ -342,15 +357,22 @@ where
         let sender = tx.signer();
         let effective_gas_price = tx.effective_gas_price(basefee);
         let result = executor.execute_transaction_without_commit(tx)?;
-        let execution = &result.result().result;
-        let outcome = match execution {
-            ExecutionResult::Success { .. } => TxOutcome::Success,
-            ExecutionResult::Revert { .. } => TxOutcome::Revert,
-            ExecutionResult::Halt { reason, .. } => TxOutcome::Halt(reason.clone()),
+        let execution = result.result();
+        let outcome = if execution.status {
+            TxOutcome::Success
+        } else if execution.is_revert() {
+            TxOutcome::Revert
+        } else {
+            TxOutcome::Halt(execution.stop)
         };
-        let gas = *execution.gas();
-        let output = execution.output().cloned().unwrap_or_default();
-        executor.commit_transaction(result);
+        let gas = ResultGas {
+            total_gas_spent: execution.total_gas_spent,
+            state_gas_spent: execution.state_gas_spent,
+            refunded: execution.refunded,
+            floor_gas: execution.floor_gas,
+        };
+        let output = execution.output.clone();
+        executor.commit_transaction(result)?;
         // `finish` returns the receipts the executor records here, unchanged.
         let receipt = executor
             .receipts()
@@ -376,11 +398,13 @@ where
             success: receipt.outcome == TxOutcome::Success,
         };
         let tx_changes = step(
+            evm_config,
             executor,
-            &env,
+            db,
+            hooked,
             scope,
             Some((tx, &receipt.logs)),
-            changes,
+            updates,
             &mut outputs.invariant_failures,
             &mut outputs.invariant_report,
         );
@@ -389,33 +413,56 @@ where
     Ok(())
 }
 
-/// Ends an execution step: applies its transitions to `changes`, checks invariants at `scope`, and
-/// returns the step's changes. A transaction's step, given the transaction and its logs as `tx`,
-/// is checked only for the contracts it changed, and also on what it did.
-fn step<'db, E>(
-    executor: &mut E,
-    env: &EvmEnv<TempoHardfork, TempoBlockEnv>,
+/// The updates `hooked` holds, which it then no longer does.
+fn take(hooked: &Updates) -> Vec<StateUpdate> {
+    std::mem::take(&mut *hooked.lock().expect("the hook does not panic"))
+}
+
+/// Ends an execution step: writes its changes to `db`, checks invariants at `scope`, and returns the
+/// step's changes. A transaction's step, given the transaction and its logs as `tx`, is checked only
+/// for the contracts it changed, and also on what it did.
+#[allow(clippy::too_many_arguments)]
+fn step(
+    evm_config: &TempoEvmConfig,
+    executor: &TempoBlockExecutor<'_>,
+    db: &Db,
+    hooked: &Updates,
     scope: InvariantScope,
     tx: Option<(Tx, &[Log])>,
-    changes: &mut BundleState,
+    updates: &mut Vec<StateUpdate>,
     failures: &mut Vec<InvariantFailure>,
     report: &mut Report,
-) -> StateChanges
-where
-    E: BlockExecutor<Evm = TempoEvm<&'db mut Db>>,
-{
-    let db: &mut Db = executor.evm_mut().db_mut();
-    let step = state::drain(db);
-    let step_changes = state::transition_changes(&step, &db.cache.contracts);
-    let selected = |contract: &Address| tx.is_none() || step.transitions.contains_key(contract);
+) -> StateChanges {
+    let step = take(hooked);
+    let net = Net::of(&step);
+    let overlay = &executor.evm().overlay_db().cache;
+    let contracts = |hash: &_| -> Option<Bytecode> { overlay.contracts.get(hash).cloned() };
+    db.commit(&net, contracts);
+    let changes = {
+        let cache = db.cache.borrow();
+        state::changes(&net, &Contracts(&[&overlay.contracts, &cache.contracts]))
+    };
+    let selected = |contract: &_| tx.is_none() || net.contains(contract);
     let effects = tx.map(|(tx, logs)| invariants::StepEffects {
-        transitions: &step,
+        net: &net,
         logs,
         tx,
     });
-    invariants::check(db, env, &scope, selected, &[], effects, failures, report);
-    changes.apply_transitions_and_create_reverts(step, BundleRetention::PlainState);
-    step_changes
+    let evm = executor.evm();
+    let env = TempoEvmEnv::new_with_version(evm.config_spec_id(), *evm.block(), *evm.version());
+    invariants::check(
+        db,
+        evm_config,
+        env,
+        &scope,
+        selected,
+        &[],
+        effects,
+        failures,
+        report,
+    );
+    updates.extend(step);
+    changes
 }
 
 /// A block the node would reject is `Rejected`; anything else went wrong in the executor.

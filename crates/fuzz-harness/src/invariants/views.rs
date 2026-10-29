@@ -1,40 +1,35 @@
-//! View calls against the harness's state after a step or, with its transitions undone, before it.
+//! View calls against the harness's state after a step or, with its changes undone, before it.
 
-use std::fmt::{self, Debug, Display};
+use std::fmt::{self, Display};
 
-use alloy_evm::{Evm as _, EvmEnv};
 use alloy_primitives::{Address, B256, Bytes, U256};
-use invariants_core::Views;
-use revm::{
-    DatabaseRef, bytecode::Bytecode, database::TransitionState,
-    database_interface::WrapDatabaseRef, state::AccountInfo,
+use evm2::{
+    bytecode::Bytecode,
+    evm::{AccountInfo, SystemTx},
 };
-use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_evm::evm::TempoEvm;
-use tempo_primitives::TempoBlockEnv;
+use invariants_core::Views;
+use reth_evm::{ConfigureEvm as _, Database};
+use tempo_evm::{TempoEvm, TempoEvmConfig, TempoEvmEnv};
 
-use crate::state::{Db, PreStateDb};
+use crate::state::{Net, PreStateDb, Reader};
 
-/// Read-only calls against the state `D` holds, noting reads the seeded pre-state misses.
-pub(super) struct EvmViews<'a, D: DatabaseRef + Debug> {
-    evm: TempoEvm<WrapDatabaseRef<D>>,
+/// Read-only calls against the state an EVM reads, noting reads the seeded pre-state misses.
+pub(super) struct EvmViews<'a> {
+    evm: TempoEvm<'a>,
     pre_state: &'a PreStateDb,
 }
 
-impl<'a, D: DatabaseRef + Debug> EvmViews<'a, D> {
+impl<'a> EvmViews<'a> {
     pub(super) fn new(
-        db: D,
-        env: &EvmEnv<TempoHardfork, TempoBlockEnv>,
+        db: impl Database + 'a,
+        evm_config: &TempoEvmConfig,
+        env: TempoEvmEnv,
         pre_state: &'a PreStateDb,
     ) -> Self {
         Self {
-            evm: TempoEvm::new(WrapDatabaseRef(db), env.clone()),
+            evm: evm_config.evm_with_env(db, env),
             pre_state,
         }
-    }
-
-    fn pre_state(&self) -> &PreStateDb {
-        self.pre_state
     }
 
     /// `input`'s output from `target`. `Ok(None)` when nothing answers: `target` has no code, or
@@ -44,11 +39,11 @@ impl<'a, D: DatabaseRef + Debug> EvmViews<'a, D> {
             .get(..4)
             .map(Bytes::copy_from_slice)
             .unwrap_or_default();
-        self.pre_state().restore_missed(false);
+        self.pre_state.restore_missed(false);
         let result = self
             .evm
-            .transact_system_call(Address::ZERO, target, input.clone());
-        if self.pre_state().missed() {
+            .system_call(SystemTx::new(target, input.clone()).with_caller(Address::ZERO));
+        if self.pre_state.missed() {
             return Ok(None);
         }
         let failed = |reason| ViewFailed {
@@ -56,15 +51,16 @@ impl<'a, D: DatabaseRef + Debug> EvmViews<'a, D> {
             target,
             reason,
         };
-        let result = result.map_err(|err| failed(err.to_string()))?.result;
+        let executed = result.map_err(|err| failed(err.to_string()))?;
+        let result = executed.result();
         if !result.is_success() {
             return Err(failed(format!("{result:?}")));
         }
-        Ok(result.output().filter(|output| !output.is_empty()).cloned())
+        Ok(Some(result.output.clone()).filter(|output| !output.is_empty()))
     }
 }
 
-impl<D: DatabaseRef + Debug> Views for EvmViews<'_, D> {
+impl Views for EvmViews<'_> {
     type Error = ViewFailed;
 
     fn call(&mut self, calls: &[(Address, Bytes)]) -> Result<Vec<Option<Bytes>>, ViewFailed> {
@@ -80,41 +76,43 @@ impl<D: DatabaseRef + Debug> Views for EvmViews<'_, D> {
     }
 }
 
-/// The state before a step: `db` with the step's `transitions` undone.
-#[derive(Debug)]
+/// The state before a step: what `reader` reads, with the step's `net` changes undone.
 pub(super) struct PreView<'a> {
-    pub(super) db: &'a Db,
-    pub(super) transitions: &'a TransitionState,
+    pub(super) reader: Reader<'a>,
+    pub(super) net: &'a Net,
 }
 
-impl DatabaseRef for PreView<'_> {
-    type Error = <Db as DatabaseRef>::Error;
+impl Database for PreView<'_> {
+    type Error = <Reader<'static> as Database>::Error;
 
-    fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
-        match self.transitions.transitions.get(&address) {
-            Some(account) => Ok(account.previous_info.clone()),
-            None => self.db.basic_ref(address),
+    fn is_fatal(_error: &Self::Error) -> bool {
+        false
+    }
+
+    fn get_account(&mut self, address: &Address) -> Result<Option<AccountInfo>, Self::Error> {
+        match self.net.get(address) {
+            Some(account) => Ok(account.original().cloned()),
+            None => self.reader.get_account(address),
         }
     }
 
-    fn code_by_hash_ref(&self, code_hash: B256) -> Result<Bytecode, Self::Error> {
-        self.db.code_by_hash_ref(code_hash)
+    fn get_code_by_hash(&mut self, code_hash: &B256) -> Result<Bytecode, Self::Error> {
+        self.reader.get_code_by_hash(code_hash)
     }
 
-    fn storage_ref(&self, address: Address, slot: U256) -> Result<U256, Self::Error> {
-        if let Some(account) = self.transitions.transitions.get(&address) {
-            if let Some(value) = account.storage.get(&slot) {
-                return Ok(value.original_value());
-            }
-            if account.previous_info.is_none() {
-                return Ok(U256::ZERO);
-            }
+    fn get_storage(&mut self, address: &Address, key: &U256) -> Result<U256, Self::Error> {
+        match self
+            .net
+            .get(address)
+            .and_then(|account| account.original_slot(key))
+        {
+            Some(value) => Ok(value),
+            None => self.reader.get_storage(address, key),
         }
-        self.db.storage_ref(address, slot)
     }
 
-    fn block_hash_ref(&self, number: u64) -> Result<B256, Self::Error> {
-        self.db.block_hash_ref(number)
+    fn get_block_hash(&mut self, number: &U256) -> Result<B256, Self::Error> {
+        self.reader.get_block_hash(number)
     }
 }
 
