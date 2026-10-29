@@ -273,13 +273,6 @@ fn validate_native_roles(
             return Err(ConfigurableAccountError::InvalidAccount { account: caller }.into());
         }
     }
-    if roles.iter().all(Option::is_none) {
-        return Ok(NativeRoles {
-            extra_gas: 0,
-            state_gas: 0,
-            accounts: Vec::new(),
-        });
-    }
     // Keychain validation rejects a grant signed by an account other than the caller.
     if let Some(signature) = aa.signature().as_configurable_account()
         && signature.account() != caller
@@ -290,7 +283,7 @@ fn validate_native_roles(
         }
         .into());
     }
-    let mut accounts = Vec::with_capacity(2);
+    let mut accounts = Vec::new();
     let mut extra_gas = 0;
     let mut state_gas = 0;
     for role in roles.into_iter().flatten() {
