@@ -1256,11 +1256,8 @@ async fn configurable_account_rpc_maximum_mixed_quorums_and_validation_cost_orde
     // Only the last approval of the grant signs the wrong digest. Recovery rejects the
     // transaction before any state is read, so it never reaches the unfunded check above.
     let mut invalid_grant = tx.clone();
-    invalid_grant.key_authorization = Some(
-        grant
-            .clone()
-            .into_signed(parent.quorum(grant.signature_hash(), true)?),
-    );
+    let invalid_quorum = parent.quorum(grant.signature_hash(), true)?;
+    invalid_grant.key_authorization = Some(grant.into_signed(invalid_quorum));
     let signature = delegate.as_delegate(&invalid_grant, parent.address, false)?;
     let invalid: TempoTxEnvelope = invalid_grant.clone().into_signed(signature.clone()).into();
     invalid
