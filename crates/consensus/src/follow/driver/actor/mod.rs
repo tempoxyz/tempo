@@ -23,7 +23,9 @@ use crate::{
     gossip::{Certificate, CertificateError},
 };
 
-pub(super) mod state;
+mod state;
+
+pub(super) use state::State;
 
 #[instrument(skip_all, err)]
 pub(super) async fn try_init<TContext, P, M>(
@@ -35,7 +37,7 @@ where
     P: ExecutionProvider + 'static,
     M: Marshal + 'static,
 {
-    let state = state::State::init(context.child("state"), &config.partition_prefix).await?;
+    let state = State::init(context.child("state"), &config.partition_prefix).await?;
 
     let tip = config
         .finalized_tip
@@ -115,7 +117,7 @@ where
 }
 
 pub(crate) struct Driver<TContext: Clock + Metrics + Storage + BufferPooler, P, M> {
-    state: state::State<TContext>,
+    state: State<TContext>,
     context: ContextCell<TContext>,
     config: Config<P, M>,
     mailbox: mpsc::UnboundedReceiver<Message>,

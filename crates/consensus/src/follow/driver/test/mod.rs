@@ -122,7 +122,7 @@ fn startup_rejects_an_unobserved_snapshot_identity_before_loading_boundaries() {
             )
         );
         assert!(provider.header_reads().is_empty());
-        let state = super::actor::state::State::init(context.child("inspect_rejected"), "test")
+        let state = super::actor::State::init(context.child("inspect_rejected"), "test")
             .await
             .unwrap();
         assert_eq!(state.identity(), None);
@@ -592,7 +592,7 @@ fn boundary_with_a_future_outcome_epoch_halts_without_persisting_an_identity() {
                     .unwrap()
                     .is_err()
             );
-            let state = super::actor::state::State::init(context.child("restart_state"), "test")
+            let state = super::actor::State::init(context.child("restart_state"), "test")
                 .await
                 .unwrap();
             assert_eq!(state.identity(), None);
@@ -626,7 +626,7 @@ fn observed_boundary_is_durable_before_acknowledgement() {
                 .is_err()
         );
 
-        let record = super::actor::state::State::init(context.child("restart_record"), "test")
+        let record = super::actor::State::init(context.child("restart_record"), "test")
             .await
             .unwrap();
         assert_eq!(record.identity().unwrap().from_epoch, 1);
@@ -707,7 +707,7 @@ fn reshared_boundaries_register_the_epoch_without_advancing_the_persisted_identi
                 .unwrap()
                 .is_err()
         );
-        let state = super::actor::state::State::init(context.child("restart_state"), "test")
+        let state = super::actor::State::init(context.child("restart_state"), "test")
             .await
             .unwrap();
         assert_eq!(state.identity().unwrap().from_epoch, 1);
@@ -727,7 +727,7 @@ fn historical_boundaries_do_not_replace_a_newer_configured_anchor_for_the_same_k
             from_epoch: 0,
             identity: *original.outcome.network_identity(),
         };
-        let mut state = super::actor::state::State::init(context.child("seed_state"), "test")
+        let mut state = super::actor::State::init(context.child("seed_state"), "test")
             .await
             .unwrap();
         state.observe(saved.clone()).await.unwrap();
@@ -779,7 +779,7 @@ fn historical_boundaries_do_not_replace_a_newer_configured_anchor_for_the_same_k
                 .unwrap()
                 .is_err()
         );
-        let state = super::actor::state::State::init(context.child("restart_state"), "test")
+        let state = super::actor::State::init(context.child("restart_state"), "test")
             .await
             .unwrap();
         assert_eq!(state.identity(), Some(&saved));
@@ -822,7 +822,7 @@ fn startup_does_not_persist_a_boundary_above_its_authenticated_tip() {
             .unwrap();
             assert!(schemes.scoped(Epoch::new(from_epoch)).is_some());
             drop(actor);
-            let state = super::actor::state::State::init(context.child("restart_state"), "test")
+            let state = super::actor::State::init(context.child("restart_state"), "test")
                 .await
                 .unwrap();
             assert_eq!(state.identity(), None);
@@ -890,7 +890,7 @@ fn startup_leaves_boundaries_above_the_marshal_floor_for_block_updates() {
                 .unwrap()
                 .is_err()
         );
-        let state = super::actor::state::State::init(context.child("restart_state"), "test")
+        let state = super::actor::State::init(context.child("restart_state"), "test")
             .await
             .unwrap();
         assert_eq!(state.identity().unwrap().from_epoch, 1);
@@ -911,7 +911,7 @@ fn startup_recovery_does_not_regress_the_persisted_identity_during_backfill() {
         let boundary = make_block(boundary_height.get(), Some(&latest.outcome));
         let tip_height = Height::new(boundary_height.get() + 1);
         let tip = make_block(tip_height.get(), None);
-        let mut state = super::actor::state::State::init(context.child("seed_state"), "test")
+        let mut state = super::actor::State::init(context.child("seed_state"), "test")
             .await
             .unwrap();
         state
@@ -967,7 +967,7 @@ fn startup_recovery_does_not_regress_the_persisted_identity_during_backfill() {
                 .unwrap()
                 .is_err()
         );
-        let state = super::actor::state::State::init(context.child("restart_state"), "test")
+        let state = super::actor::State::init(context.child("restart_state"), "test")
             .await
             .unwrap();
         assert_eq!(state.identity().unwrap().from_epoch, 3);
@@ -1011,7 +1011,7 @@ fn startup_does_not_observe_a_boundary_only_read_from_execution() {
         .await
         .unwrap();
         drop(actor);
-        let record = super::actor::state::State::init(context.child("restart_record"), "test")
+        let record = super::actor::State::init(context.child("restart_record"), "test")
             .await
             .unwrap();
         assert_eq!(record.identity(), None);
@@ -1628,7 +1628,7 @@ fn startup_installs_missing_consensus_epoch_scheme_from_marshal() {
                 .unwrap()
                 .is_err()
         );
-        let state = super::actor::state::State::init(context.child("restart_state"), "test")
+        let state = super::actor::State::init(context.child("restart_state"), "test")
             .await
             .unwrap();
         assert_eq!(state.identity(), None);
