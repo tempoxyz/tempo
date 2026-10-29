@@ -15,7 +15,14 @@ use alloy_provider::{DynProvider, Provider, ProviderBuilder};
 use alloy_rpc_client::RpcClient;
 use alloy_transport::layers::RetryBackoffLayer;
 use eyre::Result;
-use std::{num::NonZeroU32, time::Duration};
+use std::{
+    num::NonZeroU32,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 use tempo_alloy::TempoNetwork;
 use tracing::{debug, info, warn};
 use zone_precompiles::{L1StateError, L1StorageReader};
@@ -92,6 +99,9 @@ pub struct L1StateProvider {
     /// How long each synchronous cache-miss attempt waits for its answer; `None` waits as long as
     /// the transport does, which over a reconnecting WebSocket is forever.
     sync_deadline: Option<Duration>,
+    /// Set by a clone from [`Self::with_sync_limits`] once one of its reads gave up: its later
+    /// cache misses fail at once, so an L1 outage costs its caller one deadline, not one per read.
+    gave_up: Option<Arc<AtomicBool>>,
 }
 
 impl L1StateProvider {
@@ -141,6 +151,7 @@ impl L1StateProvider {
             runtime_handle,
             max_sync_attempts: config.max_sync_attempts,
             sync_deadline: None,
+            gave_up: None,
         })
     }
 
@@ -161,6 +172,7 @@ impl L1StateProvider {
             runtime_handle,
             max_sync_attempts: config.max_sync_attempts,
             sync_deadline: None,
+            gave_up: None,
         }
     }
 
@@ -170,6 +182,7 @@ impl L1StateProvider {
         Self {
             max_sync_attempts: Some(attempts),
             sync_deadline: Some(deadline),
+            gave_up: Some(Arc::new(AtomicBool::new(false))),
             ..self.clone()
         }
     }
@@ -192,6 +205,16 @@ impl L1StateProvider {
             if let Some(value) = cache.get(address, slot, block_number) {
                 return Ok(value);
             }
+        }
+
+        if self
+            .gave_up
+            .as_ref()
+            .is_some_and(|gave_up| gave_up.load(Ordering::Relaxed))
+        {
+            return Err(eyre::eyre!(
+                "L1 storage read skipped for address={address} slot={slot} block={block_number}: an earlier read through this reader gave up"
+            ));
         }
 
         warn!(%address, %slot, block_number, "L1 storage cache miss, fetching from RPC");
@@ -232,6 +255,9 @@ impl L1StateProvider {
                         .max_sync_attempts
                         .is_some_and(|max_attempts| attempt >= max_attempts.get())
                     {
+                        if let Some(gave_up) = &self.gave_up {
+                            gave_up.store(true, Ordering::Relaxed);
+                        }
                         return Err(eyre::eyre!(
                             "L1 storage RPC fetch failed after {attempt} attempts for address={address} slot={slot} block={block_number}: {rpc_err}"
                         ));
@@ -397,5 +423,49 @@ mod tests {
             .to_string();
         assert!(message.contains("after 1 attempts"), "{message}");
         assert!(message.contains("no answer within 100ms"), "{message}");
+    }
+
+    /// After one read gives up, a bounded clone fails its other misses at once instead of
+    /// waiting out the deadline again for each.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn bounded_clone_waits_out_one_deadline_per_outage() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a free local port");
+        let url = format!("http://{}", listener.local_addr().expect("a bound address"));
+        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+            .connect(&url)
+            .await
+            .expect("HTTP transport construction is lazy")
+            .erased();
+        let bounded = L1StateProvider::new_raw(
+            L1StateProviderConfig::default(),
+            L1StateCache::default(),
+            provider,
+            tokio::runtime::Handle::current(),
+        )
+        .with_sync_limits(NonZeroU32::MIN, Duration::from_millis(500));
+
+        let start = std::time::Instant::now();
+        let reads = tokio::task::spawn_blocking(move || {
+            (0..10u8)
+                .map(|slot| bounded.get_storage(Address::ZERO, B256::with_last_byte(slot), 7))
+                .collect::<Vec<_>>()
+        })
+        .await
+        .expect("storage task must not panic");
+        assert!(reads.iter().all(Result::is_err));
+        assert!(
+            reads[1]
+                .as_ref()
+                .unwrap_err()
+                .to_string()
+                .contains("an earlier read"),
+            "{:?}",
+            reads[1]
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "took {:?}",
+            start.elapsed()
+        );
     }
 }
