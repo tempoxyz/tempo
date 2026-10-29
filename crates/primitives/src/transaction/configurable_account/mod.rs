@@ -443,13 +443,17 @@ impl ConfigurableAccountSignature {
     ///
     /// Initial address derivation is not included. Returns `None` if the cost overflows `u64`.
     pub fn verification_gas(&self) -> Option<u64> {
-        let mut witness = alloy_rlp::encode(self.account);
+        let mut witness = CalldataTokenCounter {
+            tokens: 0,
+            chunk: [0; CalldataTokenCounter::CHUNK_LEN],
+        };
+        self.account.encode(&mut witness);
         self.config.encode(&mut witness);
         self.signatures
             .iter()
             .map(PrimitiveSignature::verification_gas)
             .chain([
-                tokens_in_calldata(&witness) * STANDARD_TOKEN_COST,
+                witness.tokens * STANDARD_TOKEN_COST,
                 keccak_gas(self.config.commitment_preimage_len())?,
                 keccak_gas(CONFIGURABLE_ACCOUNT_SIGNATURE_PREIMAGE_LEN)?,
             ])
@@ -763,6 +767,35 @@ pub fn configurable_account_digest(
     hasher.update(account);
     hasher.update(config_version.to_be_bytes());
     hasher.finalize()
+}
+
+/// RLP output sink that counts EIP-7623 calldata tokens instead of storing the bytes.
+struct CalldataTokenCounter {
+    /// Calldata tokens of every byte written so far.
+    tokens: u64,
+    /// Scratch space handed out for each write; counted and reused on every advance.
+    chunk: [u8; Self::CHUNK_LEN],
+}
+
+impl CalldataTokenCounter {
+    const CHUNK_LEN: usize = 64;
+}
+
+// SAFETY: `chunk_mut` always returns the whole, always-initialized `chunk`, and `advance_mut`
+// counts at most `CHUNK_LEN` of its bytes, so no write or read goes past it. The sink never
+// fills up, so `remaining_mut` is unbounded.
+unsafe impl BufMut for CalldataTokenCounter {
+    fn remaining_mut(&self) -> usize {
+        usize::MAX
+    }
+
+    unsafe fn advance_mut(&mut self, cnt: usize) {
+        self.tokens += tokens_in_calldata(&self.chunk[..cnt]);
+    }
+
+    fn chunk_mut(&mut self) -> &mut alloy_rlp::bytes::buf::UninitSlice {
+        alloy_rlp::bytes::buf::UninitSlice::new(&mut self.chunk)
+    }
 }
 
 #[cfg(feature = "serde")]
