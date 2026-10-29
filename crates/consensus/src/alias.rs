@@ -72,6 +72,11 @@ pub(crate) mod marshal {
         /// archive. Older blocks are served from reth via [`Hybrid`].
         pub finalized_blocks_retention: u64,
 
+        /// Initial entry count of the finalizations archive's freezer table.
+        /// Only applies when the table is created; an existing table keeps
+        /// its checkpointed size.
+        pub freezer_table_initial_size: u32,
+
         /// Epoch length / boundary configuration.
         pub epoch_strategy: FixedEpocher,
 
@@ -134,6 +139,7 @@ pub(crate) mod marshal {
             &config.partition_prefix,
             page_cache.clone(),
             &config.epoch_strategy,
+            config.freezer_table_initial_size,
         )
         .await
         .wrap_err("failed to initialize finalizations by height archive")?;
