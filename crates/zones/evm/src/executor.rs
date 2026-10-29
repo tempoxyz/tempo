@@ -23,6 +23,7 @@ use std::sync::Arc;
 use tempo_contracts::zones::{IZoneOutbox, TempoAdvanced};
 use tempo_evm::{TempoBlockExecutionCtx, TempoEvmTypes, TempoReceiptBuilder};
 use tempo_primitives::{TempoReceipt, TempoTxEnvelope, TempoTxType};
+use thiserror::Error;
 use zone_chainspec::ZoneChainSpec;
 use zone_precompiles::{ADVANCE_TEMPO_HEADERS_SELECTOR, ADVANCE_TEMPO_SELECTOR};
 use zone_primitives::constants::{ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS};
@@ -152,6 +153,15 @@ impl BlockTransactionResult<TempoEvmTypes> for ZoneTxResult {
     }
 }
 
+/// Decides from an executed transaction's result and state changes whether a block builder may
+/// include it. See [`ZoneBlockExecutor::set_inclusion_filter`].
+pub type InclusionFilter = Box<dyn Fn(&TxResultWithState<TempoEvmTypes>) -> bool + Send + Sync>;
+
+/// Error for a transaction that the executor's [`InclusionFilter`] left out.
+#[derive(Debug, Error)]
+#[error("transaction left out by the block builder's inclusion filter")]
+pub struct ExcludedByFilter;
+
 /// Simplified block executor for zone nodes.
 ///
 /// Enforces the successful block-opening `advanceTempo` system transaction and same-block
@@ -162,6 +172,8 @@ pub struct ZoneBlockExecutor<'a> {
     inner: EthBlockExecutor<'a, TempoEvmTypes, TempoReceiptBuilder>,
     phase: ZoneBlockPhase,
     prague_active: bool,
+    /// Builder-local policy that executed transactions must pass before they can be committed.
+    inclusion_filter: Option<InclusionFilter>,
 }
 
 impl<'a> ZoneBlockExecutor<'a> {
@@ -182,7 +194,17 @@ impl<'a> ZoneBlockExecutor<'a> {
             ),
             phase: ZoneBlockPhase::AwaitingAdvanceTempo,
             prague_active,
+            inclusion_filter: None,
         }
+    }
+
+    /// Sets the filter that later transactions must pass, or clears it with `None`.
+    ///
+    /// A transaction the filter rejects fails with [`ExcludedByFilter`] before it is committed,
+    /// so it leaves no state change and is not part of the block. Only a block builder sets one,
+    /// for local policy that consensus does not replicate; block validation never does.
+    pub fn set_inclusion_filter(&mut self, filter: Option<InclusionFilter>) {
+        self.inclusion_filter = filter;
     }
 }
 
@@ -239,6 +261,13 @@ impl<'a> BlockExecutor for ZoneBlockExecutor<'a> {
         let inner = result?;
         validate_pending_state(&inner.result().pending_state)
             .map_err(BlockExecutionError::other)?;
+        if self
+            .inclusion_filter
+            .as_ref()
+            .is_some_and(|filter| !filter(inner.result()))
+        {
+            return Err(BlockExecutionError::other(ExcludedByFilter));
+        }
 
         Ok(ZoneTxResult { inner, next_phase })
     }
@@ -366,8 +395,8 @@ impl<'a> BlockExecutor for ZoneBlockExecutor<'a> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ADVANCE_TEMPO_SELECTOR, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS, ZoneBlockExecutor,
-        ZoneBlockPhase, ZoneTransactionKind,
+        ADVANCE_TEMPO_SELECTOR, ExcludedByFilter, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS,
+        ZoneBlockExecutor, ZoneBlockPhase, ZoneTransactionKind,
     };
 
     use alloy_consensus::{Header, Sealable as _, Signed, TxLegacy};
@@ -1132,6 +1161,81 @@ mod tests {
         };
         let block = error.downcast_ref::<HandlerError>();
         assert!(block.is_some_and(is_registry_write), "{block:?}");
+    }
+
+    #[test]
+    fn inclusion_filter_leaves_out_rejected_transactions_before_commit() {
+        let mut db = InMemoryDB::default();
+        db.insert_account_storage(&TEMPO_STATE_ADDRESS, &TEMPO_BLOCK_NUMBER_SLOT, &U256::ZERO);
+        let mut zone_genesis = DEV.genesis().clone();
+        zone_genesis.config.chain_id = zone_chain_id(DEV.chain_id(), 1).unwrap();
+        let chain_spec = std::sync::Arc::new(ZoneChainSpec::from_genesis(zone_genesis).unwrap());
+        let config = ZoneEvmConfig::new(chain_spec.clone(), MockL1Reader::default(), Address::ZERO);
+        let mut env = TempoEvmEnv {
+            spec: TempoHardfork::T7,
+            ..Default::default()
+        };
+        // Zero-sender operator simulations run without fee charging.
+        env.version.features.remove(EvmFeatures::BALANCE_CHECK);
+        env.version.features.remove(EvmFeatures::BALANCE_TOP_UP);
+        env.version.features.remove(EvmFeatures::FEE_CHARGE);
+        let evm = config.evm_with_env(db, env);
+        let ctx = TempoBlockExecutionCtx {
+            inner: EthBlockExecutionCtx {
+                parent_hash: B256::ZERO,
+                parent_beacon_block_root: None,
+                ommers: &[],
+                withdrawals: None,
+                extra_data: Bytes::new(),
+                tx_count_hint: Some(1),
+                slot_number: None,
+            },
+            general_gas_limit: 0,
+            shared_gas_limit: 0,
+            consensus_context: None,
+        };
+        let mut executor = ZoneBlockExecutor::new(evm, ctx, &chain_spec);
+        executor.phase = ZoneBlockPhase::Executing;
+        let tx = |nonce| {
+            let envelope = TempoTxEnvelope::AA(
+                TempoTransaction {
+                    calls: vec![Call {
+                        to: TIP403_REGISTRY_ADDRESS.into(),
+                        value: U256::ZERO,
+                        input: ITIP403Registry::policyIdCounterCall {}.abi_encode().into(),
+                    }],
+                    chain_id: 1,
+                    fee_token: Some(DEFAULT_FEE_TOKEN),
+                    gas_limit: 1_000_000,
+                    nonce,
+                    ..Default::default()
+                }
+                .into_signed(TempoSignature::from(Signature::test_signature())),
+            );
+            Recovered::new_unchecked(envelope, Address::ZERO)
+        };
+
+        executor.set_inclusion_filter(Some(Box::new(|result| !result.result.status)));
+        let error = executor
+            .execute_transaction_without_commit(tx(0))
+            .unwrap_err();
+        assert!(
+            error
+                .as_internal()
+                .and_then(InternalBlockExecutionError::as_other)
+                .is_some_and(|error| error.is::<ExcludedByFilter>()),
+            "{error}"
+        );
+
+        // A transaction the filter accepts, or one run without a filter, executes as usual.
+        executor.set_inclusion_filter(Some(Box::new(|result| result.result.status)));
+        // The rejected transaction left no state change, so its nonce is still free.
+        let accepted = executor.execute_transaction_without_commit(tx(0)).unwrap();
+        executor.commit_transaction(accepted).unwrap();
+        executor.set_inclusion_filter(None);
+        let unfiltered = executor.execute_transaction_without_commit(tx(1)).unwrap();
+        executor.commit_transaction(unfiltered).unwrap();
+        assert_eq!(executor.receipts().len(), 2);
     }
 
     #[test]

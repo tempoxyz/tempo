@@ -1,0 +1,298 @@
+//! Leader-side allowlist for Zone TIP-20 transfers.
+//!
+//! The allowlist is sequencer-local policy that consensus does not replicate, so the leader
+//! enforces it while building blocks; followers and the prover accept any block. After executing
+//! a pool transaction, the builder leaves it out of the block if any of its TIP-20 `Transfer`
+//! events moves funds between accounts that are not both allowed, or if it requests a withdrawal
+//! whose Zone fallback recipient is another account and the two are not both allowed. Checking
+//! executed events rather than calldata covers AA batches and transfers made by predeploys.
+
+use alloy_primitives::{Address, B256};
+use alloy_sol_types::SolEvent;
+use evm2::{TxResultWithState, registry::HandlerError};
+use reth_transaction_pool::error::InvalidPoolTransactionError;
+use std::fmt;
+use tempo_contracts::precompiles::ITIP20;
+use tempo_evm::TempoEvmTypes;
+use tempo_primitives::TempoAddressExt as _;
+use tempo_transaction_pool::transaction::TempoPoolTransactionError;
+use zone_precompiles::ZoneOutbox;
+
+use crate::abi::{IZoneOutbox, ZONE_OUTBOX_ADDRESS};
+
+/// Zone accounts that may send and receive TIP-20 transfers in blocks this node builds.
+pub trait TransferAllowlist: fmt::Debug + Send + Sync + 'static {
+    /// Whether every one of `addresses` may send or receive Zone transfers, read from a single
+    /// version of the list so a concurrent write cannot approve each party under a different
+    /// one. An allowlist that has never been written allows every address.
+    fn allows_all(&self, addresses: &[Address]) -> bool;
+
+    /// Whether the list has been written and so restricts transfers. Until then it allows every
+    /// address.
+    fn is_written(&self) -> bool;
+
+    /// Whether a TIP-20 transfer from `from` to `to` is allowed.
+    ///
+    /// Transfers to or from the zero address or the outbox mint, burn, or withdraw, so they are
+    /// exempt: an account removed from the list can still withdraw.
+    fn allows_transfer(&self, from: Address, to: Address) -> bool {
+        let exempt = |address: Address| address.is_zero() || address == ZONE_OUTBOX_ADDRESS;
+        exempt(from) || exempt(to) || self.allows_all(&[from, to])
+    }
+
+    /// Whether `sender` may request a withdrawal whose L1 bounce-back credits
+    /// `fallback_recipient` on the Zone.
+    ///
+    /// Naming oneself is always allowed, so an unlisted account can still withdraw.
+    fn allows_withdrawal_fallback(&self, sender: Address, fallback_recipient: Address) -> bool {
+        fallback_recipient == sender || self.allows_all(&[sender, fallback_recipient])
+    }
+}
+
+/// Pool error for a transaction that moves Zone funds to or from an account the allowlist does
+/// not allow. It does not say which account failed the check.
+pub fn unlisted_transfer_error() -> InvalidPoolTransactionError {
+    InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(HandlerError::External(
+        "transfer sender or recipient is not allowlisted".into(),
+    )))
+}
+
+/// Whether every TIP-20 transfer and withdrawal fallback recipient in the executed transaction
+/// is allowed in a block whose fee recipient is `beneficiary`.
+///
+/// Transfers to `beneficiary` settle fees, so they are also exempt and an account removed from
+/// the list can still pay for its withdrawal. This exempts any transfer to `beneficiary`, not only
+/// the fee settlement; submission still requires both parties to be listed.
+pub(crate) fn allows_executed(
+    allowlist: &dyn TransferAllowlist,
+    beneficiary: Address,
+    result: &TxResultWithState<TempoEvmTypes>,
+) -> bool {
+    result.result.logs.iter().all(|log| {
+        // An event that matches but fails to decode is treated as a violation.
+        if log.address.is_tip20() && log.topics().first() == Some(&ITIP20::Transfer::SIGNATURE_HASH)
+        {
+            let Ok(ITIP20::Transfer { from, to, .. }) =
+                ITIP20::Transfer::decode_log_data(&log.data)
+            else {
+                return false;
+            };
+            return to == beneficiary || allowlist.allows_transfer(from, to);
+        }
+        if log.address != ZONE_OUTBOX_ADDRESS
+            || log.topics().first() != Some(&IZoneOutbox::WithdrawalRequested::SIGNATURE_HASH)
+        {
+            return true;
+        }
+        let Ok(withdrawal) = IZoneOutbox::WithdrawalRequested::decode_log_data(&log.data) else {
+            return false;
+        };
+        // Deposit bounce-backs carry no sender or fallback recipient.
+        if withdrawal.sender.is_zero() {
+            return true;
+        }
+        // `requestWithdrawal` writes the recipient in the same transaction. A missing slot reads
+        // as the zero address, which is never allowed, so the transaction is left out.
+        let slot = ZoneOutbox::new().fallback_recipient_slot(withdrawal.fallbackNonce);
+        let fallback_recipient = result
+            .pending_state
+            .account_changes_for(&ZONE_OUTBOX_ADDRESS)
+            .and_then(|outbox| outbox.storage.slots.get(&slot))
+            .map_or(Address::ZERO, |value| {
+                Address::from_word(B256::from(value.value.current))
+            });
+        allowlist.allows_withdrawal_fallback(withdrawal.sender, fallback_recipient)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_primitives::{Bytes, IntoLogData, Log, LogData, U256, address};
+    use evm2::{PendingState, TxResult};
+    use std::{
+        collections::BTreeSet,
+        sync::atomic::{AtomicBool, Ordering},
+    };
+
+    const ALICE: Address = address!("0x00000000000000000000000000000000000a11ce");
+    const BOB: Address = address!("0x0000000000000000000000000000000000000b0b");
+    const CAROL: Address = address!("0x00000000000000000000000000000000000ca201");
+    const SEQUENCER: Address = address!("0x0000000000000000000000000000000000005e01");
+
+    /// Allows only the listed addresses.
+    #[derive(Debug)]
+    struct Listed(BTreeSet<Address>);
+
+    impl TransferAllowlist for Listed {
+        fn allows_all(&self, addresses: &[Address]) -> bool {
+            addresses.iter().all(|address| self.0.contains(address))
+        }
+
+        fn is_written(&self) -> bool {
+            true
+        }
+    }
+
+    /// Holds only ALICE, then only BOB after every lookup, as if each lookup raced a write that
+    /// swapped them.
+    #[derive(Debug, Default)]
+    struct Swapping(AtomicBool);
+
+    impl TransferAllowlist for Swapping {
+        fn allows_all(&self, addresses: &[Address]) -> bool {
+            let listed = if self.0.fetch_xor(true, Ordering::SeqCst) {
+                BOB
+            } else {
+                ALICE
+            };
+            addresses.iter().all(|address| *address == listed)
+        }
+
+        fn is_written(&self) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn both_parties_are_checked_against_one_list_version() {
+        assert!(!Swapping::default().allows_transfer(ALICE, BOB));
+        assert!(!Swapping::default().allows_withdrawal_fallback(ALICE, BOB));
+    }
+
+    fn alice_and_bob() -> Listed {
+        Listed(BTreeSet::from([ALICE, BOB]))
+    }
+
+    fn transfer(from: Address, to: Address) -> Log {
+        Log {
+            address: Address::new_tip20(0),
+            data: ITIP20::Transfer {
+                from,
+                to,
+                amount: U256::from(1),
+            }
+            .into_log_data(),
+        }
+    }
+
+    fn withdrawal(sender: Address, fallback_nonce: u64) -> Log {
+        Log {
+            address: ZONE_OUTBOX_ADDRESS,
+            data: IZoneOutbox::WithdrawalRequested {
+                withdrawalIndex: 0,
+                sender,
+                token: Address::new_tip20(0),
+                to: sender,
+                amount: 1,
+                fee: 0,
+                memo: B256::ZERO,
+                gasLimit: 0,
+                fallbackNonce: fallback_nonce,
+                data: Bytes::new(),
+                revealTo: Bytes::new(),
+            }
+            .into_log_data(),
+        }
+    }
+
+    /// Outbox state after `requestWithdrawal` stored `recipient` under `fallback_nonce`.
+    fn fallback_recipient(fallback_nonce: u64, recipient: Address) -> PendingState {
+        let mut state = PendingState::default();
+        state.insert_account(ZONE_OUTBOX_ADDRESS, None, Some(Default::default()));
+        state.insert_storage(
+            ZONE_OUTBOX_ADDRESS,
+            ZoneOutbox::new().fallback_recipient_slot(fallback_nonce),
+            U256::ZERO,
+            U256::from_be_slice(recipient.as_slice()),
+        );
+        state
+    }
+
+    fn allows(logs: Vec<Log>, pending_state: PendingState) -> bool {
+        let result = TxResultWithState {
+            result: TxResult::<TempoEvmTypes> {
+                logs,
+                ..Default::default()
+            },
+            pending_state,
+            ..Default::default()
+        };
+        allows_executed(&alice_and_bob(), SEQUENCER, &result)
+    }
+
+    #[test]
+    fn transfers_need_both_parties_listed() {
+        assert!(allows(vec![transfer(ALICE, BOB)], PendingState::default()));
+        assert!(!allows(
+            vec![transfer(ALICE, CAROL)],
+            PendingState::default()
+        ));
+        assert!(!allows(
+            vec![transfer(CAROL, ALICE)],
+            PendingState::default()
+        ));
+        // One unlisted transfer leaves out the whole transaction, e.g. an AA batch.
+        assert!(!allows(
+            vec![transfer(ALICE, BOB), transfer(BOB, CAROL)],
+            PendingState::default()
+        ));
+    }
+
+    #[test]
+    fn fees_burns_and_withdrawals_are_exempt() {
+        for log in [
+            transfer(CAROL, SEQUENCER),
+            transfer(CAROL, ZONE_OUTBOX_ADDRESS),
+            transfer(ZONE_OUTBOX_ADDRESS, Address::ZERO),
+            transfer(Address::ZERO, CAROL),
+        ] {
+            assert!(allows(vec![log], PendingState::default()));
+        }
+    }
+
+    #[test]
+    fn transfer_events_from_other_contracts_are_ignored() {
+        let mut log = transfer(ALICE, CAROL);
+        log.address = CAROL;
+        assert!(allows(vec![log], PendingState::default()));
+    }
+
+    #[test]
+    fn malformed_transfer_events_are_left_out() {
+        let mut log = transfer(ALICE, BOB);
+        log.data = LogData::new_unchecked(vec![ITIP20::Transfer::SIGNATURE_HASH], Bytes::new());
+        assert!(!allows(vec![log], PendingState::default()));
+    }
+
+    #[test]
+    fn withdrawal_fallback_recipients_need_both_parties_listed_unless_self() {
+        assert!(allows(
+            vec![withdrawal(ALICE, 1)],
+            fallback_recipient(1, BOB)
+        ));
+        assert!(!allows(
+            vec![withdrawal(ALICE, 1)],
+            fallback_recipient(1, CAROL)
+        ));
+        assert!(!allows(
+            vec![withdrawal(CAROL, 1)],
+            fallback_recipient(1, ALICE)
+        ));
+        // An unlisted account can still withdraw with itself as the fallback recipient.
+        assert!(allows(
+            vec![withdrawal(CAROL, 1)],
+            fallback_recipient(1, CAROL)
+        ));
+        // The slot is read for this withdrawal's nonce, not another one.
+        assert!(!allows(
+            vec![withdrawal(ALICE, 2)],
+            fallback_recipient(1, BOB)
+        ));
+        // Deposit bounce-backs have no sender.
+        assert!(allows(
+            vec![withdrawal(Address::ZERO, 0)],
+            PendingState::default()
+        ));
+    }
+}

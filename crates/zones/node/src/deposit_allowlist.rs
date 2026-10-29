@@ -1,9 +1,13 @@
-//! Sequencer-local allowlist of L1 depositors.
+//! Sequencer-local allowlist of L1 depositors and Zone transfer parties.
 //!
 //! When a Zone portal runs with access mode disabled, anyone can deposit on L1. The leader then
 //! bounces deposits whose L1 `sender` is not on this list by supplying zeroed decryption data,
 //! which the inbox treats as a failed decryption and refunds through the ordinary deposit
-//! bounce-back path. The check runs only where blocks are built, so it needs no hardfork.
+//! bounce-back path. Users keep the same address on L1 and the Zone, so the leader also leaves out
+//! Zone TIP-20 transfers unless both parties are listed (see [`TransferAllowlist`]). The checks
+//! run only where blocks are built, so they need no hardfork. RPC-only nodes keep an
+//! [`AllowlistMirror`] of the sequencers' list so they can reject such transfers on submission
+//! instead of forwarding them.
 //!
 //! A sequencer with no persisted list is uninitialized and credits every deposit until its first
 //! write, so enabling the allowlist does not bounce deposits before the admin fills the list.
@@ -19,17 +23,31 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use alloy_primitives::{Address, B256, Bytes, Signature, keccak256};
-use alloy_sol_types::{Eip712Domain, SolStruct as _, eip712_domain, sol};
+use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, keccak256};
+use alloy_sol_types::{
+    Eip712Domain, SolCall as _, SolInterface as _, SolStruct as _, eip712_domain, sol,
+};
 use eyre::{WrapErr as _, ensure};
 use jsonrpsee::{core::RpcResult, proc_macros::rpc, types::ErrorObjectOwned};
 use parking_lot::{Mutex, RwLock};
+use reth_transaction_pool::{
+    PoolTransaction as _, TransactionPool, error::InvalidPoolTransactionError,
+};
 use serde::{Deserialize, Serialize};
+use tempo_contracts::{
+    MULTICALL3_ADDRESS,
+    zones::{IZoneOutbox, ZONE_OUTBOX_ADDRESS},
+};
+use tempo_precompiles::tip20::ITIP20;
+use tempo_primitives::TempoAddressExt as _;
+use tempo_transaction_pool::transaction::TempoPooledTransaction;
+use tokio::sync::Notify;
 use tracing::{info, warn};
 use zone_l1::{FAILED_DECRYPTION, abi::DecryptionData};
+use zone_payload::{TransferAllowlist, unlisted_transfer_error};
 
 mod relay;
-pub(crate) use relay::{AllowlistRelay, apply_relayed_requests};
+pub(crate) use relay::{AllowlistRelay, apply_relayed_requests, mirror_sequencers};
 
 /// File name of the persisted allowlist inside the node data directory.
 pub(crate) const DEPOSIT_ALLOWLIST_FILE_NAME: &str = "deposit-allowlist.json";
@@ -273,7 +291,8 @@ pub(crate) struct SequencerAllowlistStatus {
     pub(crate) status: DepositAllowlistStatus,
 }
 
-/// Addresses whose L1 deposits the leader credits, persisted as JSON.
+/// Addresses whose L1 deposits the leader credits and that may send and receive Zone transfers,
+/// persisted as JSON.
 ///
 /// Cloning shares the same list.
 #[derive(Debug, Clone)]
@@ -470,6 +489,180 @@ impl DepositAllowlist {
     }
 }
 
+impl TransferAllowlist for DepositAllowlist {
+    fn allows_all(&self, addresses: &[Address]) -> bool {
+        self.inner.state.read().as_ref().is_none_or(|state| {
+            addresses
+                .iter()
+                .all(|address| state.addresses.contains(address))
+        })
+    }
+
+    fn is_written(&self) -> bool {
+        self.inner.state.read().is_some()
+    }
+}
+
+/// Copy of the sequencers' allowlist that an RPC-only node keeps to reject transfers on
+/// submission, refreshed by the relay's `mirror_sequencers` task.
+///
+/// It admits every transfer until the first fetch finds a written list, and again once the
+/// sequencers no longer hold one; the sequencers still enforce their own lists. Cloning shares the
+/// same copy.
+#[derive(Debug, Clone, Default)]
+pub struct AllowlistMirror {
+    inner: Arc<MirrorInner>,
+}
+
+#[derive(Debug, Default)]
+struct MirrorInner {
+    /// Newest written list fetched from the sequencers, `None` while none is known.
+    snapshot: RwLock<Option<DepositAllowlistSnapshot>>,
+    /// Wakes the refresh task early, after this node relays a write.
+    refresh: Notify,
+}
+
+impl AllowlistMirror {
+    /// The version of the copy, `None` while it holds no written list.
+    pub(crate) fn status(&self) -> Option<DepositAllowlistStatus> {
+        self.inner
+            .snapshot
+            .read()
+            .as_ref()
+            .map(|snapshot| snapshot.status)
+    }
+
+    /// Install `snapshot`, a written list, returning whether its version differs from the
+    /// current copy.
+    pub(crate) fn replace(&self, mut snapshot: DepositAllowlistSnapshot) -> bool {
+        // Lookups binary-search the addresses; sequencers send them sorted, but they arrive over
+        // P2P.
+        snapshot.addresses.sort_unstable();
+        snapshot.addresses.dedup();
+        let mut current = self.inner.snapshot.write();
+        let changed = current.as_ref().map(|current| current.status) != Some(snapshot.status);
+        *current = Some(snapshot);
+        changed
+    }
+
+    /// Drop the copy so every transfer is admitted again, returning whether it held one.
+    pub(crate) fn clear(&self) -> bool {
+        self.inner.snapshot.write().take().is_some()
+    }
+
+    /// Ask the refresh task to check the sequencers now instead of at its next interval.
+    pub(crate) fn request_refresh(&self) {
+        self.inner.refresh.notify_one();
+    }
+
+    /// Resolves once [`Self::request_refresh`] was called.
+    pub(crate) async fn refresh_requested(&self) {
+        self.inner.refresh.notified().await;
+    }
+}
+
+impl TransferAllowlist for AllowlistMirror {
+    fn allows_all(&self, addresses: &[Address]) -> bool {
+        self.inner.snapshot.read().as_ref().is_none_or(|snapshot| {
+            addresses
+                .iter()
+                .all(|address| snapshot.addresses.binary_search(address).is_ok())
+        })
+    }
+
+    fn is_written(&self) -> bool {
+        self.inner.snapshot.read().is_some()
+    }
+}
+
+/// Reject a transaction whose calls transfer TIP-20 funds, or request a withdrawal with a Zone
+/// fallback recipient, between accounts `allowlist` does not both allow, that calls
+/// `transferFrom` from an unlisted account, or that calls Multicall3 once the list is written.
+///
+/// This decodes the transaction's own calls so a node rejects them on submission instead of
+/// holding and forwarding transactions the leader would drop. The leader's builder still checks
+/// executed events, which also covers list changes after admission. Unlike the builder, this does
+/// not exempt transfers to the block's fee recipient, which an RPC-only node does not know; being
+/// stricter here is safe.
+///
+/// The `transferFrom` caller must be listed because the calldata names both parties without
+/// tying them to the caller or an allowance: otherwise any funded account could learn whether an
+/// address is listed from whether `transferFrom(address, address, 0)` is admitted. The builder
+/// checks only the accounts funds move between, so this check is not repeated there.
+///
+/// Multicall3 is the only Zone contract that relays calls (contract creation is disabled), and
+/// its calldata does not show which calls it makes. TIP-20 transfers it relays always revert, but
+/// it can still withdraw its own balance through an outbox allowance granted before T15, naming
+/// any fallback recipient. Admitting it would let such a withdrawal that the builder leaves out
+/// be forwarded and executed again every few seconds without paying fees. Rejecting it loses only
+/// calls that do not move funds, which an AA batch can make directly.
+pub(crate) fn validate_transfer_calls(
+    allowlist: &dyn TransferAllowlist,
+    tx: &TempoPooledTransaction,
+) -> Result<(), InvalidPoolTransactionError> {
+    let sender = *tx.sender_ref();
+    let allowed = tx.inner().calls().all(|(kind, input)| {
+        let TxKind::Call(target) = kind else {
+            return true;
+        };
+        if target == MULTICALL3_ADDRESS {
+            return !allowlist.is_written();
+        }
+        if target.is_tip20() {
+            return match ITIP20::ITIP20Calls::abi_decode(input) {
+                Ok(ITIP20::ITIP20Calls::transfer(ITIP20::transferCall { to, .. }))
+                | Ok(ITIP20::ITIP20Calls::transferWithMemo(ITIP20::transferWithMemoCall {
+                    to,
+                    ..
+                })) => allowlist.allows_transfer(sender, to),
+                Ok(ITIP20::ITIP20Calls::transferFrom(ITIP20::transferFromCall {
+                    from,
+                    to,
+                    ..
+                }))
+                | Ok(ITIP20::ITIP20Calls::transferFromWithMemo(
+                    ITIP20::transferFromWithMemoCall { from, to, .. },
+                )) => allowlist.allows_all(&[sender]) && allowlist.allows_transfer(from, to),
+                _ => true,
+            };
+        }
+        if target != ZONE_OUTBOX_ADDRESS {
+            return true;
+        }
+        match IZoneOutbox::requestWithdrawalCall::abi_decode(input) {
+            Ok(call) => allowlist.allows_withdrawal_fallback(sender, call.zoneFallbackRecipient),
+            Err(_) => true,
+        }
+    });
+    if allowed {
+        Ok(())
+    } else {
+        Err(unlisted_transfer_error())
+    }
+}
+
+/// Remove pooled transactions that `allowlist` no longer admits, so this node stops forwarding
+/// them after the list changes. Returns how many were removed.
+///
+/// This scans pending and queued transactions whether or not they propagate, since the forwarder
+/// resends local transactions either way.
+pub(crate) fn evict_unlisted_transfers<P>(pool: &P, allowlist: &dyn TransferAllowlist) -> usize
+where
+    P: TransactionPool<Transaction = TempoPooledTransaction>,
+{
+    let unlisted = pool
+        .all_transactions()
+        .iter()
+        .filter(|tx| validate_transfer_calls(allowlist, &tx.transaction).is_err())
+        .map(|tx| *tx.hash())
+        .collect::<Vec<_>>();
+    let count = unlisted.len();
+    if count > 0 {
+        pool.remove_transactions(unlisted);
+    }
+    count
+}
+
 fn apply_set(list: &mut BTreeSet<Address>, addresses: &[Address], allowed: bool) {
     for address in addresses {
         if allowed {
@@ -609,13 +802,25 @@ fn persist(path: &Path, state: &State) -> eyre::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::address;
+    use alloy_consensus::{Signed, TxEip1559};
+    use alloy_primitives::{U256, address};
     use alloy_signer::SignerSync as _;
     use alloy_signer_local::PrivateKeySigner;
+    use reth_primitives_traits::Recovered;
+    use reth_transaction_pool::{
+        Pool, PoolConfig, TransactionOrigin, blobstore::InMemoryBlobStore,
+        noop::MockTransactionValidator,
+    };
+    use tempo_primitives::{
+        TempoTxEnvelope,
+        transaction::{Call, TempoTransaction},
+    };
+    use tempo_transaction_pool::ordering::TempoTipOrdering;
     use zone_l1::abi::ChaumPedersenProof;
 
     const ALICE: Address = address!("0x00000000000000000000000000000000000a11ce");
     const BOB: Address = address!("0x0000000000000000000000000000000000000b0b");
+    const CAROL: Address = address!("0x00000000000000000000000000000000000ca201");
     const ZONE_CHAIN_ID: u64 = 421_700_003;
 
     fn admin_signer() -> PrivateKeySigner {
@@ -946,6 +1151,22 @@ mod tests {
     }
 
     #[test]
+    fn transfer_parties_are_restricted_once_the_list_is_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let allowlist = load(dir.path().join(DEPOSIT_ALLOWLIST_FILE_NAME));
+        assert!(allowlist.allows_all(&[BOB]));
+        assert!(!allowlist.is_written());
+
+        allowlist.replace(vec![ALICE]).unwrap();
+        assert!(allowlist.is_written());
+        assert!(allowlist.allows_all(&[ALICE]));
+        assert!(!allowlist.allows_all(&[BOB]));
+
+        allowlist.replace(Vec::new()).unwrap();
+        assert!(!allowlist.allows_all(&[ALICE]));
+    }
+
+    #[test]
     fn rejects_writes_that_exceed_the_list_limit() {
         let dir = tempfile::tempdir().unwrap();
         let allowlist = load(dir.path().join(DEPOSIT_ALLOWLIST_FILE_NAME));
@@ -998,5 +1219,248 @@ mod tests {
 
         let err = allowlist.reject_unlisted(&[ALICE], &mut []).unwrap_err();
         assert_eq!(err.to_string(), "1 deposit senders but 0 decryptions");
+    }
+
+    #[test]
+    fn mirror_admits_everyone_until_it_holds_a_written_list() {
+        let mirror = AllowlistMirror::default();
+        assert_eq!(mirror.status(), None);
+        assert!(mirror.allows_all(&[CAROL]));
+        assert!(!mirror.is_written());
+        assert!(!mirror.clear());
+
+        let dir = tempfile::tempdir().unwrap();
+        let allowlist = load(dir.path().join(DEPOSIT_ALLOWLIST_FILE_NAME));
+        allowlist.replace(vec![ALICE, BOB]).unwrap();
+        let mut snapshot = allowlist.snapshot();
+        // Lookups do not rely on the sequencer sending addresses in order.
+        snapshot.addresses.reverse();
+        assert!(mirror.replace(snapshot.clone()));
+        assert_eq!(mirror.status(), Some(allowlist.status()));
+        assert!(mirror.is_written());
+        assert!(mirror.allows_all(&[ALICE]));
+        assert!(mirror.allows_all(&[BOB]));
+        assert!(!mirror.allows_all(&[CAROL]));
+        assert!(!mirror.replace(snapshot));
+
+        assert!(mirror.clear());
+        assert_eq!(mirror.status(), None);
+        assert!(!mirror.is_written());
+        assert!(mirror.allows_all(&[CAROL]));
+    }
+
+    fn call(to: Address, input: impl Into<Bytes>) -> Call {
+        Call {
+            to: TxKind::Call(to),
+            value: U256::ZERO,
+            input: input.into(),
+        }
+    }
+
+    fn token_transfer(to: Address) -> Call {
+        call(
+            Address::new_tip20(0),
+            ITIP20::transferCall {
+                to,
+                amount: U256::ONE,
+            }
+            .abi_encode(),
+        )
+    }
+
+    fn token_transfer_from(from: Address, to: Address) -> Call {
+        call(
+            Address::new_tip20(0),
+            ITIP20::transferFromWithMemoCall {
+                from,
+                to,
+                amount: U256::ONE,
+                memo: Default::default(),
+            }
+            .abi_encode(),
+        )
+    }
+
+    fn request_withdrawal(fallback_recipient: Address) -> Call {
+        call(
+            ZONE_OUTBOX_ADDRESS,
+            IZoneOutbox::requestWithdrawalCall {
+                token: Address::new_tip20(0),
+                to: fallback_recipient,
+                amount: 1,
+                memo: Default::default(),
+                gasLimit: 0,
+                zoneFallbackRecipient: fallback_recipient,
+                data: Bytes::new(),
+                revealTo: Bytes::new(),
+            }
+            .abi_encode(),
+        )
+    }
+
+    fn pooled_transaction(envelope: TempoTxEnvelope, sender: Address) -> TempoPooledTransaction {
+        TempoPooledTransaction::new(Recovered::new_unchecked(envelope, sender))
+    }
+
+    /// Checks an AA transaction from `sender` against a list holding ALICE and BOB.
+    fn admits_calls(sender: Address, calls: Vec<Call>) -> bool {
+        let dir = tempfile::tempdir().unwrap();
+        let allowlist = load(dir.path().join(DEPOSIT_ALLOWLIST_FILE_NAME));
+        allowlist.replace(vec![ALICE, BOB]).unwrap();
+        let transaction = TempoTransaction {
+            calls,
+            ..Default::default()
+        };
+        let transaction = pooled_transaction(
+            transaction
+                .into_signed(Signature::test_signature().into())
+                .into(),
+            sender,
+        );
+        match validate_transfer_calls(&allowlist, &transaction) {
+            Ok(()) => true,
+            Err(err) => {
+                assert_eq!(err.to_string(), unlisted_transfer_error().to_string());
+                false
+            }
+        }
+    }
+
+    #[test]
+    fn submission_admits_transfers_only_between_listed_accounts() {
+        assert!(admits_calls(ALICE, vec![token_transfer(BOB)]));
+        assert!(!admits_calls(ALICE, vec![token_transfer(CAROL)]));
+        assert!(!admits_calls(CAROL, vec![token_transfer(ALICE)]));
+        // Any unlisted call rejects the whole batch.
+        assert!(!admits_calls(
+            ALICE,
+            vec![token_transfer(BOB), token_transfer(CAROL)]
+        ));
+        // The spender, owner, and recipient must all be listed.
+        assert!(admits_calls(BOB, vec![token_transfer_from(ALICE, BOB)]));
+        assert!(!admits_calls(ALICE, vec![token_transfer_from(CAROL, BOB)]));
+        assert!(!admits_calls(
+            ALICE,
+            vec![token_transfer_from(ALICE, CAROL)]
+        ));
+        // An unlisted spender is rejected whatever parties it names, so it cannot use the result
+        // to learn whether they are listed.
+        assert!(!admits_calls(CAROL, vec![token_transfer_from(ALICE, BOB)]));
+        assert!(!admits_calls(
+            CAROL,
+            vec![token_transfer_from(ALICE, ALICE)]
+        ));
+        assert!(!admits_calls(
+            CAROL,
+            vec![token_transfer_from(CAROL, CAROL)]
+        ));
+        // Transfer calldata sent to a non-token contract moves no TIP-20 funds.
+        assert!(admits_calls(
+            ALICE,
+            vec![call(
+                CAROL,
+                ITIP20::transferCall {
+                    to: CAROL,
+                    amount: U256::ONE
+                }
+                .abi_encode()
+            )]
+        ));
+    }
+
+    #[test]
+    fn submission_admits_unlisted_withdrawals() {
+        assert!(admits_calls(
+            CAROL,
+            vec![token_transfer(ZONE_OUTBOX_ADDRESS)]
+        ));
+        assert!(admits_calls(CAROL, vec![request_withdrawal(CAROL)]));
+        assert!(!admits_calls(CAROL, vec![request_withdrawal(ALICE)]));
+        assert!(!admits_calls(ALICE, vec![request_withdrawal(CAROL)]));
+        assert!(admits_calls(ALICE, vec![request_withdrawal(BOB)]));
+    }
+
+    #[test]
+    fn submission_rejects_multicall3_once_the_list_is_written() {
+        let multicall = call(MULTICALL3_ADDRESS, Bytes::new());
+        // Multicall3 calls as itself, so it is rejected even for a listed sender.
+        assert!(!admits_calls(ALICE, vec![multicall.clone()]));
+        assert!(!admits_calls(
+            ALICE,
+            vec![token_transfer(BOB), multicall.clone()]
+        ));
+
+        let dir = tempfile::tempdir().unwrap();
+        let allowlist = load(dir.path().join(DEPOSIT_ALLOWLIST_FILE_NAME));
+        let transaction = TempoTransaction {
+            calls: vec![multicall],
+            ..Default::default()
+        };
+        let transaction = pooled_transaction(
+            transaction
+                .into_signed(Signature::test_signature().into())
+                .into(),
+            ALICE,
+        );
+        assert!(validate_transfer_calls(&allowlist, &transaction).is_ok());
+    }
+
+    #[tokio::test]
+    async fn eviction_covers_local_transactions_that_do_not_propagate() {
+        let pool = Pool::new(
+            MockTransactionValidator::no_propagate_local(),
+            TempoTipOrdering::default(),
+            InMemoryBlobStore::default(),
+            PoolConfig::default(),
+        );
+        let transaction = TempoTransaction {
+            gas_limit: 100_000,
+            max_fee_per_gas: 2_000_000_000,
+            calls: vec![token_transfer(BOB)],
+            ..Default::default()
+        };
+        pool.add_transaction(
+            TransactionOrigin::Local,
+            pooled_transaction(
+                transaction
+                    .into_signed(Signature::test_signature().into())
+                    .into(),
+                ALICE,
+            ),
+        )
+        .await
+        .unwrap();
+        // The forwarder resends it although it is not offered for propagation.
+        assert!(pool.pooled_transactions().is_empty());
+
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(evict_unlisted_transfers(&pool, &alice_only(dir.path())), 1);
+        assert!(
+            pool.get_transactions_by_origin(TransactionOrigin::Local)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn submission_checks_non_aa_transfers() {
+        let dir = tempfile::tempdir().unwrap();
+        let allowlist = alice_only(dir.path());
+        let envelope = TempoTxEnvelope::Eip1559(Signed::new_unhashed(
+            TxEip1559 {
+                to: TxKind::Call(Address::new_tip20(0)),
+                input: ITIP20::transferCall {
+                    to: BOB,
+                    amount: U256::ONE,
+                }
+                .abi_encode()
+                .into(),
+                ..Default::default()
+            },
+            Signature::test_signature(),
+        ));
+        let transaction = pooled_transaction(envelope, ALICE);
+        assert!(validate_transfer_calls(&allowlist, &transaction).is_err());
+        allowlist.set(&[BOB], true).unwrap();
+        assert!(validate_transfer_calls(&allowlist, &transaction).is_ok());
     }
 }
