@@ -1804,13 +1804,6 @@ struct PersistedSignedKeyAuthorization {
 
 #[derive(Clone, Deserialize)]
 #[serde(untagged)]
-enum PersistedAuthorizationSignature {
-    Primitive(PersistedPrimitiveSignature),
-    ConfigurableAccount(ConfigurableAccountSignature),
-}
-
-#[derive(Clone, Deserialize)]
-#[serde(untagged)]
 enum PersistedKeyAuthorization {
     Structured(Box<PersistedSignedKeyAuthorization>),
     Rlp(String),
@@ -1984,7 +1977,10 @@ impl TryFrom<PersistedSignedKeyAuthorization> for SignedKeyAuthorization {
             // Configurable account signatures never used the legacy form.
             None if has_scopes
                 && !has_tip1053_fields
-                && matches!(&signature, PersistedAuthorizationSignature::Primitive(_)) =>
+                && !matches!(
+                    &signature,
+                    PersistedAuthorizationSignature::ConfigurableAccount { .. }
+                ) =>
             {
                 Some(Vec::new())
             }
@@ -2002,14 +1998,7 @@ impl TryFrom<PersistedSignedKeyAuthorization> for SignedKeyAuthorization {
             is_admin,
             account,
         };
-        Ok(authorization.into_signed(match signature {
-            PersistedAuthorizationSignature::Primitive(signature) => {
-                AccountSignature::Primitive(PrimitiveSignature::try_from(signature)?)
-            }
-            PersistedAuthorizationSignature::ConfigurableAccount(signature) => {
-                AccountSignature::ConfigurableAccount(signature)
-            }
-        }))
+        Ok(authorization.into_signed(AccountSignature::try_from(signature)?))
     }
 }
 
@@ -2033,7 +2022,7 @@ impl From<PersistedTokenLimit> for TokenLimit {
 
 #[derive(Clone, Deserialize)]
 #[serde(tag = "type")]
-enum PersistedPrimitiveSignature {
+enum PersistedAuthorizationSignature {
     #[serde(rename = "secp256k1")]
     Secp256k1 { signature: PersistedSecpSignature },
     #[serde(rename = "p256")]
@@ -2051,42 +2040,42 @@ enum PersistedPrimitiveSignature {
         public_key: PersistedPublicKey,
         metadata: PersistedWebAuthnMetadata,
     },
+    #[serde(rename = "configurableAccount")]
+    ConfigurableAccount {
+        signature: ConfigurableAccountSignature,
+    },
     #[serde(other)]
     Unsupported,
 }
 
-impl TryFrom<PersistedPrimitiveSignature> for PrimitiveSignature {
+impl TryFrom<PersistedAuthorizationSignature> for AccountSignature {
     type Error = PersistedKeyError;
 
-    fn try_from(value: PersistedPrimitiveSignature) -> Result<Self, Self::Error> {
-        match value {
-            PersistedPrimitiveSignature::Secp256k1 { signature } => {
+    fn try_from(value: PersistedAuthorizationSignature) -> Result<Self, Self::Error> {
+        Ok(Self::Primitive(match value {
+            PersistedAuthorizationSignature::Secp256k1 { signature } => {
                 let parity = match signature.y_parity.0 {
                     U256::ZERO => false,
                     U256::ONE => true,
                     _ => return Err(PersistedKeyError::InvalidYParity),
                 };
-                Ok(Self::Secp256k1(Signature::new(
-                    signature.r.0,
-                    signature.s.0,
-                    parity,
-                )))
+                PrimitiveSignature::Secp256k1(Signature::new(signature.r.0, signature.s.0, parity))
             }
-            PersistedPrimitiveSignature::P256 {
+            PersistedAuthorizationSignature::P256 {
                 signature,
                 public_key,
                 prehash,
             } => {
                 public_key.validate_prefix()?;
-                Ok(Self::P256(P256SignatureWithPreHash {
+                PrimitiveSignature::P256(P256SignatureWithPreHash {
                     r: signature.r.into_b256(),
                     s: signature.s.into_b256(),
                     pub_key_x: public_key.x.into_b256(),
                     pub_key_y: public_key.y.into_b256(),
                     pre_hash: prehash,
-                }))
+                })
             }
-            PersistedPrimitiveSignature::WebAuthn {
+            PersistedAuthorizationSignature::WebAuthn {
                 signature,
                 public_key,
                 metadata,
@@ -2094,18 +2083,21 @@ impl TryFrom<PersistedPrimitiveSignature> for PrimitiveSignature {
                 public_key.validate_prefix()?;
                 let mut webauthn_data = metadata.authenticator_data.to_vec();
                 webauthn_data.extend_from_slice(&metadata.client_data_json.0);
-                Ok(Self::WebAuthn(WebAuthnSignature {
+                PrimitiveSignature::WebAuthn(WebAuthnSignature {
                     r: signature.r.into_b256(),
                     s: signature.s.into_b256(),
                     pub_key_x: public_key.x.into_b256(),
                     pub_key_y: public_key.y.into_b256(),
                     webauthn_data: webauthn_data.into(),
-                }))
+                })
             }
-            PersistedPrimitiveSignature::Unsupported => {
-                Err(PersistedKeyError::UnsupportedAuthorizationSignature)
+            PersistedAuthorizationSignature::ConfigurableAccount { signature } => {
+                return Ok(Self::ConfigurableAccount(signature));
             }
-        }
+            PersistedAuthorizationSignature::Unsupported => {
+                return Err(PersistedKeyError::UnsupportedAuthorizationSignature);
+            }
+        }))
     }
 }
 
@@ -2452,15 +2444,8 @@ struct WritableSignedKeyAuthorization {
 }
 
 #[derive(Serialize)]
-#[serde(untagged)]
-enum WritableAuthorizationSignature {
-    Primitive(WritablePrimitiveSignature),
-    ConfigurableAccount(ConfigurableAccountSignature),
-}
-
-#[derive(Serialize)]
 #[serde(tag = "type")]
-enum WritablePrimitiveSignature {
+enum WritableAuthorizationSignature {
     #[serde(rename = "secp256k1")]
     Secp256k1 { signature: WritableSecpSignature },
     #[serde(rename = "p256")]
@@ -2476,6 +2461,10 @@ enum WritablePrimitiveSignature {
         #[serde(rename = "publicKey")]
         public_key: WritablePublicKey,
         metadata: WritableWebAuthnMetadata,
+    },
+    #[serde(rename = "configurableAccount")]
+    ConfigurableAccount {
+        signature: ConfigurableAccountSignature,
     },
 }
 
@@ -2522,20 +2511,20 @@ fn writable_signature(
     let signature = match signature {
         AccountSignature::Primitive(signature) => signature,
         AccountSignature::ConfigurableAccount(signature) => {
-            return Ok(WritableAuthorizationSignature::ConfigurableAccount(
-                signature.clone(),
-            ));
+            return Ok(WritableAuthorizationSignature::ConfigurableAccount {
+                signature: signature.clone(),
+            });
         }
     };
-    Ok(WritableAuthorizationSignature::Primitive(match signature {
-        PrimitiveSignature::Secp256k1(signature) => WritablePrimitiveSignature::Secp256k1 {
+    Ok(match signature {
+        PrimitiveSignature::Secp256k1(signature) => WritableAuthorizationSignature::Secp256k1 {
             signature: WritableSecpSignature {
                 r: writable_bigint(signature.r()),
                 s: writable_bigint(signature.s()),
                 y_parity: u8::from(signature.v()),
             },
         },
-        PrimitiveSignature::P256(signature) => WritablePrimitiveSignature::P256 {
+        PrimitiveSignature::P256(signature) => WritableAuthorizationSignature::P256 {
             signature: WritableRs {
                 r: writable_b256(signature.r),
                 s: writable_b256(signature.s),
@@ -2568,7 +2557,7 @@ fn writable_signature(
                     "WebAuthn authorization client data is not UTF-8",
                 )
             })?;
-            WritablePrimitiveSignature::WebAuthn {
+            WritableAuthorizationSignature::WebAuthn {
                 signature: WritableRs {
                     r: writable_b256(signature.r),
                     s: writable_b256(signature.s),
@@ -2584,7 +2573,7 @@ fn writable_signature(
                 },
             }
         }
-    }))
+    })
 }
 
 fn writable_scopes(authorization: &SignedKeyAuthorization) -> Option<Vec<WritableScope>> {

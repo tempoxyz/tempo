@@ -12,7 +12,7 @@ use tempo_alloy::accounts::{TempoAccountsError, TempoAccountsStore};
 use tempo_primitives::{
     SignatureType,
     transaction::{
-        CallScope, ConfigurableAccountConfig, ConfigurableAccountOwner,
+        AccountSignature, CallScope, ConfigurableAccountConfig, ConfigurableAccountOwner,
         ConfigurableAccountSignature, KeyAuthorization, PrimitiveSignature, SignedKeyAuthorization,
     },
 };
@@ -65,11 +65,21 @@ fn configurable_account_authorization_round_trips(scoped: bool) {
     TempoAccountsStore::at(path.clone())
         .upsert_secp256k1_access_key(account, &signer, &authorization)
         .unwrap();
+    let stored: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     let access_keys = TempoAccountsStore::open(&path)
         .unwrap()
         .access_keys()
         .unwrap();
     fs::remove_dir_all(directory).unwrap();
+
+    // Stored like every other authorization signature: an object tagged by `type`.
+    let AccountSignature::ConfigurableAccount(signature) = &authorization.signature else {
+        panic!("expected a configurable account signature")
+    };
+    assert_eq!(
+        stored["tempo-cli.store"]["state"]["accessKeys"][0]["keyAuthorization"]["signature"],
+        serde_json::json!({ "type": "configurableAccount", "signature": signature }),
+    );
 
     let [access_key] = access_keys.as_slice() else {
         panic!("expected one stored access key, got {}", access_keys.len())
