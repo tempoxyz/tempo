@@ -8,13 +8,9 @@ use std::{
 use clap::{ArgMatches, FromArgMatches, Parser};
 use eyre::{Context as _, OptionExt, bail, ensure};
 use futures::TryStreamExt;
-use reth_chainspec::EthChainSpec as _;
-use reth_cli_commands::{
-    common::EnvironmentArgs,
-    download::{
-        DownloadCommand, DownloadPlanArchive,
-        manifest::{OutputFileChecksum, SnapshotManifest},
-    },
+use reth_cli_commands::download::{
+    DownloadCommand, DownloadPlanArchive,
+    manifest::{OutputFileChecksum, SnapshotManifest},
 };
 use reth_cli_runner::CliRunner;
 use tempo_chainspec::spec::TempoChainSpecParser;
@@ -60,20 +56,6 @@ pub(crate) fn run_with_runner(matches: &ArgMatches, runner: CliRunner) -> eyre::
 
     let force = matches.get_one::<bool>("force").copied().unwrap_or(false);
 
-    // Resolve the consensus directory like the execution layer resolves its data dir, so a
-    // non-empty target is refused before any download starts.
-    let consensus_dir = match &args.consensus_datadir {
-        Some(dir) => dir.clone(),
-        None => {
-            let env = EnvironmentArgs::<TempoChainSpecParser>::from_arg_matches(matches)
-                .wrap_err("failed to parse environment args")?;
-            env.datadir
-                .resolve_datadir(env.chain.chain())
-                .data_dir()
-                .join("consensus")
-        }
-    };
-
     runner.block_on(async move {
         if args.inner.prints_plan_json() {
             let (mut plan, prepared) = args
@@ -89,10 +71,6 @@ pub(crate) fn run_with_runner(matches: &ArgMatches, runner: CliRunner) -> eyre::
 
             plan.write_json(io::stdout().lock())?;
             return Ok(());
-        }
-
-        if !args.skip_consensus {
-            ensure_consensus_dir_replaceable(&consensus_dir, force)?;
         }
 
         info!("running execution layer download...");
@@ -116,6 +94,10 @@ pub(crate) fn run_with_runner(matches: &ArgMatches, runner: CliRunner) -> eyre::
         let prepared = prepared.ok_or_eyre(
             "consensus snapshots require a modular execution layer snapshot manifest",
         )?;
+        let consensus_dir = args
+            .consensus_datadir
+            .unwrap_or_else(|| prepared.data_dir.join("consensus"));
+
         let loaded_consensus = load_consensus_manifest(&prepared.manifest)?;
         install_consensus_archive(&consensus_dir, &loaded_consensus, force).await?;
 
@@ -217,38 +199,11 @@ fn archive_source_from_url(url: Url) -> eyre::Result<ConsensusArchiveSource> {
     }
 }
 
-/// Refuse to install into a consensus directory that already holds state, unless `force`.
-fn ensure_consensus_dir_replaceable(consensus_dir: &Path, force: bool) -> eyre::Result<()> {
-    if force {
-        return Ok(());
-    }
-    let mut entries = match fs::read_dir(consensus_dir) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => {
-            return Err(error).wrap_err_with(|| {
-                format!(
-                    "failed to read consensus directory {}",
-                    consensus_dir.display()
-                )
-            });
-        }
-    };
-    ensure!(
-        entries.next().is_none(),
-        "consensus directory {} is not empty; pass --force to replace it",
-        consensus_dir.display(),
-    );
-    Ok(())
-}
-
 async fn install_consensus_archive(
     consensus_dir: &Path,
     loaded: &LoadedConsensusManifest,
     force: bool,
 ) -> eyre::Result<()> {
-    ensure_consensus_dir_replaceable(consensus_dir, force)?;
-
     let (archive_file, actual_archive_hash) =
         write_consensus_archive_to_temp(&loaded.archive_source).await?;
 
@@ -392,10 +347,15 @@ fn move_consensus_directory(source: &Path, target: &Path, force: bool) -> eyre::
     for partition in fs::read_dir(source)? {
         let partition = partition?;
         let destination = target.join(partition.file_name());
-        // The target was empty or cleared, so an existing entry here (including a
-        // symlink) is refused rather than followed.
-        fs::create_dir(&destination)
-            .wrap_err_with(|| format!("failed to create {}", destination.display()))?;
+        match fs::create_dir(&destination) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => ensure!(
+                fs::symlink_metadata(&destination)?.is_dir(),
+                "consensus destination is not a directory: {}",
+                destination.display(),
+            ),
+            Err(error) => return Err(error.into()),
+        }
         for file in fs::read_dir(partition.path())? {
             let file = file?;
             let output_path = destination.join(file.file_name());
@@ -888,15 +848,10 @@ mod tests {
                     .await
                     .unwrap_err();
 
-                let expected = if force {
+                assert_eq!(
+                    error.to_string(),
                     format!("unsupported consensus snapshot partition: {partition}")
-                } else {
-                    format!(
-                        "consensus directory {} is not empty; pass --force to replace it",
-                        target.path().display()
-                    )
-                };
-                assert_eq!(error.to_string(), expected);
+                );
                 assert_eq!(
                     fs::read(driver.join("identity")).unwrap(),
                     b"local identity"
@@ -1128,12 +1083,51 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn install_consensus_archive_refuses_non_empty_destination_without_force() {
+    async fn install_consensus_archive_preserves_existing_files_without_force() {
         let target = tempfile::tempdir().unwrap();
+        let output_path = "engine-finalizations-by-height-metadata/00";
+        let entries: &[(&str, &[u8])] = &[(output_path, b"abc")];
+        let archive = write_test_consensus_archive(entries);
+        let loaded = loaded_test_archive(&archive, entries);
+        fs::create_dir_all(
+            target
+                .path()
+                .join("engine-finalizations-by-height-metadata"),
+        )
+        .unwrap();
+        fs::write(target.path().join("existing"), b"existing").unwrap();
+
+        install_consensus_archive(target.path(), &loaded, false)
+            .await
+            .unwrap();
+        assert_eq!(fs::read(target.path().join(output_path)).unwrap(), b"abc");
+        assert_eq!(
+            fs::read(target.path().join("existing")).unwrap(),
+            b"existing"
+        );
+
+        let error = install_consensus_archive(target.path(), &loaded, false)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<io::Error>().unwrap().kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(fs::read(target.path().join(output_path)).unwrap(), b"abc");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn install_consensus_archive_does_not_follow_destination_symlinks() {
+        let target = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let partition = target
+            .path()
+            .join("engine-finalizations-by-height-metadata");
+        std::os::unix::fs::symlink(outside.path(), &partition).unwrap();
         let entries: &[(&str, &[u8])] = &[("engine-finalizations-by-height-metadata/00", b"abc")];
         let archive = write_test_consensus_archive(entries);
         let loaded = loaded_test_archive(&archive, entries);
-        fs::write(target.path().join("existing"), b"existing").unwrap();
 
         let error = install_consensus_archive(target.path(), &loaded, false)
             .await
@@ -1142,44 +1136,11 @@ mod tests {
         assert_eq!(
             error.to_string(),
             format!(
-                "consensus directory {} is not empty; pass --force to replace it",
-                target.path().display()
+                "consensus destination is not a directory: {}",
+                partition.display()
             )
         );
-        let names: Vec<_> = fs::read_dir(target.path())
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name())
-            .collect();
-        assert_eq!(names, ["existing"]);
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn install_consensus_archive_does_not_follow_destination_symlinks() {
-        for force in [false, true] {
-            let target = tempfile::tempdir().unwrap();
-            let outside = tempfile::tempdir().unwrap();
-            let partition = target
-                .path()
-                .join("engine-finalizations-by-height-metadata");
-            std::os::unix::fs::symlink(outside.path(), &partition).unwrap();
-            let entries: &[(&str, &[u8])] =
-                &[("engine-finalizations-by-height-metadata/00", b"abc")];
-            let archive = write_test_consensus_archive(entries);
-            let loaded = loaded_test_archive(&archive, entries);
-
-            let result = install_consensus_archive(target.path(), &loaded, force).await;
-
-            if force {
-                result.unwrap();
-                assert!(!fs::symlink_metadata(&partition).unwrap().is_symlink());
-                assert_eq!(fs::read(partition.join("00")).unwrap(), b"abc");
-            } else {
-                assert!(result.is_err());
-                assert!(fs::symlink_metadata(&partition).unwrap().is_symlink());
-            }
-            assert!(!outside.path().join("00").exists());
-        }
+        assert!(!outside.path().join("00").exists());
     }
 
     #[tokio::test]
