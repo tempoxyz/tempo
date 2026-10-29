@@ -118,53 +118,88 @@ fn acc(info: &Option<AccountInfo>) -> Option<Acc> {
     info.as_ref().map(|i| (i.nonce, i.balance, i.code_hash))
 }
 
-/// Merges shard bundles; `None` when they conflict outside [`ADDITIVE`].
-fn merge(bundles: &[BundleState]) -> Option<Changes> {
+/// Merges shard bundles. `baseline` is the same block with no transactions:
+/// every shard repeats its system-call writes, so each shard's effect is its
+/// change relative to the baseline. Returns `None` when two shards change
+/// the same account, or the same slot outside [`ADDITIVE`].
+fn merge(bundles: &[BundleState], baseline: &BundleState) -> Option<Changes> {
     let mut out = Changes::default();
-    let mut account_writer: FxHashMap<Address, Option<Acc>> = FxHashMap::default();
+    let mut accounts: FxHashMap<Address, (Option<Acc>, Option<Acc>, Vec<Option<Acc>>)> =
+        FxHashMap::default();
+    for b in std::iter::once(baseline).chain(bundles) {
+        for (addr, a) in &b.state {
+            accounts.entry(*addr).or_insert_with(|| {
+                let orig = acc(&a.original_info);
+                let base = baseline.state.get(addr).map_or(orig, |x| acc(&x.info));
+                (orig, base, Vec::new())
+            });
+        }
+    }
     for b in bundles {
         for (addr, a) in &b.state {
-            let (orig, now) = (acc(&a.original_info), acc(&a.info));
-            out.accounts.entry(*addr).or_insert(now);
-            if orig == now {
-                continue;
-            }
-            match account_writer.get(addr) {
-                Some(prev) if *prev != now => return None,
-                _ => {
-                    account_writer.insert(*addr, now);
-                    out.accounts.insert(*addr, now);
-                }
+            accounts
+                .get_mut(addr)
+                .expect("collected above")
+                .2
+                .push(acc(&a.info));
+        }
+    }
+    for (addr, (orig, base, writes)) in accounts {
+        let mut changed = writes.into_iter().filter(|w| *w != base);
+        let value = match (changed.next(), changed.next()) {
+            (None, _) => base,
+            (Some(w), None) => w,
+            (Some(_), Some(_)) => return None,
+        };
+        if value != orig {
+            out.accounts.insert(addr, value);
+        }
+    }
+
+    // slot -> (original, baseline, per-shard writes)
+    let mut slots: FxHashMap<(Address, U256), (U256, U256, Vec<U256>)> = FxHashMap::default();
+    for b in std::iter::once(baseline).chain(bundles) {
+        for (addr, a) in &b.state {
+            for (key, s) in &a.storage {
+                slots.entry((*addr, *key)).or_insert_with(|| {
+                    let orig = s.previous_or_original_value;
+                    let base = baseline
+                        .state
+                        .get(addr)
+                        .and_then(|x| x.storage.get(key))
+                        .map_or(orig, |x| x.present_value);
+                    (orig, base, Vec::new())
+                });
             }
         }
     }
-    // (original, present values written by each shard)
-    let mut slots: FxHashMap<(Address, U256), (U256, Vec<U256>)> = FxHashMap::default();
     for b in bundles {
         for (addr, a) in &b.state {
             for (key, s) in &a.storage {
-                if s.previous_or_original_value == s.present_value {
-                    continue;
-                }
-                let e = slots
-                    .entry((*addr, *key))
-                    .or_insert((s.previous_or_original_value, Vec::new()));
-                e.1.push(s.present_value);
+                slots
+                    .get_mut(&(*addr, *key))
+                    .expect("collected above")
+                    .2
+                    .push(s.present_value);
             }
         }
     }
-    for ((addr, key), (orig, writes)) in slots {
-        let value = if writes.iter().all(|w| *w == writes[0]) {
-            // Identical writes (one shard, or every shard's system calls).
-            writes[0]
-        } else if ADDITIVE.contains(&addr) {
+    for ((addr, key), (orig, base, writes)) in slots {
+        let value = if ADDITIVE.contains(&addr) {
             writes
                 .iter()
-                .fold(orig, |v, w| v.wrapping_add(w.wrapping_sub(orig)))
+                .fold(base, |v, w| v.wrapping_add(w.wrapping_sub(base)))
         } else {
-            return None;
+            let mut changed = writes.into_iter().filter(|w| *w != base);
+            match (changed.next(), changed.next()) {
+                (None, _) => base,
+                (Some(w), None) => w,
+                (Some(_), Some(_)) => return None,
+            }
         };
-        out.storage.entry(addr).or_default().insert(key, value);
+        if value != orig {
+            out.storage.entry(addr).or_default().insert(key, value);
+        }
     }
     Some(out)
 }
@@ -199,7 +234,9 @@ impl ExecutorTile {
             payload,
             None,
         )?;
-        let changes = merge(std::slice::from_ref(&out.bundle)).expect("one bundle never conflicts");
+        let baseline = BundleState::default();
+        let changes = merge(std::slice::from_ref(&out.bundle), &baseline)
+            .expect("one bundle never conflicts");
         Ok((changes, out.gas, out.reverted))
     }
 
@@ -209,12 +246,13 @@ impl ExecutorTile {
         payload: &[u8],
     ) -> Result<Option<(Changes, u64, u64)>, String> {
         let n = self.shards;
+        // Shard `n` matches no sender: it runs only the block's system calls.
         let results: Vec<Result<ShardOut, String>> = std::thread::scope(|s| {
-            let handles: Vec<_> = (0..n)
+            let handles: Vec<_> = (0..=n)
                 .map(|k| {
                     let (config, state, hardfork) =
                         (self.config.clone(), &self.state, self.hardfork);
-                    let core = self.first_core.map(|c| c + k);
+                    let core = self.first_core.map(|c| c + k % n);
                     s.spawn(move || {
                         if let Some(id) = core {
                             core_affinity::set_for_current(core_affinity::CoreId { id });
@@ -236,7 +274,8 @@ impl ExecutorTile {
             reverted += r.reverted;
             bundles.push(r.bundle);
         }
-        Ok(merge(&bundles).map(|c| (c, gas, reverted)))
+        let baseline = bundles.pop().expect("baseline shard");
+        Ok(merge(&bundles, &baseline).map(|c| (c, gas, reverted)))
     }
 
     fn execute(&mut self, block: &Block, payload: &[u8]) -> StateDiff {
@@ -399,5 +438,41 @@ impl Tile<NodeSpine> for ExecutorTile {
                 .produce_with_dcache(out, payload)
                 .expect("state diff fits the dcache");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloy_primitives::{U256, map::U256Map};
+    use reth_evm::BundleState;
+
+    use super::{ADDITIVE, merge};
+
+    fn slot_bundle(addr: alloy_primitives::Address, key: u64, orig: u64, now: u64) -> BundleState {
+        let mut storage = U256Map::default();
+        storage.insert(U256::from(key), (U256::from(orig), U256::from(now)));
+        BundleState::builder(0..=0)
+            .state_address(addr)
+            .state_storage(addr, storage)
+            .build()
+    }
+
+    #[test]
+    fn equal_additive_deltas_from_two_shards_both_count() {
+        let token = ADDITIVE[0];
+        let a = slot_bundle(token, 7, 10, 11);
+        let b = slot_bundle(token, 7, 10, 11);
+        let merged = merge(&[a, b], &BundleState::default()).unwrap();
+        assert_eq!(merged.storage[&token][&U256::from(7)], U256::from(12));
+    }
+
+    #[test]
+    fn system_call_writes_count_once() {
+        let token = ADDITIVE[0];
+        let base = slot_bundle(token, 7, 10, 15);
+        let a = slot_bundle(token, 7, 10, 16);
+        let b = slot_bundle(token, 7, 10, 15);
+        let merged = merge(&[a, b], &base).unwrap();
+        assert_eq!(merged.storage[&token][&U256::from(7)], U256::from(16));
     }
 }

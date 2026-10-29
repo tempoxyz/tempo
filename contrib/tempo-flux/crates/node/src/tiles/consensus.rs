@@ -66,9 +66,10 @@ impl Tile<NodeSpine> for ConsensusTile {
         }
 
         let now = now_ns();
-        // A request sent before the builder attached is never answered; ask again.
-        let unanswered = self.inflight.is_some_and(|b| b.height == u64::MAX)
-            && now - self.requested_ns > 4 * self.block_time_ns;
+        // A request sent before the builder attached, or a block whose body or
+        // diff was lost on the spine, is never answered; propose again.
+        let unanswered =
+            self.inflight.is_some() && now - self.requested_ns > 20 * self.block_time_ns;
         if unanswered {
             self.inflight = None;
         }

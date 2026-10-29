@@ -22,6 +22,10 @@ pub struct BuilderTile {
     next_nonce: FxHashMap<Address, u64>,
     pooled: usize,
     picked: Vec<(Address, u64)>,
+    /// The last built block's transactions, kept until consensus moves past
+    /// its height. A request for the same height again means the block was
+    /// rejected, so they go back into the pool.
+    inflight: Option<(u64, Vec<(Address, u64, PendingTx)>)>,
 }
 
 impl BuilderTile {
@@ -46,8 +50,33 @@ impl BuilderTile {
         }
     }
 
+    fn restore(&mut self, txs: Vec<(Address, u64, PendingTx)>) {
+        for (sender, nonce, tx) in txs {
+            let next = self.next_nonce.entry(sender).or_default();
+            *next = (*next).min(nonce);
+            if self
+                .by_sender
+                .entry(sender)
+                .or_default()
+                .insert(nonce, tx)
+                .is_none()
+            {
+                self.pooled += 1;
+            }
+        }
+    }
+
     fn build(&mut self, req: BuildRequest, adapter: &mut SpineAdapter<NodeSpine>) {
         tracing::debug!(req.height, pooled = self.pooled, "building");
+        if let Some((height, txs)) = self.inflight.take()
+            && req.height <= height
+        {
+            tracing::warn!(
+                height,
+                "block was not finalized, returning its txs to the pool"
+            );
+            self.restore(txs);
+        }
         self.picked.clear();
         let max = req.max_txs as usize;
         for (sender, txs) in &self.by_sender {
@@ -90,9 +119,12 @@ impl BuilderTile {
             .produce_with_dcache(block, payload)
             .expect("block body fits the dcache");
 
+        let mut taken = Vec::with_capacity(self.picked.len());
         for (sender, nonce) in &self.picked {
             if let Some(txs) = self.by_sender.get_mut(sender) {
-                txs.remove(nonce);
+                if let Some(tx) = txs.remove(nonce) {
+                    taken.push((*sender, *nonce, tx));
+                }
                 if txs.is_empty() {
                     self.by_sender.remove(sender);
                 }
@@ -100,6 +132,7 @@ impl BuilderTile {
             self.next_nonce.insert(*sender, nonce + 1);
             self.pooled -= 1;
         }
+        self.inflight = Some((req.height, taken));
     }
 }
 
