@@ -38,7 +38,7 @@ pub fn validate_transaction(
     // Configurable accounts stay blocked until zones sync configurations (TIP-1114 Zones).
     if spec.is_t14()
         && (tx.as_aa().is_some_and(|aa| {
-            aa.signature().signed_by_configurable_account()
+            aa.signature().is_or_wraps_configurable_account()
                 || aa.tx().key_authorization.as_ref().is_some_and(|auth| {
                     auth.key_type == SignatureType::ConfigurableAccount
                         || auth.signature.is_configurable_account()
