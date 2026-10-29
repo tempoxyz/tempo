@@ -965,6 +965,7 @@ where
     {
         let msg = Message::read_cfg(&mut message, &NZU32!(round.players().len() as u32))
             .wrap_err("failed reading p2p message")?;
+
         // TODO: Message decoding will become strict
         if message.has_remaining() {
             let kind = match &msg {
