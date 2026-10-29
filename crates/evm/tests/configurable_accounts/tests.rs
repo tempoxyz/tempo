@@ -1523,6 +1523,15 @@ fn grant_by(signer: &PrivateKeySigner, key: Address) -> SignedKeyAuthorization {
     grant.into_signed(PrimitiveSignature::Secp256k1(signature))
 }
 
+/// Approves a digest as the fixture's primitive or configurable root.
+fn root_approval(f: &Fixture, native: bool, hash: B256) -> AccountSignature {
+    if native {
+        configurable_account_approval(f.account, &f.config, &f.owner, hash).into()
+    } else {
+        f.owner.sign_hash_sync(&hash).unwrap().into()
+    }
+}
+
 /// A grant of `key` for the fixture's account, approved by its configurable account quorum.
 fn configurable_grant(f: &Fixture, key: Address) -> SignedKeyAuthorization {
     let grant = KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key);
@@ -5087,20 +5096,7 @@ fn native_signed_parent_delegate_case(outcome: GrantOutcome, gas_price: u128) {
                     })
                     .collect(),
             );
-            let grant_signature = if parent_native {
-                AccountSignature::ConfigurableAccount(configurable_account_approval(
-                    f.account,
-                    &f.config,
-                    &f.owner,
-                    authorization.signature_hash(),
-                ))
-            } else {
-                AccountSignature::from(
-                    f.owner
-                        .sign_hash_sync(&authorization.signature_hash())
-                        .unwrap(),
-                )
-            };
+            let grant_signature = root_approval(&f, parent_native, authorization.signature_hash());
             let transfer = Call {
                 to: TxKind::Call(PATH_USD_ADDRESS),
                 value: U256::ZERO,
@@ -5132,12 +5128,11 @@ fn native_signed_parent_delegate_case(outcome: GrantOutcome, gas_price: u128) {
                     keychain_signed(tx.clone(), &signer, parent)
                 }
             };
-            let signed = sign(&tx);
-            let output = f.evm.transact(&tx_env(&signed, parent)).unwrap().commit();
+            let output = f.run(&sign(&tx));
             assert_eq!(
                 output.status,
                 outcome == GrantOutcome::Success,
-                "{outcome:?}, parent={parent_native} delegate={delegate_native}: {output:?}"
+                "{output:?}"
             );
             let charged_fee = |gas_used| {
                 let fee = calc_gas_balance_spending(gas_used, gas_price).to::<u64>();
@@ -5160,35 +5155,18 @@ fn native_signed_parent_delegate_case(outcome: GrantOutcome, gas_price: u128) {
                 };
                 assert_eq!(output.output, expected);
             }
-            let assert_commitments = |f: &mut Fixture| {
-                for (account, expected) in [
-                    (
-                        parent,
-                        if parent_native {
-                            f.config.commitment().unwrap()
-                        } else {
-                            B256::ZERO
-                        },
-                    ),
-                    (
-                        delegate,
-                        if delegate_native {
-                            config.commitment().unwrap()
-                        } else {
-                            B256::ZERO
-                        },
-                    ),
+            let assert_grant = |f: &mut Fixture, fees: u64, transferred: u64, nonce: u64| {
+                for (account, native, commitment) in [
+                    (parent, parent_native, f.config.commitment().unwrap()),
+                    (delegate, delegate_native, config.commitment().unwrap()),
                 ] {
                     assert_eq!(
                         f.info(account).map_or(B256::ZERO, |info| {
                             decode_config_commitment(&info.extension, TempoHardfork::T14).unwrap()
                         }),
-                        expected
+                        if native { commitment } else { B256::ZERO }
                     );
                 }
-            };
-            assert_commitments(&mut f);
-            let assert_grant = |f: &mut Fixture, fees: u64, transferred: u64, nonce: u64| {
                 in_storage_ctx(&mut f.evm, || {
                     let keychain = AccountKeychain::new();
                     let key = keychain.get_key(IAccountKeychain::getKeyCall {
@@ -5206,20 +5184,12 @@ fn native_signed_parent_delegate_case(outcome: GrantOutcome, gas_price: u128) {
                             account: parent,
                             keyId: delegate,
                         })?;
-                    let balance = TIP20Token::from_address(PATH_USD_ADDRESS)?
-                        .balance_of(ITIP20::balanceOfCall { account: parent })?;
-                    let recipient_balance = TIP20Token::from_address(PATH_USD_ADDRESS)?
-                        .balance_of(ITIP20::balanceOfCall {
-                            account: Address::repeat_byte(0x66),
-                        })?;
                     assert_eq!(key.keyId, delegate);
                     assert_eq!(key.expiry, 1000);
                     assert!(key.enforceLimits);
                     assert!(!key.isRevoked);
                     assert_eq!(key.signatureType as u8, if delegate_native { 3 } else { 0 });
                     assert_eq!(limit, U256::from(initial_limit - fees - transferred));
-                    assert_eq!(balance, U256::from(initial_balance - fees - transferred));
-                    assert_eq!(recipient_balance, U256::from(transferred));
                     assert!(scopes.isScoped);
                     assert_eq!(scopes.scopes.len(), targets.len());
                     for scope in scopes.scopes {
@@ -5229,6 +5199,14 @@ fn native_signed_parent_delegate_case(outcome: GrantOutcome, gas_price: u128) {
                     Ok::<_, TempoPrecompileError>(())
                 })
                 .unwrap();
+                assert_eq!(
+                    balance(f, parent),
+                    U256::from(initial_balance - fees - transferred)
+                );
+                assert_eq!(
+                    balance(f, Address::repeat_byte(0x66)),
+                    U256::from(transferred)
+                );
                 assert_eq!(f.info(parent).unwrap().nonce, nonce);
             };
             // Calls roll back, but the grant, actual fees and transaction nonce survive.
@@ -5241,27 +5219,19 @@ fn native_signed_parent_delegate_case(outcome: GrantOutcome, gas_price: u128) {
             // Re-sign without the immutable grant. Two uses prove counters do not reset.
             for (nonce, transferred) in [(4, 10), (5, 20)] {
                 tx.nonce = nonce;
-                let output = f
-                    .evm
-                    .transact(&tx_env(&sign(&tx), parent))
-                    .unwrap()
-                    .commit();
+                let output = f.run(&sign(&tx));
                 assert!(output.status, "{output:?}");
                 total_fees += charged_fee(output.tx_gas_used());
                 assert_grant(&mut f, total_fees, transferred, nonce + 1);
-                assert_commitments(&mut f);
             }
             tx.nonce = 6;
             tx.key_authorization = accepted_grant;
-            let error = f.evm.transact(&tx_env(&sign(&tx), parent)).unwrap_err();
-            let Some(TempoInvalidTransaction::KeychainPrecompileError { reason }) =
-                error.external_ref::<TempoInvalidTransaction>().cloned()
-            else {
-                panic!("expected duplicate-grant validation error, got {error}");
-            };
             assert_eq!(
-                reason,
-                TempoPrecompileError::from(AccountKeychainError::key_already_exists()).to_string()
+                rejection(&mut f, &sign(&tx), parent),
+                TempoInvalidTransaction::KeychainPrecompileError {
+                    reason: TempoPrecompileError::from(AccountKeychainError::key_already_exists())
+                        .to_string()
+                }
             );
         }
     }
@@ -5367,16 +5337,7 @@ fn configurable_delegate_cannot_sign_inline_grant() {
             if admin {
                 grant = grant.into_admin(parent);
             }
-            let approval = if parent_native {
-                AccountSignature::ConfigurableAccount(configurable_account_approval(
-                    parent,
-                    &f.config,
-                    &f.owner,
-                    grant.signature_hash(),
-                ))
-            } else {
-                AccountSignature::from(f.owner.sign_hash_sync(&grant.signature_hash()).unwrap())
-            };
+            let approval = root_approval(&f, parent_native, grant.signature_hash());
             let tx = TempoTransaction {
                 key_authorization: Some(grant.into_signed(approval)),
                 ..aa_tx(3, vec![f.getter()])
@@ -5412,8 +5373,7 @@ fn configurable_delegate_cannot_sign_inline_grant() {
 }
 
 /// A configurable account that signs both its transaction and an inline grant is registered and
-/// pays for its creation once. Each role signs its own digest: the grant's approval does not
-/// authorize the transaction.
+/// pays for its creation once. Each role signs its own digest and verifies its own quorum.
 #[test]
 fn native_sender_signing_its_own_grant_registers_once() {
     let params = tempo_gas_params(TempoHardfork::T14);
@@ -5442,22 +5402,34 @@ fn native_sender_signing_its_own_grant_registers_once() {
     };
     assert_eq!(gas(true), gas(false).plus(new_account));
 
-    let mut f = Fixture::new();
-    let account = f.account;
-    let tx = grant_tx(&mut f);
-    let approval = tx
-        .key_authorization
-        .as_ref()
-        .and_then(|grant| grant.signature.as_configurable_account())
-        .unwrap()
-        .clone();
-    let tx = tx.into_signed(TempoSignature::ConfigurableAccount(approval));
-    assert_eq!(
-        rejection(&mut f, &tx, account),
-        TempoInvalidTransaction::ConfigurableAccount(ConfigurableAccountError::Quorum(
-            ConfigurableAccountQuorumError::SignerNotOwner
-        ))
-    );
+    for invalid_grant in [false, true] {
+        let _case = Case(format!("invalid_grant={invalid_grant}"));
+        let mut f = Fixture::new();
+        let account = f.account;
+        let mut tx = grant_tx(&mut f);
+        let grant = tx.key_authorization.as_mut().unwrap();
+        let tx = if invalid_grant {
+            // A valid outer signature must not mask an invalid grant quorum.
+            grant.signature = configurable_account_approval(
+                account,
+                &f.config,
+                &signer(3),
+                grant.signature_hash(),
+            )
+            .into();
+            configurable_account_signed(&f, tx)
+        } else {
+            // The grant's approval does not authorize the transaction's digest.
+            let approval = grant.signature.as_configurable_account().unwrap().clone();
+            tx.into_signed(TempoSignature::ConfigurableAccount(approval))
+        };
+        assert_eq!(
+            rejection(&mut f, &tx, account),
+            TempoInvalidTransaction::ConfigurableAccount(ConfigurableAccountError::Quorum(
+                ConfigurableAccountQuorumError::SignerNotOwner
+            ))
+        );
+    }
 }
 
 /// A grant naming a configurable delegate that does not sign charges one access to it, cold or
