@@ -25,52 +25,7 @@ use tempo_invariants::{all, fork_position};
 
 /// TIPs whose `# Invariants` section is not in the format yet. The lint skips them, and fails once
 /// one passes, so the list only shrinks.
-const UNMIGRATED: &[&str] = &[
-    "tips/tip-1000.md",
-    "tips/tip-1001.md",
-    "tips/tip-1002.md",
-    "tips/tip-1003.md",
-    "tips/tip-1004.md",
-    "tips/tip-1005.md",
-    "tips/tip-1006.md",
-    "tips/tip-1007.md",
-    "tips/tip-1009.md",
-    "tips/tip-1010.md",
-    "tips/tip-1011.md",
-    "tips/tip-1015.md",
-    "tips/tip-1016.md",
-    "tips/tip-1017.md",
-    "tips/tip-1020.md",
-    "tips/tip-1022.md",
-    "tips/tip-1026.md",
-    "tips/tip-1028.md",
-    "tips/tip-1030.md",
-    "tips/tip-1031.md",
-    "tips/tip-1033.md",
-    "tips/tip-1034.md",
-    "tips/tip-1035.md",
-    "tips/tip-1042.md",
-    "tips/tip-1045.md",
-    "tips/tip-1047.md",
-    "tips/tip-1049.md",
-    "tips/tip-1053.md",
-    "tips/tip-1056.md",
-    "tips/tip-1060.md",
-    "tips/tip-1062.md",
-    "tips/tip-1064.md",
-    "tips/tip-1065.md",
-    "tips/tip-1067.md",
-    "tips/tip-1070.md",
-    "tips/tip-1087.md",
-    "tips/tip-1088.md",
-    "tips/tip-1092.md",
-    "tips/tip-1095.md",
-    "tips/tip-1098.md",
-    "tips/tip-1099.md",
-    "tips/tip-1115.md",
-    "tips/tip-1119.md",
-    "tips/tip-1137.md",
-];
+const UNMIGRATED: &[&str] = &[];
 
 /// The process docs, whose `Invariants` section explains the format with an example in a code
 /// block and lists no invariant itself.
@@ -128,7 +83,7 @@ fn every_spec_lists_its_invariants_in_the_format() {
         };
         // A section that lists no invariant as a bullet is not in the format yet.
         let parsed = parse(&section).and_then(|invariants| {
-            if invariants.is_empty() && !PROCESS.contains(&name.as_str()) {
+            if invariants.is_empty() && !PROCESS.contains(&name.as_str()) && !withdrawn(&markdown) {
                 Err(vec![format!(
                     "{}: the section lists no invariant as a \"- `TEMPO-<AREA>-<NAME>`: <statement>\" bullet",
                     section.first().map_or(0, |(number, _)| *number)
@@ -220,6 +175,15 @@ fn every_spec_lists_its_invariants_in_the_format() {
 }
 
 /// The specs the lint reads: `tips/*.md` and `zones/specs/*.md`, in order.
+/// Whether a TIP's front matter marks it cancelled or withdrawn, so nothing implements it and its
+/// section may state no invariants.
+fn withdrawn(markdown: &str) -> bool {
+    markdown.lines().take(20).any(|line| {
+        let line = line.trim().to_ascii_lowercase();
+        line == "status: cancelled" || line == "status: withdrawn"
+    })
+}
+
 fn specs(root: &Path) -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = ["tips", "zones/specs"]
         .iter()
