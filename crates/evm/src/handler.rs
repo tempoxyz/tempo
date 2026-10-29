@@ -582,7 +582,8 @@ fn validate_key_authorization(
                         .into(),
                 });
             }
-            if key_auth.signature.signature_type() != keychain_signature.signature.signature_type() {
+            if key_auth.signature.signature_type() != keychain_signature.signature.signature_type()
+            {
                 return Err(TempoInvalidTransaction::KeychainValidationFailed {
                     reason: "admin-signed key authorization signature type does not match transaction key signature type".into(),
                 });
