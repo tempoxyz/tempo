@@ -492,17 +492,17 @@ where
 
     // Process all maintenance operations on new block commit or reorg.
     while let Some(event) = chain_events.next().await {
-        let new = match event {
-            CanonStateNotification::Reorg { old: _, new } => {
+        let (old, new) = match event {
+            CanonStateNotification::Reorg { old, new } => {
                 // Repopulate AMM liquidity cache from the new canonical chain
                 // to invalidate stale entries from orphaned blocks.
                 if let Err(err) = amm_cache.repopulate(pool.client()) {
                     error!(target: "txpool", ?err, "AMM liquidity cache repopulate after reorg failed");
                 }
 
-                new
+                (Some(old), new)
             }
-            CanonStateNotification::Commit { new } => new,
+            CanonStateNotification::Commit { new } => (None, new),
         };
 
         let block_update_start = Instant::now();
@@ -542,6 +542,33 @@ where
 
         // 3. Collect all block-level invalidation events
         let updates = TempoPoolUpdates::from_chain(tip);
+
+        // Revalidate transactions whose authorities' configuration commitment changed,
+        // including eventless first registration (TIP-1112) and commitments a reorg reverted.
+        // Record them before any pool snapshot so outcomes validated against an old commitment
+        // are either already inserted, and found by the scan below, or validated again.
+        let changed_commitments: AddressSet = old
+            .iter()
+            .map(|old| old.execution_outcome())
+            .chain([tip.execution_outcome()])
+            .flat_map(|outcome| outcome.state().state())
+            .filter(|(_, account)| {
+                account
+                    .original_info
+                    .as_ref()
+                    .map(|info| info.extension.as_ref())
+                    .unwrap_or_default()
+                    != account
+                        .info
+                        .as_ref()
+                        .map(|info| info.extension.as_ref())
+                        .unwrap_or_default()
+            })
+            .map(|(address, _)| *address)
+            .collect();
+        if !changed_commitments.is_empty() {
+            pool.record_config_commitment_changes(changed_commitments.clone());
+        }
 
         let mut all_txs: Option<AllPoolTransactions<TempoPooledTransaction>> = None;
         // Reth's canonical-update handling may not have pruned mined transactions yet.
@@ -596,24 +623,6 @@ where
             revalidate_txs.extend(transactions);
         }
 
-        // Revalidate transactions whose authorities' configuration commitment changed,
-        // including eventless first registration (TIP-1112).
-        let changed_commitments: AddressSet = bundle_state
-            .iter()
-            .filter(|(_, account)| {
-                account
-                    .original_info
-                    .as_ref()
-                    .map(|info| info.extension.as_ref())
-                    .unwrap_or_default()
-                    != account
-                        .info
-                        .as_ref()
-                        .map(|info| info.extension.as_ref())
-                        .unwrap_or_default()
-            })
-            .map(|(address, _)| *address)
-            .collect();
         if !changed_commitments.is_empty() {
             let hashes: Vec<TxHash> = {
                 let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
@@ -688,7 +697,8 @@ where
                     .into_iter()
                     .map(|tx| (tx.origin, tx.transaction.with_discarded_caches()))
                     .collect();
-                let results = pool.add_transactions_with_origins(txs).await;
+                // Removed from the pool already, so never give up on them.
+                let results = pool.validate_and_add_transactions(txs, usize::MAX).await;
                 debug!(target: "txpool", total = results.len(),
                     success = results.iter().filter(|result| result.is_ok()).count(),
                     "Revalidated transactions");
