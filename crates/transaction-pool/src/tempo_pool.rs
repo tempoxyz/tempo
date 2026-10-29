@@ -638,21 +638,21 @@ where
         let fresh = slots
             .into_iter()
             .zip(outcomes)
-            .filter_map(|((index, origin), outcome)| match outcome {
+            .filter_map(|(slot, outcome)| match outcome {
                 TransactionValidationOutcome::Valid { transaction, .. }
                     if changes.affects(epoch, transaction.transaction()) =>
                 {
-                    stale_slots.push((index, origin));
+                    stale_slots.push(slot);
                     stale.push((
-                        origin,
+                        slot.1,
                         transaction.into_transaction().with_discarded_caches(),
                     ));
                     None
                 }
-                outcome => Some((index, origin, outcome)),
+                outcome => Some((slot, outcome)),
             });
         if has_aa_2d {
-            for (index, origin, outcome) in fresh {
+            for ((index, origin), outcome) in fresh {
                 results[index] = Some(self.add_validated_transaction(origin, outcome));
             }
         } else {
@@ -660,7 +660,7 @@ where
             let added = self
                 .protocol_pool
                 .inner()
-                .add_transactions_with_origins(fresh.map(|(index, origin, outcome)| {
+                .add_transactions_with_origins(fresh.map(|((index, origin), outcome)| {
                     indices.push(index);
                     (origin, outcome)
                 }));
@@ -827,7 +827,7 @@ where
         origin: TransactionOrigin,
         transaction: Self::Transaction,
     ) -> PoolResult<AddedTransactionOutcome> {
-        self.validate_and_add_transactions(vec![(origin, transaction)], ADMISSION_ATTEMPTS)
+        self.add_transactions_with_origins(vec![(origin, transaction)])
             .await
             .pop()
             .expect("one result per transaction")
@@ -838,9 +838,8 @@ where
         origin: TransactionOrigin,
         transactions: Vec<Self::Transaction>,
     ) -> Vec<PoolResult<AddedTransactionOutcome>> {
-        self.validate_and_add_transactions(
+        self.add_transactions_with_origins(
             transactions.into_iter().map(|tx| (origin, tx)).collect(),
-            ADMISSION_ATTEMPTS,
         )
         .await
     }
@@ -1580,7 +1579,10 @@ mod tests {
         txs.iter().map(|tx| *tx.hash()).collect()
     }
 
-    use crate::{test_utils::MockProviderStorageExt, transaction::KeychainSubject};
+    use crate::{
+        test_utils::{MockProviderStorageExt, TxBuilder},
+        transaction::KeychainSubject,
+    };
     use alloy_consensus::Header;
     use alloy_primitives::{Signature, U256, address, uint};
     use alloy_signer::SignerSync;
@@ -1906,11 +1908,9 @@ mod tests {
     fn outcomes_are_revalidated_only_when_their_authorities_changed() {
         let pool = create_test_pool(create_provider_with_tip());
         let changed = Address::random();
-        let aa_2d = crate::test_utils::TxBuilder::aa(changed)
-            .nonce_key(U256::ONE)
-            .build();
-        let protocol = crate::test_utils::TxBuilder::aa(Address::random()).build();
-        let invalid = crate::test_utils::TxBuilder::aa(changed).build();
+        let aa_2d = TxBuilder::aa(changed).nonce_key(U256::ONE).build();
+        let protocol = TxBuilder::aa(Address::random()).build();
+        let invalid = TxBuilder::aa(changed).build();
         let slots = |count| {
             (0..count)
                 .map(|index| (index, TransactionOrigin::External))
@@ -1938,7 +1938,8 @@ mod tests {
             stale.iter().map(|(_, tx)| *tx.hash()).collect::<Vec<_>>(),
             [*aa_2d.hash()]
         );
-        assert!(results[0].is_none() && !pool.contains(aa_2d.hash()));
+        assert!(results[0].is_none());
+        assert!(!pool.contains(aa_2d.hash()));
         assert_eq!(
             results[1].as_ref().unwrap().as_ref().unwrap().hash,
             *protocol.hash()
@@ -1952,13 +1953,14 @@ mod tests {
             vec![valid_outcome(aa_2d.clone())],
             &mut results,
         );
-        assert!(stale_slots.is_empty() && pool.contains(aa_2d.hash()));
+        assert!(stale_slots.is_empty());
+        assert!(pool.contains(aa_2d.hash()));
 
         // Once its changes are pruned, any valid outcome is revalidated.
         for _ in 0..RETAINED_CONFIG_COMMITMENT_CHANGES {
             pool.record_config_commitment_changes(AddressSet::default());
         }
-        let unrelated = crate::test_utils::TxBuilder::aa(Address::random()).build();
+        let unrelated = TxBuilder::aa(Address::random()).build();
         let (stale_slots, _) = pool.add_validated_at_config_commitment_epoch(
             0,
             slots(1),
@@ -2509,16 +2511,7 @@ mod tests {
         let pool = TempoTransactionPool::new(protocol_pool, AA2dPool::new(Default::default()));
 
         for pooled in [&matching, &untouched] {
-            let validated = TransactionValidationOutcome::Valid {
-                balance: *pooled.cost(),
-                state_nonce: pooled.nonce(),
-                bytecode_hash: None,
-                transaction: ValidTransaction::new(pooled.clone(), None),
-                propagate: true,
-                authorities: None,
-            };
-            pool.add_validated_transaction(TransactionOrigin::External, validated)
-                .expect("transaction should be admitted");
+            add_validated(&pool, pooled.clone());
         }
 
         let mut updates = crate::maintain::TempoPoolUpdates::new();
@@ -2600,16 +2593,7 @@ mod tests {
         let pool = TempoTransactionPool::new(protocol_pool, AA2dPool::new(Default::default()));
 
         for pooled in [&matching, &untouched] {
-            let validated = TransactionValidationOutcome::Valid {
-                balance: *pooled.cost(),
-                state_nonce: pooled.nonce(),
-                bytecode_hash: None,
-                transaction: ValidTransaction::new(pooled.clone(), None),
-                propagate: true,
-                authorities: None,
-            };
-            pool.add_validated_transaction(TransactionOrigin::External, validated)
-                .expect("transaction should be admitted");
+            add_validated(&pool, pooled.clone());
         }
 
         let mut updates = crate::maintain::TempoPoolUpdates::new();
@@ -2687,16 +2671,7 @@ mod tests {
         let pool = TempoTransactionPool::new(protocol_pool, AA2dPool::new(Default::default()));
 
         for pooled in [&matching, &untouched] {
-            let validated = TransactionValidationOutcome::Valid {
-                balance: *pooled.cost(),
-                state_nonce: pooled.nonce(),
-                bytecode_hash: None,
-                transaction: ValidTransaction::new(pooled.clone(), None),
-                propagate: true,
-                authorities: None,
-            };
-            pool.add_validated_transaction(TransactionOrigin::External, validated)
-                .expect("transaction should be admitted");
+            add_validated(&pool, pooled.clone());
         }
 
         let mut updates = crate::maintain::TempoPoolUpdates::new();
