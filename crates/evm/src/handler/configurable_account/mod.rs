@@ -27,17 +27,18 @@ use tempo_primitives::transaction::{
 };
 
 /// An independently signed role.
-struct NativeAuthorization<'a> {
+struct ConfigurableRole<'a> {
     signature: &'a ConfigurableAccountSignature,
     /// Role digest before configurable account domain separation.
     inner_digest: B256,
 }
 
-/// What [`validate_native_roles`] charges and loads for the native roles of a transaction.
-struct NativeRoles {
+/// What [`validate_configurable_roles`] charges and loads for the configurable roles of a
+/// transaction.
+struct ConfigurableRoleCharges {
     extra_gas: u64,
     state_gas: u64,
-    /// Native role accounts already loaded, in role order.
+    /// Configurable role accounts already loaded, in role order.
     accounts: Vec<Address>,
 }
 
@@ -52,10 +53,10 @@ struct LoadedAccount {
 
 impl TempoAaTx {
     /// The direct sender role, when a configurable account signs the transaction.
-    fn native_authorization(&self) -> Option<NativeAuthorization<'_>> {
+    fn configurable_role(&self) -> Option<ConfigurableRole<'_>> {
         self.signature()
             .as_configurable_account()
-            .map(|signature| NativeAuthorization {
+            .map(|signature| ConfigurableRole {
                 signature,
                 inner_digest: self.signature_hash(),
             })
@@ -69,9 +70,6 @@ impl TempoTxEnv {
     /// authorization that could change the account beside it.
     pub(crate) fn seed_upgrade_authority(&self) -> Result<(), TempoPrecompileError> {
         let aa = self.as_aa();
-        let direct = aa
-            .and_then(|aa| aa.signature().as_configurable_account())
-            .map_or(Address::ZERO, ConfigurableAccountSignature::account);
         let sole_call = match aa {
             None => {
                 self.kind() == TxKind::Call(CONFIGURABLE_ACCOUNT_ADDRESS)
@@ -95,6 +93,18 @@ impl TempoTxEnv {
         } else {
             UpgradeEligibility::PrimitiveRoot
         };
+        let direct = match aa.and_then(|aa| aa.signature().as_configurable_account()) {
+            Some(signature) => signature.account(),
+            // RPC simulation has no owner witness: a registered caller without an access-key
+            // override stands in for its own quorum.
+            None if matches!(self.execution_context(), ExecutionContext::Simulation)
+                && aa.is_none_or(|aa| aa.override_key_id().is_none())
+                && !StorageCtx.config_commitment(self.caller())?.is_zero() =>
+            {
+                self.caller()
+            }
+            None => Address::ZERO,
+        };
         ConfigurableAccount::new().set_authority(self.caller(), direct, eligibility)
     }
 
@@ -112,7 +122,7 @@ impl TempoTxEnv {
 /// that T14 key-authorization and access-key identities are recovered to name the accounts
 /// whose root-key retirement is checked.
 ///
-/// Native roles are checked first. At T14, bare primitive authority is then rejected with
+/// Configurable roles are checked first. At T14, bare primitive authority is then rejected with
 /// [`TempoInvalidTransaction::RootKeyRetired`] for any account with a nonzero configuration
 /// commitment, in the order sender, key authorization signer, fee payer, access key. RPC
 /// simulation skips only the sender check.
@@ -125,14 +135,14 @@ pub(crate) fn validate_state(
     envelope: &TempoTxEnv,
     spec: TempoHardfork,
 ) -> HandlerResult<(u64, u64)> {
-    let NativeRoles {
+    let ConfigurableRoleCharges {
         mut extra_gas,
         state_gas,
         mut accounts,
     } = match envelope.as_aa() {
-        Some(aa) => validate_native_roles(host, aa, spec)?,
-        // Non-AA transactions have no native roles.
-        None => NativeRoles {
+        Some(aa) => validate_configurable_roles(host, aa, spec)?,
+        // Non-AA transactions have no configurable roles.
+        None => ConfigurableRoleCharges {
             extra_gas: 0,
             state_gas: 0,
             accounts: Vec::new(),
@@ -154,7 +164,7 @@ pub(crate) fn verify(
 ) -> Result<(), TempoInvalidTransaction> {
     match context {
         ExecutionContext::Transaction { .. } => {
-            if let Some(role) = aa.native_authorization() {
+            if let Some(role) = aa.configurable_role() {
                 role.signature
                     .verify_approvals(role.inner_digest)
                     .map_err(ConfigurableAccountError::Quorum)?;
@@ -176,13 +186,13 @@ pub(crate) fn register_commitments(
     if host.ext().mirrored_config_commitments {
         return Ok(());
     }
-    let Some(role) = aa.native_authorization() else {
+    let Some(role) = aa.configurable_role() else {
         return Ok(());
     };
     let (account, commitment) = (role.signature.account(), role.signature.config_commitment());
     StorageCtx::enter_evm_without_tip1060_accounting(host, || {
-        // Read again rather than carried over from `validate_state`: nothing writes the
-        // commitment in between, so this only registers accounts still unset.
+        // Re-read to avoid threading `validate_state`'s value through: nothing writes the
+        // commitment in between, so both reads agree.
         if StorageCtx.config_commitment(account)?.is_zero() {
             StorageCtx.set_config_commitment(
                 account,
@@ -224,16 +234,16 @@ fn load_account(
     })
 }
 
-/// Native roles only: returns extra gas, state gas, and the native role accounts already loaded.
-fn validate_native_roles(
+/// Configurable roles only: returns extra gas, state gas, and the role accounts already loaded.
+fn validate_configurable_roles(
     host: &mut Evm<'_, TempoEvmTypes>,
     aa: &TempoAaTx,
     spec: TempoHardfork,
-) -> HandlerResult<NativeRoles> {
+) -> HandlerResult<ConfigurableRoleCharges> {
     let caller = aa.signer();
     let tx = aa.tx();
-    let Some(role) = aa.native_authorization() else {
-        return Ok(NativeRoles {
+    let Some(role) = aa.configurable_role() else {
+        return Ok(ConfigurableRoleCharges {
             extra_gas: 0,
             state_gas: 0,
             accounts: Vec::new(),
@@ -300,7 +310,7 @@ fn validate_native_roles(
             state_gas += gas.new_account_state_gas();
         }
     }
-    Ok(NativeRoles {
+    Ok(ConfigurableRoleCharges {
         extra_gas,
         state_gas,
         accounts: vec![address],
@@ -310,8 +320,8 @@ fn validate_native_roles(
 /// Rejects bare primitive authority of accounts with a nonzero commitment (TIP-1112).
 ///
 /// Each distinct non-caller account is charged one account access, deduplicated against
-/// `accounts` (which collects every charged account). A configurable account sender is a native
-/// account that always carries a commitment and is never a primitive root, so it is not checked.
+/// `accounts` (which collects every charged account). A configurable sender always carries a
+/// commitment and is never a primitive root, so it is not checked.
 fn validate_root_keys(
     host: &mut Evm<'_, TempoEvmTypes>,
     envelope: &TempoTxEnv,
@@ -335,16 +345,12 @@ fn validate_root_keys(
             Err(TempoInvalidTransaction::RootKeyRetired { account, role }.into())
         }
     };
-    let aa = envelope.as_aa();
     // RPC simulation supplies a placeholder sender signature.
-    let simulation = match envelope.execution_context() {
-        ExecutionContext::Transaction { .. } => false,
-        ExecutionContext::Simulation => true,
-    };
+    let simulation = matches!(envelope.execution_context(), ExecutionContext::Simulation);
     if !simulation && envelope.signed_by_primitive_root() {
         check(host, caller, RootKeyRole::Sender)?;
     }
-    let Some(aa) = aa else {
+    let Some(aa) = envelope.as_aa() else {
         return Ok(extra_gas);
     };
     if let Some(auth) = &aa.tx().key_authorization {

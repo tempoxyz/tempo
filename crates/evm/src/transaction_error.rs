@@ -2,6 +2,7 @@
 
 use alloy_primitives::{Address, B256, U256};
 use evm2::registry::HandlerError;
+use reth_evm::InvalidTxError;
 use tempo_primitives::transaction::{
     ConfigurableAccountQuorumError, KeyAuthorizationChainIdError, KeychainVersionError,
 };
@@ -79,6 +80,11 @@ pub enum TempoInvalidTransaction {
     /// Expiring nonce transaction missing valid_before.
     #[error("expiring nonce transaction requires valid_before to be set")]
     ExpiringNonceMissingValidBefore,
+
+    /// Expiring nonce transaction whose replay hash is already recorded and unexpired,
+    /// i.e. the same transaction was already included.
+    #[error("expiring nonce transaction already included")]
+    ExpiringNonceReplay,
 
     /// Pre-T12 expiring nonce transaction must have nonce == 0.
     #[error("expiring nonce transaction must have nonce == 0 before T12")]
@@ -236,7 +242,7 @@ pub enum TempoInvalidTransaction {
     #[error("{0}")]
     CallsValidation(&'static str),
 
-    /// Native account authorization failure.
+    /// Configurable authorization failure.
     #[error(transparent)]
     ConfigurableAccount(#[from] ConfigurableAccountError),
 
@@ -285,6 +291,7 @@ impl TempoInvalidTransaction {
             // State- or fork-dependent: may resolve as the chain advances.
             Self::ValidAfter { .. }
             | Self::ValidBefore { .. }
+            | Self::ExpiringNonceReplay
             | Self::ExpiringNonceNonceNotZero
             | Self::InvalidFeeToken(_)
             | Self::FeeTokenNotTip20 { .. }
@@ -308,29 +315,38 @@ impl TempoInvalidTransaction {
             },
         }
     }
+
+    /// Returns the Tempo validation error carried by a block executor's invalid-tx error,
+    /// or `None` if it is a generic EVM validation error.
+    pub fn from_invalid_tx_error(error: &dyn InvalidTxError) -> Option<&Self> {
+        error
+            .as_any()
+            .downcast_ref::<HandlerError>()?
+            .external_ref()
+    }
 }
 
-/// Native account authorization failure (TIP-1112).
+/// Configurable authorization failure (TIP-1112).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum ConfigurableAccountError {
-    /// Native authorization is not active in this execution context.
+    /// Configurable authorization is not active in this execution context.
     #[error("configurable account is unavailable in this execution context")]
     UnsupportedContext,
-    /// A native signature appears in a role that forbids it.
+    /// A configurable signature appears in a role that forbids it.
     #[error("configurable account signature is forbidden in this transaction role")]
     InvalidSignatureContext,
-    /// The account cannot hold a native configuration.
+    /// The account cannot hold a configuration.
     #[error("invalid configurable account {account}")]
     InvalidAccount {
         /// Rejected account.
         account: Address,
     },
-    /// The native signature names an account other than the transaction sender.
+    /// The configurable signature names an account other than the transaction sender.
     #[error("configurable account signer mismatch: expected {expected}, actual {actual}")]
     AccountMismatch {
         /// Transaction sender.
         expected: Address,
-        /// Account named by the native signature.
+        /// Account named by the configurable signature.
         actual: Address,
     },
     /// The supplied configuration does not match the stored commitment.
@@ -520,6 +536,11 @@ mod tests {
     #[test]
     fn test_pre_t12_expiring_nonce_discriminator_is_not_bad() {
         assert!(!TempoInvalidTransaction::ExpiringNonceNonceNotZero.is_bad_transaction());
+    }
+
+    #[test]
+    fn test_expiring_nonce_replay_is_not_bad() {
+        assert!(!TempoInvalidTransaction::ExpiringNonceReplay.is_bad_transaction());
     }
 
     #[test]

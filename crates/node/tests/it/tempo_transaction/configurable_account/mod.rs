@@ -334,9 +334,8 @@ async fn reject_with(
     signature: TempoSignature,
     invalid: TempoInvalidTransaction,
 ) -> eyre::Result<()> {
-    let error = rejection(env, tx, signature).await;
     assert_rpc_error(
-        &error,
+        &rejection(env, tx, signature).await,
         EthRpcErrorCode::InvalidInput.code(),
         &invalid.to_string(),
     )

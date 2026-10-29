@@ -346,10 +346,8 @@ impl Verifier {
 #[derive(Clone, Copy, Debug)]
 enum KeychainCheck {
     VerifyAccessKey,
-    VerifyAdminAccessKey,
     VerifyAdminRoot,
     IsAdminRoot,
-    IsAdminAccessKey { key_committed: bool },
 }
 
 /// The gas parameters of `spec`'s EVM version.
@@ -503,11 +501,8 @@ fn set_delegation(f: &mut Fixture, nonce: u64, target: Address) {
 }
 
 /// Authorizes `key` for the account with a root-signed grant at `nonce`.
-fn grant_key(f: &mut Fixture, nonce: u64, key: &PrivateKeySigner, admin: bool, expiry: u64) {
+fn grant_key(f: &mut Fixture, nonce: u64, key: &PrivateKeySigner, expiry: u64) {
     let mut grant = KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key.address());
-    if admin {
-        grant = grant.into_admin(f.account);
-    }
     if expiry != 0 {
         grant = grant.with_expiry(expiry);
     }
@@ -852,25 +847,23 @@ fn eoa_migration_error_order() {
         "access key batch",
         |f| {
             let key = signer(6);
-            grant_key(f, 3, &key, false, 0);
+            grant_key(f, 3, &key, 0);
             keychain_tx(f, &key, 4, vec![upgrade.clone(), f.getter()]).into()
         },
         &only_call,
     );
 
     // 2: only a primitive root signature may migrate.
-    for admin in [false, true] {
-        expect_revert(
-            Fixture::with_parent(false),
-            if admin { "admin key" } else { "access key" },
-            |f| {
-                let key = signer(6);
-                grant_key(f, 3, &key, admin, 0);
-                keychain_tx(f, &key, 4, vec![upgrade.clone()]).into()
-            },
-            &root_required,
-        );
-    }
+    expect_revert(
+        Fixture::with_parent(false),
+        "access key",
+        |f| {
+            let key = signer(6);
+            grant_key(f, 3, &key, 0);
+            keychain_tx(f, &key, 4, vec![upgrade.clone()]).into()
+        },
+        &root_required,
+    );
     // 2 before 3: a delegated account with an access key.
     expect_revert(
         Fixture::with_parent(false),
@@ -878,7 +871,7 @@ fn eoa_migration_error_order() {
         |f| {
             set_delegation(f, 3, delegate);
             let key = signer(6);
-            grant_key(f, 5, &key, false, 0);
+            grant_key(f, 5, &key, 0);
             keychain_tx(f, &key, 6, vec![upgrade.clone()]).into()
         },
         &root_required,
@@ -1248,10 +1241,10 @@ fn eoa_migration_preserves_account_state() {
     let mut f = Fixture::with_parent(false);
     let account = f.account;
     let spender = signer(7).address();
-    let keys = [signer(11), signer(12), signer(13), signer(14)];
+    let keys = [signer(11), signer(12), signer(13)];
     fund(&mut f, account, 50_000_000);
 
-    // Allowance, then an ordinary, an admin, a revoked and an expiring access key.
+    // Allowance, then an ordinary, a revoked and an expiring access key.
     let approve = Call {
         to: TxKind::Call(PATH_USD_ADDRESS),
         value: U256::ZERO,
@@ -1264,21 +1257,20 @@ fn eoa_migration_preserves_account_state() {
     };
     let tx = f.primitive(3, vec![approve]);
     assert!(f.run(&tx).status);
-    grant_key(&mut f, 4, &keys[0], false, 0);
-    grant_key(&mut f, 5, &keys[1], true, 0);
-    grant_key(&mut f, 6, &keys[2], false, 0);
+    grant_key(&mut f, 4, &keys[0], 0);
+    grant_key(&mut f, 5, &keys[1], 0);
     let revoke = Call {
         to: TxKind::Call(ACCOUNT_KEYCHAIN_ADDRESS),
         value: U256::ZERO,
         input: IAccountKeychain::revokeKeyCall {
-            keyId: keys[2].address(),
+            keyId: keys[1].address(),
         }
         .abi_encode()
         .into(),
     };
-    let tx = f.primitive(7, vec![revoke]);
+    let tx = f.primitive(6, vec![revoke]);
     assert!(f.run(&tx).status);
-    grant_key(&mut f, 8, &keys[3], false, 1000);
+    grant_key(&mut f, 7, &keys[2], 1000);
     f.update_block(|block| block.timestamp = U256::from(2000));
     // A used 2D nonce lane; the nonce manager needs its precompile account to persist.
     in_storage_ctx(&mut f.evm, || NonceManager::new().initialize()).unwrap();
@@ -1320,27 +1312,27 @@ fn eoa_migration_preserves_account_state() {
     assert_eq!(before.allowance, U256::from(77));
     assert_eq!(before.nonce, 1);
 
-    let config = migrate(&mut f, 9, signer(2).address());
+    let config = migrate(&mut f, 8, signer(2).address());
     assert_eq!(snapshot(&mut f), before);
-    assert_eq!(f.info(account).unwrap().nonce, 10);
+    assert_eq!(f.info(account).unwrap().nonce, 9);
 
-    // The admin key still cannot rotate the migrated account or migrate it again.
+    // The access key still cannot rotate the migrated account or migrate it again.
     let next = ConfigurableAccountConfig {
         version: 2,
         ..config.clone()
     };
     let mut rejected = |nonce, call, error: Vec<u8>| {
-        let tx = keychain_tx(&f, &keys[1], nonce, vec![call]);
+        let tx = keychain_tx(&f, &keys[0], nonce, vec![call]);
         let result = f.run(&tx);
         assert_eq!(&result.output, &error);
     };
     rejected(
-        10,
+        9,
         Fixture::rotation(&config, &next),
         IConfigurableAccount::UnauthorizedConfigurableAccountCaller {}.abi_encode(),
     );
     rejected(
-        11,
+        10,
         Fixture::upgrade(&config),
         IConfigurableAccount::PrimitiveRootRequired {}.abi_encode(),
     );
@@ -1479,7 +1471,7 @@ fn sponsored(
     tx
 }
 
-/// A grant of `key` for the account, signed by `signer` (a primitive root or admin key).
+/// A grant of `key` for the account, signed by `signer`.
 fn grant_by(signer: &PrivateKeySigner, key: Address) -> SignedKeyAuthorization {
     let grant = KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key);
     let signature = signer.sign_hash_sync(&grant.signature_hash()).unwrap();
@@ -1600,39 +1592,23 @@ fn retired_root_rejects_delegated_roles() {
         }
     }
 
-    // An admin access key that migrated can neither sign a grant nor sign
-    // transactions; its parent is not affected.
+    // An access key that migrated can no longer sign transactions; its parent is not affected.
     let mut f = Fixture::with_parent(false);
-    let admin = signer(4);
-    grant_key(&mut f, 3, &admin, true, 0);
+    let key = signer(4);
+    grant_key(&mut f, 3, &key, 0);
     let account = f.account;
-    let admin_grant = |f: &Fixture| {
-        let grant = KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, new_key.address())
-            .with_account(f.account);
-        let signature = admin.sign_hash_sync(&grant.signature_hash()).unwrap();
-        grant.into_signed(PrimitiveSignature::Secp256k1(signature))
-    };
-    let tx = TempoTransaction {
-        key_authorization: Some(admin_grant(&f)),
-        ..aa_tx(4, vec![f.getter()])
-    };
-    let tx = keychain_signed(tx, &admin, account);
-    // Control: the admin key still works while it has no commitment.
+    let tx = keychain_signed(aa_tx(4, vec![f.getter()]), &key, account);
+    // Control: the access key still works while it has no commitment.
     let output = f
         .evm
         .transact(&env_of(&tx, account, false))
         .unwrap()
         .detach();
     assert!(output.result.status, "{:?}", output.result);
-    retire(&mut f, admin.address());
+    retire(&mut f, key.address());
     assert_eq!(
         rejection(&mut f, &tx, account),
-        retired(admin.address(), RootKeyRole::KeyAuthorizationSigner)
-    );
-    let tx = keychain_signed(aa_tx(4, vec![f.getter()]), &admin, account);
-    assert_eq!(
-        rejection(&mut f, &tx, account),
-        retired(admin.address(), RootKeyRole::AccessKey)
+        retired(key.address(), RootKeyRole::AccessKey)
     );
 
     // A sponsor that migrates after signing can no longer pay, even for a transaction
@@ -1736,7 +1712,7 @@ fn gas_at(
     tx: impl FnOnce(&Fixture) -> AASigned,
 ) -> u64 {
     let mut f = Fixture::with_spec(false, spec);
-    grant_key(&mut f, 3, key, false, 0);
+    grant_key(&mut f, 3, key, 0);
     let tx = tx(&f);
     let result = f.run(&tx);
     assert!(result.status, "{spec:?}: {result:?}");
@@ -1755,10 +1731,10 @@ fn retired_root_error_order_and_access_gas() {
         retire(&mut f, address);
     }
     let target = signer(7).address();
-    // A root-signed grant for a root-signed transaction; an admin-signed grant must travel with
-    // its own admin key.
+    // A root-signed grant for a root-signed transaction; a grant signed by an access key must
+    // travel with that key.
     let root_grant = grant_by(&f.owner, target);
-    let admin_grant = {
+    let key_grant = {
         let grant = KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, target)
             .with_account(account);
         let signature = signer_s.sign_hash_sync(&grant.signature_hash()).unwrap();
@@ -1777,7 +1753,7 @@ fn retired_root_error_order_and_access_gas() {
     );
     let tx = keychain_signed(
         sponsor(TempoTransaction {
-            key_authorization: Some(admin_grant),
+            key_authorization: Some(key_grant),
             ..aa_tx(3, vec![f.getter()])
         }),
         &signer_s,
@@ -2353,6 +2329,32 @@ fn send_listed(
         ..aa_tx(nonce, calls)
     });
     f.run_as(sender, &tx)
+}
+
+/// An existing relayer, so that the new-account charge of its first transaction does not enter
+/// the gas of the checks that it sends.
+fn seed_relayer(f: &mut Fixture) {
+    f.evm
+        .overlay_db_mut()
+        .insert_account_info(&signer(9).address(), AccountInfo::default().with_nonce(1));
+}
+
+/// Executes `call` from the relayer with `gas_limit` and `warm` in the access list.
+fn relayed(
+    f: &mut Fixture,
+    call: Call,
+    gas_limit: u64,
+    warm: Option<Address>,
+) -> TxResult<TempoEvmTypes> {
+    let access_list = AccessList(
+        warm.into_iter()
+            .map(|address| AccessListItem {
+                address,
+                storage_keys: Vec::new(),
+            })
+            .collect(),
+    );
+    send_listed(f, signer(9).address(), vec![call], access_list, gas_limit)
 }
 
 /// Asserts that `result` reverted with exactly `error` and logged nothing.
@@ -2936,34 +2938,29 @@ fn bool_query(f: &mut Fixture, call: Call, warm: Option<Address>, label: &str) -
 fn retired_root_keychain_verifiers_reject() {
     let hash = B256::repeat_byte(0x42);
     for kind in KEY_KINDS {
-        for function in [Verifier::Keychain, Verifier::KeychainAdmin] {
-            let admin = matches!(function, Verifier::KeychainAdmin);
-            // An access key granted by the account: a committed key ID is rejected, an uncommitted
-            // one under a committed account is not.
-            for (key_committed, account_committed) in [(false, false), (true, false), (false, true)]
-            {
-                let expected = !key_committed;
-                let label = format!(
-                    "{kind:?} {function:?} key committed {key_committed}, account committed \
-                     {account_committed}"
-                );
-                let mut f = Fixture::with_parent(false);
-                let account = f.account;
-                let (key, signature) = keychain_signature(kind, 7, account, hash);
-                grant_kind(&mut f, 3, kind, key, admin);
-                if key_committed {
-                    retire(&mut f, key);
-                }
-                if account_committed {
-                    retire(&mut f, account);
-                }
-                let call = function.call(account, hash, signature);
-                assert_eq!(
-                    bool_query(&mut f, call, None, &label).0,
-                    expected,
-                    "{label}"
-                );
+        // An access key granted by the account: a committed key ID is rejected, an uncommitted one
+        // under a committed account is not.
+        for (key_committed, account_committed) in [(false, false), (true, false), (false, true)] {
+            let expected = !key_committed;
+            let label = format!(
+                "{kind:?} key committed {key_committed}, account committed {account_committed}"
+            );
+            let mut f = Fixture::with_parent(false);
+            let account = f.account;
+            let (key, signature) = keychain_signature(kind, 7, account, hash);
+            grant_kind(&mut f, 3, kind, key, false);
+            if key_committed {
+                retire(&mut f, key);
             }
+            if account_committed {
+                retire(&mut f, account);
+            }
+            let call = Verifier::Keychain.call(account, hash, signature);
+            assert_eq!(
+                bool_query(&mut f, call, None, &label).0,
+                expected,
+                "{label}"
+            );
         }
         // The root key of its own address: the implicit admin, or a stored row of its own.
         for committed in [false, true] {
@@ -2998,13 +2995,11 @@ fn retired_root_keychain_verifiers_reject() {
 
 #[test]
 fn retired_root_is_not_an_implicit_admin_key() {
-    let key = signer(7);
     for committed in [false, true] {
         let mut f = Fixture::with_parent(false);
         let account = f.account;
         // A stored non-admin row of the root's own address never makes it an admin key.
         grant_kind(&mut f, 3, SigKind::Secp256k1, account, false);
-        grant_kind(&mut f, 4, SigKind::Secp256k1, key.address(), true);
         if committed {
             retire(&mut f, account);
         }
@@ -3025,15 +3020,6 @@ fn retired_root_is_not_an_implicit_admin_key() {
             assert!(!admin, "{label}");
             assert_eq!(root_gas, unknown_gas + 100, "{label}");
         }
-        // An admin access key keeps its stored row, whether or not its account is retired.
-        let label = format!("(X, K), X committed {committed}");
-        let call = is_admin_key_call(account, key.address());
-        assert!(bool_query(&mut f, call, None, &label).0, "{label}");
-        // So does one whose own address is committed: only the root of an address is retired.
-        retire(&mut f, key.address());
-        let label = format!("(X, K), X committed {committed}, K committed");
-        let call = is_admin_key_call(account, key.address());
-        assert!(bool_query(&mut f, call, None, &label).0, "{label}");
     }
 }
 
@@ -3105,9 +3091,8 @@ fn retired_root_keychain_checks_are_unchanged_before_t14() {
     assert!(bool_query(&mut f, call, None, "isAdminKey").0);
 }
 
-/// Gas of one `check` at `spec` with the queried account (or the access key's, for the
-/// `IsAdminAccessKey` check) listed in the access list (warm) or not (cold). Each check returns
-/// true.
+/// Gas of one `check` at `spec` with the address whose commitment it reads listed in the access
+/// list (warm) or not (cold). Each check returns true.
 fn keychain_check_gas(spec: TempoHardfork, check: KeychainCheck, warm: bool) -> u64 {
     let hash = B256::repeat_byte(0x42);
     let mut f = Fixture::with_spec(false, spec);
@@ -3118,22 +3103,11 @@ fn keychain_check_gas(spec: TempoHardfork, check: KeychainCheck, warm: bool) -> 
             grant_kind(&mut f, 3, SigKind::Secp256k1, key, false);
             (Verifier::Keychain.call(account, hash, signature), key)
         }
-        KeychainCheck::VerifyAdminAccessKey => {
-            grant_kind(&mut f, 3, SigKind::Secp256k1, key, true);
-            (Verifier::KeychainAdmin.call(account, hash, signature), key)
-        }
         KeychainCheck::VerifyAdminRoot => {
             let (root, signature) = root_keychain_signature(SigKind::Secp256k1, 1, hash);
             (Verifier::KeychainAdmin.call(root, hash, signature), root)
         }
         KeychainCheck::IsAdminRoot => (is_admin_key_call(account, account), account),
-        KeychainCheck::IsAdminAccessKey { key_committed } => {
-            grant_kind(&mut f, 3, SigKind::Secp256k1, key, true);
-            if key_committed {
-                retire(&mut f, key);
-            }
-            (is_admin_key_call(account, key), key)
-        }
     };
     let label = format!("{check:?} at {spec:?}, warm {warm}");
     let (returned, gas) = bool_query(&mut f, call, warm.then_some(warm_account), &label);
@@ -3145,7 +3119,6 @@ fn keychain_check_gas(spec: TempoHardfork, check: KeychainCheck, warm: bool) -> 
 fn retired_root_keychain_checks_cost_the_commitment_read() {
     for check in [
         KeychainCheck::VerifyAccessKey,
-        KeychainCheck::VerifyAdminAccessKey,
         KeychainCheck::VerifyAdminRoot,
         KeychainCheck::IsAdminRoot,
     ] {
@@ -3158,80 +3131,43 @@ fn retired_root_keychain_checks_cost_the_commitment_read() {
             assert_eq!(after - before, read, "{check:?}, warm: {warm}");
         }
     }
-    // `isAdminKey(P, K)` never reads K's commitment: committed or not, at T13 or T14, the gas of
-    // an admin access key with a stored row is the same.
-    for warm in [false, true] {
-        let expected = keychain_check_gas(
-            TempoHardfork::T13,
-            KeychainCheck::IsAdminAccessKey {
-                key_committed: false,
-            },
-            warm,
-        );
-        for (spec, key_committed) in [
-            (TempoHardfork::T13, true),
-            (TempoHardfork::T14, false),
-            (TempoHardfork::T14, true),
-        ] {
-            assert_eq!(
-                keychain_check_gas(
-                    spec,
-                    KeychainCheck::IsAdminAccessKey { key_committed },
-                    warm
-                ),
-                expected,
-                "{spec:?}, key committed {key_committed}, warm: {warm}"
-            );
-        }
-    }
 }
 
-/// The result and gas of `function` for a signature of an admin access key of the fixture's
+/// The result and gas of `verifyKeychain` for a signature of an access key of the fixture's
 /// account whose own address is committed (and so retired at T14 only), checked against that
 /// account or, when `mismatched`, against another one than the signature names.
-fn retired_key_check(spec: TempoHardfork, function: Verifier, mismatched: bool) -> (bool, u64) {
+fn retired_key_check(spec: TempoHardfork, mismatched: bool) -> (bool, u64) {
     let hash = B256::repeat_byte(0x42);
     let mut f = Fixture::with_spec(false, spec);
     let account = f.account;
     let (key, signature) = keychain_signature(SigKind::Secp256k1, 7, account, hash);
-    grant_kind(&mut f, 3, SigKind::Secp256k1, key, true);
+    grant_kind(&mut f, 3, SigKind::Secp256k1, key, false);
     retire(&mut f, key);
     let checked = if mismatched {
         signer(5).address()
     } else {
         account
     };
-    let call = function.call(checked, hash, signature);
-    bool_query(
-        &mut f,
-        call,
-        None,
-        &format!("{function:?}, mismatched: {mismatched}"),
-    )
+    let call = Verifier::Keychain.call(checked, hash, signature);
+    bool_query(&mut f, call, None, &format!("mismatched: {mismatched}"))
 }
 
 #[test]
 fn retired_root_keychain_verifiers_check_in_order() {
     // Cold reads: the key's commitment, and the keychain slot of its grant.
     let (read, lookup) = (2600, 2100);
-    for function in [Verifier::Keychain, Verifier::KeychainAdmin] {
-        // A signature naming another account is rejected before the key's commitment is read:
-        // the same result and the same gas as at T13, where no commitment is read at all.
-        let after = retired_key_check(TempoHardfork::T14, function, true);
-        assert!(!after.0, "{function:?}");
-        assert_eq!(
-            after,
-            retired_key_check(TempoHardfork::T13, function, true),
-            "{function:?}"
-        );
-        // A retired key is rejected before its grant is looked up: the commitment read replaces
-        // the grant lookup that accepts the same signature at T13.
-        let (accepted, before) = retired_key_check(TempoHardfork::T13, function, false);
-        let (rejected, after) = retired_key_check(TempoHardfork::T14, function, false);
-        assert!(accepted, "{function:?}");
-        assert!(!rejected, "{function:?}");
-        assert_eq!(after + lookup, before + read, "{function:?}");
-    }
+    // A signature naming another account is rejected before the key's commitment is read: the
+    // same result and the same gas as at T13, where no commitment is read at all.
+    let after = retired_key_check(TempoHardfork::T14, true);
+    assert!(!after.0);
+    assert_eq!(after, retired_key_check(TempoHardfork::T13, true));
+    // A retired key is rejected before its grant is looked up: the commitment read replaces the
+    // grant lookup that accepts the same signature at T13.
+    let (accepted, before) = retired_key_check(TempoHardfork::T13, false);
+    let (rejected, after) = retired_key_check(TempoHardfork::T14, false);
+    assert!(accepted);
+    assert!(!rejected);
+    assert_eq!(after + lookup, before + read);
 }
 
 #[test]
@@ -3268,11 +3204,11 @@ fn native_commitment_only_account_evm_semantics() {
             let mut gas = Vec::new();
             for (nonce, extension) in [(1, B256::ZERO), (0, commitment), (0, B256::ZERO)] {
                 let mut f = Fixture::new();
-                let mut info = AccountInfo {
+                let info = AccountInfo {
                     nonce,
+                    extension: encode_config_commitment(extension).into(),
                     ..Default::default()
                 };
-                info.extension = encode_config_commitment(extension).into();
                 f.evm.overlay_db_mut().insert_account_info(&target, info);
                 let mut code = if operation == 0xf1 {
                     vec![0x5f, 0x5f, 0x5f, 0x5f, 0x60, value, 0x73]
@@ -3289,8 +3225,7 @@ fn native_commitment_only_account_evm_semantics() {
                 let contract = Address::repeat_byte(0x55);
                 let call = f.install_contract(contract, code);
                 f.update_account(contract, |info| info.balance = U256::from(value));
-                let tx = f.signed(3, vec![call]);
-                let output = f.evm.transact(&tx_env(&tx, f.account)).unwrap().commit();
+                let output = f.run(&f.signed(3, vec![call]));
                 assert!(output.status, "{output:?}");
                 if operation == 0x3f {
                     let expected = if nonce != 0 || !extension.is_zero() {
@@ -3325,6 +3260,9 @@ fn native_commitment_activation_database_lifecycle() {
     let factory = create_test_provider_factory();
     let mut fixture = Fixture::new();
     let config = activation_config();
+    let commitment = fixture.config.commitment().unwrap();
+    // The account registers its commitment in block 1.
+    let expected = |block: u64| if block == 0 { B256::ZERO } else { commitment };
     let mut roots = Vec::new();
     let mut parent_hash = B256::ZERO;
     for block in 0..=2 {
@@ -3348,7 +3286,13 @@ fn native_commitment_activation_database_lifecycle() {
             })
             .seal_slow();
             let mut executor = config
-                .executor_for_block(fixture.chain_db(), &block_env)
+                .executor_for_block(
+                    InMemoryDB {
+                        cache: fixture.evm.overlay_db().cache.clone(),
+                        ..Default::default()
+                    },
+                    &block_env,
+                )
                 .unwrap();
             assert_eq!(executor.evm().config_spec_id(), TempoHardfork::T14);
             executor.apply_pre_execution_changes().unwrap();
@@ -3371,21 +3315,21 @@ fn native_commitment_activation_database_lifecycle() {
             .unwrap()
             .state_root_with_updates(hashed.clone())
             .unwrap();
-        let mut header = Header {
+        let chain_block = EthereumBlock::uncle(Header {
             number: block,
             timestamp: 9 + block,
             state_root: root,
+            parent_hash,
             ..Default::default()
-        };
-        header.parent_hash = parent_hash;
-        let chain_block = EthereumBlock::uncle(header).try_into_recovered().unwrap();
+        })
+        .try_into_recovered()
+        .unwrap();
         parent_hash = chain_block.hash();
         let provider = factory.provider_rw().unwrap();
         provider.insert_block(&chain_block).unwrap();
-        let outcome = ExecutionOutcome::new(bundle, vec![vec![]], block, vec![]);
         provider
             .write_state(
-                &outcome,
+                &ExecutionOutcome::new(bundle, vec![vec![]], block, vec![]),
                 OriginalValuesKnown::Yes,
                 StateWriteConfig::default(),
             )
@@ -3399,14 +3343,9 @@ fn native_commitment_activation_database_lifecycle() {
             .basic_account(&fixture.account)
             .unwrap()
             .unwrap_or_else(|| panic!("persisted account missing at {block}"));
-        let expected = if block == 0 {
-            B256::ZERO
-        } else {
-            fixture.config.commitment().unwrap()
-        };
         assert_eq!(
             decode_config_commitment(&account.extension, TempoHardfork::T14).unwrap(),
-            expected
+            expected(block)
         );
         assert_eq!(latest.state_root(Default::default()).unwrap(), root);
         roots.push(root);
@@ -3417,14 +3356,9 @@ fn native_commitment_activation_database_lifecycle() {
         for block in [0, 1] {
             let historical = blockchain.history_by_block_number(block).unwrap();
             let account = historical.basic_account(&fixture.account).unwrap().unwrap();
-            let expected = if block == 0 {
-                B256::ZERO
-            } else {
-                fixture.config.commitment().unwrap()
-            };
             assert_eq!(
                 decode_config_commitment(&account.extension, TempoHardfork::T14).unwrap(),
-                expected
+                expected(block)
             );
         }
     }
@@ -3437,7 +3371,7 @@ fn native_commitment_activation_database_lifecycle() {
     assert_eq!(
         decode_config_commitment(&before_second.info.unwrap().extension, TempoHardfork::T14)
             .unwrap(),
-        fixture.config.commitment().unwrap()
+        commitment
     );
     for block in [1, 0] {
         let provider = factory.unwind_provider_rw().unwrap();
@@ -3445,14 +3379,9 @@ fn native_commitment_activation_database_lifecycle() {
         provider.commit().unwrap();
         let latest = factory.latest().unwrap();
         let account = latest.basic_account(&fixture.account).unwrap().unwrap();
-        let expected = if block == 0 {
-            B256::ZERO
-        } else {
-            fixture.config.commitment().unwrap()
-        };
         assert_eq!(
             decode_config_commitment(&account.extension, TempoHardfork::T14).unwrap(),
-            expected
+            expected(block)
         );
         assert_eq!(
             latest.state_root(Default::default()).unwrap(),
@@ -3529,7 +3458,7 @@ fn native_commitment_persisted_storage_trie_resume_and_proof() {
                 commitment
             );
         }
-        let progress = with_adapter!(&provider, |A| {
+        match with_adapter!(&provider, |A| {
             StateRoot::<DatabaseTrieCursorFactory<_, A>, DatabaseHashedCursorFactory<_>>::from_tx(
                 provider.tx_ref(),
             )
@@ -3537,8 +3466,8 @@ fn native_commitment_persisted_storage_trie_resume_and_proof() {
             .with_threshold(4)
             .root_with_progress()
         })
-        .unwrap();
-        match progress {
+        .unwrap()
+        {
             StateRootProgress::Progress(state, _, updates) => {
                 provider.write_trie_updates(updates).unwrap();
                 let mut checkpoint = MerkleCheckpoint::new(
@@ -3764,17 +3693,6 @@ fn registration_charges_the_new_account_cost_once_for_every_nonce_type() {
     }
 }
 
-/// Names the row of a table test that is running when it panics.
-struct Case(String);
-
-impl Drop for Case {
-    fn drop(&mut self) {
-        if std::thread::panicking() {
-            eprintln!("failing case: {}", self.0);
-        }
-    }
-}
-
 #[test]
 fn native_first_registration_preserves_existing_storage() {
     let mut f = Fixture::new();
@@ -3787,8 +3705,7 @@ fn native_first_registration_preserves_existing_storage() {
     f.evm
         .overlay_db_mut()
         .insert_account_storage(&f.account, &slot, &value);
-    let tx = f.signed(3, vec![f.getter()]);
-    let output = f.evm.transact(&tx_env(&tx, f.account)).unwrap().commit();
+    let output = f.run(&f.signed(3, vec![f.getter()]));
     assert!(output.status, "{output:?}");
     assert_eq!(output.logs, []);
     assert_eq!(f.commitment(), f.config.commitment().unwrap());
@@ -3819,8 +3736,7 @@ fn native_registration_survives_caught_reverting_subcall() {
     ]
     .concat();
     let call = f.install_contract(catcher, code);
-    let tx = f.signed(3, vec![call]);
-    let output = f.evm.transact(&tx_env(&tx, f.account)).unwrap().commit();
+    let output = f.run(&f.signed(3, vec![call]));
     assert!(output.status, "{output:?}");
     assert_eq!(output.logs, []);
     assert_eq!(f.commitment(), f.config.commitment().unwrap());
@@ -3847,8 +3763,7 @@ fn native_first_transaction_can_rotate_configuration() {
         version: 1,
         ..f.config.clone()
     };
-    let tx = f.signed(3, vec![Fixture::rotation(&f.config, &next), f.getter()]);
-    let output = f.evm.transact(&tx_env(&tx, f.account)).unwrap().commit();
+    let output = f.run(&f.signed(3, vec![Fixture::rotation(&f.config, &next), f.getter()]));
     assert!(output.status, "{output:?}");
     assert_eq!(output.logs.len(), 1);
     assert_eq!(
@@ -3871,12 +3786,7 @@ fn native_rotation_authorizes_next_transaction_in_same_block() {
         }],
         ..f.config.clone()
     };
-    let rotate = f.signed(3, vec![Fixture::rotation(&f.config, &next)]);
-    let output = f
-        .evm
-        .transact(&tx_env(&rotate, f.account))
-        .unwrap()
-        .commit();
+    let output = f.run(&f.signed(3, vec![Fixture::rotation(&f.config, &next)]));
     assert!(output.status, "{output:?}");
     let stale = f.signed(4, vec![f.getter()]);
     let error = f.evm.transact(&tx_env(&stale, f.account)).unwrap_err();
@@ -3891,12 +3801,29 @@ fn native_rotation_authorizes_next_transaction_in_same_block() {
     );
     f.config = next;
     f.owner = next_owner;
-    let tx = f.signed(4, vec![f.getter()]);
-    let output = f.evm.transact(&tx_env(&tx, f.account)).unwrap().commit();
+    let output = f.run(&f.signed(4, vec![f.getter()]));
     assert!(output.status, "{output:?}");
     assert_eq!(f.commitment(), f.config.commitment().unwrap());
     assert_eq!(f.evm.block().number, block.number);
     assert_eq!(f.evm.block().timestamp, block.timestamp);
+}
+
+#[test]
+fn simulation_of_registered_account_can_rotate_configuration() {
+    let mut f = Fixture::new();
+    assert!(f.run(&f.signed(3, vec![f.getter()])).status);
+    let next = ConfigurableAccountConfig {
+        version: 1,
+        ..f.config.clone()
+    };
+    // RPC simulation signs with a placeholder primitive signature, never an owner witness.
+    let tx = f.primitive(4, vec![Fixture::rotation(&f.config, &next)]);
+    let output = f
+        .evm
+        .transact(&simulation_env(&tx, f.account, None))
+        .unwrap()
+        .detach();
+    assert!(output.result.status, "{:?}", output.result);
 }
 
 #[test]
@@ -3906,17 +3833,23 @@ fn native_batch_rotation_failures_roll_back_together() {
     }
 }
 
+/// Names the row of a table test that is running when it panics.
+struct Case(String);
+
+impl Drop for Case {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            eprintln!("failing case: {}", self.0);
+        }
+    }
+}
+
 fn native_batch_rotation_failure(registered: bool, halt: bool) {
     let _case = Case(format!("registered={registered}, halt={halt}"));
     let mut f = Fixture::new();
     let mut nonce = 3;
     if registered {
-        let register = f.signed(nonce, vec![f.getter()]);
-        let output = f
-            .evm
-            .transact(&tx_env(&register, f.account))
-            .unwrap()
-            .commit();
+        let output = f.run(&f.signed(nonce, vec![f.getter()]));
         assert!(output.status);
         nonce += 1;
     }
@@ -3950,8 +3883,7 @@ fn native_batch_rotation_failure(registered: bool, halt: bool) {
     ];
     let mut calls = rotations.clone();
     calls.push(revert);
-    let tx = f.signed(nonce, calls);
-    let output = f.evm.transact(&tx_env(&tx, f.account)).unwrap().commit();
+    let output = f.run(&f.signed(nonce, calls));
     assert_eq!(output.stop.is_halt(), halt);
     assert_eq!(output.stop.is_revert(), !halt);
     assert_eq!(output.logs, []);
@@ -3960,8 +3892,7 @@ fn native_batch_rotation_failure(registered: bool, halt: bool) {
     assert_eq!(f.info(f.account).unwrap().nonce, nonce);
     // The original witness remains valid. Each successful update must read the
     // previous call's journaled commitment, not the transaction-start leaf.
-    let retry = f.signed(nonce, rotations);
-    let output = f.evm.transact(&tx_env(&retry, f.account)).unwrap().commit();
+    let output = f.run(&f.signed(nonce, rotations));
     assert!(output.status, "{output:?}");
     assert_eq!(output.logs.len(), 2);
     assert_eq!(f.commitment(), v2.commitment().unwrap());
@@ -3975,8 +3906,7 @@ fn eoa_migration_then_configurable_account_and_rotation() {
 
     // The next transaction's witness uses the event's salt at version 1.
     f.config = config.clone();
-    let tx = f.signed(4, vec![f.getter()]);
-    let result = f.run(&tx);
+    let result = f.run(&f.signed(4, vec![f.getter()]));
     assert_eq!(
         IConfigurableAccount::getConfigCommitmentCall::abi_decode_returns(&result.output).unwrap(),
         config.commitment().unwrap()
@@ -3989,8 +3919,7 @@ fn eoa_migration_then_configurable_account_and_rotation() {
         owners: owner_set(vec![next_owner.address()]),
         ..config
     };
-    let tx = f.signed(5, vec![Fixture::rotation(&config, &next), f.getter()]);
-    let result = f.run(&tx);
+    let result = f.run(&f.signed(5, vec![Fixture::rotation(&config, &next), f.getter()]));
     assert!(result.status, "{result:?}");
     assert_eq!(result.logs.len(), 1);
     assert_eq!(f.commitment(), next.commitment().unwrap());
@@ -4008,8 +3937,7 @@ fn eoa_migration_then_configurable_account_and_rotation() {
     );
     f.config = next;
     f.owner = next_owner;
-    let tx = f.signed(6, vec![f.getter()]);
-    assert!(f.run(&tx).status);
+    assert!(f.run(&f.signed(6, vec![f.getter()])).status);
 }
 
 #[test]
@@ -4115,8 +4043,7 @@ fn native_signature_verification_is_intrinsic_gas() {
 
     let mut f = Fixture::new();
     let witness = [alloy_rlp::encode(f.account), alloy_rlp::encode(&f.config)].concat();
-    let tx = f.signed(3, calls);
-    let native = f.run(&tx);
+    let native = f.run(&f.signed(3, calls));
     assert!(native.status, "{native:?}");
     assert!(!f.commitment().is_zero());
 
@@ -4143,8 +4070,7 @@ fn native_signature_verification_is_intrinsic_gas() {
 fn native_commitment_mismatch_reads_as_the_state_error() {
     let mut f = Fixture::new();
     let account = f.account;
-    let tx = f.signed(3, vec![f.getter()]);
-    let result = f.run(&tx);
+    let result = f.run(&f.signed(3, vec![f.getter()]));
     assert!(result.status, "{result:?}");
     let registered = f.commitment();
 
@@ -4286,34 +4212,6 @@ enum Access {
     Warm,
 }
 
-/// An existing relayer, so that the new-account charge of its first transaction does not enter
-/// the gas of the checks that it sends.
-fn seed_relayer(f: &mut Fixture) -> Address {
-    let relayer = signer(9).address();
-    f.evm
-        .overlay_db_mut()
-        .insert_account_info(&relayer, AccountInfo::default().with_nonce(1));
-    relayer
-}
-
-/// Executes `call` from the relayer with `gas_limit` and `warm` in the access list.
-fn relayed(
-    f: &mut Fixture,
-    call: Call,
-    gas_limit: u64,
-    warm: Option<Address>,
-) -> TxResult<TempoEvmTypes> {
-    let access_list = AccessList(
-        warm.into_iter()
-            .map(|address| AccessListItem {
-                address,
-                storage_keys: Vec::new(),
-            })
-            .collect(),
-    );
-    send_listed(f, signer(9).address(), vec![call], access_list, gas_limit)
-}
-
 /// The `verifyConfigurableAccount` call of `signature`.
 fn verify_configurable_account_call(
     account: Address,
@@ -4356,11 +4254,11 @@ fn check_configurable_account_verdict(
     let call = verify_configurable_account_call(account, CONFIGURABLE_ACCOUNT_HASH, signature);
     let zeros = call.input.iter().filter(|byte| **byte == 0).count() as u64;
     let nonzeros = call.input.len() as u64 - zeros;
-    // Intrinsic gas: 21000 plus 4 per zero and 16 per non-zero calldata byte. A transaction
-    // uses at least its calldata floor: 21000 plus 10 per zero and 40 per non-zero byte.
     let listed = matches!(access, Access::Listed).then_some(account);
     // Each address in the access list costs 2400 intrinsic gas.
     let access_list = if listed.is_some() { 2_400 } else { 0 };
+    // Intrinsic gas: 21000 plus 4 per zero and 16 per non-zero calldata byte. A transaction
+    // uses at least its calldata floor: 21000 plus 10 per zero and 40 per non-zero byte.
     let execution = 21_000
         + 4 * zeros
         + 16 * nonzeros
@@ -4412,7 +4310,6 @@ fn verify_configurable_account_before_and_after_rotation() {
     let unregistered_later =
         configurable_account_approval(account, &later, &f.owner, CONFIGURABLE_ACCOUNT_HASH);
     let invalid = Verdict::Invalid;
-    let label = "unregistered later version";
     check_configurable_account_verdict(
         &mut f,
         account,
@@ -4420,7 +4317,7 @@ fn verify_configurable_account_before_and_after_rotation() {
         false,
         cold,
         invalid,
-        label,
+        "unregistered later version",
     );
 
     // Registered by a rotation: only the new configuration matches, and the derivation is not
@@ -4481,7 +4378,6 @@ fn verify_configurable_account_false_cases_charge_before_they_check() {
     ] {
         let names_address =
             configurable_account_approval(address, &f.config, &f.owner, CONFIGURABLE_ACCOUNT_HASH);
-        let label = format!("invalid account {address}");
         check_configurable_account_verdict(
             &mut f,
             address,
@@ -4489,7 +4385,7 @@ fn verify_configurable_account_false_cases_charge_before_they_check() {
             false,
             access,
             invalid,
-            &label,
+            &format!("invalid account {address}"),
         );
     }
 
@@ -4638,8 +4534,7 @@ fn configurable_account_marker_dispatch() {
         value: U256::ZERO,
         input: Bytes::new(),
     };
-    let tx = f.signed(3, vec![receive.clone()]);
-    let result = f.run(&tx);
+    let result = f.run(&f.signed(3, vec![receive.clone()]));
     assert!(result.status, "{result:?}");
     assert!(result.output.is_empty());
     assert_eq!(
@@ -4657,10 +4552,28 @@ fn configurable_account_marker_dispatch() {
         data: bytes!("1234"),
     }
     .abi_encode();
+    // Like a Solidity callee, the hook accepts trailing data and a final `bytes` without its
+    // padding, but not a cut into the `bytes` value itself.
     let mut trailing = hook.clone();
     trailing.push(0);
-    let mut malformed = hook;
-    malformed.pop();
+    let unpadded = hook[..hook.len() - 30].to_vec();
+    let truncated = hook[..hook.len() - 31].to_vec();
+    for (offset, input) in [trailing, unpadded].into_iter().enumerate() {
+        let result = f.run(&f.signed(
+            4 + offset as u64,
+            vec![Call {
+                input: input.into(),
+                ..receive.clone()
+            }],
+        ));
+        assert!(result.status, "{result:?}");
+        assert_eq!(
+            result.output,
+            IConfigurableAccountShim::onERC721ReceivedCall::abi_encode_returns(
+                &IConfigurableAccountShim::onERC721ReceivedCall::SELECTOR.into()
+            )
+        );
+    }
     for (offset, input) in [
         bytes!("01"),
         bytes!("ffffffff"),
@@ -4668,14 +4581,13 @@ fn configurable_account_marker_dispatch() {
         bytes!("f23a6e61"),
         bytes!("bc197c81"),
         bytes!("1626ba7e"),
-        trailing.into(),
-        malformed.into(),
+        truncated.into(),
     ]
     .into_iter()
     .enumerate()
     {
         let result = f.run(&f.signed(
-            4 + offset as u64,
+            6 + offset as u64,
             vec![Call {
                 input,
                 ..receive.clone()
@@ -4688,6 +4600,31 @@ fn configurable_account_marker_dispatch() {
             CONFIGURABLE_ACCOUNT_CODE_HASH
         );
     }
+    // An ERC-1271 call without the signature's padding, as Solady sends it, is still answered.
+    seed_relayer(&mut f);
+    let approval =
+        configurable_account_approval(account, &f.config, &f.owner, CONFIGURABLE_ACCOUNT_HASH);
+    let signature = TempoSignature::ConfigurableAccount(approval).to_bytes();
+    assert_ne!(signature.len() % 32, 0);
+    let unpadded_len = 4 + 3 * 32 + signature.len();
+    let mut input = IConfigurableAccountShim::isValidSignatureCall {
+        hash: CONFIGURABLE_ACCOUNT_HASH,
+        signature,
+    }
+    .abi_encode();
+    input.truncate(unpadded_len);
+    let call = Call {
+        input: input.into(),
+        ..receive
+    };
+    let result = relayed(&mut f, call, 1_000_000, None);
+    assert!(result.status, "{result:?}");
+    assert_eq!(
+        result.output,
+        IConfigurableAccountShim::isValidSignatureCall::abi_encode_returns(
+            &[0x16, 0x26, 0xba, 0x7e].into()
+        )
+    );
 }
 
 /// A failing verification reverts through the shim exactly as the verifier does.
@@ -4706,9 +4643,8 @@ fn configurable_account_erc1271_propagates_verifier_reverts() {
             .abi_encode()
             .into(),
     };
-    let witness: Bytes = TempoSignature::ConfigurableAccount(signature).to_bytes();
-    let wrong_hash = call(B256::ZERO, witness);
-    let result = relayed(&mut f, wrong_hash, 1_000_000, None);
+    let witness = TempoSignature::ConfigurableAccount(signature).to_bytes();
+    let result = relayed(&mut f, call(B256::ZERO, witness), 1_000_000, None);
     assert_reverts_with(
         &result,
         ISignatureVerifier::InvalidSignature {},
@@ -4739,8 +4675,7 @@ fn configurable_marker_is_gated_by_fork_and_commitment() {
                 info.extension = encode_config_commitment(B256::repeat_byte(1)).into()
             });
         }
-        let tx = f.primitive(3, vec![call]);
-        let result = f.run(&tx);
+        let result = f.run(&f.primitive(3, vec![call]));
         assert_eq!(result.stop, InstrStop::OpcodeNotFound);
         assert!(result.output.is_empty());
     }
@@ -4797,7 +4732,7 @@ fn configurable_shim_matches_verifier_gas_and_propagates_oog() {
     let account = f.account;
     let approval =
         configurable_account_approval(account, &f.config, &f.owner, CONFIGURABLE_ACCOUNT_HASH);
-    let signature: Bytes = TempoSignature::ConfigurableAccount(approval).to_bytes();
+    let signature = TempoSignature::ConfigurableAccount(approval).to_bytes();
     let direct = ISignatureVerifier::verifyConfigurableAccountCall {
         account,
         hash: CONFIGURABLE_ACCOUNT_HASH,
@@ -4820,9 +4755,8 @@ fn configurable_shim_matches_verifier_gas_and_propagates_oog() {
         StorageCtx.gas_used()
     });
     let shim_gas = in_storage_ctx(&mut f.evm, || {
-        let result = shim::call(account, &input).unwrap();
         assert_eq!(
-            result.bytes(),
+            shim::call(account, &input).unwrap().bytes(),
             IConfigurableAccountShim::isValidSignatureCall::abi_encode_returns(
                 &[0x16, 0x26, 0xba, 0x7e].into()
             )
@@ -4830,18 +4764,31 @@ fn configurable_shim_matches_verifier_gas_and_propagates_oog() {
         StorageCtx.gas_used()
     });
     assert_eq!(shim_gas, direct_gas);
-    let mut gas = evm2::interpreter::GasTracker::new(shim_gas - 1);
-    let mut provider = tempo_precompiles::storage::evm::EvmPrecompileStorageProvider::new(
-        &mut f.evm,
-        &mut gas,
-        TempoHardfork::T14,
-        true,
+    let mut shim_with_gas = |gas_limit, input: &[u8]| {
+        let mut gas = evm2::interpreter::GasTracker::new(gas_limit);
+        let mut provider = tempo_precompiles::storage::evm::EvmPrecompileStorageProvider::new(
+            &mut f.evm,
+            &mut gas,
+            TempoHardfork::T14,
+            true,
+        );
+        StorageCtx::enter(&mut provider, || shim::call(account, input))
+    };
+    assert!(shim_with_gas(shim_gas - 1, &input).is_err_and(|error| error.is_oog()));
+    // The receive hook pays for its whole input before decoding it.
+    let receive = IConfigurableAccountShim::onERC721ReceivedCall {
+        operator: Address::ZERO,
+        from: Address::ZERO,
+        tokenId: U256::ZERO,
+        data: vec![0; 1 << 20].into(),
+    }
+    .abi_encode();
+    let receive_gas = input_cost(TempoHardfork::T14, receive.len()).unwrap();
+    assert!(shim_with_gas(receive_gas - 1, &receive).is_err_and(|error| error.is_oog()));
+    assert_eq!(
+        shim_with_gas(receive_gas, &receive).unwrap().bytes(),
+        IConfigurableAccountShim::onERC721ReceivedCall::abi_encode_returns(
+            &IConfigurableAccountShim::onERC721ReceivedCall::SELECTOR.into()
+        )
     );
-    let result = StorageCtx::enter(&mut provider, || shim::call(account, &input));
-    assert!(matches!(
-        result,
-        Err(evm2::precompiles::PrecompileError::Halt(
-            evm2::precompiles::PrecompileHalt::OutOfGas
-        ))
-    ));
 }

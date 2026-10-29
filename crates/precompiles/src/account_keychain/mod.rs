@@ -420,6 +420,13 @@ impl AccountKeychain {
         signature_type: SignatureType,
         witness: Option<B256>,
     ) -> Result<()> {
+        // T14+ ([TIP-1137]): admin keys can no longer be created.
+        //
+        // [TIP-1137]: <https://docs.tempo.xyz/protocol/tips/tip-1137>
+        if self.storage.spec().is_t14() {
+            return Err(AccountKeychainError::invalid_key_id().into());
+        }
+
         self.authorize_key_internal(
             msg_sender,
             key_id,
@@ -1217,10 +1224,17 @@ impl AccountKeychain {
         key_id: Address,
         current_timestamp: u64,
     ) -> Result<AuthorizedKey> {
-        let key = self.keys[account][key_id].read()?;
+        let mut key = self.keys[account][key_id].read()?;
 
         if key.is_revoked {
             return Err(AccountKeychainError::key_already_revoked().into());
+        }
+
+        // T14+ ([TIP-1137]): keys stored as admin act as regular access keys without limits.
+        //
+        // [TIP-1137]: <https://docs.tempo.xyz/protocol/tips/tip-1137>
+        if self.storage.spec().is_t14() {
+            key.is_admin = false;
         }
 
         if key.expiry == 0 {
@@ -1930,6 +1944,71 @@ mod tests {
 
             keychain.revoke_key(account, revokeKeyCall { keyId: admin_key })?;
             assert!(!keychain.is_admin_key(account, admin_key)?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t14_stored_admin_keys_become_regular_keys() -> eyre::Result<()> {
+        use crate::Precompile;
+
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
+        let account = Address::random();
+        let admin_key = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_tx_origin(account)?;
+            keychain.authorize_admin_key(account, admin_key, SignatureType::Secp256k1, None)
+        })?;
+        storage.set_spec(TempoHardfork::T14);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.set_tx_origin(account)?;
+
+            // No new admin keys, through the ABI or inline key authorizations.
+            let authorize_admin = IAccountKeychain::authorizeAdminKeyCall {
+                keyId: Address::random(),
+                signatureType: SignatureType::Secp256k1,
+                witness: B256::ZERO,
+            }
+            .abi_encode();
+            assert!(matches!(
+                keychain.call(&authorize_admin, account),
+                Err(evm2::precompiles::PrecompileError::Revert(_))
+            ));
+            assert!(
+                keychain
+                    .authorize_admin_key(account, Address::random(), SignatureType::Secp256k1, None)
+                    .is_err()
+            );
+
+            // The stored admin key still signs without limits, but cannot manage keys.
+            let key = keychain.validate_keychain_authorization(account, admin_key, 0, None)?;
+            assert!(!key.is_admin && !key.enforce_limits);
+            assert!(!keychain.is_admin_key(account, admin_key)?);
+            keychain.set_transaction_key(admin_key)?;
+            let new_key = authorizeKeyCall {
+                keyId: Address::random(),
+                signatureType: SignatureType::Secp256k1,
+                config: unrestricted_restrictions(),
+            };
+            assert_unauthorized_error(authorize_key(&mut keychain, account, new_key).unwrap_err());
+
+            // The root key can restrict it like any regular key.
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.update_spending_limit(
+                account,
+                updateSpendingLimitCall {
+                    keyId: admin_key,
+                    token: DEFAULT_FEE_TOKEN,
+                    newLimit: U256::ONE,
+                },
+            )?;
+            assert!(keychain.keys[account][admin_key].read()?.enforce_limits);
 
             Ok(())
         })

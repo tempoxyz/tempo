@@ -1281,8 +1281,7 @@ fn noncanonical_p256_owner_prehash_flag_canonicalizes() {
     );
 
     let mut noncanonical_signature = canonical_signature.to_vec();
-    let flag_index = noncanonical_signature.len() - 1;
-    noncanonical_signature[flag_index] = 2;
+    *noncanonical_signature.last_mut().unwrap() = 2;
 
     let envelope = |approval| {
         let mut encoded = vec![SIGNATURE_TYPE_CONFIGURABLE_ACCOUNT];
