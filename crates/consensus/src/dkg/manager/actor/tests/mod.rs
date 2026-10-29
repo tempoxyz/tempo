@@ -411,6 +411,76 @@ fn duplicate_and_late_acks_do_not_penalize_peers() {
 }
 
 #[test]
+fn dealings_with_trailing_bytes_are_dropped_without_penalizing_peers() {
+    Runner::default().start(|mut context| async move {
+        let (state, keys, _) = dkg_state(&mut context, Epoch::new(1), 2, true);
+        let round = Round::from_state(&state, crate::config::NAMESPACE, true);
+        let mut harness = Harness::builder(context.child("actor"), "dealing_trailing_bytes")
+            .initial_state(state.clone())
+            .identity(keys[0].clone())
+            .build()
+            .await;
+        let (mut actor, _mailbox) = harness.init().await.unwrap();
+        let mut storage = actor
+            .storage
+            .take()
+            .unwrap()
+            .init_verified(state.clone())
+            .await;
+        let mut player = storage
+            .create_player_for_round(keys[0].clone(), &round)
+            .unwrap()
+            .unwrap();
+        let (_, public, private) =
+            dkg::Dealer::start::<N3f1>(&mut context, round.info().clone(), keys[1].clone(), None)
+                .unwrap();
+        let private = private
+            .into_iter()
+            .find(|(player, _)| player == &keys[0].public_key())
+            .unwrap()
+            .1;
+        let message = Message::Dealer(public, private).encode();
+        let mut padded = message.to_vec();
+        padded.push(0);
+        let mut sender = harness.sender().clone();
+
+        let error = actor
+            .handle_network_msg(
+                &round,
+                &mut sender,
+                &mut storage,
+                None,
+                Some(&mut player),
+                keys[1].public_key(),
+                padded.into(),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<commonware_codec::Error>(),
+            Some(commonware_codec::Error::ExtraData(1))
+        ));
+        assert_eq!(sender.send_count(), 0);
+        assert!(harness.blocker.peers().is_empty());
+
+        actor
+            .handle_network_msg(
+                &round,
+                &mut sender,
+                &mut storage,
+                None,
+                Some(&mut player),
+                keys[1].public_key(),
+                message.into(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(sender.send_count(), 1);
+        assert!(harness.blocker.peers().is_empty());
+    });
+}
+
+#[test]
 fn local_share_storage_failures_panic_and_allow_recovery() {
     use commonware_consensus::Reporter as _;
     use commonware_runtime::deterministic::FaultConfig;
