@@ -10,7 +10,7 @@ use alloc::vec::Vec;
 use alloy_consensus::crypto::RecoveryError;
 use alloy_eips::eip7623::{STANDARD_TOKEN_COST, tokens_in_calldata};
 use alloy_primitives::{Address, B256, Bytes, Signature, U256, keccak256, uint};
-use alloy_rlp::{BufMut, Decodable, Encodable, Error as RlpError, Header, decode_exact};
+use alloy_rlp::{BufMut, decode_exact};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use sha2::{Digest, Sha256};
 
@@ -638,7 +638,7 @@ impl AccountSignature {
             Some(SIGNATURE_TYPE_CONFIGURABLE_ACCOUNT) => {
                 decode_exact::<ConfigurableAccountSignature>(&data[1..])
                     .map(Self::ConfigurableAccount)
-                    .map_err(AccountSignatureError::InvalidConfigurableAccount)
+                    .map_err(|_| AccountSignatureError::InvalidConfigurableAccount)
             }
             _ => PrimitiveSignature::from_bytes(data)
                 .map(Self::Primitive)
@@ -715,18 +715,6 @@ impl AccountSignature {
         }
         Ok(signature)
     }
-
-    /// Full gas to verify the approval: [`PrimitiveSignature::verification_gas`] or
-    /// [`ConfigurableAccountSignature::verification_gas`].
-    ///
-    /// This does not subtract the ecrecover baseline already covered by ordinary intrinsic gas.
-    /// Returns `None` if the cost overflows `u64`.
-    pub fn verification_gas(&self) -> Option<u64> {
-        match self {
-            Self::Primitive(signature) => Some(signature.verification_gas()),
-            Self::ConfigurableAccount(signature) => signature.verification_gas(),
-        }
-    }
 }
 
 impl From<Signature> for AccountSignature {
@@ -747,53 +735,13 @@ impl From<ConfigurableAccountSignature> for AccountSignature {
     }
 }
 
-impl TryFrom<TempoSignature> for AccountSignature {
-    type Error = AccountSignatureError;
-
-    fn try_from(signature: TempoSignature) -> Result<Self, Self::Error> {
-        match signature {
-            TempoSignature::Primitive(signature) => Ok(Self::Primitive(signature)),
-            TempoSignature::ConfigurableAccount(signature) => {
-                Ok(Self::ConfigurableAccount(signature))
-            }
-            TempoSignature::Keychain(_) => Err(AccountSignatureError::Keychain),
-        }
-    }
-}
-
-impl Encodable for AccountSignature {
-    fn encode(&self, out: &mut dyn BufMut) {
-        Header {
-            list: false,
-            payload_length: self.encoded_length(),
-        }
-        .encode(out);
-        self.encode_bytes_into(out);
-    }
-
-    fn length(&self) -> usize {
-        Header {
-            list: false,
-            payload_length: self.encoded_length(),
-        }
-        .length_with_payload()
-    }
-}
-
-impl Decodable for AccountSignature {
-    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        let bytes = Header::decode_bytes(buf, false)?;
-        Self::from_bytes(bytes).map_err(|error| RlpError::Custom(error.as_str()))
-    }
-}
-
-/// Why bytes or a [`TempoSignature`] are not a direct account approval.
+/// Why bytes are not a direct account approval.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AccountSignatureError {
     /// A keychain envelope where a direct approval is required.
     Keychain,
     /// A configurable account witness that does not decode.
-    InvalidConfigurableAccount(RlpError),
+    InvalidConfigurableAccount,
     /// A primitive signature that does not decode, with its message.
     Primitive(&'static str),
     /// A configurable account approval inside a keychain V1 envelope.
@@ -805,18 +753,12 @@ impl AccountSignatureError {
     const fn as_str(self) -> &'static str {
         match self {
             Self::Keychain => "keychain signatures are not account signatures",
-            Self::InvalidConfigurableAccount(_) => "Invalid configurable account signature RLP",
+            Self::InvalidConfigurableAccount => "Invalid configurable account signature RLP",
             Self::Primitive(message) => message,
             Self::ConfigurableAccountInKeychainV1 => {
                 "configurable account access keys require keychain V2"
             }
         }
-    }
-}
-
-impl core::fmt::Display for AccountSignatureError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str(self.as_str())
     }
 }
 

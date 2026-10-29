@@ -640,10 +640,6 @@ fn signature_bytes_dispatch_on_length_then_type_byte() {
         SIGNATURE_TYPE_CONFIGURABLE_ACCOUNT,
     ] {
         assert_eq!(TempoSignature::from_bytes(&[first]), Err(too_short));
-        assert_eq!(
-            decode_exact::<AccountSignature>(alloy_rlp::encode(Bytes::from(vec![first]))),
-            Err(RlpError::Custom(too_short))
-        );
         let lone_inner = [
             &[SIGNATURE_TYPE_KEYCHAIN_V2][..],
             indexed_owner(3).as_slice(),
@@ -1302,7 +1298,11 @@ fn bounded_access_key_envelope_roundtrips_and_rejects_v1() {
     let mut legacy = encoded.to_vec();
     legacy[0] = SIGNATURE_TYPE_KEYCHAIN;
     assert!(TempoSignature::from_bytes(&legacy).is_err());
-    assert!(decode_exact::<AccountSignature>(alloy_rlp::encode(&encoded)).is_err());
+    // A keychain envelope cannot nest inside another.
+    assert_eq!(
+        TempoSignature::from_bytes(&[&encoded[..21], &encoded].concat()),
+        Err("keychain signatures are not account signatures")
+    );
     #[cfg(feature = "serde")]
     {
         use serde_json::{from_value, to_value};
