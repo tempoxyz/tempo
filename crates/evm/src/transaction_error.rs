@@ -2,6 +2,7 @@
 
 use alloy_primitives::{Address, U256};
 use evm2::registry::HandlerError;
+use reth_evm::InvalidTxError;
 use tempo_primitives::transaction::{KeyAuthorizationChainIdError, KeychainVersionError};
 
 /// Tempo-specific invalid transaction errors.
@@ -77,6 +78,11 @@ pub enum TempoInvalidTransaction {
     /// Expiring nonce transaction missing valid_before.
     #[error("expiring nonce transaction requires valid_before to be set")]
     ExpiringNonceMissingValidBefore,
+
+    /// Expiring nonce transaction whose replay hash is already recorded and unexpired,
+    /// i.e. the same transaction was already included.
+    #[error("expiring nonce transaction already included")]
+    ExpiringNonceReplay,
 
     /// Pre-T12 expiring nonce transaction must have nonce == 0.
     #[error("expiring nonce transaction must have nonce == 0 before T12")]
@@ -233,6 +239,18 @@ pub enum TempoInvalidTransaction {
     /// This wraps validation errors from the shared validate_calls function.
     #[error("{0}")]
     CallsValidation(&'static str),
+
+    /// A primitive key acted alone in `role` for an account with a nonzero configuration
+    /// commitment (TIP-1112).
+    ///
+    /// State-dependent: a migration can be undone by a reorg, so the transaction is not bad.
+    #[error("root key of {account} is retired and cannot act as {role}")]
+    RootKeyRetired {
+        /// Account whose bare primitive authority is retired.
+        account: Address,
+        /// Authority role the retired key tried to fill.
+        role: RootKeyRole,
+    },
 }
 
 impl TempoInvalidTransaction {
@@ -267,6 +285,7 @@ impl TempoInvalidTransaction {
             // State- or fork-dependent: may resolve as the chain advances.
             Self::ValidAfter { .. }
             | Self::ValidBefore { .. }
+            | Self::ExpiringNonceReplay
             | Self::ExpiringNonceNonceNotZero
             | Self::InvalidFeeToken(_)
             | Self::FeeTokenNotTip20 { .. }
@@ -277,8 +296,42 @@ impl TempoInvalidTransaction {
             | Self::KeychainValidationFailed { .. }
             | Self::CollectFeePreTx(_)
             | Self::NonceManagerError(_)
-            | Self::V2KeychainBeforeActivation => false,
+            | Self::V2KeychainBeforeActivation
+            | Self::RootKeyRetired { .. } => false,
         }
+    }
+
+    /// Returns the Tempo validation error carried by a block executor's invalid-tx error,
+    /// or `None` if it is a generic EVM validation error.
+    pub fn from_invalid_tx_error(error: &dyn InvalidTxError) -> Option<&Self> {
+        error
+            .as_any()
+            .downcast_ref::<HandlerError>()?
+            .external_ref()
+    }
+}
+
+/// Authority role a primitive key can fill in a transaction (TIP-1112).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RootKeyRole {
+    /// Direct transaction sender.
+    Sender,
+    /// Signer of a primitive-signed key authorization.
+    KeyAuthorizationSigner,
+    /// Fee payer.
+    FeePayer,
+    /// Access key identity of a keychain signature.
+    AccessKey,
+}
+
+impl core::fmt::Display for RootKeyRole {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Self::Sender => "the transaction sender",
+            Self::KeyAuthorizationSigner => "a key authorization signer",
+            Self::FeePayer => "the fee payer",
+            Self::AccessKey => "an access key",
+        })
     }
 }
 
@@ -426,6 +479,11 @@ mod tests {
     #[test]
     fn test_pre_t12_expiring_nonce_discriminator_is_not_bad() {
         assert!(!TempoInvalidTransaction::ExpiringNonceNonceNotZero.is_bad_transaction());
+    }
+
+    #[test]
+    fn test_expiring_nonce_replay_is_not_bad() {
+        assert!(!TempoInvalidTransaction::ExpiringNonceReplay.is_bad_transaction());
     }
 
     #[test]
