@@ -1175,6 +1175,9 @@ fn apply_nonce(
                             )).into()
                         }
                     }
+                    TempoPrecompileError::NonceError(NonceError::ExpiringNonceReplay(_)) => {
+                        TempoInvalidTransaction::ExpiringNonceReplay.into()
+                    }
                     error => nonce_error(error),
                 })?;
             if let Some(pointer) = previous_pointer {
