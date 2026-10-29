@@ -206,20 +206,16 @@ pub(crate) fn register_commitments(
     host: &mut Evm<'_, TempoEvmTypes>,
     aa: &TempoAaTx,
 ) -> HandlerResult<()> {
-    let roles = aa
-        .native_authorizations()
-        .into_iter()
-        .flatten()
-        .map(|role| (role.signature.account(), role.signature.config_commitment()));
     StorageCtx::enter_evm_without_tip1060_accounting(host, || {
-        for (account, commitment) in roles {
+        for role in aa.native_authorizations().into_iter().flatten() {
+            let account = role.signature.account();
             // Read again rather than carried over from `validate_state`: nothing else writes the
             // commitment in between, so this only registers accounts still unset, and an account
             // signing both roles is registered by the first.
             if StorageCtx.config_commitment(account)?.is_zero() {
                 StorageCtx.set_config_commitment(
                     account,
-                    commitment,
+                    role.signature.config_commitment(),
                     ConfigCommitmentWriteGas::Intrinsic,
                 )?;
             }

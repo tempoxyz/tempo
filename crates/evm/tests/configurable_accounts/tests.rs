@@ -1901,14 +1901,13 @@ fn retired_root_keeps_owner_parent_and_sender_authority() {
 
     // A configurable-account-signed grant is accepted: the grant's signature is not a primitive
     // root.
-    let tx = configurable_account_signed(
+    let result = f.run(&configurable_account_signed(
         &f,
         TempoTransaction {
             key_authorization: Some(configurable_grant(&f, signer(8).address())),
             ..aa_tx(8, vec![f.getter()])
         },
-    );
-    let result = f.run(&tx);
+    ));
     assert!(result.status, "{result:?}");
 
     // Another configurable account M that lists the retired X accepts X's approval.
@@ -4709,14 +4708,13 @@ fn native_committed_keychain_parent_with_incompatible_code_is_rejected() {
     let mut f = Fixture::new();
     let account = f.account;
     let key = signer(2);
-    let tx = configurable_account_signed(
+    let result = f.run(&configurable_account_signed(
         &f,
         TempoTransaction {
             key_authorization: Some(configurable_grant(&f, key.address())),
             ..aa_tx(3, vec![f.getter()])
         },
-    );
-    let result = f.run(&tx);
+    ));
     assert!(result.status, "{result:?}");
     let result = f.run(&keychain_tx(&f, &key, 4, vec![f.getter()]));
     assert!(result.status, "{result:?}");
