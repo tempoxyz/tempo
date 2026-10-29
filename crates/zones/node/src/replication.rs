@@ -20,6 +20,8 @@ use zone_sequencer::{ProofCollectorHandle, SettlementManager, StoredBlockProof};
 pub(crate) struct PeerBlock {
     pub block: Block,
     pub witness: Option<StoredBlockProof>,
+    /// Encoded block and witness bytes retained while this block is pending.
+    pub encoded_size: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -368,7 +370,11 @@ pub(crate) fn decode_peer_block(encoded: &[u8]) -> eyre::Result<PeerBlock> {
         "encoded zone block has {} trailing bytes",
         input.len()
     );
-    Ok(PeerBlock { block, witness })
+    Ok(PeerBlock {
+        block,
+        witness,
+        encoded_size: encoded.len(),
+    })
 }
 
 const BACKFILL_PAGE_SIZE: u64 = 64;
@@ -664,7 +670,8 @@ mod tests {
             decode_peer_block(&bare).unwrap(),
             super::PeerBlock {
                 block: block.clone(),
-                witness: None
+                witness: None,
+                encoded_size: bare.len(),
             }
         );
         let mut proof = StoredBlockProof {
@@ -687,7 +694,8 @@ mod tests {
             decode_peer_block(&encoded).unwrap(),
             super::PeerBlock {
                 block,
-                witness: Some(proof.clone())
+                witness: Some(proof.clone()),
+                encoded_size: encoded.len(),
             }
         );
 
