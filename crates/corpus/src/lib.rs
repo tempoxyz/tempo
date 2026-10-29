@@ -2,6 +2,7 @@
 //! object store, then replay it without the source database.
 
 pub mod code;
+pub mod execute;
 pub mod store;
 pub mod types;
 pub mod view;

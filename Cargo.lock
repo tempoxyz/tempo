@@ -14452,7 +14452,10 @@ dependencies = [
 name = "tempo-corpus"
 version = "1.17.0"
 dependencies = [
+ "alloy-consensus",
+ "alloy-eip7928",
  "alloy-primitives",
+ "alloy-rlp",
  "async-trait",
  "aws-config",
  "aws-credential-types",
@@ -14464,11 +14467,17 @@ dependencies = [
  "object_store",
  "parking_lot",
  "proptest",
+ "reth-consensus",
+ "reth-evm",
  "reth-execution-types",
  "reth-primitives-traits",
+ "reth-storage-api",
+ "reth-trie-common",
  "serde",
  "serde_json",
  "slatedb",
+ "tempo-evm",
+ "tempo-primitives",
  "tokio",
  "tracing",
  "url",

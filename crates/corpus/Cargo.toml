@@ -21,6 +21,15 @@ alloy-primitives.workspace = true
 reth-primitives-traits.workspace = true
 reth-execution-types.workspace = true
 evm2.workspace = true
+tempo-evm.workspace = true
+tempo-primitives.workspace = true
+reth-evm.workspace = true
+reth-consensus.workspace = true
+reth-trie-common.workspace = true
+reth-storage-api.workspace = true
+alloy-consensus.workspace = true
+alloy-rlp.workspace = true
+alloy-eip7928.workspace = true
 
 async-trait.workspace = true
 aws-config = "=1.8.15"
