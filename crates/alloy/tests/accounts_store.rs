@@ -12,7 +12,7 @@ use tempo_alloy::accounts::{TempoAccountsError, TempoAccountsStore};
 use tempo_primitives::{
     SignatureType,
     transaction::{
-        AccountSignature, CallScope, ConfigurableAccountConfig, ConfigurableAccountOwner,
+        CallScope, ConfigurableAccountConfig, ConfigurableAccountOwner,
         ConfigurableAccountSignature, KeyAuthorization, PrimitiveSignature, SignedKeyAuthorization,
     },
 };
@@ -62,7 +62,7 @@ fn configurable_account_authorization_round_trips(scoped: bool) {
     let directory = unique_test_directory();
     let path = directory.join("store.json");
 
-    TempoAccountsStore::at(path.clone())
+    TempoAccountsStore::at(&path)
         .upsert_secp256k1_access_key(account, &signer, &authorization)
         .unwrap();
     let stored: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
@@ -73,9 +73,7 @@ fn configurable_account_authorization_round_trips(scoped: bool) {
     fs::remove_dir_all(directory).unwrap();
 
     // Stored like every other authorization signature: an object tagged by `type`.
-    let AccountSignature::ConfigurableAccount(signature) = &authorization.signature else {
-        panic!("expected a configurable account signature")
-    };
+    let signature = authorization.signature.as_configurable_account().unwrap();
     assert_eq!(
         stored["tempo-cli.store"]["state"]["accessKeys"][0]["keyAuthorization"]["signature"],
         serde_json::json!({ "type": "configurableAccount", "signature": signature }),
@@ -86,7 +84,6 @@ fn configurable_account_authorization_round_trips(scoped: bool) {
     };
     let decoded = access_key.key_authorization().unwrap();
     assert_eq!(decoded, &authorization);
-    assert_eq!(decoded.signature_hash(), authorization.signature_hash());
 }
 
 #[test]
@@ -97,7 +94,7 @@ fn configurable_account_authorization_for_another_account_is_rejected() {
     let authorization = configurable_authorization(other, &signer);
     let directory = unique_test_directory();
     let path = directory.join("store.json");
-    let store = TempoAccountsStore::at(path.clone());
+    let store = TempoAccountsStore::at(&path);
 
     // Naming the account does not let another configurable account sign its grant, and a
     // configurable account's grant cannot name another account.
