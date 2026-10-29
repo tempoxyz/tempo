@@ -3655,17 +3655,6 @@ fn registration_charges_the_new_account_cost_once_for_every_nonce_type() {
     }
 }
 
-/// Names the row of a table test that is running when it panics.
-struct Case(String);
-
-impl Drop for Case {
-    fn drop(&mut self) {
-        if std::thread::panicking() {
-            eprintln!("failing case: {}", self.0);
-        }
-    }
-}
-
 #[test]
 fn native_first_registration_preserves_existing_storage() {
     let mut f = Fixture::new();
@@ -3785,6 +3774,17 @@ fn native_rotation_authorizes_next_transaction_in_same_block() {
 fn native_batch_rotation_failures_roll_back_together() {
     for (registered, halt) in [(true, false), (true, true), (false, false), (false, true)] {
         native_batch_rotation_failure(registered, halt);
+    }
+}
+
+/// Names the row of a table test that is running when it panics.
+struct Case(String);
+
+impl Drop for Case {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            eprintln!("failing case: {}", self.0);
+        }
     }
 }
 

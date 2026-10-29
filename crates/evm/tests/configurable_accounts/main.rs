@@ -110,10 +110,6 @@ impl Fixture {
         }
     }
 
-    fn signed(&self, nonce: u64, calls: Vec<Call>) -> AASigned {
-        configurable_account_signed(self, aa_tx(nonce, calls))
-    }
-
     fn getter(&self) -> Call {
         Call {
             to: TxKind::Call(CONFIGURABLE_ACCOUNT_ADDRESS),
@@ -183,6 +179,10 @@ impl Fixture {
     fn sign_primitive(&self, tx: TempoTransaction) -> AASigned {
         let signature = self.owner.sign_hash_sync(&tx.signature_hash()).unwrap();
         tx.into_signed(signature.into())
+    }
+
+    fn signed(&self, nonce: u64, calls: Vec<Call>) -> AASigned {
+        configurable_account_signed(self, aa_tx(nonce, calls))
     }
 
     /// Executes `tx` for the account and commits its state, whether or not it reverts.
