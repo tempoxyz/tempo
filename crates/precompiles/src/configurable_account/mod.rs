@@ -192,11 +192,7 @@ impl ConfigurableAccount {
     }
 
     /// Registers `account` at its initial `config` when it has no commitment yet, and emits
-    /// [`registration_event`].
-    ///
-    /// The handler calls this before the batch checkpoint, like a key authorization, so the
-    /// registration and its event persist when the transaction's calls revert. The write and the
-    /// event are charged in intrinsic gas.
+    /// [`registration_event`]. The write and the event are charged in intrinsic gas.
     pub fn register(
         &mut self,
         account: Address,
