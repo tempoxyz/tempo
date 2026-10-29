@@ -1256,7 +1256,7 @@ impl AccountKeychain {
     /// * `current_timestamp` - Current block timestamp for expiry check
     /// * `expected_sig_type` - The signature type from the actual signature (0=Secp256k1, 1=P256,
     ///   2=WebAuthn, 3=ConfigurableAccount). Pass `None` to skip validation (for backward
-    ///   compatibility pre-T1). See [`Self::accepts_signature_type`] for the types a key accepts.
+    ///   compatibility pre-T1). See `accepts_signature_type` for the types a key accepts.
     ///
     /// # Errors
     /// - `KeyAlreadyRevoked` — the key has been permanently revoked
@@ -1643,7 +1643,7 @@ impl AccountKeychain {
     ///
     /// Reads the commitment of `key_id` as currently stored, and only when the key's stored type is
     /// primitive and `signature_type` is configurable.
-    pub fn accepts_signature_type(
+    fn accepts_signature_type(
         &self,
         key: &AuthorizedKey,
         key_id: Address,
