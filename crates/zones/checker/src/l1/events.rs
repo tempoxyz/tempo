@@ -224,6 +224,12 @@ fn decode_portal_event(log: &Log, block: u64) -> eyre::Result<Option<L1PortalEve
             ZonePortal::EnforcementModesUpdated,
             "EnforcementModesUpdated"
         ),
+        // Zone-internal transfers move balances within the Zone, so they leave L1 liabilities
+        // unchanged.
+        ZonePortal::TransfersEnabledUpdated::SIGNATURE_HASH => ignored!(
+            ZonePortal::TransfersEnabledUpdated,
+            "TransfersEnabledUpdated"
+        ),
         ZonePortal::LeaderUpdated::SIGNATURE_HASH => {
             ignored!(ZonePortal::LeaderUpdated, "LeaderUpdated")
         }
@@ -444,6 +450,16 @@ mod tests {
         ])
         .unwrap();
         assert!(events.is_empty());
+    }
+
+    #[test]
+    fn ignores_transfers_enabled_updates() {
+        for enabled in [true, false] {
+            let update = log(ZonePortal::TransfersEnabledUpdated { enabled }.encode_log_data());
+            let events = collect(&[receipt(true, B256::ZERO, vec![update])])
+                .expect("transfer opt-in updates must not stop the checker");
+            assert!(events.is_empty());
+        }
     }
 
     #[test]

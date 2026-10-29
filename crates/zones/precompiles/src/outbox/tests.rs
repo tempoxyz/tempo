@@ -3,6 +3,7 @@ use super::*;
 use alloy_primitives::{Bytes, address};
 use alloy_sol_types::{SolCall, SolInterface};
 use evm2::precompiles::PrecompileHalt;
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::zones::IZoneOutbox as ZoneOutboxAbi;
 use tempo_precompiles::{
     storage::{StorageCtx, StorageKey},
@@ -15,7 +16,7 @@ use crate::{
     tempo_state::TEMPO_BLOCK_NUMBER_SLOT,
     test_utils::{
         MockL1Reader, PrecompileResult, PrecompileStatus, TestContext, TestPrecompiles,
-        call_precompile, test_context, test_precompiles, test_storage_provider,
+        call_precompile, test_context_with_hardfork, test_precompiles, test_storage_provider,
     },
     tx_context,
 };
@@ -40,7 +41,11 @@ struct Harness {
 
 impl Harness {
     fn new() -> eyre::Result<Self> {
-        let mut ctx = test_context();
+        Self::new_at(TempoHardfork::T13)
+    }
+
+    fn new_at(spec: TempoHardfork) -> eyre::Result<Self> {
+        let mut ctx = test_context_with_hardfork(spec);
         let token = tempo_precompiles::PATH_USD_ADDRESS;
         let l1 = MockL1Reader::default();
         l1.insert(
@@ -717,6 +722,64 @@ fn request_burns_amount_plus_fee_and_rejects_insufficient_funds() -> eyre::Resul
 
     let result = harness.request(u128::MAX, BOB, B256::ZERO);
     assert!(result.expect("precompile result").is_revert());
+    Ok(())
+}
+
+#[test]
+fn relays_cannot_withdraw_from_t15() -> eyre::Result<()> {
+    for (spec, allowed) in [(TempoHardfork::T14, true), (TempoHardfork::T15, false)] {
+        for relay in RELAY_PREDEPLOYS {
+            let mut harness = Harness::new_at(spec)?;
+            // A balance and an outbox allowance the relay could get before T15.
+            {
+                let token = harness.token;
+                let mut storage = test_storage_provider(&mut harness.ctx, u64::MAX, false);
+                StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                    let mut token = TIP20Token::from_address(token)?;
+                    token.transfer(
+                        ALICE,
+                        ITIP20::transferCall {
+                            to: relay,
+                            amount: U256::from(1_000u64),
+                        },
+                    )?;
+                    token.approve(
+                        relay,
+                        ITIP20::approveCall {
+                            spender: ZONE_OUTBOX_ADDRESS,
+                            amount: U256::MAX,
+                        },
+                    )?;
+                    Ok(())
+                })?;
+            }
+            let token = harness.token;
+            let result = harness.call(
+                relay,
+                ZoneOutboxAbi::requestWithdrawalCall {
+                    token,
+                    to: BOB,
+                    amount: 100,
+                    memo: B256::ZERO,
+                    gasLimit: 0,
+                    zoneFallbackRecipient: ALICE,
+                    data: Bytes::new(),
+                    revealTo: Bytes::new(),
+                }
+                .abi_encode(),
+            );
+
+            if allowed {
+                assert!(result?.is_success(), "{spec:?} {relay}");
+                assert_eq!(harness.balance_of(relay)?, U256::from(900u64));
+                assert_eq!(harness.pending()?.len(), 1);
+            } else {
+                assert_revert(result, ZoneOutboxError::transfer_failed());
+                assert_eq!(harness.balance_of(relay)?, U256::from(1_000u64));
+                assert!(harness.pending()?.is_empty());
+            }
+        }
+    }
     Ok(())
 }
 

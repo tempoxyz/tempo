@@ -48,7 +48,7 @@ use tempo_contracts::{
         account_keychain::IAccountKeychain::{
             IAccountKeychainInstance, KeyRestrictions, SignatureType as KeyInfoSignatureType,
         },
-        t13_zone_factory_state,
+        t15_zone_factory_state,
     },
     zones::{
         ZONE_OUTBOX_ADDRESS,
@@ -61,6 +61,7 @@ use tempo_precompiles::{
     storage::{
         Handler, PrecompileStorageProvider, StorageCtx, StorageKey, hashmap::HashMapStorageProvider,
     },
+    tip20,
     tip403_registry::{
         ALLOW_ALL_POLICY_ID, AuthRole, CompoundPolicyData as RawCompoundPolicyData, PolicyData,
         PolicyType, TIP403Registry, tip403_registry_slots,
@@ -205,7 +206,7 @@ pub(crate) fn forge_bytecode(contract: &str) -> eyre::Result<alloy_primitives::B
 }
 
 fn install_native_zone_factory(genesis: &mut Genesis, owner: Address) -> eyre::Result<()> {
-    for account in t13_zone_factory_state(owner) {
+    for account in t15_zone_factory_state(owner) {
         let storage = account
             .storage
             .map(|(slot, value)| BTreeMap::from([(slot.into(), value.into())]));
@@ -218,7 +219,7 @@ fn install_native_zone_factory(genesis: &mut Genesis, owner: Address) -> eyre::R
         );
     }
 
-    // The T13 native verifier shadows its Solidity stub. Run that same stub at an ordinary
+    // The native verifier shadows its Solidity stub. Run that same stub at an ordinary
     // address and redirect only submitBatch's proof call; certificate domains stay canonical.
     let mock_verifier = genesis.alloc[&ZONE_VERIFIER_ADDRESS].clone();
     genesis.alloc.insert(
@@ -483,6 +484,15 @@ pub(crate) fn seed_raw_tip403_token_policy(
         .into();
     let packed: U256 = U256::from(policy_id) | (U256::ONE << 64);
     cache.set(TIP403_REGISTRY_ADDRESS, slot, block_number, packed.into());
+}
+
+/// Seed an unpaused L1 TIP-20 token. Zone transfers read the token's L1 pause flag.
+pub(crate) fn seed_raw_tip20_unpaused(
+    cache: &mut zone_l1::state::L1StateCacheInner,
+    block_number: u64,
+    token: Address,
+) {
+    cache.set(token, tip20::slots::PAUSED.into(), block_number, B256::ZERO);
 }
 
 /// A TIP-403 policy write for [`seed_raw_tip403_policy`].
@@ -2340,6 +2350,34 @@ impl L1TestNode {
             "L1 ZonePortal access mode did not update"
         );
         Ok(provider.get_block_number().await?)
+    }
+
+    /// Enable or disable zone-internal TIP-20 transfers with the default portal admin.
+    ///
+    /// Returns the L1 block that recorded the change; zone transfers observe it once the zone has
+    /// finalized that Tempo block.
+    pub(crate) async fn set_transfers_enabled_on_portal(
+        &self,
+        portal_address: Address,
+        enabled: bool,
+    ) -> eyre::Result<u64> {
+        use tempo_contracts::zones::ZonePortal;
+        let provider = self.admin_provider();
+        let portal = ZonePortal::new(portal_address, &provider);
+        let receipt = portal
+            .setTransfersEnabled(enabled)
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+        eyre::ensure!(receipt.status(), "setTransfersEnabled failed");
+        eyre::ensure!(
+            portal.transfersEnabled().call().await? == enabled,
+            "L1 ZonePortal transfer opt-in did not update"
+        );
+        receipt
+            .block_number
+            .ok_or_else(|| eyre::eyre!("setTransfersEnabled receipt has no block number"))
     }
 
     /// Update callback gateway registration enforcement with the default portal admin.
@@ -5106,6 +5144,7 @@ pub(crate) async fn start_zone_with_redacted_rpc() -> eyre::Result<RedactedRpcTe
         chain_id,
         max_auth_token_validity: zone_node::rpc::auth::DEFAULT_MAX_AUTH_TOKEN_VALIDITY,
         max_response_size: 160 * 1024 * 1024,
+        max_concurrent_simulations: zone_node::rpc::config::DEFAULT_MAX_CONCURRENT_SIMULATIONS,
         zone_portal: Address::ZERO,
     };
 
@@ -5148,6 +5187,7 @@ async fn start_zone_with_redacted_rpc_l1_inner() -> eyre::Result<RedactedRpcL1Te
         chain_id,
         max_auth_token_validity: zone_node::rpc::auth::DEFAULT_MAX_AUTH_TOKEN_VALIDITY,
         max_response_size: 160 * 1024 * 1024,
+        max_concurrent_simulations: zone_node::rpc::config::DEFAULT_MAX_CONCURRENT_SIMULATIONS,
         zone_portal: portal_address,
     };
 
@@ -5267,6 +5307,8 @@ impl L1Fixture {
             .into();
         let enabled_token_config = enabled_deposits_active_token_config();
         let max_tempo_gas_rate = B256::from(U256::from(1_000_000_000_000_000_000_u128));
+        let transfers_enabled =
+            B256::from(U256::ONE << (portal::slots::TRANSFERS_ENABLED_OFFSET * 8));
         let encryption_key = Self::encryption_key();
         let (encryption_key_x, encryption_key_y_parity) =
             compressed_x_and_parity(encryption_key.public_key().as_affine());
@@ -5323,6 +5365,15 @@ impl L1Fixture {
                 block,
                 B256::ZERO,
             );
+            // Synthetic fixtures opt into zone transfers, as if the admin had called
+            // setTransfersEnabled(true). The other fields packed into this slot are not read on the
+            // zone.
+            cache.set(
+                portal_address,
+                portal::slots::TRANSFERS_ENABLED.into(),
+                block,
+                transfers_enabled,
+            );
             // The Portal is unpaused in synthetic fixtures. Seed the packed pause slot so
             // withdrawal validation does not fall back to an unavailable L1 RPC endpoint.
             cache.set(
@@ -5355,6 +5406,7 @@ impl L1Fixture {
         // synthetic token permissive in RPC-free fixtures, matching the old policy-provider stub.
         seed_raw_tip403_token_policy(&mut cache, 0, Address::ZERO, ALLOW_ALL_POLICY_ID);
         seed_raw_tip403_token_policy(&mut cache, 0, PATH_USD_ADDRESS, ALLOW_ALL_POLICY_ID);
+        seed_raw_tip20_unpaused(&mut cache, 0, PATH_USD_ADDRESS);
         drop(cache);
         self.caches.lock().unwrap().push(cache_handle.clone());
         self.enabled_token_registries
@@ -5414,7 +5466,7 @@ impl L1Fixture {
         }
     }
 
-    fn seed_enabled_token_policy_state(&self, block_number: u64, tokens: &[EnabledToken]) {
+    fn seed_enabled_token_l1_state(&self, block_number: u64, tokens: &[EnabledToken]) {
         for cache in self.caches.lock().unwrap().iter() {
             let mut cache = cache.lock();
             for token in tokens {
@@ -5424,6 +5476,7 @@ impl L1Fixture {
                     token.token,
                     ALLOW_ALL_POLICY_ID,
                 );
+                seed_raw_tip20_unpaused(&mut cache, block_number, token.token);
             }
         }
     }
@@ -5512,7 +5565,7 @@ impl L1Fixture {
         events: L1PortalEvents,
     ) {
         let block_number = block.header.inner.number;
-        self.seed_enabled_token_policy_state(block_number, &events.enabled_tokens);
+        self.seed_enabled_token_l1_state(block_number, &events.enabled_tokens);
         self.apply_enabled_token_events(&events.enabled_tokens);
         for deposit in &events.deposits {
             match deposit {
@@ -5564,7 +5617,7 @@ impl L1Fixture {
         tokens: Vec<EnabledToken>,
     ) {
         let header = self.next_header();
-        self.seed_enabled_token_policy_state(header.inner.number, &tokens);
+        self.seed_enabled_token_l1_state(header.inner.number, &tokens);
         self.apply_enabled_token_events(&tokens);
         let events = L1PortalEvents {
             deposits: vec![],

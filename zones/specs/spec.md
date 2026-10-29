@@ -220,6 +220,7 @@ The following table lists every privileged action and the role authorized to inv
 | `abdicate(capability)` | [`ZonePortal`](#izoneportal) | **admin** |
 | `setAccessMode(mode)` | [`ZonePortal`](#izoneportal) | **admin** |
 | `setGatewayMode(mode)` | [`ZonePortal`](#izoneportal) | **admin** |
+| `setTransfersEnabled(enabled)` | [`ZonePortal`](#izoneportal) | **admin** |
 | `transferAdmin(newAdmin)` | [`ZonePortal`](#izoneportal) | **admin** |
 | `acceptAdmin()` | [`ZonePortal`](#izoneportal) | **pending admin** |
 | `setSequencerSet(sequencers, threshold)` | [`ZonePortal`](#izoneportal) | **admin** |
@@ -427,8 +428,9 @@ The admin manages which TIP-20 tokens are available on the zone (see [Access Con
 - `abdicate(Capability.PausePortal)`: Permanently disable future portal-wide pauses after one
   `ABDICATION_DELAY` (30 days). It does not clear an active pause; any pause started before
   abdication takes effect runs to its own expiry.
-- `abdicate(Capability.AccessPolicy)`: Permanently freeze account roles, gateway roles, and
-  enforcement modes after the same delay. Existing access roles cannot be revoked afterward.
+- `abdicate(Capability.AccessPolicy)`: Permanently freeze account roles, gateway roles,
+  enforcement modes, and the zone transfer opt-in (`transfersEnabled`) after the same delay.
+  Existing access roles cannot be revoked afterward.
 
 The portal maintains a `TokenConfig` per token with an `enabled` flag and a configurable `depositsActive` flag, along with an append-only `enabledTokens` list. The admin can halt deposits but cannot disable withdrawals for an enabled token. At most `MAX_UNPROCESSED_TOKEN_ENABLEMENTS` (8) entries may remain enabled on Tempo but unprocessed by an accepted zone batch. This keeps the `advanceTempo()` call within its execution and proof budget even when checkpoint-only blocks defer work across many Tempo blocks. Each metadata string copied into the zone (`name`, `symbol`, and `currency`) is bounded to 31 encoded bytes. Note that token issuers can independently restrict transfers via TIP-403 policies, which may cause withdrawals to fail and bounce back (see [Withdrawal Failures and Bounce-Back](#withdrawal-failures-and-bounce-back)).
 
@@ -730,7 +732,7 @@ flowchart LR
 
 ### Withdrawal Request
 
-A user withdraws by calling `requestWithdrawal(token, to, amount, memo, gasLimit, zoneFallbackRecipient, data, revealTo)` on the `ZoneOutbox`. The user must first approve the outbox to spend `amount + fee` of the token, and `amount` must be non-zero. The token must be enabled, and the `zoneFallbackRecipient` must be non-zero but need not be a Tempo allowed account. For a plain withdrawal (`gasLimit == 0`), closed access mode requires `to` to have the `Account` role; open access mode does not. Enforced gateway mode prevents accounts with the `CallbackGateway` role from receiving plain withdrawals and requires callback targets (`gasLimit > 0`) to have that role. Open gateway mode skips both role checks.
+A user withdraws by calling `requestWithdrawal(token, to, amount, memo, gasLimit, zoneFallbackRecipient, data, revealTo)` on the `ZoneOutbox`. The user must first approve the outbox to spend `amount + fee` of the token, and `amount` must be non-zero. From T15, the request reverts with `TransferFailed` when the caller is Permit2 or Multicall3, so an outbox allowance either granted before T15 cannot move its balance. The token must be enabled, and the `zoneFallbackRecipient` must be non-zero but need not be a Tempo allowed account. For a plain withdrawal (`gasLimit == 0`), closed access mode requires `to` to have the `Account` role; open access mode does not. Enforced gateway mode prevents accounts with the `CallbackGateway` role from receiving plain withdrawals and requires callback targets (`gasLimit > 0`) to have that role. Open gateway mode skips both role checks.
 
 Withdrawal requests are bounded before they enter the pending queue. `gasLimit` must be less than or equal to `MAX_WITHDRAWAL_GAS_LIMIT` or the request reverts with `GasLimitTooHigh`; `data.length` must be less than or equal to `MAX_CALLBACK_DATA_SIZE` (1,024 bytes) or the request reverts with `CallbackDataTooLarge`; and `revealTo`, when non-empty, must be a valid 33-byte compressed secp256k1 public key or the request reverts with `InvalidRevealTo`. The Zone EVM supplies the current transaction hash directly to the native outbox; if it is zero, the request reverts with `InvalidCurrentTxHash`, because the transaction hash is part of the authenticated-withdrawal sender tag.
 
@@ -922,7 +924,7 @@ be recreated.
 
 Zone execution differs from standard Tempo execution in three areas. These changes are enforced at the EVM level, not just at the RPC layer, so they apply to all code paths including user transactions, `eth_call` simulations, and prover re-execution.
 
-- **Account-indexed state access control.** Every getter on a zone system contract or precompile that selects privacy-bearing state by account must authorize that account against `msg.sender`. Unless a getter explicitly defines additional legitimate readers, it reverts unless `msg.sender` is the selected account. This includes AccountKeychain key configuration and limits, TIP-20 permit nonces, Nonce Manager lanes, Permit2 allowances and nonce bitmaps, FeeManager preferences and collected fees, FeeAMM liquidity balances, and ZoneInbox refund balances. The `ZoneInbox.refunds` mapping is not publicly readable; its explicit `refunds(token, owner)` getter authorizes only `owner` or the sequencer. `balanceOf(account)` authorizes only the account owner; `allowance(owner, spender)` authorizes the owner or spender. Enforcement applies to nested calls, including calls forwarded by Multicall3 or another contract, as well as direct calls.
+- **Account-indexed state access control.** Every getter on a zone system contract or precompile that selects privacy-bearing state by account must authorize that account against `msg.sender`. Unless a getter explicitly defines additional legitimate readers, it reverts unless `msg.sender` is the selected account. This includes AccountKeychain key configuration and limits, TIP-20 permit nonces, Nonce Manager lanes, FeeManager preferences and collected fees, FeeAMM liquidity balances, and ZoneInbox refund balances. The `ZoneInbox.refunds` mapping is not publicly readable; its explicit `refunds(token, owner)` getter authorizes only `owner` or the sequencer. `balanceOf(account)` authorizes only the account owner; `allowance(owner, spender)` authorizes the owner or spender. Enforcement applies to nested calls, including calls forwarded by Multicall3 or another contract, as well as direct calls. The Permit2 predeploy is the unmodified upstream contract, so its `allowance` and `nonceBitmap` getters are public. Multicall3 makes any caller its `msg.sender`, so `balanceOf(MULTICALL3)` and `allowance(owner, MULTICALL3)` are readable by anyone. Zone TIP-20 tokens reject transfers whose caller, `from` or `to` is Permit2 or Multicall3, and from T15 reject approvals by either (see [TIP-20 Token Precompile](#tip-20-token-precompile)). From T15 the `ZoneOutbox` also rejects `requestWithdrawal` from either, so neither can move zone funds, including its own. Contract creation is disabled on zones, so these are the only predeploys that relay arbitrary callers.
 - **Fixed gas for transfers.** All TIP-20 transfer and approve operations charge a fixed 100,000 gas regardless of storage layout. This eliminates a side channel where variable gas costs reveal whether a recipient has previously received tokens.
 - **Contract creation disabled.** `CREATE` and `CREATE2` revert. The zone runs only predeploys and TIP-20 token precompiles. Arbitrary contract deployment would allow users to circumvent the execution-level privacy controls.
 
@@ -964,7 +966,7 @@ The prover validates each read against the Tempo state root from the correspondi
 
 Native L1 storage reads use transaction-local cold/warm pricing keyed by Tempo account and storage slot. The first native access to a key in a transaction charges 2,100 gas and subsequent accesses charge 100 gas. This consensus access set is independent of the node's block-versioned L1 value cache, so prefetching and cache state cannot affect gas usage. Native precompile reads select the anchor by performing the ordinary local `TempoState.tempoBlockNumber` `SLOAD` before the L1 fetch.
 
-The EVM database overlay for mirrored TIP-403 storage uses REVM's ordinary cold/warm `SLOAD` pricing and does not apply the native tariff. On the first overlay registry read, the database adapter obtains `TempoState.tempoBlockNumber` through a host-side lookup to select the L1 anchor; this is not a second EVM `SLOAD` and carries no separate gas charge. The slot remains part of the zone-state witness because its value is required for execution, while the registry slot is charged by the ordinary REVM `SLOAD`. Every L1-backed read is charged exactly once by either the native Tempo read path or the EVM overlay path.
+The EVM database overlay for mirrored TIP-403 storage and, from T15, TIP-20 pause flags uses REVM's ordinary cold/warm `SLOAD` pricing and does not apply the native tariff. On the first overlay read, the database adapter obtains `TempoState.tempoBlockNumber` through a host-side lookup to select the L1 anchor; this is not a second EVM `SLOAD` and carries no separate gas charge. The slot remains part of the zone-state witness because its value is required for execution, while the mirrored slot is charged by the ordinary REVM `SLOAD`. Every L1-backed read is charged exactly once by either the native Tempo read path or the EVM overlay path.
 
 TIP-403 policy authorization on the zone executes Tempo's registry precompile at the canonical address over raw L1 registry storage pinned to the current finalized `tempoBlockNumber`.
 
@@ -1046,9 +1048,11 @@ Fee quotes are caller-independent: `eth_gasPrice` returns the fixed T1 gas price
 - `eth_getTransactionByHash`, `eth_getTransactionReceipt`: return `null` if the caller is not the sender.
 - `eth_sendRawTransaction`, `eth_sendRawTransactionSync`: reject if the transaction sender does not match the authenticated account.
 - `eth_fillTransaction`: fills but does not sign an unsigned transaction, with the same authenticated `from` enforcement as simulation methods.
-- `eth_call`, `eth_estimateGas`: `from` must equal the authenticated account. Account-indexed reads are then protected by the execution-level access controls described in [Privacy Modifications](#privacy-modifications), including for nested calls. State override sets and block override objects are rejected.
+- `eth_call`, `eth_estimateGas`: `from` must equal the authenticated account. Account-indexed reads are then protected by the execution-level access controls described in [Privacy Modifications](#privacy-modifications), including for nested calls. State override sets and block override objects are rejected. The block must be `latest`, `pending` (treated as `latest`), `safe`, or `finalized`; block numbers, `earliest`, and block hashes return `-32602`, because each historical block reads Tempo state at its own anchor and would bypass the shared L1 state cache.
 - `eth_getLogs`, `eth_getFilterLogs`, `eth_getFilterChanges`: filtered to TIP-20 events where the caller is a relevant party (see [Event Filtering](#event-filtering)).
 - `eth_newFilter`, `eth_newBlockFilter`, `eth_uninstallFilter`: allowed, filters are scoped to the authenticated account.
+
+`eth_call`, `eth_estimateGas`, and `eth_fillTransaction` share one node-wide cap on concurrent requests (`--redacted-rpc.max-concurrent-simulations`). Simulations can fetch uncached Tempo state for arbitrary accounts, and authorization tokens are self-signed, so the cap is global rather than per caller. Requests over the cap wait in arrival order until two seconds after their request or batch arrived, then fail with `-32009`. The simulations in a batch share that deadline, and requests with invalid params are rejected with `-32602` without waiting. Arrival-order waiting means a caller that reissues simulations back to back cannot take every freed slot ahead of callers already waiting. A request keeps its slot until execution finishes, even if the client disconnects. The cap shares capacity per request, not per caller, so a caller that sends far more simulations than others still gets most of it.
 
 Methods outside this allowlist are not classified separately as restricted or disabled. Raw state and full block endpoints, mining and mempool methods, and all `debug_*`, `admin_*`, and `txpool_*` methods return `-32601`. Sequencers and operators use the unrestricted RPC on port 8545 instead of receiving elevated access through an authorization token. Requests for full transactions through the otherwise-allowed `eth_getBlockByNumber` and `eth_getBlockByHash` methods return `-32005` and must likewise use the unrestricted endpoint.
 
@@ -1140,6 +1144,7 @@ There are no state-changing methods via authorization token. Withdrawals require
 | `-32004` | Account mismatch | `from` mismatch on `eth_call` / `eth_estimateGas` |
 | `-32005` | Sequencer only | Full block transactions require the unrestricted operator RPC |
 | `-32006` | Method disabled | WebSocket subscription kind is not available on zones |
+| `-32009` | Server is busy, try again later | The node's concurrent simulation cap stayed full for the whole wait |
 | `-32601` | Method not found | Method is not exposed by the redacted RPC allowlist |
 
 Methods where the user explicitly supplies a mismatched parameter return explicit errors (the user already knows the address they provided). Methods that query about other accounts return silent dummy values (`0x0`, `null`, empty results) to avoid revealing "data exists but you can't see it."
@@ -1618,7 +1623,11 @@ Each enabled TIP-20 token is deployed as a precompile at the same address as on 
 
 - `balanceOf` is restricted to the account owner; `allowance` is restricted to its owner or spender.
 - Transfer-family operations (`transfer`, `transferFrom`, `approve`) charge a fixed 100,000 gas.
+- `transfer`, `transferFrom`, `transferWithMemo`, and `transferFromWithMemo` revert with `Unauthorized` unless T15 is active and the zone's `ZonePortal.transfersEnabled` flag, read from finalized Tempo state at the transaction's anchor, is true. The flag defaults to false and is set by the portal admin with `setTransfersEnabled`, which `Capability.AccessPolicy` abdication freezes. They also revert with `Unauthorized` when the caller, `from` or `to` is Permit2 or Multicall3, so neither allowances granted to those predeploys nor their own balances can be moved, and transfers cannot strand funds at either. From T15, `approve` also reverts with `Unauthorized` when the caller is Permit2 or Multicall3, since anyone can make Multicall3 approve a spender for its own balance. Admitted transfers follow the standard TIP-20 rules, including TIP-403 policy checks, with one zone difference:
+  - A transfer that the recipient's TIP-1028 receive policy blocks reverts with `PolicyForbids` instead of diverting funds to `ReceivePolicyGuard`, matching deposits. The policy's recovery authority may be an address that cannot act on the zone, such as an L1 contract, and could never claim the receipt. Virtual recipients are resolved to their master before the check.
+- Whether `transferFrom` succeeds depends on the owner's balance, so an approved spender can learn `min(balance, allowance)` by simulating it. Approving a spender discloses that much of the owner's balance to it.
 - `mint` is restricted to `ZoneInbox`, `burn` is restricted to `ZoneOutbox`.
+- From T15, the token's pause flag is read from finalized Tempo state at the transaction's anchor, and `pause` and `unpause` are disabled on the zone. A token paused on Tempo therefore blocks exactly the calls it blocks there: transfers, `mint` and burns revert with `ContractPaused`, so deposits bounce back and withdrawal requests revert, and transactions paying fees in the token are invalid. `approve` and `permit` still succeed.
 
 ## Encrypted Deposit Cryptography
 
@@ -1902,6 +1911,7 @@ interface IZonePortal {
     event AbdicationScheduled(Capability indexed capability, uint64 effectiveAt);
     event RoleUpdated(address indexed account, Role prev, Role next);
     event EnforcementModesUpdated(bool accessMode, bool gatewayMode);
+    event TransfersEnabledUpdated(bool enabled);
 
     error NotSequencer();
     error NotAdmin();
@@ -1969,6 +1979,8 @@ interface IZonePortal {
     function setAccessMode(bool enforced) external; // admin-only
     function isGatewayOpen() external view returns (bool);
     function setGatewayMode(bool enforced) external; // admin-only
+    function transfersEnabled() external view returns (bool);
+    function setTransfersEnabled(bool enabled) external; // admin-only, T15+
     function hasRole(address account, Role role) external view returns (bool);
     function setAllowedAccount(address account, bool allowed) external; // admin-only
     function setGateway(address account, bool allowed) external; // admin-only

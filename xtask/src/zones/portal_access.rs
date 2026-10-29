@@ -2,9 +2,9 @@
 
 use alloy::{
     network::ReceiptResponse as _,
-    primitives::{Address, address},
+    primitives::{Address, TxHash, address},
     providers::{DynProvider, Provider as _, ProviderBuilder},
-    sol_types::SolCall as _,
+    sol_types::SolCall,
 };
 use eyre::{WrapErr as _, ensure};
 use std::path::PathBuf;
@@ -16,6 +16,8 @@ use crate::{
     safe::{SafeProposal, verify_safe, write_safe_proposal},
     zone_utils::parse_private_key,
 };
+
+type Portal = ZonePortal::ZonePortalInstance<DynProvider<TempoNetwork>, TempoNetwork>;
 
 #[derive(Debug, clap::Args)]
 struct PortalAccessArgs {
@@ -64,6 +66,16 @@ pub(crate) struct SetAccessMode {
     /// Require the Account role for deposits, refunds, and plain withdrawals.
     #[arg(long)]
     enforced: bool,
+}
+
+#[derive(Debug, clap::Parser)]
+pub(crate) struct SetTransfersEnabled {
+    #[command(flatten)]
+    args: PortalAccessArgs,
+
+    /// Allow zone-internal TIP-20 transfers from T15. Omit to disable them.
+    #[arg(long)]
+    enabled: bool,
 }
 
 #[derive(Debug, clap::Parser)]
@@ -157,180 +169,82 @@ impl EnableToken {
 
 impl SetAccessMode {
     pub(crate) async fn run(self) -> eyre::Result<()> {
-        if let Some(proposal) = self.args.safe_proposal() {
-            let (portal, provider) = connect_safe(&self.args, proposal.safe).await?;
-            portal
-                .setAccessMode(self.enforced)
-                .from(proposal.safe)
-                .call()
-                .await
-                .wrap_err("ZonePortal.setAccessMode Safe simulation failed")?;
-            let calldata = ZonePortal::setAccessModeCall {
-                enforced: self.enforced,
-            }
-            .abi_encode();
-            return write_safe_proposal(
-                &provider,
-                &proposal,
-                "ZonePortal.setAccessMode",
-                self.args.portal,
-                calldata,
-            )
-            .await;
-        }
-
-        let (portal, provider, nonce) = connect(self.args).await?;
-        let receipt = portal
-            .setAccessMode(self.enforced)
-            .nonce_key(ADMIN_OPS_NONCE_KEY)
-            .nonce(nonce)
-            .send()
-            .await
-            .wrap_err("failed sending ZonePortal.setAccessMode")?
-            .get_receipt()
-            .await
-            .wrap_err("failed waiting for setAccessMode receipt")?;
-        ensure!(receipt.status(), "setAccessMode transaction reverted");
+        let call = ZonePortal::setAccessModeCall {
+            enforced: self.enforced,
+        };
+        let Some((portal, tx_hash)) = update_portal(self.args, call).await? else {
+            return Ok(());
+        };
         ensure!(
             portal.isAccessEnforced().call().await? == self.enforced,
             "portal access mode did not update"
         );
-        print_success("account access mode", &receipt.transaction_hash());
-        drop(provider);
+        print_success("account access mode", &tx_hash);
+        Ok(())
+    }
+}
+
+impl SetTransfersEnabled {
+    pub(crate) async fn run(self) -> eyre::Result<()> {
+        let call = ZonePortal::setTransfersEnabledCall {
+            enabled: self.enabled,
+        };
+        let Some((portal, tx_hash)) = update_portal(self.args, call).await? else {
+            return Ok(());
+        };
+        ensure!(
+            portal.transfersEnabled().call().await? == self.enabled,
+            "portal transfer opt-in did not update"
+        );
+        print_success("zone transfer opt-in", &tx_hash);
         Ok(())
     }
 }
 
 impl SetGatewayMode {
     pub(crate) async fn run(self) -> eyre::Result<()> {
-        if let Some(proposal) = self.args.safe_proposal() {
-            let (portal, provider) = connect_safe(&self.args, proposal.safe).await?;
-            portal
-                .setGatewayMode(self.enforced)
-                .from(proposal.safe)
-                .call()
-                .await
-                .wrap_err("ZonePortal.setGatewayMode Safe simulation failed")?;
-            let calldata = ZonePortal::setGatewayModeCall {
-                enforced: self.enforced,
-            }
-            .abi_encode();
-            return write_safe_proposal(
-                &provider,
-                &proposal,
-                "ZonePortal.setGatewayMode",
-                self.args.portal,
-                calldata,
-            )
-            .await;
-        }
-
-        let (portal, provider, nonce) = connect(self.args).await?;
-        let receipt = portal
-            .setGatewayMode(self.enforced)
-            .nonce_key(ADMIN_OPS_NONCE_KEY)
-            .nonce(nonce)
-            .send()
-            .await
-            .wrap_err("failed sending ZonePortal.setGatewayMode")?
-            .get_receipt()
-            .await
-            .wrap_err("failed waiting for setGatewayMode receipt")?;
-        ensure!(receipt.status(), "setGatewayMode transaction reverted");
+        let call = ZonePortal::setGatewayModeCall {
+            enforced: self.enforced,
+        };
+        let Some((portal, tx_hash)) = update_portal(self.args, call).await? else {
+            return Ok(());
+        };
         ensure!(
             portal.isGatewayOpen().call().await? != self.enforced,
             "portal gateway mode did not update"
         );
-        print_success("callback gateway mode", &receipt.transaction_hash());
-        drop(provider);
+        print_success("callback gateway mode", &tx_hash);
         Ok(())
     }
 }
 
 impl SetAllowedAccount {
     pub(crate) async fn run(self) -> eyre::Result<()> {
-        if let Some(proposal) = self.args.safe_proposal() {
-            let (portal, provider) = connect_safe(&self.args, proposal.safe).await?;
-            portal
-                .setAllowedAccount(self.account, self.allowed)
-                .from(proposal.safe)
-                .call()
-                .await
-                .wrap_err("ZonePortal.setAllowedAccount Safe simulation failed")?;
-            let calldata = ZonePortal::setAllowedAccountCall {
-                account: self.account,
-                allowed: self.allowed,
-            }
-            .abi_encode();
-            return write_safe_proposal(
-                &provider,
-                &proposal,
-                "ZonePortal.setAllowedAccount",
-                self.args.portal,
-                calldata,
-            )
-            .await;
-        }
-
-        let (portal, provider, nonce) = connect(self.args).await?;
-        let receipt = portal
-            .setAllowedAccount(self.account, self.allowed)
-            .nonce_key(ADMIN_OPS_NONCE_KEY)
-            .nonce(nonce)
-            .send()
-            .await
-            .wrap_err("failed sending ZonePortal.setAllowedAccount")?
-            .get_receipt()
-            .await
-            .wrap_err("failed waiting for setAllowedAccount receipt")?;
-        ensure!(receipt.status(), "setAllowedAccount transaction reverted");
+        let call = ZonePortal::setAllowedAccountCall {
+            account: self.account,
+            allowed: self.allowed,
+        };
+        let Some((portal, tx_hash)) = update_portal(self.args, call).await? else {
+            return Ok(());
+        };
         ensure!(
             portal.hasRole(self.account, Role::Account).call().await? == self.allowed,
             "portal account role did not update"
         );
-        print_success("allowed account", &receipt.transaction_hash());
-        drop(provider);
+        print_success("allowed account", &tx_hash);
         Ok(())
     }
 }
 
 impl SetGateway {
     pub(crate) async fn run(self) -> eyre::Result<()> {
-        if let Some(proposal) = self.args.safe_proposal() {
-            let (portal, provider) = connect_safe(&self.args, proposal.safe).await?;
-            portal
-                .setGateway(self.account, self.allowed)
-                .from(proposal.safe)
-                .call()
-                .await
-                .wrap_err("ZonePortal.setGateway Safe simulation failed")?;
-            let calldata = ZonePortal::setGatewayCall {
-                account: self.account,
-                allowed: self.allowed,
-            }
-            .abi_encode();
-            return write_safe_proposal(
-                &provider,
-                &proposal,
-                "ZonePortal.setGateway",
-                self.args.portal,
-                calldata,
-            )
-            .await;
-        }
-
-        let (portal, provider, nonce) = connect(self.args).await?;
-        let receipt = portal
-            .setGateway(self.account, self.allowed)
-            .nonce_key(ADMIN_OPS_NONCE_KEY)
-            .nonce(nonce)
-            .send()
-            .await
-            .wrap_err("failed sending ZonePortal.setGateway")?
-            .get_receipt()
-            .await
-            .wrap_err("failed waiting for setGateway receipt")?;
-        ensure!(receipt.status(), "setGateway transaction reverted");
+        let call = ZonePortal::setGatewayCall {
+            account: self.account,
+            allowed: self.allowed,
+        };
+        let Some((portal, tx_hash)) = update_portal(self.args, call).await? else {
+            return Ok(());
+        };
         ensure!(
             portal
                 .hasRole(self.account, Role::CallbackGateway)
@@ -339,8 +253,7 @@ impl SetGateway {
                 == self.allowed,
             "portal gateway role did not update"
         );
-        print_success("callback gateway", &receipt.transaction_hash());
-        drop(provider);
+        print_success("callback gateway", &tx_hash);
         Ok(())
     }
 }
@@ -374,13 +287,52 @@ fn parse_token(value: &str) -> Result<Address, String> {
     }
 }
 
-async fn connect(
+/// Writes a Safe proposal for the portal admin `call`, or sends it with the admin key.
+///
+/// Returns the portal and transaction hash after a direct update succeeds, so the caller can read
+/// the new state back. Returns `None` after writing a Safe proposal, which changes nothing yet.
+async fn update_portal<C: SolCall>(
     args: PortalAccessArgs,
-) -> eyre::Result<(
-    tempo_contracts::zones::ZonePortal::ZonePortalInstance<DynProvider<TempoNetwork>, TempoNetwork>,
-    DynProvider<TempoNetwork>,
-    u64,
-)> {
+    call: C,
+) -> eyre::Result<Option<(Portal, TxHash)>> {
+    let method = C::SIGNATURE
+        .split_once('(')
+        .map_or(C::SIGNATURE, |(name, _)| name);
+    if let Some(proposal) = args.safe_proposal() {
+        let (portal, provider) = connect_safe(&args, proposal.safe).await?;
+        portal
+            .call_builder(&call)
+            .from(proposal.safe)
+            .call()
+            .await
+            .wrap_err_with(|| format!("ZonePortal.{method} Safe simulation failed"))?;
+        write_safe_proposal(
+            &provider,
+            &proposal,
+            &format!("ZonePortal.{method}"),
+            args.portal,
+            call.abi_encode(),
+        )
+        .await?;
+        return Ok(None);
+    }
+
+    let (portal, _provider, nonce) = connect(args).await?;
+    let receipt = portal
+        .call_builder(&call)
+        .nonce_key(ADMIN_OPS_NONCE_KEY)
+        .nonce(nonce)
+        .send()
+        .await
+        .wrap_err_with(|| format!("failed sending ZonePortal.{method}"))?
+        .get_receipt()
+        .await
+        .wrap_err_with(|| format!("failed waiting for {method} receipt"))?;
+    ensure!(receipt.status(), "{method} transaction reverted");
+    Ok(Some((portal, receipt.transaction_hash())))
+}
+
+async fn connect(args: PortalAccessArgs) -> eyre::Result<(Portal, DynProvider<TempoNetwork>, u64)> {
     let admin_key = args
         .admin_key
         .as_deref()
@@ -413,10 +365,7 @@ async fn connect(
 async fn connect_safe(
     args: &PortalAccessArgs,
     safe: Address,
-) -> eyre::Result<(
-    tempo_contracts::zones::ZonePortal::ZonePortalInstance<DynProvider<TempoNetwork>, TempoNetwork>,
-    DynProvider<TempoNetwork>,
-)> {
+) -> eyre::Result<(Portal, DynProvider<TempoNetwork>)> {
     let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
         .connect(&args.l1_rpc_url)
         .await

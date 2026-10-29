@@ -201,6 +201,7 @@ crate::sol! {
 
         event RoleUpdated(address indexed account, Role prev, Role next);
         event EnforcementModesUpdated(bool accessMode, bool gatewayMode);
+        event TransfersEnabledUpdated(bool enabled);
         event SequencerSetUpdated(uint64 indexed nonce, uint8 threshold, address[] sequencers);
 
         /// Emitted when block-production leadership transitions to a new sequencer.
@@ -270,6 +271,8 @@ crate::sol! {
         function setAccessMode(bool enforced) external;
         function isGatewayOpen() external view returns (bool);
         function setGatewayMode(bool enforced) external;
+        function transfersEnabled() external view returns (bool);
+        function setTransfersEnabled(bool enabled) external;
         function hasRole(address account, Role role) external view returns (bool);
         function setAllowedAccount(address account, bool allowed) external;
         function setGateway(address account, bool allowed) external;

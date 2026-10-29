@@ -7,7 +7,10 @@ use crate::{
 use eyre::{OptionExt as _, WrapErr as _};
 use futures::stream;
 use std::{collections::HashSet, ops::RangeInclusive};
-use tempo_contracts::precompiles::{ITIP20::TransferPolicyUpdate, TIP403_REGISTRY_ADDRESS};
+use tempo_contracts::precompiles::{
+    ITIP20::{PauseStateUpdate, TransferPolicyUpdate},
+    TIP403_REGISTRY_ADDRESS,
+};
 use tempo_primitives::is_tip20_prefix;
 
 use std::collections::BTreeMap;
@@ -564,6 +567,14 @@ fn cache_invalidation_address(address: Address, topic0: Option<&B256>) -> Option
     (address == TIP403_REGISTRY_ADDRESS
         || (is_tip20_prefix(address) && topic0 == Some(&TransferPolicyUpdate::SIGNATURE_HASH)))
     .then_some(TIP403_REGISTRY_ADDRESS)
+}
+
+/// Returns whether `address` is a TIP-20 token whose L1 pause flag changed in this log.
+///
+/// Zone execution reads the token's `paused` slot from L1, and the forward cache carries it to later
+/// blocks unless the token's address is invalidated.
+fn is_tip20_pause_update(address: Address, topic0: Option<&B256>) -> bool {
+    is_tip20_prefix(address) && topic0 == Some(&PauseStateUpdate::SIGNATURE_HASH)
 }
 
 fn portal_event_cache_invalidation_address(topic0: Option<&B256>) -> Option<Address> {
@@ -1217,6 +1228,8 @@ where
                         })?;
                 } else if let Some(address) = cache_invalidation_address(address, log.topic0()) {
                     invalidated.extend([address, log.address()]);
+                } else if is_tip20_pause_update(address, log.topic0()) {
+                    invalidated.insert(address);
                 }
             }
         }
@@ -1367,6 +1380,20 @@ mod tests {
             cache_invalidation_address(token, Some(&TransferPolicyUpdate::SIGNATURE_HASH)),
             Some(TIP403_REGISTRY_ADDRESS)
         );
+    }
+
+    #[test]
+    fn token_pause_updates_invalidate_only_the_token() {
+        let token = address!("20C0000000000000000000000000000000000999");
+        let pause = Some(&PauseStateUpdate::SIGNATURE_HASH);
+
+        assert!(is_tip20_pause_update(token, pause));
+        assert_eq!(cache_invalidation_address(token, pause), None);
+        assert!(!is_tip20_pause_update(
+            token,
+            Some(&TransferPolicyUpdate::SIGNATURE_HASH)
+        ));
+        assert!(!is_tip20_pause_update(Address::repeat_byte(0x11), pause));
     }
 
     #[test]

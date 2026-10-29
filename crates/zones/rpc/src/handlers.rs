@@ -102,8 +102,9 @@ pub trait ZoneRpcApi: Send + Sync + 'static {
     /// creating a transaction.
     ///
     /// Enforces that `from` equals the authenticated account (sets it if omitted,
-    /// rejects with `-32004` on mismatch). State/block overrides are rejected
-    /// with `-32602`.
+    /// rejects with `-32004` on mismatch). State/block overrides and blocks other
+    /// than `latest`, `pending`, `safe`, or `finalized` are rejected with `-32602`
+    /// before this is called.
     fn call(
         &self,
         request: TempoTransactionRequest,
@@ -114,8 +115,8 @@ pub trait ZoneRpcApi: Send + Sync + 'static {
 
     /// `eth_estimateGas(request, block, state_override)` — estimates gas for a transaction.
     ///
-    /// Same `from`-enforcement as [`call`](Self::call). State overrides are
-    /// rejected with `-32602`.
+    /// Same `from`-enforcement and block restriction as [`call`](Self::call).
+    /// State overrides are rejected with `-32602`.
     fn estimate_gas(
         &self,
         request: TempoTransactionRequest,
@@ -229,6 +230,11 @@ impl<'de> serde::Deserialize<'de> for CallParams {
     }
 }
 
+/// Raw params JSON. Handlers deserialize it directly, with no intermediate `Vec<Value>`.
+fn raw_params(req: &JsonRpcRequest) -> &str {
+    req.params.as_deref().map(|p| p.get()).unwrap_or("[]")
+}
+
 /// Convert an API result into a JSON-RPC response, logging failures.
 fn api_result(
     id: Value,
@@ -260,8 +266,7 @@ pub async fn dispatch(
         None => return JsonRpcResponse::error(id, JsonRpcError::method_not_found()),
     };
 
-    // Raw params JSON — handlers deserialize directly, no intermediate Vec<Value>.
-    let raw = req.params.as_deref().map(|p| p.get()).unwrap_or("[]");
+    let raw = raw_params(req);
 
     match method {
         // Simple passthrough methods (no params, no auth scoping)
@@ -295,12 +300,16 @@ pub async fn dispatch(
             handle_get_transaction_receipt(id, raw, auth, api).await
         }
 
-        // Simulation
-        Method::EthCall => handle_call(id, raw, auth, api).await,
-        Method::EthEstimateGas => handle_estimate_gas(id, raw, auth, api).await,
+        // Simulation and transaction preparation
+        Method::EthCall | Method::EthEstimateGas | Method::EthFillTransaction => {
+            match Simulation::parse(req) {
+                Some(Ok(simulation)) => simulation.execute(id, auth, api).await,
+                Some(Err(response)) => response,
+                None => unreachable!("{} is a simulation method", method.name()),
+            }
+        }
 
-        // Transaction preparation & submission
-        Method::EthFillTransaction => handle_fill_transaction(id, raw, auth, api).await,
+        // Transaction submission
         Method::EthSendRawTransaction => handle_send_raw_transaction(id, raw, auth, api).await,
         Method::EthSendRawTransactionSync => {
             handle_send_raw_transaction_sync(id, raw, auth, api).await
@@ -426,85 +435,87 @@ async fn handle_get_transaction_receipt(
     )
 }
 
-/// Handle `eth_call`. Enforces `from` matches the authenticated account and
-/// rejects state overrides.
-async fn handle_call(
-    id: Value,
-    raw: &str,
-    auth: &AuthContext,
-    api: &dyn ZoneRpcApi,
-) -> JsonRpcResponse {
-    let CallParams(request, block, state_override) =
-        match parse_params(raw, &id, "expected [request, block?, stateOverride?]") {
-            Ok(v) => v,
-            Err(resp) => return resp,
-        };
-
-    if state_override.is_some() {
-        return JsonRpcResponse::error(
-            id,
-            JsonRpcError::invalid_params("state overrides not allowed"),
-        );
-    }
-
-    let block = block.map(normalize_block_id);
-
-    api_result(
-        id,
-        Method::EthCall,
-        api.call(request, block, state_override, auth.clone()).await,
-    )
+/// A parsed simulation request: `eth_call`, `eth_estimateGas`, or `eth_fillTransaction`.
+///
+/// The server parses simulations before taking a simulation permit, so invalid requests are
+/// rejected with `-32602` without waiting for or holding one.
+pub(crate) enum Simulation {
+    Call(TempoTransactionRequest, Option<BlockId>),
+    EstimateGas(TempoTransactionRequest, Option<BlockId>),
+    FillTransaction(TempoTransactionRequest),
 }
 
-/// Handle `eth_estimateGas`. Same `from`-enforcement as `eth_call`.
-/// Rejects state overrides.
-async fn handle_estimate_gas(
-    id: Value,
-    raw: &str,
-    auth: &AuthContext,
-    api: &dyn ZoneRpcApi,
-) -> JsonRpcResponse {
-    let CallParams(request, block, state_override) =
-        match parse_params(raw, &id, "expected [request, block?, stateOverride?]") {
-            Ok(v) => v,
-            Err(resp) => return resp,
+impl Simulation {
+    /// Parses `req` as a simulation.
+    ///
+    /// Returns `None` if `req` is not a simulation method, and an error response for malformed
+    /// params, state overrides, or blocks other than `latest`, `pending`, `safe`, or `finalized`.
+    pub(crate) fn parse(req: &JsonRpcRequest) -> Option<Result<Self, JsonRpcResponse>> {
+        let method = Method::from_name(&req.method)?;
+        let (id, raw) = (&req.id, raw_params(req));
+        let simulation = match method {
+            Method::EthCall => {
+                call_params(id, raw).map(|(request, block)| Self::Call(request, block))
+            }
+            Method::EthEstimateGas => {
+                call_params(id, raw).map(|(request, block)| Self::EstimateGas(request, block))
+            }
+            // `from`-enforcement is delegated to the API impl.
+            Method::EthFillTransaction => {
+                parse_params::<(TempoTransactionRequest,)>(raw, id, "expected [request]")
+                    .map(|(request,)| Self::FillTransaction(request))
+            }
+            _ => return None,
         };
-
-    if state_override.is_some() {
-        return JsonRpcResponse::error(
-            id,
-            JsonRpcError::invalid_params("state overrides not allowed"),
-        );
+        Some(simulation)
     }
 
-    let block = block.map(normalize_block_id);
-
-    api_result(
-        id,
-        Method::EthEstimateGas,
-        api.estimate_gas(request, block, state_override, auth.clone())
-            .await,
-    )
+    /// Runs the simulation against `api`, responding with `id`.
+    pub(crate) async fn execute(
+        self,
+        id: Value,
+        auth: &AuthContext,
+        api: &dyn ZoneRpcApi,
+    ) -> JsonRpcResponse {
+        match self {
+            Self::Call(request, block) => api_result(
+                id,
+                Method::EthCall,
+                api.call(request, block, None, auth.clone()).await,
+            ),
+            Self::EstimateGas(request, block) => api_result(
+                id,
+                Method::EthEstimateGas,
+                api.estimate_gas(request, block, None, auth.clone()).await,
+            ),
+            Self::FillTransaction(request) => api_result(
+                id,
+                Method::EthFillTransaction,
+                api.fill_transaction(request, auth.clone()).await,
+            ),
+        }
+    }
 }
 
-/// Handle `eth_fillTransaction`. `from`-enforcement is delegated to the API impl.
-async fn handle_fill_transaction(
-    id: Value,
+/// Parses `eth_call` / `eth_estimateGas` params, rejecting state overrides and historical blocks.
+#[allow(clippy::result_large_err)]
+fn call_params(
+    id: &Value,
     raw: &str,
-    auth: &AuthContext,
-    api: &dyn ZoneRpcApi,
-) -> JsonRpcResponse {
-    let (request,) =
-        match parse_params::<(TempoTransactionRequest,)>(raw, &id, "expected [request]") {
-            Ok(v) => v,
-            Err(resp) => return resp,
-        };
+) -> Result<(TempoTransactionRequest, Option<BlockId>), JsonRpcResponse> {
+    let CallParams(request, block, state_override) =
+        parse_params(raw, id, "expected [request, block?, stateOverride?]")?;
 
-    api_result(
-        id,
-        Method::EthFillTransaction,
-        api.fill_transaction(request, auth.clone()).await,
-    )
+    if state_override.is_some() {
+        return Err(JsonRpcResponse::error(
+            id.clone(),
+            JsonRpcError::invalid_params("state overrides not allowed"),
+        ));
+    }
+
+    let block =
+        simulation_block(block).map_err(|error| JsonRpcResponse::error(id.clone(), error))?;
+    Ok((request, block))
 }
 
 /// Handle `eth_sendRawTransaction`. Sender verification is delegated to the API impl.
@@ -723,6 +734,25 @@ fn normalize_block_number(number: BlockNumberOrTag) -> BlockNumberOrTag {
         BlockNumberOrTag::Latest
     } else {
         number
+    }
+}
+
+/// Normalizes a simulation block, rejecting any block that is not `latest`, `pending`, `safe`, or
+/// `finalized`.
+///
+/// Each zone block is anchored to its own Tempo block, and L1 state is cached per Tempo block. A
+/// simulation at an arbitrary historical block would force a fresh L1 fetch for every slot it reads.
+fn simulation_block(block: Option<BlockId>) -> Result<Option<BlockId>, JsonRpcError> {
+    match block.map(normalize_block_id) {
+        None => Ok(None),
+        Some(
+            block @ BlockId::Number(
+                BlockNumberOrTag::Latest | BlockNumberOrTag::Safe | BlockNumberOrTag::Finalized,
+            ),
+        ) => Ok(Some(block)),
+        Some(_) => Err(JsonRpcError::invalid_params(
+            "simulations only accept the latest, pending, safe, or finalized block",
+        )),
     }
 }
 
@@ -1003,14 +1033,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn simulations_treat_pending_as_latest() {
+    async fn simulations_accept_only_recent_block_tags() {
         let api = MockZoneRpcApi::default();
         for method in ["eth_call", "eth_estimateGas"] {
             // The mock echoes the block it is asked to run against.
             for (requested, forwarded) in [
                 (json!("pending"), json!("latest")),
                 (json!("latest"), json!("latest")),
-                (json!("0x10"), json!("0x10")),
+                (json!("safe"), json!("safe")),
+                (json!("finalized"), json!("finalized")),
             ] {
                 let resp = dispatch(
                     &request(
@@ -1028,6 +1059,39 @@ mod tests {
                 let block: serde_json::Value =
                     serde_json::from_str(resp.result.expect("should dispatch").get()).unwrap();
                 assert_eq!(block, forwarded, "{method} at {requested}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn simulations_reject_historical_blocks() {
+        let api = MockZoneRpcApi::default();
+        for method in ["eth_call", "eth_estimateGas"] {
+            for block in [
+                json!("0x10"),
+                json!("earliest"),
+                json!({"blockHash": format!("{:#x}", B256::repeat_byte(0x33))}),
+            ] {
+                let resp = dispatch(
+                    &request(
+                        method,
+                        json!([
+                            {"to": format!("{:#x}", Address::repeat_byte(0x11)), "data": "0x"},
+                            block,
+                        ]),
+                    ),
+                    &auth(),
+                    &api,
+                )
+                .await;
+
+                assert!(resp.result.is_none(), "{method} at {block}");
+                let err = resp.error.expect("should reject historical blocks");
+                assert_eq!(err.code, -32602, "{method} at {block}");
+                assert_eq!(
+                    err.message,
+                    "simulations only accept the latest, pending, safe, or finalized block"
+                );
             }
         }
     }

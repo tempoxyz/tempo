@@ -5,7 +5,7 @@
 
 use reth_metrics::{
     Metrics,
-    metrics::{Counter, Histogram},
+    metrics::{Counter, Gauge, Histogram},
 };
 
 use crate::types::Method;
@@ -34,6 +34,15 @@ impl RedactedRpcCallMetrics {
 pub(crate) struct RedactedRpcAuthMetrics {
     /// Number of authentication failures.
     pub(crate) auth_failures_total: Counter,
+}
+
+#[derive(Metrics, Clone)]
+#[metrics(scope = "tempo_zone_redacted_rpc_simulations")]
+pub(crate) struct RedactedRpcSimulationMetrics {
+    /// Number of simulation requests rejected because no permit freed up before the wait deadline.
+    pub(crate) rejected_total: Counter,
+    /// Number of simulation permits held, including by simulations whose client disconnected.
+    pub(crate) permits_in_use: Gauge,
 }
 
 #[derive(Metrics, Clone)]

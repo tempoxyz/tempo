@@ -118,7 +118,6 @@ async fn test_enable_token_and_deposit_same_block() -> eyre::Result<()> {
 /// The enabled token is used for direct fee collection. The regression assertion checks that pool
 /// admission accepts its anchored policy without requiring FeeAMM liquidity.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "TODO: re-enable once zones allow user transfers"]
 async fn test_pool_validation_uses_enabled_token_anchored_policy() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 

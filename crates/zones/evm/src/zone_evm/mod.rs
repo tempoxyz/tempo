@@ -21,7 +21,7 @@ use zone_precompiles::{
 };
 use zone_primitives::constants::{CONTRACT_DEPLOYER_ALLOWLIST, TEMPO_STATE_ADDRESS};
 
-use crate::database::validate_journal;
+use crate::database::{is_tip20_pause_slot, validate_journal};
 
 /// Wraps Tempo's handlers with Zone transaction validation and transaction-local L1 context.
 pub(crate) fn zone_tx_registry<L1: L1StorageReader>(
@@ -69,24 +69,25 @@ impl<L1: L1StorageReader> ZoneTxHandler<L1> {
             .state_mut()
             .storage_slot_untracked(&TEMPO_STATE_ADDRESS, &TEMPO_BLOCK_NUMBER_SLOT)?;
 
-        // Mirrored registry values depend on the anchor, but the accepted cache is keyed by slot
-        // only. Keep its entries only while they were loaded at this transaction's anchor.
-        // Anchor-changing transactions switch anchors mid-transaction, and a cache hit skips
-        // `L1OverlayDB`, which would hide the switch: they always start from an empty cache.
+        // Mirrored registry and TIP-20 pause values depend on the anchor, but the accepted cache is
+        // keyed by slot only. Keep its entries only while they were loaded at this transaction's
+        // anchor. Anchor-changing transactions switch anchors mid-transaction, and a cache hit
+        // skips `L1OverlayDB`, which would hide the switch: they always start from an empty cache.
         let changes_anchor = matches!(
             ZoneTransactionKind::classify(request.envelope.evm_tx().is_system_tx(), || {
                 request.envelope.evm_tx().calls()
             }),
             ZoneTransactionKind::AdvanceTempo | ZoneTransactionKind::AdvanceTempoHeaders
         );
-        if self.l1.select_registry_cache_anchor(initial_anchor) || changes_anchor {
-            request
-                .host
-                .state_mut()
-                .overlay_db_mut()
-                .cache
-                .storage
-                .remove(&TIP403_REGISTRY_ADDRESS);
+        if self.l1.select_mirror_cache_anchor(initial_anchor) || changes_anchor {
+            let cache = &mut request.host.state_mut().overlay_db_mut().cache.storage;
+            cache.remove(&TIP403_REGISTRY_ADDRESS);
+            // The Zone never writes pause flags, so dropping them loses no local change.
+            for (address, storage) in cache.iter_mut() {
+                storage
+                    .slots
+                    .retain(|slot, _| !is_tip20_pause_slot(address, slot));
+            }
         }
         self.l1.begin_transaction(initial_anchor);
 

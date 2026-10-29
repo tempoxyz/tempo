@@ -23,13 +23,16 @@ use reth_evm::{
 use reth_evm_ethereum::{EthBlockExecutor, EthTransactionResultWithState};
 use reth_execution_types::StateUpdate;
 use std::sync::Arc;
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
+use tempo_chainspec::{
+    TempoChainSpec,
+    hardfork::{TempoHardfork, TempoHardforks},
+};
 use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, CONFIGURABLE_ACCOUNT_ADDRESS, CURRENT_COMMITTEE_ADDRESS,
     ICurrentCommittee, INITIAL_FACTORY_OWNER, InitialZoneFactoryAccount,
     RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, STORAGE_CREDITS_ADDRESS,
     TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS, initial_zone_factory_state,
-    t13_zone_factory_state,
+    t13_zone_factory_state, t15_zone_factory_state,
 };
 use tempo_primitives::{SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType};
 use tracing::trace;
@@ -193,7 +196,7 @@ impl AsRef<TxResult<TempoEvmTypes>> for TempoTxResult {
 pub struct TempoBlockExecutor<'a> {
     pub(crate) inner: EthBlockExecutor<'a, TempoEvmTypes, TempoReceiptBuilder>,
 
-    t13_active_at_genesis: bool,
+    chain_spec: &'a TempoChainSpec,
     prague_active: bool,
     section: BlockSection,
     extra_data: Bytes,
@@ -225,8 +228,7 @@ impl<'a> TempoBlockExecutor<'a> {
         let mut inner = EthBlockExecutor::new(evm, ctx.inner, chain_spec, TempoReceiptBuilder);
         inner.set_spec_id(spec_id);
         Self {
-            t13_active_at_genesis: chain_spec
-                .is_t13_active_at_timestamp(chain_spec.genesis().timestamp),
+            chain_spec,
             prague_active,
             incentive_gas_used: 0,
             block_gas_used: 0,
@@ -309,6 +311,27 @@ impl<'a> TempoBlockExecutor<'a> {
     fn upgrade_zone_runtimes_at_boundary(&mut self) -> Result<(), BlockExecutionError> {
         let [_, portal, verifier, messenger] = t13_zone_factory_state(INITIAL_FACTORY_OWNER);
         self.install_zone_runtimes_at_boundary([portal, verifier, messenger])
+    }
+
+    /// Installs the T15 shared runtimes, which add the zone transfer opt-in to the portal.
+    fn upgrade_zone_runtimes_at_t15_boundary(&mut self) -> Result<(), BlockExecutionError> {
+        let [_, portal, verifier, messenger] = t15_zone_factory_state(INITIAL_FACTORY_OWNER);
+        self.install_zone_runtimes_at_boundary([portal, verifier, messenger])
+    }
+
+    /// Returns the fork whose shared Zone runtimes are live at `timestamp`, or `None` before T13.
+    ///
+    /// A runtime set is live only once every earlier runtime upgrade is also active, matching how
+    /// genesis generation picks the set. So a chain with T15 at genesis and T13 later installs the
+    /// T15 set when T13 activates.
+    fn zone_runtime_fork_at(&self, timestamp: u64) -> Option<TempoHardfork> {
+        if !self.chain_spec.is_t13_active_at_timestamp(timestamp) {
+            None
+        } else if self.chain_spec.is_t15_active_at_timestamp(timestamp) {
+            Some(TempoHardfork::T15)
+        } else {
+            Some(TempoHardfork::T13)
+        }
     }
 
     /// Installs shared Zone runtimes without modifying their existing storage.
@@ -683,11 +706,18 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         if self.evm().config_spec_id().is_t14() {
             self.deploy_precompile_at_boundary(CONFIGURABLE_ACCOUNT_ADDRESS, &[])?;
         }
-        // Chains starting at T13 supply their runtime code in genesis. Preserve those
-        // allocations (including locally compiled contracts on test chains). Chains
-        // that activate T13 later still follow the normal runtime upgrade path.
-        if self.evm().config_spec_id().is_t13() && !self.t13_active_at_genesis {
-            self.upgrade_zone_runtimes_at_boundary()?;
+        // Chains starting at a runtime-upgrade fork supply its runtime code in genesis. Preserve
+        // those allocations (including locally compiled contracts on test chains). Chains that
+        // activate the fork later follow the normal runtime upgrade path. Only the newest live
+        // runtime set is installed, so T13 runtimes are never reinstalled over T15 ones.
+        let runtime_fork =
+            self.zone_runtime_fork_at(self.evm().block().timestamp.saturating_to::<u64>());
+        if runtime_fork != self.zone_runtime_fork_at(self.chain_spec.genesis().timestamp) {
+            match runtime_fork {
+                Some(TempoHardfork::T15) => self.upgrade_zone_runtimes_at_t15_boundary()?,
+                Some(TempoHardfork::T13) => self.upgrade_zone_runtimes_at_boundary()?,
+                _ => {}
+            }
         }
 
         Ok(())
@@ -968,7 +998,8 @@ mod tests {
         },
         zones::{
             T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
-            ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
+            T15_ZONE_PORTAL_RUNTIME, ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME,
+            ZONE_VERIFIER_RUNTIME,
         },
     };
     use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -2752,6 +2783,10 @@ mod tests {
                 .extra_fields
                 .insert_value("t13Time".into(), activation)
                 .unwrap();
+            genesis
+                .config
+                .extra_fields
+                .insert("t15Time".into(), serde_json::Value::Null);
             let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
             let mut db = InMemoryDB::default();
             let mut executor = TestExecutorBuilder::default()
@@ -2778,6 +2813,70 @@ mod tests {
                 let info = overlay.account_info(&address).unwrap();
                 let installed = &overlay.cache.contracts[&info.code_hash];
                 assert_eq!(installed.original_bytes(), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn zone_runtime_upgrade_activates_at_t15() {
+        let t13 = [
+            T13_ZONE_PORTAL_RUNTIME,
+            T13_ZONE_VERIFIER_RUNTIME,
+            T13_ZONE_MESSENGER_RUNTIME,
+        ];
+        let t15 = [
+            T15_ZONE_PORTAL_RUNTIME,
+            T13_ZONE_VERIFIER_RUNTIME,
+            T13_ZONE_MESSENGER_RUNTIME,
+        ];
+        let initial = [
+            ZONE_PORTAL_RUNTIME,
+            ZONE_VERIFIER_RUNTIME,
+            ZONE_MESSENGER_RUNTIME,
+        ];
+        // `t13Time`, `t14Time` and `t15Time`.
+        let in_order = [10u64, 15, 20];
+        // What `--t13-time 200` without `--hardfork` generates.
+        let t15_before_t13 = [200u64, 0, 0];
+        for (schedule, timestamp, spec, expected_runtimes) in [
+            (in_order, 14, TempoHardfork::T13, t13.clone()),
+            (in_order, 19, TempoHardfork::T14, t13),
+            (in_order, 20, TempoHardfork::T15, t15.clone()),
+            (in_order, 21, TempoHardfork::T15, t15.clone()),
+            (t15_before_t13, 199, TempoHardfork::T15, initial),
+            (t15_before_t13, 200, TempoHardfork::T15, t15.clone()),
+            (t15_before_t13, 201, TempoHardfork::T15, t15),
+        ] {
+            let mut genesis = DEV.genesis().clone();
+            for (fork, activation) in ["t13Time", "t14Time", "t15Time"].into_iter().zip(schedule) {
+                genesis
+                    .config
+                    .extra_fields
+                    .insert_value(fork.into(), activation)
+                    .unwrap();
+            }
+            let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
+            let mut db = InMemoryDB::default();
+            let mut executor = TestExecutorBuilder::default()
+                .with_spec(spec)
+                .with_parent_beacon_block_root(B256::ZERO)
+                .build(&mut db, &chainspec);
+            let mut block = *executor.evm().block();
+            block.timestamp = U256::from(timestamp);
+            executor.evm_mut().set_block(block);
+            executor.apply_pre_execution_changes().unwrap();
+            for (address, expected) in [
+                ZONE_PORTAL_IMPL_ADDRESS,
+                ZONE_VERIFIER_ADDRESS,
+                ZONE_MESSENGER_ADDRESS,
+            ]
+            .into_iter()
+            .zip(expected_runtimes)
+            {
+                let overlay = executor.evm().state().overlay_db();
+                let info = overlay.account_info(&address).unwrap();
+                let installed = &overlay.cache.contracts[&info.code_hash];
+                assert_eq!(installed.original_bytes(), expected, "{timestamp}");
             }
         }
     }
