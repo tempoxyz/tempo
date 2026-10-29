@@ -193,8 +193,7 @@ impl From<ConfigurableAccountConfigError> for TempoPrecompileError {
     fn from(error: ConfigurableAccountConfigError) -> Self {
         match error {
             ConfigurableAccountConfigError::EmptyOwners
-            | ConfigurableAccountConfigError::ZeroOwner
-            | ConfigurableAccountConfigError::AccountIsOwner => {
+            | ConfigurableAccountConfigError::ZeroOwner => {
                 ConfigurableAccountError::invalid_configurable_account_owner()
             }
             ConfigurableAccountConfigError::TooManyOwners => {
@@ -213,9 +212,6 @@ impl From<ConfigurableAccountConfigError> for TempoPrecompileError {
             }
             ConfigurableAccountConfigError::OwnersNotAscending => {
                 ConfigurableAccountError::invalid_owner_order()
-            }
-            ConfigurableAccountConfigError::DerivedAccountZero => {
-                ConfigurableAccountError::invalid_account()
             }
         }
         .into()

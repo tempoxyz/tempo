@@ -16,9 +16,6 @@ impl Precompile for ConfigurableAccount {
             calldata,
             |call| match call {
                 IConfigurableAccount::IConfigurableAccountCalls {
-                    deriveAccount(call) => view(call, |c| {
-                        self.derive_account(c.salt, c.threshold, &c.owners)
-                    }),
                     getConfigCommitment(call) => view(call, |c| {
                         self.get_config_commitment(c.account)
                     }),

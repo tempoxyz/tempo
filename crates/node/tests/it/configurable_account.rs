@@ -10,7 +10,10 @@ use alloy::{
     rpc::types::TransactionRequest,
     signers::local::PrivateKeySigner,
 };
-use evm2::evm::InMemoryDB;
+use evm2::{
+    bytecode::Bytecode,
+    evm::{AccountInfo, InMemoryDB},
+};
 use reth_evm::{ConfigureEvm, EvmEnvFor};
 use reth_rpc_eth_api::TryIntoTxEnv;
 use serde_json::from_str;
@@ -20,9 +23,13 @@ use tempo_alloy::rpc::{
 };
 use tempo_chainspec::TempoChainSpec;
 use tempo_evm::{TempoEvm, TempoEvmConfig};
-use tempo_precompiles::{PATH_USD_ADDRESS, storage::StorageCtx, test_util::TIP20Setup};
+use tempo_precompiles::{
+    PATH_USD_ADDRESS, configurable_account::CONFIGURABLE_ACCOUNT_CODE, storage::StorageCtx,
+    test_util::TIP20Setup,
+};
 use tempo_primitives::{
     TempoHeader,
+    account::encode_config_commitment,
     transaction::{ConfigurableAccountConfig, ConfigurableAccountOwner, SignatureType},
 };
 
@@ -64,26 +71,32 @@ fn evm(db: InMemoryDB) -> TempoEvm<'static> {
     evm
 }
 
-/// A fresh one-owner configurable account and its derived address.
-fn configurable_account(owner: &PrivateKeySigner) -> (ConfigurableAccountConfig, Address) {
+/// A one-owner configurable account, and a database where it has that configuration.
+fn configurable_account(
+    owner: &PrivateKeySigner,
+) -> (ConfigurableAccountConfig, Address, InMemoryDB) {
     let config = ConfigurableAccountConfig {
         salt: B256::repeat_byte(0x5a),
-        version: 0,
+        version: 1,
         threshold: 1,
         owners: vec![ConfigurableAccountOwner {
             owner: owner.address(),
             weight: 1,
         }],
     };
-    let account = config.derive_account().unwrap();
-    (config, account)
+    let account = Address::repeat_byte(0x5c);
+    let mut info = AccountInfo::default().with_code(Bytecode::new_raw(CONFIGURABLE_ACCOUNT_CODE));
+    info.extension = encode_config_commitment(config.commitment().unwrap()).into();
+    let mut db = InMemoryDB::default();
+    db.insert_account_info(&account, info);
+    (config, account, db)
 }
 
 /// A simulated `WebAuthn` owner approval is charged its modeled data as nonzero calldata.
 #[test]
 fn simulated_webauthn_approvals_charge_worst_case_data() {
     let owner = PrivateKeySigner::random();
-    let (config, account) = configurable_account(&owner);
+    let (config, account, db) = configurable_account(&owner);
     let gas_used = |key_type: SignatureType, key_data: Option<Bytes>| {
         let spec = ConfigurableAccountSimulationSpec {
             signer: None,
@@ -107,7 +120,7 @@ fn simulated_webauthn_approvals_charge_worst_case_data() {
         let mut env = evm_env(&evm_config());
         env.version.chain_id = CHAIN_ID;
         let tx = request.try_into_tx_env(&env).unwrap();
-        let result = evm(InMemoryDB::default()).transact(&tx).unwrap().commit();
+        let result = evm(db.clone()).transact(&tx).unwrap().commit();
         assert!(result.status, "{result:?}");
         result.tx_gas_used()
     };

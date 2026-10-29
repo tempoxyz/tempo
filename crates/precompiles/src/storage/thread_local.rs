@@ -17,7 +17,7 @@ use tempo_primitives::{TempoBlockEnv, TempoBlockExt};
 use crate::{
     error::{IntoPrecompileResult, Result, TempoPrecompileError},
     storage::{
-        ConfigCommitmentWriteGas, PrecompileStorageProvider, StorageActions,
+        PrecompileStorageProvider, StorageActions,
         evm::{EvmPrecompileStorageProvider, EvmStorageExt},
     },
 };
@@ -334,13 +334,8 @@ impl StorageCtx {
     }
 
     /// Writes an authorized commitment using the provider's account journal.
-    pub fn set_config_commitment(
-        &mut self,
-        address: Address,
-        commitment: B256,
-        gas: ConfigCommitmentWriteGas,
-    ) -> Result<()> {
-        Self::try_with_storage(|s| s.set_config_commitment(address, commitment, gas))
+    pub fn set_config_commitment(&mut self, address: Address, commitment: B256) -> Result<()> {
+        Self::try_with_storage(|s| s.set_config_commitment(address, commitment))
     }
 
     /// Reads the already-warm execution caller without charging account access twice.

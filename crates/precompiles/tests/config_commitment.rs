@@ -14,8 +14,8 @@ use tempo_precompiles::{
     configurable_account::CONFIGURABLE_ACCOUNT_CODE_HASH,
     error::TempoPrecompileError,
     storage::{
-        ConfigCommitmentWriteGas, PrecompileStorageProvider, StorageCtx,
-        evm::EvmPrecompileStorageProvider, hashmap::HashMapStorageProvider,
+        PrecompileStorageProvider, StorageCtx, evm::EvmPrecompileStorageProvider,
+        hashmap::HashMapStorageProvider,
     },
 };
 use tempo_primitives::{TempoBlockEnv, TempoBlockExt, account::encode_config_commitment};
@@ -84,8 +84,7 @@ fn write_then_read() {
         let mut ctx = StorageCtx;
         assert_eq!(ctx.config_commitment(ACCOUNT).unwrap(), B256::ZERO);
 
-        ctx.set_config_commitment(ACCOUNT, INITIAL, ConfigCommitmentWriteGas::Precompile)
-            .unwrap();
+        ctx.set_config_commitment(ACCOUNT, INITIAL).unwrap();
         assert_eq!(ctx.config_commitment(ACCOUNT).unwrap(), INITIAL);
         assert_eq!(
             ctx.with_account_info(ACCOUNT, |info| Ok(info.code_hash))
@@ -97,8 +96,7 @@ fn write_then_read() {
             B256::ZERO
         );
 
-        ctx.set_config_commitment(ACCOUNT, ROTATED, ConfigCommitmentWriteGas::Precompile)
-            .unwrap();
+        ctx.set_config_commitment(ACCOUNT, ROTATED).unwrap();
         assert_eq!(ctx.config_commitment(ACCOUNT).unwrap(), ROTATED);
         assert_eq!(
             ctx.with_account_info(ACCOUNT, |info| Ok(info.code_hash))
@@ -112,60 +110,28 @@ fn write_then_read() {
 fn rejects_zero_pre_t14_and_static_writes() {
     on_each_provider(TempoHardfork::T14, false, || {
         let mut ctx = StorageCtx;
-        for gas in [
-            ConfigCommitmentWriteGas::Intrinsic,
-            ConfigCommitmentWriteGas::Precompile,
-        ] {
-            assert!(is_invalid_write(ctx.set_config_commitment(
-                ACCOUNT,
-                B256::ZERO,
-                gas
-            )));
-        }
+        assert!(is_invalid_write(
+            ctx.set_config_commitment(ACCOUNT, B256::ZERO)
+        ));
         assert_eq!(ctx.config_commitment(ACCOUNT).unwrap(), B256::ZERO);
     });
 
     for fork in [TempoHardfork::T12, TempoHardfork::T13] {
         on_each_provider(fork, false, || {
             let mut ctx = StorageCtx;
-            assert!(is_invalid_write(ctx.set_config_commitment(
-                ACCOUNT,
-                INITIAL,
-                ConfigCommitmentWriteGas::Intrinsic
-            )));
+            assert!(is_invalid_write(
+                ctx.set_config_commitment(ACCOUNT, INITIAL)
+            ));
             assert_eq!(ctx.config_commitment(ACCOUNT).unwrap(), B256::ZERO);
         });
     }
 
     on_each_provider(TempoHardfork::T14, true, || {
         let mut ctx = StorageCtx;
-        assert!(is_invalid_write(ctx.set_config_commitment(
-            ACCOUNT,
-            INITIAL,
-            ConfigCommitmentWriteGas::Precompile
-        )));
+        assert!(is_invalid_write(
+            ctx.set_config_commitment(ACCOUNT, INITIAL)
+        ));
         assert_eq!(ctx.config_commitment(ACCOUNT).unwrap(), B256::ZERO);
-    });
-}
-
-#[test]
-fn intrinsic_write_requires_empty_commitment() {
-    on_each_provider(TempoHardfork::T14, false, || {
-        let mut ctx = StorageCtx;
-        ctx.set_config_commitment(ACCOUNT, INITIAL, ConfigCommitmentWriteGas::Intrinsic)
-            .unwrap();
-        for commitment in [INITIAL, ROTATED] {
-            assert!(is_invalid_write(ctx.set_config_commitment(
-                ACCOUNT,
-                commitment,
-                ConfigCommitmentWriteGas::Intrinsic
-            )));
-            assert_eq!(ctx.config_commitment(ACCOUNT).unwrap(), INITIAL);
-        }
-
-        ctx.set_config_commitment(ACCOUNT, INITIAL, ConfigCommitmentWriteGas::Precompile)
-            .unwrap();
-        assert_eq!(ctx.config_commitment(ACCOUNT).unwrap(), INITIAL);
     });
 }
 
@@ -174,12 +140,10 @@ fn checkpoint_revert_restores_commitment() {
     on_each_provider(TempoHardfork::T14, false, || {
         let mut ctx = StorageCtx;
         let outer = ctx.checkpoint();
-        ctx.set_config_commitment(ACCOUNT, INITIAL, ConfigCommitmentWriteGas::Intrinsic)
-            .unwrap();
+        ctx.set_config_commitment(ACCOUNT, INITIAL).unwrap();
 
         let inner = ctx.checkpoint();
-        ctx.set_config_commitment(ACCOUNT, ROTATED, ConfigCommitmentWriteGas::Precompile)
-            .unwrap();
+        ctx.set_config_commitment(ACCOUNT, ROTATED).unwrap();
         assert_eq!(ctx.config_commitment(ACCOUNT).unwrap(), ROTATED);
         drop(inner);
         assert_eq!(ctx.config_commitment(ACCOUNT).unwrap(), INITIAL);
@@ -191,8 +155,7 @@ fn checkpoint_revert_restores_commitment() {
         );
 
         let inner = ctx.checkpoint();
-        ctx.set_config_commitment(ACCOUNT, ROTATED, ConfigCommitmentWriteGas::Precompile)
-            .unwrap();
+        ctx.set_config_commitment(ACCOUNT, ROTATED).unwrap();
         inner.commit();
         assert_eq!(ctx.config_commitment(ACCOUNT).unwrap(), ROTATED);
         drop(outer);
@@ -225,12 +188,10 @@ fn evm_storage_reads_and_writes_commitments() {
         assert_eq!(storage.config_commitment(ACCOUNT).unwrap(), B256::ZERO);
         assert_eq!(storage.gas_used() - before, account_access);
 
-        // The first precompile write registers the commitment, priced like account creation,
+        // The first write stores the commitment, priced like account creation,
         // and creates the account.
         let before = storage.gas_used();
-        storage
-            .set_config_commitment(ACCOUNT, INITIAL, ConfigCommitmentWriteGas::Precompile)
-            .unwrap();
+        storage.set_config_commitment(ACCOUNT, INITIAL).unwrap();
         assert_eq!(storage.gas_used() - before, 2 * new_account);
         assert_eq!(storage.state_gas_used(), 2 * params.new_account_state_gas());
         assert_eq!(storage.config_commitment(ACCOUNT).unwrap(), INITIAL);
@@ -238,27 +199,20 @@ fn evm_storage_reads_and_writes_commitments() {
         // Rotation pays only the update charge; the account already exists.
         let state_gas = storage.state_gas_used();
         let before = storage.gas_used();
-        storage
-            .set_config_commitment(ACCOUNT, ROTATED, ConfigCommitmentWriteGas::Precompile)
-            .unwrap();
+        storage.set_config_commitment(ACCOUNT, ROTATED).unwrap();
         assert_eq!(storage.gas_used() - before, 5_000);
         assert_eq!(storage.state_gas_used(), state_gas);
         assert_eq!(storage.config_commitment(ACCOUNT).unwrap(), ROTATED);
 
-        // An intrinsic registration was priced with the transaction, account creation included.
+        // A first write to another empty account pays for the commitment and the account again.
         let fresh = Address::repeat_byte(4);
         let before = storage.gas_used();
-        storage
-            .set_config_commitment(fresh, INITIAL, ConfigCommitmentWriteGas::Intrinsic)
-            .unwrap();
-        assert_eq!(storage.gas_used(), before);
-        assert_eq!(storage.state_gas_used(), state_gas);
-        assert!(is_invalid_write(storage.set_config_commitment(
-            fresh,
-            ROTATED,
-            ConfigCommitmentWriteGas::Intrinsic
-        )));
-        assert_eq!(storage.gas_used(), before);
+        storage.set_config_commitment(fresh, INITIAL).unwrap();
+        assert_eq!(storage.gas_used() - before, 2 * new_account);
+        assert_eq!(
+            storage.state_gas_used(),
+            state_gas + 2 * params.new_account_state_gas()
+        );
         assert_eq!(storage.gas_refunded(), 0);
     }
 
@@ -293,14 +247,9 @@ fn evm_static_write_is_rejected_uncharged() {
     let mut storage = EvmPrecompileStorageProvider::new(&mut evm, &mut gas_tracker, spec, true);
     assert_eq!(storage.config_commitment(ACCOUNT).unwrap(), B256::ZERO);
     let before = storage.gas_used();
-    for gas in [
-        ConfigCommitmentWriteGas::Intrinsic,
-        ConfigCommitmentWriteGas::Precompile,
-    ] {
-        assert!(is_invalid_write(
-            storage.set_config_commitment(ACCOUNT, INITIAL, gas)
-        ));
-    }
+    assert!(is_invalid_write(
+        storage.set_config_commitment(ACCOUNT, INITIAL)
+    ));
     assert_eq!(storage.gas_used(), before);
     assert_eq!(storage.state_gas_used(), 0);
     assert_eq!(storage.config_commitment(ACCOUNT).unwrap(), B256::ZERO);
@@ -339,13 +288,7 @@ fn evm_write_gas_boundary() {
             {
                 let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
                 if !previous.is_zero() {
-                    storage
-                        .set_config_commitment(
-                            ACCOUNT,
-                            previous,
-                            ConfigCommitmentWriteGas::Intrinsic,
-                        )
-                        .unwrap();
+                    storage.set_config_commitment(ACCOUNT, previous).unwrap();
                 }
                 // Pay for the prerequisite account read separately from the write budget.
                 assert_eq!(storage.config_commitment(ACCOUNT).unwrap(), previous);
@@ -356,11 +299,7 @@ fn evm_write_gas_boundary() {
             {
                 let mut storage =
                     EvmPrecompileStorageProvider::new(&mut evm, &mut gas_tracker, spec, false);
-                let result = storage.set_config_commitment(
-                    ACCOUNT,
-                    ROTATED,
-                    ConfigCommitmentWriteGas::Precompile,
-                );
+                let result = storage.set_config_commitment(ACCOUNT, ROTATED);
                 if shortfall == 0 {
                     result.unwrap();
                     assert_eq!(storage.gas_used(), cost);
@@ -395,9 +334,7 @@ fn evm_registration_state_gas_spills_into_regular_gas() {
     let reservoir = state_gas / 4;
     let mut gas_tracker = GasTracker::new_with_execution_gas_and_reservoir(u64::MAX / 2, reservoir);
     let mut storage = EvmPrecompileStorageProvider::new(&mut evm, &mut gas_tracker, spec, false);
-    storage
-        .set_config_commitment(ACCOUNT, INITIAL, ConfigCommitmentWriteGas::Precompile)
-        .unwrap();
+    storage.set_config_commitment(ACCOUNT, INITIAL).unwrap();
     let spill = state_gas - reservoir;
     assert_eq!(storage.state_gas_used(), state_gas);
     assert_eq!(storage.state_gas_spilled(), spill);

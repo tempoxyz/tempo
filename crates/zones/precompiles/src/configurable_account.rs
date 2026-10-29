@@ -37,8 +37,7 @@ impl CallRules for ConfigurableAccountRules {
                         .into(),
                 )
             }
-            IConfigurableAccount::IConfigurableAccountCalls::deriveAccount(_)
-            | IConfigurableAccount::IConfigurableAccountCalls::getConfigCommitment(_) => {
+            IConfigurableAccount::IConfigurableAccountCalls::getConfigCommitment(_) => {
                 CallCheck::Continue
             }
         }

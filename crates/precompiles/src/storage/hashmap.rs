@@ -14,8 +14,8 @@ use crate::{
     configurable_account::CONFIGURABLE_ACCOUNT_CODE,
     error::TempoPrecompileError,
     storage::{
-        ConfigCommitmentWriteGas, PrecompileStorageProvider, SstoreTransitionFlags,
-        account_config_commitment,
+        CONFIG_COMMITMENT_UPDATE_GAS, PrecompileStorageProvider, SstoreTransitionFlags,
+        account_config_commitment, config_commitment_write_dynamic_gas,
     },
     storage_credits::{NonCreditableSlots, StorageCreditsBackend, sstore_storage_credits},
 };
@@ -297,15 +297,17 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         &mut self,
         address: Address,
         commitment: B256,
-        gas: ConfigCommitmentWriteGas,
     ) -> Result<(), TempoPrecompileError> {
         // Reject before any read or gas charge, so a rejected write is never charged.
         if !self.spec.is_t14() || self.is_static || commitment.is_zero() {
             return Err(TempoPrecompileError::InvalidConfigCommitmentWrite);
         }
-        self.deduct_gas(gas.static_cost())?;
+        self.deduct_gas(CONFIG_COMMITMENT_UPDATE_GAS)?;
         let previous = self.config_commitment(address)?;
-        self.deduct_gas(gas.dynamic_cost(previous, &self.gas_params)?)?;
+        self.deduct_gas(config_commitment_write_dynamic_gas(
+            previous,
+            &self.gas_params,
+        ))?;
         let account = self.accounts.entry(address).or_default();
         if previous.is_zero() {
             account.set_code(Bytecode::new_raw(CONFIGURABLE_ACCOUNT_CODE));

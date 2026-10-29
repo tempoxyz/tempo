@@ -13,10 +13,10 @@ use p256::{
 use proptest::prelude::*;
 use sha2::{Digest, Sha256};
 use tempo_primitives::transaction::{
-    AccountSignature, CONFIGURABLE_ACCOUNT_CONFIG_DOMAIN, CONFIGURABLE_ACCOUNT_DOMAIN,
-    CONFIGURABLE_ACCOUNT_SIGNATURE_DOMAIN, ConfigurableAccountConfig,
-    ConfigurableAccountConfigError, ConfigurableAccountOwner, ConfigurableAccountQuorumError,
-    ConfigurableAccountSignature, ConfigurableAccountSignatureError, ConfigurableAccountStateError,
+    AccountSignature, CONFIGURABLE_ACCOUNT_CONFIG_DOMAIN, CONFIGURABLE_ACCOUNT_SIGNATURE_DOMAIN,
+    ConfigurableAccountConfig, ConfigurableAccountConfigError, ConfigurableAccountOwner,
+    ConfigurableAccountQuorumError, ConfigurableAccountSignature,
+    ConfigurableAccountSignatureError, ConfigurableAccountStateError,
     ConfigurableAccountWeightAccumulator, KeychainSignature, KeychainVersion,
     MAX_CONFIGURABLE_ACCOUNT_OWNER_SIGNATURE_BYTES, MAX_CONFIGURABLE_ACCOUNT_OWNERS,
     MAX_CONFIGURABLE_ACCOUNT_SIGNATURES, PrimitiveSignature, SIGNATURE_TYPE_CONFIGURABLE_ACCOUNT,
@@ -49,6 +49,12 @@ fn configurable_account_config(
             .map(|&(owner, weight)| ConfigurableAccountOwner { owner, weight })
             .collect(),
     }
+}
+
+/// A configurable account address. Addresses are not derived from configurations, so any nonzero
+/// address names an account.
+fn test_account() -> Address {
+    Address::repeat_byte(0xac)
 }
 
 fn current_config(owner: Address) -> ConfigurableAccountConfig {
@@ -282,7 +288,6 @@ fn arbitrary_bounded_approvals() {
 #[test]
 fn config_validation_reports_the_first_broken_rule() {
     let [low, high] = [1, 2].map(indexed_owner);
-    let account = indexed_owner(0x10);
     // Nine owners of weight 30 but one of weight 1: the eight heaviest reach 240, of 241.
     let one_light_owner = |index: usize| {
         let mut owners = indexed_owners(MAX_CONFIGURABLE_ACCOUNT_SIGNATURES + 1, 30);
@@ -293,20 +298,17 @@ fn config_validation_reports_the_first_broken_rule() {
     struct ConfigCase {
         case: &'static str,
         config: ConfigurableAccountConfig,
-        for_account: Option<Address>,
         expected: Result<u8, ConfigurableAccountConfigError>,
     }
 
     for ConfigCase {
         case,
         config,
-        for_account,
         expected,
     } in [
         ConfigCase {
             case: "no owners, before the threshold",
             config: configurable_account_config(0, 0, &[]),
-            for_account: None,
             expected: Err(ConfigurableAccountConfigError::EmptyOwners),
         },
         ConfigCase {
@@ -316,7 +318,6 @@ fn config_validation_reports_the_first_broken_rule() {
                 0,
                 &indexed_owners(MAX_CONFIGURABLE_ACCOUNT_OWNERS + 1, 1),
             ),
-            for_account: None,
             expected: Err(ConfigurableAccountConfigError::TooManyOwners),
         },
         ConfigCase {
@@ -326,61 +327,51 @@ fn config_validation_reports_the_first_broken_rule() {
                 8,
                 &indexed_owners(MAX_CONFIGURABLE_ACCOUNT_OWNERS, 1),
             ),
-            for_account: None,
             expected: Ok(48),
         },
         ConfigCase {
             case: "a zero threshold, before every owner entry",
             config: configurable_account_config(0, 0, &[(Address::ZERO, 0)]),
-            for_account: None,
             expected: Err(ConfigurableAccountConfigError::ZeroThreshold),
         },
         ConfigCase {
             case: "a zero owner anywhere, before an earlier zero weight",
             config: configurable_account_config(0, 1, &[(low, 0), (Address::ZERO, 1)]),
-            for_account: None,
             expected: Err(ConfigurableAccountConfigError::ZeroOwner),
         },
         ConfigCase {
             case: "a zero weight",
             config: configurable_account_config(0, 1, &[(low, 1), (high, 0)]),
-            for_account: None,
             expected: Err(ConfigurableAccountConfigError::ZeroWeight),
         },
         ConfigCase {
             case: "a zero weight, before ordering",
             config: configurable_account_config(0, 1, &[(high, 1), (low, 0)]),
-            for_account: None,
             expected: Err(ConfigurableAccountConfigError::ZeroWeight),
         },
         ConfigCase {
             case: "an adjacent duplicate",
             config: configurable_account_config(0, 1, &[(low, 1), (low, 1)]),
-            for_account: None,
             expected: Err(ConfigurableAccountConfigError::DuplicateOwner),
         },
         ConfigCase {
             case: "a nonadjacent duplicate",
             config: configurable_account_config(0, 1, &[(low, 1), (high, 1), (low, 1)]),
-            for_account: None,
             expected: Err(ConfigurableAccountConfigError::DuplicateOwner),
         },
         ConfigCase {
             case: "descending owners, before the weight total",
             config: configurable_account_config(0, 1, &[(high, 128), (low, 128)]),
-            for_account: None,
             expected: Err(ConfigurableAccountConfigError::OwnersNotAscending),
         },
         ConfigCase {
             case: "ascending owners",
             config: configurable_account_config(0, 2, &[(low, 1), (high, 2)]),
-            for_account: None,
             expected: Ok(3),
         },
         ConfigCase {
             case: "the largest threshold and total weight",
             config: configurable_account_config(0, u8::MAX, &[(low, u8::MAX)]),
-            for_account: None,
             expected: Ok(u8::MAX),
         },
         // The eight heaviest of nine owners of weight 29 cannot reach the threshold either.
@@ -391,19 +382,16 @@ fn config_validation_reports_the_first_broken_rule() {
                 u8::MAX,
                 &indexed_owners(MAX_CONFIGURABLE_ACCOUNT_SIGNATURES + 1, 29),
             ),
-            for_account: None,
             expected: Err(ConfigurableAccountConfigError::TotalWeightExceedsMax),
         },
         ConfigCase {
             case: "the eight heaviest owners reach the threshold, light owner first",
             config: configurable_account_config(0, 240, &one_light_owner(0)),
-            for_account: None,
             expected: Ok(241),
         },
         ConfigCase {
             case: "the eight heaviest owners reach the threshold, light owner in the middle",
             config: configurable_account_config(0, 240, &one_light_owner(4)),
-            for_account: None,
             expected: Ok(241),
         },
         ConfigCase {
@@ -413,57 +401,17 @@ fn config_validation_reports_the_first_broken_rule() {
                 240,
                 &one_light_owner(MAX_CONFIGURABLE_ACCOUNT_SIGNATURES),
             ),
-            for_account: None,
             expected: Ok(241),
         },
         ConfigCase {
             case: "a threshold past the eight heaviest owners",
             config: configurable_account_config(0, 241, &one_light_owner(0)),
-            for_account: None,
             expected: Err(ConfigurableAccountConfigError::ThresholdExceedsWeight),
         },
-        ConfigCase {
-            case: "an initial config owning its account",
-            config: configurable_account_config(0, 1, &[(account, 1)]),
-            for_account: Some(account),
-            expected: Err(ConfigurableAccountConfigError::AccountIsOwner),
-        },
-        ConfigCase {
-            case: "self-ownership, before its own zero weight",
-            config: configurable_account_config(0, 1, &[(account, 0)]),
-            for_account: Some(account),
-            expected: Err(ConfigurableAccountConfigError::AccountIsOwner),
-        },
-        ConfigCase {
-            case: "self-ownership anywhere, before an earlier zero weight",
-            config: configurable_account_config(0, 1, &[(high, 0), (account, 1)]),
-            for_account: Some(account),
-            expected: Err(ConfigurableAccountConfigError::AccountIsOwner),
-        },
-        ConfigCase {
-            case: "a later version owning its account",
-            config: current_config(account),
-            for_account: Some(account),
-            expected: Ok(1),
-        },
-        ConfigCase {
-            case: "the last version owning its account",
-            config: configurable_account_config(u64::MAX, 1, &[(account, 1)]),
-            for_account: Some(account),
-            expected: Ok(1),
-        },
     ] {
-        match for_account {
-            Some(account) => {
-                assert_eq!(config.validate_for_account(account), expected, "{case}");
-            }
-            None => {
-                assert_eq!(config.validate(), expected, "{case}");
-                // Deriving the account and committing to the config validate it first.
-                assert_eq!(config.derive_account().err(), expected.err(), "{case}");
-                assert_eq!(config.commitment().err(), expected.err(), "{case}");
-            }
-        }
+        assert_eq!(config.validate(), expected, "{case}");
+        // Committing to the config validates it first.
+        assert_eq!(config.commitment().err(), expected.err(), "{case}");
     }
 }
 
@@ -525,13 +473,11 @@ fn configurable_account_signature_construction_reports_the_first_broken_rule() {
             )),
         },
         ConstructionCase {
-            case: "initial self-ownership of the named account",
+            case: "a config owning the named account",
             account,
-            config: configurable_account_config(0, 1, &[(account, 1)]),
+            config: configurable_account_config(1, 1, &[(account, 1)]),
             approvals: vec![owner_approval()],
-            expected: Err(ConfigurableAccountSignatureError::InvalidConfig(
-                ConfigurableAccountConfigError::AccountIsOwner,
-            )),
+            expected: Ok(()),
         },
         ConstructionCase {
             case: "no approvals",
@@ -677,16 +623,6 @@ fn configurable_account_hashes_follow_vectors_and_documented_layout() {
     let owner = Address::repeat_byte(0x11);
     let initial = configurable_account_config(0, 1, &[(owner, 1)]);
     assert_eq!(
-        initial.account_preimage().map(keccak256),
-        Ok(b256!(
-            "641ad6eccc3adf35fac828d5cbb727e2489c904a905420e794e8275b6150bfe1"
-        ))
-    );
-    assert_eq!(
-        initial.derive_account(),
-        Ok(address!("cbb727e2489c904a905420e794e8275b6150bfe1"))
-    );
-    assert_eq!(
         initial.commitment(),
         Ok(b256!(
             "79cc3a5fcbe18cb8cbbd2b41393750ccf3bbc20533a846755767fa10068ae01d"
@@ -711,13 +647,6 @@ fn configurable_account_hashes_follow_vectors_and_documented_layout() {
         current.config_commitment(),
         b256!("ee570a0f26f17b41cdf0952a04ee01ea23495b0c0a59f9c904b0d60cb76453c3")
     );
-    // The most owners, each of weight 1, at threshold 8, reproduced the same way.
-    assert_eq!(
-        configurable_account_config(0, 8, &indexed_owners(MAX_CONFIGURABLE_ACCOUNT_OWNERS, 1))
-            .derive_account(),
-        Ok(address!("9859f0316567499ebcd81d3417c0622999d7179f"))
-    );
-
     // The documented preimage layouts, built by hand.
     let owners = [(indexed_owner(1), 2), (indexed_owner(2), 3)];
     let mut config = configurable_account_config(9, 4, &owners);
@@ -727,15 +656,6 @@ fn configurable_account_hashes_follow_vectors_and_documented_layout() {
         owner_set.extend_from_slice(owner.as_slice());
         owner_set.push(weight);
     }
-
-    let account_preimage = [
-        CONFIGURABLE_ACCOUNT_DOMAIN,
-        config.salt.as_slice(),
-        owner_set.as_slice(),
-    ]
-    .concat();
-    assert_eq!(config.account_preimage(), Ok(account_preimage.clone()));
-    assert_eq!(config.account_preimage_len(), account_preimage.len());
 
     let commitment_preimage = [
         CONFIGURABLE_ACCOUNT_CONFIG_DOMAIN,
@@ -751,8 +671,7 @@ fn configurable_account_hashes_follow_vectors_and_documented_layout() {
     assert_eq!(config.commitment_preimage_len(), commitment_preimage.len());
     assert_eq!(config.commitment(), Ok(keccak256(&commitment_preimage)));
 
-    let account = Address::from_word(keccak256(&account_preimage));
-    assert_eq!(config.derive_account(), Ok(account));
+    let account = test_account();
 
     let digest_preimage = [
         CONFIGURABLE_ACCOUNT_SIGNATURE_DOMAIN,
@@ -767,12 +686,9 @@ fn configurable_account_hashes_follow_vectors_and_documented_layout() {
     );
 
     // An owner approval cannot replay across accounts that share owners, or across versions.
-    let mut resalted = config.clone();
-    resalted.salt = B256::repeat_byte(0x08);
-    let resalted_account = resalted.derive_account().unwrap();
-    assert_ne!(resalted_account, account, "the salt sets the account");
+    let other_account = Address::repeat_byte(0x98);
     assert_ne!(
-        configurable_account_digest(inner_digest, resalted_account, config.version),
+        configurable_account_digest(inner_digest, other_account, config.version),
         configurable_account_digest(inner_digest, account, config.version),
         "the account sets the digest"
     );
@@ -782,15 +698,11 @@ fn configurable_account_hashes_follow_vectors_and_documented_layout() {
         "the version sets the digest"
     );
 
-    // Each preimage bounds the owner count on its own.
+    // The preimage bounds the owner count on its own.
     let oversized = configurable_account_config(
         0,
         1,
         &indexed_owners(MAX_CONFIGURABLE_ACCOUNT_OWNERS + 1, 1),
-    );
-    assert_eq!(
-        oversized.account_preimage(),
-        Err(ConfigurableAccountConfigError::TooManyOwners)
     );
     assert_eq!(
         oversized.commitment_preimage(),
@@ -915,8 +827,8 @@ fn configurable_account_approvals_report_the_first_broken_rule() {
     });
     let mut owners = [first.address(), second.address()];
     owners.sort();
-    let config = configurable_account_config(0, 2, &owners.map(|owner| (owner, 1)));
-    let account = config.derive_account().unwrap();
+    let config = configurable_account_config(1, 2, &owners.map(|owner| (owner, 1)));
+    let account = test_account();
     let inner_digest = B256::repeat_byte(0x42);
     let digest = configurable_account_digest(inner_digest, account, config.version);
     let approve = |signer: &PrivateKeySigner| {
@@ -997,11 +909,8 @@ fn configurable_account_approvals_report_the_first_broken_rule() {
 #[test]
 fn configurable_account_commitment_reports_the_first_broken_rule() {
     let owners = [(indexed_owner(1), 1)];
-    let account = configurable_account_config(0, 1, &owners)
-        .derive_account()
-        .unwrap();
-    let other_account = Address::repeat_byte(0x98);
-    let signature = |account: Address, version: u64| {
+    let account = test_account();
+    let signature = |version: u64| {
         ConfigurableAccountSignature::try_new(
             account,
             configurable_account_config(version, 1, &owners),
@@ -1010,13 +919,12 @@ fn configurable_account_commitment_reports_the_first_broken_rule() {
         .unwrap()
     };
     let [initial_commitment, current_commitment] =
-        [0, 1].map(|version| signature(account, version).config_commitment());
+        [0, 1].map(|version| signature(version).config_commitment());
 
     struct CommitmentCase {
         case: &'static str,
         version: u64,
         stored: B256,
-        account: Address,
         expected: Result<(), ConfigurableAccountStateError>,
     }
 
@@ -1024,53 +932,38 @@ fn configurable_account_commitment_reports_the_first_broken_rule() {
         case,
         version,
         stored,
-        account,
         expected,
     } in [
         CommitmentCase {
             case: "a stored commitment equal to the witness",
             version: 1,
             stored: current_commitment,
-            account,
             expected: Ok(()),
         },
         CommitmentCase {
             case: "a stored commitment differing from the witness",
             version: 1,
             stored: initial_commitment,
-            account,
             expected: Err(ConfigurableAccountStateError::CommitmentMismatch {
                 expected: initial_commitment,
                 actual: current_commitment,
             }),
         },
         CommitmentCase {
-            case: "first use of the derived account",
+            case: "no stored commitment, at version zero",
             version: 0,
             stored: B256::ZERO,
-            account,
-            expected: Ok(()),
+            expected: Err(ConfigurableAccountStateError::NotConfigurable),
         },
         CommitmentCase {
-            case: "first use at a version above zero",
+            case: "no stored commitment, at a later version",
             version: 1,
             stored: B256::ZERO,
-            account,
-            expected: Err(ConfigurableAccountStateError::UnregisteredVersion { actual: 1 }),
-        },
-        CommitmentCase {
-            case: "first use of an account other than the derived one",
-            version: 0,
-            stored: B256::ZERO,
-            account: other_account,
-            expected: Err(ConfigurableAccountStateError::InitialAccountMismatch {
-                expected: account,
-                actual: other_account,
-            }),
+            expected: Err(ConfigurableAccountStateError::NotConfigurable),
         },
     ] {
         assert_eq!(
-            signature(account, version).validate_account_commitment(stored),
+            signature(version).validate_account_commitment(stored),
             expected,
             "{case}"
         );
@@ -1215,11 +1108,11 @@ proptest! {
     }
 }
 
-/// A version 0 single-owner witness over the account derived for it.
+/// A version 0 single-owner witness for the test account.
 fn initial_signature() -> ConfigurableAccountSignature {
     let config = configurable_account_config(0, 1, &[(indexed_owner(2), 1)]);
     ConfigurableAccountSignature::try_new(
-        config.derive_account().unwrap(),
+        test_account(),
         config,
         vec![PrimitiveSignature::default()],
     )
@@ -1230,7 +1123,7 @@ fn initial_signature() -> ConfigurableAccountSignature {
 fn signed_delegate(parent: Address) -> ConfigurableAccountSignature {
     let owner = PrivateKeySigner::from_bytes(&B256::repeat_byte(2)).unwrap();
     let config = configurable_account_config(0, 1, &[(owner.address(), 1)]);
-    let account = config.derive_account().unwrap();
+    let account = test_account();
     let digest = configurable_account_digest(
         KeychainSignature::signing_hash(B256::ZERO, parent),
         account,
@@ -1261,12 +1154,8 @@ fn tempo_signature_size_counts_each_allocation_once() {
             approvals.reserve(1);
             let owners_capacity = config.owners.capacity();
             let approvals_capacity = approvals.capacity();
-            let signature = ConfigurableAccountSignature::try_new(
-                config.derive_account().unwrap(),
-                config,
-                approvals,
-            )
-            .unwrap();
+            let signature =
+                ConfigurableAccountSignature::try_new(test_account(), config, approvals).unwrap();
 
             assert_eq!(
                 TempoSignature::ConfigurableAccount(signature).size(),
@@ -1337,7 +1226,7 @@ fn noncanonical_p256_owner_prehash_flag_canonicalizes() {
     let pub_key_y = B256::from_slice(encoded_point.y().unwrap().as_ref());
     let owner = derive_p256_address(&pub_key_x, &pub_key_y);
     let config = configurable_account_config(0, 1, &[(owner, 1)]);
-    let account = config.derive_account().unwrap();
+    let account = test_account();
     let digest = configurable_account_digest(B256::repeat_byte(0x42), account, 0);
 
     let prehashed = B256::from_slice(Sha256::digest(digest).as_ref());

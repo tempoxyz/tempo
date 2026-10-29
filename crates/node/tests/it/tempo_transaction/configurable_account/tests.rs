@@ -138,18 +138,16 @@ impl RootRole {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn configurable_account_rpc_registration_revert_retry_and_rotation() -> eyre::Result<()> {
+async fn configurable_account_rpc_revert_retry_and_rotation() -> eyre::Result<()> {
     let mut env = environment().await?;
-    let mut account = ConfigurableAccount::new(0x11, 2);
+    let mut account = ConfigurableAccount::create(&mut env, 0x11, 2).await?;
     env.fund_account(account.address).await?;
-    assert_eq!(commitment(&env, account.address).await?, B256::ZERO);
     let request = account.simulation_request();
     let provider = tempo_provider(&env);
     let simulated = provider.call(request.clone()).latest().await?;
     assert_eq!(simulated, Bytes::from(account.config.commitment().unwrap()));
     let estimate = provider.estimate_gas(request).latest().await?;
     assert!(estimate > 0);
-    assert_eq!(commitment(&env, account.address).await?, B256::ZERO);
     let before = ITIP20::new(DEFAULT_FEE_TOKEN, env.provider())
         .balanceOf(account.address)
         .call()
@@ -183,7 +181,7 @@ async fn configurable_account_rpc_registration_revert_retry_and_rotation() -> ey
             account.config.commitment().unwrap()
         ))
     );
-    // Registration installs the one-byte marker, which answers ERC-1271 and ERC-721 receipts.
+    // Migration installed the one-byte marker, which answers ERC-1271 and ERC-721 receipts.
     assert_eq!(
         env.provider().get_code_at(account.address).await?,
         Bytes::from_static(&[0xef])
@@ -235,19 +233,11 @@ async fn configurable_account_rpc_registration_revert_retry_and_rotation() -> ey
     let payload = error.as_error_resp().expect("revert response");
     assert_eq!(payload.message, "execution reverted");
     assert_eq!(payload.as_revert_data(), None);
-    let registered_estimate = provider
-        .estimate_gas(account.simulation_request())
-        .latest()
-        .await?;
-    assert!(
-        registered_estimate < estimate,
-        "registered version zero avoids initial registration gas"
-    );
     assert_eq!(
         env.provider()
             .get_transaction_count(account.address)
             .await?,
-        1
+        2
     );
     assert!(
         ITIP20::new(DEFAULT_FEE_TOKEN, env.provider())
@@ -397,7 +387,7 @@ async fn configurable_account_rpc_registration_revert_retry_and_rotation() -> ey
 #[tokio::test(flavor = "multi_thread")]
 async fn configurable_account_rpc_historical_state_and_account_overrides() -> eyre::Result<()> {
     let mut env = environment().await?;
-    let mut account = ConfigurableAccount::new(0x18, 2);
+    let mut account = ConfigurableAccount::create(&mut env, 0x18, 2).await?;
     env.fund_account(account.address).await?;
     let tx = account.transaction(&env, vec![noop()]);
     let signature = account.sign(&tx)?;
@@ -484,7 +474,7 @@ async fn configurable_account_rpc_historical_state_and_account_overrides() -> ey
 #[tokio::test(flavor = "multi_thread")]
 async fn configurable_account_rpc_fill_and_access_list_preserve_authority() -> eyre::Result<()> {
     let mut env = environment().await?;
-    let mut account = ConfigurableAccount::new(0x19, 3);
+    let mut account = ConfigurableAccount::create(&mut env, 0x19, 3).await?;
     env.fund_account(account.address).await?;
     let provider = tempo_provider(&env);
     let mut request = account.simulation_request();
@@ -522,7 +512,10 @@ async fn configurable_account_rpc_fill_and_access_list_preserve_authority() -> e
             .any(|item| { item.address == OBSERVER && item.storage_keys.contains(&B256::ZERO) }),
         "{access:?}"
     );
-    assert_eq!(commitment(&env, account.address).await?, B256::ZERO);
+    assert_eq!(
+        commitment(&env, account.address).await?,
+        account.config.commitment().unwrap()
+    );
     assert_eq!(
         env.provider().get_storage_at(OBSERVER, U256::ZERO).await?,
         U256::ZERO
@@ -545,7 +538,7 @@ async fn configurable_account_rpc_fill_and_access_list_preserve_authority() -> e
         .await?;
     let mut tx = parse_filled_tx(&filled)?;
     assert_eq!(tx.key_authorization.as_ref(), Some(&grant));
-    assert_eq!(tx.nonce, 0);
+    assert_eq!(tx.nonce, 1);
     assert_eq!(tx.chain_id, env.chain_id());
     assert_eq!(tx.calls[0].to, OBSERVER.into());
     let raw: Bytes = from_value(filled["raw"].clone())?;
@@ -583,7 +576,10 @@ async fn configurable_account_rpc_fill_and_access_list_preserve_authority() -> e
     assert_eq!(quorum.account(), account.address);
     assert_eq!(quorum.config(), &account.config);
     assert_eq!(quorum.signatures().len(), account.owners.len());
-    assert_eq!(commitment(&env, account.address).await?, B256::ZERO);
+    assert_eq!(
+        commitment(&env, account.address).await?,
+        account.config.commitment().unwrap()
+    );
     tx.gas_limit = estimate;
     let signature = account.sign(&tx)?;
     account.submit(&mut env, tx, signature, true).await?;
@@ -600,8 +596,8 @@ async fn configurable_account_rpc_fill_and_access_list_preserve_authority() -> e
 async fn configurable_account_rpc_simulated_grant_estimate_covers_the_signed_grant()
 -> eyre::Result<()> {
     let mut env = environment().await?;
-    let mut parent = ConfigurableAccount::new(0x1a, 2);
-    let delegate = ConfigurableAccount::new(0x2a, 2);
+    let mut parent = ConfigurableAccount::create(&mut env, 0x1a, 2).await?;
+    let delegate = ConfigurableAccount::create(&mut env, 0x2a, 2).await?;
     env.fund_account(parent.address).await?;
     let grant = KeyAuthorization::unrestricted(
         env.chain_id(),
@@ -638,8 +634,8 @@ async fn configurable_account_rpc_simulated_grant_estimate_covers_the_signed_gra
 async fn configurable_account_rpc_delegate_rotation_preserves_grant_and_spending()
 -> eyre::Result<()> {
     let mut env = environment().await?;
-    let mut parent = ConfigurableAccount::new(0x31, 2);
-    let mut delegate = ConfigurableAccount::new(0x41, 2);
+    let mut parent = ConfigurableAccount::create(&mut env, 0x31, 2).await?;
+    let mut delegate = ConfigurableAccount::create(&mut env, 0x41, 2).await?;
     env.fund_account(parent.address).await?;
     env.fund_account(delegate.address).await?;
     let limit = U256::from(100_000_000_000u64);
@@ -745,8 +741,8 @@ async fn configurable_account_rpc_delegate_rotation_preserves_grant_and_spending
 async fn configurable_account_rpc_maximum_mixed_quorums_and_validation_cost_order()
 -> eyre::Result<()> {
     let mut env = environment().await?;
-    let mut parent = ConfigurableAccount::new(0x61, 8);
-    let delegate = ConfigurableAccount::new(0x81, 8);
+    let mut parent = ConfigurableAccount::create(&mut env, 0x61, 8).await?;
+    let delegate = ConfigurableAccount::create(&mut env, 0x81, 8).await?;
     let grant = KeyAuthorization::unrestricted(
         env.chain_id(),
         SignatureType::ConfigurableAccount,
@@ -814,8 +810,14 @@ async fn configurable_account_rpc_maximum_mixed_quorums_and_validation_cost_orde
     let error = rejection(&env, invalid_grant, signature).await;
     assert_rpc_error(&error, INVALID_PARAMS_CODE, "invalid transaction signature")?;
     env.fund_account(parent.address).await?;
-    assert_eq!(commitment(&env, parent.address).await?, B256::ZERO);
-    assert_eq!(commitment(&env, delegate.address).await?, B256::ZERO);
+    assert_eq!(
+        commitment(&env, parent.address).await?,
+        parent.config.commitment().unwrap()
+    );
+    assert_eq!(
+        commitment(&env, delegate.address).await?,
+        delegate.config.commitment().unwrap()
+    );
 
     // Two independent eight-owner witnesses include secp256k1, P256 and WebAuthn. Sponsorship
     // adds exactly one ordinary secp256k1 signature without giving the sponsor authority.

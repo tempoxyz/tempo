@@ -12,8 +12,8 @@ use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{
     error::{Result as TempoResult, TempoPrecompileError},
     storage::{
-        ConfigCommitmentWriteGas, Handler, PrecompileStorageProvider, StorageAction,
-        StorageActions, StorageCtx, account_config_commitment,
+        Handler, PrecompileStorageProvider, StorageAction, StorageActions, StorageCtx,
+        account_config_commitment,
     },
     tip20::{ITIP20, TIP20Token},
     validator_config_v2::{ValidatorConfigV2, ValidatorConfigV2Error},
@@ -481,12 +481,7 @@ where
         account_config_commitment(&info, self.spec)
     }
 
-    fn set_config_commitment(
-        &mut self,
-        _: Address,
-        _: B256,
-        _: ConfigCommitmentWriteGas,
-    ) -> TempoResult<()> {
+    fn set_config_commitment(&mut self, _: Address, _: B256) -> TempoResult<()> {
         // Read-only context rejects every write; the caller sees a revert, not a panic.
         Err(TempoPrecompileError::InvalidConfigCommitmentWrite)
     }

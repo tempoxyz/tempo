@@ -304,6 +304,7 @@ impl TempoInvalidTransaction {
                 | ConfigurableAccountError::Quorum(_) => true,
                 ConfigurableAccountError::UnsupportedContext
                 | ConfigurableAccountError::InvalidAccount { .. }
+                | ConfigurableAccountError::NotConfigurable { .. }
                 | ConfigurableAccountError::ConfigurationCommitmentMismatch { .. } => false,
             },
         }
@@ -322,6 +323,12 @@ pub enum ConfigurableAccountError {
     /// The account cannot hold a native configuration.
     #[error("invalid configurable account {account}")]
     InvalidAccount {
+        /// Rejected account.
+        account: Address,
+    },
+    /// The named account has no configuration commitment, so it is not a configurable account.
+    #[error("account {account} is not a configurable account")]
+    NotConfigurable {
         /// Rejected account.
         account: Address,
     },
