@@ -188,5 +188,21 @@ async fn configurable_account_authorization_for_another_account_is_rejected() {
             Err(TempoAccountsError::MissingAccessKey { .. })
         ));
     }
+
+    // A stored configurable signature that does not decode drops only its own key.
+    let mut value = stored;
+    value["tempo-cli.store"]["state"]["accessKeys"][0]["keyAuthorization"]["signature"]["signature"] =
+        serde_json::json!("0xc0");
+    fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+    let usable = PrivateKeySigner::random();
+    store
+        .upsert_secp256k1_access_key(other, &usable, &configurable_authorization(other, &usable))
+        .unwrap();
+    let wallet = TempoAccountsWallet::from_store(&path).unwrap();
+    assert!(matches!(
+        wallet.access_key(other, 4217, signer.address()),
+        Err(TempoAccountsError::MissingAccessKey { .. })
+    ));
+    wallet.access_key(other, 4217, usable.address()).unwrap();
     fs::remove_dir_all(directory).unwrap();
 }
