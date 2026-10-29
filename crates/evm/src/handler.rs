@@ -50,7 +50,7 @@ use tempo_precompiles::{
     storage::{Handler as _, StorageCtx, account_config_commitment},
 };
 use tempo_primitives::transaction::{
-    SignedKeyAuthorization, TEMPO_EXPIRING_NONCE_KEY, validate_calls,
+    SignedKeyAuthorization, TEMPO_EXPIRING_NONCE_KEY, TempoTransaction, validate_calls,
 };
 
 /// Base gas for KeyAuthorization (22k storage + 5k buffer), signature gas added at runtime
@@ -1439,10 +1439,11 @@ fn prepare_aa(
         timestamp,
     )?;
 
-    // Configurable-account state checks load more accounts, so transaction warmth goes first.
-    request.host.state_mut().prewarm(&caller);
-    warm_base_accounts(request.host, tx.calls[0].to);
-    warm_access_list(request.host, &tx.access_list);
+    // From T14, configurable-account state checks load more accounts, so transaction warmth
+    // goes first.
+    if spec.is_t14() {
+        warm_aa_accounts(request.host, caller, tx);
+    }
     let (native_gas, native_state_gas) =
         configurable_account::validate_state(request.host, request.envelope, spec)?;
 
@@ -1498,6 +1499,10 @@ fn prepare_aa(
     }
 
     validate_execution_gas_limit_cap(request.host.version(), tx.gas_limit, intrinsic, floor_gas)?;
+
+    if !spec.is_t14() {
+        warm_aa_accounts(request.host, caller, tx);
+    }
 
     // Collect fees for the transaction.
     let fee_context = TempoHandlerHooks::resolve_fee_context(request.host, request.envelope)?;
@@ -1572,6 +1577,13 @@ fn prepare_aa(
         regular_refund,
         result,
     })
+}
+
+/// Warms the AA transaction's caller, base accounts and access list.
+fn warm_aa_accounts(host: &mut Evm<'_, TempoEvmTypes>, caller: Address, tx: &TempoTransaction) {
+    host.state_mut().prewarm(&caller);
+    warm_base_accounts(host, tx.calls[0].to);
+    warm_access_list(host, &tx.access_list);
 }
 
 fn execute_aa(
