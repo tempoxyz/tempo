@@ -2280,7 +2280,7 @@ fn stored_access_key(key: &PersistedAccessKey) -> Result<TempoStoredAccessKey, T
         authorization.key_id != key.address
             || authorization.chain_id != key.chain_id
             || authorization.key_type != key_type
-            || authorization_account(authorization).is_some_and(|account| account != key.access)
+            || authorization_accounts(authorization).any(|account| account != key.access)
     }) {
         return Err(TempoAccountsError::InvalidAccessKey {
             address: key.address,
@@ -2341,7 +2341,7 @@ fn validate_stored_authorization(
             "the authorization key ID does not match the local signer",
         ));
     }
-    if authorization_account(authorization).is_some_and(|authorized| authorized != account) {
+    if authorization_accounts(authorization).any(|authorized| authorized != account) {
         return Err(TempoAccountsError::InvalidAuthorization(
             "the authorization targets a different account",
         ));
@@ -2349,14 +2349,16 @@ fn validate_stored_authorization(
     Ok(())
 }
 
-/// The account an authorization names without recovering a primitive signer: the account of its
-/// configurable account signature, which only signs its own grants, else its explicit account.
-fn authorization_account(authorization: &SignedKeyAuthorization) -> Option<Address> {
+/// The accounts an authorization names without recovering a primitive signer: the account of its
+/// configurable account signature, which only signs its own grants, and its explicit account. A
+/// valid authorization names one account through all of them.
+fn authorization_accounts(authorization: &SignedKeyAuthorization) -> impl Iterator<Item = Address> {
     authorization
         .signature
         .as_configurable_account()
         .map(ConfigurableAccountSignature::account)
-        .or(authorization.account)
+        .into_iter()
+        .chain(authorization.account)
 }
 
 struct EditableTempoCliStore {
