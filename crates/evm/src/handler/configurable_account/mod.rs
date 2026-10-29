@@ -147,10 +147,7 @@ fn validate_root_keys(
         }
     };
     // RPC simulation supplies a placeholder sender signature.
-    let simulation = match envelope.execution_context() {
-        ExecutionContext::Transaction { .. } => false,
-        ExecutionContext::Simulation => true,
-    };
+    let simulation = matches!(envelope.execution_context(), ExecutionContext::Simulation);
     if !simulation && envelope.signed_by_primitive_root() {
         check(host, caller, RootKeyRole::Sender)?;
     }
