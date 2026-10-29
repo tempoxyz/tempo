@@ -1389,7 +1389,7 @@ fn noncanonical_p256_owner_prehash_flag_canonicalizes() {
 fn configurable_account_signature_type_serializes_under_its_name() {
     use serde_json::{from_value, json, to_value};
 
-    let key_type = AccountSignature::from(initial_signature()).key_type();
+    let key_type = AccountSignature::from(initial_signature()).signature_type();
     assert_eq!(key_type, SignatureType::ConfigurableAccount);
     assert_eq!(to_value(key_type).unwrap(), json!("configurableAccount"));
     assert_eq!(

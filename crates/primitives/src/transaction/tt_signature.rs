@@ -663,7 +663,7 @@ impl AccountSignature {
     }
 
     /// Returns the signature's access-key type, including configurable account.
-    pub fn key_type(&self) -> SignatureType {
+    pub fn signature_type(&self) -> SignatureType {
         match self {
             Self::Primitive(signature) => signature.signature_type(),
             Self::ConfigurableAccount(_) => SignatureType::ConfigurableAccount,

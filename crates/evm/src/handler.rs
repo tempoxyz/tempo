@@ -493,7 +493,7 @@ fn validate_key_authorization(
         && signed
             .signature()
             .as_keychain()
-            .is_some_and(|signature| key_auth.key_type != signature.signature.key_type())
+            .is_some_and(|signature| key_auth.key_type != signature.signature.signature_type())
     {
         return Err(TempoInvalidTransaction::KeychainValidationFailed {
             reason: "key authorization key_type does not match the keychain signature type".into(),
@@ -582,7 +582,7 @@ fn validate_key_authorization(
                         .into(),
                 });
             }
-            if key_auth.signature.signature_type() != keychain_signature.signature.key_type() {
+            if key_auth.signature.signature_type() != keychain_signature.signature.signature_type() {
                 return Err(TempoInvalidTransaction::KeychainValidationFailed {
                     reason: "admin-signed key authorization signature type does not match transaction key signature type".into(),
                 });
@@ -695,7 +695,7 @@ fn prepare_keychain(
         // with historical blocks during re-execution.
         let expected_signature_type = (key_authorization.is_some()
             || host.config_spec_id().is_t1())
-        .then_some(u8::from(keychain_signature.signature.key_type()));
+        .then_some(u8::from(keychain_signature.signature.signature_type()));
         let loaded = StorageCtx::enter_evm_without_tip1060_accounting(host, || {
             let mut keychain = AccountKeychain::new();
             let key = keychain
