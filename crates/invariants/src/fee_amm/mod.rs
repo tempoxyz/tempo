@@ -24,8 +24,8 @@ pub use tempo_contracts::precompiles::{
 mod checks;
 
 pub use checks::{
-    CHECKS, FEE_CUSTODY, LP_SUPPLY, MINT_BALANCE, MINT_RESERVE, MINT_SUPPLY, POOL_SHAPE,
-    STEP_CHECKS, VIEW,
+    CHECKS, CUSTODY_STEP, FEE_CUSTODY, LP_SUPPLY, MINT_BALANCE, MINT_RESERVE, MINT_SUPPLY,
+    POOL_SHAPE, STEP_CHECKS, VIEW,
 };
 
 /// The LP supply a pool's first mint locks, as `tempo_precompiles::tip_fee_manager::amm::MIN_LIQUIDITY`

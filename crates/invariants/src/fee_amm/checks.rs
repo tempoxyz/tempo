@@ -14,6 +14,7 @@ pub const POOL_SHAPE: &str = "TEMPO-AMM30";
 pub const MINT_SUPPLY: &str = "TEMPO-AMM2";
 pub const MINT_BALANCE: &str = "TEMPO-AMM3";
 pub const MINT_RESERVE: &str = "TEMPO-AMM4";
+pub const CUSTODY_STEP: &str = "TEMPO-FEE5-STEP";
 
 pub const CHECKS: &[Check<Books>] = &[
     // The fee manager holds, of each token, at least its pools' reserves of it plus the fees it
@@ -79,6 +80,32 @@ pub const CHECKS: &[Check<Books>] = &[
 
 /// The step's effect on each pool the fee manager's books read before and after it.
 pub const STEP_CHECKS: &[Check<Step<Books, Option<Tx>>>] = &[
+    // What the fee manager holds of each token changes by exactly what it owes in it: a token
+    // that leaves or enters it must leave or enter a pool reserve or a validator's collected fees.
+    check! {
+        id: CUSTODY_STEP,
+        over: |step: &Step<Books, Option<Tx>>| step.post.holdings.keys(),
+        judge: |s, token| {
+            let token = **token;
+            let (Some(&held_before), Some(&held_after)) =
+                (s.pre.holdings.get(&token), s.post.holdings.get(&token))
+            else {
+                return None;
+            };
+            let owed = |books: &Books| {
+                let (reserves, fees) = books.owed(token)?;
+                reserves.checked_add(fees)
+            };
+            let (owed_before, owed_after) = (owed(&s.pre)?, owed(&s.post)?);
+            if held_before == held_after && owed_before == owed_after {
+                return None;
+            }
+            ensure!(
+                held_before.checked_add(owed_after) == held_after.checked_add(owed_before),
+                "token {token} held {held_before} -> {held_after}, owed {owed_before} -> {owed_after}"
+            )
+        },
+    },
     // The LP supply grows by exactly the minted liquidity, plus `MIN_LIQUIDITY` on a pool's first
     // mint.
     check! {

@@ -136,11 +136,18 @@ pub(crate) fn check(
             .flat_map(|&user| tokens.iter().map(move |&validator| (user, validator)))
             .filter(|(user, validator)| user != validator)
             .collect();
+        // Fees are collected for the block's beneficiary; a step that distributes another
+        // validator's fees names it in its logs.
+        let mut validators: Vec<Address> = logged_addresses(effects.iter().flat_map(|e| e.logs))
+            .chain([env.block.beneficiary])
+            .collect();
+        validators.sort_unstable();
+        validators.dedup();
         let at = fee_amm::At {
             fee_manager: TIP_FEE_MANAGER_ADDRESS,
             tokens: &tokens,
             pairs: &pairs,
-            validators: &[env.block.beneficiary],
+            validators: &validators,
             holders: &all_holders,
         };
         reader.check::<fee_amm::Books>(&mut step, at, TIP_FEE_MANAGER_ADDRESS, fee_amm::VIEW);
