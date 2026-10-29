@@ -56,8 +56,8 @@ use tempo_primitives::{
     Block as TempoBlock, SignatureType, TempoHeader, TempoTxEnvelope,
     account::encode_config_commitment,
     transaction::{
-        AccountSignature, CONFIGURABLE_ACCOUNT_CONFIG_DOMAIN, ConfigurableAccountStateError,
-        KeyAuthorization, KeychainSignature, SignedKeyAuthorization, TEMPO_EXPIRING_NONCE_KEY,
+        CONFIGURABLE_ACCOUNT_CONFIG_DOMAIN, ConfigurableAccountStateError, KeyAuthorization,
+        KeychainSignature, SignedKeyAuthorization, TEMPO_EXPIRING_NONCE_KEY,
         TempoSignedAuthorization, TokenLimit, calc_gas_balance_spending, derive_p256_address,
         tt_signature::{P256SignatureWithPreHash, WebAuthnSignature, normalize_p256_s},
     },
@@ -1398,11 +1398,9 @@ fn delegate_keychain_signed(
     owner: &PrivateKeySigner,
 ) -> AASigned {
     let digest = KeychainSignature::signing_hash(tx.signature_hash(), parent);
-    let signature = AccountSignature::ConfigurableAccount(configurable_account_approval(
-        delegate, config, owner, digest,
-    ));
     tx.into_signed(TempoSignature::Keychain(KeychainSignature::new(
-        parent, signature,
+        parent,
+        configurable_account_approval(delegate, config, owner, digest),
     )))
 }
 
