@@ -42,11 +42,14 @@ impl Reader<'_> {
             return;
         };
         // A contract the step deployed has no state before it to read.
-        if effects.net.get(&contract).is_some_and(|account| {
-            account
-                .original()
-                .is_none_or(|info| info.code_hash == KECCAK256_EMPTY)
-        }) {
+        let deployed = |address: &Address| {
+            effects.net.get(address).is_some_and(|account| {
+                account
+                    .original()
+                    .is_none_or(|info| info.code_hash == KECCAK256_EMPTY)
+            })
+        };
+        if deployed(&contract) {
             return;
         }
         let before = PreView {
@@ -55,7 +58,14 @@ impl Reader<'_> {
         };
         let before = EvmViews::new(before, self.evm_config, self.env.clone(), pre_state);
         let subject = format!("{contract} before the step");
-        let Some(pre) = observed(report, view, subject, M::observe(&mut { before }, at)) else {
+        let read = M::observe(&mut { before }, at);
+        // Nor does one it reads, such as a token the step created.
+        if let Err(ObserveError::Views(failed)) = &read
+            && deployed(&failed.target())
+        {
+            return;
+        }
+        let Some(pre) = observed(report, view, subject, read) else {
             return;
         };
         report.run_any(all(), &effects.step(contract, pre, post));

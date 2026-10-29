@@ -124,6 +124,13 @@ pub(super) struct ViewFailed {
     reason: String,
 }
 
+impl ViewFailed {
+    /// The contract the call was made to.
+    pub(super) fn target(&self) -> Address {
+        self.target
+    }
+}
+
 impl Display for ViewFailed {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} on {}: {}", self.selector, self.target, self.reason)

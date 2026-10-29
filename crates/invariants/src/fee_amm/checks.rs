@@ -80,8 +80,9 @@ pub const CHECKS: &[Check<Books>] = &[
 
 /// The step's effect on each pool the fee manager's books read before and after it.
 pub const STEP_CHECKS: &[Check<Step<Books, Option<Tx>>>] = &[
-    // What the fee manager holds of each token changes by exactly what it owes in it: a token
-    // that leaves or enters it must leave or enter a pool reserve or a validator's collected fees.
+    // The fee manager's holdings of each token never fall by more than what it owes in it: a
+    // token that leaves it must leave a pool reserve or a validator's collected fees. More can
+    // come in than it comes to owe, such as a plain transfer or mint to it.
     check! {
         id: CUSTODY_STEP,
         over: |step: &Step<Books, Option<Tx>>| step.post.holdings.keys(),
@@ -100,8 +101,9 @@ pub const STEP_CHECKS: &[Check<Step<Books, Option<Tx>>>] = &[
             if held_before == held_after && owed_before == owed_after {
                 return None;
             }
+            let (kept, due) = (held_after.checked_add(owed_before)?, held_before.checked_add(owed_after)?);
             ensure!(
-                held_before.checked_add(owed_after) == held_after.checked_add(owed_before),
+                kept >= due,
                 "token {token} held {held_before} -> {held_after}, owed {owed_before} -> {owed_after}"
             )
         },
