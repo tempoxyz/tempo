@@ -3470,48 +3470,6 @@ fn native_commitment_only_account_evm_semantics() {
 }
 
 #[test]
-fn native_rotation_rejects_access_keys_and_callbacks() {
-    for access_key in [true, false] {
-        let mut f = Fixture::new();
-        let next = ConfigurableAccountConfig {
-            version: 1,
-            ..f.config.clone()
-        };
-        let rotation = Fixture::rotation(&f.config, &next);
-        let tx = if access_key {
-            let delegate = signer(2);
-            let tx = TempoTransaction {
-                chain_id: 1,
-                nonce: 3,
-                gas_limit: 1_000_000,
-                calls: vec![rotation],
-                key_authorization: Some(configurable_grant(&f, delegate.address())),
-                ..Default::default()
-            };
-            keychain_signed(tx, &delegate, f.account)
-        } else {
-            // Forward calldata to the precompile and bubble its revert data.
-            let mut call = forwarder(&mut f);
-            call.input = rotation.input;
-            f.signed(3, vec![call])
-        };
-        let output = f.evm.transact(&tx_env(&tx, f.account)).unwrap().commit();
-        assert!(output.stop.is_revert(), "{output:?}");
-        assert_eq!(
-            output.output,
-            IConfigurableAccount::UnauthorizedConfigurableAccountCaller {}.abi_encode()
-        );
-        assert!(
-            output
-                .logs
-                .iter()
-                .all(|log| log.address != CONFIGURABLE_ACCOUNT_ADDRESS)
-        );
-        assert_eq!(f.commitment(), f.config.commitment().unwrap());
-    }
-}
-
-#[test]
 fn native_commitment_activation_database_lifecycle() {
     let factory = create_test_provider_factory();
     let mut fixture = Fixture::new();
@@ -3950,255 +3908,6 @@ fn registration_charges_the_new_account_cost_once_for_every_nonce_type() {
 }
 
 #[test]
-fn native_signed_parent_delegate_grant_outcomes() {
-    const FEE_GAS_PRICE: u128 = 1_000_000_000_000;
-    for (outcome, gas_price) in [
-        (GrantOutcome::Success, 0),
-        (GrantOutcome::RevertAndRetry, 0),
-        (GrantOutcome::ScopeRejectionAndRetry, 0),
-        (GrantOutcome::RevertAndRetry, FEE_GAS_PRICE),
-        (GrantOutcome::ScopeRejectionAndRetry, FEE_GAS_PRICE),
-    ] {
-        native_signed_parent_delegate_case(outcome, gas_price);
-    }
-}
-
-fn native_signed_parent_delegate_case(outcome: GrantOutcome, gas_price: u128) {
-    for parent_native in [false, true] {
-        for delegate_native in [false, true] {
-            let _case = Case(format!(
-                "{outcome:?}, gas price {gas_price}, parent_native={parent_native}, delegate_native={delegate_native}"
-            ));
-            let mut f = Fixture::with_parent(parent_native);
-            let signer = signer(2);
-            let config = ConfigurableAccountConfig {
-                salt: B256::repeat_byte(2),
-                version: 0,
-                threshold: 1,
-                owners: owner_set(vec![signer.address()]),
-            };
-            let delegate = if delegate_native {
-                config.derive_account().unwrap()
-            } else {
-                signer.address()
-            };
-            let parent = f.account;
-            // One microdollar per gas in fee cases; fund all three executions up front.
-            let fee_budget = if gas_price == 0 { 0 } else { 50_000_000 };
-            let initial_balance = 1000 + fee_budget;
-            let initial_limit = 100 + fee_budget;
-            let reverter = Address::repeat_byte(0x55);
-            let revert = f.install_contract(reverter, bytes!("60006000fd").to_vec());
-            fund(&mut f, parent, initial_balance);
-            let mut targets = vec![CONFIGURABLE_ACCOUNT_ADDRESS, PATH_USD_ADDRESS];
-            if outcome != GrantOutcome::ScopeRejectionAndRetry {
-                targets.push(reverter);
-            }
-            let authorization = KeyAuthorization::unrestricted(
-                1,
-                if delegate_native {
-                    SignatureType::ConfigurableAccount
-                } else {
-                    SignatureType::Secp256k1
-                },
-                delegate,
-            )
-            .with_expiry(1000)
-            .with_limits(vec![TokenLimit {
-                token: PATH_USD_ADDRESS,
-                limit: U256::from(initial_limit),
-                period: 0,
-            }])
-            .with_allowed_calls(
-                targets
-                    .iter()
-                    .map(|&target| CallScope {
-                        target,
-                        selector_rules: vec![],
-                    })
-                    .collect(),
-            );
-            let grant_signature = if parent_native {
-                AccountSignature::ConfigurableAccount(configurable_account_approval(
-                    f.account,
-                    &f.config,
-                    &f.owner,
-                    authorization.signature_hash(),
-                ))
-            } else {
-                AccountSignature::from(
-                    f.owner
-                        .sign_hash_sync(&authorization.signature_hash())
-                        .unwrap(),
-                )
-            };
-            let transfer = Call {
-                to: TxKind::Call(PATH_USD_ADDRESS),
-                value: U256::ZERO,
-                input: ITIP20::transferCall {
-                    to: Address::repeat_byte(0x66),
-                    amount: U256::from(10),
-                }
-                .abi_encode()
-                .into(),
-            };
-            let mut tx = TempoTransaction {
-                chain_id: 1,
-                nonce: 3,
-                gas_limit: 5_000_000,
-                max_fee_per_gas: gas_price,
-                max_priority_fee_per_gas: gas_price,
-                calls: if outcome == GrantOutcome::Success {
-                    vec![f.getter()]
-                } else {
-                    vec![transfer.clone(), revert]
-                },
-                key_authorization: Some(authorization.into_signed(grant_signature)),
-                ..Default::default()
-            };
-            let sign = |tx: &TempoTransaction| {
-                if delegate_native {
-                    delegate_keychain_signed(tx.clone(), parent, delegate, &config, &signer)
-                } else {
-                    keychain_signed(tx.clone(), &signer, parent)
-                }
-            };
-            let signed = sign(&tx);
-            let output = f.evm.transact(&tx_env(&signed, parent)).unwrap().commit();
-            assert_eq!(
-                output.status,
-                outcome == GrantOutcome::Success,
-                "{outcome:?}, parent={parent_native} delegate={delegate_native}: {output:?}"
-            );
-            let charged_fee = |gas_used| {
-                let fee = calc_gas_balance_spending(gas_used, gas_price).to::<u64>();
-                if gas_price != 0 {
-                    assert!(fee > 0, "unused gas must be refunded");
-                    assert!(fee < tx.gas_limit, "unused gas must be refunded");
-                }
-                fee
-            };
-            let mut total_fees = charged_fee(output.tx_gas_used());
-            if outcome != GrantOutcome::Success {
-                assert!(
-                    output.stop.is_revert(),
-                    "expected included revert, got {output:?}"
-                );
-                let expected = if outcome == GrantOutcome::ScopeRejectionAndRetry {
-                    IAccountKeychain::CallNotAllowed {}.abi_encode()
-                } else {
-                    vec![]
-                };
-                assert_eq!(output.output, expected);
-            }
-            let assert_commitments = |f: &mut Fixture| {
-                for (account, expected) in [
-                    (
-                        parent,
-                        if parent_native {
-                            f.config.commitment().unwrap()
-                        } else {
-                            B256::ZERO
-                        },
-                    ),
-                    (
-                        delegate,
-                        if delegate_native {
-                            config.commitment().unwrap()
-                        } else {
-                            B256::ZERO
-                        },
-                    ),
-                ] {
-                    assert_eq!(
-                        f.info(account).map_or(B256::ZERO, |info| {
-                            decode_config_commitment(&info.extension, TempoHardfork::T14).unwrap()
-                        }),
-                        expected
-                    );
-                }
-            };
-            assert_commitments(&mut f);
-            let assert_grant = |f: &mut Fixture, fees: u64, transferred: u64, nonce: u64| {
-                in_storage_ctx(&mut f.evm, || {
-                    let keychain = AccountKeychain::new();
-                    let key = keychain.get_key(IAccountKeychain::getKeyCall {
-                        account: parent,
-                        keyId: delegate,
-                    })?;
-                    let limit =
-                        keychain.get_remaining_limit(IAccountKeychain::getRemainingLimitCall {
-                            account: parent,
-                            keyId: delegate,
-                            token: PATH_USD_ADDRESS,
-                        })?;
-                    let scopes =
-                        keychain.get_allowed_calls(IAccountKeychain::getAllowedCallsCall {
-                            account: parent,
-                            keyId: delegate,
-                        })?;
-                    let balance = TIP20Token::from_address(PATH_USD_ADDRESS)?
-                        .balance_of(ITIP20::balanceOfCall { account: parent })?;
-                    let recipient_balance = TIP20Token::from_address(PATH_USD_ADDRESS)?
-                        .balance_of(ITIP20::balanceOfCall {
-                            account: Address::repeat_byte(0x66),
-                        })?;
-                    assert_eq!(key.keyId, delegate);
-                    assert_eq!(key.expiry, 1000);
-                    assert!(key.enforceLimits);
-                    assert!(!key.isRevoked);
-                    assert_eq!(key.signatureType as u8, if delegate_native { 3 } else { 0 });
-                    assert_eq!(limit, U256::from(initial_limit - fees - transferred));
-                    assert_eq!(balance, U256::from(initial_balance - fees - transferred));
-                    assert_eq!(recipient_balance, U256::from(transferred));
-                    assert!(scopes.isScoped);
-                    assert_eq!(scopes.scopes.len(), targets.len());
-                    for scope in scopes.scopes {
-                        assert!(targets.contains(&scope.target));
-                        assert_eq!(scope.selectorRules, Vec::new());
-                    }
-                    Ok::<_, TempoPrecompileError>(())
-                })
-                .unwrap();
-                assert_eq!(f.info(parent).unwrap().nonce, nonce);
-            };
-            // Calls roll back, but the grant, actual fees and transaction nonce survive.
-            assert_grant(&mut f, total_fees, 0, 4);
-            if outcome == GrantOutcome::Success {
-                continue;
-            }
-            let accepted_grant = tx.key_authorization.take();
-            tx.calls = vec![transfer];
-            // Re-sign without the immutable grant. Two uses prove counters do not reset.
-            for (nonce, transferred) in [(4, 10), (5, 20)] {
-                tx.nonce = nonce;
-                let output = f
-                    .evm
-                    .transact(&tx_env(&sign(&tx), parent))
-                    .unwrap()
-                    .commit();
-                assert!(output.status, "{output:?}");
-                total_fees += charged_fee(output.tx_gas_used());
-                assert_grant(&mut f, total_fees, transferred, nonce + 1);
-                assert_commitments(&mut f);
-            }
-            tx.nonce = 6;
-            tx.key_authorization = accepted_grant;
-            let error = f.evm.transact(&tx_env(&sign(&tx), parent)).unwrap_err();
-            let Some(TempoInvalidTransaction::KeychainPrecompileError { reason }) =
-                error.external_ref::<TempoInvalidTransaction>().cloned()
-            else {
-                panic!("expected duplicate-grant validation error, got {error}");
-            };
-            assert_eq!(
-                reason,
-                TempoPrecompileError::from(AccountKeychainError::key_already_exists()).to_string()
-            );
-        }
-    }
-}
-
-#[test]
 fn native_first_registration_preserves_existing_storage() {
     let mut f = Fixture::new();
     let info = f.info(f.account).unwrap();
@@ -4276,6 +3985,48 @@ fn native_first_transaction_can_rotate_configuration() {
         next.commitment().unwrap()
     );
     assert_eq!(f.commitment(), next.commitment().unwrap());
+}
+
+#[test]
+fn native_rotation_rejects_access_keys_and_callbacks() {
+    for access_key in [true, false] {
+        let mut f = Fixture::new();
+        let next = ConfigurableAccountConfig {
+            version: 1,
+            ..f.config.clone()
+        };
+        let rotation = Fixture::rotation(&f.config, &next);
+        let tx = if access_key {
+            let delegate = signer(2);
+            let tx = TempoTransaction {
+                chain_id: 1,
+                nonce: 3,
+                gas_limit: 1_000_000,
+                calls: vec![rotation],
+                key_authorization: Some(configurable_grant(&f, delegate.address())),
+                ..Default::default()
+            };
+            keychain_signed(tx, &delegate, f.account)
+        } else {
+            // Forward calldata to the precompile and bubble its revert data.
+            let mut call = forwarder(&mut f);
+            call.input = rotation.input;
+            f.signed(3, vec![call])
+        };
+        let output = f.evm.transact(&tx_env(&tx, f.account)).unwrap().commit();
+        assert!(output.stop.is_revert(), "{output:?}");
+        assert_eq!(
+            output.output,
+            IConfigurableAccount::UnauthorizedConfigurableAccountCaller {}.abi_encode()
+        );
+        assert!(
+            output
+                .logs
+                .iter()
+                .all(|log| log.address != CONFIGURABLE_ACCOUNT_ADDRESS)
+        );
+        assert_eq!(f.commitment(), f.config.commitment().unwrap());
+    }
 }
 
 #[test]
@@ -4731,6 +4482,255 @@ fn native_committed_keychain_parent_with_incompatible_code_is_rejected() {
             account
         })
     );
+}
+
+#[test]
+fn native_signed_parent_delegate_grant_outcomes() {
+    const FEE_GAS_PRICE: u128 = 1_000_000_000_000;
+    for (outcome, gas_price) in [
+        (GrantOutcome::Success, 0),
+        (GrantOutcome::RevertAndRetry, 0),
+        (GrantOutcome::ScopeRejectionAndRetry, 0),
+        (GrantOutcome::RevertAndRetry, FEE_GAS_PRICE),
+        (GrantOutcome::ScopeRejectionAndRetry, FEE_GAS_PRICE),
+    ] {
+        native_signed_parent_delegate_case(outcome, gas_price);
+    }
+}
+
+fn native_signed_parent_delegate_case(outcome: GrantOutcome, gas_price: u128) {
+    for parent_native in [false, true] {
+        for delegate_native in [false, true] {
+            let _case = Case(format!(
+                "{outcome:?}, gas price {gas_price}, parent_native={parent_native}, delegate_native={delegate_native}"
+            ));
+            let mut f = Fixture::with_parent(parent_native);
+            let signer = signer(2);
+            let config = ConfigurableAccountConfig {
+                salt: B256::repeat_byte(2),
+                version: 0,
+                threshold: 1,
+                owners: owner_set(vec![signer.address()]),
+            };
+            let delegate = if delegate_native {
+                config.derive_account().unwrap()
+            } else {
+                signer.address()
+            };
+            let parent = f.account;
+            // One microdollar per gas in fee cases; fund all three executions up front.
+            let fee_budget = if gas_price == 0 { 0 } else { 50_000_000 };
+            let initial_balance = 1000 + fee_budget;
+            let initial_limit = 100 + fee_budget;
+            let reverter = Address::repeat_byte(0x55);
+            let revert = f.install_contract(reverter, bytes!("60006000fd").to_vec());
+            fund(&mut f, parent, initial_balance);
+            let mut targets = vec![CONFIGURABLE_ACCOUNT_ADDRESS, PATH_USD_ADDRESS];
+            if outcome != GrantOutcome::ScopeRejectionAndRetry {
+                targets.push(reverter);
+            }
+            let authorization = KeyAuthorization::unrestricted(
+                1,
+                if delegate_native {
+                    SignatureType::ConfigurableAccount
+                } else {
+                    SignatureType::Secp256k1
+                },
+                delegate,
+            )
+            .with_expiry(1000)
+            .with_limits(vec![TokenLimit {
+                token: PATH_USD_ADDRESS,
+                limit: U256::from(initial_limit),
+                period: 0,
+            }])
+            .with_allowed_calls(
+                targets
+                    .iter()
+                    .map(|&target| CallScope {
+                        target,
+                        selector_rules: vec![],
+                    })
+                    .collect(),
+            );
+            let grant_signature = if parent_native {
+                AccountSignature::ConfigurableAccount(configurable_account_approval(
+                    f.account,
+                    &f.config,
+                    &f.owner,
+                    authorization.signature_hash(),
+                ))
+            } else {
+                AccountSignature::from(
+                    f.owner
+                        .sign_hash_sync(&authorization.signature_hash())
+                        .unwrap(),
+                )
+            };
+            let transfer = Call {
+                to: TxKind::Call(PATH_USD_ADDRESS),
+                value: U256::ZERO,
+                input: ITIP20::transferCall {
+                    to: Address::repeat_byte(0x66),
+                    amount: U256::from(10),
+                }
+                .abi_encode()
+                .into(),
+            };
+            let mut tx = TempoTransaction {
+                chain_id: 1,
+                nonce: 3,
+                gas_limit: 5_000_000,
+                max_fee_per_gas: gas_price,
+                max_priority_fee_per_gas: gas_price,
+                calls: if outcome == GrantOutcome::Success {
+                    vec![f.getter()]
+                } else {
+                    vec![transfer.clone(), revert]
+                },
+                key_authorization: Some(authorization.into_signed(grant_signature)),
+                ..Default::default()
+            };
+            let sign = |tx: &TempoTransaction| {
+                if delegate_native {
+                    delegate_keychain_signed(tx.clone(), parent, delegate, &config, &signer)
+                } else {
+                    keychain_signed(tx.clone(), &signer, parent)
+                }
+            };
+            let signed = sign(&tx);
+            let output = f.evm.transact(&tx_env(&signed, parent)).unwrap().commit();
+            assert_eq!(
+                output.status,
+                outcome == GrantOutcome::Success,
+                "{outcome:?}, parent={parent_native} delegate={delegate_native}: {output:?}"
+            );
+            let charged_fee = |gas_used| {
+                let fee = calc_gas_balance_spending(gas_used, gas_price).to::<u64>();
+                if gas_price != 0 {
+                    assert!(fee > 0, "unused gas must be refunded");
+                    assert!(fee < tx.gas_limit, "unused gas must be refunded");
+                }
+                fee
+            };
+            let mut total_fees = charged_fee(output.tx_gas_used());
+            if outcome != GrantOutcome::Success {
+                assert!(
+                    output.stop.is_revert(),
+                    "expected included revert, got {output:?}"
+                );
+                let expected = if outcome == GrantOutcome::ScopeRejectionAndRetry {
+                    IAccountKeychain::CallNotAllowed {}.abi_encode()
+                } else {
+                    vec![]
+                };
+                assert_eq!(output.output, expected);
+            }
+            let assert_commitments = |f: &mut Fixture| {
+                for (account, expected) in [
+                    (
+                        parent,
+                        if parent_native {
+                            f.config.commitment().unwrap()
+                        } else {
+                            B256::ZERO
+                        },
+                    ),
+                    (
+                        delegate,
+                        if delegate_native {
+                            config.commitment().unwrap()
+                        } else {
+                            B256::ZERO
+                        },
+                    ),
+                ] {
+                    assert_eq!(
+                        f.info(account).map_or(B256::ZERO, |info| {
+                            decode_config_commitment(&info.extension, TempoHardfork::T14).unwrap()
+                        }),
+                        expected
+                    );
+                }
+            };
+            assert_commitments(&mut f);
+            let assert_grant = |f: &mut Fixture, fees: u64, transferred: u64, nonce: u64| {
+                in_storage_ctx(&mut f.evm, || {
+                    let keychain = AccountKeychain::new();
+                    let key = keychain.get_key(IAccountKeychain::getKeyCall {
+                        account: parent,
+                        keyId: delegate,
+                    })?;
+                    let limit =
+                        keychain.get_remaining_limit(IAccountKeychain::getRemainingLimitCall {
+                            account: parent,
+                            keyId: delegate,
+                            token: PATH_USD_ADDRESS,
+                        })?;
+                    let scopes =
+                        keychain.get_allowed_calls(IAccountKeychain::getAllowedCallsCall {
+                            account: parent,
+                            keyId: delegate,
+                        })?;
+                    let balance = TIP20Token::from_address(PATH_USD_ADDRESS)?
+                        .balance_of(ITIP20::balanceOfCall { account: parent })?;
+                    let recipient_balance = TIP20Token::from_address(PATH_USD_ADDRESS)?
+                        .balance_of(ITIP20::balanceOfCall {
+                            account: Address::repeat_byte(0x66),
+                        })?;
+                    assert_eq!(key.keyId, delegate);
+                    assert_eq!(key.expiry, 1000);
+                    assert!(key.enforceLimits);
+                    assert!(!key.isRevoked);
+                    assert_eq!(key.signatureType as u8, if delegate_native { 3 } else { 0 });
+                    assert_eq!(limit, U256::from(initial_limit - fees - transferred));
+                    assert_eq!(balance, U256::from(initial_balance - fees - transferred));
+                    assert_eq!(recipient_balance, U256::from(transferred));
+                    assert!(scopes.isScoped);
+                    assert_eq!(scopes.scopes.len(), targets.len());
+                    for scope in scopes.scopes {
+                        assert!(targets.contains(&scope.target));
+                        assert_eq!(scope.selectorRules, Vec::new());
+                    }
+                    Ok::<_, TempoPrecompileError>(())
+                })
+                .unwrap();
+                assert_eq!(f.info(parent).unwrap().nonce, nonce);
+            };
+            // Calls roll back, but the grant, actual fees and transaction nonce survive.
+            assert_grant(&mut f, total_fees, 0, 4);
+            if outcome == GrantOutcome::Success {
+                continue;
+            }
+            let accepted_grant = tx.key_authorization.take();
+            tx.calls = vec![transfer];
+            // Re-sign without the immutable grant. Two uses prove counters do not reset.
+            for (nonce, transferred) in [(4, 10), (5, 20)] {
+                tx.nonce = nonce;
+                let output = f
+                    .evm
+                    .transact(&tx_env(&sign(&tx), parent))
+                    .unwrap()
+                    .commit();
+                assert!(output.status, "{output:?}");
+                total_fees += charged_fee(output.tx_gas_used());
+                assert_grant(&mut f, total_fees, transferred, nonce + 1);
+                assert_commitments(&mut f);
+            }
+            tx.nonce = 6;
+            tx.key_authorization = accepted_grant;
+            let error = f.evm.transact(&tx_env(&sign(&tx), parent)).unwrap_err();
+            let Some(TempoInvalidTransaction::KeychainPrecompileError { reason }) =
+                error.external_ref::<TempoInvalidTransaction>().cloned()
+            else {
+                panic!("expected duplicate-grant validation error, got {error}");
+            };
+            assert_eq!(
+                reason,
+                TempoPrecompileError::from(AccountKeychainError::key_already_exists()).to_string()
+            );
+        }
+    }
 }
 
 /// A grant that a configurable delegate uses in the same transaction must name that delegate
