@@ -164,9 +164,9 @@ pub(crate) fn validate_state(
     };
     if spec.is_t14() {
         extra_gas += validate_root_keys(host, envelope, spec, &mut accounts)?;
-    }
-    if let Some(aa) = envelope.as_aa() {
-        extra_gas += grant_delegate_access_gas(host, aa, spec, &accounts)?;
+        if let Some(aa) = envelope.as_aa() {
+            extra_gas += grant_delegate_access_gas(host, aa, spec, &accounts)?;
+        }
     }
     Ok((extra_gas, state_gas))
 }
@@ -406,8 +406,7 @@ fn grant_delegate_access_gas(
     spec: TempoHardfork,
     signers: &[Address],
 ) -> HandlerResult<u64> {
-    if spec.is_t14()
-        && let Some(delegate) = aa.grant_delegate()
+    if let Some(delegate) = aa.grant_delegate()
         && delegate != aa.signer()
         && !signers.contains(&delegate)
     {
