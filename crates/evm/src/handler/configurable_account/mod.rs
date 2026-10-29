@@ -54,11 +54,10 @@ struct LoadedAccount {
 impl TempoAaTx {
     /// The outer (direct or delegated) role, when a configurable account signs the transaction.
     fn native_authorization(&self) -> Option<NativeAuthorization<'_>> {
-        let signature_hash = self.signature_hash();
         match self.signature() {
             TempoSignature::ConfigurableAccount(signature) => Some(NativeAuthorization {
                 signature,
-                inner_digest: signature_hash,
+                inner_digest: self.signature_hash(),
             }),
             TempoSignature::Keychain(keychain) => {
                 keychain
@@ -67,7 +66,7 @@ impl TempoAaTx {
                     .map(|signature| NativeAuthorization {
                         signature,
                         inner_digest: KeychainSignature::signing_hash(
-                            signature_hash,
+                            self.signature_hash(),
                             keychain.user_address,
                         ),
                     })
