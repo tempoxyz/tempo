@@ -7,7 +7,9 @@ use alloy_primitives::{Address, TxKind};
 use alloy_provider::{DynProvider, Provider as _};
 use alloy_sol_types::SolCall as _;
 use alloy_transport::{RpcError, TransportError, TransportErrorKind};
+use antithesis_sdk::assert_always;
 use eyre::{OptionExt as _, Result, WrapErr as _, ensure};
+use serde_json::json;
 use tempo_alloy::TempoNetwork;
 use tempo_contracts::zones::{
     BatchSubmitted, TokenEnablementTransition, legacySubmitBatchCall, submitBatchCall,
@@ -301,8 +303,18 @@ impl<P: ZoneSequencerProvider> RpcFollowerShadowProver<P> {
             tokio::time::sleep(POLL_INTERVAL).await;
         }
 
+        let local_hash = self.zone_provider.block_hash(to)?;
+        assert_always!(
+            local_hash == Some(batch.next_block_hash),
+            "Follower canonical block matches the settled batch",
+            &json!({
+                "zone_block": to,
+                "local_hash": local_hash,
+                "settled_hash": batch.next_block_hash,
+            })
+        );
         ensure!(
-            self.zone_provider.block_hash(to)? == Some(batch.next_block_hash),
+            local_hash == Some(batch.next_block_hash),
             "local canonical Zone block {to} does not match finalized submission {}",
             batch.next_block_hash
         );

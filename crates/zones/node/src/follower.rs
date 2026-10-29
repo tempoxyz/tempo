@@ -6,11 +6,13 @@ use alloy_primitives::B256;
 use alloy_rlp::Decodable as _;
 use alloy_rpc_types_engine::ForkchoiceState;
 use alloy_sol_types::SolCall as _;
+use antithesis_sdk::assert_always;
 use eyre::{OptionExt as _, WrapErr as _};
 use reth_node_api::{ConsensusEngineHandle, PayloadTypes as _};
 use reth_primitives_traits::{SealedBlock, SealedHeader};
 use reth_provider::HeaderProvider;
 use reth_storage_api::{BlockReader, StateProviderFactory};
+use serde_json::json;
 use std::{
     collections::{BTreeMap, HashMap},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -681,6 +683,11 @@ where
         let timestamp = block.header().timestamp();
         let payload = ZonePayloadTypes::block_to_payload(block, None);
         let status = self.context.engine.new_payload(payload).await?;
+        assert_always!(
+            !status.is_invalid(),
+            "Follower execution accepts leader blocks",
+            &json!({ "block_number": block_number, "block_hash": hash, "status": status })
+        );
         if !status.is_valid() {
             eyre::bail!("execution engine rejected peer block {block_number} ({hash}): {status:?}");
         }
@@ -715,6 +722,11 @@ where
             .engine
             .fork_choice_updated(forkchoice, None)
             .await?;
+        assert_always!(
+            !result.is_invalid(),
+            "Follower forkchoice accepts leader blocks",
+            &json!({ "block_number": block_number, "block_hash": hash, "result": result })
+        );
         if !result.is_valid() {
             eyre::bail!(
                 "execution engine rejected forkchoice for block {block_number} ({hash}): {result:?}"

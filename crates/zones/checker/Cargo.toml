@@ -54,6 +54,8 @@ metrics.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
 serde = { workspace = true, features = ["alloc"] }
+serde_json = { workspace = true, default-features = true }
+antithesis_sdk.workspace = true
 bincode.workspace = true
 bytes.workspace = true
 tempfile.workspace = true
