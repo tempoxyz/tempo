@@ -6,14 +6,18 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use alloy_network::NetworkWallet;
 use alloy_primitives::{Address, B256};
 use alloy_signer_local::PrivateKeySigner;
-use tempo_alloy::accounts::{TempoAccountsError, TempoAccountsStore};
+use tempo_alloy::accounts::{
+    TempoAccessKey, TempoAccountsError, TempoAccountsStore, TempoAccountsWallet,
+};
 use tempo_primitives::{
-    SignatureType,
+    SignatureType, TempoTransaction,
     transaction::{
-        AccountSignature, CallScope, ConfigurableAccountConfig, ConfigurableAccountOwner,
+        CallScope, ConfigurableAccountConfig, ConfigurableAccountOwner,
         ConfigurableAccountSignature, KeyAuthorization, PrimitiveSignature, SignedKeyAuthorization,
+        TempoTypedTransaction,
     },
 };
 
@@ -62,7 +66,7 @@ fn configurable_account_authorization_round_trips(scoped: bool) {
     let directory = unique_test_directory();
     let path = directory.join("store.json");
 
-    TempoAccountsStore::at(path.clone())
+    TempoAccountsStore::at(&path)
         .upsert_secp256k1_access_key(account, &signer, &authorization)
         .unwrap();
     let stored: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
@@ -73,9 +77,7 @@ fn configurable_account_authorization_round_trips(scoped: bool) {
     fs::remove_dir_all(directory).unwrap();
 
     // Stored like every other authorization signature: an object tagged by `type`.
-    let AccountSignature::ConfigurableAccount(signature) = &authorization.signature else {
-        panic!("expected a configurable account signature")
-    };
+    let signature = authorization.signature.as_configurable_account().unwrap();
     assert_eq!(
         stored["tempo-cli.store"]["state"]["accessKeys"][0]["keyAuthorization"]["signature"],
         serde_json::json!({ "type": "configurableAccount", "signature": signature }),
@@ -86,18 +88,17 @@ fn configurable_account_authorization_round_trips(scoped: bool) {
     };
     let decoded = access_key.key_authorization().unwrap();
     assert_eq!(decoded, &authorization);
-    assert_eq!(decoded.signature_hash(), authorization.signature_hash());
 }
 
-#[test]
-fn configurable_account_authorization_for_another_account_is_rejected() {
+#[tokio::test]
+async fn configurable_account_authorization_for_another_account_is_rejected() {
     let account = Address::repeat_byte(2);
     let other = Address::repeat_byte(3);
     let signer = PrivateKeySigner::random();
     let authorization = configurable_authorization(other, &signer);
     let directory = unique_test_directory();
     let path = directory.join("store.json");
-    let store = TempoAccountsStore::at(path.clone());
+    let store = TempoAccountsStore::at(&path);
 
     // Naming the account does not let another configurable account sign its grant, and a
     // configurable account's grant cannot name another account.
@@ -113,26 +114,55 @@ fn configurable_account_authorization_for_another_account_is_rejected() {
             Err(TempoAccountsError::InvalidAuthorization(_))
         ));
     }
+    assert!(
+        TempoAccessKey::from_secp256k1(account, 4217, signer.clone())
+            .with_key_authorization(named)
+            .sign_transaction_from(
+                account,
+                TempoTypedTransaction::AA(TempoTransaction {
+                    chain_id: 4217,
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("account does not match the selected key")
+    );
 
     store
         .upsert_secp256k1_access_key(other, &signer, &authorization)
         .unwrap();
     let stored: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     // Neither the stored owner nor the grant's explicit account may differ from the signing
-    // configurable account.
-    for field in ["access", "keyAuthorization/account"] {
+    // configurable account, even when they agree with each other.
+    for fields in [
+        &["access"][..],
+        &["keyAuthorization/account"],
+        &["access", "keyAuthorization/account"],
+    ] {
         let mut value = stored.clone();
-        *field.split('/').fold(
-            &mut value["tempo-cli.store"]["state"]["accessKeys"][0],
-            |value, field| &mut value[field],
-        ) = serde_json::json!(account);
+        for field in fields {
+            *field.split('/').fold(
+                &mut value["tempo-cli.store"]["state"]["accessKeys"][0],
+                |value, field| &mut value[field],
+            ) = serde_json::json!(account);
+        }
         fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
         let Err(TempoAccountsError::InvalidAccessKey { address, .. }) =
             TempoAccountsStore::open(&path).unwrap().access_keys()
         else {
-            panic!("expected the stored authorization with a different {field} to be rejected")
+            panic!("expected the stored authorization with a different {fields:?} to be rejected")
         };
         assert_eq!(address, signer.address());
+        assert!(matches!(
+            TempoAccountsWallet::from_store(&path).unwrap().access_key(
+                account,
+                4217,
+                signer.address()
+            ),
+            Err(TempoAccountsError::MissingAccessKey { .. })
+        ));
     }
     fs::remove_dir_all(directory).unwrap();
 }
