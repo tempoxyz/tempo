@@ -1267,6 +1267,28 @@ async fn configurable_account_rpc_maximum_mixed_quorums_and_validation_cost_orde
     invalid
         .recover_signer()
         .expect_err("recovery verifies the grant quorum");
+    // Simulation skips recovery, so the RPC checks the grant quorum itself.
+    let mut request = TempoTransactionRequest::from(invalid_grant.clone());
+    request.inner.from = Some(parent.address);
+    request.key_id = Some(delegate.address);
+    request.configurable_account_simulation = delegate
+        .simulation_request()
+        .configurable_account_simulation;
+    let provider = tempo_provider(&env);
+    for error in [
+        provider
+            .estimate_gas(request.clone())
+            .latest()
+            .await
+            .unwrap_err(),
+        provider.call(request).latest().await.unwrap_err(),
+    ] {
+        assert_rpc_error(
+            &error,
+            INVALID_PARAMS_CODE,
+            "invalid configurable account owner signature",
+        )?;
+    }
     assert_rpc_error(
         &rejection(&env, invalid_grant, signature).await,
         INVALID_PARAMS_CODE,
