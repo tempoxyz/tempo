@@ -21,6 +21,7 @@ reth-node-api.workspace = true
 reth-metrics.workspace = true
 reth-primitives-traits = { workspace = true, features = ["std"] }
 reth-storage-api.workspace = true
+reth-evm.workspace = true
 
 # alloy
 alloy-consensus.workspace = true
@@ -29,6 +30,7 @@ alloy-eips.workspace = true
 alloy-network.workspace = true
 alloy-primitives.workspace = true
 alloy-provider = { workspace = true, features = ["ws"] }
+alloy-rlp.workspace = true
 alloy-rpc-client = { workspace = true, default-features = true }
 alloy-rpc-types-eth.workspace = true
 alloy-sol-types.workspace = true
@@ -39,6 +41,7 @@ tempo-alloy.workspace = true
 tempo-chainspec = { workspace = true, features = ["reth"] }
 tempo-contracts = { workspace = true, features = ["rpc", "std"] }
 tempo-evm.workspace = true
+tempo-invariants.workspace = true
 tempo-precompiles.workspace = true
 tempo-primitives = { workspace = true, features = ["reth-codec"] }
 
@@ -48,6 +51,7 @@ zone-primitives.workspace = true
 zone-l1.workspace = true
 
 # misc
+evm2.workspace = true
 eyre.workspace = true
 futures.workspace = true
 metrics.workspace = true
@@ -61,9 +65,7 @@ tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
 alloy-consensus = { workspace = true, features = ["std"] }
-alloy-rlp.workspace = true
 alloy-rpc-types-eth.workspace = true
-evm2.workspace = true
 reth-ethereum-primitives = { workspace = true, default-features = true }
 reth-primitives-traits = { workspace = true, features = ["std", "test-utils"] }
 reth-provider = { workspace = true, features = ["test-utils"] }

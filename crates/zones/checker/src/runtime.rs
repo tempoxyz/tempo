@@ -21,6 +21,7 @@ use crate::{
     AttemptError, CheckerConfig,
     accounting::effects,
     bootstrap,
+    invariants::{ViewEvm, ZoneInvariants, observe_committed},
     l1::{L1ReadError, classify_rpc_error, collect_l1_range_at, portal_balances},
     l2::{AccountingStateError, collect_l2_block_evidence, read_accounting_state},
     latency::{self, LatencyTracker},
@@ -44,6 +45,7 @@ pub(crate) async fn run<Node>(
 where
     Node: FullNodeComponents<Types: NodeTypes<Primitives = TempoPrimitives>>,
     <Node::Provider as ChainSpecProvider>::ChainSpec: TempoHardforks,
+    Node::Evm: ViewEvm,
 {
     let metrics = CheckerMetrics::default();
     metrics.disabled.set(0.0);
@@ -93,6 +95,7 @@ async fn run_inner<Node>(
 where
     Node: FullNodeComponents<Types: NodeTypes<Primitives = TempoPrimitives>>,
     <Node::Provider as ChainSpecProvider>::ChainSpec: TempoHardforks,
+    Node::Evm: ViewEvm,
 {
     tracing::info!(target: "zone::checker", "checker started");
     let persisted_identity = config
@@ -140,7 +143,23 @@ where
         metrics,
         latency: LatencyTracker::default(),
     };
+    let mut invariants = ZoneInvariants::default();
     while let Some(notification) = ctx.notifications.try_next().await? {
+        if let ExExNotification::ChainCommitted { new } = &notification {
+            observe_committed(
+                &mut invariants,
+                ctx.provider(),
+                ctx.evm_config(),
+                (&l1, config.portal_address),
+                new.blocks_and_receipts()
+                    .map(|(block, receipts)| (&**block, receipts.as_slice()))
+                    .collect(),
+                metrics,
+            )
+            .await;
+        } else {
+            invariants = ZoneInvariants::default();
+        }
         if !matches!(&notification, ExExNotification::ChainCommitted { .. }) {
             snapshot = store.reset(&checkpoint)?;
             metrics.recovery_rebuilds_total.increment(1);

@@ -138,6 +138,12 @@ pub(crate) struct CheckerMetrics {
     pub(crate) deposit_latency_seconds: Histogram,
     /// Time from a user withdrawal's Zone request to the Tempo block that processed it.
     pub(crate) withdrawal_latency_seconds: Histogram,
+    /// Zone blocks the zone-side invariants were judged on.
+    pub(crate) invariant_blocks_checked_total: Counter,
+    /// Zone-side invariant violations found.
+    pub(crate) invariant_violations_total: Counter,
+    /// Zone blocks whose invariants could not run.
+    pub(crate) invariant_errors_total: Counter,
 }
 
 impl CheckerMetrics {

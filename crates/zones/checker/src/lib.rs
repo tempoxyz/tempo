@@ -4,6 +4,7 @@
 
 mod accounting;
 mod bootstrap;
+mod invariants;
 mod l1;
 mod l2;
 mod latency;
@@ -20,6 +21,8 @@ use reth_exex::ExExContext;
 use reth_node_api::{FullNodeComponents, NodeTypes};
 use tempo_chainspec::spec::TempoHardforks;
 use tempo_primitives::TempoPrimitives;
+
+pub use invariants::{ViewEvm, ZoneInvariants};
 
 /// Whether an operation should be retried or disable the checker.
 #[derive(Debug)]
@@ -129,6 +132,7 @@ impl CheckerExEx {
     where
         Node: FullNodeComponents<Types: NodeTypes<Primitives = TempoPrimitives>>,
         <Node::Provider as ChainSpecProvider>::ChainSpec: TempoHardforks,
+        Node::Evm: ViewEvm,
     {
         runtime::run(self.config, &mut ctx).await
     }

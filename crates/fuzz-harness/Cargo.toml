@@ -39,6 +39,8 @@ tempo-evm.workspace = true
 tempo-primitives = { workspace = true, features = ["reth"] }
 
 [dev-dependencies]
+alloy-signer.workspace = true
+alloy-signer-local.workspace = true
 commonware-codec.workspace = true
 criterion.workspace = true
 tempo-dkg-onchain-artifacts = { workspace = true, features = ["test-utils"] }

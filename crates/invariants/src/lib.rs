@@ -22,6 +22,7 @@ pub mod fee_amm;
 pub mod keychain;
 pub mod receive_policy;
 pub mod tip20;
+pub mod zones;
 
 /// The transaction a step ran.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,6 +48,9 @@ pub fn all() -> impl Iterator<Item = &'static dyn AnyCheck> {
         .chain(erased(account::STEP_CHECKS))
         .chain(erased(keychain::CHECKS))
         .chain(erased(receive_policy::CHECKS))
+        .chain(erased(zones::portal::CHECKS))
+        .chain(erased(zones::portal::STEP_CHECKS))
+        .chain(zones::zone::all())
 }
 
 /// The position of the fork named `name` (such as `T14`, as [`TempoHardfork`] displays it) in

@@ -26,6 +26,7 @@ pub(crate) use trace::Tracer;
 mod reader;
 mod trace;
 mod views;
+mod zones;
 
 /// How many of the newest DEX orders the books are read over.
 const MAX_ORDERS: u128 = 256;
@@ -198,6 +199,7 @@ pub(crate) fn check(
         let precompile = CONFIGURABLE_ACCOUNT_ADDRESS;
         reader.check::<account::Commitments>(&mut step, at, precompile, account::VIEW);
     }
+    zones::check(&reader, &accounts, &selected, &mut step);
 
     failures.extend(step.violations.drain(..).map(|violation| InvariantFailure {
         id: violation.id.to_string(),
