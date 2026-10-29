@@ -102,7 +102,7 @@ impl TempoTxEnv {
             }
         };
         let eligibility = if !no_authorizations {
-            UpgradeEligibility::NotDirectCall
+            UpgradeEligibility::HasAuthorizations
         } else if !self.signed_by_primitive_root() {
             UpgradeEligibility::NotPrimitiveRoot
         } else {

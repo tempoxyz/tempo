@@ -248,7 +248,7 @@ fn rotation_requires_registered_current_leaf_and_direct_authority() {
             update(account, &current, 1, &owners),
             ConfigurableAccountError::unauthorized_configurable_account_caller(),
         );
-        seed_authority(account, account, UpgradeEligibility::NotDirectCall);
+        seed_authority(account, account, UpgradeEligibility::HasAuthorizations);
         assert_reverts(
             update(account, &current, 1, &owners),
             ConfigurableAccountError::invalid_config(),
@@ -317,7 +317,7 @@ fn update_config_requires_the_sender_as_direct_authority() {
             );
         }
         // The direct authority alone decides: the origin is not consulted.
-        seed_authority(EOA, account, UpgradeEligibility::NotDirectCall);
+        seed_authority(EOA, account, UpgradeEligibility::HasAuthorizations);
         returns::<IConfigurableAccount::updateConfigCall>(update(account, &current, 1, &owners));
     });
 }
@@ -328,7 +328,7 @@ fn update_config_rejects_invalid_current_and_next_configs() {
     StorageCtx::enter(&mut storage, || {
         let owners = weighted_owners(&[(OWNER, 1)]);
         let account = derive(B256::ZERO, 1, &owners);
-        seed_authority(account, account, UpgradeEligibility::NotDirectCall);
+        seed_authority(account, account, UpgradeEligibility::HasAuthorizations);
         let initial = config(B256::ZERO, 0, 1, &owners).commitment().unwrap();
         seed_commitment(account, initial);
 
@@ -532,7 +532,7 @@ fn upgrade_account_checks_eligibility_code_and_commitment_in_order() {
         for (sender, eligibility, expected) in [
             (
                 with_code,
-                UpgradeEligibility::NotDirectCall,
+                UpgradeEligibility::HasAuthorizations,
                 ConfigurableAccountError::upgrade_must_be_direct_call(),
             ),
             (
