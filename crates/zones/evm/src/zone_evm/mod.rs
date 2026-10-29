@@ -10,7 +10,7 @@ use crate::executor::ZoneTransactionKind;
 use alloy_consensus::transaction::Recovered;
 use alloy_primitives::B256;
 use evm2::{
-    AnyError, TxResult,
+    AnyError, EvmFeatures, TxResult,
     registry::{AnyTxHandler, HandlerError, HandlerResult, TxHandler, TxRegistry, TxRequest},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -91,9 +91,24 @@ impl<L1: L1StorageReader> ZoneTxHandler<L1> {
         }
         self.l1.begin_transaction(initial_anchor);
 
-        let tx_hash = match request.envelope.execution_context() {
-            ExecutionContext::Transaction { tx_hash } => tx_hash,
-            ExecutionContext::Simulation => B256::repeat_byte(0xff),
+        let (tx_hash, origin) = match request.envelope.execution_context() {
+            ExecutionContext::Simulation => (
+                B256::repeat_byte(0xff),
+                tx_context::ExecutionOrigin::Simulation,
+            ),
+            // Prewarming (the zone builder's and reth's engine prewarming) disables both checks, so
+            // a transaction funded or sequenced by an earlier one still executes. Tempo envs never
+            // enable the balance check, so pool validation, which disables only the nonce check,
+            // lands here too and its L1 misses are bounded like prewarming's.
+            ExecutionContext::Transaction { tx_hash }
+                if !request.host.feature(EvmFeatures::NONCE_CHECK)
+                    && !request.host.feature(EvmFeatures::BALANCE_CHECK) =>
+            {
+                (tx_hash, tx_context::ExecutionOrigin::Prewarming)
+            }
+            ExecutionContext::Transaction { tx_hash } => {
+                (tx_hash, tx_context::ExecutionOrigin::Canonical)
+            }
         };
         let fee_payer = request
             .envelope
@@ -101,7 +116,7 @@ impl<L1: L1StorageReader> ZoneTxHandler<L1> {
             .unwrap_or_else(|_| request.tx.signer());
         Ok(ZoneTxContext {
             l1: self.l1.clone(),
-            _transaction: tx_context::set_current_transaction(tx_hash, fee_payer),
+            _transaction: tx_context::set_current_transaction(tx_hash, fee_payer, origin),
         })
     }
 }
@@ -147,7 +162,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::{ZoneBlockExecutor, ZoneDbError, ZoneEvm, ZoneEvmConfig};
     use alloy_consensus::{SignableTransaction, TxEip7702, TxLegacy, transaction::Recovered};
-    use alloy_primitives::{Address, Signature, U256};
+    use alloy_primitives::{Address, Bytes, Signature, U256};
     use evm2::{
         PendingState, TxResult,
         evm::{AccountInfo, InMemoryDB, precompile::NoPrecompiles},
@@ -155,7 +170,8 @@ pub(crate) mod tests {
         registry::{HandlerError, TxRegistry, TxRequest, handler},
     };
     use reth_chainspec::EthChainSpec;
-    use reth_evm::{BlockExecutor, BlockExecutorFactory, ConfigureEvm};
+    use reth_evm::{BlockExecutor, BlockExecutorFactory, ConfigureEvm, FromTxWithEncoded};
+    use reth_primitives_traits::WithEncoded;
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -163,6 +179,7 @@ pub(crate) mod tests {
     use tempo_chainspec::{hardfork::TempoHardfork, spec::DEV};
     use tempo_evm::{
         ResolvedFeeToken, TempoEvmEnv, TempoEvmTypes, TempoInvalidTransaction, TempoTxEnv,
+        tempo_execution_config,
     };
     use tempo_precompiles::TIP403_REGISTRY_ADDRESS;
     use tempo_primitives::{
@@ -173,7 +190,9 @@ pub(crate) mod tests {
         },
     };
     use zone_chainspec::ZoneChainSpec;
-    use zone_precompiles::{ADVANCE_TEMPO_SELECTOR, test_utils::MockL1Reader};
+    use zone_precompiles::{
+        ADVANCE_TEMPO_SELECTOR, test_utils::MockL1Reader, tx_context::ExecutionOrigin,
+    };
     use zone_primitives::constants::{ZONE_INBOX_ADDRESS, zone_chain_id};
 
     pub(crate) fn config() -> ZoneEvmConfig<MockL1Reader> {
@@ -403,5 +422,101 @@ pub(crate) mod tests {
             assert_eq!(l1.get_anchor(), None);
         }
         assert_eq!(preparations.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn zone_handler_publishes_the_execution_origin() {
+        let spec = TempoHardfork::T7;
+        let signed = Recovered::new_unchecked(
+            TempoTxEnvelope::Legacy(
+                TxLegacy {
+                    to: Address::ZERO.into(),
+                    ..Default::default()
+                }
+                .into_signed(Signature::test_signature()),
+            ),
+            Address::repeat_byte(0xab),
+        );
+        let simulation =
+            TempoTxEnv::from_tx_with_encoded(WithEncoded::new(Bytes::new(), signed.clone()));
+        // Production envs, including canonical ones, never enable the balance check.
+        let production = *tempo_execution_config(spec, DEV.chain_id()).version();
+        assert!(!production.features.contains(EvmFeatures::BALANCE_CHECK));
+        for (tx_env, disabled_checks, origin) in [
+            (
+                simulation,
+                EvmFeatures::empty(),
+                ExecutionOrigin::Simulation,
+            ),
+            (
+                TempoTxEnv::from(signed.clone()),
+                EvmFeatures::empty(),
+                ExecutionOrigin::Canonical,
+            ),
+            // Engine prewarming and the zone builder's prewarming disable both checks.
+            (
+                TempoTxEnv::from(signed.clone()),
+                EvmFeatures::NONCE_CHECK | EvmFeatures::BALANCE_CHECK,
+                ExecutionOrigin::Prewarming,
+            ),
+            // Pool validation disables only the nonce and base fee checks, and counts as
+            // prewarming because the balance check is already off.
+            (
+                TempoTxEnv::from(signed.clone()),
+                EvmFeatures::NONCE_CHECK | EvmFeatures::BASE_FEE_CHECK,
+                ExecutionOrigin::Prewarming,
+            ),
+        ] {
+            let mut evm = test_evm(InMemoryDB::default());
+            let l1 = evm
+                .database_as::<crate::L1OverlayDB<InMemoryDB, MockL1Reader>>()
+                .unwrap()
+                .l1_state()
+                .clone();
+            let observed = Arc::new(std::sync::Mutex::new(None));
+            let mut inner = TxRegistry::new();
+            let observed_origin = observed.clone();
+            inner.register(
+                0,
+                |tx: &TempoTxEnv| Some(tx),
+                handler(
+                    move |request: &mut TxRequest<'_, '_, TempoEvmTypes, TempoTxEnv>| {
+                        *observed_origin.lock().unwrap() = Some(tx_context::execution_origin());
+                        request.host.ext_mut().resolved_fee_token =
+                            Some(ResolvedFeeToken::Selected(Address::ZERO));
+                        Ok(())
+                    },
+                    |_, ()| -> HandlerResult<TxResult<TempoEvmTypes>> {
+                        panic!("validation must not execute user calls")
+                    },
+                ),
+            );
+            let mut registry = TxRegistry::new();
+            registry.register(
+                0,
+                |tx: &TempoTxEnv| Some(tx),
+                ZoneTxHandler {
+                    inner: inner.get_by_type(0).unwrap(),
+                    l1,
+                },
+            );
+            let mut version = production;
+            version.features.remove(disabled_checks);
+            evm.set_execution_config(
+                super::zone_execution_config(spec, version),
+                spec,
+                registry,
+                NoPrecompiles::default(),
+            );
+
+            evm.validate_tx(&Recovered::new_unchecked(tx_env, signed.signer()))
+                .unwrap();
+            assert_eq!(*observed.lock().unwrap(), Some(origin));
+            assert_eq!(
+                tx_context::execution_origin(),
+                ExecutionOrigin::Canonical,
+                "the context must clear after validation"
+            );
+        }
     }
 }

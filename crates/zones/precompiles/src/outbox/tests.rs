@@ -100,7 +100,7 @@ impl Harness {
 
     #[rustfmt::skip]
     fn call_inner(&mut self, caller: Address, fee_payer: Address, data: impl AsRef<[u8]>, with_context: bool, is_static: bool) -> PrecompileResult {
-        let _guard = with_context.then(|| tx_context::set_current_transaction(TX_HASH, fee_payer));
+        let _guard = with_context.then(|| tx_context::set_current_transaction(TX_HASH, fee_payer, tx_context::ExecutionOrigin::Canonical));
         call_precompile(
             &mut self.ctx, &mut self.precompile, caller, data.as_ref(), GAS, is_static, ZONE_OUTBOX_ADDRESS, ZONE_OUTBOX_ADDRESS
         )

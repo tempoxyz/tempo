@@ -32,9 +32,8 @@ pub struct RedactedRpcConfig {
     /// at once across all callers. Further simulations wait in arrival order and fail with `-32009`
     /// if no permit frees up within two seconds of their request or batch arriving.
     ///
-    /// Simulations can block on uncached Tempo L1 state through the provider that block building
-    /// uses, and authorization tokens are self-signed, so this cap bounds how many can do so at
-    /// once.
+    /// Simulations can wait on uncached Tempo L1 state, up to one time-limited fetch per miss, and
+    /// authorization tokens are self-signed, so this cap bounds how many can do so at once.
     pub max_concurrent_simulations: NonZeroUsize,
     /// The ZonePortal contract address on L1 (used for querying deposits, not for auth tokens).
     pub zone_portal: alloy_primitives::Address,

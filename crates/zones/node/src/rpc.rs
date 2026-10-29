@@ -24,7 +24,10 @@ use alloy_rpc_types_eth::{
 };
 use alloy_sol_types::SolCall;
 use eyre::{OptionExt as _, WrapErr};
-use futures::StreamExt;
+use futures::{
+    FutureExt as _, StreamExt,
+    future::{BoxFuture, Shared},
+};
 use jsonrpsee::{RpcModule, core::RpcResult, proc_macros::rpc, types::ErrorObjectOwned};
 use reth_chainspec::Hardforks;
 use reth_evm::{ConfigureEvm as _, execute::Executor as _, witness::ExecutionWitnessRecord};
@@ -149,15 +152,12 @@ pub(crate) trait ZoneApi {
 /// Public Zone API backed directly by the node and Tempo L1 providers.
 #[derive(Clone)]
 pub(crate) struct OperatorZoneApi<P> {
-    zone_id: u32,
-    chain_id: u64,
-    portal_address: Address,
-    l1_provider: DynProvider<TempoNetwork>,
+    portal: PortalReads,
     zone_provider: P,
 }
 
 impl<P> OperatorZoneApi<P> {
-    pub(crate) const fn new(
+    pub(crate) fn new(
         zone_id: u32,
         chain_id: u64,
         portal_address: Address,
@@ -165,10 +165,7 @@ impl<P> OperatorZoneApi<P> {
         zone_provider: P,
     ) -> Self {
         Self {
-            zone_id,
-            chain_id,
-            portal_address,
-            l1_provider,
+            portal: PortalReads::new(zone_id, chain_id, portal_address, l1_provider),
             zone_provider,
         }
     }
@@ -187,19 +184,15 @@ where
             .and_then(|state| state.tempo_block_number().map_err(internal))
             .map_err(operator_rpc_error)?;
 
-        zone_info(
-            self.zone_id,
-            self.chain_id,
-            self.portal_address,
-            tempo_block_number,
-            &self.l1_provider,
-        )
-        .await
-        .map_err(operator_rpc_error)
+        self.portal
+            .zone_info(tempo_block_number)
+            .await
+            .map_err(operator_rpc_error)
     }
 
     async fn get_encryption_key(&self) -> RpcResult<ZonePortal::encryptionKeyAtBlockReturn> {
-        encryption_key(self.portal_address, &self.l1_provider)
+        self.portal
+            .encryption_key()
             .await
             .map_err(operator_rpc_error)
     }
@@ -492,17 +485,20 @@ async fn zone_sequencers(
         .map_err(internal)
 }
 
-/// Builds the Zone metadata shared by the operator and redacted RPC surfaces.
-///
-/// The caller supplies the local Zone's processed Tempo block number; the
-/// remaining dynamic fields are read directly from the ZonePortal on Tempo L1.
-async fn zone_info(
-    zone_id: u32,
-    chain_id: u64,
+/// The ZonePortal fields of `zone_getZoneInfo`, read at the Tempo L1 head.
+#[derive(Clone)]
+struct PortalZoneState {
+    zone_tokens: Vec<Address>,
+    sequencers: Vec<Address>,
+    is_access_enforced: bool,
+    is_gateway_open: bool,
+}
+
+/// Reads the Zone metadata that the operator and redacted RPC surfaces share from the ZonePortal.
+async fn portal_zone_state(
     portal_address: Address,
-    tempo_block_number: u64,
     l1_provider: &DynProvider<TempoNetwork>,
-) -> Result<ZoneInfoResponse, JsonRpcError> {
+) -> Result<PortalZoneState, JsonRpcError> {
     let portal = ZonePortal::new(portal_address, l1_provider);
     let (zone_tokens, sequencers, is_access_enforced, is_gateway_open) = tokio::try_join!(
         zone_tokens(portal_address, l1_provider),
@@ -523,14 +519,11 @@ async fn zone_info(
         },
     )?;
 
-    Ok(ZoneInfoResponse {
-        zone_id: U64::from(zone_id),
-        is_access_enforced,
-        is_gateway_open,
+    Ok(PortalZoneState {
         zone_tokens,
         sequencers,
-        chain_id: U64::from(chain_id),
-        tempo_block_number: U64::from(tempo_block_number),
+        is_access_enforced,
+        is_gateway_open,
     })
 }
 
@@ -546,6 +539,119 @@ async fn encryption_key(
         .call()
         .await
         .map_err(internal)
+}
+
+/// ZonePortal reads behind `zone_getZoneInfo` and `zone_getEncryptionKey`, shared by every caller
+/// for [`PORTAL_READ_TTL`] so request load does not reach the Tempo L1 endpoint.
+///
+/// Concurrent callers await one in-flight read, and a failed read is retried by the next caller. A
+/// read that outlasts its callers' timeouts stays in flight, so a silent L1 endpoint is sent no
+/// further reads.
+#[derive(Clone)]
+struct PortalReads {
+    zone_id: u32,
+    chain_id: u64,
+    portal_address: Address,
+    l1_provider: DynProvider<TempoNetwork>,
+    portal_state: Arc<parking_lot::Mutex<Option<SharedRead<PortalZoneState>>>>,
+    encryption_key:
+        Arc<parking_lot::Mutex<Option<SharedRead<ZonePortal::encryptionKeyAtBlockReturn>>>>,
+}
+
+impl PortalReads {
+    fn new(
+        zone_id: u32,
+        chain_id: u64,
+        portal_address: Address,
+        l1_provider: DynProvider<TempoNetwork>,
+    ) -> Self {
+        Self {
+            zone_id,
+            chain_id,
+            portal_address,
+            l1_provider,
+            portal_state: Default::default(),
+            encryption_key: Default::default(),
+        }
+    }
+
+    /// Returns the Zone metadata for a node that has processed Tempo block `tempo_block_number`.
+    async fn zone_info(&self, tempo_block_number: u64) -> Result<ZoneInfoResponse, JsonRpcError> {
+        let (portal_address, l1_provider) = (self.portal_address, self.l1_provider.clone());
+        let portal = SharedRead::get_or_start(&self.portal_state, async move {
+            portal_zone_state(portal_address, &l1_provider).await
+        })
+        .await?;
+        Ok(ZoneInfoResponse {
+            zone_id: U64::from(self.zone_id),
+            is_access_enforced: portal.is_access_enforced,
+            is_gateway_open: portal.is_gateway_open,
+            zone_tokens: portal.zone_tokens,
+            sequencers: portal.sequencers,
+            chain_id: U64::from(self.chain_id),
+            tempo_block_number: U64::from(tempo_block_number),
+        })
+    }
+
+    /// Returns the encryption key active at the Tempo L1 head as of at most [`PORTAL_READ_TTL`]
+    /// ago.
+    async fn encryption_key(&self) -> Result<ZonePortal::encryptionKeyAtBlockReturn, JsonRpcError> {
+        let (portal_address, l1_provider) = (self.portal_address, self.l1_provider.clone());
+        SharedRead::get_or_start(&self.encryption_key, async move {
+            encryption_key(portal_address, &l1_provider).await
+        })
+        .await
+    }
+}
+
+/// How long a successful [`PortalReads`] read is reused, measured from when it started.
+const PORTAL_READ_TTL: Duration = Duration::from_secs(1);
+
+/// How long one caller waits on a [`PortalReads`] read, so an unresponsive L1 endpoint cannot hold
+/// it forever.
+const PORTAL_READ_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// A ZonePortal read that callers share while it is in flight and for [`PORTAL_READ_TTL`] after.
+struct SharedRead<T> {
+    started_at: tokio::time::Instant,
+    read: Shared<BoxFuture<'static, Result<T, JsonRpcError>>>,
+}
+
+impl<T: Clone + Send + Sync + 'static> SharedRead<T> {
+    /// Awaits the read in `slot` while it is in flight or succeeded within [`PORTAL_READ_TTL`], and
+    /// otherwise starts `read` in its place, for at most [`PORTAL_READ_TIMEOUT`].
+    async fn get_or_start(
+        slot: &parking_lot::Mutex<Option<Self>>,
+        read: impl Future<Output = Result<T, JsonRpcError>> + Send + 'static,
+    ) -> Result<T, JsonRpcError> {
+        let shared = 'shared: {
+            let mut slot = slot.lock();
+            if let Some(current) = slot.as_ref()
+                && match current.read.peek() {
+                    None => true,
+                    Some(Ok(_)) => current.started_at.elapsed() < PORTAL_READ_TTL,
+                    Some(Err(_)) => false,
+                }
+            {
+                break 'shared current.read.clone();
+            }
+
+            let read = read.boxed().shared();
+            *slot = Some(Self {
+                started_at: tokio::time::Instant::now(),
+                read: read.clone(),
+            });
+            read
+        };
+
+        tokio::time::timeout(PORTAL_READ_TIMEOUT, shared)
+            .await
+            .unwrap_or_else(|_| {
+                Err(JsonRpcError::internal(format!(
+                    "ZonePortal read timed out after {PORTAL_READ_TIMEOUT:?}"
+                )))
+            })
+    }
 }
 
 fn get_sequencer_info<P>(
@@ -759,7 +865,7 @@ pub struct ZoneRpc<Api: EthApiTypes> {
     eth: EthHandlers<Api>,
     config: zone_rpc::RedactedRpcConfig,
     enabled_tokens: EnabledTokenRegistry,
-    l1_provider: DynProvider<TempoNetwork>,
+    portal: PortalReads,
     /// Maps filter IDs to the authenticated account that created them.
     /// The reth filter registry remains the source of truth for filter liveness.
     filter_owners: Arc<Mutex<HashMap<FilterId, Address>>>,
@@ -773,11 +879,17 @@ impl<Api: EthApiTypes + 'static> ZoneRpc<Api> {
         enabled_tokens: EnabledTokenRegistry,
         l1_provider: DynProvider<TempoNetwork>,
     ) -> Self {
+        let portal = PortalReads::new(
+            config.zone_id,
+            config.chain_id,
+            config.zone_portal,
+            l1_provider,
+        );
         let rpc = Self {
             eth,
             config,
             enabled_tokens,
-            l1_provider,
+            portal,
             filter_owners: Arc::new(Mutex::new(HashMap::new())),
         };
         rpc.spawn_filter_owner_pruner();
@@ -1389,21 +1501,14 @@ where
                 .map_err(internal)?
                 .tempo_block_number()
                 .map_err(internal)?;
-            let info = zone_info(
-                self.config.zone_id,
-                self.config.chain_id,
-                self.config.zone_portal,
-                tempo_block_number,
-                &self.l1_provider,
-            )
-            .await?;
+            let info = self.portal.zone_info(tempo_block_number).await?;
             to_raw(&info)
         })
     }
 
     fn zone_get_encryption_key(&self, _auth: AuthContext) -> BoxFut<'_> {
         Box::pin(async move {
-            let key = encryption_key(self.config.zone_portal, &self.l1_provider).await?;
+            let key = self.portal.encryption_key().await?;
             to_raw(&key)
         })
     }
@@ -1876,6 +1981,120 @@ mod tests {
         assert!(methods.contains("zone_getZoneInfo"));
         assert!(methods.contains("zone_getEncryptionKey"));
         assert!(!methods.contains("zone_getAuthorizationTokenInfo"));
+    }
+
+    fn mocked_portal_reads(asserter: &alloy_transport::mock::Asserter) -> PortalReads {
+        let l1_provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+            .connect_mocked_client(asserter.clone())
+            .erased();
+        PortalReads::new(1, 42431, Address::repeat_byte(0x11), l1_provider)
+    }
+
+    /// Queues the `eth_blockNumber` and `encryptionKeyAtBlock` responses of one key read.
+    fn push_encryption_key(asserter: &alloy_transport::mock::Asserter, key_index: u64) {
+        asserter.push_success(&U64::from(100));
+        asserter.push_success(&Bytes::from(
+            ZonePortal::encryptionKeyAtBlockCall::abi_encode_returns(
+                &ZonePortal::encryptionKeyAtBlockReturn {
+                    x: B256::repeat_byte(0x01),
+                    yParity: 2,
+                    keyIndex: U256::from(key_index),
+                },
+            ),
+        ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn portal_reads_are_shared_until_the_ttl_expires() {
+        let asserter = alloy_transport::mock::Asserter::new();
+        let portal = mocked_portal_reads(&asserter);
+        push_encryption_key(&asserter, 1);
+
+        // Both callers share one read, and the asserter has no responses for a second.
+        let (first, second) = tokio::join!(portal.encryption_key(), portal.encryption_key());
+        assert_eq!(first.unwrap().keyIndex, U256::from(1));
+        assert_eq!(second.unwrap().keyIndex, U256::from(1));
+        tokio::time::advance(PORTAL_READ_TTL - Duration::from_millis(1)).await;
+        assert_eq!(
+            portal.encryption_key().await.unwrap().keyIndex,
+            U256::from(1)
+        );
+
+        tokio::time::advance(Duration::from_millis(1)).await;
+        push_encryption_key(&asserter, 2);
+        assert_eq!(
+            portal.encryption_key().await.unwrap().keyIndex,
+            U256::from(2)
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn failed_portal_read_is_retried_by_the_next_caller() {
+        let asserter = alloy_transport::mock::Asserter::new();
+        let portal = mocked_portal_reads(&asserter);
+        asserter.push_failure_msg("L1 unavailable");
+        portal
+            .encryption_key()
+            .await
+            .expect_err("the failed read must be returned");
+
+        push_encryption_key(&asserter, 1);
+        assert_eq!(
+            portal.encryption_key().await.unwrap().keyIndex,
+            U256::from(1)
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn zone_info_keeps_each_callers_tempo_block_number() {
+        let asserter = alloy_transport::mock::Asserter::new();
+        let portal = mocked_portal_reads(&asserter);
+        // `zone_info` polls the token count, sequencer count, `isAccessEnforced`, and
+        // `isGatewayOpen` in that order. Zero counts skip the Multicall3 index reads.
+        asserter.push_success(&Bytes::from(
+            ZonePortal::enabledTokenCountCall::abi_encode_returns(&U256::ZERO),
+        ));
+        asserter.push_success(&Bytes::from(
+            ZonePortal::sequencerCountCall::abi_encode_returns(&U256::ZERO),
+        ));
+        asserter.push_success(&Bytes::from(
+            ZonePortal::isAccessEnforcedCall::abi_encode_returns(&true),
+        ));
+        asserter.push_success(&Bytes::from(
+            ZonePortal::isGatewayOpenCall::abi_encode_returns(&false),
+        ));
+
+        let first = portal.zone_info(7).await.unwrap();
+        let second = portal.zone_info(8).await.unwrap();
+        assert_eq!(first.tempo_block_number, U64::from(7));
+        assert_eq!(second.tempo_block_number, U64::from(8));
+        assert!(first.is_access_enforced);
+        assert!(!first.is_gateway_open);
+        assert_eq!(
+            ZoneInfoResponse {
+                tempo_block_number: U64::ZERO,
+                ..first
+            },
+            ZoneInfoResponse {
+                tempo_block_number: U64::ZERO,
+                ..second
+            },
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stalled_portal_read_times_out_and_stays_in_flight() {
+        let slot = parking_lot::Mutex::new(None);
+        let error = SharedRead::<u64>::get_or_start(&slot, std::future::pending())
+            .await
+            .expect_err("a stalled read must time out");
+        assert!(error.message.contains("timed out"), "{}", error.message);
+
+        // The next caller waits on the stalled read instead of sending another.
+        let error = SharedRead::get_or_start(&slot, async { Ok(7) })
+            .await
+            .expect_err("the stalled read must stay in flight");
+        assert!(error.message.contains("timed out"), "{}", error.message);
     }
 
     #[test]
