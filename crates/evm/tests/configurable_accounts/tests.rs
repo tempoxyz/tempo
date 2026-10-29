@@ -4825,7 +4825,7 @@ fn native_delegate_grant_is_bound_to_the_transaction() {
 /// child key for the parent: it cannot be granted as an admin key, and as a regular access key it
 /// cannot authorize other keys.
 #[test]
-fn native_delegate_cannot_sign_inline_grant() {
+fn configurable_delegate_cannot_sign_inline_grant() {
     let owner = signer(2);
     let config = ConfigurableAccountConfig {
         salt: B256::repeat_byte(2),
