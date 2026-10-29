@@ -2,7 +2,6 @@
 
 use alloy_primitives::Address;
 use alloy_sol_types::{SolCall, SolError, SolInterface};
-use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::IAccountKeychain;
 use tempo_precompiles::dispatch::abi_decoder_config_for_spec;
 
@@ -70,10 +69,10 @@ impl CallRules for AccountKeychainRules {
                 check_caller(caller, &[call.account])
             }
             IAccountKeychain::IAccountKeychainCalls::authorizeKey_1(call) => {
-                reject_configurable_account_key_type(call.signatureType, spec)
+                reject_configurable_account_key_type(call.signatureType)
             }
             IAccountKeychain::IAccountKeychainCalls::authorizeKey_2(call) => {
-                reject_configurable_account_key_type(call.signatureType, spec)
+                reject_configurable_account_key_type(call.signatureType)
             }
             IAccountKeychain::IAccountKeychainCalls::authorizeKey_0(_)
             | IAccountKeychain::IAccountKeychainCalls::authorizeAdminKey(_)
@@ -88,11 +87,8 @@ impl CallRules for AccountKeychainRules {
 }
 
 /// Rejects configurable account delegates until zones sync configurations (TIP-1114 Zones).
-fn reject_configurable_account_key_type(
-    key_type: IAccountKeychain::SignatureType,
-    spec: TempoHardfork,
-) -> CallCheck {
-    if spec.is_t14() && key_type == IAccountKeychain::SignatureType::ConfigurableAccount {
+fn reject_configurable_account_key_type(key_type: IAccountKeychain::SignatureType) -> CallCheck {
+    if key_type == IAccountKeychain::SignatureType::ConfigurableAccount {
         CallCheck::Revert(
             IAccountKeychain::InvalidSignatureType {}
                 .abi_encode()
