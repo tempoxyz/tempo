@@ -18,6 +18,7 @@ pub(crate) struct AccountKeychainRules;
 
 const UNRESTRICTED_SELECTORS: &[[u8; 4]] = &[
     IAccountKeychain::authorizeKey_0Call::SELECTOR,
+    IAccountKeychain::authorizeAdminKeyCall::SELECTOR,
     IAccountKeychain::burnKeyAuthorizationWitnessCall::SELECTOR,
     IAccountKeychain::revokeKeyCall::SELECTOR,
     IAccountKeychain::updateSpendingLimitCall::SELECTOR,
@@ -74,10 +75,8 @@ impl CallRules for AccountKeychainRules {
             IAccountKeychain::IAccountKeychainCalls::authorizeKey_2(call) => {
                 check_key_type(call.signatureType, spec)
             }
-            IAccountKeychain::IAccountKeychainCalls::authorizeAdminKey(call) => {
-                check_key_type(call.signatureType, spec)
-            }
             IAccountKeychain::IAccountKeychainCalls::authorizeKey_0(_)
+            | IAccountKeychain::IAccountKeychainCalls::authorizeAdminKey(_)
             | IAccountKeychain::IAccountKeychainCalls::burnKeyAuthorizationWitness(_)
             | IAccountKeychain::IAccountKeychainCalls::revokeKey(_)
             | IAccountKeychain::IAccountKeychainCalls::updateSpendingLimit(_)
