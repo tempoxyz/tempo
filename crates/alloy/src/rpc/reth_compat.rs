@@ -182,18 +182,18 @@ impl TryIntoTxEnv<Recovered<TempoTxEnv>, TempoEvmEnv> for TempoTransactionReques
 impl TempoTransactionRequest {
     /// Configurable account signatures for a simulated call.
     ///
-    /// Installs the mock grant described by `keyAuthorizationSimulation` and returns the mock
-    /// outer signature described by `configurableAccountSimulation`, or `None` when the request
-    /// has no `configurableAccountSimulation`. Stateful configurable account checks run when the
-    /// call executes at its position, so only the stateless ones are done here.
+    /// Installs the mock grant described by `keyAuthorizationSimulation` when a grant is attached,
+    /// and returns the mock outer signature described by `configurableAccountSimulation`, or
+    /// `None` when the request has no `configurableAccountSimulation`. Stateful configurable
+    /// account checks run when the call executes at its position, so only the stateless ones are
+    /// done here.
     fn simulated_block_signature(&mut self) -> Result<Option<TempoSignature>, EthApiError> {
         let invalid = |message: &str| EthApiError::InvalidParams(message.into());
         let parent = self.inner.from.unwrap_or_default();
-        if let Some(spec) = &self.key_authorization_simulation {
-            let grant = self
-                .key_authorization
-                .as_ref()
-                .ok_or_else(|| invalid("keyAuthorizationSimulation requires keyAuthorization"))?
+        if let Some(spec) = &self.key_authorization_simulation
+            && let Some(grant) = &self.key_authorization
+        {
+            let grant = grant
                 .authorization
                 .clone()
                 .into_signed(spec.mock_signature(spec.signer.unwrap_or(parent))?);

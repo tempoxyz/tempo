@@ -82,7 +82,8 @@ pub struct TempoTransactionRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub configurable_account_simulation: Option<ConfigurableAccountSimulationSpec>,
 
-    /// Independent parent or admin quorum authorizing the attached keyAuthorization.
+    /// Independent parent or admin quorum authorizing the attached keyAuthorization; ignored
+    /// without one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_authorization_simulation: Option<ConfigurableAccountSimulationSpec>,
 

@@ -137,6 +137,27 @@ fn grant_simulation_signs_the_grant_with_mock_owner_approvals() {
     assert_eq!(signature.signatures().len(), 2);
 }
 
+/// Fillers drop a grant whose key is already live but keep its simulated quorum, which is then
+/// ignored.
+#[test]
+fn grant_simulation_without_a_grant_is_ignored() {
+    let mut request = aa_request(SignatureType::Secp256k1);
+    request.key_authorization_simulation = Some(spec(vec![approval(1), approval(2)]));
+
+    TryIntoSimTx::<TempoTxEnvelope>::try_into_sim_tx(request.clone())
+        .expect("eth_simulateV1 ignores the simulated quorum");
+    let env = request
+        .try_into_tx_env(&TempoEvmEnv::default())
+        .expect("eth_call ignores the simulated quorum");
+    assert!(
+        env.as_aa()
+            .expect("AA expected")
+            .tx()
+            .key_authorization
+            .is_none()
+    );
+}
+
 /// `eth_simulateV1` and `eth_call` reject an inconsistent simulated role alike. Simulation skips
 /// owner cryptography, so they also verify a real configurable grant first.
 #[test_case(
@@ -161,11 +182,6 @@ fn grant_simulation_signs_the_grant_with_mock_owner_approvals() {
     },
     "configurable account simulation signer does not match the role account";
     "signer mismatch"
-)]
-#[test_case(
-    |request| request.key_authorization_simulation = Some(spec(vec![approval(1), approval(2)])),
-    "keyAuthorizationSimulation requires keyAuthorization";
-    "grant simulation without a grant"
 )]
 #[test_case(
     |request| request.set_key_authorization(grant().into_signed(
