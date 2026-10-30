@@ -120,7 +120,8 @@ impl Pool {
 
     /// Returns whether the pool has enough reserve validator token to cover the given amount.
     pub fn has_enough_reserve_validator_token(&self, amount: U256) -> bool {
-        U256::from(self.reserve_validator_token) >= amount
+        // Reject empty pools, even for zero-output swaps, so no input lands in an LP-less pool.
+        self.reserve_validator_token != 0 && U256::from(self.reserve_validator_token) >= amount
     }
 }
 
