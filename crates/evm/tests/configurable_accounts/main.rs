@@ -20,12 +20,13 @@ use tempo_evm::{
     tempo_execution_config, tempo_tx_registry,
 };
 use tempo_precompiles::{
-    TempoPrecompiles, account_keychain::AccountKeychain, storage::StorageCtx,
-    test_util::TIP20Setup, tip403_registry::TIP403Registry,
+    TempoPrecompiles, account_keychain::AccountKeychain,
+    configurable_account::CONFIGURABLE_ACCOUNT_CODE, storage::StorageCtx, test_util::TIP20Setup,
+    tip403_registry::TIP403Registry,
 };
 use tempo_primitives::{
     AASigned, TempoSignature, TempoTransaction, TempoTxEnvelope,
-    account::decode_config_commitment,
+    account::{decode_config_commitment, encode_config_commitment},
     transaction::{
         CONFIGURABLE_ACCOUNT_UPGRADE_DOMAIN, Call, ConfigurableAccountConfig,
         ConfigurableAccountOwner, ConfigurableAccountSignature, PrimitiveSignature,
@@ -38,6 +39,10 @@ const AA_GAS_LIMIT: u64 = 1_000_000;
 
 /// The chain ID of the fixture's EVM and of the transactions it signs.
 const CHAIN_ID: u64 = 1;
+
+/// The fixture's configurable account. Configurable accounts are only created by migration, so
+/// the fixture writes its commitment and code marker directly.
+const CONFIGURABLE_ACCOUNT: Address = Address::repeat_byte(0xac);
 
 struct Fixture {
     evm: TempoEvm<'static>,
@@ -77,7 +82,7 @@ impl Fixture {
             }],
         };
         let account = if configurable {
-            config.derive_account().unwrap()
+            CONFIGURABLE_ACCOUNT
         } else {
             owner.address()
         };
@@ -90,12 +95,13 @@ impl Fixture {
             TempoEvmEnv::new_with_version(spec, TempoBlockEnv::default(), version),
         );
         // The accepted overlay holds the whole state, so `genesis_bundle` and executors see it.
-        evm.overlay_db_mut().insert_account_info(
-            &account,
-            AccountInfo::default()
-                .with_nonce(3)
-                .with_balance(U256::from(42)),
-        );
+        let mut info = AccountInfo::default()
+            .with_nonce(3)
+            .with_balance(U256::from(42));
+        if configurable {
+            info = configurable_account_info(info, &config);
+        }
+        evm.overlay_db_mut().insert_account_info(&account, info);
         in_storage_ctx(&mut evm, || {
             TIP403Registry::new().initialize()?;
             AccountKeychain::new().initialize()?;
@@ -279,6 +285,13 @@ impl Fixture {
         block.into_bundle()
     }
 
+    /// Makes `address` a configurable account at `config`, keeping its balance and nonce.
+    fn configure(&mut self, address: Address, config: &ConfigurableAccountConfig) {
+        self.update_account(address, |info| {
+            *info = configurable_account_info(info.clone(), config);
+        });
+    }
+
     fn install_contract(&mut self, address: Address, code: Vec<u8>) -> Call {
         self.evm.overlay_db_mut().insert_account_info(
             &address,
@@ -290,6 +303,14 @@ impl Fixture {
             input: Default::default(),
         }
     }
+}
+
+/// `info` holding the commitment to `config` and the configurable account code marker, as a
+/// migrated account's does.
+fn configurable_account_info(info: AccountInfo, config: &ConfigurableAccountConfig) -> AccountInfo {
+    let mut info = info.with_code(Bytecode::new_raw(CONFIGURABLE_ACCOUNT_CODE));
+    info.extension = encode_config_commitment(config.commitment().unwrap()).into();
+    info
 }
 
 /// Runs `f` in a storage context of `evm` and accepts its writes.

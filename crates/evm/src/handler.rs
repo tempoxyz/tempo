@@ -1468,14 +1468,13 @@ fn prepare_aa(
     if spec.is_t14() {
         warm_aa_accounts(request.host, caller, tx);
     }
-    let (configurable_gas, configurable_state_gas) =
+    let configurable_gas =
         configurable_account::validate_state(request.host, request.envelope, spec)?;
 
     // Route to the AA gas calculation and validation path.
     let (mut intrinsic, mut initial_state_gas, floor_gas) =
         intrinsic_gas(request.host, request.tx.inner())?;
     intrinsic = intrinsic.saturating_add(configurable_gas);
-    initial_state_gas = initial_state_gas.saturating_add(configurable_state_gas);
     let (nonce_gas, nonce_state_gas) = nonce_intrinsic_gas(request.host, request.tx.inner());
 
     // For T0+, include 2D nonce gas in validation (charged upfront)
@@ -1652,7 +1651,6 @@ fn execute_aa(
             )
         };
     reservoir += state_refund;
-    configurable_account::register_commitments(request.host, request.tx.inner())?;
     let mut result = execute_batch(
         request.host,
         caller,

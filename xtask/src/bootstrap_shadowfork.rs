@@ -44,9 +44,7 @@ use tempo_contracts::precompiles::VALIDATOR_CONFIG_V2_ADDRESS;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_precompiles::{
     error::TempoPrecompileError,
-    storage::{
-        ConfigCommitmentWriteGas, PrecompileStorageProvider, StorageCtx, account_config_commitment,
-    },
+    storage::{PrecompileStorageProvider, StorageCtx, account_config_commitment},
     validator_config_v2::ValidatorConfigV2,
 };
 use tempo_primitives::{TempoBlockEnv, TempoPrimitives};
@@ -617,7 +615,6 @@ where
         &mut self,
         _address: Address,
         _commitment: B256,
-        _gas: ConfigCommitmentWriteGas,
     ) -> Result<(), TempoPrecompileError> {
         // The overlay only persists storage slots; it cannot write account extensions.
         Err(TempoPrecompileError::InvalidConfigCommitmentWrite)

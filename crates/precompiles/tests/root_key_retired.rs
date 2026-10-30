@@ -13,9 +13,7 @@ use tempo_contracts::precompiles::{
 };
 use tempo_precompiles::{
     error::TempoPrecompileError,
-    storage::{
-        ConfigCommitmentWriteGas, ContractStorage, StorageCtx, hashmap::HashMapStorageProvider,
-    },
+    storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
     test_util::TIP20Setup,
     tip20::PERMIT_TYPEHASH,
     tip20_channel_reserve::TIP20ChannelReserve,
@@ -56,7 +54,7 @@ fn storage_at(spec: TempoHardfork, committed: &[Address]) -> HashMapStorageProvi
     StorageCtx::enter(&mut storage, || {
         for account in committed {
             StorageCtx
-                .set_config_commitment(*account, COMMITMENT, ConfigCommitmentWriteGas::Intrinsic)
+                .set_config_commitment(*account, COMMITMENT)
                 .unwrap();
         }
     });
@@ -299,7 +297,7 @@ fn migrate(storage: &mut HashMapStorageProvider, account: Address, spec: TempoHa
     storage.set_spec(T14);
     StorageCtx::enter(storage, || {
         StorageCtx
-            .set_config_commitment(account, COMMITMENT, ConfigCommitmentWriteGas::Intrinsic)
+            .set_config_commitment(account, COMMITMENT)
             .unwrap();
     });
     storage.set_spec(spec);

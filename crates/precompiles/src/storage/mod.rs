@@ -31,48 +31,20 @@ use tempo_primitives::{TempoBlockEnv, account::decode_config_commitment, gas::ke
 
 use crate::error::{Result, TempoPrecompileError};
 
-/// TIP-1108 charge for replacing a nonzero config commitment.
+/// TIP-1108 charge for replacing a nonzero config commitment. A commitment write charges it
+/// before the previous commitment is read, as the cheaper of the two writes.
 const CONFIG_COMMITMENT_UPDATE_GAS: u64 = 5_000;
 
-/// Determines where TIP-1108's field-write charge is paid.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConfigCommitmentWriteGas {
-    /// First registration was charged once in transaction intrinsic gas.
-    Intrinsic,
-    /// Charge the explicit precompile operation here: the field write, plus TIP-1000's
-    /// new-account cost (regular and state gas) when the write finds the account still empty.
-    Precompile,
-}
-
-impl ConfigCommitmentWriteGas {
-    /// Gas charged before the previous commitment is read: the cheaper of the two writes.
-    fn static_cost(self) -> u64 {
-        match self {
-            Self::Intrinsic => 0,
-            Self::Precompile => CONFIG_COMMITMENT_UPDATE_GAS,
-        }
-    }
-
-    /// Regular gas charged once the previous commitment is known, on top of
-    /// [`Self::static_cost`]. A first write is priced like account creation, since the commitment
-    /// is permanent account state; its state gas is [`Self::state_cost`].
-    fn dynamic_cost(self, previous: B256, gas: &GasParams) -> Result<u64> {
-        match self {
-            Self::Intrinsic if previous.is_zero() => Ok(0),
-            Self::Intrinsic => Err(TempoPrecompileError::InvalidConfigCommitmentWrite),
-            Self::Precompile if previous.is_zero() => Ok(gas
-                .get(GasId::NewAccountCost)
-                .saturating_sub(CONFIG_COMMITMENT_UPDATE_GAS)),
-            Self::Precompile => Ok(0),
-        }
-    }
-
-    /// State gas for the write: account-creation state gas for a first write charged here.
-    fn state_cost(self, previous: B256, gas: &GasParams) -> u64 {
-        match self {
-            Self::Precompile if previous.is_zero() => gas.new_account_state_gas(),
-            Self::Intrinsic | Self::Precompile => 0,
-        }
+/// Regular gas of a commitment write once the previous commitment is known, on top of
+/// [`CONFIG_COMMITMENT_UPDATE_GAS`]. A first write is priced like account creation, since the
+/// commitment is permanent account state, which also charges account-creation state gas.
+/// TIP-1000's new-account cost is charged on top when the write finds the account still empty.
+fn config_commitment_write_dynamic_gas(previous: B256, gas: &GasParams) -> u64 {
+    if previous.is_zero() {
+        gas.get(GasId::NewAccountCost)
+            .saturating_sub(CONFIG_COMMITMENT_UPDATE_GAS)
+    } else {
+        0
     }
 }
 
@@ -259,16 +231,12 @@ pub trait PrecompileStorageProvider {
     /// Writes an authorized nonzero commitment through the account journal.
     /// The first write also installs the shared account code marker without a code-deposit charge;
     /// rotations preserve it. Both changes share the same rollback boundary.
-    /// Callers must validate registration, rotation, or migration authority first.
-    /// Account-access gas belongs to that authorization read; this method charges
-    /// only what `gas` names, or nothing when registration was charged intrinsically.
+    /// Callers must validate rotation or migration authority first.
+    /// Account-access gas belongs to that authorization read; this method charges the TIP-1108
+    /// field write, plus TIP-1000's new-account cost (regular and state gas) when the write finds
+    /// the account still empty.
     /// Providers that cannot store commitments reject every write.
-    fn set_config_commitment(
-        &mut self,
-        address: Address,
-        commitment: B256,
-        gas: ConfigCommitmentWriteGas,
-    ) -> Result<()>;
+    fn set_config_commitment(&mut self, address: Address, commitment: B256) -> Result<()>;
 }
 
 /// Storage operations for a given (contract) address.
