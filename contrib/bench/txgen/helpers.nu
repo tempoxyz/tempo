@@ -22,6 +22,7 @@ const TXGEN_HELPER_ALWAYS_FUND_PRESETS = [
     "neobank-withdraw"
     "public-mix"
     "tip20-policy"
+    "institutional"
     "vault-deposit"
     "vault-withdraw"
     "vault-throughput"
@@ -92,6 +93,8 @@ const TXGEN_HELPER_CLICKHOUSE_METRICS_FILE = "contrib/bench/clickhouse-metrics.t
 const TXGEN_HELPER_TIP403_REGISTRY = "0x403c000000000000000000000000000000000000"
 const TXGEN_HELPER_POLICY_ABI = "contrib/bench/txgen/tip403-policy.abi.json"
 const TXGEN_HELPER_POLICY_SETUP_GAS_LIMIT = 10000000
+# Presets that run tip20-policy's issuer and receiver policy setup.
+const TXGEN_HELPER_POLICY_PRESETS = ["tip20-policy" "institutional"]
 
 def txgen-tip20-base-scenario [] {
     {
@@ -1552,7 +1555,7 @@ def txgen-run-preset-pipeline [
     let existing_recipient_start = ($env | get --optional TXGEN_EXISTING_RECIPIENTS_START | default "0" | into int)
     let existing_recipient_end = ($env | get --optional TXGEN_EXISTING_RECIPIENTS_END | default "0" | into int)
     let uses_existing_recipients = (txgen-spec-effective-text $spec_path) =~ '(?m)^\s*existing_recipients:\s*$'
-    let recipient_accounts = if $preset_name == "tip20-policy" {
+    let recipient_accounts = if $preset_name in $TXGEN_HELPER_POLICY_PRESETS {
         $accounts
     } else if $uses_existing_recipients and $existing_recipient_end > $existing_recipient_start {
         $existing_recipient_end - $existing_recipient_start
@@ -1561,7 +1564,7 @@ def txgen-run-preset-pipeline [
     }
     let total_accounts = $accounts + $recipient_accounts
     let workload_metadata = (txgen-workload-metadata-args $preset_name $spec_path)
-    if $preset_name == "tip20-policy" {
+    if $preset_name in $TXGEN_HELPER_POLICY_PRESETS {
         $spec_path = (txgen-prepare-tip20-policy $spec_path $generate_rpc_url $tx_token_count $accounts)
     }
     if not $skip_faucet_funding {
@@ -1668,7 +1671,7 @@ def txgen-run-preset-pipeline [
     } else {
         print $"  Streaming up to ($tx_count) txgen transaction\(s\) over ($txgen_duration) into bench send..."
     }
-    let check_receipts = $is_vault or $preset_name == "tip20-policy" or $is_zone_to_zone
+    let check_receipts = $is_vault or $preset_name in $TXGEN_HELPER_POLICY_PRESETS or $is_zone_to_zone
     let workload_start_block = if $check_receipts {
         (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}').result | into int
     } else { 0 }
@@ -1684,7 +1687,7 @@ def txgen-run-preset-pipeline [
         return { ok: false, exit_code: 1, report_path: $report_path }
     }
 
-    if $preset_name in ["zones" "vault-deposit" "vault-withdraw" "tip20-policy"] and (open $report_path).failed > 0 {
+    if ($preset_name in ["zones" "vault-deposit" "vault-withdraw"] or $preset_name in $TXGEN_HELPER_POLICY_PRESETS) and (open $report_path).failed > 0 {
         print $"ERROR: ($preset_name) workload contains sender failures; see ($report_path)"
         return { ok: false, exit_code: 1, report_path: $report_path }
     }

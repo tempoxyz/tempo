@@ -41,6 +41,23 @@ assert equal ($policy.admin_calls | where function == createCompoundPolicy | get
 assert equal ($policy.admin_calls | where function == createPolicy | length) 8
 assert equal $policy.receive_call.function setReceivePolicy
 assert equal $policy.receive_call.args [25 26 "0x0000000000000000000000000000000000000000"]
+# The institutional preset runs tip20-policy's policy setup, adds DEX liquidity, and pays
+# counterparties that carry receiver filters.
+let institutional_spec = (txgen-resolve-bench-spec institutional)
+assert equal $institutional_spec.kind static
+assert ("institutional" in $TXGEN_HELPER_POLICY_PRESETS)
+assert ("institutional" in $TXGEN_HELPER_ALWAYS_FUND_PRESETS)
+assert equal (open $institutional_spec.spec_path | get include) [dex.yml tip20-policy.yml]
+let institutional = (open $institutional_spec.spec_path)
+assert equal ($institutional.mix | get weight | math sum) 100
+assert equal ($institutional.mix | get template | sort) [deposit_burn deposit_mint dex_swap policy_transfer settlement_transfer treasury_sweep]
+assert equal ($institutional.templates.treasury_sweep.calls | length) 8
+assert ($institutional.templates.treasury_sweep.calls | all { |call| $call.args.0.pool.pool == policy_receivers })
+assert equal $institutional.templates.policy_transfer.fee_token (txgen-tip20-token-address 1)
+assert equal $institutional.templates.deposit_mint.from {pool: users, select: {index: 0}}
+assert equal $institutional.templates.deposit_burn.call.function burn
+assert ((open (txgen-repo-root | path join contrib bench txgen tip20.abi.json)) | any { |item| $item.name == burn })
+assert equal ($institutional.templates.dex_swap.call.args.values | last 2) [{uniform: [1000000 5000000]} 0]
 # Single-workload throughput presets reuse public-mix fixtures and keep their own label.
 for preset in [zone-portal-throughput vault-throughput] {
     let spec = (txgen-resolve-bench-spec $preset)
