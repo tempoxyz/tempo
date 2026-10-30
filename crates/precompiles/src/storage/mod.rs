@@ -31,10 +31,10 @@ use tempo_primitives::{TempoBlockEnv, account::decode_config_commitment, gas::ke
 
 use crate::error::{Result, TempoPrecompileError};
 
-/// TIP-1108 charge for replacing a nonzero config commitment.
+/// TIP-1107 charge for replacing a nonzero config commitment.
 const CONFIG_COMMITMENT_UPDATE_GAS: u64 = 5_000;
 
-/// Determines where TIP-1108's field-write charge is paid.
+/// Determines where TIP-1107's field-write charge is paid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigCommitmentWriteGas {
     /// First registration was charged once in transaction intrinsic gas.
@@ -333,7 +333,7 @@ pub fn keccak_cost(len: usize) -> Result<u64> {
     keccak_gas(len).ok_or(TempoPrecompileError::OutOfGas)
 }
 
-/// Decodes the TIP-1108 commitment carried in `info`'s account extension under `hardfork`.
+/// Decodes the TIP-1107 commitment carried in `info`'s account extension under `hardfork`.
 ///
 /// A malformed extension is a node invariant violation, so it fails with
 /// [`TempoPrecompileError::Fatal`].

@@ -597,7 +597,7 @@ where
         }
 
         // Revalidate transactions whose authorities' configuration commitment changed,
-        // including eventless first registration (TIP-1112).
+        // including eventless first registration (TIP-1107).
         let changed_commitments: AddressSet = bundle_state
             .iter()
             .filter(|(_, account)| {

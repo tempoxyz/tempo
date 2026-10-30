@@ -34,7 +34,7 @@ pub fn validate_transaction(
         ));
     }
 
-    // Configurable accounts stay blocked until zones sync configurations (TIP-1114 Zones).
+    // Configurable accounts stay blocked until zones sync configurations (TIP-1154).
     if spec.is_t14()
         && (tx.as_aa().is_some_and(|aa| {
             aa.signature().is_or_wraps_configurable_account()
