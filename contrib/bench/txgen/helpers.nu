@@ -1520,8 +1520,14 @@ def txgen-prepare-public-mix-preset [spec_path: string, count: int, accounts: in
         if $result.exit_code != 0 { error make {msg: $"Failed to read access-key setup: ($result.stderr)"} }
         $result.stdout | from json
     } else { [] }
+    # Portal deploys fill the general lane (10M each); start them after the vault fixture, whose
+    # 30M deploys need an otherwise empty lane on a low general gas limit and would starve.
+    let vault_last = ($vault_setup | last | get id)
+    let zone_steps = ($zone_spec.setup.steps | each { |step|
+        if ($step.id | str starts-with "portal_") { $step | upsert depends_on [$vault_last] } else { $step }
+    })
     {include: $spec_path, accounts: {users: {range: [0 $accounts]}},
-        setup: {steps: ($vault_setup | append $users | append $zone_spec.setup.steps | append $dex_setup | append $keychain_setup)},
+        setup: {steps: ($vault_setup | append $users | append $zone_steps | append $dex_setup | append $keychain_setup)},
         templates: $templates,
         mix: $mix} | to yaml | save -f $output
     $output
