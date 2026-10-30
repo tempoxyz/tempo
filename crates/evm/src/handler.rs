@@ -1267,7 +1267,7 @@ fn execute_batch(
     let mut state_gas = 0i64;
     let mut spilled_state_gas = 0u64;
     let mut final_result = None;
-    let tx_env = TxEnv::<TempoEvmTypes> {
+    *host.tx_env_mut() = TxEnv::<TempoEvmTypes> {
         origin: caller,
         gas_price,
         chain_id: U256::from(host.version().chain_id),
@@ -1298,7 +1298,7 @@ fn execute_batch(
                 call.value,
                 &mut gas,
             )?;
-            execute_initial_frame(host, &tx_env, frame, &mut gas, remaining, reservoir)?
+            execute_initial_frame(host, frame, &mut gas, remaining, reservoir)?
         };
         // Check if call succeeded
         if !result.is_success() {

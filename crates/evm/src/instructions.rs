@@ -190,7 +190,6 @@ mod tests {
     use evm2::{
         ExecutionError,
         bytecode::Bytecode,
-        env::TxEnvExt,
         evm::{AccountInfo, InMemoryDB, StateChangeSource, precompile::NoPrecompiles},
         interpreter::MessageExt,
     };
@@ -313,9 +312,7 @@ mod tests {
             code: Bytecode::new_raw(Bytes::from_static(&[0x60, 0x01, 0x60, 0x00, 0x55, 0x00])),
             ..MessageExt::default()
         };
-        let error = evm
-            .execute_message(&TxEnvExt::default(), &mut message)
-            .unwrap_err();
+        let error = evm.execute_message(&mut message).unwrap_err();
         let ExecutionError::Fatal(error) = error else {
             panic!("expected fatal error")
         };
