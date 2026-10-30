@@ -191,6 +191,25 @@ impl ConfigurableAccount {
         Ok(hash)
     }
 
+    /// Registers `account` at its initial `config` when it has no commitment yet, and emits
+    /// [`registration_event`]. The write and the event are charged in intrinsic gas.
+    pub fn register(
+        &mut self,
+        account: Address,
+        config: &ConfigurableAccountConfig,
+        commitment: B256,
+    ) -> Result<()> {
+        if !self.get_config_commitment(account)?.is_zero() {
+            return Ok(());
+        }
+        self.storage.set_config_commitment(
+            account,
+            commitment,
+            ConfigCommitmentWriteGas::Intrinsic,
+        )?;
+        self.emit_event(registration_event(account, config))
+    }
+
     /// One-time storage initialization.
     pub fn initialize(&mut self) -> Result<()> {
         self.__initialize()
@@ -231,6 +250,27 @@ pub fn config(
             })
             .collect(),
     }
+}
+
+/// The `ConfigurableAccountConfigUpdated` event announcing `account`'s initial `config`.
+pub fn registration_event(
+    account: Address,
+    config: &ConfigurableAccountConfig,
+) -> ConfigurableAccountEvent {
+    ConfigurableAccountEvent::configurable_account_config_updated(
+        account,
+        config.salt,
+        config.version,
+        config.threshold,
+        config
+            .owners
+            .iter()
+            .map(|owner| IConfigurableAccount::ConfigurableAccountOwner {
+                owner: owner.owner,
+                weight: owner.weight,
+            })
+            .collect(),
+    )
 }
 
 /// Whether code matches the account's registration state.

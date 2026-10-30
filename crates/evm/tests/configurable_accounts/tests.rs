@@ -4,7 +4,7 @@ use alloy_eips::{
     eip2930::{AccessList, AccessListItem},
     eip7702::{Authorization, SignedAuthorization},
 };
-use alloy_primitives::{Bytes, KECCAK256_EMPTY, LogData, aliases::U96, bytes, keccak256};
+use alloy_primitives::{Bytes, KECCAK256_EMPTY, Log, LogData, aliases::U96, bytes, keccak256};
 use alloy_sol_types::{SolError, SolEvent, SolValue};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use evm2::{
@@ -562,6 +562,21 @@ fn configurable_account_logs(result: &TxResult<TempoEvmTypes>) -> Vec<LogData> {
         .filter(|log| log.address == CONFIGURABLE_ACCOUNT_ADDRESS)
         .map(|log| log.data.clone())
         .collect()
+}
+
+/// The event registering `f.account` at its version-zero configuration.
+fn registration_log(f: &Fixture) -> Log {
+    Log {
+        address: CONFIGURABLE_ACCOUNT_ADDRESS,
+        data: IConfigurableAccount::ConfigurableAccountConfigUpdated {
+            account: f.account,
+            salt: f.config.salt,
+            version: 0,
+            threshold: f.config.threshold,
+            owners: abi_owners(&f.config),
+        }
+        .encode_log_data(),
+    }
 }
 
 fn assert_upgraded(
@@ -3893,7 +3908,8 @@ fn native_first_transaction_registers() {
         };
         let result = f.run(&f.signed(3, calls));
         assert_eq!(result.status, caught, "caught {caught}: {result:?}");
-        assert_eq!(result.logs, []);
+        // Registration runs before the batch checkpoint, so its event survives the revert.
+        assert_eq!(result.logs, [registration_log(&f)]);
         assert_eq!(f.commitment(), f.config.commitment().unwrap());
         let after = f.info(account).unwrap();
         assert_eq!(after.code_hash, CONFIGURABLE_ACCOUNT_CODE_HASH);
@@ -3909,6 +3925,7 @@ fn native_first_transaction_registers() {
 
         let result = f.run(&f.signed(4, vec![f.getter()]));
         assert!(result.status, "{result:?}");
+        assert!(configurable_account_logs(&result).is_empty());
         assert_eq!(
             IConfigurableAccount::getConfigCommitmentCall::abi_decode_returns(&result.output)
                 .unwrap(),
@@ -4038,11 +4055,10 @@ fn native_rotation_rejects_access_keys_and_callbacks() {
             output.output,
             IConfigurableAccount::UnauthorizedConfigurableAccountCaller {}.abi_encode()
         );
-        assert!(
-            output
-                .logs
-                .iter()
-                .all(|log| log.address != CONFIGURABLE_ACCOUNT_ADDRESS)
+        // Only the registration event survives the reverted rotation.
+        assert_eq!(
+            configurable_account_logs(&output),
+            [registration_log(&f).data]
         );
         assert_eq!(f.commitment(), f.config.commitment().unwrap());
     }
@@ -4070,7 +4086,8 @@ fn configurable_account_rotation() {
         };
         let result = f.run(&f.signed(nonce, vec![Fixture::rotation(&f.config, &next), f.getter()]));
         assert!(result.status, "migrated {migrated}: {result:?}");
-        assert_eq!(result.logs.len(), 1);
+        // A first transaction also registers the account, logging its version-zero configuration.
+        assert_eq!(result.logs.len(), if migrated { 1 } else { 2 });
         assert_eq!(
             IConfigurableAccount::getConfigCommitmentCall::abi_decode_returns(&result.output)
                 .unwrap(),
@@ -4180,7 +4197,11 @@ fn native_batch_rotation_failure(registered: bool, halt: bool) {
     let output = f.run(&f.signed(nonce, calls));
     assert_eq!(output.stop.is_halt(), halt);
     assert_eq!(output.stop.is_revert(), !halt);
-    assert_eq!(output.logs, []);
+    // Only a first registration's event survives the batch rollback.
+    assert_eq!(
+        output.logs,
+        Vec::from_iter((!registered).then(|| registration_log(&f)))
+    );
     assert_eq!(f.commitment(), f.config.commitment().unwrap());
     nonce += 1;
     assert_eq!(f.info(f.account).unwrap().nonce, nonce);
@@ -4341,7 +4362,7 @@ fn configurable_sender_rejections() {
 }
 
 /// A configurable-account signature adds its TIP-1114 verification cost `V - 3,000` to intrinsic
-/// gas, on top of the first-use account proof and the TIP-1108 registration write.
+/// gas, on top of the first-use account proof, the TIP-1108 registration write and its event.
 #[test]
 fn native_signature_verification_is_intrinsic_gas() {
     let calls = vec![Call {
@@ -4371,7 +4392,8 @@ fn native_signature_verification_is_intrinsic_gas() {
     let verification = calldata + keccak(75 + 21) + keccak(96);
     // First use: derivation K(68 + 21), plus the registration write, priced like account creation.
     let new_account = tempo_gas_params(TempoHardfork::T14).get(GasId::NewAccountCost);
-    let first_use = keccak(68 + 21) + new_account;
+    // The registration event: LOG2 over salt, version, threshold and one owner (224 bytes).
+    let first_use = keccak(68 + 21) + new_account + 375 + 2 * 375 + 8 * 224;
     assert_eq!(
         native.tx_gas_used() - primitive.tx_gas_used(),
         verification + first_use
