@@ -297,20 +297,20 @@ pub fn decode_block(
 /// slots (from the storage wipe) that are absent from reverts.
 pub fn verify_changesets(
     bundle: &BundleState,
-    input: &BlockInput,
+    changeset: &crate::types::ChangeSet,
     number: u64,
 ) -> eyre::Result<()> {
     let reverts = bundle
         .reverts
         .last()
         .ok_or_else(|| eyre::eyre!("missing block reverts"))?;
-    let mut accounts: HashMap<Address, Option<Account>> = input
+    let mut accounts: HashMap<Address, Option<Account>> = changeset
         .accounts
         .iter()
         .map(|(address, info)| (Address::from(*address), info.as_ref().map(|i| i.account())))
         .collect();
     let mut storage: HashMap<Address, HashMap<B256, U256>> = HashMap::new();
-    for (address, key, value) in &input.storage {
+    for ((address, key), value) in &changeset.storage {
         storage
             .entry(Address::from(*address))
             .or_default()

@@ -3,7 +3,7 @@
 use crate::{
     code,
     execute::{Executed, execute_block, standalone_all, verify_changesets},
-    types::{Block as BlockInput, Case, Chunk, Info},
+    types::{Block as BlockInput, Case, ChangeSet, Chunk, Info},
     view::{Keys, Recording, View},
 };
 use alloy_consensus::BlockHeader;
@@ -88,10 +88,7 @@ where
                 .insert((address.address(), U256::from_be_bytes(slot.key.0)));
         }
     }
-    let input = BlockInput {
-        hash: block.hash().0,
-        rlp: alloy_rlp::encode(block.clone_block()),
-        senders: block.senders().iter().map(|a| a.into_array()).collect(),
+    let changeset = ChangeSet {
         accounts: accounts
             .iter()
             .map(|a| {
@@ -105,14 +102,24 @@ where
             .iter()
             .map(|(address, slot)| {
                 (
-                    address.address().into_array(),
-                    slot.key.0,
+                    (address.address().into_array(), slot.key.0),
                     slot.value.to_be_bytes(),
                 )
             })
             .collect(),
     };
-    verify_changesets(&executed.bundle, &input, number)?;
+    eyre::ensure!(
+        changeset.accounts.len() == accounts.len() && changeset.storage.len() == storage.len(),
+        "duplicate changeset entries"
+    );
+    verify_changesets(&executed.bundle, &changeset, number)?;
+    let input = BlockInput {
+        hash: block.hash().0,
+        rlp: alloy_rlp::encode(block.clone_block()),
+        senders: block.senders().iter().map(|a| a.into_array()).collect(),
+        changed_accounts: Vec::new(),
+        changed_storage: Vec::new(),
+    };
 
     // The execution result must equal the canonical state after the block.
     let mut canonical = db_at(number)?;
@@ -175,6 +182,13 @@ where
             .insert(*at, initial.get_block_hash(&U256::from(*at))?.0);
     }
     drop(keys);
+    let (changed_accounts, changed_storage) = chunk.mark(&changeset)?;
+    chunk.blocks[0].changed_accounts = changed_accounts;
+    chunk.blocks[0].changed_storage = changed_storage;
+    eyre::ensure!(
+        chunk.changeset()? == changeset,
+        "changeset bitmap round trip mismatch"
+    );
     let Executed {
         transactions,
         phases,

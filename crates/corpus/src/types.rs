@@ -31,8 +31,35 @@ pub struct Block {
     pub hash: [u8; 32],
     pub rlp: Vec<u8>,
     pub senders: Vec<[u8; 20]>,
-    pub accounts: Vec<([u8; 20], Option<Info>)>,
-    pub storage: Vec<([u8; 20], [u8; 32], [u8; 32])>,
+    /// Historical account changeset as a bitmap over the chunk's account witness (in key
+    /// order): bit `i` marks the `i`-th account as changed by the block. Its pre-value is the
+    /// witness value before the block, which capture checked against the archive changeset.
+    pub changed_accounts: Vec<u8>,
+    /// Historical storage changeset as a bitmap over the chunk's storage witness (in key
+    /// order). Slots wiped by a destroyed account stay in the witness so they can be marked.
+    pub changed_storage: Vec<u8>,
+}
+
+/// A block's historical changeset: pre-values of every account and slot it changed.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ChangeSet {
+    pub accounts: BTreeMap<[u8; 20], Option<Info>>,
+    pub storage: BTreeMap<([u8; 20], [u8; 32]), [u8; 32]>,
+}
+
+/// Packs `len` flags, set where `changed` holds, into a little-endian bitmap.
+pub fn bitmap(len: usize, mut changed: impl FnMut(usize) -> bool) -> Vec<u8> {
+    let mut bits = vec![0u8; len.div_ceil(8)];
+    for i in 0..len {
+        if changed(i) {
+            bits[i / 8] |= 1 << (i % 8);
+        }
+    }
+    bits
+}
+
+fn bit(bits: &[u8], i: usize) -> bool {
+    bits[i / 8] & (1 << (i % 8)) != 0
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, SchemaRead, SchemaWrite)]
@@ -64,6 +91,71 @@ impl Info {
 }
 
 impl Chunk {
+    /// Bitmaps marking `changeset` within this chunk's witness. Every changed key must be in
+    /// the witness with the same pre-value.
+    pub fn mark(&self, changeset: &ChangeSet) -> eyre::Result<(Vec<u8>, Vec<u8>)> {
+        for (address, info) in &changeset.accounts {
+            let witness = self
+                .accounts
+                .get(address)
+                .and_then(|v| v.first())
+                .map(|(_, i)| i);
+            eyre::ensure!(
+                witness == Some(info),
+                "account changeset disagrees with witness"
+            );
+        }
+        for (key, value) in &changeset.storage {
+            let witness = self
+                .storage
+                .get(key)
+                .and_then(|v| v.first())
+                .map(|(_, v)| v);
+            eyre::ensure!(
+                witness == Some(value),
+                "storage changeset disagrees with witness"
+            );
+        }
+        let accounts: Vec<bool> = self
+            .accounts
+            .keys()
+            .map(|k| changeset.accounts.contains_key(k))
+            .collect();
+        let storage: Vec<bool> = self
+            .storage
+            .keys()
+            .map(|k| changeset.storage.contains_key(k))
+            .collect();
+        let accounts = bitmap(accounts.len(), |i| accounts[i]);
+        let storage = bitmap(storage.len(), |i| storage[i]);
+        Ok((accounts, storage))
+    }
+
+    /// The block's historical changeset, resolved from its bitmaps over the witness.
+    pub fn changeset(&self) -> eyre::Result<ChangeSet> {
+        let block = self
+            .blocks
+            .first()
+            .ok_or_else(|| eyre::eyre!("empty chunk"))?;
+        eyre::ensure!(
+            block.changed_accounts.len() == self.accounts.len().div_ceil(8)
+                && block.changed_storage.len() == self.storage.len().div_ceil(8),
+            "changeset bitmap size mismatch"
+        );
+        let mut changeset = ChangeSet::default();
+        for (i, (address, versions)) in self.accounts.iter().enumerate() {
+            if bit(&block.changed_accounts, i) {
+                changeset.accounts.insert(*address, versions[0].1.clone());
+            }
+        }
+        for (i, (key, versions)) in self.storage.iter().enumerate() {
+            if bit(&block.changed_storage, i) {
+                changeset.storage.insert(*key, versions[0].1);
+            }
+        }
+        Ok(changeset)
+    }
+
     pub fn validate(&self) -> eyre::Result<()> {
         eyre::ensure!(
             self.start > 0 && self.end > self.start,

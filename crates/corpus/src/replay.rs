@@ -543,7 +543,7 @@ pub fn verify(
         record.first_tx,
         Some((&expected, phases)),
     )?;
-    crate::execute::verify_changesets(&executed.bundle, &chunk.blocks[0], chunk.start)?;
+    crate::execute::verify_changesets(&executed.bundle, &chunk.changeset()?, chunk.start)?;
     eyre::ensure!(
         executed.transactions.len() as u64 == record.transactions && executed.gas == record.gas,
         "transaction/gas totals mismatch"
