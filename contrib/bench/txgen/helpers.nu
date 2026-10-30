@@ -37,10 +37,6 @@ const TXGEN_HELPER_ALWAYS_FUND_PRESETS = [
 const TXGEN_HELPER_PUBLIC_MIX_PRESETS = ["public-mix" "vault-throughput" "zone-portal-throughput" "zone-earn-mix" "zone-earn-hot" "zone-earn-serial" "zone-portal-hot" "card-settlement" "neobank-generic" "neobank-multi" "projected-pipeline" "batch-payout"]
 # Presets that pin the zone portal count instead of sizing it by TPS (TXGEN_ZONE_COUNT still overrides).
 const TXGEN_HELPER_PRESET_ZONE_COUNTS = {"zone-earn-hot": 1, "zone-portal-hot": 1}
-# Size of presets/zones.yml's zone_deployers pool: portal i deploys and is funded from sender i mod this.
-const TXGEN_HELPER_ZONE_DEPLOYERS = 16
-# Their addresses (mnemonic indices 100100..100115), checked for pending setup before zone runs.
-const TXGEN_HELPER_ZONE_DEPLOYER_ADDRESSES = ["0x838d876925b480b41bc1ffbfc44b6a3c7a58e7e1" "0x6edd96cdb4c3bd4d7132f774b6791730df3bab16" "0xf4a2817f7ef2c3eee3cb50a636d4f4919b111e44" "0x18938c541db8a22a490425b2da76fb011c9b7a0d" "0xf600a43564c072b8b3d1c57f3f3447e35c41ebb2" "0xca5e5bcb6498bb97a5f0469793e87e101fb3922d" "0x96197808177c6553bb302acb57ac60299a5228ac" "0xddd0fa3d8b94602aee0fb87893c2fde12b08938a" "0x982020eb1a30526e9330f7dae826e8c12a6a95cb" "0x6aebb2d0bb57dc2b6b07ff6f0f8597fa2ebaf4db" "0x3be8fa5410341f47b7cc3a7faa733919a1a233a5" "0x23fd333821c54d71dcf597eee4046b81cc408463" "0xe73d54445eeaf6886e673a982571701b8748b9ae" "0xaa378ed1c0450e3332963fd882704398d023d92f" "0x5dfbde950dace7c877d8489b6b6fb7d3a4423da0" "0x64b9b9cd2e473cc0f25a8c6cfd342fcc60cda777"]
 # Zone -> zone presets (presets/zone-to-zone.yml); the hot variant pins one source and one target portal.
 const TXGEN_HELPER_ZONE_TO_ZONE_PRESETS = ["zone-to-zone" "zone-to-zone-hot"]
 const TXGEN_HELPER_ZONE_TO_ZONE_CALLBACK_GAS = 1500000
@@ -778,17 +774,19 @@ def txgen-prepare-zones-preset [spec_path: string, count: int, accounts: int, zo
     let spec = (open $spec_path)
     let token = "0x20c0000000000000000000000000000000000000"
     mut steps = [$spec.setup.steps.0]
-    # Spread portals over the zone_deployers pool so their deploys and funding run in parallel.
-    let zone_deployer = { |zone| {pool: zone_deployers, select: {index: ($zone mod $TXGEN_HELPER_ZONE_DEPLOYERS)}} }
+    # Each portal deploys through CreateX (salt = zone, so its address doesn't depend on a nonce)
+    # on its own 2D nonce lane, which its funding step reuses: portals deploy in parallel from
+    # one sender instead of queueing on the deployer's protocol nonce.
     for zone in 0..<$zones {
         $steps = ($steps | append ($spec.setup.steps.1
             | update id $"portal_($zone)"
-            | update deploy.from (do $zone_deployer $zone)
+            | upsert deploy.nonce_key ($zone + 1)
+            | upsert deploy.create2 {salt: $zone}
             | update deploy.constructor_args.0 {var: setup.settlement.sender}))
     }
     for zone in 0..<$zones {
         $steps = ($steps | append ($spec.setup.steps.2 | update id $"fund_($zone)"
-            | update tx.from (do $zone_deployer $zone)
+            | upsert tx.nonce_key ($zone + 1)
             | update tx.calls.0.args [{var: $"setup.portal_($zone).address"} $count]))
     }
     let groups = if ($groups | is-empty) { [{users: [0 $accounts], zones: [0 $zones]}] } else { $groups }
@@ -1613,12 +1611,10 @@ def txgen-run-preset-pipeline [
         if $portal_code.result == "0x" {
             error make { msg: "zones requires the ZonePortal runtime; activate T10 or later before running the benchmark" }
         }
-        for address in ($TXGEN_HELPER_ZONE_DEPLOYER_ADDRESSES | prepend "0xd7932ce865275be97001a0574441d79b143820ec") {
-            let pending = (txgen-rpc-call $generate_rpc_url $"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_getTransactionCount\",\"params\":[\"($address)\",\"pending\"]}")
-            let latest = (txgen-rpc-call $generate_rpc_url $"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_getTransactionCount\",\"params\":[\"($address)\",\"latest\"]}")
-            if $pending.result != $latest.result {
-                error make { msg: $"zone fixture deployer ($address) has pending transactions; drain its nonce lane before setup" }
-            }
+        let nonce_response = (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionCount","params":["0xd7932ce865275be97001a0574441d79b143820ec","pending"]}')
+        let latest_nonce = (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionCount","params":["0xd7932ce865275be97001a0574441d79b143820ec","latest"]}')
+        if $nonce_response.result != $latest_nonce.result {
+            error make { msg: "zone fixture deployer has pending transactions; drain its nonce lane before setup" }
         }
         let mode = ($env.TXGEN_ZONE_MODE? | default "mixed")
         # TIP-1096 allows 230 outstanding deposits, reserving 20 for bounce-backs.

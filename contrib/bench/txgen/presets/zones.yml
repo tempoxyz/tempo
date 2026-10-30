@@ -12,13 +12,6 @@ accounts:
   deployer:
     mnemonic: "test test test test test test test test test test test junk"
     index: 100001
-  # Portal deploy and fund senders. The helper spreads portals across them so portal setup
-  # is not one serial nonce lane (715 portals at 50k TPS); faucet-funded with the other pools.
-  zone_deployers:
-    mnemonic: "test test test test test test test test test test test junk"
-    range:
-      - 100100
-      - 100116
 artifacts:
   ERC20: ../tip20.abi.json
   PortalFixture: ../zones/PortalFixture.json
@@ -32,10 +25,13 @@ setup:
         from: {pool: deployer, select: {index: 0}}
         artifact: SettlementFixture
         gas_limit: 5000000
+    # The helper gives portal i CREATE2 salt i and its own 2D nonce lane (key i + 1), shared
+    # with its funding step, so portals deploy in parallel from one sender.
     - id: portal
       deploy:
-        type: eip1559
+        type: tempo
         from: {pool: deployer, select: {index: 0}}
+        fee_token: "0x20c0000000000000000000000000000000000000"
         artifact: PortalFixture
         gas_limit: 10000000
         constructor_args: [null, "0x20c0000000000000000000000000000000000000", {var: setup.settlement.address}]
