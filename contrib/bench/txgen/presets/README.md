@@ -134,3 +134,11 @@ authorised in setup, split between pulls into one merchant settlement account
 the gas shares and the gaps: rotation does not revoke the old key yet, because
 txgen has no revoke flow. It needs funded users (nonzero state bloat), for example
 `derek bench preset=access-key-mix gas-limit=500M general-gas-limit=30M`.
+
+`agentic` covers agent payments: agents open MPP sessions on the native TIP-20 Channel
+Reserve and pay one-off MPP charges (`transferWithMemo`) to a pool of 16 service
+accounts, and spend through access keys authorised in setup. Vouchers are off-chain, so
+a session's on-chain cost is its open plus one settle or close; settle and close are not
+generated yet because the channel descriptor needs the opening transaction's identifier
+(https://github.com/tempoxyz/txgen/pull/200). The file lists the shares and gaps. For example
+`derek bench preset=agentic gas-limit=500M general-gas-limit=30M`.

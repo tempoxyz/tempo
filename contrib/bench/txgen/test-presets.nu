@@ -318,6 +318,26 @@ for name in [keychain_merchant_pull keychain_agent_spend] {
     assert equal ($access.templates | get $name | get auth.access_key.from_setup) authorize_keychain_users
 }
 assert equal ($access.templates.keychain_merchant_pull.call.args | first) "0x0000000000000000000000000000000000005e77"
+# The agentic preset: MPP session opens and charges to a small service pool, and agent
+# spend with keys authorised in setup.
+let agentic_spec = (txgen-resolve-bench-spec agentic)
+assert equal $agentic_spec.kind static
+assert equal $agentic_spec.requires_keychain_setup true
+assert ("agentic" in $TXGEN_HELPER_ALWAYS_FUND_PRESETS)
+assert equal (txgen-workload-metadata-args agentic $agentic_spec.spec_path) ["-m" "workload_mix_weighting=gas"]
+let agentic = (^uv run --no-project --with yq==3.4.3 yq -c '{mix, templates, accounts}' $agentic_spec.spec_path | from json)
+assert equal ($agentic.mix | get weight | math sum) 100
+assert equal ($agentic.mix | get template | sort) [access_key_create keychain_agent_spend mpp_charge mpp_session_open]
+assert equal $agentic.accounts.services.range [200000 200016]
+assert equal $agentic.templates.mpp_session_open.call.to "0x4d50500000000000000000000000000000000000"
+assert equal $agentic.templates.mpp_session_open.call.function open
+assert equal $agentic.templates.mpp_charge.call.function transferWithMemo
+assert equal $agentic.templates.keychain_agent_spend.auth.access_key.from_setup authorize_keychain_users
+for name in [mpp_session_open mpp_charge keychain_agent_spend access_key_create] {
+    let template = ($agentic.templates | get $name)
+    assert equal $template.expiring_nonce true
+    assert equal ($template | get -o call.args.0.pool.pool | default "") services $name
+}
 # Zone -> zone: a ring of callback portals, warmed in setup; closed access returns one unit to the source.
 for preset in [zone-to-zone zone-to-zone-hot] {
     let spec = (txgen-resolve-bench-spec $preset)

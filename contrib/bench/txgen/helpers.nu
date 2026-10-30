@@ -14,6 +14,7 @@ const TXGEN_HELPER_ALWAYS_FUND_PRESETS = [
     "neobank-generic"
     "neobank-multi"
     "batch-payout"
+    "agentic"
     "dex"
     "bridge-mix"
     "bridge-mix-new-accounts"
