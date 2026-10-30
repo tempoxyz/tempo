@@ -96,16 +96,19 @@ const MAX_SUBSCRIPTIONS_PER_CONNECTION: usize = 4;
 
 /// Messages that may be queued on a subscription's connection before the subscription is dropped.
 ///
-/// jsonrpsee exposes only the connection's send buffer, which every subscription and method
-/// response on that connection shares, so this counts the whole connection's backlog, not this
-/// subscription's. It is set well above what a healthy client sharing its connection with other
-/// subscriptions queues, while still bounding a client that stops reading to a few dozen block
-/// copies instead of jsonrpsee's 1024.
+/// Slow readers are handled at the source: every subscriber reads the feed's shared broadcast ring
+/// and skips ahead when it lags. That cannot see a client that stops reading, though: its
+/// subscription keeps copying blocks out of the ring into jsonrpsee's send buffer for the
+/// connection (1024 messages) until it is full. jsonrpsee exposes only that buffer, shared by every
+/// subscription and method response on the connection, and not this subscription's own share, so
+/// this check counts the whole connection's backlog. It is set high enough that bursts from other
+/// subscriptions on the connection (such as `eth_subscribe` logs) do not trip it, while bounding a
+/// client that stops reading to this many block copies instead of 1024.
 ///
 /// Known limitation: reth's IPC server moves messages out of that buffer into an unbounded queue
 /// per connection as soon as they arrive, so on IPC neither this check nor [`SEND_TIMEOUT`] fires
 /// and a local IPC client that stops reading is never dropped.
-const MAX_PENDING_NOTIFICATIONS: usize = 32;
+const MAX_PENDING_NOTIFICATIONS: usize = 128;
 
 /// How long a notification may wait for room on the connection before the subscription is
 /// dropped.
@@ -122,12 +125,12 @@ pub struct TempoConsensusRpc<I> {
 }
 
 /// One subscription's claim on its connection's share; released on drop.
-struct ConnectionSlot {
+struct SubscriptionGuard {
     counts: Arc<Mutex<HashMap<ConnectionId, usize>>>,
     connection: ConnectionId,
 }
 
-impl ConnectionSlot {
+impl SubscriptionGuard {
     fn try_claim(
         counts: &Arc<Mutex<HashMap<ConnectionId, usize>>>,
         connection: ConnectionId,
@@ -145,7 +148,7 @@ impl ConnectionSlot {
     }
 }
 
-impl Drop for ConnectionSlot {
+impl Drop for SubscriptionGuard {
     fn drop(&mut self) {
         let mut guard = self.counts.lock();
         if let Some(count) = guard.get_mut(&self.connection) {
@@ -190,7 +193,8 @@ impl<I: ConsensusFeed> TempoConsensusApiServer for TempoConsensusRpc<I> {
     ) -> jsonrpsee::core::SubscriptionResult {
         // Reject before accepting, so the client gets an error for its subscribe call instead of
         // a subscription that ends at once.
-        let Some(slot) = ConnectionSlot::try_claim(&self.per_connection, pending.connection_id())
+        let Some(guard) =
+            SubscriptionGuard::try_claim(&self.per_connection, pending.connection_id())
         else {
             pending
                 .reject(ErrorObject::owned(
@@ -227,7 +231,7 @@ impl<I: ConsensusFeed> TempoConsensusApiServer for TempoConsensusRpc<I> {
         // when it returns an error, sends the client a close notification so it can resubscribe
         // and backfill with `consensus_getFinalization`. Holding `permit` here releases it when the
         // subscription ends.
-        let _permit = (permit, slot);
+        let _permit = (permit, guard);
         loop {
             // Events only arrive on finalization, so a failed `send` alone would not detect a
             // disconnect or unsubscribe while finalization is stalled. Race against `closed()` so

@@ -199,7 +199,7 @@ async fn subscribe_is_rejected_as_busy_once_limit_is_reached() {
 
 #[tokio::test]
 async fn subscriber_that_stops_reading_is_dropped() {
-    let (events_tx, _) = broadcast::channel(64);
+    let (events_tx, _) = broadcast::channel(256);
     let module = TempoConsensusRpc::new(IdleFeed {
         events_tx: events_tx.clone(),
     })
@@ -207,7 +207,7 @@ async fn subscriber_that_stops_reading_is_dropped() {
 
     // Never read from the subscription, so its notifications pile up in the buffer.
     let _subscription = module
-        .subscribe("consensus_subscribe", EmptyServerParams::new(), 64)
+        .subscribe("consensus_subscribe", EmptyServerParams::new(), 256)
         .await
         .unwrap();
     wait_for_live_subscriptions(&events_tx, 1).await;
