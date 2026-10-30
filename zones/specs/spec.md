@@ -2286,3 +2286,230 @@ No onchain action is required from zone operators. Operators upgrade their zone 
 If the fork changes zone predeploy behavior, the zone node injects new bytecode at the predeploy addresses before `advanceTempo` executes in the first post-fork zone block.
 
 If the operator does not upgrade before the fork, the zone node detects that it does not support the active Tempo fork and halts cleanly. If the node is upgraded but the prover is stale, zone execution continues but settlement pauses until the new prover is installed. In both cases, user funds remain safe in the portal.
+
+# Invariants
+
+Each invariant below names what checks it. A portal invariant marked "check" is a
+[tempo-invariants](../../crates/invariants/INVARIANTS.md) check the fuzz harness runs after every
+step that touches a portal or the zone factory; a zone-side one is a check the zone checker runs
+over zone blocks. The rest name a test, or none where nothing tests them yet.
+
+## Zone Registry and Deployment
+
+- `TEMPO-ZONE-CHAIN-ID-UNIQUE`: Each live zone uses the chain ID derived from its zone ID, and no two live zones share a chain ID.
+  - Checked by: none
+- `TEMPO-ZONE-PORTAL-PAIRING`: The zone factory registers each portal under the zone ID the portal reports, at the address derived from that ID, and the portal relays through the factory's shared messenger.
+  - Since: T10
+  - Checked by: check
+- `TEMPO-ZONE-GENESIS-BINDING`: A portal's `blockHash` is zero until its first batch settles.
+  - Since: T10
+  - Checked by: check
+- `TEMPO-ZONE-FIRST-TEMPO-ANCHOR`: The first proof contains at least two blocks, and its first non-genesis block imports Tempo and proves the portal's `sequencer` slot is non-zero at that block.
+  - Checked by: none
+- `TEMPO-ZONE-PREDEPLOY-ADDRESSES`: `TempoState`, `ZoneInbox`, and `ZoneOutbox` answer their views at their fixed predeploy addresses.
+  - Checked by: check
+
+## Access Control and Configuration
+
+- `TEMPO-ZONE-ADMIN-NONZERO`: A zone portal's `admin` is never the zero address.
+  - Since: T10
+  - Checked by: check
+- `TEMPO-ZONE-ADMIN-ONLY-GOVERNANCE`: Only the portal's admin calls its governance functions successfully (token enablement and deposit pausing, access and gateway modes, roles, the sequencer set, `zoneGasRate`, `maxTempoGasRate`, `bouncebackGas`, `transferAdmin`, `resume` and `abdicate`), and only the pending admin `acceptAdmin`.
+  - Since: T10
+  - Checked by: check
+- `TEMPO-ZONE-SEQUENCER-ONLY-OPS`: Only a registered sequencer calls `setRpcUrl`, `submitBatch` or `processWithdrawals` successfully, and only the admin or a sequencer `setSequencerEncryptionKey` or `setLeader`.
+  - Since: T10
+  - Checked by: check
+- `TEMPO-ZONE-GAS-RATE-BOUNDED`: A portal's `zoneGasRate` and `maxTempoGasRate` never exceed `MAX_GAS_FEE_RATE` (10^18).
+  - Since: T10
+  - Checked by: check
+
+## Token Registry and Supply
+
+- `TEMPO-ZONE-TOKEN-ENABLEMENT-APPEND-ONLY`: Once enabled, a token stays enabled and keeps its place in the portal's enabled-token list, which grows only by the tokens its `TokenEnabled` events name, each advancing `tokenEnablementHash` to `keccak256(abi.encode(previous, token, name, symbol, currency))`.
+  - Since: T10
+  - Checked by: check
+- `TEMPO-ZONE-TOKEN-ENABLEMENT-BINDING`: Every non-genesis `advanceTempo` hashes the exact ordered token-address and metadata delta from `ZoneInbox.processedTokenEnablementHash`, requires equality with `ZonePortal.tokenEnablementHash` at the final imported Tempo state, and initializes all entries before processing deposits.
+  - Checked by: check
+- `TEMPO-ZONE-TOKEN-DEPOSIT-PAUSE-ONLY`: Pausing or resuming a token's deposits leaves it enabled and in the enabled-token list and sets only its `depositsActive` flag.
+  - Since: T10
+  - Checked by: check
+- `TEMPO-ZONE-MESSENGER-AUTH`: The shared messenger relays a withdrawal for a zone only when the portal the zone factory registered for that zone calls it.
+  - Since: T10
+  - Checked by: check
+- `TEMPO-ZONE-SUPPLY-SOLVENCY`: For each token, zone-side total supply equals accepted deposits plus withdrawal bounce-backs minus requested withdrawals minus deposit bounce-backs.
+  - Checked by: check
+- `TEMPO-ZONE-PORTAL-SOLVENCY`: Over each step, a portal's balance of an enabled token changes by at least the deposits it takes in less the withdrawals it delivers, the deposit fees and bounce-backs it pays out and the refunds it pays claimants.
+  - Since: T10
+  - Checked by: check
+- `TEMPO-ZONE-MINT-BURN-AUTHORITY`: Only `ZoneInbox` can mint zone tokens and only `ZoneOutbox` can burn zone tokens.
+  - Checked by: check
+
+## Deposits
+
+- `TEMPO-ZONE-DEPOSIT-ENABLED-ACTIVE`: A deposit enters the queue only for a token that is enabled with deposits active, while the portal is not paused.
+  - Since: T10
+  - Checked by: check
+- `TEMPO-ZONE-DEPOSIT-FEE-SNAPSHOT`: A queued deposit's fee is `FIXED_DEPOSIT_GAS * zoneGasRate` at enqueue time, its entry holds the amount less that fee, and the fee is transferred to the admin in the same step.
+  - Since: T10
+  - Checked by: check
+- `TEMPO-ZONE-DEPOSIT-ALIASES`: `deposit` and `depositEncrypted` accept the same encrypted arguments and produce identical validation, accounting, queue entries, and events.
+  - Checked by: `crates/zones/contracts/test/tempo/ZonePortal.t.sol:test_deposit_aliasMatchesDepositEncrypted`
+- `TEMPO-ZONE-DEPOSIT-MIN-AMOUNT`: A queued deposit's amount covers its deposit fee plus the bounce-back fee in force, so its net amount is at least `calculateBouncebackFee()`.
+  - Since: T10
+  - Checked by: check
+- `TEMPO-ZONE-DEPOSIT-BOUNCEBACK-NONZERO`: Every queued deposit names a non-zero `tempoRefundRecipient`.
+  - Since: T10
+  - Checked by: check
+- `TEMPO-ZONE-DEPOSIT-QUEUE-HASH`: The portal's deposit queue hash changes only by the entries its `DepositMade` and `WithdrawalBounceBack` events report, each advancing it to `keccak256(abi.encode(depositType, entry, previous))`.
+  - Since: T10
+  - Checked by: check
+- `TEMPO-ZONE-DEPOSIT-NUMBER-MONOTONIC`: `depositCount` and `processedDepositNumber` are monotonic and match the number of queue entries enqueued or proven processed.
+  - Checked by: check
+- `TEMPO-ZONE-PORTAL-DEPOSIT-NUMBER`: `depositCount` grows by one per queued entry, whose event reports the new count as its number, and `lastProcessedDepositNumber` changes only to the number a `BatchSubmitted` event reports, never decreasing or passing `depositCount`.
+  - Since: T10
+  - Checked by: check
+- `TEMPO-ZONE-DEPOSIT-PROCESSED-PREFIX`: The inbox processes only a prefix of the portal queue, oldest first, and never skips, reorders, or duplicates deposits.
+  - Checked by: check
+- `TEMPO-ZONE-DEPOSIT-FAIL-BOUNCEBACK`: Any rejected deposit, invalid encryption, or failed mint enqueues exactly one deposit bounce-back withdrawal.
+  - Checked by: `crates/zones/precompiles/src/inbox/tests.rs::receive_policy_blocked_deposit_enqueues_bounce_back`
+- `TEMPO-ZONE-DEPOSIT-REJECTION-NO-MINT`: A rejected user deposit never mints zone tokens and still advances the deposit queue.
+  - Checked by: `crates/zones/precompiles/src/inbox/tests.rs::invalid_encrypted_proof_bounces_without_mint`
+
+## Deposit Encryption and Keys
+
+- `TEMPO-ZONE-ENCRYPTION-KEY-APPEND-ONLY`: The portal's encryption keys are only appended, each a valid compressed secp256k1 point that a `SequencerEncryptionKeyUpdated` event announces with its index and activation block, and no entry changes once added.
+  - Since: T10
+  - Checked by: check
+- `TEMPO-ZONE-ENCRYPTION-KEY-GRACE`: Every deposit names an encryption key that `isEncryptionKeyValid` accepts in its block: the current key, or an earlier one less than `ENCRYPTION_KEY_GRACE_PERIOD` blocks after its successor's activation.
+  - Since: T10
+  - Checked by: check
+- `TEMPO-ZONE-ENCRYPTED-PAYLOAD-SHAPE`: Every queued deposit carries an ephemeral public key that is a valid compressed secp256k1 point and exactly 64 bytes of ciphertext.
+  - Since: T10
+  - Checked by: check
+- `TEMPO-ZONE-DECRYPTION-ORDER`: Decryption data is consumed one-for-one, in order, for accepted encrypted deposits only.
+  - Checked by: `crates/zones/precompiles/src/inbox/tests.rs::missing_and_extra_decryption_data_revert`
+- `TEMPO-ZONE-CHAUM-PEDERSEN-BINDING`: Accepted encrypted deposits only decrypt using a valid Chaum-Pedersen proof tied to the stored sequencer key for `keyIndex`.
+  - Checked by: `crates/zones/precompiles/src/inbox/tests.rs::invalid_encrypted_proof_bounces_without_mint`
+- `TEMPO-ZONE-AES-GCM-AUTHENTICITY`: If AES-GCM authentication or plaintext length validation fails, no mint is attempted and the deposit bounces back.
+  - Checked by: `crates/zones/precompiles/src/aes_gcm.rs::test_aes_gcm_bad_tag`
+
+## Withdrawals
+
+- `TEMPO-ZONE-WITHDRAWAL-TOKEN-ENABLED`: Withdrawals can only be requested for enabled tokens.
+  - Checked by: `crates/zones/precompiles/src/outbox/tests.rs::request_withdrawal_rejects_portal_disabled_token_before_state_mutation`
+- `TEMPO-ZONE-WITHDRAWAL-FALLBACK-NONZERO`: Every user withdrawal has a non-zero `zoneFallbackRecipient`.
+  - Checked by: `crates/zones/precompiles/src/outbox/tests.rs::request_rejects_zero_fallback_recipient`
+- `TEMPO-ZONE-WITHDRAWAL-FEE-SNAPSHOT`: Withdrawal fee equals `(WITHDRAWAL_BASE_GAS + gasLimit) * tempoGasRate` at request time, with the rate bounded by the finalized admin maximum, and is burned with the amount.
+  - Checked by: `crates/zones/precompiles/src/outbox/tests.rs::request_charges_withdrawal_fee_to_effective_fee_payer`
+- `TEMPO-ZONE-WITHDRAWAL-BURN-BEFORE-QUEUE`: `requestWithdrawal` burns `amount + fee` before appending the pending withdrawal.
+  - Checked by: `crates/zones/precompiles/src/outbox/tests.rs::request_burns_amount_plus_fee_and_rejects_insufficient_funds`
+- `TEMPO-ZONE-WITHDRAWAL-CALLBACK-BOUNDS`: `gasLimit <= MAX_WITHDRAWAL_GAS_LIMIT`, callback data is bounded, and over-limit legacy withdrawals bounce back after dequeue.
+  - Checked by: `crates/zones/precompiles/src/outbox/tests.rs::callback_and_reveal_boundaries_are_enforced`
+- `TEMPO-ZONE-WITHDRAWAL-CALLBACK-RETURNDATA-BOUND`: Realized delivery cost of a callback withdrawal stays within its `gasLimit` plus a fixed overhead: `relayMessage` bounds its return and revert data for any callback target, and enabled tokens are native TIP-20s with constant-size errors.
+  - Checked by: `crates/zones/contracts/test/tempo/ZoneMessenger.t.sol:test_relayMessage_returnBombDoesNotAmplifyCallerGas`
+- `TEMPO-ZONE-SENDER-TAG-BINDING`: `senderTag == keccak256(abi.encodePacked(sender, txHash, fallbackNonce))`, where `txHash` is the current withdrawal request transaction hash and `fallbackNonce` uniquely identifies the withdrawal.
+  - Checked by: `crates/zones/precompiles/src/outbox/tests.rs::finalize_withdrawals_match_queue_hash_and_have_unique_sender_tags`
+- `TEMPO-ZONE-ENCRYPTED-SENDER-SHAPE`: If `revealTo` is set, `encryptedSender` is present and exactly 113 bytes; otherwise it is empty.
+  - Checked by: `crates/zones/precompiles/src/outbox/tests.rs::encrypted_sender_count_and_length_are_validated`
+- `TEMPO-ZONE-WITHDRAWAL-BATCH-INDEX`: `finalizeWithdrawalBatch` advances `withdrawalBatchIndex` exactly once per submitted batch, including zero-withdrawal batches.
+  - Checked by: check
+- `TEMPO-ZONE-PORTAL-BATCH-INDEX`: `withdrawalBatchIndex` grows by exactly one per `BatchSubmitted` event, which reports the new index, and by nothing else.
+  - Since: T10
+  - Checked by: check
+- `TEMPO-ZONE-WITHDRAWAL-HASH-LIFO-FIFO`: Outbox builds each withdrawal hash chain LIFO so the portal processes user withdrawals FIFO.
+  - Checked by: `crates/zones/precompiles/src/outbox/tests.rs::finalize_withdrawals_match_queue_hash_and_have_unique_sender_tags`
+- `TEMPO-ZONE-WITHDRAWAL-QUEUE-FIFO`: The withdrawal queue's `head` and `tail` only grow, with `head <= tail`; the slots in `[head, tail)` hold non-zero hash chains and the others are zero; a batch with withdrawals takes the next `tail` index and a batch without takes none.
+  - Since: T10
+  - Checked by: check
+- `TEMPO-ZONE-WITHDRAWAL-DEQUEUE-AUTH`: A `processWithdrawals` call that returns dequeues only withdrawals whose hash chain `keccak256(abi.encode(withdrawal, remainingQueue))` equals the head slot, which it leaves holding `remainingQueue`, or clears as `head` advances when that is zero.
+  - Since: T10
+  - Checked by: check
+- `TEMPO-ZONE-WITHDRAWAL-POP-ONCE`: Each processed withdrawal is popped exactly once, whether transfer/callback succeeds or bounces back.
+  - Checked by: `crates/zones/contracts/test/libraries/WithdrawalQueueLib.t.sol:testFuzz_enqueueDequeue_preservesFifoAndLength`
+- `TEMPO-ZONE-WITHDRAWAL-FAIL-BOUNCEBACK`: Each user withdrawal the portal fails to deliver enqueues exactly one `WithdrawalBounceBack` for its token and full amount, and nothing else enqueues one.
+  - Since: T10
+  - Checked by: check
+- `TEMPO-ZONE-WITHDRAWAL-FEE-LOCAL`: User withdrawal data does not include the fee, and `processWithdrawals` never pays a user withdrawal fee from portal escrow.
+  - Checked by: none
+- `TEMPO-ZONE-DEPOSIT-BOUNCEBACK-FEE-CAP`: A deposit bounce-back's collected fee is at most `calculateBouncebackFee()` at processing time.
+  - Since: T10
+  - Checked by: check
+- `TEMPO-ZONE-DEPOSIT-BOUNCEBACK-FEE-NONBLOCKING`: A failed deposit-bounce-back fee transfer never reverts `processWithdrawal`; processing completes and the admin keeps the fee only when its transfer succeeds.
+  - Checked by: `crates/zones/contracts/test/tempo/ZonePortalGasLimit.t.sol:test_processWithdrawal_depositBounceBack_feeTransferFailureRefundsFullAmount`
+- `TEMPO-ZONE-BOUNCEBACK-FUNDS-PRESERVED`: A deposit bounce-back the portal cannot deliver adds its amount to `refunds(token, recipient)`, and `claimRefund` pays out and zeroes that whole balance.
+  - Since: T10
+  - Checked by: check
+- `TEMPO-ZONE-BOUNCEBACK-TERMINAL`: Internal withdrawal bounce-backs are the only `DepositType.WithdrawalBounceBack` entries; their canonical payload contains only `token`, the encoded fallback nonce in `to`, and `amount`. Rejected or malformed bounce-back entries revert, and a failed bounce-back routes to the refund registry instead of re-bouncing.
+  - Checked by: `crates/zones/precompiles/src/inbox/tests.rs::failed_withdrawal_bounce_back_parks_refund`
+
+## Batch Submission and Proofs
+
+- `TEMPO-ZONE-BATCH-PREV-HASH`: A portal's `blockHash` changes only to the `nextBlockHash` a `BatchSubmitted` event reports, and each accepted `submitBatch` starts from the `blockHash` before it.
+  - Since: T10
+  - Checked by: check
+- `TEMPO-ZONE-BATCH-NEXT-HASH`: Accepted proof output commits to the full next zone block hash, including state, transactions, receipts, number, timestamp, beneficiary, and protocol version.
+  - Checked by: none
+- `TEMPO-ZONE-BATCH-DEPOSIT-TRANSITION`: Deposit transition starts from the inbox's previous processed hash/number and ends at the post-batch processed hash/number.
+  - Checked by: none
+- `TEMPO-ZONE-BATCH-WITHDRAWAL-COMMITMENT`: Submitted `withdrawalQueueHash` and `withdrawalBatchIndex` equal `ZoneOutbox.lastBatch` from the proven post-state.
+  - Checked by: check
+- `TEMPO-ZONE-BATCH-ANCHOR-BLOCK`: Anchor block number/hash passed to the verifier matches either the direct Tempo binding or a valid ancestry chain to a recent Tempo block; when non-zero, `recentTempoBlockNumber > tempoBlockNumber`.
+  - Checked by: `crates/zones/contracts/test/tempo/ZonePortal.t.sol:test_submitBatch_revertsIfRecentTempoBlockNumberNotGreater`
+- `TEMPO-ZONE-BATCH-SEQUENCER-BENEFICIARY`: Every non-genesis proven zone block has `beneficiary == portal.sequencer`; the genesis block matches the canonical header in full.
+  - Checked by: none
+- `TEMPO-ZONE-BATCH-FINALIZE-LAST`: Intermediate blocks do not finalize withdrawals; the final block executes `finalizeWithdrawalBatch` last.
+  - Checked by: `crates/zones/evm/src/executor.rs::withdrawal_finalization_is_the_last_transaction`
+- `TEMPO-ZONE-PROOF-MISSING-READS`: Any zone-state or Tempo-state read missing from the witness causes proof failure; missing reads never default silently.
+  - Checked by: `crates/zones/evm/src/database.rs::l1_failures_and_read_before_advance_fail_closed`
+
+## Tempo State Reads and TIP-403
+
+- `TEMPO-ZONE-TEMPO-HEADER-CONTINUITY`: `TempoState.finalizeTempo` only accepts headers whose parent hash and block number continue from the previous finalized Tempo header.
+  - Checked by: check
+- `TEMPO-ZONE-TEMPO-READ-METERING`: Native Tempo storage reads charge 2,100 gas on the first transaction-local access to an account/slot and 100 gas on subsequent accesses; EVM-overlay reads use ordinary cold/warm SLOAD pricing and are not charged twice.
+  - Checked by: `crates/zones/precompiles/src/storage.rs::metered_l1_reads_are_cold_once_per_account_slot`
+- `TEMPO-ZONE-TEMPO-READ-ROOT`: Every Tempo storage read is proven against the `tempoStateRoot` bound at the block where the read occurs.
+  - Checked by: none
+- `TEMPO-ZONE-TIP403-INHERITANCE`: Zone token transfer, mint, and withdrawal paths enforce the TIP-403 policy inherited from the current finalized Tempo view.
+  - Checked by: `crates/zones/node/tests/it/e2e.rs::test_p2p_follower_enforces_policy_change_at_anchor_block`
+- `TEMPO-ZONE-TIP403-READONLY`: Zone-side TIP-403 registry/proxy cannot mutate policy state.
+  - Checked by: `crates/zones/precompiles/src/tip403_proxy/mod.rs::external_calls_revert_with_only_precompiles`
+
+## Zone Execution and Privacy
+
+- `TEMPO-ZONE-ADVANCE-TEMPO-FIRST`: When present, `advanceTempo` is the first transaction in a zone block.
+  - Checked by: check
+- `TEMPO-ZONE-CONTRACT-CREATION-DISABLED`: User `CREATE` and `CREATE2` always revert on zones.
+  - Checked by: check
+- `TEMPO-ZONE-BALANCE-ALLOWANCE-PRIVACY`: `balanceOf(account)` reveals values only to `account`; `allowance(owner, spender)` reveals values only to `owner` or `spender`.
+  - Checked by: check
+- `TEMPO-ZONE-ACCOUNT-GETTER-PRIVACY`: Account-indexed `NonceManager` and `AccountKeychain` getters reveal values only when their immediate caller owns the queried account.
+  - Checked by: check
+- `TEMPO-ZONE-REFUND-READ-PRIVACY`: `ZoneInbox.refunds(token, owner)` reveals a value only when its immediate caller is `owner` or an active sequencer.
+  - Checked by: check
+- `TEMPO-ZONE-FIXED-TOKEN-GAS`: TIP-20 transfer and approve operations charge fixed gas independent of account storage layout.
+  - Checked by: `crates/zones/precompiles/src/ztip20/mod.rs::fixed_gas_selectors_charge_exactly_one_hundred_thousand_gas`
+- `TEMPO-ZONE-BLOCK-TIMESTAMP-MONOTONIC`: Zone block timestamps are non-decreasing and block numbers increment by one.
+  - Checked by: check
+
+## Redacted RPC
+
+- `TEMPO-ZONE-RPC-TOKEN-DOMAIN`: Authorization tokens bind to `TempoZoneRPC`, version, zone ID or wildcard zero, chain ID, `issuedAt`, and `expiresAt`.
+  - Checked by: `crates/zones/node/tests/it/redacted_rpc.rs::validate_rejects_chain_id_mismatch`
+- `TEMPO-ZONE-RPC-TOKEN-LIFETIME`: Tokens expire, are not valid too far in the future, and never exceed the 30-day maximum validity window.
+  - Checked by: `crates/zones/node/tests/it/redacted_rpc.rs::validate_rejects_window_too_large`
+- `TEMPO-ZONE-RPC-SENDER-SCOPING`: `eth_sendRawTransaction`, `eth_call`, and `eth_estimateGas` require the authenticated account to match the transaction or call sender.
+  - Checked by: none
+- `TEMPO-ZONE-RPC-ACCOUNT-QUERY-SCOPING`: `eth_getBalance`/`eth_getTransactionCount` return `0x0` for non-self queries and `eth_getTransactionByHash`/`eth_getTransactionReceipt` return `null` when the caller is not the sender.
+  - Checked by: `crates/zones/node/tests/it/redacted_rpc_e2e.rs::test_balance_privacy`
+- `TEMPO-ZONE-RPC-RAW-STATE-SEQUENCER-ONLY`: Raw state, full transaction/block, debug/admin/txpool, proof, and pending-transaction methods are unavailable to non-sequencers.
+  - Checked by: `crates/zones/rpc/src/handlers.rs::redacted_rpc_excludes_operator_sequencer_methods`
+- `TEMPO-ZONE-RPC-BLOCK-REDACTION`: Non-sequencer block responses have empty `transactions` and zeroed `logsBloom`.
+  - Checked by: `crates/zones/node/tests/it/redacted_rpc_e2e.rs::test_block_access_control`
+- `TEMPO-ZONE-RPC-LOG-SCOPING`: Log queries and subscriptions only return TIP-20 events where the authenticated account is a relevant party.
+  - Checked by: `crates/zones/rpc/src/filter.rs::filter_logs_keeps_eligible_and_drops_others`
+- `TEMPO-ZONE-RPC-TIMING-FLOOR`: Scoped data-fetching methods enforce the minimum response time before returning negative results.
+  - Checked by: none
+- `TEMPO-ZONE-RPC-KEYCHAIN-REVOCATION`: Keychain-authenticated WebSocket connections terminate within one second of importing a revocation block.
+  - Checked by: `crates/zones/rpc/tests/it/ws.rs::ws_closes_when_keychain_key_is_revoked`

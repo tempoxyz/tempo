@@ -125,11 +125,13 @@ reth-trie-common = { workspace = true, features = ["std"] }
 reqwest = { workspace = true, features = ["json", "rustls"] }
 serde = { workspace = true, features = ["alloc", "derive"] }
 sha2 = { workspace = true, default-features = true }
+tempo-invariants.workspace = true
 tempo-payload-types.workspace = true
 tempo-precompiles = { workspace = true, features = ["test-utils"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
 tokio-tungstenite.workspace = true
+zone-checker.workspace = true
 zone-spf.workspace = true
 url = "2"
 

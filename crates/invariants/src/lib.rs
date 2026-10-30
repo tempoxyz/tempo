@@ -22,6 +22,7 @@ pub mod fee_amm;
 pub mod keychain;
 pub mod receive_policy;
 pub mod tip20;
+pub mod zones;
 
 /// The transaction a step ran.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,6 +48,9 @@ pub fn all() -> impl Iterator<Item = &'static dyn AnyCheck> {
         .chain(erased(account::STEP_CHECKS))
         .chain(erased(keychain::CHECKS))
         .chain(erased(receive_policy::CHECKS))
+        .chain(erased(zones::portal::CHECKS))
+        .chain(erased(zones::portal::STEP_CHECKS))
+        .chain(zones::zone::all())
 }
 
 /// The position of the fork named `name` (such as `T14`, as [`TempoHardfork`] displays it) in
@@ -63,6 +67,20 @@ pub fn applies_at(meta: &Meta, fork: TempoHardfork) -> bool {
     let current = fork_position(&fork.to_string()).expect("a fork has a position");
     let known = |bound: Option<&str>| bound.is_none_or(|name| fork_position(name).is_some());
     known(meta.since) && known(meta.until) && meta.applies(fork_position, current)
+}
+
+/// The frames of `calls` (in entry order) that returned, as did every frame they were called from.
+pub(crate) fn kept(calls: &[Frame]) -> impl Iterator<Item = &Frame> {
+    // The open frames' depths, and whether each is kept.
+    let mut open: Vec<(usize, bool)> = Vec::new();
+    calls.iter().filter(move |frame| {
+        while open.last().is_some_and(|(depth, _)| *depth >= frame.depth) {
+            open.pop();
+        }
+        let kept = frame.success && open.last().is_none_or(|(_, kept)| *kept);
+        open.push((frame.depth, kept));
+        kept
+    })
 }
 
 /// `value` as text, `missing` when there is none.

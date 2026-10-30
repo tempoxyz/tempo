@@ -133,7 +133,7 @@ These are the comments reviewers leave most often. Follow them so they don't hav
 - Use `TempoPrecompileError::Fatal` only for invariant violations. Failures a user can trigger revert.
 - TIPs are prose requirements. Don't include implementation code, alerts, or test listings.
 - TIPs justify every constant and limit, and state failure, overflow, and range behavior explicitly.
-- When an interface changes, update the TIP, `invariants.md`, the Solidity reference implementation, and the Rust precompile in the same PR.
+- When an interface changes, update the TIP or zone spec and its `# Invariants` section, the Solidity reference implementation, and the Rust precompile in the same PR.
 - Keep the Solidity and Rust storage layouts identical.
 
 ## Zones

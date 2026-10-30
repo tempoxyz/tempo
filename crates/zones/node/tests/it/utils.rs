@@ -598,6 +598,14 @@ pub(crate) trait TestNodeHandle: Send {
         config: zone_sequencer::ZoneSequencerConfig,
         signer: alloy_signer_local::PrivateKeySigner,
     ) -> Pin<Box<dyn Future<Output = zone_sequencer::ZoneSequencerHandle> + Send + '_>>;
+
+    /// Judges the zone-side invariants on every canonical block from 1 to the head, as the
+    /// checker ExEx does, with `l1` (a Tempo provider and the zone's portal) for the checks
+    /// paired with Tempo state.
+    fn check_zone_invariants(
+        &self,
+        l1: Option<(DynProvider<TempoNetwork>, Address)>,
+    ) -> Pin<Box<dyn Future<Output = eyre::Result<tempo_invariants::Report>> + '_>>;
 }
 
 impl<Node, AddOns> TestNodeHandle for NodeHandle<Node, AddOns>
@@ -605,6 +613,7 @@ where
     Node: FullNodeComponents<
         Types: reth_node_api::NodeTypes<Primitives = tempo_primitives::TempoPrimitives>,
     >,
+    Node::Evm: zone_checker::ViewEvm,
     AddOns: RethRpcAddOns<Node>,
 {
     fn proof_directory(&self) -> std::path::PathBuf {
@@ -638,6 +647,42 @@ where
                 tokio_util::sync::CancellationToken::new(),
             )
             .await
+        })
+    }
+
+    fn check_zone_invariants(
+        &self,
+        l1: Option<(DynProvider<TempoNetwork>, Address)>,
+    ) -> Pin<Box<dyn Future<Output = eyre::Result<tempo_invariants::Report>> + '_>> {
+        Box::pin(async move {
+            use reth_provider::{BlockReader, ReceiptProvider, TransactionVariant};
+
+            let provider = self.node.provider();
+            let evm_config = self.node.evm_config();
+            let mut invariants = zone_checker::ZoneInvariants::default();
+            let mut violations = Vec::new();
+            for number in 1..=provider.best_block_number()? {
+                let block = provider
+                    .recovered_block(number.into(), TransactionVariant::WithHash)?
+                    .ok_or_else(|| eyre::eyre!("zone block {number} not found"))?;
+                let receipts = provider
+                    .receipts_by_block(number.into())?
+                    .ok_or_else(|| eyre::eyre!("receipts of zone block {number} not found"))?;
+                let report = invariants
+                    .check(
+                        provider,
+                        evm_config,
+                        l1.as_ref().map(|(l1, portal)| (l1, *portal)),
+                        &block,
+                        &receipts,
+                    )
+                    .await?;
+                violations.extend(report.violations);
+            }
+            Ok(tempo_invariants::Report {
+                counts: invariants.totals().counts.clone(),
+                violations,
+            })
         })
     }
 }
@@ -729,6 +774,16 @@ impl ZoneTestNode {
             previous = current;
         }
         eyre::bail!("ZoneEngine kept producing blocks after cancellation");
+    }
+
+    /// Judges the zone-side invariants on every canonical block so far, as the checker ExEx
+    /// does; with `with_l1`, also the checks paired with the portal on this node's L1.
+    pub(crate) async fn check_zone_invariants(
+        &self,
+        with_l1: bool,
+    ) -> eyre::Result<tempo_invariants::Report> {
+        let l1 = with_l1.then(|| (self.l1_provider.clone(), self.portal_address));
+        self.node_handle.check_zone_invariants(l1).await
     }
 
     /// Returns an HTTP provider connected to this zone node.
@@ -1583,7 +1638,8 @@ impl ZoneTestNode {
 pub(crate) struct L1TestNode {
     http_url: url::Url,
     ws_url: url::Url,
-    _node_handle: Box<dyn TestNodeHandle>,
+    // Held only to keep the node running.
+    _node_handle: Box<dyn std::any::Any + Send>,
     _tasks: Runtime,
 }
 
