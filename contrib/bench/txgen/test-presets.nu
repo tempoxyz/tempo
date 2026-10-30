@@ -303,6 +303,24 @@ with-env {TXGEN_BATCH_PAYOUT_RECIPIENTS: "8"} {
     assert equal ($small.templates.reward_distribution.calls | length) 9
 }
 rm -rf $batch_dir
+# Cross-border: bridge-mix's fixture and dex/walls.yml's liquidity both reach setup; payroll
+# batches stay within the txpool's 32 calls and pay existing state-bloat accounts.
+let cross_spec = (txgen-resolve-bench-spec cross-border)
+assert equal $cross_spec.kind static
+assert ("cross-border" in $TXGEN_HELPER_ALWAYS_FUND_PRESETS)
+let cross = (open $cross_spec.spec_path)
+assert equal $cross.include [bridge-mix.yml dex/walls.yml]
+assert equal ($cross.mix | get weight | math sum) 100
+assert equal ($cross.mix | get template | sort) [bridge_deposit bridge_payout corridor_payout dex_swap payroll_batch payroll_new_batch]
+assert equal ($cross.templates.payroll_batch.calls | length) $TXGEN_HELPER_MAX_AA_CALLS
+assert ($cross.templates.payroll_batch.calls | all { |call| $call.args.0 == {address_pool: {pool: existing_recipients, select: random}} })
+assert equal ($cross.templates.payroll_new_batch.calls | length) 8
+assert equal ($cross.templates.dex_swap.call.args.values | last 2) [{uniform: [1000000 5000000]} 0]
+txgen-configure-existing-recipients-env $cross_spec.spec_path 1024 4
+assert (($env.TXGEN_EXISTING_RECIPIENTS_END | into int) > 10000)
+# dex.yml keeps its walls through the shared append piece.
+assert equal ((^uv run --no-project --with yq==3.4.3 yq -c '.include' ($cross_spec.spec_path | path dirname | path join dex.yml)) | from json) [dex/walls.yml]
+assert equal ((^uv run --no-project --with yq==3.4.3 yq -c '.append.setup.steps | map(.id)' ($cross_spec.spec_path | path dirname | path join dex walls.yml)) | from json | length) 6
 # The access-key mix authorises keys in setup and inline, and pays one merchant account.
 let access_spec = (txgen-resolve-bench-spec access-key-mix)
 assert equal $access_spec.kind static

@@ -17,6 +17,7 @@ const TXGEN_HELPER_ALWAYS_FUND_PRESETS = [
     "dex"
     "bridge-mix"
     "bridge-mix-new-accounts"
+    "cross-border"
     "neobank-deposit"
     "neobank-swap"
     "neobank-withdraw"
@@ -1293,7 +1294,7 @@ def txgen-prepare-neobank-multi-preset [spec_path: string, count: int, accounts:
     let raw_templates = ($entries | where { |entry| ($entry | get -o raw) != null } | get raw)
     let accounts_record = ($parts | get accounts | reduce --fold {users: {range: [0 $accounts]}} { |pools, acc| $acc | merge $pools })
     let dex_setup = if ($parts | any { |part| $part.dex }) {
-        let result = (^uv run --no-project --with yq==3.4.3 yq -c '.setup.steps' ($presets | path join dex.yml) | complete)
+        let result = (^uv run --no-project --with yq==3.4.3 yq -c '.append.setup.steps' ($presets | path join dex walls.yml) | complete)
         if $result.exit_code != 0 { error make {msg: $"Failed to read dex setup: ($result.stderr)"} }
         $result.stdout | from json
     } else { [] }
@@ -1410,9 +1411,9 @@ def txgen-prepare-public-mix-preset [spec_path: string, count: int, accounts: in
     } else { {templates: $templates, mix: $mix} }
     let templates = $card.templates
     let mix = $card.mix
-    # Asset conversion swaps on the stablecoin DEX need dex.yml's liquidity walls.
+    # Asset conversion swaps on the stablecoin DEX need dex/walls.yml's liquidity walls.
     let dex_setup = if ($spec.mix | any { |entry| ($entry | get -o template) == "dex_swap" }) {
-        let result = (^uv run --no-project --with yq==3.4.3 yq -c '.setup.steps' ($presets | path join dex.yml) | complete)
+        let result = (^uv run --no-project --with yq==3.4.3 yq -c '.append.setup.steps' ($presets | path join dex walls.yml) | complete)
         if $result.exit_code != 0 { error make {msg: $"Failed to read dex setup: ($result.stderr)"} }
         $result.stdout | from json
     } else { [] }
