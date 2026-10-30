@@ -15,6 +15,7 @@ pub const MINT_SUPPLY: &str = "TEMPO-AMM2";
 pub const MINT_BALANCE: &str = "TEMPO-AMM3";
 pub const MINT_RESERVE: &str = "TEMPO-AMM4";
 pub const CUSTODY_STEP: &str = "TEMPO-FEE5-STEP";
+pub const SHARE_VALUE: &str = "TEMPO-AMM-SHARE-VALUE";
 
 pub const CHECKS: &[Check<Books>] = &[
     // The fee manager holds, of each token, at least its pools' reserves of it plus the fees it
@@ -108,6 +109,33 @@ pub const STEP_CHECKS: &[Check<Step<Books, Option<Tx>>>] = &[
             )
         },
     },
+    // A pool's value per LP share, `V + floor(N * U / SCALE)` over the LP supply, never falls: swaps,
+    // rebalances and mints price in its favour, and each burn's rounding may cost it 1.
+    check! {
+        id: SHARE_VALUE,
+        over: |step: &Step<Books, Option<Tx>>| &step.post.pools,
+        judge: |s, post| {
+            let pre = s.pre.pools.iter().find(|pre| pre.is(post.user_token, post.validator_token))?;
+            if pre.total_supply.is_zero() || post.total_supply.is_zero() {
+                return None;
+            }
+            let burns = s
+                .events::<Burn>(s.post.fee_manager)
+                .iter()
+                .filter(|b| post.is(b.userToken, b.validatorToken))
+                .count();
+            let (before, after) = (pre.share_value()?, post.share_value()?.checked_add(U256::from(burns))?);
+            if pre == *post {
+                return None;
+            }
+            ensure!(
+                after.checked_mul(pre.total_supply)? >= before.checked_mul(post.total_supply)?,
+                "value {before} over LP supply {} -> {after} over {} ({burns} burns)",
+                pre.total_supply,
+                post.total_supply
+            )
+        },
+    },
     // The LP supply grows by exactly the minted liquidity, plus `MIN_LIQUIDITY` on a pool's first
     // mint.
     check! {
@@ -190,4 +218,62 @@ fn minted(step: &Step<Books, Option<Tx>>, pool: &PoolState) -> Option<Result<Poo
         return None;
     }
     Some(pre.replay(&mints))
+}
+
+#[cfg(test)]
+mod tests {
+    use alloy_primitives::{Address, U256};
+
+    use super::{SHARE_VALUE, STEP_CHECKS};
+    use crate::{
+        Report, Step,
+        fee_amm::{Books, PoolState},
+    };
+
+    fn books(reserve_user: u64, reserve_validator: u64, total_supply: u64) -> Books {
+        Books {
+            fee_manager: Address::repeat_byte(0xfe),
+            holdings: Default::default(),
+            pools: vec![PoolState {
+                user_token: Address::repeat_byte(1),
+                validator_token: Address::repeat_byte(2),
+                reserve_user: U256::from(reserve_user),
+                reserve_validator: U256::from(reserve_validator),
+                total_supply: U256::from(total_supply),
+                lp: Default::default(),
+            }],
+            collected: Default::default(),
+        }
+    }
+
+    fn fired(pre: Books, post: Books) -> u64 {
+        let step = Step {
+            pre,
+            post,
+            changes: vec![],
+            logs: vec![],
+            tx: None,
+        };
+        let mut report = Report::default();
+        report.run(STEP_CHECKS, &step);
+        report.counts[SHARE_VALUE].fired
+    }
+
+    #[test]
+    fn share_value() {
+        // A fee swap of 1000 user tokens pays out 997 validator tokens: value per share grows.
+        assert_eq!(
+            fired(books(0, 10_000, 5_000), books(1_000, 9_003, 5_000)),
+            0
+        );
+        // Paying out at par instead loses value.
+        assert_eq!(
+            fired(books(0, 10_000, 5_000), books(1_000, 9_000, 5_000)),
+            1
+        );
+        // A mint of 1000 at the pool's value keeps it.
+        assert_eq!(fired(books(0, 10_000, 5_000), books(0, 11_000, 5_500)), 0);
+        // Minting more LP than the deposit is worth loses it.
+        assert_eq!(fired(books(0, 10_000, 5_000), books(0, 11_000, 5_600)), 1);
+    }
 }
