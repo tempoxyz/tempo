@@ -4,7 +4,7 @@
 pub(crate) mod marshal {
     use std::{num::NonZeroUsize, sync::Arc};
 
-    use alloy_consensus::{BlockHeader as _, Sealable as _};
+    use alloy_consensus::BlockHeader as _;
     use commonware_codec::ReadExt as _;
     use commonware_consensus::{
         Epochable as _,
@@ -26,7 +26,6 @@ pub(crate) mod marshal {
     use reth_provider::{BlockReader as _, providers::BlockchainProvider};
     use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
     use tempo_node::{TempoFullNode, node::TempoNode};
-    use tempo_primitives::TempoHeader;
     use tracing::{info, instrument};
 
     use crate::{
@@ -151,12 +150,16 @@ pub(crate) mod marshal {
         let FinalizationRange {
             floor: finalized_floor,
             tip: finalized_tip,
-        } = establish_finalization_range(
-            &finalizations_by_height,
-            &finalized_blocks,
-            &execution_node,
-        )
-        .await?;
+        } = establish_finalization_range(&finalizations_by_height, &execution_node).await?;
+        if let Some((height, _)) = &finalized_tip {
+            finalized_blocks
+                .ensure_certified(&finalizations_by_height, *height)
+                .await
+                .wrap_err(
+                    "finalized blocks are not the certified chain; have you restored an \
+                     inconsistent snapshot? delete consensus storage and try again",
+                )?;
+        }
         let (tip_round, tip_height, tip_digest) = match &finalized_tip {
             Some((height, certificate)) => (
                 certificate.proposal.round,
@@ -253,10 +256,6 @@ pub(crate) mod marshal {
 
     async fn establish_finalization_range<TContext>(
         certificates: &immutable::Archive<TContext, Digest, Certificate>,
-        blocks: &Hybrid<
-            TContext,
-            BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, DatabaseEnv>>,
-        >,
         execution_node: &TempoFullNode,
     ) -> eyre::Result<FinalizationRange>
     where
@@ -304,31 +303,11 @@ pub(crate) mod marshal {
                 .ok_or_eyre("archive did not contain finalized tip certificate")?
         };
         let height = Height::new(last);
-        let header = blocks
-            .get_header(Identifier::Key(&certificate.proposal.payload))
-            .await
-            .wrap_err("failed reading finalized tip header")?;
-        if let Some(header) = &header {
-            verify_tip_header(height, certificate.proposal.payload, header)?;
-        }
 
         Ok(FinalizationRange {
             floor,
             tip: Some((height, certificate)),
         })
-    }
-
-    fn verify_tip_header(height: Height, digest: Digest, header: &TempoHeader) -> eyre::Result<()> {
-        ensure!(
-            header.number() == height.get(),
-            "finalized tip header number `{}` does not match archive height `{height}`",
-            header.number(),
-        );
-        ensure!(
-            Digest(header.hash_slow()) == digest,
-            "finalized tip header hash does not match certificate payload at height `{height}`",
-        );
-        Ok(())
     }
 
     async fn start_from_finalized_floor<TContext>(
@@ -431,30 +410,5 @@ pub(crate) mod marshal {
                     Digest(execution_node.chain_spec().genesis_hash()),
                 )
             })
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn startup_tip_header_must_match_archive_height_and_certificate_digest() {
-            let height = Height::new(12);
-            let mut header = TempoHeader::default();
-            header.inner.number = height.get();
-            let digest = Digest(header.hash_slow());
-            verify_tip_header(height, digest, &header).unwrap();
-
-            let error = verify_tip_header(height.next(), digest, &header).unwrap_err();
-            assert!(error.to_string().contains("does not match archive height"));
-
-            header.inner.extra_data = vec![1].into();
-            let error = verify_tip_header(height, digest, &header).unwrap_err();
-            assert!(
-                error
-                    .to_string()
-                    .contains("header hash does not match certificate payload")
-            );
-        }
     }
 }
