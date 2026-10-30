@@ -148,7 +148,8 @@ impl TempoTransactionRequest {
     /// done here.
     fn simulated_block_signature(&mut self) -> Result<Option<TempoSignature>, EthApiError> {
         let invalid = |message: &str| EthApiError::InvalidParams(message.into());
-        let from = self.inner.from;
+        // `eth_simulateV1` defaults a missing `from` to the zero address before conversion.
+        let from = self.inner.from.filter(|from| !from.is_zero());
         let parent = || from.ok_or_else(|| invalid(MISSING_FROM));
         if let Some(spec) = &self.key_authorization_simulation
             && let Some(grant) = &self.key_authorization

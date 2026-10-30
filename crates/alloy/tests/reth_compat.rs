@@ -271,6 +271,14 @@ fn grant_simulation_without_a_grant_is_ignored() {
     "configurable account simulation requires `from`";
     "grant quorum without from"
 )]
+#[test_case(
+    |request| {
+        request.configurable_account_simulation = Some(spec(vec![approval(1), approval(2)]));
+        request.inner.from = Some(Address::ZERO);
+    },
+    "configurable account simulation requires `from`";
+    "outer quorum with the zero from eth_simulateV1 defaults to"
+)]
 fn simulation_rejects_invalid_roles(configure: fn(&mut TempoTransactionRequest), message: &str) {
     let mut request = aa_request(SignatureType::Secp256k1);
     configure(&mut request);
