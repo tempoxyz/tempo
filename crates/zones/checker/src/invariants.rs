@@ -63,7 +63,7 @@ pub trait ViewEvm: ConfigureEvm<Primitives = TempoPrimitives> {
 }
 
 /// Tempo reads go through the node's L1 cache with one RPC attempt per miss, given up after
-/// [`L1_READ_DEADLINE`], where the node's own execution retries a miss forever: a failed or
+/// `L1_READ_DEADLINE`, where the node's own execution retries a miss forever: a failed or
 /// unanswered read makes its view answer nothing, so an L1 outage leaves the checks reading it
 /// (such as refunds asked as a third party, which read the portal's roles) unjudged instead of
 /// stalling the checker.
