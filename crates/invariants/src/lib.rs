@@ -23,11 +23,13 @@ pub mod receive_policy;
 pub mod tip20;
 
 /// The transaction a step ran.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tx {
     pub sender: Address,
     /// Whether execution succeeded (not reverted or halted).
     pub success: bool,
+    /// Who its signatures authorize it for.
+    pub authority: account::Authority,
 }
 
 /// Every Tempo check, whatever its context.
@@ -44,6 +46,7 @@ pub fn all() -> impl Iterator<Item = &'static dyn AnyCheck> {
         .chain(erased(dex::CHECKS))
         .chain(erased(dex::STEP_CHECKS))
         .chain(erased(account::STEP_CHECKS))
+        .chain(erased(account::LEAF_CHECKS))
         .chain(erased(keychain::CHECKS))
         .chain(erased(receive_policy::CHECKS))
 }

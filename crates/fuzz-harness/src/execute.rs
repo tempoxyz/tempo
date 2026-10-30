@@ -230,7 +230,7 @@ pub(crate) fn execute_blocks(
         // A read the pre-state could not answer makes the result meaningless,
         // even when the error was swallowed on its way up.
         let executed = match executed {
-            _ if db.pre.missed() => Err(ErrorClass::IncompletePreState),
+            _ if db.pre.missed() => Err((ErrorClass::IncompletePreState, None)),
             executed => executed,
         };
         match executed {
@@ -251,7 +251,22 @@ pub(crate) fn execute_blocks(
                         .add(counts);
                 }
             }
-            Err(error) => {
+            Err((error, partial)) => {
+                // The transactions before the one that failed executed as they would in the
+                // block without it, so what they broke is reported, though the block is not.
+                if let Some(partial) = partial {
+                    let partial = *partial;
+                    outcome
+                        .invariant_failures
+                        .extend(partial.invariant_failures);
+                    for (id, counts) in partial.invariant_report.counts {
+                        outcome
+                            .invariant_counts
+                            .entry(id.into())
+                            .or_default()
+                            .add(counts);
+                    }
+                }
                 outcome.error = error;
                 break;
             }
@@ -269,29 +284,33 @@ struct BlockOutputs {
     invariant_report: Report,
 }
 
+/// Why a block failed, and what its transactions produced before it did.
+type BlockFailure = (ErrorClass, Option<Box<BlockOutputs>>);
+
 /// The state updates an executor has emitted since they were last taken.
 type Updates = Arc<Mutex<Vec<StateUpdate>>>;
 
-/// Executes `block` on `db`. Returns the updates it made to state and what it produced.
+/// Executes `block` on `db`. Returns the updates it made to state and what it produced or, when it
+/// fails, why and what its transactions produced before it did.
 fn execute_block(
     evm_config: &TempoEvmConfig,
     consensus: &TempoConsensus,
     db: &Db,
     block: &ExecutionBlock,
     block_index: u64,
-) -> Result<(Vec<StateUpdate>, BlockOutputs), ErrorClass> {
+) -> Result<(Vec<StateUpdate>, BlockOutputs), BlockFailure> {
     consensus
         .validate_header(block.sealed_block().sealed_header())
-        .map_err(|_| ErrorClass::Rejected)?;
+        .map_err(|_| (ErrorClass::Rejected, None))?;
     consensus
         .validate_block_pre_execution(block.sealed_block())
-        .map_err(|_| ErrorClass::Rejected)?;
+        .map_err(|_| (ErrorClass::Rejected, None))?;
     let evm = evm_config
         .evm_for_block(db.reader(), block.header())
-        .map_err(|_| ErrorClass::Rejected)?;
+        .map_err(|_| (ErrorClass::Rejected, None))?;
     let ctx = evm_config
         .context_for_block(block.sealed_block())
-        .map_err(|_| ErrorClass::Rejected)?;
+        .map_err(|_| (ErrorClass::Rejected, None))?;
     let mut executor = evm_config.create_executor(evm, ctx);
     let hooked = Updates::default();
     let installed = executor.set_state_hook({
@@ -312,8 +331,10 @@ fn execute_block(
         &mut updates,
         &mut outputs,
     )
-    .map_err(|err| class(&err))?;
-    let output = executor.finish().map_err(|err| class(&err))?;
+    .map_err(|err| (class(&err), Some(Box::new(std::mem::take(&mut outputs)))))?;
+    let output = executor
+        .finish()
+        .map_err(|err| (class(&err), Some(Box::new(std::mem::take(&mut outputs)))))?;
     let post_block = take(&hooked);
     let net = Net::of(&post_block);
     let cache = db.cache.borrow();
@@ -356,6 +377,8 @@ fn execute_txs(
         let tx_index = tx_index as u64;
         let sender = tx.signer();
         let effective_gas_price = tx.effective_gas_price(basefee);
+        let spec = executor.evm().config_spec_id();
+        let authority = invariants::authority(tx.inner(), sender, spec.is_t14());
         let result = executor.execute_transaction_without_commit(tx)?;
         let execution = result.result();
         let outcome = if execution.status {
@@ -396,6 +419,7 @@ fn execute_txs(
         let tx = Tx {
             sender,
             success: receipt.outcome == TxOutcome::Success,
+            authority,
         };
         let tx_changes = step(
             evm_config,
@@ -442,13 +466,15 @@ fn step(
         let cache = db.cache.borrow();
         state::changes(&net, &Contracts(&[&overlay.contracts, &cache.contracts]))
     };
-    let selected = |contract: &_| tx.is_none() || net.contains(contract);
+    let is_tx = tx.is_some();
+    let selected = |contract: &_| !is_tx || net.contains(contract);
+    let evm = executor.evm();
     let effects = tx.map(|(tx, logs)| invariants::StepEffects {
         net: &net,
         logs,
         tx,
+        spec: evm.config_spec_id(),
     });
-    let evm = executor.evm();
     let env = TempoEvmEnv::new_with_version(evm.config_spec_id(), *evm.block(), *evm.version());
     invariants::check(
         db,

@@ -7,19 +7,24 @@
 //! failing.
 
 use alloy_primitives::{Address, Log};
+use evm2::evm::{AccountInfo, Database as _};
 use invariants_core::{Report, SlotChange, Step};
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
     CONFIGURABLE_ACCOUNT_ADDRESS, IStablecoinDEX, STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
 };
 use tempo_evm::{TempoEvmConfig, TempoEvmEnv};
 use tempo_fuzz_types::{InvariantFailure, InvariantScope};
 use tempo_invariants::{Tx, account, all, dex, fee_amm, tip20};
+use tempo_precompiles::storage::account_config_commitment;
 use tempo_primitives::is_tip20_prefix;
 
 use crate::state::{Db, Net};
 
+pub(crate) use authority::authority;
 use reader::Reader;
 
+mod authority;
 mod reader;
 mod views;
 
@@ -32,6 +37,8 @@ pub(crate) struct StepEffects<'a> {
     pub(crate) net: &'a Net,
     pub(crate) logs: &'a [Log],
     pub(crate) tx: Tx,
+    /// The hardfork the step ran at.
+    pub(crate) spec: TempoHardfork,
 }
 
 impl StepEffects<'_> {
@@ -54,7 +61,7 @@ impl StepEffects<'_> {
             post,
             changes,
             logs: self.logs.to_vec(),
-            tx: Some(self.tx),
+            tx: Some(self.tx.clone()),
         }
     }
 }
@@ -175,12 +182,14 @@ pub(crate) fn check(
     }
     if let Some(effects) = &effects {
         // A transaction changes a commitment only by changing its account, so the accounts it
-        // changed and its sender are all it can have moved.
+        // changed and its sender are all it can have moved. Its signatures' accounts are read too:
+        // a signer it should have registered, or whose authority it should have refused.
         let mut changed: Vec<Address> = effects
             .net
             .addresses()
             .copied()
             .chain([effects.tx.sender])
+            .chain(effects.tx.authority.accounts())
             .collect();
         changed.sort_unstable();
         changed.dedup();
@@ -190,6 +199,18 @@ pub(crate) fn check(
         };
         let precompile = CONFIGURABLE_ACCOUNT_ADDRESS;
         reader.check::<account::Commitments>(&mut step, at, precompile, account::VIEW);
+        let leaves = account::Leaves {
+            of: changed
+                .iter()
+                .filter_map(|&address| {
+                    let before = leaf(account_at(db, Some(effects.net), address)?, effects.spec)?;
+                    let after = leaf(account_at(db, None, address)?, effects.spec)?;
+                    Some((address, (before, after)))
+                })
+                .collect(),
+            tx: effects.tx.clone(),
+        };
+        step.run_any(all(), &leaves);
     }
 
     failures.extend(step.violations.drain(..).map(|violation| InvariantFailure {
@@ -199,4 +220,26 @@ pub(crate) fn check(
     }));
     report.merge(step);
     db.pre.restore_missed(missed);
+}
+
+/// The account at `address` after the step or, with its `net` changes undone, before it. `None`
+/// when the pre-state lacks it.
+fn account_at(db: &Db, net: Option<&Net>, address: Address) -> Option<Option<AccountInfo>> {
+    if let Some(change) = net.and_then(|net| net.get(&address)) {
+        return Some(change.original().cloned());
+    }
+    db.pre.restore_missed(false);
+    let info = db.view().get_account(&address).ok()?;
+    (!db.pre.missed()).then_some(info)
+}
+
+/// The commitment and code hash of `info`, an account at `spec`.
+fn leaf(info: Option<AccountInfo>, spec: TempoHardfork) -> Option<account::Leaf> {
+    let Some(info) = info else {
+        return Some(account::Leaf::EMPTY);
+    };
+    Some(account::Leaf {
+        commitment: account_config_commitment(&info, spec).ok()?,
+        code_hash: info.code_hash,
+    })
 }
