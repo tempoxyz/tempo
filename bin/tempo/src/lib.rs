@@ -605,9 +605,17 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                     }
 
                     if has_consensus_engine {
+                        // Connection IDs are only unique within one server, so the per-connection
+                        // subscription cap applies to WS only; HTTP has no subscriptions and IPC
+                        // is local. All transports share the global cap.
                         let consensus_rpc = TempoConsensusRpc::new(cl_feed_state);
-                        ctx.modules.merge_configured(consensus_rpc.into_rpc())
-                            .wrap_err("failed to register consensus rpc module")?;
+                        let without_connection_cap = consensus_rpc.without_connection_cap();
+                        ctx.modules.merge_ws(consensus_rpc.into_rpc())
+                            .wrap_err("failed to register consensus rpc module on ws")?;
+                        ctx.modules.merge_http(without_connection_cap.clone().into_rpc())
+                            .wrap_err("failed to register consensus rpc module on http")?;
+                        ctx.modules.merge_ipc(without_connection_cap.into_rpc())
+                            .wrap_err("failed to register consensus rpc module on ipc")?;
                     }
 
                     Ok(())

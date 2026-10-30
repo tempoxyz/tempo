@@ -120,8 +120,9 @@ pub struct TempoConsensusRpc<I> {
     consensus_feed: I,
     /// One permit per live subscription, shared by every connection.
     subscriptions: Arc<Semaphore>,
-    /// Live subscriptions per connection, capped at [`MAX_SUBSCRIPTIONS_PER_CONNECTION`].
-    per_connection: Arc<Mutex<HashMap<ConnectionId, usize>>>,
+    /// Live subscriptions per connection, capped at [`MAX_SUBSCRIPTIONS_PER_CONNECTION`]; `None`
+    /// for transports without the cap (see [`Self::without_connection_cap`]).
+    per_connection: Option<Arc<Mutex<HashMap<ConnectionId, usize>>>>,
 }
 
 /// One subscription's claim on its connection's share; released on drop.
@@ -172,7 +173,22 @@ impl<I: ConsensusFeed> TempoConsensusRpc<I> {
         Self {
             consensus_feed,
             subscriptions: Arc::new(Semaphore::new(max_subscriptions)),
-            per_connection: Default::default(),
+            per_connection: Some(Default::default()),
+        }
+    }
+}
+
+impl<I: Clone> TempoConsensusRpc<I> {
+    /// Returns a handler sharing this one's global subscription cap but without the
+    /// per-connection cap.
+    ///
+    /// Connection IDs are only unique within one server, so the per-connection cap must be used
+    /// by a single transport. Register this handler on the others, such as local IPC.
+    pub fn without_connection_cap(&self) -> Self {
+        Self {
+            consensus_feed: self.consensus_feed.clone(),
+            subscriptions: self.subscriptions.clone(),
+            per_connection: None,
         }
     }
 }
@@ -193,17 +209,22 @@ impl<I: ConsensusFeed> TempoConsensusApiServer for TempoConsensusRpc<I> {
     ) -> jsonrpsee::core::SubscriptionResult {
         // Reject before accepting, so the client gets an error for its subscribe call instead of
         // a subscription that ends at once.
-        let Some(guard) =
-            SubscriptionGuard::try_claim(&self.per_connection, pending.connection_id())
-        else {
-            pending
-                .reject(ErrorObject::owned(
-                    TOO_MANY_SUBSCRIPTIONS_CODE,
-                    "too many consensus subscriptions on this connection",
-                    Some(MAX_SUBSCRIPTIONS_PER_CONNECTION),
-                ))
-                .await;
-            return Ok(());
+        let guard = match &self.per_connection {
+            Some(counts) => {
+                let Some(guard) = SubscriptionGuard::try_claim(counts, pending.connection_id())
+                else {
+                    pending
+                        .reject(ErrorObject::owned(
+                            TOO_MANY_SUBSCRIPTIONS_CODE,
+                            "too many consensus subscriptions on this connection",
+                            Some(MAX_SUBSCRIPTIONS_PER_CONNECTION),
+                        ))
+                        .await;
+                    return Ok(());
+                };
+                Some(guard)
+            }
+            None => None,
         };
         let Ok(permit) = self.subscriptions.clone().try_acquire_owned() else {
             pending

@@ -12,6 +12,7 @@ use tokio::sync::broadcast;
 
 /// A feed with no publisher of its own, modelling a node whose finalization has stalled.
 /// Tests that need events send them on `events_tx` directly.
+#[derive(Clone)]
 struct IdleFeed {
     events_tx: broadcast::Sender<Arc<SharedEvent>>,
 }
@@ -302,4 +303,26 @@ async fn subscriptions_are_capped_per_connection() {
     held.pop().unwrap().unsubscribe().await.unwrap();
     wait_for_live_subscriptions(&events_tx, MAX_SUBSCRIPTIONS_PER_CONNECTION).await;
     let _again = first.subscribe_events().await.unwrap();
+}
+
+#[tokio::test]
+async fn handler_without_connection_cap_allows_more_per_connection() {
+    let (events_tx, _) = broadcast::channel(1);
+    let module = TempoConsensusRpc::new(IdleFeed {
+        events_tx: events_tx.clone(),
+    })
+    .without_connection_cap()
+    .into_rpc();
+
+    // In-process subscriptions all share one connection ID.
+    let mut held = Vec::new();
+    for _ in 0..=MAX_SUBSCRIPTIONS_PER_CONNECTION {
+        held.push(
+            module
+                .subscribe_unbounded("consensus_subscribe", EmptyServerParams::new())
+                .await
+                .unwrap(),
+        );
+    }
+    wait_for_live_subscriptions(&events_tx, MAX_SUBSCRIPTIONS_PER_CONNECTION + 1).await;
 }
