@@ -12,6 +12,13 @@ accounts:
   deployer:
     mnemonic: "test test test test test test test test test test test junk"
     index: 100001
+  # Portal deploy and fund senders. The helper spreads portals across them so portal setup
+  # is not one serial nonce lane (715 portals at 50k TPS); faucet-funded with the other pools.
+  zone_deployers:
+    mnemonic: "test test test test test test test test test test test junk"
+    range:
+      - 100100
+      - 100116
 artifacts:
   ERC20: ../tip20.abi.json
   PortalFixture: ../zones/PortalFixture.json

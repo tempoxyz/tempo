@@ -37,6 +37,8 @@ const TXGEN_HELPER_ALWAYS_FUND_PRESETS = [
 const TXGEN_HELPER_PUBLIC_MIX_PRESETS = ["public-mix" "vault-throughput" "zone-portal-throughput" "zone-earn-mix" "zone-earn-hot" "zone-earn-serial" "zone-portal-hot" "card-settlement" "neobank-generic" "neobank-multi" "projected-pipeline" "batch-payout"]
 # Presets that pin the zone portal count instead of sizing it by TPS (TXGEN_ZONE_COUNT still overrides).
 const TXGEN_HELPER_PRESET_ZONE_COUNTS = {"zone-earn-hot": 1, "zone-portal-hot": 1}
+# Size of presets/zones.yml's zone_deployers pool: portal i deploys and is funded from sender i mod this.
+const TXGEN_HELPER_ZONE_DEPLOYERS = 16
 # Zone -> zone presets (presets/zone-to-zone.yml); the hot variant pins one source and one target portal.
 const TXGEN_HELPER_ZONE_TO_ZONE_PRESETS = ["zone-to-zone" "zone-to-zone-hot"]
 const TXGEN_HELPER_ZONE_TO_ZONE_CALLBACK_GAS = 1500000
@@ -774,13 +776,17 @@ def txgen-prepare-zones-preset [spec_path: string, count: int, accounts: int, zo
     let spec = (open $spec_path)
     let token = "0x20c0000000000000000000000000000000000000"
     mut steps = [$spec.setup.steps.0]
+    # Spread portals over the zone_deployers pool so their deploys and funding run in parallel.
+    let zone_deployer = { |zone| {pool: zone_deployers, select: {index: ($zone mod $TXGEN_HELPER_ZONE_DEPLOYERS)}} }
     for zone in 0..<$zones {
         $steps = ($steps | append ($spec.setup.steps.1
             | update id $"portal_($zone)"
+            | update deploy.from (do $zone_deployer $zone)
             | update deploy.constructor_args.0 {var: setup.settlement.sender}))
     }
     for zone in 0..<$zones {
         $steps = ($steps | append ($spec.setup.steps.2 | update id $"fund_($zone)"
+            | update tx.from (do $zone_deployer $zone)
             | update tx.calls.0.args [{var: $"setup.portal_($zone).address"} $count]))
     }
     let groups = if ($groups | is-empty) { [{users: [0 $accounts], zones: [0 $zones]}] } else { $groups }
