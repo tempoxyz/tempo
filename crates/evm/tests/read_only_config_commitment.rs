@@ -6,7 +6,7 @@ use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_evm::TempoStateAccess;
 use tempo_precompiles::{
     error::TempoPrecompileError,
-    storage::{ConfigCommitmentWriteGas, StorageActions, StorageCtx},
+    storage::{StorageActions, StorageCtx},
 };
 use tempo_primitives::account::encode_config_commitment;
 
@@ -28,15 +28,10 @@ fn read_only_context_reads_commitments_and_rejects_writes() {
             B256::ZERO
         );
 
-        for gas in [
-            ConfigCommitmentWriteGas::Intrinsic,
-            ConfigCommitmentWriteGas::Precompile,
-        ] {
-            assert_eq!(
-                ctx.set_config_commitment(ACCOUNT, B256::repeat_byte(3), gas),
-                Err(TempoPrecompileError::InvalidConfigCommitmentWrite)
-            );
-        }
+        assert_eq!(
+            ctx.set_config_commitment(ACCOUNT, B256::repeat_byte(3)),
+            Err(TempoPrecompileError::InvalidConfigCommitmentWrite)
+        );
         assert_eq!(ctx.config_commitment(ACCOUNT).unwrap(), COMMITMENT);
     });
 }

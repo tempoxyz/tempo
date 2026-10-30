@@ -13895,7 +13895,6 @@ dependencies = [
  "clap",
  "commonware-codec",
  "commonware-cryptography",
- "evm2",
  "eyre",
  "once_cell",
  "paste",

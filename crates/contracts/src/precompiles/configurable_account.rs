@@ -36,10 +36,6 @@ sol! {
             ConfigurableAccountOwner[] owners
         );
 
-        function deriveAccount(bytes32 salt, uint8 threshold, ConfigurableAccountOwner[] calldata owners)
-            external
-            pure
-            returns (address account);
         function getConfigCommitment(address account) external view returns (bytes32 commitment);
         function updateConfig(
             ConfigurableAccountConfig calldata current,
@@ -52,7 +48,6 @@ sol! {
             external
             returns (bytes32 commitment);
 
-        error InvalidAccount();
         error InvalidConfig();
         error InvalidThreshold();
         error InvalidConfigurableAccountOwner();
@@ -69,7 +64,7 @@ sol! {
 }
 
 sol! {
-    /// Read-only methods executed at every registered configurable account address.
+    /// Read-only methods executed at every configurable account address.
     interface IConfigurableAccountShim {
         /// Returns the ERC-1271 magic value for a valid current-owner witness.
         function isValidSignature(bytes32 hash, bytes calldata signature) external view returns (bytes4);

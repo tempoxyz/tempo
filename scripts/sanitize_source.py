@@ -285,7 +285,7 @@ def sanitize_chainspec(chainspec_dir):
     """Strip reth-gated code from tempo-chainspec source files."""
     lib_rs = f"{chainspec_dir}/src/lib.rs"
 
-    _delete_cfg_gated_block(lib_rs, '#[cfg(feature = "evm")]', expected=3)
+    _delete_cfg_gated_block(lib_rs, '#[cfg(feature = "evm")]', expected=1)
 
     # Delete #![cfg_attr(all(not(test), feature = "reth"), warn(unused_crate_dependencies))]
     delete_lines(lib_rs, r'^#!\[cfg_attr\(all\(not\(test\), feature = "reth"\), warn\(unused_crate_dependencies\)\)\]\n', expected=1)
