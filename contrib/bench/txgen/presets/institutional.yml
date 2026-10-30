@@ -10,17 +10,20 @@
 #   Treasury      15  treasury_sweep        one treasury transaction rebalancing to 8 counterparties
 #   Mint          10  deposit_mint          the issuer mints the tokenized deposit to a client
 #   Burn          10  deposit_burn          the issuer burns redeemed deposits from its own balance
-#   Conversion    20  dex_swap              asset conversion on the stablecoin DEX (dex.yml liquidity)
+#   Conversion    17  dex_swap              asset conversion on the stablecoin DEX (dex.yml liquidity)
+#   Liquidity      3  dex_place             a market maker placing flip orders, so long runs keep
+#                                           liquidity on both sides of the book (dex.yml's template)
 #
 # Setup is tip20-policy's: every selected token gets a compound issuer policy of empty
 # blacklists and every counterparty (policy_receivers) both receiver filters, so every
 # transfer, mint and swap here reads TIP-403 policy state; dex.yml places the DEX
 # liquidity walls and the FeeAMM gets AlphaUSD/pathUSD liquidity. Setup runs outside
-# measurement. Runs require full inclusion and no reverted receipts, as tip20-policy.
+# measurement. Unlike tip20-policy, runs do not require full inclusion: at saturation
+# expiring transactions lapse, and a drained book reverts swaps, both visible in the report.
 #
 # Settlement and treasury transfers are few and large in value, but value does not
 # change gas, so amounts stay small and balances last; their weight is their gas share.
-# Drop the dex_swap mix entry to run without conversion.
+# Drop the dex_swap and dex_place mix entries to run without conversion.
 #
 # Gaps:
 # - The tokenized deposit is pathUSD, whose issuer role dev genesis grants users[0]. A
@@ -158,4 +161,6 @@ mix:
   - template: deposit_burn
     weight: 10
   - template: dex_swap
-    weight: 20
+    weight: 17
+  - template: dex_place
+    weight: 3

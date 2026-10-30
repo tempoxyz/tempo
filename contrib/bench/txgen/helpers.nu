@@ -93,7 +93,8 @@ const TXGEN_HELPER_CLICKHOUSE_METRICS_FILE = "contrib/bench/clickhouse-metrics.t
 const TXGEN_HELPER_TIP403_REGISTRY = "0x403c000000000000000000000000000000000000"
 const TXGEN_HELPER_POLICY_ABI = "contrib/bench/txgen/tip403-policy.abi.json"
 const TXGEN_HELPER_POLICY_SETUP_GAS_LIMIT = 10000000
-# Presets that run tip20-policy's issuer and receiver policy setup.
+# Presets that run tip20-policy's issuer and receiver policy setup. Only tip20-policy
+# itself requires full inclusion: load presets such as institutional saturate the pool.
 const TXGEN_HELPER_POLICY_PRESETS = ["tip20-policy" "institutional"]
 
 def txgen-tip20-base-scenario [] {
@@ -1671,7 +1672,7 @@ def txgen-run-preset-pipeline [
     } else {
         print $"  Streaming up to ($tx_count) txgen transaction\(s\) over ($txgen_duration) into bench send..."
     }
-    let check_receipts = $is_vault or $preset_name in $TXGEN_HELPER_POLICY_PRESETS or $is_zone_to_zone
+    let check_receipts = $is_vault or $preset_name == "tip20-policy" or $is_zone_to_zone
     let workload_start_block = if $check_receipts {
         (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}').result | into int
     } else { 0 }
@@ -1687,7 +1688,7 @@ def txgen-run-preset-pipeline [
         return { ok: false, exit_code: 1, report_path: $report_path }
     }
 
-    if ($preset_name in ["zones" "vault-deposit" "vault-withdraw"] or $preset_name in $TXGEN_HELPER_POLICY_PRESETS) and (open $report_path).failed > 0 {
+    if $preset_name in ["zones" "vault-deposit" "vault-withdraw" "tip20-policy"] and (open $report_path).failed > 0 {
         print $"ERROR: ($preset_name) workload contains sender failures; see ($report_path)"
         return { ok: false, exit_code: 1, report_path: $report_path }
     }

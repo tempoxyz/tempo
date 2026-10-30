@@ -50,7 +50,7 @@ assert ("institutional" in $TXGEN_HELPER_ALWAYS_FUND_PRESETS)
 assert equal (open $institutional_spec.spec_path | get include) [dex.yml tip20-policy.yml]
 let institutional = (open $institutional_spec.spec_path)
 assert equal ($institutional.mix | get weight | math sum) 100
-assert equal ($institutional.mix | get template | sort) [deposit_burn deposit_mint dex_swap policy_transfer settlement_transfer treasury_sweep]
+assert equal ($institutional.mix | get template | sort) [deposit_burn deposit_mint dex_place dex_swap policy_transfer settlement_transfer treasury_sweep]
 assert equal ($institutional.templates.treasury_sweep.calls | length) 8
 assert ($institutional.templates.treasury_sweep.calls | all { |call| $call.args.0.pool.pool == policy_receivers })
 assert equal $institutional.templates.policy_transfer.fee_token (txgen-tip20-token-address 1)
