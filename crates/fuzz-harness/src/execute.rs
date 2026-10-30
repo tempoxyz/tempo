@@ -6,8 +6,9 @@ use alloy_consensus::{
     BlockHeader as _, proofs::calculate_transaction_root, transaction::Transaction as _,
 };
 use alloy_eips::Decodable2718 as _;
-use alloy_primitives::Address;
+use alloy_primitives::{Address, Log};
 use evm2::bytecode::Bytecode;
+use invariants_core::Report;
 use reth_consensus::{Consensus as _, HeaderValidator as _};
 use reth_evm::{
     BlockExecutionError, BlockExecutor as _, BlockExecutorFactory as _, ConfigureEvm as _,
@@ -21,6 +22,7 @@ use tempo_fuzz_types::{
     PreState, ResultGas, StateChanges, TempoBlock, TempoExecutionOutcome, TempoHarnessInput,
     TempoHarnessOutcome, TempoTransactionInput, TransactionOutcome, TxOutcome, TxReceiptOutput,
 };
+use tempo_invariants::Tx;
 use tempo_primitives::{Block, BlockBody, TempoTxEnvelope};
 
 use crate::{
@@ -155,16 +157,13 @@ fn broken_start(
     };
     let (PreState::Genesis(listed) | PreState::Exact { state: listed, .. }) = pre_state;
     let logged = outcome.receipts.iter().flat_map(|receipt| &receipt.logs);
-    let topics = logged
-        .flat_map(|log| log.topics())
-        .filter(|topic| topic[..12] == [0; 12]);
     let holders: Vec<Address> = db
         .cache
         .borrow()
         .accounts
         .keys()
         .copied()
-        .chain(topics.map(|topic| Address::from_word(*topic)))
+        .chain(invariants::logged_addresses(logged))
         .collect();
     let mut failures = Vec::new();
     invariants::check(
@@ -174,7 +173,9 @@ fn broken_start(
         &InvariantScope::Execution,
         |address| listed.accounts.contains_key(address),
         &holders,
+        None,
         &mut failures,
+        &mut Report::default(),
     );
     failures
 }
@@ -242,6 +243,13 @@ pub(crate) fn execute_blocks(
                 outcome
                     .invariant_failures
                     .extend(outputs.invariant_failures);
+                for (id, counts) in outputs.invariant_report.counts {
+                    outcome
+                        .invariant_counts
+                        .entry(id.into())
+                        .or_default()
+                        .add(counts);
+                }
             }
             Err(error) => {
                 outcome.error = error;
@@ -258,6 +266,7 @@ struct BlockOutputs {
     receipts: Vec<TxReceiptOutput>,
     changes: BlockChanges,
     invariant_failures: Vec<InvariantFailure>,
+    invariant_report: Report,
 }
 
 /// The state updates an executor has emitted since they were last taken.
@@ -336,14 +345,16 @@ fn execute_txs(
         db,
         hooked,
         InvariantScope::Block { block_index },
-        false,
+        None,
         updates,
         &mut outputs.invariant_failures,
+        &mut outputs.invariant_report,
     );
 
     let basefee = block.header().base_fee_per_gas();
     for (tx_index, tx) in block.transactions_recovered().enumerate() {
         let tx_index = tx_index as u64;
+        let sender = tx.signer();
         let effective_gas_price = tx.effective_gas_price(basefee);
         let result = executor.execute_transaction_without_commit(tx)?;
         let execution = result.result();
@@ -381,15 +392,21 @@ fn execute_txs(
             block_index,
             tx_index,
         };
+        let receipt = outputs.receipts.last().expect("pushed above");
+        let tx = Tx {
+            sender,
+            success: receipt.outcome == TxOutcome::Success,
+        };
         let tx_changes = step(
             evm_config,
             executor,
             db,
             hooked,
             scope,
-            true,
+            Some((tx, &receipt.logs)),
             updates,
             &mut outputs.invariant_failures,
+            &mut outputs.invariant_report,
         );
         outputs.changes.txs.push(tx_changes);
     }
@@ -401,8 +418,9 @@ fn take(hooked: &Updates) -> Vec<StateUpdate> {
     std::mem::take(&mut *hooked.lock().expect("the hook does not panic"))
 }
 
-/// Ends an execution step: writes its changes to `db`, checks invariants at `scope` (only for
-/// contracts the step changed, if `changed_only`), and returns the step's changes.
+/// Ends an execution step: writes its changes to `db`, checks invariants at `scope`, and returns the
+/// step's changes. A transaction's step, given the transaction and its logs as `tx`, is checked only
+/// for the contracts it changed, and also on what it did.
 #[allow(clippy::too_many_arguments)]
 fn step(
     evm_config: &TempoEvmConfig,
@@ -410,9 +428,10 @@ fn step(
     db: &Db,
     hooked: &Updates,
     scope: InvariantScope,
-    changed_only: bool,
+    tx: Option<(Tx, &[Log])>,
     updates: &mut Vec<StateUpdate>,
     failures: &mut Vec<InvariantFailure>,
+    report: &mut Report,
 ) -> StateChanges {
     let step = take(hooked);
     let net = Net::of(&step);
@@ -423,10 +442,25 @@ fn step(
         let cache = db.cache.borrow();
         state::changes(&net, &Contracts(&[&overlay.contracts, &cache.contracts]))
     };
-    let selected = |contract: &_| !changed_only || net.contains(contract);
+    let selected = |contract: &_| tx.is_none() || net.contains(contract);
+    let effects = tx.map(|(tx, logs)| invariants::StepEffects {
+        net: &net,
+        logs,
+        tx,
+    });
     let evm = executor.evm();
     let env = TempoEvmEnv::new_with_version(evm.config_spec_id(), *evm.block(), *evm.version());
-    invariants::check(db, evm_config, env, &scope, selected, &[], failures);
+    invariants::check(
+        db,
+        evm_config,
+        env,
+        &scope,
+        selected,
+        &[],
+        effects,
+        failures,
+        report,
+    );
     updates.extend(step);
     changes
 }

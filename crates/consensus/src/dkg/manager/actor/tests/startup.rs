@@ -10,16 +10,14 @@ use tempo_chainspec::NetworkIdentity;
 use tempo_primitives::TempoHeader;
 
 use super::{
-    super::{
-        startup::verify_finalized_tip,
-        state::{self, ShareState, State},
-    },
+    super::state::{self, ShareState, State},
     harness::{Harness, header, outcome_header},
 };
 use crate::{
     consensus::Digest,
     epoch::SchemeProvider,
     gossip::Certificate,
+    startup::verify_finalized_tip,
     test_utils::{DkgFixture, dkg_fixture, make_certificate},
 };
 
@@ -62,8 +60,8 @@ fn startup_uses_the_newest_trusted_identity_without_falling_back() {
     Runner::default().start(|mut context| async move {
         let old = dkg_fixture(&mut context, Epoch::new(1));
         let new = dkg_fixture(&mut context, Epoch::new(3));
-        let old_state = persisted(&old, &mut context);
-        let new_state = persisted(&new, &mut context);
+        let old_state = identity(&old);
+        let new_state = identity(&new);
         let old_tip = tip(&old, 3);
         let new_tip = tip(&new, 3);
         let reshared_tip = tip(&new, 4);
@@ -175,7 +173,7 @@ fn historical_tips_and_genesis_remain_allowed() {
     Runner::default().start(|mut context| async move {
         let old = dkg_fixture(&mut context, Epoch::new(1));
         let new = dkg_fixture(&mut context, Epoch::new(3));
-        let state = persisted(&new, &mut context);
+        let state = identity(&new);
         // Last block of epoch 2, signed by the outgoing key. Persisted DKG
         // state already holds the identity for epoch 3.
         let boundary_tip = tip_for_header(&old, &header(Height::new(29)));
@@ -330,19 +328,23 @@ fn startup_rejects_epoch_tampering_at_or_after_identity_epoch() {
 }
 
 #[test]
-#[should_panic(expected = "persisted DKG network identity differs from the configured identity")]
 fn startup_rejects_conflicting_persisted_identity_even_for_a_historical_tip() {
     Runner::default().start(|mut context| async move {
         let configured_fixture = dkg_fixture(&mut context, Epoch::new(3));
         let local = dkg_fixture(&mut context, Epoch::new(3));
-        let state = persisted(&local, &mut context);
-        let _ = verify_finalized_tip(
+        let state = identity(&local);
+        let error = verify_finalized_tip(
             &mut context,
             &identity(&configured_fixture),
             Some(&state),
             None,
             Height::zero(),
             &SchemeProvider::new(),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "persisted DKG network identity differs from the configured identity in epoch `3`"
         );
     });
 }

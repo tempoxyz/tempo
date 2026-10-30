@@ -19,8 +19,9 @@ use commonware_cryptography::{
     ed25519::{PrivateKey, PublicKey},
 };
 use commonware_math::algebra::Random as _;
-use commonware_runtime::{Clock, Spawner};
+use commonware_runtime::{BufferPooler, Clock, Metrics, Spawner, Storage};
 use commonware_utils::vec::NonEmptyVec;
+use rand_core::CryptoRng;
 use reth_primitives_traits::NodePrimitives;
 use reth_provider::{
     BlockIdReader, HeaderProvider,
@@ -32,6 +33,7 @@ use tempo_primitives::TempoHeader;
 use crate::{
     consensus::{Block, Digest},
     epoch::SchemeProvider,
+    gossip::Certificate,
 };
 
 mod actor;
@@ -57,6 +59,9 @@ pub(super) struct Config<P, M> {
     pub(super) network_identity: NetworkIdentity,
 
     pub(super) last_finalized_height: Height,
+    pub(super) finalized_tip: Option<(Height, Certificate)>,
+
+    pub(super) partition_prefix: String,
 
     pub(super) marshal: M,
 
@@ -66,16 +71,16 @@ pub(super) struct Config<P, M> {
 /// A driver and its mailbox.
 pub(super) type Initialized<TContext, P, M> = (Driver<TContext, P, M>, Mailbox);
 
-pub(super) fn try_init<TContext, P, M>(
+pub(super) async fn try_init<TContext, P, M>(
     context: TContext,
     config: Config<P, M>,
 ) -> eyre::Result<Initialized<TContext, P, M>>
 where
-    TContext: Clock + Spawner,
+    TContext: Clock + Spawner + Metrics + Storage + BufferPooler + CryptoRng,
     P: ExecutionProvider + 'static,
     M: Marshal + 'static,
 {
-    actor::try_init(context, config)
+    actor::try_init(context, config).await
 }
 
 /// Finalized execution-layer state needed to establish the driver's trusted boundary.

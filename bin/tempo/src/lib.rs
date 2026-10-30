@@ -605,6 +605,26 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                     }
 
                     if has_consensus_engine {
+                        let module_config = ctx.modules.module_config();
+                        let mut missing = Vec::new();
+                        if cli::selection_lacks_consensus(module_config.http()) {
+                            missing.push("--http.api");
+                        }
+                        if cli::selection_lacks_consensus(module_config.ws()) {
+                            missing.push("--ws.api");
+                        }
+                        if !missing.is_empty() {
+                            warn!(
+                                flags = %missing.join(", "),
+                                "the consensus RPC module (consensus_*) is served on transports \
+                                 whose module selection does not list it; this implicit activation \
+                                 is deprecated and will be removed in a future release, add \
+                                 `consensus` to the listed flags to keep serving it",
+                            );
+                        }
+
+                        // Registered on HTTP, WS and IPC regardless of selection until the
+                        // deprecation above is completed.
                         // Connection IDs are only unique within one server, so the handler with
                         // the per-connection cap serves HTTP and WS only. They share one server
                         // when they share a port, and HTTP never runs subscriptions otherwise.

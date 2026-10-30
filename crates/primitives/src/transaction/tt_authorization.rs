@@ -1,3 +1,4 @@
+use alloy_consensus::crypto::RecoveryError;
 use alloy_eips::eip7702::{Authorization, RecoveredAuthority, RecoveredAuthorization};
 use alloy_primitives::{Address, B256};
 use alloy_rlp::{BufMut, Decodable, Encodable, Header, Result as RlpResult, length_of_length};
@@ -73,6 +74,9 @@ impl TempoSignedAuthorization {
     ///
     /// Implementers should check that the authority has no code.
     pub fn recover_authority(&self) -> Result<Address, alloy_consensus::crypto::RecoveryError> {
+        if self.signature.is_or_wraps_configurable_account() {
+            return Err(RecoveryError::new());
+        }
         let sig_hash = self.signature_hash();
         self.signature.recover_signer(&sig_hash)
     }
