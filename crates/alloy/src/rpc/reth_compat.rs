@@ -277,8 +277,6 @@ fn create_mock_primitive_signature(
             pre_hash: false,
         }),
         PrimitiveSignatureType::WebAuthn => {
-            // 37 bytes of authenticator data plus the base clientDataJSON template (50 bytes).
-            const MIN_WEBAUTHN_SIZE: usize = 87;
             const DEFAULT_WEBAUTHN_SIZE: usize = 800;
 
             let size = if let Some(data) = key_data {
@@ -290,19 +288,36 @@ fn create_mock_primitive_signature(
                 }
             } else {
                 DEFAULT_WEBAUTHN_SIZE
-            }
-            .clamp(MIN_WEBAUTHN_SIZE, max_webauthn_data_len);
-            mock_webauthn_signature(size)
+            };
+            mock_webauthn_signature(size.min(max_webauthn_data_len))
         }
     }
 }
 
-/// Creates a mock `WebAuthn` signature with `len` bytes of data.
-///
-/// The data is non-zero, so it costs at least as much calldata gas as a real signature's.
-fn mock_webauthn_signature(len: usize) -> PrimitiveSignature {
+/// Creates a mock `WebAuthn` signature with `size` bytes of data, at least the base template's.
+fn mock_webauthn_signature(size: usize) -> PrimitiveSignature {
+    // Base clientDataJSON template (50 bytes) plus 37 bytes of authenticator data.
+    const BASE_CLIENT_JSON: &str = r#"{"type":"webauthn.get","challenge":"","origin":""}"#;
+    const AUTH_DATA_SIZE: usize = 37;
+    const MIN_WEBAUTHN_SIZE: usize = AUTH_DATA_SIZE + BASE_CLIENT_JSON.len();
+
+    let size = size.max(MIN_WEBAUTHN_SIZE);
+
+    // Price every authenticator byte as nonzero; real RP-ID hashes and counters vary.
+    let mut webauthn_data = vec![0xff; AUTH_DATA_SIZE];
+    webauthn_data[32] = 0x01;
+
+    let additional_bytes = size - MIN_WEBAUTHN_SIZE;
+    let client_json = if additional_bytes > 0 {
+        let padding = "x".repeat(additional_bytes);
+        format!(r#"{{"type":"webauthn.get","challenge":"","origin":"{padding}"}}"#,)
+    } else {
+        BASE_CLIENT_JSON.to_string()
+    };
+
+    webauthn_data.extend_from_slice(client_json.as_bytes());
     PrimitiveSignature::WebAuthn(WebAuthnSignature {
-        webauthn_data: Bytes::from(vec![0xff; len]),
+        webauthn_data: Bytes::from(webauthn_data),
         r: B256::ZERO,
         s: B256::ZERO,
         pub_key_x: B256::ZERO,
