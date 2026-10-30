@@ -1,0 +1,59 @@
+# Projected pipeline, by pillar: every customer in the internal planning sheet's
+# pipeline (43 programs, as of 2026-10-30), grouped by primary flow into pillars and
+# summed. Names are pillars and flows, never programs.
+#
+#   pillar             tx/month   avg gas/tx   gas share  flows (sheet primary flow)
+#   embedded-finance   1,910,000     ~336K        83%     card spend, earn, migration, trading
+#   cross-border         439,000     ~217K        12%     remittance, payouts
+#   institutional        303,435     ~115K         5%     settlement, treasury
+#   agentic                    0         -         -      no pipeline program yet
+#
+# share is each pillar's gas (tx/month times the sheet's measured gas per tx, card swipes
+# funded from Earn at ~350K), in billions of gas per month; flow weights are the same gas
+# split within the pillar. Peak factor 84 is mainnet's busiest minute over its 30-day
+# average general-lane load (Sep 23 - Oct 22 2026).
+#
+# Offered rates (tps), peak minute: Year 1 = the pipeline live, 2,652,435 tx/month / 2,592,000 s
+# x 84 = 86 tx/s; Year 2 = 5x (growth model: 3x deployments x 1.67x size per year) = 430 tx/s;
+# Year 3 = 2,150 tx/s, past what 100 GiB of bench state represents.
+#
+# Templates approximate the pillars within neobank-generic: cross-border has no bridge
+# fixture and institutional no TIP-403 policy or mint/burn. The dedicated presets
+# (cross-border, institutional, agentic, neobank-generic) measure each pillar's ceiling.
+version: 1
+shapes:
+  - name: embedded-finance
+    pillar: embedded-finance
+    description: Card spend funded from Earn, Earn deposits and withdrawals, wallet transfers.
+    volume:
+      tx_per_month: 1910000
+      peak_factor: 84
+    share: 641.6
+    flows:
+      card_from_earn: {weight: 490, templates: [card_settlement]}
+      earn_deposit: {weight: 79, templates: [vault_deposit]}
+      earn_withdraw: {weight: 52, templates: [vault_withdraw]}
+      transfers: {weight: 20, templates: [public_transfer_memo]}
+    presets: [neobank-generic, card-settlement]
+  - name: cross-border
+    pillar: cross-border
+    description: Remittance payouts with memos and global payouts cashed out.
+    volume:
+      tx_per_month: 439000
+      peak_factor: 84
+    share: 95.4
+    flows:
+      remittance: {weight: 50.2, templates: [public_transfer_memo]}
+      payouts: {weight: 45.2, templates: [public_transfer, cash_out]}
+    presets: [dex]
+  - name: institutional
+    pillar: institutional
+    description: Settlement and treasury transfers between known accounts.
+    volume:
+      tx_per_month: 303435
+      peak_factor: 84
+    share: 34.9
+    flows:
+      settlement: {weight: 29.7, templates: [public_transfer_memo]}
+      treasury: {weight: 5.2, templates: [public_transfer]}
+    presets: [tip20-policy]

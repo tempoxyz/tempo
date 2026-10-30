@@ -19,6 +19,7 @@ pub mod metrics;
 mod network;
 pub(crate) mod network_identity;
 pub(crate) mod peer_manager;
+pub(crate) mod startup;
 pub mod storage;
 #[cfg(test)]
 pub(crate) mod test_utils;

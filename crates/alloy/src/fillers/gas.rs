@@ -12,7 +12,10 @@ use alloy_provider::{
 use alloy_transport::TransportResult;
 use tempo_primitives::transaction::{FEE_PAYER_SIGNATURE_MARKER, SignedKeyAuthorization};
 
-use crate::{TempoNetwork, provider::TempoProviderExt, rpc::TempoTransactionRequest};
+use crate::{
+    TempoNetwork, accounts::authorization_accounts, provider::TempoProviderExt,
+    rpc::TempoTransactionRequest,
+};
 
 /// Gas that a fee payer signature adds from T14: one cold account access, equal to the cost the
 /// protocol charges for reading the fee payer's account.
@@ -218,12 +221,10 @@ fn validate_authorization(
             actual: authorization.chain_id,
         });
     }
-    if let Some(authorized_account) = authorization.account
-        && authorized_account != account
-    {
+    if let Some(actual) = authorization_accounts(signed).find(|authorized| *authorized != account) {
         return Err(KeyAuthorizationError::AuthorizationAccountMismatch {
             expected: account,
-            actual: authorized_account,
+            actual,
         });
     }
     if authorization

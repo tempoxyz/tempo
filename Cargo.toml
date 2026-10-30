@@ -126,7 +126,7 @@ debug = "line-tables-only"
 strip = "none"
 incremental = true
 
-[profile.dst]
+[profile.fuzz]
 inherits = "profiling"
 debug-assertions = true
 overflow-checks = true
@@ -337,6 +337,7 @@ commonware-runtime = "2026.9.0"
 commonware-storage = "2026.9.0"
 commonware-utils = "2026.9.0"
 
+antithesis_sdk = { version = "0.3.0", default-features = false }
 arbitrary = { version = "1.4", features = ["derive"] }
 async-trait = "0.1"
 auto_impl = "1"

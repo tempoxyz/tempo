@@ -410,6 +410,17 @@ where
         )
         .wrap_err("unable to start cryptographic dealer instance")?;
 
+        // Storage holds every log read from a finalized header before the dealer
+        // is created, so ours being there means it is already on chain.
+        if self
+            .cache
+            .get(&round.epoch)
+            .is_some_and(|events| events.logs.contains_key(&me.public_key()))
+        {
+            info!("own dealer log already finalized; not dealing again");
+            return Ok(Some(Dealer::new(None, pub_msg, BTreeMap::new())));
+        }
+
         // Replay stored acks
         let mut unsent: BTreeMap<PublicKey, DealerPrivMsg> = priv_msgs.into_iter().collect();
         for (player, ack) in self.acks_for_epoch(round.epoch) {

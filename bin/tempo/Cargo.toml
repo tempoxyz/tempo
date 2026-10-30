@@ -137,7 +137,7 @@ required-features = ["localnet"]
 [features]
 default = ["asm-keccak", "jemalloc", "otlp", "keccak-cache-global"]
 
-dst = ["tempo-precompiles/dst", "reth-db/dst", "reth-trie/dst"]
+fuzz = ["tempo-precompiles/fuzz", "reth-db/dst", "reth-trie/dst"]
 
 localnet = ["dep:nix"]
 
