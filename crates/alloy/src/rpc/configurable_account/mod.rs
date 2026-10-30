@@ -1,7 +1,7 @@
 use alloy_primitives::{Address, Bytes};
 use alloy_rlp::decode_exact;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
-use tempo_primitives::{SignatureType, transaction::ConfigurableAccountConfig};
+use tempo_primitives::transaction::ConfigurableAccountConfig;
 
 /// One independently signed configurable role in a simulation.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -26,10 +26,23 @@ pub struct ConfigurableAccountSimulationApproval {
     pub owner: Address,
     /// Omission conservatively models a maximum-size `WebAuthn` approval.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub key_type: Option<SignatureType>,
+    pub key_type: Option<PrimitiveSignatureType>,
     /// `WebAuthn` data-length hint; see [`TempoTransactionRequest::key_data`](super::TempoTransactionRequest::key_data).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_data: Option<Bytes>,
+}
+
+/// Signature type of a primitive owner key: every [`SignatureType`](tempo_primitives::SignatureType)
+/// but a configurable account, which an owner approval cannot use.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PrimitiveSignatureType {
+    /// A secp256k1 signature.
+    Secp256k1,
+    /// A P256 signature.
+    P256,
+    /// A `WebAuthn` P256 assertion.
+    WebAuthn,
 }
 
 mod serde_configurable_account_config {

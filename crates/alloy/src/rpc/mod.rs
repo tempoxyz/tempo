@@ -7,6 +7,7 @@ mod configurable_account;
 mod request;
 pub use configurable_account::{
     ConfigurableAccountSimulationApproval, ConfigurableAccountSimulationSpec,
+    PrimitiveSignatureType,
 };
 pub use request::{FeeToken, TempoCallBuilderExt, TempoTransactionRequest};
 

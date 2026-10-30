@@ -1101,16 +1101,20 @@ async fn configurable_account_rpc_fill_and_access_list_preserve_authority() -> e
         .owners
         .iter()
         .map(|owner| {
-            let signature = owner.sign(B256::ZERO)?;
-            Ok(ConfigurableAccountSimulationApproval {
-                owner: owner.address(),
-                key_type: Some(signature.signature_type()),
-                key_data: match &signature {
-                    PrimitiveSignature::WebAuthn(signature) => Some(Bytes::from(
+            let (key_type, key_data) = match owner.sign(B256::ZERO)? {
+                PrimitiveSignature::Secp256k1(_) => (PrimitiveSignatureType::Secp256k1, None),
+                PrimitiveSignature::P256(_) => (PrimitiveSignatureType::P256, None),
+                PrimitiveSignature::WebAuthn(signature) => (
+                    PrimitiveSignatureType::WebAuthn,
+                    Some(Bytes::from(
                         u16::try_from(signature.webauthn_data.len())?.to_be_bytes(),
                     )),
-                    PrimitiveSignature::Secp256k1(_) | PrimitiveSignature::P256(_) => None,
-                },
+                ),
+            };
+            Ok(ConfigurableAccountSimulationApproval {
+                owner: owner.address(),
+                key_type: Some(key_type),
+                key_data,
             })
         })
         .collect::<eyre::Result<Vec<_>>>()?;

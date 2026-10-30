@@ -1794,6 +1794,7 @@ fn test_t3_scope_validation_moves_to_execution(gas_limit: u64, expected_stop: In
     let keychain = prepare_keychain(
         &mut evm,
         env.as_aa().unwrap(),
+        env.execution_context(),
         TempoFeeContext {
             fee_payer: caller,
             fee_token: DEFAULT_FEE_TOKEN,
@@ -1917,6 +1918,7 @@ fn test_t3_scope_validation_returns_call_not_allowed_revert_data() {
     let keychain = prepare_keychain(
         &mut evm,
         env.as_aa().unwrap(),
+        env.execution_context(),
         TempoFeeContext {
             fee_payer: caller,
             fee_token: DEFAULT_FEE_TOKEN,
@@ -2717,7 +2719,12 @@ mod keychain {
         chain_id: u64,
         spec: TempoHardfork,
     ) -> HandlerResult<()> {
-        validate_key_authorization(env.as_aa().unwrap(), chain_id, spec)?;
+        validate_key_authorization(
+            env.as_aa().unwrap(),
+            env.execution_context(),
+            chain_id,
+            spec,
+        )?;
         Ok(())
     }
 
@@ -3647,8 +3654,12 @@ mod keychain {
             // Exercise actual V1 key recovery instead of the estimation-only override.
             let env = env.with_simulation_overrides(B256::ZERO, None, None);
 
-            let env_result =
-                validate_key_authorization(env.as_aa().unwrap(), 1, TempoHardfork::T1B);
+            let env_result = validate_key_authorization(
+                env.as_aa().unwrap(),
+                env.execution_context(),
+                1,
+                TempoHardfork::T1B,
+            );
             assert!(
                 env_result.is_ok(),
                 "V1 replay should pass pre-T1C stateless validation for {user}: {env_result:?}"
