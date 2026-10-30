@@ -22,7 +22,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     sync::Arc,
 };
-use tempo_evm::{TempoBlockExecutor, TempoEvmConfig, TempoTransactionBoundary};
+use tempo_evm::{TempoBlockExecutor, TempoEvmConfig};
 use tempo_primitives::{Block, TempoPrimitives};
 
 /// A block's execution records and resulting state.
@@ -138,11 +138,11 @@ where
     let pre = drain(&updates);
     let mut records = Vec::new();
     for (index, tx) in block.transactions_recovered().enumerate() {
-        let before = executor.transaction_boundary().encode().to_vec();
+        let before = encode_boundary(executor.transaction_counters()).to_vec();
         let output = executor.execute_transaction_without_commit(tx)?;
         let outcome = outcome(&output);
         executor.commit_transaction(output)?;
-        let after = executor.transaction_boundary().encode().to_vec();
+        let after = encode_boundary(executor.transaction_counters()).to_vec();
         let receipt = alloy_rlp::encode(
             executor
                 .receipts()
@@ -213,9 +213,12 @@ pub fn run_standalone(
     before: &[u8],
 ) -> eyre::Result<Transaction> {
     let mut executor = executor(config, view.clone(), block)?;
-    let boundary = TempoTransactionBoundary::decode(before)
-        .ok_or_else(|| eyre::eyre!("invalid transaction boundary"))?;
-    executor.restore_transaction_boundary(boundary);
+    let counters =
+        decode_boundary(before).ok_or_else(|| eyre::eyre!("invalid transaction boundary"))?;
+    eyre::ensure!(
+        executor.restore_transaction_counters(counters),
+        "invalid transaction boundary section"
+    );
     let updates = hooked(&mut executor)?;
     let tx = block
         .transactions_recovered()
@@ -224,7 +227,7 @@ pub fn run_standalone(
     let output = executor.execute_transaction_without_commit(tx)?;
     let outcome = outcome(&output);
     executor.commit_transaction(output)?;
-    let after = executor.transaction_boundary().encode().to_vec();
+    let after = encode_boundary(executor.transaction_counters()).to_vec();
     let receipt = alloy_rlp::encode(
         executor
             .receipts()
@@ -371,4 +374,29 @@ pub fn verify_changesets(
         eyre::bail!("block {number}: account {address} in changeset but not in reverts");
     }
     Ok(())
+}
+
+/// Stored size of a transaction boundary: a section tag followed by six big-endian counters.
+const BOUNDARY_LEN: usize = 1 + 6 * 8;
+
+/// Encodes [`TempoBlockExecutor::transaction_counters`] for storage.
+fn encode_boundary(counters: [u64; 7]) -> [u8; BOUNDARY_LEN] {
+    let mut bytes = [0; BOUNDARY_LEN];
+    bytes[0] = counters[0] as u8;
+    for (i, value) in counters[1..].iter().enumerate() {
+        bytes[1 + i * 8..9 + i * 8].copy_from_slice(&value.to_be_bytes());
+    }
+    bytes
+}
+
+/// Decodes a boundary produced by [`encode_boundary`].
+fn decode_boundary(bytes: &[u8]) -> Option<[u64; 7]> {
+    if bytes.len() != BOUNDARY_LEN {
+        return None;
+    }
+    let mut counters = [bytes[0] as u64, 0, 0, 0, 0, 0, 0];
+    for (i, value) in counters[1..].iter_mut().enumerate() {
+        *value = u64::from_be_bytes(bytes[1 + i * 8..9 + i * 8].try_into().ok()?);
+    }
+    Some(counters)
 }
