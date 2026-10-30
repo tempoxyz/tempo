@@ -9,6 +9,8 @@ use zone_node::cli::ZoneCli;
 static ALLOC: reth_cli_util::allocator::Allocator = reth_cli_util::allocator::new_allocator();
 
 fn main() {
+    #[cfg(feature = "fuzz")]
+    antithesis_sdk::antithesis_init();
     reth_cli_util::sigsegv_handler::install();
 
     rustls::crypto::aws_lc_rs::default_provider()
