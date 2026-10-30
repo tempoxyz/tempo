@@ -453,23 +453,33 @@ fn validate_time_window(
     Ok(())
 }
 
-fn access_key_id(aa: &TempoAaTx) -> Result<Option<Address>, TempoInvalidTransaction> {
+fn access_key_id(
+    aa: &TempoAaTx,
+    context: ExecutionContext,
+) -> Result<Option<Address>, TempoInvalidTransaction> {
     let signed = aa.inner();
     let Some(signature) = signed.signature().as_keychain() else {
         return Ok(None);
     };
-    let key_id = if let Some(key_id) = aa.override_key_id() {
-        key_id
-    } else {
-        signature
-            .key_id(&signed.signature_hash())
-            .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
-    };
-    Ok(Some(key_id))
+    if let Some(key_id) = aa.override_key_id() {
+        return Ok(Some(key_id));
+    }
+    // A simulated configurable delegate carries placeholder owner approvals: name the delegate
+    // instead of recovering it from them.
+    if matches!(context, ExecutionContext::Simulation)
+        && let Some(delegate) = signature.signature.as_configurable_account()
+    {
+        return Ok(Some(delegate.account()));
+    }
+    signature
+        .key_id(&signed.signature_hash())
+        .map(Some)
+        .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)
 }
 
 fn validate_key_authorization(
     aa: &TempoAaTx,
+    context: ExecutionContext,
     chain_id: u64,
     spec: TempoHardfork,
 ) -> Result<(), TempoInvalidTransaction> {
@@ -482,7 +492,7 @@ fn validate_key_authorization(
         return Err(ConfigurableAccountError::UnsupportedContext.into());
     }
 
-    let access_key = access_key_id(aa)?;
+    let access_key = access_key_id(aa, context)?;
     let same_tx_auth_use = access_key == Some(key_auth.key_id);
     if access_key.is_some() && !same_tx_auth_use && !spec.is_t6() {
         return Err(TempoInvalidTransaction::AccessKeyCannotAuthorizeOtherKeys);
@@ -622,6 +632,7 @@ fn keychain_error(error: TempoPrecompileError) -> HandlerError {
 fn prepare_keychain(
     host: &mut Evm<'_, TempoEvmTypes>,
     aa: &TempoAaTx,
+    context: ExecutionContext,
     fee: TempoFeeContext,
 ) -> HandlerResult<KeychainState> {
     let signed = aa.inner();
@@ -642,7 +653,8 @@ fn prepare_keychain(
     }
 
     // Use override_key_id if provided (for gas estimation), otherwise recover from signature.
-    let access_key = access_key_id(aa)?.expect("keychain signature must have an access key");
+    let access_key =
+        access_key_id(aa, context)?.expect("keychain signature must have an access key");
     let key_authorization = tx.key_authorization.as_ref();
 
     // Classify whether this keychain-signed tx is using the same access key that the
@@ -1383,7 +1395,12 @@ fn prepare_aa(
             .validate_version(spec.is_t1c())
             .map_err(TempoInvalidTransaction::from)?;
     }
-    validate_key_authorization(request.tx.inner(), request.host.version().chain_id, spec)?;
+    validate_key_authorization(
+        request.tx.inner(),
+        request.envelope.execution_context(),
+        request.host.version().chain_id,
+        spec,
+    )?;
     // Access-key CREATE is a cheap structural rejection that does not depend on any
     // per-call scope walk or state mutation. Rejecting it here keeps validation work
     // constant and avoids entering CREATE execution paths that require special protocol-
@@ -1521,7 +1538,12 @@ fn prepare_aa(
     // For Keychain signatures, validate the acting access key before fee collection when it
     // already exists. Same-tx auth+use is the exception: that key is registered only after fees
     // are collected, so fee-limit validation uses the inline authorization payload instead.
-    let keychain = prepare_keychain(request.host, request.tx.inner(), fee_context)?;
+    let keychain = prepare_keychain(
+        request.host,
+        request.tx.inner(),
+        request.envelope.execution_context(),
+        fee_context,
+    )?;
     if request.host.feature(EvmFeatures::FEE_CHARGE) {
         TempoHandlerHooks::collect_fee(
             request.host,

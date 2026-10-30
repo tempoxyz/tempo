@@ -141,10 +141,10 @@ impl TempoTxEnv {
         };
         let direct = match aa.and_then(|aa| aa.signature().as_configurable_account()) {
             Some(signature) => signature.account(),
-            // RPC simulation has no owner witness: a registered caller without an access-key
-            // override stands in for its own quorum.
+            // RPC simulation has no owner witness: a registered caller signing without an
+            // access key stands in for its own quorum.
             None if matches!(self.execution_context(), ExecutionContext::Simulation)
-                && aa.is_none_or(|aa| aa.override_key_id().is_none())
+                && aa.is_none_or(|aa| aa.signature().as_keychain().is_none())
                 && !StorageCtx.config_commitment(self.caller())?.is_zero() =>
             {
                 self.caller()
@@ -430,7 +430,7 @@ fn validate_root_keys(
     }
     if let Some(keychain) = aa.signature().as_keychain()
         && !keychain.signature.is_configurable_account()
-        && let Some(key_id) = access_key_id(aa)?
+        && let Some(key_id) = access_key_id(aa, envelope.execution_context())?
     {
         check(host, key_id, RootKeyRole::AccessKey)?;
     }

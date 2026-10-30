@@ -24,7 +24,7 @@ use tempo_alloy::{
     TempoNetwork,
     rpc::{
         ConfigurableAccountSimulationApproval, ConfigurableAccountSimulationSpec,
-        TempoTransactionReceipt, TempoTransactionRequest,
+        PrimitiveSignatureType, TempoTransactionReceipt, TempoTransactionRequest,
     },
 };
 use tempo_chainspec::hardfork::TempoHardfork;

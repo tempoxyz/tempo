@@ -1782,6 +1782,29 @@ fn retired_root_rejects_delegated_roles() {
         "{error:?}"
     );
 
+    // A simulated delegate names itself without the key ID override: its placeholder approvals
+    // are not recovered, while a signed transaction still verifies them.
+    let placeholder = delegate_keychain_signed(
+        aa_tx(5, vec![spend(20)]),
+        account,
+        key.address(),
+        &key_config,
+        &signer(0x77),
+    );
+    assert_eq!(
+        rejection(&mut f, &placeholder, account),
+        TempoInvalidTransaction::ConfigurableAccount(ConfigurableAccountError::Quorum(
+            ConfigurableAccountQuorumError::SignerNotOwner
+        ))
+    );
+    let output = f
+        .evm
+        .transact(&simulation_env(&placeholder, account, None))
+        .unwrap()
+        .detach();
+    assert!(output.result.status, "{:?}", output.result);
+    assert_eq!(remaining(&mut f), U256::from(70));
+
     // Its owner quorum uses the same grant: the limit and the spent counter carry over.
     let tx = delegate_keychain_signed(
         aa_tx(5, vec![spend(20)]),
