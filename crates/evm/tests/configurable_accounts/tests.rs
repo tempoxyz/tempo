@@ -3938,6 +3938,35 @@ fn sender_registration_gas(lane: NonceLane, create_first: bool, empty_sender: bo
     block_gas(&mut f, &tx)
 }
 
+/// Gas of a nonce-zero protocol transaction of a primitive sender, signed as its access key by a
+/// configurable delegate that registers in it.
+fn delegate_registration_gas(empty_delegate: bool) -> BlockGas {
+    let mut f = Fixture::with_parent(false);
+    let parent = f.account;
+    seed_account(&mut f, parent, false);
+    let owner = signer(2);
+    let config = ConfigurableAccountConfig {
+        salt: B256::repeat_byte(2),
+        version: 0,
+        threshold: 1,
+        owners: owner_set(vec![owner.address()]),
+    };
+    let delegate = config.derive_account().unwrap();
+    seed_account(&mut f, delegate, empty_delegate);
+    let grant = KeyAuthorization::unrestricted(1, SignatureType::ConfigurableAccount, delegate)
+        .with_account(parent);
+    let approval = f.owner.sign_hash_sync(&grant.signature_hash()).unwrap();
+    let tx = TempoTransaction {
+        key_authorization: Some(grant.into_signed(approval)),
+        gas_limit: 5_000_000,
+        ..aa_tx(0, vec![f.getter()])
+    };
+    block_gas(
+        &mut f,
+        &delegate_keychain_signed(tx, parent, delegate, &config, &owner),
+    )
+}
+
 #[test]
 fn registration_charges_the_new_account_cost_once_for_every_nonce_type() {
     let params = tempo_gas_params(TempoHardfork::T14);
@@ -4004,6 +4033,13 @@ fn registration_charges_the_new_account_cost_once_for_every_nonce_type() {
         };
         assert_eq!(empty, expected, "{lane:?}, create first: {create_first}");
     }
+
+    // A registered delegate is never the sender, so its creation is always charged.
+    assert_eq!(
+        delegate_registration_gas(true),
+        delegate_registration_gas(false).plus(new_account),
+        "empty delegate"
+    );
 }
 
 #[test]
