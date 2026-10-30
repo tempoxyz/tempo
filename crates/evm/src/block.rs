@@ -29,7 +29,7 @@ use tempo_contracts::precompiles::{
     ICurrentCommittee, INITIAL_FACTORY_OWNER, InitialZoneFactoryAccount,
     RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, STORAGE_CREDITS_ADDRESS,
     TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS, initial_zone_factory_state,
-    t13_zone_factory_state,
+    t13_zone_factory_state, t14_zone_factory_state,
 };
 use tempo_primitives::{SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType};
 use tracing::trace;
@@ -194,6 +194,7 @@ pub struct TempoBlockExecutor<'a> {
     pub(crate) inner: EthBlockExecutor<'a, TempoEvmTypes, TempoReceiptBuilder>,
 
     t13_active_at_genesis: bool,
+    t14_active_at_genesis: bool,
     prague_active: bool,
     section: BlockSection,
     extra_data: Bytes,
@@ -227,6 +228,8 @@ impl<'a> TempoBlockExecutor<'a> {
         Self {
             t13_active_at_genesis: chain_spec
                 .is_t13_active_at_timestamp(chain_spec.genesis().timestamp),
+            t14_active_at_genesis: chain_spec
+                .is_t14_active_at_timestamp(chain_spec.genesis().timestamp),
             prague_active,
             incentive_gas_used: 0,
             block_gas_used: 0,
@@ -311,10 +314,21 @@ impl<'a> TempoBlockExecutor<'a> {
         self.install_zone_runtimes_at_boundary([portal, verifier, messenger])
     }
 
+    /// Installs the T14 portal runtime, plus the T13 verifier and messenger when genesis did not
+    /// supply them.
+    fn upgrade_zone_runtimes_to_t14_at_boundary(&mut self) -> Result<(), BlockExecutionError> {
+        let [_, portal, verifier, messenger] = t14_zone_factory_state(INITIAL_FACTORY_OWNER);
+        if self.t13_active_at_genesis {
+            self.install_zone_runtimes_at_boundary([portal])
+        } else {
+            self.install_zone_runtimes_at_boundary([portal, verifier, messenger])
+        }
+    }
+
     /// Installs shared Zone runtimes without modifying their existing storage.
     fn install_zone_runtimes_at_boundary(
         &mut self,
-        runtimes: [InitialZoneFactoryAccount; 3],
+        runtimes: impl IntoIterator<Item = InitialZoneFactoryAccount>,
     ) -> Result<(), BlockExecutionError> {
         let mut state = PendingState::default();
         for runtime in runtimes {
@@ -686,7 +700,12 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         // Chains starting at T13 supply their runtime code in genesis. Preserve those
         // allocations (including locally compiled contracts on test chains). Chains
         // that activate T13 later still follow the normal runtime upgrade path.
-        if self.evm().config_spec_id().is_t13() && !self.t13_active_at_genesis {
+        // Chains starting at T14 supply the T14 portal runtime in genesis. Once T14 is active,
+        // install only the latest runtimes: reinstalling the T13 portal first would revert and
+        // reapply the portal code on every block.
+        if self.evm().config_spec_id().is_t14() && !self.t14_active_at_genesis {
+            self.upgrade_zone_runtimes_to_t14_at_boundary()?;
+        } else if self.evm().config_spec_id().is_t13() && !self.t13_active_at_genesis {
             self.upgrade_zone_runtimes_at_boundary()?;
         }
 
@@ -968,7 +987,8 @@ mod tests {
         },
         zones::{
             T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
-            ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
+            T14_ZONE_PORTAL_RUNTIME, ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME,
+            ZONE_VERIFIER_RUNTIME,
         },
     };
     use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -2707,9 +2727,10 @@ mod tests {
     }
 
     #[test]
-    fn zone_runtime_upgrade_activates_at_t13() {
-        for (activation, timestamp, expected_runtimes) in [
+    fn zone_runtime_upgrade_activates_at_boundaries() {
+        for (t13_activation, t14_activation, timestamp, expected_runtimes) in [
             (
+                u64::MAX,
                 u64::MAX,
                 10,
                 [
@@ -2720,6 +2741,7 @@ mod tests {
             ),
             (
                 10,
+                u64::MAX,
                 9,
                 [
                     ZONE_PORTAL_RUNTIME,
@@ -2729,6 +2751,7 @@ mod tests {
             ),
             (
                 10,
+                u64::MAX,
                 10,
                 [
                     T13_ZONE_PORTAL_RUNTIME,
@@ -2738,7 +2761,38 @@ mod tests {
             ),
             (
                 10,
+                u64::MAX,
                 11,
+                [
+                    T13_ZONE_PORTAL_RUNTIME,
+                    T13_ZONE_VERIFIER_RUNTIME,
+                    T13_ZONE_MESSENGER_RUNTIME,
+                ],
+            ),
+            (
+                10,
+                10,
+                10,
+                [
+                    T14_ZONE_PORTAL_RUNTIME,
+                    T13_ZONE_VERIFIER_RUNTIME,
+                    T13_ZONE_MESSENGER_RUNTIME,
+                ],
+            ),
+            (
+                5,
+                10,
+                10,
+                [
+                    T14_ZONE_PORTAL_RUNTIME,
+                    T13_ZONE_VERIFIER_RUNTIME,
+                    T13_ZONE_MESSENGER_RUNTIME,
+                ],
+            ),
+            (
+                5,
+                10,
+                9,
                 [
                     T13_ZONE_PORTAL_RUNTIME,
                     T13_ZONE_VERIFIER_RUNTIME,
@@ -2747,15 +2801,19 @@ mod tests {
             ),
         ] {
             let mut genesis = DEV.genesis().clone();
-            genesis
-                .config
-                .extra_fields
-                .insert_value("t13Time".into(), activation)
-                .unwrap();
+            for (key, activation) in [("t13Time", t13_activation), ("t14Time", t14_activation)] {
+                genesis
+                    .config
+                    .extra_fields
+                    .insert_value(key.into(), activation)
+                    .unwrap();
+            }
             let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
             let mut db = InMemoryDB::default();
             let mut executor = TestExecutorBuilder::default()
-                .with_spec(if timestamp >= activation {
+                .with_spec(if timestamp >= t14_activation {
+                    TempoHardfork::T14
+                } else if timestamp >= t13_activation {
                     TempoHardfork::T13
                 } else {
                     TempoHardfork::T12
@@ -2780,6 +2838,45 @@ mod tests {
                 assert_eq!(installed.original_bytes(), expected);
             }
         }
+    }
+
+    #[test]
+    fn zone_runtime_upgrade_is_idempotent_after_t14() {
+        let mut genesis = DEV.genesis().clone();
+        for key in ["t13Time", "t14Time"] {
+            genesis
+                .config
+                .extra_fields
+                .insert_value(key.into(), 10)
+                .unwrap();
+        }
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
+        let mut db = InMemoryDB::default();
+        let mut executor = TestExecutorBuilder::default()
+            .with_spec(TempoHardfork::T14)
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+        let mut block = *executor.evm().block();
+        block.timestamp = U256::from(11);
+        executor.evm_mut().set_block(block);
+        executor.apply_pre_execution_changes().unwrap();
+
+        let hook_calls = Arc::new(Mutex::new(Vec::new()));
+        let hook_calls_clone = hook_calls.clone();
+        executor.set_state_hook(move |state| hook_calls_clone.lock().unwrap().push(state));
+        executor.apply_pre_execution_changes().unwrap();
+        assert!(
+            hook_calls.lock().unwrap().iter().all(|state| {
+                [
+                    ZONE_PORTAL_IMPL_ADDRESS,
+                    ZONE_VERIFIER_ADDRESS,
+                    ZONE_MESSENGER_ADDRESS,
+                ]
+                .iter()
+                .all(|address| state.account(address).is_none())
+            }),
+            "installed T14 runtimes must not be rewritten on later blocks"
+        );
     }
 
     #[test]

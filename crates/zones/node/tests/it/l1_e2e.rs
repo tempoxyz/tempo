@@ -2093,7 +2093,7 @@ async fn test_deposit_and_withdrawal() -> eyre::Result<()> {
 }
 
 /// A finalized portal-wide pause stops Zone block production and L1 withdrawal processing until
-/// the portal resumes, while batches finalized before the pause still settle.
+/// the portal resumes, including batches finalized before the pause.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_global_pause_stops_and_resumes_block_production() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
@@ -2170,35 +2170,9 @@ async fn test_global_pause_stops_and_resumes_block_production() -> eyre::Result<
         "the Zone imported the pause block instead of stopping before it"
     );
 
-    // Batches finalized before the pause still settle, but the withdrawal stays queued on L1.
+    // A batch finalized before the pause stays queued until the portal resumes.
     let withdrawal_start_block = l1.provider().get_block_number().await?;
     let sequencer = spawn_sequencer(&l1, &zone, portal_address, l1.dev_signer()).await;
-    poll_until(
-        L1_TIMEOUT,
-        Duration::from_millis(250),
-        "pre-pause withdrawal batch to settle while the portal is paused",
-        || {
-            let portal = &portal;
-            async move {
-                let batch = portal.withdrawalBatchIndex().call().await?;
-                Ok((batch > initial_withdrawal_batch).then_some(()))
-            }
-        },
-    )
-    .await?;
-    eyre::ensure!(
-        !sequencer.withdrawal_handle.is_finished(),
-        "withdrawal processor exited while the portal was paused"
-    );
-    assert!(
-        portal
-            .WithdrawalProcessed_filter()
-            .from_block(withdrawal_start_block)
-            .query()
-            .await?
-            .is_empty(),
-        "withdrawal must remain queued while the portal is paused"
-    );
 
     // Ingestion keeps following finalized L1 within its lookahead window while the Zone anchor
     // and block height remain frozen, so governance landing during the pause is applied.
@@ -2233,6 +2207,24 @@ async fn test_global_pause_stops_and_resumes_block_production() -> eyre::Result<
     .await?;
     assert_eq!(zone_provider.get_block_number().await?, frozen_head);
     assert_eq!(zone.tempo_block_number().await?, frozen_anchor);
+    eyre::ensure!(
+        !sequencer.withdrawal_handle.is_finished(),
+        "withdrawal processor exited while the portal was paused"
+    );
+    assert_eq!(
+        portal.withdrawalBatchIndex().call().await?,
+        initial_withdrawal_batch,
+        "pre-pause withdrawal batch settled while the portal was paused"
+    );
+    assert!(
+        portal
+            .WithdrawalProcessed_filter()
+            .from_block(withdrawal_start_block)
+            .query()
+            .await?
+            .is_empty(),
+        "withdrawal must remain queued while the portal is paused"
+    );
 
     let resume_receipt = portal.resume().send().await?.get_receipt().await?;
     eyre::ensure!(resume_receipt.status(), "global resume transaction failed");
