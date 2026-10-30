@@ -17,7 +17,8 @@ use tempo_primitives::{TempoBlockEnv, TempoBlockExt};
 use crate::{
     error::{IntoPrecompileResult, Result, TempoPrecompileError},
     storage::{
-        ConfigCommitmentWriteGas, PrecompileStorageProvider, StorageActions,
+        ConfigCommitmentWriteGas, NestedCall, NestedCallResult, PrecompileStorageProvider,
+        StorageActions,
         evm::{EvmPrecompileStorageProvider, EvmStorageExt},
     },
 };
@@ -270,6 +271,15 @@ impl StorageCtx {
     /// Enables or disables minting new TIP-1060 storage credits for subsequent storage clears.
     pub fn set_tip1060_storage_credit_minting(&mut self, enabled: bool) {
         Self::with_storage(|s| s.set_tip1060_storage_credit_minting(enabled))
+    }
+
+    /// Runs a nested call from the running precompile. See [`PrecompileStorageProvider::call`].
+    ///
+    /// The provider stays borrowed while the child runs. A child that re-enters a Tempo
+    /// precompile, including the caller itself, gets its own storage context, so the caller must
+    /// not hold storage values it expects the child to change.
+    pub fn call(&mut self, call: NestedCall) -> Result<NestedCallResult> {
+        Self::try_with_storage(|s| s.call(call))
     }
 
     /// Creates a journal checkpoint and returns a RAII guard.

@@ -159,7 +159,11 @@ impl ZoneFactory {
         )?;
         // TIP-1091 deliberately etches the canonical runtime unconditionally. The 96-bit portal
         // prefix makes pre-existing state computationally infeasible to target with CREATE2.
-        ZonePortalStorage::new(portal).initialize(zone_id, &call.params, token_enablement_hash)?;
+        ZonePortalStorage::new(portal).initialize_from_factory(
+            zone_id,
+            &call.params,
+            token_enablement_hash,
+        )?;
 
         self.zones[zone_id].write(ZoneInfoStorage {
             zone_id,
@@ -498,13 +502,13 @@ mod tests {
             assert_eq!(portal.pause_expiry.read()?, 0);
             assert_eq!(
                 portal
-                    .abdication_effective_at(ZonePortalCapability::PausePortal)
+                    .abdication_effective_at_slot(ZonePortalCapability::PausePortal)
                     .read()?,
                 0
             );
             assert_eq!(
                 portal
-                    .abdication_effective_at(ZonePortalCapability::AccessPolicy)
+                    .abdication_effective_at_slot(ZonePortalCapability::AccessPolicy)
                     .read()?,
                 0
             );
@@ -586,14 +590,14 @@ mod tests {
             );
             assert_eq!(
                 portal
-                    .abdication_effective_at(ZonePortalCapability::AccessPolicy)
+                    .abdication_effective_at_slot(ZonePortalCapability::AccessPolicy)
                     .slot(),
                 access_abdication_slot
             );
 
             // Ensure portal can't be re-initialized
             assert_eq!(
-                portal.initialize(1, &params, B256::ZERO),
+                portal.initialize_from_factory(1, &params, B256::ZERO),
                 Err(ZoneFactoryError::already_initialized().into())
             );
             Ok(())

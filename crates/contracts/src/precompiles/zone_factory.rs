@@ -5,7 +5,8 @@ use crate::zones::{
 use alloy_primitives::{Address, Bytes, FixedBytes, U256, address, fixed_bytes};
 
 pub use crate::zones::ZonePortal::{
-    Capability as ZonePortalCapability, Role as ZonePortalRole, ZonePortalEvents as ZonePortalEvent,
+    Capability as ZonePortalCapability, Role as ZonePortalRole,
+    ZonePortalErrors as ZonePortalError, ZonePortalEvents as ZonePortalEvent,
 };
 pub use IZoneFactory::{
     IZoneFactoryErrors as ZoneFactoryError, IZoneFactoryEvents as ZoneFactoryEvent,

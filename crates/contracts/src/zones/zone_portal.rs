@@ -303,8 +303,8 @@ crate::sol! {
         function MAX_TOKEN_METADATA_BYTES() external view returns (uint256);
         function areDepositsActive(address token) external view returns (bool);
         function tokenConfig(address token) external view returns (TokenConfig memory);
-        function initialize(uint32 zoneId, address initialToken, bool accessMode, bool gatewayMode, address[] calldata allowedAccounts, address[] calldata zoneGateways, address admin, address messenger, address[] calldata sequencers, uint8 threshold, address verifier, string calldata rpcUrl) external;
-        function deliverWithdrawal(address to, address token, uint128 amount, bytes32 memo, uint64 gasLimit, bytes calldata callbackData) external;
+        function initialize(uint32 zoneId, address initialToken, bool accessMode, bool gatewayMode, address[] calldata allowedAccounts, address[] calldata zoneGateways, address messenger, address admin, address[] calldata sequencers, uint8 threshold, address verifier, string calldata rpcUrl) external;
+        function deliverWithdrawal(address token, address target, uint128 amount, bytes32 senderTag, uint64 gasLimit, bytes calldata data) external;
         function MAX_DEPOSITS_PER_TEMPO_BLOCK() external view returns (uint64);
         function MAX_UNPROCESSED_DEPOSITS() external view returns (uint64);
         function MAX_UNPROCESSED_TOKEN_ENABLEMENTS() external view returns (uint64);
