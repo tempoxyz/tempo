@@ -61,6 +61,14 @@ and transaction gas on T13/T14, while benchmark timings use normal node caches.
 The snapshots create a fresh recipient balance and initial validator fee accrual;
 benchmark receivers already have balances from faucet funding.
 
+`institutional` covers tokenized deposits, institutional settlement and treasury under the
+same policy setup as `tip20-policy`: policy-checked payments, memo settlement transfers from a
+16-account treasury pool, 8-call treasury sweeps, issuer mints and burns of the tokenized deposit
+(pathUSD, issued by users[0]) and stablecoin DEX conversion with `dex.yml`'s liquidity and a
+small order-placement flow. Every counterparty carries receiver filters; unlike `tip20-policy`,
+runs do not require full inclusion. The file lists the shares and gaps. For example
+`derek bench preset=institutional gas-limit=500M general-gas-limit=30M`.
+
 `zone-earn-mix` and `bridge-mix` model live customer traffic shapes, with gas-share
 weights taken from mainnet; each file lists its window, the mainnet shares and
 what it does not model. `zone-earn-mix` reuses the public-mix fixtures (zone
