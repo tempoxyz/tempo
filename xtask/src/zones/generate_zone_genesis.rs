@@ -773,15 +773,20 @@ mod tests {
             let json = std::fs::read(output.path().join("genesis.json")).unwrap();
             let genesis: Genesis = serde_json::from_slice(&json).unwrap();
             assert_eq!(genesis.timestamp, 50);
-            for (key, expected) in [
-                ("t11Time", serde_json::json!(20)),
-                ("t12Time", serde_json::json!(200)),
-                ("t13Time", serde_json::Value::Null),
-                ("t14Time", serde_json::Value::Null),
-            ] {
-                assert_eq!(genesis.config.extra_fields[key], expected);
+            for &fork in TempoHardfork::VARIANTS {
+                if let Some(key) = fork.genesis_key() {
+                    assert!(!genesis.config.extra_fields.contains_key(key), "{key}");
+                }
             }
-            let spec = ZoneChainSpec::from_genesis(genesis).unwrap();
+            // Nodes on this parent take the reported schedule from the L1.
+            let spec = ZoneChainSpec::from_genesis(genesis)
+                .unwrap()
+                .with_l1_fork_schedule([
+                    (TempoHardfork::T0, 10),
+                    (TempoHardfork::T11, 20),
+                    (TempoHardfork::T12, 200),
+                ])
+                .unwrap();
             for (timestamp, expected) in activations {
                 assert_eq!(spec.tempo_hardfork_at(timestamp), expected);
             }

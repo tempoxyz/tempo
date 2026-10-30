@@ -20,21 +20,22 @@ explicit offline `--hardfork <fork>` cap; there is no implicit all-forks-at-gene
 default.
 
 RPC mode reads `eth_chainId`, `tempo_forkSchedule`, and the latest L1 header. The
-RPC chain ID must match the parent encoded in the Zone chain ID. Genesis preserves
-activation timestamps, including scheduled future upgrades, and writes absent
-supported forks as `null` so node startup cannot inherit a different schedule.
-The latest L1 head is used only to validate the reported schedule. The genesis
-timestamp comes from the anchor header, and the initialization EVM uses the fork
-active at that timestamp. With the same anchor, schedule, and generation parameters,
-regeneration produces identical genesis even as the L1 head advances. RPC failures,
-unsupported forks, inconsistent schedules, or fork overrides abort generation.
-If an upgrade occurs between the schedule and head reads, retry generation.
+RPC chain ID must match the parent encoded in the Zone chain ID. The schedule only
+validates the anchor and picks the fork for the initialization EVM; genesis writes
+no Tempo fork fields. On mainnet and testnet, Zone nodes inherit missing fork
+fields from the parent schedule compiled into the binary, while explicit genesis
+fields still win. On other parents they ignore Tempo fork fields in genesis and
+read `tempo_forkSchedule` from `--l1.rpc-url` once at startup. Either way L1
+upgrades need no genesis change, only a node upgrade or restart. Offline tools
+(`import`, `stage`, `re-execute`) still execute from the genesis schedule.
+The genesis timestamp comes from the anchor header. With the same anchor and
+generation parameters, regeneration produces identical genesis even as the L1 head
+advances. RPC failures, unsupported forks, inconsistent schedules, or fork overrides
+abort generation. If an upgrade occurs between the schedule and head reads, retry
+generation.
 `--l1-rpc-url` can also be combined with `--tempo-portal` to derive a pre-creation
 anchor, or with `--tempo-genesis-header-rlp` to supply the anchor explicitly.
-
-Fork settings are persisted in `genesis.json`; restarting nodes does not fetch
-a new schedule. L1 upgrades not present in the snapshot require a coordinated
-configuration update. Existing Zone databases are not modified by generation.
+Existing Zone databases are not modified by generation.
 
 For offline development or tests, `--hardfork T11` enables forks through T11 at
 timestamp zero and disables T12/T13/T14. Individual `--t*-time` flags still take
