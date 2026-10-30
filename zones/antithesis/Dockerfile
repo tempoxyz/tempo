@@ -18,7 +18,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # Release optimizations with debug assertions and symbols.
-ARG RUST_PROFILE=dst
+ARG RUST_PROFILE=fuzz
 # The build context has no Git metadata, so the version SHA comes from the caller.
 ARG VERGEN_GIT_SHA=0000000000000000000000000000000000000000
 ARG VERGEN_GIT_SHA_SHORT=00000000
