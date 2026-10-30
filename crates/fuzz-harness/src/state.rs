@@ -345,6 +345,27 @@ pub(crate) struct AccountNet {
     storage: BTreeMap<U256, StorageSlot>,
 }
 
+impl AccountNet {
+    /// The account before the span, `None` if it did not exist.
+    pub(crate) fn original(&self) -> Option<&AccountInfo> {
+        self.original.as_ref()
+    }
+
+    /// The value of `slot` before the span, if the span knows it: the slot was written, or the
+    /// account did not exist.
+    pub(crate) fn original_slot(&self, slot: &U256) -> Option<U256> {
+        match self.storage.get(slot) {
+            Some(value) => Some(value.original_value()),
+            None => self.original.is_none().then_some(U256::ZERO),
+        }
+    }
+
+    /// The slots the span changed, with their values before and after it.
+    pub(crate) fn changed_slots(&self) -> impl Iterator<Item = (&U256, &StorageSlot)> {
+        self.storage.iter().filter(|(_, value)| value.is_changed())
+    }
+}
+
 /// The net changes of a span of execution steps, by address.
 #[derive(Default)]
 pub(crate) struct Net(BTreeMap<Address, AccountNet>);
@@ -387,6 +408,16 @@ impl Net {
     /// Whether the span changed the account at `address`.
     pub(crate) fn contains(&self, address: &Address) -> bool {
         self.0.contains_key(address)
+    }
+
+    /// The accounts the span changed.
+    pub(crate) fn addresses(&self) -> impl Iterator<Item = &Address> {
+        self.0.keys()
+    }
+
+    /// What the span changed in the account at `address`.
+    pub(crate) fn get(&self, address: &Address) -> Option<&AccountNet> {
+        self.0.get(address)
     }
 }
 
@@ -513,9 +544,7 @@ pub(crate) fn changes(net: &Net, contracts: &Contracts<'_>) -> StateChanges {
         }
         out.storage.extend(
             change
-                .storage
-                .iter()
-                .filter(|(_, slot)| slot.is_changed())
+                .changed_slots()
                 .map(|(slot, value)| StorageChangeOutput {
                     address: *address,
                     slot: *slot,

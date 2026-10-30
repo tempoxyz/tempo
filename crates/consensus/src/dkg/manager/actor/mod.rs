@@ -22,7 +22,7 @@ use commonware_cryptography::{
 };
 use commonware_math::algebra::Random as _;
 use commonware_p2p::{
-    Receiver, Recipients, Sender,
+    Blocker, Receiver, Recipients, Sender,
     utils::mux::{self, MuxHandle},
 };
 use commonware_parallel::Sequential;
@@ -47,7 +47,7 @@ use futures::{
     stream::FuturesOrdered,
 };
 use rand_core::CryptoRng;
-use tempo_chainspec::TempoHardforks as _;
+use tempo_chainspec::{NetworkIdentity, TempoHardforks as _};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_primitives::TempoHeader;
 use tokio::select;
@@ -55,7 +55,6 @@ use tracing::{Level, Span, debug, info, info_span, instrument, warn};
 
 use crate::consensus::{Digest, block::Block};
 
-mod startup;
 mod state;
 #[cfg(test)]
 mod tests;
@@ -121,13 +120,14 @@ impl Read for Message {
 
 pub(crate) struct Actor<
     TContext,
+    TBlocker,
     TExecutionLayer = super::TempoExecutionLayer,
     TMarshal = crate::alias::marshal::Mailbox,
 > where
     TContext: BufferPooler + Clock + commonware_runtime::Metrics + Storage,
 {
     /// The actor configuration passed in when constructing the actor.
-    config: super::Config<TExecutionLayer, TMarshal>,
+    config: super::Config<TExecutionLayer, TMarshal, TBlocker>,
 
     /// The runtime context passed in when constructing the actor.
     context: ContextCell<TContext>,
@@ -147,14 +147,16 @@ pub(crate) struct Actor<
     pending_finalized_blocks: FuturesOrdered<Ready<(Span, Block, Exact)>>,
 }
 
-impl<TContext, TExecutionLayer, TMarshal> Actor<TContext, TExecutionLayer, TMarshal>
+impl<TContext, TBlocker, TExecutionLayer, TMarshal>
+    Actor<TContext, TBlocker, TExecutionLayer, TMarshal>
 where
     TContext: BufferPooler + Clock + CryptoRng + commonware_runtime::Metrics + Spawner + Storage,
     TExecutionLayer: ExecutionLayer,
     TMarshal: Marshal,
+    TBlocker: Blocker<PublicKey = PublicKey> + Sync,
 {
     pub(super) async fn new(
-        config: super::Config<TExecutionLayer, TMarshal>,
+        config: super::Config<TExecutionLayer, TMarshal, TBlocker>,
         context: TContext,
         mailbox: mpsc::UnboundedReceiver<super::ingress::Message>,
     ) -> eyre::Result<Self> {
@@ -168,10 +170,15 @@ where
 
         // Authenticate with the original persisted identity before healing can
         // replace stale state with an outcome supplied by the snapshot.
-        startup::verify_finalized_tip(
+        let persisted_identity = storage.state().map(|state| NetworkIdentity {
+            from_epoch: state.epoch.get(),
+            identity: *state.output.public().public(),
+        });
+
+        crate::startup::verify_finalized_tip(
             &mut *context,
             &config.network_identity,
-            storage.state(),
+            persisted_identity.as_ref(),
             config
                 .finalized_tip
                 .as_ref()
@@ -419,26 +426,6 @@ where
                     }
                 }
 
-                network_msg = round_receiver.recv().fuse() => {
-                    match network_msg {
-                        Ok((sender, message)) => {
-                            // Protocol errors are logged by the handler; write failures panic.
-                            let _ = self.handle_network_msg(
-                                &round,
-                                &mut round_sender,
-                                storage,
-                                dealer_state.as_mut(),
-                                player_state.as_mut(),
-                                sender,
-                                message,
-                            ).await;
-                        }
-                        Err(err) => {
-                            break Err(err).wrap_err("network p2p subchannel closed")
-                        }
-                    }
-                }
-
                 msg = self.mailbox.next() => {
                     let Some(msg) = msg else {
                         break Err(eyre!("all instances of the DKG actor's mailbox are dropped"));
@@ -507,6 +494,26 @@ where
                                 &round,
                                 verify,
                             );
+                        }
+                    }
+                }
+
+                network_msg = round_receiver.recv().fuse() => {
+                    match network_msg {
+                        Ok((sender, message)) => {
+                            // Protocol errors are logged by the handler; write failures panic.
+                            let _ = self.handle_network_msg(
+                                &round,
+                                &mut round_sender,
+                                storage,
+                                dealer_state.as_mut(),
+                                player_state.as_mut(),
+                                sender,
+                                message,
+                            ).await;
+                        }
+                        Err(err) => {
+                            break Err(err).wrap_err("network p2p subchannel closed")
                         }
                     }
                 }
@@ -944,7 +951,7 @@ where
     )]
     // TODO(janis): replace this by a struct?
     async fn handle_network_msg<TStorageContext>(
-        &self,
+        &mut self,
         round: &Round,
         round_channel: &mut impl Sender<PublicKey = PublicKey>,
         storage: &mut state::Storage<TStorageContext>,
@@ -967,7 +974,10 @@ where
                     let ack = player_state
                         .receive_dealing(storage, round.epoch(), from.clone(), pub_msg, priv_msg)
                         .await
-                        .wrap_err("failed to process dealing")?;
+                        .inspect_err(|error| {
+                            commonware_p2p::block!(self.config.blocker, from.clone(), %error, "invalid DKG dealing");
+                        })
+                        .wrap_err("invalid DKG dealing")?;
 
                     let sent = round_channel.send(
                         Recipients::One(from.clone()),
@@ -998,7 +1008,7 @@ where
                     dealer_state
                         .receive_ack(storage, round.epoch(), from, ack)
                         .await
-                        .wrap_err("failed to process ACK")?;
+                        .wrap_err("invalid DKG acknowledgement")?;
                 } else {
                     info!("received an ACK, but we are not a dealer");
                 }

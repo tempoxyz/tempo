@@ -1,0 +1,17 @@
+[package]
+name = "tempo-invariants"
+description = "Tempo protocol invariants over state read through view calls"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+alloy-primitives = { workspace = true, features = ["std"] }
+alloy-sol-types = { workspace = true, features = ["std"] }
+invariants-core.workspace = true
+tempo-contracts.workspace = true

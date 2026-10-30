@@ -62,14 +62,70 @@ fn startup_uses_previous_execution_boundary() {
                     identity: *fixture.outcome.network_identity(),
                 },
                 last_finalized_height: finalized_height,
+                finalized_tip: Some((
+                    finalized_height,
+                    make_finalization(
+                        &make_block(finalized_height.get(), None),
+                        Epoch::new(1),
+                        &fixture.schemes,
+                    ),
+                )),
+                partition_prefix: "test".into(),
                 marshal: StubMarshal::default(),
                 epoch_strategy: strategy,
             },
-        );
+        )
+        .await;
 
         assert!(result.is_ok());
         assert_eq!(provider.header_reads(), vec![expected_boundary.get()]);
         assert!(schemes.scoped(Epoch::new(1)).is_some());
+    });
+}
+
+#[test_traced]
+fn startup_rejects_an_unobserved_snapshot_identity_before_loading_boundaries() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let trusted = dkg_fixture(&mut context, Epoch::zero());
+        let snapshot = dkg_fixture(&mut context, Epoch::new(1));
+        let height = Height::new(EPOCH_LENGTH.get() + 1);
+        let certificate = make_finalization(
+            &make_block(height.get(), None),
+            Epoch::new(1),
+            &snapshot.schemes,
+        );
+        let provider = StubExecutionProvider::default();
+        let schemes = SchemeProvider::new();
+        schemes.register(Epoch::new(1), snapshot.schemes[0].clone());
+        let error = try_init(
+            context.child("driver"),
+            Config {
+                execution_provider: provider.clone(),
+                scheme_provider: schemes,
+                network_identity: NetworkIdentity {
+                    from_epoch: 0,
+                    identity: *trusted.outcome.network_identity(),
+                },
+                last_finalized_height: height,
+                finalized_tip: Some((height, certificate)),
+                partition_prefix: "test".into(),
+                marshal: StubMarshal::default(),
+                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+            },
+        )
+        .await
+        .err()
+        .expect("snapshot identity must not authenticate its own tip");
+        assert!(
+            error.to_string().contains(
+                "failed verification against the trusted network identity from epoch `0`"
+            )
+        );
+        assert!(provider.header_reads().is_empty());
+        let state = super::actor::State::init(context.child("inspect_rejected"), "test")
+            .await
+            .unwrap();
+        assert_eq!(state.identity(), None);
     });
 }
 
@@ -90,10 +146,13 @@ fn startup_propagates_finalized_block_read_failure() {
                     identity: *fixture.outcome.network_identity(),
                 },
                 last_finalized_height: Height::zero(),
+                finalized_tip: None,
+                partition_prefix: "test".into(),
                 marshal: StubMarshal::default(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
             },
-        );
+        )
+        .await;
 
         assert!(result.is_err());
         assert!(provider.header_reads().is_empty());
@@ -116,10 +175,13 @@ fn startup_requires_execution_boundary_header() {
                     identity: *fixture.outcome.network_identity(),
                 },
                 last_finalized_height: Height::zero(),
+                finalized_tip: None,
+                partition_prefix: "test".into(),
                 marshal: StubMarshal::default(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
             },
-        );
+        )
+        .await;
 
         assert!(result.is_err());
         assert_eq!(provider.header_reads(), vec![0]);
@@ -146,10 +208,13 @@ fn valid_finalization_is_certified_and_reported() {
                     identity: *fixture.outcome.network_identity(),
                 },
                 last_finalized_height: Height::zero(),
+                finalized_tip: None,
+                partition_prefix: "test".into(),
                 marshal: marshal.clone(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
             },
         )
+        .await
         .expect("driver should initialize");
 
         actor.start();
@@ -201,22 +266,27 @@ fn network_identity_verifies_finalization_when_epoch_scheme_is_missing() {
                     identity: *network_fixture.outcome.network_identity(),
                 },
                 last_finalized_height: Height::zero(),
+                finalized_tip: None,
+                partition_prefix: "test".into(),
                 marshal: marshal.clone(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
             },
         )
+        .await
         .expect("driver should initialize");
 
         assert!(
-            schemes.scoped(network_fixture.outcome.epoch()).is_none(),
+            schemes
+                .scoped(network_fixture.outcome.epoch().next())
+                .is_none(),
             "network identity fallback requires the epoch scheme to be missing",
         );
         actor.start();
 
-        let block = make_block(EPOCH_LENGTH.get() * 2 + 1, None);
+        let block = make_block(EPOCH_LENGTH.get() * 3 + 1, None);
         let finalization = make_finalization(
             &block,
-            network_fixture.outcome.epoch(),
+            network_fixture.outcome.epoch().next(),
             &network_fixture.schemes,
         );
         let certified = make_certified_block(block, &finalization);
@@ -257,22 +327,27 @@ fn gossiped_certificate_is_admitted_and_reported_only_to_marshal() {
                     identity: *network_fixture.outcome.network_identity(),
                 },
                 last_finalized_height: Height::zero(),
+                finalized_tip: None,
+                partition_prefix: "test".into(),
                 marshal: marshal.clone(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
             },
         )
+        .await
         .expect("driver should initialize");
 
         actor.start();
 
-        let block = make_block(EPOCH_LENGTH.get() * 2 + 1, None);
+        let block = make_block(EPOCH_LENGTH.get() * 3 + 1, None);
         let finalization = make_finalization(
             &block,
-            network_fixture.outcome.epoch(),
+            network_fixture.outcome.epoch().next(),
             &network_fixture.schemes,
         );
         assert!(
-            schemes.scoped(network_fixture.outcome.epoch()).is_none(),
+            schemes
+                .scoped(network_fixture.outcome.epoch().next())
+                .is_none(),
             "the certificate must require the network identity fallback",
         );
 
@@ -282,7 +357,9 @@ fn gossiped_certificate_is_admitted_and_reported_only_to_marshal() {
             .expect("driver should answer");
         assert_eq!(result, Ok(()));
         assert!(
-            schemes.scoped(network_fixture.outcome.epoch()).is_some(),
+            schemes
+                .scoped(network_fixture.outcome.epoch().next())
+                .is_some(),
             "marshal needs the successful fallback to re-verify the resolved block",
         );
         // The driver reports only the certificate to marshal.
@@ -291,8 +368,8 @@ fn gossiped_certificate_is_admitted_and_reported_only_to_marshal() {
 
         // The first offer became the latest verified round, so a repeat is stale.
         let repeat = make_finalization(
-            &make_block(EPOCH_LENGTH.get() * 2 + 1, None),
-            network_fixture.outcome.epoch(),
+            &make_block(EPOCH_LENGTH.get() * 3 + 1, None),
+            network_fixture.outcome.epoch().next(),
             &network_fixture.schemes,
         );
         let result = mailbox
@@ -308,13 +385,14 @@ fn gossiped_certificate_is_admitted_and_reported_only_to_marshal() {
 ///
 /// This is a utility for a group of tests found below.
 struct Rig {
+    handle: commonware_runtime::Handle<()>,
     mailbox: super::Mailbox,
     marshal: StubMarshal,
     schemes: SchemeProvider,
     fixture: DkgFixture,
 }
 
-fn start_rig(context: &mut deterministic::Context) -> Rig {
+async fn start_rig(context: &mut deterministic::Context) -> Rig {
     let fixture = dkg_fixture(context, Epoch::zero());
     let startup_block = make_block(0, Some(&fixture.outcome));
     let provider = StubExecutionProvider::default();
@@ -333,14 +411,18 @@ fn start_rig(context: &mut deterministic::Context) -> Rig {
                 identity: *fixture.outcome.network_identity(),
             },
             last_finalized_height: Height::zero(),
+            finalized_tip: None,
+            partition_prefix: "test".into(),
             marshal: marshal.clone(),
             epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
         },
     )
+    .await
     .expect("driver should initialize");
-    actor.start();
+    let handle = actor.start();
 
     Rig {
+        handle,
         mailbox,
         marshal,
         schemes,
@@ -353,7 +435,7 @@ fn start_rig(context: &mut deterministic::Context) -> Rig {
 #[test_traced]
 fn newer_certificate_advances_latest_verified_round() {
     deterministic::Runner::default().start(|mut context| async move {
-        let rig = start_rig(&mut context);
+        let rig = start_rig(&mut context).await;
 
         let first = make_block(1, None);
         let first_certificate = make_finalization(&first, Epoch::zero(), &rig.fixture.schemes);
@@ -388,7 +470,7 @@ fn newer_certificate_advances_latest_verified_round() {
 #[test_traced]
 fn upstream_event_advances_p2p_admission() {
     deterministic::Runner::default().start(|mut context| async move {
-        let rig = start_rig(&mut context);
+        let rig = start_rig(&mut context).await;
 
         let block = make_block(1, None);
         let certificate = make_finalization(&block, Epoch::zero(), &rig.fixture.schemes);
@@ -414,7 +496,7 @@ fn upstream_event_advances_p2p_admission() {
 #[test_traced]
 fn marshal_tip_advances_latest_verified_round() {
     deterministic::Runner::default().start(|mut context| async move {
-        let rig = start_rig(&mut context);
+        let rig = start_rig(&mut context).await;
 
         let block = make_block(1, None);
         let digest = block.digest();
@@ -439,7 +521,7 @@ fn marshal_tip_advances_latest_verified_round() {
 #[test_traced]
 fn gossiped_certificate_failing_registered_scheme_is_invalid() {
     deterministic::Runner::default().start(|mut context| async move {
-        let rig = start_rig(&mut context);
+        let rig = start_rig(&mut context).await;
         let wrong_fixture = dkg_fixture(&mut context, Epoch::zero());
         let block = make_block(1, None);
         let certificate = make_finalization(&block, Epoch::zero(), &wrong_fixture.schemes);
@@ -467,7 +549,7 @@ fn gossiped_certificate_failing_registered_scheme_is_invalid() {
 #[test_traced]
 fn boundary_update_registers_its_scheme() {
     deterministic::Runner::default().start(|mut context| async move {
-        let rig = start_rig(&mut context);
+        let rig = start_rig(&mut context).await;
         let next = dkg_fixture(&mut context, Epoch::new(1));
         let boundary = FixedEpocher::new(EPOCH_LENGTH)
             .last(Epoch::zero())
@@ -482,6 +564,457 @@ fn boundary_update_registers_its_scheme() {
         waiter.await.expect("the update should be acknowledged");
 
         assert!(rig.schemes.scoped(Epoch::new(1)).is_some());
+    });
+}
+
+#[test_traced]
+fn boundary_with_a_future_outcome_epoch_halts_without_persisting_an_identity() {
+    deterministic::Runner::new(deterministic::Config::default().with_catch_panics(true)).start(
+        |mut context| async move {
+            let rig = start_rig(&mut context).await;
+            let forged = dkg_fixture(&mut context, Epoch::new(1000));
+            let boundary = FixedEpocher::new(EPOCH_LENGTH).last(Epoch::zero()).unwrap();
+            let (ack, waiter) = Exact::handle();
+            let _ = rig.mailbox.to_marshal_reporter().report(Update::Block(
+                make_block(boundary.get(), Some(&forged.outcome)).into(),
+                ack,
+            ));
+
+            let result = context
+                .timeout(Duration::from_secs(1), rig.handle)
+                .await
+                .unwrap();
+            assert!(matches!(result, Err(commonware_runtime::Error::Exited)));
+            assert!(
+                context
+                    .timeout(Duration::from_secs(1), waiter)
+                    .await
+                    .unwrap()
+                    .is_err()
+            );
+            let state = super::actor::State::init(context.child("restart_state"), "test")
+                .await
+                .unwrap();
+            assert_eq!(state.identity(), None);
+        },
+    );
+}
+
+#[test_traced]
+fn observed_boundary_is_durable_before_acknowledgement() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let rig = start_rig(&mut context).await;
+        let next = dkg_fixture(&mut context, Epoch::new(1));
+        let boundary = FixedEpocher::new(EPOCH_LENGTH).last(Epoch::zero()).unwrap();
+        let block = make_block(boundary.get(), Some(&next.outcome));
+        let (ack, waiter) = Exact::handle();
+        let _ = rig
+            .mailbox
+            .to_marshal_reporter()
+            .report(Update::Block(block.into(), ack));
+        context
+            .timeout(Duration::from_secs(1), waiter)
+            .await
+            .expect("boundary acknowledgement deadline")
+            .expect("persisted boundary should be acknowledged");
+        rig.handle.abort();
+        assert!(
+            context
+                .timeout(Duration::from_secs(1), rig.handle)
+                .await
+                .unwrap()
+                .is_err()
+        );
+
+        let record = super::actor::State::init(context.child("restart_record"), "test")
+            .await
+            .unwrap();
+        assert_eq!(record.identity().unwrap().from_epoch, 1);
+        assert_eq!(
+            record.identity().unwrap().identity,
+            *next.outcome.network_identity()
+        );
+        drop(record);
+
+        let height = Height::new(EPOCH_LENGTH.get() + 1);
+        let provider = StubExecutionProvider::default();
+        provider.set_finalized(height.get());
+        provider.add_header(&make_block(boundary.get(), Some(&next.outcome)));
+        let tip = make_block(height.get(), None);
+        let (restarted, _) = try_init(
+            context.child("restarted_driver"),
+            Config {
+                execution_provider: provider,
+                scheme_provider: SchemeProvider::new(),
+                network_identity: NetworkIdentity {
+                    from_epoch: 0,
+                    identity: *rig.fixture.outcome.network_identity(),
+                },
+                last_finalized_height: height,
+                finalized_tip: Some((
+                    height,
+                    make_finalization(&tip, Epoch::new(1), &next.schemes),
+                )),
+                partition_prefix: "test".into(),
+                marshal: StubMarshal::default(),
+                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+            },
+        )
+        .await
+        .expect("the persisted rotation must authenticate a restart with the old configured key");
+        drop(restarted);
+    });
+}
+
+#[test_traced]
+fn reshared_boundaries_register_the_epoch_without_advancing_the_persisted_identity() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let rig = start_rig(&mut context).await;
+        let boundary = FixedEpocher::new(EPOCH_LENGTH).last(Epoch::zero()).unwrap();
+        for epoch in [1, 2] {
+            let mut outcome = rig.fixture.outcome.clone();
+            outcome.epoch = epoch;
+            let (ack, waiter) = Exact::handle();
+            let _ = rig.mailbox.to_marshal_reporter().report(Update::Block(
+                make_block(EPOCH_LENGTH.get() * epoch - 1, Some(&outcome)).into(),
+                ack,
+            ));
+            context
+                .timeout(Duration::from_secs(1), waiter)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(rig.schemes.scoped(Epoch::new(epoch)).is_some());
+        }
+        let block = make_block(boundary.get() + 1, None);
+        let certificate = make_finalization(&block, Epoch::new(1), &rig.fixture.schemes);
+        assert_eq!(
+            context
+                .timeout(
+                    Duration::from_secs(1),
+                    rig.mailbox.process_certificate(certificate)
+                )
+                .await
+                .unwrap()
+                .unwrap(),
+            Ok(())
+        );
+        rig.handle.abort();
+        assert!(
+            context
+                .timeout(Duration::from_secs(1), rig.handle)
+                .await
+                .unwrap()
+                .is_err()
+        );
+        let state = super::actor::State::init(context.child("restart_state"), "test")
+            .await
+            .unwrap();
+        assert_eq!(state.identity().unwrap().from_epoch, 1);
+        assert_eq!(
+            state.identity().unwrap().identity,
+            *rig.fixture.outcome.network_identity()
+        );
+    });
+}
+
+#[test_traced]
+fn historical_boundaries_do_not_replace_a_newer_configured_anchor_for_the_same_key() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let original = dkg_fixture(&mut context, Epoch::zero());
+        let historical = dkg_fixture(&mut context, Epoch::new(1));
+        let saved = NetworkIdentity {
+            from_epoch: 0,
+            identity: *original.outcome.network_identity(),
+        };
+        let mut state = super::actor::State::init(context.child("seed_state"), "test")
+            .await
+            .unwrap();
+        state.observe(saved.clone()).await.unwrap();
+        drop(state);
+        let boundary = FixedEpocher::new(EPOCH_LENGTH).last(Epoch::zero()).unwrap();
+        let block = make_block(boundary.get(), Some(&historical.outcome));
+        let provider = StubExecutionProvider::default();
+        provider.set_finalized(boundary.get());
+        provider.add_header(&block);
+        let (actor, mailbox) = try_init(
+            context.child("driver"),
+            Config {
+                execution_provider: provider,
+                scheme_provider: SchemeProvider::new(),
+                network_identity: NetworkIdentity {
+                    from_epoch: 5,
+                    identity: saved.identity,
+                },
+                last_finalized_height: boundary,
+                finalized_tip: Some((
+                    boundary,
+                    make_finalization(&block, Epoch::zero(), &original.schemes),
+                )),
+                partition_prefix: "test".into(),
+                marshal: StubMarshal::default(),
+                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+            },
+        )
+        .await
+        .unwrap();
+        let handle = actor.start();
+        let mut outcome = historical.outcome.clone();
+        outcome.epoch = 2;
+        let (ack, waiter) = Exact::handle();
+        let _ = mailbox.to_marshal_reporter().report(Update::Block(
+            make_block(EPOCH_LENGTH.get() * 2 - 1, Some(&outcome)).into(),
+            ack,
+        ));
+        context
+            .timeout(Duration::from_secs(1), waiter)
+            .await
+            .unwrap()
+            .unwrap();
+        handle.abort();
+        assert!(
+            context
+                .timeout(Duration::from_secs(1), handle)
+                .await
+                .unwrap()
+                .is_err()
+        );
+        let state = super::actor::State::init(context.child("restart_state"), "test")
+            .await
+            .unwrap();
+        assert_eq!(state.identity(), Some(&saved));
+    });
+}
+
+#[test_traced]
+fn startup_does_not_persist_a_boundary_above_its_authenticated_tip() {
+    for from_epoch in [0, 5] {
+        deterministic::Runner::default().start(|mut context| async move {
+            let old = dkg_fixture(&mut context, Epoch::zero());
+            let next = dkg_fixture(&mut context, Epoch::new(1));
+            let boundary = FixedEpocher::new(EPOCH_LENGTH).last(Epoch::zero()).unwrap();
+            let provider = StubExecutionProvider::default();
+            provider.set_finalized(boundary.get());
+            provider.add_header(&make_block(boundary.get(), Some(&next.outcome)));
+            let configured = NetworkIdentity {
+                from_epoch,
+                identity: *old.outcome.network_identity(),
+            };
+            let tip = make_block(1, None);
+            let schemes = SchemeProvider::new();
+            let (actor, _) = try_init(
+                context.child("driver"),
+                Config {
+                    execution_provider: provider,
+                    scheme_provider: schemes.clone(),
+                    network_identity: configured.clone(),
+                    last_finalized_height: Height::new(1),
+                    finalized_tip: Some((
+                        Height::new(1),
+                        make_finalization(&tip, Epoch::zero(), &old.schemes),
+                    )),
+                    partition_prefix: "test".into(),
+                    marshal: StubMarshal::default(),
+                    epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                },
+            )
+            .await
+            .unwrap();
+            assert!(schemes.scoped(Epoch::new(from_epoch)).is_some());
+            drop(actor);
+            let state = super::actor::State::init(context.child("restart_state"), "test")
+                .await
+                .unwrap();
+            assert_eq!(state.identity(), None);
+        });
+    }
+}
+
+#[test_traced]
+fn startup_leaves_boundaries_above_the_marshal_floor_for_block_updates() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let old = dkg_fixture(&mut context, Epoch::zero());
+        let next = dkg_fixture(&mut context, Epoch::new(1));
+        let boundary = FixedEpocher::new(EPOCH_LENGTH).last(Epoch::zero()).unwrap();
+        let block = make_block(boundary.get(), Some(&next.outcome));
+        let provider = StubExecutionProvider::default();
+        provider.add_header(&make_block(0, Some(&old.outcome)));
+        let marshal = StubMarshal::default();
+        marshal.add_block(block.clone());
+        let (actor, mailbox) = try_init(
+            context.child("driver"),
+            Config {
+                execution_provider: provider,
+                scheme_provider: SchemeProvider::new(),
+                network_identity: NetworkIdentity {
+                    from_epoch: 0,
+                    identity: *old.outcome.network_identity(),
+                },
+                last_finalized_height: Height::new(1),
+                finalized_tip: Some((
+                    boundary,
+                    make_finalization(&block, Epoch::zero(), &old.schemes),
+                )),
+                partition_prefix: "test".into(),
+                marshal: marshal.clone(),
+                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+            },
+        )
+        .await
+        .unwrap();
+        let handle = actor.start();
+        let (ack, waiter) = Exact::handle();
+        let _ = mailbox
+            .to_marshal_reporter()
+            .report(Update::Block(make_block(1, None).into(), ack));
+        context
+            .timeout(Duration::from_secs(1), waiter)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(marshal.block_reads().is_empty());
+        let (ack, waiter) = Exact::handle();
+        let _ = mailbox
+            .to_marshal_reporter()
+            .report(Update::Block(block.into(), ack));
+        context
+            .timeout(Duration::from_secs(1), waiter)
+            .await
+            .unwrap()
+            .unwrap();
+        handle.abort();
+        assert!(
+            context
+                .timeout(Duration::from_secs(1), handle)
+                .await
+                .unwrap()
+                .is_err()
+        );
+        let state = super::actor::State::init(context.child("restart_state"), "test")
+            .await
+            .unwrap();
+        assert_eq!(state.identity().unwrap().from_epoch, 1);
+        assert_eq!(
+            state.identity().unwrap().identity,
+            *next.outcome.network_identity()
+        );
+    });
+}
+
+#[test_traced]
+fn startup_recovery_does_not_regress_the_persisted_identity_during_backfill() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let original = dkg_fixture(&mut context, Epoch::zero());
+        let earlier = dkg_fixture(&mut context, Epoch::new(1));
+        let latest = dkg_fixture(&mut context, Epoch::new(3));
+        let boundary_height = Height::new(EPOCH_LENGTH.get() * 3 - 1);
+        let boundary = make_block(boundary_height.get(), Some(&latest.outcome));
+        let tip_height = Height::new(boundary_height.get() + 1);
+        let tip = make_block(tip_height.get(), None);
+        let mut state = super::actor::State::init(context.child("seed_state"), "test")
+            .await
+            .unwrap();
+        state
+            .observe(NetworkIdentity {
+                from_epoch: 3,
+                identity: *latest.outcome.network_identity(),
+            })
+            .await
+            .unwrap();
+        drop(state);
+        let provider = StubExecutionProvider::default();
+        provider.add_header(&make_block(0, Some(&original.outcome)));
+        let marshal = StubMarshal::default();
+        marshal.add_block(boundary.clone());
+        let (actor, mailbox) = try_init(
+            context.child("driver"),
+            Config {
+                execution_provider: provider,
+                scheme_provider: SchemeProvider::new(),
+                network_identity: NetworkIdentity {
+                    from_epoch: 0,
+                    identity: *original.outcome.network_identity(),
+                },
+                last_finalized_height: tip_height,
+                finalized_tip: Some((
+                    tip_height,
+                    make_finalization(&tip, Epoch::new(3), &latest.schemes),
+                )),
+                partition_prefix: "test".into(),
+                marshal: marshal.clone(),
+                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+            },
+        )
+        .await
+        .unwrap();
+        let handle = actor.start();
+        let (ack, waiter) = Exact::handle();
+        let _ = mailbox.to_marshal_reporter().report(Update::Block(
+            make_block(EPOCH_LENGTH.get() - 1, Some(&earlier.outcome)).into(),
+            ack,
+        ));
+        context
+            .timeout(Duration::from_secs(1), waiter)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(marshal.block_reads(), vec![boundary_height]);
+        handle.abort();
+        assert!(
+            context
+                .timeout(Duration::from_secs(1), handle)
+                .await
+                .unwrap()
+                .is_err()
+        );
+        let state = super::actor::State::init(context.child("restart_state"), "test")
+            .await
+            .unwrap();
+        assert_eq!(state.identity().unwrap().from_epoch, 3);
+        assert_eq!(
+            state.identity().unwrap().identity,
+            *latest.outcome.network_identity()
+        );
+    });
+}
+
+#[test_traced]
+fn startup_does_not_observe_a_boundary_only_read_from_execution() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let old = dkg_fixture(&mut context, Epoch::zero());
+        let next = dkg_fixture(&mut context, Epoch::new(1));
+        let boundary = FixedEpocher::new(EPOCH_LENGTH).last(Epoch::zero()).unwrap();
+        let block = make_block(boundary.get(), Some(&next.outcome));
+        let provider = StubExecutionProvider::default();
+        provider.set_finalized(boundary.get());
+        provider.add_header(&block);
+        let configured = NetworkIdentity {
+            from_epoch: 0,
+            identity: *old.outcome.network_identity(),
+        };
+        let (actor, _) = try_init(
+            context.child("driver"),
+            Config {
+                execution_provider: provider,
+                scheme_provider: SchemeProvider::new(),
+                network_identity: configured.clone(),
+                last_finalized_height: boundary,
+                finalized_tip: Some((
+                    boundary,
+                    make_finalization(&block, Epoch::zero(), &old.schemes),
+                )),
+                partition_prefix: "test".into(),
+                marshal: StubMarshal::default(),
+                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+            },
+        )
+        .await
+        .unwrap();
+        drop(actor);
+        let record = super::actor::State::init(context.child("restart_record"), "test")
+            .await
+            .unwrap();
+        assert_eq!(record.identity(), None);
     });
 }
 
@@ -512,10 +1045,13 @@ fn unverifiable_gossiped_certificate_is_not_blamed_on_the_sender() {
                     identity: *fixture.outcome.network_identity(),
                 },
                 last_finalized_height: Height::zero(),
+                finalized_tip: None,
+                partition_prefix: "test".into(),
                 marshal: marshal.clone(),
                 epoch_strategy: strategy,
             },
         )
+        .await
         .expect("driver should initialize");
 
         actor.start();
@@ -579,10 +1115,13 @@ fn missing_scheme_catches_up_through_each_boundary() {
                     identity: *fixture.outcome.network_identity(),
                 },
                 last_finalized_height: Height::zero(),
+                finalized_tip: None,
+                partition_prefix: "test".into(),
                 marshal: marshal.clone(),
                 epoch_strategy: strategy,
             },
         )
+        .await
         .expect("driver should initialize");
         actor.start();
 
@@ -657,10 +1196,13 @@ fn upstream_finalization_failing_registered_scheme_is_dropped_without_hint() {
                     identity: *fixture.outcome.network_identity(),
                 },
                 last_finalized_height: Height::zero(),
+                finalized_tip: None,
+                partition_prefix: "test".into(),
                 marshal: marshal.clone(),
                 epoch_strategy: strategy,
             },
         )
+        .await
         .expect("driver should initialize");
 
         actor.start();
@@ -720,10 +1262,13 @@ fn finalization_failing_the_identity_fallback_hints_current_epoch_boundary() {
                     identity: *fixture.outcome.network_identity(),
                 },
                 last_finalized_height: Height::zero(),
+                finalized_tip: None,
+                partition_prefix: "test".into(),
                 marshal: marshal.clone(),
                 epoch_strategy: strategy,
             },
         )
+        .await
         .expect("driver should initialize");
 
         actor.start();
@@ -767,10 +1312,13 @@ fn mismatched_finalization_digest_is_dropped_without_stopping_driver() {
                     identity: *fixture.outcome.network_identity(),
                 },
                 last_finalized_height: Height::zero(),
+                finalized_tip: None,
+                partition_prefix: "test".into(),
                 marshal: marshal.clone(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
             },
         )
+        .await
         .expect("driver should initialize");
 
         actor.start();
@@ -830,10 +1378,13 @@ fn scheme_before_network_identity_epoch_is_required() {
                     identity: *missing_fixture.outcome.network_identity(),
                 },
                 last_finalized_height: Height::zero(),
+                finalized_tip: None,
+                partition_prefix: "test".into(),
                 marshal: marshal.clone(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
             },
         )
+        .await
         .expect("driver should initialize");
 
         assert!(schemes.scoped(missing_fixture.outcome.epoch()).is_none());
@@ -882,10 +1433,13 @@ fn gossiped_certificate_without_a_usable_identity_needs_scheme() {
                     identity: *missing_fixture.outcome.network_identity(),
                 },
                 last_finalized_height: Height::zero(),
+                finalized_tip: None,
+                partition_prefix: "test".into(),
                 marshal: marshal.clone(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
             },
         )
+        .await
         .expect("driver should initialize");
 
         actor.start();
@@ -945,10 +1499,13 @@ fn boundary_update_registers_scheme_before_acknowledging() {
                     identity: *fixture.outcome.network_identity(),
                 },
                 last_finalized_height: Height::zero(),
+                finalized_tip: None,
+                partition_prefix: "test".into(),
                 marshal: StubMarshal::default(),
                 epoch_strategy: strategy,
             },
         )
+        .await
         .expect("driver should initialize");
 
         actor.start();
@@ -984,10 +1541,13 @@ fn non_boundary_update_is_acknowledged_without_registering_a_scheme() {
                     identity: *fixture.outcome.network_identity(),
                 },
                 last_finalized_height: Height::zero(),
+                finalized_tip: None,
+                partition_prefix: "test".into(),
                 marshal: StubMarshal::default(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
             },
         )
+        .await
         .expect("driver should initialize");
 
         actor.start();
@@ -1006,7 +1566,8 @@ fn non_boundary_update_is_acknowledged_without_registering_a_scheme() {
 fn startup_installs_missing_consensus_epoch_scheme_from_marshal() {
     deterministic::Runner::default().start(|mut context| async move {
         let fixture = dkg_fixture(&mut context, Epoch::zero());
-        let recovered_fixture = dkg_fixture(&mut context, Epoch::new(2));
+        let mut recovered_outcome = fixture.outcome.clone();
+        recovered_outcome.epoch = 3;
         let startup_block = make_block(0, Some(&fixture.outcome));
         let provider = StubExecutionProvider::default();
         provider.add_header(&startup_block);
@@ -1025,7 +1586,7 @@ fn startup_installs_missing_consensus_epoch_scheme_from_marshal() {
             .last(previous_epoch)
             .expect("previous epoch has a boundary");
 
-        marshal.add_block(make_block(boundary.get(), Some(&recovered_fixture.outcome)));
+        marshal.add_block(make_block(boundary.get(), Some(&recovered_outcome)));
 
         let schemes = SchemeProvider::new();
         let (actor, _mailbox) = try_init(
@@ -1038,19 +1599,39 @@ fn startup_installs_missing_consensus_epoch_scheme_from_marshal() {
                     identity: *fixture.outcome.network_identity(),
                 },
                 last_finalized_height,
+                finalized_tip: Some((
+                    last_finalized_height,
+                    make_finalization(
+                        &make_block(last_finalized_height.get(), None),
+                        current_epoch,
+                        &fixture.schemes,
+                    ),
+                )),
+                partition_prefix: "test".into(),
                 marshal: marshal.clone(),
                 epoch_strategy: strategy,
             },
         )
+        .await
         .expect("driver should initialize");
 
-        actor.start();
-        wait_until(&context, || {
-            schemes.scoped(recovered_fixture.outcome.epoch()).is_some()
-        })
-        .await;
+        let handle = actor.start();
+        wait_until(&context, || marshal.block_reads() == vec![boundary]).await;
 
         assert_eq!(marshal.block_reads(), vec![boundary]);
+        assert!(schemes.scoped(recovered_outcome.epoch()).is_some());
+        handle.abort();
+        assert!(
+            context
+                .timeout(Duration::from_secs(1), handle)
+                .await
+                .unwrap()
+                .is_err()
+        );
+        let state = super::actor::State::init(context.child("restart_state"), "test")
+            .await
+            .unwrap();
+        assert_eq!(state.identity(), None);
     });
 }
 
@@ -1072,10 +1653,13 @@ fn non_finalized_events_are_ignored() {
                     identity: *fixture.outcome.network_identity(),
                 },
                 last_finalized_height: Height::zero(),
+                finalized_tip: None,
+                partition_prefix: "test".into(),
                 marshal: marshal.clone(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
             },
         )
+        .await
         .expect("driver should initialize");
 
         actor.start();
