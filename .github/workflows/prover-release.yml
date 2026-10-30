@@ -33,7 +33,7 @@ jobs:
     name: Check release ref
     if: github.repository == 'tempoxyz/tempo'
     # Publishing from a prover tag needs the triggering user and a code owner
-    # of bin/prover/ to approve in Voight-Kampff (review.yml deployments).
+    # of bin/prover/ to approve in VK (review.yml deployments).
     environment: ${{ startsWith(github.ref, 'refs/tags/prover/v') && 'release' || '' }}
     runs-on: ubuntu-latest
     permissions:
