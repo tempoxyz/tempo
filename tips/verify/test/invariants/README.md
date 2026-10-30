@@ -89,7 +89,7 @@ The FeeAMM is a constant-rate AMM used for converting user fee tokens to validat
 
 ### Rounding & Exploitation Invariants
 
-- **TEMPO-AMM17**: Mint/burn cycle should not profit the actor - prevents rounding exploitation.
+- **TEMPO-AMM17**: Mint/burn cycle is no better than a rebalance swap. Minting then immediately burning can return user tokens, since the cycle nets out to a validator-to-user swap, but the validator tokens paid must be at least `userReceived * N / SCALE`. This is `rebalanceSwap`'s price without its +1, which the floor in mint's denominator can save the minter. Prevents rounding exploitation and mint pricing drifting from the rebalance rate.
 - **TEMPO-AMM18**: Small swaps should still pay >= theoretical rate.
 - **TEMPO-AMM19**: Must pay at least 1 for any swap - prevents zero-cost extraction.
 - **TEMPO-AMM20**: Reserves are always bounded by uint128.
