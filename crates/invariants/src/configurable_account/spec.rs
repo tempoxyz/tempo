@@ -1,21 +1,20 @@
-//! The configuration rules and hashes of TIP-1107 and TIP-1113, written from the TIPs' text rather
-//! than taken from the implementation, so checks compare the two.
+//! TIP formulas, written from the TIP text rather than the implementation.
 
 use alloy_primitives::{Address, B256, b256, keccak256};
 
 use super::IConfigurableAccount::{ConfigurableAccountConfig, ConfigurableAccountOwner};
 
 /// Domain of a derived account address.
-// https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L84-L93
+// <https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L84-L93>
 const ACCOUNT_DOMAIN: &[u8] = b"tempo:configurable-account:account";
 /// Domain of a configuration commitment.
-// https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L180-L188
+// <https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L180-L188>
 const CONFIG_DOMAIN: &[u8] = b"tempo:configurable-account:config";
 /// Domain of the digest owners approve.
-// https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L121-L126
+// <https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L121-L126>
 const SIGNATURE_DOMAIN: &[u8] = b"tempo:configurable-account:signature";
 /// Domain of a migrated account's salt.
-// https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1113.md#L77-L80
+// <https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1113.md#L77-L80>
 const UPGRADE_DOMAIN: &[u8] = b"tempo:configurable-account:upgrade";
 
 /// Most owners a configuration has.
@@ -28,12 +27,12 @@ pub const MAX_APPROVAL_BYTES: usize = 2049;
 pub const CONFIGURABLE_KEY_TYPE: u8 = 3;
 
 /// Code hash of the account code marker, `keccak256(0xef)`.
-// https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L266-L269
+// <https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L266-L269>
 pub const MARKER_CODE_HASH: B256 =
     b256!("309b8896ee4c1ff7ec1966155373dee42663b6b40c3fedc70ba501684848d2a3");
 
 /// The first configuration rule `config` breaks, `None` when it passes them all.
-// https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L74-L80
+// <https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L74-L80>
 pub fn broken_rule(threshold: u8, owners: &[ConfigurableAccountOwner]) -> Option<&'static str> {
     if owners.is_empty() || owners.len() > MAX_OWNERS {
         return Some("it does not have 1 to 48 owners");
@@ -71,8 +70,7 @@ pub fn broken_rule(threshold: u8, owners: &[ConfigurableAccountOwner]) -> Option
     None
 }
 
-/// `uint8(threshold) || uint8(owner_count) || owner[0].address || uint8(owner[0].weight) || ...`,
-/// `None` with more owners than a byte counts.
+/// The encoded threshold and owners, `None` with over 255 owners.
 fn owner_set(threshold: u8, owners: &[ConfigurableAccountOwner]) -> Option<Vec<u8>> {
     let mut set = vec![threshold, u8::try_from(owners.len()).ok()?];
     for owner in owners {
@@ -83,7 +81,7 @@ fn owner_set(threshold: u8, owners: &[ConfigurableAccountOwner]) -> Option<Vec<u
 }
 
 /// The commitment of `config`, `None` with more owners than a byte counts.
-// https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L180-L188
+// <https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L180-L188>
 pub fn commitment(config: &ConfigurableAccountConfig) -> Option<B256> {
     let set = owner_set(config.threshold, &config.owners)?;
     Some(keccak256(
@@ -98,7 +96,7 @@ pub fn commitment(config: &ConfigurableAccountConfig) -> Option<B256> {
 }
 
 /// The address a version-0 configuration derives.
-// https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L86-L95
+// <https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L86-L95>
 pub fn derived_address(config: &ConfigurableAccountConfig) -> Option<Address> {
     let set = owner_set(config.threshold, &config.owners)?;
     Some(Address::from_word(keccak256(
@@ -107,13 +105,13 @@ pub fn derived_address(config: &ConfigurableAccountConfig) -> Option<Address> {
 }
 
 /// The salt of `account`'s configuration after it migrates.
-// https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1113.md#L77-L82
+// <https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1113.md#L77-L82>
 pub fn upgrade_salt(account: Address) -> B256 {
     keccak256([UPGRADE_DOMAIN, account.as_slice()].concat())
 }
 
 /// The digest an owner of `account` approves at configuration `version` for `inner_digest`.
-// https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L121-L128
+// <https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L121-L128>
 pub fn approval_digest(inner_digest: B256, account: Address, version: u64) -> B256 {
     keccak256(
         [

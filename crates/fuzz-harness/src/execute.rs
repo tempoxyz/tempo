@@ -252,8 +252,7 @@ pub(crate) fn execute_blocks(
                 }
             }
             Err((error, partial)) => {
-                // The transactions before the one that failed executed as they would in the
-                // block without it, so what they broke is reported, though the block is not.
+                // Report what the transactions before the failing one broke.
                 if let Some(partial) = partial {
                     let partial = *partial;
                     outcome
@@ -290,8 +289,7 @@ type BlockFailure = (ErrorClass, Option<Box<BlockOutputs>>);
 /// The state updates an executor has emitted since they were last taken.
 type Updates = Arc<Mutex<Vec<StateUpdate>>>;
 
-/// Executes `block` on `db`. Returns the updates it made to state and what it produced or, when it
-/// fails, why and what its transactions produced before it did.
+/// Executes `block` on `db`, returning its state updates and outputs, or why it failed.
 fn execute_block(
     evm_config: &TempoEvmConfig,
     consensus: &TempoConsensus,

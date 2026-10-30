@@ -1,6 +1,4 @@
-//! Configurable accounts (TIP-1107, TIP-1111, TIP-1113): the configuration commitment each account
-//! holds, read through the configurable account precompile, the leaf fields a step changed, and
-//! the authority a transaction's signatures name.
+//! Configurable accounts (TIP-1107, TIP-1111, TIP-1113).
 
 use std::{collections::BTreeMap, fmt};
 
@@ -35,8 +33,7 @@ pub struct Commitments {
 impl Observe for Commitments {
     type At<'a> = At<'a>;
 
-    /// Reads each account's commitment. Over partial views, an account nothing answers for is
-    /// left out.
+    /// Reads each account's commitment, leaving out unanswered ones.
     fn observe<V: Views>(views: &mut V, at: At<'_>) -> Result<Self, ObserveError<V::Error>> {
         let At {
             precompile,
@@ -73,17 +70,14 @@ pub struct At<'a> {
     pub accounts: &'a [Address],
 }
 
-/// Who authorized a transaction, as its signatures name them. Taken from the transaction itself,
-/// not predicted: the accounts each signature acts for, and for a configurable-account signature
-/// its configuration and the owner each approval recovers to.
+/// Who a transaction's signatures authorize it for.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Authority {
     /// Whether configurable accounts are active (T14) at the transaction's block.
     pub active: bool,
     /// Each configurable-account signature: an owner quorum approving for its account.
     pub quorums: Vec<Quorum>,
-    /// Each ordinary (secp256k1, P256 or WebAuthn) signature that acts as account authority,
-    /// with the account it acts for.
+    /// Each ordinary signature acting as account authority.
     pub keys: Vec<Key>,
     /// The inline key authorization's grant.
     pub grant: Option<Grant>,
@@ -165,8 +159,7 @@ impl fmt::Display for Quorum {
 /// One owner approval.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Approval {
-    /// The signer it recovers to over [`spec::approval_digest`] of its role's digest,
-    /// `None` when it recovers to none.
+    /// The owner it recovers to, if any.
     pub owner: Option<Address>,
     /// Its encoded length in bytes.
     pub len: usize,
@@ -196,9 +189,7 @@ impl Leaf {
     };
 }
 
-/// A transaction's step over the leaves of the accounts it changed or its signatures name: each
-/// account's leaf before and after the step. Built by the runner from state, as code hashes are
-/// not read through view calls.
+/// Each changed or signing account's leaf before and after a transaction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Leaves {
     pub of: BTreeMap<Address, (Leaf, Leaf)>,

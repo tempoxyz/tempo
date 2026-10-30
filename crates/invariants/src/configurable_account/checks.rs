@@ -1,5 +1,4 @@
-//! The configurable account invariants, from the Invariants sections of TIP-1107, TIP-1111 and
-//! TIP-1113. The link above each check is the TIP text that states it.
+//! Configurable account invariants (TIP-1107, TIP-1111, TIP-1113).
 
 use alloy_primitives::{Address, B256, KECCAK256_EMPTY};
 use alloy_sol_types::SolEvent;
@@ -12,7 +11,7 @@ use super::{
 };
 use crate::{Check, Checked, Step, StepChecked, Tx, Verdict};
 
-/// The configurable account precompile's views answer. Counted by runners that read the model, not judged by a check here.
+/// The configurable account precompile's views answer. Counted by runners, not judged here.
 pub const VIEW: &str = "TEMPO-ACCOUNT-VIEW";
 pub const COMMITMENT_KEPT: &str = "TEMPO-ACCOUNT-COMMITMENT-KEPT";
 pub const COMMITMENT_BY_SELF: &str = "TEMPO-ACCOUNT-COMMITMENT-BY-SELF";
@@ -36,12 +35,10 @@ pub const GRANT_DELEGATE: &str = "TEMPO-ACCOUNT-GRANT-DELEGATE";
 
 type AccountStep = Step<Commitments, Option<Tx>>;
 
-/// A step's effect on each observed account's configuration commitment, judged against the
-/// transaction's signatures and the precompile's events.
+/// Checks of a step against its signatures and events.
 pub const STEP_CHECKS: &[Check<AccountStep>] = &[
-    // Once an account has a configuration, nothing clears it.
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L504
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1113.md#L263
+    // A commitment is never cleared.
+    // <https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L504>
     check! {
         id: COMMITMENT_KEPT,
         over: |step: &AccountStep| step.post.of.keys(),
@@ -53,12 +50,8 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
             ensure!(!post.is_zero(), "commitment {pre} cleared")
         },
     },
-    // Only registration, owner updates and migration change a commitment. An owner update
-    // (`updateConfig` takes the sender's own configuration) and a migration (`upgradeAccount`
-    // migrates the sender) change only the sender's; registration changes only an account whose
-    // quorum signed the transaction, which under TIP-1111 may be a delegate or a grant's parent.
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L504
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1111.md#L91
+    // Only the sender or an account whose quorum signed changes its commitment.
+    // <https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L504>
     check! {
         id: COMMITMENT_BY_SELF,
         over: |step: &AccountStep| step.post.of.keys(),
@@ -76,11 +69,8 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
             )
         },
     },
-    // A changed commitment is announced: `AccountUpgraded` with the new commitment, or
-    // `ConfigurableAccountConfigUpdated`, for the account. Registration emits no event.
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L462
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1113.md#L234
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L449
+    // A changed commitment is announced, except at registration.
+    // <https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L462>
     check! {
         id: COMMITMENT_EVENT,
         over: |step: &AccountStep| step.post.of.keys(),
@@ -104,13 +94,8 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
             )
         },
     },
-    // A changed commitment is the hash of the configuration that wrote it: the last owner update
-    // or migration the step announced, or, with no event, the registering quorum's version-0
-    // configuration. A transaction whose calls revert or halt keeps its registration and rolls
-    // back its owner updates, so the commitment is the version-0 hash, never an updated one.
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L505
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L506
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L524
+    // The commitment is the hash of the configuration that wrote it.
+    // <https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L505-L506>
     check! {
         id: COMMITMENT_HASH,
         over: |step: &AccountStep| step.post.of.keys(),
@@ -140,11 +125,8 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
             )
         },
     },
-    // Every configuration a signature carries or an event announces passes the configuration
-    // rules, including that its eight largest weights reach the threshold.
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L505
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L518
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L74-L80
+    // Every carried or announced configuration passes the configuration rules.
+    // <https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L518>
     check! {
         id: CONFIG_RULES,
         over: |step: &AccountStep| step.post.of.keys(),
@@ -167,11 +149,8 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
             })
         },
     },
-    // Each configurable account that signed an included transaction, for itself, as a delegate
-    // or as a grant's parent, has a commitment afterwards, whether its calls succeeded, reverted
-    // or halted.
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L502
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1111.md#L191
+    // Every configurable signer has a commitment afterwards.
+    // <https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L502>
     check! {
         id: SIGNER_REGISTERED,
         over: |step: &AccountStep| quorums(step),
@@ -180,13 +159,8 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
             ensure!(!post.is_zero(), "has no commitment after the transaction")
         },
     },
-    // A quorum is checked against its account's commitment at the transaction's position: with a
-    // commitment, its configuration hashes to it; without one, it is a version-0 configuration
-    // that derives the account's address, and does not list the account as an owner.
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L515
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L497
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1111.md#L182
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L169-L174
+    // A quorum matches its account's commitment, or derives its address.
+    // <https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L515>
     check! {
         id: QUORUM_COMMITMENT,
         over: |step: &AccountStep| quorums(step),
@@ -210,20 +184,15 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
             )
         },
     },
-    // A quorum's approvals recover to owners of its configuration in strictly ascending order,
-    // and their weights first reach the threshold at the last approval.
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L515
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L516
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L159-L165
+    // Approvals are ascending owners that first reach the threshold at the last one.
+    // <https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L515-L516>
     check! {
         id: QUORUM_WEIGHT,
         over: |step: &AccountStep| quorums(step),
         judge: |_, q| Some(quorum_weight(q).map_or(Verdict::Holds, Verdict::Broken)),
     },
-    // A configurable-account signature carries 1 to 8 approvals, each at most 2,049 bytes, so a
-    // transaction's two quorums check at most sixteen.
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L517
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1111.md#L185
+    // 1 to 8 approvals, each at most 2,049 bytes.
+    // <https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L517>
     check! {
         id: APPROVAL_BOUNDS,
         over: |step: &AccountStep| quorums(step),
@@ -236,10 +205,8 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
             )
         },
     },
-    // An owner update is a top-level call of a transaction signed directly by the account's
-    // current quorum: not an access key, a contract or a fee payer.
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L522
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L218
+    // Owner updates are signed directly by the account's quorum.
+    // <https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L522>
     check! {
         id: UPDATE_QUORUM,
         over: |step: &AccountStep| step.post.of.keys(),
@@ -261,11 +228,8 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
             )
         },
     },
-    // Each owner update keeps the salt and sets the version to the previous configuration's plus
-    // one, starting from the configuration the transaction's own quorum signed.
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L523
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L223-L224
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L227
+    // Each owner update keeps the salt and bumps the version by one.
+    // <https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L523>
     check! {
         id: UPDATE_VERSION,
         over: |step: &AccountStep| step.post.of.keys(),
@@ -293,10 +257,8 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
             Some(Verdict::Holds)
         },
     },
-    // A migration is the sender's own, signed by its original key with an ordinary signature,
-    // not an access key or a quorum, and carries no key authorization.
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1113.md#L65
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1113.md#L70-L71
+    // Migration is signed by the sender's own original key.
+    // <https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1113.md#L65-L71>
     check! {
         id: UPGRADE_ROOT,
         over: |step: &AccountStep| upgrades(step),
@@ -318,9 +280,8 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
             )
         },
     },
-    // Only an account without a commitment migrates, so it migrates at most once.
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1113.md#L73
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1113.md#L260
+    // Only an account without a commitment migrates.
+    // <https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1113.md#L260>
     check! {
         id: UPGRADE_FRESH,
         over: |step: &AccountStep| upgrades(step),
@@ -329,10 +290,8 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
             ensure!(pre.is_zero(), "already had commitment {pre}")
         },
     },
-    // A migration installs the version-1 configuration under the salt derived from the account,
-    // and its event and the stored commitment are that configuration's hash.
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1113.md#L77-L87
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1113.md#L260
+    // Migration stores the version-1 configuration's hash under the upgrade salt.
+    // <https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1113.md#L260>
     check! {
         id: UPGRADE_CONFIG,
         over: |step: &AccountStep| upgrades(step),
@@ -356,13 +315,8 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
             )
         },
     },
-    // From T14 an ordinary signature is not account authority for an account with a commitment
-    // at the transaction's position: as sender, key authorization signer, fee payer, or access
-    // key (whose key ID then takes only its quorum, whatever key type the grant stores).
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1113.md#L264
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1113.md#L266
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1113.md#L119-L120
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1111.md#L183
+    // An ordinary signature is never authority for an account with a commitment.
+    // <https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1113.md#L264>
     check! {
         id: ROOT_KEY_RETIRED,
         over: |step: &AccountStep| {
@@ -376,12 +330,13 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
             ensure!(pre.is_zero(), "signed with an ordinary key, its commitment is {pre}")
         },
     },
-    // Before T14 no transaction carries a configurable-account signature or a grant of key type 3.
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L135
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1111.md#L177
+    // Before T14, no configurable signatures or key-type-3 grants.
+    // <https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1111.md#L177>
     check! {
         id: FORK_GATED,
-        over: |step: &AccountStep| step.tx.iter().filter(|tx| !tx.authority.active).map(|tx| tx.sender),
+        over: |step: &AccountStep| {
+            step.tx.iter().filter(|tx| !tx.authority.active).map(|tx| tx.sender)
+        },
         judge: |s, _| {
             let authority = &s.tx.as_ref()?.authority;
             let grant = authority.grant.map(|g| g.key_type);
@@ -400,11 +355,8 @@ impl StepChecked<Option<Tx>> for Commitments {
 
 /// A transaction's effect on the leaves of the accounts it changed or named.
 pub const LEAF_CHECKS: &[Check<Leaves>] = &[
-    // An account with a commitment carries exactly the account code marker, whether its first
-    // transaction succeeded or failed.
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L509
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1113.md#L260
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L281
+    // An account with a commitment has the 0xef marker as code.
+    // <https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L509>
     check! {
         id: MARKER,
         over: |l: &Leaves| l.of.keys(),
@@ -421,13 +373,8 @@ pub const LEAF_CHECKS: &[Check<Leaves>] = &[
             )
         },
     },
-    // Only registration and migration install the marker, with the commitment in the same step:
-    // a failed migration rolls both back. Precompiles and TIP-20 tokens carry the same code, so a
-    // TIP-20 token's creation is not judged.
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L510
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L275-L277
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1113.md#L261
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1113.md#L267
+    // Only registration and migration install the marker.
+    // <https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L510>
     check! {
         id: MARKER_INSTALL,
         over: |l: &Leaves| l.of.keys(),
@@ -448,10 +395,8 @@ pub const LEAF_CHECKS: &[Check<Leaves>] = &[
             )
         },
     },
-    // A grant of key type 3 names as its key ID a delegate other than the parent, without code or
-    // delegation other than the account code marker.
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1111.md#L176
-    // https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1111.md#L65-L66
+    // A key-type-3 grant names a delegate other than the parent, without other code.
+    // <https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1111.md#L176>
     check! {
         id: GRANT_DELEGATE,
         over: |l: &Leaves| {
@@ -482,8 +427,7 @@ fn commitments(s: &AccountStep, account: &Address) -> Option<(B256, B256)> {
     Some((*s.pre.of.get(account)?, *s.post.of.get(account)?))
 }
 
-/// Whether the step registered `account`: it had no commitment, and now holds the hash of the
-/// version-0 configuration a quorum of the transaction carried for it.
+/// Whether the step registered `account` with a version-0 quorum of the transaction.
 fn registered(s: &AccountStep, account: Address, pre: B256, post: B256) -> bool {
     pre.is_zero()
         && s.tx.iter().any(|tx| {
