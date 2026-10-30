@@ -207,7 +207,7 @@ impl Transaction {
         self.outcome.charged_gas
     }
 
-    /// The stored form: input in full, outputs as per-field digests.
+    /// The stored form: input and state delta in full, other outputs as per-field digests.
     pub fn stored(&self) -> eyre::Result<Case> {
         Ok(Case {
             ordinal: self.ordinal,
@@ -217,19 +217,21 @@ impl Transaction {
             status: self.outcome.status,
             charged_gas: self.outcome.charged_gas,
             created: self.outcome.created,
+            delta: self.delta.clone(),
             outputs: Outputs {
                 outcome: digest(&wincode::serialize(&self.outcome)?),
                 receipt: digest(&self.receipt),
-                delta: digest(&wincode::serialize(&self.delta)?),
                 after: digest(&self.after),
             },
         })
     }
 }
 
-/// Stored form of a [`Transaction`]: its input (`before`) in full, and each output as a
-/// separate xxh3-128 digest, so replay detects any divergence and names the field without
-/// storing post values. Status, charged gas and the created address stay readable for triage.
+/// Stored form of a [`Transaction`]: its input (`before`) and state delta in full, and every
+/// other output as a separate xxh3-128 digest, so replay detects any divergence and names the
+/// field. The stored deltas restore the state before any transaction of the block without
+/// executing the ones before it. Status, charged gas and the created address stay readable
+/// for triage.
 #[derive(Debug, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct Case {
     pub ordinal: u64,
@@ -239,15 +241,15 @@ pub struct Case {
     pub status: u8,
     pub charged_gas: u64,
     pub created: Option<[u8; 20]>,
+    pub delta: Delta,
     pub outputs: Outputs,
 }
 
-/// Per-field digests of a transaction's outputs.
+/// Per-field digests of a transaction's outputs other than its state delta.
 #[derive(Debug, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct Outputs {
     pub outcome: [u8; 16],
     pub receipt: [u8; 16],
-    pub delta: [u8; 16],
     pub after: [u8; 16],
 }
 
@@ -279,7 +281,7 @@ impl Case {
             "transaction receipt mismatch at {at}"
         );
         eyre::ensure!(
-            actual.outputs.delta == self.outputs.delta,
+            actual.delta == self.delta,
             "transaction delta mismatch at {at}"
         );
         eyre::ensure!(
@@ -291,10 +293,10 @@ impl Case {
 }
 
 /// Ordered commits inside a phase, preserving wipe then recreation.
-#[derive(Debug, Default, PartialEq, Eq, SchemaRead, SchemaWrite)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct Delta(pub Vec<BTreeMap<[u8; 20], Change>>);
 
-#[derive(Debug, PartialEq, Eq, SchemaRead, SchemaWrite)]
+#[derive(Clone, Debug, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct Change {
     pub info: Option<InfoChange>,
     pub created: bool,
@@ -303,7 +305,7 @@ pub struct Change {
 }
 
 /// None preserves a field; Some(zero/None) explicitly resets it.
-#[derive(Debug, PartialEq, Eq, SchemaRead, SchemaWrite)]
+#[derive(Clone, Debug, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct InfoChange {
     pub nonce: Option<u64>,
     pub balance: Option<[u8; 32]>,

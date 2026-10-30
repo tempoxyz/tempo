@@ -1,7 +1,7 @@
 //! Bounded in-process checkpoint reads feeding native execution workers.
 
 use crate::{
-    execute::{decode_block, execute_block, standalone_all},
+    execute::{decode_block, execute_block, standalone_cases},
     store::{self, Catalog, MAX_RECORD_BYTES, Record, Store},
     types::{Chunk, Transaction},
     view::View,
@@ -174,33 +174,38 @@ pub fn run(
                         ready.space.notify_one();
                         let chunk = store::decode(&ready.bytes, &ready.record)?;
                         runtime.block_on(store::resolve_code(reader, &chunk))?;
-                        let (block, actual) =
-                            verify(config, consensus, &chunk, &ready.cases, &ready.record)?;
                         let (transactions, gas) = if let Some((from, to)) = standalone {
+                            // The stored deltas restore each transaction's prestate, so the
+                            // block itself is not executed.
                             let (mut transactions, mut gas) = (0, 0);
-                            let phases = chunk.phases.as_ref().expect("verified");
-                            standalone_all(
+                            let cases = decode_cases(&ready.cases, &ready.record)?;
+                            let block = decode_block(
+                                &chunk.blocks[0],
+                                chunk.start,
+                                B256::from(chunk.parent),
+                            )?;
+                            let phases = chunk
+                                .phases
+                                .as_ref()
+                                .ok_or_else(|| eyre::eyre!("missing phase expectations"))?;
+                            standalone_cases(
                                 config,
                                 &block,
                                 View::new(chunk.clone()),
                                 phases,
-                                &actual,
-                                |index, replayed| {
-                                    let expected = &actual[index];
-                                    if expected.ordinal >= from && expected.ordinal < to {
-                                        eyre::ensure!(
-                                            replayed == expected,
-                                            "standalone transaction {} differs",
-                                            expected.ordinal
-                                        );
-                                        gas += expected.gas_used();
+                                &cases,
+                                |case| {
+                                    let selected = case.ordinal >= from && case.ordinal < to;
+                                    if selected {
+                                        gas += case.charged_gas;
                                         transactions += 1;
                                     }
-                                    Ok(())
+                                    selected
                                 },
                             )?;
                             (transactions, gas)
                         } else {
+                            verify(config, consensus, &chunk, &ready.cases, &ready.record)?;
                             (ready.record.transactions, ready.record.gas)
                         };
                         completed.0 += 1;
@@ -512,8 +517,21 @@ async fn read_catalog(
     Ok(totals)
 }
 
+/// Decodes and checks every transaction record of a block.
+fn decode_cases(cases: &[Bytes], record: &Record) -> eyre::Result<Vec<crate::types::Case>> {
+    eyre::ensure!(
+        cases.len() == record.cases.len(),
+        "transaction count mismatch"
+    );
+    cases
+        .iter()
+        .enumerate()
+        .map(|(i, b)| store::decode_case(b, &record.cases[i], record.first_tx + i as u64))
+        .collect()
+}
+
 /// Verifies one published block: executes it from its record alone and checks every
-/// transaction against its stored digests, consensus rules and the historical changesets.
+/// transaction against its stored record, consensus rules and the historical changesets.
 pub fn verify(
     config: &TempoEvmConfig,
     consensus: &TempoConsensus,
@@ -521,15 +539,7 @@ pub fn verify(
     cases: &[Bytes],
     record: &Record,
 ) -> eyre::Result<(RecoveredBlock<Block>, Vec<Transaction>)> {
-    eyre::ensure!(
-        cases.len() == record.cases.len(),
-        "transaction count mismatch"
-    );
-    let expected = cases
-        .iter()
-        .enumerate()
-        .map(|(i, b)| store::decode_case(b, &record.cases[i], record.first_tx + i as u64))
-        .collect::<eyre::Result<Vec<_>>>()?;
+    let expected = decode_cases(cases, record)?;
     let block = decode_block(&chunk.blocks[0], chunk.start, B256::from(chunk.parent))?;
     let phases = chunk
         .phases
