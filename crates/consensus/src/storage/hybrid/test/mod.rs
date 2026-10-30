@@ -15,8 +15,14 @@ use commonware_macros::test_traced;
 use commonware_runtime::{Runner as _, Spawner, deterministic};
 use commonware_utils::NZU64;
 
+use commonware_consensus::types::{Epoch, FixedEpocher};
+
 use super::*;
-use crate::{consensus::block::Error as BlockError, storage::PRUNABLE_ITEMS_PER_SECTION};
+use crate::{
+    consensus::block::Error as BlockError,
+    storage::PRUNABLE_ITEMS_PER_SECTION,
+    test_utils::{dkg_fixture, make_certificate},
+};
 use utils::{StubProvider, fresh_prunable_with_section_size, make_block, make_chain};
 
 /// Force every height into its own section so the prunable archive's
@@ -980,5 +986,266 @@ fn reth_provider_errors_propagate_to_caller() {
                 Err(Error::Provider(_))
             ));
         }
+    });
+}
+
+/// Seeds a finalizations archive with a certificate for each of `blocks`.
+async fn certify<TContext>(
+    context: &mut TContext,
+    blocks: &[&Block],
+) -> immutable::Archive<TContext, Digest, Certificate>
+where
+    TContext: BufferPooler
+        + Storage
+        + Metrics
+        + Clock
+        + Spawner
+        + rand_core::CryptoRng
+        + Send
+        + Sync
+        + 'static,
+{
+    let fixture = dkg_fixture(context, Epoch::zero());
+    let mut certificates = crate::storage::init_finalizations_archive(
+        context,
+        "test",
+        utils::fresh_page_cache(context),
+        &FixedEpocher::new(NZU64!(1_000)),
+    )
+    .await
+    .expect("init finalizations archive");
+    for block in blocks {
+        let certificate = make_certificate(block.digest(), Epoch::zero(), 1, &fixture.schemes);
+        certificates = certificates
+            .put(block.height().get(), block.digest(), certificate)
+            .await
+            .expect("put certificate");
+    }
+    certificates
+}
+
+/// Chain 1..=10 with reth finalized at 4 and holding 1..=4; the cache holds
+/// `cached`, and certificates exist for `certified` heights.
+async fn certified_store<TContext>(
+    context: &mut TContext,
+    chain: &[Block],
+    cached: &[Block],
+    certified: &[u64],
+) -> (
+    Hybrid<TContext, StubProvider>,
+    immutable::Archive<TContext, Digest, Certificate>,
+)
+where
+    TContext: BufferPooler
+        + Storage
+        + Metrics
+        + Clock
+        + Spawner
+        + rand_core::CryptoRng
+        + Send
+        + Sync
+        + 'static,
+{
+    let (mut hybrid, provider) = SetupHybrid::default().build(context).await;
+    for block in &chain[..4] {
+        provider.add_block(block);
+    }
+    provider.set_reth_finalized(4);
+    for block in cached {
+        hybrid = hybrid.put(block.clone()).await.expect("put");
+    }
+    let certified = certified
+        .iter()
+        .map(|height| &chain[*height as usize - 1])
+        .collect::<Vec<_>>();
+    let certificates = certify(context, &certified).await;
+    (hybrid, certificates)
+}
+
+#[test_traced]
+fn ensure_certified_accepts_chain_linked_to_certificates_and_reth() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let chain = make_chain(1, 10);
+        let (hybrid, certificates) =
+            certified_store(&mut context, &chain, &chain[4..], &[4, 10]).await;
+        hybrid
+            .ensure_certified(&certificates, Height::new(10))
+            .await
+            .expect("certified chain");
+    });
+}
+
+#[test_traced]
+fn ensure_certified_rejects_uncertified_block_at_certified_height() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let chain = make_chain(1, 10);
+        let mut cached = chain[4..9].to_vec();
+        let substitute = make_block(10, chain[8].digest().0 ^ B256::with_last_byte(1));
+        cached.push(substitute.clone());
+        let (hybrid, certificates) = certified_store(&mut context, &chain, &cached, &[4, 10]).await;
+        let error = hybrid
+            .ensure_certified(&certificates, Height::new(10))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "finalized block `{}` at height `10` is not the block `{}` certified at that height",
+                substitute.digest(),
+                chain[9].digest(),
+            )
+        );
+    });
+}
+
+#[test_traced]
+fn ensure_certified_rejects_block_that_is_not_the_parent_of_the_block_above() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let chain = make_chain(1, 10);
+        let mut cached = chain[4..].to_vec();
+        let substitute = make_block(7, chain[5].digest().0 ^ B256::with_last_byte(1));
+        cached[2] = substitute.clone();
+        let (hybrid, certificates) = certified_store(&mut context, &chain, &cached, &[4, 10]).await;
+        let error = hybrid
+            .ensure_certified(&certificates, Height::new(10))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "finalized block `{}` at height `7` is not the parent `{}` of the finalized block above it",
+                substitute.digest(),
+                chain[6].digest(),
+            )
+        );
+    });
+}
+
+#[test_traced]
+fn ensure_certified_rejects_cached_block_above_the_tip_certificate() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let chain = make_chain(1, 11);
+        let (hybrid, certificates) =
+            certified_store(&mut context, &chain, &chain[4..], &[4, 10]).await;
+        let error = hybrid
+            .ensure_certified(&certificates, Height::new(10))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "finalized block `{}` at height `11` is neither certified nor the parent of a certified block",
+                chain[10].digest(),
+            )
+        );
+    });
+}
+
+#[test_traced]
+fn ensure_certified_rejects_reth_finalized_block_that_is_not_certified() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let chain = make_chain(1, 10);
+        let (mut hybrid, provider) = SetupHybrid::default().build(&context).await;
+        let fork = make_block(4, chain[2].digest().0 ^ B256::with_last_byte(1));
+        for block in chain[..3].iter().chain([&fork]) {
+            provider.add_block(block);
+        }
+        provider.set_reth_finalized(4);
+        for block in &chain[4..] {
+            hybrid = hybrid.put(block.clone()).await.expect("put");
+        }
+        let certificates = certify(&mut context, &[&chain[9]]).await;
+        let error = hybrid
+            .ensure_certified(&certificates, Height::new(10))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "finalized block `{}` at height `4` is not the parent `{}` of the finalized block above it",
+                fork.digest(),
+                chain[3].digest(),
+            )
+        );
+    });
+}
+
+#[test_traced]
+fn ensure_certified_rejects_certificate_at_or_below_reth_finalized_for_another_block() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let chain = make_chain(1, 10);
+        let (hybrid, provider) = SetupHybrid::default().build(&context).await;
+        let fork = make_block(3, chain[1].digest().0 ^ B256::with_last_byte(1));
+        for block in chain[..2].iter().chain([&fork, &chain[3]]) {
+            provider.add_block(block);
+        }
+        provider.set_reth_finalized(4);
+        let certificates = certify(&mut context, &[&chain[2]]).await;
+        let error = hybrid
+            .ensure_certified(&certificates, Height::new(3))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "finalized block `{}` at height `3` is not the block `{}` certified at that height",
+                fork.digest(),
+                chain[2].digest(),
+            )
+        );
+    });
+}
+
+#[test_traced]
+fn ensure_certified_rejects_reth_finalized_block_that_differs_from_the_cached_one() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let chain = make_chain(1, 10);
+        let (mut hybrid, provider) = SetupHybrid::default().build(&context).await;
+        let fork = make_block(4, chain[2].digest().0 ^ B256::with_last_byte(1));
+        for block in chain[..3].iter().chain([&fork]) {
+            provider.add_block(block);
+        }
+        provider.set_reth_finalized(4);
+        for block in &chain[3..] {
+            hybrid = hybrid.put(block.clone()).await.expect("put");
+        }
+        let certificates = certify(&mut context, &[&chain[9]]).await;
+        let error = hybrid
+            .ensure_certified(&certificates, Height::new(10))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "execution layer's finalized block `{}` at height `4` is not the certified block `{}`",
+                fork.digest(),
+                chain[3].digest(),
+            )
+        );
+    });
+}
+
+#[test_traced]
+fn ensure_certified_rejects_missing_header_at_or_below_reth_finalized() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let chain = make_chain(1, 10);
+        let (mut hybrid, provider) = SetupHybrid::default().build(&context).await;
+        for block in &chain[..3] {
+            provider.add_block(block);
+        }
+        provider.set_reth_finalized(4);
+        for block in &chain[4..] {
+            hybrid = hybrid.put(block.clone()).await.expect("put");
+        }
+        let certificates = certify(&mut context, &[&chain[9]]).await;
+        let error = hybrid
+            .ensure_certified(&certificates, Height::new(10))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "missing finalized header at height `4`, at or below the execution layer's \
+             finalized height `4`",
+        );
     });
 }

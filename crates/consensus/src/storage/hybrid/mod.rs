@@ -93,13 +93,15 @@
 //!
 //! [`alias::marshal::init`]: crate::alias::marshal::init
 
+use alloy_consensus::Sealable as _;
 use alloy_primitives::B256;
 use commonware_consensus::{Heightable as _, marshal::store::Blocks, types::Height};
-use commonware_runtime::{BufferPooler, Clock, Metrics, Storage};
+use commonware_runtime::{BufferPooler, Clock, Metrics, Spawner, Storage};
 use commonware_storage::{
-    archive::{self, Identifier, prunable},
+    archive::{self, Archive as _, Identifier, immutable, prunable},
     translator::TwoCap,
 };
+use eyre::{OptionExt as _, WrapErr as _, ensure};
 use reth_node_core::primitives::SealedBlock;
 use reth_primitives_traits::SealedOrRecoveredBlock;
 use reth_provider::{
@@ -109,7 +111,10 @@ use reth_provider::{
 use tempo_primitives::TempoHeader;
 use tracing::{info, instrument};
 
-use crate::consensus::{Digest, block::Block};
+use crate::{
+    consensus::{Digest, block::Block},
+    gossip::Certificate,
+};
 
 #[cfg(test)]
 pub(in crate::storage) mod test;
@@ -339,6 +344,118 @@ where
             Identifier::Key(digest) => {
                 Ok(self.execution_block_provider.header_by_hash(digest.0)?)
             }
+        }
+    }
+
+    /// Ensures that the blocks this store serves by height above the
+    /// highest certificate at or below reth's finalized height are the
+    /// blocks `certificates` certify, and that reth's finalized chain is the
+    /// certified one.
+    ///
+    /// Marshal dispatches and the executor backfills finalized blocks by
+    /// height, without comparing them to the certificate at that height, so
+    /// a restored archive could otherwise pair genuine certificates with
+    /// other blocks. Walks down from the higher of `tip_height` and the
+    /// highest cached block. A stored block must be the parent of the stored
+    /// block above it or, when the block above is missing, the block its own
+    /// certificate certifies; where both exist it must be both. The first
+    /// height at or below reth's finalized height must hold reth's canonical
+    /// header. The walk ends at the highest certificate at or below reth's
+    /// finalized height, or at that height when no certificate is that low.
+    ///
+    /// Certificates are not verified here.
+    ///
+    /// Errors when a stored block is not the certified one, cannot be linked
+    /// to a certificate, or reth's finalized block is not the certified one.
+    #[instrument(skip_all, fields(%tip_height), err)]
+    pub(crate) async fn ensure_certified(
+        &self,
+        certificates: &immutable::Archive<TContext, Digest, Certificate>,
+        tip_height: Height,
+    ) -> eyre::Result<()>
+    where
+        TContext: Spawner,
+    {
+        let execution_finalized = self
+            .execution_block_provider
+            .finalized_height()
+            .unwrap_or_default();
+        let lowest_certificate = certificates.first_index();
+        let mut height = archive::Archive::last_index(&self.prunable)
+            .map_or(tip_height.get(), |cached| cached.max(tip_height.get()));
+        let mut parent_of_above = None;
+        let mut execution_checked = false;
+        loop {
+            let certified = certificates
+                .get(Identifier::Index(height))
+                .await
+                .wrap_err_with(|| format!("failed reading certificate at height `{height}`"))?
+                .map(|certificate| certificate.proposal.payload);
+            let header = self
+                .get_header(Identifier::Index(height))
+                .await
+                .wrap_err_with(|| {
+                    format!("failed reading finalized header at height `{height}`")
+                })?;
+            match header {
+                None => {
+                    ensure!(
+                        height > execution_finalized,
+                        "missing finalized header at height `{height}`, at or below the \
+                         execution layer's finalized height `{execution_finalized}`",
+                    );
+                    parent_of_above = None;
+                }
+                Some(header) => {
+                    let digest = Digest(header.hash_slow());
+                    if let Some(certified) = certified {
+                        ensure!(
+                            digest == certified,
+                            "finalized block `{digest}` at height `{height}` is not the block \
+                             `{certified}` certified at that height",
+                        );
+                    }
+                    match parent_of_above {
+                        Some(parent) => ensure!(
+                            digest == parent,
+                            "finalized block `{digest}` at height `{height}` is not the parent \
+                             `{parent}` of the finalized block above it",
+                        ),
+                        None => ensure!(
+                            certified.is_some(),
+                            "finalized block `{digest}` at height `{height}` is neither certified \
+                             nor the parent of a certified block",
+                        ),
+                    }
+                    if height <= execution_finalized {
+                        if !execution_checked {
+                            let execution = self
+                                .execution_block_provider
+                                .header_by_height(height)
+                                .wrap_err_with(|| {
+                                    format!("failed reading execution header at height `{height}`")
+                                })?
+                                .ok_or_eyre("execution layer has no finalized header")?;
+                            let execution = Digest(execution.hash_slow());
+                            ensure!(
+                                execution == digest,
+                                "execution layer's finalized block `{execution}` at height \
+                                 `{height}` is not the certified block `{digest}`",
+                            );
+                            execution_checked = true;
+                        }
+                        if certified.is_some()
+                            || lowest_certificate.is_none_or(|lowest| lowest > height)
+                        {
+                            return Ok(());
+                        }
+                    }
+                    parent_of_above = Some(Digest(header.inner.parent_hash));
+                }
+            }
+            // Genesis is at or below every finalized height and carries no
+            // certificate, so the walk returns before height 0 underflows.
+            height -= 1;
         }
     }
 
