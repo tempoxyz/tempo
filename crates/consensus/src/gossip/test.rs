@@ -672,6 +672,37 @@ fn higher_round_cannot_replace_a_slot_being_judged() {
     });
 }
 
+/// A certificate dropped while the slot was locked was never verified, so the
+/// peer's later resend must be admitted rather than treated as a replay.
+#[test_traced]
+fn resend_after_locked_replacement_is_admitted() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let mut rig = start(&mut context);
+        rig.connect(peer(1));
+
+        let verified = rig.frame(70);
+        let replacement = rig.frame(71);
+        rig.send(peer(1), verified.clone()).await;
+        wait_until(&context, || rig.sink.requests().len() == 1).await;
+        rig.send(peer(1), replacement.clone()).await;
+        wait_until(&context, || {
+            metric(&context, "gossip_dropped_locked_replacement_total") == 1
+        })
+        .await;
+
+        rig.sink.release(Ok(()));
+        wait_until(&context, || {
+            metric(&context, "gossip_latest_verified_view") == 70
+        })
+        .await;
+
+        rig.send(peer(1), replacement.clone()).await;
+        wait_until(&context, || rig.sink.requests().len() == 2).await;
+        assert_eq!(rig.sink.requests(), vec![round(70), round(71)]);
+        assert_eq!(metric(&context, "gossip_dropped_replay_total"), 0);
+    });
+}
+
 /// A rate-limited slot has not consumed verification work, so the peer may
 /// still replace it with a more useful certificate.
 #[test_traced]
