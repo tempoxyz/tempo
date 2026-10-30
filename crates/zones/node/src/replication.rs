@@ -346,6 +346,57 @@ fn encode_block_with_witness(
     Ok(EncodedBlock { block, witness })
 }
 
+/// Deepest CBOR nesting accepted in a peer witness. Honest witnesses nest only a few levels.
+const MAX_WITNESS_CBOR_DEPTH: usize = 32;
+
+/// Rejects the first CBOR item in `input` if its arrays, maps and tags nest deeper than
+/// `max_depth`.
+///
+/// serde and minicbor-serde recurse once per level with no limit, and `#[serde(flatten)]` makes
+/// unknown witness keys decode recursively too, so a few KB of nested arrays from any manifest
+/// peer would overflow the stack and abort the node. This walk is iterative.
+fn ensure_cbor_depth(input: &[u8], max_depth: usize) -> eyre::Result<()> {
+    use minicbor::data::Type;
+
+    let mut decoder = minicbor::Decoder::new(input);
+    // Items left in each open container; `None` for indefinite-length ones.
+    let mut open: Vec<Option<u64>> = Vec::new();
+    loop {
+        while let Some(Some(0)) = open.last() {
+            open.pop();
+        }
+        if open.is_empty() && decoder.position() > 0 {
+            return Ok(());
+        }
+        let datatype = decoder.datatype()?;
+        if datatype == Type::Break {
+            eyre::ensure!(
+                open.pop() == Some(None),
+                "unexpected CBOR break at {}",
+                decoder.position()
+            );
+            decoder.skip()?;
+            continue;
+        }
+        if let Some(Some(remaining)) = open.last_mut() {
+            *remaining -= 1;
+        }
+        match datatype {
+            Type::Array | Type::ArrayIndef => open.push(decoder.array()?),
+            Type::Map | Type::MapIndef => open.push(decoder.map()?.map(|n| n.saturating_mul(2))),
+            Type::Tag => {
+                decoder.tag()?;
+                open.push(Some(1));
+            }
+            _ => decoder.skip()?,
+        }
+        eyre::ensure!(
+            open.len() <= max_depth,
+            "witness CBOR nests deeper than {max_depth} levels"
+        );
+    }
+}
+
 // Shared envelope for live blocks and backfill: magic/version, one RLP block, then witness CBOR.
 // Settled history and nodes without proof persistence keep using bare RLP blocks.
 pub(crate) fn decode_peer_block(encoded: &[u8]) -> eyre::Result<PeerBlock> {
@@ -358,6 +409,7 @@ pub(crate) fn decode_peer_block(encoded: &[u8]) -> eyre::Result<PeerBlock> {
     let block = Block::decode(&mut input)
         .map_err(|err| eyre::eyre!("invalid RLP-encoded zone block: {err}"))?;
     let witness = if witnessed {
+        ensure_cbor_depth(input, MAX_WITNESS_CBOR_DEPTH)?;
         let mut deserializer = minicbor_serde::Deserializer::from(minicbor::Decoder::new(input));
         let proof = serde::Deserialize::deserialize(&mut deserializer)?;
         input = &input[deserializer.decoder().position()..];
@@ -753,6 +805,64 @@ mod tests {
         json.extend_from_slice(&bare);
         serde_json::to_writer(&mut json, &proof).unwrap();
         assert!(decode_peer_block(&json).is_err());
+    }
+
+    #[test]
+    fn witness_envelope_rejects_deeply_nested_cbor() {
+        let bare = alloy_rlp::encode(Block::default());
+        let proof = StoredBlockProof {
+            format_version: 2,
+            witness: Default::default(),
+        };
+        let honest = witness_envelope(bare.clone(), &proof);
+        let witness = &honest[EncodedBlock::WITNESS_PREFIX.len() + bare.len()..];
+        super::ensure_cbor_depth(witness, super::MAX_WITNESS_CBOR_DEPTH).unwrap();
+
+        // An unknown key flattened into the execution witness, holding 5,000 nested arrays,
+        // overflowed a 2 MiB stack before the depth check.
+        let mut nested = Vec::new();
+        let mut encoder = minicbor::Encoder::new(&mut nested);
+        encoder
+            .map(2)
+            .unwrap()
+            .str("formatVersion")
+            .unwrap()
+            .u32(2)
+            .unwrap();
+        encoder
+            .str("witness")
+            .unwrap()
+            .map(1)
+            .unwrap()
+            .str("x")
+            .unwrap();
+        nested.extend(std::iter::repeat_n(0x81, 5_000));
+        nested.push(0x00);
+        for item in [
+            nested,
+            [vec![0x9f; 5_000], vec![0xff; 5_000]].concat(),
+            vec![0xc6; 5_000],
+        ] {
+            let mut encoded = EncodedBlock::WITNESS_PREFIX.to_vec();
+            encoded.extend_from_slice(&bare);
+            encoded.extend_from_slice(&item);
+            let decoded = std::thread::Builder::new()
+                .stack_size(256 * 1024)
+                .spawn(move || decode_peer_block(&encoded).map(|_| ()))
+                .unwrap()
+                .join()
+                .unwrap();
+            assert_eq!(
+                decoded.unwrap_err().to_string(),
+                "witness CBOR nests deeper than 32 levels"
+            );
+        }
+
+        // Exactly the limit is still accepted by the depth check.
+        let mut at_limit = vec![0x81; super::MAX_WITNESS_CBOR_DEPTH];
+        at_limit.push(0x00);
+        super::ensure_cbor_depth(&at_limit, super::MAX_WITNESS_CBOR_DEPTH).unwrap();
+        assert!(super::ensure_cbor_depth(&[0xff], super::MAX_WITNESS_CBOR_DEPTH).is_err());
     }
 
     #[tokio::test]
