@@ -8,7 +8,7 @@ use super::{
 use crate::{
     ECRECOVER_GAS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS, ZONE_FACTORY_ADDRESS,
     error::{Result, TempoPrecompileError},
-    storage::{Handler, StorageCtx},
+    storage::Handler,
 };
 use alloy::{
     consensus::crypto::secp256k1::recover_signer_unchecked,
@@ -544,7 +544,8 @@ impl ZonePortalStorage {
     }
 
     /// Solidity `ecrecover` (precompile `0x01`): `v` must be 27 or 28 and, unlike
-    /// [`StorageCtx::recover_signer`], high-`s` signatures are accepted.
+    /// [`StorageCtx::recover_signer`](crate::storage::StorageCtx::recover_signer), high-`s`
+    /// signatures are accepted.
     fn ecrecover(&mut self, digest: B256, v: u8, r: B256, s: B256) -> Result<Option<Address>> {
         self.storage.deduct_gas(ECRECOVER_GAS)?;
         if v != 27 && v != 28 {
@@ -561,7 +562,9 @@ impl ZonePortalStorage {
 mod tests {
     use super::{super::secp256k1::SECP256K1_P, *};
     use crate::{
-        PATH_USD_ADDRESS, storage::hashmap::HashMapStorageProvider, test_util::TIP20Setup,
+        PATH_USD_ADDRESS,
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        test_util::TIP20Setup,
         zone_factory::ZoneFactory,
     };
     use alloy::primitives::{Bytes, IntoLogData, uint};
