@@ -328,6 +328,25 @@ for bad in [
     assert (try { txgen-neobank-instances ($shapes_dir | path join bad.yml); false } catch { true })
 }
 rm -rf $shapes_dir
+# projected-pipeline: a neobank-multi style preset whose default shapes file is the pipeline
+# by pillar, so the preset name alone selects it (multi-region runs pass no env).
+let projected_spec = (txgen-resolve-bench-spec projected-pipeline)
+for list in [$TXGEN_HELPER_PUBLIC_MIX_PRESETS $TXGEN_HELPER_ALWAYS_FUND_PRESETS ($TXGEN_HELPER_NEOBANK_MULTI_PRESETS | columns)] {
+    assert ("projected-pipeline" in $list)
+}
+let pipeline = (txgen-deployment-shapes ($presets_dir | path join shapes pipeline.yml))
+assert equal ($pipeline | get name) [embedded-finance cross-border institutional]
+assert (((($pipeline | get peak_tps | math sum) - (2652435 / 2592000 * 84)) | math abs) < 0.000001)
+let projected_dir = (mktemp -d)
+let projected_path = (txgen-prepare-public-mix-preset $projected_spec.spec_path 1000 40 6 1337 --out-dir $projected_dir)
+assert equal ($projected_path | path basename) "projected-pipeline.yml"
+let projected_weights = (txgen-workload-metadata-args projected-pipeline $projected_path | last | str replace "workload_mix_weights=" "" | from json)
+let projected_total = ($projected_weights | values | math sum)
+for shape in $pipeline {
+    let weight = ($projected_weights | items { |key, value| {key: $key, value: $value} } | where { |entry| $entry.key | str starts-with $"($shape.name)/" } | get value | math sum)
+    assert ((($weight / $projected_total) - ($shape.share / ($pipeline | get share | math sum)) | math abs) < 0.000001)
+}
+rm -rf $projected_dir
 # Batch payouts: a 16-sender treasury pays 32 recipients per transaction (the txpool's
 # call limit); reward batches stop at 16 Earn deposits to fit the transaction gas cap.
 let batch_dir = (mktemp -d)

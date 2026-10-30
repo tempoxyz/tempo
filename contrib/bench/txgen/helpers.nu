@@ -13,6 +13,7 @@ const TXGEN_HELPER_ALWAYS_FUND_PRESETS = [
     "card-settlement"
     "neobank-generic"
     "neobank-multi"
+    "projected-pipeline"
     "batch-payout"
     "dex"
     "bridge-mix"
@@ -30,7 +31,7 @@ const TXGEN_HELPER_ALWAYS_FUND_PRESETS = [
     "zone-to-zone-hot"
 ]
 # Presets composed by txgen-prepare-public-mix-preset from the public-mix fixtures.
-const TXGEN_HELPER_PUBLIC_MIX_PRESETS = ["public-mix" "vault-throughput" "zone-portal-throughput" "zone-earn-mix" "zone-earn-hot" "zone-earn-serial" "zone-portal-hot" "card-settlement" "neobank-generic" "neobank-multi" "batch-payout"]
+const TXGEN_HELPER_PUBLIC_MIX_PRESETS = ["public-mix" "vault-throughput" "zone-portal-throughput" "zone-earn-mix" "zone-earn-hot" "zone-earn-serial" "zone-portal-hot" "card-settlement" "neobank-generic" "neobank-multi" "projected-pipeline" "batch-payout"]
 # Presets that pin the zone portal count instead of sizing it by TPS (TXGEN_ZONE_COUNT still overrides).
 const TXGEN_HELPER_PRESET_ZONE_COUNTS = {"zone-earn-hot": 1, "zone-portal-hot": 1}
 # Zone -> zone presets (presets/zone-to-zone.yml); the hot variant pins one source and one target portal.
@@ -55,7 +56,7 @@ const TXGEN_HELPER_CARD_SETTLEMENT_SENDERS = 18
 const TXGEN_HELPER_CARD_SETTLEMENT_ACCOUNT = "0x000000000000000000000000000000000000ca4d"
 # Batch payouts: recipients per transaction by preset (TXGEN_BATCH_PAYOUT_RECIPIENTS overrides),
 # within the txpool's 32 calls per Tempo transaction and the 30M transaction gas cap.
-const TXGEN_HELPER_BATCH_PAYOUT_RECIPIENTS = {"batch-payout": 32, "neobank-generic": 32, "neobank-multi": 32}
+const TXGEN_HELPER_BATCH_PAYOUT_RECIPIENTS = {"batch-payout": 32, "neobank-generic": 32, "neobank-multi": 32, "projected-pipeline": 32}
 const TXGEN_HELPER_BATCH_PAYOUT_BASE_GAS = 500000
 const TXGEN_HELPER_BATCH_TREASURY_SIZE = 16
 # neobank-generic mix templates by module (TXGEN_NEOBANK_MODULES selects modules).
@@ -76,6 +77,8 @@ const TXGEN_HELPER_NEOBANK_SINKS = [
 # Deployment-shape pillars (presets/shapes/README.md) and the month length behind peak TPS.
 const TXGEN_HELPER_SHAPE_PILLARS = [cross-border institutional embedded-finance agentic]
 const TXGEN_HELPER_SECONDS_PER_MONTH = 2592000
+# neobank-multi style presets and their default instances or shapes file (TXGEN_NEOBANK_INSTANCES overrides).
+const TXGEN_HELPER_NEOBANK_MULTI_PRESETS = {"neobank-multi": "neobank/instances.yml", "projected-pipeline": "shapes/pipeline.yml"}
 # neobank-multi mix weights sum to about this, split by instance gas share.
 const TXGEN_HELPER_NEOBANK_WEIGHT_SCALE = 1000000000
 const TXGEN_HELPER_MAX_AA_CALLS = 32
@@ -1263,7 +1266,8 @@ def txgen-neobank-instance-text [text: string, instance: record, index: int] {
 def txgen-prepare-neobank-multi-preset [spec_path: string, count: int, accounts: int, zones: int, chain_id: int, output_dir: string] {
     let presets = ($spec_path | path dirname)
     # A relative TXGEN_NEOBANK_INSTANCES path resolves from the working directory, then the repository root.
-    let config = ($env.TXGEN_NEOBANK_INSTANCES? | default ($presets | path join neobank instances.yml))
+    let preset_name = ($spec_path | path basename | str replace --regex '\.yml$' '')
+    let config = ($env.TXGEN_NEOBANK_INSTANCES? | default ($presets | path join ($TXGEN_HELPER_NEOBANK_MULTI_PRESETS | get $preset_name)))
     let config = if ($config | path exists) { $config } else { [ (txgen-repo-root) $config ] | path join }
     if not ($config | path exists) { error make {msg: $"neobank instances file not found: ($config)"} }
     let instances = (txgen-neobank-instances $config)
@@ -1417,7 +1421,7 @@ def txgen-prepare-public-mix-preset [spec_path: string, count: int, accounts: in
     }
     if $zones < 1 { error make {msg: "Public mix requires at least one zone"} }
     let preset_name = ($spec_path | path basename | str replace --regex '\.yml$' '')
-    if $preset_name == "neobank-multi" {
+    if $preset_name in ($TXGEN_HELPER_NEOBANK_MULTI_PRESETS | columns) {
         let output_dir = if $out_dir == "" {
             [ (txgen-repo-root) $TXGEN_HELPER_DEFAULT_RENDERED_SPECS_DIR (random uuid) ] | path join
         } else { $out_dir | path expand }
