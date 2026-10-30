@@ -523,6 +523,59 @@ impl StablecoinDEX {
         Ok(level)
     }
 
+    /// Sums the remaining amount of up to `max_orders` orders at `tick` on one side of `base`'s
+    /// book, walking the tick's linked list from `start_order_id` (0 starts at the tick's head).
+    ///
+    /// Returns the partial sum and the ID of the next order to read, which is 0 once the tick's
+    /// tail has been read.
+    ///
+    /// # Errors
+    /// - `InvalidBaseToken` — `base` address does not resolve to a valid [`TIP20Token`]
+    /// - `OrderDoesNotExist` — `start_order_id` is not an active order at this tick and side
+    pub fn get_tick_liquidity(
+        &self,
+        base: Address,
+        tick: i16,
+        is_bid: bool,
+        start_order_id: u128,
+        max_orders: u32,
+    ) -> Result<IStablecoinDEX::getTickLiquidityReturn> {
+        let quote = TIP20Token::from_address(base)?.quote_token()?;
+        let book_key = compute_book_key(base, quote);
+
+        let mut order_id = if start_order_id == 0 {
+            let level = if is_bid {
+                self.books[book_key].bids[tick].read()?
+            } else {
+                self.books[book_key].asks[tick].read()?
+            };
+            level.links.head
+        } else {
+            let order = self.get_order(start_order_id)?;
+            if order.book_key() != book_key || order.tick() != tick || order.is_bid() != is_bid {
+                return Err(StablecoinDEXError::order_does_not_exist().into());
+            }
+            start_order_id
+        };
+
+        let mut liquidity = 0u128;
+        for _ in 0..max_orders {
+            if order_id == 0 {
+                break;
+            }
+            let order = self.orders[order_id].read_in_book(book_key)?;
+            liquidity = liquidity
+                .checked_add(order.remaining())
+                .ok_or(TempoPrecompileError::under_overflow())?;
+            order_id = order.next();
+        }
+
+        Ok(IStablecoinDEX::getTickLiquidityReturn {
+            liquidity,
+            nextOrderId: order_id,
+        })
+    }
+
     /// Returns the [`Orderbook`] for a given pair key.
     pub fn books(&self, pair_key: B256) -> Result<Orderbook> {
         self.books[pair_key].read()
@@ -1924,6 +1977,72 @@ mod tests {
 
             exchange.set_book_index(0)?;
             assert_eq!(exchange.book_key_index(book_key)?, Some(0));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_get_tick_liquidity_pages() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+            let maker = Address::random();
+            let admin = Address::random();
+            let tick = 10;
+            let amount = MIN_ORDER_AMOUNT;
+            let (base, _) = setup_test_tokens(admin, maker, exchange.address, amount * 10)?;
+            exchange.create_pair(base)?;
+            let first = exchange.place(maker, base, amount, true, tick)?;
+            let second = exchange.place(maker, base, amount * 2, true, tick)?;
+            let third = exchange.place(maker, base, amount * 3, true, tick)?;
+            let other_tick = exchange.place(maker, base, amount, true, tick + 10)?;
+
+            let page = exchange.get_tick_liquidity(base, tick, true, 0, 2)?;
+            assert_eq!(page.liquidity, amount * 3);
+            assert_eq!(page.nextOrderId, third);
+
+            let page = exchange.get_tick_liquidity(base, tick, true, page.nextOrderId, 2)?;
+            assert_eq!(page.liquidity, amount * 3);
+            assert_eq!(page.nextOrderId, 0);
+
+            let page = exchange.get_tick_liquidity(base, tick, true, 0, u32::MAX)?;
+            assert_eq!(
+                page.liquidity,
+                exchange.get_price_level(base, tick, true)?.total_liquidity
+            );
+            assert_eq!(page.nextOrderId, 0);
+
+            let page = exchange.get_tick_liquidity(base, tick, true, second, 0)?;
+            assert_eq!(page.liquidity, 0);
+            assert_eq!(page.nextOrderId, second);
+
+            let empty = exchange.get_tick_liquidity(base, tick, false, 0, 10)?;
+            assert_eq!(empty.liquidity, 0);
+            assert_eq!(empty.nextOrderId, 0);
+
+            let not_found = Err(StablecoinDEXError::order_does_not_exist().into());
+            assert_eq!(
+                exchange.get_tick_liquidity(base, tick, true, other_tick, 10),
+                not_found
+            );
+            assert_eq!(
+                exchange.get_tick_liquidity(base, tick, false, first, 10),
+                not_found
+            );
+            assert_eq!(
+                exchange.get_tick_liquidity(base, tick, true, third + 100, 10),
+                not_found
+            );
+
+            exchange.cancel(maker, first)?;
+            assert_eq!(
+                exchange.get_tick_liquidity(base, tick, true, first, 10),
+                not_found
+            );
+            let page = exchange.get_tick_liquidity(base, tick, true, 0, 10)?;
+            assert_eq!(page.liquidity, amount * 5);
 
             Ok(())
         })
