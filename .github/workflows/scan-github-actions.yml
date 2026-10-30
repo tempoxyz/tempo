@@ -43,6 +43,7 @@ jobs:
       - name: Test CI helpers
         run: |
           bash .github/scripts/bench-state-test.sh
+          bash .github/scripts/bench-tempo-extract-test.sh
           bash .github/scripts/bench-upload-charts-test.sh
           node --test .github/scripts/bench-multi-region-refs.test.js
           node --test .github/scripts/docker-pr.test.js

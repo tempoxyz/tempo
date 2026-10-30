@@ -1042,6 +1042,12 @@ jobs:
 
           "${cmd[@]}"
 
+      - name: Clean up e2e validators
+        if: always() && steps.bench.outcome != 'skipped' && steps.bench.outcome != ''
+        timeout-minutes: 3
+        # Use the existing helper so unrebased PR heads can also clean up.
+        run: nu -c 'source bench-e2e.nu; cleanup-local-e2e-processes'
+
       - name: Generate e2e summary
         id: results-dir
         if: success()

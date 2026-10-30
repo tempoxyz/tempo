@@ -2439,6 +2439,11 @@ def apply-system-tuning [] {
 
     # TCP tuning (fixes ephemeral port exhaustion at high TPS)
     print "  TCP: enabling tw_reuse, expanding port range"
+    # Keep fixed consensus, RPC and metrics listeners out of automatic port allocation.
+    # Preserve reservations installed by the host or other applications.
+    let existing_reserved_ports = (sysctl -n net.ipv4.ip_local_reserved_ports | str trim)
+    let reserved_ports = ([$existing_reserved_ports "8000-8004,8100-8104,8545,8645,9001,9101"] | where { |ports| $ports != "" } | str join ",")
+    sudo sysctl -w $"net.ipv4.ip_local_reserved_ports=($reserved_ports)" | ignore
     sudo sysctl -w net.ipv4.tcp_tw_reuse=1 | ignore
     sudo sysctl -w net.ipv4.ip_local_port_range="1024 65535" | ignore
 
@@ -2489,6 +2494,7 @@ def apply-system-tuning [] {
         ($line | str trim | str starts-with "nvme") or ($line | str starts-with "NAME")
     } | each { |line| print $"    ($line)" }
     print $"  Port range: (sysctl -n net.ipv4.ip_local_port_range | str trim)"
+    print $"  Reserved ports: (sysctl -n net.ipv4.ip_local_reserved_ports | str trim)"
     print ""
 
     { tuned: true }
