@@ -1,5 +1,17 @@
 FROM rust:1.96-alpine@sha256:a41f7740f8b45d45795624eec13a8b42263cc700f19f7e4e86e04d3dda08a479 AS proxy-chef
-RUN cargo install cargo-chef@0.1.77 --locked
+ARG CARGO_CHEF_VERSION=0.1.77
+ARG CARGO_CHEF_SHA256=a3733ab416c3ffddd37914cd13919ca05fee1a1cf654f3016dcfe7f399d89cd1
+# Install the upstream x86_64 release binary instead of compiling it on every build.
+RUN set -eu; \
+    chef=cargo-chef-x86_64-unknown-linux-musl; \
+    cd /tmp; \
+    wget -q -O chef.tar.xz \
+      "https://github.com/LukeMathWalker/cargo-chef/releases/download/v$CARGO_CHEF_VERSION/$chef.tar.xz"; \
+    echo "$CARGO_CHEF_SHA256  chef.tar.xz" | sha256sum -c -; \
+    tar -xJf chef.tar.xz; \
+    mv "$chef/cargo-chef" "$CARGO_HOME/bin/cargo-chef"; \
+    rm -rf chef.tar.xz "$chef"; \
+    cargo chef --version
 WORKDIR /build
 
 FROM proxy-chef AS proxy-planner
