@@ -87,14 +87,18 @@ fn network_storage_failures_panic_and_allow_recovery() {
                 )
                 .unwrap()
                 .unwrap();
+            let message = Message::Dealer(public, private.clone()).encode();
+            let mut trailing = message.to_vec();
+            trailing.push(0);
             let invalid_messages = [
                 vec![u8::MAX].into(),
+                // A valid dealing followed by a byte that strict decoding rejects.
+                trailing.into(),
                 // The commitment belongs to a different polynomial.
                 Message::Dealer(other_public, private.clone()).encode(),
                 // This ACK was signed by keys[0], but arrives from keys[1].
                 Message::Ack(ack).encode(),
             ];
-            let message = Message::Dealer(public, private).encode();
             let network = TestNetwork::default();
             let (sender, mut receiver) = network.register(keys[1].public_key());
             let mut sender = mux::GlobalSender::new(sender);
@@ -115,7 +119,9 @@ fn network_storage_failures_panic_and_allow_recovery() {
             }
             // Rejected protocol messages must not attempt a write or stop the
             // actor, even when every storage operation would fail.
-            for (index, invalid) in invalid_messages.into_iter().enumerate() {
+            // Undecodable messages and invalid dealings penalize the sender;
+            // a misattributed ACK does not.
+            for (invalid, blocked) in invalid_messages.into_iter().zip([1, 2, 3, 3]) {
                 assert!(
                     sender
                         .send(
@@ -127,22 +133,17 @@ fn network_storage_failures_panic_and_allow_recovery() {
                         .accepted()
                 );
                 context.sleep(Duration::from_millis(1)).await;
-                if index == 1 {
-                    let blocker = harness.blocker.clone();
-                    let timer = context.child("penalty_wait");
-                    context
-                        .timeout(Duration::from_secs(1), async move {
-                            while blocker.peers().is_empty() {
-                                timer.sleep(Duration::from_millis(1)).await;
-                            }
-                        })
-                        .await
-                        .expect("invalid private share must penalize its sender");
-                }
-                assert_eq!(
-                    harness.blocker.peers(),
-                    vec![keys[1].public_key(); usize::from(index >= 1)]
-                );
+                let blocker = harness.blocker.clone();
+                let timer = context.child("penalty_wait");
+                context
+                    .timeout(Duration::from_secs(1), async move {
+                        while blocker.peers().len() < blocked {
+                            timer.sleep(Duration::from_millis(1)).await;
+                        }
+                    })
+                    .await
+                    .expect("invalid message must penalize its sender");
+                assert_eq!(harness.blocker.peers(), vec![keys[1].public_key(); blocked]);
                 let mailbox = harness.mailbox().clone();
                 let epoch = state.epoch;
                 assert!(
@@ -176,7 +177,7 @@ fn network_storage_failures_panic_and_allow_recovery() {
                 })
                 .await
                 .expect("a network storage failure must panic immediately");
-            assert_eq!(harness.blocker.peers(), vec![keys[1].public_key()]);
+            assert_eq!(harness.blocker.peers(), vec![keys[1].public_key(); 3]);
             assert!(
                 receiver.recv().now_or_never().is_none(),
                 "a dealing must be persisted before its ACK is sent",
@@ -225,7 +226,7 @@ fn network_storage_failures_panic_and_allow_recovery() {
                 Message::read_cfg(&mut ack, &NZU32!(2)).unwrap(),
                 Message::Ack(_)
             ));
-            assert_eq!(harness.blocker.peers(), vec![keys[1].public_key()]);
+            assert_eq!(harness.blocker.peers(), vec![keys[1].public_key(); 4]);
             harness.stop().await;
         });
     }
@@ -1775,6 +1776,97 @@ fn acked_dealer_messages_not_re_exchanged_after_restart() {
 
         assert!(first_harness.has_dealer_log(state.epoch).await);
         assert!(second_harness.has_dealer_log(state.epoch).await);
+    });
+}
+
+#[test]
+fn dealer_restarted_past_midpoint_has_its_log_before_the_next_block() {
+    Runner::default().start(|mut context| async move {
+        let (state, _, _) = dkg_state(&mut context, Epoch::new(1), 1, true);
+        let mut harness = Harness::builder(context.child("test"), "restart_past_midpoint")
+            .epoch_length(10)
+            .initial_state(state.clone())
+            .build()
+            .await;
+        harness.start().await;
+        harness
+            .report_finalized_header(header(Height::new(10)))
+            .await;
+        harness
+            .report_finalized_header(header(Height::new(15)))
+            .await;
+        let log = harness
+            .mailbox()
+            .get_dealer_log(state.epoch)
+            .await
+            .unwrap()
+            .expect("dealer finalizes at the midpoint");
+
+        harness.stop().await;
+        harness.start().await;
+        assert_eq!(
+            harness.mailbox().get_dealer_log(state.epoch).await.unwrap(),
+            Some(log),
+        );
+    });
+}
+
+#[test]
+fn dealer_restarted_before_midpoint_has_no_log() {
+    Runner::default().start(|mut context| async move {
+        let (state, _, _) = dkg_state(&mut context, Epoch::new(1), 1, true);
+        let mut harness = Harness::builder(context.child("test"), "restart_before_midpoint")
+            .epoch_length(10)
+            .initial_state(state.clone())
+            .build()
+            .await;
+        harness.start().await;
+        harness
+            .report_finalized_header(header(Height::new(14)))
+            .await;
+
+        harness.stop().await;
+        harness.start().await;
+        assert!(!harness.has_dealer_log(state.epoch).await);
+    });
+}
+
+#[test]
+fn dealer_log_already_finalized_is_not_proposed_after_restart() {
+    Runner::default().start(|mut context| async move {
+        let (state, _, _) = dkg_state(&mut context, Epoch::new(1), 1, true);
+        let mut harness = Harness::builder(context.child("test"), "finalized_own_log")
+            .epoch_length(10)
+            .initial_state(state.clone())
+            .build()
+            .await;
+        harness.start().await;
+        harness
+            .report_finalized_header(header(Height::new(10)))
+            .await;
+        harness
+            .report_finalized_header(header(Height::new(15)))
+            .await;
+        let log = harness
+            .mailbox()
+            .get_dealer_log(state.epoch)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut log_header = header(Height::new(16));
+        log_header.inner.extra_data = log.encode().into();
+        harness.report_finalized_header(log_header).await;
+        assert!(!harness.has_dealer_log(state.epoch).await);
+
+        harness.stop().await;
+        harness.start().await;
+        harness
+            .report_finalized_header(header(Height::new(17)))
+            .await;
+        assert!(
+            !harness.has_dealer_log(state.epoch).await,
+            "a restarted dealer must not propose a log that is already finalized",
+        );
     });
 }
 
