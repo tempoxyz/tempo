@@ -39,6 +39,8 @@ const TXGEN_HELPER_PUBLIC_MIX_PRESETS = ["public-mix" "vault-throughput" "zone-p
 const TXGEN_HELPER_PRESET_ZONE_COUNTS = {"zone-earn-hot": 1, "zone-portal-hot": 1}
 # Size of presets/zones.yml's zone_deployers pool: portal i deploys and is funded from sender i mod this.
 const TXGEN_HELPER_ZONE_DEPLOYERS = 16
+# Their addresses (mnemonic indices 100100..100115), checked for pending setup before zone runs.
+const TXGEN_HELPER_ZONE_DEPLOYER_ADDRESSES = ["0x838d876925b480b41bc1ffbfc44b6a3c7a58e7e1" "0x6edd96cdb4c3bd4d7132f774b6791730df3bab16" "0xf4a2817f7ef2c3eee3cb50a636d4f4919b111e44" "0x18938c541db8a22a490425b2da76fb011c9b7a0d" "0xf600a43564c072b8b3d1c57f3f3447e35c41ebb2" "0xca5e5bcb6498bb97a5f0469793e87e101fb3922d" "0x96197808177c6553bb302acb57ac60299a5228ac" "0xddd0fa3d8b94602aee0fb87893c2fde12b08938a" "0x982020eb1a30526e9330f7dae826e8c12a6a95cb" "0x6aebb2d0bb57dc2b6b07ff6f0f8597fa2ebaf4db" "0x3be8fa5410341f47b7cc3a7faa733919a1a233a5" "0x23fd333821c54d71dcf597eee4046b81cc408463" "0xe73d54445eeaf6886e673a982571701b8748b9ae" "0xaa378ed1c0450e3332963fd882704398d023d92f" "0x5dfbde950dace7c877d8489b6b6fb7d3a4423da0" "0x64b9b9cd2e473cc0f25a8c6cfd342fcc60cda777"]
 # Zone -> zone presets (presets/zone-to-zone.yml); the hot variant pins one source and one target portal.
 const TXGEN_HELPER_ZONE_TO_ZONE_PRESETS = ["zone-to-zone" "zone-to-zone-hot"]
 const TXGEN_HELPER_ZONE_TO_ZONE_CALLBACK_GAS = 1500000
@@ -1276,6 +1278,15 @@ def txgen-neobank-instance-text [text: string, instance: record, index: int] {
 # disjoint user slice with its own random-sender and treasury pools, sinks, keychain
 # setup, vault/zone templates and portals (when zones >= instances); its mix is its
 # share times its modules' neobank-generic weights renormalised within the instance.
+# Portal deploys fill the general lane (10M each, up to 16 senders at once); start them after
+# the vault fixture, whose 30M deploys need an otherwise empty lane and would starve.
+def txgen-portals-after-vault [zone_steps: list<any>, vault_setup: list<any>] {
+    let vault_last = ($vault_setup | last | get id)
+    $zone_steps | each { |step|
+        if ($step.id | str starts-with "portal_") { $step | upsert depends_on [$vault_last] } else { $step }
+    }
+}
+
 def txgen-prepare-neobank-multi-preset [spec_path: string, count: int, accounts: int, zones: int, chain_id: int, output_dir: string] {
     let presets = ($spec_path | path dirname)
     # A relative TXGEN_NEOBANK_INSTANCES path resolves from the working directory, then the repository root.
@@ -1401,7 +1412,7 @@ def txgen-prepare-neobank-multi-preset [spec_path: string, count: int, accounts:
     $"# Per-instance copies of neobank-generic templates, rendered by helpers.nu.\ntemplates:\n($raw_templates | str join "\n")\n"
         | save -f ($output_dir | path join $raw_name)
     let body = ({include: [($spec_path | path expand) $raw_name], accounts: $accounts_record,
-        setup: {steps: ($vault_setup | append $users | append $zone_spec.setup.steps | append $dex_setup)},
+        setup: {steps: ($vault_setup | append $users | append (txgen-portals-after-vault $zone_spec.setup.steps $vault_setup) | append $dex_setup)},
         templates: $templates,
         mix: ($entries | each { |entry| {template: $entry.name, weight: $entry.weight} })} | to yaml)
     # Keychain steps hold ${TXGEN_*} placeholders: appended as text after the setup above.
@@ -1520,12 +1531,7 @@ def txgen-prepare-public-mix-preset [spec_path: string, count: int, accounts: in
         if $result.exit_code != 0 { error make {msg: $"Failed to read access-key setup: ($result.stderr)"} }
         $result.stdout | from json
     } else { [] }
-    # Portal deploys fill the general lane (10M each); start them after the vault fixture, whose
-    # 30M deploys need an otherwise empty lane on a low general gas limit and would starve.
-    let vault_last = ($vault_setup | last | get id)
-    let zone_steps = ($zone_spec.setup.steps | each { |step|
-        if ($step.id | str starts-with "portal_") { $step | upsert depends_on [$vault_last] } else { $step }
-    })
+    let zone_steps = (txgen-portals-after-vault $zone_spec.setup.steps $vault_setup)
     {include: $spec_path, accounts: {users: {range: [0 $accounts]}},
         setup: {steps: ($vault_setup | append $users | append $zone_steps | append $dex_setup | append $keychain_setup)},
         templates: $templates,
@@ -1607,10 +1613,12 @@ def txgen-run-preset-pipeline [
         if $portal_code.result == "0x" {
             error make { msg: "zones requires the ZonePortal runtime; activate T10 or later before running the benchmark" }
         }
-        let nonce_response = (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionCount","params":["0xd7932ce865275be97001a0574441d79b143820ec","pending"]}')
-        let latest_nonce = (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionCount","params":["0xd7932ce865275be97001a0574441d79b143820ec","latest"]}')
-        if $nonce_response.result != $latest_nonce.result {
-            error make { msg: "zone fixture deployer has pending transactions; drain its nonce lane before setup" }
+        for address in ($TXGEN_HELPER_ZONE_DEPLOYER_ADDRESSES | prepend "0xd7932ce865275be97001a0574441d79b143820ec") {
+            let pending = (txgen-rpc-call $generate_rpc_url $"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_getTransactionCount\",\"params\":[\"($address)\",\"pending\"]}")
+            let latest = (txgen-rpc-call $generate_rpc_url $"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_getTransactionCount\",\"params\":[\"($address)\",\"latest\"]}")
+            if $pending.result != $latest.result {
+                error make { msg: $"zone fixture deployer ($address) has pending transactions; drain its nonce lane before setup" }
+            }
         }
         let mode = ($env.TXGEN_ZONE_MODE? | default "mixed")
         # TIP-1096 allows 230 outstanding deposits, reserving 20 for bounce-backs.
