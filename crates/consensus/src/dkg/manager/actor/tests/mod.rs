@@ -1779,6 +1779,97 @@ fn acked_dealer_messages_not_re_exchanged_after_restart() {
 }
 
 #[test]
+fn dealer_restarted_past_midpoint_has_its_log_before_the_next_block() {
+    Runner::default().start(|mut context| async move {
+        let (state, _, _) = dkg_state(&mut context, Epoch::new(1), 1, true);
+        let mut harness = Harness::builder(context.child("test"), "restart_past_midpoint")
+            .epoch_length(10)
+            .initial_state(state.clone())
+            .build()
+            .await;
+        harness.start().await;
+        harness
+            .report_finalized_header(header(Height::new(10)))
+            .await;
+        harness
+            .report_finalized_header(header(Height::new(15)))
+            .await;
+        let log = harness
+            .mailbox()
+            .get_dealer_log(state.epoch)
+            .await
+            .unwrap()
+            .expect("dealer finalizes at the midpoint");
+
+        harness.stop().await;
+        harness.start().await;
+        assert_eq!(
+            harness.mailbox().get_dealer_log(state.epoch).await.unwrap(),
+            Some(log),
+        );
+    });
+}
+
+#[test]
+fn dealer_restarted_before_midpoint_has_no_log() {
+    Runner::default().start(|mut context| async move {
+        let (state, _, _) = dkg_state(&mut context, Epoch::new(1), 1, true);
+        let mut harness = Harness::builder(context.child("test"), "restart_before_midpoint")
+            .epoch_length(10)
+            .initial_state(state.clone())
+            .build()
+            .await;
+        harness.start().await;
+        harness
+            .report_finalized_header(header(Height::new(14)))
+            .await;
+
+        harness.stop().await;
+        harness.start().await;
+        assert!(!harness.has_dealer_log(state.epoch).await);
+    });
+}
+
+#[test]
+fn dealer_log_already_finalized_is_not_proposed_after_restart() {
+    Runner::default().start(|mut context| async move {
+        let (state, _, _) = dkg_state(&mut context, Epoch::new(1), 1, true);
+        let mut harness = Harness::builder(context.child("test"), "finalized_own_log")
+            .epoch_length(10)
+            .initial_state(state.clone())
+            .build()
+            .await;
+        harness.start().await;
+        harness
+            .report_finalized_header(header(Height::new(10)))
+            .await;
+        harness
+            .report_finalized_header(header(Height::new(15)))
+            .await;
+        let log = harness
+            .mailbox()
+            .get_dealer_log(state.epoch)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut log_header = header(Height::new(16));
+        log_header.inner.extra_data = log.encode().into();
+        harness.report_finalized_header(log_header).await;
+        assert!(!harness.has_dealer_log(state.epoch).await);
+
+        harness.stop().await;
+        harness.start().await;
+        harness
+            .report_finalized_header(header(Height::new(17)))
+            .await;
+        assert!(
+            !harness.has_dealer_log(state.epoch).await,
+            "a restarted dealer must not propose a log that is already finalized",
+        );
+    });
+}
+
+#[test]
 fn duplicate_outcome_requests_keep_all_live_waiters() {
     Runner::default().start(|mut context| async move {
         let (state, _, _) = dkg_state(&mut context, Epoch::new(1), 4, true);

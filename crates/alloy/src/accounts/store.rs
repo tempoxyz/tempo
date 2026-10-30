@@ -31,13 +31,17 @@ use tempo_contracts::precompiles::ITIP20;
 use tempo_primitives::{
     SignatureType, TempoAddressExt, TempoTxEnvelope,
     transaction::{
-        Call, CallScope, KeyAuthorization, KeychainSignature, PrimitiveSignature, SelectorRule,
-        SignedKeyAuthorization, TempoSignature, TempoTypedTransaction, TokenLimit,
+        AccountSignature, Call, CallScope, ConfigurableAccountSignature, KeyAuthorization,
+        KeychainSignature, PrimitiveSignature, SelectorRule, SignedKeyAuthorization,
+        TempoSignature, TempoTypedTransaction, TokenLimit,
         tt_signature::{P256SignatureWithPreHash, WebAuthnSignature},
     },
 };
 
-use super::p256::{P256Jwk, P256SignerError, TempoP256Signer};
+use super::{
+    authorization_accounts,
+    p256::{P256Jwk, P256SignerError, TempoP256Signer},
+};
 use crate::{
     TempoNetwork, fillers::gas::resolve_key_authorization, provider::keychain::call_scopes_allow,
     rpc::TempoTransactionRequest,
@@ -325,16 +329,13 @@ impl TempoAccessKey {
                 "chain ID does not match the selected key",
             ));
         }
-        if authorization
-            .account
-            .is_some_and(|account| account != self.account)
-        {
+        if authorization_accounts(authorization).any(|account| account != self.account) {
             return Err(TempoAccessKeyError::InvalidAuthorization(
                 "account does not match the selected key",
             ));
         }
         if authorization.account.is_none()
-            && authorization.recover_signer().ok() != Some(self.account)
+            && authorization.authorizing_account().ok() != Some(self.account)
         {
             return Err(TempoAccessKeyError::InvalidAuthorization(
                 "signature does not recover the root account",
@@ -1798,7 +1799,7 @@ struct PersistedSignedKeyAuthorization {
     account: Option<Address>,
     #[serde(rename = "type")]
     key_type: PersistedKeyType,
-    signature: PersistedPrimitiveSignature,
+    signature: PersistedAuthorizationSignature,
 }
 
 #[derive(Clone, Deserialize)]
@@ -1847,7 +1848,7 @@ impl TryFrom<AccountsRpcKeyAuthorization> for SignedKeyAuthorization {
             is_admin: false,
             account: None,
         };
-        Ok(Self::new(authorization, value.signature.try_into()?))
+        Ok(authorization.into_signed(PrimitiveSignature::try_from(value.signature)?))
     }
 }
 
@@ -1973,7 +1974,16 @@ impl TryFrom<PersistedSignedKeyAuthorization> for SignedKeyAuthorization {
             // placeholder when scopes follow it. Preserve that exact signed
             // wire shape. Newer TIP-1053 fields switched skipped fields to the
             // canonical optional null placeholder.
-            None if has_scopes && !has_tip1053_fields => Some(Vec::new()),
+            // Configurable account signatures never used the legacy form.
+            None if has_scopes
+                && !has_tip1053_fields
+                && !matches!(
+                    &signature,
+                    PersistedAuthorizationSignature::ConfigurableAccount { .. }
+                ) =>
+            {
+                Some(Vec::new())
+            }
             None => None,
         };
         let allowed_calls = scopes.map(persisted_scopes_to_call_scopes).transpose()?;
@@ -1988,7 +1998,7 @@ impl TryFrom<PersistedSignedKeyAuthorization> for SignedKeyAuthorization {
             is_admin,
             account,
         };
-        Ok(Self::new(authorization, signature.try_into()?))
+        Ok(authorization.into_signed(AccountSignature::try_from(signature)?))
     }
 }
 
@@ -2012,7 +2022,7 @@ impl From<PersistedTokenLimit> for TokenLimit {
 
 #[derive(Clone, Deserialize)]
 #[serde(tag = "type")]
-enum PersistedPrimitiveSignature {
+enum PersistedAuthorizationSignature {
     #[serde(rename = "secp256k1")]
     Secp256k1 { signature: PersistedSecpSignature },
     #[serde(rename = "p256")]
@@ -2030,42 +2040,44 @@ enum PersistedPrimitiveSignature {
         public_key: PersistedPublicKey,
         metadata: PersistedWebAuthnMetadata,
     },
+    #[serde(rename = "configurableAccount")]
+    ConfigurableAccount { signature: Bytes },
     #[serde(other)]
     Unsupported,
 }
 
-impl TryFrom<PersistedPrimitiveSignature> for PrimitiveSignature {
+impl TryFrom<PersistedAuthorizationSignature> for AccountSignature {
     type Error = PersistedKeyError;
 
-    fn try_from(value: PersistedPrimitiveSignature) -> Result<Self, Self::Error> {
+    fn try_from(value: PersistedAuthorizationSignature) -> Result<Self, Self::Error> {
         match value {
-            PersistedPrimitiveSignature::Secp256k1 { signature } => {
+            PersistedAuthorizationSignature::Secp256k1 { signature } => {
                 let parity = match signature.y_parity.0 {
                     U256::ZERO => false,
                     U256::ONE => true,
                     _ => return Err(PersistedKeyError::InvalidYParity),
                 };
-                Ok(Self::Secp256k1(Signature::new(
-                    signature.r.0,
-                    signature.s.0,
-                    parity,
+                Ok(Self::Primitive(PrimitiveSignature::Secp256k1(
+                    Signature::new(signature.r.0, signature.s.0, parity),
                 )))
             }
-            PersistedPrimitiveSignature::P256 {
+            PersistedAuthorizationSignature::P256 {
                 signature,
                 public_key,
                 prehash,
             } => {
                 public_key.validate_prefix()?;
-                Ok(Self::P256(P256SignatureWithPreHash {
-                    r: signature.r.into_b256(),
-                    s: signature.s.into_b256(),
-                    pub_key_x: public_key.x.into_b256(),
-                    pub_key_y: public_key.y.into_b256(),
-                    pre_hash: prehash,
-                }))
+                Ok(Self::Primitive(PrimitiveSignature::P256(
+                    P256SignatureWithPreHash {
+                        r: signature.r.into_b256(),
+                        s: signature.s.into_b256(),
+                        pub_key_x: public_key.x.into_b256(),
+                        pub_key_y: public_key.y.into_b256(),
+                        pre_hash: prehash,
+                    },
+                )))
             }
-            PersistedPrimitiveSignature::WebAuthn {
+            PersistedAuthorizationSignature::WebAuthn {
                 signature,
                 public_key,
                 metadata,
@@ -2073,15 +2085,22 @@ impl TryFrom<PersistedPrimitiveSignature> for PrimitiveSignature {
                 public_key.validate_prefix()?;
                 let mut webauthn_data = metadata.authenticator_data.to_vec();
                 webauthn_data.extend_from_slice(&metadata.client_data_json.0);
-                Ok(Self::WebAuthn(WebAuthnSignature {
-                    r: signature.r.into_b256(),
-                    s: signature.s.into_b256(),
-                    pub_key_x: public_key.x.into_b256(),
-                    pub_key_y: public_key.y.into_b256(),
-                    webauthn_data: webauthn_data.into(),
-                }))
+                Ok(Self::Primitive(PrimitiveSignature::WebAuthn(
+                    WebAuthnSignature {
+                        r: signature.r.into_b256(),
+                        s: signature.s.into_b256(),
+                        pub_key_x: public_key.x.into_b256(),
+                        pub_key_y: public_key.y.into_b256(),
+                        webauthn_data: webauthn_data.into(),
+                    },
+                )))
             }
-            PersistedPrimitiveSignature::Unsupported => {
+            PersistedAuthorizationSignature::ConfigurableAccount { signature } => {
+                alloy_rlp::decode_exact(&signature)
+                    .map(Self::ConfigurableAccount)
+                    .map_err(PersistedKeyError::InvalidConfigurableAccountSignature)
+            }
+            PersistedAuthorizationSignature::Unsupported => {
                 Err(PersistedKeyError::UnsupportedAuthorizationSignature)
             }
         }
@@ -2236,6 +2255,8 @@ enum PersistedKeyError {
     InvalidYParity,
     #[error("P-256 public key prefix must be uncompressed (4)")]
     InvalidPublicKeyPrefix,
+    #[error("invalid configurable-account signature: {0}")]
+    InvalidConfigurableAccountSignature(alloy_rlp::Error),
 }
 
 #[derive(Clone, Copy)]
@@ -2267,9 +2288,7 @@ fn stored_access_key(key: &PersistedAccessKey) -> Result<TempoStoredAccessKey, T
         authorization.key_id != key.address
             || authorization.chain_id != key.chain_id
             || authorization.key_type != key_type
-            || authorization
-                .account
-                .is_some_and(|account| account != key.access)
+            || authorization_accounts(authorization).any(|account| account != key.access)
     }) {
         return Err(TempoAccountsError::InvalidAccessKey {
             address: key.address,
@@ -2330,10 +2349,7 @@ fn validate_stored_authorization(
             "the authorization key ID does not match the local signer",
         ));
     }
-    if authorization
-        .account
-        .is_some_and(|authorized| authorized != account)
-    {
+    if authorization_accounts(authorization).any(|authorized| authorized != account) {
         return Err(TempoAccountsError::InvalidAuthorization(
             "the authorization targets a different account",
         ));
@@ -2422,12 +2438,12 @@ struct WritableSignedKeyAuthorization {
     account: Option<Address>,
     #[serde(rename = "type")]
     key_type: &'static str,
-    signature: WritablePrimitiveSignature,
+    signature: WritableAuthorizationSignature,
 }
 
 #[derive(Serialize)]
 #[serde(tag = "type")]
-enum WritablePrimitiveSignature {
+enum WritableAuthorizationSignature {
     #[serde(rename = "secp256k1")]
     Secp256k1 { signature: WritableSecpSignature },
     #[serde(rename = "p256")]
@@ -2443,6 +2459,10 @@ enum WritablePrimitiveSignature {
         #[serde(rename = "publicKey")]
         public_key: WritablePublicKey,
         metadata: WritableWebAuthnMetadata,
+    },
+    #[serde(rename = "configurableAccount")]
+    ConfigurableAccount {
+        signature: ConfigurableAccountSignature,
     },
 }
 
@@ -2484,17 +2504,25 @@ fn writable_b256(value: B256) -> String {
 }
 
 fn writable_signature(
-    signature: &PrimitiveSignature,
-) -> Result<WritablePrimitiveSignature, TempoAccountsError> {
+    signature: &AccountSignature,
+) -> Result<WritableAuthorizationSignature, TempoAccountsError> {
+    let signature = match signature {
+        AccountSignature::Primitive(signature) => signature,
+        AccountSignature::ConfigurableAccount(signature) => {
+            return Ok(WritableAuthorizationSignature::ConfigurableAccount {
+                signature: signature.clone(),
+            });
+        }
+    };
     Ok(match signature {
-        PrimitiveSignature::Secp256k1(signature) => WritablePrimitiveSignature::Secp256k1 {
+        PrimitiveSignature::Secp256k1(signature) => WritableAuthorizationSignature::Secp256k1 {
             signature: WritableSecpSignature {
                 r: writable_bigint(signature.r()),
                 s: writable_bigint(signature.s()),
                 y_parity: u8::from(signature.v()),
             },
         },
-        PrimitiveSignature::P256(signature) => WritablePrimitiveSignature::P256 {
+        PrimitiveSignature::P256(signature) => WritableAuthorizationSignature::P256 {
             signature: WritableRs {
                 r: writable_b256(signature.r),
                 s: writable_b256(signature.s),
@@ -2527,7 +2555,7 @@ fn writable_signature(
                     "WebAuthn authorization client data is not UTF-8",
                 )
             })?;
-            WritablePrimitiveSignature::WebAuthn {
+            WritableAuthorizationSignature::WebAuthn {
                 signature: WritableRs {
                     r: writable_b256(signature.r),
                     s: writable_b256(signature.s),
@@ -2994,14 +3022,13 @@ fn select_access_key(
                 || authorization
                     .expiry
                     .is_some_and(|expiry| expiry.get() <= now)
-                || authorization
-                    .account
-                    .is_some_and(|authorized_account| authorized_account != account)
+                || authorization_accounts(authorization).any(|authorized| authorized != account)
         }) {
             continue;
         }
         if key_authorization.as_ref().is_some_and(|authorization| {
-            authorization.account.is_none() && authorization.recover_signer().ok() != Some(account)
+            authorization.account.is_none()
+                && authorization.authorizing_account().ok() != Some(account)
         }) {
             continue;
         }
@@ -3629,7 +3656,9 @@ mod tests {
                 .as_slice()
             )
         );
-        let PrimitiveSignature::WebAuthn(signature) = &authorization.signature else {
+        let AccountSignature::Primitive(PrimitiveSignature::WebAuthn(signature)) =
+            &authorization.signature
+        else {
             panic!("expected WebAuthn root signature")
         };
         assert_eq!(signature.webauthn_data.as_ref(), webauthn_data);

@@ -111,6 +111,23 @@ impl AASigned {
             .get_or_init(|| self.tx.signature_hash().into())
     }
 
+    /// Recovers the sender and verifies any configurable account owner quorum signing an inline key
+    /// authorization, so execution only checks commitments against state.
+    fn recover_sender(
+        &self,
+        sig_hash: &B256,
+    ) -> Result<Address, alloy_consensus::crypto::RecoveryError> {
+        let signer = self.signature.recover_signer(sig_hash)?;
+        if let Some(auth) = &self.tx.key_authorization
+            && let Some(signature) = auth.signature.as_configurable_account()
+        {
+            signature
+                .verify_approvals(auth.signature_hash())
+                .map_err(|_| alloy_consensus::crypto::RecoveryError::new())?;
+        }
+        Ok(signer)
+    }
+
     /// Recover the signer and compute the expiring nonce hash in one pass when applicable.
     ///
     /// Non-expiring transactions delegate to the regular recovery path. Expiring nonce transactions
@@ -135,7 +152,7 @@ impl AASigned {
         let signature_hash = *self
             .signature_hash
             .get_or_init(|| hasher.clone().finalize().into());
-        let signer = self.signature.recover_signer(&signature_hash)?;
+        let signer = self.recover_sender(&signature_hash)?;
 
         if let Some((cached_sender, cached_hash)) = self.expiring_nonce_hash.get()
             && *cached_sender == signer
@@ -401,14 +418,14 @@ impl alloy_consensus::transaction::SignerRecoverable for AASigned {
         &self,
     ) -> Result<alloy_primitives::Address, alloy_consensus::crypto::RecoveryError> {
         let sig_hash = self.signature_hash();
-        self.signature.recover_signer(&sig_hash)
+        self.recover_sender(&sig_hash)
     }
 
     fn recover_signer_unchecked(
         &self,
     ) -> Result<alloy_primitives::Address, alloy_consensus::crypto::RecoveryError> {
-        // For Tempo transactions, verified and unverified recovery are the same
-        // since signature verification happens during recover_signer
+        // Both paths identify the sender. Configurable account commitments and keychain grants
+        // require separate stateful validation.
         self.recover_signer()
     }
 }
