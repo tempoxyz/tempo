@@ -331,6 +331,22 @@ where
             )
             .wrap_err("unable to instantiate dealer state")?;
 
+        // After a restart past the midpoint, finalize now instead of on the next
+        // finalized block, so proposals before it can carry our log.
+        if let Some(dealer_state) = &mut dealer_state
+            && let Some((height, _)) = storage.get_latest_finalized_block_for_epoch(&round.epoch())
+            && !matches!(
+                self.config
+                    .epoch_strategy
+                    .containing(*height)
+                    .expect("epoch strategy is covering all heights")
+                    .phase(),
+                EpochPhase::Early
+            )
+        {
+            dealer_state.finalize();
+        }
+
         if dealer_state.is_some() {
             self.metrics.how_often_dealer.metric().inc();
         }
