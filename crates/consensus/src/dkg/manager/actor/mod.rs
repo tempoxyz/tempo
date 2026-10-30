@@ -965,7 +965,7 @@ where
     {
         let msg = Message::decode_cfg(message, &NZU32!(round.players().len() as u32))
             .inspect_err(|error| {
-                commonware_p2p::block!(self.config.blocker, from.clone(), %error, "undecodable DKG message");
+                commonware_p2p::block!(self.config.blocker, from.clone(), %error, "failed decoding DKG message");
             })
             .wrap_err("failed decoding p2p message")?;
 
