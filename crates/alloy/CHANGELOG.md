@@ -1,5 +1,19 @@
 # Changelog
 
+## `tempo-alloy@2.0.0`
+
+### Minor Changes
+
+- From T14 RPC simulation can model configurable account owner quorums. `TempoTransactionRequest` gains `configurableAccountSimulation`, the claimed quorum of the sender or of the `keyId` delegate, and `keyAuthorizationSimulation`, the claimed quorum of the parent or admin signing the attached key authorization. Simulation checks the claimed approvals against the configuration and builds mock owner signatures in their place, verifies the owner quorum of a configurable-signed key authorization sent without one, and refuses to sign a request that carries either field. (by @hamdiallam, [#8787](https://github.com/tempoxyz/tempo/pull/8787))
+- Moved EVM execution from revm and alloy-evm to evm2 and removed the `tempo-revm` crate. `tempo-hardfork`, `tempo-primitives` and `tempo-chainspec` expose evm2 types behind their `evm` features in place of their revm and alloy-evm equivalents. `tempo-alloy` drops its `revm` feature and `TempoTransactionRequest::try_into_tempo_tx_env`; its `reth` feature now converts requests into evm2 transaction environments. (by @hamdiallam, [#8787](https://github.com/tempoxyz/tempo/pull/8787))
+
+### Patch Changes
+
+- From T14 a configurable account can act as an access key. A V2 `KeychainSignature` now carries an `AccountSignature`: a primitive approval or the delegate's owner quorum. `SignatureType::ConfigurableAccount` (3) names such a delegate in a key authorization, which is rejected before T14. The handler checks the delegate's account, code and configuration commitment, registers it on first use and charges its account access; a primitive key whose ID has since migrated accepts its owner quorum. Gas estimation rejects a configurable key type without a configuration witness, the signature verifier rejects configurable keychain signatures, and zones reject configurable delegates. (by @hamdiallam, [#8787](https://github.com/tempoxyz/tempo/pull/8787))
+- From T14 a configurable account can sign key authorizations. `SignedKeyAuthorization.signature` is now an `AccountSignature`: a primitive root signature or the account's owner quorum, with the same wire encoding. `SignedKeyAuthorization::authorizing_account` returns the named configurable account, and `recover_signer` fails for one. Sender recovery verifies the grant's owner quorum, and the handler checks the grant account's code and configuration commitment and registers it on first use. The Tempo Accounts store persists configurable-signed key authorizations, and zones reject them. (by @hamdiallam, [#8787](https://github.com/tempoxyz/tempo/pull/8787))
+- From T14 a primitive key of an account with a configuration commitment can no longer act as the transaction sender, key authorization signer, fee payer or access key: the transaction is rejected with `TempoInvalidTransaction::RootKeyRetired` (role in `RootKeyRole`). Each distinct non-sender role account costs one account access, so a sponsored transaction pays one more cold access; `eth_estimateGas` and `eth_fillTransaction` add it for a request carrying the fee payer marker, `TempoGasFiller` adds it when it fills such a request, and `account_access_gas` is exported. (by @hamdiallam, [#8787](https://github.com/tempoxyz/tempo/pull/8787))
+- Fixed `eth_estimateGas` and `eth_fillTransaction` under-estimating gas for WebAuthn senders: the mock signature now prices its authenticator data as nonzero bytes. (by @hamdiallam, [#8787](https://github.com/tempoxyz/tempo/pull/8787))
+
 ## `tempo-alloy@1.16.0`
 
 
