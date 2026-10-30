@@ -55,6 +55,12 @@ jobs:
         run: |
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             tag="$INPUT_TAG"
+            # VK picks the approving code owners from the dispatched ref, so a
+            # dispatch must run from the tag it releases.
+            if [ "$GITHUB_REF" != "refs/tags/$tag" ]; then
+              echo "::error::Dispatch release.yml from refs/tags/$tag, not $GITHUB_REF"
+              exit 1
+            fi
           elif [[ "$GITHUB_REF" == refs/heads/rc/* ]]; then
             tag="sha-${SHA::7}"
           else
