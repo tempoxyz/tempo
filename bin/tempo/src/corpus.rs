@@ -1,12 +1,12 @@
 //! `tempo corpus`: capture an archive range into an object-store corpus and replay it.
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use reth_chainspec::EthChainSpec;
 use reth_cli::chainspec::ChainSpecParser;
 use reth_cli_commands::common::{AccessRights, Environment, EnvironmentArgs};
 use reth_cli_util::cancellation::CancellationToken;
 use reth_ethereum::tasks::Runtime;
-use std::{path::PathBuf, sync::Arc};
+use std::{ops::Range, path::PathBuf, sync::Arc};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
 use tempo_corpus::{
     fill, replay, seeds,
@@ -101,9 +101,9 @@ impl FillCommand {
     }
 }
 
-/// Replay a published corpus range.
-#[derive(Debug, Parser)]
-pub struct ReplayCommand {
+/// A block range of a published corpus and the workers to process it on.
+#[derive(Debug, Args)]
+struct CorpusSource {
     /// The chain the corpus was captured from.
     #[arg(long, value_name = "CHAIN_OR_PATH", default_value = "mainnet", value_parser = TempoChainSpecParser::parser())]
     chain: Arc<TempoChainSpec>,
@@ -119,133 +119,115 @@ pub struct ReplayCommand {
     /// Exclusive end; defaults to the corpus end.
     #[arg(long)]
     to: Option<u64>,
+    /// Worker threads; defaults to the available parallelism.
+    #[arg(long)]
+    workers: Option<usize>,
+}
+
+impl CorpusSource {
+    /// Opens the complete corpus, checked against `chain`, with the selected block range (not yet
+    /// checked against it) and worker count.
+    async fn open(&self) -> eyre::Result<(Store, Catalog, Range<u64>, usize)> {
+        let store = Store::open(&self.corpus, self.s3_endpoint.as_deref()).await?;
+        let (catalog, _) = store
+            .catalog()
+            .await?
+            .ok_or_else(|| eyre::eyre!("no corpus catalog at {}", self.corpus))?;
+        eyre::ensure!(catalog.complete, "corpus is not complete");
+        let context = &catalog.context;
+        eyre::ensure!(
+            context.chain_id == self.chain.chain_id()
+                && context.genesis == self.chain.genesis_hash().to_string()
+                && context.forks == self.chain.display_hardforks().to_string(),
+            "corpus chain/fork context mismatch"
+        );
+        let range =
+            self.from.unwrap_or(context.start)..self.to.unwrap_or(context.end).min(context.end);
+        let workers = self
+            .workers
+            .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
+            .max(1);
+        Ok((store, catalog, range, workers))
+    }
+}
+
+/// Fails unless `range` is a non-empty block range of `catalog`'s corpus.
+fn ensure_blocks(catalog: &Catalog, range: &Range<u64>) -> eyre::Result<()> {
+    eyre::ensure!(
+        range.start >= catalog.context.start && !range.is_empty(),
+        "corpus block range mismatch"
+    );
+    Ok(())
+}
+
+/// Replay a published corpus range.
+#[derive(Debug, Parser)]
+pub struct ReplayCommand {
+    #[command(flatten)]
+    source: CorpusSource,
     /// Replay only transactions with ordinal in [tx-from, tx-to), each independently.
     #[arg(long, requires = "tx_to")]
     tx_from: Option<u64>,
     /// Exclusive end of the standalone transaction ordinal range.
     #[arg(long, requires = "tx_from")]
     tx_to: Option<u64>,
-    /// Execution worker threads; defaults to the available parallelism.
-    #[arg(long)]
-    workers: Option<usize>,
 }
 
 impl ReplayCommand {
     async fn execute(self) -> eyre::Result<()> {
-        let (store, catalog) =
-            open_complete(&self.corpus, self.s3_endpoint.as_deref(), &self.chain).await?;
-        let context = &catalog.context;
-        let chain = self.chain.clone();
-        let from = self.from.unwrap_or(context.start);
-        let end = self.to.unwrap_or(context.end).min(context.end);
+        let (store, catalog, range, workers) = self.source.open().await?;
         let standalone = self.tx_from.zip(self.tx_to);
         if let Some((from, to)) = standalone {
+            let context = &catalog.context;
             eyre::ensure!(
                 from >= context.first_tx && from < to && to <= context.end_tx,
                 "transaction ordinal range outside the corpus"
             );
         } else {
-            eyre::ensure!(
-                from >= context.start && from < end,
-                "corpus block range mismatch"
-            );
+            ensure_blocks(&catalog, &range)?;
         }
-        let workers = self
-            .workers
-            .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
-            .max(1);
-        let (config, consensus) = components(chain);
+        let (config, consensus) = components(self.source.chain.clone());
         let cancellation = CancellationToken::new();
         let _guard = cancellation.drop_guard();
         let token = cancellation.clone();
         tokio::task::spawn_blocking(move || {
             replay::run(
-                store,
-                catalog,
-                from..end,
-                config,
-                consensus,
-                workers,
-                standalone,
-                token,
+                store, catalog, range, config, consensus, workers, standalone, token,
             )
         })
         .await?
     }
 }
 
-/// Opens a complete corpus captured from `chain`.
-async fn open_complete(
-    corpus: &str,
-    endpoint: Option<&str>,
-    chain: &TempoChainSpec,
-) -> eyre::Result<(Store, Catalog)> {
-    let store = Store::open(corpus, endpoint).await?;
-    let (catalog, _) = store
-        .catalog()
-        .await?
-        .ok_or_else(|| eyre::eyre!("no corpus catalog at {corpus}"))?;
-    eyre::ensure!(catalog.complete, "corpus is not complete");
-    let context = &catalog.context;
-    eyre::ensure!(
-        context.chain_id == chain.chain_id()
-            && context.genesis == chain.genesis_hash().to_string()
-            && context.forks == chain.display_hardforks().to_string(),
-        "corpus chain/fork context mismatch"
-    );
-    Ok((store, catalog))
-}
-
 /// Export a published corpus range as fuzz harness seeds.
 #[derive(Debug, Parser)]
 pub struct SeedsCommand {
-    /// The chain the corpus was captured from.
-    #[arg(long, value_name = "CHAIN_OR_PATH", default_value = "mainnet", value_parser = TempoChainSpecParser::parser())]
-    chain: Arc<TempoChainSpec>,
-    /// Source s3://bucket/prefix.
-    #[arg(long)]
-    corpus: String,
-    /// Optional S3-compatible endpoint. Credentials use the standard AWS chain.
-    #[arg(long)]
-    s3_endpoint: Option<String>,
-    /// First block; defaults to the corpus start.
-    #[arg(long)]
-    from: Option<u64>,
-    /// Exclusive end; defaults to the corpus end.
-    #[arg(long)]
-    to: Option<u64>,
+    #[command(flatten)]
+    source: CorpusSource,
     /// Directory for the seeds, with `divergent/` and `invariants/` beneath it.
     #[arg(long)]
     out: PathBuf,
-    /// Worker threads; defaults to the available parallelism.
-    #[arg(long)]
-    workers: Option<usize>,
 }
 
 impl SeedsCommand {
     async fn execute(self) -> eyre::Result<()> {
-        let (store, catalog) =
-            open_complete(&self.corpus, self.s3_endpoint.as_deref(), &self.chain).await?;
-        let context = &catalog.context;
-        let from = self.from.unwrap_or(context.start);
-        let to = self.to.unwrap_or(context.end).min(context.end);
-        eyre::ensure!(
-            from >= context.start && from < to,
-            "corpus block range mismatch"
-        );
-        let workers = self
-            .workers
-            .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
-            .max(1);
+        let (store, catalog, range, workers) = self.source.open().await?;
+        ensure_blocks(&catalog, &range)?;
         let summary = tokio::task::spawn_blocking(move || {
-            seeds::export(store, catalog, from..to, &self.chain, &self.out, workers)
+            seeds::export(
+                store,
+                catalog,
+                range,
+                &self.source.chain,
+                &self.out,
+                workers,
+            )
         })
         .await??;
         info!(
             blocks = summary.blocks,
             seeds = summary.seeds,
-            divergent = ?summary.divergent,
-            invariants = ?summary.invariants,
+            findings = ?summary.findings,
             "Corpus seed export finished"
         );
         Ok(())
