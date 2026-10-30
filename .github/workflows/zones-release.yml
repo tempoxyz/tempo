@@ -37,6 +37,10 @@ jobs:
   resolve-release:
     if: github.repository == 'tempoxyz/tempo'
     name: Resolve release inputs
+    # Publishing needs the triggering user and a code owner of bin/tempo-zone/
+    # to approve in Voight-Kampff (review.yml deployments). The environment
+    # only admits release tags, so publishing dispatches run from the tag.
+    environment: ${{ (github.event_name == 'push' || inputs.dry_run == false) && 'release' || '' }}
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.release.outputs.tag }}

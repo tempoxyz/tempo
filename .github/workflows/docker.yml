@@ -46,6 +46,8 @@ env:
 jobs:
   build-and-push:
     name: Build and Push Docker Images
+    # Release images need the Voight-Kampff approvals of the release environment.
+    environment: ${{ startsWith(github.ref, 'refs/tags/tempo/v') && 'release' || '' }}
     outputs:
       tempo_image_tag: ${{ steps.source.outputs.image_tag || steps.meta-tempo.outputs.version }}
     if: ${{ (github.event_name != 'schedule' || github.repository == 'tempoxyz/tempo') && !(github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository != 'tempoxyz/tempo') }}
