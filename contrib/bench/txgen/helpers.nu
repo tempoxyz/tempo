@@ -1092,7 +1092,8 @@ def txgen-split-ranges [total: int, shares: list<number>, minimum: int] {
 # weight is split evenly over its templates; the shape's modules are those its
 # templates belong to, and their other templates get weight 0. Share defaults to the
 # peak transaction rate (tx_per_month times peak_factor).
-def txgen-deployment-shapes [path: string] {
+def txgen-deployment-shapes [path: string, --presets-dir: string = ""] {
+    let presets_dir = if $presets_dir == "" { txgen-presets-dir } else { $presets_dir }
     let shapes = (open $path | get -o shapes | default [])
     if ($shapes | is-empty) { error make {msg: $"($path) lists no deployment shapes"} }
     let known = ($TXGEN_HELPER_NEOBANK_MODULES | values | flatten)
@@ -1141,7 +1142,7 @@ def txgen-deployment-shapes [path: string] {
                 $acc | insert $template ($rows | where template == $template | get weight | append 0 | math sum)
             })
         for preset in ($shape | get -o presets | default []) {
-            if not ((txgen-presets-dir) | path join $"($preset).yml" | path exists) {
+            if not ($presets_dir | path join $"($preset).yml" | path exists) {
                 error make {msg: $"deployment shape ($name) lists unknown preset ($preset)"}
             }
         }
@@ -1158,9 +1159,9 @@ def txgen-deployment-shapes [path: string] {
 # neobank-multi instances: name (a traffic shape, never a customer), gas share and
 # modules (default all), from TXGEN_NEOBANK_INSTANCES or presets/neobank/instances.yml.
 # A deployment-shapes file (a top-level shapes key) is converted to instances.
-def txgen-neobank-instances [path: string] {
+def txgen-neobank-instances [path: string, --presets-dir: string = ""] {
     let instances = if (open $path | get -o shapes) != null {
-        txgen-deployment-shapes $path
+        txgen-deployment-shapes $path --presets-dir $presets_dir
     } else {
         open $path | get -o instances | default []
     }
@@ -1270,7 +1271,7 @@ def txgen-prepare-neobank-multi-preset [spec_path: string, count: int, accounts:
     let config = ($env.TXGEN_NEOBANK_INSTANCES? | default ($presets | path join ($TXGEN_HELPER_NEOBANK_MULTI_PRESETS | get $preset_name)))
     let config = if ($config | path exists) { $config } else { [ (txgen-repo-root) $config ] | path join }
     if not ($config | path exists) { error make {msg: $"neobank instances file not found: ($config)"} }
-    let instances = (txgen-neobank-instances $config)
+    let instances = (txgen-neobank-instances $config --presets-dir $presets)
     let targets = ($instances | where peak_tps != null)
     if ($targets | is-not-empty) {
         let summary = ($targets | each { |shape| $"($shape.name) ($shape.peak_tps | math round --precision 1)" } | str join ", ")
