@@ -69,6 +69,12 @@ portal settlement, Earn vault and transfers), so it has the same requirements.
 small operator pool and sponsored bridge deposits, for example
 `derek bench preset=bridge-mix`. Refresh the weights when the traffic changes.
 
+`cross-border` covers remittance, global payouts and payroll: bridge deposits and payouts on
+`bridge-mix`'s fixture, FX swaps on the stablecoin DEX (`dex/walls.yml` liquidity, the walls
+`dex.yml` also includes), memo payouts to existing accounts, and 32-call payroll batches plus
+8-call batches to fresh addresses from a 16-account treasury. The file lists the shares and gaps.
+For example `derek bench preset=cross-border gas-limit=500M general-gas-limit=30M`.
+
 Gap variants: `zone-earn-hot` pins every zone operation to one portal (shared
 portal and vault state, up to the TIP-1096 deposit cap); `zone-earn-serial`
 sends zone settlement and Earn deposits from one account with ordered nonces;
