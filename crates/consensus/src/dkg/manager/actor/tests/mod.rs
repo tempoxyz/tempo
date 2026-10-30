@@ -87,14 +87,18 @@ fn network_storage_failures_panic_and_allow_recovery() {
                 )
                 .unwrap()
                 .unwrap();
+            let message = Message::Dealer(public, private.clone()).encode();
+            let mut trailing = message.to_vec();
+            trailing.push(0);
             let invalid_messages = [
                 vec![u8::MAX].into(),
+                // A valid dealing followed by a byte that strict decoding rejects.
+                trailing.into(),
                 // The commitment belongs to a different polynomial.
                 Message::Dealer(other_public, private.clone()).encode(),
                 // This ACK was signed by keys[0], but arrives from keys[1].
                 Message::Ack(ack).encode(),
             ];
-            let message = Message::Dealer(public, private).encode();
             let network = TestNetwork::default();
             let (sender, mut receiver) = network.register(keys[1].public_key());
             let mut sender = mux::GlobalSender::new(sender);
@@ -115,7 +119,9 @@ fn network_storage_failures_panic_and_allow_recovery() {
             }
             // Rejected protocol messages must not attempt a write or stop the
             // actor, even when every storage operation would fail.
-            for (index, invalid) in invalid_messages.into_iter().enumerate() {
+            // Undecodable messages and invalid dealings penalize the sender;
+            // a misattributed ACK does not.
+            for (invalid, blocked) in invalid_messages.into_iter().zip([1, 2, 3, 3]) {
                 assert!(
                     sender
                         .send(
@@ -127,22 +133,17 @@ fn network_storage_failures_panic_and_allow_recovery() {
                         .accepted()
                 );
                 context.sleep(Duration::from_millis(1)).await;
-                if index == 1 {
-                    let blocker = harness.blocker.clone();
-                    let timer = context.child("penalty_wait");
-                    context
-                        .timeout(Duration::from_secs(1), async move {
-                            while blocker.peers().is_empty() {
-                                timer.sleep(Duration::from_millis(1)).await;
-                            }
-                        })
-                        .await
-                        .expect("invalid private share must penalize its sender");
-                }
-                assert_eq!(
-                    harness.blocker.peers(),
-                    vec![keys[1].public_key(); usize::from(index >= 1)]
-                );
+                let blocker = harness.blocker.clone();
+                let timer = context.child("penalty_wait");
+                context
+                    .timeout(Duration::from_secs(1), async move {
+                        while blocker.peers().len() < blocked {
+                            timer.sleep(Duration::from_millis(1)).await;
+                        }
+                    })
+                    .await
+                    .expect("invalid message must penalize its sender");
+                assert_eq!(harness.blocker.peers(), vec![keys[1].public_key(); blocked]);
                 let mailbox = harness.mailbox().clone();
                 let epoch = state.epoch;
                 assert!(
@@ -176,7 +177,7 @@ fn network_storage_failures_panic_and_allow_recovery() {
                 })
                 .await
                 .expect("a network storage failure must panic immediately");
-            assert_eq!(harness.blocker.peers(), vec![keys[1].public_key()]);
+            assert_eq!(harness.blocker.peers(), vec![keys[1].public_key(); 3]);
             assert!(
                 receiver.recv().now_or_never().is_none(),
                 "a dealing must be persisted before its ACK is sent",
@@ -225,7 +226,7 @@ fn network_storage_failures_panic_and_allow_recovery() {
                 Message::read_cfg(&mut ack, &NZU32!(2)).unwrap(),
                 Message::Ack(_)
             ));
-            assert_eq!(harness.blocker.peers(), vec![keys[1].public_key()]);
+            assert_eq!(harness.blocker.peers(), vec![keys[1].public_key(); 4]);
             harness.stop().await;
         });
     }
