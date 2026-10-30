@@ -9,17 +9,19 @@
 use alloy_primitives::{Address, Log};
 use invariants_core::{Report, SlotChange, Step};
 use tempo_contracts::precompiles::{
-    CONFIGURABLE_ACCOUNT_ADDRESS, IStablecoinDEX, STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    IStablecoinDEX, STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
 };
 use tempo_evm::{TempoEvmConfig, TempoEvmEnv};
 use tempo_fuzz_types::{InvariantFailure, InvariantScope};
-use tempo_invariants::{Tx, account, all, dex, fee_amm, tip20};
+use tempo_invariants::{Tx, all, configurable_account as account, dex, fee_amm, tip20};
 use tempo_primitives::is_tip20_prefix;
 
 use crate::state::{Db, Net};
 
+pub(crate) use configurable_account::authority;
 use reader::Reader;
 
+mod configurable_account;
 mod reader;
 mod views;
 
@@ -32,6 +34,7 @@ pub(crate) struct StepEffects<'a> {
     pub(crate) net: &'a Net,
     pub(crate) logs: &'a [Log],
     pub(crate) tx: Tx,
+    pub(crate) spec: tempo_chainspec::hardfork::TempoHardfork,
 }
 
 impl StepEffects<'_> {
@@ -54,7 +57,7 @@ impl StepEffects<'_> {
             post,
             changes,
             logs: self.logs.to_vec(),
-            tx: Some(self.tx),
+            tx: Some(self.tx.clone()),
         }
     }
 }
@@ -174,22 +177,7 @@ pub(crate) fn check(
         reader.check::<dex::Books>(&mut step, at, STABLECOIN_DEX_ADDRESS, dex::VIEW);
     }
     if let Some(effects) = &effects {
-        // A transaction changes a commitment only by changing its account, so the accounts it
-        // changed and its sender are all it can have moved.
-        let mut changed: Vec<Address> = effects
-            .net
-            .addresses()
-            .copied()
-            .chain([effects.tx.sender])
-            .collect();
-        changed.sort_unstable();
-        changed.dedup();
-        let at = account::At {
-            precompile: CONFIGURABLE_ACCOUNT_ADDRESS,
-            accounts: &changed,
-        };
-        let precompile = CONFIGURABLE_ACCOUNT_ADDRESS;
-        reader.check::<account::Commitments>(&mut step, at, precompile, account::VIEW);
+        configurable_account::check(&reader, db, effects, &mut step);
     }
 
     failures.extend(step.violations.drain(..).map(|violation| InvariantFailure {
