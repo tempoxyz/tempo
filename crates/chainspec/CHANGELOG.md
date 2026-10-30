@@ -1,5 +1,20 @@
 # Changelog
 
+## `tempo-chainspec@2.0.0`
+
+### Major Changes
+
+- Scheduled T13 activation on Moderato for 29 October 2026 at 15:00 UTC and mainnet for 3 November 2026 at 15:00 UTC. Updated public hardfork timestamp lookups to return the scheduled times. (by @hamdiallam, [#8787](https://github.com/tempoxyz/tempo/pull/8787))
+
+### Minor Changes
+
+- Added `tempo_chainspec::is_valid_native_account`. (by @hamdiallam, [#8787](https://github.com/tempoxyz/tempo/pull/8787))
+- Moved EVM execution from revm and alloy-evm to evm2 and removed the `tempo-revm` crate. `tempo-hardfork`, `tempo-primitives` and `tempo-chainspec` expose evm2 types behind their `evm` features in place of their revm and alloy-evm equivalents. `tempo-alloy` drops its `revm` feature and `TempoTransactionRequest::try_into_tempo_tx_env`; its `reth` feature now converts requests into evm2 transaction environments. (by @hamdiallam, [#8787](https://github.com/tempoxyz/tempo/pull/8787))
+
+### Patch Changes
+
+- Added the `T15` hardfork with no public-network activation; dev and test genesis activate it at genesis. (by @hamdiallam, [#8787](https://github.com/tempoxyz/tempo/pull/8787))
+
 ## `tempo-chainspec@1.16.0`
 
 ### Minor Changes
