@@ -600,7 +600,7 @@ mod runtime_tests {
                 .system_call(SystemTx::new(to, input.into()).with_caller(caller))
                 .unwrap()
                 .commit();
-            (result.status, result.output.clone(), result.logs.clone())
+            (result.status, result.output, result.logs)
         };
 
         let create = call(
