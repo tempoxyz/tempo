@@ -14,12 +14,7 @@ pub use tempo_contracts::precompiles::IConfigurableAccount::{
 mod checks;
 pub mod spec;
 
-pub use checks::{
-    APPROVAL_BOUNDS, COMMITMENT_BY_SELF, COMMITMENT_EVENT, COMMITMENT_HASH, COMMITMENT_KEPT,
-    CONFIG_RULES, FORK_GATED, GRANT_DELEGATE, LEAF_CHECKS, MARKER, MARKER_INSTALL,
-    QUORUM_COMMITMENT, QUORUM_WEIGHT, ROOT_KEY_RETIRED, SIGNER_REGISTERED, STEP_CHECKS,
-    UPDATE_QUORUM, UPDATE_VERSION, UPGRADE_CONFIG, UPGRADE_FRESH, UPGRADE_ROOT, VIEW,
-};
+pub use checks::{LEAF_CHECKS, STEP_CHECKS, VIEW};
 
 /// The configuration commitments of the observed accounts.
 #[derive(Debug, Clone, PartialEq, Eq)]
