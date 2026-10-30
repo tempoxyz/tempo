@@ -1,0 +1,91 @@
+# Pillar and projected-load benchmarks on the multi-region network.
+#
+# The main dispatch form is at GitHub's 25-input limit and offers a fixed preset
+# list, so this form takes any preset in contrib/bench/txgen/presets (for example
+# neobank-generic, cross-border, institutional, agentic, projected-pipeline) and
+# the block and lane gas limits. bench-args reaches txgen, for example
+# "--tps-schedule 25:60s,86:60s,25:180s" for a burst step (set tps to its peak).
+
+name: bench-e2e-multi-region-pillars
+
+on:
+  workflow_dispatch:
+    inputs:
+      preset:
+        description: Preset in contrib/bench/txgen/presets, by name.
+        type: string
+        required: true
+      tps:
+        description: Target transactions per second.
+        type: string
+        default: "50000"
+      duration:
+        description: Benchmark duration in seconds.
+        type: string
+        default: "120"
+      bloat:
+        description: State bloat size in GB.
+        type: string
+        default: "100"
+      gas-limit:
+        description: Block gas limit.
+        type: string
+        default: "500000000"
+      general-gas-limit:
+        description: General lane gas limit.
+        type: string
+        default: "30000000"
+      bench-args:
+        description: Extra txgen arguments, such as --tps-schedule.
+        type: string
+        default: ""
+      validator-count:
+        description: Number of validators.
+        type: string
+        default: "10"
+      regions:
+        description: Comma-separated cloud regions. Empty uses the cloud's five defaults.
+        type: string
+        default: ""
+      run-pairs:
+        description: Baseline/feature run pairs.
+        type: string
+        default: "1"
+
+permissions: {}
+
+jobs:
+  bench-e2e-multi-region:
+    name: bench-e2e-multi-region-pillars
+    uses: ./.github/workflows/bench-e2e-multi-region.yml # zizmor: ignore[self-repository] actionlint does not support $/ references yet.
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      packages: read
+    with:
+      cloud: gcp
+      preset: ${{ inputs.preset }}
+      tps: ${{ inputs.tps }}
+      duration: ${{ inputs.duration }}
+      bloat: ${{ inputs.bloat }}
+      gas-limit: ${{ inputs['gas-limit'] }}
+      general-gas-limit: ${{ inputs['general-gas-limit'] }}
+      bench-args: ${{ inputs['bench-args'] }}
+      validator-count: ${{ inputs['validator-count'] }}
+      regions: ${{ inputs.regions }}
+      run-pairs: ${{ inputs['run-pairs'] }}
+      clickhouse-run: feature-1
+      otlp: true
+      valscope: true
+    secrets:
+      BENCH_LOGS_PUSH_URL: ${{ secrets.BENCH_LOGS_PUSH_URL }}
+      TEMPO_TELEMETRY_URL: ${{ secrets.TEMPO_TELEMETRY_URL }}
+      BENCH_VICTORIAMETRICS_URL: ${{ secrets.BENCH_VICTORIAMETRICS_URL }}
+      CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
+      CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
+      CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
+      VICTORIALOGS_URL: ${{ secrets.VICTORIALOGS_URL }}
+      VICTORIAMETRICS_URL: ${{ secrets.VICTORIAMETRICS_URL }}
+      VALSCOPE_CONTROL_URL: ${{ secrets.VALSCOPE_CONTROL_URL }}
+      VALSCOPE_INTERNAL_TOKEN: ${{ secrets.VALSCOPE_INTERNAL_TOKEN }}

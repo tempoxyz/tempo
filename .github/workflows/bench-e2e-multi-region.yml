@@ -59,6 +59,14 @@ on:
         type: string
         required: false
         default: "1500000000"
+      gas-limit:
+        type: string
+        required: false
+        default: "5000000000"
+      bench-args:
+        type: string
+        required: false
+        default: ""
       run-pairs:
         type: string
         required: false
