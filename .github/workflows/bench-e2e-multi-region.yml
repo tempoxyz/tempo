@@ -151,10 +151,30 @@ on:
         required: false
         default: ""
       preset:
-        description: Benchmark preset name in contrib/bench/txgen/presets.
-        type: string
+        description: Benchmark preset.
+        type: choice
         required: true
         default: default
+        options:
+          - default
+          - tip20
+          - tip20_2d_nonces
+          - tip20_protocol_nonces
+          - tip20_random_recipients
+          - tip20_existing_recipients
+          - tip20_keychain
+          - tip20_keychain_random_recipients
+          - tip20_keychain_existing_recipients
+          - tip20_key_authorization
+          - mpp
+          - mix
+          - public-mix
+          - dex
+          - neobank-generic
+          - agentic
+          - institutional
+          - cross-border
+          - projected-pipeline
       duration:
         description: Benchmark duration in seconds.
         type: string
