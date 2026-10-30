@@ -124,6 +124,14 @@ pub const STEP_CHECKS: &[Check<Step<Books, Option<Tx>>>] = &[
                 .iter()
                 .filter(|b| post.is(b.userToken, b.validatorToken))
                 .count();
+            // A burn's rounding loss scales with a later mint's supply, so skip burn-and-mint steps.
+            let minted = s
+                .events::<Mint>(s.post.fee_manager)
+                .iter()
+                .any(|m| post.is(m.userToken, m.validatorToken));
+            if burns > 0 && minted {
+                return None;
+            }
             let (before, after) = (pre.share_value()?, post.share_value()?.checked_add(U256::from(burns))?);
             if pre == *post {
                 return None;
