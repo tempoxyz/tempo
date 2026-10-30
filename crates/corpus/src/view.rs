@@ -44,11 +44,12 @@ fn analyzed(hash: B256) -> Result<Bytecode, Missing> {
 }
 
 fn account_info(nonce: u64, balance: U256, code_hash: B256) -> AccountInfo {
-    let mut info = AccountInfo::default();
-    info.nonce = nonce;
-    info.balance = balance;
-    info.code_hash = code_hash;
-    info
+    AccountInfo {
+        nonce,
+        balance,
+        code_hash,
+        ..Default::default()
+    }
 }
 
 fn from_info(info: &Info) -> AccountInfo {
