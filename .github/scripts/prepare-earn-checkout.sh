@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Installs an Earn checkout's public Solidity dependencies and prints its Foundry project root.
 #
-# tempoxyz/earn holds Earn either at the repository root, with lib/ submodules, or as the earn/
+# tempoxyz/contracts holds Earn either at the repository root, with lib/ submodules, or as the earn/
 # project beside others, with dependencies pinned in earn/foundry.lock and installed by
 # scripts/solidity-deps.sh. Workflows pass the printed path to `forge build --root`.
 #
