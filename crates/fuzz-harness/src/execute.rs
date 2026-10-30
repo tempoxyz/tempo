@@ -30,8 +30,8 @@ use crate::{
 
 type ExecutionBlock = RecoveredBlock<Block>;
 
-/// Executes `input`.
-pub(crate) fn run(input: TempoHarnessInput) -> TempoHarnessOutcome {
+/// Executes `input`, as [`crate::tempo_fuzz_execute_with_result_v1`] does its bincode encoding.
+pub fn run(input: TempoHarnessInput) -> TempoHarnessOutcome {
     match input {
         TempoHarnessInput::Transaction(input) => {
             TempoHarnessOutcome::Transaction(transaction(&input))

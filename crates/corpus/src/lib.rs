@@ -6,6 +6,7 @@ pub mod code;
 pub mod execute;
 pub mod fill;
 pub mod replay;
+pub mod seeds;
 pub mod store;
 pub mod types;
 pub mod view;

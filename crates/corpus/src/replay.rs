@@ -455,18 +455,7 @@ async fn read_catalog(
     pages: mpsc::Sender<Vec<Record>>,
     cancellation: &CancellationToken,
 ) -> eyre::Result<(u64, u64, u64)> {
-    let cursor = if range.start == catalog.context.start {
-        store::Cursor::initial(&catalog.context)?
-    } else {
-        let previous = store::metadata(reader, range.start - 1).await?;
-        let mut cursor = store::Cursor {
-            next: previous.start,
-            tx: previous.first_tx,
-            parent: previous.parent,
-        };
-        cursor.advance(&previous)?;
-        cursor
-    };
+    let cursor = store::cursor_at(reader, &catalog.context, range.start).await?;
     let initial_tx = cursor.tx;
     let mut totals = (0, 0, 0);
     let mut metadata = store::MetadataPages::open(reader, cursor, range.end).await?;
