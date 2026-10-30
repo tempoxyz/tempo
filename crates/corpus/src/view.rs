@@ -10,7 +10,8 @@ use evm2::{
     evm::{AccountInfo, Database},
     interpreter::Word,
 };
-use parking_lot::{Mutex, RwLock};
+use parking_lot::Mutex;
+use schnellru::{ByLength, LruMap};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fmt,
@@ -29,17 +30,21 @@ impl fmt::Display for Missing {
 
 impl std::error::Error for Missing {}
 
-/// Analyzed bytecode by hash, built once from the verified shared code.
-static ANALYZED: LazyLock<RwLock<HashMap<B256, Bytecode>>> = LazyLock::new(Default::default);
+/// Most analyzed contracts kept at once. A miss only re-analyzes the verified shared code.
+const MAX_ANALYZED: u32 = 16 * 1024;
+
+/// Analyzed bytecode by hash, built from the verified shared code.
+static ANALYZED: LazyLock<Mutex<LruMap<B256, Bytecode, ByLength>>> =
+    LazyLock::new(|| Mutex::new(LruMap::new(ByLength::new(MAX_ANALYZED))));
 
 fn analyzed(hash: B256) -> Result<Bytecode, Missing> {
-    if let Some(code) = ANALYZED.read().get(&hash) {
+    if let Some(code) = ANALYZED.lock().get(&hash) {
         return Ok(code.clone());
     }
     let bytes =
         code::code_bytes(&hash.0).ok_or_else(|| Missing(format!("unresolved code {hash}")))?;
     let code = Bytecode::new_raw_checked(bytes).map_err(|err| Missing(err.to_string()))?;
-    ANALYZED.write().insert(hash, code.clone());
+    ANALYZED.lock().insert(hash, code.clone());
     Ok(code)
 }
 

@@ -279,6 +279,9 @@ pub fn decode_block(
         block.header.number() == number && block.header.parent_hash() == parent,
         "corpus block gap/order mismatch"
     );
+    // The hash check below covers only the header; tie the body to it too.
+    tempo_evm::consensus::validate_body_against_header(&block.body, &block.header)
+        .map_err(|error| eyre::eyre!("block {number}: body does not match header: {error}"))?;
     eyre::ensure!(
         block.body.transactions.len() == input.senders.len(),
         "corpus sender count mismatch"
@@ -345,7 +348,7 @@ pub fn verify_changesets(
                 );
             }
         }
-        let mut slots = storage.get_mut(address);
+        let mut slots = storage.remove(address);
         for (key, slot) in &revert.storage {
             let key = B256::from(*key);
             let value = slots.as_mut().and_then(|s| s.remove(&key));
@@ -373,6 +376,14 @@ pub fn verify_changesets(
     if let Some(address) = accounts.keys().next() {
         eyre::bail!("block {number}: account {address} in changeset but not in reverts");
     }
+    // Storage-only changes have no account entry, so an address re-execution never touched
+    // would otherwise go unchecked.
+    if let Some((address, slots)) = storage.iter().find(|(_, slots)| !slots.is_empty()) {
+        eyre::bail!(
+            "block {number}: {address} has {} changeset slots but no revert",
+            slots.len()
+        );
+    }
     Ok(())
 }
 
@@ -399,4 +410,61 @@ fn decode_boundary(bytes: &[u8]) -> Option<[u64; 7]> {
         *value = u64::from_be_bytes(bytes[1 + i * 8..9 + i * 8].try_into().ok()?);
     }
     Some(counters)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::ChangeSet;
+    use reth_trie_common::bundle_state::{AccountRevert, Reverts};
+
+    fn bundle(reverts: Vec<(Address, AccountRevert)>) -> BundleState {
+        BundleState {
+            reverts: Reverts::new(vec![reverts]),
+            ..Default::default()
+        }
+    }
+
+    fn storage_only_changeset() -> ChangeSet {
+        let mut changeset = ChangeSet::default();
+        changeset
+            .storage
+            .insert(([1; 20], [2; 32]), U256::from(3).to_be_bytes());
+        changeset
+    }
+
+    #[test]
+    fn changesets_match_storage_only_revert() {
+        let revert = AccountRevert {
+            storage: [(
+                U256::from_be_bytes([2; 32]),
+                RevertToSlot::Some(U256::from(3)),
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+        verify_changesets(
+            &bundle(vec![(Address::repeat_byte(1), revert)]),
+            &storage_only_changeset(),
+            7,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn changesets_reject_storage_of_untouched_address() {
+        let err = verify_changesets(&bundle(vec![]), &storage_only_changeset(), 7).unwrap_err();
+        assert!(err.to_string().contains("but no revert"), "{err}");
+    }
+
+    #[test]
+    fn boundary_encoding_roundtrip() {
+        for section in 0..5 {
+            let counters = [section, 1, u64::MAX, 3, 4, 5, 6];
+            let bytes = encode_boundary(counters);
+            assert_eq!(decode_boundary(&bytes), Some(counters));
+            assert_eq!(decode_boundary(&bytes[1..]), None);
+        }
+    }
 }

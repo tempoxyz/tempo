@@ -4,4 +4,4 @@ reason = "aws-nitro-enclaves-nsm-api uses the unmaintained serde_cbor crate to e
 
 [[IgnoredVulns]]
 id = "RUSTSEC-2024-0449"
-reason = "unsafe-libyaml is unmaintained; pulled in by slatedb through figment -> serde_yaml (tempo-corpus) with no safe upgrade available."
+reason = "unsafe-libyaml is unmaintained; pulled in by slatedb through figment -> serde_yaml (tempo-corpus, only behind tempo's non-default `corpus` feature) with no safe upgrade available."

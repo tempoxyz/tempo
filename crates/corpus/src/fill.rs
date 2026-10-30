@@ -18,6 +18,7 @@ use slatedb::{
 };
 use std::{
     collections::BTreeMap,
+    panic::AssertUnwindSafe,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
     time::Duration,
 };
@@ -160,8 +161,9 @@ where
             .with_settings(Settings {
                 object_store_max_retries: store::SLATEDB_RETRIES,
                 compression_codec: Some(CompressionCodec::Zstd),
-                // Archival fill publishes checkpoints, not retention policy.
-                garbage_collector_options: None,
+                // Superseded checkpoints are retired with a grace lifetime after each
+                // publication; GC reclaims their files once they expire.
+                garbage_collector_options: Some(Default::default()),
                 ..Default::default()
             })
             .build(),
@@ -318,7 +320,14 @@ where
                         if failed.load(Ordering::Relaxed) {
                             return;
                         }
-                        let result = produce(number);
+                        // A panicking worker would never deliver its block and the
+                        // in-order writer would wait for it forever.
+                        let result = std::panic::catch_unwind(AssertUnwindSafe(|| produce(number)))
+                            .unwrap_or_else(|_| {
+                                Err(eyre::eyre!(
+                                    "corpus capture worker panicked at block {number}"
+                                ))
+                            });
                         let error = result.is_err();
                         if sender.send(result).is_err() || error {
                             failed.store(true, Ordering::Relaxed);
@@ -437,7 +446,7 @@ where
                             == Some(&catalog.context.tip),
                         "canonical pin changed during capture"
                     );
-                    catalog.checkpoint = Some(checkpoint);
+                    let superseded = catalog.checkpoint.replace(checkpoint);
                     catalog.complete = stop == end;
                     let reader = handle.block_on(store.reader(&catalog))?;
                     let checked = handle.block_on(store::for_each_published(
@@ -450,6 +459,9 @@ where
                     handle.block_on(reader.close())?;
                     checked?;
                     version = handle.block_on(store.publish(&catalog, Some(version)))?;
+                    if let Some(superseded) = superseded {
+                        handle.block_on(store.retire_checkpoint(&superseded))?;
+                    }
                     info!(
                         start,
                         end = stop,

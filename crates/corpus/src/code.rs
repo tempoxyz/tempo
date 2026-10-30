@@ -4,6 +4,9 @@ use alloy_primitives::{B256, Bytes, keccak256};
 use parking_lot::RwLock;
 use std::{collections::HashMap, sync::LazyLock};
 
+/// Not evicted: fill and replay read code back right after inserting it, so eviction could
+/// fail a capture mid-block. Its size is bounded by the chain's distinct bytecode, which is
+/// far below the record budget.
 static CODE: LazyLock<RwLock<HashMap<[u8; 32], Bytes>>> = LazyLock::new(Default::default);
 
 /// Whether verified bytecode for `hash` is cached.

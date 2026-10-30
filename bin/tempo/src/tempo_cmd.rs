@@ -45,7 +45,9 @@ use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_precompiles::validator_config_v2::{VALIDATOR_NS_ADD, VALIDATOR_NS_ROTATE};
 use tempo_validator_config::ValidatorConfig;
 
-use crate::{corpus, init_state, p2p_proxy::P2pProxyArgs, regenesis, shadow_replay};
+#[cfg(feature = "corpus")]
+use crate::corpus;
+use crate::{init_state, p2p_proxy::P2pProxyArgs, regenesis, shadow_replay};
 
 fn get_env(key: &str) -> eyre::Result<String> {
     std::env::var(key).wrap_err_with(|| format!("failed reading environment variable `{key}`"))
@@ -85,6 +87,7 @@ pub enum TempoSubcommand {
     ShadowReplay(Box<shadow_replay::ShadowReplay>),
 
     /// Historical execution corpus: capture an archive range once, replay it without a DB.
+    #[cfg(feature = "corpus")]
     #[command(subcommand)]
     Corpus(corpus::CorpusCommand),
 
@@ -136,6 +139,7 @@ impl ExtendedCommand for TempoSubcommand {
                 )?;
                 Ok(())
             }
+            #[cfg(feature = "corpus")]
             Self::Corpus(cmd) => {
                 let runtime = runner.runtime();
                 runner.run_blocking_until_ctrl_c(cmd.execute(runtime))?;

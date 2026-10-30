@@ -13,6 +13,7 @@ use object_store::{
 use serde::{Deserialize, Serialize};
 use slatedb::{
     Db, DbReader, DbReaderMode,
+    admin::Admin,
     config::{CheckpointOptions, CheckpointScope, DbReaderOptions, FlushOptions, FlushType},
 };
 use std::{sync::Arc, time::Duration};
@@ -32,6 +33,8 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 /// conditional write after a timeout. SlateDB's wrapper retries on top of that and is the
 /// one layer that recognises a conditional write that landed before its response was lost.
 pub const SLATEDB_RETRIES: Option<u32> = Some(3);
+/// How long a replaced checkpoint stays readable after a newer one is published.
+const RETIRED_CHECKPOINT_LIFETIME: Duration = Duration::from_secs(60 * 60);
 pub const CONTEXT_KEY: &[u8] = b"reth-corpus-context";
 pub const CURSOR_KEY: &[u8] = b"reth-corpus-cursor";
 
@@ -290,17 +293,40 @@ impl Store {
             bytes.len() <= MAX_CATALOG_BYTES,
             "catalog exceeds size limit"
         );
-        let result = self
+        let path = self.path.clone().join("catalog.json");
+        let mode = prior
+            .clone()
+            .map(PutMode::Update)
+            .unwrap_or(PutMode::Create);
+        let result = match self
             .objects
             .put_opts(
-                &self.path.clone().join("catalog.json"),
-                Bytes::from(bytes).into(),
+                &path,
+                Bytes::from(bytes.clone()).into(),
                 PutOptions {
-                    mode: prior.map(PutMode::Update).unwrap_or(PutMode::Create),
+                    mode,
                     ..Default::default()
                 },
             )
-            .await?;
+            .await
+        {
+            Ok(result) => result,
+            // `LocalFileSystem` has no conditional update. A local corpus has a single
+            // writer on one machine (SlateDB still fences its data), so check the catalog
+            // is unchanged and overwrite it.
+            Err(object_store::Error::NotImplemented { .. }) if prior.is_some() => {
+                let prior = prior.expect("checked above");
+                let current = self.objects.head(&path).await?;
+                eyre::ensure!(
+                    current.e_tag == prior.e_tag,
+                    "corpus catalog changed since it was read; another writer published"
+                );
+                self.objects
+                    .put_opts(&path, Bytes::from(bytes).into(), PutMode::Overwrite.into())
+                    .await?
+            }
+            Err(error) => return Err(error.into()),
+        };
         Ok(UpdateVersion {
             e_tag: result.e_tag,
             version: result.version,
@@ -350,6 +376,16 @@ impl Store {
             return Err(error);
         }
         Ok(reader)
+    }
+
+    /// Gives a superseded checkpoint a grace lifetime instead of keeping it forever, so
+    /// readers still pinned to it can finish before garbage collection reclaims its files.
+    pub async fn retire_checkpoint(&self, id: &str) -> eyre::Result<()> {
+        Admin::builder(self.path.clone().join("data"), self.objects.clone())
+            .build()
+            .refresh_checkpoint(id.parse()?, Some(RETIRED_CHECKPOINT_LIFETIME))
+            .await?;
+        Ok(())
     }
 
     pub async fn checkpoint(&self, db: &Db) -> eyre::Result<String> {
@@ -1043,6 +1079,26 @@ pub mod tests {
         drop(pages);
         corrupt.close().await?;
         db.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn local_corpus_republishes_catalog() -> eyre::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let url = Url::from_directory_path(dir.path()).expect("absolute temp dir");
+        let store = Store::open(url.as_str(), None).await?;
+        let mut catalog = catalog(1, 1, 1);
+        catalog.records.clear();
+        catalog.complete = false;
+        catalog.checkpoint = None;
+        let first = store.publish(&catalog, None).await?;
+        catalog.generation += 1;
+        let second = store.publish(&catalog, Some(first.clone())).await?;
+        assert!(store.publish(&catalog, Some(first)).await.is_err());
+        catalog.generation += 1;
+        store.publish(&catalog, Some(second)).await?;
+        let (published, _) = store.catalog().await?.expect("published catalog");
+        assert_eq!(published.generation, catalog.generation);
         Ok(())
     }
 }

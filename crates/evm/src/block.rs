@@ -1750,6 +1750,51 @@ mod tests {
     }
 
     #[test]
+    fn test_restored_transaction_counters_match_in_block_execution() {
+        let chainspec = test_chainspec();
+        let signer = PrivateKey::from_seed(0);
+        let input = create_system_tx_input(vec![create_subblock_metadata(&signer)], 1);
+        let system_tx = create_system_tx(chainspec.chain_id(), input);
+
+        let mut db = InMemoryDB::default();
+        let mut in_block = TestExecutorBuilder::default()
+            .with_section(BlockSection::NonShared)
+            .build(&mut db, &chainspec);
+        let start = in_block.transaction_counters();
+        in_block
+            .execute_transaction(Recovered::new_unchecked(system_tx.clone(), Address::ZERO))
+            .unwrap();
+        let end = in_block.transaction_counters();
+        let receipts = in_block.receipts().to_vec();
+
+        let mut db = InMemoryDB::default();
+        let mut restored = TestExecutorBuilder::default().build(&mut db, &chainspec);
+        assert_ne!(restored.transaction_counters(), start);
+        assert!(restored.restore_transaction_counters(start));
+        assert_eq!(restored.transaction_counters(), start);
+        restored
+            .execute_transaction(Recovered::new_unchecked(system_tx, Address::ZERO))
+            .unwrap();
+        assert_eq!(restored.transaction_counters(), end);
+        assert_eq!(restored.receipts(), receipts.as_slice());
+    }
+
+    #[test]
+    fn test_restore_transaction_counters_sets_every_counter() {
+        let chainspec = test_chainspec();
+        let mut db = InMemoryDB::default();
+        let mut executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
+        for section in 0..5 {
+            let counters = [section, 11, 12, 13, 14, 15, 16];
+            assert!(executor.restore_transaction_counters(counters));
+            assert_eq!(executor.transaction_counters(), counters);
+        }
+        let before = executor.transaction_counters();
+        assert!(!executor.restore_transaction_counters([5, 0, 0, 0, 0, 0, 0]));
+        assert_eq!(executor.transaction_counters(), before);
+    }
+
+    #[test]
     fn test_validate_system_tx_invalid_sublocks_metadata() {
         let chainspec = test_chainspec();
         let mut db = InMemoryDB::default();

@@ -36,22 +36,24 @@ alloy-rlp.workspace = true
 alloy-eip7928.workspace = true
 
 async-trait.workspace = true
-aws-config = "=1.8.15"
-aws-credential-types = "=1.2.14"
+aws-config = "1.8"
+aws-credential-types = "1.2"
 blake3.workspace = true
 bytes.workspace = true
 eyre.workspace = true
 futures.workspace = true
-object_store = { version = "=0.14.2", features = ["aws"] }
+object_store = { version = "0.14.2", features = ["aws"] }
 parking_lot.workspace = true
+schnellru.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 slatedb = { version = "=0.17.0", default-features = false, features = ["aws", "moka", "zstd"] }
 tokio.workspace = true
 tracing.workspace = true
 url.workspace = true
-wincode = { version = "=0.6.1", features = ["derive"] }
+wincode = { version = "0.6", features = ["derive"] }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 
 [dev-dependencies]
 proptest.workspace = true
+tempfile.workspace = true
