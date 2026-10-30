@@ -394,7 +394,7 @@ fn decode_boundary(bytes: &[u8]) -> Option<[u64; 7]> {
     if bytes.len() != BOUNDARY_LEN {
         return None;
     }
-    let mut counters = [bytes[0] as u64, 0, 0, 0, 0, 0, 0];
+    let mut counters = [u64::from(bytes[0]), 0, 0, 0, 0, 0, 0];
     for (i, value) in counters[1..].iter_mut().enumerate() {
         *value = u64::from_be_bytes(bytes[1 + i * 8..9 + i * 8].try_into().ok()?);
     }
