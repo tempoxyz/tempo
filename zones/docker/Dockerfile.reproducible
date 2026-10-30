@@ -44,8 +44,33 @@ ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} \
     JEMALLOC_OVERRIDE=/usr/lib/x86_64-linux-gnu/libjemalloc.a \
     RUSTFLAGS="-C symbol-mangling-version=v0 -C strip=none -C link-arg=-Wl,--build-id=none -C link-arg=-fuse-ld=mold -C metadata= --remap-path-prefix /app=. --remap-path-prefix /usr/local/cargo/registry=/registry --remap-path-prefix /usr/local/rustup=/rustup"
 
-FROM reproducible-builder-base AS builder
-RUN cargo build --locked --bin tempo-zone \
+# ZONES_SCCACHE=1 (pull request candidates only) compiles through a pinned sccache
+# with a persistent cache mount. Releases, clean rebuilds and verifiers leave it at 0
+# and run cargo unchanged. sccache only returns what rustc produced for the same
+# inputs, so the binary is the same either way.
+FROM reproducible-builder-base AS sccache-base
+ARG ZONES_SCCACHE=0
+RUN cat > /usr/local/bin/zones-cargo <<'EOF' && chmod 0755 /usr/local/bin/zones-cargo
+#!/bin/sh
+set -eu
+[ "${ZONES_SCCACHE:-0}" = 1 ] || exec "$@"
+name=sccache-v0.14.0-x86_64-unknown-linux-musl
+tmp=$(mktemp -d)
+curl --proto '=https' --tlsv1.2 -fsSL --retry 3 -o "$tmp/s.tar.gz" \
+  "https://github.com/mozilla/sccache/releases/download/v0.14.0/$name.tar.gz"
+echo "8424b38cda4ecce616a1557d81328f3d7c96503a171eab79942fad618b42af44  $tmp/s.tar.gz" | sha256sum -c - >/dev/null
+tar -xzf "$tmp/s.tar.gz" -C "$tmp" "$name/sccache"
+install -m 0755 "$tmp/$name/sccache" /usr/local/bin/sccache
+rm -rf "$tmp"
+export RUSTC_WRAPPER=/usr/local/bin/sccache SCCACHE_DIR=/sccache CARGO_INCREMENTAL=0
+"$@"
+sccache --show-stats
+EOF
+
+FROM sccache-base AS builder
+ARG ZONES_SCCACHE=0
+RUN --mount=type=cache,target=/sccache,sharing=private,id=zones-reproducible-tempo-zone-sccache \
+    zones-cargo cargo build --locked --bin tempo-zone \
         --features jemalloc \
         --profile zones-reproducible \
         --target x86_64-unknown-linux-gnu
@@ -53,8 +78,10 @@ RUN cargo build --locked --bin tempo-zone \
 FROM scratch AS artifacts
 COPY --from=builder /app/target/x86_64-unknown-linux-gnu/zones-reproducible/tempo-zone /tempo-zone
 
-FROM reproducible-builder-base AS prover-builder
-RUN cargo build --locked --bin tempo-zone-prover-enclave \
+FROM sccache-base AS prover-builder
+ARG ZONES_SCCACHE=0
+RUN --mount=type=cache,target=/sccache,sharing=private,id=zones-reproducible-prover-sccache \
+    zones-cargo cargo build --locked --bin tempo-zone-prover-enclave \
         --profile zones-reproducible \
         --target x86_64-unknown-linux-gnu
 
