@@ -7,7 +7,7 @@
 //! failing.
 
 use alloy_primitives::{Address, Log};
-use invariants_core::{Report, SlotChange, Step};
+use invariants_core::{Frame, Report, SlotChange, Step};
 use tempo_contracts::precompiles::{
     CONFIGURABLE_ACCOUNT_ADDRESS, IStablecoinDEX, STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
 };
@@ -18,19 +18,24 @@ use tempo_primitives::is_tip20_prefix;
 
 use crate::state::{Db, Net};
 
+#[cfg(test)]
+pub(crate) use reader::ADDED;
 use reader::Reader;
+pub(crate) use trace::Tracer;
 
 mod reader;
+mod trace;
 mod views;
 
 /// How many of the newest DEX orders the books are read over.
 const MAX_ORDERS: u128 = 256;
 
-/// What a transaction step did: its net state changes, already written to the database, and its
-/// logs.
+/// What a transaction step did: its net state changes, already written to the database, its logs
+/// and the call frames it entered.
 pub(crate) struct StepEffects<'a> {
     pub(crate) net: &'a Net,
     pub(crate) logs: &'a [Log],
+    pub(crate) calls: &'a [Frame],
     pub(crate) tx: Tx,
 }
 
@@ -54,6 +59,7 @@ impl StepEffects<'_> {
             post,
             changes,
             logs: self.logs.to_vec(),
+            calls: self.calls.to_vec(),
             tx: Some(self.tx),
         }
     }
@@ -72,9 +78,10 @@ pub(crate) fn logged_addresses<'a>(
 /// Appends to `failures` each invariant `db` breaks, at `scope`, over the accounts `db` holds,
 /// and adds how many subjects each judged, was armed for and found broken to `report`; `holders`
 /// are read as balance holders too, but never checked as contracts. `env` is the block's
-/// environment, which the views run in. Only contracts for which `selected` holds are checked, e.g. those whose state
-/// changed, as no other contract's invariants can have broken. With `effects`, a token's step
-/// checks also run on its ledger before the step against its ledger after it.
+/// environment, which the views run in; only the checks that apply at its fork run. Only contracts
+/// for which `selected` holds are checked, e.g. those whose state changed, as no other contract's
+/// invariants can have broken. With `effects`, a token's step checks also run on its ledger before
+/// the step against its ledger after it.
 #[expect(clippy::too_many_arguments)]
 pub(crate) fn check(
     db: &Db,
