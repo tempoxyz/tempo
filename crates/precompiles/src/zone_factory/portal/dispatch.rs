@@ -1,9 +1,15 @@
 //! ABI dispatch for native ZonePortal accounts (T15+).
 
 use super::{ZonePortalConstants, ZonePortalStorage};
-use crate::{Precompile, charge_input_cost, dispatch, mutate, unknown_selector_result, view};
-use alloy::primitives::Address;
-use evm2::{evm::precompile::PrecompileOutput, precompiles::PrecompileResult};
+use crate::{Precompile, charge_input_cost, dispatch, mutate, selector_from_calldata, view};
+use alloy::{
+    primitives::{Address, Bytes},
+    sol_types::{SolCall, SolInterface},
+};
+use evm2::{
+    evm::precompile::PrecompileOutput,
+    precompiles::{PrecompileError, PrecompileResult},
+};
 use tempo_contracts::zones::ZonePortal;
 
 impl Precompile for ZonePortalStorage {
@@ -16,6 +22,13 @@ impl Precompile for ZonePortalStorage {
         }
         if let Some(err) = charge_input_cost(&mut self.storage, calldata) {
             return err;
+        }
+        // The Solidity runtime has no fallback: a selector it does not expose reverts with empty
+        // data rather than Tempo's `UnknownFunctionSelector` error.
+        if let Some(selector) = selector_from_calldata(calldata)
+            && !is_portal_selector(selector)
+        {
+            return empty_revert();
         }
 
         dispatch!(
@@ -104,9 +117,9 @@ impl Precompile for ZonePortalStorage {
                     zoneGasRate(call) => view(call, |call| self.zone_gas_rate(call)),
                     zoneHeight(call) => view(call, |call| self.zone_height(call)),
                     zoneId(call) => view(call, |call| self.zone_id(call)),
-                    MAX_DEPOSITS_PER_TEMPO_BLOCK(_) => unknown_selector_result(calldata),
-                    MAX_TOKENS_ENABLED_PER_TEMPO_BLOCK(_) => unknown_selector_result(calldata),
-                    submitBatch_0(_) => unknown_selector_result(calldata),
+                    MAX_DEPOSITS_PER_TEMPO_BLOCK(_) => empty_revert(),
+                    MAX_TOKENS_ENABLED_PER_TEMPO_BLOCK(_) => empty_revert(),
+                    submitBatch_0(_) => empty_revert(),
                 }
                 ZonePortalConstants::ZonePortalConstantsCalls {
                     ABDICATION_DELAY(call) => view(call, |call| self.abdication_delay(call)),
@@ -116,4 +129,20 @@ impl Precompile for ZonePortalStorage {
             }
         )
     }
+}
+
+/// Whether the T13 Solidity runtime exposes `selector`.
+fn is_portal_selector(selector: [u8; 4]) -> bool {
+    let retired = [
+        ZonePortal::MAX_DEPOSITS_PER_TEMPO_BLOCKCall::SELECTOR,
+        ZonePortal::MAX_TOKENS_ENABLED_PER_TEMPO_BLOCKCall::SELECTOR,
+        ZonePortal::submitBatch_0Call::SELECTOR,
+    ];
+    (ZonePortal::ZonePortalCalls::valid_selector(selector) && !retired.contains(&selector))
+        || ZonePortalConstants::ZonePortalConstantsCalls::valid_selector(selector)
+}
+
+/// A revert with empty data, as Solidity gives for a selector without a function.
+fn empty_revert() -> PrecompileResult {
+    Err(PrecompileError::Revert(Bytes::new()))
 }
