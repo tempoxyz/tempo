@@ -3,15 +3,13 @@
 use super::{
     ABDICATION_DELAY, FIXED_DEPOSIT_GAS, MAX_GAS_FEE_RATE, MAX_UNPROCESSED_DEPOSITS,
     MAX_UNPROCESSED_TOKEN_ENABLEMENTS, PAUSE_DURATION, ZonePortalConstants, ZonePortalStorage,
+    secp256k1::derive_address,
 };
 use crate::{
     error::{Result, TempoPrecompileError},
-    storage::{Handler, NestedCall},
+    storage::Handler,
 };
-use alloy::{
-    primitives::{Address, B256, Bytes, U256, address, uint},
-    sol_types::{Revert, SolError},
-};
+use alloy::primitives::{Address, B256, U256};
 use tempo_contracts::{
     precompiles::{MAX_SEQUENCERS, ZonePortalError},
     zones::{MAX_TOKEN_METADATA_BYTES, MAX_WITHDRAWAL_GAS_LIMIT, ZonePortal},
@@ -19,17 +17,6 @@ use tempo_contracts::{
 
 /// `ENCRYPTION_KEY_GRACE_PERIOD` from `IZone.sol`: blocks a superseded key stays valid.
 const ENCRYPTION_KEY_GRACE_PERIOD: u64 = 86_400;
-
-/// The MODEXP precompile `Secp256k1Lib` calls.
-const MODEXP_ADDRESS: Address = address!("0x0000000000000000000000000000000000000005");
-
-/// `Secp256k1Lib.SECP256K1_P`.
-const SECP256K1_P: U256 =
-    uint!(0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F_U256);
-
-/// `Secp256k1Lib.SECP256K1_SQRT_EXP`: `(p + 1) / 4`.
-const SECP256K1_SQRT_EXP: U256 =
-    uint!(0x3FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFBFFFFF0C_U256);
 
 impl ZonePortalStorage {
     /// Solidity `ABDICATION_DELAY`.
@@ -371,7 +358,7 @@ impl ZonePortalStorage {
         Ok(ZonePortal::sequencerEncryptionKeyReturn {
             x,
             yParity: y_parity,
-            pubkey: self.derive_encryption_key_address(x, y_parity)?,
+            pubkey: derive_address(x, y_parity)?,
         })
     }
 
@@ -440,49 +427,6 @@ impl ZonePortalStorage {
     pub fn zone_id(&self, _call: ZonePortal::zoneIdCall) -> Result<u32> {
         self.zone_id.read()
     }
-
-    /// `Secp256k1Lib.deriveAddress`: recovers `y` with a static call to MODEXP, then hashes
-    /// the uncompressed key into an address.
-    fn derive_encryption_key_address(&self, x: B256, y_parity: u8) -> Result<Address> {
-        let px = U256::from_be_bytes(x.0);
-        let rhs = px
-            .mul_mod(px, SECP256K1_P)
-            .mul_mod(px, SECP256K1_P)
-            .add_mod(U256::from(7), SECP256K1_P);
-        let word_len = U256::from(32);
-        let input = [
-            word_len,
-            word_len,
-            word_len,
-            rhs,
-            SECP256K1_SQRT_EXP,
-            SECP256K1_P,
-        ]
-        .iter()
-        .flat_map(|word| word.to_be_bytes::<32>())
-        .collect::<Bytes>();
-        let result = super::storage().call(NestedCall {
-            target: MODEXP_ADDRESS,
-            input,
-            gas_limit: u64::MAX,
-            is_static: true,
-        })?;
-        if !result.success || result.output.len() != 32 {
-            return Err(TempoPrecompileError::RawRevert(
-                Revert::from("modexp failed").abi_encode().into(),
-            ));
-        }
-
-        let mut y = U256::from_be_slice(&result.output);
-        if (y % U256::from(2) == U256::ZERO) != (y_parity == 0x02) {
-            y = SECP256K1_P - y;
-        }
-
-        let mut packed = [0u8; 64];
-        packed[..32].copy_from_slice(&px.to_be_bytes::<32>());
-        packed[32..].copy_from_slice(&y.to_be_bytes::<32>());
-        Ok(Address::from_word(self.storage.keccak256(&packed)?))
-    }
 }
 
 #[cfg(test)]
@@ -494,6 +438,7 @@ mod tests {
         test_util::TIP20Setup,
         zone_factory::{ZoneFactory, portal::PortalEncryptionKeyEntry},
     };
+    use alloy::primitives::uint;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{IZoneFactory, ZonePortalCapability, ZonePortalRole};
 

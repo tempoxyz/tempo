@@ -555,6 +555,589 @@ mod runtime_tests {
         );
     }
 
+    /// Runs one script of portal calls and records each call's status, output and logs.
+    ///
+    /// Before T15 the calls reach the T13 Solidity runtime through the ERC-1167 proxy; from T15
+    /// they reach the native portal. Gas is not compared: the native portal prices differently.
+    fn run_portal_script(
+        spec: TempoHardfork,
+    ) -> Vec<(&'static str, bool, Bytes, Vec<alloy_primitives::Log>)> {
+        let owner = Address::repeat_byte(0x11);
+        let admin = Address::repeat_byte(0x22);
+        let sequencer = Address::repeat_byte(0x33);
+        let gateway = Address::repeat_byte(0x44);
+        let depositor = Address::repeat_byte(0x55);
+        let outsider = Address::repeat_byte(0x66);
+        let new_admin = Address::repeat_byte(0x77);
+
+        let mut db = InMemoryDB::default();
+        for account in tempo_contracts::zones::t13_zone_factory_state(owner) {
+            let mut info = AccountInfo::default().with_code(Bytecode::new_raw(account.code));
+            if account.address == ZONE_FACTORY_ADDRESS {
+                info = AccountInfo::default()
+                    .with_code(Bytecode::new_raw(Bytes::from_static(&[0xef])));
+            }
+            db.insert_account_info(&account.address, info);
+            if let Some((slot, value)) = account.storage {
+                db.insert_account_storage(&account.address, &slot, &value);
+            }
+        }
+        let mut evm = configured_evm(spec, 0, false, db);
+        let second_token =
+            StorageCtx::enter_evm(&mut evm, || -> Result<_, TempoPrecompileError> {
+                TIP20Setup::path_usd(admin)
+                    .with_issuer(admin)
+                    .with_mint(depositor, U256::from(1_000_000))
+                    .apply()?;
+                Ok(TIP20Setup::create("Second Token", "SECOND", admin)
+                    .apply()?
+                    .address())
+            })
+            .unwrap();
+
+        let mut call = |to: Address, input: Vec<u8>, caller: Address| {
+            let result = evm
+                .system_call(SystemTx::new(to, input.into()).with_caller(caller))
+                .unwrap()
+                .commit();
+            (result.status, result.output.clone(), result.logs.clone())
+        };
+
+        let create = call(
+            ZONE_FACTORY_ADDRESS,
+            IZoneFactory::createZoneCall {
+                params: IZoneFactory::CreateZoneParams {
+                    initialToken: PATH_USD_ADDRESS,
+                    accessMode: true,
+                    gatewayMode: true,
+                    allowedAccounts: vec![depositor],
+                    zoneGateways: vec![gateway],
+                    admin,
+                    sequencers: vec![sequencer],
+                    threshold: 1,
+                    rpcUrl: "https://zone.example".to_string(),
+                },
+            }
+            .abi_encode(),
+            owner,
+        );
+        assert!(create.0, "createZone failed at {spec:?}");
+        let portal = IZoneFactory::createZoneCall::abi_decode_returns(&create.1)
+            .unwrap()
+            .portal;
+
+        // The sequencer's encryption key, with its proof of possession over this portal.
+        let key = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x42)).unwrap();
+        let compressed = key.credential().verifying_key().to_encoded_point(true);
+        let y_parity = compressed.as_bytes()[0];
+        let x = B256::from_slice(&compressed.as_bytes()[1..]);
+        let pop = key
+            .sign_hash_sync(&keccak256(
+                (portal, x, U256::from(y_parity)).abi_encode_params(),
+            ))
+            .unwrap();
+        let deposit = |token: Address, amount: u128, refund: Address| {
+            IZonePortal::depositCall {
+                token,
+                amount,
+                keyIndex: U256::ZERO,
+                encrypted: tempo_contracts::zones::DepositPayload {
+                    // The secp256k1 generator's X coordinate, a valid point.
+                    ephemeralPubkeyX: B256::from(alloy_primitives::uint!(
+                        0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798_U256
+                    )),
+                    ephemeralPubkeyYParity: 0x02,
+                    ciphertext: Bytes::from(vec![0xab; 64]),
+                    nonce: Default::default(),
+                    tag: Default::default(),
+                },
+                tempoRefundRecipient: refund,
+            }
+            .abi_encode()
+        };
+        let selector = |signature: &str| keccak256(signature)[..4].to_vec();
+
+        let steps: Vec<(&'static str, Address, Vec<u8>, Address)> = vec![
+            (
+                "admin",
+                portal,
+                IZonePortal::adminCall {}.abi_encode(),
+                outsider,
+            ),
+            (
+                "zoneId",
+                portal,
+                IZonePortal::zoneIdCall {}.abi_encode(),
+                outsider,
+            ),
+            (
+                "isSequencer",
+                portal,
+                IZonePortal::isSequencerCall { account: sequencer }.abi_encode(),
+                outsider,
+            ),
+            (
+                "sequencerAt out of range",
+                portal,
+                IZonePortal::sequencerAtCall {
+                    index: U256::from(1),
+                }
+                .abi_encode(),
+                outsider,
+            ),
+            (
+                "tokenConfig",
+                portal,
+                IZonePortal::tokenConfigCall {
+                    token: PATH_USD_ADDRESS,
+                }
+                .abi_encode(),
+                outsider,
+            ),
+            (
+                "tokenEnablementHash",
+                portal,
+                IZonePortal::tokenEnablementHashCall {}.abi_encode(),
+                outsider,
+            ),
+            (
+                "MAX_SEQUENCERS",
+                portal,
+                selector("MAX_SEQUENCERS()"),
+                outsider,
+            ),
+            (
+                "PAUSE_DURATION",
+                portal,
+                selector("PAUSE_DURATION()"),
+                outsider,
+            ),
+            (
+                "ABDICATION_DELAY",
+                portal,
+                selector("ABDICATION_DELAY()"),
+                outsider,
+            ),
+            (
+                "sequencerEncryptionKey unset",
+                portal,
+                IZonePortal::sequencerEncryptionKeyCall {}.abi_encode(),
+                outsider,
+            ),
+            (
+                "unknown selector",
+                portal,
+                vec![0xde, 0xad, 0xbe, 0xef],
+                outsider,
+            ),
+            (
+                "setZoneGasRate not admin",
+                portal,
+                IZonePortal::setZoneGasRateCall { newZoneGasRate: 1 }.abi_encode(),
+                outsider,
+            ),
+            (
+                "setZoneGasRate",
+                portal,
+                IZonePortal::setZoneGasRateCall { newZoneGasRate: 2 }.abi_encode(),
+                admin,
+            ),
+            (
+                "setBouncebackGas",
+                portal,
+                IZonePortal::setBouncebackGasCall {
+                    newBouncebackGas: 50_000,
+                }
+                .abi_encode(),
+                admin,
+            ),
+            (
+                "setMaxTempoGasRate",
+                portal,
+                IZonePortal::setMaxTempoGasRateCall {
+                    newMaxTempoGasRate: 3,
+                }
+                .abi_encode(),
+                admin,
+            ),
+            (
+                "setPauseGuardian",
+                portal,
+                IZonePortal::setPauseGuardianCall {
+                    account: outsider,
+                    allowed: true,
+                }
+                .abi_encode(),
+                admin,
+            ),
+            (
+                "setGateway on account",
+                portal,
+                IZonePortal::setGatewayCall {
+                    account: depositor,
+                    allowed: true,
+                }
+                .abi_encode(),
+                admin,
+            ),
+            (
+                "setRpcUrl not sequencer",
+                portal,
+                IZonePortal::setRpcUrlCall {
+                    rpcUrl: "https://x".into(),
+                }
+                .abi_encode(),
+                admin,
+            ),
+            (
+                "setRpcUrl",
+                portal,
+                IZonePortal::setRpcUrlCall {
+                    rpcUrl: "https://new.example".into(),
+                }
+                .abi_encode(),
+                sequencer,
+            ),
+            (
+                "enableToken before cursor",
+                portal,
+                IZonePortal::enableTokenCall {
+                    token: second_token,
+                }
+                .abi_encode(),
+                admin,
+            ),
+            (
+                "initialize not factory",
+                portal,
+                IZonePortal::initializeCall {
+                    zoneId: 9,
+                    initialToken: PATH_USD_ADDRESS,
+                    accessMode: false,
+                    gatewayMode: false,
+                    allowedAccounts: vec![],
+                    zoneGateways: vec![],
+                    messenger: ZONE_MESSENGER_ADDRESS,
+                    admin,
+                    sequencers: vec![sequencer],
+                    threshold: 1,
+                    verifier: Address::ZERO,
+                    rpcUrl: String::new(),
+                }
+                .abi_encode(),
+                outsider,
+            ),
+            (
+                "deliverWithdrawal not self",
+                portal,
+                IZonePortal::deliverWithdrawalCall {
+                    token: PATH_USD_ADDRESS,
+                    target: gateway,
+                    amount: 1,
+                    senderTag: B256::ZERO,
+                    gasLimit: 1,
+                    data: Bytes::new(),
+                }
+                .abi_encode(),
+                sequencer,
+            ),
+            (
+                "deposit without key",
+                portal,
+                deposit(PATH_USD_ADDRESS, 1_000_000, depositor),
+                depositor,
+            ),
+            (
+                "setSequencerEncryptionKey bad proof",
+                portal,
+                IZonePortal::setSequencerEncryptionKeyCall {
+                    x,
+                    yParity: y_parity,
+                    popV: 27 + u8::from(pop.v()),
+                    popR: pop.r().into(),
+                    popS: (pop.s() ^ U256::from(1)).into(),
+                }
+                .abi_encode(),
+                sequencer,
+            ),
+            (
+                "setSequencerEncryptionKey",
+                portal,
+                IZonePortal::setSequencerEncryptionKeyCall {
+                    x,
+                    yParity: y_parity,
+                    popV: 27 + u8::from(pop.v()),
+                    popR: pop.r().into(),
+                    popS: pop.s().into(),
+                }
+                .abi_encode(),
+                sequencer,
+            ),
+            (
+                "sequencerEncryptionKey",
+                portal,
+                IZonePortal::sequencerEncryptionKeyCall {}.abi_encode(),
+                outsider,
+            ),
+            (
+                "isEncryptionKeyValid",
+                portal,
+                IZonePortal::isEncryptionKeyValidCall {
+                    keyIndex: U256::ZERO,
+                }
+                .abi_encode(),
+                outsider,
+            ),
+            (
+                "deposit zero refund recipient",
+                portal,
+                deposit(PATH_USD_ADDRESS, 1_000_000, Address::ZERO),
+                depositor,
+            ),
+            (
+                "deposit not allowed",
+                portal,
+                deposit(PATH_USD_ADDRESS, 1_000_000, outsider),
+                outsider,
+            ),
+            (
+                "deposit without allowance",
+                portal,
+                deposit(PATH_USD_ADDRESS, 500_000, depositor),
+                depositor,
+            ),
+            (
+                "approve portal",
+                PATH_USD_ADDRESS,
+                ITIP20::approveCall {
+                    spender: portal,
+                    amount: U256::from(1_000_000),
+                }
+                .abi_encode(),
+                depositor,
+            ),
+            (
+                "deposit too small",
+                portal,
+                deposit(PATH_USD_ADDRESS, 1, depositor),
+                depositor,
+            ),
+            (
+                "deposit",
+                portal,
+                deposit(PATH_USD_ADDRESS, 500_000, depositor),
+                depositor,
+            ),
+            (
+                "deposit second token",
+                portal,
+                deposit(second_token, 500_000, depositor),
+                depositor,
+            ),
+            (
+                "currentDepositQueueHash",
+                portal,
+                IZonePortal::currentDepositQueueHashCall {}.abi_encode(),
+                outsider,
+            ),
+            (
+                "depositCount",
+                portal,
+                IZonePortal::depositCountCall {}.abi_encode(),
+                outsider,
+            ),
+            (
+                "claimRefund not allowed",
+                portal,
+                IZonePortal::claimRefundCall {
+                    token: PATH_USD_ADDRESS,
+                }
+                .abi_encode(),
+                outsider,
+            ),
+            (
+                "claimRefund nothing parked",
+                portal,
+                IZonePortal::claimRefundCall {
+                    token: PATH_USD_ADDRESS,
+                }
+                .abi_encode(),
+                depositor,
+            ),
+            (
+                "processWithdrawals not sequencer",
+                portal,
+                IZonePortal::processWithdrawalsCall {
+                    withdrawals: vec![],
+                    remainingQueue: B256::ZERO,
+                }
+                .abi_encode(),
+                admin,
+            ),
+            (
+                "processWithdrawals empty",
+                portal,
+                IZonePortal::processWithdrawalsCall {
+                    withdrawals: vec![],
+                    remainingQueue: B256::ZERO,
+                }
+                .abi_encode(),
+                sequencer,
+            ),
+            (
+                "submitBatch wrong block hash",
+                portal,
+                tempo_contracts::zones::submitBatchCall {
+                    tempoBlockNumber: 0,
+                    recentTempoBlockNumber: 0,
+                    blockTransition: BlockTransition {
+                        prevBlockHash: B256::repeat_byte(1),
+                        nextBlockHash: B256::ZERO,
+                    },
+                    depositQueueTransition: DepositQueueTransition {
+                        prevProcessedHash: B256::ZERO,
+                        nextProcessedHash: B256::ZERO,
+                        prevDepositNumber: 0,
+                        nextDepositNumber: 0,
+                    },
+                    tokenEnablementTransition: TokenEnablementTransition {
+                        prevProcessedTokenCount: 0,
+                        nextProcessedTokenCount: 0,
+                    },
+                    withdrawalQueueHash: B256::ZERO,
+                    verifierConfig: Bytes::new(),
+                    proof: Bytes::new(),
+                    nextZoneHeight: U256::ZERO,
+                    signatures: Vec::new(),
+                }
+                .abi_encode(),
+                sequencer,
+            ),
+            (
+                "pause not guardian",
+                portal,
+                IZonePortal::pauseCall {}.abi_encode(),
+                depositor,
+            ),
+            (
+                "pause",
+                portal,
+                IZonePortal::pauseCall {}.abi_encode(),
+                outsider,
+            ),
+            (
+                "deposit while paused",
+                portal,
+                deposit(PATH_USD_ADDRESS, 500_000, depositor),
+                depositor,
+            ),
+            (
+                "areDepositsActive while paused",
+                portal,
+                IZonePortal::areDepositsActiveCall {
+                    token: PATH_USD_ADDRESS,
+                }
+                .abi_encode(),
+                outsider,
+            ),
+            (
+                "resume",
+                portal,
+                IZonePortal::resumeCall {}.abi_encode(),
+                admin,
+            ),
+            (
+                "abdicate",
+                portal,
+                IZonePortal::abdicateCall {
+                    capability: IZonePortal::Capability::AccessPolicy,
+                }
+                .abi_encode(),
+                admin,
+            ),
+            (
+                "abdicationEffectiveAt",
+                portal,
+                IZonePortal::abdicationEffectiveAtCall {
+                    capability: IZonePortal::Capability::AccessPolicy,
+                }
+                .abi_encode(),
+                outsider,
+            ),
+            (
+                "transferAdmin",
+                portal,
+                IZonePortal::transferAdminCall {
+                    newAdmin: new_admin,
+                }
+                .abi_encode(),
+                admin,
+            ),
+            (
+                "acceptAdmin wrong account",
+                portal,
+                IZonePortal::acceptAdminCall {}.abi_encode(),
+                outsider,
+            ),
+            (
+                "acceptAdmin",
+                portal,
+                IZonePortal::acceptAdminCall {}.abi_encode(),
+                new_admin,
+            ),
+            (
+                "setLeader",
+                portal,
+                IZonePortal::setLeaderCall {
+                    newLeader: sequencer,
+                    expectedEpoch: 1,
+                }
+                .abi_encode(),
+                new_admin,
+            ),
+            (
+                "setSequencerSet unchanged",
+                portal,
+                IZonePortal::setSequencerSetCall {
+                    newSequencers: vec![sequencer],
+                    newThreshold: 1,
+                }
+                .abi_encode(),
+                new_admin,
+            ),
+        ];
+
+        steps
+            .into_iter()
+            .map(|(name, to, input, caller)| {
+                let (status, output, logs) = call(to, input, caller);
+                (name, status, output, logs)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn native_zone_portal_matches_solidity_runtime() {
+        let solidity = run_portal_script(TempoHardfork::T14);
+        let native = run_portal_script(TempoHardfork::T15);
+        assert_eq!(solidity.len(), native.len());
+        for (expected, actual) in solidity.iter().zip(&native) {
+            assert_eq!(
+                expected, actual,
+                "step {:?} differs (left: Solidity at T14, right: native at T15)",
+                expected.0
+            );
+        }
+        // The script must exercise both outcomes, or it compares nothing useful.
+        assert!(native.iter().any(|step| step.1));
+        assert!(native.iter().any(|step| !step.1));
+        assert!(
+            native
+                .iter()
+                .any(|(name, status, ..)| *name == "deposit" && *status)
+        );
+    }
+
     #[test]
     fn test_zone_verifier_runtime_is_shadowed_at_t13() {
         let calldata = IZoneVerifier::verifyCall {

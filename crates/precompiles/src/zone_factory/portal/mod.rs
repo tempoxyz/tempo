@@ -14,13 +14,14 @@
 mod admin;
 mod deposits;
 mod dispatch;
+mod secp256k1;
 mod settlement;
 mod views;
 mod withdrawals;
 
 use crate::{
     error::{Result, TempoPrecompileError},
-    storage::{Handler, Mapping, NestedCall, Slot, StorageCtx},
+    storage::{Handler, Mapping, NestedCall, Slot},
 };
 use alloy::{
     primitives::{Address, B256, Bytes, FixedBytes, IntoLogData, U256, hex},
@@ -369,10 +370,4 @@ impl ZonePortalStorage {
             .map(Some)
             .map_err(|_| TempoPrecompileError::RawRevert(Bytes::new()))
     }
-}
-
-/// Builds a [`StorageCtx`] handle; exists so group modules need not import it.
-#[allow(dead_code)]
-pub(crate) fn storage() -> StorageCtx {
-    StorageCtx
 }

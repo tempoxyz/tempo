@@ -60,12 +60,12 @@ impl ZonePortalStorage {
         // The binding names the Solidity `(token, target, senderTag)` parameters
         // `(to, token, memo)`; positions and the selector match.
         let ZonePortal::deliverWithdrawalCall {
-            to: token,
-            token: target,
+            token,
+            target,
             amount,
-            memo: sender_tag,
+            senderTag: sender_tag,
             gasLimit: gas_limit,
-            callbackData: data,
+            data,
         } = call;
 
         if self.is_gateway_enforced.read()?
@@ -219,12 +219,12 @@ impl ZonePortalStorage {
         } else {
             // Isolate callback effects so failure can be caught without reverting the dequeue.
             let deliver = ZonePortal::deliverWithdrawalCall {
-                to: token,
-                token: withdrawal.to,
+                token,
+                target: withdrawal.to,
                 amount: withdrawal.amount,
-                memo: withdrawal.senderTag,
+                senderTag: withdrawal.senderTag,
                 gasLimit: withdrawal.gasLimit,
-                callbackData: withdrawal.callbackData.clone(),
+                data: withdrawal.callbackData.clone(),
             };
             self.try_external_call(self.address, &deliver, false)?
                 .is_some()
@@ -567,12 +567,12 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut portal = create_portal()?;
             let call = ZonePortal::deliverWithdrawalCall {
-                to: PATH_USD_ADDRESS,
-                token: RECIPIENT_1,
+                token: PATH_USD_ADDRESS,
+                target: RECIPIENT_1,
                 amount: 1,
-                memo: B256::ZERO,
+                senderTag: B256::ZERO,
                 gasLimit: 1,
-                callbackData: Bytes::new(),
+                data: Bytes::new(),
             };
 
             assert_eq!(

@@ -3,6 +3,7 @@
 use super::{
     ABDICATION_DELAY, MAX_GAS_FEE_RATE, MAX_UNPROCESSED_TOKEN_ENABLEMENTS, PAUSE_DURATION,
     PortalEncryptionKeyEntry, PortalTokenConfig, ZonePortalStorage,
+    secp256k1::{derive_address, is_valid_x},
 };
 use crate::{
     ECRECOVER_GAS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS, ZONE_FACTORY_ADDRESS,
@@ -11,7 +12,7 @@ use crate::{
 };
 use alloy::{
     consensus::crypto::secp256k1::recover_signer_unchecked,
-    primitives::{Address, B256, Signature, U256, uint},
+    primitives::{Address, B256, Signature, U256},
     sol_types::SolValue,
 };
 use tempo_contracts::{
@@ -21,16 +22,6 @@ use tempo_contracts::{
     },
     zones::{MAX_TOKEN_METADATA_BYTES, ZonePortal},
 };
-
-/// `Secp256k1Lib.SECP256K1_P`.
-const SECP256K1_P: U256 =
-    uint!(0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F_U256);
-/// `Secp256k1Lib.SECP256K1_HALF_PM1`: `(p - 1) / 2`, Euler's criterion exponent.
-const SECP256K1_HALF_PM1: U256 =
-    uint!(0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF7FFFFE17_U256);
-/// `Secp256k1Lib.SECP256K1_SQRT_EXP`: `(p + 1) / 4`, the square-root exponent.
-const SECP256K1_SQRT_EXP: U256 =
-    uint!(0x3FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFBFFFFF0C_U256);
 
 impl ZonePortalStorage {
     /// Solidity `abdicate`.
@@ -566,41 +557,14 @@ impl ZonePortalStorage {
     }
 }
 
-/// `Secp256k1Lib.isValidX`: `x` is a field element and `x^3 + 7` is a quadratic residue.
-fn is_valid_x(x: B256) -> bool {
-    let px = U256::from_be_bytes(x.0);
-    if px.is_zero() || px >= SECP256K1_P {
-        return false;
-    }
-    curve_rhs(px).pow_mod(SECP256K1_HALF_PM1, SECP256K1_P) == U256::ONE
-}
-
-/// `Secp256k1Lib.deriveAddress`: the address of the compressed public key `(x, y_parity)`.
-fn derive_address(x: B256, y_parity: u8) -> Result<Address> {
-    let px = U256::from_be_bytes(x.0);
-    let mut y = curve_rhs(px).pow_mod(SECP256K1_SQRT_EXP, SECP256K1_P);
-    if (y.bit(0)) == (y_parity == 0x02) {
-        y = SECP256K1_P - y;
-    }
-    let hash = StorageCtx.keccak256(&[px.to_be_bytes::<32>(), y.to_be_bytes::<32>()].concat())?;
-    Ok(Address::from_word(hash))
-}
-
-/// `Secp256k1Lib._curveRhs`: `x^3 + 7 mod p`.
-fn curve_rhs(px: U256) -> U256 {
-    px.mul_mod(px, SECP256K1_P)
-        .mul_mod(px, SECP256K1_P)
-        .add_mod(U256::from(7), SECP256K1_P)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{super::secp256k1::SECP256K1_P, *};
     use crate::{
         PATH_USD_ADDRESS, storage::hashmap::HashMapStorageProvider, test_util::TIP20Setup,
         zone_factory::ZoneFactory,
     };
-    use alloy::primitives::{Bytes, IntoLogData};
+    use alloy::primitives::{Bytes, IntoLogData, uint};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use tempo_chainspec::hardfork::TempoHardfork;

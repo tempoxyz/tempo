@@ -12,7 +12,6 @@ use bitflags::bitflags;
 use evm2::{
     Evm, EvmFeatures, EvmTypes, ExecutionError, HostError, Version,
     bytecode::Bytecode,
-    env::TxEnvExt,
     evm::{AccountExtension, AccountInfo, SLoad, SStore, StateCheckpoint},
     interpreter::{GasTracker, Host, MessageExt, MessageKind, gas},
     version::{GasId, GasParams},
@@ -716,12 +715,10 @@ where
             caller_is_static: self.is_static,
             ..MessageExt::default()
         };
-        // TODO: evm2 at this revision does not expose the running transaction's environment to
-        // precompiles, so the child sees a default one (zero ORIGIN and GASPRICE). evm2 #866 moves
-        // the environment into the EVM; bump past it and drop this argument.
-        let tx_env = TxEnvExt::default();
-        let result = Host::execute_message(&mut *self.evm, &tx_env, &mut message)
-            .map_err(execution_error)?;
+        // The child sees the running transaction's environment (ORIGIN, GASPRICE), which the EVM
+        // owns since evm2 #866.
+        let result =
+            Host::execute_message(&mut *self.evm, &mut message).map_err(execution_error)?;
         if result.stop.is_fatal() {
             return Err(TempoPrecompileError::Fatal(format!(
                 "nested call halted fatally: {:?}",

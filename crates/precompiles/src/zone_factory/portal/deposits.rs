@@ -4,13 +4,14 @@ use super::{
     CALLBACK_DEPOSIT_AVAILABLE, CALLBACK_DEPOSIT_CONSUMED, FIXED_DEPOSIT_GAS,
     MAX_UNPROCESSED_DEPOSITS, TEMPO_BASE_FEE_SCALE, WITHDRAWAL_PROCESSING_DEPOSIT_RESERVE,
     ZonePortalStorage,
+    secp256k1::{is_compressed_y_parity, is_valid_x},
 };
 use crate::{
     error::{Result, TempoPrecompileError},
     storage::Handler,
 };
 use alloy::{
-    primitives::{Address, B256, U256, uint},
+    primitives::{Address, B256, U256},
     sol_types::SolValue,
 };
 use tempo_contracts::{
@@ -23,14 +24,6 @@ use tempo_contracts::{
 
 /// `ENCRYPTED_PAYLOAD_PLAINTEXT_SIZE`: required ciphertext length of an encrypted deposit.
 const ENCRYPTED_PAYLOAD_PLAINTEXT_SIZE: usize = 64;
-
-/// `Secp256k1Lib.SECP256K1_P`: the secp256k1 field prime.
-const SECP256K1_P: U256 =
-    uint!(0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F_U256);
-
-/// `Secp256k1Lib.SECP256K1_HALF_PM1`: `(p - 1) / 2`, the Euler's criterion exponent.
-const SECP256K1_HALF_PM1: U256 =
-    uint!(0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF7FFFFE17_U256);
 
 impl ZonePortalStorage {
     /// Solidity `calculateBouncebackFee`: `ceil(bouncebackGas * block.basefee / 1e12)`.
@@ -318,28 +311,9 @@ impl ZonePortalStorage {
     }
 }
 
-/// `Secp256k1Lib.isCompressedYParity`.
-fn is_compressed_y_parity(y_parity: u8) -> bool {
-    y_parity == 0x02 || y_parity == 0x03
-}
-
-/// `Secp256k1Lib.isValidX`: whether `x^3 + 7` is a quadratic residue mod p (Euler's
-/// criterion), i.e. `x` is the X coordinate of a secp256k1 point.
-fn is_valid_x(x: B256) -> bool {
-    let px = U256::from_be_bytes(x.0);
-    if px.is_zero() || px >= SECP256K1_P {
-        return false;
-    }
-    let rhs = px
-        .mul_mod(px, SECP256K1_P)
-        .mul_mod(px, SECP256K1_P)
-        .add_mod(uint!(7_U256), SECP256K1_P);
-    rhs.pow_mod(SECP256K1_HALF_PM1, SECP256K1_P) == U256::ONE
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{super::secp256k1::SECP256K1_P, *};
     use crate::{
         PATH_USD_ADDRESS,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
