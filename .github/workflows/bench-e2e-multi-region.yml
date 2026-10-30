@@ -59,6 +59,14 @@ on:
         type: string
         required: false
         default: "1500000000"
+      gas-limit:
+        type: string
+        required: false
+        default: "5000000000"
+      bench-args:
+        type: string
+        required: false
+        default: ""
       run-pairs:
         type: string
         required: false
@@ -162,6 +170,11 @@ on:
           - mix
           - public-mix
           - dex
+          - neobank-generic
+          - agentic
+          - institutional
+          - cross-border
+          - projected-pipeline
       duration:
         description: Benchmark duration in seconds.
         type: string
@@ -252,11 +265,11 @@ on:
         type: string
         required: true
         default: "5000000000"
-      no-cache:
-        description: Skip binary cache.
-        type: boolean
+      general-gas-limit:
+        description: General lane gas limit.
+        type: string
         required: true
-        default: false
+        default: "1500000000"
       bench-args:
         description: Extra bench args.
         type: string
@@ -330,7 +343,7 @@ jobs:
       BENCH_INPUT_FEATURE_ARGS: ${{ inputs['feature-args'] || '' }}
       BENCH_INPUT_GAS_LIMIT: ${{ inputs['gas-limit'] || '5000000000' }}
       BENCH_INPUT_GENERAL_GAS_LIMIT: ${{ inputs['general-gas-limit'] || '1500000000' }}
-      BENCH_INPUT_NO_CACHE: ${{ github.event_name == 'workflow_dispatch' && (inputs['no-cache'] == true || inputs['no-cache'] == 'true') && 'true' || 'false' }}
+      BENCH_INPUT_NO_CACHE: "false"
       BENCH_INPUT_BENCH_ARGS: ${{ inputs['bench-args'] || '' }}
       BENCH_INPUT_RUN_PAIRS: ${{ inputs['run-pairs'] || '1' }}
       BENCH_INPUT_CLICKHOUSE_RUN: ${{ inputs['clickhouse-run'] || 'feature-1' }}

@@ -1,3 +1,6 @@
+include:
+  - dex/walls.yml
+
 chain_id: 1337
 
 gas:
@@ -13,111 +16,6 @@ accounts:
 
 artifacts:
   StablecoinDEX: ../stablecoin-dex.abi.json
-
-setup:
-  steps:
-    - id: dex_wall_bid_token1
-      tx:
-        type: eip1559
-        from:
-          pool: users
-          select: { index: 0 }
-        gas_limit: 8000000
-        call:
-          to: "0xdec0000000000000000000000000000000000000"
-          abi: StablecoinDEX
-          function: placeFlip
-          args:
-            - "0x20c0000000000000000000000000000000000001"
-            - 10000000000
-            - true
-            - -100
-            - 100
-    - id: dex_wall_ask_token1
-      tx:
-        type: eip1559
-        from:
-          pool: users
-          select: { index: 0 }
-        gas_limit: 8000000
-        call:
-          to: "0xdec0000000000000000000000000000000000000"
-          abi: StablecoinDEX
-          function: placeFlip
-          args:
-            - "0x20c0000000000000000000000000000000000001"
-            - 10000000000
-            - false
-            - 100
-            - -100
-    - id: dex_wall_bid_token2
-      tx:
-        type: eip1559
-        from:
-          pool: users
-          select: { index: 0 }
-        gas_limit: 8000000
-        call:
-          to: "0xdec0000000000000000000000000000000000000"
-          abi: StablecoinDEX
-          function: placeFlip
-          args:
-            - "0x20c0000000000000000000000000000000000002"
-            - 10000000000
-            - true
-            - -100
-            - 100
-    - id: dex_wall_ask_token2
-      tx:
-        type: eip1559
-        from:
-          pool: users
-          select: { index: 0 }
-        gas_limit: 8000000
-        call:
-          to: "0xdec0000000000000000000000000000000000000"
-          abi: StablecoinDEX
-          function: placeFlip
-          args:
-            - "0x20c0000000000000000000000000000000000002"
-            - 10000000000
-            - false
-            - 100
-            - -100
-    - id: dex_wall_bid_token3
-      tx:
-        type: eip1559
-        from:
-          pool: users
-          select: { index: 0 }
-        gas_limit: 8000000
-        call:
-          to: "0xdec0000000000000000000000000000000000000"
-          abi: StablecoinDEX
-          function: placeFlip
-          args:
-            - "0x20c0000000000000000000000000000000000003"
-            - 10000000000
-            - true
-            - -100
-            - 100
-    - id: dex_wall_ask_token3
-      tx:
-        type: eip1559
-        from:
-          pool: users
-          select: { index: 0 }
-        gas_limit: 8000000
-        call:
-          to: "0xdec0000000000000000000000000000000000000"
-          abi: StablecoinDEX
-          function: placeFlip
-          args:
-            - "0x20c0000000000000000000000000000000000003"
-            - 10000000000
-            - false
-            - 100
-            - -100
 
 templates:
   dex_place:

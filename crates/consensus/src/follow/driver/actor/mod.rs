@@ -4,10 +4,12 @@ use commonware_consensus::{
     simplex::types::Activity,
     types::{Epoch, Epocher as _, Height, Round},
 };
-use commonware_runtime::{Clock, ContextCell, Spawner, spawn_cell};
+use commonware_runtime::{BufferPooler, Clock, ContextCell, Metrics, Spawner, Storage, spawn_cell};
 use commonware_utils::Acknowledgement as _;
 use eyre::{OptionExt as _, Report, WrapErr as _};
 use rand_core::{CryptoRng, Rng};
+use tempo_chainspec::NetworkIdentity;
+use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::rpc::consensus::{CertifiedBlock, Event};
 use tokio::{select, sync::mpsc};
 use tracing::{debug, instrument, warn};
@@ -21,15 +23,36 @@ use crate::{
     gossip::{Certificate, CertificateError},
 };
 
-pub(super) fn try_init<TContext, P, M>(
-    context: TContext,
+mod state;
+
+pub(super) use state::State;
+
+#[instrument(skip_all, err)]
+pub(super) async fn try_init<TContext, P, M>(
+    mut context: TContext,
     config: Config<P, M>,
 ) -> eyre::Result<super::Initialized<TContext, P, M>>
 where
-    TContext: Clock + Spawner,
+    TContext: Clock + Spawner + Metrics + Storage + BufferPooler + CryptoRng,
     P: ExecutionProvider + 'static,
     M: Marshal + 'static,
 {
+    let state = State::init(context.child("state"), &config.partition_prefix).await?;
+
+    let tip = config
+        .finalized_tip
+        .as_ref()
+        .map(|(height, certificate)| (*height, certificate));
+
+    let network_identity = crate::startup::verify_finalized_tip(
+        &mut context,
+        &config.network_identity,
+        state.identity(),
+        tip,
+        config.last_finalized_height,
+        &config.scheme_provider,
+    )?;
+
     let (tx, rx) = mpsc::unbounded_channel();
     let mailbox = Mailbox(tx);
 
@@ -56,11 +79,6 @@ where
         Height::zero()
     };
 
-    let verifier = FinalizationVerifier::new(
-        config.network_identity.clone(),
-        config.epoch_strategy.clone(),
-    )
-    .with_scheme_provider(config.scheme_provider.clone());
     let boundary_header = config
         .execution_provider
         .finalized_header_by_number(startup_execution_boundary.get())
@@ -72,7 +90,10 @@ where
                 from the execution layer"
             )
         })?;
-    let onchain_outcome = verifier
+
+    let verifier = FinalizationVerifier::new(network_identity, config.epoch_strategy.clone())
+        .with_scheme_provider(config.scheme_provider.clone());
+    let outcome = verifier
         .decode_dkg_outcome_and_register_boundary(boundary_header.extra_data().as_ref())
         .wrap_err_with(|| {
             format!(
@@ -80,22 +101,23 @@ where
             )
         })?;
 
-    let current_epoch = onchain_outcome.epoch();
-
     let actor = Driver {
         context: ContextCell::new(context),
+        state,
         config,
         mailbox: rx,
         startup_execution_boundary,
-        current_epoch,
+        current_epoch: outcome.epoch(),
         epoch_sync_target: None,
         verifier,
         latest_verified_round: Round::zero(),
     };
+
     Ok((actor, mailbox))
 }
 
-pub(crate) struct Driver<TContext, P, M> {
+pub(crate) struct Driver<TContext: Clock + Metrics + Storage + BufferPooler, P, M> {
+    state: State<TContext>,
     context: ContextCell<TContext>,
     config: Config<P, M>,
     mailbox: mpsc::UnboundedReceiver<Message>,
@@ -108,7 +130,7 @@ pub(crate) struct Driver<TContext, P, M> {
 
 impl<C, P, M> Driver<C, P, M>
 where
-    C: Clock + Rng + CryptoRng + Spawner,
+    C: Clock + Rng + CryptoRng + Spawner + Metrics + Storage + BufferPooler,
     P: ExecutionProvider + 'static,
     M: Marshal + 'static,
 {
@@ -139,7 +161,9 @@ where
                             let _: Result<_, _> = self.process_event(certified).await;
                         }
                         Message::Finalized(update) => {
-                            self.process_update(update).await;
+                            if self.process_update(update).await.is_err() {
+                                return;
+                            }
                         }
                         Message::Certificate { certificate, response } => {
                             let result = self.process_certificate(*certificate).await;
@@ -204,6 +228,29 @@ where
             self.current_epoch = self.current_epoch.max(onchain_outcome.epoch());
         } else {
             debug!("no gap detected");
+        }
+
+        Ok(())
+    }
+
+    #[instrument(skip_all, err)]
+    async fn observe_boundary_identity(&mut self, outcome: &OnchainDkgOutcome) -> eyre::Result<()> {
+        let trusted_identity = self.verifier.network_identity();
+        let identity_epoch = self
+            .state
+            .identity()
+            .map_or(trusted_identity.from_epoch, |identity| {
+                trusted_identity.from_epoch.max(identity.from_epoch)
+            });
+
+        // Scheme registration has already rejected conflicting keys within the same epoch.
+        if outcome.epoch >= identity_epoch {
+            let identity = NetworkIdentity {
+                from_epoch: outcome.epoch().get(),
+                identity: *outcome.network_identity(),
+            };
+
+            self.state.observe(identity).await?
         }
 
         Ok(())
@@ -352,16 +399,16 @@ where
         self.config.marshal.hint_finalized(boundary_height).await;
     }
 
-    #[instrument(skip_all)]
-    async fn process_update(&mut self, update: marshal::Update<Block>) {
+    #[instrument(skip_all, err)]
+    async fn process_update(&mut self, update: marshal::Update<Block>) -> eyre::Result<()> {
         // Marshal sends its startup tip and each finalization it stores. These
         // durable tips recover the latest verified round and provide later progress.
         let (block, ack) = match update {
+            marshal::Update::Block(block, ack) => (block, ack),
             marshal::Update::Tip(round, _, _) => {
                 self.latest_verified_round = self.latest_verified_round.max(round);
-                return;
+                return Ok(());
             }
-            marshal::Update::Block(block, ack) => (block, ack),
         };
 
         let epoch_info = self
@@ -376,19 +423,27 @@ where
                 .decode_dkg_outcome_and_register_boundary(block.header().extra_data().as_ref())
                 .expect("boundary blocks must contain DKG outcomes");
 
-            let network_identity = self.verifier.network_identity();
-            if onchain_outcome.epoch >= network_identity.from_epoch
-                && network_identity.identity != *onchain_outcome.network_identity()
+            // Prevent an outcome from advancing the persisted trust anchor to an arbitrary epoch.
+            assert_eq!(
+                onchain_outcome.epoch(),
+                epoch_info.epoch().next(),
+                "boundary outcome must describe the next epoch",
+            );
+
+            let configured_identity = &self.config.network_identity;
+            if onchain_outcome.epoch >= configured_identity.from_epoch
+                && configured_identity.identity != *onchain_outcome.network_identity()
             {
                 warn!(
-                    compiled_from_epoch = network_identity.from_epoch,
+                    compiled_from_epoch = configured_identity.from_epoch,
                     onchain_epoch = %onchain_outcome.epoch,
-                    compiled_network_identity = %network_identity.identity,
+                    compiled_network_identity = %configured_identity.identity,
                     onchain_network_identity = %onchain_outcome.network_identity(),
                     "Network identity differs from the onchain DKG outcome!!! Update the binary with the latest network identity"
                 );
             }
 
+            self.observe_boundary_identity(&onchain_outcome).await?;
             self.current_epoch = self.current_epoch.max(onchain_outcome.epoch());
 
             if self
@@ -407,5 +462,6 @@ where
         // sends the next update. Dropping the acknowledgement means shutdown,
         // so an early return would stop block delivery.
         ack.acknowledge();
+        Ok(())
     }
 }

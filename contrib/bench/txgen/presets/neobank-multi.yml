@@ -2,7 +2,8 @@
 # own traffic shape, enabled modules and gas share, in one run. Use it to size the
 # combined headroom and bottlenecks of several live programs before their own
 # traffic data exists. Instances live in neobank/instances.yml (traffic-shape names,
-# never customer names); TXGEN_NEOBANK_INSTANCES=<path> selects another file.
+# never customer names); TXGEN_NEOBANK_INSTANCES=<path> selects another file, which
+# may also be a deployment-shapes file (shapes/README.md): one instance per shape.
 #
 # The helper renders each instance from neobank-generic.yml. An instance's mix
 # weight is its share times its modules' neobank-generic weights renormalised within

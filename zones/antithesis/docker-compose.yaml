@@ -1,0 +1,147 @@
+# Multi-sequencer zone on a dev-mode Tempo L1:
+#
+# - l1: Tempo dev node; zone nodes read finalized state over WebSocket
+# - provision: creates the zone on L1 with three sequencers (2-of-3 settlement) and writes
+#   genesis, keys and the manifest to the shared volume, then exits
+# - zone-0..2: the sequencer quorum; zone-0 is the initial leader
+# - zone-rpc: RPC follower outside the quorum that re-proves every settled batch with the
+#   native prover and runs the solvency checker
+# - workload: waits until the zone replicates, then signals that setup is complete
+#
+# Static addresses keep the P2P manifest free of DNS names.
+
+x-zone: &zone
+  image: ${ZONES_IMAGE:-tempo-zones-antithesis:latest}
+  entrypoint: ["/opt/zones/zone-node.sh"]
+  depends_on:
+    provision:
+      condition: service_completed_successfully
+  restart: unless-stopped
+
+services:
+  l1:
+    image: ${ZONES_IMAGE:-tempo-zones-antithesis:latest}
+    hostname: l1
+    entrypoint: ["/usr/local/bin/tempo"]
+    command:
+      - node
+      - --chain
+      - /opt/zones/l1-genesis.json
+      - --dev
+      - --dev.block-time
+      - 500ms
+      - --dev.finality-depth
+      - "1"
+      - --datadir
+      - /data
+      - --http
+      - --http.addr
+      - 0.0.0.0
+      - --http.port
+      - "8545"
+      - --http.api
+      - all
+      - --ws
+      - --ws.addr
+      - 0.0.0.0
+      - --ws.port
+      - "8546"
+      - --ws.api
+      - all
+      # Witness collection proves older L1 checkpoints when a zone node catches up.
+      - --rpc.eth-proof-window
+      - "100000"
+      - --tempo.bootnodes-endpoint
+      - none
+      - --disable-discovery
+      - --no-persist-peers
+      - --color
+      - never
+    volumes:
+      - l1-data:/data
+    networks:
+      zones:
+        ipv4_address: 10.20.0.10
+    restart: unless-stopped
+
+  provision:
+    image: ${ZONES_IMAGE:-tempo-zones-antithesis:latest}
+    hostname: provision
+    entrypoint: ["/opt/zones/provision.sh"]
+    depends_on:
+      - l1
+    volumes:
+      - shared:/shared
+    networks:
+      zones:
+        ipv4_address: 10.20.0.5
+
+  zone-0:
+    <<: *zone
+    hostname: zone-0
+    command: ["0"]
+    volumes:
+      - shared:/shared:ro
+      - zone-0-data:/data
+    networks:
+      zones:
+        ipv4_address: 10.20.0.11
+
+  zone-1:
+    <<: *zone
+    hostname: zone-1
+    command: ["1"]
+    volumes:
+      - shared:/shared:ro
+      - zone-1-data:/data
+    networks:
+      zones:
+        ipv4_address: 10.20.0.12
+
+  zone-2:
+    <<: *zone
+    hostname: zone-2
+    command: ["2"]
+    volumes:
+      - shared:/shared:ro
+      - zone-2-data:/data
+    networks:
+      zones:
+        ipv4_address: 10.20.0.13
+
+  zone-rpc:
+    <<: *zone
+    hostname: zone-rpc
+    command: ["rpc"]
+    volumes:
+      - shared:/shared:ro
+      - zone-rpc-data:/data
+    networks:
+      zones:
+        ipv4_address: 10.20.0.20
+
+  workload:
+    image: ${ZONES_IMAGE:-tempo-zones-antithesis:latest}
+    hostname: workload
+    entrypoint: ["/opt/zones/workload.sh"]
+    depends_on:
+      provision:
+        condition: service_completed_successfully
+    networks:
+      zones:
+        ipv4_address: 10.20.0.30
+
+volumes:
+  shared:
+  l1-data:
+  zone-0-data:
+  zone-1-data:
+  zone-2-data:
+  zone-rpc-data:
+
+networks:
+  zones:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.20.0.0/24

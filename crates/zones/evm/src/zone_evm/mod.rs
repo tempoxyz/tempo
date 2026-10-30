@@ -41,6 +41,7 @@ pub(crate) fn zone_tx_registry<L1: L1StorageReader>(
             ZoneTxHandler {
                 inner: handler,
                 l1: l1.clone(),
+                spec,
             },
         );
     }
@@ -52,6 +53,7 @@ pub(crate) fn zone_tx_registry<L1: L1StorageReader>(
 struct ZoneTxHandler<L1> {
     inner: AnyTxHandler<TempoEvmTypes, TxResult<TempoEvmTypes>>,
     l1: L1State<L1>,
+    spec: TempoHardfork,
 }
 
 impl<L1: L1StorageReader> ZoneTxHandler<L1> {
@@ -60,7 +62,7 @@ impl<L1: L1StorageReader> ZoneTxHandler<L1> {
         request: &mut TxRequest<'_, '_, TempoEvmTypes, TempoTxEnv>,
     ) -> HandlerResult<ZoneTxContext<L1>> {
         self.l1.reset_transaction_state();
-        crate::validate_transaction(request.envelope, CONTRACT_DEPLOYER_ALLOWLIST)?;
+        crate::validate_transaction(request.envelope, CONTRACT_DEPLOYER_ALLOWLIST, self.spec)?;
 
         // The accepted EVM overlay sits above L1OverlayDB. Snapshot its checkpoint
         // here so mirrored reads cannot fall back to the backing database's old value.
@@ -379,6 +381,7 @@ pub(crate) mod tests {
             ZoneTxHandler {
                 inner: inner.get_by_type(0).unwrap(),
                 l1: l1.clone(),
+                spec,
             },
         );
         evm.set_execution_config(
