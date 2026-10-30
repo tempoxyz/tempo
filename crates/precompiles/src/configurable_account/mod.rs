@@ -143,11 +143,11 @@ impl ConfigurableAccount {
     ) -> Result<B256> {
         // Only the transaction's own sender may migrate itself.
         if self.tx_origin.t_read()? != sender {
-            return Err(ConfigurableAccountError::upgrade_must_be_only_call().into());
+            return Err(ConfigurableAccountError::upgrade_must_be_direct_call().into());
         }
         match self.upgrade_eligibility.t_read()? {
-            UpgradeEligibility::NotSoleCall => {
-                return Err(ConfigurableAccountError::upgrade_must_be_only_call().into());
+            UpgradeEligibility::HasAuthorizations => {
+                return Err(ConfigurableAccountError::upgrade_must_be_direct_call().into());
             }
             UpgradeEligibility::NotPrimitiveRoot => {
                 return Err(ConfigurableAccountError::primitive_root_required().into());
@@ -204,11 +204,12 @@ impl ConfigurableAccount {
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Storable)]
 pub enum UpgradeEligibility {
-    /// The transaction is not a lone, direct call to this precompile without authorizations.
-    NotSoleCall,
-    /// The transaction is a sole call, but its outer signature is not a primitive root signature.
+    /// The transaction carries an authorization list or key authorization.
+    HasAuthorizations,
+    /// The transaction carries no authorizations, but its outer signature is not a primitive root
+    /// signature.
     NotPrimitiveRoot,
-    /// The transaction is a sole call signed by a primitive root key.
+    /// The transaction carries no authorizations and is signed by a primitive root key.
     PrimitiveRoot,
 }
 
