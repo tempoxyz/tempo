@@ -139,8 +139,6 @@ just check-balance-redacted my-zone <token-address>
 ```
 
 
-See [docs/ZONES.md](docs/ZONES.md) for the full guide on deposits, withdrawals, redacted RPC, router demos, TIP-403 policy flows, and command references.
-
 <br> 
 
 ## License
