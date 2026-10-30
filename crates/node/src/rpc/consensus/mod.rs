@@ -162,17 +162,12 @@ impl Drop for SubscriptionGuard {
 }
 
 impl<I: ConsensusFeed> TempoConsensusRpc<I> {
-    /// Create a new consensus RPC handler allowing at most 256 concurrent subscriptions.
+    /// Create a new consensus RPC handler allowing at most 256 concurrent subscriptions, and 4
+    /// per connection.
     pub fn new(consensus_feed: I) -> Self {
-        Self::with_max_subscriptions(consensus_feed, DEFAULT_MAX_SUBSCRIPTIONS)
-    }
-
-    /// Create a new consensus RPC handler allowing at most `max_subscriptions` concurrent
-    /// subscriptions; further subscribe requests are rejected as busy.
-    fn with_max_subscriptions(consensus_feed: I, max_subscriptions: usize) -> Self {
         Self {
             consensus_feed,
-            subscriptions: Arc::new(Semaphore::new(max_subscriptions)),
+            subscriptions: Arc::new(Semaphore::new(DEFAULT_MAX_SUBSCRIPTIONS)),
             per_connection: Some(Default::default()),
         }
     }

@@ -164,12 +164,13 @@ fn finalized_event() -> Arc<SharedEvent> {
 #[tokio::test]
 async fn subscribe_is_rejected_as_busy_once_limit_is_reached() {
     let (events_tx, _) = broadcast::channel(1);
-    let module = TempoConsensusRpc::with_max_subscriptions(
-        IdleFeed {
+    let module = TempoConsensusRpc {
+        consensus_feed: IdleFeed {
             events_tx: events_tx.clone(),
         },
-        1,
-    )
+        subscriptions: Arc::new(Semaphore::new(1)),
+        per_connection: Some(Default::default()),
+    }
     .into_rpc();
 
     let first = module
