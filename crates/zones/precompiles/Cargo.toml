@@ -49,7 +49,7 @@ tempo-evm.workspace = true
 tempo-precompiles = { workspace = true, features = ["test-utils"] }
 
 [features]
-fuzzing = ["tempo-precompiles/fuzzing"]
+fuzz = ["tempo-precompiles/fuzz"]
 default = ["std"]
 test-utils = [
     "std",

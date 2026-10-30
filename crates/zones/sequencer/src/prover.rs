@@ -19,12 +19,12 @@ use alloy_primitives::{B256, Bytes, keccak256};
 use alloy_provider::{DynProvider, Provider as _};
 use alloy_rpc_types_eth::BlockNumberOrTag;
 use alloy_sol_types::{SolCall as _, SolInterface as _};
-#[cfg(feature = "fuzzing")]
+#[cfg(feature = "fuzz")]
 use antithesis_sdk::assert_always;
 use eyre::{Context as _, OptionExt as _, Result, bail, ensure};
 use futures::{StreamExt as _, TryStreamExt as _, stream};
 use reth_primitives_traits::RecoveredBlock;
-#[cfg(feature = "fuzzing")]
+#[cfg(feature = "fuzz")]
 use serde_json::json;
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -455,7 +455,7 @@ async fn validate_candidate<P: ZoneSequencerProvider>(
         let output = tokio::task::spawn_blocking(move || prove_zone_batch(&spf_config, witness))
             .await
             .context("SPF worker panicked")?;
-        #[cfg(feature = "fuzzing")]
+        #[cfg(feature = "fuzz")]
         assert_always!(
             output.is_ok(),
             "Native prover accepts the sequencer witness",
@@ -474,7 +474,7 @@ async fn validate_candidate<P: ZoneSequencerProvider>(
 
     let started = Instant::now();
     let comparison = compare_output(&output, batch, batch.prev_block_hash);
-    #[cfg(feature = "fuzzing")]
+    #[cfg(feature = "fuzz")]
     assert_always!(
         comparison.is_ok(),
         "Prover output matches the sequencer batch",

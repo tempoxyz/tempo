@@ -37,7 +37,7 @@ path = "src/main.rs"
 default = ["asm-keccak", "jemalloc", "keccak-cache-global"]
 
 # Report Antithesis SDK assertions. Without it the assertions and their details are compiled out.
-fuzzing = ["dep:antithesis_sdk", "antithesis_sdk/full", "zone-node/fuzzing"]
+fuzz = ["dep:antithesis_sdk", "antithesis_sdk/full", "zone-node/fuzz"]
 
 asm-keccak = [
 	"alloy-primitives/asm-keccak",

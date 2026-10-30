@@ -7,10 +7,10 @@ use alloy_primitives::{Address, TxKind};
 use alloy_provider::{DynProvider, Provider as _};
 use alloy_sol_types::SolCall as _;
 use alloy_transport::{RpcError, TransportError, TransportErrorKind};
-#[cfg(feature = "fuzzing")]
+#[cfg(feature = "fuzz")]
 use antithesis_sdk::assert_always;
 use eyre::{OptionExt as _, Result, WrapErr as _, ensure};
-#[cfg(feature = "fuzzing")]
+#[cfg(feature = "fuzz")]
 use serde_json::json;
 use tempo_alloy::TempoNetwork;
 use tempo_contracts::zones::{
@@ -306,7 +306,7 @@ impl<P: ZoneSequencerProvider> RpcFollowerShadowProver<P> {
         }
 
         let local_hash = self.zone_provider.block_hash(to)?;
-        #[cfg(feature = "fuzzing")]
+        #[cfg(feature = "fuzz")]
         assert_always!(
             local_hash == Some(batch.next_block_hash),
             "Follower canonical block matches the settled batch",

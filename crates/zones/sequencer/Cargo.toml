@@ -72,4 +72,4 @@ tokio = { workspace = true, features = ["test-util"] }
 zone-chainspec = { workspace = true, features = ["test-utils"] }
 
 [features]
-fuzzing = ["dep:antithesis_sdk", "antithesis_sdk/full"]
+fuzz = ["dep:antithesis_sdk", "antithesis_sdk/full"]

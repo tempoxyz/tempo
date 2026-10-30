@@ -135,11 +135,11 @@ url = "2"
 
 [features]
 default = []
-fuzzing = [
+fuzz = [
   "dep:antithesis_sdk",
   "antithesis_sdk/full",
-  "zone-checker?/fuzzing",
-  "zone-sequencer/fuzzing",
+  "zone-checker?/fuzz",
+  "zone-sequencer/fuzz",
 ]
 asm-keccak = [
   "alloy/asm-keccak",
