@@ -590,6 +590,7 @@ mod runtime_tests {
                     .with_mint(depositor, U256::from(1_000_000))
                     .apply()?;
                 Ok(TIP20Setup::create("Second Token", "SECOND", admin)
+                    .with_salt(B256::repeat_byte(0x5e))
                     .apply()?
                     .address())
             })
