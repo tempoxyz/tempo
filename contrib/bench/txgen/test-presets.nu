@@ -277,6 +277,57 @@ for bad in [{card_shards: 1} {card_spend: -1} {zone_deposit: 1}] {
 assert (try { txgen-neobank-instance-mix $base_mix (txgen-neobank-instances ($pipeline_dir | path join bad.yml) | first); false } catch { true })
 assert equal (txgen-neobank-instances ($presets_dir | path join neobank instances-pipeline.yml) | get share | math sum) 100
 rm -rf $pipeline_dir
+# Deployment shapes: a shapes file drives neobank-multi; each shape is one instance with
+# its flows' weights, the modules its templates belong to and its peak-rate share.
+let shapes_dir = (mktemp -d)
+let shapes_path = ($presets_dir | path join shapes examples.yml)
+let shapes = (txgen-deployment-shapes $shapes_path)
+assert equal ($shapes | get name) [remittance-payout treasury-settlement card-earn-app agent-payments]
+assert equal ((open $shapes_path).shapes | get pillar | sort) ($TXGEN_HELPER_SHAPE_PILLARS | sort)
+let remittance = ($shapes | first)
+assert equal $remittance.modules [account deposit transfer cashout]
+assert equal $remittance.weights.payroll_new 10.0
+assert equal $remittance.weights.zone_deposit 0
+assert equal $remittance.share 9000000
+assert (($remittance.peak_tps - (3000000 / 2592000 * 3) | math abs) < 0.000001)
+assert equal ($shapes | where name == agent-payments | first | get modules) [account spend]
+let schema = (open ($presets_dir | path join shapes schema.json))
+assert equal ($schema | get '$defs'.shape.properties.flows.additionalProperties.properties.templates.items.enum | sort) ($TXGEN_HELPER_NEOBANK_MODULES | values | flatten | sort)
+assert equal ($schema | get '$defs'.shape.properties.pillar.enum) $TXGEN_HELPER_SHAPE_PILLARS
+let validated = (^uv run --no-project --with jsonschema==4.23.0 --with pyyaml==6.0.2 python3 -c "import json, sys, yaml, jsonschema; jsonschema.validate(yaml.safe_load(open(sys.argv[1])), json.load(open(sys.argv[2])))" $shapes_path ($presets_dir | path join shapes schema.json) | complete)
+assert equal $validated.exit_code 0 $validated.stderr
+with-env {TXGEN_NEOBANK_INSTANCES: "contrib/bench/txgen/presets/shapes/examples.yml"} {
+    let path = (txgen-prepare-public-mix-preset $multi_spec.spec_path 1000 40 6 1337 --out-dir $shapes_dir)
+    let rendered = (open $path)
+    let weights = (txgen-workload-metadata-args neobank-multi $path | last | str replace "workload_mix_weights=" "" | from json)
+    let total = ($weights | values | math sum)
+    let share_total = ($shapes | get share | math sum)
+    for shape in $shapes {
+        let mine = ($weights | items { |key, value| {key: $key, value: $value} } | where { |entry| $entry.key | str starts-with $"($shape.name)/" })
+        assert ((($mine | get value | math sum) / $total - ($shape.share / $share_total) | math abs) < 0.000001)
+        # Only the shape's flow templates run.
+        let flows = ($shape.weights | items { |template, weight| {template: $template, weight: $weight} } | where weight > 0 | get template | sort)
+        assert equal ($mine | get key | each { |key| $key | split row "/" | last } | sort) $flows
+    }
+    assert equal ($weights | get "treasury-settlement/public_transfer_memo") (($weights | get "treasury-settlement/dex_swap") * 5 / 2)
+    assert equal ($rendered.templates | columns | where { |name| $name =~ '^card-earn-app/card_settlement_' } | length) 18
+    let keychain = (^uv run --no-project --with yq==3.4.3 yq -c '.append.setup.steps | map(.id)' $path | from json)
+    assert equal $keychain [authorize_keychain_agent_payments]
+}
+for bad in [
+    {name: a, pillar: retail, volume: {tx_per_month: 1}, flows: {x: {weight: 1, templates: [cash_out]}}}
+    {name: a, pillar: agentic, volume: {tx_per_month: 0}, flows: {x: {weight: 1, templates: [cash_out]}}}
+    {name: a, pillar: agentic, volume: {tx_per_month: 1, peak_factor: 0.5}, flows: {x: {weight: 1, templates: [cash_out]}}}
+    {name: a, pillar: agentic, volume: {tx_per_month: 1}, flows: {}}
+    {name: a, pillar: agentic, volume: {tx_per_month: 1}, flows: {x: {weight: 0, templates: [cash_out]}}}
+    {name: a, pillar: agentic, volume: {tx_per_month: 1}, flows: {x: {weight: 1, templates: [mpp_open]}}}
+    {name: a, pillar: agentic, volume: {tx_per_month: 1}, flows: {x: {weight: 1, templates: [cash_out]}}, presets: [no-such-preset]}
+    {name: Big, pillar: agentic, volume: {tx_per_month: 1}, flows: {x: {weight: 1, templates: [cash_out]}}}
+] {
+    {version: 1, shapes: [$bad]} | to yaml | save -f ($shapes_dir | path join bad.yml)
+    assert (try { txgen-neobank-instances ($shapes_dir | path join bad.yml); false } catch { true })
+}
+rm -rf $shapes_dir
 # Batch payouts: a 16-sender treasury pays 32 recipients per transaction (the txpool's
 # call limit); reward batches stop at 16 Earn deposits to fit the transaction gas cap.
 let batch_dir = (mktemp -d)

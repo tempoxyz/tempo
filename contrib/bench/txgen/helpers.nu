@@ -73,6 +73,9 @@ const TXGEN_HELPER_NEOBANK_SINKS = [
     "0x0000000000000000000000000000000000000ff0"
     "0x0000000000000000000000000000000000005e77"
 ]
+# Deployment-shape pillars (presets/shapes/README.md) and the month length behind peak TPS.
+const TXGEN_HELPER_SHAPE_PILLARS = [cross-border institutional embedded-finance agentic]
+const TXGEN_HELPER_SECONDS_PER_MONTH = 2592000
 # neobank-multi mix weights sum to about this, split by instance gas share.
 const TXGEN_HELPER_NEOBANK_WEIGHT_SCALE = 1000000000
 const TXGEN_HELPER_MAX_AA_CALLS = 32
@@ -1082,10 +1085,82 @@ def txgen-split-ranges [total: int, shares: list<number>, minimum: int] {
     }
 }
 
+# Deployment shapes (presets/shapes/README.md) as neobank-multi instances. A flow's
+# weight is split evenly over its templates; the shape's modules are those its
+# templates belong to, and their other templates get weight 0. Share defaults to the
+# peak transaction rate (tx_per_month times peak_factor).
+def txgen-deployment-shapes [path: string] {
+    let shapes = (open $path | get -o shapes | default [])
+    if ($shapes | is-empty) { error make {msg: $"($path) lists no deployment shapes"} }
+    let known = ($TXGEN_HELPER_NEOBANK_MODULES | values | flatten)
+    $shapes | each { |shape|
+        let name = ($shape | get -o name | default "")
+        if not ($name =~ '^[a-z][a-z0-9-]*$') {
+            error make {msg: $"deployment shape name '($name)' must be lowercase letters, digits and hyphens"}
+        }
+        let pillar = ($shape | get -o pillar | default "")
+        if $pillar not-in $TXGEN_HELPER_SHAPE_PILLARS {
+            error make {msg: $"deployment shape ($name) pillar '($pillar)' must be one of ($TXGEN_HELPER_SHAPE_PILLARS | str join ', ')"}
+        }
+        let volume = ($shape | get -o volume | default {})
+        let tx = ($volume | get -o tx_per_month | default 0)
+        if ($tx | describe) not-in [int float] or $tx <= 0 {
+            error make {msg: $"deployment shape ($name) needs a positive volume.tx_per_month"}
+        }
+        let peak = ($volume | get -o peak_factor | default 1)
+        if ($peak | describe) not-in [int float] or $peak < 1 {
+            error make {msg: $"deployment shape ($name) volume.peak_factor must be at least 1"}
+        }
+        let flows = ($shape | get -o flows | default {})
+        if not ($flows | describe | str starts-with "record") or ($flows | is-empty) {
+            error make {msg: $"deployment shape ($name) needs flows: a map of flow names to weight and templates"}
+        }
+        let rows = ($flows | transpose flow spec | each { |row|
+            let weight = ($row.spec | get -o weight | default 0)
+            if ($weight | describe) not-in [int float] or $weight <= 0 {
+                error make {msg: $"deployment shape ($name) flow ($row.flow) needs a positive weight"}
+            }
+            let templates = ($row.spec | get -o templates | default [])
+            if ($templates | describe | str starts-with "list") == false or ($templates | is-empty) {
+                error make {msg: $"deployment shape ($name) flow ($row.flow) needs a list of templates"}
+            }
+            let unknown = ($templates | where { |template| $template not-in $known })
+            if ($unknown | is-not-empty) {
+                error make {msg: $"deployment shape ($name) flow ($row.flow) names unknown neobank-generic template\(s\) ($unknown | str join ', ')"}
+            }
+            $templates | each { |template| {template: $template, weight: ($weight / ($templates | length))} }
+        } | flatten)
+        let used = ($rows | get template | uniq)
+        let modules = ($TXGEN_HELPER_NEOBANK_MODULES | transpose module templates
+            | where { |module| $module.templates | any { |template| $template in $used } } | get module)
+        let weights = ($modules | each { |module| $TXGEN_HELPER_NEOBANK_MODULES | get $module } | flatten
+            | reduce --fold {} { |template, acc|
+                $acc | insert $template ($rows | where template == $template | get weight | append 0 | math sum)
+            })
+        for preset in ($shape | get -o presets | default []) {
+            if not ((txgen-presets-dir) | path join $"($preset).yml" | path exists) {
+                error make {msg: $"deployment shape ($name) lists unknown preset ($preset)"}
+            }
+        }
+        {
+            name: $name
+            share: ($shape | get -o share | default ($tx * $peak))
+            modules: $modules
+            weights: $weights
+            peak_tps: ($tx / $TXGEN_HELPER_SECONDS_PER_MONTH * $peak)
+        }
+    }
+}
+
 # neobank-multi instances: name (a traffic shape, never a customer), gas share and
 # modules (default all), from TXGEN_NEOBANK_INSTANCES or presets/neobank/instances.yml.
+# A deployment-shapes file (a top-level shapes key) is converted to instances.
 def txgen-neobank-instances [path: string] {
-    let instances = (open $path | get -o instances | default [])
+    let instances = if (open $path | get -o shapes) != null {
+        txgen-deployment-shapes $path
+    } else {
+        open $path | get -o instances | default []
+    }
     if ($instances | is-empty) { error make {msg: $"($path) lists no neobank instances"} }
     let parsed = ($instances | each { |instance|
         let name = ($instance | get -o name | default "")
@@ -1115,7 +1190,8 @@ def txgen-neobank-instances [path: string] {
                 error make {msg: $"neobank instance ($name) weight for ($item.template) must be a non-negative number"}
             }
         }
-        {name: $name, id: ($name | str replace --all "-" "_"), share: $share, modules: $modules, weights: $weights}
+        {name: $name, id: ($name | str replace --all "-" "_"), share: $share, modules: $modules, weights: $weights,
+            peak_tps: ($instance | get -o peak_tps)}
     })
     if ($parsed | get id | uniq | length) != ($parsed | length) {
         error make {msg: "neobank instance names must be unique"}
@@ -1191,6 +1267,11 @@ def txgen-prepare-neobank-multi-preset [spec_path: string, count: int, accounts:
     let config = if ($config | path exists) { $config } else { [ (txgen-repo-root) $config ] | path join }
     if not ($config | path exists) { error make {msg: $"neobank instances file not found: ($config)"} }
     let instances = (txgen-neobank-instances $config)
+    let targets = ($instances | where peak_tps != null)
+    if ($targets | is-not-empty) {
+        let summary = ($targets | each { |shape| $"($shape.name) ($shape.peak_tps | math round --precision 1)" } | str join ", ")
+        print $"Deployment shapes peak target: ($targets | get peak_tps | math sum | math round --precision 1) TPS \(($summary)\)"
+    }
     let base_path = ($presets | path join neobank-generic.yml)
     let result = (^uv run --no-project --with yq==3.4.3 yq -c '.mix' $base_path | complete)
     if $result.exit_code != 0 { error make {msg: $"Failed to read neobank-generic mix: ($result.stderr)"} }
