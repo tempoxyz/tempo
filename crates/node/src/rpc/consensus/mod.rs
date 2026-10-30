@@ -177,8 +177,8 @@ impl<I: Clone> TempoConsensusRpc<I> {
     /// Returns a handler sharing this one's global subscription cap but without the
     /// per-connection cap.
     ///
-    /// Connection IDs are only unique within one server, so the per-connection cap must be used
-    /// by a single transport. Register this handler on the others, such as local IPC.
+    /// Connection IDs are only unique within one server, so the per-connection cap must only be
+    /// used by handlers on one server. Register this handler on the others, such as local IPC.
     pub fn without_connection_cap(&self) -> Self {
         Self {
             consensus_feed: self.consensus_feed.clone(),
