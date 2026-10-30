@@ -117,9 +117,17 @@ fn execute(
     let evm_config = TempoEvmConfig::new(Arc::clone(&spec));
     let consensus = TempoConsensus::new(spec);
     let mut outcome = TempoExecutionOutcome::default();
-    let applied = execute_blocks(&evm_config, &consensus, &db, &blocks, &mut outcome);
+    let (applied, failed_logs) =
+        execute_blocks(&evm_config, &consensus, &db, &blocks, &mut outcome);
     if !outcome.invariant_failures.is_empty() {
-        let invariant_failures = broken_start(&evm_config, pre_state, &blocks[0], &db, &outcome);
+        let invariant_failures = broken_start(
+            &evm_config,
+            pre_state,
+            &blocks[0],
+            &db,
+            &outcome,
+            &failed_logs,
+        );
         if !invariant_failures.is_empty() {
             return TempoExecutionOutcome {
                 error: ErrorClass::InvalidInput,
@@ -151,12 +159,17 @@ fn broken_start(
     block: &ExecutionBlock,
     db: &Db,
     outcome: &TempoExecutionOutcome,
+    failed_logs: &[Log],
 ) -> Vec<InvariantFailure> {
     let (Ok(env), Ok(start)) = (evm_config.evm_env(block.header()), state::seed(pre_state)) else {
         return Vec::new();
     };
     let (PreState::Genesis(listed) | PreState::Exact { state: listed, .. }) = pre_state;
-    let logged = outcome.receipts.iter().flat_map(|receipt| &receipt.logs);
+    let logged = outcome
+        .receipts
+        .iter()
+        .flat_map(|receipt| &receipt.logs)
+        .chain(failed_logs);
     let holders: Vec<Address> = db
         .cache
         .borrow()
@@ -216,15 +229,17 @@ pub(crate) fn recover_block(
 }
 
 /// Executes `blocks` on `db`, appending each applied block's outputs to `outcome` and setting its
-/// error at the first block that fails. Returns the changes of the blocks that applied.
+/// error at the first block that fails. Returns the changes of the blocks that applied, and the logs
+/// of the failed block's transactions before it failed.
 pub(crate) fn execute_blocks(
     evm_config: &TempoEvmConfig,
     consensus: &TempoConsensus,
     db: &Db,
     blocks: &[ExecutionBlock],
     outcome: &mut TempoExecutionOutcome,
-) -> Net {
+) -> (Net, Vec<Log>) {
     let mut applied = Net::default();
+    let mut failed_logs = Vec::new();
     for (index, block) in blocks.iter().enumerate() {
         let executed = execute_block(evm_config, consensus, db, block, index as u64);
         // A read the pre-state could not answer makes the result meaningless,
@@ -255,6 +270,7 @@ pub(crate) fn execute_blocks(
                 // Report what the transactions before the failing one broke.
                 if let Some(partial) = partial {
                     let partial = *partial;
+                    failed_logs.extend(partial.receipts.into_iter().flat_map(|r| r.logs));
                     outcome
                         .invariant_failures
                         .extend(partial.invariant_failures);
@@ -271,7 +287,7 @@ pub(crate) fn execute_blocks(
             }
         }
     }
-    applied
+    (applied, failed_logs)
 }
 
 /// What one block produced.
