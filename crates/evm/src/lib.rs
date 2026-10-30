@@ -49,7 +49,7 @@ pub mod genesis;
 use core::num::NonZeroU64;
 use std::{borrow::Cow, sync::Arc};
 
-use alloy_consensus::BlockHeader as _;
+use alloy_consensus::{BlockHeader as _, transaction::TxHashRef as _};
 use alloy_eips::eip7840::BlobParams;
 use alloy_primitives::{Address, U256};
 use evm2::{ExecutionConfig, env::BlockEnv, evm::DynDatabase};
@@ -224,6 +224,44 @@ impl ConfigureEvm for TempoEvmConfig {
             .jit_backend()
             .is_some()
             .then_some(&self.evm_factory as _)
+    }
+
+    fn reuses_prewarm_results(&self) -> bool {
+        true
+    }
+
+    fn prewarm_tx_result<'a>(
+        &self,
+        tx: &TempoTxEnvelope,
+        result: reth_evm::TxResultWithStateFor<Self>,
+    ) -> Option<reth_evm::TxExecutionResultFor<'a, Self>>
+    where
+        Self: 'a,
+    {
+        // Execute normally what the speculative result cannot stand in for: system and subblock
+        // transactions need the executor's pre-execution checks, prewarming runs expiring nonce
+        // transactions against a block-local ring index, and the payment lane of a transaction
+        // classified differently by the two rule sets depends on the block's hardfork.
+        if tx.is_system_tx()
+            || tx.has_sub_block_nonce_key_prefix()
+            || tx.is_expiring_nonce()
+            || tx.is_payment_v1() != tx.is_payment_v2()
+        {
+            return None;
+        }
+        // The engine reuses results only without EIP-8037, so block gas is the transaction's gas.
+        let block_gas_used = result.result.tx_gas_used();
+        Some(TempoTxResult::new_precomputed(
+            tx,
+            ExecutionContext::Transaction {
+                tx_hash: *tx.tx_hash(),
+            },
+            result.result,
+            result.pending_state,
+            false,
+            tx.is_payment_v2(),
+            block_gas_used,
+        ))
     }
 
     fn evm_env(&self, header: &TempoHeader) -> Result<EvmEnvFor<Self>, Self::Error> {

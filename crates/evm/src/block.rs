@@ -956,6 +956,7 @@ mod tests {
         interpreter::Host as _,
     };
     use reth_chainspec::{EthChainSpec, EthereumHardfork, ForkCondition};
+    use reth_evm::ConfigureEvm as _;
     use std::{
         collections::HashMap,
         sync::{Arc, Mutex},
@@ -979,7 +980,9 @@ mod tests {
     use tempo_primitives::{
         SubBlockMetadata, TempoSignature, TempoTransaction, TempoTxType,
         subblock::{SubBlockVersion, TEMPO_SUBBLOCK_NONCE_KEY_PREFIX},
-        transaction::{Call, envelope::TEMPO_SYSTEM_TX_SIGNATURE},
+        transaction::{
+            Call, envelope::TEMPO_SYSTEM_TX_SIGNATURE, tempo_transaction::TEMPO_EXPIRING_NONCE_KEY,
+        },
     };
 
     fn system_calls_chainspec() -> Arc<TempoChainSpec> {
@@ -3024,5 +3027,55 @@ mod tests {
              not block_regular_gas_used ({})",
             result.gas_used, cumulative, regular
         );
+    }
+
+    #[test]
+    fn prewarm_results_commit_only_for_txs_without_executor_checks() {
+        let chainspec = test_chainspec();
+        let config = crate::TempoEvmConfig::new(chainspec.clone());
+        let result = || TxResultWithState {
+            result: TxResult::<TempoEvmTypes> {
+                status: true,
+                total_gas_spent: 21_000,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let expiring_nonce_tx = TempoTxEnvelope::AA(
+            TempoTransaction {
+                chain_id: 1,
+                calls: vec![Call {
+                    to: Address::ZERO.into(),
+                    input: Default::default(),
+                    value: Default::default(),
+                }],
+                nonce_key: TEMPO_EXPIRING_NONCE_KEY,
+                ..Default::default()
+            }
+            .into_signed(TempoSignature::from(Signature::test_signature())),
+        );
+        for tx in [
+            create_system_tx(chainspec.chain_id(), Bytes::new()),
+            create_subblock_tx(),
+            expiring_nonce_tx,
+            // A TIP-20 payment before TIP-1045 only.
+            create_tip20_empty_calldata_tx(),
+        ] {
+            assert!(config.prewarm_tx_result(&tx, result()).is_none());
+        }
+
+        let mut db = InMemoryDB::default();
+        let mut executor = TestExecutorBuilder::default()
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+        executor.apply_pre_execution_changes().unwrap();
+        let output = config
+            .prewarm_tx_result(&create_legacy_tx(), result())
+            .unwrap();
+        executor.commit_transaction(output).unwrap();
+        let output = executor.finish().unwrap();
+        assert_eq!(output.gas_used, 21_000);
+        assert_eq!(output.receipts.len(), 1);
+        assert_eq!(output.receipts[0].cumulative_gas_used, 21_000);
     }
 }
