@@ -254,8 +254,7 @@ pub fn export(
         drop(sender);
         handles
             .into_iter()
-            .map(|handle| handle.join().expect("seed workers do not panic"))
-            .collect::<eyre::Result<()>>()
+            .try_for_each(|handle| handle.join().expect("seed workers do not panic"))
             .and(read)
     })?;
     runtime.block_on(reader.close())?;
