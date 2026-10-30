@@ -117,10 +117,9 @@ jobs:
   detect-changes:
     name: Detect Zones image changes
     if: github.repository == 'tempoxyz/tempo' && github.event.pull_request.draft != true
-    # Images built from a zones/ or prover/ tag are releases: they need the
-    # VK approvals of the release environment. Within a prover
-    # release run, the approval given to prover-release.yml is reused.
-    environment: ${{ startsWith(github.ref, 'refs/tags/') && 'release' || '' }}
+    # Images published from a zones/ or prover/ tag are releases: they need the
+    # VK approvals of the release environment. Verify-only runs publish nothing.
+    environment: ${{ (startsWith(github.ref, 'refs/tags/zones/v') || startsWith(github.ref, 'refs/tags/prover/v')) && inputs.production_image_verify_only != true && inputs.reproducible_verify != true && inputs.reproducible_eif_verify != true && 'release' || '' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read

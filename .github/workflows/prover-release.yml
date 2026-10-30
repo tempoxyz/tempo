@@ -34,7 +34,7 @@ jobs:
     if: github.repository == 'tempoxyz/tempo'
     # Publishing from a prover tag needs the triggering user and a code owner
     # of bin/prover/ to approve in VK (review.yml deployments).
-    environment: ${{ startsWith(github.ref, 'refs/tags/prover/v') && 'release' || '' }}
+    environment: ${{ startsWith(github.ref, 'refs/tags/prover/v') && !(github.event_name == 'workflow_dispatch' && inputs.dry_run) && 'release' || '' }}
     runs-on: ubuntu-latest
     permissions:
       id-token: write

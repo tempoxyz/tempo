@@ -76,6 +76,12 @@ jobs:
             echo "Provide a release tag, or set dry_run to verify a commit" >&2
             exit 1
           fi
+          # VK picks the approving code owners from the dispatched ref, so a
+          # publishing dispatch must run from the tag it releases.
+          if [[ "$DRY_RUN" != "true" && "$GITHUB_REF" != "refs/tags/$INPUT_TAG" ]]; then
+            echo "Publishing dispatches must run from refs/tags/$INPUT_TAG, not $GITHUB_REF" >&2
+            exit 1
+          fi
 
       - name: Check out release source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
