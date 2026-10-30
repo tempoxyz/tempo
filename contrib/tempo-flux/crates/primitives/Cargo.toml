@@ -1,0 +1,10 @@
+[package]
+name = "tempo-flux-primitives"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+type-hash.workspace = true
+type-hash-derive.workspace = true
