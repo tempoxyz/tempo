@@ -438,6 +438,123 @@ mod runtime_tests {
         assert_eq!(U256::from_be_slice(&result.output), U256::from(42));
     }
 
+    /// Creates a zone whose shared portal runtime returns 42 for every call, so a call that
+    /// reaches the ERC-1167 proxy is easy to tell from native dispatch.
+    fn evm_with_zone(spec: TempoHardfork) -> (TempoEvm<'static>, Address, Address) {
+        let owner = Address::repeat_byte(0x11);
+        let admin = Address::repeat_byte(0x22);
+        let logic_runtime = Bytecode::new_raw(Bytes::from_static(&[
+            0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3,
+        ]));
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(
+            &ZONE_PORTAL_IMPL_ADDRESS,
+            AccountInfo::default().with_code(logic_runtime),
+        );
+        initialize_zone_factory(&mut db, owner);
+        let mut evm = configured_evm(spec, 0, false, db);
+        StorageCtx::enter_evm(&mut evm, || TIP20Setup::path_usd(admin).apply()).unwrap();
+
+        let result = evm
+            .system_call(
+                SystemTx::new(
+                    ZONE_FACTORY_ADDRESS,
+                    IZoneFactory::createZoneCall {
+                        params: IZoneFactory::CreateZoneParams {
+                            initialToken: PATH_USD_ADDRESS,
+                            accessMode: true,
+                            gatewayMode: true,
+                            allowedAccounts: vec![admin],
+                            zoneGateways: vec![Address::repeat_byte(0x44)],
+                            admin,
+                            sequencers: vec![Address::repeat_byte(0x33)],
+                            threshold: 1,
+                            rpcUrl: "https://zone.example".to_string(),
+                        },
+                    }
+                    .abi_encode()
+                    .into(),
+                )
+                .with_caller(owner),
+            )
+            .unwrap()
+            .commit();
+        assert!(result.status, "createZone failed: {result:?}");
+        let created = IZoneFactory::createZoneCall::abi_decode_returns(&result.output).unwrap();
+        (evm, created.portal, admin)
+    }
+
+    #[test]
+    fn zone_portal_dispatches_natively_from_t15() {
+        for (spec, native) in [(TempoHardfork::T14, false), (TempoHardfork::T15, true)] {
+            let (mut evm, portal, admin) = evm_with_zone(spec);
+            let result = evm
+                .system_call(
+                    SystemTx::new(portal, IZonePortal::adminCall {}.abi_encode().into())
+                        .with_caller(Address::ZERO),
+                )
+                .unwrap()
+                .discard();
+            assert!(result.status, "admin() failed at {spec:?}: {result:?}");
+            let expected = if native {
+                U256::from_be_slice(admin.as_slice())
+            } else {
+                U256::from(42)
+            };
+            assert_eq!(U256::from_be_slice(&result.output), expected, "{spec:?}");
+        }
+    }
+
+    #[test]
+    fn native_zone_portal_reaches_precompiles_through_nested_calls() {
+        let (mut evm, portal, admin) = evm_with_zone(TempoHardfork::T15);
+        // claimRefund with nothing parked still runs _tryTransfer: the address registry and
+        // TIP-403 lookups and a zero TIP-20 transfer, each a nested call from the portal.
+        let result = evm
+            .system_call(
+                SystemTx::new(
+                    portal,
+                    IZonePortal::claimRefundCall {
+                        token: PATH_USD_ADDRESS,
+                    }
+                    .abi_encode()
+                    .into(),
+                )
+                .with_caller(admin),
+            )
+            .unwrap()
+            .commit();
+        assert!(result.status, "claimRefund failed: {result:?}");
+        assert_eq!(
+            IZonePortal::claimRefundCall::abi_decode_returns(&result.output).unwrap(),
+            0
+        );
+
+        // An account outside the allowlist is rejected with the portal's own error.
+        let outsider = Address::repeat_byte(0x55);
+        let result = evm
+            .system_call(
+                SystemTx::new(
+                    portal,
+                    IZonePortal::claimRefundCall {
+                        token: PATH_USD_ADDRESS,
+                    }
+                    .abi_encode()
+                    .into(),
+                )
+                .with_caller(outsider),
+            )
+            .unwrap()
+            .discard();
+        assert!(!result.status);
+        assert_eq!(
+            result.output.as_ref(),
+            IZonePortal::AccountNotAllowed { account: outsider }
+                .abi_encode()
+                .as_slice()
+        );
+    }
+
     #[test]
     fn test_zone_verifier_runtime_is_shadowed_at_t13() {
         let calldata = IZoneVerifier::verifyCall {

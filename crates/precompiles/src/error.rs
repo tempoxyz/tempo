@@ -27,7 +27,7 @@ use tempo_contracts::{
         FeeManagerError, NonceError, ReceivePolicyGuardError, RolesAuthError,
         SignatureVerifierError, StablecoinDEXError, StorageCreditsError, TIP20ChannelReserveError,
         TIP20FactoryError, TIP403RegistryError, TIPFeeAMMError, UnknownFunctionSelector,
-        ValidatorConfigError, ValidatorConfigV2Error, ZoneFactoryError,
+        ValidatorConfigError, ValidatorConfigV2Error, ZoneFactoryError, ZonePortalError,
     },
 };
 use tempo_primitives::transaction::ConfigurableAccountConfigError;
@@ -117,6 +117,16 @@ pub enum TempoPrecompileError {
     #[error("ZoneFactory error: {0:?}")]
     ZoneFactoryError(ZoneFactoryError),
 
+    /// Error from the native ZonePortal precompile
+    #[error("ZonePortal error: {0:?}")]
+    ZonePortalError(ZonePortalError),
+
+    /// Revert with raw data: a bare Solidity `require` (empty) or revert data bubbled up
+    /// from a nested call.
+    #[error("Revert({0})")]
+    #[from(skip)]
+    RawRevert(alloy::primitives::Bytes),
+
     #[error("configurable account error: {0:?}")]
     ConfigurableAccountError(ConfigurableAccountError),
 
@@ -180,6 +190,8 @@ impl From<TempoPrecompileError> for HandlerError {
             | TempoPrecompileError::StorageCreditsError(_)
             | TempoPrecompileError::CurrentCommitteeError(_)
             | TempoPrecompileError::ZoneFactoryError(_)
+            | TempoPrecompileError::ZonePortalError(_)
+            | TempoPrecompileError::RawRevert(_)
             | TempoPrecompileError::ConfigurableAccountError(_)
             | TempoPrecompileError::InvalidConfigCommitmentWrite
             | TempoPrecompileError::OutOfGas
@@ -247,6 +259,11 @@ impl TempoPrecompileError {
             Self::StorageCreditsError(e) => e.selector(),
             Self::CurrentCommitteeError(e) => e.selector(),
             Self::ZoneFactoryError(e) => e.selector(),
+            Self::ZonePortalError(e) => e.selector(),
+            Self::RawRevert(data) => data
+                .get(..4)
+                .and_then(|s| s.try_into().ok())
+                .unwrap_or([0; 4]),
             Self::ConfigurableAccountError(e) => e.selector(),
             Self::UnknownFunctionSelector(selector) => *selector,
             Self::Panic(_) | Self::StorageDeltaUnderflow(_) => Panic::SELECTOR,
@@ -287,6 +304,8 @@ impl TempoPrecompileError {
             | Self::StorageCreditsError(_)
             | Self::CurrentCommitteeError(_)
             | Self::ZoneFactoryError(_)
+            | Self::ZonePortalError(_)
+            | Self::RawRevert(_)
             | Self::ConfigurableAccountError(_)
             | Self::UnknownFunctionSelector(_)
             | Self::InvalidConfigCommitmentWrite => false,
@@ -348,6 +367,8 @@ impl TempoPrecompileError {
             Self::StorageCreditsError(e) => e.abi_encode().into(),
             Self::CurrentCommitteeError(e) => e.abi_encode().into(),
             Self::ZoneFactoryError(e) => e.abi_encode().into(),
+            Self::ZonePortalError(e) => e.abi_encode().into(),
+            Self::RawRevert(data) => data,
             Self::ConfigurableAccountError(e) => e.abi_encode().into(),
             Self::OutOfGas => {
                 return Err(PrecompileHalt::OutOfGas.into());
@@ -433,6 +454,7 @@ pub fn error_decoder_registry() -> TempoPrecompileErrorRegistry {
     add_errors_to_registry(&mut registry, TempoPrecompileError::StorageCreditsError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::CurrentCommitteeError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::ZoneFactoryError);
+    add_errors_to_registry(&mut registry, TempoPrecompileError::ZonePortalError);
     add_errors_to_registry(
         &mut registry,
         TempoPrecompileError::ConfigurableAccountError,

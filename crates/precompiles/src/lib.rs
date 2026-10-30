@@ -52,7 +52,7 @@ use crate::{
     tip403_registry::TIP403Registry,
     validator_config::ValidatorConfig,
     validator_config_v2::ValidatorConfigV2,
-    zone_factory::ZoneFactory,
+    zone_factory::{ZoneFactory, ZonePortalStorage},
     zone_verifier::ZoneVerifier,
 };
 use std::{cell::RefCell, rc::Rc};
@@ -162,6 +162,14 @@ sol! {
     error DelegateCallNotAllowed();
 }
 
+/// Returns whether `address` runs a native Tempo precompile under `spec`.
+///
+/// From T15, every `ZONE_PORTAL_PREFIX` address dispatches to the native ZonePortal, which
+/// takes precedence over the ERC-1167 proxy code installed by the factory.
+fn is_tempo_precompile(address: &Address, spec: TempoHardfork) -> bool {
+    address.is_precompile(spec) || (spec.is_t15() && address.zone_portal_id().is_some())
+}
+
 /// Tempo's built-in and protocol precompiles for EVM2.
 #[derive(Debug)]
 pub struct TempoPrecompiles<T: EvmTypesHost> {
@@ -192,7 +200,10 @@ impl<T: EvmTypesHost> TempoPrecompiles<T> {
         }
     }
 
-    fn call_tempo(&self, address: Address, calldata: &[u8], caller: Address) -> PrecompileResult {
+    /// Dispatches a call to the Tempo precompile at `address`.
+    ///
+    /// Takes no `self`: a precompile may make nested calls that re-enter this provider.
+    fn call_tempo(address: Address, calldata: &[u8], caller: Address) -> PrecompileResult {
         if address.is_tip20() {
             TIP20Token::from_address(address)
                 .expect("TIP-20 prefix already checked")
@@ -231,6 +242,8 @@ impl<T: EvmTypesHost> TempoPrecompiles<T> {
             ZoneFactory::new().call(calldata, caller)
         } else if address == ZONE_VERIFIER_ADDRESS {
             ZoneVerifier::new().call(calldata, caller)
+        } else if address.zone_portal_id().is_some() {
+            ZonePortalStorage::new(address).call(calldata, caller)
         } else {
             unreachable!("Tempo precompile address checked before dispatch")
         }
@@ -261,7 +274,7 @@ where
     }
 
     fn contains(&self, address: &Address) -> bool {
-        self.base.contains(address) || address.is_precompile(self.spec)
+        self.base.contains(address) || is_tempo_precompile(address, self.spec)
     }
 
     fn execute(
@@ -277,7 +290,7 @@ where
         // Dispatch on the requested callee like evm2's membership check: code stored at a
         // precompile address, such as EIP-7702 delegation code from a state override, never
         // replaces the native precompile.
-        if !message.call_target.is_precompile(self.spec) {
+        if !is_tempo_precompile(&message.call_target, self.spec) {
             return None;
         }
         if message.destination != message.call_target {
@@ -289,9 +302,10 @@ where
         let is_static = message.caller_is_static || message.kind == MessageKind::StaticCall;
         let mut storage = EvmPrecompileStorageProvider::new(evm, gas, self.spec, is_static)
             .with_actions(self.actions.clone())
-            .with_non_creditable_slots(self.non_creditable_slots.clone());
+            .with_non_creditable_slots(self.non_creditable_slots.clone())
+            .with_frame(message.call_target, message.depth);
         Some(StorageCtx::enter(&mut storage, || {
-            self.call_tempo(message.call_target, &message.input, message.caller)
+            Self::call_tempo(message.call_target, &message.input, message.caller)
         }))
     }
 }

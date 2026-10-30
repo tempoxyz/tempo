@@ -309,6 +309,9 @@ crate::sol! {
         function MAX_UNPROCESSED_DEPOSITS() external view returns (uint64);
         function MAX_UNPROCESSED_TOKEN_ENABLEMENTS() external view returns (uint64);
         function MAX_WITHDRAWAL_GAS_LIMIT() external view returns (uint64);
+        function MAX_SEQUENCERS() external view returns (uint256);
+        function PAUSE_DURATION() external view returns (uint64);
+        function ABDICATION_DELAY() external view returns (uint64);
         function paused() external view returns (bool);
         function pauseExpiry() external view returns (uint64);
         function abdicationEffectiveAt(Capability capability) external view returns (uint64);

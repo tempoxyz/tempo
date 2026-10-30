@@ -2,18 +2,19 @@ use crate::{
     configurable_account::CONFIGURABLE_ACCOUNT_CODE,
     error::TempoPrecompileError,
     storage::{
-        ConfigCommitmentWriteGas, PrecompileStorageProvider, StorageActions,
-        account_config_commitment, actions::StorageAction,
+        ConfigCommitmentWriteGas, NestedCall, NestedCallResult, PrecompileStorageProvider,
+        StorageActions, account_config_commitment, actions::StorageAction,
     },
     storage_credits::{NonCreditableSlots, StorageCreditsBackend, sstore_storage_credits},
 };
 use alloy::primitives::{Address, B256, Bytes, Log, LogData, U256};
 use bitflags::bitflags;
 use evm2::{
-    Evm, EvmFeatures, EvmTypes, Version,
+    Evm, EvmFeatures, EvmTypes, ExecutionError, HostError, Version,
     bytecode::Bytecode,
+    env::TxEnvExt,
     evm::{AccountExtension, AccountInfo, SLoad, SStore, StateCheckpoint},
-    interpreter::{GasTracker, gas},
+    interpreter::{GasTracker, Host, MessageExt, MessageKind, gas},
     version::{GasId, GasParams},
 };
 use std::{
@@ -38,6 +39,15 @@ pub struct EvmPrecompileStorageProvider<'evm, 'gas, 'db, T: EvmTypes> {
     non_creditable_slots: Option<Rc<RefCell<NonCreditableSlots>>>,
     /// Recorded storage actions.
     actions: StorageActions,
+    /// The precompile call frame nested calls start from, when there is one.
+    frame: Option<PrecompileFrame>,
+}
+
+/// The precompile call frame a provider serves: its address and call depth.
+#[derive(Debug, Clone, Copy)]
+struct PrecompileFrame {
+    address: Address,
+    depth: u16,
 }
 
 impl<'evm, 'gas, 'db, T> EvmPrecompileStorageProvider<'evm, 'gas, 'db, T>
@@ -85,7 +95,16 @@ where
             tip1060_storage_credit_minting_enabled: true,
             non_creditable_slots: None,
             actions: StorageActions::disabled(),
+            frame: None,
         }
+    }
+
+    /// Records the precompile frame this provider serves, which nested calls start from.
+    ///
+    /// Without it, [`PrecompileStorageProvider::call`] fails.
+    pub fn with_frame(mut self, address: Address, depth: u16) -> Self {
+        self.frame = Some(PrecompileFrame { address, depth });
+        self
     }
 
     /// Sets the storage actions for this provider.
@@ -640,6 +659,83 @@ where
         self.evm.state_mut().checkpoint()
     }
 
+    fn call(&mut self, call: NestedCall) -> Result<NestedCallResult, TempoPrecompileError> {
+        let frame = self.frame.ok_or_else(|| {
+            TempoPrecompileError::Fatal("nested call outside a precompile frame".into())
+        })?;
+        // Account access is charged as CALL charges it, including EIP-7702 delegation.
+        let warm_cost = self.version.gas_params.get(GasId::WarmStorageReadCost);
+        let cold_cost = self.version.gas_params.cold_account_additional_cost();
+        self.deduct_gas(warm_cost)?;
+        let skip_cold_load = self.gas_tracker.remaining() < cold_cost;
+        let account = Host::load_account(&mut *self.evm, &call.target, true, skip_cold_load)
+            .map_err(host_error)?;
+        if account.is_cold {
+            self.deduct_gas(cold_cost)?;
+        }
+        let mut code = account.code;
+        let mut code_address = call.target;
+        if self.version.feature(EvmFeatures::EIP7702)
+            && let Some(delegate) = code.eip7702_address()
+        {
+            self.deduct_gas(warm_cost)?;
+            let skip_cold_load = self.gas_tracker.remaining() < cold_cost;
+            let delegated = Host::load_account(&mut *self.evm, &delegate, true, skip_cold_load)
+                .map_err(host_error)?;
+            if delegated.is_cold {
+                self.deduct_gas(cold_cost)?;
+            }
+            code = delegated.code;
+            code_address = delegate;
+        }
+
+        // EIP-150: forward at most all but one 64th of what remains.
+        let gas_limit = self
+            .version
+            .gas_params
+            .call_stipend_reduction(self.gas_tracker.remaining())
+            .min(call.gas_limit);
+        self.deduct_gas(gas_limit)?;
+
+        let mut message = MessageExt {
+            kind: if call.is_static {
+                MessageKind::StaticCall
+            } else {
+                MessageKind::Call
+            },
+            depth: frame.depth.saturating_add(1),
+            gas_limit,
+            reservoir: self.gas_tracker.reservoir(),
+            destination: call.target,
+            call_target: call.target,
+            caller: frame.address,
+            input: call.input,
+            value: U256::ZERO,
+            code,
+            code_address,
+            caller_is_static: self.is_static,
+            ..MessageExt::default()
+        };
+        // TODO: evm2 at this revision does not expose the running transaction's environment to
+        // precompiles, so the child sees a default one (zero ORIGIN and GASPRICE). evm2 #866 moves
+        // the environment into the EVM; bump past it and drop this argument.
+        let tx_env = TxEnvExt::default();
+        let result = Host::execute_message(&mut *self.evm, &tx_env, &mut message)
+            .map_err(execution_error)?;
+        if result.stop.is_fatal() {
+            return Err(TempoPrecompileError::Fatal(format!(
+                "nested call halted fatally: {:?}",
+                result.stop
+            )));
+        }
+        let success = result.stop.is_success();
+        self.gas_tracker.merge_child_gas(result.gas, result.stop);
+        Ok(NestedCallResult {
+            success,
+            output: result.output,
+        })
+    }
+
     #[inline]
     fn checkpoint_commit(&mut self, _checkpoint: StateCheckpoint) {}
 
@@ -812,6 +908,23 @@ impl From<&SStore> for SstoreTransitionFlags {
 impl From<SStore> for SstoreTransitionFlags {
     fn from(result: SStore) -> Self {
         Self::from(&result)
+    }
+}
+
+fn execution_error(error: ExecutionError) -> TempoPrecompileError {
+    match error {
+        ExecutionError::Database(error) => TempoPrecompileError::Database(error),
+        ExecutionError::Fatal(error) => TempoPrecompileError::Fatal(error.to_string()),
+    }
+}
+
+fn host_error(error: HostError) -> TempoPrecompileError {
+    match error {
+        HostError::Halt(stop) if stop.is_out_of_gas() => TempoPrecompileError::OutOfGas,
+        HostError::Halt(stop) => {
+            TempoPrecompileError::Fatal(format!("account load halted: {stop:?}"))
+        }
+        HostError::Execution(error) => execution_error(error),
     }
 }
 
@@ -1926,5 +2039,76 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    fn evm_with_code(code: &'static [u8]) -> TestEvm {
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(
+            &NESTED_TARGET,
+            evm2::evm::AccountInfo::default()
+                .with_code(evm2::bytecode::Bytecode::new_raw(Bytes::from_static(code))),
+        );
+        TestEvm::with_database(TempoHardfork::T15, false, database)
+    }
+
+    const NESTED_CALLER: Address = Address::repeat_byte(0x5a);
+    const NESTED_TARGET: Address = Address::repeat_byte(0xca);
+
+    fn nested_call(is_static: bool) -> crate::storage::NestedCall {
+        crate::storage::NestedCall {
+            target: NESTED_TARGET,
+            input: Bytes::new(),
+            gas_limit: 100_000,
+            is_static,
+        }
+    }
+
+    #[test]
+    fn nested_call_runs_child_as_the_precompile() -> eyre::Result<()> {
+        // CALLER PUSH0 SSTORE; mstore(0, 42); return(0, 32)
+        let mut evm = evm_with_code(&[
+            0x33, 0x5f, 0x55, 0x60, 0x2a, 0x5f, 0x52, 0x60, 0x20, 0x5f, 0xf3,
+        ]);
+        let mut provider = evm.provider_max_gas().with_frame(NESTED_CALLER, 1);
+        let result = provider.call(nested_call(false))?;
+        assert!(result.success);
+        assert_eq!(U256::from_be_slice(&result.output), U256::from(42));
+        assert_eq!(
+            provider.sload(NESTED_TARGET, U256::ZERO)?,
+            U256::from_be_slice(NESTED_CALLER.as_slice())
+        );
+        assert!(provider.gas_used() > 0);
+        Ok(())
+    }
+
+    #[test]
+    fn nested_call_rolls_back_a_reverting_child() -> eyre::Result<()> {
+        // sstore(0, 1); revert(0, 0)
+        let mut evm = evm_with_code(&[0x60, 0x01, 0x5f, 0x55, 0x5f, 0x5f, 0xfd]);
+        let mut provider = evm.provider_max_gas().with_frame(NESTED_CALLER, 1);
+        let result = provider.call(nested_call(false))?;
+        assert!(!result.success);
+        assert_eq!(provider.sload(NESTED_TARGET, U256::ZERO)?, U256::ZERO);
+        Ok(())
+    }
+
+    #[test]
+    fn nested_static_call_cannot_write() -> eyre::Result<()> {
+        // sstore(0, 1); stop
+        let mut evm = evm_with_code(&[0x60, 0x01, 0x5f, 0x55, 0x00]);
+        let mut provider = evm.provider_max_gas().with_frame(NESTED_CALLER, 1);
+        assert!(!provider.call(nested_call(true))?.success);
+        assert!(provider.call(nested_call(false))?.success);
+        Ok(())
+    }
+
+    #[test]
+    fn nested_call_needs_a_frame() {
+        let mut evm = evm_with_code(&[0x00]);
+        let mut provider = evm.provider_max_gas();
+        assert!(matches!(
+            provider.call(nested_call(false)),
+            Err(TempoPrecompileError::Fatal(_))
+        ));
     }
 }

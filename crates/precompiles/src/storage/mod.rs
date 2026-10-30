@@ -253,6 +253,17 @@ pub trait PrecompileStorageProvider {
         Ok(recovered.ok().filter(|addr| !addr.is_zero()))
     }
 
+    /// Runs a nested call from the running precompile into `call.target`.
+    ///
+    /// The child sees the precompile's own address as its caller, runs one call level deeper and
+    /// commits or rolls back on its own, so the precompile can carry on after a failed child.
+    /// Providers without a live EVM reject every nested call.
+    fn call(&mut self, _call: NestedCall) -> Result<NestedCallResult> {
+        Err(TempoPrecompileError::Fatal(
+            "nested calls need an EVM-backed storage provider".into(),
+        ))
+    }
+
     /// Reads the commitment from the account extension with normal account-access gas.
     fn config_commitment(&mut self, address: Address) -> Result<B256>;
 
@@ -269,6 +280,36 @@ pub trait PrecompileStorageProvider {
         commitment: B256,
         gas: ConfigCommitmentWriteGas,
     ) -> Result<()>;
+}
+
+/// A nested call made by a native precompile into another account.
+///
+/// The caller is always the running precompile's own address. Native precompiles never send
+/// value, so the call carries none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NestedCall {
+    /// Account to call. Code at this address runs, or its native precompile when one is
+    /// registered there.
+    pub target: Address,
+    /// ABI-encoded call input.
+    pub input: Bytes,
+    /// Most gas to forward. The provider caps it at all but one 64th of what remains after the
+    /// account-access charge, as `CALL` does.
+    pub gas_limit: u64,
+    /// Whether the child runs as a `STATICCALL`.
+    pub is_static: bool,
+}
+
+/// Outcome of a [`NestedCall`].
+///
+/// A child that reverts, halts or runs out of gas has its state changes rolled back and reports
+/// `success: false`; only database and fatal errors surface as `Err`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NestedCallResult {
+    /// Whether the child returned or stopped normally.
+    pub success: bool,
+    /// Return or revert data.
+    pub output: Bytes,
 }
 
 /// Storage operations for a given (contract) address.
