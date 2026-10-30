@@ -151,25 +151,10 @@ on:
         required: false
         default: ""
       preset:
-        description: Benchmark preset.
-        type: choice
+        description: Benchmark preset name in contrib/bench/txgen/presets.
+        type: string
         required: true
         default: default
-        options:
-          - default
-          - tip20
-          - tip20_2d_nonces
-          - tip20_protocol_nonces
-          - tip20_random_recipients
-          - tip20_existing_recipients
-          - tip20_keychain
-          - tip20_keychain_random_recipients
-          - tip20_keychain_existing_recipients
-          - tip20_key_authorization
-          - mpp
-          - mix
-          - public-mix
-          - dex
       duration:
         description: Benchmark duration in seconds.
         type: string
@@ -260,11 +245,11 @@ on:
         type: string
         required: true
         default: "5000000000"
-      no-cache:
-        description: Skip binary cache.
-        type: boolean
+      general-gas-limit:
+        description: General lane gas limit.
+        type: string
         required: true
-        default: false
+        default: "1500000000"
       bench-args:
         description: Extra bench args.
         type: string
@@ -338,7 +323,7 @@ jobs:
       BENCH_INPUT_FEATURE_ARGS: ${{ inputs['feature-args'] || '' }}
       BENCH_INPUT_GAS_LIMIT: ${{ inputs['gas-limit'] || '5000000000' }}
       BENCH_INPUT_GENERAL_GAS_LIMIT: ${{ inputs['general-gas-limit'] || '1500000000' }}
-      BENCH_INPUT_NO_CACHE: ${{ github.event_name == 'workflow_dispatch' && (inputs['no-cache'] == true || inputs['no-cache'] == 'true') && 'true' || 'false' }}
+      BENCH_INPUT_NO_CACHE: "false"
       BENCH_INPUT_BENCH_ARGS: ${{ inputs['bench-args'] || '' }}
       BENCH_INPUT_RUN_PAIRS: ${{ inputs['run-pairs'] || '1' }}
       BENCH_INPUT_CLICKHOUSE_RUN: ${{ inputs['clickhouse-run'] || 'feature-1' }}
