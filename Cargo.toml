@@ -125,7 +125,7 @@ debug = "line-tables-only"
 strip = "none"
 incremental = true
 
-[profile.dst]
+[profile.fuzzing]
 inherits = "profiling"
 debug-assertions = true
 overflow-checks = true

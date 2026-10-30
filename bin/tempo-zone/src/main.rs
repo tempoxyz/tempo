@@ -9,6 +9,7 @@ use zone_node::cli::ZoneCli;
 static ALLOC: reth_cli_util::allocator::Allocator = reth_cli_util::allocator::new_allocator();
 
 fn main() {
+    #[cfg(feature = "fuzzing")]
     antithesis_sdk::antithesis_init();
     reth_cli_util::sigsegv_handler::install();
 

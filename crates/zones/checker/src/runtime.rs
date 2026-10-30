@@ -6,6 +6,7 @@ use alloy_consensus::BlockHeader as _;
 use alloy_eips::BlockNumHash;
 use alloy_provider::{DynProvider, Provider as _, ProviderBuilder};
 use alloy_rpc_client::{ConnectionConfig, RpcClient, WebSocketConfig};
+#[cfg(feature = "fuzzing")]
 use antithesis_sdk::{assert_always, assert_unreachable};
 use futures::{StreamExt as _, TryStreamExt as _, future};
 use reth_chainspec::ChainSpecProvider;
@@ -13,6 +14,7 @@ use reth_exex::{ExExContext, ExExHead, ExExNotification};
 use reth_node_api::{FullNodeComponents, NodePrimitives, NodeTypes};
 use reth_primitives_traits::RecoveredBlock;
 use reth_storage_api::{BlockHashReader as _, StateProviderFactory};
+#[cfg(feature = "fuzzing")]
 use serde_json::json;
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::TempoHardforks;
@@ -188,6 +190,7 @@ where
             Err(BlockError::Finding { zone, error }) => {
                 snapshot = store.load()?;
                 tracing::error!(target: "zone::checker", %error, zone_block = zone.number, zone_hash = %zone.hash, "checker divergence");
+                #[cfg(feature = "fuzzing")]
                 assert_unreachable!(
                     "Zone checker records a divergence",
                     &json!({
@@ -476,6 +479,7 @@ where
             .into_iter()
             .map(|evidence| (evidence.token, evidence.total_supply, evidence.balances)),
     );
+    #[cfg(feature = "fuzzing")]
     assert_always!(
         zone_state.is_ok(),
         "Zone balances and supply match bridge accounting",
@@ -509,6 +513,7 @@ where
         }
     };
     let custody = state.verify_portal_balances(balances);
+    #[cfg(feature = "fuzzing")]
     assert_always!(
         custody.is_ok(),
         "Portal custody covers zone liabilities",
