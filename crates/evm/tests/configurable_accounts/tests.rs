@@ -2356,7 +2356,7 @@ fn retired_root_authorization_list_entries_skipped() {
 
 #[test]
 fn retired_root_authorization_list_entries_skipped_after_a_same_block_migration() {
-    // TIP-1112: an entry the root key signed before migrating, relayed by a later transaction
+    // TIP-1113: an entry the root key signed before migrating, relayed by a later transaction
     // of the same block, is skipped.
     let target = Address::repeat_byte(0x55);
     let sender = signer(2);
@@ -4376,8 +4376,8 @@ fn configurable_sender_rejections() {
     );
 }
 
-/// A configurable-account signature adds its TIP-1114 verification cost `V - 3,000` to intrinsic
-/// gas, on top of the first-use account proof and the TIP-1108 registration write.
+/// A configurable-account signature adds its TIP-1107 verification cost `V - 3,000` to intrinsic
+/// gas, on top of the first-use account proof and the registration write.
 #[test]
 fn native_signature_verification_is_intrinsic_gas() {
     let calls = vec![Call {

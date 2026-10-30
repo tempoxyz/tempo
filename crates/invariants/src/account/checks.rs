@@ -14,7 +14,7 @@ pub const COMMITMENT_EVENT: &str = "TEMPO-ACCOUNT-COMMITMENT-EVENT";
 
 /// A step's effect on each observed account's configuration commitment.
 pub const STEP_CHECKS: &[Check<Step<Commitments, Option<Tx>>>] = &[
-    // Once an account has a configuration, nothing clears it (TIP-1108).
+    // Once an account has a configuration, nothing clears it (TIP-1107).
     check! {
         id: COMMITMENT_KEPT,
         over: |step: &Step<Commitments, Option<Tx>>| step.post.of.keys(),
@@ -28,7 +28,7 @@ pub const STEP_CHECKS: &[Check<Step<Commitments, Option<Tx>>>] = &[
     },
     // Only the account's own transaction changes its configuration: `updateConfig` takes the
     // sender's own configuration and `upgradeAccount` migrates the transaction's own sender
-    // (TIP-1109, TIP-1113).
+    // (TIP-1107, TIP-1113).
     check! {
         id: COMMITMENT_BY_SELF,
         over: |step: &Step<Commitments, Option<Tx>>| step.post.of.keys(),

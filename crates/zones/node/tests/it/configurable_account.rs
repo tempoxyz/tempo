@@ -1,4 +1,4 @@
-//! Zones reject configurable accounts until they sync configurations from Tempo (TIP-1114 Zones).
+//! Zones reject configurable accounts until they sync configurations from Tempo (TIP-1154).
 
 use alloy::primitives::{Address, B256, Bytes, TxKind, U256};
 use alloy_eips::{eip2718::Encodable2718, eip2930::AccessList};
