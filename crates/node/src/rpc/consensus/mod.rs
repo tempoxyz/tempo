@@ -11,7 +11,7 @@ pub mod types;
 #[cfg(test)]
 mod tests;
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{collections::HashMap, num::NonZeroUsize, sync::Arc, time::Duration};
 
 use jsonrpsee::{
     ConnectionId,
@@ -88,11 +88,29 @@ pub trait TempoConsensusApi {
 ///
 /// The feed is meant for followers and indexers, and every subscription receives a copy of each
 /// finalized block, so it gets a far lower cap than jsonrpsee's generic per-connection limit.
-const DEFAULT_MAX_SUBSCRIPTIONS: usize = 256;
+pub const DEFAULT_MAX_SUBSCRIPTIONS: NonZeroUsize = NonZeroUsize::new(256).unwrap();
 
-/// Cap on concurrent `consensus_subscribe` subscriptions on one connection, so a single client
-/// cannot take every slot of [`DEFAULT_MAX_SUBSCRIPTIONS`].
-const MAX_SUBSCRIPTIONS_PER_CONNECTION: usize = 4;
+/// Default cap on concurrent `consensus_subscribe` subscriptions on one connection, so a single
+/// client cannot take every slot of the node-wide cap.
+pub const DEFAULT_MAX_SUBSCRIPTIONS_PER_CONNECTION: NonZeroUsize = NonZeroUsize::new(4).unwrap();
+
+/// Caps on concurrent `consensus_subscribe` subscriptions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SubscriptionLimits {
+    /// Across all connections and transports.
+    pub max_subscriptions: NonZeroUsize,
+    /// On one HTTP or WS connection.
+    pub max_subscriptions_per_connection: NonZeroUsize,
+}
+
+impl Default for SubscriptionLimits {
+    fn default() -> Self {
+        Self {
+            max_subscriptions: DEFAULT_MAX_SUBSCRIPTIONS,
+            max_subscriptions_per_connection: DEFAULT_MAX_SUBSCRIPTIONS_PER_CONNECTION,
+        }
+    }
+}
 
 /// Messages that may be queued on a subscription's connection before the subscription is dropped.
 ///
@@ -120,9 +138,16 @@ pub struct TempoConsensusRpc<I> {
     consensus_feed: I,
     /// One permit per live subscription, shared by every connection.
     subscriptions: Arc<Semaphore>,
-    /// Live subscriptions per connection, capped at [`MAX_SUBSCRIPTIONS_PER_CONNECTION`]; `None`
-    /// for transports without the cap (see [`Self::without_connection_cap`]).
-    per_connection: Option<Arc<Mutex<HashMap<ConnectionId, usize>>>>,
+    /// Live subscriptions per connection and their cap; `None` for transports without the cap
+    /// (see [`Self::without_connection_cap`]).
+    per_connection: Option<ConnectionCap>,
+}
+
+/// Live subscriptions per connection, and how many one connection may hold.
+#[derive(Debug, Clone)]
+struct ConnectionCap {
+    counts: Arc<Mutex<HashMap<ConnectionId, usize>>>,
+    max: usize,
 }
 
 /// One subscription's claim on its connection's share; released on drop.
@@ -132,18 +157,15 @@ struct SubscriptionGuard {
 }
 
 impl SubscriptionGuard {
-    fn try_claim(
-        counts: &Arc<Mutex<HashMap<ConnectionId, usize>>>,
-        connection: ConnectionId,
-    ) -> Option<Self> {
-        let mut guard = counts.lock();
+    fn try_claim(cap: &ConnectionCap, connection: ConnectionId) -> Option<Self> {
+        let mut guard = cap.counts.lock();
         let count = guard.entry(connection).or_default();
-        if *count >= MAX_SUBSCRIPTIONS_PER_CONNECTION {
+        if *count >= cap.max {
             return None;
         }
         *count += 1;
         Some(Self {
-            counts: counts.clone(),
+            counts: cap.counts.clone(),
             connection,
         })
     }
@@ -162,13 +184,15 @@ impl Drop for SubscriptionGuard {
 }
 
 impl<I: ConsensusFeed> TempoConsensusRpc<I> {
-    /// Create a new consensus RPC handler allowing at most 256 concurrent subscriptions, and 4
-    /// per connection.
-    pub fn new(consensus_feed: I) -> Self {
+    /// Create a new consensus RPC handler enforcing `limits`.
+    pub fn new(consensus_feed: I, limits: SubscriptionLimits) -> Self {
         Self {
             consensus_feed,
-            subscriptions: Arc::new(Semaphore::new(DEFAULT_MAX_SUBSCRIPTIONS)),
-            per_connection: Some(Default::default()),
+            subscriptions: Arc::new(Semaphore::new(limits.max_subscriptions.get())),
+            per_connection: Some(ConnectionCap {
+                counts: Default::default(),
+                max: limits.max_subscriptions_per_connection.get(),
+            }),
         }
     }
 }
@@ -205,14 +229,13 @@ impl<I: ConsensusFeed> TempoConsensusApiServer for TempoConsensusRpc<I> {
         // Reject before accepting, so the client gets an error for its subscribe call instead of
         // a subscription that ends at once.
         let guard = match &self.per_connection {
-            Some(counts) => {
-                let Some(guard) = SubscriptionGuard::try_claim(counts, pending.connection_id())
-                else {
+            Some(cap) => {
+                let Some(guard) = SubscriptionGuard::try_claim(cap, pending.connection_id()) else {
                     pending
                         .reject(ErrorObject::owned(
                             TOO_MANY_SUBSCRIPTIONS_CODE,
                             "too many consensus subscriptions on this connection",
-                            Some(MAX_SUBSCRIPTIONS_PER_CONNECTION),
+                            Some(cap.max),
                         ))
                         .await;
                     return Ok(());

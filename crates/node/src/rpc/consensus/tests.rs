@@ -6,7 +6,7 @@ use jsonrpsee::{
     ws_client::WsClientBuilder,
 };
 use reth_primitives_traits::SealedBlock;
-use std::{sync::Arc, time::Duration};
+use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 use tempo_primitives::Block;
 use tokio::sync::broadcast;
 
@@ -57,9 +57,12 @@ async fn wait_for_live_subscriptions(
 #[tokio::test]
 async fn subscription_task_exits_on_disconnect_without_events() {
     let (events_tx, _) = broadcast::channel(1);
-    let module = TempoConsensusRpc::new(IdleFeed {
-        events_tx: events_tx.clone(),
-    })
+    let module = TempoConsensusRpc::new(
+        IdleFeed {
+            events_tx: events_tx.clone(),
+        },
+        SubscriptionLimits::default(),
+    )
     .into_rpc();
 
     let subscription = module
@@ -75,9 +78,12 @@ async fn subscription_task_exits_on_disconnect_without_events() {
 #[tokio::test]
 async fn unsubscribe_releases_permit_without_events() {
     let (events_tx, _) = broadcast::channel(1);
-    let module = TempoConsensusRpc::new(IdleFeed {
-        events_tx: events_tx.clone(),
-    })
+    let module = TempoConsensusRpc::new(
+        IdleFeed {
+            events_tx: events_tx.clone(),
+        },
+        SubscriptionLimits::default(),
+    )
     .into_rpc();
 
     let server = Server::builder()
@@ -111,9 +117,12 @@ async fn unsubscribe_releases_permit_without_events() {
 #[tokio::test]
 async fn subscription_notification_carries_event() {
     let (events_tx, _) = broadcast::channel(1);
-    let module = TempoConsensusRpc::new(IdleFeed {
-        events_tx: events_tx.clone(),
-    })
+    let module = TempoConsensusRpc::new(
+        IdleFeed {
+            events_tx: events_tx.clone(),
+        },
+        SubscriptionLimits::default(),
+    )
     .into_rpc();
 
     let mut subscription = module
@@ -164,13 +173,15 @@ fn finalized_event() -> Arc<SharedEvent> {
 #[tokio::test]
 async fn subscribe_is_rejected_as_busy_once_limit_is_reached() {
     let (events_tx, _) = broadcast::channel(1);
-    let module = TempoConsensusRpc {
-        consensus_feed: IdleFeed {
+    let module = TempoConsensusRpc::new(
+        IdleFeed {
             events_tx: events_tx.clone(),
         },
-        subscriptions: Arc::new(Semaphore::new(1)),
-        per_connection: Some(Default::default()),
-    }
+        SubscriptionLimits {
+            max_subscriptions: NonZeroUsize::MIN,
+            ..Default::default()
+        },
+    )
     .into_rpc();
 
     let first = module
@@ -202,9 +213,12 @@ async fn subscribe_is_rejected_as_busy_once_limit_is_reached() {
 #[tokio::test]
 async fn subscriber_that_stops_reading_is_dropped() {
     let (events_tx, _) = broadcast::channel(256);
-    let module = TempoConsensusRpc::new(IdleFeed {
-        events_tx: events_tx.clone(),
-    })
+    let module = TempoConsensusRpc::new(
+        IdleFeed {
+            events_tx: events_tx.clone(),
+        },
+        SubscriptionLimits::default(),
+    )
     .into_rpc();
 
     // Never read from the subscription, so its notifications pile up in the buffer.
@@ -242,9 +256,12 @@ impl ConsensusFeed for ClosingFeed {
 #[tokio::test]
 async fn server_ended_subscription_closes_client_stream() {
     let (events_tx, events_rx) = broadcast::channel(1);
-    let module = TempoConsensusRpc::new(ClosingFeed {
-        rx: std::sync::Mutex::new(Some(events_rx)),
-    })
+    let module = TempoConsensusRpc::new(
+        ClosingFeed {
+            rx: std::sync::Mutex::new(Some(events_rx)),
+        },
+        SubscriptionLimits::default(),
+    )
     .into_rpc();
 
     let server = Server::builder().build("127.0.0.1:0").await.unwrap();
@@ -269,9 +286,12 @@ async fn server_ended_subscription_closes_client_stream() {
 #[tokio::test]
 async fn subscriptions_are_capped_per_connection() {
     let (events_tx, _) = broadcast::channel(1);
-    let module = TempoConsensusRpc::new(IdleFeed {
-        events_tx: events_tx.clone(),
-    })
+    let module = TempoConsensusRpc::new(
+        IdleFeed {
+            events_tx: events_tx.clone(),
+        },
+        SubscriptionLimits::default(),
+    )
     .into_rpc();
 
     let server = Server::builder().build("127.0.0.1:0").await.unwrap();
@@ -281,10 +301,10 @@ async fn subscriptions_are_capped_per_connection() {
 
     let first = connect().await.unwrap();
     let mut held = Vec::new();
-    for _ in 0..MAX_SUBSCRIPTIONS_PER_CONNECTION {
+    for _ in 0..DEFAULT_MAX_SUBSCRIPTIONS_PER_CONNECTION.get() {
         held.push(first.subscribe_events().await.unwrap());
     }
-    wait_for_live_subscriptions(&events_tx, MAX_SUBSCRIPTIONS_PER_CONNECTION).await;
+    wait_for_live_subscriptions(&events_tx, DEFAULT_MAX_SUBSCRIPTIONS_PER_CONNECTION.get()).await;
 
     let jsonrpsee::core::client::Error::Call(err) = first
         .subscribe_events()
@@ -298,26 +318,33 @@ async fn subscriptions_are_capped_per_connection() {
     // Another connection still gets its own share.
     let second = connect().await.unwrap();
     let _other = second.subscribe_events().await.unwrap();
-    wait_for_live_subscriptions(&events_tx, MAX_SUBSCRIPTIONS_PER_CONNECTION + 1).await;
+    wait_for_live_subscriptions(
+        &events_tx,
+        DEFAULT_MAX_SUBSCRIPTIONS_PER_CONNECTION.get() + 1,
+    )
+    .await;
 
     // Ending one subscription frees a slot on the first connection.
     held.pop().unwrap().unsubscribe().await.unwrap();
-    wait_for_live_subscriptions(&events_tx, MAX_SUBSCRIPTIONS_PER_CONNECTION).await;
+    wait_for_live_subscriptions(&events_tx, DEFAULT_MAX_SUBSCRIPTIONS_PER_CONNECTION.get()).await;
     let _again = first.subscribe_events().await.unwrap();
 }
 
 #[tokio::test]
 async fn handler_without_connection_cap_allows_more_per_connection() {
     let (events_tx, _) = broadcast::channel(1);
-    let module = TempoConsensusRpc::new(IdleFeed {
-        events_tx: events_tx.clone(),
-    })
+    let module = TempoConsensusRpc::new(
+        IdleFeed {
+            events_tx: events_tx.clone(),
+        },
+        SubscriptionLimits::default(),
+    )
     .without_connection_cap()
     .into_rpc();
 
     // In-process subscriptions all share one connection ID.
     let mut held = Vec::new();
-    for _ in 0..=MAX_SUBSCRIPTIONS_PER_CONNECTION {
+    for _ in 0..=DEFAULT_MAX_SUBSCRIPTIONS_PER_CONNECTION.get() {
         held.push(
             module
                 .subscribe_unbounded("consensus_subscribe", EmptyServerParams::new())
@@ -325,5 +352,9 @@ async fn handler_without_connection_cap_allows_more_per_connection() {
                 .unwrap(),
         );
     }
-    wait_for_live_subscriptions(&events_tx, MAX_SUBSCRIPTIONS_PER_CONNECTION + 1).await;
+    wait_for_live_subscriptions(
+        &events_tx,
+        DEFAULT_MAX_SUBSCRIPTIONS_PER_CONNECTION.get() + 1,
+    )
+    .await;
 }

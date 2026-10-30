@@ -1003,8 +1003,9 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
     .node(tempo_node)
     .extend_rpc_modules(move |ctx| {
         if let Some(feed_state) = feed_state {
-            ctx.modules
-                .merge_configured(TempoConsensusRpc::new(feed_state).into_rpc())?;
+            ctx.modules.merge_configured(
+                TempoConsensusRpc::new(feed_state, Default::default()).into_rpc(),
+            )?;
         }
         Ok(())
     });
