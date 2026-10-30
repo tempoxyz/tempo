@@ -1,6 +1,6 @@
 //! ABI dispatch for native ZonePortal accounts (T15+).
 
-use super::ZonePortalStorage;
+use super::{ZonePortalConstants, ZonePortalStorage};
 use crate::{Precompile, charge_input_cost, dispatch, mutate, unknown_selector_result, view};
 use alloy::primitives::Address;
 use evm2::{evm::precompile::PrecompileOutput, precompiles::PrecompileResult};
@@ -22,15 +22,12 @@ impl Precompile for ZonePortalStorage {
             calldata,
             |call| match call {
                 ZonePortal::ZonePortalCalls {
-                    ABDICATION_DELAY(call) => view(call, |call| self.abdication_delay(call)),
                     FIXED_DEPOSIT_GAS(call) => view(call, |call| self.fixed_deposit_gas(call)),
                     MAX_GAS_FEE_RATE(call) => view(call, |call| self.max_gas_fee_rate(call)),
-                    MAX_SEQUENCERS(call) => view(call, |call| self.max_sequencers(call)),
                     MAX_TOKEN_METADATA_BYTES(call) => view(call, |call| self.max_token_metadata_bytes(call)),
                     MAX_UNPROCESSED_DEPOSITS(call) => view(call, |call| self.max_unprocessed_deposits(call)),
                     MAX_UNPROCESSED_TOKEN_ENABLEMENTS(call) => view(call, |call| self.max_unprocessed_token_enablements(call)),
                     MAX_WITHDRAWAL_GAS_LIMIT(call) => view(call, |call| self.max_withdrawal_gas_limit(call)),
-                    PAUSE_DURATION(call) => view(call, |call| self.pause_duration(call)),
                     abdicate(call) => mutate(call, msg_sender, |sender, call| self.abdicate(sender, call)),
                     abdicationEffectiveAt(call) => view(call, |call| self.abdication_effective_at(call)),
                     acceptAdmin(call) => mutate(call, msg_sender, |sender, call| self.accept_admin(sender, call)),
@@ -110,6 +107,11 @@ impl Precompile for ZonePortalStorage {
                     MAX_DEPOSITS_PER_TEMPO_BLOCK(_) => unknown_selector_result(calldata),
                     MAX_TOKENS_ENABLED_PER_TEMPO_BLOCK(_) => unknown_selector_result(calldata),
                     submitBatch_0(_) => unknown_selector_result(calldata),
+                }
+                ZonePortalConstants::ZonePortalConstantsCalls {
+                    ABDICATION_DELAY(call) => view(call, |call| self.abdication_delay(call)),
+                    MAX_SEQUENCERS(call) => view(call, |call| self.max_sequencers(call)),
+                    PAUSE_DURATION(call) => view(call, |call| self.pause_duration(call)),
                 }
             }
         )

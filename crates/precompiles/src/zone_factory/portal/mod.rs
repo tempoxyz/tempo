@@ -194,6 +194,16 @@ impl ZonePortalStorage {
     }
 }
 
+alloy::sol! {
+    /// Public constants of `ZonePortal.sol` that the `IZonePortal` interface, and so the shared
+    /// `ZonePortal` binding, does not declare.
+    interface ZonePortalConstants {
+        function MAX_SEQUENCERS() external view returns (uint256);
+        function PAUSE_DURATION() external view returns (uint64);
+        function ABDICATION_DELAY() external view returns (uint64);
+    }
+}
+
 /// `FIXED_DEPOSIT_GAS`: deposit fee = this * `zoneGasRate`.
 pub const FIXED_DEPOSIT_GAS: u64 = 100_000;
 /// `MAX_UNPROCESSED_DEPOSITS`.

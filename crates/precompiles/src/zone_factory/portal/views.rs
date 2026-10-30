@@ -2,7 +2,7 @@
 
 use super::{
     ABDICATION_DELAY, FIXED_DEPOSIT_GAS, MAX_GAS_FEE_RATE, MAX_UNPROCESSED_DEPOSITS,
-    MAX_UNPROCESSED_TOKEN_ENABLEMENTS, PAUSE_DURATION, ZonePortalStorage,
+    MAX_UNPROCESSED_TOKEN_ENABLEMENTS, PAUSE_DURATION, ZonePortalConstants, ZonePortalStorage,
 };
 use crate::{
     error::{Result, TempoPrecompileError},
@@ -33,7 +33,10 @@ const SECP256K1_SQRT_EXP: U256 =
 
 impl ZonePortalStorage {
     /// Solidity `ABDICATION_DELAY`.
-    pub fn abdication_delay(&self, _call: ZonePortal::ABDICATION_DELAYCall) -> Result<u64> {
+    pub fn abdication_delay(
+        &self,
+        _call: ZonePortalConstants::ABDICATION_DELAYCall,
+    ) -> Result<u64> {
         Ok(ABDICATION_DELAY)
     }
 
@@ -48,7 +51,7 @@ impl ZonePortalStorage {
     }
 
     /// Solidity `MAX_SEQUENCERS`.
-    pub fn max_sequencers(&self, _call: ZonePortal::MAX_SEQUENCERSCall) -> Result<U256> {
+    pub fn max_sequencers(&self, _call: ZonePortalConstants::MAX_SEQUENCERSCall) -> Result<U256> {
         Ok(U256::from(MAX_SEQUENCERS))
     }
 
@@ -85,7 +88,7 @@ impl ZonePortalStorage {
     }
 
     /// Solidity `PAUSE_DURATION`.
-    pub fn pause_duration(&self, _call: ZonePortal::PAUSE_DURATIONCall) -> Result<u64> {
+    pub fn pause_duration(&self, _call: ZonePortalConstants::PAUSE_DURATIONCall) -> Result<u64> {
         Ok(PAUSE_DURATION)
     }
 
@@ -543,11 +546,11 @@ mod tests {
     fn constants_match_solidity() -> eyre::Result<()> {
         with_portal(|portal| {
             assert_eq!(
-                portal.abdication_delay(ZonePortal::ABDICATION_DELAYCall {})?,
+                portal.abdication_delay(ZonePortalConstants::ABDICATION_DELAYCall {})?,
                 2_592_000
             );
             assert_eq!(
-                portal.pause_duration(ZonePortal::PAUSE_DURATIONCall {})?,
+                portal.pause_duration(ZonePortalConstants::PAUSE_DURATIONCall {})?,
                 2_592_000
             );
             assert_eq!(
@@ -559,7 +562,7 @@ mod tests {
                 1_000_000_000_000_000_000
             );
             assert_eq!(
-                portal.max_sequencers(ZonePortal::MAX_SEQUENCERSCall {})?,
+                portal.max_sequencers(ZonePortalConstants::MAX_SEQUENCERSCall {})?,
                 uint!(8_U256)
             );
             assert_eq!(
