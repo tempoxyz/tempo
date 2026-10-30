@@ -95,6 +95,7 @@ metrics.workspace = true
 parking_lot.workspace = true
 serde = { workspace = true, features = ["alloc"] }
 serde_json = { workspace = true, default-features = true }
+antithesis_sdk = { workspace = true, optional = true }
 tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
@@ -134,6 +135,12 @@ url = "2"
 
 [features]
 default = []
+fuzz = [
+  "dep:antithesis_sdk",
+  "antithesis_sdk/full",
+  "zone-checker?/fuzz",
+  "zone-sequencer/fuzz",
+]
 asm-keccak = [
   "alloy/asm-keccak",
   "alloy-primitives/asm-keccak",

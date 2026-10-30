@@ -6,12 +6,16 @@ use alloy_consensus::BlockHeader as _;
 use alloy_eips::BlockNumHash;
 use alloy_provider::{DynProvider, Provider as _, ProviderBuilder};
 use alloy_rpc_client::{ConnectionConfig, RpcClient, WebSocketConfig};
+#[cfg(feature = "fuzz")]
+use antithesis_sdk::{assert_always, assert_unreachable};
 use futures::{StreamExt as _, TryStreamExt as _, future};
 use reth_chainspec::ChainSpecProvider;
 use reth_exex::{ExExContext, ExExHead, ExExNotification};
 use reth_node_api::{FullNodeComponents, NodePrimitives, NodeTypes};
 use reth_primitives_traits::RecoveredBlock;
 use reth_storage_api::{BlockHashReader as _, StateProviderFactory};
+#[cfg(feature = "fuzz")]
+use serde_json::json;
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::TempoHardforks;
 use tempo_primitives::{TempoPrimitives, TempoReceipt};
@@ -186,6 +190,15 @@ where
             Err(BlockError::Finding { zone, error }) => {
                 snapshot = store.load()?;
                 tracing::error!(target: "zone::checker", %error, zone_block = zone.number, zone_hash = %zone.hash, "checker divergence");
+                #[cfg(feature = "fuzz")]
+                assert_unreachable!(
+                    "Zone checker records a divergence",
+                    &json!({
+                        "zone_block": zone.number,
+                        "zone_hash": zone.hash,
+                        "error": format!("{error:#}"),
+                    })
+                );
                 snapshot = store.record_finding(
                     &snapshot,
                     Finding {
@@ -461,13 +474,21 @@ where
             }
         }
     };
-    state
-        .verify_zone_state(
-            observed
-                .into_iter()
-                .map(|evidence| (evidence.token, evidence.total_supply, evidence.balances)),
-        )
-        .map_err(|error| fail(error.into()))?;
+    let zone_state = state.verify_zone_state(
+        observed
+            .into_iter()
+            .map(|evidence| (evidence.token, evidence.total_supply, evidence.balances)),
+    );
+    #[cfg(feature = "fuzz")]
+    assert_always!(
+        zone_state.is_ok(),
+        "Zone balances and supply match bridge accounting",
+        &json!({
+            "zone_block": zone.number,
+            "error": zone_state.as_ref().err().map(ToString::to_string),
+        })
+    );
+    zone_state.map_err(|error| fail(error.into()))?;
 
     let balances = loop {
         match portal_balances(
@@ -491,9 +512,17 @@ where
             Err(error) => return Err(classify_block_l1_error(error, zone)),
         }
     };
-    state
-        .verify_portal_balances(balances)
-        .map_err(|error| fail(error.into()))?;
+    let custody = state.verify_portal_balances(balances);
+    #[cfg(feature = "fuzz")]
+    assert_always!(
+        custody.is_ok(),
+        "Portal custody covers zone liabilities",
+        &json!({
+            "zone_block": zone.number,
+            "error": custody.as_ref().err().map(ToString::to_string),
+        })
+    );
+    custody.map_err(|error| fail(error.into()))?;
 
     let next = store
         .apply(candidate)
