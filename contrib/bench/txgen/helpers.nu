@@ -774,13 +774,19 @@ def txgen-prepare-zones-preset [spec_path: string, count: int, accounts: int, zo
     let spec = (open $spec_path)
     let token = "0x20c0000000000000000000000000000000000000"
     mut steps = [$spec.setup.steps.0]
+    # Each portal deploys through CreateX (salt = zone, so its address doesn't depend on a nonce)
+    # on its own 2D nonce lane, which its funding step reuses: portals deploy in parallel from
+    # one sender instead of queueing on the deployer's protocol nonce.
     for zone in 0..<$zones {
         $steps = ($steps | append ($spec.setup.steps.1
             | update id $"portal_($zone)"
+            | upsert deploy.nonce_key ($zone + 1)
+            | upsert deploy.create2 {salt: $zone}
             | update deploy.constructor_args.0 {var: setup.settlement.sender}))
     }
     for zone in 0..<$zones {
         $steps = ($steps | append ($spec.setup.steps.2 | update id $"fund_($zone)"
+            | upsert tx.nonce_key ($zone + 1)
             | update tx.calls.0.args [{var: $"setup.portal_($zone).address"} $count]))
     }
     let groups = if ($groups | is-empty) { [{users: [0 $accounts], zones: [0 $zones]}] } else { $groups }
@@ -1270,6 +1276,15 @@ def txgen-neobank-instance-text [text: string, instance: record, index: int] {
 # disjoint user slice with its own random-sender and treasury pools, sinks, keychain
 # setup, vault/zone templates and portals (when zones >= instances); its mix is its
 # share times its modules' neobank-generic weights renormalised within the instance.
+# Portal deploys fill the general lane (10M each, up to 16 senders at once); start them after
+# the vault fixture, whose 30M deploys need an otherwise empty lane and would starve.
+def txgen-portals-after-vault [zone_steps: list<any>, vault_setup: list<any>] {
+    let vault_last = ($vault_setup | last | get id)
+    $zone_steps | each { |step|
+        if ($step.id | str starts-with "portal_") { $step | upsert depends_on [$vault_last] } else { $step }
+    }
+}
+
 def txgen-prepare-neobank-multi-preset [spec_path: string, count: int, accounts: int, zones: int, chain_id: int, output_dir: string] {
     let presets = ($spec_path | path dirname)
     # A relative TXGEN_NEOBANK_INSTANCES path resolves from the working directory, then the repository root.
@@ -1395,7 +1410,7 @@ def txgen-prepare-neobank-multi-preset [spec_path: string, count: int, accounts:
     $"# Per-instance copies of neobank-generic templates, rendered by helpers.nu.\ntemplates:\n($raw_templates | str join "\n")\n"
         | save -f ($output_dir | path join $raw_name)
     let body = ({include: [($spec_path | path expand) $raw_name], accounts: $accounts_record,
-        setup: {steps: ($vault_setup | append $users | append $zone_spec.setup.steps | append $dex_setup)},
+        setup: {steps: ($vault_setup | append $users | append (txgen-portals-after-vault $zone_spec.setup.steps $vault_setup) | append $dex_setup)},
         templates: $templates,
         mix: ($entries | each { |entry| {template: $entry.name, weight: $entry.weight} })} | to yaml)
     # Keychain steps hold ${TXGEN_*} placeholders: appended as text after the setup above.
@@ -1514,8 +1529,9 @@ def txgen-prepare-public-mix-preset [spec_path: string, count: int, accounts: in
         if $result.exit_code != 0 { error make {msg: $"Failed to read access-key setup: ($result.stderr)"} }
         $result.stdout | from json
     } else { [] }
+    let zone_steps = (txgen-portals-after-vault $zone_spec.setup.steps $vault_setup)
     {include: $spec_path, accounts: {users: {range: [0 $accounts]}},
-        setup: {steps: ($vault_setup | append $users | append $zone_spec.setup.steps | append $dex_setup | append $keychain_setup)},
+        setup: {steps: ($vault_setup | append $users | append $zone_steps | append $dex_setup | append $keychain_setup)},
         templates: $templates,
         mix: $mix} | to yaml | save -f $output
     $output

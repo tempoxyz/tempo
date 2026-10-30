@@ -25,10 +25,13 @@ setup:
         from: {pool: deployer, select: {index: 0}}
         artifact: SettlementFixture
         gas_limit: 5000000
+    # The helper gives portal i CREATE2 salt i and its own 2D nonce lane (key i + 1), shared
+    # with its funding step, so portals deploy in parallel from one sender.
     - id: portal
       deploy:
-        type: eip1559
+        type: tempo
         from: {pool: deployer, select: {index: 0}}
+        fee_token: "0x20c0000000000000000000000000000000000000"
         artifact: PortalFixture
         gas_limit: 10000000
         constructor_args: [null, "0x20c0000000000000000000000000000000000000", {var: setup.settlement.address}]
