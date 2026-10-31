@@ -268,6 +268,45 @@ pub fn standalone_all(
     Ok(())
 }
 
+/// Applies the block's pre phase and the stored deltas of transactions `0..index` to `view`,
+/// leaving it at the state before transaction `index`, without executing anything.
+pub fn restore_before(
+    view: &mut View,
+    phases: &Phases,
+    cases: &[Case],
+    index: usize,
+) -> eyre::Result<()> {
+    eyre::ensure!(index <= cases.len(), "transaction index out of range");
+    view.apply(&phases.pre)?;
+    for case in &cases[..index] {
+        view.apply(&case.delta)?;
+    }
+    Ok(())
+}
+
+/// Runs the block's transactions standalone from their stored records alone: the state
+/// before each one is restored from the pre phase and the earlier stored deltas, without
+/// executing the block. `select` picks which transactions run; each one that runs is checked
+/// against its record.
+pub fn standalone_cases(
+    config: &TempoEvmConfig,
+    block: &RecoveredBlock<Block>,
+    mut view: View,
+    phases: &Phases,
+    cases: &[Case],
+    mut select: impl FnMut(&Case) -> bool,
+) -> eyre::Result<()> {
+    view.apply(&phases.pre)?;
+    for (index, case) in cases.iter().enumerate() {
+        if select(case) {
+            let actual = run_standalone(config, block, &view, case.ordinal, index, &case.before)?;
+            case.check(&actual)?;
+        }
+        view.apply(&case.delta)?;
+    }
+    Ok(())
+}
+
 /// Decodes a stored block and checks it against its recorded hash and parent.
 pub fn decode_block(
     input: &BlockInput,
