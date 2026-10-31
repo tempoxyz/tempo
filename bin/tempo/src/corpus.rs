@@ -1,16 +1,20 @@
 //! `tempo corpus`: capture an archive range into an object-store corpus and replay it.
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use reth_chainspec::EthChainSpec;
 use reth_cli::chainspec::ChainSpecParser;
 use reth_cli_commands::common::{AccessRights, Environment, EnvironmentArgs};
 use reth_cli_util::cancellation::CancellationToken;
 use reth_ethereum::tasks::Runtime;
-use std::sync::Arc;
+use std::{ops::Range, path::PathBuf, sync::Arc};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
-use tempo_corpus::{fill, replay, store::Store};
+use tempo_corpus::{
+    fill, replay, seeds,
+    store::{Catalog, Store},
+};
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_node::node::TempoNode;
+use tracing::info;
 
 /// Historical execution corpus commands.
 #[derive(Debug, Subcommand)]
@@ -21,6 +25,8 @@ pub enum CorpusCommand {
     Replay(ReplayCommand),
     /// Rewrite a legacy corpus in the current format, without the archive DB.
     Migrate(MigrateCommand),
+    /// Export a corpus range as fuzz harness seeds, keeping the blocks the harness reproduces.
+    Seeds(SeedsCommand),
 }
 
 impl CorpusCommand {
@@ -29,6 +35,7 @@ impl CorpusCommand {
             Self::Fill(cmd) => cmd.execute(runtime).await,
             Self::Replay(cmd) => cmd.execute().await,
             Self::Migrate(cmd) => cmd.execute().await,
+            Self::Seeds(cmd) => cmd.execute().await,
         }
     }
 }
@@ -97,9 +104,9 @@ impl FillCommand {
     }
 }
 
-/// Replay a published corpus range.
-#[derive(Debug, Parser)]
-pub struct ReplayCommand {
+/// A block range of a published corpus and the workers to process it on.
+#[derive(Debug, Args)]
+struct CorpusSource {
     /// The chain the corpus was captured from.
     #[arg(long, value_name = "CHAIN_OR_PATH", default_value = "mainnet", value_parser = TempoChainSpecParser::parser())]
     chain: Arc<TempoChainSpec>,
@@ -115,19 +122,15 @@ pub struct ReplayCommand {
     /// Exclusive end; defaults to the corpus end.
     #[arg(long)]
     to: Option<u64>,
-    /// Replay only transactions with ordinal in [tx-from, tx-to), each independently.
-    #[arg(long, requires = "tx_to")]
-    tx_from: Option<u64>,
-    /// Exclusive end of the standalone transaction ordinal range.
-    #[arg(long, requires = "tx_from")]
-    tx_to: Option<u64>,
-    /// Execution worker threads; defaults to the available parallelism.
+    /// Worker threads; defaults to the available parallelism.
     #[arg(long)]
     workers: Option<usize>,
 }
 
-impl ReplayCommand {
-    async fn execute(self) -> eyre::Result<()> {
+impl CorpusSource {
+    /// Opens the complete corpus, checked against `chain`, with the selected block range (not yet
+    /// checked against it) and worker count.
+    async fn open(&self) -> eyre::Result<(Store, Catalog, Range<u64>, usize)> {
         let store = Store::open(&self.corpus, self.s3_endpoint.as_deref()).await?;
         let (catalog, _) = store
             .catalog()
@@ -135,45 +138,64 @@ impl ReplayCommand {
             .ok_or_else(|| eyre::eyre!("no corpus catalog at {}", self.corpus))?;
         eyre::ensure!(catalog.complete, "corpus is not complete");
         let context = &catalog.context;
-        let chain = self.chain.clone();
         eyre::ensure!(
-            context.chain_id == chain.chain_id()
-                && context.genesis == chain.genesis_hash().to_string()
-                && context.forks == chain.display_hardforks().to_string(),
+            context.chain_id == self.chain.chain_id()
+                && context.genesis == self.chain.genesis_hash().to_string()
+                && context.forks == self.chain.display_hardforks().to_string(),
             "corpus chain/fork context mismatch"
         );
-        let from = self.from.unwrap_or(context.start);
-        let end = self.to.unwrap_or(context.end).min(context.end);
+        let range =
+            self.from.unwrap_or(context.start)..self.to.unwrap_or(context.end).min(context.end);
+        let workers = self
+            .workers
+            .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
+            .max(1);
+        Ok((store, catalog, range, workers))
+    }
+}
+
+/// Fails unless `range` is a non-empty block range of `catalog`'s corpus.
+fn ensure_blocks(catalog: &Catalog, range: &Range<u64>) -> eyre::Result<()> {
+    eyre::ensure!(
+        range.start >= catalog.context.start && !range.is_empty(),
+        "corpus block range mismatch"
+    );
+    Ok(())
+}
+
+/// Replay a published corpus range.
+#[derive(Debug, Parser)]
+pub struct ReplayCommand {
+    #[command(flatten)]
+    source: CorpusSource,
+    /// Replay only transactions with ordinal in [tx-from, tx-to), each independently.
+    #[arg(long, requires = "tx_to")]
+    tx_from: Option<u64>,
+    /// Exclusive end of the standalone transaction ordinal range.
+    #[arg(long, requires = "tx_from")]
+    tx_to: Option<u64>,
+}
+
+impl ReplayCommand {
+    async fn execute(self) -> eyre::Result<()> {
+        let (store, catalog, range, workers) = self.source.open().await?;
         let standalone = self.tx_from.zip(self.tx_to);
         if let Some((from, to)) = standalone {
+            let context = &catalog.context;
             eyre::ensure!(
                 from >= context.first_tx && from < to && to <= context.end_tx,
                 "transaction ordinal range outside the corpus"
             );
         } else {
-            eyre::ensure!(
-                from >= context.start && from < end,
-                "corpus block range mismatch"
-            );
+            ensure_blocks(&catalog, &range)?;
         }
-        let workers = self
-            .workers
-            .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
-            .max(1);
-        let (config, consensus) = components(chain);
+        let (config, consensus) = components(self.source.chain.clone());
         let cancellation = CancellationToken::new();
         let _guard = cancellation.drop_guard();
         let token = cancellation.clone();
         tokio::task::spawn_blocking(move || {
             replay::run(
-                store,
-                catalog,
-                from..end,
-                config,
-                consensus,
-                workers,
-                standalone,
-                token,
+                store, catalog, range, config, consensus, workers, standalone, token,
             )
         })
         .await?
@@ -221,5 +243,40 @@ impl MigrateCommand {
         let dest = Store::open(&self.corpus, self.s3_endpoint.as_deref()).await?;
         let (config, consensus) = components(chain);
         tempo_corpus::migrate::migrate(source, dest, self.from, self.to, &config, &consensus).await
+    }
+}
+
+/// Export a published corpus range as fuzz harness seeds.
+#[derive(Debug, Parser)]
+pub struct SeedsCommand {
+    #[command(flatten)]
+    source: CorpusSource,
+    /// Directory for the seeds, with `divergent/` and `invariants/` beneath it.
+    #[arg(long)]
+    out: PathBuf,
+}
+
+impl SeedsCommand {
+    async fn execute(self) -> eyre::Result<()> {
+        let (store, catalog, range, workers) = self.source.open().await?;
+        ensure_blocks(&catalog, &range)?;
+        let summary = tokio::task::spawn_blocking(move || {
+            seeds::export(
+                store,
+                catalog,
+                range,
+                &self.source.chain,
+                &self.out,
+                workers,
+            )
+        })
+        .await??;
+        info!(
+            blocks = summary.blocks,
+            seeds = summary.seeds,
+            findings = ?summary.findings,
+            "Corpus seed export finished"
+        );
+        Ok(())
     }
 }

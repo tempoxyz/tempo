@@ -34,10 +34,15 @@ reth-storage-api = { workspace = true, features = ["db-api"] }
 alloy-consensus.workspace = true
 alloy-rlp.workspace = true
 alloy-eip7928.workspace = true
+alloy-eips.workspace = true
+tempo-chainspec = { workspace = true, features = ["reth"] }
+tempo-fuzz-harness.workspace = true
+tempo-fuzz-types.workspace = true
 
 async-trait.workspace = true
 aws-config = "1.8"
 aws-credential-types = "1.2"
+bincode.workspace = true
 blake3.workspace = true
 bytes.workspace = true
 eyre.workspace = true

@@ -10,6 +10,8 @@ mod execute;
 mod invariants;
 mod state;
 
+pub use execute::run;
+
 use bincode::Options as _;
 use core::ffi::c_int;
 use tempo_chainspec::hardfork::TempoHardfork;

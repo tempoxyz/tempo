@@ -649,6 +649,21 @@ impl Cursor {
     }
 }
 
+/// The published boundary before `block`, which must lie within the corpus range or be its end.
+pub async fn cursor_at(reader: &DbReader, context: &Context, block: u64) -> eyre::Result<Cursor> {
+    if block == context.start {
+        return Cursor::initial(context);
+    }
+    let previous = metadata(reader, block - 1).await?;
+    let mut cursor = Cursor {
+        next: previous.start,
+        tx: previous.first_tx,
+        parent: previous.parent,
+    };
+    cursor.advance(&previous)?;
+    Ok(cursor)
+}
+
 pub fn metadata_key(block: u64) -> [u8; 9] {
     let mut key = key(block);
     key[0] = b'm';

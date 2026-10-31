@@ -212,6 +212,7 @@ tempo-corpus = { path = "crates/corpus" }
 tempo-consensus-config = { path = "crates/consensus-config", default-features = false }
 tempo-dkg-onchain-artifacts = { path = "crates/dkg-onchain-artifacts", default-features = false }
 tempo-faucet = { path = "crates/faucet", default-features = false }
+tempo-fuzz-harness = { path = "crates/fuzz-harness" }
 tempo-fuzz-types = { path = "crates/fuzz-types", default-features = false }
 tempo-evm = { path = "crates/evm", default-features = false }
 tempo-eyre = { path = "crates/eyre", default-features = false }
