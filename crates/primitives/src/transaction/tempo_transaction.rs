@@ -356,6 +356,12 @@ impl TempoTransaction {
         // Validate calls list structure using the shared function
         validate_calls(&self.calls, !self.tempo_authorization_list.is_empty())?;
 
+        // Execution already rejects this (EVM PRIORITY_FEE_CHECK); checking here also rejects it
+        // at decode time and before signing.
+        if self.max_priority_fee_per_gas > self.max_fee_per_gas {
+            return Err("max_priority_fee_per_gas must not exceed max_fee_per_gas");
+        }
+
         // validBefore must be greater than validAfter if both are set
         if let Some(valid_after) = self.valid_after
             && let Some(valid_before) = self.valid_before
@@ -847,8 +853,11 @@ impl<'a> arbitrary::Arbitrary<'a> for TempoTransaction {
         // Generate all fields using the default Arbitrary implementation
         let chain_id = u.arbitrary()?;
         let fee_token = u.arbitrary()?;
-        let max_priority_fee_per_gas = u.arbitrary()?;
-        let max_fee_per_gas = u.arbitrary()?;
+        let priority_fee: u128 = u.arbitrary()?;
+        let max_fee: u128 = u.arbitrary()?;
+        // validate() requires max_priority_fee_per_gas <= max_fee_per_gas
+        let max_priority_fee_per_gas = priority_fee.min(max_fee);
+        let max_fee_per_gas = priority_fee.max(max_fee);
         let gas_limit = u.arbitrary()?;
 
         // Generate calls - ensure at least one call is present and CREATE validation passes
@@ -1232,7 +1241,7 @@ mod tests {
             valid_before: Some(nz(100)),
             valid_after: None,
             tempo_authorization_list: vec![],
-            calls: vec![dummy_call],
+            calls: vec![dummy_call.clone()],
             ..Default::default()
         };
         assert!(tx4.validate().is_ok());
@@ -1242,6 +1251,27 @@ mod tests {
             ..Default::default()
         };
         assert!(tx5.validate().is_err());
+
+        // Valid: priority fee equal to max fee
+        let tx6 = TempoTransaction {
+            max_fee_per_gas: 100,
+            max_priority_fee_per_gas: 100,
+            calls: vec![dummy_call.clone()],
+            ..Default::default()
+        };
+        assert!(tx6.validate().is_ok());
+
+        // Invalid: priority fee above max fee
+        let tx7 = TempoTransaction {
+            max_fee_per_gas: 100,
+            max_priority_fee_per_gas: 101,
+            calls: vec![dummy_call],
+            ..Default::default()
+        };
+        assert_eq!(
+            tx7.validate(),
+            Err("max_priority_fee_per_gas must not exceed max_fee_per_gas")
+        );
     }
 
     #[test]
