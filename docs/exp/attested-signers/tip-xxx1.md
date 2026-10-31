@@ -91,7 +91,7 @@ The signature and registry TIPs activate in the same hardfork as at least one sc
 
 - Identity methods are defined by the signer program, not the protocol. Email codes, OpenID Connect sign-ins, and passkeys all produce a user tag.
 - Each policy uses one scheme. Combining schemes, such as requiring signatures from both a Nitro and a Confidential Space program, uses configurable-account thresholds.
-- Attested signatures sign transactions and key authorizations. They do not sign messages for offchain verification.
+- Attested signatures sign transactions and key authorizations. Contracts verify them for any hash through TIP-1020, against the current registry state.
 - The same person signing in through two identity methods, or through two policies, has two attested signers.
 - Attested signer addresses do not depend on the measurement, so upgrades of the signer program keep every address.
 
@@ -192,7 +192,7 @@ No existing transaction, account, or signature changes. Before activation, type 
 | Wallets and SDKs, such as ox and Viem | Need attested signer address derivation, the `0x06` encoding, the signed digest, and builders for key authorizations with an attested signature ([TIP-XXX2](./tip-xxx2.md)) |
 | Wallet operators | Run a signer program in a TEE, register its program keys, and operate a policy with an owner and guardian ([TIP-XXX3](./tip-xxx3.md)) |
 | Explorers and indexers | Decode type `0x06` signatures and registry events. An attested signer is an ordinary account with no code |
-| Contracts using TIP-1020 | `recover` and `verify` reject attested signatures with `InvalidFormat` ([TIP-XXX2](./tip-xxx2.md#accepted-contexts)) |
+| Contracts using TIP-1020 | `recover` and `verify` accept attested signatures checked against the current registry state ([TIP-XXX2](./tip-xxx2.md#tip-1020-verification)) |
 | RPC simulation and gas estimation | Apply the same registry reads and charges as block validation, and report which check failed |
 | Existing accounts | Unchanged. Moving to an attested signer needs a configurable account, where active |
 

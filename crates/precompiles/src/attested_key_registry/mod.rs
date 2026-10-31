@@ -268,13 +268,18 @@ impl AttestedKeyRegistry {
         Err(AttestedKeyRegistryError::not_listed().into())
     }
 
-    fn revoke_keys(&mut self, sender: Address, policy_id: B256) -> Result<()> {
+    pub(crate) fn revoke_keys(&mut self, sender: Address, policy_id: B256) -> Result<()> {
         self.ensure_owner_or_guardian(sender, policy_id)?;
         let epoch = self.increment_epoch(policy_id)?;
         self.emit_event(AttestedKeyRegistryEvent::keys_revoked(policy_id, epoch))
     }
 
-    fn set_paused(&mut self, sender: Address, policy_id: B256, paused: bool) -> Result<()> {
+    pub(crate) fn set_paused(
+        &mut self,
+        sender: Address,
+        policy_id: B256,
+        paused: bool,
+    ) -> Result<()> {
         if paused {
             self.ensure_owner_or_guardian(sender, policy_id)?;
         } else {
@@ -512,7 +517,7 @@ pub fn key_id(policy_id: B256, x: B256, y: B256) -> B256 {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
     use alloy::primitives::keccak256;
@@ -520,8 +525,8 @@ mod tests {
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_nitro_attestation::testing::{DEV_PCRS, DevAttestation};
 
-    const NOW: u64 = 1_800_000_000;
-    const OWNER: Address = Address::repeat_byte(0x01);
+    pub(crate) const NOW: u64 = 1_800_000_000;
+    pub(crate) const OWNER: Address = Address::repeat_byte(0x01);
     const GUARDIAN: Address = Address::repeat_byte(0x02);
     const OTHER: Address = Address::repeat_byte(0x03);
 
@@ -529,7 +534,7 @@ mod tests {
         keccak256(DEV_PCRS.concat())
     }
 
-    fn program_key(seed: u8) -> (B256, B256) {
+    pub(crate) fn program_key(seed: u8) -> (B256, B256) {
         let key = SigningKey::from_slice(&[seed; 32]).unwrap();
         let point = key.verifying_key().to_encoded_point(false);
         (
@@ -538,7 +543,10 @@ mod tests {
         )
     }
 
-    fn with_registry<R>(chain_id: u64, f: impl FnOnce(&mut AttestedKeyRegistry) -> R) -> R {
+    pub(crate) fn with_registry<R>(
+        chain_id: u64,
+        f: impl FnOnce(&mut AttestedKeyRegistry) -> R,
+    ) -> R {
         let mut storage = HashMapStorageProvider::new_with_spec(chain_id, TempoHardfork::T14);
         storage.set_timestamp(U256::from(NOW));
         StorageCtx::enter(&mut storage, || f(&mut AttestedKeyRegistry::new()))
@@ -554,6 +562,16 @@ mod tests {
             measurements,
             anchors: vec![],
         }
+    }
+
+    /// Creates the dev policy and registers the program key `SigningKey::from_slice(&[seed; 32])`
+    /// at [`NOW`]. Returns the policy ID.
+    pub(crate) fn register_dev_key(registry: &mut AttestedKeyRegistry, seed: u8) -> B256 {
+        let policy_id = create_dev_policy(registry);
+        let key = program_key(seed);
+        let attestation = attestation_for(registry, policy_id, key);
+        register(registry, policy_id, key, attestation).unwrap();
+        policy_id
     }
 
     fn create_dev_policy(registry: &mut AttestedKeyRegistry) -> B256 {

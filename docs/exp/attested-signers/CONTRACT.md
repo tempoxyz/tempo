@@ -122,11 +122,29 @@ Claude-Session: https://claude.ai/code/session_01D3nmWfxsYgSZCf4nZP5cZY
   authorization recovery verify P256 (and that the key is on the curve). The handler then checks, at the
   transaction's position, for pool and block alike: `valid_until >= now`, `valid_until - now <= 600`, and
   `program_key_current`. A failure is `attested signature rejected: <reason>`.
+- TIP-1020 (`0x5165…`, from `T14`; supersedes "rejected by TIP-1020" above): `verify(signer, hash, sig)` returns
+  `true` iff the `0x06` signature decodes canonically, `now <= valid_until <= now + 600`, `program_key_current` holds
+  at the call, P256 verifies over `attested_digest(d = hash)`, and `attested_address == signer`; otherwise `false`.
+  `recover(hash, sig)` returns the attested address under the same checks and reverts `InvalidSignature` otherwise.
+  Non-canonical bytes revert `InvalidFormat`. Gas: P256 8,000 + calldata of the 72 extra bytes, charged before any
+  check, plus the two registry reads at their storage cost. `verifyConfigurableAccount`, `verifyKeychain` and
+  `verifyKeychainAdmin` reject `0x06` (`InvalidFormat`).
 - Rejected: inside keychain signatures (`0x03`/`0x04` decoding fails with
-  `attested signatures cannot sign as access keys`), in EIP-7702 authorization lists, by TIP-1020
-  (`InvalidFormat`), in Zone RPC auth tokens, and in zone transactions. Fee payer signatures are secp256k1 only.
+  `attested signatures cannot sign as access keys`), in EIP-7702 authorization lists, in Zone RPC auth tokens, and
+  in zone transactions. Fee payer signatures are secp256k1 only.
 - Gas: `8,000 + 2 × 2,100 + calldata_gas(policy_id ‖ user_tag ‖ valid_until as 8 bytes BE)`. As a transaction
   signature, `3,000` less is added to the 21,000 base. Zero bytes cost 4 gas, so a `valid_until` below `2^32`
   costs 48 gas less than the TIP's all-non-zero figure.
+- Configurable account owners (`0x05`): an attested signer is an ordinary owner entry whose `owner` is its
+  `attested_address(policy_id, user_tag)`; configurations carry no owner kind on this base (owners are
+  `{address, weight}`), so configs and commitments are unchanged. In the approvals list of a `0x05` signature, each
+  entry is an RLP byte string of typed signature bytes; an attested approval is `0x06 ‖ rlp([...])`, exactly the
+  standalone `0x06` bytes, next to the existing secp256k1 (65 bytes) / `0x01` P256 / `0x02` WebAuthn entries.
+  The program key signs `attested_digest(d)` with `d = configurable_account_digest(inner, account, version)`
+  (`keccak256("tempo:configurable-account:signature" ‖ inner ‖ account ‖ version as 8 bytes BE)`, where `inner` is
+  the transaction signature hash, the key authorization hash, or the keychain V2 hash, as for other owners).
+  Approvals stay sorted by recovered owner address. Each counts as one signature toward the 8-approval limit and
+  costs the standalone `0x06` gas. The handler checks its validity window and registry state at the transaction's
+  position. TIP-1020 `verifyConfigurableAccount` rejects attested approvals (`InvalidFormat`).
 - Not built: pool revalidation on `KeysRevoked`/`PolicyPaused`/`MeasurementRemoved` (a pending transaction fails
   when it is executed), and RPC gas estimation for `0x06` beyond what the handler does for any signature.

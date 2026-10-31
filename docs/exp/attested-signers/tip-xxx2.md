@@ -14,7 +14,7 @@ protocolVersion: TBD
 
 This TIP adds signature type `0x06`, the attested signature. Its address derives from a policy ID and a user tag, as a P256 address derives from a public key. An attested signature carries a P256 signature by a program key. The node accepts it only while the [Attested Key Registry](./tip-xxx3.md) records that key as current for the policy. Verification costs one P256 verification and two storage reads, and the signature is 206 bytes for current timestamps.
 
-[TIP-XXX1](./tip-xxx1.md) explains how attested signers fit together. Attested signatures sign transactions and key authorizations. They do not sign messages for offchain verification.
+[TIP-XXX1](./tip-xxx1.md) explains how attested signers fit together. Attested signatures sign transactions and key authorizations, and contracts verify them for any hash through TIP-1020.
 
 ## Motivation
 
@@ -96,6 +96,7 @@ attested_digest = keccak256(
 | Transaction signature | Transaction signing hash ([TIP-0001](./tip-0001.md)) |
 | Key authorization signature | Key authorization digest ([TIP-0001](./tip-0001.md)) |
 | Multisig owner approval | The owner-approval digest defined by TIP-1114, where active |
+| TIP-1020 `recover` and `verify` | The hash passed to the precompile |
 
 The program key signs `attested_digest` with ECDSA over P256, with no further hashing. The ASCII domain keeps the digest distinct from other uses of the key. The digest covers every field except `signature`, so no other byte can change without the program key.
 
@@ -126,17 +127,24 @@ An attested signature is accepted as:
 
 - the signature of a Tempo transaction (type `0x76`) sent from its `attested_address`;
 - the root signature of a key authorization for its `attested_address` ([TIP-0001](./tip-0001.md));
-- an owner approval in a TIP-1114 multisig signature, where TIP-1114 is active.
+- an owner approval in a TIP-1114 multisig signature, where TIP-1114 is active;
+- a signature checked by TIP-1020 `recover` and `verify` for any hash, as in [TIP-1020 verification](#tip-1020-verification).
 
 It MUST be rejected:
 
 - inside a keychain signature (`0x03` or `0x04`), including a configurable delegate's, because a program key is not an access key;
 - as a fee payer signature, in subblock transactions, and in authorization lists;
-- by TIP-1020 `recover` and `verify`, which revert with `InvalidFormat`.
+- as an approval in TIP-1020 `verifyConfigurableAccount`, which reverts with `InvalidFormat`.
 
 Before activation, type `0x06` MUST be rejected in every context.
 
 Where TIP-1114 and TIP-1111 are active, each attested signature counts as one primitive signature toward their limits.
+
+## TIP-1020 verification
+
+TIP-1020 `verify(signer, hash, signature)` runs [Verification](#verification) with `d = hash`, against the registry state at the call, and returns `true` only if the attested address equals `signer`. A signature that fails the validity window, the registry check, or the P256 verification returns `false`. `recover(hash, signature)` returns the attested address under the same checks, and reverts with `InvalidSignature` where `verify` returns `false`. A non-canonical encoding reverts with `InvalidFormat` in both.
+
+The precompile charges the P256 verification and the calldata cost of [Gas](#gas) before any check. The two registry reads charge their own cold storage cost. The result depends on current state: a signature that verifies now fails after `revokeKeys`, `pause`, `removeMeasurement`, or `valid_until`. Contracts MUST NOT cache a successful result past the call.
 
 ## Node behavior
 
@@ -154,7 +162,7 @@ attested_cost = 8,000                  // P256 verification, as TIP-0001 prices 
               + calldata_gas(policy_id || user_tag || valid_until)
 ```
 
-As a transaction signature, `attested_cost - 3,000` is added to the 21,000 base, as TIP-0001 does for P256. With non-zero bytes, `calldata_gas` of the 72 extra bytes is 1,152 gas, so a transaction signature adds 10,352 gas to the base.
+As a transaction signature, `attested_cost - 3,000` is added to the 21,000 base, as TIP-0001 does for P256. With non-zero bytes, `calldata_gas` of the 72 extra bytes is 1,152 gas, so a transaction signature adds 10,352 gas to the base. TIP-1020 charges `attested_cost`.
 
 ## Activation
 
@@ -164,7 +172,6 @@ Activation is hardfork-gated, together with [TIP-XXX3](./tip-xxx3.md) and at lea
 
 - **The program key as the signer, with the user tag in calldata:** every user would share one address, and a program key rotation would move every account.
 - **Measurement in the address:** every signer program upgrade would move every account.
-- **A message form for offchain verification:** needs historical registry reads by verifiers. It is left for a later TIP.
 
 ## Interfaces
 
@@ -177,7 +184,7 @@ Attested signatures add no new contract interface. The registry interface is in 
 | SDKs, such as ox and Viem | Need `attested_address` and `attested_digest` derivation, `0x06` encoding and decoding, and builders for attested-signed transactions, key authorizations, and owner approvals |
 | Wallets | Sign key authorizations through a signer program, then sign later transactions with the access key, as for other access keys |
 | RPC simulation and gas estimation | MUST apply the same checks and charges as block validation, and report which check failed |
-| TIP-1020 callers | Receive `InvalidFormat` for attested signatures |
+| TIP-1020 callers | `verify` and `recover` accept attested signatures checked against the current registry state |
 | Existing signature types | Unchanged |
 
 Test vectors cover encodings, addresses, digests, and each rejection rule.
@@ -200,7 +207,7 @@ The local authority boundary is the registry read. [TIP-XXX1](./tip-xxx1.md#thre
 
 - An attested signature authorizes only the digest its program key signed, and no byte of it can change without the program key.
 - An attested signature is valid only while the registry holds its program key as current for its policy, read at the transaction's position in the block.
-- An attested signature is accepted only as a transaction signature, a key authorization signature, or a multisig owner approval.
+- An attested signature is accepted only as a transaction signature, a key authorization signature, a multisig owner approval, or by TIP-1020 `verify` and `recover`.
 - The address is independent of the program key, the measurement, the expiry, and the chain.
 - Before activation, `0x06` is rejected in every context.
 
