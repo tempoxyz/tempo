@@ -210,7 +210,14 @@ impl NetworkTransactionBuilder<TempoNetwork> for TempoTransactionRequest {
     fn build_unsigned(self) -> BuildResult<TempoTypedTransaction, TempoNetwork> {
         match self.output_tx_type() {
             TempoTxType::AA => match self.complete_aa() {
-                Ok(..) => Ok(self.build_aa().expect("checked by above condition").into()),
+                Ok(..) => {
+                    let tx = self.clone().build_aa().expect("checked by above condition");
+                    // Refuse to build what the node will not decode, so it is never signed.
+                    if let Err(err) = tx.validate() {
+                        return Err(TransactionBuilderError::Custom(err.into()).into_unbuilt(self));
+                    }
+                    Ok(tx.into())
+                }
                 Err(missing) => Err(TransactionBuilderError::InvalidTransactionRequest(
                     TempoTxType::AA,
                     missing,
@@ -497,6 +504,30 @@ mod tests {
             request.build_unsigned(),
             Ok(TempoTypedTransaction::AA(_))
         ));
+    }
+
+    #[test]
+    fn build_unsigned_rejects_aa_priority_fee_above_max_fee() {
+        let request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                to: Some(TxKind::Call(Address::ZERO)),
+                max_fee_per_gas: Some(1),
+                max_priority_fee_per_gas: Some(2),
+                nonce: Some(0),
+                gas: Some(21_000),
+                ..Default::default()
+            },
+            nonce_key: Some(U256::ONE),
+            ..Default::default()
+        };
+        assert_eq!(request.output_tx_type(), TempoTxType::AA);
+        assert_eq!(
+            request
+                .build_unsigned()
+                .expect_err("priority fee above max fee must not build")
+                .to_string(),
+            "Failed to build transaction: max_priority_fee_per_gas must not exceed max_fee_per_gas"
+        );
     }
 
     #[test]

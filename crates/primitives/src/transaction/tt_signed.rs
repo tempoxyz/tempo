@@ -649,8 +649,8 @@ pub(crate) mod tests {
                 |(
                     chain_id,
                     fee_token,
-                    max_priority_fee_per_gas,
-                    max_fee_per_gas,
+                    priority_fee,
+                    max_fee,
                     gas_limit,
                     calls,
                     nonce,
@@ -659,8 +659,9 @@ pub(crate) mod tests {
                 )| TempoTransaction {
                     chain_id,
                     fee_token,
-                    max_priority_fee_per_gas,
-                    max_fee_per_gas,
+                    // validate() requires max_priority_fee_per_gas <= max_fee_per_gas
+                    max_priority_fee_per_gas: priority_fee.min(max_fee),
+                    max_fee_per_gas: priority_fee.max(max_fee),
                     gas_limit,
                     calls,
                     nonce_key: U256::ZERO,
