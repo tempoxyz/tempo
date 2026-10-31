@@ -75,7 +75,7 @@ impl TempoAaTx {
                             keychain.user_address,
                         ),
                     }),
-                TempoSignature::Primitive(_) => None,
+                TempoSignature::Primitive(_) | TempoSignature::Attested(_) => None,
             };
         let grant = self.tx().key_authorization.as_ref().and_then(|auth| {
             Some(NativeAuthorization {
@@ -136,7 +136,9 @@ impl TempoTxEnv {
     fn signed_by_primitive_root(&self) -> bool {
         self.as_aa().is_none_or(|aa| match aa.signature() {
             TempoSignature::Primitive(_) => true,
-            TempoSignature::Keychain(_) | TempoSignature::ConfigurableAccount(_) => false,
+            TempoSignature::Keychain(_)
+            | TempoSignature::ConfigurableAccount(_)
+            | TempoSignature::Attested(_) => false,
         })
     }
 }
@@ -462,8 +464,9 @@ fn validate_root_keys(
     let Some(aa) = aa else {
         return Ok(extra_gas);
     };
+    // Attested signers, like configurable accounts, are not primitive roots.
     if let Some(auth) = &aa.tx().key_authorization
-        && auth.signature.as_configurable_account().is_none()
+        && auth.signature.primitive_signature_type().is_some()
     {
         let signer = auth
             .recover_signer()

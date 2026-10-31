@@ -1,5 +1,8 @@
 use evm2::interpreter::gas::COLD_SLOAD_COST;
-use tempo_primitives::transaction::{AccountSignature, TempoSignature};
+use tempo_primitives::{
+    gas::SECP256K1_VERIFY_GAS,
+    transaction::{AccountSignature, TempoSignature},
+};
 
 /// Additional gas for keychain signatures (key validation overhead: cold SLOAD + processing).
 const KEYCHAIN_VALIDATION_GAS: u64 = COLD_SLOAD_COST as u64 + 900;
@@ -12,6 +15,9 @@ fn account_signature_verification_gas(signature: &AccountSignature) -> u64 {
         // Only a `u64` overflow fails; saturating keeps such a transaction unaffordable.
         AccountSignature::ConfigurableAccount(signature) => {
             signature.intrinsic_verification_gas().unwrap_or(u64::MAX)
+        }
+        AccountSignature::Attested(signature) => {
+            signature.verification_gas() - SECP256K1_VERIFY_GAS
         }
     }
 }
@@ -31,6 +37,8 @@ pub(crate) fn tempo_signature_verification_gas(signature: &TempoSignature) -> u6
         TempoSignature::ConfigurableAccount(signature) => {
             signature.intrinsic_verification_gas().unwrap_or(u64::MAX)
         }
+        // The P256 cost always exceeds the secp256k1 baseline, so this cannot underflow.
+        TempoSignature::Attested(signature) => signature.verification_gas() - SECP256K1_VERIFY_GAS,
     }
 }
 

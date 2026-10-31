@@ -1,5 +1,6 @@
 //! Tempo EVM Handler implementation.
 
+mod attested;
 mod config;
 pub(crate) mod configurable_account;
 
@@ -1443,6 +1444,7 @@ fn prepare_aa(
         tx.valid_before.map(|value| value.get()),
         timestamp,
     )?;
+    attested::validate(request.host, request.tx.inner(), spec)?;
 
     // Configurable-account state checks load more accounts, so transaction warmth goes first.
     request.host.state_mut().prewarm(&caller);
