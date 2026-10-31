@@ -304,6 +304,7 @@ use tempo_contracts::precompiles::{
 use tempo_node::{node::TempoNode, rpc::error::TempoEthApiError};
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
 use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, tip20::ISSUER_ROLE};
+use tokio::{runtime::Handle, task};
 
 /// Creates a test TIP20 token with issuer role granted to the caller
 pub(crate) async fn setup_test_token<P>(
@@ -359,63 +360,61 @@ pub(crate) type LocalTestNode = reth_e2e_test_utils::NodeHelperType<TempoNode>;
 
 pub(crate) type TestMinedBlock = MinedBlock<TempoBuiltPayload, TempoTransactionReceipt>;
 
-pub(crate) struct TestNode(LocalTestNode);
+/// A [`LocalTestNode`] that is stopped when dropped, so it closes `RocksDB` before the test process
+/// exits. Requires a multi-threaded runtime.
+pub(crate) struct TestNode(Option<LocalTestNode>);
 
 impl TestNode {
-    pub(crate) fn into_inner(self) -> LocalTestNode {
-        self.0
-    }
-
     pub(crate) async fn mine(
         &mut self,
         txs: impl IntoIterator<Item = Bytes>,
     ) -> eyre::Result<TestMinedBlock> {
-        self.0.mine(txs).await
+        self.deref_mut().mine(txs).await
     }
 
     pub(crate) async fn mine_signed<T: Encodable2718>(
         &mut self,
         txs: impl IntoIterator<Item = T>,
     ) -> eyre::Result<TestMinedBlock> {
-        self.0.mine_signed(txs).await
+        self.deref_mut().mine_signed(txs).await
     }
 
     pub(crate) async fn mine_pooled(
         &mut self,
         hashes: impl IntoIterator<Item = B256>,
     ) -> eyre::Result<TestMinedBlock> {
-        self.0.mine_pooled(hashes).await
+        self.deref_mut().mine_pooled(hashes).await
     }
 
     pub(crate) async fn inject_and_advance(
         &mut self,
         raw_tx: Bytes,
     ) -> eyre::Result<(B256, TempoBuiltPayload)> {
-        self.0.inject_and_advance(raw_tx).await
+        self.deref_mut().inject_and_advance(raw_tx).await
     }
 
     pub(crate) async fn advance_until_receipt(
         &mut self,
         hash: B256,
     ) -> eyre::Result<TempoTransactionReceipt> {
-        self.0.advance_until_receipt(hash).await
+        self.deref_mut().advance_until_receipt(hash).await
     }
 
     pub(crate) async fn inject_tx(&self, raw_tx: Bytes) -> Result<B256, TempoEthApiError> {
-        self.0.rpc.inject_tx(raw_tx).await
+        self.rpc.inject_tx(raw_tx).await
     }
 
     pub(crate) async fn transaction_receipt(
         &self,
         hash: B256,
     ) -> Result<Option<TempoTransactionReceipt>, TempoEthApiError> {
-        self.0.rpc.transaction_receipt(hash).await
+        self.rpc.transaction_receipt(hash).await
     }
 }
 
 impl From<LocalTestNode> for TestNode {
     fn from(node: LocalTestNode) -> Self {
-        Self(node)
+        Self(Some(node))
     }
 }
 
@@ -423,20 +422,35 @@ impl Deref for TestNode {
     type Target = LocalTestNode;
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        self.0.as_ref().expect("the node is only taken on drop")
     }
 }
 
 impl DerefMut for TestNode {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
+        self.0.as_mut().expect("the node is only taken on drop")
+    }
+}
+
+impl Drop for TestNode {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            return;
+        }
+        let node = self.0.take().expect("the node is only taken on drop");
+        let handle = Handle::current();
+        // Fails if e.g. an in-flight RPC request still holds a database transaction.
+        if let Err(err) = task::block_in_place(|| handle.block_on(node.stop())) {
+            eprintln!("failed to stop test node: {err:?}");
+        }
     }
 }
 
 /// Returns the harness setup for `num_nodes` Tempo nodes on `chain_spec`.
 ///
 /// The nodes build their payloads with [`TempoPayloadAttributes::new`] for the payload timestamp,
-/// without a proposer key, consensus context or extra data.
+/// without a proposer key, consensus context or extra data. They are restartable, so a
+/// [`TestNode`] can stop them on drop.
 pub(crate) fn tempo_test_setup(
     num_nodes: usize,
     chain_spec: Arc<TempoChainSpec>,
@@ -444,12 +458,11 @@ pub(crate) fn tempo_test_setup(
     E2ETestSetupBuilder::new_with_attributes_generator(num_nodes, chain_spec, |timestamp| {
         TempoPayloadAttributes::new(None, timestamp, 0, Bytes::new(), None)
     })
+    .with_restartable_nodes()
 }
 
 /// Set up a test node from the provided source configuration
-pub(crate) async fn setup_test_node(
-    source: NodeSource,
-) -> eyre::Result<(Url, Option<LocalTestNode>)> {
+pub(crate) async fn setup_test_node(source: NodeSource) -> eyre::Result<(Url, Option<TestNode>)> {
     let setup = match source {
         NodeSource::ExternalRpc(url) => {
             TestNodeBuilder::new()
@@ -525,7 +538,7 @@ pub(crate) struct HttpOnlySetup {
     /// HTTP RPC URL for provider connections
     pub http_url: Url,
     /// Optional local node (None if using external RPC)
-    pub local_node: Option<LocalTestNode>,
+    pub local_node: Option<TestNode>,
 }
 
 /// Builder for creating test nodes
@@ -704,7 +717,7 @@ impl TestNodeBuilder {
 
         Ok(HttpOnlySetup {
             http_url: node.rpc_url(),
-            local_node: Some(node),
+            local_node: Some(node.into()),
         })
     }
 
