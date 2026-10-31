@@ -86,6 +86,7 @@ tokio-stream = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
 tempo-transaction-pool = { workspace = true, features = ["test-utils"] }
+tempo-nitro-attestation = { workspace = true, features = ["test-utils"] }
 alloy-network.workspace = true
 tempo-precompiles.workspace = true
 alloy-rpc-types-engine.workspace = true

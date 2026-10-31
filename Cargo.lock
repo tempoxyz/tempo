@@ -14285,8 +14285,10 @@ dependencies = [
  "hex-literal",
  "minicbor",
  "minicbor-serde",
+ "p384",
  "serde",
  "serde_with",
+ "sha2 0.10.9",
  "x509-cert",
 ]
 
@@ -14358,6 +14360,7 @@ dependencies = [
  "tempo-chainspec",
  "tempo-contracts",
  "tempo-evm",
+ "tempo-nitro-attestation",
  "tempo-payload-builder",
  "tempo-payload-types",
  "tempo-precompiles",
