@@ -1260,3 +1260,6 @@ fn bridged_credits_use_recipient_policy_from_t13() -> eyre::Result<()> {
     }
     Ok(())
 }
+
+#[path = "tests/tla.rs"]
+mod tla;
