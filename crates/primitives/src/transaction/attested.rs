@@ -354,4 +354,54 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn configurable_account_carries_attested_approvals() {
+        use crate::transaction::{
+            ConfigurableAccountConfig, ConfigurableAccountOwner, ConfigurableAccountSignature,
+            OwnerApproval, TempoSignature, configurable_account_digest,
+        };
+
+        let unsigned = signed(B256::ZERO, 1_800_000_600);
+        let config = ConfigurableAccountConfig {
+            salt: B256::ZERO,
+            version: 0,
+            threshold: 1,
+            owners: vec![ConfigurableAccountOwner {
+                owner: unsigned.address(),
+                weight: 1,
+            }],
+        };
+        let account = config.derive_account().unwrap();
+        let inner = B256::repeat_byte(0x42);
+        let approval = signed(
+            configurable_account_digest(inner, account, 0),
+            1_800_000_600,
+        );
+        let signature =
+            ConfigurableAccountSignature::try_new(account, config, [approval.clone()]).unwrap();
+
+        // The approval is the standalone `0x06` encoding, as an RLP byte string.
+        let tempo = TempoSignature::ConfigurableAccount(signature.clone());
+        let bytes = tempo.to_bytes();
+        let mut standalone = Vec::new();
+        approval.encode_bytes_into(&mut standalone);
+        assert!(
+            bytes
+                .windows(standalone.len())
+                .any(|window| window == standalone)
+        );
+        assert_eq!(TempoSignature::from_bytes(&bytes).unwrap(), tempo);
+
+        assert_eq!(
+            signature.signatures(),
+            [OwnerApproval::Attested(approval.clone())]
+        );
+        signature.verify_approvals(inner).unwrap();
+        assert!(signature.verify_approvals(B256::ZERO).is_err());
+        assert!(
+            signature.verification_gas().unwrap() > approval.verification_gas(),
+            "the approval is charged as a standalone attested signature"
+        );
+    }
 }

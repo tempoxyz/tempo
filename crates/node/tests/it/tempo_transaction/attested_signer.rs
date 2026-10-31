@@ -4,7 +4,7 @@
 use super::{
     helpers::{
         create_basic_aa_tx, generate_p256_access_key, sign_aa_tx_secp256k1,
-        sign_aa_tx_with_p256_access_key,
+        sign_aa_tx_with_p256_access_key, sign_p256_primitive,
     },
     local::Localnet,
     types::TestEnv,
@@ -25,7 +25,9 @@ use tempo_nitro_attestation::testing::{DEV_PCRS, DevAttestation};
 use tempo_primitives::{
     SignatureType, TempoTxEnvelope,
     transaction::{
-        AttestedSignature, Call, KeyAuthorization, SignedKeyAuthorization, TempoSignature,
+        AttestedSignature, Call, ConfigurableAccountConfig, ConfigurableAccountOwner,
+        ConfigurableAccountSignature, KeyAuthorization, OwnerApproval, SignedKeyAuthorization,
+        TempoSignature, configurable_account_digest,
     },
 };
 
@@ -113,8 +115,9 @@ fn noop_call() -> Call {
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn attested_key_authorization_until_revoked() -> eyre::Result<()> {
+/// Starts a dev node, creates a dev-scheme policy owned by the funder, and registers a fresh
+/// program key under it. Returns the node, the signer, and the program key's coordinates.
+async fn registered_signer() -> eyre::Result<(Localnet, Signer, B256, B256)> {
     // The dev root's certificates are valid from 2026-10-31, so blocks follow wall-clock time.
     reth_tracing::init_test_tracing();
     let setup = TestNodeBuilder::new()
@@ -188,6 +191,14 @@ async fn attested_key_authorization_until_revoked() -> eyre::Result<()> {
     .await?;
     let registry = IAttestedKeyRegistry::new(ATTESTED_KEY_REGISTRY_ADDRESS, env.provider.clone());
     assert!(registry.keyValidUntil(policy_id, x, y).call().await? > now);
+    Ok((env, signer, x, y))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn attested_key_authorization_until_revoked() -> eyre::Result<()> {
+    let (mut env, signer, x, y) = registered_signer().await?;
+    let (chain_id, policy_id) = (env.chain_id, signer.policy_id);
+    let registry = IAttestedKeyRegistry::new(ATTESTED_KEY_REGISTRY_ADDRESS, env.provider.clone());
 
     let attested = signer.address();
     env.fund_account(attested).await?;
@@ -251,5 +262,128 @@ async fn attested_key_authorization_until_revoked() -> eyre::Result<()> {
         Some("attested signature rejected: valid_until too far in the future"),
     )
     .await?;
+    Ok(())
+}
+
+/// A configurable account whose owners, of weight one each, are an attested address and a P256
+/// key.
+struct AttestedOwnedAccount {
+    address: Address,
+    config: ConfigurableAccountConfig,
+    p256: (SigningKey, B256, B256, Address),
+}
+
+impl AttestedOwnedAccount {
+    fn new(signer: &Signer, threshold: u8, salt: u8) -> Self {
+        let p256 = generate_p256_access_key();
+        let mut owners = vec![
+            ConfigurableAccountOwner {
+                owner: signer.address(),
+                weight: 1,
+            },
+            ConfigurableAccountOwner {
+                owner: p256.3,
+                weight: 1,
+            },
+        ];
+        owners.sort_by_key(|owner| owner.owner);
+        let config = ConfigurableAccountConfig {
+            salt: B256::repeat_byte(salt),
+            version: 0,
+            threshold,
+            owners,
+        };
+        Self {
+            address: config.derive_account().expect("valid config"),
+            config,
+            p256,
+        }
+    }
+
+    /// Signs a no-op transaction with the attested approval and, if `with_p256`, the P256
+    /// approval, in ascending owner order.
+    fn signed_tx(
+        &self,
+        signer: &Signer,
+        chain_id: u64,
+        nonce: u64,
+        valid_until: u64,
+        with_p256: bool,
+    ) -> eyre::Result<Vec<u8>> {
+        let tx = create_basic_aa_tx(chain_id, nonce, vec![noop_call()], GAS_LIMIT);
+        let digest =
+            configurable_account_digest(tx.signature_hash(), self.address, self.config.version);
+        let mut approvals = vec![(
+            signer.address(),
+            OwnerApproval::from(signer.sign(digest, valid_until)?),
+        )];
+        if with_p256 {
+            let (key, x, y, owner) = &self.p256;
+            approvals.push((*owner, sign_p256_primitive(digest, key, *x, *y)?.into()));
+        }
+        approvals.sort_by_key(|(owner, _)| *owner);
+        let signature = ConfigurableAccountSignature::try_new(
+            self.address,
+            self.config.clone(),
+            approvals.into_iter().map(|(_, approval)| approval),
+        )?;
+        let envelope: TempoTxEnvelope = tx
+            .into_signed(TempoSignature::ConfigurableAccount(signature))
+            .into();
+        Ok(envelope.encoded_2718())
+    }
+}
+
+/// Submits an encoded transaction and asserts it is mined successfully.
+async fn submit(env: &mut Localnet, encoded: Vec<u8>) -> eyre::Result<()> {
+    let hash = keccak256(&encoded);
+    env.submit_tx(encoded, hash).await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn attested_owner_approves_configurable_account() -> eyre::Result<()> {
+    let (mut env, signer, _, _) = registered_signer().await?;
+    let chain_id = env.chain_id;
+    let single = AttestedOwnedAccount::new(&signer, 1, 0x01);
+    let pair = AttestedOwnedAccount::new(&signer, 2, 0x02);
+    env.fund_account(single.address).await?;
+    env.fund_account(pair.address).await?;
+    let now = env.current_block_timestamp().await?;
+
+    // Threshold 1: the attested approval alone authorizes the account.
+    let encoded = single.signed_tx(&signer, chain_id, 0, now + 300, false)?;
+    submit(&mut env, encoded).await?;
+
+    // Threshold 2: the attested approval alone is below the threshold, and with the P256
+    // approval it reaches it.
+    let encoded = pair.signed_tx(&signer, chain_id, 0, now + 300, false)?;
+    env.submit_tx_expecting_rejection(
+        encoded,
+        Some("configurable account signature weight below threshold"),
+    )
+    .await?;
+    let encoded = pair.signed_tx(&signer, chain_id, 0, now + 300, true)?;
+    submit(&mut env, encoded).await?;
+
+    owner_call(
+        &mut env,
+        IAttestedKeyRegistry::revokeKeysCall {
+            policyId: signer.policy_id,
+        }
+        .abi_encode(),
+    )
+    .await?;
+
+    // After `revokeKeys`, the attested approval no longer authorizes, alone or with the P256 one.
+    let now = env.current_block_timestamp().await?;
+    for (account, with_p256) in [(&single, false), (&pair, true)] {
+        let encoded = account.signed_tx(&signer, chain_id, 1, now + 300, with_p256)?;
+        env.submit_tx_expecting_rejection(
+            encoded,
+            Some("attested signature rejected: program key is not current"),
+        )
+        .await?;
+    }
     Ok(())
 }

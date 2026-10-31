@@ -19,8 +19,9 @@ use tempo_primitives::transaction::{
     ConfigurableAccountSignature, ConfigurableAccountSignatureError, ConfigurableAccountStateError,
     ConfigurableAccountWeightAccumulator, KeychainSignature, KeychainVersion,
     MAX_CONFIGURABLE_ACCOUNT_OWNER_SIGNATURE_BYTES, MAX_CONFIGURABLE_ACCOUNT_OWNERS,
-    MAX_CONFIGURABLE_ACCOUNT_SIGNATURES, PrimitiveSignature, SIGNATURE_TYPE_CONFIGURABLE_ACCOUNT,
-    SignatureType, TempoSignature, configurable_account_digest, derive_p256_address,
+    MAX_CONFIGURABLE_ACCOUNT_SIGNATURES, OwnerApproval, PrimitiveSignature,
+    SIGNATURE_TYPE_CONFIGURABLE_ACCOUNT, SignatureType, TempoSignature,
+    configurable_account_digest, derive_p256_address,
     tt_signature::{
         P256SignatureWithPreHash, SIGNATURE_TYPE_KEYCHAIN, SIGNATURE_TYPE_KEYCHAIN_V2,
         SIGNATURE_TYPE_WEBAUTHN, WebAuthnSignature, normalize_p256_s,
@@ -258,13 +259,18 @@ fn arbitrary_bounded_approvals() {
                     approval.encoded_length() <= MAX_CONFIGURABLE_ACCOUNT_OWNER_SIGNATURE_BYTES
                 );
                 match approval {
-                    PrimitiveSignature::Secp256k1(_) => primitive_types[0] = true,
-                    PrimitiveSignature::P256(_) => primitive_types[1] = true,
-                    PrimitiveSignature::WebAuthn(_) => {
+                    OwnerApproval::Primitive(PrimitiveSignature::Secp256k1(_)) => {
+                        primitive_types[0] = true
+                    }
+                    OwnerApproval::Primitive(PrimitiveSignature::P256(_)) => {
+                        primitive_types[1] = true
+                    }
+                    OwnerApproval::Primitive(PrimitiveSignature::WebAuthn(_)) => {
                         primitive_types[2] = true;
                         saw_max_webauthn |= approval.encoded_length()
                             == MAX_CONFIGURABLE_ACCOUNT_OWNER_SIGNATURE_BYTES;
                     }
+                    OwnerApproval::Attested(_) => unreachable!("not generated"),
                 }
             }
             let bytes = alloy_rlp::encode(&signature);
@@ -565,7 +571,7 @@ fn configurable_account_signature_construction_reports_the_first_broken_rule() {
         assert_eq!(
             ConfigurableAccountSignature::try_new(account, config, approvals.clone())
                 .map(|signature| signature.signatures().to_vec()),
-            expected.map(|()| approvals),
+            expected.map(|()| approvals.into_iter().map(OwnerApproval::from).collect()),
             "{case}"
         );
     }
@@ -627,7 +633,7 @@ fn sixty_five_byte_owners_remain_untyped() {
             vec![primitive],
         );
         let decoded = ConfigurableAccountSignature::decode(&mut encoded.as_slice()).unwrap();
-        assert_eq!(decoded.signatures(), [expected]);
+        assert_eq!(decoded.signatures(), [OwnerApproval::Primitive(expected)]);
     }
 }
 
@@ -1185,7 +1191,7 @@ proptest! {
         );
         match approvals
             .iter()
-            .map(|approval| decode_exact::<PrimitiveSignature>(alloy_rlp::encode(approval.as_slice())))
+            .map(|approval| decode_exact::<OwnerApproval>(alloy_rlp::encode(approval.as_slice())))
             .collect::<Result<Vec<_>, _>>()
         {
             // Accepted approvals decode in order and re-encode canonically.
@@ -1198,7 +1204,12 @@ proptest! {
                 let reencoded = alloy_rlp::encode(&decoded);
                 let canonical_approvals = signatures
                     .iter()
-                    .map(|signature| signature.to_bytes().to_vec())
+                    .map(|signature| match signature {
+                        OwnerApproval::Primitive(signature) => signature.to_bytes().to_vec(),
+                        OwnerApproval::Attested(signature) => {
+                            TempoSignature::Attested(signature.clone()).to_bytes().to_vec()
+                        }
+                    })
                     .collect();
                 prop_assert_eq!(
                     &reencoded,
@@ -1243,7 +1254,7 @@ fn tempo_signature_size_counts_each_allocation_once() {
             };
             let mut config = configurable_account_config(0, 1, &[(indexed_owner(2), 1)]);
             config.owners.reserve(1);
-            let mut approvals = vec![approval; count];
+            let mut approvals = vec![OwnerApproval::Primitive(approval); count];
             approvals.reserve(1);
             let owners_capacity = config.owners.capacity();
             let approvals_capacity = approvals.capacity();
@@ -1258,7 +1269,7 @@ fn tempo_signature_size_counts_each_allocation_once() {
                 TempoSignature::ConfigurableAccount(signature).size(),
                 1 + size_of::<ConfigurableAccountSignature>()
                     + owners_capacity * size_of::<ConfigurableAccountOwner>()
-                    + approvals_capacity * size_of::<PrimitiveSignature>()
+                    + approvals_capacity * size_of::<OwnerApproval>()
                     + count * data_len,
             );
         }
