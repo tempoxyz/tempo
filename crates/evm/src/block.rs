@@ -9,7 +9,7 @@ use alloy_rlp::Decodable;
 use alloy_sol_types::SolCall;
 use commonware_codec::ReadExt;
 use evm2::{
-    EvmTypes, TxResult, TxResultWithState,
+    EvmTypes, TxResult, TxResultWithState, TxStateChanges,
     bytecode::Bytecode,
     evm::{Bal, PendingState, SystemTx},
 };
@@ -763,7 +763,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
     fn execute_transaction_with_commit_condition(
         &mut self,
         tx: impl ExecutorTx<Self>,
-        f: impl FnOnce(&TxResult<TempoEvmTypes>) -> CommitChanges,
+        f: impl FnOnce(&TxResult<TempoEvmTypes>, TxStateChanges<'_>) -> CommitChanges,
     ) -> Result<Option<GasOutput>, BlockExecutionError> {
         let (mut tx_env, recovered) = tx.into_parts();
         // Remove any prewarming-specific context that was added to the tx env.
@@ -785,7 +785,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         let mut validated = None;
         let gas_output = self.inner.execute_transaction_with_commit_condition(
             (tx_env, recovered),
-            |result| {
+            |result, state_changes| {
                 let block_gas_used = if use_regular_gas {
                     result.execution_gas_spent()
                 } else {
@@ -801,7 +801,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
                     block_gas_used,
                 );
                 let commit = if next_section.is_ok() {
-                    f(result)
+                    f(result, state_changes)
                 } else {
                     CommitChanges::No
                 };
