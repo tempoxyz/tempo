@@ -40,3 +40,42 @@ fn verifies_production_attestation_and_rejects_corrupt_signature() {
         Err(Error::InvalidSignature(SignatureError::Document))
     );
 }
+
+#[cfg(feature = "test-utils")]
+#[test]
+fn verifies_dev_attestation_under_dev_root_only() {
+    use tempo_nitro_attestation::{
+        CertificateError, NITRO_DEV_ROOT_DER,
+        testing::{DEV_PCRS, DevAttestation},
+    };
+
+    assert_eq!(
+        digest(&SHA256, NITRO_DEV_ROOT_DER).as_ref(),
+        hex_literal::hex!("eef02ddde90ed0c4cbcdfa551b60b00ddbaae3824d929ecb9102ddff3f34e666")
+    );
+    let now = 1_800_000_000;
+    let document = DevAttestation::new([0xAB; 32], now * 1_000).build();
+    let parsed = parse_attestation(&document).unwrap();
+    assert_eq!(parsed.signature_count(), 3);
+
+    let verified = verify_parsed(parsed.clone(), now, NITRO_DEV_ROOT_DER, &AwsLcP384).unwrap();
+    assert_eq!(verified.user_data, [0xAB; 32]);
+    assert_eq!(verified.timestamp, now * 1_000);
+    let pcrs: Vec<_> = verified
+        .pcrs
+        .iter()
+        .map(|pcr| pcr.value.as_slice())
+        .collect();
+    assert_eq!(
+        pcrs,
+        DEV_PCRS
+            .iter()
+            .map(|pcr| pcr.as_slice())
+            .collect::<Vec<_>>()
+    );
+
+    assert_eq!(
+        verify_parsed(parsed, now, AWS_NITRO_ROOT_DER, &AwsLcP384),
+        Err(Error::InvalidCertificate(CertificateError::RootMismatch))
+    );
+}
