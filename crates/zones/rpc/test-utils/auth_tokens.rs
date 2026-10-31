@@ -95,7 +95,9 @@ pub(crate) fn sign_keychain_signature(
     };
     let primitive = match sign_p256_signature(signing_hash, signing_key)? {
         TempoSignature::Primitive(primitive) => primitive,
-        TempoSignature::Keychain(_) | TempoSignature::ConfigurableAccount(_) => {
+        TempoSignature::Keychain(_)
+        | TempoSignature::ConfigurableAccount(_)
+        | TempoSignature::Attested(_) => {
             unreachable!("primitive signature expected")
         }
     };
@@ -108,7 +110,9 @@ pub(crate) fn sign_keychain_signature(
         TempoSignature::Keychain(keychain) => keychain
             .key_id(&digest)
             .map_err(|err| eyre::eyre!("inner key recovery failed: {err}"))?,
-        TempoSignature::Primitive(_) | TempoSignature::ConfigurableAccount(_) => {
+        TempoSignature::Primitive(_)
+        | TempoSignature::ConfigurableAccount(_)
+        | TempoSignature::Attested(_) => {
             unreachable!("keychain signature expected")
         }
     };

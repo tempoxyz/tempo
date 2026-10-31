@@ -1,6 +1,7 @@
 #[cfg(test)]
 use super::configurable_account::ConfigurableAccountConfig;
 use super::{
+    attested::{AttestedSignature, SIGNATURE_TYPE_ATTESTED},
     configurable_account::{ConfigurableAccountSignature, SIGNATURE_TYPE_CONFIGURABLE_ACCOUNT},
     tempo_transaction::{
         MAX_WEBAUTHN_SIGNATURE_LENGTH, P256_SIGNATURE_LENGTH, SECP256K1_SIGNATURE_LENGTH,
@@ -597,10 +598,12 @@ impl<'a> arbitrary::Arbitrary<'a> for KeychainSignature {
         let version = u.arbitrary()?;
         Ok(Self {
             user_address: u.arbitrary()?,
-            signature: if version == KeychainVersion::V1 {
-                AccountSignature::Primitive(u.arbitrary()?)
-            } else {
-                u.arbitrary()?
+            signature: match (version, u.arbitrary()?) {
+                // Attested signatures never decode inside a keychain envelope.
+                (KeychainVersion::V1, _) | (_, AccountSignature::Attested(_)) => {
+                    AccountSignature::Primitive(u.arbitrary()?)
+                }
+                (KeychainVersion::V2, signature) => signature,
             },
             version,
             cached_key_id: OnceLock::new(), // Always start with empty cache
@@ -628,6 +631,8 @@ pub enum AccountSignature {
     Primitive(PrimitiveSignature),
     /// An account's primitive-owner quorum.
     ConfigurableAccount(ConfigurableAccountSignature),
+    /// A registered program key's signature for an attested address.
+    Attested(AttestedSignature),
 }
 
 impl AccountSignature {
@@ -642,6 +647,9 @@ impl AccountSignature {
                     .map(Self::ConfigurableAccount)
                     .map_err(AccountSignatureError::InvalidConfigurableAccount)
             }
+            Some(SIGNATURE_TYPE_ATTESTED) => AttestedSignature::decode_exact(&data[1..])
+                .map(Self::Attested)
+                .map_err(AccountSignatureError::InvalidAttested),
             _ => PrimitiveSignature::from_bytes(data)
                 .map(Self::Primitive)
                 .map_err(AccountSignatureError::Primitive),
@@ -653,6 +661,7 @@ impl AccountSignature {
         match self {
             Self::Primitive(signature) => signature.encode_bytes_into(out),
             Self::ConfigurableAccount(signature) => signature.encode_bytes_into(out),
+            Self::Attested(signature) => signature.encode_bytes_into(out),
         }
     }
 
@@ -661,14 +670,19 @@ impl AccountSignature {
         match self {
             Self::Primitive(signature) => signature.encoded_length(),
             Self::ConfigurableAccount(signature) => signature.encoded_length(),
+            Self::Attested(signature) => signature.encoded_length(),
         }
     }
 
     /// Returns the signature's access-key type, including configurable account.
+    ///
+    /// An attested signature reports `P256`, its program key's curve. It is never an access key:
+    /// keychain decoding rejects it.
     pub fn key_type(&self) -> SignatureType {
         match self {
             Self::Primitive(signature) => signature.signature_type(),
             Self::ConfigurableAccount(_) => SignatureType::ConfigurableAccount,
+            Self::Attested(_) => SignatureType::P256,
         }
     }
 
@@ -676,7 +690,7 @@ impl AccountSignature {
     pub fn primitive_signature_type(&self) -> Option<SignatureType> {
         match self {
             Self::Primitive(signature) => Some(signature.signature_type()),
-            Self::ConfigurableAccount(_) => None,
+            Self::ConfigurableAccount(_) | Self::Attested(_) => None,
         }
     }
 
@@ -684,17 +698,27 @@ impl AccountSignature {
     pub const fn as_configurable_account(&self) -> Option<&ConfigurableAccountSignature> {
         match self {
             Self::ConfigurableAccount(signature) => Some(signature),
-            Self::Primitive(_) => None,
+            Self::Primitive(_) | Self::Attested(_) => None,
+        }
+    }
+
+    /// Returns the attested signature, when applicable.
+    pub const fn as_attested(&self) -> Option<&AttestedSignature> {
+        match self {
+            Self::Attested(signature) => Some(signature),
+            Self::Primitive(_) | Self::ConfigurableAccount(_) => None,
         }
     }
 
     /// Recovers a primitive signer or returns the shape-validated configurable account.
     ///
-    /// A returned configurable account is untrusted until state and owner quorum are checked.
+    /// A returned configurable account is untrusted until state and owner quorum are checked, and
+    /// an attested address until the registry and validity window are checked.
     fn recover_account(&self, digest: &B256) -> Result<Address, RecoveryError> {
         match self {
             Self::Primitive(signature) => signature.recover_signer(digest),
             Self::ConfigurableAccount(signature) => Ok(signature.account()),
+            Self::Attested(signature) => signature.recover_signer(digest),
         }
     }
 
@@ -703,6 +727,7 @@ impl AccountSignature {
         match self {
             Self::Primitive(signature) => signature.size(),
             Self::ConfigurableAccount(signature) => signature.size(),
+            Self::Attested(_) => size_of::<AttestedSignature>(),
         }
     }
 
@@ -712,6 +737,9 @@ impl AccountSignature {
         version: KeychainVersion,
     ) -> Result<Self, AccountSignatureError> {
         let signature = Self::from_bytes(data)?;
+        if signature.as_attested().is_some() {
+            return Err(AccountSignatureError::AttestedInKeychain);
+        }
         if version == KeychainVersion::V1 && signature.as_configurable_account().is_some() {
             return Err(AccountSignatureError::ConfigurableAccountInKeychainV1);
         }
@@ -727,6 +755,7 @@ impl AccountSignature {
         match self {
             Self::Primitive(signature) => Some(signature.verification_gas()),
             Self::ConfigurableAccount(signature) => signature.verification_gas(),
+            Self::Attested(signature) => Some(signature.verification_gas()),
         }
     }
 }
@@ -740,6 +769,12 @@ impl From<Signature> for AccountSignature {
 impl From<PrimitiveSignature> for AccountSignature {
     fn from(signature: PrimitiveSignature) -> Self {
         Self::Primitive(signature)
+    }
+}
+
+impl From<AttestedSignature> for AccountSignature {
+    fn from(signature: AttestedSignature) -> Self {
+        Self::Attested(signature)
     }
 }
 
@@ -758,6 +793,7 @@ impl TryFrom<TempoSignature> for AccountSignature {
             TempoSignature::ConfigurableAccount(signature) => {
                 Ok(Self::ConfigurableAccount(signature))
             }
+            TempoSignature::Attested(signature) => Ok(Self::Attested(signature)),
             TempoSignature::Keychain(_) => Err(AccountSignatureError::Keychain),
         }
     }
@@ -800,6 +836,10 @@ pub enum AccountSignatureError {
     Primitive(&'static str),
     /// A configurable account approval inside a keychain V1 envelope.
     ConfigurableAccountInKeychainV1,
+    /// An attested signature that does not decode, with its message.
+    InvalidAttested(&'static str),
+    /// An attested signature inside a keychain envelope: a program key is not an access key.
+    AttestedInKeychain,
 }
 
 impl AccountSignatureError {
@@ -812,6 +852,8 @@ impl AccountSignatureError {
             Self::ConfigurableAccountInKeychainV1 => {
                 "configurable account access keys require keychain V2"
             }
+            Self::InvalidAttested(message) => message,
+            Self::AttestedInKeychain => "attested signatures cannot sign as access keys",
         }
     }
 }
@@ -847,6 +889,9 @@ pub enum TempoSignature {
 
     /// Configurable account signature.
     ConfigurableAccount(ConfigurableAccountSignature),
+
+    /// Attested signature by a registered program key (type `0x06`).
+    Attested(AttestedSignature),
 }
 
 impl TempoSignature {
@@ -899,7 +944,7 @@ impl TempoSignature {
     pub fn to_bytes(&self) -> Bytes {
         match self {
             Self::Primitive(primitive_sig) => primitive_sig.to_bytes(),
-            Self::Keychain(_) | Self::ConfigurableAccount(_) => {
+            Self::Keychain(_) | Self::ConfigurableAccount(_) | Self::Attested(_) => {
                 let mut bytes = Vec::with_capacity(self.encoded_length());
                 self.encode_bytes_into(&mut bytes);
                 Bytes::from(bytes)
@@ -925,6 +970,7 @@ impl TempoSignature {
             Self::ConfigurableAccount(configurable_account_sig) => {
                 configurable_account_sig.encode_bytes_into(out)
             }
+            Self::Attested(attested_sig) => attested_sig.encode_bytes_into(out),
         }
     }
 
@@ -940,6 +986,7 @@ impl TempoSignature {
             Self::ConfigurableAccount(configurable_account_sig) => {
                 configurable_account_sig.encoded_length()
             }
+            Self::Attested(attested_sig) => attested_sig.encoded_length(),
         }
     }
 
@@ -948,7 +995,7 @@ impl TempoSignature {
         match self {
             Self::Primitive(primitive_sig) => Some(primitive_sig.signature_type()),
             Self::Keychain(keychain_sig) => keychain_sig.signature.primitive_signature_type(),
-            Self::ConfigurableAccount(_) => None,
+            Self::ConfigurableAccount(_) | Self::Attested(_) => None,
         }
     }
 
@@ -960,6 +1007,7 @@ impl TempoSignature {
             Self::ConfigurableAccount(configurable_account_sig) => {
                 1 + configurable_account_sig.size()
             }
+            Self::Attested(_) => 1 + size_of::<AttestedSignature>(),
         }
     }
 
@@ -999,6 +1047,8 @@ impl TempoSignature {
             Self::ConfigurableAccount(configurable_account_sig) => {
                 Ok(configurable_account_sig.account())
             }
+            // Verifies the program key's signature only; the registry check needs state.
+            Self::Attested(attested_sig) => attested_sig.recover_signer(sig_hash),
         }
     }
 
@@ -1057,6 +1107,14 @@ impl TempoSignature {
             _ => None,
         }
     }
+
+    /// Get the attested signature if this is an attested signature.
+    pub const fn as_attested(&self) -> Option<&AttestedSignature> {
+        match self {
+            Self::Attested(attested_sig) => Some(attested_sig),
+            _ => None,
+        }
+    }
 }
 
 impl Default for TempoSignature {
@@ -1110,6 +1168,7 @@ impl From<AccountSignature> for TempoSignature {
             AccountSignature::ConfigurableAccount(signature) => {
                 Self::ConfigurableAccount(signature)
             }
+            AccountSignature::Attested(signature) => Self::Attested(signature),
         }
     }
 }
@@ -1209,7 +1268,7 @@ fn verify_p256_signature_with_p256(
 /// - !std → p256
 /// - std && !test → aws-lc-rs (best performance)
 /// - std && test → both (ensures verification backend alignment)
-fn verify_p256_signature_internal(
+pub(crate) fn verify_p256_signature_internal(
     r: &[u8],
     s: &[u8],
     pub_key_x: &[u8],

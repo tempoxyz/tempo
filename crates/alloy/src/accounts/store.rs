@@ -31,9 +31,9 @@ use tempo_contracts::precompiles::ITIP20;
 use tempo_primitives::{
     SignatureType, TempoAddressExt, TempoTxEnvelope,
     transaction::{
-        AccountSignature, Call, CallScope, ConfigurableAccountSignature, KeyAuthorization,
-        KeychainSignature, PrimitiveSignature, SelectorRule, SignedKeyAuthorization,
-        TempoSignature, TempoTypedTransaction, TokenLimit,
+        AccountSignature, AttestedSignature, Call, CallScope, ConfigurableAccountSignature,
+        KeyAuthorization, KeychainSignature, PrimitiveSignature, SelectorRule,
+        SignedKeyAuthorization, TempoSignature, TempoTypedTransaction, TokenLimit,
         tt_signature::{P256SignatureWithPreHash, WebAuthnSignature},
     },
 };
@@ -1807,6 +1807,7 @@ struct PersistedSignedKeyAuthorization {
 enum PersistedAuthorizationSignature {
     Primitive(PersistedPrimitiveSignature),
     ConfigurableAccount(ConfigurableAccountSignature),
+    Attested(AttestedSignature),
 }
 
 #[derive(Clone, Deserialize)]
@@ -2008,6 +2009,9 @@ impl TryFrom<PersistedSignedKeyAuthorization> for SignedKeyAuthorization {
             }
             PersistedAuthorizationSignature::ConfigurableAccount(signature) => {
                 AccountSignature::ConfigurableAccount(signature)
+            }
+            PersistedAuthorizationSignature::Attested(signature) => {
+                AccountSignature::Attested(signature)
             }
         };
         Ok(authorization.into_signed(signature))
@@ -2456,6 +2460,7 @@ struct WritableSignedKeyAuthorization {
 enum WritableAuthorizationSignature {
     Primitive(WritablePrimitiveSignature),
     ConfigurableAccount(ConfigurableAccountSignature),
+    Attested(AttestedSignature),
 }
 
 #[derive(Serialize)]
@@ -2525,6 +2530,9 @@ fn writable_signature(
             return Ok(WritableAuthorizationSignature::ConfigurableAccount(
                 signature.clone(),
             ));
+        }
+        AccountSignature::Attested(signature) => {
+            return Ok(WritableAuthorizationSignature::Attested(signature.clone()));
         }
     };
     Ok(WritableAuthorizationSignature::Primitive(match signature {
