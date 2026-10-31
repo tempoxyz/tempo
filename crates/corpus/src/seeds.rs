@@ -52,7 +52,7 @@ pub struct Summary {
 
 /// The harness chain for `spec`: its chain ID and hardfork schedule. A hardfork `spec` never
 /// activates is scheduled at `u64::MAX`, so the harness does not activate it by default.
-pub fn chain_spec_input(spec: &TempoChainSpec) -> eyre::Result<ChainSpecInput> {
+fn chain_spec_input(spec: &TempoChainSpec) -> eyre::Result<ChainSpecInput> {
     let hardforks = TempoHardfork::VARIANTS
         .iter()
         .map(|&fork| match spec.tempo_fork_activation(fork) {
@@ -69,10 +69,7 @@ pub fn chain_spec_input(spec: &TempoChainSpec) -> eyre::Result<ChainSpecInput> {
 
 /// `chunk`'s blocks on the exact pre-state they read. Its code must be resolved
 /// ([`store::resolve_code`]).
-pub fn harness_input(
-    chunk: &Chunk,
-    chain_spec: ChainSpecInput,
-) -> eyre::Result<TempoBlockchainInput> {
+fn harness_input(chunk: &Chunk, chain_spec: ChainSpecInput) -> eyre::Result<TempoBlockchainInput> {
     let mut accounts = BTreeMap::<Address, AccountInput>::new();
     // `Chunk::validate` ensures every key's first version is the state before the chunk.
     for (address, versions) in &chunk.accounts {
@@ -141,7 +138,7 @@ pub fn harness_input(
 /// `chunk`'s single block and its transactions `cases`, or `None` if it reproduces them: per
 /// transaction status and gas, the accounts and storage slots the block changed, then each
 /// transaction's changes against its stored delta.
-pub fn divergence(
+fn divergence(
     chunk: &Chunk,
     cases: &[Case],
     outcome: &TempoExecutionOutcome,
@@ -264,19 +261,15 @@ fn tx_divergence(
         }
         stored.retain(|key, written| Some(&*written) != values.get(key).or(Some(&U256::ZERO)));
         let actual = harness(changes);
-        if stored != actual {
-            let differs = |a: &BTreeMap<Key, U256>, b: &BTreeMap<Key, U256>| {
-                a.iter()
-                    .filter(|(k, v)| b.get(k) != Some(v))
-                    .map(|(k, v)| (*k, *v))
-                    .collect::<Vec<_>>()
-            };
+        if let Some((kind, report)) = differ(
+            "tx-delta",
+            stored.into_iter(),
+            actual.iter().map(|(k, v)| (*k, *v)),
+        ) {
             return Some((
-                "tx-delta",
+                kind,
                 format!(
-                    "tx {index}\nstored only {:#?}\nharness only {:#?}",
-                    differs(&stored, &actual),
-                    differs(&actual, &stored),
+                    "tx {index}: (key, value) missing = stored only, extra = harness only\n{report}"
                 ),
             ));
         }
