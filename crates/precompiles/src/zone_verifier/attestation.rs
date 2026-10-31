@@ -6,14 +6,14 @@ use tempo_nitro_attestation::{
 
 use crate::storage::StorageCtx;
 
-pub(super) const BASE_GAS: u64 = 40_000;
-pub(super) const SIGNATURE_GAS: u64 = 150_000;
+pub(crate) const BASE_GAS: u64 = 40_000;
+pub(crate) const SIGNATURE_GAS: u64 = 150_000;
 
 /// Parses and verifies a Nitro attestation against `root_der` at the given block timestamp.
 /// Base gas is charged before parsing, and signature gas before cryptographic verification.
 ///
 /// Returns `Ok(Some(_))` for a valid attestation, `Ok(None)` for validation failure.
-pub(super) fn verify_attestation_with_root(
+pub(crate) fn verify_attestation_with_root(
     document: &[u8],
     block_timestamp: u64,
     root_der: &[u8],

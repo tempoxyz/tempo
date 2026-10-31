@@ -1,5 +1,6 @@
 pub mod account_keychain;
 pub mod address_registry;
+pub mod attested_key_registry;
 pub mod common_errors;
 pub mod configurable_account;
 pub mod current_committee;
@@ -20,6 +21,7 @@ pub mod zone_verifier;
 
 pub use account_keychain::*;
 pub use address_registry::*;
+pub use attested_key_registry::*;
 pub use common_errors::*;
 pub use configurable_account::*;
 pub use current_committee::*;
@@ -66,10 +68,15 @@ pub const CURRENT_COMMITTEE_ADDRESS: Address =
     address!("0xC077E00000000000000000000000000000000000");
 pub const CONFIGURABLE_ACCOUNT_ADDRESS: Address =
     address!("AACC000000000000000000000000000000000000");
+/// Experimental Attested Key Registry (attested signers PoC).
+pub const ATTESTED_KEY_REGISTRY_ADDRESS: Address =
+    address!("0xA77E570000000000000000000000000000000000");
 
 /// Fixed system precompile addresses and corresponding activation hardfork
 pub const SYSTEM_PRECOMPILES: &[(Address, TempoHardfork)] = &[
     (CONFIGURABLE_ACCOUNT_ADDRESS, TempoHardfork::T14),
+    // PoC: gated on T14 instead of a new hardfork.
+    (ATTESTED_KEY_REGISTRY_ADDRESS, TempoHardfork::T14),
     (TIP403_REGISTRY_ADDRESS, TempoHardfork::Genesis),
     (TIP_FEE_MANAGER_ADDRESS, TempoHardfork::Genesis),
     (STABLECOIN_DEX_ADDRESS, TempoHardfork::Genesis),

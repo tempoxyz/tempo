@@ -198,7 +198,8 @@ mod tests {
     use alloy_signer_local::PrivateKeySigner;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_primitives::transaction::{
-        ConfigurableAccountConfig, ConfigurableAccountOwner, ConfigurableAccountSignature,
+        AttestedSignature, ConfigurableAccountConfig, ConfigurableAccountOwner,
+        ConfigurableAccountSignature,
         tt_signature::{SIGNATURE_TYPE_P256, SIGNATURE_TYPE_WEBAUTHN},
     };
 
@@ -231,6 +232,48 @@ mod tests {
             for result in [
                 verifier.verify_keychain(account, B256::ZERO, signature.to_bytes()),
                 verifier.verify_keychain_admin(account, B256::ZERO, signature.to_bytes()),
+            ] {
+                assert_eq!(
+                    result.unwrap_err(),
+                    SignatureVerifierError::invalid_format().into()
+                );
+            }
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn attested_signatures_are_invalid_format() -> eyre::Result<()> {
+        let mut signature = alloy::primitives::B512::ZERO;
+        signature[31] = 1;
+        signature[63] = 1;
+        let attested = TempoSignature::Attested(AttestedSignature {
+            policy_id: B256::repeat_byte(1),
+            user_tag: B256::repeat_byte(2),
+            program_key: alloy::primitives::B512::repeat_byte(3),
+            valid_until: 1,
+            signature,
+        });
+        let bytes = attested.to_bytes();
+        assert_eq!(TempoSignature::from_bytes(&bytes).unwrap(), attested);
+        let account = Address::repeat_byte(4);
+        let mut storage = HashMapStorageProvider::new_with_spec(1337, TempoHardfork::T14);
+        StorageCtx::enter(&mut storage, || {
+            let verifier = SignatureVerifier::new();
+            assert_eq!(
+                verifier.recover(B256::ZERO, bytes.clone()).unwrap_err(),
+                SignatureVerifierError::invalid_format().into()
+            );
+            assert_eq!(
+                verifier
+                    .verify_configurable_account(account, B256::ZERO, &bytes)
+                    .unwrap_err(),
+                SignatureVerifierError::invalid_format().into()
+            );
+            let keychain = [&[0x04][..], account.as_slice(), &bytes].concat();
+            for result in [
+                verifier.verify_keychain(account, B256::ZERO, keychain.clone().into()),
+                verifier.verify_keychain_admin(account, B256::ZERO, keychain.into()),
             ] {
                 assert_eq!(
                     result.unwrap_err(),
