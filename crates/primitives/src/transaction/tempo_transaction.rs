@@ -356,8 +356,8 @@ impl TempoTransaction {
         // Validate calls list structure using the shared function
         validate_calls(&self.calls, !self.tempo_authorization_list.is_empty())?;
 
-        // Execution already rejects this (EVM PRIORITY_FEE_CHECK); checking here also rejects it
-        // at decode time and before signing.
+        // Execution already rejects this (EVM PRIORITY_FEE_CHECK). Checking it here also rejects
+        // it at decode time and when tempo-alloy builds an AA transaction for signing.
         if self.max_priority_fee_per_gas > self.max_fee_per_gas {
             return Err("max_priority_fee_per_gas must not exceed max_fee_per_gas");
         }
