@@ -139,7 +139,8 @@ pub fn harness_input(
 
 /// The kind and a report of the first way `outcome` differs from what the corpus recorded for
 /// `chunk`'s single block and its transactions `cases`, or `None` if it reproduces them: per
-/// transaction status and gas, then the accounts and storage slots the block changed.
+/// transaction status and gas, the accounts and storage slots the block changed, then each
+/// transaction's changes against its stored delta.
 pub fn divergence(
     chunk: &Chunk,
     cases: &[Case],
@@ -167,7 +168,7 @@ pub fn divergence(
     }
     let changeset = chunk.changeset()?;
     let diff = &outcome.state_diff.total;
-    Ok(differ(
+    let block = differ(
         "accounts",
         changeset.accounts.keys().map(|a| Address::from(*a)),
         diff.accounts.iter().map(|a| a.address),
@@ -181,7 +182,107 @@ pub fn divergence(
                 .map(|(a, s)| (Address::from(*a), U256::from_be_bytes(*s))),
             diff.storage.iter().map(|s| (s.address, s.slot)),
         )
-    }))
+    });
+    Ok(block.or_else(|| tx_divergence(chunk, cases, outcome)))
+}
+
+/// A balance, nonce or storage slot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Key {
+    Balance(Address),
+    Nonce(Address),
+    Slot(Address, U256),
+}
+
+/// The first transaction whose changes differ from its stored delta: a balance, nonce or slot
+/// the harness changed to a value the transaction did not write, or one the transaction changed
+/// that the harness left alone. Writes of the value already there are not changes, so values
+/// are tracked from the witness through the harness's pre-block and per-transaction changes.
+fn tx_divergence(
+    chunk: &Chunk,
+    cases: &[Case],
+    outcome: &TempoExecutionOutcome,
+) -> Option<(&'static str, String)> {
+    let [steps] = outcome.state_diff.blocks.as_slice() else {
+        return Some((
+            "tx-delta",
+            "expected one block of per-transaction changes".into(),
+        ));
+    };
+    let mut values = BTreeMap::<Key, U256>::new();
+    for (address, versions) in &chunk.accounts {
+        let (address, info) = (Address::from(*address), versions[0].1.as_ref());
+        let account = info.map(|info| info.account());
+        values.insert(
+            Key::Balance(address),
+            account.as_ref().map_or(U256::ZERO, |a| a.balance),
+        );
+        values.insert(
+            Key::Nonce(address),
+            U256::from(account.map_or(0, |a| a.nonce)),
+        );
+    }
+    for ((address, slot), versions) in &chunk.storage {
+        let key = Key::Slot(Address::from(*address), U256::from_be_bytes(*slot));
+        values.insert(key, U256::from_be_bytes(versions[0].1));
+    }
+    let harness = |changes: &tempo_fuzz_types::StateChanges| {
+        let mut out = BTreeMap::new();
+        for account in &changes.accounts {
+            let gone = account.exists == Some(false);
+            if let Some(balance) = account.balance.or(gone.then_some(U256::ZERO)) {
+                out.insert(Key::Balance(account.address), balance);
+            }
+            if let Some(nonce) = account.nonce.or(gone.then_some(0)) {
+                out.insert(Key::Nonce(account.address), U256::from(nonce));
+            }
+        }
+        for slot in &changes.storage {
+            out.insert(Key::Slot(slot.address, slot.slot), slot.after);
+        }
+        out
+    };
+    values.extend(harness(&steps.pre_block));
+    for (index, (case, changes)) in cases.iter().zip(&steps.txs).enumerate() {
+        let mut stored = BTreeMap::new();
+        for (address, change) in case.delta.0.iter().flatten() {
+            let address = Address::from(*address);
+            let (balance, nonce) = match &change.info {
+                None => (Some(U256::ZERO), Some(0)),
+                Some(info) => (info.balance.map(U256::from_be_bytes), info.nonce),
+            };
+            if let Some(balance) = balance {
+                stored.insert(Key::Balance(address), balance);
+            }
+            if let Some(nonce) = nonce {
+                stored.insert(Key::Nonce(address), U256::from(nonce));
+            }
+            for (slot, value) in &change.storage {
+                let key = Key::Slot(address, U256::from_be_bytes(*slot));
+                stored.insert(key, U256::from_be_bytes(*value));
+            }
+        }
+        stored.retain(|key, written| Some(&*written) != values.get(key).or(Some(&U256::ZERO)));
+        let actual = harness(changes);
+        if stored != actual {
+            let differs = |a: &BTreeMap<Key, U256>, b: &BTreeMap<Key, U256>| {
+                a.iter()
+                    .filter(|(k, v)| b.get(k) != Some(v))
+                    .map(|(k, v)| (*k, *v))
+                    .collect::<Vec<_>>()
+            };
+            return Some((
+                "tx-delta",
+                format!(
+                    "tx {index}\nstored only {:#?}\nharness only {:#?}",
+                    differs(&stored, &actual),
+                    differs(&actual, &stored),
+                ),
+            ));
+        }
+        values.extend(actual);
+    }
+    None
 }
 
 /// `kind` and the keys missing from or extra in `actual`, unless it has the same as `expected`.
