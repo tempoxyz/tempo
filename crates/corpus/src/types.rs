@@ -329,3 +329,130 @@ pub struct Outcome {
     pub charged_gas: u64,
     pub output: Option<Vec<u8>>,
 }
+
+/// Pre-bitmap block record with the historical changeset stored explicitly. Read only by
+/// [`crate::migrate`].
+#[derive(Debug, SchemaRead, SchemaWrite)]
+pub struct LegacyBlock {
+    pub hash: [u8; 32],
+    pub rlp: Vec<u8>,
+    pub senders: Vec<[u8; 20]>,
+    pub accounts: Vec<([u8; 20], Option<Info>)>,
+    pub storage: Vec<([u8; 20], [u8; 32], [u8; 32])>,
+}
+
+/// Pre-bitmap chunk record; identical to [`Chunk`] except for its blocks.
+#[derive(Debug, SchemaRead, SchemaWrite)]
+pub struct LegacyChunk {
+    pub start: u64,
+    pub end: u64,
+    pub parent: [u8; 32],
+    pub blocks: Vec<LegacyBlock>,
+    pub accounts: BTreeMap<[u8; 20], Vec<(u64, Option<Info>)>>,
+    #[allow(clippy::type_complexity)]
+    pub storage: BTreeMap<([u8; 20], [u8; 32]), Vec<(u64, [u8; 32])>>,
+    pub code: BTreeSet<[u8; 32]>,
+    pub hashes: BTreeMap<u64, [u8; 32]>,
+    pub phases: Option<Phases>,
+}
+
+impl LegacyChunk {
+    /// Converts to the bitmap format, checking every changeset entry against the witness.
+    pub fn upgrade(self) -> eyre::Result<Chunk> {
+        let [legacy]: [LegacyBlock; 1] = self
+            .blocks
+            .try_into()
+            .map_err(|_| eyre::eyre!("legacy chunk must hold one block"))?;
+        let changeset = ChangeSet {
+            accounts: legacy.accounts.iter().cloned().collect(),
+            storage: legacy
+                .storage
+                .iter()
+                .map(|(address, slot, value)| ((*address, *slot), *value))
+                .collect(),
+        };
+        eyre::ensure!(
+            changeset.accounts.len() == legacy.accounts.len()
+                && changeset.storage.len() == legacy.storage.len(),
+            "duplicate legacy changeset entries"
+        );
+        let mut chunk = Chunk {
+            start: self.start,
+            end: self.end,
+            parent: self.parent,
+            blocks: vec![Block {
+                hash: legacy.hash,
+                rlp: legacy.rlp,
+                senders: legacy.senders,
+                changed_accounts: Vec::new(),
+                changed_storage: Vec::new(),
+            }],
+            accounts: self.accounts,
+            storage: self.storage,
+            code: self.code,
+            hashes: self.hashes,
+            phases: self.phases,
+        };
+        let (accounts, storage) = chunk.mark(&changeset)?;
+        chunk.blocks[0].changed_accounts = accounts;
+        chunk.blocks[0].changed_storage = storage;
+        eyre::ensure!(
+            chunk.changeset()? == changeset,
+            "upgraded changeset round trip mismatch"
+        );
+        Ok(chunk)
+    }
+}
+
+/// Pre-delta transaction record: the state delta stored only as a digest. Read only by
+/// [`crate::migrate`].
+#[derive(Debug, PartialEq, Eq, SchemaRead, SchemaWrite)]
+pub struct LegacyCase {
+    pub ordinal: u64,
+    pub index: u64,
+    pub hash: [u8; 32],
+    pub before: Vec<u8>,
+    pub status: u8,
+    pub charged_gas: u64,
+    pub created: Option<[u8; 20]>,
+    pub outputs: LegacyOutputs,
+}
+
+/// Per-field output digests of a [`LegacyCase`].
+#[derive(Debug, PartialEq, Eq, SchemaRead, SchemaWrite)]
+pub struct LegacyOutputs {
+    pub outcome: [u8; 16],
+    pub receipt: [u8; 16],
+    pub delta: [u8; 16],
+    pub after: [u8; 16],
+}
+
+impl LegacyCase {
+    /// Checks a re-executed transaction against this record, including its delta digest, and
+    /// returns its record in the current format.
+    pub fn upgrade(&self, actual: &Transaction) -> eyre::Result<Case> {
+        let case = actual.stored()?;
+        let at = self.ordinal;
+        eyre::ensure!(
+            case.ordinal == self.ordinal
+                && case.index == self.index
+                && case.hash == self.hash
+                && case.before == self.before
+                && case.status == self.status
+                && case.charged_gas == self.charged_gas
+                && case.created == self.created,
+            "legacy transaction context/outcome mismatch at {at}"
+        );
+        eyre::ensure!(
+            case.outputs.outcome == self.outputs.outcome
+                && case.outputs.receipt == self.outputs.receipt
+                && case.outputs.after == self.outputs.after,
+            "legacy transaction output digest mismatch at {at}"
+        );
+        eyre::ensure!(
+            digest(&wincode::serialize(&case.delta)?) == self.outputs.delta,
+            "legacy transaction delta digest mismatch at {at}"
+        );
+        Ok(case)
+    }
+}
