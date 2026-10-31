@@ -239,6 +239,68 @@ impl<'a> TempoBlockExecutor<'a> {
         }
     }
 
+    /// Block-level counters after all prior transactions were committed: the section tag
+    /// followed by non-shared gas left, non-payment gas left, incentive gas used, block gas
+    /// used, cumulative gas used and blob gas used.
+    ///
+    /// With [`Self::restore_transaction_counters`] this executes one transaction from its exact
+    /// prestate (as `tempo-corpus` does), not a whole block. The inner executor's separate
+    /// regular/state block gas counters are not restorable; they only gate block-gas
+    /// admission, which a canonical transaction passes either way.
+    #[doc(hidden)]
+    pub fn transaction_counters(&self) -> [u64; 7] {
+        let section = match self.section {
+            BlockSection::StartOfBlock => 0,
+            BlockSection::NonShared => 1,
+            BlockSection::GasIncentive => 2,
+            BlockSection::System {
+                seen_subblocks_signatures: false,
+            } => 3,
+            BlockSection::System {
+                seen_subblocks_signatures: true,
+            } => 4,
+        };
+        [
+            section,
+            self.non_shared_gas_left,
+            self.non_payment_gas_left,
+            self.incentive_gas_used,
+            self.block_gas_used,
+            self.inner.cumulative_gas_used,
+            self.inner.blob_gas_used,
+        ]
+    }
+
+    /// Restores counters from [`Self::transaction_counters`] into a fresh executor over the
+    /// matching prestate. Returns `false`, changing nothing, for an unknown section tag.
+    ///
+    /// Do not apply pre-execution changes again or finalize this executor. Storage-action
+    /// replay memoization is reset: an isolated transaction always executes normally.
+    #[doc(hidden)]
+    pub fn restore_transaction_counters(&mut self, counters: [u64; 7]) -> bool {
+        let section = match counters[0] {
+            0 => BlockSection::StartOfBlock,
+            1 => BlockSection::NonShared,
+            2 => BlockSection::GasIncentive,
+            3 => BlockSection::System {
+                seen_subblocks_signatures: false,
+            },
+            4 => BlockSection::System {
+                seen_subblocks_signatures: true,
+            },
+            _ => return false,
+        };
+        self.section = section;
+        self.non_shared_gas_left = counters[1];
+        self.non_payment_gas_left = counters[2];
+        self.incentive_gas_used = counters[3];
+        self.block_gas_used = counters[4];
+        self.inner.cumulative_gas_used = counters[5];
+        self.inner.blob_gas_used = counters[6];
+        self.replay_state = StorageActionReplayState::default();
+        true
+    }
+
     /// Deploys `0xEF` marker bytecode and initializes storage at a precompile address.
     ///
     /// This also dispatches the state change to the system caller's state hook so that the
@@ -1685,6 +1747,51 @@ mod tests {
             "duplicate subblocks metadata system transaction"
         );
         assert_eq!(executor.receipts().len(), 1);
+    }
+
+    #[test]
+    fn test_restored_transaction_counters_match_in_block_execution() {
+        let chainspec = test_chainspec();
+        let signer = PrivateKey::from_seed(0);
+        let input = create_system_tx_input(vec![create_subblock_metadata(&signer)], 1);
+        let system_tx = create_system_tx(chainspec.chain_id(), input);
+
+        let mut db = InMemoryDB::default();
+        let mut in_block = TestExecutorBuilder::default()
+            .with_section(BlockSection::NonShared)
+            .build(&mut db, &chainspec);
+        let start = in_block.transaction_counters();
+        in_block
+            .execute_transaction(Recovered::new_unchecked(system_tx.clone(), Address::ZERO))
+            .unwrap();
+        let end = in_block.transaction_counters();
+        let receipts = in_block.receipts().to_vec();
+
+        let mut db = InMemoryDB::default();
+        let mut restored = TestExecutorBuilder::default().build(&mut db, &chainspec);
+        assert_ne!(restored.transaction_counters(), start);
+        assert!(restored.restore_transaction_counters(start));
+        assert_eq!(restored.transaction_counters(), start);
+        restored
+            .execute_transaction(Recovered::new_unchecked(system_tx, Address::ZERO))
+            .unwrap();
+        assert_eq!(restored.transaction_counters(), end);
+        assert_eq!(restored.receipts(), receipts.as_slice());
+    }
+
+    #[test]
+    fn test_restore_transaction_counters_sets_every_counter() {
+        let chainspec = test_chainspec();
+        let mut db = InMemoryDB::default();
+        let mut executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
+        for section in 0..5 {
+            let counters = [section, 11, 12, 13, 14, 15, 16];
+            assert!(executor.restore_transaction_counters(counters));
+            assert_eq!(executor.transaction_counters(), counters);
+        }
+        let before = executor.transaction_counters();
+        assert!(!executor.restore_transaction_counters([5, 0, 0, 0, 0, 0, 0]));
+        assert_eq!(executor.transaction_counters(), before);
     }
 
     #[test]
