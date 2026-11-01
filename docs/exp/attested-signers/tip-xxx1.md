@@ -174,7 +174,7 @@ These requirements are not consensus rules. They determine whether a policy's ad
 - **User tags.** The program SHOULD derive `user_tag = HMAC-SHA256(k, "tempo:user-tag:v1" || method || ":" || normalized_identifier)`. `k` is a secret that a KMS releases only to TEEs with an approved measurement. The derivation, the method names, and the normalization rules MUST NOT change for a policy, because they determine every address.
 - **Secret continuity.** The KMS release policy for `k` MUST cover the old and new measurements during an upgrade. Losing `k` prevents users from signing in again. Their existing access keys continue to work.
 - **Program keys.** The program SHOULD generate a new program key for each registration and register it at least 120 seconds before the current one expires.
-- **Transport.** The program SHOULD end TLS inside the TEE, so the wallet operator's servers cannot read codes or swap access keys.
+- **Transport.** The program SHOULD accept requests only from the wallet operator, over mTLS. It is not reachable from browsers. The wallet operator serves the sign-in page, so a compromised operator can read codes or swap device keys for users who sign in during the compromise. A direct path from the client to the program helps only for clients whose code the operator does not serve.
 - **Builds.** The program MUST build reproducibly from published source. Before the owner proposes a measurement, at least two independent parties SHOULD rebuild it and confirm the measurement. During the delay, monitors SHOULD rebuild every proposed measurement from its published commit.
 
 ## Scope boundaries
