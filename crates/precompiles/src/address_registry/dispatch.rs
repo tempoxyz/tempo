@@ -2,7 +2,7 @@ use crate::{
     Precompile, address_registry::AddressRegistry, charge_input_cost, dispatch, mutate, view,
 };
 use alloy::primitives::Address;
-use revm::precompile::PrecompileResult;
+use evm2::precompiles::PrecompileResult;
 use tempo_contracts::precompiles::IAddressRegistry;
 use tempo_primitives::{MasterId, TempoAddressExt, UserTag};
 
@@ -53,7 +53,7 @@ mod tests {
     use crate::{
         address_registry::IAddressRegistry,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::{assert_full_coverage, check_selector_coverage},
+        test_util::{assert_full_coverage, check_selector_coverage, revert_bytes},
     };
     use alloy::sol_types::{SolCall, SolError, SolValue};
     use tempo_chainspec::hardfork::TempoHardfork;
@@ -87,11 +87,12 @@ mod tests {
             let call = IAddressRegistry::isImplicitlyApprovedCall {
                 addr: Address::ZERO,
             };
-            let result = registry.call(&call.abi_encode(), Address::ZERO)?;
-            assert!(result.is_revert());
+            let result = registry.call(&call.abi_encode(), Address::ZERO);
             assert!(
-                tempo_contracts::precompiles::UnknownFunctionSelector::abi_decode(&result.bytes)
-                    .is_ok()
+                tempo_contracts::precompiles::UnknownFunctionSelector::abi_decode(revert_bytes(
+                    &result
+                ))
+                .is_ok()
             );
             Ok(())
         })
@@ -108,16 +109,14 @@ mod tests {
                 addr: tempo_contracts::precompiles::TIP_FEE_MANAGER_ADDRESS,
             };
             let result = registry.call(&call.abi_encode(), Address::ZERO)?;
-            assert!(!result.is_revert());
-            assert!(bool::abi_decode(&result.bytes).unwrap());
+            assert!(bool::abi_decode(result.bytes()).unwrap());
 
             // Unlisted address returns false.
             let call = IAddressRegistry::isImplicitlyApprovedCall {
                 addr: Address::random(),
             };
             let result = registry.call(&call.abi_encode(), Address::ZERO)?;
-            assert!(!result.is_revert());
-            assert!(!bool::abi_decode(&result.bytes).unwrap());
+            assert!(!bool::abi_decode(result.bytes()).unwrap());
 
             Ok(())
         })
@@ -134,8 +133,7 @@ mod tests {
                 masterId: Default::default(),
             };
             let result = registry.call(&call.abi_encode(), Address::ZERO)?;
-            assert!(!result.is_revert());
-            let addr = Address::abi_decode(&result.bytes).unwrap();
+            let addr = Address::abi_decode(result.bytes()).unwrap();
             assert_eq!(addr, Address::ZERO);
 
             Ok(())
@@ -153,7 +151,7 @@ mod tests {
                 addr: Address::random(),
             };
             let result = registry.call(&call.abi_encode(), Address::ZERO)?;
-            assert!(!bool::abi_decode(&result.bytes).unwrap());
+            assert!(!bool::abi_decode(result.bytes()).unwrap());
 
             // Virtual
             let mut bytes = [0u8; 20];
@@ -162,7 +160,7 @@ mod tests {
                 addr: Address::from(bytes),
             };
             let result = registry.call(&call.abi_encode(), Address::ZERO)?;
-            assert!(bool::abi_decode(&result.bytes).unwrap());
+            assert!(bool::abi_decode(result.bytes()).unwrap());
 
             Ok(())
         })

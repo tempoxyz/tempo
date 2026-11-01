@@ -39,11 +39,12 @@ use commonware_cryptography::{
     transcript::Summary,
 };
 use commonware_math::algebra::Random as _;
-use commonware_p2p::{CheckedSender, LimitedSender, Receiver, Recipients};
+use commonware_p2p::{Blocker, CheckedSender, LimitedSender, Receiver, Recipients};
 use commonware_parallel::Sequential;
 use commonware_runtime::{Handle, IoBufs, Supervisor as _, deterministic::Context};
 use commonware_utils::{
-    Acknowledgement as _, N3f1, TryFromIterator as _, acknowledgement::Exact, ordered,
+    Acknowledgement as _, N3f1, TryFromIterator as _, acknowledgement::Exact, channel::ring,
+    ordered,
 };
 use futures::{StreamExt as _, channel::mpsc};
 use rand::{SeedableRng as _, rngs::StdRng};
@@ -61,7 +62,7 @@ use super::super::{
     state::{self, Round, ShareState},
 };
 
-type TestActor = Actor<Context, StubExecutionProvider, StubMarshal>;
+type TestActor = Actor<Context, RecordingBlocker, StubExecutionProvider, StubMarshal>;
 
 pub(super) struct Harness {
     context: Context,
@@ -81,6 +82,7 @@ pub(super) struct Harness {
     pub(super) marshal: StubMarshal,
     pub(super) epoch_manager: StubEpochManager,
     pub(super) scheme_provider: SchemeProvider,
+    pub(super) blocker: RecordingBlocker,
 }
 
 enum InitialState {
@@ -231,6 +233,7 @@ impl HarnessBuilder {
             marshal: self.marshal,
             epoch_manager: self.epoch_manager,
             scheme_provider: SchemeProvider::new(),
+            blocker: RecordingBlocker::default(),
         }
     }
 }
@@ -280,6 +283,7 @@ impl Harness {
                 epoch_strategy: self.epoch_strategy.clone(),
                 namespace: crate::config::NAMESPACE.to_vec(),
                 me: self.identity.clone(),
+                blocker: self.blocker.clone(),
                 mailbox_size: NonZeroUsize::new(1).unwrap(),
                 marshal: self.marshal.clone(),
                 last_finalized_height: self.last_finalized_height,
@@ -385,6 +389,31 @@ impl Drop for Harness {
         if let Some(handle) = self.handle.take() {
             handle.abort();
         }
+    }
+}
+
+#[derive(Clone, Default)]
+pub(super) struct RecordingBlocker {
+    peers: Arc<Mutex<Vec<PublicKey>>>,
+}
+
+impl RecordingBlocker {
+    pub(super) fn peers(&self) -> Vec<PublicKey> {
+        self.peers.lock().unwrap().clone()
+    }
+}
+
+impl Blocker for RecordingBlocker {
+    type PublicKey = PublicKey;
+
+    fn block(&mut self, peer: PublicKey) -> Feedback {
+        self.peers.lock().unwrap().push(peer);
+        Feedback::Ok
+    }
+
+    fn blocked(&mut self) -> commonware_p2p::BlockedSubscription<PublicKey> {
+        let (_, receiver) = ring::channel(NonZeroUsize::new(1).unwrap());
+        receiver
     }
 }
 

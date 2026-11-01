@@ -122,6 +122,10 @@ pub struct Setup {
     /// `None` preserves the fixture schedule.
     pub t12_time: Option<u64>,
 
+    /// T14 activation override for transition tests.
+    /// `None` preserves the fixture schedule.
+    pub t14_time: Option<u64>,
+
     /// Verification mode used by every validator.
     pub verification_mode: VerificationMode,
 
@@ -156,6 +160,7 @@ impl Setup {
     pub fn new(verification_mode: VerificationMode) -> Self {
         Self {
             t12_time: None,
+            t14_time: None,
             verification_mode,
             how_many_signers: 4,
             how_many_verifiers: 0,
@@ -222,6 +227,14 @@ impl Setup {
         }
     }
 
+    /// Sets the T14 activation timestamp for a live hardfork transition.
+    pub fn t14_time(self, t14_time: u64) -> Self {
+        Self {
+            t14_time: Some(t14_time),
+            ..self
+        }
+    }
+
     /// Announces `tempo/1` on every validator so they publish finalization
     /// certificates to their devp2p peers.
     pub fn gossip(self, with_gossip: bool) -> Self {
@@ -248,6 +261,7 @@ pub async fn setup_validators(
     context: &mut Context,
     Setup {
         t12_time,
+        t14_time,
         verification_mode,
         epoch_length,
         how_many_signers,
@@ -291,6 +305,7 @@ pub async fn setup_validators(
         .with_epoch_length(epoch_length)
         .with_initial_dkg_outcome(onchain_dkg_outcome)
         .with_t12_time(t12_time)
+        .with_t14_time(t14_time)
         .with_validators(validators.clone())
         .launch()
         .unwrap();

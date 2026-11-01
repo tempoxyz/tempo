@@ -3,7 +3,6 @@
 //! Covers Rust integers, Alloy integers, Alloy fixed bytes, `bool`, and `Address`.
 
 use alloy::primitives::{Address, U256};
-use revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
 use tempo_precompiles_macros;
 
 use crate::storage::types::*;
@@ -62,12 +61,12 @@ impl Packable for Address {}
 impl FromWord for Address {
     #[inline]
     fn to_word(&self) -> U256 {
-        self.into_u256()
+        U256::from_be_slice(self.as_slice())
     }
 
     #[inline]
     fn from_word(word: U256) -> crate::error::Result<Self> {
-        Ok(word.into_address())
+        Ok(Self::from_slice(&word.to_be_bytes::<32>()[12..]))
     }
 }
 

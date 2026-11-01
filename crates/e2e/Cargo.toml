@@ -24,7 +24,7 @@ alloy = { workspace = true, features = [
   "rlp",
   "providers",
 ] }
-alloy-evm = { workspace = true, features = ["std"] }
+evm2 = { workspace = true, features = ["std"] }
 alloy-genesis = { workspace = true, features = ["std"] }
 alloy-primitives.workspace = true
 
@@ -62,7 +62,7 @@ reth-static-file.workspace = true
 
 tempfile.workspace = true
 tempo-chainspec = { workspace = true, features = ["reth"] }
-tempo-evm.workspace = true
+tempo-evm = { workspace = true, features = ["genesis"] }
 tempo-dkg-onchain-artifacts.workspace = true
 tempo-consensus.workspace = true
 tempo-node.workspace = true

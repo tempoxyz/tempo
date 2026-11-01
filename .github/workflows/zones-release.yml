@@ -138,10 +138,30 @@ jobs:
             echo "Protected main was not fetched" >&2
             exit 1
           }
-          git merge-base --is-ancestor "$commit_sha" refs/remotes/origin/main || {
-            echo "Release source $commit_sha is not a commit on main" >&2
-            exit 1
-          }
+          if ! git merge-base --is-ancestor "$commit_sha" refs/remotes/origin/main; then
+            # Prepare Zones Release tags the commit on its pre-release branch,
+            # which a squash merge keeps off main. Accept it only as one commit
+            # on main that changes nothing but Zones version lines.
+            read -r -a ancestry <<< "$(git rev-list --parents -n 1 "$commit_sha")"
+            parent="${ancestry[1]:-}"
+            # Without rename detection a moved file shows as a deletion and an
+            # addition, so only in-place edits of regular allowlisted files pass.
+            changed_files="$(git diff --no-renames --raw --no-abbrev "$parent" "$commit_sha" || true)"
+            unexpected_files="$(
+              printf '%s\n' "$changed_files" | grep -v '^$' |
+                grep -Ev $'^:100644 100644 [0-9a-f]{40} [0-9a-f]{40} M\t(Cargo\\.lock|bin/tempo-zone/Cargo\\.toml|crates/zones/[^/]+/Cargo\\.toml)$' || true
+            )"
+            unexpected_lines="$(
+              git diff --no-renames -U0 "$parent" "$commit_sha" | grep -E '^[+-]' |
+                grep -Ev '^(\+\+\+|---) ' | grep -Ev '^[+-]version = "[^"]+"$' || true
+            )"
+            if [[ "${#ancestry[@]}" -ne 2 ]] ||
+               ! git merge-base --is-ancestor "$parent" refs/remotes/origin/main ||
+               [[ -z "$changed_files" || -n "$unexpected_files" || -n "$unexpected_lines" ]]; then
+              echo "Release source $commit_sha is not a commit on main or a Zones version bump on one" >&2
+              exit 1
+            fi
+          fi
 
           {
             echo "tag=$tag"

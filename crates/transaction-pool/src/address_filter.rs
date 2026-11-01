@@ -1,14 +1,15 @@
 //! Address checks for transaction pool admission.
 
 use crate::transaction::{TempoPoolTransactionError, TempoPooledTransaction};
+use alloy_consensus::Transaction;
 use alloy_primitives::{Address, map::AddressSet};
 use reth_transaction_pool::PoolTransaction;
-use std::str::FromStr;
+use std::{iter, str::FromStr};
 
-/// Addresses checked against transaction senders and direct call targets.
+/// Addresses checked against every address a transaction names.
 ///
-/// Ordinary Ethereum-style transactions have at most one direct call target. Tempo
-/// transactions may contain multiple calls, so every direct target is checked.
+/// These are the recovered sender, the fee payer, every direct call target, the delegate and
+/// recovered authority of every EIP-7702 or Tempo authorization, and every access list entry.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AddressFilter {
     addresses: AddressSet,
@@ -37,7 +38,11 @@ impl AddressFilter {
         self.addresses.contains(address)
     }
 
-    /// Checks the recovered sender and every direct call target in the transaction.
+    /// Checks the addresses the transaction names without signature recovery.
+    ///
+    /// These are the recovered sender, every direct call target, every EIP-7702 or Tempo
+    /// authorization delegate, and every access list entry. Fee payer and authorization
+    /// authorities need signature recovery and are checked by [`Self::check_recovered`].
     pub fn check(
         &self,
         transaction: &TempoPooledTransaction,
@@ -46,18 +51,60 @@ impl AddressFilter {
             return Ok(());
         }
 
-        let matched = self
-            .contains(transaction.sender_ref())
-            .then_some(*transaction.sender_ref())
-            .or_else(|| {
-                transaction
-                    .inner()
-                    .calls()
-                    .filter_map(|(kind, _)| kind.into_to())
-                    .find(|address| self.contains(address))
-            });
+        let inner = transaction.inner();
+        let call_targets = inner.calls().filter_map(|(kind, _)| kind.into_to());
+        let eip7702_delegates = inner
+            .authorization_list()
+            .unwrap_or_default()
+            .iter()
+            .map(|auth| auth.address);
+        let tempo_delegates = inner
+            .tempo_authorization_list()
+            .unwrap_or_default()
+            .iter()
+            .map(|auth| auth.address);
+        let access_list = transaction
+            .access_list()
+            .into_iter()
+            .flat_map(|list| list.iter().map(|item| item.address));
 
-        match matched {
+        self.find_match(
+            iter::once(*transaction.sender_ref())
+                .chain(call_targets)
+                .chain(eip7702_delegates)
+                .chain(tempo_delegates)
+                .chain(access_list),
+        )
+    }
+
+    /// Checks the fee payer and the recovered authorization authorities.
+    ///
+    /// Called once validation has cached the transaction environment and recovered the
+    /// authorities, so neither signature is recovered again. A fee payer that fails to recover
+    /// was already rejected by validation.
+    pub fn check_recovered(
+        &self,
+        transaction: &TempoPooledTransaction,
+        authorities: &[Address],
+    ) -> Result<(), TempoPoolTransactionError> {
+        if self.is_empty() {
+            return Ok(());
+        }
+
+        self.find_match(
+            transaction
+                .fee_payer()
+                .ok()
+                .into_iter()
+                .chain(authorities.iter().copied()),
+        )
+    }
+
+    fn find_match(
+        &self,
+        mut addresses: impl Iterator<Item = Address>,
+    ) -> Result<(), TempoPoolTransactionError> {
+        match addresses.find(|address| self.contains(address)) {
             Some(address) => Err(TempoPoolTransactionError::AddressCheck { address }),
             None => Ok(()),
         }
@@ -106,10 +153,32 @@ impl FromStr for AddressFilter {
 #[cfg(test)]
 mod tests {
     use super::AddressFilter;
-    use crate::{test_utils::TxBuilder, transaction::TempoPoolTransactionError};
-    use alloy_primitives::{Address, Bytes, TxKind, U256};
+    use crate::{
+        test_utils::TxBuilder,
+        transaction::{TempoPoolTransactionError, TempoPooledTransaction},
+    };
+    use alloy_consensus::{SignableTransaction, TxEip7702};
+    use alloy_eips::{
+        eip2930::{AccessList, AccessListItem},
+        eip7702::Authorization,
+    };
+    use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
+    use reth_primitives_traits::Recovered;
     use reth_transaction_pool::PoolTransaction;
-    use tempo_primitives::transaction::tempo_transaction::Call;
+    use tempo_primitives::{
+        TempoTxEnvelope,
+        transaction::{TempoSignedAuthorization, tempo_transaction::Call},
+    };
+
+    fn authorization(delegate: Address) -> Authorization {
+        Authorization {
+            chain_id: U256::ONE,
+            nonce: 0,
+            address: delegate,
+        }
+    }
 
     fn assert_address_check(result: Result<(), TempoPoolTransactionError>, expected: Address) {
         assert!(matches!(
@@ -165,6 +234,91 @@ mod tests {
         let filter = AddressFilter::new([later_target]);
 
         assert_address_check(filter.check(&transaction), later_target);
+    }
+
+    #[test]
+    fn checks_fee_payer_only_after_recovery() {
+        let sender = Address::with_last_byte(12);
+        let TempoTxEnvelope::AA(mut signed) =
+            TxBuilder::aa(sender).build().inner().clone().into_inner()
+        else {
+            panic!("expected AA transaction");
+        };
+        let fee_payer = PrivateKeySigner::random();
+        let fee_payer_hash = signed.tx().fee_payer_signature_hash(sender);
+        signed.tx_mut().fee_payer_signature = Some(
+            fee_payer
+                .sign_hash_sync(&fee_payer_hash)
+                .expect("fee payer signing should succeed"),
+        );
+        let transaction = TempoPooledTransaction::new(Recovered::new_unchecked(
+            TempoTxEnvelope::AA(signed),
+            sender,
+        ));
+        let filter = AddressFilter::new([fee_payer.address()]);
+
+        assert!(filter.check(&transaction).is_ok());
+        assert_address_check(
+            filter.check_recovered(&transaction, &[]),
+            fee_payer.address(),
+        );
+    }
+
+    #[test]
+    fn checks_recovered_authorities() {
+        let authority = Address::with_last_byte(13);
+        let transaction = TxBuilder::aa(Address::with_last_byte(14)).build();
+        let filter = AddressFilter::new([authority]);
+
+        assert_address_check(
+            filter.check_recovered(&transaction, &[Address::with_last_byte(15), authority]),
+            authority,
+        );
+    }
+
+    #[test]
+    fn checks_tempo_authorization_delegate() {
+        let delegate = Address::with_last_byte(16);
+        let transaction = TxBuilder::aa(Address::with_last_byte(17))
+            .authorization_list(vec![TempoSignedAuthorization::new_unchecked(
+                authorization(delegate),
+                Signature::test_signature().into(),
+            )])
+            .build();
+
+        assert_address_check(AddressFilter::new([delegate]).check(&transaction), delegate);
+    }
+
+    #[test]
+    fn checks_eip7702_authorization_delegate() {
+        let delegate = Address::with_last_byte(18);
+        let tx = TxEip7702 {
+            chain_id: 1,
+            to: Address::with_last_byte(19),
+            authorization_list: vec![
+                authorization(delegate).into_signed(Signature::test_signature()),
+            ],
+            ..Default::default()
+        };
+        let transaction = TempoPooledTransaction::new(Recovered::new_unchecked(
+            TempoTxEnvelope::Eip7702(tx.into_signed(Signature::test_signature())),
+            Address::with_last_byte(20),
+        ));
+
+        assert_address_check(AddressFilter::new([delegate]).check(&transaction), delegate);
+    }
+
+    #[test]
+    fn checks_access_list_entries() {
+        let listed = Address::with_last_byte(21);
+        let transaction = TxBuilder::aa(Address::with_last_byte(22))
+            .access_list(AccessList(vec![AccessListItem {
+                address: listed,
+                storage_keys: Vec::new(),
+            }]))
+            .build();
+
+        assert_address_check(AddressFilter::new([listed]).check(&transaction), listed);
     }
 
     #[test]
