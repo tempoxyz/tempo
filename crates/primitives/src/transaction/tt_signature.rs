@@ -737,7 +737,17 @@ impl AccountSignature {
         version: KeychainVersion,
     ) -> Result<Self, AccountSignatureError> {
         let signature = Self::from_bytes(data)?;
-        if signature.as_attested().is_some() {
+        // A configurable delegate relays its owners' approvals as an access key, so an attested
+        // approval there would sign as an access key too.
+        let attested_approval = signature
+            .as_configurable_account()
+            .is_some_and(|signature| {
+                signature
+                    .signatures()
+                    .iter()
+                    .any(|approval| approval.as_attested().is_some())
+            });
+        if signature.as_attested().is_some() || attested_approval {
             return Err(AccountSignatureError::AttestedInKeychain);
         }
         if version == KeychainVersion::V1 && signature.as_configurable_account().is_some() {
@@ -838,7 +848,8 @@ pub enum AccountSignatureError {
     ConfigurableAccountInKeychainV1,
     /// An attested signature that does not decode, with its message.
     InvalidAttested(&'static str),
-    /// An attested signature inside a keychain envelope: a program key is not an access key.
+    /// An attested signature, or a configurable account signature with an attested approval,
+    /// inside a keychain envelope: a program key is not an access key.
     AttestedInKeychain,
 }
 

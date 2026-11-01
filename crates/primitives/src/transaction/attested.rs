@@ -403,5 +403,12 @@ mod tests {
             signature.verification_gas().unwrap() > approval.verification_gas(),
             "the approval is charged as a standalone attested signature"
         );
+
+        // A configurable delegate's keychain signature cannot relay the attested approval.
+        let keychain = [&[0x04][..], &[0x11; 20], &bytes].concat();
+        assert_eq!(
+            TempoSignature::from_bytes(&keychain),
+            Err("attested signatures cannot sign as access keys")
+        );
     }
 }
