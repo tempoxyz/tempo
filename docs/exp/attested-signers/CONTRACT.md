@@ -118,19 +118,35 @@ Claude-Session: https://claude.ai/code/session_01D3nmWfxsYgSZCf4nZP5cZY
   `valid_until` a canonical RLP integer. Encoded size is at most 210 bytes.
 - `d` for a key authorization is `KeyAuthorization::signature_hash()`: `keccak256(rlp(KeyAuthorization))` over the
   same fields every other root signature signs. For a transaction it is the Tempo transaction signature hash.
-- Decoding rejects trailing bytes, `r` or `s` outside `[1, n-1]`, and `s > n/2`. Sender recovery and key
-  authorization recovery verify P256 (and that the key is on the curve). The handler then checks, at the
-  transaction's position, for pool and block alike: `valid_until >= now`, `valid_until - now <= 600`, and
-  `program_key_current`. A failure is `attested signature rejected: <reason>`.
+- Decoding rejects trailing bytes, `r` or `s` outside `[1, n-1]`, and `s > n/2`. The handler checks every
+  attested signature of the transaction (sender, key authorization, owner approvals) at its position, for pool
+  and block alike: `valid_until >= now`, `valid_until - now <= 600`, then `program_key_current`. It runs these
+  before key authorization recovery and owner quorum checks, so every P256 verification in the handler follows
+  the registry read. A failure is `attested signature rejected: <reason>`.
+- Pool ordering (tip-xxx2 "Ordering"): pool recovery (`try_recover`, `try_recover_with_cache`,
+  `recover_raw_transaction`, `recover_raw_transaction_with_cache`) derives a `0x06` sender as
+  `attested_address(policy_id, user_tag)` without a curve operation and never puts it in the sender recovery
+  cache that block import reads. The validator then runs, in order: activation and validity window of every
+  attested signature (before building the transaction environment, so before the secp256k1 fee payer
+  recovery), the handler (registry reads, then key authorization and owner approval P256), and last the
+  sender's P256 verification (`P256 signature verification failed`). Block import still recovers senders,
+  verifying a `0x06` sender's P256 first, as the TIP allows outside pool admission. Not covered: a transaction
+  that reaches the pool already recovered (`eth_sendTransaction`, reorg reinjection) was verified earlier and
+  is verified again.
 - TIP-1020 (`0x5165…`, from `T14`; supersedes "rejected by TIP-1020" above): `verify(signer, hash, sig)` returns
   `true` iff the `0x06` signature decodes canonically, `now <= valid_until <= now + 600`, `program_key_current` holds
   at the call, P256 verifies over `attested_digest(d = hash)`, and `attested_address == signer`; otherwise `false`.
   `recover(hash, sig)` returns the attested address under the same checks and reverts `InvalidSignature` otherwise.
   Non-canonical bytes revert `InvalidFormat`. Gas: P256 8,000 + calldata of the 72 extra bytes, charged before any
-  check, plus the two registry reads at their storage cost. `verifyConfigurableAccount`, `verifyKeychain` and
-  `verifyKeychainAdmin` reject `0x06` (`InvalidFormat`).
+  check, plus the two registry reads at their storage cost. `verifyKeychain` and `verifyKeychainAdmin` reject
+  `0x06` (`InvalidFormat`). `verifyConfigurableAccount` accepts `0x06` owner approvals: each is charged as a
+  standalone `0x06` (with the other approvals, before any check, and its two registry reads at their storage cost),
+  and the call returns `false` if one fails the window or `program_key_current`. Its P256 is verified with the
+  other approvals; a failure reverts `InvalidSignature`, as for other owners.
 - Rejected: inside keychain signatures (`0x03`/`0x04` decoding fails with
-  `attested signatures cannot sign as access keys`), in EIP-7702 authorization lists, in Zone RPC auth tokens, and
+  `attested signatures cannot sign as access keys`), including as an owner approval of a configurable delegate's
+  `0x05` signature inside a keychain signature (same decoding error; the handler also rejects one built in memory
+  with `attested approval inside a keychain signature`), in EIP-7702 authorization lists, in Zone RPC auth tokens, and
   in zone transactions. Fee payer signatures are secp256k1 only.
 - Gas: `8,000 + 2 × 2,100 + calldata_gas(policy_id ‖ user_tag ‖ valid_until as 8 bytes BE)`. As a transaction
   signature, `3,000` less is added to the 21,000 base. Zero bytes cost 4 gas, so a `valid_until` below `2^32`
@@ -145,6 +161,6 @@ Claude-Session: https://claude.ai/code/session_01D3nmWfxsYgSZCf4nZP5cZY
   the transaction signature hash, the key authorization hash, or the keychain V2 hash, as for other owners).
   Approvals stay sorted by recovered owner address. Each counts as one signature toward the 8-approval limit and
   costs the standalone `0x06` gas. The handler checks its validity window and registry state at the transaction's
-  position. TIP-1020 `verifyConfigurableAccount` rejects attested approvals (`InvalidFormat`).
+  position. TIP-1020 `verifyConfigurableAccount` accepts attested approvals, as above.
 - Not built: pool revalidation on `KeysRevoked`/`PolicyPaused`/`MeasurementRemoved` (a pending transaction fails
   when it is executed), and RPC gas estimation for `0x06` beyond what the handler does for any signature.

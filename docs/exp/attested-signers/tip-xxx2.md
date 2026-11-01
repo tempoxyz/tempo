@@ -131,7 +131,7 @@ The validity window is the time check above: `valid_until` is at least the block
 
 - `program_key_current` reads registry storage at the transaction's position in the block ([TIP-XXX3](./tip-xxx3.md#node-reads)). A `revokeKeys`, `pause`, or `removeMeasurement` earlier in the same block applies.
 - `p256_verify` checks that `program_key` is on the curve before verifying.
-- Outside pool admission, such as sender recovery during block import, decoding and `p256_verify` MAY run before the registry read. The result MUST equal running every step in order.
+- Outside pool admission, such as sender recovery during block import, decoding and `p256_verify` MAY run before the time checks and the registry read. The result MUST equal running every step in order.
 
 Each failed check rejects the signature. A transaction with a rejected sender signature is invalid and does not enter a block, so no fee is charged and no nonce is consumed. A rejected key authorization signature makes its transaction invalid in the same way.
 
@@ -142,13 +142,12 @@ An attested signature is accepted as:
 - the signature of a Tempo transaction (type `0x76`) sent from its `attested_address`;
 - the root signature of a key authorization for its `attested_address` ([TIP-0001](./tip-0001.md));
 - an owner approval in a TIP-1114 configurable-account signature, where TIP-1114 is active;
-- a signature checked by TIP-1020 `recover` and `verify` for any hash, as in [TIP-1020 verification](#tip-1020-verification).
+- a signature checked by TIP-1020 `recover` and `verify` for any hash, and an owner approval checked by TIP-1020 `verifyConfigurableAccount`, as in [TIP-1020 verification](#tip-1020-verification).
 
 It MUST be rejected:
 
-- inside a keychain signature (`0x03` or `0x04`), including a configurable delegate's, because a program key is not an access key;
-- as a fee payer signature, in subblock transactions, and in authorization lists;
-- as an approval in TIP-1020 `verifyConfigurableAccount`, which reverts with `InvalidFormat`.
+- inside a keychain signature (`0x03` or `0x04`), including as an owner approval in a configurable delegate's configurable-account signature, because a program key is not an access key;
+- as a fee payer signature, in subblock transactions, and in authorization lists.
 
 Before activation, type `0x06` MUST be rejected in every context.
 
@@ -158,11 +157,15 @@ Where TIP-1114 and TIP-1111 are active, each attested signature counts as one pr
 
 TIP-1020 `verify(signer, hash, signature)` runs [Verification](#verification) with `d = hash`, against the registry state at the call, and returns `true` only if the attested address equals `signer`. A signature that fails the validity window, the registry check, or the P256 verification returns `false`. `recover(hash, signature)` returns the attested address under the same checks, and reverts with `InvalidSignature` where `verify` returns `false`. A non-canonical encoding reverts with `InvalidFormat` in both.
 
-The precompile charges the P256 verification and the calldata cost of [Gas](#gas) before any check. The two registry reads charge their own cold storage cost. The result depends on current state: a signature that verifies now fails after `revokeKeys`, `pause`, `removeMeasurement`, or `valid_until`. Contracts MUST NOT cache a successful result past the call.
+The precompile charges the P256 verification and the calldata cost of [Gas](#gas) before any check. The two registry reads charge their own cold storage cost.
+
+TIP-1020 `verifyConfigurableAccount(account, hash, signature)` accepts attested owner approvals. Each one costs what a standalone attested signature costs, and the precompile charges it with the other approvals before any check. The call returns `false` if an attested approval fails the validity window or the registry check at the call. The P256 verification of an attested approval is part of the owner quorum check, as for other owners.
+
+The result of each function depends on current state: a signature that verifies now fails after `revokeKeys`, `pause`, `removeMeasurement`, or `valid_until`. Contracts MUST NOT cache a successful result past the call.
 
 ## Node behavior
 
-- **Ordering.** Pools MUST finish decoding and time checks before any elliptic-curve operation, and SHOULD check fee affordability before the registry reads.
+- **Ordering.** Pools MUST finish decoding and time checks before any elliptic-curve operation, and MUST read the registry before they verify any attested P256 signature. A pool derives the sender of a transaction signed by an attested signature from its policy ID and user tag, without a curve operation, and verifies that P256 signature after every other admission check.
 - **Revalidation.** Pools SHOULD revalidate pending transactions with attested signatures on `KeysRevoked`, `PolicyPaused`, and `MeasurementRemoved` for their policy, and evict them after `valid_until` or when their program key expires.
 - **Caching.** Nodes MAY cache successful P256 verifications by `keccak256(attested_signature)` and `d`. The time checks and registry reads MUST run for each block.
 
@@ -193,7 +196,7 @@ Attested signatures add no new contract interface. The registry interface is in 
 | SDKs, such as ox and Viem | Need `attested_address` and `attested_digest` derivation, `0x06` encoding and decoding, and builders for attested-signed transactions, key authorizations, and owner approvals |
 | Wallets | Request attested signatures for transactions, key authorizations, owner approvals, and messages through the wallet operator. Access keys stay optional |
 | RPC simulation and gas estimation | MUST apply the same checks and charges as block validation, and report which check failed |
-| TIP-1020 callers | `verify` and `recover` accept attested signatures checked against the current registry state |
+| TIP-1020 callers | `verify`, `recover`, and `verifyConfigurableAccount` accept attested signatures checked against the current registry state |
 | Existing signature types | Unchanged |
 
 Test vectors cover encodings, addresses, digests, and each rejection rule.
@@ -216,7 +219,7 @@ The local authority boundary is the registry read. [TIP-XXX1](./tip-xxx1.md#thre
 
 - An attested signature authorizes only the digest its program key signed, and no byte of it can change without the program key.
 - An attested signature is valid only while the registry holds its program key as current for its policy, read at the transaction's position in the block.
-- An attested signature is accepted only as a transaction signature, a key authorization signature, a configurable-account owner approval, or by TIP-1020 `verify` and `recover`.
+- An attested signature is accepted only as a transaction signature, a key authorization signature, a configurable-account owner approval outside a keychain signature, or by TIP-1020 `verify`, `recover`, and `verifyConfigurableAccount`.
 - The address is independent of the program key, the measurement, the expiry, and the chain.
 - Before activation, `0x06` is rejected in every context.
 

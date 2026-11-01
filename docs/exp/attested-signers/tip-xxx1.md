@@ -152,6 +152,8 @@ Each failure stops the operation at a different point:
 
 The wallet operator can forward each operation in one round trip from the wallet, and it can revoke the device at once.
 
+Revoking a device needs no state in the program. Every signature needs the operator's approval, so the operator revokes a device by refusing to approve its operations. The binding token itself cannot be revoked. It only expires.
+
 ### Trust
 
 Each party's authority, and its limit:
@@ -164,7 +166,7 @@ Each party's authority, and its limit:
 | Policy guardian | Pause the policy, remove measurements and anchors, revoke all program keys, and cancel pending proposals | Approve a measurement or trust anchor |
 | Signer program (approved code) | Sign for any user tag of its policy, as its code allows | Run with a different measurement under the same registration |
 | Identity method's parties, such as an OpenID Connect provider or the program's email account | Prove any identity of that method, and so bind a device as any of its users | Sign without the operator's approval, or affect other methods |
-| Wallet operator | Approve or refuse each signature, revoke devices at once, and serve the client's code | Sign without a device proof, bind its own device, or register a key for unapproved code |
+| Wallet operator | Approve or refuse each signature, revoke devices at once, and serve the client's code. Because it serves that code, it can read sign-in proofs or swap device keys for users who sign in while it is compromised | Sign without a device proof from a bound device, except for users who sign in while it is compromised, or register a key for unapproved code |
 | User's device | Sign device proofs | Sign without the operator's approval |
 | Validators | Nothing beyond their existing role | |
 
@@ -232,7 +234,8 @@ A passkey usually needs no signer program. It is a native Tempo signer and can o
 
 A policy MAY approve code with other authorization rules. This profile is the reference.
 
-- **Device binding.** At sign-in, the program issues the binding as a token that it seals with the device binding key. The token covers the user tag, the device key, the chain, the policy, and an expiry of at most 30 days. Only a verified sign-in issues one.
+- **Device binding.** At sign-in, the program issues the binding as a token that it seals with the device binding key. The token covers the user tag, the device key, the chain, the policy, and an expiry of at most 30 days. Only a verified sign-in issues one. The program keeps no list of bindings, so it cannot revoke one before its expiry.
+- **Device revocation.** The operator revokes a device by refusing to approve its operations, at once and for every later signature. A user who signs out asks the operator to do this.
 - **Device proof.** The device key signs `keccak256("tempo:attested-device" || chainId || policyId || userTag || deviceKeyId || digest || nonce || timestamp)`. The program accepts a timestamp within 60 seconds of its clock and rejects a nonce it saw in that window.
 - **Operator approval.** The operator's approval key signs `keccak256("tempo:attested-approval" || chainId || policyId || userTag || deviceKeyId || digest || nonce || expiry)`, with an expiry of at most 120 seconds. The approval key's public key is fixed in the measured code or in the policy.
 - **Signing.** The program signs a digest only if the binding, the device proof, and the approval are valid and name the same user tag, device key, digest, and nonce.
@@ -244,12 +247,14 @@ Dollar amounts use the [TIP-1067](./tip-1067.md) base-fee cap of 1.2 × 10^10 at
 
 | Operation | Gas | Cost at the cap | Paid |
 |---|---|---|---|
-| Registering a Nitro program key with a five-certificate chain | 790,000 for verification ([TIP-XXX4](./tip-xxx4.md#gas)), plus storage and calldata | about $0.0095 | Every 600 seconds or less, for each running signer program |
+| Registering a Nitro program key with a five-certificate chain | About 1,150,000: 790,000 for verification ([TIP-XXX4](./tip-xxx4.md#gas)), and about 360,000 for the transaction base, the key record, the event, and calldata | about $0.014, of which $0.0095 is verification | Every 600 seconds or less, for each running signer program |
 | Registering a Confidential Space program key | To be measured ([TIP-XXX5](./tip-xxx5.md#gas)) | | Every 600 seconds or less, for each running signer program |
 | Verifying an attested signature | P256 verification plus 4,200 ([TIP-XXX2](./tip-xxx2.md#gas)) | about $0.00015 | Each operation that the attested signer signs |
 | Transactions signed by an access key | No extra gas | | Where the user authorized an access key |
 
-At one registration every 600 seconds, one Nitro signer program costs about $1.37 per day at the cap.
+The part outside verification is measured. A registration under the dev scheme, with a three-certificate chain and 2,276 bytes of calldata, used 809,265 gas, of which 490,000 is verification. The other 319,265 gas is the transaction base, the key record, the event, and calldata. A production document is about 2,200 bytes longer, which adds about 35,000 gas of calldata.
+
+At one registration every 600 seconds, one Nitro signer program costs about $2.00 per day at the cap, of which $1.37 is verification.
 
 ## Interfaces
 
@@ -295,7 +300,7 @@ The most consequential attack is signing for every address of a policy. The atta
 | Compromised build pipeline | Produces a malicious image from reviewed source | The image's measurement differs from independent rebuilds. Monitors flag the proposal, and the guardian cancels it during the delay. Without independent rebuilds, the owner approves it and it can sign as every user |
 | Compromised policy owner | Proposes any measurement or trust anchor | Proposals wait for the delay. The guardian cancels them and can pause the policy. If no one acts, the malicious code signs as every user after the delay |
 | Compromised guardian | Pauses the policy and removes entries | Can deny service. Cannot approve code |
-| Attestation service | Signs documents | Fully trusted for its scheme. A compromise lets the attacker register keys for any measurement. Guardians remove the service's trust anchors or pause, which stops new registrations at once. A hardfork disables the scheme |
+| Attestation service | Signs documents | Fully trusted for its scheme. A compromise lets the attacker register keys for any measurement. Guardians remove the scheme's trust anchors where it has them, or pause, which stops new registrations at once. Nitro has no anchors, so its guardians pause. A hardfork disables the scheme |
 | TEE hardware flaw | Reads program memory | Exposes the current program key, `k`, and the device binding key. The program key expires within 600 seconds, and the guardian revokes keys at once. A leaked `k` links identities to addresses. A leaked binding key lets an attacker bind devices, which still need the operator's approval |
 
 Residual risks:

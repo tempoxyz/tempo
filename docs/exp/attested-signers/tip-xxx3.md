@@ -95,6 +95,7 @@ Every change below reverts with `Unauthorized` if the caller lacks the role, and
 - `UnknownScheme` if the scheme is not active;
 - `DelayTooLong` if the delay exceeds `MAX_DELAY`;
 - `TooManyEntries` if either list exceeds its maximum;
+- `AlreadyListed` if either list contains an entry twice;
 - `InvalidAnchor` if the scheme rejects an anchor's format, or accepts no anchors and the list is not empty.
 
 ### Approvals
