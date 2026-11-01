@@ -66,7 +66,7 @@ The signer program checks how the user signed in. The chain sees only a policy I
 | Identity method | A way to prove an identity to the program, such as an email code, an OpenID Connect ID token, or a wallet signature. The program defines each method. |
 | Identity | A method name and a normalized identifier, such as `email:alice@example.com` or `google:<sub>`. |
 | User tag | A 32-byte value that the program derives from an identity with its secret `k` ([Identity methods](#identity-methods)). The chain treats it as opaque. |
-| Device key | A P256 key that the user's client generates at each sign-in. It never leaves the client. |
+| Device key | A P256 key that the user's client generates at each sign-in. It never leaves the client. It can also be an access key of the account ([Access keys](#access-keys)). |
 | Device binding | A record, issued by the program at sign-in, that binds one device key to one user tag until it expires. |
 | Device proof | A signature by the device key over one digest ([reference profile](#reference-authorization-profile)). |
 | Wallet operator | The party that runs the wallet's servers and its signer program, serves the wallet client's code, and approves each signature. |
@@ -85,9 +85,40 @@ Steps 1, 2, and 5 are consensus rules. Steps 3 and 4 are rules of the measured c
 
 The critical authority boundary is the measurement check at registration. Only code whose measurement the policy approved can hold a registered program key, and only a registered program key can sign for the policy's addresses. Inside that code, the second boundary is the pair of device proof and operator approval: neither the device nor the operator gets a signature alone.
 
-### Sign-in and signing
+### Scenario
 
-The following scenario is illustrative. Alice signs in to a wallet with the email address `alice@example.com` under policy `P`, whose signer program runs in an AWS Nitro Enclave. Email is one identity method. Another method changes only the challenge and the proof in steps 10 to 14.
+The following sections follow one illustrative user. Alice signs in to a wallet with the email address `alice@example.com` under policy `P`, whose signer program runs in an AWS Nitro Enclave. Each section covers one step of the [lifecycle](#lifecycle).
+
+### Program key registration
+
+The signer program keeps a current program key in the registry, independent of any user.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant S as Signer program (TEE)
+    participant A as Attestation service
+    participant T as Tempo
+
+    loop Every few minutes
+        S->>S: programKey = p256.generate()
+        S->>A: Request a document binding programKey to chain, registry, P
+        A-->>S: Attestation document (measurement, binding)
+        S->>T: registerKey(P, document, programKey)
+        T->>T: Verify the document, check the measurement is active in P
+        T-->>S: Registered until at most now + 600 s
+    end
+```
+
+1. The program generates a new program key.
+2. The attestation service returns a document that binds the key to the chain, the registry, and policy `P`, with the measurement of the running code.
+3. The program, or anyone, submits the document to `registerKey` ([TIP-XXX3](./tip-xxx3.md#registration)).
+4. The registry verifies the document under the policy's scheme, checks that the measurement is active, and records the key for at most 600 seconds.
+5. The program repeats this before each registration expires.
+
+### Sign-in
+
+Alice proves her identity once, and the proof binds a new device key to her user tag. Email is one identity method. Another method changes only the challenge and the proof in steps 5 to 9.
 
 ```mermaid
 sequenceDiagram
@@ -96,17 +127,7 @@ sequenceDiagram
     participant W as Wallet
     participant O as Wallet operator
     participant S as Signer program (TEE)
-    participant A as Attestation service
-    participant T as Tempo
 
-    Note over S,T: Every few minutes
-    S->>S: programKey = p256.generate()
-    S->>A: Request a document binding programKey to chain, registry, P
-    A-->>S: Attestation document (measurement, binding)
-    S->>T: registerKey(P, document, programKey)
-    T-->>S: Registered until at most now + 600 s
-
-    Note over U,S: Sign-in (any identity method)
     U->>W: Continue with alice@example.com
     W->>W: deviceKey = p256.generate()
     W->>O: Start sign-in (email, deviceKey)
@@ -118,8 +139,30 @@ sequenceDiagram
     S->>S: Check the code<br/>userTag = HMAC-SHA256(k, "tempo:user-tag:v1" || "email:alice@example.com")
     S-->>O: Device binding for deviceKey and userTag
     O-->>W: Session for the device
+```
 
-    Note over U,T: Each operation, with no new sign-in
+1. Alice's wallet generates a device key for this sign-in.
+2. The wallet starts the sign-in through the wallet operator.
+3. The signer program sends Alice an email code from its own email account. The challenge commits to the device key.
+4. Alice enters the code, and the wallet returns it through the operator.
+5. The program checks the code, derives Alice's user tag ([Identity methods](#identity-methods)), and issues a device binding for the device key.
+6. The operator records the device for Alice's session.
+
+If Alice enters a wrong code, the program issues no binding.
+
+### Signing
+
+Each later operation needs the device key and the operator's approval, with no new sign-in.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as Alice
+    participant W as Wallet
+    participant O as Wallet operator
+    participant S as Signer program (TEE)
+    participant T as Tempo
+
     U->>W: Send 10 USD to Bob
     W->>W: digest = signing hash of the transaction<br/>deviceProof = deviceKey.sign(digest, nonce)
     W->>O: Transaction and deviceProof
@@ -132,27 +175,59 @@ sequenceDiagram
     T-->>W: Receipt
 ```
 
-1. The signer program registers a program key, as [TIP-XXX3](./tip-xxx3.md#registration) describes, and repeats this before each registration expires.
-2. Alice's wallet generates a device key for this sign-in and starts the sign-in through the wallet operator.
-3. The signer program sends Alice an email code from its own email account. The challenge commits to the device key.
-4. Alice enters the code. The program checks it, derives her user tag, and issues a device binding for the device key.
-5. For each later operation, the wallet signs a device proof over the operation's digest, and the wallet operator approves the same digest.
-6. The signer program checks the binding, the device proof, and the approval, then signs the digest ([TIP-XXX2](./tip-xxx2.md#signed-digest)).
-7. The transaction is sent from Alice's attested signer address. The node verifies the attested signature ([TIP-XXX2](./tip-xxx2.md#verification)).
+1. The wallet computes the operation's digest and signs a device proof over it with a fresh nonce.
+2. The wallet operator checks Alice's session and its own policy, and approves the same digest and nonce.
+3. The signer program checks the binding, the device proof, and the approval, then signs the digest ([TIP-XXX2](./tip-xxx2.md#signed-digest)).
+4. The transaction is sent from Alice's attested signer address. The node verifies the attested signature ([TIP-XXX2](./tip-xxx2.md#verification)).
 
-The same path signs key authorizations, configurable-account owner approvals, and messages.
-
-Each failure stops the operation at a different point:
+The same path signs key authorizations, configurable-account owner approvals, and messages. The operator can forward each operation in one round trip from the wallet.
 
 | Failure | Outcome |
 |---|---|
-| Alice enters a wrong code | The program issues no binding |
 | The device proof or the approval is missing or names another digest | The program signs nothing |
 | The program key expires before the transaction lands | The node rejects the signature, and the wallet requests a new one |
 
-The wallet operator can forward each operation in one round trip from the wallet, and it can revoke the device at once.
-
 Revoking a device needs no state in the program. Every signature needs the operator's approval, so the operator revokes a device by refusing to approve its operations. The binding token itself cannot be revoked. It only expires.
+
+### Access keys
+
+The device key can also be an access key of Alice's account. One key then serves both roles, and transactions within the key's limits need no request to the operator or the signer program.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant W as Wallet
+    participant O as Wallet operator
+    participant S as Signer program (TEE)
+    participant T as Tempo
+
+    Note over W,T: Once, at sign-in or later
+    W->>W: keyAuthorization for deviceKey (limits, expiry)<br/>deviceProof over its digest
+    W->>O: keyAuthorization and deviceProof
+    O->>S: digest, deviceProof, approval, binding
+    S-->>O: Attested signature over the key authorization
+    O->>T: Transaction carrying the key authorization
+    T->>T: Store deviceKey as an access key
+
+    Note over W,T: Each transaction within the limits
+    W->>W: Sign the transaction with deviceKey
+    W->>T: Transaction from attested_address(P, userTag), keychain signature
+    T->>T: Check the access key and its limits
+```
+
+1. The wallet builds a key authorization for its device key, with the limits and expiry the app requested, and signs a device proof over its digest.
+2. The operator approves, and the signer program signs the key authorization as the account's owner. This follows the [Signing](#signing) path, and it can share the sign-in's request.
+3. The chain stores the device key as an access key of the attested signer's account ([TIP-1011](./tip-1011.md)).
+4. Within the key's limits, the device key signs transactions directly as a keychain signature. No request reaches the operator or the signer program.
+5. Beyond the limits, and for operations that only the owner can do, the device key signs a device proof instead, and the [Signing](#signing) path applies.
+
+| Rule | Reason |
+|---|---|
+| The key authorization names the device key, and no other key | One key per sign-in, so revoking the device covers both roles |
+| A key authorization with no limits and no allowed calls grants no direct power | The device key then acts only through the operator's approval |
+| Device proofs and keychain signatures sign different preimages | A device proof never verifies as a transaction signature, and the reverse |
+
+Revoking the access key onchain ends its direct power. The operator's refusal ends its owner operations. A wallet that revokes a device does both.
 
 ### Trust
 
@@ -167,7 +242,7 @@ Each party's authority, and its limit:
 | Signer program (approved code) | Sign for any user tag of its policy, as its code allows | Run with a different measurement under the same registration |
 | Identity method's parties, such as an OpenID Connect provider or the program's email account | Prove any identity of that method, and so bind a device as any of its users | Sign without the operator's approval, or affect other methods |
 | Wallet operator | Approve or refuse each signature, revoke devices at once, and serve the client's code. Because it serves that code, it can read sign-in proofs or swap device keys for users who sign in while it is compromised | Sign without a device proof from a bound device, except for users who sign in while it is compromised, or register a key for unapproved code |
-| User's device | Sign device proofs | Sign without the operator's approval |
+| User's device | Sign device proofs, and transactions within the limits of its access key, if it has one | Sign an owner operation, or exceed its access key's limits, without the operator's approval |
 | Validators | Nothing beyond their existing role | |
 
 The [Threat Model](#threat-model) traces what happens when each party is compromised.
@@ -177,7 +252,7 @@ The [Threat Model](#threat-model) traces what happens when each party is comprom
 - Identity methods, device bindings, and operator approvals are rules of the signer program, not of the protocol. Adding a method is a new measurement, not a hardfork. The chain cannot check identity methods, device bindings, or approvals. It checks only that approved code signed.
 - A policy cannot express an approval that depends on claims other than the measurement, such as a cloud project. The signer program enforces those conditions itself.
 - Attested signatures sign transactions, key authorizations, and configurable-account owner approvals. Contracts verify them for any hash through TIP-1020, against the current registry state.
-- Access keys are optional. An attested signer can authorize one like any account owner.
+- Access keys are optional. The device key can be the account's access key, with the limits the app requests ([Access keys](#access-keys)).
 - Each identity is a separate attested signer. A configurable account with several attested signers as owners links one person's methods.
 - Each policy uses one scheme. Combining schemes uses configurable-account thresholds.
 - Attested signer addresses do not depend on the measurement, so upgrades of the signer program keep every address.
@@ -294,7 +369,7 @@ The most consequential attack is signing for every address of a policy. The atta
 | Actor | Capability and trust | Boundary check and failure consequence |
 |---|---|---|
 | Compromised wallet operator, insider, or deploy pipeline | Controls servers, deploys, the approval key, and the TEE host | Different code has a different measurement, so registration fails ([TIP-XXX3](./tip-xxx3.md#registration)). The approval key signs nothing without a device proof, and only a verified sign-in binds a device. It can read sign-in proofs or swap device keys for users who sign in during the compromise, because it serves the client's code |
-| Stolen device key | Signs device proofs | Gets no signature without the operator's approval. The operator revokes the device at once |
+| Stolen device key | Signs device proofs, and transactions as its access key, if it has one | Spends within its access key's limits until the access key expires or is revoked onchain. Gets no owner signature without the operator's approval, and the operator refuses at once |
 | Identity method's parties | Prove any identity of the method | Can bind a device as any user of that method. Signing still needs the operator's approval. For email, whoever reads the program's outbound messages can do this, so the email account needs few admins, no message previews, and alerts on changes |
 | User's mailbox or provider account | Proves that user's identity | Binds a device as that user only |
 | Compromised build pipeline | Produces a malicious image from reviewed source | The image's measurement differs from independent rebuilds. Monitors flag the proposal, and the guardian cancels it during the delay. Without independent rebuilds, the owner approves it and it can sign as every user |

@@ -52,7 +52,7 @@ An attested signature names a policy, a user tag, a program key, and an expiry, 
 
 The registry check is the authority boundary. A valid P256 signature from an unregistered key, or from a key registered for another policy, is rejected.
 
-In the illustrative [TIP-XXX1 scenario](./tip-xxx1.md#sign-in-and-signing), the context is Alice's transaction, so the program key signs over that transaction's signing hash, and the sender is `attested_address(P, userTag)`. The same signature format serves the other [accepted contexts](#accepted-contexts) with a different context digest.
+In the illustrative [TIP-XXX1 scenario](./tip-xxx1.md#signing), the context is Alice's transaction, so the program key signs over that transaction's signing hash, and the sender is `attested_address(P, userTag)`. The same signature format serves the other [accepted contexts](#accepted-contexts) with a different context digest.
 
 ## Constants
 
