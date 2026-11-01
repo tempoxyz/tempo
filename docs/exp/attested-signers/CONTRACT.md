@@ -16,7 +16,7 @@ Everything here is DEV/EXPERIMENTAL. Nothing merges.
 
 ## Registry precompile
 
-- Address: `0xA77E570000000000000000000000000000000000` (`ATTESTED_KEY_REGISTRY_ADDRESS`).
+- Address: `0x1161000000000000000000000000000000000000` (`ATTESTED_KEY_REGISTRY_ADDRESS`).
 - Solidity interface: `IAttestedKeyRegistry` from TIP-1161 → Interfaces. PoC MUST implement, with exactly those
   signatures/selectors: `createPolicy`, `computePolicyId`, `proposeMeasurement`, `cancelProposal`, `removeMeasurement`,
   `revokeKeys`, `pause`, `unpause`, `setMaxKeyLifetime`, `registerKey`, `policy`, `measurementActiveAt`,
@@ -206,6 +206,5 @@ for an exact estimate: each zero byte of it costs 12 gas less. After `revokeKeys
 
 ## Deviations from the TIPs
 
-- Registry address: the PoC uses `0xA77E570000000000000000000000000000000000`. TIP-1161 names `0x1161000000000000000000000000000000000000`.
 - Activation: the PoC gates everything on T14. The TIPs leave the hardfork open.
 - Scheme `0xFE` (Nitro dev root, chain 1337 only) is PoC-only. Scheme `0x02` (TIP-1163) is not implemented.

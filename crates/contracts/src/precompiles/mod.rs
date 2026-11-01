@@ -70,7 +70,7 @@ pub const CONFIGURABLE_ACCOUNT_ADDRESS: Address =
     address!("AACC000000000000000000000000000000000000");
 /// Experimental Attested Key Registry (attested signers PoC).
 pub const ATTESTED_KEY_REGISTRY_ADDRESS: Address =
-    address!("0xA77E570000000000000000000000000000000000");
+    address!("0x1161000000000000000000000000000000000000");
 
 /// Fixed system precompile addresses and corresponding activation hardfork
 pub const SYSTEM_PRECOMPILES: &[(Address, TempoHardfork)] = &[
