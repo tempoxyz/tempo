@@ -28,7 +28,6 @@ use opentelemetry_otlp as _;
 pub mod cli;
 mod defaults;
 mod follow;
-pub mod init_state;
 mod overrides;
 pub mod p2p_proxy;
 pub mod regenesis;
@@ -45,6 +44,7 @@ pub use crate::{
 pub use reth_cli_util as cli_util;
 pub use tempo_node;
 pub use tempo_node as node;
+pub use tempo_state_bloat as init_state;
 
 use crate::utils::{
     block_on_consensus_public_key, fetch_bootnodes, install_crypto_provider,
@@ -71,7 +71,7 @@ use tempo_chainspec::{
 };
 use tempo_consensus::{feed as consensus_feed, run_consensus_stack, run_follow_stack};
 use tempo_contracts::precompiles::{ZONE_FACTORY_ADDRESS, initial_zone_factory_config};
-use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
+use tempo_evm::consensus::TempoConsensus;
 use tempo_faucet::faucet::{TempoFaucetExt, TempoFaucetExtApiServer};
 pub use tempo_node::{
     AccountInfoReader, AddressFilter, InvalidPoolTransactionError, PoolTransaction,
@@ -132,10 +132,7 @@ fn set_zone_factory_genesis_owner(genesis: &mut Genesis, owner: Address) -> eyre
         .storage
         .as_mut()
         .ok_or_eyre("DEV ZoneFactory is missing storage")?;
-    storage.insert(
-        B256::ZERO,
-        B256::from(initial_zone_factory_config(owner).to_be_bytes()),
-    );
+    storage.insert(B256::ZERO, B256::from(initial_zone_factory_config(owner)));
     Ok(())
 }
 
@@ -155,6 +152,12 @@ pub fn tempo_main() -> eyre::Result<()> {
 /// launched. See [`TempoOverrides`] for the currently supported hooks and an
 /// example that injects additional transaction pool validation.
 pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
+    // A JIT backend launches this binary as its out-of-process compiler.
+    #[cfg(feature = "jit")]
+    if tempo_evm::jit::maybe_run_jit_helper()?.is_break() {
+        return Ok(());
+    }
+
     install_crypto_provider();
 
     reth_cli_util::sigsegv_handler::install();
@@ -310,6 +313,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         tempo_node::ExecutedState,
         TempoArgs,
         Option<tempo_node::gossip::TransportHandle>,
+        tempo_node::Estimator,
     )>();
     let (consensus_dead_tx, mut consensus_dead_rx) = oneshot::channel();
 
@@ -325,7 +329,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             return Ok(());
         }
 
-        let (node, executed_state, args, gossip_transport) =
+        let (node, executed_state, args, gossip_transport, estimator) =
             consensus_startup_rx.blocking_recv().wrap_err(
                 "channel closed before consensus-relevant command line args \
                 and a handle to the execution node could be received",
@@ -427,6 +431,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                     executed_state,
                     cl_feed_state_clone,
                     gossip_transport,
+                    estimator,
                 ))
             };
 
@@ -464,8 +469,15 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         ret
     });
 
-    let components =
-        |spec: Arc<TempoChainSpec>| (TempoEvmConfig::new(spec.clone()), TempoConsensus::new(spec));
+    let jit_args = match &cli.command {
+        Commands::ReExecute(cmd) => cmd.jit.clone(),
+        _ => Default::default(),
+    };
+    let components = move |spec: Arc<TempoChainSpec>| {
+        let (evm_config, _) = tempo_node::node::build_evm_config(spec.clone(), &jit_args, None)
+            .expect("failed to build EVM config");
+        (evm_config, TempoConsensus::new(spec))
+    };
 
     cli.run_with_components::<TempoNode>(components, async move |builder, args| {
         if let Some(value) = args.consensus.message_backlog {
@@ -531,7 +543,16 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         } else {
             None
         };
-        let chain_id = builder.config().chain.chain().id();
+        let chain_id = builder.config().chain.chain_id();
+
+        #[cfg(feature = "custom-pcrs")]
+        if let Some(policy) = args.custom_pcrs.clone() {
+            policy.validate(chain_id)?;
+            warn!(?policy, "replacing compiled-in zone verifier PCRs with a custom policy");
+            tempo_precompiles::zone_verifier::CUSTOM_PCRS
+                .set(policy)
+                .map_err(|_| eyre::eyre!("zone verifier PCRs were already set"))?;
+        }
 
         // Resolve the bootnodes endpoint:
         // --tempo.bootnodes-endpoint=none -> disabled
@@ -548,12 +569,15 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                 None => node,
             }
         });
+        let estimator = tempo_node.payload_builder_builder().resolve_estimator();
+        // Share the overridden settings with both the payload builder and consensus.
+        let tempo_node = tempo_node.with_estimator(estimator.clone());
         let executed_state = tempo_node.executed_state();
 
         let NodeHandle {
             node,
             node_exit_future,
-        } = builder
+        } = tempo_node_launcher::launch(builder
             .node(tempo_node)
             .apply(|mut builder: WithLaunchContext<_>| {
                 // Uncertified follower mode: set debug RPC when certification is off
@@ -581,6 +605,26 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                     }
 
                     if has_consensus_engine {
+                        let module_config = ctx.modules.module_config();
+                        let mut missing = Vec::new();
+                        if cli::selection_lacks_consensus(module_config.http()) {
+                            missing.push("--http.api");
+                        }
+                        if cli::selection_lacks_consensus(module_config.ws()) {
+                            missing.push("--ws.api");
+                        }
+                        if !missing.is_empty() {
+                            warn!(
+                                flags = %missing.join(", "),
+                                "the consensus RPC module (consensus_*) is served on transports \
+                                 whose module selection does not list it; this implicit activation \
+                                 is deprecated and will be removed in a future release, add \
+                                 `consensus` to the listed flags to keep serving it",
+                            );
+                        }
+
+                        // Registered on every transport regardless of selection until the
+                        // deprecation above is completed.
                         let consensus_rpc = TempoConsensusRpc::new(cl_feed_state);
                         ctx.modules.merge_configured(consensus_rpc.into_rpc())
                             .wrap_err("failed to register consensus rpc module")?;
@@ -588,8 +632,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
 
                     Ok(())
                 })
-            })
-            .launch_with_debug_capabilities()
+            }))
             .await
             .wrap_err("failed launching execution node")?;
 
@@ -652,7 +695,9 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             });
         }
 
-        let _ = consensus_startup_tx.send((node, executed_state, args, gossip_transport));
+        // The receiver is only dropped when the consensus thread has already
+        // exited, which `consensus_dead_rx` below reports.
+        let _ = consensus_startup_tx.send((node, executed_state, args, gossip_transport, estimator));
 
         // TODO: emit these inside a span
         tokio::select! {
@@ -684,6 +729,19 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         Err(unwind) => std::panic::resume_unwind(unwind),
     }
     Ok(())
+}
+
+/// Creates a temporary directory on tmpfs where available.
+///
+/// For tests whose runtime is dominated by fsync or syncfs latency on the CI disk, which is
+/// shared with node tests, rather than by the behavior they check.
+#[cfg(test)]
+pub(crate) fn tmpfs_tempdir() -> tempfile::TempDir {
+    #[cfg(target_os = "linux")]
+    if let Ok(dir) = tempfile::tempdir_in("/dev/shm") {
+        return dir;
+    }
+    tempfile::tempdir().unwrap()
 }
 
 #[cfg(test)]
@@ -768,8 +826,8 @@ mod tests {
         };
         let filter = node_cmd.ext.node_args.txpool_filter.as_ref().unwrap();
         assert_eq!(filter.len(), 2);
-        assert!(filter.contains(&address!("0000000000000000000000000000000000000001")));
-        assert!(filter.contains(&address!("0000000000000000000000000000000000000002")));
+        assert!(filter.contains(&Address::with_last_byte(1)));
+        assert!(filter.contains(&Address::with_last_byte(2)));
 
         let file = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(
@@ -793,9 +851,9 @@ mod tests {
         };
         let filter = node_cmd.ext.node_args.txpool_filter.as_ref().unwrap();
         assert_eq!(filter.len(), 3);
-        assert!(filter.contains(&address!("0000000000000000000000000000000000000003")));
-        assert!(filter.contains(&address!("0000000000000000000000000000000000000004")));
-        assert!(filter.contains(&address!("0000000000000000000000000000000000000005")));
+        assert!(filter.contains(&Address::with_last_byte(3)));
+        assert!(filter.contains(&Address::with_last_byte(4)));
+        assert!(filter.contains(&Address::with_last_byte(5)));
     }
 
     #[test]
@@ -849,7 +907,7 @@ mod tests {
             code: Some(Bytes::from_static(&[0xef])),
             storage: Some(BTreeMap::from([(
                 B256::ZERO,
-                B256::from(initial_zone_factory_config(owner).to_be_bytes()),
+                B256::from(initial_zone_factory_config(owner)),
             )])),
             ..Default::default()
         };
@@ -1162,7 +1220,10 @@ mod tests {
             node_cmd.ext.consensus.network_budget.into_duration(),
             Duration::from_millis(50)
         );
-        assert_eq!(node_cmd.ext.node_args.builder_build_time_multiplier, 1.35);
+        assert_eq!(
+            node_cmd.ext.node_args.builder_build_time_multiplier,
+            tempo_node::estimator::BuildTimeMultiplier::default()
+        );
 
         let mut cli = TempoCli::try_parse_from([
             "tempo",
@@ -1248,5 +1309,23 @@ mod tests {
                 .payload_builder_builder()
                 .enable_prewarming
         );
+    }
+
+    #[test]
+    fn parses_jit_args() {
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "node",
+            "--dev",
+            "--jit",
+            "--jit.hot-threshold",
+            "8",
+        ])
+        .unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+        assert!(node_cmd.jit.enabled);
+        assert_eq!(node_cmd.jit.hot_threshold, 8);
     }
 }

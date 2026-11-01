@@ -2,7 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const repository = 'tempoxyz/tempo';
-const imageNames = ['tempo', 'tempo-localnet', 'tempo-sidecar', 'tempo-xtask'];
+const imageNames = ['tempo', 'tempo-localnet', 'tempo-xtask'];
 const marker = id => `<!-- tempo-docker-run:${id} -->`;
 const requestMarker = id => `<!-- tempo-docker-request:${id} -->`;
 
@@ -47,8 +47,11 @@ async function resolve(github, context, runId = context.payload.workflow_run?.id
 
 function validateImages(raw, status) {
   if (!raw || !/^[a-f0-9]{40}$/.test(raw.sha)) throw new Error('Invalid source SHA');
-  const names = status.mode === 'profiling' ? ['tempo'] : imageNames;
-  if (!Array.isArray(raw.images) || raw.images.length !== names.length) throw new Error('Invalid images');
+  if (!Array.isArray(raw.images)) throw new Error('Invalid images');
+  // Older builds have no devnet image; accept both sets during the rollout.
+  const names = status.mode === 'profiling' ? ['tempo'] :
+    raw.images.some(image => image.name === 'tempo-devnet') ? [...imageNames, 'tempo-devnet'] : imageNames;
+  if (raw.images.length !== names.length) throw new Error('Invalid images');
   const prefix = status.mode === 'profiling' ? 'profiling-' : '';
   const tags = [`${prefix}pr-${status.number}`, `${prefix}sha-${raw.sha.slice(0, 7)}`];
   if (status.mode === 'nightly') tags.push('nightly');

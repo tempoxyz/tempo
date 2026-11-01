@@ -486,13 +486,12 @@ mod tests {
     use commonware_runtime::{Runner as _, deterministic::Runner};
     use commonware_utils::{N3f1, TryFromIterator as _};
     use rand::SeedableRng as _;
-    use reth_ethereum::evm::revm::{State, database::StateProviderDatabase};
-    use reth_node_builder::ConfigureEvm as _;
+    use reth_evm::{ConfigureEvm as _, database::StateProviderDatabase};
     use reth_provider::{
         EvmStateProviderBox, StateProvider as _,
         test_utils::{ExtendedAccount, MockEthProvider},
     };
-    use tempo_node::evm::{TempoEvmConfig, evm::TempoEvm};
+    use tempo_node::evm::{TempoEvm, TempoEvmConfig};
     use tempo_precompiles::{
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         validator_config_v2::{IValidatorConfigV2, VALIDATOR_NS_ADD},
@@ -525,9 +524,9 @@ mod tests {
 
         fn evm_for_block(
             &self,
-            db: State<StateProviderDatabase<EvmStateProviderBox>>,
+            db: StateProviderDatabase<EvmStateProviderBox>,
             header: &TempoHeader,
-        ) -> eyre::Result<TempoEvm<State<StateProviderDatabase<EvmStateProviderBox>>>> {
+        ) -> eyre::Result<TempoEvm<'static>> {
             TempoEvmConfig::moderato()
                 .evm_for_block(db, header)
                 .map_err(eyre::Report::new)
@@ -609,7 +608,7 @@ mod tests {
     fn peer(seed: u8) -> ValidatorFixture {
         let private_key = PrivateKey::from_seed(u64::from(seed));
         let public_key = private_key.public_key();
-        let validator_address = AlloyAddress::from([seed; 20]);
+        let validator_address = AlloyAddress::repeat_byte(seed);
         let egress_ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, seed));
         let ingress_socket = SocketAddr::new(egress_ip, 8000 + u16::from(seed));
         let p2p_address = Address::Asymmetric {
@@ -659,7 +658,7 @@ mod tests {
         validators: &[ValidatorFixture],
     ) -> eyre::Result<TestExecutionNode> {
         let mut storage = HashMapStorageProvider::new(1);
-        let owner = AlloyAddress::from([0xAA; 20]);
+        let owner = AlloyAddress::repeat_byte(0xAA);
 
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             let mut config = ValidatorConfigV2::new();

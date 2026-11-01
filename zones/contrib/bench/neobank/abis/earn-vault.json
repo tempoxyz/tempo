@@ -1,0 +1,56 @@
+[
+  {
+    "type": "function",
+    "name": "totalEarnShares",
+    "stateMutability": "view",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "function",
+    "name": "previewRedeem",
+    "stateMutability": "view",
+    "inputs": [
+      {
+        "name": "earnShares",
+        "type": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "assets",
+        "type": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "function",
+    "name": "redeem",
+    "stateMutability": "nonpayable",
+    "inputs": [
+      {
+        "name": "earnShares",
+        "type": "uint256"
+      },
+      {
+        "name": "receiver",
+        "type": "address"
+      },
+      {
+        "name": "minAssets",
+        "type": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "assets",
+        "type": "uint256"
+      }
+    ]
+  }
+]

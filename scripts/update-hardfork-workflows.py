@@ -42,10 +42,7 @@ def parse_metadata(raw: str, requested: str) -> tuple[list[dict[str, str]], dict
         or not isinstance(matrix, list)
         or len(matrix) != 2
         or not all(isinstance(lane, dict) for lane in matrix)
-        or not all(
-            isinstance(lane.get("hardfork"), str) and isinstance(lane.get("genesisArgs"), str)
-            for lane in matrix
-        )
+        or not all(isinstance(lane.get("hardfork"), str) for lane in matrix)
     ):
         raise ValueError("invalid hardfork metadata shape")
     if len(ordered) < 2 or ordered[-2:] != [current, next_hardfork]:
@@ -67,14 +64,9 @@ def main() -> None:
     args = parser.parse_args()
 
     matrix, metadata = parse_metadata(args.metadata, args.hardfork)
-    replace_parameter(
-        args.workflows_root / "manifests/tempo-tests.yaml",
-        json.dumps(matrix, separators=(",", ":")),
-    )
-    replace_parameter(
-        args.workflows_root / "manifests/invariant-tests.yaml",
-        json.dumps([{"hardfork": lane["hardfork"]} for lane in matrix], separators=(",", ":")),
-    )
+    matrix_json = json.dumps(matrix, separators=(",", ":"))
+    for workflow in ("tempo-tests", "invariant-tests"):
+        replace_parameter(args.workflows_root / f"manifests/{workflow}.yaml", matrix_json)
     print(json.dumps(metadata, separators=(",", ":")))
 
 

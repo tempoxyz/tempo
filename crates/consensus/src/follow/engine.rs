@@ -124,7 +124,8 @@ impl<TUpstream> Config<TUpstream> {
             actor: marshal_actor,
             mailbox: marshal_mailbox,
             finalized_floor: last_finalized_height,
-            ..
+            finalized_tip,
+            finalized_tip_certificate,
         } = alias::marshal::init(
             context.child("marshal"),
             page_cache_ref,
@@ -157,10 +158,7 @@ impl<TUpstream> Config<TUpstream> {
             .wrap_err("failed to obtain devp2p block client")?;
         let block_network = FullBlockClient::new(
             network_client,
-            Arc::new(TempoConsensus::new_with_bal_hashes(
-                self.execution_node.chain_spec(),
-                cfg!(feature = "bal"),
-            )),
+            Arc::new(TempoConsensus::new(self.execution_node.chain_spec())),
         );
 
         let (resolver, resolver_rx) = resolver::try_init(
@@ -206,10 +204,14 @@ impl<TUpstream> Config<TUpstream> {
                 scheme_provider: scheme_provider.clone(),
                 network_identity: self.network_identity,
                 last_finalized_height,
+                finalized_tip: finalized_tip_certificate
+                    .map(|certificate| (finalized_tip.1, certificate)),
+                partition_prefix: format!("{}_driver", self.partition_prefix),
                 marshal: marshal_mailbox.clone(),
                 epoch_strategy: epoch_strategy.clone(),
             },
         )
+        .await
         .wrap_err("failed initializing driver actor")?;
 
         let (gossip_actor, gossip_mailbox) = self

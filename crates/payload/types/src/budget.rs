@@ -109,9 +109,8 @@ impl ValidationLatencyEstimate {
     /// Recent elapsed validation feedback is the floor so faster replay feedback
     /// still reclaims budget without shrinking smaller current blocks. If the
     /// current block carries more gas or transactions than the recent P90 workload,
-    /// the estimate scales up by that excess. Encoded bytes are intentionally
-    /// not used here because BAL sidecar bytes are charged through marshal
-    /// persistence, not execution-layer validation work.
+    /// the estimate scales up by that excess. Encoded byte size is not used to
+    /// estimate execution-layer validation work.
     pub fn estimate(self, workload: ValidationLatencyWorkload) -> Option<Duration> {
         if self.elapsed == Duration::ZERO {
             return None;
@@ -140,7 +139,7 @@ impl ValidationLatencyEstimate {
 /// reserving validator headroom when the builder grows beyond the workloads
 /// that produced the feedback.
 #[derive(Clone, Debug, Default)]
-pub struct ValidationLatencyEstimator {
+pub(crate) struct ValidationLatencyEstimator {
     /// Samples are kept in id order for retention; count maps are keyed by
     /// observed values so estimate snapshots can read percentiles without
     /// sorting.
@@ -191,7 +190,7 @@ impl ValidationLatencyEstimator {
     }
 
     /// Records local time spent validating a block through the execution layer.
-    pub fn observe(
+    pub(crate) fn observe(
         &mut self,
         sample_id: u64,
         workload: ValidationLatencyWorkload,
@@ -219,7 +218,7 @@ impl ValidationLatencyEstimator {
     /// `None` means this node has not yet observed any successful validations.
     /// Callers should fall back to their conservative validator-work estimate in
     /// that case.
-    pub fn estimate(&self) -> Option<ValidationLatencyEstimate> {
+    pub(crate) fn estimate(&self) -> Option<ValidationLatencyEstimate> {
         let sample_count = self.sample_window.len();
         let p90_elapsed = percentile_from_counts(&self.elapsed_counts, sample_count, 9, 10)?;
         Some(ValidationLatencyEstimate {

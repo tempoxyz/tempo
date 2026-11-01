@@ -44,8 +44,8 @@ use reth_provider::{
 use reth_static_file_types::{ChangesetOffset, SegmentHeader};
 use reth_storage_api::{DBProvider, StateRootProvider};
 use reth_trie::{HashedPostState, HashedStorage, hashed_cursor::zero_destroyed_account_storage};
+use reth_trie_common::bundle_state::{AccountStatus, BundleAccount};
 use reth_trie_db::DatabaseHashedCursorFactory;
-use revm::database::{AccountStatus, BundleAccount};
 use tempo_chainspec::spec::TempoChainSpecParser;
 use tempo_contracts::precompiles::VALIDATOR_CONFIG_V2_ADDRESS;
 use tracing::{info, warn};
@@ -344,6 +344,7 @@ fn genesis_account_replacement(
         nonce: genesis_account.nonce.unwrap_or_default(),
         balance: genesis_account.balance,
         bytecode_hash: bytecode.as_ref().map(|(hash, _)| *hash),
+        extension: genesis_account.extension.clone(),
     };
     let storage = genesis_storage_entries(genesis_account);
     let mut hashed_storage = storage
@@ -373,11 +374,12 @@ where
     P: DBProvider,
 {
     let mut hashed_state = HashedPostState::default()
-        .with_accounts(
-            replacements
-                .iter()
-                .map(|replacement| (replacement.hashed_address, Some(replacement.account))),
-        )
+        .with_accounts(replacements.iter().map(|replacement| {
+            (
+                replacement.hashed_address,
+                Some(replacement.account.clone()),
+            )
+        }))
         .with_storages(replacements.iter().map(|replacement| {
             let storage = HashedStorage {
                 storage: replacement
@@ -873,7 +875,7 @@ where
         if let Some((hash, bytecode)) = &replacement.bytecode {
             tx.put::<tables::Bytecodes>(*hash, bytecode.clone())?;
         }
-        tx.put::<tables::HashedAccounts>(replacement.hashed_address, replacement.account)?;
+        tx.put::<tables::HashedAccounts>(replacement.hashed_address, replacement.account.clone())?;
     }
 
     Ok(())
@@ -1064,44 +1066,53 @@ mod tests {
         let iterations = 512;
         let (sender, receiver) = mpsc::channel();
 
-        for iteration in 0..iterations {
-            let synced_address = Address::repeat_byte(0x22);
-            let static_dir = tempfile::tempdir().unwrap();
+        // Committing the changesets syncs them to disk, which was about half of every
+        // iteration. Write them once and give every iteration a fresh copy, on tmpfs where
+        // available since the call under test syncs as well.
+        let synced_address = Address::repeat_byte(0x22);
+        let template_dir = crate::tmpfs_tempdir();
+        {
+            let provider: StaticFileProvider<TempoPrimitives> =
+                StaticFileProviderBuilder::read_write(template_dir.path())
+                    .build()
+                    .unwrap();
             {
-                let provider: StaticFileProvider<TempoPrimitives> =
-                    StaticFileProviderBuilder::read_write(static_dir.path())
-                        .build()
-                        .unwrap();
-                {
-                    let mut writer = provider
-                        .get_writer(0, StaticFileSegment::AccountChangeSets)
-                        .unwrap();
-                    writer
-                        .append_account_changeset(
-                            vec![AccountBeforeTx {
-                                address: synced_address,
-                                info: None,
-                            }],
-                            0,
-                        )
-                        .unwrap();
-                }
-                {
-                    let mut writer = provider
-                        .get_writer(0, StaticFileSegment::StorageChangeSets)
-                        .unwrap();
-                    writer
-                        .append_storage_changeset(
-                            vec![StorageBeforeTx {
-                                address: synced_address,
-                                key: B256::repeat_byte(0x33),
-                                value: U256::ZERO,
-                            }],
-                            0,
-                        )
-                        .unwrap();
-                }
-                provider.commit().unwrap();
+                let mut writer = provider
+                    .get_writer(0, StaticFileSegment::AccountChangeSets)
+                    .unwrap();
+                writer
+                    .append_account_changeset(
+                        vec![AccountBeforeTx {
+                            address: synced_address,
+                            info: None,
+                        }],
+                        0,
+                    )
+                    .unwrap();
+            }
+            {
+                let mut writer = provider
+                    .get_writer(0, StaticFileSegment::StorageChangeSets)
+                    .unwrap();
+                writer
+                    .append_storage_changeset(
+                        vec![StorageBeforeTx {
+                            address: synced_address,
+                            key: B256::repeat_byte(0x33),
+                            value: U256::ZERO,
+                        }],
+                        0,
+                    )
+                    .unwrap();
+            }
+            provider.commit().unwrap();
+        }
+
+        for iteration in 0..iterations {
+            let static_dir = crate::tmpfs_tempdir();
+            for entry in std::fs::read_dir(template_dir.path()).unwrap() {
+                let entry = entry.unwrap();
+                std::fs::copy(entry.path(), static_dir.path().join(entry.file_name())).unwrap();
             }
 
             // A fresh provider has an empty jar cache with a fresh hasher seed, matching a

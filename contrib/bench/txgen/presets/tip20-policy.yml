@@ -1,0 +1,16 @@
+# Successful compound issuer checks and both receiver filters; see the setup helper.
+include:
+  - tip20/base.yml
+  - tip20/fee-amm-liquidity.yml
+  - tip20/auth-direct.yml
+  - tip20/nonce-protocol.yml
+
+merge:
+  templates:
+    tip20_transfer:
+      fee_token: "0x20c0000000000000000000000000000000000001"
+      call:
+        to: "0x20c0000000000000000000000000000000000000"
+        args:
+          - pool: {pool: policy_receivers, select: random}
+          - 1

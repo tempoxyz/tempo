@@ -747,7 +747,7 @@ mod tests {
                     Address::random(),
                     &Recipient::direct(Address::random()),
                     Address::ZERO,
-                    U256::from(1u64),
+                    U256::ONE,
                     blocked_reason,
                     kind,
                     B256::ZERO,

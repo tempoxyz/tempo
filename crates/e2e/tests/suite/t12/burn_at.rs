@@ -552,7 +552,7 @@ fn assert_burn_events(logs: &[Log], token: Address, burner: Address, from: Addre
             keccak256("BurnAt(address,address,uint256)"),
             burner.into_word(),
             from.into_word(),
-            B256::from(amount.to_be_bytes::<32>())
+            B256::from(amount)
         ]
     );
     assert!(logs[1].inner.data.data.is_empty());

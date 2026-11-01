@@ -158,8 +158,8 @@ impl PolicyData {
     fn policy_type(&self) -> Result<PolicyType> {
         let is_t2 = StorageCtx.spec().is_t2();
 
-        match self.policy_type.try_into() {
-            Ok(ty) if is_t2 || ty != PolicyType::COMPOUND => Ok(ty),
+        match PolicyType::try_from(self.policy_type) {
+            Ok(ty) if is_t2 || !ty.is_compound() => Ok(ty),
             _ => Err(if is_t2 {
                 TIP403RegistryError::invalid_policy_type().into()
             } else {
@@ -181,7 +181,7 @@ impl PolicyData {
 
     /// Returns `true` if the policy data is the default (uninitialized) value.
     fn is_default(&self) -> bool {
-        self.policy_type == 0 && self.admin == Address::ZERO
+        self.policy_type == 0 && self.admin.is_zero()
     }
 }
 
@@ -677,7 +677,7 @@ impl TIP403Registry {
         }
 
         // Check policy type
-        if !matches!(data.policy_type()?, PolicyType::WHITELIST) {
+        if !data.policy_type()?.is_whitelist() {
             return Err(TIP403RegistryError::incompatible_policy_type().into());
         }
 
@@ -716,7 +716,7 @@ impl TIP403Registry {
         }
 
         // Check policy type
-        if !matches!(data.policy_type()?, PolicyType::BLACKLIST) {
+        if !data.policy_type()?.is_blacklist() {
             return Err(TIP403RegistryError::incompatible_policy_type().into());
         }
 

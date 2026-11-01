@@ -613,7 +613,9 @@ mod tests {
 
     #[test]
     fn commonware_runtime_holds_lock_file_while_running() {
-        let dir = tempfile::tempdir().unwrap();
+        // The runtime syncfs()es its storage filesystem at startup, which can take tens of
+        // seconds on a CI disk busy with node tests.
+        let dir = crate::tmpfs_tempdir();
         let storage_dir = dir.path().join("consensus");
         assert!(!storage_dir.exists());
 

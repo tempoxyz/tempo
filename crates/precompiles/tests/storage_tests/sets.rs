@@ -355,7 +355,7 @@ fn test_oz_values_full_and_paginated() -> eyre::Result<()> {
     StorageCtx::enter(&mut storage, || {
         let mut set = tempo_precompiles::storage::SetHandler::<U256>::new(U256::ZERO, address);
 
-        let value_a = U256::from(1);
+        let value_a = U256::ONE;
         let value_b = U256::from(2);
         let value_c = U256::from(3);
         let values = vec![value_a, value_b, value_c];
@@ -402,7 +402,7 @@ fn test_set_in_contract() -> eyre::Result<()> {
         // Verify slot assignments
         assert_eq!(layout.counter.slot(), U256::ZERO);
         // Set occupies 2 slots: Vec length at slot 1, Mapping at slot 2
-        assert_eq!(layout.holders.base_slot(), U256::from(1));
+        assert_eq!(layout.holders.base_slot(), U256::ONE);
         assert_eq!(layout.ids.base_slot(), U256::from(3));
 
         // Test counter

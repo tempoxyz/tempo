@@ -17,7 +17,7 @@ use crate::{
 /// The default admin role (zero hash). Holders can grant/revoke any role.
 pub const DEFAULT_ADMIN_ROLE: B256 = B256::ZERO;
 /// A self-administered role that cannot be granted by any admin.
-pub const UNGRANTABLE_ROLE: B256 = B256::new([0xff; 32]);
+pub const UNGRANTABLE_ROLE: B256 = B256::repeat_byte(0xff);
 
 impl TIP20Token {
     /// Initializes the roles precompile by setting [`UNGRANTABLE_ROLE`] to be self-administered.

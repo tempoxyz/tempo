@@ -1,0 +1,61 @@
+# Example deployment shapes, one per pillar (see README.md). Volumes and weights are
+# illustrative traffic shapes for sizing, not any one program's numbers; copy the file
+# and set your own. Run every shape side by side in one bench:
+#   derek bench preset=neobank-multi bench-env="TXGEN_NEOBANK_INSTANCES=contrib/bench/txgen/presets/shapes/examples.yml"
+version: 1
+shapes:
+  - name: remittance-payout
+    pillar: cross-border
+    description: Funded corridor payouts with FX conversion, payroll fan-out and cash out.
+    volume:
+      tx_per_month: 3000000
+      peak_factor: 3
+    flows:
+      funding: {weight: 15, templates: [public_transfer]}
+      corridor_payout: {weight: 30, templates: [public_transfer_memo]}
+      payroll: {weight: 20, templates: [payroll_existing, payroll_new]}
+      fx_conversion: {weight: 10, templates: [dex_swap]}
+      first_receive: {weight: 5, templates: [account_first_receive]}
+      cash_out: {weight: 20, templates: [cash_out]}
+    presets: [batch-payout, dex]
+  - name: treasury-settlement
+    pillar: institutional
+    description: Few, large settlement and treasury transfers between known accounts.
+    volume:
+      tx_per_month: 300000
+      peak_factor: 5
+    flows:
+      settlement: {weight: 50, templates: [public_transfer_memo]}
+      treasury_funding: {weight: 10, templates: [public_transfer]}
+      conversion: {weight: 20, templates: [dex_swap]}
+      redemption: {weight: 20, templates: [cash_out]}
+    presets: [tip20-policy, dex]
+  - name: card-earn-app
+    pillar: embedded-finance
+    description: Stablecoin accounts with Earn, card spend from cash and Earn, and cash out.
+    volume:
+      tx_per_month: 20000000
+      peak_factor: 4
+    flows:
+      onboarding: {weight: 6, templates: [account_first_receive, access_key_create]}
+      zone_funding: {weight: 10, templates: [zone_deposit]}
+      earn_deposit: {weight: 15, templates: [vault_deposit]}
+      earn_withdraw: {weight: 10, templates: [vault_withdraw]}
+      card_from_earn: {weight: 20, templates: [card_settlement]}
+      card_from_cash: {weight: 10, templates: [card_spend]}
+      card_refund: {weight: 2, templates: [card_refund]}
+      p2p: {weight: 17, templates: [public_transfer_memo]}
+      cash_out: {weight: 10, templates: [cash_out]}
+    presets: [card-settlement, zone-earn-mix]
+  - name: agent-payments
+    pillar: agentic
+    description: Agents paying with delegated access keys, plus subscription pulls.
+    volume:
+      tx_per_month: 10000000
+      peak_factor: 2
+    flows:
+      agent_spend: {weight: 50, templates: [keychain_agent_spend]}
+      subscription_pull: {weight: 30, templates: [keychain_merchant_pull]}
+      key_issue: {weight: 15, templates: [access_key_create]}
+      key_rotate: {weight: 5, templates: [access_key_rotate]}
+    presets: [access-key-mix, mpp]

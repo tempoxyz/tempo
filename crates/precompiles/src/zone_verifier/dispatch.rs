@@ -1,5 +1,5 @@
 use alloy::{primitives::Address, sol_types::SolCall};
-use revm::precompile::PrecompileResult;
+use evm2::precompiles::PrecompileResult;
 use tempo_contracts::precompiles::IZoneVerifier;
 
 use crate::{Precompile, charge_input_cost, dispatch, view};
@@ -40,6 +40,9 @@ mod tests {
     use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
     use alloy::primitives::{B256, Bytes, U256};
     use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_contracts::zones::{
+        BlockTransition, DepositQueueTransition, TokenEnablementTransition,
+    };
 
     fn call(proof: Vec<u8>) -> IZoneVerifier::verifyCall {
         IZoneVerifier::verifyCall {
@@ -49,17 +52,17 @@ mod tests {
             anchorBlockHash: B256::ZERO,
             expectedWithdrawalBatchIndex: 0,
             nextZoneHeight: U256::ZERO,
-            blockTransition: IZoneVerifier::BlockTransition {
+            blockTransition: BlockTransition {
                 prevBlockHash: B256::ZERO,
                 nextBlockHash: B256::ZERO,
             },
-            depositQueueTransition: IZoneVerifier::DepositQueueTransition {
+            depositQueueTransition: DepositQueueTransition {
                 prevProcessedHash: B256::ZERO,
                 nextProcessedHash: B256::ZERO,
                 prevDepositNumber: 0,
                 nextDepositNumber: 0,
             },
-            tokenEnablementTransition: IZoneVerifier::TokenEnablementTransition {
+            tokenEnablementTransition: TokenEnablementTransition {
                 prevProcessedTokenCount: 0,
                 nextProcessedTokenCount: 0,
             },
@@ -83,8 +86,7 @@ mod tests {
                         crate::zone_factory::portal_address(call.zoneId),
                     )
                     .unwrap();
-                assert!(output.is_success());
-                assert!(!IZoneVerifier::verifyCall::abi_decode_returns(&output.bytes).unwrap());
+                assert!(!IZoneVerifier::verifyCall::abi_decode_returns(output.bytes()).unwrap());
             }
         });
     }
@@ -102,17 +104,14 @@ mod tests {
         calldata[4 + 16 * 32..4 + 17 * 32].fill(0xff);
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
         StorageCtx::enter(&mut storage, || {
-            assert!(
-                ZoneVerifier::new()
-                    .call(&calldata, portal)
-                    .unwrap()
-                    .is_revert()
-            );
+            assert!(matches!(
+                ZoneVerifier::new().call(&calldata, portal),
+                Err(evm2::precompiles::PrecompileError::Revert(_))
+            ));
 
             calldata.push(0);
             let output = ZoneVerifier::new().call(&calldata, portal).unwrap();
-            assert!(output.is_success());
-            assert!(!IZoneVerifier::verifyCall::abi_decode_returns(&output.bytes).unwrap());
+            assert!(!IZoneVerifier::verifyCall::abi_decode_returns(output.bytes()).unwrap());
         });
     }
 
@@ -123,10 +122,11 @@ mod tests {
         calldata[..4].copy_from_slice(&[0xe5, 0x7a, 0x63, 0x66]);
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
         StorageCtx::enter(&mut storage, || {
-            let output = ZoneVerifier::new()
-                .call(&calldata, crate::zone_factory::portal_address(call.zoneId))
-                .unwrap();
-            assert!(output.is_revert());
+            assert!(matches!(
+                ZoneVerifier::new()
+                    .call(&calldata, crate::zone_factory::portal_address(call.zoneId)),
+                Err(evm2::precompiles::PrecompileError::Revert(_))
+            ));
         });
     }
 }

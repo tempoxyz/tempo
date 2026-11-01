@@ -247,6 +247,7 @@ fn decode_jwk_field(field: &'static str, value: &str) -> Result<[u8; 32], P256Si
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_primitives::address;
 
     fn webcrypto_vector_jwk() -> P256Jwk {
         P256Jwk::from_base64url(
@@ -264,9 +265,7 @@ mod tests {
         let signer = TempoP256Signer::from_webcrypto_jwk(&webcrypto_vector_jwk()).unwrap();
         assert_eq!(
             signer.address(),
-            "0xf0159a522607cd6ab1097204c9fafb7bbe6afb6c"
-                .parse::<Address>()
-                .unwrap()
+            address!("0xf0159a522607cd6ab1097204c9fafb7bbe6afb6c")
         );
         assert!(signer.pre_hash());
     }

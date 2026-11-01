@@ -225,6 +225,9 @@ crate::sol! {
         error CloseNotReady();
         /// Top-up would overflow the packed deposit.
         error DepositOverflow();
+        /// The channel's voucher signer has a retired root key (a configuration commitment), so
+        /// it cannot back a new deposit.
+        error RootKeyRetired(address account);
     }
 }
 
@@ -238,8 +241,8 @@ impl ITIP20ChannelReserve::ITIP20ChannelReserveCalls {
     /// # NOTES
     /// - Only validates calldata; caller must check that `to == TIP20_CHANNEL_RESERVE_ADDRESS`.
     /// - Static-only calls require the ABI-encoded length followed by at most
-    ///   `max_trailing_bytes` trailing bytes: `0` before T13 and
-    ///   [`MAX_PAYMENT_TRAILING_BYTES`](crate::precompiles::tip20::MAX_PAYMENT_TRAILING_BYTES) from T13.
+    ///   `max_trailing_bytes` trailing bytes: `0` before T15 and
+    ///   [`MAX_PAYMENT_TRAILING_BYTES`](crate::precompiles::tip20::MAX_PAYMENT_TRAILING_BYTES) from T15.
     /// - Dynamic calls require valid ABI decoding and calldata length <= [`MAX_PAYMENT_CALLDATA_LEN`].
     /// - Dynamic calls also require valid `signature` encoding.
     ///

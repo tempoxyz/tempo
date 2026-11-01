@@ -9,10 +9,11 @@ use alloy_eips::{
     eip7594::BlobTransactionSidecarVariant,
     eip7702::SignedAuthorization,
 };
-use alloy_evm::FromRecoveredTx;
 use alloy_primitives::{
-    Address, B256, Bytes, TxHash, TxKind, U256, bytes, keccak256, map::AddressMap,
+    Address, B256, Bytes, TxHash, TxKind, U256, bytes, keccak256,
+    map::{AddressMap, AddressSet},
 };
+use evm2::registry::HandlerError;
 use reth_evm::execute::WithTxEnv;
 use reth_primitives_traits::{InMemorySize, Recovered, SignerRecoverable};
 use reth_transaction_pool::{
@@ -25,6 +26,7 @@ use std::{
     sync::{Arc, OnceLock},
 };
 use tempo_contracts::precompiles::PaymentSlots;
+use tempo_evm::{ResolvedFeeToken, TempoInvalidTransaction, TempoTxEnv};
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN,
     nonce::NonceManager,
@@ -36,7 +38,6 @@ use tempo_primitives::{
     TempoTxEnvelope,
     transaction::{InvalidValidAfter, InvalidValidBefore, calc_gas_balance_spending},
 };
-use tempo_revm::{TempoInvalidTransaction, TempoTxEnv};
 use thiserror::Error;
 
 /// Tempo pooled transaction representation.
@@ -47,9 +48,9 @@ pub struct TempoPooledTransaction {
     inner: EthPooledTransaction<TempoTxEnvelope>,
     /// Cached cost of the transaction in the fee token.
     fee_token_cost: U256,
-    /// Cached T5-T12 payment classification for efficient block building.
+    /// Cached T5-T14 payment classification for efficient block building.
     is_payment_v2: bool,
-    /// Cached T13+ payment classification for efficient block building.
+    /// Cached T15+ payment classification for efficient block building.
     is_payment_v3: bool,
     /// Precomputed sender-scoped hash used to deduplicate expiring nonce transactions.
     expiring_nonce_hash: Option<B256>,
@@ -68,7 +69,7 @@ pub struct TempoPooledTransaction {
     ///
     /// Used by `keychain_subject()` so pool maintenance matches against the same token
     /// that was validated without requiring state access.
-    resolved_fee_token: OnceLock<Address>,
+    resolved_fee_token: OnceLock<ResolvedFeeToken>,
     /// Cached keychain subject for the signer of an inline `KeyAuthorization`.
     key_authorization_signer_subject: OnceLock<Option<KeychainSubject>>,
     /// Cached target key of an inline `KeyAuthorization`.
@@ -185,12 +186,12 @@ impl TempoPooledTransaction {
         })
     }
 
-    /// Returns whether this is a payment transaction according to the T5-T12 builder criteria.
+    /// Returns whether this is a payment transaction according to the T5-T14 builder criteria.
     pub fn is_payment_v2(&self) -> bool {
         self.is_payment_v2
     }
 
-    /// Returns whether this is a payment transaction according to the T13+ builder criteria.
+    /// Returns whether this is a payment transaction according to the T15+ builder criteria.
     pub fn is_payment_v3(&self) -> bool {
         self.is_payment_v3
     }
@@ -201,8 +202,7 @@ impl TempoPooledTransaction {
         self.inner
             .transaction
             .as_aa()
-            .map(|tx| !tx.tx().nonce_key.is_zero())
-            .unwrap_or(false)
+            .is_some_and(|tx| !tx.tx().nonce_key.is_zero())
     }
 
     /// Returns true if this is an expiring nonce transaction.
@@ -301,7 +301,7 @@ impl TempoPooledTransaction {
 
     /// Computes the [`TempoTxEnv`] for this transaction.
     pub(crate) fn tx_env_slow(&self) -> TempoTxEnv {
-        TempoTxEnv::from_recovered_tx(self.inner().inner(), self.sender())
+        TempoTxEnv::from(self.inner().clone())
     }
 
     /// Pre-computes and caches the [`TempoTxEnv`].
@@ -330,9 +330,15 @@ impl TempoPooledTransaction {
         self.tx_env().clone()
     }
 
-    /// Returns a tuple that can be passed to block executor.
-    pub fn executable(&self) -> (TempoTxEnv, &Recovered<TempoTxEnvelope>) {
-        (self.tx_env().clone(), &self.inner.transaction)
+    /// Returns the transaction environment consumed by the EVM2 block executor.
+    ///
+    /// The recovered transaction is borrowed because execution consumes this wrapper
+    /// synchronously, avoiding a clone of the original transaction envelope.
+    pub fn executable(&self) -> (Recovered<TempoTxEnv>, &Recovered<TempoTxEnvelope>) {
+        (
+            Recovered::new_unchecked(self.clone_tx_env(), self.sender()),
+            self.inner(),
+        )
     }
 
     /// Returns a [`WithTxEnv`] wrapper by cloning the cached [`TempoTxEnv`] and
@@ -340,9 +346,11 @@ impl TempoPooledTransaction {
     ///
     /// This avoids cloning the full pooled transaction when the caller only
     /// needs an owned executable transaction.
-    pub fn clone_into_with_tx_env(&self) -> WithTxEnv<TempoTxEnv, Recovered<TempoTxEnvelope>> {
+    pub fn clone_into_with_tx_env(
+        &self,
+    ) -> WithTxEnv<Recovered<TempoTxEnv>, Recovered<TempoTxEnvelope>> {
         WithTxEnv {
-            tx_env: self.clone_tx_env(),
+            tx_env: Recovered::new_unchecked(self.clone_tx_env(), self.sender()),
             tx: Arc::new(self.inner.transaction.clone()),
         }
     }
@@ -351,10 +359,13 @@ impl TempoPooledTransaction {
     ///
     /// If the [`TempoTxEnv`] was pre-computed via [`Self::tx_env`], the cached
     /// value is used. Otherwise, it is computed on-demand.
-    pub fn into_with_tx_env(mut self) -> WithTxEnv<TempoTxEnv, Recovered<TempoTxEnvelope>> {
+    pub fn into_with_tx_env(
+        mut self,
+    ) -> WithTxEnv<Recovered<TempoTxEnv>, Recovered<TempoTxEnvelope>> {
+        let signer = self.sender();
         let tx_env = self.tx_env.take().unwrap_or_else(|| self.tx_env_slow());
         WithTxEnv {
-            tx_env,
+            tx_env: Recovered::new_unchecked(tx_env, signer),
             tx: Arc::new(self.inner.transaction),
         }
     }
@@ -390,7 +401,7 @@ impl TempoPooledTransaction {
     /// The validator sets this after EVM validation resolves the token from the
     /// transaction's explicit `fee_token` field or from fee-manager state. Pool
     /// maintenance code should not call this directly.
-    pub fn set_resolved_fee_token(&self, fee_token: Address) {
+    pub fn set_resolved_fee_token(&self, fee_token: ResolvedFeeToken) {
         let _ = self.resolved_fee_token.set(fee_token);
     }
 
@@ -423,7 +434,17 @@ impl TempoPooledTransaction {
     /// the pool validator. Prefer [`Self::effective_fee_token`] in maintenance code
     /// that needs the token a transaction will actually use to pay fees.
     pub fn resolved_fee_token(&self) -> Option<Address> {
-        self.resolved_fee_token.get().copied()
+        self.resolved_fee_token.get().map(|token| token.address())
+    }
+
+    /// Returns whether validation took the fee token from the ordered fallback list.
+    ///
+    /// Only such tokens can change when the fee payer's fallback-token balances change. This is
+    /// `false` for transactions that have not completed validation.
+    pub fn is_fallback_fee_token(&self) -> bool {
+        self.resolved_fee_token
+            .get()
+            .is_some_and(|token| token.is_fallback())
     }
 
     /// Returns the effective fee token for pool maintenance and accounting.
@@ -510,6 +531,31 @@ impl TempoPooledTransaction {
             self.fee_payer().unwrap_or(sender),
             |_slot| {},
         );
+    }
+
+    /// Whether any account in `accounts` is an authority of this transaction: the sender (unless
+    /// an access key signs for it), the key authorization signer, a separate fee payer or the
+    /// access key.
+    pub(crate) fn has_authority_in(&self, accounts: &AddressSet) -> bool {
+        let Some(tx) = self.inner().as_aa() else {
+            return accounts.contains(self.sender_ref());
+        };
+        let sender = (!tx.signature().is_keychain()).then(|| *self.sender_ref());
+        // Recovery fails only for a transaction that validation already rejects.
+        let grant_signer = tx
+            .tx()
+            .key_authorization
+            .as_ref()
+            .and_then(|authorization| authorization.authorizing_account().ok());
+        let fee_payer = tx
+            .tx()
+            .fee_payer_signature
+            .and_then(|_| self.fee_payer().ok());
+        let access_key = self.keychain_subject().map(|subject| subject.key_id);
+        [sender, grant_signer, fee_payer, access_key]
+            .into_iter()
+            .flatten()
+            .any(|authority| accounts.contains(&authority))
     }
 }
 
@@ -734,8 +780,9 @@ pub enum TempoPoolTransactionError {
 
     /// A transaction matched a configured address check.
     ///
-    /// Thrown during pool admission when the recovered sender or a direct call target
-    /// appears in the node's configured address filter.
+    /// Thrown during pool admission when an address of the transaction (sender, fee payer, call
+    /// target, authorization delegate or authority, or access list entry) appears in the node's
+    /// configured address filter.
     #[error("Transaction address check failed for {address}")]
     AddressCheck {
         /// The address that matched the configured filter.
@@ -744,18 +791,37 @@ pub enum TempoPoolTransactionError {
 
     /// A Tempo EVM validation error returned by the transaction pool.
     ///
-    /// Thrown when `TempoEvm::validate_transaction` rejects the transaction with
-    /// a [`TempoInvalidTransaction`] that is not mapped to a standard reth
-    /// pool error. The pool also uses this wrapper for AMM liquidity failures
-    /// detected after EVM validation, as `CollectFeePreTx(InsufficientAmmLiquidity)`.
+    /// Thrown when an EVM2 handler rejects the transaction with an error that is
+    /// not mapped to a standard reth pool error. Tempo-specific validation errors
+    /// are stored as [`HandlerError::External`].
     #[error(transparent)]
-    Evm(TempoInvalidTransaction),
+    Evm(HandlerError),
 }
 
 impl PoolTransactionError for TempoPoolTransactionError {
     fn is_bad_transaction(&self) -> bool {
         match self {
-            Self::Evm(err) => err.is_bad_transaction(),
+            Self::Evm(err) => err.external_ref::<TempoInvalidTransaction>().map_or_else(
+                || {
+                    matches!(
+                        err,
+                        HandlerError::InvalidChainId { .. }
+                            | HandlerError::MissingChainId
+                            | HandlerError::IntrinsicGasTooLow { .. }
+                            | HandlerError::NonceOverflow
+                            | HandlerError::TxGasLimitGreaterThanCap { .. }
+                            | HandlerError::CreateInitCodeSizeLimit { .. }
+                            | HandlerError::EmptyAuthorizationList
+                            | HandlerError::EmptyBlobs
+                            | HandlerError::TooManyBlobs { .. }
+                            | HandlerError::BlobVersionNotSupported
+                            | HandlerError::PriorityFeeGreaterThanMaxFee
+                            | HandlerError::UnsupportedTransactionType(_)
+                            | HandlerError::WrongTransactionType { .. }
+                    )
+                },
+                TempoInvalidTransaction::is_bad_transaction,
+            ),
             Self::ExceedsNonPaymentLimit
             | Self::InvalidValidBefore(_)
             | Self::InvalidValidAfter(_)
@@ -875,14 +941,10 @@ impl PoolTransaction for TempoPooledTransaction {
     }
 
     fn requires_nonce_check(&self) -> bool {
-        self.inner
-            .transaction()
-            .as_aa()
-            .map(|tx| {
-                // for AA transaction with a custom nonce key we can skip the nonce validation
-                tx.tx().nonce_key.is_zero()
-            })
-            .unwrap_or(true)
+        self.inner.transaction().as_aa().is_none_or(|tx| {
+            // for AA transaction with a custom nonce key we can skip the nonce validation
+            tx.tx().nonce_key.is_zero()
+        })
     }
 
     fn requires_nonce_bound_check(&self) -> bool {
@@ -992,6 +1054,159 @@ impl EthPoolTransaction for TempoPooledTransaction {
     }
 }
 
+// ========================================
+// Keychain invalidation types
+// ========================================
+
+/// Index of revoked keychain keys, keyed by account for efficient lookup.
+///
+/// Uses account as the primary key with a list of revoked key_ids,
+/// avoiding the need to construct full keys during lookup.
+#[derive(Debug, Clone, Default)]
+pub struct RevokedKeys {
+    /// Map from account to list of revoked key_ids.
+    by_account: AddressMap<Vec<Address>>,
+}
+
+impl RevokedKeys {
+    /// Creates a new empty index.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Inserts a revoked key.
+    pub fn insert(&mut self, account: Address, key_id: Address) {
+        self.by_account.entry(account).or_default().push(key_id);
+    }
+
+    /// Returns true if the index is empty.
+    pub fn is_empty(&self) -> bool {
+        self.by_account.is_empty()
+    }
+
+    /// Returns the total number of revoked keys.
+    pub fn len(&self) -> usize {
+        self.by_account.values().map(Vec::len).sum()
+    }
+
+    /// Returns true if the given (account, key_id) combination is in the index.
+    pub fn contains(&self, account: Address, key_id: Address) -> bool {
+        self.by_account
+            .get(&account)
+            .is_some_and(|key_ids| key_ids.contains(&key_id))
+    }
+}
+
+/// Index of spending limit updates, keyed by account for efficient lookup.
+///
+/// Uses account as the primary key with a list of (key_id, token) pairs,
+/// avoiding the need to construct full keys during lookup.
+#[derive(Debug, Clone, Default)]
+pub struct SpendingLimitUpdates {
+    /// Map from account to list of (key_id, token) pairs that had limit changes.
+    /// `None` token acts as a wildcard matching any fee token for that key_id.
+    by_account: AddressMap<Vec<(Address, Option<Address>)>>,
+}
+
+impl SpendingLimitUpdates {
+    /// Creates a new empty index.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Inserts a spending limit update. `None` token matches any fee token.
+    pub fn insert(&mut self, account: Address, key_id: Address, token: Option<Address>) {
+        self.by_account
+            .entry(account)
+            .or_default()
+            .push((key_id, token));
+    }
+
+    /// Returns true if the index is empty.
+    pub fn is_empty(&self) -> bool {
+        self.by_account.is_empty()
+    }
+
+    /// Returns the total number of spending limit updates.
+    pub fn len(&self) -> usize {
+        self.by_account.values().map(Vec::len).sum()
+    }
+
+    /// Returns true if the given (account, key_id, token) combination is in the index.
+    ///
+    /// A `None` entry matches any token for that key_id. This is used for included
+    /// block txs whose fee token could not be resolved without state access.
+    pub fn contains(&self, account: Address, key_id: Address, token: Address) -> bool {
+        self.by_account
+            .get(&account)
+            .is_some_and(|pairs: &Vec<(Address, Option<Address>)>| {
+                pairs
+                    .iter()
+                    .any(|&(k, t)| k == key_id && t.is_none_or(|t| t == token))
+            })
+    }
+}
+
+/// Keychain identity extracted from a transaction.
+///
+/// Contains the account (user_address), key_id, and fee_token for matching against
+/// revocation and spending limit events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct KeychainSubject {
+    /// The account that owns the keychain key (from `user_address` in the signature).
+    pub account: Address,
+    /// The key ID recovered from the keychain signature.
+    pub key_id: Address,
+    /// The fee token used by this transaction.
+    pub fee_token: Address,
+}
+
+impl KeychainSubject {
+    /// Returns true if this subject matches any of the revoked keys.
+    ///
+    /// Uses account-keyed index for O(1) account lookup, then linear scan over
+    /// the typically small list of key_ids for that account.
+    pub fn matches_revoked(&self, revoked_keys: &RevokedKeys) -> bool {
+        revoked_keys.contains(self.account, self.key_id)
+    }
+
+    /// Returns true if this subject is affected by any of the spending limit updates.
+    ///
+    /// Uses account-keyed index for O(1) account lookup, then linear scan over
+    /// the typically small list of (key_id, token) pairs for that account.
+    pub fn matches_spending_limit_update(
+        &self,
+        spending_limit_updates: &SpendingLimitUpdates,
+    ) -> bool {
+        spending_limit_updates.contains(self.account, self.key_id, self.fee_token)
+    }
+}
+
+/// Key-authorization witness identity extracted from an AA transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct KeyAuthorizationWitnessSubject {
+    /// The account whose key-authorization witness is carried or burned.
+    pub account: Address,
+    /// The TIP-1053 witness.
+    pub witness: B256,
+}
+
+/// Target key identity extracted from an inline key authorization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct KeyAuthorizationTargetSubject {
+    /// The account that owns the target key.
+    pub account: Address,
+    /// The key being authorized.
+    pub key_id: Address,
+}
+
+impl KeyAuthorizationTargetSubject {
+    /// Returns true if this target key is affected by a key status update.
+    pub fn matches_key_update(&self, key_updates: &RevokedKeys) -> bool {
+        key_updates.contains(self.account, self.key_id)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1006,10 +1221,7 @@ mod tests {
     use tempo_contracts::precompiles::ITIP20;
     use tempo_precompiles::{PATH_USD_ADDRESS, nonce::NonceManager};
     use tempo_primitives::transaction::{
-        TEMPO_EXPIRING_NONCE_KEY, TempoTransaction,
-        tempo_transaction::Call,
-        tt_signature::{PrimitiveSignature, TempoSignature},
-        tt_signed::AASigned,
+        TEMPO_EXPIRING_NONCE_KEY, TempoTransaction, tempo_transaction::Call,
     };
 
     const TEMPO_TRANSACTION_ARBITRARY_SIZE: usize = 4096;
@@ -1019,16 +1231,16 @@ mod tests {
         let signature = signer
             .sign_hash_sync(&tx.signature_hash())
             .expect("signing failed");
-        let signed = AASigned::new_unhashed(
-            tx,
-            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
-        );
+        let signed = tx.into_signed(signature.into());
         (signed.into(), signer.address())
     }
 
     fn raw_pooled_transaction(
-        tx: TempoTransaction,
+        mut tx: TempoTransaction,
     ) -> (TempoPooledTransaction, TempoTxEnvelope, Address, usize) {
+        // Recovery verifies a configurable grant quorum, which arbitrary approvals never reach.
+        tx.key_authorization
+            .take_if(|auth| auth.signature.is_configurable_account());
         let (envelope, sender) = signed_aa_envelope(tx);
         let mut raw = Vec::with_capacity(envelope.encode_2718_len());
         envelope.encode_2718(&mut raw);
@@ -1046,7 +1258,7 @@ mod tests {
         let nonce_key_slot = transaction.nonce_key_slot();
         let _ = transaction.tx_env();
         transaction.set_key_expiry(Some(123));
-        transaction.set_resolved_fee_token(Address::random());
+        transaction.set_resolved_fee_token(ResolvedFeeToken::Selected(Address::random()));
 
         let fresh = transaction.with_discarded_caches();
 
@@ -1078,10 +1290,7 @@ mod tests {
             B256::ZERO,
         ));
 
-        let recovered = Recovered::new_unchecked(
-            envelope,
-            address!("0000000000000000000000000000000000000001"),
-        );
+        let recovered = Recovered::new_unchecked(envelope, Address::with_last_byte(1));
 
         let pooled_tx = TempoPooledTransaction::new(recovered);
         assert!(pooled_tx.is_payment_v2());
@@ -1133,10 +1342,7 @@ mod tests {
             B256::ZERO,
         ));
 
-        let recovered = Recovered::new_unchecked(
-            envelope,
-            address!("0000000000000000000000000000000000000001"),
-        );
+        let recovered = Recovered::new_unchecked(envelope, Address::with_last_byte(1));
 
         let pooled_tx = TempoPooledTransaction::new(recovered);
         assert!(!pooled_tx.is_payment_v2());
@@ -1282,28 +1488,34 @@ mod tests {
             ),
             (TempoPoolTransactionError::Keychain("test error"), false),
             (
-                TempoPoolTransactionError::Evm(TempoInvalidTransaction::NonceManagerError(
-                    "nonce error".to_string(),
+                TempoPoolTransactionError::Evm(HandlerError::external(
+                    TempoInvalidTransaction::NonceManagerError("nonce error".to_string()),
                 )),
                 false,
             ),
             (
-                TempoPoolTransactionError::Evm(TempoInvalidTransaction::FeeTokenNotTip20 {
-                    address: Address::repeat_byte(0x20),
-                }),
+                TempoPoolTransactionError::Evm(HandlerError::external(
+                    TempoInvalidTransaction::FeeTokenNotTip20 {
+                        address: Address::repeat_byte(0x20),
+                    },
+                )),
                 false,
             ),
             (
-                TempoPoolTransactionError::Evm(TempoInvalidTransaction::FeeTokenNotUsdCurrency {
-                    address: Address::repeat_byte(0x20),
-                    currency: "EUR".to_string(),
-                }),
+                TempoPoolTransactionError::Evm(HandlerError::external(
+                    TempoInvalidTransaction::FeeTokenNotUsdCurrency {
+                        address: Address::repeat_byte(0x20),
+                        currency: "EUR".to_string(),
+                    },
+                )),
                 false,
             ),
             (
-                TempoPoolTransactionError::Evm(TempoInvalidTransaction::FeeTokenPaused {
-                    address: Address::repeat_byte(0x20),
-                }),
+                TempoPoolTransactionError::Evm(HandlerError::external(
+                    TempoInvalidTransaction::FeeTokenPaused {
+                        address: Address::repeat_byte(0x20),
+                    },
+                )),
                 false,
             ),
             (
@@ -1328,8 +1540,8 @@ mod tests {
             ),
             (TempoPoolTransactionError::SubblockNonceKey, true),
             (
-                TempoPoolTransactionError::Evm(TempoInvalidTransaction::CallsValidation(
-                    "calls error",
+                TempoPoolTransactionError::Evm(HandlerError::external(
+                    TempoInvalidTransaction::CallsValidation("calls error"),
                 )),
                 true,
             ),
@@ -1361,7 +1573,7 @@ mod tests {
             ),
             (
                 TxBuilder::aa(Address::random())
-                    .nonce_key(U256::from(1))
+                    .nonce_key(U256::ONE)
                     .build(),
                 false,
                 "AA with nonce_key > 0 should NOT require nonce check",
@@ -1454,9 +1666,7 @@ mod tests {
             ..Default::default()
         };
 
-        let signature =
-            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
-        let aa_signed = AASigned::new_unhashed(aa_tx, signature);
+        let aa_signed = aa_tx.into_signed(Signature::test_signature().into());
         let envelope: TempoTxEnvelope = aa_signed.into();
         let recovered = Recovered::new_unchecked(envelope, sender);
 
@@ -1647,7 +1857,7 @@ mod tests {
 
         let mut unknown_selector = ITIP20::transferCall {
             to: Address::repeat_byte(0x33),
-            amount: U256::from(1u64),
+            amount: U256::ONE,
         }
         .abi_encode();
         unknown_selector[..4].copy_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
@@ -1682,158 +1892,5 @@ mod tests {
                 vec![sender.mapping_slot(tip20_slots::BALANCES)],
             );
         }
-    }
-}
-
-// ========================================
-// Keychain invalidation types
-// ========================================
-
-/// Index of revoked keychain keys, keyed by account for efficient lookup.
-///
-/// Uses account as the primary key with a list of revoked key_ids,
-/// avoiding the need to construct full keys during lookup.
-#[derive(Debug, Clone, Default)]
-pub struct RevokedKeys {
-    /// Map from account to list of revoked key_ids.
-    by_account: AddressMap<Vec<Address>>,
-}
-
-impl RevokedKeys {
-    /// Creates a new empty index.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Inserts a revoked key.
-    pub fn insert(&mut self, account: Address, key_id: Address) {
-        self.by_account.entry(account).or_default().push(key_id);
-    }
-
-    /// Returns true if the index is empty.
-    pub fn is_empty(&self) -> bool {
-        self.by_account.is_empty()
-    }
-
-    /// Returns the total number of revoked keys.
-    pub fn len(&self) -> usize {
-        self.by_account.values().map(Vec::len).sum()
-    }
-
-    /// Returns true if the given (account, key_id) combination is in the index.
-    pub fn contains(&self, account: Address, key_id: Address) -> bool {
-        self.by_account
-            .get(&account)
-            .is_some_and(|key_ids| key_ids.contains(&key_id))
-    }
-}
-
-/// Index of spending limit updates, keyed by account for efficient lookup.
-///
-/// Uses account as the primary key with a list of (key_id, token) pairs,
-/// avoiding the need to construct full keys during lookup.
-#[derive(Debug, Clone, Default)]
-pub struct SpendingLimitUpdates {
-    /// Map from account to list of (key_id, token) pairs that had limit changes.
-    /// `None` token acts as a wildcard matching any fee token for that key_id.
-    by_account: AddressMap<Vec<(Address, Option<Address>)>>,
-}
-
-impl SpendingLimitUpdates {
-    /// Creates a new empty index.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Inserts a spending limit update. `None` token matches any fee token.
-    pub fn insert(&mut self, account: Address, key_id: Address, token: Option<Address>) {
-        self.by_account
-            .entry(account)
-            .or_default()
-            .push((key_id, token));
-    }
-
-    /// Returns true if the index is empty.
-    pub fn is_empty(&self) -> bool {
-        self.by_account.is_empty()
-    }
-
-    /// Returns the total number of spending limit updates.
-    pub fn len(&self) -> usize {
-        self.by_account.values().map(Vec::len).sum()
-    }
-
-    /// Returns true if the given (account, key_id, token) combination is in the index.
-    ///
-    /// A `None` entry matches any token for that key_id. This is used for included
-    /// block txs whose fee token could not be resolved without state access.
-    pub fn contains(&self, account: Address, key_id: Address, token: Address) -> bool {
-        self.by_account
-            .get(&account)
-            .is_some_and(|pairs: &Vec<(Address, Option<Address>)>| {
-                pairs
-                    .iter()
-                    .any(|&(k, t)| k == key_id && t.is_none_or(|t| t == token))
-            })
-    }
-}
-
-/// Keychain identity extracted from a transaction.
-///
-/// Contains the account (user_address), key_id, and fee_token for matching against
-/// revocation and spending limit events.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct KeychainSubject {
-    /// The account that owns the keychain key (from `user_address` in the signature).
-    pub account: Address,
-    /// The key ID recovered from the keychain signature.
-    pub key_id: Address,
-    /// The fee token used by this transaction.
-    pub fee_token: Address,
-}
-
-impl KeychainSubject {
-    /// Returns true if this subject matches any of the revoked keys.
-    ///
-    /// Uses account-keyed index for O(1) account lookup, then linear scan over
-    /// the typically small list of key_ids for that account.
-    pub fn matches_revoked(&self, revoked_keys: &RevokedKeys) -> bool {
-        revoked_keys.contains(self.account, self.key_id)
-    }
-
-    /// Returns true if this subject is affected by any of the spending limit updates.
-    ///
-    /// Uses account-keyed index for O(1) account lookup, then linear scan over
-    /// the typically small list of (key_id, token) pairs for that account.
-    pub fn matches_spending_limit_update(
-        &self,
-        spending_limit_updates: &SpendingLimitUpdates,
-    ) -> bool {
-        spending_limit_updates.contains(self.account, self.key_id, self.fee_token)
-    }
-}
-
-/// Key-authorization witness identity extracted from an AA transaction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct KeyAuthorizationWitnessSubject {
-    /// The account whose key-authorization witness is carried or burned.
-    pub account: Address,
-    /// The TIP-1053 witness.
-    pub witness: B256,
-}
-
-/// Target key identity extracted from an inline key authorization.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct KeyAuthorizationTargetSubject {
-    /// The account that owns the target key.
-    pub account: Address,
-    /// The key being authorized.
-    pub key_id: Address,
-}
-
-impl KeyAuthorizationTargetSubject {
-    /// Returns true if this target key is affected by a key status update.
-    pub fn matches_key_update(&self, key_updates: &RevokedKeys) -> bool {
-        key_updates.contains(self.account, self.key_id)
     }
 }

@@ -1,0 +1,4 @@
+interface:
+  display_name: "ZoneFactory Deploy"
+  short_description: "Deploy and update the shared ZoneFactory"
+  default_prompt: "Use $zonefactory-deploy to deploy a fresh Moderato ZoneFactory and update the repo defaults."

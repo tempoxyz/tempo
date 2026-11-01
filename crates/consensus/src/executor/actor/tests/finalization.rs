@@ -2,15 +2,19 @@
 //! from the marshal actor are delivered to the execution layer through
 //! `newPayload` in order, finalized through a subsequent
 //! `forkchoiceUpdated` that may cover several deliveries, and acknowledged
-//! only once that forkchoice update has been accepted.
+//! only once that forkchoice update has been accepted and the execution layer
+//! durably persisted them.
+
+use std::{pin::pin, time::Duration};
 
 use alloy_rpc_types_engine::{ForkchoiceState, PayloadStatusEnum};
 use commonware_macros::test_traced;
 use commonware_runtime::{Runner as _, deterministic};
+use futures::poll;
 use tempo_primitives::ed25519::PublicKey;
 
 use super::harness::{
-    ElCall, ForkchoiceStateExt as _, GENESIS, Harness, HarnessOptions, STARTUP_FCU,
+    ElCall, FakeMarshal, ForkchoiceStateExt as _, GENESIS, Harness, HarnessOptions, STARTUP_FCU,
     STARTUP_FCU_CALL, built_payload, make_block, make_block_with_proposer, round,
 };
 use crate::consensus::Digest;
@@ -85,6 +89,66 @@ fn finalized_blocks_are_forwarded_in_order() {
             by a single forkchoice update",
         );
         assert_eq!(h.execution.finalized(), Some((3, digests[2])));
+    });
+}
+
+#[test_traced]
+fn finalized_blocks_are_acknowledged_once_durable() {
+    deterministic::Runner::default().start(|context| async move {
+        let mut h = Harness::start_at_genesis(&context);
+        h.execution.persist_manually();
+
+        let b1 = make_block(1, 1, GENESIS);
+        let b2 = make_block(2, 2, b1.digest());
+        let b3 = make_block(3, 3, b2.digest());
+        let (d2, d3) = (b2.digest(), b3.digest());
+        let fork = make_block(4, 3, d2);
+        assert_ne!(fork.digest(), d3);
+
+        h.deliver_tip(round(3), 3, d3);
+        let mut w1 = pin!(h.deliver_finalized(b1));
+        let w2 = pin!(h.deliver_finalized(b2));
+        let mut w3 = pin!(h.deliver_finalized(b3));
+        h.wait_until(|| h.execution.finalized() == Some((3, d3)))
+            .await;
+        h.run_for(Duration::from_millis(10)).await;
+        assert!(
+            poll!(&mut w1).is_pending(),
+            "finalized blocks must not be acknowledged before they are durable",
+        );
+
+        // A durable tip off the canonical chain proves nothing about it.
+        h.execution.persist(3, fork.digest());
+        h.run_for(Duration::from_millis(10)).await;
+        assert!(poll!(&mut w1).is_pending());
+
+        h.execution.persist(2, d2);
+        w1.await.expect("first block is durable");
+        w2.await.expect("second block is durable");
+        h.run_for(Duration::from_millis(10)).await;
+        assert!(
+            poll!(&mut w3).is_pending(),
+            "blocks above the durable tip must wait for the next persistence run",
+        );
+
+        h.execution.persist(3, d3);
+        w3.await.expect("third block is durable");
+
+        // Persistence running ahead of finality proves the finalized prefix
+        // of its chain durable.
+        let b4 = make_block(4, 4, d3);
+        let b5 = make_block(5, 5, b4.digest());
+        let d4 = b4.digest();
+        h.deliver_tip(round(4), 4, d4);
+        let mut w4 = pin!(h.deliver_finalized(b4));
+        h.wait_until(|| h.execution.finalized() == Some((4, d4)))
+            .await;
+        h.run_for(Duration::from_millis(10)).await;
+        assert!(poll!(&mut w4).is_pending());
+        h.execution.seed_canonical_block(&b5);
+        h.execution.persist(5, b5.digest());
+        w4.await
+            .expect("finalized block below a durable tip on its chain is durable");
     });
 }
 
@@ -404,6 +468,54 @@ fn redelivered_finalized_block_at_the_tracked_state_is_acknowledged() {
             ],
         );
         assert_eq!(h.execution.finalized(), Some((1, d1)),);
+    });
+}
+
+#[test_traced]
+fn finalized_block_above_the_reported_tip_is_acknowledged() {
+    deterministic::Runner::default().start(|context| async move {
+        let b1 = make_block(1, 1, GENESIS);
+        let b2 = make_block(2, 2, b1.digest());
+        let b3 = make_block(3, 3, b2.digest());
+        let b4 = make_block(4, 4, b3.digest());
+        let (d2, d3, d4) = (b2.digest(), b3.digest(), b4.digest());
+
+        let marshal = FakeMarshal::new();
+        marshal.add_block(b1);
+        marshal.add_block(b2);
+
+        // A restart backfills to the floor at the stored finalized tip.
+        let mut h = Harness::builder()
+            .marshal(marshal)
+            .harness_options(HarnessOptions {
+                finalized_floor: 2,
+                finalized_tip: (round(2), 2, d2),
+                ..Default::default()
+            })
+            .start(&context);
+        h.wait_until(|| h.execution.finalized() == Some((2, d2)))
+            .await;
+
+        // Marshal then delivers the next finalized block without reporting a
+        // tip for it first. The block itself proves its finality.
+        h.deliver_finalized(b3)
+            .await
+            .expect("a finalized block above the reported tip should be acknowledged");
+        assert_eq!(h.execution.finalized(), Some((3, d3)));
+
+        h.deliver_tip(round(4), 4, d4);
+        h.deliver_finalized(b4)
+            .await
+            .expect("finalization should continue past the unreported block");
+        assert_eq!(
+            h.execution.fcus(),
+            vec![
+                STARTUP_FCU,
+                (d2, d2, false),
+                (d3, d3, false),
+                (d4, d4, false)
+            ],
+        );
     });
 }
 

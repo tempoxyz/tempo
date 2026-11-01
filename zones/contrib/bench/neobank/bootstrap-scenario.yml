@@ -1,0 +1,92 @@
+version: 1
+
+chains:
+  l1:
+    network: tempo
+    rpc_url: "${L1_RPC_URL}"
+    query_rpc_url: "${ZONES_BENCH_L1_QUERY_RPC_URL}"
+    chain_id: ${ZONES_BENCH_EXPECTED_L1_CHAIN_ID}
+    workload: ./bootstrap-deposit.yml
+
+  zone:
+    network: tempo
+    rpc_url: "${ZONE_RPC_URL}"
+    query_rpc_url: "${ZONE_RPC_URL}"
+    chain_id: ${ZONES_BENCH_EXPECTED_ZONE_CHAIN_ID}
+    workload: ./bootstrap-zone.yml
+
+scenario:
+  name: zones-bootstrap-deposit
+  timeout: 10m
+
+  bindings:
+    account:
+      account:
+        pool: control
+        select: lease
+
+  steps:
+    - submit:
+        chain: l1
+        template: control_portal_approval
+        with:
+          from: { var: account.ref }
+        await: receipt
+      save: control_portal_approval
+
+    - checkpoint:
+        chain: zone
+      save: zone_before_deposit
+
+    - invoke:
+        chain: l1
+        action: prepare_encrypted_deposit
+        with:
+          sender: { var: account.address }
+          recipient: "${ZONES_BENCH_SEQUENCER_ADDRESS}"
+          zoneId: ${ZONES_BENCH_EXPECTED_ZONE_ID}
+          portalAddress: "${L1_PORTAL_ADDRESS}"
+          memo: "0x0000000000000000000000000000000000000000000000000000000000000000"
+      save: encryption
+
+    - submit:
+        chain: l1
+        template: bootstrap_deposit
+        with:
+          from: { var: account.ref }
+          call:
+            args:
+              - "${ZONES_BENCH_TOKEN}"
+              - ${ZONES_BENCH_BOOTSTRAP_DEPOSIT_AMOUNT}
+              - { var: encryption.keyIndex }
+              - { var: encryption.encrypted }
+              - { var: account.address }
+      save: bootstrap_deposit
+
+    - wait_log:
+        chain: l1
+        transaction_hash: { var: bootstrap_deposit.tx_hash }
+        sender: { var: bootstrap_deposit.sender }
+        address: "${L1_PORTAL_ADDRESS}"
+        abi: ZonePortal
+        event: DepositMade
+        where:
+          sender: { var: account.address }
+          token: "${ZONES_BENCH_TOKEN}"
+      save: deposit_made
+
+    - wait_log:
+        chain: zone
+        from_block: { var: zone_before_deposit.block_number }
+        address: "${ZONES_BENCH_INBOX}"
+        abi: ZoneInbox
+        event: DepositProcessed
+        where:
+          depositHash: { var: deposit_made.args.newCurrentDepositQueueHash }
+          sender: { var: account.address }
+          to: "${ZONES_BENCH_SEQUENCER_ADDRESS}"
+          token: "${ZONES_BENCH_TOKEN}"
+          amount: { var: deposit_made.args.netAmount }
+          memo: "0x0000000000000000000000000000000000000000000000000000000000000000"
+        max_block_range: 1000
+      save: deposit_processed

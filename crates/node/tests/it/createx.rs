@@ -1,9 +1,9 @@
-use crate::utils::{TEST_MNEMONIC, TestNodeBuilder};
+use crate::utils::TestNodeBuilder;
 use alloy::{
     primitives::Bytes,
     providers::{Provider, ProviderBuilder},
-    signers::local::MnemonicBuilder,
 };
+use reth_e2e_test_utils::wallet::test_signer;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::{CREATEX_ADDRESS, CreateX};
 
@@ -13,7 +13,7 @@ async fn test_createx() -> eyre::Result<()> {
 
     let setup = TestNodeBuilder::new().build_http_only().await?;
 
-    let wallet = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let wallet = test_signer(0);
     let provider = ProviderBuilder::new()
         .wallet(wallet)
         .connect_http(setup.http_url);

@@ -43,7 +43,7 @@ jobs:
     steps:
       # ── checkout ───────────────────────────────────────────────
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2 # zizmor: ignore[artipacked]
         with:
@@ -77,25 +77,22 @@ jobs:
           if git rev-parse --verify origin/reth-auto-bump >/dev/null 2>&1; then
             echo "Continuing on existing reth-auto-bump branch, rebasing onto main"
             git checkout reth-auto-bump
-            if ! git rebase origin/main; then
+            # -X ours (main during a rebase) keeps main's side of each conflicting
+            # hunk and our non-conflicting fixes; the fix loop below re-applies any
+            # fix this drops.
+            if ! git rebase -X ours origin/main; then
               echo "Rebase conflicts detected, resolving..."
-              # Conflicts are expected in Cargo.toml/Cargo.lock from old rev bumps.
-              # Accept main's version for those since we're about to bump to a new
-              # rev anyway. Keep source fixes from our side.
+              # Conflicts left over are whole-file ones (such as modify/delete); take
+              # main's side of those too.
               while [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ]; do
                 CONFLICTED=$(git diff --name-only --diff-filter=U)
                 for f in $CONFLICTED; do
-                  case "$f" in
-                    Cargo.toml|Cargo.lock)
-                      echo "  Accepting main version for $f"
-                      git checkout --theirs "$f"
-                      ;;
-                    *)
-                      echo "  Accepting our version for $f"
-                      git checkout --ours "$f"
-                      ;;
-                  esac
-                  git add "$f"
+                  echo "  Accepting main version for $f"
+                  if git checkout --ours "$f" 2>/dev/null; then
+                    git add "$f"
+                  else
+                    git rm -q "$f"
+                  fi
                 done
                 GIT_EDITOR=true git rebase --continue || true
               done
@@ -107,10 +104,10 @@ jobs:
           fi
 
       # ── toolchain (matches test.yml) ───────────────────────────
-      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
-      - uses: tempoxyz/gh-actions/actions/setup-mold@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
-      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
-      - uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+      - uses: tempoxyz/gh-actions/actions/setup-mold@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+      - uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           tool: nextest@0.9.127
 
@@ -161,6 +158,7 @@ jobs:
           chmod +x /usr/local/bin/amp-run
 
       # ── update reth rev ─────────────────────────────────────────
+      # When already on the latest rev, all later steps are skipped.
       - name: Update reth rev in Cargo.toml
         id: update
         env:
@@ -175,10 +173,18 @@ jobs:
           echo "Current reth rev (on working branch): $CURRENT_REV"
 
           # Latest commit on reth main
-          NEW_REV=$(gh api repos/paradigmxyz/reth/commits/main --jq '.sha' | head -c 7)
+          NEW_REV=$(gh api repos/paradigmxyz/reth/commits/main --jq '.sha')
           echo "Latest reth main: $NEW_REV"
 
-          if [ "$CURRENT_REV" = "$NEW_REV" ]; then
+          for rev in "$CURRENT_REV" "$NEW_REV"; do
+            if ! [[ "$rev" =~ ^[0-9a-f]{7,40}$ ]]; then
+              echo "::error::Could not read reth rev: '$rev'"
+              exit 1
+            fi
+          done
+
+          # Pins may be short or full SHAs.
+          if [[ "$NEW_REV" == "$CURRENT_REV"* ]]; then
             echo "bumped=false" >> "$GITHUB_OUTPUT"
             echo "Already on latest reth rev."
             exit 0
@@ -191,8 +197,29 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
           # Update all reth rev references in Cargo.toml files
-          find . -name 'Cargo.toml' -exec sed -i "s|paradigmxyz/reth\", rev = \"${CURRENT_REV}\"|paradigmxyz/reth\", rev = \"${NEW_REV}\"|g" {} +
+          find . -name 'Cargo.toml' -exec sed -i "s|paradigmxyz/reth\", rev = \"[0-9a-f]*\"|paradigmxyz/reth\", rev = \"${NEW_REV}\"|g" {} +
           echo "Updated reth rev: $CURRENT_REV -> $NEW_REV"
+
+          # Match the reth-core and evm2 pins to the ones the new reth rev uses.
+          RETH_TOML=$(gh api "repos/paradigmxyz/reth/contents/Cargo.toml?ref=${NEW_REV}" -H 'Accept: application/vnd.github.raw' | grep -v '^[[:space:]]*#')
+          reth_pin() {
+            echo "$RETH_TOML" | grep -m1 "github.com/$1\", rev = " | sed 's/.*rev = "\([^"]*\)".*/\1/' || true
+          }
+          set_pin() {
+            find . -name 'Cargo.toml' -exec sed -i "s|github.com/$1\", rev = \"[0-9a-f]*\"|github.com/$1\", rev = \"$2\"|g" {} +
+            echo "Set $1 rev: $2"
+          }
+          RETH_CORE_REV=$(reth_pin paradigmxyz/reth-core)
+          # Tempo patches alloy-rs/evm2 with DaniPopes/evm2; keep both at the evm2 rev reth builds with.
+          EVM2_REV=$(reth_pin DaniPopes/evm2)
+          [ -n "$EVM2_REV" ] || EVM2_REV=$(reth_pin alloy-rs/evm2)
+          if [ -z "$RETH_CORE_REV" ] || [ -z "$EVM2_REV" ]; then
+            echo "::error::Could not read reth-core or evm2 rev from reth ${NEW_REV}"
+            exit 1
+          fi
+          set_pin paradigmxyz/reth-core "$RETH_CORE_REV"
+          set_pin alloy-rs/evm2 "$EVM2_REV"
+          set_pin DaniPopes/evm2 "$EVM2_REV"
 
       # ── commit rev bump if changed ──────────────────────────────
       - name: Commit reth rev bump
@@ -203,9 +230,14 @@ jobs:
           git add -A
           git commit -m "deps: bump reth rev to ${NEW_REV} ($(date -u +%Y-%m-%d))"
 
+      - name: Install LLVM for JIT targets
+        if: steps.update.outputs.bumped == 'true'
+        run: .github/scripts/install_llvm.sh
+
       # ── cargo check + Amp fix loop ────────────────────────────
       - name: Fix compilation errors
         id: check-loop
+        if: steps.update.outputs.bumped == 'true'
         env:
           AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
         run: |
@@ -274,6 +306,7 @@ jobs:
       # ── test compilation check + Amp fix loop ─────────────────
       - name: Fix test compilation errors
         id: test-loop
+        if: steps.update.outputs.bumped == 'true'
         env:
           AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
         run: |
@@ -343,6 +376,7 @@ jobs:
 
       # ── commit source fixes ─────────────────────────────────────
       - name: Commit source fixes
+        if: steps.update.outputs.bumped == 'true'
         run: |
           if [ -n "$(git status --porcelain)" ]; then
             git add -A
@@ -352,10 +386,12 @@ jobs:
           fi
 
       # ── zepter feature lint ─────────────────────────────────────
-      - uses: tempoxyz/gh-actions/actions/cargo-install@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+      - uses: tempoxyz/gh-actions/actions/cargo-install@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        if: steps.update.outputs.bumped == 'true'
         with:
           tool: zepter
       - name: Fix zepter lint
+        if: steps.update.outputs.bumped == 'true'
         run: |
           if ! zepter run check; then
             echo "Zepter check failed — running auto-fix..."
@@ -370,11 +406,13 @@ jobs:
 
       # ── push ───────────────────────────────────────────────────
       - name: Push working branch
+        if: steps.update.outputs.bumped == 'true'
         run: |
           git push --force-with-lease origin reth-auto-bump
 
       # ── create / update PR ─────────────────────────────────────
       - name: Create or update PR
+        if: steps.update.outputs.bumped == 'true'
         env:
           GH_TOKEN: ${{ secrets.DEREK_UPDATE_RETH_TOKEN }}
           AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
@@ -512,6 +550,7 @@ jobs:
 
       # ── wait for CI and fix failures ─────────────────────────
       - name: Wait for CI and fix failures
+        if: steps.update.outputs.bumped == 'true'
         env:
           GH_TOKEN: ${{ secrets.DEREK_UPDATE_RETH_TOKEN }}
           AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
@@ -704,8 +743,6 @@ jobs:
           DETAILS=""
           if [ "$BUMPED" = "true" ] && [ -n "$OLD_REV" ] && [ -n "$NEW_REV" ]; then
             DETAILS="${DETAILS}\n• <https://github.com/paradigmxyz/reth/commit/${OLD_REV}|${OLD_REV:0:7}> → <https://github.com/paradigmxyz/reth/commit/${NEW_REV}|${NEW_REV:0:7}> (<https://github.com/paradigmxyz/reth/compare/${OLD_REV}...${NEW_REV}|diff>)"
-          elif [ "$BUMPED" = "false" ]; then
-            DETAILS="${DETAILS}\n• Already on latest reth rev"
           fi
 
           if [ "$CLIPPY_PASSED" = "false" ]; then

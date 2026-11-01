@@ -1,3 +1,5 @@
+pub mod configurable_account;
+pub use configurable_account::*;
 pub mod envelope;
 pub mod key_authorization;
 pub mod tempo_transaction;
@@ -8,8 +10,8 @@ pub mod tt_signed;
 pub use tt_authorization::{MAGIC, RecoveredTempoAuthorization, TempoSignedAuthorization};
 // Re-export Authorization from alloy for convenience
 pub use tt_signature::{
-    KeychainSignature, KeychainVersion, KeychainVersionError, PrimitiveSignature, TempoSignature,
-    derive_p256_address,
+    AccountSignature, AccountSignatureError, KeychainSignature, KeychainVersion,
+    KeychainVersionError, PrimitiveSignature, TempoSignature, derive_p256_address,
 };
 
 pub use crate::address::TIP20_TOKEN_PREFIX as TIP20_PAYMENT_PREFIX;
@@ -78,13 +80,10 @@ mod tests {
         assert_eq!(calc_gas_balance_spending(0, 0), U256::ZERO);
 
         // exact division: 1 gas * 10^12 attodollars = 1 microdollar
-        assert_eq!(
-            calc_gas_balance_spending(1, 1_000_000_000_000),
-            U256::from(1)
-        );
+        assert_eq!(calc_gas_balance_spending(1, 1_000_000_000_000), U256::ONE);
 
         // rounds up via div_ceil: 1 gas * 1 attodollar → ceil(1 / 10^12) = 1
-        assert_eq!(calc_gas_balance_spending(1, 1), U256::from(1));
+        assert_eq!(calc_gas_balance_spending(1, 1), U256::ONE);
 
         // typical tx: 21000 gas * 1 gwei (10^9 attodollars)
         // = 21000 * 10^9 / 10^12 = 21000 / 1000 = 21

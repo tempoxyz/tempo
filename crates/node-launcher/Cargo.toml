@@ -1,0 +1,24 @@
+[package]
+name = "tempo-node-launcher"
+description = "Non-generic launch entrypoint for the Tempo execution node"
+
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+publish.workspace = true
+
+[dependencies]
+eyre.workspace = true
+futures.workspace = true
+reth-db.workspace = true
+reth-node-builder.workspace = true
+tempo-node.workspace = true
+
+[lints]
+workspace = true

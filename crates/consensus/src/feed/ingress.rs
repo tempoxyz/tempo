@@ -80,20 +80,17 @@ mod tests {
         block_on(async {
             let (sender, mut receiver) = futures::channel::mpsc::unbounded();
             let mut mailbox = Mailbox::new(sender);
-            let block = Block::try_from_execution_block(
-                SealedBlock::seal_slow(TempoBlock {
-                    header: TempoHeader {
-                        inner: Header {
-                            number: 1,
-                            ..Default::default()
-                        },
+            let block = Block::try_from_execution_block(SealedBlock::seal_slow(TempoBlock {
+                header: TempoHeader {
+                    inner: Header {
+                        number: 1,
                         ..Default::default()
                     },
-                    body: BlockBody::default(),
-                }),
-                None,
-            )
-            .expect("test block should not contain BAL side data");
+                    ..Default::default()
+                },
+                body: BlockBody::default(),
+            }))
+            .expect("test block should be valid");
 
             let _ = mailbox.report(Update::Tip(
                 Round::new(Epoch::zero(), View::new(1)),

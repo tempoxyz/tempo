@@ -145,6 +145,9 @@ impl TIP20ChannelReserve {
     ///
     /// Payees cannot be zero or TIP-20 addresses. Virtual payees require a non-virtual operator.
     /// This prevents channels whose payee cannot receive direct payouts or submit vouchers itself.
+    ///
+    /// From T14, reverts with `RootKeyRetired` when the voucher signer has a configuration
+    /// commitment.
     pub fn open(
         &mut self,
         msg_sender: Address,
@@ -163,6 +166,12 @@ impl TIP20ChannelReserve {
         if deposit.is_zero() {
             return Err(TIP20ChannelReserveError::zero_deposit().into());
         }
+
+        self.ensure_voucher_signer_active(if call.authorizedSigner.is_zero() {
+            msg_sender
+        } else {
+            call.authorizedSigner
+        })?;
 
         let expiring_nonce_hash = self.enclosing_channel_open_context_hash()?;
         let channel_id = self.compute_channel_id_inner(
@@ -311,6 +320,9 @@ impl TIP20ChannelReserve {
     /// Adds deposit to an existing channel and cancels a pending close request.
     ///
     /// A zero top-up is allowed and only cancels a pending close request.
+    ///
+    /// From T14, a nonzero top-up reverts with `RootKeyRetired` when the voucher signer has a
+    /// configuration commitment.
     pub fn top_up(
         &mut self,
         msg_sender: Address,
@@ -331,6 +343,7 @@ impl TIP20ChannelReserve {
         }
 
         if !additional.is_zero() {
+            self.ensure_voucher_signer_active(self.expected_signer(&call.descriptor))?;
             let next_deposit = state
                 .deposit
                 .checked_add(additional)
@@ -848,6 +861,18 @@ impl TIP20ChannelReserve {
         if signer != self.expected_signer(descriptor) {
             return Err(TIP20ChannelReserveError::invalid_signature().into());
         }
+        // No retirement check: migrating must not let the payer void vouchers the payee holds.
+        Ok(())
+    }
+
+    /// Rejects a retired root key (TIP-1112) as the voucher signer for new deposit.
+    ///
+    /// Vouchers stay valid after their signer migrates, so a retired key keeps authority over
+    /// funds already in its channels but must not gain authority over new funds.
+    fn ensure_voucher_signer_active(&self, signer: Address) -> Result<()> {
+        if self.storage.is_retired_root(signer)? {
+            return Err(TIP20ChannelReserveError::root_key_retired(signer).into());
+        }
         Ok(())
     }
 
@@ -1346,8 +1371,7 @@ mod tests {
                     channelId: channel_id,
                     cumulativeAmount: U96::from(10),
                 })?;
-            let signature =
-                Bytes::copy_from_slice(&payer_signer.sign_hash_sync(&digest)?.as_bytes());
+            let signature = Bytes::from(payer_signer.sign_hash_sync(&digest)?.as_bytes());
 
             // Settle enforces the logical payer-as-sender check, not just reserve -> payee.
             let res = reserve.settle(
@@ -1432,8 +1456,7 @@ mod tests {
                     channelId: channel_id,
                     cumulativeAmount: U96::from(40),
                 })?;
-            let signature =
-                Bytes::copy_from_slice(&payer_signer.sign_hash_sync(&digest)?.as_bytes());
+            let signature = Bytes::from(payer_signer.sign_hash_sync(&digest)?.as_bytes());
             reserve.settle(
                 payee,
                 ITIP20ChannelReserve::settleCall {
@@ -1450,7 +1473,7 @@ mod tests {
                     cumulativeAmount: U96::from(60),
                 })?;
             let close_signature =
-                Bytes::copy_from_slice(&payer_signer.sign_hash_sync(&close_digest)?.as_bytes());
+                Bytes::from(payer_signer.sign_hash_sync(&close_digest)?.as_bytes());
             reserve.close(
                 payee,
                 ITIP20ChannelReserve::closeCall {
@@ -1481,7 +1504,7 @@ mod tests {
                 payer,
                 ITIP20::transferCall {
                     to: stranger,
-                    amount: U256::from(1u128),
+                    amount: U256::ONE,
                 },
             );
             assert_eq!(result.unwrap_err(), TIP20Error::policy_forbids().into());
@@ -1649,8 +1672,7 @@ mod tests {
                     channelId: channel_id,
                     cumulativeAmount: cumulative,
                 })?;
-            let signature =
-                Bytes::copy_from_slice(&payer_signer.sign_hash_sync(&digest)?.as_bytes());
+            let signature = Bytes::from(payer_signer.sign_hash_sync(&digest)?.as_bytes());
             reserve.settle(
                 payee,
                 ITIP20ChannelReserve::settleCall {
@@ -1667,7 +1689,7 @@ mod tests {
                     cumulativeAmount: close_cumulative,
                 })?;
             let close_signature =
-                Bytes::copy_from_slice(&payer_signer.sign_hash_sync(&close_digest)?.as_bytes());
+                Bytes::from(payer_signer.sign_hash_sync(&close_digest)?.as_bytes());
             reserve.close(
                 payee,
                 ITIP20ChannelReserve::closeCall {
@@ -1745,8 +1767,7 @@ mod tests {
                     channelId: channel_id,
                     cumulativeAmount: cumulative,
                 })?;
-            let signature =
-                Bytes::copy_from_slice(&payer_signer.sign_hash_sync(&digest)?.as_bytes());
+            let signature = Bytes::from(payer_signer.sign_hash_sync(&digest)?.as_bytes());
             let result = reserve.settle(
                 payee,
                 ITIP20ChannelReserve::settleCall {
@@ -2089,8 +2110,7 @@ mod tests {
                     channelId: channel_id,
                     cumulativeAmount: cumulative,
                 })?;
-            let signature =
-                Bytes::copy_from_slice(&payer_signer.sign_hash_sync(&digest)?.as_bytes());
+            let signature = Bytes::from(payer_signer.sign_hash_sync(&digest)?.as_bytes());
 
             token.pause(payer, ITIP20::pauseCall {})?;
             let result = reserve.settle(
@@ -2152,8 +2172,7 @@ mod tests {
                     channelId: channel_id,
                     cumulativeAmount: U96::from(120),
                 })?;
-            let signature =
-                Bytes::copy_from_slice(&payer_signer.sign_hash_sync(&digest)?.as_bytes());
+            let signature = Bytes::from(payer_signer.sign_hash_sync(&digest)?.as_bytes());
 
             let channel_descriptor = descriptor(
                 payer,
@@ -2179,7 +2198,7 @@ mod tests {
                     cumulativeAmount: U96::from(500),
                 })?;
             let close_signature =
-                Bytes::copy_from_slice(&payer_signer.sign_hash_sync(&close_digest)?.as_bytes());
+                Bytes::from(payer_signer.sign_hash_sync(&close_digest)?.as_bytes());
             reserve.close(
                 payee,
                 ITIP20ChannelReserve::closeCall {
@@ -2387,8 +2406,7 @@ mod tests {
                     channelId: channel_id,
                     cumulativeAmount: U96::from(40),
                 })?;
-            let signature =
-                Bytes::copy_from_slice(&payer_signer.sign_hash_sync(&digest)?.as_bytes());
+            let signature = Bytes::from(payer_signer.sign_hash_sync(&digest)?.as_bytes());
 
             reserve.settle(
                 operator,
@@ -2430,7 +2448,7 @@ mod tests {
                 ITIP20ChannelReserve::settleCall {
                     descriptor: descriptor_without_operator,
                     cumulativeAmount: U96::from(1),
-                    signature: Bytes::copy_from_slice(&Signature::test_signature().as_bytes()),
+                    signature: Signature::test_signature().as_bytes().into(),
                 },
             );
             assert_eq!(
@@ -2478,8 +2496,7 @@ mod tests {
                     channelId: channel_id,
                     cumulativeAmount: U96::from(80),
                 })?;
-            let signature =
-                Bytes::copy_from_slice(&payer_signer.sign_hash_sync(&digest)?.as_bytes());
+            let signature = Bytes::from(payer_signer.sign_hash_sync(&digest)?.as_bytes());
 
             reserve.close(
                 operator,
@@ -2525,7 +2542,7 @@ mod tests {
                     descriptor: descriptor_without_operator,
                     cumulativeAmount: U96::from(1),
                     captureAmount: U96::from(1),
-                    signature: Bytes::copy_from_slice(&Signature::test_signature().as_bytes()),
+                    signature: Signature::test_signature().as_bytes().into(),
                 },
             );
             assert_eq!(
@@ -2680,7 +2697,7 @@ mod tests {
                 .abi_encode(),
                 Address::ZERO,
             );
-            assert!(result.is_ok());
+            assert!(matches!(result, Err(evm2::PrecompileError::Revert(_))));
             Ok(())
         })
     }

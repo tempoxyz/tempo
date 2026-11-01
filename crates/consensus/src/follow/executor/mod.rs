@@ -18,7 +18,7 @@ use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::Pu
 use commonware_runtime::{Clock, Pacer, Spawner};
 use eyre::OptionExt as _;
 use futures::channel::mpsc;
-use reth_engine_primitives::ConsensusEngineHandle;
+use reth_engine_primitives::{BeaconForkChoiceUpdateError, ConsensusEngineHandle};
 use reth_ethereum::chainspec::EthChainSpec as _;
 use reth_primitives_traits::{NodePrimitives, SealedHeader};
 use reth_provider::{
@@ -66,7 +66,9 @@ where
 }
 
 /// Finalized block state needed to initialize and advance the follower.
-pub(crate) trait FinalizedBlockProvider: Send + Sync {
+///
+/// Clones must observe the same live execution-layer state.
+pub(crate) trait FinalizedBlockProvider: Clone + Send + Sync {
     /// Execution layer's effective finalized header. Returns genesis when no
     /// explicit finalized marker exists on a fresh chain.
     fn finalized_header(&self) -> eyre::Result<SealedHeader<TempoHeader>>;
@@ -88,7 +90,7 @@ pub(crate) trait ExecutionEngine: Send + Sync {
         &self,
         state: ForkchoiceState,
         attributes: Option<TempoPayloadAttributes>,
-    ) -> impl Future<Output = eyre::Result<ForkchoiceUpdated>> + Send + 'static;
+    ) -> impl Future<Output = Result<ForkchoiceUpdated, BeaconForkChoiceUpdateError>> + Send + 'static;
 }
 
 /// Narrow marshal capability used by the follower executor.
@@ -138,14 +140,10 @@ impl ExecutionEngine for ConsensusEngineHandle<TempoPayloadTypes> {
         &self,
         state: ForkchoiceState,
         attributes: Option<TempoPayloadAttributes>,
-    ) -> impl Future<Output = eyre::Result<ForkchoiceUpdated>> + Send + 'static {
+    ) -> impl Future<Output = Result<ForkchoiceUpdated, BeaconForkChoiceUpdateError>> + Send + 'static
+    {
         let engine = self.clone();
-        async move {
-            engine
-                .fork_choice_updated(state, attributes)
-                .await
-                .map_err(eyre::Report::new)
-        }
+        async move { engine.fork_choice_updated(state, attributes).await }
     }
 }
 

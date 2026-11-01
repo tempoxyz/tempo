@@ -3,7 +3,7 @@
 use super::ValidatorConfig;
 use crate::{Precompile, charge_input_cost, dispatch, error::TempoPrecompileError, mutate, view};
 use alloy::primitives::Address;
-use revm::precompile::PrecompileResult;
+use evm2::precompiles::PrecompileResult;
 use tempo_contracts::precompiles::IValidatorConfig;
 
 impl Precompile for ValidatorConfig {
@@ -51,7 +51,7 @@ mod tests {
     use crate::{
         expect_precompile_revert,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::{assert_full_coverage, check_selector_coverage},
+        test_util::{assert_full_coverage, check_selector_coverage, revert_bytes},
     };
     use alloy::{
         primitives::{Address, FixedBytes},
@@ -74,12 +74,12 @@ mod tests {
             let mut validator_config = ValidatorConfig::new();
             validator_config.initialize(owner)?;
 
-            let result = validator_config.call(&[0x12, 0x34, 0x56, 0x78], sender)?;
-            assert!(result.is_revert());
+            let result = validator_config.call(&[0x12, 0x34, 0x56, 0x78], sender);
+            assert!(matches!(result, Err(evm2::PrecompileError::Revert(_))));
 
             // T1: insufficient calldata also returns reverted output
-            let result = validator_config.call(&[0x12, 0x34], sender)?;
-            assert!(result.is_revert());
+            let result = validator_config.call(&[0x12, 0x34], sender);
+            assert!(matches!(result, Err(evm2::PrecompileError::Revert(_))));
 
             Ok(())
         })?;
@@ -91,8 +91,7 @@ mod tests {
             validator_config.initialize(owner)?;
 
             let result = validator_config.call(&[0x12, 0x34], sender);
-            let output = result.expect("expected Ok(halt) for short calldata");
-            assert!(output.is_halt());
+            assert!(matches!(result, Err(evm2::PrecompileError::Halt(_))));
 
             Ok(())
         })
@@ -114,11 +113,8 @@ mod tests {
             let calldata = owner_call.abi_encode();
 
             let result = validator_config.call(&calldata, sender)?;
-            // HashMapStorageProvider does not do gas accounting, so we expect 0 here.
-            assert_eq!(result.gas_used, 0);
-
             // Verify we get the correct owner
-            let decoded = Address::abi_decode(&result.bytes)?;
+            let decoded = Address::abi_decode(result.bytes())?;
             assert_eq!(decoded, owner);
 
             Ok(())
@@ -137,7 +133,7 @@ mod tests {
             validator_config.initialize(owner)?;
 
             // Add validator via dispatch
-            let public_key = FixedBytes::<32>::from([0x42; 32]);
+            let public_key = FixedBytes::<32>::repeat_byte(0x42);
             let add_call = IValidatorConfig::addValidatorCall {
                 newValidatorAddress: validator_addr,
                 publicKey: public_key,
@@ -147,10 +143,7 @@ mod tests {
             };
             let calldata = add_call.abi_encode();
 
-            let result = validator_config.call(&calldata, owner)?;
-
-            // HashMapStorageProvider does not have gas accounting, so we expect 0
-            assert_eq!(result.gas_used, 0);
+            validator_config.call(&calldata, owner)?;
 
             // Verify validator was added by calling getValidators
             let validators = validator_config.get_validators()?;
@@ -178,7 +171,7 @@ mod tests {
             validator_config.initialize(owner)?;
 
             // Try to add validator as non-owner
-            let public_key = FixedBytes::<32>::from([0x42; 32]);
+            let public_key = FixedBytes::<32>::repeat_byte(0x42);
             let add_call = IValidatorConfig::addValidatorCall {
                 newValidatorAddress: validator_addr,
                 publicKey: public_key,
@@ -221,7 +214,7 @@ mod tests {
 
         let owner = Address::random();
         let validator = Address::random();
-        let public_key = FixedBytes::<32>::from([0x42; 32]);
+        let public_key = FixedBytes::<32>::repeat_byte(0x42);
 
         // T0: changeValidatorStatusByIndex returns UnknownFunctionSelector
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
@@ -247,10 +240,9 @@ mod tests {
                 active: false,
             };
             let calldata = call.abi_encode();
-            let result = validator_config.call(&calldata, owner)?;
+            let result = validator_config.call(&calldata, owner);
 
-            assert!(result.is_revert());
-            let decoded = UnknownFunctionSelector::abi_decode(&result.bytes)?;
+            let decoded = UnknownFunctionSelector::abi_decode(revert_bytes(&result))?;
             assert_eq!(
                 decoded.selector.0,
                 IValidatorConfig::changeValidatorStatusByIndexCall::SELECTOR
@@ -283,12 +275,7 @@ mod tests {
                 active: false,
             };
             let calldata = call.abi_encode();
-            let result = validator_config.call(&calldata, owner)?;
-
-            assert!(
-                !result.is_revert(),
-                "changeValidatorStatusByIndex should succeed in T1"
-            );
+            validator_config.call(&calldata, owner)?;
 
             // Verify the status was changed
             let validators = validator_config.get_validators()?;

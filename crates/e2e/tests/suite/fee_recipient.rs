@@ -9,8 +9,8 @@ use reth_ethereum::{provider::CanonStateSubscriptions as _, storage::BlockReader
 
 use crate::{Setup, setup_validators};
 
-const ORIGINAL_FEE_RECIPIENT: Address = Address::new([0xFE; 20]);
-const UPDATED_FEE_RECIPIENT: Address = Address::new([0xAB; 20]);
+const ORIGINAL_FEE_RECIPIENT: Address = Address::repeat_byte(0xFE);
+const UPDATED_FEE_RECIPIENT: Address = Address::repeat_byte(0xAB);
 
 /// Verifies that the block beneficiary follows the on-chain V2 fee recipient
 /// across a `setFeeRecipient` update.

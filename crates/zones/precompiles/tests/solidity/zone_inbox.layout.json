@@ -1,0 +1,79 @@
+{
+  "contracts": {
+    "tests/solidity/zone_inbox.sol:ZoneInboxStorage": {
+      "storage-layout": {
+        "storage": [
+          {
+            "astId": 4,
+            "contract": "tests/solidity/zone_inbox.sol:ZoneInboxStorage",
+            "label": "processedDepositQueueHash",
+            "offset": 0,
+            "slot": "0",
+            "type": "t_bytes32"
+          },
+          {
+            "astId": 6,
+            "contract": "tests/solidity/zone_inbox.sol:ZoneInboxStorage",
+            "label": "processedDepositNumber",
+            "offset": 0,
+            "slot": "1",
+            "type": "t_uint64"
+          },
+          {
+            "astId": 12,
+            "contract": "tests/solidity/zone_inbox.sol:ZoneInboxStorage",
+            "label": "_refunds",
+            "offset": 0,
+            "slot": "2",
+            "type": "t_mapping(t_address,t_mapping(t_address,t_uint128))"
+          },
+          {
+            "astId": 14,
+            "contract": "tests/solidity/zone_inbox.sol:ZoneInboxStorage",
+            "label": "processedTokenEnablementHash",
+            "offset": 0,
+            "slot": "3",
+            "type": "t_bytes32"
+          }
+        ],
+        "types": {
+          "t_address": {
+            "encoding": "inplace",
+            "label": "address",
+            "numberOfBytes": "20"
+          },
+          "t_bytes32": {
+            "encoding": "inplace",
+            "label": "bytes32",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_address,t_mapping(t_address,t_uint128))": {
+            "encoding": "mapping",
+            "key": "t_address",
+            "label": "mapping(address => mapping(address => uint128))",
+            "numberOfBytes": "32",
+            "value": "t_mapping(t_address,t_uint128)"
+          },
+          "t_mapping(t_address,t_uint128)": {
+            "encoding": "mapping",
+            "key": "t_address",
+            "label": "mapping(address => uint128)",
+            "numberOfBytes": "32",
+            "value": "t_uint128"
+          },
+          "t_uint128": {
+            "encoding": "inplace",
+            "label": "uint128",
+            "numberOfBytes": "16"
+          },
+          "t_uint64": {
+            "encoding": "inplace",
+            "label": "uint64",
+            "numberOfBytes": "8"
+          }
+        }
+      }
+    }
+  },
+  "version": "0.8.33+commit.64118f21.Darwin.appleclang"
+}

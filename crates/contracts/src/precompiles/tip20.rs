@@ -181,6 +181,7 @@ crate::sol! {
         error InvalidSignature();
         error LogoURITooLong();
         error InvalidLogoURI();
+        error RootKeyRetired(address account);
     }
 }
 
@@ -208,8 +209,8 @@ impl ITIP20::ITIP20Calls {
     /// # NOTES
     /// - Only validates calldata; the caller must check the TIP-20 address prefix on `to`.
     /// - Only selector and ABI-encoded length match, no decoding (better performance).
-    /// - At most `max_trailing_bytes` may follow the ABI-encoded arguments: `0` before T13 and
-    ///   [`MAX_PAYMENT_TRAILING_BYTES`] from T13.
+    /// - At most `max_trailing_bytes` may follow the ABI-encoded arguments: `0` before T15 and
+    ///   [`MAX_PAYMENT_TRAILING_BYTES`] from T15.
     /// - Use [`PaymentSlots::classify`] when the call's addresses are needed as well.
     ///
     /// [TIP-20 payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
@@ -219,7 +220,7 @@ impl ITIP20::ITIP20Calls {
 }
 
 /// [TIP-1045] Maximum number of bytes that may follow the ABI-encoded arguments of a static-only
-/// payment call from T13.
+/// payment call from T15.
 ///
 /// Integrators commonly append a fixed-size tag, such as an attribution ID, after otherwise
 /// canonical calldata.

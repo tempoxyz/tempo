@@ -1,7 +1,7 @@
 use super::SignatureVerifier;
 use crate::{Precompile, charge_input_cost, dispatch, view};
-use alloy::primitives::Address;
-use revm::precompile::PrecompileResult;
+use alloy::{primitives::Address, sol_types::SolCall};
+use evm2::precompiles::PrecompileResult;
 use tempo_contracts::precompiles::{ISignatureVerifier, SignatureVerifierError};
 use tempo_primitives::MAX_WEBAUTHN_SIGNATURE_LENGTH;
 
@@ -17,10 +17,15 @@ impl Precompile for SignatureVerifier {
             return err;
         }
 
-        if calldata.len() > MAX_CALLDATA_LEN {
-            return Ok(self
+        // `verifyConfigurableAccount` input is bounded by its decoder and already charged.
+        if calldata.len() > MAX_CALLDATA_LEN
+            && !(self.storage.spec().is_t14()
+                && calldata
+                    .starts_with(&ISignatureVerifier::verifyConfigurableAccountCall::SELECTOR))
+        {
+            return self
                 .storage
-                .abi_revert(SignatureVerifierError::invalid_format()));
+                .abi_revert(SignatureVerifierError::invalid_format());
         }
 
         dispatch!(
@@ -39,6 +44,10 @@ impl Precompile for SignatureVerifier {
                     verifyKeychainAdmin(call) => view(call, |c| {
                         self.verify_keychain_admin(c.account, c.hash, c.signature)
                     }),
+                    #[schedule(since = T14)]
+                    verifyConfigurableAccount(call) => view(call, |c| {
+                        self.verify_configurable_account(c.account, c.hash, &c.signature)
+                    }),
                 }
             }
         )
@@ -53,7 +62,7 @@ mod tests {
         account_keychain::{AccountKeychain, KeyRestrictions, SignatureType},
         expect_precompile_revert,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::{assert_full_coverage, check_selector_coverage},
+        test_util::{assert_full_coverage, check_selector_coverage, revert_bytes},
     };
     use alloy::{
         primitives::B256,
@@ -83,7 +92,7 @@ mod tests {
         .abi_encode();
 
         let output = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
-        let ret = ISignatureVerifier::verifyKeychainCall::abi_decode_returns(&output.bytes)?;
+        let ret = ISignatureVerifier::verifyKeychainCall::abi_decode_returns(output.bytes())?;
         Ok(ret)
     }
 
@@ -100,7 +109,7 @@ mod tests {
         .abi_encode();
 
         let output = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
-        let ret = ISignatureVerifier::verifyKeychainAdminCall::abi_decode_returns(&output.bytes)?;
+        let ret = ISignatureVerifier::verifyKeychainAdminCall::abi_decode_returns(output.bytes())?;
         Ok(ret)
     }
 
@@ -121,7 +130,7 @@ mod tests {
 
     #[test]
     fn test_signature_verifier_selector_coverage() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
         StorageCtx::enter(&mut storage, || {
             let mut verifier = SignatureVerifier::new();
 
@@ -148,10 +157,9 @@ mod tests {
             }
             .abi_encode();
 
-            let result = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
-            assert!(result.is_revert());
+            let result = SignatureVerifier::new().call(&calldata, Address::ZERO);
             assert!(
-                UnknownFunctionSelector::abi_decode(&result.bytes).is_ok(),
+                UnknownFunctionSelector::abi_decode(revert_bytes(&result)).is_ok(),
                 "verifyKeychain should be selector-gated before T6"
             );
             Ok(())
@@ -169,10 +177,9 @@ mod tests {
             }
             .abi_encode();
 
-            let result = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
-            assert!(result.is_revert());
+            let result = SignatureVerifier::new().call(&calldata, Address::ZERO);
             assert!(
-                UnknownFunctionSelector::abi_decode(&result.bytes).is_ok(),
+                UnknownFunctionSelector::abi_decode(revert_bytes(&result)).is_ok(),
                 "verifyKeychainAdmin should be selector-gated before T6"
             );
             Ok(())
@@ -184,18 +191,18 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
         StorageCtx::enter(&mut storage, || {
             let signer = PrivateKeySigner::random();
-            let hash = B256::from([0xAA; 32]);
+            let hash = B256::repeat_byte(0xAA);
             let sig = signer.sign_hash_sync(&hash)?;
 
             let calldata = ISignatureVerifier::verifyCall {
                 signer: signer.address(),
                 hash,
-                signature: sig.as_bytes().to_vec().into(),
+                signature: sig.as_bytes().into(),
             }
             .abi_encode();
 
             let output = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
-            let ret = ISignatureVerifier::verifyCall::abi_decode_returns(&output.bytes)?;
+            let ret = ISignatureVerifier::verifyCall::abi_decode_returns(output.bytes())?;
             assert!(ret, "verify should return true for the correct signer");
             Ok(())
         })
@@ -206,18 +213,18 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
         StorageCtx::enter(&mut storage, || {
             let signer = PrivateKeySigner::random();
-            let hash = B256::from([0xBB; 32]);
+            let hash = B256::repeat_byte(0xBB);
             let sig = signer.sign_hash_sync(&hash)?;
 
             let calldata = ISignatureVerifier::verifyCall {
                 signer: Address::random(),
                 hash,
-                signature: sig.as_bytes().to_vec().into(),
+                signature: sig.as_bytes().into(),
             }
             .abi_encode();
 
             let output = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
-            let ret = ISignatureVerifier::verifyCall::abi_decode_returns(&output.bytes)?;
+            let ret = ISignatureVerifier::verifyCall::abi_decode_returns(output.bytes())?;
             assert!(!ret, "verify should return false for a wrong signer");
             Ok(())
         })
@@ -247,7 +254,7 @@ mod tests {
                 None,
             )?;
 
-            let hash = B256::from([0x44; 32]);
+            let hash = B256::repeat_byte(0x44);
             let signature = keychain_signature(account, &access_key, hash)?;
 
             let ret = call_verify_keychain(account, hash, signature)?;
@@ -262,7 +269,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let account = Address::random();
             let access_key = PrivateKeySigner::random();
-            let hash = B256::from([0x55; 32]);
+            let hash = B256::repeat_byte(0x55);
             let signature = keychain_signature(account, &access_key, hash)?;
 
             let ret = call_verify_keychain(account, hash, signature)?;
@@ -277,7 +284,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let root = PrivateKeySigner::random();
             let account = root.address();
-            let hash = B256::from([0x56; 32]);
+            let hash = B256::repeat_byte(0x56);
             let signature = keychain_signature(account, &root, hash)?;
 
             let ret = call_verify_keychain(account, hash, signature)?;
@@ -313,7 +320,7 @@ mod tests {
                 None,
             )?;
 
-            let hash = B256::from([0x57; 32]);
+            let hash = B256::repeat_byte(0x57);
             let signature = keychain_signature(account, &access_key, hash)?;
 
             let ret = call_verify_keychain(Address::random(), hash, signature)?;
@@ -342,7 +349,7 @@ mod tests {
                 None,
             )?;
 
-            let hash = B256::from([0x66; 32]);
+            let hash = B256::repeat_byte(0x66);
             let signature = keychain_signature(account, &admin, hash)?;
 
             let ret = call_verify_keychain_admin(account, hash, signature)?;
@@ -357,7 +364,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let root = PrivateKeySigner::random();
             let account = root.address();
-            let hash = B256::from([0x67; 32]);
+            let hash = B256::repeat_byte(0x67);
             let signature = keychain_signature(account, &root, hash)?;
 
             let ret = call_verify_keychain_admin(account, hash, signature)?;
@@ -383,7 +390,7 @@ mod tests {
                 None,
             )?;
 
-            let hash = B256::from([0x68; 32]);
+            let hash = B256::repeat_byte(0x68);
             let signature = keychain_signature(account, &admin, hash)?;
 
             let ret = call_verify_keychain_admin(Address::random(), hash, signature)?;
@@ -419,7 +426,7 @@ mod tests {
                 None,
             )?;
 
-            let hash = B256::from([0x77; 32]);
+            let hash = B256::repeat_byte(0x77);
             let signature = keychain_signature(account, &access_key, hash)?;
 
             let ret = call_verify_keychain_admin(account, hash, signature)?;
@@ -433,13 +440,13 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         StorageCtx::enter(&mut storage, || {
             let signer = PrivateKeySigner::random();
-            let hash = B256::from([0x88; 32]);
+            let hash = B256::repeat_byte(0x88);
             let sig = signer.sign_hash_sync(&hash)?;
 
             let calldata = ISignatureVerifier::verifyKeychainCall {
                 account: signer.address(),
                 hash,
-                signature: sig.as_bytes().to_vec().into(),
+                signature: sig.as_bytes().into(),
             }
             .abi_encode();
 
@@ -475,10 +482,10 @@ mod tests {
             }
             .abi_encode();
 
-            let result = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
+            let result = SignatureVerifier::new().call(&calldata, Address::ZERO);
             // Should NOT be rejected by the size guard, should fail later at signature validation
             assert!(
-                SignatureVerifierError::abi_decode(&result.bytes)
+                SignatureVerifierError::abi_decode(revert_bytes(&result))
                     .map(|e| e != SignatureVerifierError::invalid_format())
                     .unwrap_or(true),
                 "max-size WebAuthn calldata was wrongly rejected by size guard"
@@ -495,11 +502,10 @@ mod tests {
             // decode instead). A zeroed selector is unknown, so we expect an
             // UnknownFunctionSelector revert — not InvalidFormat.
             let calldata = vec![0u8; MAX_CALLDATA_LEN];
-            let result = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
+            let result = SignatureVerifier::new().call(&calldata, Address::ZERO);
 
-            assert!(result.is_revert());
             assert!(
-                SignatureVerifierError::abi_decode(&result.bytes).is_err(),
+                SignatureVerifierError::abi_decode(revert_bytes(&result)).is_err(),
                 "should not be an InvalidFormat revert"
             );
             Ok(())

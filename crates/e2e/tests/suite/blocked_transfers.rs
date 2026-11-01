@@ -48,7 +48,7 @@ fn test_blocked_transfer_claim_no_recovery() {
             10,
             11,
             receiver,
-            B256::from([0x01; 32]),
+            B256::repeat_byte(0x01),
             amount,
         )
         .await?;
@@ -116,7 +116,7 @@ fn test_receive_policy_guard_claim_with_recovery() {
             20,
             21,
             recovery,
-            B256::from([0x02; 32]),
+            B256::repeat_byte(0x02),
             amount,
         )
         .await?;

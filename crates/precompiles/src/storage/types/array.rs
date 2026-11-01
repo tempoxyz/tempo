@@ -367,7 +367,7 @@ mod tests {
         });
 
         // Both elements packed in slot 0: low 12 bytes = elem 0, next 12 bytes = elem 1.
-        let expected = U256::from(1) | (U256::from(2) << 96);
+        let expected = U256::ONE | (U256::from(2) << 96);
         assert_eq!(storage.sload(address, base_slot).unwrap(), expected);
         assert_eq!(
             storage.sload(address, base_slot + U256::ONE).unwrap(),
@@ -384,7 +384,7 @@ mod tests {
             handler[1].write(U96::from(3)).unwrap();
         });
 
-        let after = U256::from(1) | (U256::from(3) << 96);
+        let after = U256::ONE | (U256::from(3) << 96);
         assert_eq!(storage.sload(address, base_slot).unwrap(), after);
         assert_eq!(
             storage.sload(address, base_slot + U256::ONE).unwrap(),
@@ -418,7 +418,7 @@ mod tests {
         });
 
         // Slot 0: elem0 in low 12 bytes, elem1 in next 12 bytes.
-        let expected_slot0 = U256::from(1) | (U256::from(2) << 96);
+        let expected_slot0 = U256::ONE | (U256::from(2) << 96);
         assert_eq!(
             storage.sload(address, base_slot).unwrap(),
             expected_slot0,
