@@ -188,6 +188,24 @@ JSON form of a `0x06` signature, wherever a transaction, a block, or a request c
 `slot` and `validUntil` are hex quantities. A `0x05` signature stays one RLP hex string, so its attested approvals
 are the standalone `0x06` bytes inside it.
 
+Pending transactions. `txpool_content`, `txpool_contentFrom`, `txpool_inspect`, and `txpool_status` list a
+pending `0x06`-signed transaction under its attested address, by nonce, in the same form as
+`eth_getTransactionByHash` with `blockHash`, `blockNumber`, and `transactionIndex` null:
+
+```json
+{ "pending": { "0x<attested address>": {
+    "0": { "type": "0x76", "from": "0x<attested address>", "nonce": "0x0", "nonceKey": "0x0", "calls": [ … ],
+           "keyAuthorization": null, "signature": { "type": "attested", "policyId": "0x…", … } },
+    "1": { "type": "0x76", "nonce": "0x1",
+           "keyAuthorization": { "keyId": "0x…", "keyType": "p256", …,
+                                 "signature": { "type": "attested", "policyId": "0x…", … } },
+           "signature": { "version": "v2", "userAddress": "0x<attested address>", "keyId": "0x…",
+                          "signature": { "type": "p256", … } } } } },
+  "queued": {} }
+```
+
+`txpool_inspect` summarizes each by its first call: `"0": "0x<to>: 0 wei + 3000000 gas × 20000000000 wei"`.
+
 Simulation before the program key signs. `eth_estimateGas`, `eth_call`, `eth_createAccessList`,
 `eth_fillTransaction`, `debug_traceCall`, and `eth_simulateV1` / `tempo_simulateV1` take, on the request:
 

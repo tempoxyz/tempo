@@ -1,7 +1,7 @@
 //! Attested signers (signature type `0x06`) through a local node: a registered program key
 //! authorizes an access key for an attested address, `revokeKeys` ends that authority, and a
 //! registration into an occupied slot ends the key it held. RPC simulation, estimation, filling,
-//! and the JSON form of `0x06` signatures are covered too.
+//! and the JSON form of `0x06` signatures in mined and pending transactions are covered too.
 
 use super::{
     helpers::{
@@ -13,11 +13,13 @@ use super::{
 };
 use crate::utils::TestNodeBuilder;
 use alloy::{
+    network::ReceiptResponse,
     primitives::{Address, B256, B512, Bytes, U256, keccak256},
     providers::Provider,
     sol_types::{SolCall, SolValue},
 };
 use alloy_eips::Encodable2718;
+use eyre::OptionExt;
 use p256::ecdsa::{Signature, SigningKey, signature::hazmat::PrehashSigner};
 use reth_e2e_test_utils::wallet::test_signer;
 use reth_primitives_traits::transaction::TxHashRef;
@@ -802,5 +804,126 @@ async fn attested_rpc_simulation_estimation_fill_and_json() -> eyre::Result<()> 
         let error = result.expect_err(method).to_string();
         assert!(error.contains(reason), "{method}: {error}");
     }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn attested_txpool_content_and_inspect() -> eyre::Result<()> {
+    let (mut env, signer, ..) = registered_signer().await?;
+    let chain_id = env.chain_id;
+    let attested = signer.address();
+    env.fund_account(attested).await?;
+    let now = env.current_block_timestamp().await?;
+
+    // Two pending transactions from the attested address: one signed by the program key, and
+    // one signed by an access key that an attested key authorization grants in the same
+    // transaction.
+    let tx = create_basic_aa_tx(chain_id, 0, vec![noop_call()], GAS_LIMIT);
+    let signature = TempoSignature::Attested(signer.sign(tx.signature_hash(), now + 300)?);
+    let sender: TempoTxEnvelope = tx.into_signed(signature.clone()).into();
+    let (authorization, access_key, key_x, key_y) = signer.authorize(chain_id, now + 300)?;
+    let mut tx = create_basic_aa_tx(chain_id, 1, vec![noop_call()], GAS_LIMIT);
+    tx.key_authorization = Some(authorization.clone());
+    let access_signature =
+        sign_aa_tx_with_p256_access_key(&tx, &access_key, &key_x, &key_y, attested)?;
+    let granted: TempoTxEnvelope = tx.into_signed(access_signature).into();
+    for envelope in [&sender, &granted] {
+        let pending = env
+            .provider
+            .send_raw_transaction(&envelope.encoded_2718())
+            .await?;
+        assert_eq!(pending.tx_hash(), envelope.tx_hash());
+    }
+
+    let status: Value = env.provider.raw_request("txpool_status".into(), ()).await?;
+    assert_eq!(status, json!({ "pending": "0x2", "queued": "0x0" }));
+
+    // `txpool_content` and `txpool_contentFrom` list both under the attested address, by nonce,
+    // in the same JSON form as `eth_getTransactionByHash`.
+    let content: Value = env
+        .provider
+        .raw_request("txpool_content".into(), ())
+        .await?;
+    let pending = content["pending"]
+        .as_object()
+        .ok_or_else(|| eyre::eyre!("no pending map: {content}"))?;
+    assert_eq!(pending.len(), 1, "{content}");
+    let (address, by_nonce) = pending.iter().next().ok_or_eyre("empty pending map")?;
+    assert_eq!(address.parse::<Address>()?, attested);
+    let from: Value = env
+        .provider
+        .raw_request("txpool_contentFrom".into(), (attested,))
+        .await?;
+    assert_eq!(from["pending"], *by_nonce);
+    assert_eq!(content["queued"], json!({}));
+
+    let first = &by_nonce["0"];
+    assert_eq!(first["hash"], json!(sender.tx_hash()));
+    assert_eq!(
+        first["from"]
+            .as_str()
+            .map(str::parse::<Address>)
+            .transpose()?,
+        Some(attested)
+    );
+    assert_eq!(first["type"], "0x76");
+    assert_eq!(first["blockHash"], Value::Null);
+    assert_eq!(first["signature"]["type"], "attested", "{first}");
+    assert_eq!(
+        serde_json::from_value::<TempoSignature>(first["signature"].clone())?,
+        signature
+    );
+
+    let second = &by_nonce["1"];
+    assert_eq!(second["hash"], json!(granted.tx_hash()));
+    assert_eq!(second["signature"]["signature"]["type"], "p256", "{second}");
+    assert_eq!(
+        second["signature"]["keyId"],
+        json!(authorization.key_id),
+        "{second}"
+    );
+    assert_eq!(
+        second["keyAuthorization"]["signature"]["type"], "attested",
+        "{second}"
+    );
+    assert_eq!(
+        serde_json::from_value::<SignedKeyAuthorization>(second["keyAuthorization"].clone())?,
+        authorization
+    );
+
+    // `txpool_inspect` summarizes each by its first call, value, gas limit, and fee cap.
+    let inspect: Value = env
+        .provider
+        .raw_request("txpool_inspect".into(), ())
+        .await?;
+    let summaries = inspect["pending"]
+        .as_object()
+        .and_then(|pending| pending.values().next())
+        .ok_or_else(|| eyre::eyre!("no pending summary: {inspect}"))?;
+    let to = noop_call()
+        .to
+        .to()
+        .copied()
+        .ok_or_eyre("noop call creates")?;
+    for nonce in ["0", "1"] {
+        let summary = summaries[nonce]
+            .as_str()
+            .ok_or_else(|| eyre::eyre!("no summary for nonce {nonce}: {inspect}"))?;
+        assert!(
+            summary.starts_with(&format!("{to}: 0 wei + {GAS_LIMIT} gas")),
+            "{summary}"
+        );
+    }
+
+    // Both are mined from the pool.
+    let block = env
+        .setup
+        .node
+        .mine_pooled([*sender.tx_hash(), *granted.tx_hash()])
+        .await?;
+    assert_eq!(block.receipts.len(), 2);
+    assert!(block.receipts.iter().all(|receipt| receipt.status()));
+    let status: Value = env.provider.raw_request("txpool_status".into(), ()).await?;
+    assert_eq!(status, json!({ "pending": "0x0", "queued": "0x0" }));
     Ok(())
 }
