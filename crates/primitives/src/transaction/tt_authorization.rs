@@ -1,11 +1,8 @@
+use alloy_consensus::crypto::RecoveryError;
 use alloy_eips::eip7702::{Authorization, RecoveredAuthority, RecoveredAuthorization};
-#[cfg(feature = "evm")]
-use alloy_primitives::U256;
 use alloy_primitives::{Address, B256};
 use alloy_rlp::{BufMut, Decodable, Encodable, Header, Result as RlpResult, length_of_length};
 use core::ops::Deref;
-#[cfg(feature = "evm")]
-use revm::context::transaction::AuthorizationTr;
 
 #[cfg(not(feature = "std"))]
 use once_cell::race::OnceBox as OnceLock;
@@ -77,6 +74,9 @@ impl TempoSignedAuthorization {
     ///
     /// Implementers should check that the authority has no code.
     pub fn recover_authority(&self) -> Result<Address, alloy_consensus::crypto::RecoveryError> {
+        if self.signature.is_or_wraps_configurable_account() {
+            return Err(RecoveryError::new());
+        }
         let sig_hash = self.signature_hash();
         self.signature.recover_signer(&sig_hash)
     }
@@ -282,23 +282,6 @@ impl Deref for RecoveredTempoAuthorization {
 
     fn deref(&self) -> &Self::Target {
         self.signed.inner()
-    }
-}
-
-#[cfg(feature = "evm")]
-impl AuthorizationTr for RecoveredTempoAuthorization {
-    fn chain_id(&self) -> U256 {
-        self.chain_id
-    }
-    fn address(&self) -> Address {
-        self.address
-    }
-    fn nonce(&self) -> u64 {
-        self.nonce
-    }
-
-    fn authority(&self) -> Option<Address> {
-        self.authority()
     }
 }
 

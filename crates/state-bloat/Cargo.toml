@@ -23,6 +23,8 @@ reth-cli.workspace = true
 reth-cli-commands.workspace = true
 reth-db-api.workspace = true
 reth-etl.workspace = true
+# Only to enable its `account-ext` feature.
+reth-evm.workspace = true
 reth-primitives-traits.workspace = true
 reth-provider.workspace = true
 reth-tasks.workspace = true

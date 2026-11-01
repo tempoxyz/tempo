@@ -70,6 +70,57 @@ class ProverPathTests(unittest.TestCase):
         self.assertFalse(any(fnmatch.fnmatchcase('docs/README.md', pattern) for pattern in patterns))
 
 
+class DockerWorkflowTests(unittest.TestCase):
+    def test_image_filters_skip_test_only_batches_but_keep_runtime_inputs(self):
+        tests = ['crates/node/tests/it/main.rs', 'crates/zones/node/tests/it/main.rs']
+        common = ['Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml',
+                  'mainnet-network-identity.json', '.gitmodules', 'crates/evm/src/lib.rs',
+                  'crates/zones/node/build.rs', 'bin/tempo/main.rs', 'xtask/src/main.rs']
+        for name, detector, included, excluded in (
+            ('zones-docker', 'detect-changes', common + [
+                'zones/docker/Dockerfile', 'zones/scripts/package-prover-eif.sh',
+                '.github/workflows/zones-docker.yml'], tests + ['docs/README.md']),
+            ('network-e2e', 'detect', common + [
+                'Dockerfile', '.dockerignore', 'docker-bake.hcl', 'scripts/build.sh',
+                '.github/workflows/docker.yml', 'tips/verify/src/main.rs',
+                'crates/node/tests/assets/test-genesis.json', 'crates/node/tests/new-fixture.json',
+                'future-inputs/new.json'], tests + ['docs/README.md', 'contrib/Dockerfile',
+                'localnet/index.ts', 'tips/tip-1234.md']),
+        ):
+            workflow = yaml.safe_load((ROOT / f'.github/workflows/{name}.yml').read_text())
+            step = next(s for s in workflow['jobs'][detector]['steps'] if s.get('id') == 'paths')
+            patterns = yaml.safe_load(step['with']['filters'])['images']
+            if name == 'zones-docker':
+                # PyYAML reads the unquoted workflow key "on" as True.
+                self.assertEqual(patterns, workflow[True]['pull_request']['paths'])
+            cases = [([p], False) for p in excluded] + [(excluded, False)]
+            cases += [(files, True) for p in included for files in ([p], excluded + [p])]
+            for files, expected in cases:
+                with self.subTest(workflow=name, files=files):
+                    matched = any(any(fnmatch.fnmatchcase(f, p) for p in patterns if not p.startswith('!'))
+                                  and not any(fnmatch.fnmatchcase(f, p[1:]) for p in patterns if p.startswith('!'))
+                                  for f in files)
+                    self.assertEqual(matched, expected)
+
+    def test_failed_detection_keeps_queue_builds_enabled(self):
+        # Pin the safety guard that regressed, rather than emulate GitHub's evaluator.
+        for name, detector, output, consumers in (
+            ('network-e2e', 'detect', 'images_required', ['build']),
+            ('zones-docker', 'detect-changes', 'required',
+             ['resolve-production-build-inputs', 'eif-toolchain']),
+        ):
+            jobs = yaml.safe_load((ROOT / f'.github/workflows/{name}.yml').read_text())['jobs']
+            self.assertIn("steps.paths.outputs.changes == '' ||", jobs[detector]['outputs'][output])
+            fallback = ("!cancelled() && ((github.event_name == 'merge_group' && "
+                        f"(needs.{detector}.result != 'success' || needs.{detector}.outputs.{output} != 'false')) ||")
+            for consumer in consumers:
+                with self.subTest(workflow=name, job=consumer):
+                    guard = ' '.join(jobs[consumer]['if'].split()).removeprefix('${{ ')
+                    self.assertTrue(guard.startswith(fallback), guard)
+            if name == 'zones-docker':
+                self.assertIn('!cancelled()', jobs['build-and-push']['if'])
+
+
 class DockerIgnoreTests(unittest.TestCase):
     def test_all_dockerfiles_use_the_same_context_filter(self):
         dockerfiles = sorted((ROOT / 'zones/docker').glob('Dockerfile*'))

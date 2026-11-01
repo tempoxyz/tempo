@@ -10,10 +10,10 @@ pub const P256_VERIFY_GAS: u64 = 8_000;
 pub const WEBAUTHN_VERIFY_GAS: u64 = 8_000;
 
 /// Base gas of one `KECCAK256`.
-pub const KECCAK256_BASE_GAS: u64 = 30;
+const KECCAK256_BASE_GAS: u64 = 30;
 
 /// Gas per 32-byte word hashed by `KECCAK256`.
-pub const KECCAK256_WORD_GAS: u64 = 6;
+const KECCAK256_WORD_GAS: u64 = 6;
 
 /// Gas for one `KECCAK256` over `len` bytes of input.
 ///

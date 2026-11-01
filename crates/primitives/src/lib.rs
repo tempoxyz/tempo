@@ -14,7 +14,7 @@ pub mod gas;
 #[cfg(feature = "evm")]
 mod block;
 #[cfg(feature = "evm")]
-pub use block::TempoBlockEnv;
+pub use block::{TempoBlockEnv, TempoBlockExt};
 
 pub mod transaction;
 pub use transaction::{
@@ -34,6 +34,9 @@ extern crate alloc;
 pub mod account;
 
 use once_cell as _;
+// TODO: Remove this import and feature-only dependency after updating Reth's feature forwarding.
+#[cfg(feature = "rpc")]
+use reth_evm as _;
 
 /// Tempo block.
 pub type Block = alloy_consensus::Block<TempoTxEnvelope, TempoHeader>;

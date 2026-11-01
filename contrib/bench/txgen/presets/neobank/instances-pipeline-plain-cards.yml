@@ -1,0 +1,24 @@
+# Pipeline instances with plain card swipes: as instances-pipeline.yml, but
+# card-heavy settles no swipes from Earn (card_settlement 0); cash card spend
+# carries the Spend module's card weight (10 + 3).
+#
+# Pipeline instances: the live and near-term programs' flows side by side. Each
+# share is the flow's share of pipeline gas (internal planning sheet); names are
+# traffic shapes. Select with TXGEN_NEOBANK_INSTANCES (see README).
+instances:
+  - name: card-heavy
+    share: 64
+    modules: [account, earn, spend, cashout]
+    weights: {card_settlement: 0, card_spend: 13}
+  - name: earn-app
+    share: 17
+    modules: [account, deposit, earn]
+  - name: remittance
+    share: 6
+    modules: [account, deposit, transfer, cashout]
+  - name: payroll-earn
+    share: 6
+    modules: [deposit, earn, cashout]
+  - name: settlement
+    share: 7
+    modules: [transfer, cashout]

@@ -876,7 +876,7 @@ fn build_forkchoice_update_transport_error_is_fatal() {
 }
 
 #[test_traced]
-fn payload_attributes_reach_the_execution_layer_unchanged() {
+fn payload_attributes_reach_the_execution_layer_with_remaining_budget() {
     deterministic::Runner::default().start(|context| async move {
         let h = Harness::start_at_genesis(&context);
 
@@ -897,6 +897,7 @@ fn payload_attributes_reach_the_execution_layer_unchanged() {
             Some(consensus_context),
         )
         .with_payload_build_budget(build_budget);
+        let expected_attributes = attributes.clone();
 
         let proposal = make_block(1, 1, GENESIS);
         h.execution.script_built_payload(built_payload(&proposal));
@@ -912,7 +913,10 @@ fn payload_attributes_reach_the_execution_layer_unchanged() {
         assert_eq!(received.timestamp_millis(), 123_456);
         assert_eq!(received.extra_data(), &extra_data);
         assert_eq!(received.consensus_context(), Some(consensus_context));
-        assert_eq!(received.payload_build_budget(), Some(build_budget));
+        let before = expected_attributes.payload_build_budget().unwrap();
+        let remaining = received.payload_build_budget().unwrap();
+        let after = expected_attributes.payload_build_budget().unwrap();
+        assert!((after..=before).contains(&remaining));
     });
 }
 
@@ -966,10 +970,11 @@ fn build_resolves_deferred_extra_data_between_the_valid_parent_and_the_fcu() {
             answer,
         } = scripted_deferred_extra_data();
         let budget = Duration::from_secs(10);
+        let expected_attributes = attributes().with_payload_build_budget(budget);
         let build = h.build_with_deferred_extra_data(
             round(2),
             digest,
-            attributes().with_payload_build_budget(budget),
+            expected_attributes.clone(),
             deferred_extra_data,
         );
         h.wait_until(|| h.execution.new_payloads() == vec![digest])
@@ -1003,11 +1008,12 @@ fn build_resolves_deferred_extra_data_between_the_valid_parent_and_the_fcu() {
             panic!("expected exactly one attribute-carrying FCU");
         };
         assert_eq!(received.extra_data(), &extra_data);
+        let before = expected_attributes.payload_build_budget().unwrap();
+        let remaining = received.payload_build_budget().unwrap();
+        let after = expected_attributes.payload_build_budget().unwrap();
         assert!(
-            received
-                .payload_build_budget()
-                .is_some_and(|remaining| remaining <= budget),
-            "the build keeps its budget, less the wait for the extra data",
+            (after..=before).contains(&remaining),
+            "the build keeps the original budget clock through parent delivery and extra data",
         );
     });
 }

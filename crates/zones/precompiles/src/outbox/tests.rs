@@ -1,9 +1,8 @@
 use super::*;
 
-use alloy_evm::{EvmInternals, precompiles::DynPrecompile};
 use alloy_primitives::{Bytes, address};
 use alloy_sol_types::{SolCall, SolEvent, SolInterface};
-use revm::precompile::{PrecompileHalt, PrecompileResult, PrecompileStatus};
+use evm2::precompiles::PrecompileHalt;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::{
     precompiles::{IRolesAuth, RolesAuthError},
@@ -17,11 +16,11 @@ use tempo_precompiles::{
 use zone_primitives::constants::TEMPO_STATE_ADDRESS;
 
 use crate::{
-    create_outbox_precompile,
     tempo_state::TEMPO_BLOCK_NUMBER_SLOT,
     test_utils::{
-        MockL1Reader, TestContext, call_precompile, test_context, test_context_with_hardfork,
-        test_env, test_storage_provider,
+        MockL1Reader, PrecompileResult, PrecompileStatus, TestContext, TestPrecompiles,
+        call_precompile, test_context, test_context_with_hardfork, test_precompiles,
+        test_storage_provider,
     },
     tx_context,
 };
@@ -39,7 +38,7 @@ const GATEWAY: Address = Address::with_last_byte(0xe5);
 
 struct Harness {
     ctx: TestContext,
-    precompile: DynPrecompile,
+    precompile: TestPrecompiles,
     l1: MockL1Reader,
     token: Address,
 }
@@ -98,8 +97,7 @@ impl Harness {
             })?;
         }
 
-        let env = test_env(&ctx);
-        let precompile = create_outbox_precompile(L1State::new(l1.clone(), PORTAL), &env);
+        let precompile = test_precompiles(&ctx, L1State::new(l1.clone(), PORTAL));
 
         Ok(Self {
             ctx,
@@ -112,15 +110,12 @@ impl Harness {
     #[rustfmt::skip]
     fn call_inner(&mut self, origin: Address, caller: Address, fee_payer: Address, data: impl AsRef<[u8]>, with_context: bool, is_static: bool) -> PrecompileResult {
         let _guard = with_context.then(|| tx_context::set_current_transaction(tx_context::TransactionContext { tx_hash: TX_HASH, origin, fee_payer }));
-        let checkpoint = EvmInternals::from_context(&mut self.ctx).checkpoint();
+        let checkpoint = self.ctx.checkpoint();
         let result = call_precompile(
-            &mut self.ctx, &self.precompile, caller, data.as_ref(), GAS, is_static, ZONE_OUTBOX_ADDRESS, ZONE_OUTBOX_ADDRESS
+            &mut self.ctx, &mut self.precompile, caller, data.as_ref(), GAS, is_static, ZONE_OUTBOX_ADDRESS, ZONE_OUTBOX_ADDRESS
         );
-        let mut internals = EvmInternals::from_context(&mut self.ctx);
-        if result.as_ref().is_ok_and(|output| output.is_success()) {
-            internals.checkpoint_commit();
-        } else {
-            internals.checkpoint_revert(checkpoint);
+        if !result.as_ref().is_ok_and(|output| output.is_success()) {
+            self.ctx.checkpoint_revert(checkpoint);
         }
         result
     }
@@ -798,12 +793,12 @@ fn request_burns_amount_plus_fee_and_rejects_insufficient_funds() -> eyre::Resul
 
     let result = harness.request(u128::MAX, BOB, B256::ZERO)?;
     assert!(result.is_revert());
-    assert_eq!(
-        result.bytes,
-        TempoPrecompileError::under_overflow()
-            .into_precompile_result(0, 0)?
-            .bytes
-    );
+    let Err(evm2::precompiles::PrecompileError::Revert(expected)) =
+        TempoPrecompileError::under_overflow().into_precompile_result()
+    else {
+        panic!("arithmetic overflow must revert");
+    };
+    assert_eq!(result.bytes, expected);
     Ok(())
 }
 
@@ -893,8 +888,8 @@ fn sponsored_withdrawal_fee_uses_cached_default_token() -> eyre::Result<()> {
         assert_eq!(pending[0].amount, amount);
         let event = harness
             .ctx
-            .journaled_state
-            .logs
+            .evm()
+            .logs()
             .iter()
             .find_map(|log| ZoneOutboxAbi::WithdrawalRequested::decode_log(log).ok())
             .expect("withdrawal event");
@@ -1083,7 +1078,7 @@ fn fee_token_failures_revert_both_burns_and_withdrawal_state() -> eyre::Result<(
             revealTo: Bytes::new(),
         }
         .abi_encode();
-        let logs_before = harness.ctx.journaled_state.logs.len();
+        let logs_before = harness.ctx.evm().logs().len();
         let result = harness.call_with_fee_payer(ALICE, FEE_PAYER, &call);
         assert_revert(
             result,
@@ -1098,7 +1093,7 @@ fn fee_token_failures_revert_both_burns_and_withdrawal_state() -> eyre::Result<(
             principal_before
         );
         assert_eq!(harness.token_state(fee_token, FEE_PAYER)?, fee_before);
-        assert_eq!(harness.ctx.journaled_state.logs.len(), logs_before);
+        assert_eq!(harness.ctx.evm().logs().len(), logs_before);
         assert!(harness.pending()?.is_empty());
         assert_eq!(harness.last_fallback_nonce()?, 0);
         let mut storage = test_storage_provider(&mut harness.ctx, u64::MAX, false);
@@ -1350,8 +1345,8 @@ fn static_mutation_halts_without_changing_state() -> eyre::Result<()> {
     )?;
     assert_eq!(
         output.status,
-        PrecompileStatus::Halt(PrecompileHalt::other_static(
-            "state change during static call"
+        PrecompileStatus::Halt(PrecompileHalt::Other(
+            "state change during static call".into()
         ))
     );
     assert!(output.bytes.is_empty());
@@ -1391,8 +1386,8 @@ fn fallback_recipient_nonce_is_private_and_consumed_once_by_inbox() -> eyre::Res
     let output = harness.call_static(ZONE_INBOX_ADDRESS, &calldata)?;
     assert_eq!(
         output.status,
-        PrecompileStatus::Halt(PrecompileHalt::other_static(
-            "state change during static call"
+        PrecompileStatus::Halt(PrecompileHalt::Other(
+            "state change during static call".into()
         ))
     );
     assert!(output.bytes.is_empty());

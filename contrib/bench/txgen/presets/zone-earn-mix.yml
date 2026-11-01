@@ -1,0 +1,26 @@
+# Zone Earn payout mix, modelled on a live customer's mainnet L1 traffic over
+# ten days in October 2026. Weights are gas shares; mainnet gas share in brackets:
+#   zone_withdraw  35  [69% zone settlement: processWithdrawals whose callback swaps
+#   vault_deposit  57   into an Earn vault; split between the withdrawal and the
+#                       Earn deposit] + [23% rewards funding into the same vault]
+#   vault_withdraw  4  [4% vault withdrawals and ERC-4337 bundles]
+#   zone_deposit    2  [2% approve plus zone portal deposit]
+#   transfer        2  [1.3% TIP-20 transfers]
+#
+# Known gaps: the zone fixture processes withdrawals without callbacks, so the
+# swap and Earn deposit are separate transactions here; mainnet settlement comes
+# from one sequencer, here from many users; and the swap is not modelled.
+# Same fixtures and requirements as public-mix: chain 1337, T10+ and nonzero state bloat.
+include: public-mix.yml
+
+mix:
+  - template: zone_withdraw
+    weight: 35
+  - template: vault_deposit
+    weight: 57
+  - template: vault_withdraw
+    weight: 4
+  - template: zone_deposit
+    weight: 2
+  - template: public_transfer
+    weight: 2

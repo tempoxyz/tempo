@@ -30,11 +30,14 @@
 
 pub mod constants;
 
+#[cfg(feature = "evm")]
+pub mod gas_params;
+
 use crate::constants::gas;
 use alloy_eips::eip7825::MAX_TX_GAS_LIMIT_OSAKA;
-#[cfg(feature = "evm")]
-use alloy_evm::revm::primitives::hardfork::SpecId;
 use alloy_hardforks::hardfork;
+#[cfg(feature = "evm")]
+use evm2::SpecId;
 
 /// Single-source hardfork definition macro. Append a new variant and everything else is generated:
 ///
@@ -104,17 +107,6 @@ macro_rules! tempo_hardfork {
             use super::*;
             use TempoHardfork::*;
             use alloy_hardforks::Hardfork;
-
-            #[test]
-            fn t15_is_unscheduled_on_public_networks() {
-                assert_eq!(T15.mainnet_activation_block(), None);
-                assert_eq!(T15.mainnet_activation_timestamp(), None);
-                assert_eq!(T15.moderato_activation_block(), None);
-                assert_eq!(T15.moderato_activation_timestamp(), None);
-                for chain in [4217, 42431] {
-                    assert_ne!(TempoHardfork::from_chain_and_timestamp(chain, u64::MAX), Some(T15));
-                }
-            }
 
             #[test]
             fn test_hardfork_name() {
@@ -257,7 +249,9 @@ tempo_hardfork!(
         ///
         /// See <https://docs.tempo.xyz/docs/protocol/upgrades/t14>.
         T14,
-        /// T15 hardfork. No public-network activation is scheduled.
+        /// T15 hardfork.
+        ///
+        /// See <https://docs.tempo.xyz/docs/protocol/upgrades/t15>.
         T15,
     }
 );

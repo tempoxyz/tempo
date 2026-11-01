@@ -36,7 +36,7 @@ use tracing::{Level, debug, info, instrument, warn};
 
 use super::parent_state::TempoParentState;
 use crate::{
-    consensus::{Digest, block::Block},
+    consensus::{Digest, ProposalBudget, block::Block},
     executor::DeferredExtraData,
 };
 
@@ -56,13 +56,8 @@ pub(in crate::consensus) struct Config<TContext> {
     /// post-state of its parent.
     pub(in crate::consensus) parent_state: TempoParentState,
 
-    /// Local proposal return budget, excluding the network propagation allowance.
-    ///
-    /// Starts at `target_block_time - network_budget` when the application is
-    /// called. Commonware's parent fetch happens beforehand and is not charged
-    /// against this budget. Proposal preparation time is deducted before handing
-    /// the remaining budget to the payload builder.
-    pub(in crate::consensus) proposal_return_budget: Duration,
+    /// Proposal pacing allowance from the header stamp, capped by preparation.
+    pub(in crate::consensus) proposal_budget: ProposalBudget,
     /// Proposal budget estimator that records local validation feedback.
     pub(in crate::consensus) estimator: Estimator,
 
@@ -75,8 +70,8 @@ pub(in crate::consensus) struct Config<TContext> {
 pub(crate) struct Inner {
     public_key: PublicKey,
     epoch_strategy: FixedEpocher,
-    /// Local proposal window after reserving network propagation time.
-    proposal_return_budget: Duration,
+    /// Proposal pacing allowance after reserving network propagation time.
+    proposal_budget: ProposalBudget,
 
     executor: crate::executor::Mailbox,
     dkg_manager: crate::dkg::manager::Mailbox,
@@ -93,7 +88,7 @@ impl Inner {
         Self {
             public_key: config.public_key,
             epoch_strategy: config.epoch_strategy,
-            proposal_return_budget: config.proposal_return_budget,
+            proposal_budget: config.proposal_budget,
             executor: config.executor,
             dkg_manager: config.dkg_manager,
             parent_state: config.parent_state,
@@ -166,6 +161,10 @@ impl Inner {
             (extra_data, None)
         };
 
+        // Start monotonic pacing alongside the wall-clock header stamp.
+        let pacing_started = Instant::now();
+        let preparation_elapsed = propose_start.elapsed();
+
         // Use current timestamp but make sure that if parent's timestamp is in the future, we account for that.
         let mut epoch_millis = runtime.current().epoch_millis();
         if epoch_millis <= parent.timestamp_millis() {
@@ -183,11 +182,10 @@ impl Inner {
         });
 
         let proposer_public_key = crate::utils::public_key_to_b256(&self.public_key);
-        // Give the builder only the proposal window that remains when payload
-        // construction is requested.
-        let build_budget = self
-            .proposal_return_budget
-            .saturating_sub(propose_start.elapsed());
+        // Cap the pacing allowance, not the duration of required build work.
+        let pacing_allowance = self.proposal_budget.pacing_allowance(preparation_elapsed);
+        let pacing_elapsed = pacing_started.elapsed();
+        let build_budget = pacing_allowance.saturating_sub(pacing_elapsed);
         let attrs = TempoPayloadAttributes::new(
             Some(proposer_public_key),
             timestamp,
@@ -227,24 +225,24 @@ impl Inner {
             block,
             execution_block_encoded,
         );
-        let proposal_elapsed = propose_start.elapsed();
-        // Pace proposal return from the propose start. Validators still need
+        let pacing_elapsed = pacing_started.elapsed();
+        // Pace proposal return from the header stamp. Validators still need
         // to repeat replayable build work, so leave room for it before
         // returning the proposal.
-        let return_delay = self
-            .proposal_return_budget
-            .saturating_sub(proposal_elapsed)
-            .saturating_sub(validation_latency_elapsed);
+        let return_after = pacing_allowance.saturating_sub(validation_latency_elapsed);
+        let return_delay = return_after.saturating_sub(pacing_elapsed);
         debug!(
             proposal.digest = %proposal.digest(),
-            proposal_elapsed = %display_duration(proposal_elapsed),
+            pacing_elapsed = %display_duration(pacing_elapsed),
             build_time = %display_duration(payload_build_elapsed),
             payload_validation_work = %display_duration(payload_validation_work_elapsed),
             validation_latency_time = %display_duration(validation_latency_elapsed),
             return_time = %display_duration(return_delay),
             "sleeping before returning proposal"
         );
-        runtime.sleep_until(runtime.current() + return_delay).await;
+        runtime
+            .sleep(return_after.saturating_sub(pacing_started.elapsed()))
+            .await;
 
         Ok(proposal)
     }

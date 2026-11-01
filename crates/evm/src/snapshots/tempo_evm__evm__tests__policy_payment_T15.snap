@@ -1,6 +1,5 @@
 ---
 source: crates/evm/src/evm.rs
-assertion_line: 1600
 expression: snapshot
 ---
 policy_payment:
