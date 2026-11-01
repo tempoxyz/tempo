@@ -31,8 +31,38 @@ env:
   TEMPO_DEVNET_RPC_URL: ${{ secrets.TEMPO_DEVNET_RPC_URL }}
 
 jobs:
+  changes:
+    name: Check Rust changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: read
+    outputs:
+      rust: ${{ contains(fromJSON(steps.filter.outputs.changes), 'rust') }}
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - uses: tempoxyz/gh-actions/actions/changed-paths@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        id: filter
+        with:
+          # Run the Rust jobs when Rust sources, manifests, Cargo.lock or their CI config change.
+          filters: |
+            rust:
+              - '{bin,crates,examples,scripts,xtask,tips/verify}/**'
+              - 'Cargo.lock'
+              - '*-network-identity.json'
+              - '*.toml'
+              - '{.cargo,.config,.github/actions}/**'
+              - '.github/scripts/{native-libs.sh,check_no_std.sh,warn_flaky_e2e.py,test_warn_flaky_e2e.py}'
+              - '.github/workflows/{test,lint,bench}.yml'
+
   zones-artifacts:
     name: Build Zones test artifacts
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: depot-ubuntu-latest-16
     timeout-minutes: 30
     permissions:
@@ -53,10 +83,19 @@ jobs:
           ref: main
           path: earn
           persist-credentials: false
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+      - name: Restore Earn's solar compiler
+        # Present when Earn compiles with solar (earn/solar.lock); solidity-deps.sh builds it with cargo.
+        if: ${{ hashFiles('earn/earn/solar.lock') != '' }}
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: earn/.solar
+          key: earn-solar-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('earn/earn/solar.lock') }}
       - name: Initialize Earn public dependencies
-        working-directory: earn
-        # PropAMM is private and only needed by Earn's integration tests.
-        run: git submodule update --init lib/forge-std lib/openzeppelin-contracts
+        # Sets EARN_ROOT to Earn's Foundry project, at the checkout root or in its earn/ directory.
+        run: |
+          root="$(bash .github/scripts/prepare-earn-checkout.sh earn)"
+          echo "EARN_ROOT=$root" >> "$GITHUB_ENV"
       - name: Install Foundry
         uses: tempoxyz/gh-actions/actions/setup-foundry@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
@@ -76,6 +115,7 @@ jobs:
         with:
           path: |
             earn/cache
+            earn/earn/cache
             crates/zones/contracts/cache
             crates/zones/contracts/out
           key: zones-forge-v3-${{ runner.os }}-${{ steps.solidity-key.outputs.forge-sha }}-${{ steps.solidity-key.outputs.contracts-tree }}-${{ steps.solidity-key.outputs.earn-sha }}
@@ -92,6 +132,8 @@ jobs:
 
   genesis:
     name: Genesis generation
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: depot-ubuntu-latest-4
     timeout-minutes: 30
     permissions:
@@ -132,7 +174,8 @@ jobs:
 
   test:
     name: test (${{ matrix.partition }}/2)
-    needs: zones-artifacts
+    if: needs.changes.outputs.rust == 'true'
+    needs: [changes, zones-artifacts]
     runs-on: depot-ubuntu-latest-32
     timeout-minutes: 30
     permissions:
@@ -166,12 +209,14 @@ jobs:
           name: zones-test-artifacts
           path: crates/zones/contracts/out
       - name: Build and compile tests
-        run: cargo nextest run --profile ci --lib --bins --tests -E 'not (package(tempo-e2e) | (package(tempo-node) & binary(it) & test(/test_matrices_(testnet|devnet)/)))' --partition count:${{ matrix.partition }}/2 --no-run
+        run: cargo nextest run --profile ci --workspace --exclude tempo-nitro-attestation-fuzz --lib --bins --tests -E 'not (package(tempo-e2e) | (package(tempo-node) & binary(it) & test(/test_matrices_(testnet|devnet)/)))' --partition count:${{ matrix.partition }}/2 --no-run
       - name: Run tests
-        run: cargo nextest run --profile ci --lib --bins --tests -E 'not (package(tempo-e2e) | (package(tempo-node) & binary(it) & test(/test_matrices_(testnet|devnet)/)))' --partition count:${{ matrix.partition }}/2
+        run: cargo nextest run --profile ci --workspace --exclude tempo-nitro-attestation-fuzz --lib --bins --tests -E 'not (package(tempo-e2e) | (package(tempo-node) & binary(it) & test(/test_matrices_(testnet|devnet)/)))' --partition count:${{ matrix.partition }}/2
 
   e2e:
     name: e2e (${{ matrix.partition }}/4)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: depot-ubuntu-latest-32
     timeout-minutes: 30
     permissions:
@@ -227,8 +272,48 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
+  jit:
+    name: JIT equivalence
+    runs-on: depot-ubuntu-latest-16
+    timeout-minutes: 30
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+      - uses: tempoxyz/gh-actions/actions/setup-mold@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          version: v0.15.0
+      - name: Install LLVM
+        run: .github/scripts/install_llvm.sh
+      - uses: ./.github/actions/native-libs # zizmor: ignore[self-repository] actionlint does not support $/ references yet.
+        with:
+          cargo-args: -p tempo --features jit
+      - uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          tool: nextest@0.9.127
+      # The out-of-process run uses the tempo binary as its compiler helper.
+      - name: Build tempo
+        run: cargo build --bin tempo --features jit
+      - name: Run in-process JIT tests
+        run: cargo nextest run --profile ci -p tempo-evm --lib --features jit -E 'test(/^jit::/)'
+      - name: Run out-of-process JIT tests
+        run: cargo nextest run --profile ci -p tempo-evm --lib --features jit -E 'test(/^jit::/)'
+        env:
+          EVM2_JIT_MODE: out-of-process
+          EVM2_JIT_HELPER_PATH: ${{ github.workspace }}/target/debug/tempo
+
   cli:
     name: CLI smoke tests
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: depot-ubuntu-latest-4
     timeout-minutes: 30
     permissions:
@@ -282,6 +367,8 @@ jobs:
 
   msrv:
     name: MSRV
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: depot-ubuntu-latest-4
     timeout-minutes: 30
     permissions:
@@ -316,9 +403,11 @@ jobs:
     permissions:
       id-token: write
     needs:
+      - changes
       - test
       - e2e
       - cli
+      - jit
       - msrv
       - genesis
     timeout-minutes: 30
@@ -329,4 +418,5 @@ jobs:
       - name: Decide whether the needed jobs succeeded or failed
         uses: tempoxyz/gh-actions/actions/check-needs@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
+          allowed-skips: ${{ needs.changes.outputs.rust != 'true' && 'genesis,test,e2e,cli,msrv' || '' }}
           jobs: ${{ toJSON(needs) }}

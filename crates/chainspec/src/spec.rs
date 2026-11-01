@@ -6,7 +6,6 @@ use crate::{
 };
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use alloy_eips::eip7840::BlobParams;
-use alloy_evm::eth::spec::EthExecutorSpec;
 use alloy_genesis::Genesis;
 use alloy_primitives::{Address, B256, U256};
 use core::num::NonZeroU64;
@@ -47,10 +46,6 @@ macro_rules! tempo_genesis_info {
                     #[serde(skip_serializing_if = "Option::is_none")]
                     [<$variant:lower _time>]: Option<u64>,
                 )*
-                /// Development-only TIP-1110 factory; public networks remain unconfigured.
-                // TODO: set the canonical TIP-1110 recovery factory for public networks before T14 activation
-                #[serde(skip_serializing_if = "Option::is_none")]
-                configurable_account_recovery_factory: Option<Address>,
             }
 
             impl TempoGenesisInfo {
@@ -86,11 +81,6 @@ impl TempoGenesisInfo {
 
     pub fn general_gas_limit(&self) -> Option<u64> {
         self.general_gas_limit
-    }
-
-    /// Returns the TIP-1110 configurable account recovery factory configured in genesis, if any.
-    pub const fn configurable_account_recovery_factory(&self) -> Option<Address> {
-        self.configurable_account_recovery_factory
     }
 }
 
@@ -392,12 +382,6 @@ impl EthChainSpec for TempoChainSpec {
 impl EthereumHardforks for TempoChainSpec {
     fn ethereum_fork_activation(&self, fork: EthereumHardfork) -> ForkCondition {
         self.inner.ethereum_fork_activation(fork)
-    }
-}
-
-impl EthExecutorSpec for TempoChainSpec {
-    fn deposit_contract_address(&self) -> Option<Address> {
-        self.inner.deposit_contract_address()
     }
 }
 
@@ -920,6 +904,7 @@ mod tests {
             assert_eq!(cs.tempo_hardfork_at(1793718000), TempoHardfork::T13);
             assert_eq!(cs.tempo_hardfork_at(1793718001), TempoHardfork::T13);
             assert!(!cs.is_t14_active_at_timestamp(u64::MAX));
+            assert!(!cs.is_t15_active_at_timestamp(u64::MAX));
             assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T13);
         }
 
@@ -1048,6 +1033,7 @@ mod tests {
             assert_eq!(cs.tempo_hardfork_at(1793286000), TempoHardfork::T13);
             assert_eq!(cs.tempo_hardfork_at(1793286001), TempoHardfork::T13);
             assert!(!cs.is_t14_active_at_timestamp(u64::MAX));
+            assert!(!cs.is_t15_active_at_timestamp(u64::MAX));
             assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T13);
         }
 

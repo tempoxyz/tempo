@@ -18,7 +18,7 @@ workspace = true
 
 [dependencies]
 alloy-eips.workspace = true
-alloy-evm = { workspace = true, optional = true }
+evm2 = { workspace = true, optional = true }
 alloy-hardforks.workspace = true
 alloy-primitives.workspace = true
 paste.workspace = true
@@ -32,9 +32,15 @@ default = ["std", "serde"]
 std = [
     "alloy-eips/std",
     "alloy-primitives/std",
-    "alloy-evm?/std",
+    "evm2?/std",
     "serde?/std",
     "serde_json/std",
 ]
-serde = ["dep:serde", "alloy-eips/serde", "alloy-hardforks/serde", "alloy-primitives/serde"]
-evm = ["dep:alloy-evm"]
+serde = [
+    "dep:serde",
+    "alloy-eips/serde",
+    "alloy-hardforks/serde",
+    "alloy-primitives/serde",
+    "evm2?/serde",
+]
+evm = ["dep:evm2"]

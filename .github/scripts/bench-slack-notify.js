@@ -285,6 +285,32 @@ function buildFailureBlocks({ prNumber, actor, actorSlackId, jobUrl, repo, faile
   ];
 }
 
+function notificationContext(context) {
+  const repo = `${context.repo.owner}/${context.repo.repo}`;
+  const actor = process.env.BENCH_ACTOR;
+  return {
+    repo, actor, prNumber: process.env.BENCH_PR,
+    actorSlackId: loadSlackUsers(process.env.GITHUB_WORKSPACE || '.')[actor],
+    jobUrl: process.env.BENCH_JOB_URL || `${context.serverUrl}/${repo}/actions/runs/${context.runId}`,
+  };
+}
+
+// Public wins, otherwise an actor DM unless on-win mode suppresses it.
+// The caller owns message rendering, replay threads, and eligibility for a public win.
+async function routeSuccess({ core, actor, actorSlackId, improved, send }) {
+  const channel = process.env.SLACK_BENCH_CHANNEL;
+  if (channel && improved) {
+    await send(channel);
+    core.info(`Results posted to channel, skipping DM to ${actor}`);
+  } else if (process.env.BENCH_SLACK === 'on-win') {
+    core.info('on-win mode: no public improvement, skipping all notifications');
+  } else if (actorSlackId) {
+    await send(actorSlackId);
+  } else {
+    core.info(`No Slack user mapping for GitHub user '${actor}', skipping DM`);
+  }
+}
+
 async function success({ core, context }) {
   const token = process.env.SLACK_BENCH_BOT_TOKEN;
   if (!token) {
@@ -300,48 +326,15 @@ async function success({ core, context }) {
     return;
   }
 
-  const repo = `${context.repo.owner}/${context.repo.repo}`;
-  const prNumber = process.env.BENCH_PR;
-  const actor = process.env.BENCH_ACTOR;
-  const jobUrl = process.env.BENCH_JOB_URL ||
-    `${context.serverUrl}/${repo}/actions/runs/${context.runId}`;
-
-  const slackUsers = loadSlackUsers(process.env.GITHUB_WORKSPACE || '.');
-  const actorSlackId = slackUsers[actor];
+  const { repo, prNumber, actor, actorSlackId, jobUrl } = notificationContext(context);
 
   const blocks = buildSuccessBlocks({ summary, prNumber, actor, actorSlackId, jobUrl, repo });
   const text = `Tempo bench: baseline vs feature (${summary.config?.run_pairs ?? '-'} run pairs)`;
 
-  const changes = e2eChanges(summary);
-  const channel = process.env.SLACK_BENCH_CHANNEL;
-  const slackMode = process.env.BENCH_SLACK || 'always';
-  let postedToChannel = false;
-
-  // Match reth-bench: post to the public channel only for significant improvements.
-  if (channel && hasImprovement(changes)) {
-    await postToSlack(token, channel, blocks, text, core);
-    postedToChannel = true;
-  } else if (channel) {
-    core.info('No significant improvement, skipping public channel notification');
-  }
-
-  if (slackMode === 'on-win') {
-    if (!postedToChannel) {
-      core.info('on-win mode: no improvement detected, skipping all notifications');
-    }
-    return;
-  }
-
-  // DM the actor when results were not posted to the public channel
-  if (!postedToChannel) {
-    if (actorSlackId) {
-      await postToSlack(token, actorSlackId, blocks, text, core);
-    } else {
-      core.info(`No Slack user mapping for GitHub user '${actor}', skipping DM`);
-    }
-  } else {
-    core.info(`Results posted to channel, skipping DM to ${actor}`);
-  }
+  await routeSuccess({
+    core, actor, actorSlackId, improved: hasImprovement(e2eChanges(summary)),
+    send: channel => postToSlack(token, channel, blocks, text, core),
+  });
 }
 
 async function failure({ core, context, failedStep }) {
@@ -351,14 +344,7 @@ async function failure({ core, context, failedStep }) {
     return;
   }
 
-  const repo = `${context.repo.owner}/${context.repo.repo}`;
-  const prNumber = process.env.BENCH_PR;
-  const actor = process.env.BENCH_ACTOR;
-  const jobUrl = process.env.BENCH_JOB_URL ||
-    `${context.serverUrl}/${repo}/actions/runs/${context.runId}`;
-
-  const slackUsers = loadSlackUsers(process.env.GITHUB_WORKSPACE || '.');
-  const actorSlackId = slackUsers[actor];
+  const { repo, prNumber, actor, actorSlackId, jobUrl } = notificationContext(context);
 
   const blocks = buildFailureBlocks({ prNumber, actor, actorSlackId, jobUrl, repo, failedStep });
   const text = `Bench failed while ${failedStep}`;
@@ -537,18 +523,11 @@ async function replaySuccess({ core, context }) {
     return;
   }
 
-  const repo = `${context.repo.owner}/${context.repo.repo}`;
-  const prNumber = process.env.BENCH_PR;
-  const actor = process.env.BENCH_ACTOR;
-  const jobUrl = process.env.BENCH_JOB_URL ||
-    `${context.serverUrl}/${repo}/actions/runs/${context.runId}`;
+  const { repo, prNumber, actor, actorSlackId, jobUrl } = notificationContext(context);
   const chain = process.env.BENCH_CHAIN || 'mainnet';
   const blocks = process.env.BENCH_BLOCKS || '5000';
   const warmup = process.env.BENCH_WARMUP_BLOCKS || '1000';
   const runLabel = replayRunLabel();
-
-  const slackUsers = loadSlackUsers(process.env.GITHUB_WORKSPACE || '.');
-  const actorSlackId = slackUsers[actor];
   const { blocks: slackBlocks, threadBlocks } = buildReplaySuccessBlocks({
     summary,
     prNumber,
@@ -572,32 +551,9 @@ async function replaySuccess({ core, context }) {
     }
   }
 
-  const slackMode = process.env.BENCH_SLACK || 'always';
-  const channel = process.env.SLACK_BENCH_CHANNEL;
-  let postedToChannel = false;
-  if (channel && hasImprovement(summary.changes || {})) {
-    await sendWithThread(channel);
-    postedToChannel = true;
-  } else if (channel) {
-    core.info('No significant replay improvement, skipping public channel notification');
-  }
-
-  if (slackMode === 'on-win') {
-    if (!postedToChannel) {
-      core.info('on-win mode: no replay improvement detected, skipping all notifications');
-    }
-    return;
-  }
-
-  if (!postedToChannel) {
-    if (actorSlackId) {
-      await sendWithThread(actorSlackId);
-    } else {
-      core.info(`No Slack user mapping for GitHub user '${actor}', skipping DM`);
-    }
-  } else {
-    core.info(`Replay results posted to channel, skipping DM to ${actor}`);
-  }
+  await routeSuccess({
+    core, actor, actorSlackId, improved: hasImprovement(summary.changes || {}), send: sendWithThread,
+  });
 }
 
 async function replayFailure({ core, context, failedStep }) {
@@ -607,16 +563,9 @@ async function replayFailure({ core, context, failedStep }) {
     return;
   }
 
-  const repo = `${context.repo.owner}/${context.repo.repo}`;
-  const prNumber = process.env.BENCH_PR;
-  const actor = process.env.BENCH_ACTOR;
-  const jobUrl = process.env.BENCH_JOB_URL ||
-    `${context.serverUrl}/${repo}/actions/runs/${context.runId}`;
+  const { repo, prNumber, actor, actorSlackId, jobUrl } = notificationContext(context);
   const chain = process.env.BENCH_CHAIN || 'mainnet';
   const runLabel = replayRunLabel();
-
-  const slackUsers = loadSlackUsers(process.env.GITHUB_WORKSPACE || '.');
-  const actorSlackId = slackUsers[actor];
   const blocks = buildReplayFailureBlocks({ prNumber, actor, actorSlackId, jobUrl, repo, chain, failedStep, runLabel });
   const text = `Tempo ${runLabel.toLowerCase()} failed while ${failedStep}`;
 
@@ -627,7 +576,7 @@ async function replayFailure({ core, context, failedStep }) {
   }
 }
 
-function buildZonesSuccessBlocks({ comparison, changes, prNumber, actor, actorSlackId, jobUrl, repo }) {
+function buildZonesSuccessBlocks({ comparison, changes, reason, prNumber, actor, actorSlackId, jobUrl, repo }) {
   const { metadata, latencies } = comparison;
   // No scored row (missing or partial traces, under 100 journeys) is not a measured no-change.
   const verdict = verdictFromChanges(changes, Object.keys(changes).length ? 'No Significant Change' : 'Unclassified');
@@ -644,6 +593,7 @@ function buildZonesSuccessBlocks({ comparison, changes, prNumber, actor, actorSl
     '',
     `*Prover:* \`${metadata.prover ? 'on' : 'off'}\` | *Preset:* \`${metadata.preset}\` | *Hardfork:* \`${metadata.tempoHardfork}\``,
     `*Journeys:* \`${metadata.count}\` | *Target TPS:* \`${metadata.tps}\` | *Region:* \`${metadata.region}\``,
+    ...(reason ? [`*Unclassified:* ${reason}`] : []),
   ].join('\n');
   // Raw percentile changes are context; the verdict comes from bench-zones-classify.js.
   const rows = comparison.rows.map(({ key, label }) => [label, ...['p50', 'p95'].flatMap(quantile => {
@@ -681,50 +631,23 @@ async function zonesSuccess({ core, context }) {
     return;
   }
 
-  const repo = `${context.repo.owner}/${context.repo.repo}`;
-  const prNumber = process.env.BENCH_PR;
-  const actor = process.env.BENCH_ACTOR;
-  const jobUrl = process.env.BENCH_JOB_URL ||
-    `${context.serverUrl}/${repo}/actions/runs/${context.runId}`;
-
-  const slackUsers = loadSlackUsers(process.env.GITHUB_WORKSPACE || '.');
-  const actorSlackId = slackUsers[actor];
-  let changes = {};
+  const { repo, prNumber, actor, actorSlackId, jobUrl } = notificationContext(context);
+  let changes = {}, reason;
   try {
-    changes = zonesClassify(comparison.rows, process.env.BENCH_WORK_DIR);
+    ({ changes, reason } = zonesClassify(comparison.rows, process.env.BENCH_WORK_DIR));
   } catch (e) {
     core.warning(`Could not classify Zones latency: ${e.message}`);
+    reason = 'Classification failed; see CI logs.';
   }
-  const blocks = buildZonesSuccessBlocks({ comparison, changes, prNumber, actor, actorSlackId, jobUrl, repo });
+  const blocks = buildZonesSuccessBlocks({ comparison, changes, reason, prNumber, actor, actorSlackId, jobUrl, repo });
   const text = `Tempo Zones bench: baseline vs feature (prover ${comparison.metadata.prover ? 'on' : 'off'})`;
 
-  const channel = process.env.SLACK_BENCH_CHANNEL;
-  const slackMode = process.env.BENCH_SLACK || 'always';
-  let postedToChannel = false;
-  // Benchmarking a commit against itself measures noise; never announce it.
-  if (channel && comparison.metadata.baseline !== comparison.metadata.feature && hasImprovement(changes)) {
-    await postToSlack(token, channel, blocks, text, core);
-    postedToChannel = true;
-  } else if (channel) {
-    core.info('No significant Zones improvement between distinct commits, skipping public channel notification');
-  }
-
-  if (slackMode === 'on-win') {
-    if (!postedToChannel) {
-      core.info('on-win mode: no Zones improvement detected, skipping all notifications');
-    }
-    return;
-  }
-
-  if (!postedToChannel) {
-    if (actorSlackId) {
-      await postToSlack(token, actorSlackId, blocks, text, core);
-    } else {
-      core.info(`No Slack user mapping for GitHub user '${actor}', skipping DM`);
-    }
-  } else {
-    core.info(`Zones results posted to channel, skipping DM to ${actor}`);
-  }
+  await routeSuccess({
+    core, actor, actorSlackId,
+    // Benchmarking a commit against itself measures noise; never announce it.
+    improved: comparison.metadata.baseline !== comparison.metadata.feature && hasImprovement(changes),
+    send: channel => postToSlack(token, channel, blocks, text, core),
+  });
 }
 
 module.exports = {

@@ -12,22 +12,31 @@ ARG EXTRA_RUSTFLAGS=""
 
 COPY . .
 
+# Keep the shared dependency layer, but compile only the requested executable.
+FROM builder AS node-builder
+
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=zones-${TARGETARCH}-${RUST_PROFILE}-${CACHE_FAMILY}-registry \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked,id=zones-${TARGETARCH}-${RUST_PROFILE}-${CACHE_FAMILY}-git \
     --mount=type=cache,target=$SCCACHE_DIR,sharing=locked,id=zones-${TARGETARCH}-${RUST_PROFILE}-${CACHE_FAMILY}-sccache \
     RUSTFLAGS="-C link-arg=-fuse-ld=mold ${EXTRA_RUSTFLAGS}" \
     cargo build --locked --profile ${RUST_PROFILE} \
         --bin tempo-zone --features "jemalloc" \
-    && RUSTFLAGS="-C link-arg=-fuse-ld=mold ${EXTRA_RUSTFLAGS}" \
-    cargo build --locked --profile ${RUST_PROFILE} \
-        --bin tempo-zone-xtask \
     && if [ -n "$VERGEN_GIT_SHA" ]; then \
          /app/target/${RUST_PROFILE}/tempo-zone --version | grep -F "$VERGEN_GIT_SHA"; \
        fi
 
+FROM builder AS xtask-builder
+
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=zones-${TARGETARCH}-${RUST_PROFILE}-${CACHE_FAMILY}-registry \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked,id=zones-${TARGETARCH}-${RUST_PROFILE}-${CACHE_FAMILY}-git \
+    --mount=type=cache,target=$SCCACHE_DIR,sharing=locked,id=zones-${TARGETARCH}-${RUST_PROFILE}-${CACHE_FAMILY}-sccache \
+    RUSTFLAGS="-C link-arg=-fuse-ld=mold ${EXTRA_RUSTFLAGS}" \
+    cargo build --locked --profile ${RUST_PROFILE} \
+        --bin tempo-zone-xtask
+
 # Solidity contracts compiled for shared runtimes, routers, and zone genesis artifacts.
 # Requires the crates/zones/contracts/lib submodules to be checked out.
-FROM debian:bookworm-slim@sha256:4724b8cc51e33e398f0e2e15e18d5ec2851ff0c2280647e1310bc1642182655d AS solidity
+FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8 AS solidity
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl git \
     && rm -rf /var/lib/apt/lists/*
@@ -39,7 +48,7 @@ WORKDIR /app/crates/zones/contracts
 COPY crates/zones/contracts .
 RUN forge build --skip test
 
-FROM debian:bookworm-slim@sha256:4724b8cc51e33e398f0e2e15e18d5ec2851ff0c2280647e1310bc1642182655d AS base
+FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8 AS base
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -50,7 +59,7 @@ WORKDIR /data
 # tempo-zone
 FROM base AS tempo-zone
 ARG RUST_PROFILE=profiling
-COPY --from=builder /app/target/${RUST_PROFILE}/tempo-zone /usr/local/bin/tempo-zone
+COPY --from=node-builder /app/target/${RUST_PROFILE}/tempo-zone /usr/local/bin/tempo-zone
 ENTRYPOINT ["/usr/local/bin/tempo-zone"]
 
 # tempo-zone-xtask: zone provisioning tooling (create-zone, zone-info, deploy-router).
@@ -60,7 +69,7 @@ ARG RUST_PROFILE=profiling
 RUN apt-get update && apt-get install -y --no-install-recommends \
     jq \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=builder /app/target/${RUST_PROFILE}/tempo-zone-xtask /usr/local/bin/tempo-xtask
+COPY --from=xtask-builder /app/target/${RUST_PROFILE}/tempo-zone-xtask /usr/local/bin/tempo-xtask
 COPY --from=solidity /root/.foundry/bin/cast /usr/local/bin/cast
 COPY --from=solidity /app/crates/zones/contracts/out /app/crates/zones/contracts/out
 WORKDIR /app

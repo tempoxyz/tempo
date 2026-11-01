@@ -1,0 +1,157 @@
+# Access-key mix: the Account and Spend modules' access-key flows. Weights are
+# gas shares, proposed from the planned product mix rather than any one
+# customer's traffic.
+#
+#   flow       gas  template                 what it models
+#   Create      15  access_key_create        a transfer that carries an inline key_authorization,
+#                                            so the key is authorised in the same transaction
+#   Rotate       5  access_key_rotate        a user who already holds a key authorises a new one
+#                                            (authorise-only, see gaps)
+#   Pull        50  keychain_merchant_pull   subscription and issuer card pulls: a delegated key
+#                                            pays one merchant settlement account (one hot balance slot)
+#   Agent       30  keychain_agent_spend     agent spend: a delegated key pays a random user
+#
+# Setup authorises one access key per user (keychain_authorize_pool), outside the
+# measured window. Keys are scoped to TIP-20 transfer with spending limits, so every
+# delegated payment also reads the key, its call scope and its limit.
+#
+# Gaps:
+# - Revocation: txgen has no revoke flow, so rotation does not revoke the old key.
+#   Needed in txgen: a keychain_revoke auth action (or a setup-key reference usable
+#   as a call argument) that sends a root-signed AccountKeychain.revokeKey for the
+#   sender's paired setup key, with each key revoked at most once.
+# - Per-agent rate (~10 tx/min per agent): txgen picks senders at random, so the
+#   per-sender rate follows TPS and the pool size, not a fixed agent cadence.
+# Requires T12+ (expiring nonces) and funded users (nonzero state bloat).
+chain_id: 1337
+
+gas:
+  max_fee_per_gas: 100000000000
+  max_priority_fee_per_gas: 100000000000
+
+accounts:
+  users:
+    mnemonic: "test test test test test test test test test test test junk"
+    range:
+      - 0
+      - ${TXGEN_ACCOUNTS}
+
+artifacts:
+  ERC20: ../tip20.abi.json
+
+setup:
+  steps:
+    - id: authorize_keychain_users
+      keychain_authorize_pool:
+        accounts:
+          pool: users
+        access_keys:
+          mnemonic: "test test test test test test test test test test test junk"
+          range:
+            - ${TXGEN_KEYCHAIN_ACCESS_KEYS_START}
+            - ${TXGEN_KEYCHAIN_ACCESS_KEYS_END}
+        key_type: secp256k1
+        gas_limit: ${TXGEN_KEYCHAIN_AUTHORIZE_SETUP_GAS_LIMIT}
+        fee_token: "0x20c0000000000000000000000000000000000000"
+        limits: ${TXGEN_KEYCHAIN_TIP20_LIMITS}
+        allowed_calls: ${TXGEN_KEYCHAIN_TIP20_ALLOWED_CALLS}
+
+templates:
+  access_key_create:
+    type: tempo
+    from: {pool: users, select: random}
+    gas_limit: ${TXGEN_KEY_AUTHORIZATION_GAS_LIMIT}
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    nonce: { uniform: [0, 18446744073709551615] } # TIP-1106, requires T12+
+    valid_for_secs: 25
+    auth:
+      mode: key_authorization
+      access_key:
+        derive: per_tx
+      key_type: secp256k1
+      limits: ${TXGEN_KEYCHAIN_TIP20_LIMITS}
+      allowed_calls: ${TXGEN_KEYCHAIN_TIP20_ALLOWED_CALLS}
+      witness:
+        random_bytes: 32
+    call:
+      to: "0x20c0000000000000000000000000000000000000"
+      abi: ERC20
+      function: transfer
+      args:
+        - pool: {pool: users, select: random}
+        - 1
+  access_key_rotate:
+    type: tempo
+    from: {pool: users, select: random}
+    gas_limit: ${TXGEN_KEY_AUTHORIZATION_GAS_LIMIT}
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    nonce: { uniform: [0, 18446744073709551615] } # TIP-1106, requires T12+
+    valid_for_secs: 25
+    auth:
+      mode: key_authorization
+      access_key:
+        derive: per_tx
+      key_type: secp256k1
+      limits: ${TXGEN_KEYCHAIN_TIP20_LIMITS}
+      allowed_calls: ${TXGEN_KEYCHAIN_TIP20_ALLOWED_CALLS}
+      witness:
+        random_bytes: 32
+    call:
+      to: "0x20c0000000000000000000000000000000000000"
+      abi: ERC20
+      function: transfer
+      args:
+        - pool: {pool: users, select: random}
+        - 1
+  keychain_merchant_pull:
+    type: tempo
+    from: {pool: users, select: random}
+    gas_limit: 3000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    nonce: { uniform: [0, 18446744073709551615] } # TIP-1106, requires T12+
+    valid_for_secs: 25
+    auth:
+      mode: keychain
+      access_key:
+        from_setup: authorize_keychain_users
+        pair: same_index
+    call:
+      to: "0x20c0000000000000000000000000000000000000"
+      abi: ERC20
+      function: transfer
+      args:
+        - "0x0000000000000000000000000000000000005e77"
+        - 1
+  keychain_agent_spend:
+    type: tempo
+    from: {pool: users, select: random}
+    gas_limit: 3000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    nonce: { uniform: [0, 18446744073709551615] } # TIP-1106, requires T12+
+    valid_for_secs: 25
+    auth:
+      mode: keychain
+      access_key:
+        from_setup: authorize_keychain_users
+        pair: same_index
+    call:
+      to: "0x20c0000000000000000000000000000000000000"
+      abi: ERC20
+      function: transfer
+      args:
+        - pool: {pool: users, select: random}
+        - 1
+
+mix:
+  - template: access_key_create
+    weight: 15
+  - template: access_key_rotate
+    weight: 5
+  - template: keychain_merchant_pull
+    weight: 50
+  - template: keychain_agent_spend
+    weight: 30
