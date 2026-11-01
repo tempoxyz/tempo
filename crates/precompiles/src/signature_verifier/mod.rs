@@ -32,7 +32,7 @@ impl SignatureVerifier {
     /// Recovers the signer of `hash`.
     ///
     /// From T14, an attested signature (type `0x06`) recovers its attested address if it passes
-    /// every check of [`Self::verify_attested`], and reverts with `InvalidSignature` otherwise.
+    /// every attested signature check, and reverts with `InvalidSignature` otherwise.
     pub fn recover(&self, hash: B256, signature: Bytes) -> Result<Address> {
         if let Some(attested) = self.decode_attested(&signature)? {
             return self
