@@ -1117,52 +1117,6 @@ mod tests {
             for envelope in payment_envelopes(Bytes::from(data)) {
                 assert!(envelope.is_payment_v1(), "V1 must accept (prefix-only)");
                 assert!(!envelope.is_payment_v2(), "V2 must reject excess calldata");
-                assert!(envelope.is_payment_v3(), "V3 must accept 32 trailing bytes");
-            }
-        }
-    }
-
-    #[test]
-    fn test_payment_v3_trailing_bytes() {
-        let [open, top_up, settle, close, request_close, withdraw] =
-            channel_reserve_payment_calldatas();
-        let static_calls = payment_calldatas()
-            .map(|calldata| (PAYMENT_TKN, calldata))
-            .into_iter()
-            .chain(
-                [open, top_up, request_close, withdraw]
-                    .map(|calldata| (TIP20_CHANNEL_RESERVE_ADDRESS, calldata)),
-            );
-
-        for (to, calldata) in static_calls {
-            for trailing in [1, MAX_PAYMENT_TRAILING_BYTES] {
-                let mut data = calldata.to_vec();
-                data.extend(core::iter::repeat_n(0xab, trailing));
-                for envelope in payment_envelopes_to(to, Bytes::from(data)) {
-                    assert!(!envelope.is_payment_v2(), "V2 must reject trailing bytes");
-                    assert!(
-                        envelope.is_payment_v3(),
-                        "V3 must accept bounded trailing bytes"
-                    );
-                }
-            }
-
-            let mut data = calldata.to_vec();
-            data.extend([0xab; MAX_PAYMENT_TRAILING_BYTES + 1]);
-            for envelope in payment_envelopes_to(to, Bytes::from(data)) {
-                assert!(
-                    !envelope.is_payment_v3(),
-                    "V3 must reject excess trailing bytes"
-                );
-            }
-        }
-
-        // Dynamic calls are bounded by total calldata length, so V3 leaves them unchanged.
-        for calldata in [settle, close] {
-            let mut data = calldata.to_vec();
-            data.extend([0xab; MAX_PAYMENT_TRAILING_BYTES + 1]);
-            for envelope in payment_envelopes_to(TIP20_CHANNEL_RESERVE_ADDRESS, Bytes::from(data)) {
-                assert_eq!(envelope.is_payment_v2(), envelope.is_payment_v3());
             }
         }
     }

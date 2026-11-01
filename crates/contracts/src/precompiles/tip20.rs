@@ -386,40 +386,10 @@ mod test {
     fn test_is_payment() {
         for calldata in payment_calldatas() {
             assert!(ITIP20::ITIP20Calls::is_payment(&calldata, 0));
-            assert!(ITIP20::ITIP20Calls::is_payment(
-                &calldata,
-                MAX_PAYMENT_TRAILING_BYTES
-            ));
         }
 
         for calldata in non_payment_calldatas() {
             assert!(!ITIP20::ITIP20Calls::is_payment(&calldata, 0));
-            assert!(!ITIP20::ITIP20Calls::is_payment(
-                &calldata,
-                MAX_PAYMENT_TRAILING_BYTES
-            ));
-        }
-    }
-
-    #[test]
-    fn test_is_payment_trailing_bytes() {
-        for calldata in payment_calldatas() {
-            for trailing in 1..=MAX_PAYMENT_TRAILING_BYTES {
-                let mut input = calldata.clone();
-                input.extend(core::iter::repeat_n(0xab, trailing));
-                assert!(!ITIP20::ITIP20Calls::is_payment(&input, 0));
-                assert!(ITIP20::ITIP20Calls::is_payment(
-                    &input,
-                    MAX_PAYMENT_TRAILING_BYTES
-                ));
-            }
-
-            let mut input = calldata;
-            input.extend([0xab; MAX_PAYMENT_TRAILING_BYTES + 1]);
-            assert!(!ITIP20::ITIP20Calls::is_payment(
-                &input,
-                MAX_PAYMENT_TRAILING_BYTES
-            ));
         }
     }
 

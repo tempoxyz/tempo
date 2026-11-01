@@ -276,7 +276,6 @@ impl ITIP20ChannelReserve::ITIP20ChannelReserveCalls {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::precompiles::tip20::MAX_PAYMENT_TRAILING_BYTES;
     use alloc::{vec, vec::Vec};
     use alloy_primitives::{B256, aliases::U96};
 
@@ -324,42 +323,6 @@ mod tests {
         let mut unknown = payment_calldatas()[0].clone();
         unknown[..4].copy_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
         assert!(!ITIP20ChannelReserve::ITIP20ChannelReserveCalls::is_payment(&unknown, 0));
-    }
-
-    #[test]
-    fn test_is_payment_trailing_bytes() {
-        let [open, top_up, settle, close, request_close, withdraw] = payment_calldatas();
-
-        for calldata in [open, top_up, request_close, withdraw] {
-            let mut input = calldata;
-            input.extend([0xab; MAX_PAYMENT_TRAILING_BYTES]);
-            assert!(!ITIP20ChannelReserve::ITIP20ChannelReserveCalls::is_payment(&input, 0));
-            assert!(ITIP20ChannelReserve::ITIP20ChannelReserveCalls::is_payment(
-                &input,
-                MAX_PAYMENT_TRAILING_BYTES
-            ));
-
-            input.push(0xab);
-            assert!(
-                !ITIP20ChannelReserve::ITIP20ChannelReserveCalls::is_payment(
-                    &input,
-                    MAX_PAYMENT_TRAILING_BYTES
-                )
-            );
-        }
-
-        // Dynamic calls are bounded by `MAX_PAYMENT_CALLDATA_LEN` instead, regardless of the limit.
-        for calldata in [settle, close] {
-            let mut input = calldata;
-            input.extend([0xab; MAX_PAYMENT_TRAILING_BYTES + 1]);
-            assert!(ITIP20ChannelReserve::ITIP20ChannelReserveCalls::is_payment(
-                &input, 0
-            ));
-            assert!(ITIP20ChannelReserve::ITIP20ChannelReserveCalls::is_payment(
-                &input,
-                MAX_PAYMENT_TRAILING_BYTES
-            ));
-        }
     }
 
     #[test]

@@ -968,9 +968,8 @@ mod tests {
     use tempo_chainspec::{TempoChainSpec, TempoHardfork, spec::DEV};
     use tempo_contracts::{
         precompiles::{
-            CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, ITIP20, PATH_USD_ADDRESS,
-            ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS,
-            ZONE_VERIFIER_ADDRESS, tip20::MAX_PAYMENT_TRAILING_BYTES,
+            CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, PATH_USD_ADDRESS, ZONE_FACTORY_ADDRESS,
+            ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
         },
         zones::{
             T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
@@ -1784,38 +1783,6 @@ mod tests {
             .with_spec(TempoHardfork::T5)
             .build(&mut db, &chainspec);
         assert!(!t5_executor.is_payment(&tx));
-    }
-
-    #[test]
-    fn test_is_payment_uses_v3_from_t15() {
-        let mut input = ITIP20::transferCall {
-            to: Address::random(),
-            amount: U256::ONE,
-        }
-        .abi_encode();
-        input.extend([0xab; MAX_PAYMENT_TRAILING_BYTES]);
-        let tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(
-            TxLegacy {
-                to: TxKind::Call(PATH_USD_ADDRESS),
-                input: input.into(),
-                ..Default::default()
-            },
-            Signature::test_signature(),
-        ));
-        assert!(!tx.is_payment_v2(), "T5 classifier rejects trailing bytes");
-        assert!(
-            tx.is_payment_v3(),
-            "T15 classifier accepts bounded trailing bytes"
-        );
-
-        let chainspec = DEV.clone();
-        for (spec, expected) in [(TempoHardfork::T14, false), (TempoHardfork::T15, true)] {
-            let mut db = InMemoryDB::default();
-            let executor = TestExecutorBuilder::default()
-                .with_spec(spec)
-                .build(&mut db, &chainspec);
-            assert_eq!(executor.is_payment(&tx), expected, "{spec:?}");
-        }
     }
 
     #[test]

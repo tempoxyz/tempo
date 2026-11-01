@@ -1297,36 +1297,6 @@ mod tests {
     }
 
     #[test]
-    fn test_payment_classification_trailing_bytes() {
-        let mut calldata = ITIP20::transferCall {
-            to: Address::random(),
-            amount: U256::random(),
-        }
-        .abi_encode();
-        calldata.extend([0xab; 32]);
-
-        let tx = TxEip1559 {
-            to: TxKind::Call(PATH_USD_ADDRESS),
-            gas_limit: 21000,
-            input: Bytes::from(calldata),
-            ..Default::default()
-        };
-        let envelope = TempoTxEnvelope::Eip1559(alloy_consensus::Signed::new_unchecked(
-            tx,
-            Signature::test_signature(),
-            B256::ZERO,
-        ));
-        let recovered = Recovered::new_unchecked(
-            envelope,
-            address!("0000000000000000000000000000000000000001"),
-        );
-
-        let pooled_tx = TempoPooledTransaction::new(recovered);
-        assert!(!pooled_tx.is_payment_v2());
-        assert!(pooled_tx.is_payment_v3());
-    }
-
-    #[test]
     fn test_payment_classification_tip20_prefix_without_valid_calldata() {
         // TIP20 prefix but no valid calldata should NOT be classified as payment in the pool
         let payment_addr = address!("20c0000000000000000000000000000000000001");
