@@ -105,69 +105,62 @@ The signature and registry TIPs activate in the same hardfork as at least one sc
 - Each policy uses one scheme. Combining schemes uses configurable-account thresholds.
 - Attested signer addresses do not depend on the measurement, so upgrades of the signer program keep every address.
 
-## Sign-in
+## Sign-in and signing
 
-The following flow applies to every identity method. The example values are illustrative.
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor U as User
-    participant C as Client
-    participant O as Wallet operator
-    participant S as Signer program (TEE)
-    participant P as Identity provider
-
-    C->>C: deviceKey = p256.generate()
-    C->>O: Start sign-in (method, identifier)
-    O->>S: Start (method, identifier, deviceKey)
-    S->>P: Challenge bound to deviceKey
-    P-->>U: Code, or provider sign-in
-    U->>C: Proof
-    C->>O: Proof
-    O->>S: Finish (method, proof, deviceKey)
-    S->>S: Verify proof, userTag = HMAC(k, identity)
-    S-->>O: Device binding and sign-in assertion
-    O-->>C: Session for the device
-```
-
-1. The client generates a device key for this sign-in.
-2. The wallet operator relays the start to the program.
-3. The program issues the method's challenge, which commits to the device key. For an email code, it sends the code from its own email account. For an OpenID Connect provider, it returns a nonce derived from the device key.
-4. The user completes the method, and the client returns the proof through the operator.
-5. The program verifies the proof with trust inputs fixed in its measured code, derives the user tag, and issues the device binding and an assertion that the operator can verify against the registry.
-
-If the proof fails, the program issues nothing. A proof for another device key fails the method's binding check.
-
-## Signing
-
-Every later operation follows one path, with no new sign-in.
+The following scenario is illustrative. Alice signs in to a wallet with the email address `alice@example.com` under policy `P`, whose signer program runs in an AWS Nitro Enclave. Email is one identity method. Another method changes only the challenge and the proof in steps 10 to 14.
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant C as Client
+    actor U as Alice
+    participant W as Wallet
     participant O as Wallet operator
     participant S as Signer program (TEE)
+    participant A as Attestation service
     participant T as Tempo
 
-    Note over S,T: Program key registered every few minutes
-    C->>C: digest of the operation<br/>deviceProof = deviceKey.sign(digest, nonce)
-    C->>O: Operation and deviceProof
-    O->>O: Check session and policy, approve
+    Note over S,T: Every few minutes
+    S->>S: programKey = p256.generate()
+    S->>A: Request a document binding programKey to chain, registry, P
+    A-->>S: Attestation document (measurement, binding)
+    S->>T: registerKey(P, document, programKey)
+    T-->>S: Registered until now + 600 s
+
+    Note over U,S: Sign-in (any identity method)
+    U->>W: Continue with alice@example.com
+    W->>W: deviceKey = p256.generate()
+    W->>O: Start sign-in (email, deviceKey)
+    O->>S: Start sign-in (email, deviceKey)
+    S->>U: Email code
+    U->>W: Code
+    W->>O: Code
+    O->>S: Finish sign-in (code, deviceKey)
+    S->>S: Check the code<br/>userTag = HMAC(k, "email:alice@example.com")
+    S-->>O: Device binding for deviceKey and userTag
+    O-->>W: Session for the device
+
+    Note over U,T: Each operation, with no new sign-in
+    U->>W: Send 10 USD to Bob
+    W->>W: digest = signing hash of the transaction<br/>deviceProof = deviceKey.sign(digest, nonce)
+    W->>O: Transaction and deviceProof
+    O->>O: Check the session and policy, approve
     O->>S: digest, deviceProof, approval, binding
-    S->>S: Check binding, device proof, approval
-    S-->>O: 0x06 signature over digest
-    O->>T: Transaction, key authorization,<br/>owner approval, or message
-    T->>T: Program key current? Signature valid?<br/>Signer = attested_address(policyId, userTag)
+    S->>S: Check the binding, the device proof, and the approval
+    S-->>O: Attested signature over digest
+    O->>T: Transaction from attested_address(P, userTag)
+    T->>T: Check the program key record and policy<br/>Verify the P256 signature, derive the address
+    T-->>W: Receipt
 ```
 
-1. The client computes the operation's digest and signs a device proof over it with a fresh nonce.
-2. The wallet operator checks its session for the device, applies its policy, and approves the same digest and nonce.
-3. The program checks that the device binding is valid for the device key, that both signatures cover the same digest and nonce, and that the nonce is fresh. It then signs the digest ([TIP-XXX2](./tip-xxx2.md#signed-digest)).
-4. The chain verifies the attested signature ([TIP-XXX2](./tip-xxx2.md#verification)).
+1. The signer program registers a program key, as [TIP-XXX3](./tip-xxx3.md#registration) describes, and repeats this before each registration expires.
+2. Alice's wallet generates a device key for this sign-in and starts the sign-in through the wallet operator.
+3. The signer program sends Alice an email code from its own email account. The challenge commits to the device key.
+4. Alice enters the code. The program checks it, derives her user tag, and issues a device binding for the device key.
+5. For each later operation, the wallet signs a device proof over the operation's digest, and the wallet operator approves the same digest.
+6. The signer program checks the binding, the device proof, and the approval, then signs the digest ([TIP-XXX2](./tip-xxx2.md#signed-digest)).
+7. The transaction is sent from Alice's attested signer address. The node verifies the attested signature ([TIP-XXX2](./tip-xxx2.md#verification)).
 
-The wallet operator can forward the request in one round trip from the client. A revocation by the operator stops approvals at once. The binding expires on its own.
+The same path signs key authorizations, configurable-account owner approvals, and messages. If Alice enters a wrong code, the program issues no binding. If the device proof or the approval is missing or names another digest, the program signs nothing. If the program key expires before the transaction lands, the node rejects the signature, and the wallet requests a new one. The wallet operator can forward each operation in one round trip from the wallet, and it can revoke the device at once.
 
 ## Trust
 
