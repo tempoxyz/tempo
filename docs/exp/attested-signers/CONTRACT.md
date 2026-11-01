@@ -123,7 +123,7 @@ Claude-Session: https://claude.ai/code/session_01D3nmWfxsYgSZCf4nZP5cZY
   and block alike: `valid_until >= now`, `valid_until - now <= 600`, then `program_key_current`. It runs these
   before key authorization recovery and owner quorum checks, so every P256 verification in the handler follows
   the registry read. A failure is `attested signature rejected: <reason>`.
-- Pool ordering (tip-xxx2 "Ordering"): pool recovery (`try_recover`, `try_recover_with_cache`,
+- Pool ordering (TIP-1160 "Ordering"): pool recovery (`try_recover`, `try_recover_with_cache`,
   `recover_raw_transaction`, `recover_raw_transaction_with_cache`) derives a `0x06` sender as
   `attested_address(policy_id, user_tag)` without a curve operation and never puts it in the sender recovery
   cache that block import reads. The validator then runs, in order: activation and validity window of every
