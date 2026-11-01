@@ -454,7 +454,7 @@ impl AttestedKeyRegistry {
         // TIP-XXX4 steps 5 and 6: PCR0-2 present, 48 bytes, not all zero, and `user_data`
         // equal to the binding.
         let mut pcrs = [0u8; 3 * 48];
-        for (index, chunk) in (0..).zip(pcrs.chunks_exact_mut(48)) {
+        for (index, chunk) in (0..).zip(pcrs.as_chunks_mut::<48>().0) {
             let pcr = attestation
                 .pcrs
                 .iter()
