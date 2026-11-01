@@ -18,7 +18,6 @@ on:
       - "crates/precompiles/**"
       - "crates/precompiles-macros/**"
       - "crates/primitives/**"
-      - "crates/revm/**"
       - "scripts/foundry-patch.sh"
       - ".github/workflows/specs.yml"
       - ".github/workflows/update-reth.yml"
@@ -30,6 +29,9 @@ env:
   CARGO_HTTP_TIMEOUT: "180"
   CARGO_TERM_COLOR: always
   RUSTC_WRAPPER: "sccache"
+  # Foundry's evm2 migration (foundry-rs/foundry#17541). Pin to a commit and move the pin to
+  # Foundry master once that PR merges.
+  FOUNDRY_REF: dcaffbf056720dc944d7a3e8473000694dc82357
 
 jobs:
   check-specs-changes:
@@ -68,7 +70,6 @@ jobs:
               - 'crates/precompiles/**'
               - 'crates/precompiles-macros/**'
               - 'crates/primitives/**'
-              - 'crates/revm/**'
               - 'scripts/foundry-patch.sh'
               - '.github/workflows/specs.yml'
             foundry_smoke:
@@ -106,8 +107,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: foundry-rs/foundry
-          # Keep Foundry on revm 43.0.2 to match the version used by reth and Tempo.
-          ref: 4e9eba80e77a8e696a9c888c6af058da65c12fc8
+          ref: ${{ env.FOUNDRY_REF }}
           path: foundry
           persist-credentials: false
 
@@ -210,10 +210,58 @@ jobs:
         working-directory: tips/verify
         run: forge fmt --check
 
-  foundry-build:
-    name: Build patched Forge
+  foundry-compat:
+    name: Foundry evm2 compatibility
     needs: check-specs-changes
     if: github.repository == 'tempoxyz/tempo' && needs.check-specs-changes.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      compatible: ${{ steps.compat.outputs.compatible }}
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Checkout tempo
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          sparse-checkout: Cargo.toml
+          sparse-checkout-cone-mode: false
+          path: tempo
+          persist-credentials: false
+
+      - name: Checkout foundry
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: foundry-rs/foundry
+          ref: ${{ env.FOUNDRY_REF }}
+          sparse-checkout: Cargo.toml
+          sparse-checkout-cone-mode: false
+          path: foundry
+          persist-credentials: false
+
+      # Tempo's reth crates and Foundry must share one evm2, and Foundry's evm2 fork may carry
+      # APIs that Tempo's evm2 lacks, or lack ones that reth needs. Build Foundry only when both
+      # pin the same evm2 commit.
+      - name: Compare evm2 revisions
+        id: compat
+        run: |
+          rev() { sed -nE 's/^evm2 = \{.*rev = "([0-9a-f]+)".*/\1/p' "$1" | head -n1; }
+          tempo_rev="$(rev tempo/Cargo.toml)"
+          foundry_rev="$(rev foundry/Cargo.toml)"
+          if [[ -n "$tempo_rev" && "$tempo_rev" == "$foundry_rev" ]]; then
+            echo "compatible=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "compatible=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Foundry build skipped::Tempo pins evm2 ${tempo_rev:-<none>} and Foundry ${FOUNDRY_REF} pins ${foundry_rev:-<none>}. Skipping the Foundry build and tests until foundry-rs/foundry#17541 uses Tempo's evm2 commit."
+          fi
+
+  foundry-build:
+    name: Build patched Forge
+    needs: [check-specs-changes, foundry-compat]
+    if: github.repository == 'tempoxyz/tempo' && needs.check-specs-changes.outputs.should_run == 'true' && needs.foundry-compat.outputs.compatible == 'true'
     runs-on: depot-ubuntu-latest-8
     timeout-minutes: 60
     permissions:
@@ -234,8 +282,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: foundry-rs/foundry
-          # Keep Foundry on revm 43.0.2 to match the version used by reth and Tempo.
-          ref: 4e9eba80e77a8e696a9c888c6af058da65c12fc8
+          ref: ${{ env.FOUNDRY_REF }}
           path: foundry
           persist-credentials: false
 
@@ -316,6 +363,7 @@ jobs:
       - build
       - abi-alignment-check
       - lint
+      - foundry-compat
       - foundry-build
       - foundry-test
     timeout-minutes: 5
@@ -326,5 +374,5 @@ jobs:
       - name: Decide whether the needed jobs succeeded or failed
         uses: tempoxyz/gh-actions/actions/check-needs@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
-          allowed-skips: build,abi-alignment-check,lint,foundry-build,foundry-test
+          allowed-skips: build,abi-alignment-check,lint,foundry-compat,foundry-build,foundry-test
           jobs: ${{ toJSON(needs) }}

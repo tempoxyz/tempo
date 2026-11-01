@@ -1,3 +1,4 @@
+mod configurable_account;
 mod demo_asset_swap;
 mod demo_cross_zone;
 mod demo_shield_and_send;
@@ -21,5 +22,6 @@ mod stepping_e2e;
 mod tip403_policy;
 mod tip403_transfers;
 mod utils;
+mod witness_outage_e2e;
 
 fn main() {}

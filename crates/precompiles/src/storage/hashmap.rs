@@ -1,17 +1,22 @@
-use alloy::primitives::{Address, B256, LogData, U256};
-use revm::{
-    context::{BlockEnv, journaled_state::JournalCheckpoint},
-    context_interface::cfg::GasParams,
-    interpreter::{SStoreResult, StateLoad, gas::GasTracker},
-    state::{AccountInfo, Bytecode},
+use alloy::primitives::{Address, B256, Bytes, LogData, U256};
+use evm2::{
+    SpecId,
+    bytecode::Bytecode,
+    evm::{AccountExtension, AccountInfo, SLoad, SStore, StateCheckpoint},
+    interpreter::GasTracker,
+    version::GasParams,
 };
 use std::collections::HashMap;
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_primitives::TempoBlockEnv;
+use tempo_primitives::{TempoBlockEnv, account::encode_config_commitment};
 
 use crate::{
+    configurable_account::CONFIGURABLE_ACCOUNT_CODE,
     error::TempoPrecompileError,
-    storage::{ConfigCommitmentWriteGas, PrecompileStorageProvider, SstoreTransitionFlags},
+    storage::{
+        ConfigCommitmentWriteGas, PrecompileStorageProvider, SstoreTransitionFlags,
+        account_config_commitment,
+    },
     storage_credits::{NonCreditableSlots, StorageCreditsBackend, sstore_storage_credits},
 };
 
@@ -22,7 +27,6 @@ pub struct HashMapStorageProvider {
     internals: HashMap<(Address, U256), U256>,
     transient: HashMap<(Address, U256), U256>,
     accounts: HashMap<Address, AccountInfo>,
-    config_commitments: HashMap<Address, B256>,
     fail_on_sload: Option<(Address, U256)>,
     chain_id: u64,
     block_env: TempoBlockEnv,
@@ -45,7 +49,7 @@ pub struct HashMapStorageProvider {
 ///
 /// PERF: naive cloning strategy due to its limited usage.
 struct Snapshot {
-    config_commitments: HashMap<Address, B256>,
+    accounts: HashMap<Address, AccountInfo>,
     internals: HashMap<(Address, U256), U256>,
     transient: HashMap<(Address, U256), U256>,
     events: HashMap<Address, Vec<LogData>>,
@@ -63,29 +67,25 @@ impl HashMapStorageProvider {
             internals: HashMap::new(),
             transient: HashMap::new(),
             accounts: HashMap::new(),
-            config_commitments: HashMap::new(),
             fail_on_sload: None,
             events: HashMap::new(),
             snapshots: Vec::new(),
             chain_id,
             block_env: TempoBlockEnv {
-                inner: BlockEnv {
-                    #[expect(clippy::disallowed_methods)]
-                    timestamp: U256::from(
-                        std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap()
-                            .as_secs(),
-                    ),
-                    ..Default::default()
-                },
+                #[expect(clippy::disallowed_methods)]
+                timestamp: U256::from(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs(),
+                ),
                 ..Default::default()
             },
             spec,
             amsterdam_eip8037_enabled: false,
             is_static: false,
-            gas_params: GasParams::new_spec(spec.into()),
-            gas_tracker: GasTracker::new(u64::MAX, u64::MAX, 0),
+            gas_params: tempo_chainspec::gas_params::version(SpecId::OSAKA, spec, false).gas_params,
+            gas_tracker: GasTracker::new(u64::MAX),
             tip1060_storage_credits_enabled: spec.is_t7(),
             counter_sload: 0,
             counter_sstore: 0,
@@ -96,7 +96,8 @@ impl HashMapStorageProvider {
     /// Returns self with the hardfork spec overridden (builder pattern).
     pub fn with_spec(mut self, spec: TempoHardfork) -> Self {
         self.spec = spec;
-        self.gas_params = GasParams::new_spec(self.spec.into());
+        self.gas_params =
+            tempo_chainspec::gas_params::version(SpecId::OSAKA, spec, false).gas_params;
         self.tip1060_storage_credits_enabled = spec.is_t7();
         self
     }
@@ -104,7 +105,8 @@ impl HashMapStorageProvider {
     /// Returns self with `amsterdam_eip8037_enabled` overridden (builder pattern).
     pub fn with_amsterdam_eip8037_enabled(mut self, enabled: bool) -> Self {
         self.amsterdam_eip8037_enabled = enabled;
-        self.gas_params = GasParams::new_spec(self.spec.into());
+        self.gas_params =
+            tempo_chainspec::gas_params::version(SpecId::OSAKA, self.spec, enabled).gas_params;
         self
     }
 }
@@ -118,10 +120,9 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         &self.block_env
     }
 
-    fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), TempoPrecompileError> {
+    fn set_code(&mut self, address: Address, code: Bytes) -> Result<(), TempoPrecompileError> {
         let account = self.accounts.entry(address).or_default();
-        account.code_hash = code.hash_slow();
-        account.code = Some(code);
+        account.set_code(Bytecode::new_raw(code));
         Ok(())
     }
 
@@ -135,11 +136,12 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         Ok(())
     }
 
-    fn account_code(&mut self, address: Address) -> Result<(B256, Bytecode), TempoPrecompileError> {
-        let Some(account) = self.accounts.get(&address) else {
-            return Ok((B256::ZERO, Bytecode::default()));
-        };
-        Ok((account.code_hash, account.code.clone().unwrap_or_default()))
+    fn with_warm_caller_info(
+        &mut self,
+        address: Address,
+        f: &mut dyn FnMut(&AccountInfo),
+    ) -> Result<(), TempoPrecompileError> {
+        self.with_account_info(address, f)
     }
 
     fn sstore(
@@ -157,15 +159,18 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         self.internals.insert((address, key), value);
 
         if self.tip1060_storage_credits_enabled {
-            let state_load = StateLoad::new(
-                SStoreResult {
+            sstore_storage_credits(
+                self,
+                address,
+                Some(key),
+                &SStore {
                     original_value: present,
                     present_value: present,
                     new_value: value,
+                    is_cold: false,
+                    _non_exhaustive: (),
                 },
-                false,
-            );
-            sstore_storage_credits(self, address, Some(key), &state_load)?;
+            )?;
         }
 
         Ok(())
@@ -251,38 +256,34 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         self.is_static
     }
 
-    fn checkpoint(&mut self) -> JournalCheckpoint {
+    fn checkpoint(&mut self) -> StateCheckpoint {
         let idx = self.snapshots.len();
         self.snapshots.push(Snapshot {
-            config_commitments: self.config_commitments.clone(),
+            accounts: self.accounts.clone(),
             internals: self.internals.clone(),
             transient: self.transient.clone(),
             events: self.events.clone(),
         });
-        JournalCheckpoint {
-            log_i: 0,
-            journal_i: idx,
-            selfdestructed_i: 0,
-        }
+        StateCheckpoint::new(idx, 0)
     }
 
-    fn checkpoint_commit(&mut self, checkpoint: JournalCheckpoint) {
+    fn checkpoint_commit(&mut self, checkpoint: StateCheckpoint) {
         assert_eq!(
-            checkpoint.journal_i,
+            checkpoint.journal_len(),
             self.snapshots.len() - 1,
             "out-of-order checkpoint commit (expected top of stack)"
         );
         self.snapshots.pop();
     }
 
-    fn checkpoint_revert(&mut self, checkpoint: JournalCheckpoint) {
+    fn checkpoint_revert(&mut self, checkpoint: StateCheckpoint) {
         assert_eq!(
-            checkpoint.journal_i,
+            checkpoint.journal_len(),
             self.snapshots.len() - 1,
             "out-of-order checkpoint revert (expected top of stack)"
         );
-        if let Some(snapshot) = self.snapshots.drain(checkpoint.journal_i..).next() {
-            self.config_commitments = snapshot.config_commitments;
+        if let Some(snapshot) = self.snapshots.drain(checkpoint.journal_len()..).next() {
+            self.accounts = snapshot.accounts;
             self.internals = snapshot.internals;
             self.transient = snapshot.transient;
             self.events = snapshot.events;
@@ -294,11 +295,10 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
     }
 
     fn config_commitment(&mut self, address: Address) -> Result<B256, TempoPrecompileError> {
-        Ok(self
-            .config_commitments
-            .get(&address)
-            .copied()
-            .unwrap_or(B256::ZERO))
+        // A missing account has no extension; reading must not create it.
+        self.accounts.get(&address).map_or(Ok(B256::ZERO), |info| {
+            account_config_commitment(info, self.spec)
+        })
     }
 
     fn set_config_commitment(
@@ -311,9 +311,14 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         if !self.spec.is_t14() || self.is_static || commitment.is_zero() {
             return Err(TempoPrecompileError::InvalidConfigCommitmentWrite);
         }
+        self.deduct_gas(gas.static_cost())?;
         let previous = self.config_commitment(address)?;
-        self.deduct_gas(gas.cost(previous)?)?;
-        self.config_commitments.insert(address, commitment);
+        self.deduct_gas(gas.dynamic_cost(previous, &self.gas_params)?)?;
+        let account = self.accounts.entry(address).or_default();
+        if previous.is_zero() {
+            account.set_code(Bytecode::new_raw(CONFIGURABLE_ACCOUNT_CODE));
+        }
+        account.extension = AccountExtension::from(encode_config_commitment(commitment));
         Ok(())
     }
 }
@@ -334,14 +339,16 @@ impl StorageCreditsBackend for HashMapStorageProvider {
         address: Address,
         key: U256,
         _skip_cold_load: bool,
-    ) -> Result<StateLoad<U256>, Self::Error> {
-        Ok(StateLoad::new(
-            self.internals
+    ) -> Result<SLoad, Self::Error> {
+        Ok(SLoad {
+            value: self
+                .internals
                 .get(&(address, key))
                 .copied()
                 .unwrap_or(U256::ZERO),
-            false,
-        ))
+            is_cold: false,
+            _non_exhaustive: (),
+        })
     }
 
     fn sstore(
@@ -426,7 +433,12 @@ impl HashMapStorageProvider {
     /// Overrides the active hardfork spec.
     pub fn set_spec(&mut self, spec: TempoHardfork) {
         self.spec = spec;
-        self.gas_params = GasParams::new_spec(self.spec.into());
+        self.gas_params = tempo_chainspec::gas_params::version(
+            SpecId::OSAKA,
+            spec,
+            self.amsterdam_eip8037_enabled,
+        )
+        .gas_params;
         self.tip1060_storage_credits_enabled = spec.is_t7();
     }
 
@@ -470,10 +482,5 @@ impl HashMapStorageProvider {
     /// Overrides the static-call context.
     pub fn set_is_static(&mut self, is_static: bool) {
         self.is_static = is_static;
-    }
-
-    /// Selects an explicit recovery factory for configurable account test fixtures.
-    pub fn set_configurable_account_recovery_factory(&mut self, factory: Address) {
-        self.block_env.configurable_account_recovery_factory = Some(factory);
     }
 }

@@ -10,8 +10,8 @@ use tempo_contracts::precompiles::{VALIDATOR_CONFIG_V2_ADDRESS, ValidatorConfigV
 use tempo_precompiles_macros::{Storable, contract};
 
 use crate::{
-    error::{Result, TempoPrecompileError},
-    ip_validation::{IpWithPortParseError, ensure_address_is_ip, ensure_address_is_ip_port},
+    error::Result,
+    ip::{IpAddr, IpAddrWithPort, IpParseError, IpWithPortParseError},
     storage::{Handler, Mapping},
     validator_config::ValidatorConfig,
 };
@@ -310,20 +310,23 @@ impl ValidatorConfigV2 {
         self.next_network_identity_rotation_epoch.read()
     }
 
-    fn validate_endpoints(ingress: &str, egress: &str) -> Result<()> {
-        ensure_address_is_ip_port(ingress).map_err(|err| {
-            TempoPrecompileError::from(ValidatorConfigV2Error::not_ip_port(
-                ingress.to_string(),
-                err.to_string(),
-            ))
+    fn validate_endpoints<'a>(
+        &self,
+        ingress: &'a str,
+        egress: &'a str,
+    ) -> Result<(IpAddrWithPort<'a>, IpAddr<'a>)> {
+        let spec = self.storage.spec();
+        let parsed_ingress = IpAddrWithPort::parse(ingress, spec).map_err(|err| match err {
+            IpWithPortParseError::TooLong => ValidatorConfigV2Error::invalid_ip(ingress.into()),
+            err => ValidatorConfigV2Error::not_ip_port(ingress.into(), err.to_string()),
         })?;
 
-        ensure_address_is_ip(egress).map_err(|err| {
-            TempoPrecompileError::from(ValidatorConfigV2Error::not_ip(
-                egress.to_string(),
-                err.to_string(),
-            ))
-        })
+        let parsed_egress = IpAddr::parse(egress, spec).map_err(|err| match err {
+            IpParseError::TooLong => ValidatorConfigV2Error::invalid_ip(egress.into()),
+            err => ValidatorConfigV2Error::not_ip(egress.into(), err.to_string()),
+        })?;
+
+        Ok((parsed_ingress, parsed_egress))
     }
 
     /// Parses `ingress` as an `<ip>:<port>` pair and returns the hash of the
@@ -337,10 +340,7 @@ impl ValidatorConfigV2 {
             .parse::<std::net::SocketAddr>()
             .map_err(IpWithPortParseError::from)
             .map_err(|err| {
-                TempoPrecompileError::from(ValidatorConfigV2Error::not_ip_port(
-                    ingress.to_string(),
-                    err.to_string(),
-                ))
+                ValidatorConfigV2Error::not_ip_port(ingress.to_string(), err.to_string())
             })?;
         let mut hasher = Keccak256::new();
         match ingress {
@@ -461,8 +461,8 @@ impl ValidatorConfigV2 {
         pubkey: &B256,
         signature: &[u8],
         validator_address: Address,
-        ingress: &str,
-        egress: &str,
+        ingress: IpAddrWithPort<'_>,
+        egress: IpAddr<'_>,
     ) -> Result<()> {
         let sig = Signature::decode(signature)
             .map_err(|_| ValidatorConfigV2Error::invalid_signature_format())?;
@@ -471,13 +471,9 @@ impl ValidatorConfigV2 {
         hasher.update(self.storage.chain_id().to_be_bytes());
         hasher.update(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
         hasher.update(validator_address.as_slice());
-        hasher.update([
-            u8::try_from(ingress.len()).expect("validator ingress length must fit in uint8")
-        ]);
+        hasher.update([ingress.len()]);
         hasher.update(ingress.as_bytes());
-        hasher.update([
-            u8::try_from(egress.len()).expect("validator egress length must fit in uint8")
-        ]);
+        hasher.update([egress.len()]);
         hasher.update(egress.as_bytes());
 
         let namespace = match kind {
@@ -515,7 +511,8 @@ impl ValidatorConfigV2 {
     /// - `PublicKeyAlreadyExists` — the public key is already registered
     /// - `InvalidValidatorAddress` — `validatorAddress` is zero
     /// - `AddressAlreadyHasValidator` — the address belongs to an active validator
-    /// - `NotIpPort` / `NotIp` — endpoints fail validation
+    /// - `NotIp` / `NotIpPort` — endpoints are malformed
+    /// - `InvalidIp` — an endpoint exceeds 255 bytes (T14+)
     /// - `IngressAlreadyExists` — the new ingress is already in use
     /// - `InvalidSignature` — signature verification fails
     pub fn add_validator(
@@ -526,7 +523,8 @@ impl ValidatorConfigV2 {
         self.config.read()?.require_init()?.require_owner(sender)?;
         self.require_new_pubkey(call.publicKey)?;
         self.require_new_address(call.validatorAddress)?;
-        Self::validate_endpoints(&call.ingress, &call.egress)?;
+
+        let (ingress, egress) = self.validate_endpoints(&call.ingress, &call.egress)?;
         let ingress_hash = self.require_unique_ingress(&call.ingress)?;
 
         self.verify_validator_signature(
@@ -536,8 +534,8 @@ impl ValidatorConfigV2 {
             &call.publicKey,
             &call.signature,
             call.validatorAddress,
-            &call.ingress,
-            &call.egress,
+            ingress,
+            egress,
         )?;
 
         let block_height = self.storage.block_number();
@@ -685,7 +683,8 @@ impl ValidatorConfigV2 {
     /// - `ValidatorNotFound` / `ValidatorAlreadyDeleted` — `idx` is invalid
     /// - `NotInitialized` / `Unauthorized` — auth failure
     /// - `InvalidPublicKey` / `PublicKeyAlreadyExists` — the new key is invalid
-    /// - `NotIpPort` / `NotIp` / `IngressAlreadyExists` — endpoint validation failure
+    /// - `NotIp` / `NotIpPort` / `IngressAlreadyExists` — endpoint validation failure
+    /// - `InvalidIp` — an endpoint exceeds 255 bytes (T14+)
     /// - `InvalidSignature` — signature verification fails
     pub fn rotate_validator(
         &mut self,
@@ -698,7 +697,8 @@ impl ValidatorConfigV2 {
             .require_init()?
             .require_owner_or_validator(sender, v.validator_address)?;
         self.require_new_pubkey(call.publicKey)?;
-        Self::validate_endpoints(&call.ingress, &call.egress)?;
+
+        let (ingress, egress) = self.validate_endpoints(&call.ingress, &call.egress)?;
 
         self.require_unique_ingress(&call.ingress)?;
         self.verify_validator_signature(
@@ -706,8 +706,8 @@ impl ValidatorConfigV2 {
             &call.publicKey,
             &call.signature,
             v.validator_address,
-            &call.ingress,
-            &call.egress,
+            ingress,
+            egress,
         )?;
 
         let block_height = self.storage.block_number();
@@ -788,7 +788,8 @@ impl ValidatorConfigV2 {
     /// - `NotInitialized` — the contract has not been initialized
     /// - `ValidatorNotFound` / `ValidatorAlreadyDeleted` — `idx` is invalid
     /// - `Unauthorized` — `sender` is neither the owner nor the validator
-    /// - `NotIpPort` / `NotIp` — the new endpoints fail validation
+    /// - `NotIp` / `NotIpPort` — the new endpoints are malformed
+    /// - `InvalidIp` — an endpoint exceeds 255 bytes (T14+)
     /// - `IngressAlreadyExists` — the new ingress is already in use.
     pub fn set_ip_addresses(
         &mut self,
@@ -801,7 +802,7 @@ impl ValidatorConfigV2 {
             .require_init()?
             .require_owner_or_validator(sender, v.validator_address)?;
 
-        Self::validate_endpoints(&call.ingress, &call.egress)?;
+        self.validate_endpoints(&call.ingress, &call.egress)?;
 
         self.update_ingress_ip_tracking(&v.ingress, &call.ingress)?;
 
@@ -1862,7 +1863,14 @@ mod tests {
                     sig1,
                 ),
             );
-            assert!(result.is_err(), "egress with port should be rejected");
+            assert_eq!(
+                result,
+                Err(ValidatorConfigV2Error::not_ip(
+                    "192.168.1.1:9000".into(),
+                    "input was not a valid IP address".into(),
+                )
+                .into())
+            );
 
             // Plain IP for egress should succeed
             vc.storage.set_block_number(200);
