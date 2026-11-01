@@ -186,7 +186,8 @@ pub struct MigrateCommand {
     /// The chain the corpus was captured from.
     #[arg(long, value_name = "CHAIN_OR_PATH", default_value = "mainnet", value_parser = TempoChainSpecParser::parser())]
     chain: Arc<TempoChainSpec>,
-    /// Source s3://bucket/prefix of a complete legacy corpus.
+    /// Source s3://bucket/prefix of a legacy corpus; an unfinished one migrates up to its
+    /// last published block.
     #[arg(long)]
     source: String,
     /// Destination s3://bucket/prefix; must not exist.
@@ -198,7 +199,7 @@ pub struct MigrateCommand {
     /// First block; defaults to the source start.
     #[arg(long)]
     from: Option<u64>,
-    /// Exclusive end; defaults to the source end.
+    /// Exclusive end; defaults to the source's last published block.
     #[arg(long)]
     to: Option<u64>,
 }
