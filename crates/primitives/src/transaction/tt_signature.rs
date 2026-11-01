@@ -510,6 +510,22 @@ impl KeychainSignature {
         }
     }
 
+    /// Returns this signature with `key_id` as its access key ID, which [`Self::key_id`] then
+    /// returns without recovering it from the inner signature.
+    ///
+    /// Only for simulation placeholders, whose dummy inner signature recovers no key. Decoded
+    /// signatures never carry a preset key ID.
+    pub fn with_key_id(self, key_id: Address) -> Self {
+        let cached_key_id = OnceLock::new();
+        // A fresh cell is empty, so `set` cannot fail.
+        #[allow(clippy::useless_conversion)]
+        let _ = cached_key_id.set(key_id.into());
+        Self {
+            cached_key_id,
+            ..self
+        }
+    }
+
     /// Compute the effective signature hash for key recovery.
     ///
     /// - V1: returns `sig_hash` directly (legacy, deprecated)

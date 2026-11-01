@@ -4,7 +4,7 @@ use crate::rpc::{
 };
 use alloy_consensus::{EthereumTxEnvelope, TxEip4844, error::ValueError, transaction::Recovered};
 use alloy_network::{NetworkTransactionBuilder, TxSigner};
-use alloy_primitives::{Address, B256, Bytes, Signature, U256};
+use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
 use reth_primitives_traits::SealedHeader;
 use reth_rpc_convert::{
     FromConsensusHeader, SignTxRequestError, SignableTxRequest, TryIntoSimTx, TryIntoTxEnv,
@@ -48,15 +48,31 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
             TempoTxType::AA => {
                 let signature = match self.simulated_block_signature() {
                     Ok(Some(signature)) => signature,
-                    Ok(None) if self.key_type == Some(SignatureType::ConfigurableAccount) => {
-                        return Err(ValueError::new(
-                            self,
-                            EthApiError::InvalidParams(MISSING_CONFIGURATION_WITNESS.into()),
-                        ));
-                    }
-                    Ok(None) => TempoSignature::default(),
+                    // The conversion has no block context. Every Tempo network has activated
+                    // T1C, which rejects V1 keychain signatures.
+                    Ok(None) => match create_mock_tempo_sig(
+                        &self.key_type.unwrap_or(SignatureType::Secp256k1),
+                        self.key_data.as_ref(),
+                        self.key_id,
+                        self.inner.from.unwrap_or_default(),
+                        true,
+                    ) {
+                        Some(signature) => signature,
+                        None => {
+                            return Err(ValueError::new(
+                                self,
+                                EthApiError::InvalidParams(MISSING_CONFIGURATION_WITNESS.into()),
+                            ));
+                        }
+                    },
                     Err(error) => return Err(ValueError::new(self, error)),
                 };
+                // `eth_simulateV1` fills a missing `to` with `TxKind::Create`, which a request
+                // can't express itself. Next to `calls` it would append a create call that can
+                // never be valid, so drop it as `eth_call` and `eth_estimateGas` do.
+                if !self.calls.is_empty() && self.inner.to == Some(TxKind::Create) {
+                    self.inner.to = None;
+                }
                 let tx = self.build_aa()?;
 
                 Ok(tx.into_signed(signature).into())
@@ -247,13 +263,15 @@ fn create_mock_tempo_sig(
     };
     let inner_sig = create_mock_primitive_signature(key_type, key_data, MAX_MOCK_WEBAUTHN_DATA_LEN);
 
-    if key_id.is_some() {
+    if let Some(key_id) = key_id {
         let keychain_sig = if is_t1c {
             KeychainSignature::new(caller_addr, inner_sig)
         } else {
             KeychainSignature::new_v1(caller_addr, inner_sig)
         };
-        Some(TempoSignature::Keychain(keychain_sig))
+        // The dummy inner signature recovers no key, and a simulated block executes the
+        // signature without the transaction environment's key ID override.
+        Some(TempoSignature::Keychain(keychain_sig.with_key_id(key_id)))
     } else {
         Some(TempoSignature::Primitive(inner_sig))
     }

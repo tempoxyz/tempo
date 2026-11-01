@@ -11,6 +11,7 @@ use alloy::{
     network::{EthereumWallet, ReceiptResponse},
     primitives::{Address, B256, Bytes, Signature, U256},
     providers::{Provider, ProviderBuilder},
+    rpc::types::TransactionRequest,
     signers::{SignerSync, local::PrivateKeySigner},
     sol_types::SolCall,
 };
@@ -36,7 +37,7 @@ use tempo_precompiles::{
     tip20::ITIP20::{self},
 };
 use tempo_primitives::{
-    TempoTransaction, TempoTxEnvelope,
+    SignatureType, TempoTransaction, TempoTxEnvelope,
     transaction::{
         KeyAuthorization, SignedKeyAuthorization,
         tempo_transaction::Call,
@@ -2594,5 +2595,106 @@ async fn test_aa_keychain_v2_signature() -> eyre::Result<()> {
         inject_result.unwrap_err()
     );
 
+    Ok(())
+}
+
+/// `eth_simulateV1` of a P256 access key request that carries its calls in `calls` without `to`
+/// uses the gas that the signed transaction uses when mined.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_simulate_v1_p256_keychain_gas_matches_mined() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
+    let root_signer = test_signer(0);
+    let root_addr = root_signer.address();
+    let provider = setup
+        .node
+        .rpc_provider_with_wallet_for::<TempoNetwork, _>(root_signer.clone());
+    let chain_id = provider.get_chain_id().await?;
+
+    let (access_key_signing, pub_x, pub_y, access_key_addr) = generate_p256_access_key();
+    let nonce = provider.get_transaction_count(root_addr).await?;
+
+    let mut auth_tx = create_basic_aa_tx(
+        chain_id,
+        nonce,
+        vec![create_balance_of_call(root_addr)],
+        2_000_000,
+    );
+    auth_tx.key_authorization = Some(create_key_authorization(
+        &root_signer,
+        access_key_addr,
+        create_mock_p256_sig(pub_x, pub_y),
+        chain_id,
+        None,
+        None,
+    )?);
+    let root_sig = sign_aa_tx_secp256k1(&auth_tx, &root_signer)?;
+    setup
+        .node
+        .mine_signed([auth_tx.into_signed(root_sig)])
+        .await?
+        .ensure_success()?;
+
+    let transfer_tx = create_basic_aa_tx(
+        chain_id,
+        nonce + 1,
+        vec![create_transfer_call(
+            DEFAULT_FEE_TOKEN,
+            Address::random(),
+            U256::from(1_000_000u64),
+        )],
+        2_000_000,
+    );
+    let request = TempoTransactionRequest {
+        inner: TransactionRequest {
+            from: Some(root_addr),
+            nonce: Some(transfer_tx.nonce),
+            gas: Some(transfer_tx.gas_limit),
+            max_fee_per_gas: Some(transfer_tx.max_fee_per_gas),
+            max_priority_fee_per_gas: Some(transfer_tx.max_priority_fee_per_gas),
+            chain_id: Some(chain_id),
+            ..Default::default()
+        },
+        calls: transfer_tx.calls.clone(),
+        fee_token: transfer_tx.fee_token,
+        key_type: Some(SignatureType::P256),
+        key_id: Some(access_key_addr),
+        ..Default::default()
+    };
+    let response: serde_json::Value = provider
+        .raw_request(
+            "eth_simulateV1".into(),
+            (
+                serde_json::json!({ "blockStateCalls": [{ "calls": [request] }] }),
+                "latest",
+            ),
+        )
+        .await?;
+    let call = &response[0]["calls"][0];
+    assert_eq!(call["status"], "0x1", "simulated call failed: {call}");
+    let simulated = u64::from_str_radix(
+        call["gasUsed"]
+            .as_str()
+            .ok_or_eyre("simulated call without gasUsed")?
+            .trim_start_matches("0x"),
+        16,
+    )?;
+
+    let signature = sign_aa_tx_with_p256_access_key(
+        &transfer_tx,
+        &access_key_signing,
+        &pub_x,
+        &pub_y,
+        root_addr,
+    )?;
+    let mined = setup
+        .node
+        .mine_signed([transfer_tx.into_signed(signature)])
+        .await?
+        .ensure_success()?;
+    let receipt = mined.receipts.first().ok_or_eyre("no receipt")?;
+
+    assert_eq!(simulated, receipt.gas_used());
     Ok(())
 }

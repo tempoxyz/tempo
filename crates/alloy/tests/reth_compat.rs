@@ -12,7 +12,7 @@ use tempo_evm::TempoEvmEnv;
 use tempo_primitives::{
     SignatureType, TempoSignature, TempoTxEnvelope,
     transaction::{
-        ConfigurableAccountConfig, ConfigurableAccountOwner, ConfigurableAccountSignature,
+        Call, ConfigurableAccountConfig, ConfigurableAccountOwner, ConfigurableAccountSignature,
         KeyAuthorization, PrimitiveSignature,
     },
 };
@@ -290,4 +290,35 @@ fn simulation_rejects_invalid_roles(configure: fn(&mut TempoTransactionRequest),
         .try_into_tx_env(&TempoEvmEnv::default())
         .expect_err("eth_call rejects the role");
     assert!(matches!(error, EthApiError::InvalidParams(actual) if actual == message));
+}
+
+/// `eth_simulateV1` fills a missing `to` with a create, and keeps a request's `calls` without it.
+/// Its placeholder signature follows the key hints as `eth_call` does, and names the access key.
+#[test]
+fn simulation_keeps_calls_and_follows_key_hints() {
+    let key_id = Address::repeat_byte(0xbb);
+    let call = Call {
+        to: TxKind::Call(Address::repeat_byte(1)),
+        value: U256::ZERO,
+        input: Bytes::from_static(&[1, 2, 3]),
+    };
+    let mut request = aa_request(SignatureType::P256);
+    request.inner.to = Some(TxKind::Create);
+    request.calls = vec![call.clone()];
+    request.key_id = Some(key_id);
+
+    let TempoTxEnvelope::AA(tx) = TryIntoSimTx::<TempoTxEnvelope>::try_into_sim_tx(request)
+        .expect("a request with calls converts")
+    else {
+        panic!("AA expected");
+    };
+    assert_eq!(tx.tx().calls, vec![call]);
+    let signature = tx
+        .signature()
+        .as_keychain()
+        .expect("a request with a key ID simulates a keychain sender");
+    assert!(!signature.is_legacy());
+    assert_eq!(signature.user_address, Address::repeat_byte(0xaa));
+    assert_eq!(signature.signature.signature_type(), SignatureType::P256);
+    assert_eq!(signature.key_id(&tx.signature_hash()).unwrap(), key_id);
 }
