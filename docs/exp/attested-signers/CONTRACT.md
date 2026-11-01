@@ -2,7 +2,7 @@
 
 Shared by three workstreams: the Tempo node (`tempoxyz/tempo`, branch `exp/attested-signers`), the Rust signer
 service (`tempoxyz/id`, `services/attested-signer`), and the Tempo ID TypeScript integration (`tempoxyz/id`,
-same branch). The TIP drafts in this folder (`tip-xxx1.md` … `tip-xxx5.md`) are the design. This file pins the exact
+same branch). The TIP drafts in this folder (TIP-1159 … TIP-1163) are the design. This file pins the exact
 bytes and the PoC simplifications. If code and TIP disagree, this file wins for the PoC.
 
 Everything here is DEV/EXPERIMENTAL. Nothing merges.
@@ -17,14 +17,14 @@ Everything here is DEV/EXPERIMENTAL. Nothing merges.
 ## Registry precompile
 
 - Address: `0xA77E570000000000000000000000000000000000` (`ATTESTED_KEY_REGISTRY_ADDRESS`).
-- Solidity interface: `IAttestedKeyRegistry` from `tip-xxx3.md` → Interfaces. PoC MUST implement, with exactly those
+- Solidity interface: `IAttestedKeyRegistry` from TIP-1161 → Interfaces. PoC MUST implement, with exactly those
   signatures/selectors: `createPolicy`, `computePolicyId`, `proposeMeasurement`, `cancelProposal`, `removeMeasurement`,
   `revokeKeys`, `pause`, `unpause`, `registerKey`, `policy`, `measurementActiveAt`, `keyValidUntil`. Others
   (`proposeAnchor`, `removeAnchor`, `setDelay`, `setGuardian`, `transferOwnership`, `anchorActiveAt`) MAY revert
   `Unauthorized()`/be omitted in the PoC. Events and errors as in the TIP (error `PolicyIsPaused`, not `PolicyPaused`).
 - `policy_id = keccak256(abi.encode(creator, salt))`.
 - Constants: `KEY_LIFETIME = 600`, `MAX_FUTURE_SKEW = 60`, `MAX_ATTESTATION_AGE = 300` (seconds).
-- Registration checks and order: `tip-xxx3.md` → Registration. Record `{valid_until, epoch}` under
+- Registration checks and order: TIP-1161 → Registration. Record `{valid_until, epoch}` under
   `key_id = keccak256(policy_id ‖ x ‖ y)`.
 - `binding = keccak256("tempo:attested-key" ‖ uint256(chainid) [32 bytes BE] ‖ registry address [20 bytes] ‖ policy_id [32] ‖ x [32] ‖ y [32])`.
 
@@ -36,7 +36,7 @@ Everything here is DEV/EXPERIMENTAL. Nothing merges.
 | `0xFE` Nitro dev | `dev-root.der` in this folder (hex in `dev-root.der.hex`, SHA-256 `eef02ddde90ed0c4cbcdfa551b60b00ddbaae3824d929ecb9102ddff3f34e666`) | chain id `1337` only. Reject elsewhere with `UnknownScheme` |
 
 Both use `tempo_nitro_attestation::{parse_attestation, verify_parsed}` with the scheme's root and the Zone verifier gas
-(`40,000 + 150,000 × (cabundle.len() + 1)`), then `tip-xxx4.md` → Verification steps 5–7:
+(`40,000 + 150,000 × (cabundle.len() + 1)`), then TIP-1162 → Verification steps 5–7:
 - PCR0, PCR1, PCR2 present, 48 bytes each, none all-zero.
 - `user_data` exactly 32 bytes == `binding`.
 - `measurement = keccak256(PCR0 ‖ PCR1 ‖ PCR2)`, `issued_at = timestamp_ms / 1000`, no expiry.
@@ -63,11 +63,11 @@ attested_address   = keccak256(0x06 ‖ policy_id ‖ user_tag)[12:]
 - `d` = key authorization signature hash (as `SignedKeyAuthorization` / `KeyAuthorization::signature_hash` computes it
   for other root signatures) or the transaction signing hash.
 - Program key signs `attested_digest` with ECDSA P-256 directly (prehash = the 32-byte digest, no SHA-256). `s` low.
-- Validity: `tip-xxx2.md` → Verification. `valid_until >= now`, `valid_until <= now + 600`, `program_key_current`
+- Validity: TIP-1160 → Verification. `valid_until >= now`, `valid_until <= now + 600`, `program_key_current`
   (policy exists, not paused, record unexpired, record.epoch == policy.epoch), P-256 verify.
 - Accepted as: transaction signature from `attested_address`, and key authorization root signature. Rejected inside
   keychain signatures, as fee payer, and by TIP-1020 (`InvalidFormat`).
-- Gas: P-256 cost (8,000) + 2 × 2,100 + calldata gas of the 72 extra bytes, as `tip-xxx2.md` → Gas.
+- Gas: P-256 cost (8,000) + 2 × 2,100 + calldata gas of the 72 extra bytes, as TIP-1160 → Gas.
 
 ## Signer service HTTP API (`services/attested-signer`, Rust, axum)
 
@@ -164,3 +164,9 @@ Claude-Session: https://claude.ai/code/session_01D3nmWfxsYgSZCf4nZP5cZY
   position. TIP-1020 `verifyConfigurableAccount` accepts attested approvals, as above.
 - Not built: pool revalidation on `KeysRevoked`/`PolicyPaused`/`MeasurementRemoved` (a pending transaction fails
   when it is executed), and RPC gas estimation for `0x06` beyond what the handler does for any signature.
+
+## Deviations from the TIPs
+
+- Registry address: the PoC uses `0xA77E570000000000000000000000000000000000`. TIP-1161 names `0x1161000000000000000000000000000000000000`.
+- Activation: the PoC gates everything on T14. The TIPs leave the hardfork open.
+- Scheme `0xFE` (Nitro dev root, chain 1337 only) is PoC-only. Scheme `0x02` (TIP-1163) is not implemented.
