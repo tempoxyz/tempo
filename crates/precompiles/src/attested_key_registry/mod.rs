@@ -448,7 +448,7 @@ impl AttestedKeyRegistry {
         }
 
         let now = self.now();
-        let binding = self.binding(policy_id, slot, x, y)?;
+        let binding = self.binding(policy_id, slot, x, y, call.lifetime)?;
         let attestation = verify_attestation_with_root(&call.document, now, root)?
             .ok_or_else(AttestedKeyRegistryError::invalid_attestation)?;
         // TIP-XXX4 steps 5 and 6: PCR0-2 present, 48 bytes, not all zero, and `user_data`
@@ -544,9 +544,12 @@ impl AttestedKeyRegistry {
         }
     }
 
-    /// `keccak256("tempo:attested-key" || chainid || registry || policy_id || slot || x || y)`,
-    /// with a 1-byte `slot`.
-    fn binding(&self, policy_id: B256, slot: u8, x: B256, y: B256) -> Result<B256> {
+    /// `keccak256("tempo:attested-key" || chainid || registry || policy_id || slot || x || y ||
+    /// lifetime)`, with a 1-byte `slot` and an 8-byte big-endian `lifetime`.
+    ///
+    /// The document commits to the requested `lifetime`, so a copy of a registration cannot
+    /// shorten the key's lifetime.
+    fn binding(&self, policy_id: B256, slot: u8, x: B256, y: B256, lifetime: u64) -> Result<B256> {
         let chain_id = U256::from(self.storage.chain_id()).to_be_bytes::<32>();
         let preimage = [
             BINDING_DOMAIN,
@@ -556,6 +559,7 @@ impl AttestedKeyRegistry {
             &[slot],
             x.as_slice(),
             y.as_slice(),
+            &lifetime.to_be_bytes(),
         ]
         .concat();
         self.storage.keccak256(&preimage)
@@ -712,6 +716,17 @@ pub(crate) mod tests {
         register_for(registry, policy_id, slot, key, attestation, 0)
     }
 
+    /// Returns a document issued at the block timestamp, bound to `(x, y)` in `slot` for the
+    /// policy's maximum lifetime.
+    fn attestation_for(
+        registry: &AttestedKeyRegistry,
+        policy_id: B256,
+        slot: u8,
+        key: (B256, B256),
+    ) -> DevAttestation {
+        attestation_for_lifetime(registry, policy_id, slot, key, 0)
+    }
+
     fn register_for(
         registry: &mut AttestedKeyRegistry,
         policy_id: B256,
@@ -730,14 +745,14 @@ pub(crate) mod tests {
         })
     }
 
-    /// Returns a document issued at the block timestamp, bound to `(x, y)` in `slot`.
-    fn attestation_for(
+    fn attestation_for_lifetime(
         registry: &AttestedKeyRegistry,
         policy_id: B256,
         slot: u8,
         (x, y): (B256, B256),
+        lifetime: u64,
     ) -> DevAttestation {
-        let binding = registry.binding(policy_id, slot, x, y).unwrap();
+        let binding = registry.binding(policy_id, slot, x, y, lifetime).unwrap();
         DevAttestation::new(binding.as_slice(), registry.now() * 1_000)
     }
 
@@ -1189,12 +1204,19 @@ pub(crate) mod tests {
             let policy_id = create_dev_policy(registry);
             let key = program_key(7);
             for (lifetime, expected) in [(0, LIFETIME), (100, 100), (LIFETIME + 1, LIFETIME)] {
-                let attestation = attestation_for(registry, policy_id, 0, key);
+                let attestation = attestation_for_lifetime(registry, policy_id, 0, key, lifetime);
                 assert_eq!(
                     register_for(registry, policy_id, 0, key, attestation, lifetime).unwrap(),
                     NOW + expected
                 );
             }
+
+            // The document commits to the lifetime, so a copy cannot request another one.
+            let attestation = attestation_for_lifetime(registry, policy_id, 0, key, 100);
+            assert_eq!(
+                register_for(registry, policy_id, 0, key, attestation, 1),
+                Err(err(AttestedKeyRegistryError::invalid_attestation()))
+            );
 
             // A decrease caps the next registration at once.
             registry.set_max_key_lifetime(OWNER, policy_id, 60).unwrap();

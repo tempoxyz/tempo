@@ -155,7 +155,7 @@ crate::sol! {
         /// @param document The attestation document, in the scheme's format.
         /// @param programKeyX The program key's x coordinate.
         /// @param programKeyY The program key's y coordinate.
-        /// @param lifetime Requested seconds until expiry, capped by the policy's maxKeyLifetime. Zero for the cap.
+        /// @param lifetime Requested seconds until expiry, capped by the policy's maxKeyLifetime. Zero for the cap. The document's binding names it.
         /// @return validUntil When the registration expires, in seconds.
         function registerKey(bytes32 policyId, uint8 slot, bytes calldata document, bytes32 programKeyX, bytes32 programKeyY, uint64 lifetime)
             external

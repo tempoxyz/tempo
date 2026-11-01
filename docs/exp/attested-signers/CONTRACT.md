@@ -32,7 +32,8 @@ Everything here is DEV/EXPERIMENTAL. Nothing merges.
   `maxKeyLifetime` (set at `createPolicy`, in `[1, MAX_KEY_LIFETIME]`; `setMaxKeyLifetime` decreases at once and
   increases after the policy's delay). `KeyRegistered` carries `key_id = keccak256(policy_id ‖ x ‖ y)` and `slot`.
 - Registration checks and order: TIP-1161 → Registration (`InvalidSlot` for `slot >= KEY_SLOTS`, after the scheme).
-- `binding = keccak256("tempo:attested-key" ‖ uint256(chainid) [32 bytes BE] ‖ registry address [20 bytes] ‖ policy_id [32] ‖ slot [1] ‖ x [32] ‖ y [32])`.
+- `binding = keccak256("tempo:attested-key" ‖ uint256(chainid) [32 bytes BE] ‖ registry address [20 bytes] ‖ policy_id [32] ‖ slot [1] ‖ x [32] ‖ y [32] ‖ lifetime [8 bytes BE])`. The
+  binding names `lifetime`, so a copy of a registration cannot shorten the key.
 
 ## Attestation schemes
 

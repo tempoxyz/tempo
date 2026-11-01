@@ -147,6 +147,7 @@ async fn register(env: &mut Localnet, signer: &Signer) -> eyre::Result<u64> {
             &[signer.slot],
             x.as_slice(),
             y.as_slice(),
+            &0u64.to_be_bytes(),
         ]
         .concat(),
     );
