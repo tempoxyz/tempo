@@ -1,5 +1,6 @@
 //! Attested signers (signature type `0x06`) through a local node: a registered program key
-//! authorizes an access key for an attested address, and `revokeKeys` ends that authority.
+//! authorizes an access key for an attested address, `revokeKeys` ends that authority, and a
+//! registration into an occupied slot ends the key it held.
 
 use super::{
     helpers::{
@@ -33,18 +34,39 @@ use tempo_primitives::{
 
 const GAS_LIMIT: u64 = 3_000_000;
 const SCHEME_NITRO_DEV: u8 = 0xFE;
+/// `maxKeyLifetime` of the test policy.
+const MAX_KEY_LIFETIME: u64 = 3_600;
 
-/// A program key of the dev signer and the policy it registers under.
+/// A program key of the dev signer, the policy it registers under, and its slot.
 struct Signer {
     key: SigningKey,
     policy_id: B256,
+    slot: u8,
     user_tag: B256,
 }
 
 impl Signer {
+    /// A fresh program key for `slot` of `policy_id`.
+    fn random(policy_id: B256, slot: u8) -> Self {
+        Self {
+            key: SigningKey::random(&mut p256::elliptic_curve::rand_core::OsRng),
+            policy_id,
+            slot,
+            user_tag: B256::repeat_byte(0x7A),
+        }
+    }
+
     fn program_key(&self) -> B512 {
         let point = self.key.verifying_key().to_encoded_point(false);
         B512::from_slice(&point.as_bytes()[1..])
+    }
+
+    fn coordinates(&self) -> (B256, B256) {
+        let program_key = self.program_key();
+        (
+            B256::from_slice(&program_key[..32]),
+            B256::from_slice(&program_key[32..]),
+        )
     }
 
     fn address(&self) -> Address {
@@ -56,6 +78,7 @@ impl Signer {
         let mut signature = AttestedSignature {
             policy_id: self.policy_id,
             user_tag: self.user_tag,
+            slot: self.slot,
             program_key: self.program_key(),
             valid_until,
             signature: B512::ZERO,
@@ -79,8 +102,9 @@ impl Signer {
     }
 }
 
-/// Sends `input` to the registry from the funded owner and asserts success.
-async fn owner_call(env: &mut Localnet, input: Vec<u8>) -> eyre::Result<()> {
+/// Sends `input` to the registry from the funded owner, asserts success, and returns the gas
+/// used.
+async fn owner_call(env: &mut Localnet, input: Vec<u8>) -> eyre::Result<u64> {
     // Simulate first, so a revert reports its error instead of a failed receipt.
     let request = alloy::rpc::types::TransactionRequest::default()
         .from(env.funder_addr)
@@ -103,8 +127,52 @@ async fn owner_call(env: &mut Localnet, input: Vec<u8>) -> eyre::Result<()> {
     let signature = sign_aa_tx_secp256k1(&tx, &env.funder_signer)?;
     let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
     let hash = *envelope.tx_hash();
-    env.submit_tx(envelope.encoded_2718(), hash).await?;
-    Ok(())
+    let receipt = env.submit_tx(envelope.encoded_2718(), hash).await?;
+    let gas_used = receipt["gasUsed"]
+        .as_str()
+        .ok_or_else(|| eyre::eyre!("receipt without gasUsed"))?;
+    Ok(u64::from_str_radix(gas_used.trim_start_matches("0x"), 16)?)
+}
+
+/// Registers `signer`'s program key into its slot with a dev document issued now, for the
+/// policy's maximum lifetime. Returns the gas used.
+async fn register(env: &mut Localnet, signer: &Signer) -> eyre::Result<u64> {
+    let (x, y) = signer.coordinates();
+    let binding = keccak256(
+        [
+            b"tempo:attested-key".as_slice(),
+            &U256::from(env.chain_id).to_be_bytes::<32>(),
+            ATTESTED_KEY_REGISTRY_ADDRESS.as_slice(),
+            signer.policy_id.as_slice(),
+            &[signer.slot],
+            x.as_slice(),
+            y.as_slice(),
+        ]
+        .concat(),
+    );
+    let now = env.current_block_timestamp().await?;
+    let gas_used = owner_call(
+        env,
+        IAttestedKeyRegistry::registerKeyCall {
+            policyId: signer.policy_id,
+            slot: signer.slot,
+            document: DevAttestation::new(binding.as_slice(), now * 1_000)
+                .build()
+                .into(),
+            programKeyX: x,
+            programKeyY: y,
+            lifetime: 0,
+        }
+        .abi_encode(),
+    )
+    .await?;
+    let registry = IAttestedKeyRegistry::new(ATTESTED_KEY_REGISTRY_ADDRESS, env.provider.clone());
+    let valid_until = registry
+        .keyValidUntil(signer.policy_id, x, y)
+        .call()
+        .await?;
+    assert!(valid_until > now && valid_until <= now + 1 + MAX_KEY_LIFETIME);
+    Ok(gas_used)
 }
 
 fn noop_call() -> Call {
@@ -116,7 +184,7 @@ fn noop_call() -> Call {
 }
 
 /// Starts a dev node, creates a dev-scheme policy owned by the funder, and registers a fresh
-/// program key under it. Returns the node, the signer, and the program key's coordinates.
+/// program key into its slot 0. Returns the node, the signer, and the program key's coordinates.
 async fn registered_signer() -> eyre::Result<(Localnet, Signer, B256, B256)> {
     // The dev root's certificates are valid from 2026-10-31, so blocks follow wall-clock time.
     reth_tracing::init_test_tracing();
@@ -147,6 +215,7 @@ async fn registered_signer() -> eyre::Result<(Localnet, Signer, B256, B256)> {
             owner,
             guardian: Address::ZERO,
             delay: 0,
+            maxKeyLifetime: MAX_KEY_LIFETIME,
             measurements: vec![keccak256(DEV_PCRS.concat())],
             anchors: vec![],
         }
@@ -154,43 +223,9 @@ async fn registered_signer() -> eyre::Result<(Localnet, Signer, B256, B256)> {
     )
     .await?;
 
-    let signer = Signer {
-        key: SigningKey::random(&mut p256::elliptic_curve::rand_core::OsRng),
-        policy_id,
-        user_tag: B256::repeat_byte(0x7A),
-    };
-    let program_key = signer.program_key();
-    let (x, y) = (
-        B256::from_slice(&program_key[..32]),
-        B256::from_slice(&program_key[32..]),
-    );
-    let binding = keccak256(
-        [
-            b"tempo:attested-key".as_slice(),
-            &U256::from(chain_id).to_be_bytes::<32>(),
-            ATTESTED_KEY_REGISTRY_ADDRESS.as_slice(),
-            policy_id.as_slice(),
-            x.as_slice(),
-            y.as_slice(),
-        ]
-        .concat(),
-    );
-    let now = env.current_block_timestamp().await?;
-    owner_call(
-        &mut env,
-        IAttestedKeyRegistry::registerKeyCall {
-            policyId: policy_id,
-            document: DevAttestation::new(binding.as_slice(), now * 1_000)
-                .build()
-                .into(),
-            programKeyX: x,
-            programKeyY: y,
-        }
-        .abi_encode(),
-    )
-    .await?;
-    let registry = IAttestedKeyRegistry::new(ATTESTED_KEY_REGISTRY_ADDRESS, env.provider.clone());
-    assert!(registry.keyValidUntil(policy_id, x, y).call().await? > now);
+    let signer = Signer::random(policy_id, 0);
+    register(&mut env, &signer).await?;
+    let (x, y) = signer.coordinates();
     Ok((env, signer, x, y))
 }
 
@@ -420,5 +455,68 @@ async fn attested_owner_approves_configurable_account() -> eyre::Result<()> {
         )
         .await?;
     }
+    Ok(())
+}
+
+/// Signs a no-op transaction from the attested address with `signer` and asserts it is mined.
+async fn submit_signed(env: &mut Localnet, signer: &Signer, nonce: u64) -> eyre::Result<()> {
+    let now = env.current_block_timestamp().await?;
+    let tx = create_basic_aa_tx(env.chain_id, nonce, vec![noop_call()], GAS_LIMIT);
+    let signature = TempoSignature::Attested(signer.sign(tx.signature_hash(), now + 300)?);
+    let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
+    let hash = *envelope.tx_hash();
+    env.submit_tx(envelope.encoded_2718(), hash).await?;
+    Ok(())
+}
+
+/// Signs a no-op transaction from the attested address with `signer` and asserts the pool
+/// rejects it because the program key is not current in the slot it names.
+async fn expect_not_current(env: &mut Localnet, signer: &Signer, nonce: u64) -> eyre::Result<()> {
+    let now = env.current_block_timestamp().await?;
+    let tx = create_basic_aa_tx(env.chain_id, nonce, vec![noop_call()], GAS_LIMIT);
+    let signature = TempoSignature::Attested(signer.sign(tx.signature_hash(), now + 300)?);
+    let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
+    env.submit_tx_expecting_rejection(
+        envelope.encoded_2718(),
+        Some("attested signature rejected: program key is not current"),
+    )
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn attested_slot_rotation() -> eyre::Result<()> {
+    let (mut env, first, ..) = registered_signer().await?;
+    env.fund_account(first.address()).await?;
+
+    // A key in the empty slot 1 overlaps the key in slot 0, and both sign for the same address.
+    let second = Signer::random(first.policy_id, 1);
+    assert_eq!(second.address(), first.address());
+    let first_write_gas = register(&mut env, &second).await?;
+    submit_signed(&mut env, &first, 0).await?;
+    submit_signed(&mut env, &second, 1).await?;
+
+    // Rotating slot 0 overwrites it and ends the first key at once, with time left on it.
+    let third = Signer::random(first.policy_id, 0);
+    let rotation_gas = register(&mut env, &third).await?;
+    expect_not_current(&mut env, &first, 2).await?;
+    let registry = IAttestedKeyRegistry::new(ATTESTED_KEY_REGISTRY_ADDRESS, env.provider.clone());
+    let (x, y) = first.coordinates();
+    assert_eq!(
+        registry.keyValidUntil(first.policy_id, x, y).call().await?,
+        0
+    );
+    submit_signed(&mut env, &third, 2).await?;
+    submit_signed(&mut env, &second, 3).await?;
+
+    // A registered key naming a slot that does not hold it.
+    let wrong_slot = Signer { slot: 1, ..third };
+    expect_not_current(&mut env, &wrong_slot, 4).await?;
+
+    // Overwriting a non-zero slot avoids the new-slot storage cost of the first write.
+    println!("registerKey gas: first write {first_write_gas}, rotation {rotation_gas}");
+    assert!(
+        first_write_gas > rotation_gas + 200_000,
+        "first write {first_write_gas}, rotation {rotation_gas}"
+    );
     Ok(())
 }

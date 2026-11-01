@@ -22,16 +22,19 @@ pub const ATTESTED_SIGNATURE_DOMAIN: &[u8] = b"tempo:attested-signature";
 /// Longest time, in seconds, before `valid_until` that an attested signature is accepted.
 pub const ATTESTED_MAX_VALIDITY_WINDOW: u64 = 600;
 
+/// Program key slots of each Attested Key Registry policy. A signature names a slot below this.
+pub const ATTESTED_KEY_SLOTS: u8 = 8;
+
 /// Largest encoding of an attested signature, type byte included, with a 9-byte `valid_until`.
-pub const MAX_ATTESTED_SIGNATURE_SIZE: usize = 210;
+pub const MAX_ATTESTED_SIGNATURE_SIZE: usize = 211;
 
 /// Cold storage read cost charged for each of the two registry reads.
 const COLD_SLOAD_GAS: u64 = 2_100;
 
 /// Signature by a registered program key for `attested_address(policy_id, user_tag)`.
 ///
-/// Wire format: `0x06 || rlp([policy_id, user_tag, program_key, valid_until, signature])`.
-/// Decoding checks the encoding and the `r`/`s` ranges only. [`Self::recover_signer`] checks the
+/// Wire format: `0x06 || rlp([policy_id, user_tag, slot, program_key, valid_until, signature])`.
+/// Decoding checks the encoding, the slot range, and the `r`/`s` ranges only. [`Self::recover_signer`] checks the
 /// curve point and the P256 signature. The registry and time checks belong to the caller.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -41,6 +44,8 @@ pub struct AttestedSignature {
     pub policy_id: B256,
     /// Tag of the user whose address this signature signs for.
     pub user_tag: B256,
+    /// Registry slot of the policy that holds the program key, below [`ATTESTED_KEY_SLOTS`].
+    pub slot: u8,
     /// Uncompressed P256 program key, `x || y`.
     pub program_key: B512,
     /// Last block timestamp, in seconds, at which the signature is valid.
@@ -67,10 +72,12 @@ impl AttestedSignature {
 
     /// Returns the digest the program key signs for the context digest `d`, the transaction
     /// signing hash or the key authorization signature hash:
-    /// `keccak256(domain || d || keccak256(rlp([policy_id, user_tag, program_key, valid_until])))`.
+    /// `keccak256(domain || d || keccak256(rlp([policy_id, user_tag, slot, program_key,
+    /// valid_until])))`.
     pub fn digest(&self, d: B256) -> B256 {
         let payload_length = self.policy_id.length()
             + self.user_tag.length()
+            + self.slot.length()
             + self.program_key.length()
             + self.valid_until.length();
         let mut fields = Vec::with_capacity(payload_length + 3);
@@ -81,6 +88,7 @@ impl AttestedSignature {
         .encode(&mut fields);
         self.policy_id.encode(&mut fields);
         self.user_tag.encode(&mut fields);
+        self.slot.encode(&mut fields);
         self.program_key.encode(&mut fields);
         self.valid_until.encode(&mut fields);
 
@@ -108,13 +116,15 @@ impl AttestedSignature {
         Ok(self.address())
     }
 
-    /// Full verification gas: one P256 verification, two cold registry reads, and the calldata
-    /// cost of `policy_id || user_tag || valid_until` (8-byte big-endian).
+    /// Full verification gas: one P256 verification, two cold registry reads (the policy and the
+    /// key slot), and the calldata cost of `policy_id || user_tag || slot || valid_until`
+    /// (1-byte slot, 8-byte big-endian `valid_until`).
     pub fn verification_gas(&self) -> u64 {
-        let mut extra = [0u8; 72];
+        let mut extra = [0u8; 73];
         extra[..32].copy_from_slice(self.policy_id.as_slice());
         extra[32..64].copy_from_slice(self.user_tag.as_slice());
-        extra[64..].copy_from_slice(&self.valid_until.to_be_bytes());
+        extra[64] = self.slot;
+        extra[65..].copy_from_slice(&self.valid_until.to_be_bytes());
         P256_VERIFY_GAS + 2 * COLD_SLOAD_GAS + tokens_in_calldata(&extra) * STANDARD_TOKEN_COST
     }
 
@@ -129,14 +139,17 @@ impl AttestedSignature {
         1 + self.length()
     }
 
-    /// Decodes the bytes after the type byte, rejecting trailing bytes, oversize encodings, and
-    /// `r` or `s` outside `[1, n - 1]` or a high `s`.
+    /// Decodes the bytes after the type byte, rejecting trailing bytes, oversize encodings, a
+    /// slot from [`ATTESTED_KEY_SLOTS`] up, and `r` or `s` outside `[1, n - 1]` or a high `s`.
     pub(crate) fn decode_exact(data: &[u8]) -> Result<Self, &'static str> {
         if data.len() + 1 > MAX_ATTESTED_SIGNATURE_SIZE {
             return Err("Attested signature too large");
         }
         let signature: Self =
             alloy_rlp::decode_exact(data).map_err(|_| "Invalid attested signature RLP")?;
+        if signature.slot >= ATTESTED_KEY_SLOTS {
+            return Err("Attested signature slot out of range");
+        }
         let (r, s) = signature.signature.split_at(32);
         let (r, s) = (U256::from_be_slice(r), U256::from_be_slice(s));
         if r.is_zero() || r >= P256_ORDER || s.is_zero() || s > P256N_HALF {
@@ -152,6 +165,7 @@ impl Decodable for AttestedSignature {
         struct Wire {
             policy_id: B256,
             user_tag: B256,
+            slot: u8,
             program_key: B512,
             valid_until: u64,
             signature: B512,
@@ -159,6 +173,7 @@ impl Decodable for AttestedSignature {
         let Wire {
             policy_id,
             user_tag,
+            slot,
             program_key,
             valid_until,
             signature,
@@ -166,6 +181,7 @@ impl Decodable for AttestedSignature {
         Ok(Self {
             policy_id,
             user_tag,
+            slot,
             program_key,
             valid_until,
             signature,
@@ -186,6 +202,7 @@ impl<'a> arbitrary::Arbitrary<'a> for AttestedSignature {
         Ok(Self {
             policy_id: u.arbitrary()?,
             user_tag: u.arbitrary()?,
+            slot: u.int_in_range(0..=ATTESTED_KEY_SLOTS - 1)?,
             program_key: u.arbitrary()?,
             valid_until: u.arbitrary()?,
             signature,
@@ -220,6 +237,7 @@ mod tests {
         let mut signature = AttestedSignature {
             policy_id: B256::repeat_byte(0xAA),
             user_tag: B256::repeat_byte(0xBB),
+            slot: 1,
             program_key: B512::from_slice(&point.as_bytes()[1..]),
             valid_until,
             signature: B512::ZERO,
@@ -239,13 +257,15 @@ mod tests {
 
         let signature = signed(B256::ZERO, 1_800_000_600);
         let d = B256::repeat_byte(0x42);
-        // rlp([policy_id, user_tag, program_key, valid_until]): list of 33 + 33 + 66 + 5 bytes.
+        // rlp([policy_id, user_tag, slot, program_key, valid_until]): list of
+        // 33 + 33 + 1 + 66 + 5 bytes.
         let fields = [
-            &[0xf8, 137][..],
+            &[0xf8, 138][..],
             &[0xa0],
             signature.policy_id.as_slice(),
             &[0xa0],
             signature.user_tag.as_slice(),
+            &[0x01],
             &[0xb8, 64],
             signature.program_key.as_slice(),
             &[0x84],
@@ -263,7 +283,7 @@ mod tests {
                 .concat()
             )
         );
-        assert_eq!(signature.encoded_length(), 206);
+        assert_eq!(signature.encoded_length(), 207);
     }
 
     #[test]
@@ -280,11 +300,11 @@ mod tests {
         );
         assert_eq!(signature.recover_signer(&d).unwrap(), signature.address());
         assert!(signature.recover_signer(&B256::ZERO).is_err());
-        // 8000 + 2 * 2100 + calldata of 68 non-zero bytes and the 4 zero high bytes of
-        // `valid_until`.
+        // 8000 + 2 * 2100 + calldata of 69 non-zero bytes (slot 1 among them) and the 4 zero
+        // high bytes of `valid_until`.
         assert_eq!(
             signature.verification_gas(),
-            8_000 + 4_200 + 68 * 16 + 4 * 4
+            8_000 + 4_200 + 69 * 16 + 4 * 4
         );
     }
 
@@ -321,7 +341,24 @@ mod tests {
         ));
         assert!(!is_valid_p256_public_key(&B256::ZERO, &B256::ZERO));
 
-        // A list with a sixth field.
+        for slot in [ATTESTED_KEY_SLOTS - 1, ATTESTED_KEY_SLOTS] {
+            let mut encoded = Vec::new();
+            AttestedSignature {
+                slot,
+                ..signature.clone()
+            }
+            .encode(&mut encoded);
+            assert_eq!(
+                AttestedSignature::decode_exact(&encoded).map(|decoded| decoded.slot),
+                if slot < ATTESTED_KEY_SLOTS {
+                    Ok(slot)
+                } else {
+                    Err("Attested signature slot out of range")
+                }
+            );
+        }
+
+        // A list with a seventh field.
         let mut six = Vec::new();
         Header {
             list: true,

@@ -19,14 +19,20 @@ Everything here is DEV/EXPERIMENTAL. Nothing merges.
 - Address: `0xA77E570000000000000000000000000000000000` (`ATTESTED_KEY_REGISTRY_ADDRESS`).
 - Solidity interface: `IAttestedKeyRegistry` from TIP-1161 → Interfaces. PoC MUST implement, with exactly those
   signatures/selectors: `createPolicy`, `computePolicyId`, `proposeMeasurement`, `cancelProposal`, `removeMeasurement`,
-  `revokeKeys`, `pause`, `unpause`, `registerKey`, `policy`, `measurementActiveAt`, `keyValidUntil`. Others
+  `revokeKeys`, `pause`, `unpause`, `setMaxKeyLifetime`, `registerKey`, `policy`, `measurementActiveAt`,
+  `keyValidUntil`. Others
   (`proposeAnchor`, `removeAnchor`, `setDelay`, `setGuardian`, `transferOwnership`, `anchorActiveAt`) MAY revert
   `Unauthorized()`/be omitted in the PoC. Events and errors as in the TIP (error `PolicyIsPaused`, not `PolicyPaused`).
 - `policy_id = keccak256(abi.encode(creator, salt))`.
-- Constants: `KEY_LIFETIME = 600`, `MAX_FUTURE_SKEW = 60`, `MAX_ATTESTATION_AGE = 300` (seconds).
-- Registration checks and order: TIP-1161 → Registration. Record `{valid_until, epoch}` under
-  `key_id = keccak256(policy_id ‖ x ‖ y)`.
-- `binding = keccak256("tempo:attested-key" ‖ uint256(chainid) [32 bytes BE] ‖ registry address [20 bytes] ‖ policy_id [32] ‖ x [32] ‖ y [32])`.
+- Constants: `KEY_SLOTS = 8`, `MAX_KEY_LIFETIME = 604,800` (7 days), `MAX_FUTURE_SKEW = 60`,
+  `MAX_ATTESTATION_AGE = 300` (seconds).
+- Key slots: each policy has `KEY_SLOTS` slots. `registerKey(policyId, slot, document, x, y, lifetime)` overwrites
+  `slot` with `{key_hash, valid_until, epoch}` (one storage slot, `key_hash = bytes16(keccak256(x ‖ y))`), which ends
+  the key the slot held. `valid_until = now + min(lifetime == 0 ? max : lifetime, max)`, where `max` is the policy's
+  `maxKeyLifetime` (set at `createPolicy`, in `[1, MAX_KEY_LIFETIME]`; `setMaxKeyLifetime` decreases at once and
+  increases after the policy's delay). `KeyRegistered` carries `key_id = keccak256(policy_id ‖ x ‖ y)` and `slot`.
+- Registration checks and order: TIP-1161 → Registration (`InvalidSlot` for `slot >= KEY_SLOTS`, after the scheme).
+- `binding = keccak256("tempo:attested-key" ‖ uint256(chainid) [32 bytes BE] ‖ registry address [20 bytes] ‖ policy_id [32] ‖ slot [1] ‖ x [32] ‖ y [32])`.
 
 ## Attestation schemes
 
@@ -54,9 +60,9 @@ Dev PCRs (the dev signer reports these): `PCR0 = 0x01 × 48`, `PCR1 = 0x02 × 48
 ## Signature type 0x06
 
 ```
-attested_signature = 0x06 ‖ rlp([policy_id: bytes32, user_tag: bytes32, program_key: bytes(64) x‖y,
+attested_signature = 0x06 ‖ rlp([policy_id: bytes32, user_tag: bytes32, slot: uint8, program_key: bytes(64) x‖y,
                                  valid_until: uint64, signature: bytes(64) r‖s])
-attested_digest    = keccak256("tempo:attested-signature" ‖ d ‖ keccak256(rlp([policy_id, user_tag, program_key, valid_until])))
+attested_digest    = keccak256("tempo:attested-signature" ‖ d ‖ keccak256(rlp([policy_id, user_tag, slot, program_key, valid_until])))
 attested_address   = keccak256(0x06 ‖ policy_id ‖ user_tag)[12:]
 ```
 
@@ -64,10 +70,12 @@ attested_address   = keccak256(0x06 ‖ policy_id ‖ user_tag)[12:]
   for other root signatures) or the transaction signing hash.
 - Program key signs `attested_digest` with ECDSA P-256 directly (prehash = the 32-byte digest, no SHA-256). `s` low.
 - Validity: TIP-1160 → Verification. `valid_until >= now`, `valid_until <= now + 600`, `program_key_current`
-  (policy exists, not paused, record unexpired, record.epoch == policy.epoch), P-256 verify.
+  (policy exists, not paused, `slot < KEY_SLOTS`, the slot holds this key, unexpired, slot epoch == policy epoch),
+  P-256 verify.
 - Accepted as: transaction signature from `attested_address`, and key authorization root signature. Rejected inside
   keychain signatures, as fee payer, and by TIP-1020 (`InvalidFormat`).
-- Gas: P-256 cost (8,000) + 2 × 2,100 + calldata gas of the 72 extra bytes, as TIP-1160 → Gas.
+- Gas: P-256 cost (8,000) + 2 × 2,100 + calldata gas of the 73 extra bytes (`policy_id ‖ user_tag ‖ slot ‖
+  valid_until`), as TIP-1160 → Gas.
 
 ## Signer service HTTP API (`services/attested-signer`, Rust, axum)
 
@@ -108,17 +116,18 @@ Claude-Session: https://claude.ai/code/session_01D3nmWfxsYgSZCf4nZP5cZY
   marker code at the first block of `T14`, as other precompiles do.
 - Registry: every function of `IAttestedKeyRegistry` is implemented. Both Nitro schemes accept no anchors, so
   `proposeAnchor` reverts `InvalidAnchor`, `removeAnchor` reverts `NotListed`, and `anchorActiveAt` returns `0`.
-  `createPolicy` reverts `AlreadyListed` for a duplicate initial measurement. `keyValidUntil` returns `0` unless the
-  key is current (`program_key_current`).
+  `createPolicy` reverts `AlreadyListed` for a duplicate initial measurement. `keyValidUntil(policyId, x, y)` reads
+  every slot and returns the `valid_until` of the one that holds the key as current, or `0`.
 - Scheme `0xFE` root: `tempo_nitro_attestation::NITRO_DEV_ROOT_DER`. Rust test helper:
   `tempo_nitro_attestation::testing::DevAttestation` (feature `test-utils`), with `DEV_PCRS`.
 - `0x06` lives in both `AccountSignature::Attested` (key authorization root signature) and
   `TempoSignature::Attested` (transaction signature), as `tempo_primitives::transaction::AttestedSignature`.
-  RLP field types: `policy_id` and `user_tag` are 32-byte strings, `program_key` and `signature` 64-byte strings,
-  `valid_until` a canonical RLP integer. Encoded size is at most 210 bytes.
+  RLP field types: `policy_id` and `user_tag` are 32-byte strings, `slot` a canonical RLP integer below 8,
+  `program_key` and `signature` 64-byte strings, `valid_until` a canonical RLP integer. Encoded size is at most 211
+  bytes (207 with a 4-byte `valid_until`).
 - `d` for a key authorization is `KeyAuthorization::signature_hash()`: `keccak256(rlp(KeyAuthorization))` over the
   same fields every other root signature signs. For a transaction it is the Tempo transaction signature hash.
-- Decoding rejects trailing bytes, `r` or `s` outside `[1, n-1]`, and `s > n/2`. The handler checks every
+- Decoding rejects trailing bytes, `slot >= 8`, `r` or `s` outside `[1, n-1]`, and `s > n/2`. The handler checks every
   attested signature of the transaction (sender, key authorization, owner approvals) at its position, for pool
   and block alike: `valid_until >= now`, `valid_until - now <= 600`, then `program_key_current`. It runs these
   before key authorization recovery and owner quorum checks, so every P256 verification in the handler follows

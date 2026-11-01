@@ -1,9 +1,10 @@
 //! Attested Key Registry (attested signers PoC).
 //!
-//! Policies list the measurements of approved signer programs. Anyone registers a program key with
-//! an attestation document whose measurement is active in the policy, for at most
-//! [`KEY_LIFETIME`] seconds. Attested signatures (type `0x06`) are valid only while
-//! [`AttestedKeyRegistry::program_key_current`] holds for their key.
+//! Policies list the measurements of approved signer programs. Anyone registers a program key into
+//! one of a policy's [`ATTESTED_KEY_SLOTS`] slots with an attestation document whose measurement is
+//! active in the policy, for at most the policy's `maxKeyLifetime`. A registration overwrites the
+//! slot, which ends the key it held. Attested signatures (type `0x06`) are valid only while
+//! [`AttestedKeyRegistry::program_key_current`] holds for their slot and key.
 
 pub mod dispatch;
 
@@ -13,7 +14,7 @@ use crate::{
     zone_verifier::attestation::verify_attestation_with_root,
 };
 use alloy::{
-    primitives::{Address, B256, U256},
+    primitives::{Address, B128, B256, U256, keccak256},
     sol_types::SolValue,
 };
 use tempo_contracts::precompiles::{
@@ -22,10 +23,10 @@ use tempo_contracts::precompiles::{
 };
 use tempo_nitro_attestation::{AWS_NITRO_ROOT_DER, NITRO_DEV_ROOT_DER};
 use tempo_precompiles_macros::{Storable, contract};
-use tempo_primitives::transaction::is_valid_p256_public_key;
+use tempo_primitives::transaction::{ATTESTED_KEY_SLOTS, is_valid_p256_public_key};
 
-/// Longest time, in seconds, a registration lasts.
-pub const KEY_LIFETIME: u64 = 600;
+/// Largest `maxKeyLifetime`, in seconds, a policy can choose (7 days).
+pub const MAX_KEY_LIFETIME: u64 = 604_800;
 /// Allowance, in seconds, for attestation service clocks running ahead.
 pub const MAX_FUTURE_SKEW: u64 = 60;
 /// Oldest document accepted, in seconds after its issue time.
@@ -84,9 +85,33 @@ impl PolicySettings {
     }
 }
 
-/// A registered program key, packed.
+/// Key lifetime cap of a policy, packed.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Storable)]
-pub struct KeyRecord {
+pub struct KeyLifetime {
+    /// Longest registration, in seconds.
+    pub max: u64,
+    /// Increased cap that applies from `pending_max_at`.
+    pub pending_max: u64,
+    /// When `pending_max` applies. Zero if no increase is pending.
+    pub pending_max_at: u64,
+}
+
+impl KeyLifetime {
+    /// Returns the cap in effect at `now`.
+    fn max_at(&self, now: u64) -> u64 {
+        if self.pending_max_at != 0 && now >= self.pending_max_at {
+            self.pending_max
+        } else {
+            self.max
+        }
+    }
+}
+
+/// A program key slot of a policy, packed into one storage slot.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Storable)]
+pub struct KeySlot {
+    /// [`key_hash`] of the program key the slot holds.
+    pub key_hash: B128,
     /// Last block timestamp at which the key is current.
     pub valid_until: u64,
     /// Policy epoch at registration.
@@ -100,21 +125,26 @@ pub struct AttestedKeyRegistry {
     settings: Mapping<B256, PolicySettings>,
     measurement_active_at: Mapping<B256, Mapping<B256, u64>>,
     anchor_active_at: Mapping<B256, Mapping<B256, u64>>,
-    keys: Mapping<B256, KeyRecord>,
+    key_slots: Mapping<B256, Mapping<u8, KeySlot>>,
+    key_lifetimes: Mapping<B256, KeyLifetime>,
 }
 
 impl AttestedKeyRegistry {
-    /// Returns whether `(x, y)` is current for `policy_id` at the block timestamp: the policy
-    /// exists and is not paused, and the key's record is unexpired and at the policy's epoch.
+    /// Returns whether `slot` of `policy_id` holds `(x, y)` as current at the block timestamp:
+    /// the policy exists and is not paused, and the slot holds the key, unexpired and at the
+    /// policy's epoch. `false` for a slot from [`ATTESTED_KEY_SLOTS`] up.
     ///
     /// Called by the EVM handler for every attested signature, at the transaction's position.
-    pub fn program_key_current(&self, policy_id: B256, x: B256, y: B256) -> Result<bool> {
+    /// Reads two storage slots: the policy and the key slot.
+    pub fn program_key_current(&self, policy_id: B256, slot: u8, x: B256, y: B256) -> Result<bool> {
         let policy = self.policies[policy_id].read()?;
-        if policy.owner.is_zero() || policy.paused {
+        if policy.owner.is_zero() || policy.paused || slot >= ATTESTED_KEY_SLOTS {
             return Ok(false);
         }
-        let record = self.keys[key_id(policy_id, x, y)].read()?;
-        Ok(record.valid_until >= self.now() && record.epoch == policy.epoch)
+        let key = self.key_slots[policy_id][slot].read()?;
+        Ok(key.key_hash == key_hash(x, y)
+            && key.valid_until >= self.now()
+            && key.epoch == policy.epoch)
     }
 
     fn create_policy(
@@ -133,6 +163,7 @@ impl AttestedKeyRegistry {
         if call.delay > MAX_DELAY {
             return Err(AttestedKeyRegistryError::delay_too_long().into());
         }
+        ensure_key_lifetime_in_range(call.maxKeyLifetime)?;
         let measurement_count = u8::try_from(call.measurements.len())
             .ok()
             .filter(|count| *count <= MAX_MEASUREMENTS)
@@ -156,6 +187,10 @@ impl AttestedKeyRegistry {
             measurement_count,
             ..Default::default()
         })?;
+        self.key_lifetimes[policy_id].write(KeyLifetime {
+            max: call.maxKeyLifetime,
+            ..Default::default()
+        })?;
         self.emit_event(AttestedKeyRegistryEvent::policy_created(
             policy_id,
             sender,
@@ -163,6 +198,7 @@ impl AttestedKeyRegistry {
             call.owner,
             call.guardian,
             call.delay,
+            call.maxKeyLifetime,
         ))?;
 
         // Initial measurements are active at once. Zero marks an absent entry, so a block at
@@ -323,6 +359,45 @@ impl AttestedKeyRegistry {
         ))
     }
 
+    fn set_max_key_lifetime(
+        &mut self,
+        sender: Address,
+        policy_id: B256,
+        new_max: u64,
+    ) -> Result<()> {
+        self.ensure_owner(sender, policy_id)?;
+        ensure_key_lifetime_in_range(new_max)?;
+        let now = self.now();
+        let mut lifetime = self.key_lifetimes[policy_id].read()?;
+        let current = lifetime.max_at(now);
+        // A longer lifetime widens what a leaked program key can do, so, unlike the delay, a
+        // decrease applies at once and cancels a pending increase, and an increase waits for the
+        // policy's delay.
+        let effective_at = if new_max <= current {
+            lifetime = KeyLifetime {
+                max: new_max,
+                ..Default::default()
+            };
+            now
+        } else {
+            let effective_at = now
+                .checked_add(self.settings[policy_id].read()?.delay_at(now))
+                .ok_or_else(TempoPrecompileError::under_overflow)?;
+            lifetime = KeyLifetime {
+                max: current,
+                pending_max: new_max,
+                pending_max_at: effective_at,
+            };
+            effective_at
+        };
+        self.key_lifetimes[policy_id].write(lifetime)?;
+        self.emit_event(AttestedKeyRegistryEvent::max_key_lifetime_changed(
+            policy_id,
+            new_max,
+            effective_at,
+        ))
+    }
+
     fn set_guardian(&mut self, sender: Address, policy_id: B256, guardian: Address) -> Result<()> {
         self.ensure_owner(sender, policy_id)?;
         let previous = self.guardians[policy_id].read()?;
@@ -350,8 +425,9 @@ impl AttestedKeyRegistry {
         ))
     }
 
-    /// Registers a program key from an attestation document, running the checks in the order
-    /// the registry specifies. Returns the registration's `valid_until`.
+    /// Registers a program key into a slot from an attestation document, running the checks in
+    /// the order the registry specifies. Overwrites the slot, which ends the key it held. Returns
+    /// the registration's `valid_until`.
     fn register_key(&mut self, call: IAttestedKeyRegistry::registerKeyCall) -> Result<u64> {
         let policy_id = call.policyId;
         let policy = self.policies[policy_id].read()?;
@@ -362,13 +438,17 @@ impl AttestedKeyRegistry {
             return Err(AttestedKeyRegistryError::policy_is_paused().into());
         }
         let root = self.root_for(policy.scheme)?;
+        let slot = call.slot;
+        if slot >= ATTESTED_KEY_SLOTS {
+            return Err(AttestedKeyRegistryError::invalid_slot().into());
+        }
         let (x, y) = (call.programKeyX, call.programKeyY);
         if !is_valid_p256_public_key(&x, &y) {
             return Err(AttestedKeyRegistryError::invalid_program_key().into());
         }
 
         let now = self.now();
-        let binding = self.binding(policy_id, x, y)?;
+        let binding = self.binding(policy_id, slot, x, y)?;
         let attestation = verify_attestation_with_root(&call.document, now, root)?
             .ok_or_else(AttestedKeyRegistryError::invalid_attestation)?;
         // TIP-XXX4 steps 5 and 6: PCR0-2 present, 48 bytes, not all zero, and `user_data`
@@ -398,20 +478,28 @@ impl AttestedKeyRegistry {
         {
             return Err(AttestedKeyRegistryError::stale_attestation().into());
         }
-        // Nitro documents have no expiry, so `valid_until` is `now + KEY_LIFETIME`.
+        // Nitro documents have no expiry, so `valid_until` is `now + min(lifetime, max)`, where a
+        // zero `lifetime` asks for the maximum.
+        let max = self.key_lifetimes[policy_id].read()?.max_at(now);
+        let lifetime = if call.lifetime == 0 {
+            max
+        } else {
+            call.lifetime.min(max)
+        };
         let valid_until = now
-            .checked_add(KEY_LIFETIME)
+            .checked_add(lifetime)
             .ok_or_else(TempoPrecompileError::under_overflow)?;
 
-        let key_id = key_id(policy_id, x, y);
-        self.keys[key_id].write(KeyRecord {
+        self.key_slots[policy_id][slot].write(KeySlot {
+            key_hash: key_hash(x, y),
             valid_until,
             epoch: policy.epoch,
         })?;
         self.emit_event(AttestedKeyRegistryEvent::key_registered(
             policy_id,
-            key_id,
+            key_id(policy_id, x, y),
             measurement,
+            slot,
             valid_until,
         ))?;
         Ok(valid_until)
@@ -420,6 +508,7 @@ impl AttestedKeyRegistry {
     fn policy(&self, policy_id: B256) -> Result<IAttestedKeyRegistry::policyReturn> {
         let policy = self.policies[policy_id].read()?;
         let settings = self.settings[policy_id].read()?;
+        let lifetime = self.key_lifetimes[policy_id].read()?;
         Ok(IAttestedKeyRegistry::policyReturn {
             owner: policy.owner,
             guardian: self.guardians[policy_id].read()?,
@@ -429,14 +518,21 @@ impl AttestedKeyRegistry {
             delay: settings.delay,
             pendingDelay: settings.pending_delay,
             pendingDelayAt: settings.pending_delay_at,
+            maxKeyLifetime: lifetime.max,
+            pendingMaxKeyLifetime: lifetime.pending_max,
+            pendingMaxKeyLifetimeAt: lifetime.pending_max_at,
         })
     }
 
+    /// Returns the `valid_until` of the slot that holds `(x, y)` as current, or zero if none
+    /// does. Reads every slot, for callers that do not know which one holds the key.
     fn key_valid_until(&self, policy_id: B256, x: B256, y: B256) -> Result<u64> {
-        if !self.program_key_current(policy_id, x, y)? {
-            return Ok(0);
+        for slot in 0..ATTESTED_KEY_SLOTS {
+            if self.program_key_current(policy_id, slot, x, y)? {
+                return Ok(self.key_slots[policy_id][slot].read()?.valid_until);
+            }
         }
-        Ok(self.keys[key_id(policy_id, x, y)].read()?.valid_until)
+        Ok(0)
     }
 
     /// Returns the pinned root of `scheme` if it is active on this chain.
@@ -448,14 +544,16 @@ impl AttestedKeyRegistry {
         }
     }
 
-    /// `keccak256("tempo:attested-key" || chainid || registry || policy_id || x || y)`.
-    fn binding(&self, policy_id: B256, x: B256, y: B256) -> Result<B256> {
+    /// `keccak256("tempo:attested-key" || chainid || registry || policy_id || slot || x || y)`,
+    /// with a 1-byte `slot`.
+    fn binding(&self, policy_id: B256, slot: u8, x: B256, y: B256) -> Result<B256> {
         let chain_id = U256::from(self.storage.chain_id()).to_be_bytes::<32>();
         let preimage = [
             BINDING_DOMAIN,
             &chain_id,
             ATTESTED_KEY_REGISTRY_ADDRESS.as_slice(),
             policy_id.as_slice(),
+            &[slot],
             x.as_slice(),
             y.as_slice(),
         ]
@@ -515,16 +613,29 @@ impl AttestedKeyRegistry {
     }
 }
 
-/// `keccak256(policy_id || x || y)`.
+/// `keccak256(policy_id || x || y)`, the program key's ID in `KeyRegistered`.
 pub fn key_id(policy_id: B256, x: B256, y: B256) -> B256 {
-    alloy::primitives::keccak256([policy_id.as_slice(), x.as_slice(), y.as_slice()].concat())
+    keccak256([policy_id.as_slice(), x.as_slice(), y.as_slice()].concat())
+}
+
+/// The first 16 bytes of `keccak256(x || y)`, which a key slot stores. A key with the same hash
+/// would take a 2^128 second-preimage search, the security level of P256 itself.
+pub fn key_hash(x: B256, y: B256) -> B128 {
+    B128::from_slice(&keccak256([x.as_slice(), y.as_slice()].concat())[..16])
+}
+
+/// Reverts with `InvalidKeyLifetime` unless `lifetime` is in `[1, MAX_KEY_LIFETIME]`.
+fn ensure_key_lifetime_in_range(lifetime: u64) -> Result<()> {
+    if lifetime == 0 || lifetime > MAX_KEY_LIFETIME {
+        return Err(AttestedKeyRegistryError::invalid_key_lifetime().into());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
     use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
-    use alloy::primitives::keccak256;
     use p256::ecdsa::SigningKey;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_nitro_attestation::testing::{DEV_PCRS, DevAttestation};
@@ -533,6 +644,8 @@ pub(crate) mod tests {
     pub(crate) const OWNER: Address = Address::repeat_byte(0x01);
     const GUARDIAN: Address = Address::repeat_byte(0x02);
     const OTHER: Address = Address::repeat_byte(0x03);
+    /// `maxKeyLifetime` of the test policies.
+    const LIFETIME: u64 = 3_600;
 
     fn dev_measurement() -> B256 {
         keccak256(DEV_PCRS.concat())
@@ -563,18 +676,19 @@ pub(crate) mod tests {
             owner: OWNER,
             guardian: GUARDIAN,
             delay: 0,
+            maxKeyLifetime: LIFETIME,
             measurements,
             anchors: vec![],
         }
     }
 
     /// Creates the dev policy and registers the program key `SigningKey::from_slice(&[seed; 32])`
-    /// at [`NOW`]. Returns the policy ID.
+    /// into slot 0 at [`NOW`]. Returns the policy ID.
     pub(crate) fn register_dev_key(registry: &mut AttestedKeyRegistry, seed: u8) -> B256 {
         let policy_id = create_dev_policy(registry);
         let key = program_key(seed);
-        let attestation = attestation_for(registry, policy_id, key);
-        register(registry, policy_id, key, attestation).unwrap();
+        let attestation = attestation_for(registry, policy_id, 0, key);
+        register(registry, policy_id, 0, key, attestation).unwrap();
         policy_id
     }
 
@@ -587,27 +701,55 @@ pub(crate) mod tests {
             .unwrap()
     }
 
+    /// Registers `(x, y)` into `slot` for the policy's maximum lifetime.
     fn register(
         registry: &mut AttestedKeyRegistry,
         policy_id: B256,
+        slot: u8,
+        key: (B256, B256),
+        attestation: DevAttestation,
+    ) -> Result<u64> {
+        register_for(registry, policy_id, slot, key, attestation, 0)
+    }
+
+    fn register_for(
+        registry: &mut AttestedKeyRegistry,
+        policy_id: B256,
+        slot: u8,
         (x, y): (B256, B256),
         attestation: DevAttestation,
+        lifetime: u64,
     ) -> Result<u64> {
         registry.register_key(IAttestedKeyRegistry::registerKeyCall {
             policyId: policy_id,
+            slot,
             document: attestation.build().into(),
             programKeyX: x,
             programKeyY: y,
+            lifetime,
         })
     }
 
+    /// Returns a document issued at the block timestamp, bound to `(x, y)` in `slot`.
     fn attestation_for(
         registry: &AttestedKeyRegistry,
         policy_id: B256,
+        slot: u8,
         (x, y): (B256, B256),
     ) -> DevAttestation {
-        let binding = registry.binding(policy_id, x, y).unwrap();
-        DevAttestation::new(binding.as_slice(), NOW * 1_000)
+        let binding = registry.binding(policy_id, slot, x, y).unwrap();
+        DevAttestation::new(binding.as_slice(), registry.now() * 1_000)
+    }
+
+    fn current(
+        registry: &AttestedKeyRegistry,
+        policy_id: B256,
+        slot: u8,
+        key: (B256, B256),
+    ) -> bool {
+        registry
+            .program_key_current(policy_id, slot, key.0, key.1)
+            .unwrap()
     }
 
     fn err(error: AttestedKeyRegistryError) -> TempoPrecompileError {
@@ -629,41 +771,36 @@ pub(crate) mod tests {
                 policy_id
             );
             let key = program_key(7);
-            assert!(
-                !registry
-                    .program_key_current(policy_id, key.0, key.1)
-                    .unwrap()
-            );
+            assert!(!current(registry, policy_id, 3, key));
 
-            let attestation = attestation_for(registry, policy_id, key);
+            let attestation = attestation_for(registry, policy_id, 3, key);
             assert_eq!(
-                register(registry, policy_id, key, attestation).unwrap(),
-                NOW + KEY_LIFETIME
+                register(registry, policy_id, 3, key, attestation).unwrap(),
+                NOW + LIFETIME
             );
-            assert!(
-                registry
-                    .program_key_current(policy_id, key.0, key.1)
-                    .unwrap()
-            );
+            assert!(current(registry, policy_id, 3, key));
             assert_eq!(
                 registry.key_valid_until(policy_id, key.0, key.1).unwrap(),
-                NOW + KEY_LIFETIME
+                NOW + LIFETIME
             );
             assert_eq!(
-                registry.keys[key_id(policy_id, key.0, key.1)]
-                    .read()
-                    .unwrap(),
-                KeyRecord {
-                    valid_until: NOW + KEY_LIFETIME,
+                registry.key_slots[policy_id][3].read().unwrap(),
+                KeySlot {
+                    key_hash: key_hash(key.0, key.1),
+                    valid_until: NOW + LIFETIME,
                     epoch: 0
                 }
             );
-            // Another key of the same policy is not current.
+            // The key is current only in its own slot, and another key of the policy is not.
+            assert!(!current(registry, policy_id, 2, key));
+            assert!(!current(registry, policy_id, ATTESTED_KEY_SLOTS, key));
             let other = program_key(8);
-            assert!(
-                !registry
-                    .program_key_current(policy_id, other.0, other.1)
-                    .unwrap()
+            assert!(!current(registry, policy_id, 3, other));
+            assert_eq!(
+                registry
+                    .key_valid_until(policy_id, other.0, other.1)
+                    .unwrap(),
+                0
             );
 
             let policy = registry.policy(policy_id).unwrap();
@@ -676,6 +813,14 @@ pub(crate) mod tests {
                     policy.epoch
                 ),
                 (OWNER, GUARDIAN, SCHEME_NITRO_DEV, false, 0)
+            );
+            assert_eq!(
+                (
+                    policy.maxKeyLifetime,
+                    policy.pendingMaxKeyLifetime,
+                    policy.pendingMaxKeyLifetimeAt
+                ),
+                (LIFETIME, 0, 0)
             );
             assert_eq!(
                 registry.measurement_active_at[policy_id][dev_measurement()]
@@ -691,22 +836,32 @@ pub(crate) mod tests {
         with_registry(DEV_CHAIN_ID, |registry| {
             let policy_id = create_dev_policy(registry);
             let key = program_key(7);
-            let attestation = attestation_for(registry, policy_id, key);
+            let attestation = attestation_for(registry, policy_id, 0, key);
 
             assert_eq!(
-                register(registry, B256::ZERO, key, attestation.clone()),
+                register(registry, B256::ZERO, 0, key, attestation.clone()),
                 Err(err(AttestedKeyRegistryError::policy_not_found()))
+            );
+
+            let off_range = attestation_for(registry, policy_id, ATTESTED_KEY_SLOTS, key);
+            assert_eq!(
+                register(registry, policy_id, ATTESTED_KEY_SLOTS, key, off_range),
+                Err(err(AttestedKeyRegistryError::invalid_slot()))
             );
 
             let off_curve = (key.0, B256::repeat_byte(0x01));
             assert_eq!(
-                register(registry, policy_id, off_curve, attestation.clone()),
+                register(registry, policy_id, 0, off_curve, attestation.clone()),
                 Err(err(AttestedKeyRegistryError::invalid_program_key()))
             );
 
-            // A document bound to another key.
+            // A document bound to another key, or to the same key in another slot.
             assert_eq!(
-                register(registry, policy_id, program_key(8), attestation.clone()),
+                register(registry, policy_id, 0, program_key(8), attestation.clone()),
+                Err(err(AttestedKeyRegistryError::invalid_attestation()))
+            );
+            assert_eq!(
+                register(registry, policy_id, 1, key, attestation.clone()),
                 Err(err(AttestedKeyRegistryError::invalid_attestation()))
             );
 
@@ -714,7 +869,7 @@ pub(crate) mod tests {
             let mut zero_pcr = attestation.clone();
             zero_pcr.pcrs[1] = [0; 48];
             assert_eq!(
-                register(registry, policy_id, key, zero_pcr),
+                register(registry, policy_id, 0, key, zero_pcr),
                 Err(err(AttestedKeyRegistryError::invalid_attestation()))
             );
 
@@ -722,7 +877,7 @@ pub(crate) mod tests {
             let mut short = attestation.clone();
             short.user_data.pop();
             assert_eq!(
-                register(registry, policy_id, key, short),
+                register(registry, policy_id, 0, key, short),
                 Err(err(AttestedKeyRegistryError::invalid_attestation()))
             );
 
@@ -730,29 +885,29 @@ pub(crate) mod tests {
             let mut other_code = attestation.clone();
             other_code.pcrs[2] = [0x09; 48];
             assert_eq!(
-                register(registry, policy_id, key, other_code),
+                register(registry, policy_id, 0, key, other_code),
                 Err(err(AttestedKeyRegistryError::measurement_not_active()))
             );
 
             let mut old = attestation.clone();
             old.timestamp_ms = (NOW - MAX_ATTESTATION_AGE - 1) * 1_000;
             assert_eq!(
-                register(registry, policy_id, key, old.clone()),
+                register(registry, policy_id, 0, key, old.clone()),
                 Err(err(AttestedKeyRegistryError::stale_attestation()))
             );
             old.timestamp_ms = (NOW - MAX_ATTESTATION_AGE) * 1_000;
-            assert!(register(registry, policy_id, key, old).is_ok());
+            assert!(register(registry, policy_id, 0, key, old).is_ok());
 
             let mut future = attestation.clone();
             future.timestamp_ms = (NOW + MAX_FUTURE_SKEW + 1) * 1_000;
             assert_eq!(
-                register(registry, policy_id, key, future),
+                register(registry, policy_id, 0, key, future),
                 Err(err(AttestedKeyRegistryError::stale_attestation()))
             );
 
             registry.set_paused(GUARDIAN, policy_id, true).unwrap();
             assert_eq!(
-                register(registry, policy_id, key, attestation),
+                register(registry, policy_id, 0, key, attestation),
                 Err(err(AttestedKeyRegistryError::policy_is_paused()))
             );
         });
@@ -765,9 +920,9 @@ pub(crate) mod tests {
                 .create_policy(OWNER, create_call(SCHEME_NITRO, vec![dev_measurement()]))
                 .unwrap();
             let key = program_key(7);
-            let attestation = attestation_for(registry, policy_id, key);
+            let attestation = attestation_for(registry, policy_id, 0, key);
             assert_eq!(
-                register(registry, policy_id, key, attestation),
+                register(registry, policy_id, 0, key, attestation),
                 Err(err(AttestedKeyRegistryError::invalid_attestation()))
             );
         });
@@ -817,6 +972,14 @@ pub(crate) mod tests {
                     AttestedKeyRegistryError::delay_too_long(),
                 ),
                 (
+                    fresh(|c| c.maxKeyLifetime = 0),
+                    AttestedKeyRegistryError::invalid_key_lifetime(),
+                ),
+                (
+                    fresh(|c| c.maxKeyLifetime = MAX_KEY_LIFETIME + 1),
+                    AttestedKeyRegistryError::invalid_key_lifetime(),
+                ),
+                (
                     fresh(|c| {
                         c.measurements = (0..=MAX_MEASUREMENTS).map(B256::with_last_byte).collect()
                     }),
@@ -841,14 +1004,10 @@ pub(crate) mod tests {
         with_registry(DEV_CHAIN_ID, |registry| {
             let policy_id = create_dev_policy(registry);
             let key = program_key(7);
-            let attestation = attestation_for(registry, policy_id, key);
-            let current = |registry: &AttestedKeyRegistry| {
-                registry
-                    .program_key_current(policy_id, key.0, key.1)
-                    .unwrap()
-            };
+            let attestation = attestation_for(registry, policy_id, 0, key);
+            let current = |registry: &AttestedKeyRegistry| current(registry, policy_id, 0, key);
 
-            register(registry, policy_id, key, attestation.clone()).unwrap();
+            register(registry, policy_id, 0, key, attestation.clone()).unwrap();
             assert_eq!(
                 registry.revoke_keys(OTHER, policy_id),
                 Err(err(AttestedKeyRegistryError::unauthorized()))
@@ -862,7 +1021,7 @@ pub(crate) mod tests {
             assert_eq!(registry.policy(policy_id).unwrap().epoch, 1);
 
             // Re-registration records the new epoch.
-            register(registry, policy_id, key, attestation.clone()).unwrap();
+            register(registry, policy_id, 0, key, attestation.clone()).unwrap();
             assert!(current(registry));
 
             registry.set_paused(GUARDIAN, policy_id, true).unwrap();
@@ -884,7 +1043,7 @@ pub(crate) mod tests {
                 Err(err(AttestedKeyRegistryError::not_listed()))
             );
             assert_eq!(
-                register(registry, policy_id, key, attestation),
+                register(registry, policy_id, 0, key, attestation),
                 Err(err(AttestedKeyRegistryError::measurement_not_active()))
             );
             assert_eq!(
@@ -922,9 +1081,9 @@ pub(crate) mod tests {
 
             // A pending measurement cannot register keys.
             let key = program_key(7);
-            let attestation = attestation_for(registry, policy_id, key);
+            let attestation = attestation_for(registry, policy_id, 0, key);
             assert_eq!(
-                register(registry, policy_id, key, attestation),
+                register(registry, policy_id, 0, key, attestation),
                 Err(err(AttestedKeyRegistryError::measurement_not_active()))
             );
 
@@ -970,6 +1129,145 @@ pub(crate) mod tests {
                 registry.transfer_ownership(OTHER, policy_id, Address::ZERO),
                 Err(err(AttestedKeyRegistryError::zero_address()))
             );
+        });
+    }
+
+    #[test]
+    fn overwriting_a_slot_ends_its_key_and_two_slots_overlap() {
+        with_registry(DEV_CHAIN_ID, |registry| {
+            let policy_id = create_dev_policy(registry);
+            let (first, second, third) = (program_key(7), program_key(8), program_key(9));
+
+            let attestation = attestation_for(registry, policy_id, 0, first);
+            register(registry, policy_id, 0, first, attestation).unwrap();
+
+            // A key in the other slot overlaps the first.
+            registry.storage.set_timestamp(U256::from(NOW + 100));
+            let attestation = attestation_for(registry, policy_id, 1, second);
+            assert_eq!(
+                register(registry, policy_id, 1, second, attestation).unwrap(),
+                NOW + 100 + LIFETIME
+            );
+            assert!(current(registry, policy_id, 0, first));
+            assert!(current(registry, policy_id, 1, second));
+
+            // Overwriting slot 0 ends the first key at once, with time left on its registration.
+            registry.storage.set_timestamp(U256::from(NOW + 200));
+            let attestation = attestation_for(registry, policy_id, 0, third);
+            register(registry, policy_id, 0, third, attestation).unwrap();
+            assert!(!current(registry, policy_id, 0, first));
+            assert_eq!(
+                registry
+                    .key_valid_until(policy_id, first.0, first.1)
+                    .unwrap(),
+                0
+            );
+            assert!(current(registry, policy_id, 0, third));
+            assert!(current(registry, policy_id, 1, second));
+            assert_eq!(
+                registry
+                    .key_valid_until(policy_id, second.0, second.1)
+                    .unwrap(),
+                NOW + 100 + LIFETIME
+            );
+
+            // The slot's key expires at `valid_until`.
+            registry
+                .storage
+                .set_timestamp(U256::from(NOW + 200 + LIFETIME));
+            assert!(current(registry, policy_id, 0, third));
+            registry
+                .storage
+                .set_timestamp(U256::from(NOW + 201 + LIFETIME));
+            assert!(!current(registry, policy_id, 0, third));
+        });
+    }
+
+    #[test]
+    fn registrations_are_capped_by_max_key_lifetime() {
+        with_registry(DEV_CHAIN_ID, |registry| {
+            let policy_id = create_dev_policy(registry);
+            let key = program_key(7);
+            for (lifetime, expected) in [(0, LIFETIME), (100, 100), (LIFETIME + 1, LIFETIME)] {
+                let attestation = attestation_for(registry, policy_id, 0, key);
+                assert_eq!(
+                    register_for(registry, policy_id, 0, key, attestation, lifetime).unwrap(),
+                    NOW + expected
+                );
+            }
+
+            // A decrease caps the next registration at once.
+            registry.set_max_key_lifetime(OWNER, policy_id, 60).unwrap();
+            let attestation = attestation_for(registry, policy_id, 0, key);
+            assert_eq!(
+                register(registry, policy_id, 0, key, attestation).unwrap(),
+                NOW + 60
+            );
+        });
+    }
+
+    #[test]
+    fn max_key_lifetime_increases_wait_for_the_delay() {
+        with_registry(DEV_CHAIN_ID, |registry| {
+            let mut call = create_call(SCHEME_NITRO_DEV, vec![dev_measurement()]);
+            call.delay = 100;
+            let policy_id = registry.create_policy(OWNER, call).unwrap();
+            let lifetime = |registry: &AttestedKeyRegistry| {
+                let policy = registry.policy(policy_id).unwrap();
+                (
+                    policy.maxKeyLifetime,
+                    policy.pendingMaxKeyLifetime,
+                    policy.pendingMaxKeyLifetimeAt,
+                )
+            };
+
+            for (sender, value, expected) in [
+                (GUARDIAN, LIFETIME, AttestedKeyRegistryError::unauthorized()),
+                (OWNER, 0, AttestedKeyRegistryError::invalid_key_lifetime()),
+                (
+                    OWNER,
+                    MAX_KEY_LIFETIME + 1,
+                    AttestedKeyRegistryError::invalid_key_lifetime(),
+                ),
+            ] {
+                assert_eq!(
+                    registry.set_max_key_lifetime(sender, policy_id, value),
+                    Err(err(expected))
+                );
+            }
+
+            // An increase waits for the delay. Registrations until then use the earlier cap.
+            registry
+                .set_max_key_lifetime(OWNER, policy_id, MAX_KEY_LIFETIME)
+                .unwrap();
+            assert_eq!(lifetime(registry), (LIFETIME, MAX_KEY_LIFETIME, NOW + 100));
+            let key = program_key(7);
+            registry.storage.set_timestamp(U256::from(NOW + 99));
+            let attestation = attestation_for(registry, policy_id, 0, key);
+            assert_eq!(
+                register(registry, policy_id, 0, key, attestation).unwrap(),
+                NOW + 99 + LIFETIME
+            );
+            registry.storage.set_timestamp(U256::from(NOW + 100));
+            let attestation = attestation_for(registry, policy_id, 0, key);
+            assert_eq!(
+                register(registry, policy_id, 0, key, attestation).unwrap(),
+                NOW + 100 + MAX_KEY_LIFETIME
+            );
+
+            // A decrease applies at once and cancels a pending increase.
+            registry
+                .set_max_key_lifetime(OWNER, policy_id, 2 * LIFETIME)
+                .unwrap();
+            assert_eq!(lifetime(registry), (2 * LIFETIME, 0, 0));
+            registry
+                .set_max_key_lifetime(OWNER, policy_id, 3 * LIFETIME)
+                .unwrap();
+            assert_eq!(lifetime(registry), (2 * LIFETIME, 3 * LIFETIME, NOW + 200));
+            registry
+                .set_max_key_lifetime(OWNER, policy_id, LIFETIME)
+                .unwrap();
+            assert_eq!(lifetime(registry), (LIFETIME, 0, 0));
         });
     }
 }

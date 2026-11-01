@@ -47,6 +47,9 @@ impl Precompile for AttestedKeyRegistry {
                     setDelay(call) => mutate(call, msg_sender, |sender, c| {
                         self.set_delay(sender, c.policyId, c.newDelay)
                     }),
+                    setMaxKeyLifetime(call) => mutate(call, msg_sender, |sender, c| {
+                        self.set_max_key_lifetime(sender, c.policyId, c.newMaxKeyLifetime)
+                    }),
                     setGuardian(call) => mutate(call, msg_sender, |sender, c| {
                         self.set_guardian(sender, c.policyId, c.newGuardian)
                     }),

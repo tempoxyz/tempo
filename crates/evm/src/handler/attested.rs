@@ -21,8 +21,8 @@ use tempo_primitives::{
 };
 
 /// Rejects the transaction unless every attested signature it carries passes
-/// [`validate_window`] at the block's timestamp and is signed by a program key the registry
-/// holds as current.
+/// [`validate_window`] at the block's timestamp and is signed by a program key that the registry
+/// slot it names holds as current.
 pub(crate) fn validate(
     host: &mut Evm<'_, TempoEvmTypes>,
     aa: &TempoAaTx,
@@ -34,6 +34,7 @@ pub(crate) fn validate(
         let current = StorageCtx::enter_evm_without_tip1060_accounting(host, || {
             AttestedKeyRegistry::new().program_key_current(
                 signature.policy_id,
+                signature.slot,
                 signature.program_key_x(),
                 signature.program_key_y(),
             )
@@ -141,6 +142,7 @@ mod tests {
         AttestedSignature {
             policy_id: B256::repeat_byte(0xAA),
             user_tag: B256::repeat_byte(0xBB),
+            slot: 0,
             program_key: B512::repeat_byte(0x03),
             valid_until,
             signature: B512::repeat_byte(0x01),

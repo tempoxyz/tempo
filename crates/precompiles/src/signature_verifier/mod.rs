@@ -83,8 +83,8 @@ impl SignatureVerifier {
     }
 
     /// Checks an attested signature against current state, as a transaction signature is
-    /// checked: `valid_until` within `[now, now + 600]`, the program key current in the
-    /// Attested Key Registry, and the P256 signature over the attested digest of `hash`.
+    /// checked: `valid_until` within `[now, now + 600]`, the program key current in its
+    /// Attested Key Registry slot, and the P256 signature over the attested digest of `hash`.
     ///
     /// Charges the P256 verification and calldata gas before any check; the two registry reads
     /// charge their own storage gas. Returns the attested address, or `None` if a check fails.
@@ -102,8 +102,8 @@ impl SignatureVerifier {
         Ok(signature.recover_signer(&hash).ok())
     }
 
-    /// Returns whether `now <= valid_until <= now + 600` and the Attested Key Registry holds the
-    /// program key as current for the policy. Reads the registry only inside the window.
+    /// Returns whether `now <= valid_until <= now + 600` and the Attested Key Registry slot the
+    /// signature names holds the program key as current for the policy. Reads the registry only inside the window.
     fn attested_key_current(&self, signature: &AttestedSignature) -> Result<bool> {
         let now = self.storage.timestamp().saturating_to::<u64>();
         if signature.valid_until < now || signature.valid_until - now > ATTESTED_MAX_VALIDITY_WINDOW
@@ -112,6 +112,7 @@ impl SignatureVerifier {
         }
         AttestedKeyRegistry::new().program_key_current(
             signature.policy_id,
+            signature.slot,
             signature.program_key_x(),
             signature.program_key_y(),
         )
@@ -353,6 +354,7 @@ mod tests {
         let attested = TempoSignature::Attested(AttestedSignature {
             policy_id: B256::repeat_byte(1),
             user_tag: B256::repeat_byte(2),
+            slot: 0,
             program_key: B512::repeat_byte(3),
             valid_until: 1,
             signature,
@@ -410,13 +412,20 @@ mod tests {
     }
 
     /// Signs `hash` as an attested signature for user tag `0x7A…` with the program key of
-    /// `seed`, registered under `policy_id`.
-    fn attested_sign(policy_id: B256, seed: u8, hash: B256, valid_until: u64) -> AttestedSignature {
+    /// `seed`, naming `slot` of `policy_id`.
+    fn attested_sign(
+        policy_id: B256,
+        slot: u8,
+        seed: u8,
+        hash: B256,
+        valid_until: u64,
+    ) -> AttestedSignature {
         let (x, y) = program_key(seed);
         let key = SigningKey::from_slice(&[seed; 32]).unwrap();
         let mut signature = AttestedSignature {
             policy_id,
             user_tag: B256::repeat_byte(0x7A),
+            slot,
             program_key: B512::from_slice(&[x.as_slice(), y.as_slice()].concat()),
             valid_until,
             signature: B512::ZERO,
@@ -432,7 +441,7 @@ mod tests {
         with_registry(DEV_CHAIN_ID, |registry| {
             let policy_id = register_dev_key(registry, 7);
             let sign =
-                |hash: B256, valid_until: u64| attested_sign(policy_id, 7, hash, valid_until);
+                |hash: B256, valid_until: u64| attested_sign(policy_id, 0, 7, hash, valid_until);
             let verifier = SignatureVerifier::new();
             let hash = B256::repeat_byte(0x42);
             let valid = sign(hash, NOW + 600);
@@ -446,6 +455,16 @@ mod tests {
             assert_eq!(verifier.recover(hash, bytes.clone()).unwrap(), signer);
             assert!(!verify(Address::repeat_byte(9), hash, &bytes));
             assert!(!verify(signer, B256::ZERO, &bytes));
+
+            // The registered key signing for a slot that does not hold it.
+            let wrong_slot =
+                TempoSignature::Attested(attested_sign(policy_id, 1, 7, hash, NOW + 600))
+                    .to_bytes();
+            assert!(!verify(signer, hash, &wrong_slot));
+            assert_eq!(
+                verifier.recover(hash, wrong_slot).unwrap_err(),
+                SignatureVerifierError::invalid_signature().into()
+            );
 
             for valid_until in [NOW - 1, NOW + 601] {
                 let bytes = TempoSignature::Attested(sign(hash, valid_until)).to_bytes();
@@ -474,7 +493,7 @@ mod tests {
     fn verifies_attested_owner_approvals_against_the_registry() {
         with_registry(DEV_CHAIN_ID, |registry| {
             let policy_id = register_dev_key(registry, 7);
-            let attested_owner = attested_sign(policy_id, 7, B256::ZERO, NOW).address();
+            let attested_owner = attested_sign(policy_id, 0, 7, B256::ZERO, NOW).address();
             let p256_key = SigningKey::from_slice(&[9; 32]).unwrap();
             let (p256_x, p256_y) = program_key(9);
             let p256_owner = derive_p256_address(&p256_x, &p256_y);
@@ -496,12 +515,13 @@ mod tests {
             };
             let sign = |account: Address,
                         config: &ConfigurableAccountConfig,
+                        slot: u8,
                         valid_until: u64,
                         with_p256: bool| {
                 let digest = configurable_account_digest(hash, account, config.version);
                 let mut approvals: Vec<(Address, OwnerApproval)> = vec![(
                     attested_owner,
-                    attested_sign(policy_id, 7, digest, valid_until).into(),
+                    attested_sign(policy_id, slot, 7, digest, valid_until).into(),
                 )];
                 if with_p256 {
                     let (raw, _) = p256_key
@@ -534,24 +554,26 @@ mod tests {
 
             // Threshold 1: the attested approval alone verifies, within its validity window.
             let (single, single_config) = account_with(1);
-            assert!(verify(single, &sign(single, &single_config, NOW + 600, false)).unwrap());
+            assert!(verify(single, &sign(single, &single_config, 0, NOW + 600, false)).unwrap());
             for valid_until in [NOW - 1, NOW + 601] {
-                let bytes = sign(single, &single_config, valid_until, false);
+                let bytes = sign(single, &single_config, 0, valid_until, false);
                 assert!(!verify(single, &bytes).unwrap());
             }
+            // An approval naming a slot that does not hold its program key.
+            assert!(!verify(single, &sign(single, &single_config, 1, NOW + 600, false)).unwrap());
 
             // Threshold 2: the attested approval needs the P256 approval too.
             let (pair, pair_config) = account_with(2);
             assert_eq!(
-                verify(pair, &sign(pair, &pair_config, NOW + 600, false)).unwrap_err(),
+                verify(pair, &sign(pair, &pair_config, 0, NOW + 600, false)).unwrap_err(),
                 SignatureVerifierError::invalid_signature().into()
             );
-            let both = sign(pair, &pair_config, NOW + 600, true);
+            let both = sign(pair, &pair_config, 0, NOW + 600, true);
             assert!(verify(pair, &both).unwrap());
 
             // A revoked program key no longer approves, alone or with the P256 approval.
             registry.revoke_keys(OWNER, policy_id).unwrap();
-            assert!(!verify(single, &sign(single, &single_config, NOW + 600, false)).unwrap());
+            assert!(!verify(single, &sign(single, &single_config, 0, NOW + 600, false)).unwrap());
             assert!(!verify(pair, &both).unwrap());
         });
     }
