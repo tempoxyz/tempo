@@ -1,6 +1,6 @@
 //! Attested signature (type `0x06`) checks that need block state (attested signers PoC).
 //!
-//! [`validate`] checks the validity window and reads the Attested Key Registry, at the
+//! `validate` checks the validity window and reads the Attested Key Registry, at the
 //! transaction's position in the block, before any attested P256 signature is verified in the
 //! handler. Block import recovers senders, verifying a `0x06` sender signature first, which the
 //! TIP allows outside pool admission. Pool admission instead derives a `0x06` sender without a
