@@ -326,7 +326,8 @@ impl AttestedOwnedAccount {
             self.address,
             self.config.clone(),
             approvals.into_iter().map(|(_, approval)| approval),
-        )?;
+        )
+        .map_err(|error| eyre::eyre!("{error}"))?;
         let envelope: TempoTxEnvelope = tx
             .into_signed(TempoSignature::ConfigurableAccount(signature))
             .into();
