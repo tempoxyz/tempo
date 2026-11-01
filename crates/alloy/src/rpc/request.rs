@@ -11,7 +11,7 @@ use tempo_primitives::{
     transaction::{Call, SignedKeyAuthorization, TempoSignedAuthorization, TempoTypedTransaction},
 };
 
-use super::ConfigurableAccountSimulationSpec;
+use super::{AttestedSimulationSpec, ConfigurableAccountSimulationSpec};
 use crate::TempoNetwork;
 
 /// An Ethereum [`TransactionRequest`] extended with Tempo-specific fields.
@@ -86,6 +86,14 @@ pub struct TempoTransactionRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_authorization_simulation: Option<ConfigurableAccountSimulationSpec>,
 
+    /// Attested signature (type `0x06`) of the outer sender, whose address is `from`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attested_simulation: Option<AttestedSimulationSpec>,
+
+    /// Attested root signature (type `0x06`) of the attached keyAuthorization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_authorization_attested_simulation: Option<AttestedSimulationSpec>,
+
     /// Transaction valid before timestamp in seconds (for expiring nonces, [TIP-1009]).
     /// Transaction can only be included in a block before this timestamp.
     ///
@@ -127,6 +135,8 @@ impl TempoTransactionRequest {
             || self.key_data.is_some()
             || self.configurable_account_simulation.is_some()
             || self.key_authorization_simulation.is_some()
+            || self.attested_simulation.is_some()
+            || self.key_authorization_attested_simulation.is_some()
             || self.valid_before.is_some()
             || self.valid_after.is_some()
             || self.fee_payer_signature.is_some()
@@ -471,6 +481,8 @@ impl From<TempoTransaction> for TempoTransactionRequest {
             key_authorization: tx.key_authorization,
             configurable_account_simulation: None,
             key_authorization_simulation: None,
+            attested_simulation: None,
+            key_authorization_attested_simulation: None,
             valid_before: tx.valid_before,
             valid_after: tx.valid_after,
             fee_payer_signature: tx.fee_payer_signature,

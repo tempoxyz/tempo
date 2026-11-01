@@ -11,7 +11,7 @@ pub use self::config::{
 };
 use self::config::{TempoFeeContext, TempoHandlerHooks};
 use crate::{
-    FeePaymentError, TempoAaTx, TempoInvalidTransaction, TempoTxEnv,
+    ExecutionContext, FeePaymentError, TempoAaTx, TempoInvalidTransaction, TempoTxEnv,
     signature_gas::{calldata_tokens, tempo_signature_verification_gas},
     transaction_error::ConfigurableAccountError,
 };
@@ -50,7 +50,7 @@ use tempo_precompiles::{
     storage::{Handler as _, StorageCtx},
 };
 use tempo_primitives::transaction::{
-    SignedKeyAuthorization, TEMPO_EXPIRING_NONCE_KEY, validate_calls,
+    AccountSignature, SignedKeyAuthorization, TEMPO_EXPIRING_NONCE_KEY, validate_calls,
 };
 
 /// Base gas for KeyAuthorization (22k storage + 5k buffer), signature gas added at runtime
@@ -472,8 +472,26 @@ fn access_key_id(aa: &TempoAaTx) -> Result<Option<Address>, TempoInvalidTransact
     Ok(Some(key_id))
 }
 
+/// Returns the account that signed `key_auth`. RPC simulation supplies a placeholder attested
+/// root signature, so it takes the attested address without verifying the P256 signature, as it
+/// skips the configurable account quorum. The registry check still runs in [`attested::validate`].
+fn key_authorization_account(
+    key_auth: &SignedKeyAuthorization,
+    context: ExecutionContext,
+) -> Result<Address, TempoInvalidTransaction> {
+    match (&key_auth.signature, context) {
+        (AccountSignature::Attested(signature), ExecutionContext::Simulation) => {
+            Ok(signature.address())
+        }
+        _ => key_auth
+            .recover_account()
+            .map_err(|_| TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed),
+    }
+}
+
 fn validate_key_authorization(
     aa: &TempoAaTx,
+    context: ExecutionContext,
     chain_id: u64,
     spec: TempoHardfork,
 ) -> Result<(), TempoInvalidTransaction> {
@@ -533,9 +551,7 @@ fn validate_key_authorization(
         });
     }
 
-    let signer = key_auth
-        .recover_account()
-        .map_err(|_| TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed)?;
+    let signer = key_authorization_account(key_auth, context)?;
     if !spec.is_t6() && signer != aa.signer() {
         return Err(TempoInvalidTransaction::KeyAuthorizationNotSignedByRoot {
             expected: aa.signer(),
@@ -625,6 +641,7 @@ fn keychain_error(error: TempoPrecompileError) -> HandlerError {
 fn prepare_keychain(
     host: &mut Evm<'_, TempoEvmTypes>,
     aa: &TempoAaTx,
+    context: ExecutionContext,
     fee: TempoFeeContext,
 ) -> HandlerResult<KeychainState> {
     let signed = aa.inner();
@@ -742,9 +759,7 @@ fn prepare_keychain(
     if host.config_spec_id().is_t6()
         && let Some(key_authorization) = key_authorization
     {
-        let signer = key_authorization
-            .recover_account()
-            .map_err(|_| TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed)?;
+        let signer = key_authorization_account(key_authorization, context)?;
         if signer != aa.signer() {
             let signature_type: u8 = key_authorization.signature.key_type().into();
             let signer_is_admin = match state.loaded_key.as_ref() {
@@ -1384,7 +1399,12 @@ fn prepare_aa(
     }
     // Attested window and registry checks precede every P256 verification in the handler.
     attested::validate(request.host, request.tx.inner(), spec)?;
-    validate_key_authorization(request.tx.inner(), request.host.version().chain_id, spec)?;
+    validate_key_authorization(
+        request.tx.inner(),
+        request.envelope.execution_context(),
+        request.host.version().chain_id,
+        spec,
+    )?;
     // Access-key CREATE is a cheap structural rejection that does not depend on any
     // per-call scope walk or state mutation. Rejecting it here keeps validation work
     // constant and avoids entering CREATE execution paths that require special protocol-
@@ -1517,7 +1537,12 @@ fn prepare_aa(
     // For Keychain signatures, validate the acting access key before fee collection when it
     // already exists. Same-tx auth+use is the exception: that key is registered only after fees
     // are collected, so fee-limit validation uses the inline authorization payload instead.
-    let keychain = prepare_keychain(request.host, request.tx.inner(), fee_context)?;
+    let keychain = prepare_keychain(
+        request.host,
+        request.tx.inner(),
+        request.envelope.execution_context(),
+        fee_context,
+    )?;
     if request.host.feature(EvmFeatures::FEE_CHARGE) {
         TempoHandlerHooks::collect_fee(
             request.host,

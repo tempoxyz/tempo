@@ -139,6 +139,7 @@ impl ConfigurableAccount {
                         owner: owner.owner,
                         key_type: None,
                         key_data: None,
+                        attested: None,
                     })
                     .collect(),
             }),

@@ -3,6 +3,8 @@ use alloy_rlp::decode_exact;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 use tempo_primitives::{SignatureType, transaction::ConfigurableAccountConfig};
 
+use super::AttestedSimulationSpec;
+
 /// One independently signed configurable role in a simulation.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -30,6 +32,10 @@ pub struct ConfigurableAccountSimulationApproval {
     /// `WebAuthn` data-length hint; see [`TempoTransactionRequest::key_data`](super::TempoTransactionRequest::key_data).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_data: Option<Bytes>,
+    /// Models an attested approval (type `0x06`) for the owner, which must be its attested address.
+    /// Excludes `keyType` and `keyData`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attested: Option<AttestedSimulationSpec>,
 }
 
 mod serde_configurable_account_config {

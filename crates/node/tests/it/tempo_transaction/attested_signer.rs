@@ -1,10 +1,11 @@
 //! Attested signers (signature type `0x06`) through a local node: a registered program key
 //! authorizes an access key for an attested address, `revokeKeys` ends that authority, and a
-//! registration into an occupied slot ends the key it held.
+//! registration into an occupied slot ends the key it held. RPC simulation, estimation, filling,
+//! and the JSON form of `0x06` signatures are covered too.
 
 use super::{
     helpers::{
-        create_basic_aa_tx, generate_p256_access_key, sign_aa_tx_secp256k1,
+        create_basic_aa_tx, generate_p256_access_key, parse_filled_tx, sign_aa_tx_secp256k1,
         sign_aa_tx_with_p256_access_key, sign_p256_primitive,
     },
     local::Localnet,
@@ -20,7 +21,12 @@ use alloy_eips::Encodable2718;
 use p256::ecdsa::{Signature, SigningKey, signature::hazmat::PrehashSigner};
 use reth_e2e_test_utils::wallet::test_signer;
 use reth_primitives_traits::transaction::TxHashRef;
+use serde_json::{Value, json};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tempo_alloy::rpc::{
+    AttestedSimulationSpec, ConfigurableAccountSimulationApproval,
+    ConfigurableAccountSimulationSpec, TempoTransactionRequest,
+};
 use tempo_contracts::precompiles::{ATTESTED_KEY_REGISTRY_ADDRESS, IAttestedKeyRegistry};
 use tempo_nitro_attestation::testing::{DEV_PCRS, DevAttestation};
 use tempo_primitives::{
@@ -59,6 +65,18 @@ impl Signer {
     fn program_key(&self) -> B512 {
         let point = self.key.verifying_key().to_encoded_point(false);
         B512::from_slice(&point.as_bytes()[1..])
+    }
+
+    /// The simulation spec of this signer's attested signature, before it signs, valid until
+    /// `valid_until`. The value matters to gas: each zero byte of it costs 12 gas less.
+    fn simulation_spec(&self, valid_until: u64) -> AttestedSimulationSpec {
+        AttestedSimulationSpec {
+            policy_id: self.policy_id,
+            user_tag: self.user_tag,
+            slot: self.slot,
+            program_key: self.program_key(),
+            valid_until: Some(valid_until),
+        }
     }
 
     fn coordinates(&self) -> (B256, B256) {
@@ -519,5 +537,270 @@ async fn attested_slot_rotation() -> eyre::Result<()> {
         first_write_gas > rotation_gas + 200_000,
         "first write {first_write_gas}, rotation {rotation_gas}"
     );
+    Ok(())
+}
+
+/// Parses a hex quantity field of an RPC response.
+fn quantity(value: &Value) -> eyre::Result<u64> {
+    let hex = value
+        .as_str()
+        .ok_or_else(|| eyre::eyre!("not a quantity: {value}"))?;
+    Ok(u64::from_str_radix(hex.trim_start_matches("0x"), 16)?)
+}
+
+/// Runs `request` alone through `eth_simulateV1` at the latest block and returns its gas used, or
+/// the error text of a failed call or a rejected request.
+async fn simulated_gas(env: &Localnet, request: &TempoTransactionRequest) -> eyre::Result<u64> {
+    let response: Value = env
+        .provider
+        .raw_request(
+            "eth_simulateV1".into(),
+            (
+                json!({ "blockStateCalls": [{ "calls": [request] }] }),
+                "latest",
+            ),
+        )
+        .await?;
+    let call = &response[0]["calls"][0];
+    eyre::ensure!(call["status"] == "0x1", "simulated call failed: {call}");
+    quantity(&call["gasUsed"])
+}
+
+/// Runs `request` through `debug_traceCall` at the latest block and returns its gas used.
+async fn traced_gas(env: &Localnet, request: &TempoTransactionRequest) -> eyre::Result<u64> {
+    let trace: Value = env
+        .provider
+        .raw_request("debug_traceCall".into(), (request, "latest", json!({})))
+        .await?;
+    eyre::ensure!(trace["failed"] == false, "traced call failed: {trace}");
+    trace["gas"]
+        .as_u64()
+        .ok_or_else(|| eyre::eyre!("trace without gas: {trace}"))
+}
+
+/// Returns the gas used by a mined transaction.
+async fn gas_used(env: &Localnet, hash: B256) -> eyre::Result<u64> {
+    let receipt: Value = env
+        .provider
+        .raw_request("eth_getTransactionReceipt".into(), (hash,))
+        .await?;
+    eyre::ensure!(receipt["status"] == "0x1", "transaction failed: {receipt}");
+    quantity(&receipt["gasUsed"])
+}
+
+/// Asserts that `estimate` covers `used` within reth's 1.5% estimation tolerance.
+fn assert_estimate_covers(estimate: u64, used: u64) {
+    assert!(
+        used <= estimate && estimate <= used + used * 15 / 1000 + 1,
+        "estimate {estimate}, used {used}"
+    );
+}
+
+/// Traces and estimates `request`, mines `encoded` (the same transaction, signed), and asserts
+/// that the trace used exactly the mined gas and that the estimate covers it.
+async fn assert_simulation_matches(
+    env: &mut Localnet,
+    request: &TempoTransactionRequest,
+    encoded: Vec<u8>,
+) -> eyre::Result<u64> {
+    let simulated = traced_gas(env, request).await?;
+    let estimate: u64 = env
+        .provider
+        .raw_request::<_, alloy::primitives::U64>("eth_estimateGas".into(), (request,))
+        .await?
+        .to();
+    let hash = keccak256(&encoded);
+    env.submit_tx(encoded, hash).await?;
+    let used = gas_used(env, hash).await?;
+    println!("traced {simulated}, estimate {estimate}, used {used}");
+    assert_eq!(simulated, used, "traced and mined gas differ");
+    assert_estimate_covers(estimate, used);
+    Ok(used)
+}
+
+/// Returns the request of `tx`, a single call, from `from`, without a signature. The call goes in
+/// `to` and `input`: `eth_simulateV1` treats a request without `to` as a contract creation.
+fn request_for(tx: &tempo_primitives::TempoTransaction, from: Address) -> TempoTransactionRequest {
+    let mut request = TempoTransactionRequest::from(tx.clone());
+    request.inner.from = Some(from);
+    let call = request.calls.remove(0);
+    request.inner.to = Some(call.to);
+    request.inner.input = call.input.into();
+    request
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn attested_rpc_simulation_estimation_fill_and_json() -> eyre::Result<()> {
+    let (mut env, signer, ..) = registered_signer().await?;
+    let chain_id = env.chain_id;
+    let attested = signer.address();
+    env.fund_account(attested).await?;
+    let now = env.current_block_timestamp().await?;
+
+    // An attested sender: simulation charges exactly what the signed transaction uses.
+    let tx = create_basic_aa_tx(chain_id, 0, vec![noop_call()], GAS_LIMIT);
+    let mut request = request_for(&tx, attested);
+    request.attested_simulation = Some(signer.simulation_spec(now + 300));
+    let signature = TempoSignature::Attested(signer.sign(tx.signature_hash(), now + 300)?);
+    let envelope: TempoTxEnvelope = tx.into_signed(signature.clone()).into();
+    let simulated = simulated_gas(&env, &request).await?;
+    let _: Bytes = env
+        .provider
+        .raw_request("eth_call".into(), (&request, "latest"))
+        .await?;
+    let access_list: Value = env
+        .provider
+        .raw_request("eth_createAccessList".into(), (&request, "latest"))
+        .await?;
+    assert!(access_list.get("error").is_none(), "{access_list}");
+    let sender_gas = assert_simulation_matches(&mut env, &request, envelope.encoded_2718()).await?;
+    assert_eq!(simulated, sender_gas, "eth_simulateV1 and mined gas differ");
+
+    // The mined transaction reads back with its attested signature, in the transaction, the
+    // block, and the receipt.
+    let hash = *envelope.tx_hash();
+    let tx_json: Value = env
+        .provider
+        .raw_request("eth_getTransactionByHash".into(), (hash,))
+        .await?;
+    assert_eq!(tx_json["signature"]["type"], "attested", "{tx_json}");
+    assert_eq!(tx_json["signature"]["slot"], "0x0");
+    assert_eq!(
+        serde_json::from_value::<TempoSignature>(tx_json["signature"].clone())?,
+        signature
+    );
+    let block: Value = env
+        .provider
+        .raw_request(
+            "eth_getBlockByHash".into(),
+            (tx_json["blockHash"].clone(), true),
+        )
+        .await?;
+    let in_block = block["transactions"]
+        .as_array()
+        .and_then(|txs| txs.iter().find(|tx| tx["hash"] == tx_json["hash"]))
+        .ok_or_else(|| eyre::eyre!("transaction missing from its block"))?;
+    assert_eq!(in_block["signature"], tx_json["signature"]);
+    let trace: Value = env
+        .provider
+        .raw_request("debug_traceTransaction".into(), (hash, json!({})))
+        .await?;
+    assert_eq!(trace["gas"], sender_gas, "{trace}");
+    let typed = alloy::providers::RootProvider::<tempo_alloy::TempoNetwork>::new_http(
+        env.setup.node.rpc_url(),
+    )
+    .get_transaction_by_hash(hash)
+    .await?
+    .ok_or_else(|| eyre::eyre!("transaction not found"))?;
+    assert_eq!(typed.inner.into_inner(), envelope);
+
+    // A key authorization with an attested root, used by its access key in the same transaction.
+    let (authorization, access_key, key_x, key_y) = signer.authorize(chain_id, now + 300)?;
+    let mut tx = create_basic_aa_tx(chain_id, 1, vec![noop_call()], GAS_LIMIT);
+    tx.key_authorization = Some(authorization.clone());
+    let mut request = request_for(&tx, attested);
+    request.key_id = Some(authorization.key_id);
+    request.key_type = Some(SignatureType::P256);
+    request.key_authorization_attested_simulation = Some(signer.simulation_spec(now + 300));
+    let signature = sign_aa_tx_with_p256_access_key(&tx, &access_key, &key_x, &key_y, attested)?;
+    let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
+    let grant_gas = assert_simulation_matches(&mut env, &request, envelope.encoded_2718()).await?;
+    let tx_json: Value = env
+        .provider
+        .raw_request("eth_getTransactionByHash".into(), (*envelope.tx_hash(),))
+        .await?;
+    assert_eq!(
+        tx_json["keyAuthorization"]["signature"]["type"], "attested",
+        "{tx_json}"
+    );
+
+    // A configurable account whose attested owner approves alone.
+    let account = AttestedOwnedAccount::new(&signer, 1, 0x03);
+    env.fund_account(account.address).await?;
+    let tx = create_basic_aa_tx(chain_id, 0, vec![noop_call()], GAS_LIMIT);
+    let mut request = request_for(&tx, account.address);
+    request.configurable_account_simulation = Some(ConfigurableAccountSimulationSpec {
+        signer: None,
+        config: account.config.clone(),
+        approvals: vec![ConfigurableAccountSimulationApproval {
+            owner: attested,
+            key_type: None,
+            key_data: None,
+            attested: Some(signer.simulation_spec(now + 300)),
+        }],
+    });
+    let encoded = account.signed_tx(&signer, chain_id, 0, now + 300, false)?;
+    let approval_gas = assert_simulation_matches(&mut env, &request, encoded).await?;
+    println!(
+        "attested gas used: sender {sender_gas}, key authorization root {grant_gas}, owner approval {approval_gas}"
+    );
+
+    // `eth_fillTransaction` fills a transaction that the program key then signs and sends.
+    let mut request = TempoTransactionRequest::default();
+    request.inner.from = Some(attested);
+    request.inner.to = Some(noop_call().to);
+    request.fee_token = Some(tempo_contracts::precompiles::DEFAULT_FEE_TOKEN);
+    request.attested_simulation = Some(signer.simulation_spec(now + 300));
+    let filled: Value = env
+        .provider
+        .raw_request("eth_fillTransaction".into(), (&request,))
+        .await?;
+    let tx = parse_filled_tx(&filled)?;
+    assert_eq!(tx.nonce, 2);
+    let signature = TempoSignature::Attested(signer.sign(tx.signature_hash(), now + 300)?);
+    let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
+    let hash = *envelope.tx_hash();
+    env.submit_tx(envelope.encoded_2718(), hash).await?;
+
+    // A request naming another address than the attested one, and an approval for another owner.
+    let mut mismatched = request.clone();
+    mismatched.inner.from = Some(Address::repeat_byte(0x42));
+    let error = env
+        .provider
+        .raw_request::<_, Value>("eth_estimateGas".into(), (&mismatched,))
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("attestedSimulation address does not match from"),
+        "{error}"
+    );
+
+    // After `revokeKeys`, simulation, estimation, and submission all fail for the same reason.
+    owner_call(
+        &mut env,
+        IAttestedKeyRegistry::revokeKeysCall {
+            policyId: signer.policy_id,
+        }
+        .abi_encode(),
+    )
+    .await?;
+    let reason = "attested signature rejected: program key is not current";
+    let simulated = simulated_gas(&env, &request).await;
+    let estimated = env
+        .provider
+        .raw_request::<_, Value>("eth_estimateGas".into(), (&request,))
+        .await;
+    let now = env.current_block_timestamp().await?;
+    let tx = create_basic_aa_tx(chain_id, 3, vec![noop_call()], GAS_LIMIT);
+    let signature = TempoSignature::Attested(signer.sign(tx.signature_hash(), now + 300)?);
+    let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
+    let sent = env
+        .provider
+        .send_raw_transaction(&envelope.encoded_2718())
+        .await
+        .map(|_| ());
+    for (method, result) in [
+        ("eth_simulateV1", simulated.map(|_| ())),
+        (
+            "eth_estimateGas",
+            estimated.map(|_| ()).map_err(eyre::Report::from),
+        ),
+        ("eth_sendRawTransaction", sent.map_err(eyre::Report::from)),
+    ] {
+        let error = result.expect_err(method).to_string();
+        assert!(error.contains(reason), "{method}: {error}");
+    }
     Ok(())
 }

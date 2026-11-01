@@ -36,19 +36,27 @@ const COLD_SLOAD_GAS: u64 = 2_100;
 /// Wire format: `0x06 || rlp([policy_id, user_tag, slot, program_key, valid_until, signature])`.
 /// Decoding checks the encoding, the slot range, and the `r`/`s` ranges only. [`Self::recover_signer`] checks the
 /// curve point and the P256 signature. The registry and time checks belong to the caller.
+///
+/// JSON: `{ "type": "attested", policyId, userTag, slot, programKey, validUntil, signature }`, with
+/// `slot` and `validUntil` as hex quantities and `programKey` and `signature` as 64-byte hex.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+#[cfg_attr(
+    feature = "serde",
+    serde(tag = "type", rename = "attested", rename_all = "camelCase")
+)]
 pub struct AttestedSignature {
     /// Attested Key Registry policy that registered the program key.
     pub policy_id: B256,
     /// Tag of the user whose address this signature signs for.
     pub user_tag: B256,
     /// Registry slot of the policy that holds the program key, below [`ATTESTED_KEY_SLOTS`].
+    #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
     pub slot: u8,
     /// Uncompressed P256 program key, `x || y`.
     pub program_key: B512,
     /// Last block timestamp, in seconds, at which the signature is valid.
+    #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
     pub valid_until: u64,
     /// ECDSA P256 signature `r || s` over [`Self::digest`], with low `s`.
     pub signature: B512,
@@ -368,6 +376,38 @@ mod tests {
         six.extend_from_slice(&bytes[3..]);
         six.push(0x80);
         assert!(AttestedSignature::decode_exact(&six).is_err());
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn json_shape_and_roundtrip() {
+        use crate::transaction::{AccountSignature, TempoSignature};
+
+        let signature = signed(B256::ZERO, 1_800_000_600);
+        let json = serde_json::to_value(TempoSignature::Attested(signature.clone())).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "type": "attested",
+                "policyId": signature.policy_id,
+                "userTag": signature.user_tag,
+                "slot": "0x1",
+                "programKey": signature.program_key,
+                "validUntil": "0x6b49d458",
+                "signature": signature.signature,
+            })
+        );
+        for value in [
+            serde_json::from_value::<TempoSignature>(json.clone()).unwrap(),
+            TempoSignature::Attested(
+                match serde_json::from_value::<AccountSignature>(json).unwrap() {
+                    AccountSignature::Attested(signature) => signature,
+                    other => panic!("not attested: {other:?}"),
+                },
+            ),
+        ] {
+            assert_eq!(value, TempoSignature::Attested(signature.clone()));
+        }
     }
 
     #[test]

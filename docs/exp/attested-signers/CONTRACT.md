@@ -73,8 +73,8 @@ attested_address   = keccak256(0x06 ‖ policy_id ‖ user_tag)[12:]
 - Validity: TIP-1160 → Verification. `valid_until >= now`, `valid_until <= now + 600`, `program_key_current`
   (policy exists, not paused, `slot < KEY_SLOTS`, the slot holds this key, unexpired, slot epoch == policy epoch),
   P-256 verify.
-- Accepted as: transaction signature from `attested_address`, and key authorization root signature. Rejected inside
-  keychain signatures, as fee payer, and by TIP-1020 (`InvalidFormat`).
+- Accepted as: transaction signature from `attested_address`, key authorization root signature, configurable-account
+  owner approval, and in TIP-1020. Rejected inside keychain signatures and as fee payer.
 - Gas: P-256 cost (8,000) + 2 × 2,100 + calldata gas of the 73 extra bytes (`policy_id ‖ user_tag ‖ slot ‖
   valid_until`), as TIP-1160 → Gas.
 
@@ -172,8 +172,37 @@ Claude-Session: https://claude.ai/code/session_01D3nmWfxsYgSZCf4nZP5cZY
   Approvals stay sorted by recovered owner address. Each counts as one signature toward the 8-approval limit and
   costs the standalone `0x06` gas. The handler checks its validity window and registry state at the transaction's
   position. TIP-1020 `verifyConfigurableAccount` accepts attested approvals, as above.
-- Not built: pool revalidation on `KeysRevoked`/`PolicyPaused`/`MeasurementRemoved` (a pending transaction fails
-  when it is executed), and RPC gas estimation for `0x06` beyond what the handler does for any signature.
+- Not built: pool revalidation on `KeysRevoked`/`PolicyPaused`/`MeasurementRemoved`/`KeyRegistered` (a pending
+  transaction fails when it is executed).
+
+## RPC
+
+JSON form of a `0x06` signature, wherever a transaction, a block, or a request carries one (the transaction's
+`signature`, `keyAuthorization.signature`):
+
+```json
+{ "type": "attested", "policyId": "0x…32 bytes", "userTag": "0x…32 bytes", "slot": "0x0",
+  "programKey": "0x…64 bytes (x ‖ y)", "validUntil": "0x6b49d458", "signature": "0x…64 bytes (r ‖ s)" }
+```
+
+`slot` and `validUntil` are hex quantities. A `0x05` signature stays one RLP hex string, so its attested approvals
+are the standalone `0x06` bytes inside it.
+
+Simulation before the program key signs. `eth_estimateGas`, `eth_call`, `eth_createAccessList`,
+`eth_fillTransaction`, `debug_traceCall`, and `eth_simulateV1` / `tempo_simulateV1` take, on the request:
+
+| Field | Models |
+|---|---|
+| `attestedSimulation` | The sender's `0x06` signature. `from` must equal its attested address. Excludes `keyId` and `configurableAccountSimulation` |
+| `keyAuthorizationAttestedSimulation` | The `0x06` root signature of the attached `keyAuthorization`. Excludes `keyAuthorizationSimulation` |
+| `configurableAccountSimulation.approvals[].attested` | A `0x06` owner approval. The owner must equal its attested address. Excludes `keyType` and `keyData` |
+
+Each is `{ policyId, userTag, slot, programKey, validUntil? }`. The node builds a placeholder `0x06` signature with
+those fields (`r = s = 1`), reads the registry for `slot` at the block as block validation does, and charges the
+same gas, but skips the P256 verification, as it skips other placeholder signatures. `validUntil` defaults to the
+block timestamp plus 300 (`eth_simulateV1`: the node's clock plus 300). Pass the value the signature will carry
+for an exact estimate: each zero byte of it costs 12 gas less. After `revokeKeys`, each method fails with
+`attested signature rejected: program key is not current`, as `eth_sendRawTransaction` does.
 
 ## Deviations from the TIPs
 
