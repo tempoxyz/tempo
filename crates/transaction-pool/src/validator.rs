@@ -36,7 +36,7 @@ use tempo_chainspec::{
 };
 use tempo_evm::{
     FeePaymentError, TempoEvm, TempoEvmConfig, TempoEvmEnv, TempoEvmTypes, TempoInvalidTransaction,
-    TempoStateAccess,
+    TempoStateAccess, attested,
 };
 use tempo_precompiles::{
     nonce::{INonce, NonceManager},
@@ -448,6 +448,18 @@ where
             );
         }
 
+        // TIP-XXX2: attested signatures pass decoding and the validity window before any curve
+        // operation, such as the fee payer recovery that builds the transaction environment.
+        if let Some(aa) = transaction.inner().as_aa()
+            && let Err(err) =
+                attested::validate_window(aa, evm.block().timestamp.saturating_to::<u64>(), spec)
+        {
+            return TransactionValidationOutcome::Invalid(
+                transaction,
+                InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(err.into())),
+            );
+        }
+
         // Fees below the chain's configured floor can never become executable; fees below
         // the current dynamic base fee can wait for block selection.
         if transaction.max_fee_per_gas() < self.minimum_fee_cap {
@@ -551,6 +563,20 @@ where
                 "successful Tempo handler did not resolve a fee token".into(),
             );
         };
+
+        // Pool recovery derives an attested sender without verifying it, so the P256 check runs
+        // here, after the handler's validity window and registry checks.
+        if let Some(aa) = transaction.inner().as_aa()
+            && let Some(signature) = aa.signature().as_attested()
+            && signature.recover_signer(&aa.signature_hash()).is_err()
+        {
+            return TransactionValidationOutcome::Invalid(
+                transaction,
+                InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(
+                    TempoInvalidTransaction::InvalidP256Signature.into(),
+                )),
+            );
+        }
 
         // Cache the resolved fee token from EVM validation for pool maintenance.
         transaction.set_resolved_fee_token(fee_token);

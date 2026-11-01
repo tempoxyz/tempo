@@ -214,6 +214,17 @@ async fn attested_key_authorization_until_revoked() -> eyre::Result<()> {
     let hash = *envelope.tx_hash();
     env.submit_tx(envelope.encoded_2718(), hash).await?;
 
+    // A program key signature over another digest passes decoding, the window, and the
+    // registry read, and fails the P256 verification that pool admission runs last.
+    let tx = create_basic_aa_tx(chain_id, 1, vec![noop_call()], GAS_LIMIT);
+    let forged = TempoSignature::Attested(signer.sign(B256::ZERO, now + 300)?);
+    let envelope: TempoTxEnvelope = tx.into_signed(forged).into();
+    env.submit_tx_expecting_rejection(
+        envelope.encoded_2718(),
+        Some("P256 signature verification failed"),
+    )
+    .await?;
+
     // The attested signature also signs a transaction directly.
     let tx = create_basic_aa_tx(chain_id, 1, vec![noop_call()], GAS_LIMIT);
     let signature = TempoSignature::Attested(signer.sign(tx.signature_hash(), now + 300)?);
@@ -253,13 +264,36 @@ async fn attested_key_authorization_until_revoked() -> eyre::Result<()> {
     )
     .await?;
 
-    // A signature valid for longer than the window is rejected before the registry read.
+    // Pool admission checks the window, then the registry, before any P256 verification: forged
+    // signatures, as a sender or a key authorization signature, fail those checks first.
     let tx = create_basic_aa_tx(chain_id, 2, vec![noop_call()], GAS_LIMIT);
-    let signature = TempoSignature::Attested(signer.sign(tx.signature_hash(), now + 10_000)?);
-    let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
+    let forged = TempoSignature::Attested(signer.sign(B256::ZERO, now + 10_000)?);
+    let envelope: TempoTxEnvelope = tx.into_signed(forged).into();
     env.submit_tx_expecting_rejection(
         envelope.encoded_2718(),
         Some("attested signature rejected: valid_until too far in the future"),
+    )
+    .await?;
+
+    let tx = create_basic_aa_tx(chain_id, 2, vec![noop_call()], GAS_LIMIT);
+    let forged = TempoSignature::Attested(signer.sign(B256::ZERO, now + 300)?);
+    let envelope: TempoTxEnvelope = tx.into_signed(forged).into();
+    env.submit_tx_expecting_rejection(
+        envelope.encoded_2718(),
+        Some("attested signature rejected: program key is not current"),
+    )
+    .await?;
+
+    let (access_key, key_x, key_y, key_id) = generate_p256_access_key();
+    let authorization = KeyAuthorization::unrestricted(chain_id, SignatureType::P256, key_id)
+        .into_signed(signer.sign(B256::ZERO, now + 300)?);
+    let mut tx = create_basic_aa_tx(chain_id, 2, vec![noop_call()], GAS_LIMIT);
+    tx.key_authorization = Some(authorization);
+    let signature = sign_aa_tx_with_p256_access_key(&tx, &access_key, &key_x, &key_y, attested)?;
+    let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
+    env.submit_tx_expecting_rejection(
+        envelope.encoded_2718(),
+        Some("attested signature rejected: program key is not current"),
     )
     .await?;
     Ok(())

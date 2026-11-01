@@ -1,6 +1,6 @@
 //! Tempo EVM Handler implementation.
 
-mod attested;
+pub mod attested;
 mod config;
 pub(crate) mod configurable_account;
 
@@ -1382,6 +1382,8 @@ fn prepare_aa(
             .validate_version(spec.is_t1c())
             .map_err(TempoInvalidTransaction::from)?;
     }
+    // Attested window and registry checks precede every P256 verification in the handler.
+    attested::validate(request.host, request.tx.inner(), spec)?;
     validate_key_authorization(request.tx.inner(), request.host.version().chain_id, spec)?;
     // Access-key CREATE is a cheap structural rejection that does not depend on any
     // per-call scope walk or state mutation. Rejecting it here keeps validation work
@@ -1444,7 +1446,6 @@ fn prepare_aa(
         tx.valid_before.map(|value| value.get()),
         timestamp,
     )?;
-    attested::validate(request.host, request.tx.inner(), spec)?;
 
     // Configurable-account state checks load more accounts, so transaction warmth goes first.
     request.host.state_mut().prewarm(&caller);

@@ -14,8 +14,8 @@ use alloy_primitives::{
     map::{AddressMap, AddressSet},
 };
 use evm2::registry::HandlerError;
-use reth_evm::execute::WithTxEnv;
-use reth_primitives_traits::{InMemorySize, Recovered, SignerRecoverable};
+use reth_evm::{SenderRecoveryCache, execute::WithTxEnv};
+use reth_primitives_traits::{InMemorySize, Recovered, SignedTransaction, SignerRecoverable};
 use reth_transaction_pool::{
     EthBlobTransactionSidecar, EthPoolTransaction, EthPooledTransaction, PoolTransaction,
     error::{PoolTransactionError, RawPoolTransactionError},
@@ -36,7 +36,9 @@ use tempo_precompiles::{
 };
 use tempo_primitives::{
     TempoTxEnvelope,
-    transaction::{InvalidValidAfter, InvalidValidBefore, calc_gas_balance_spending},
+    transaction::{
+        AttestedSignature, InvalidValidAfter, InvalidValidBefore, calc_gas_balance_spending,
+    },
 };
 use thiserror::Error;
 
@@ -880,6 +882,35 @@ impl PoolTransaction for TempoPooledTransaction {
         Self::new(tx)
     }
 
+    fn try_recover(pooled: Self::Pooled) -> Result<Self, Self::Pooled> {
+        if let Some(sender) = attested_sender(&pooled) {
+            return Ok(Self::new(Recovered::new_unchecked(pooled, sender)));
+        }
+        SignedTransaction::try_into_recovered(pooled).map(Self::from_pooled)
+    }
+
+    fn try_recover_with_cache(
+        pooled: Self::Pooled,
+        cache: &SenderRecoveryCache,
+    ) -> Result<Self, Self::Pooled> {
+        // An unverified attested sender must not reach the cache that block import trusts.
+        if attested_sender(&pooled).is_some() {
+            return Self::try_recover(pooled);
+        }
+        match cache.recover(&pooled) {
+            Ok(signer) => Ok(Self::from_pooled(Recovered::new_unchecked(pooled, signer))),
+            Err(_) => Err(pooled),
+        }
+    }
+
+    fn recover_raw_transaction_with_cache(
+        data: &[u8],
+        cache: &SenderRecoveryCache,
+    ) -> Result<Self, RawPoolTransactionError> {
+        Self::try_recover_with_cache(Self::decode_raw_transaction(data)?, cache)
+            .map_err(|_| RawPoolTransactionError::InvalidTransactionSignature)
+    }
+
     fn recover_raw_transaction(data: &[u8]) -> Result<Self, RawPoolTransactionError> {
         if data.is_empty() {
             return Err(RawPoolTransactionError::EmptyRawTransactionData);
@@ -890,6 +921,14 @@ impl PoolTransaction for TempoPooledTransaction {
             .map_err(|_| RawPoolTransactionError::FailedToDecodeSignedTransaction)?;
 
         let (signer, expiring_nonce_hash) = match &transaction {
+            TempoTxEnvelope::AA(tx) if let Some(signature) = tx.signature().as_attested() => {
+                let signer = signature.address();
+                let expiring_nonce_hash = tx
+                    .tx()
+                    .is_expiring_nonce_tx()
+                    .then(|| tx.expiring_nonce_hash(signer));
+                (signer, expiring_nonce_hash)
+            }
             TempoTxEnvelope::AA(tx) => tx
                 .recover_signer_with_expiring_nonce_hash()
                 .map_err(|_| RawPoolTransactionError::InvalidTransactionSignature)?,
@@ -1193,6 +1232,20 @@ impl KeyAuthorizationTargetSubject {
     pub fn matches_key_update(&self, key_updates: &RevokedKeys) -> bool {
         key_updates.contains(self.account, self.key_id)
     }
+}
+
+/// Returns the sender of an AA transaction signed by an attested signature, derived from its
+/// policy ID and user tag without a curve operation.
+///
+/// Pool admission orders the attested checks as TIP-XXX2 requires: decoding, then the validity
+/// window, then the registry read, then the P256 verification. The validator verifies the P256
+/// signature after the handler's registry read.
+fn attested_sender(transaction: &TempoTxEnvelope) -> Option<Address> {
+    transaction
+        .as_aa()?
+        .signature()
+        .as_attested()
+        .map(AttestedSignature::address)
 }
 
 #[cfg(test)]

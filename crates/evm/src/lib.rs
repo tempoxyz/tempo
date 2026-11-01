@@ -37,7 +37,7 @@ pub use fee_manager::{
 };
 pub use handler::{
     EXPIRING_NONCE_GAS, TempoBlockEnv, TempoBlockExt, TempoConfig, TempoConfigSelector,
-    TempoEvmExt, TempoEvmTypes, TempoTxResultExt, build_tempo_evm,
+    TempoEvmExt, TempoEvmTypes, TempoTxResultExt, attested, build_tempo_evm,
     configurable_account::account_access_gas, tempo_execution_config, tempo_opcode_config,
     tempo_tx_registry,
 };
