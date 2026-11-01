@@ -373,15 +373,15 @@ impl AttestedKeyRegistry {
             .ok_or_else(AttestedKeyRegistryError::invalid_attestation)?;
         // TIP-XXX4 steps 5 and 6: PCR0-2 present, 48 bytes, not all zero, and `user_data`
         // equal to the binding.
-        let mut pcrs = Vec::with_capacity(3 * 48);
-        for index in 0..3 {
+        let mut pcrs = [0u8; 3 * 48];
+        for (index, chunk) in (0..).zip(pcrs.chunks_exact_mut(48)) {
             let pcr = attestation
                 .pcrs
                 .iter()
                 .find(|pcr| pcr.index == index)
                 .filter(|pcr| pcr.value.len() == 48 && pcr.value.iter().any(|byte| *byte != 0))
                 .ok_or_else(AttestedKeyRegistryError::invalid_attestation)?;
-            pcrs.extend_from_slice(&pcr.value);
+            chunk.copy_from_slice(&pcr.value);
         }
         if attestation.user_data.as_slice() != binding.as_slice() {
             return Err(AttestedKeyRegistryError::invalid_attestation().into());
@@ -450,13 +450,16 @@ impl AttestedKeyRegistry {
 
     /// `keccak256("tempo:attested-key" || chainid || registry || policy_id || x || y)`.
     fn binding(&self, policy_id: B256, x: B256, y: B256) -> Result<B256> {
-        let mut preimage = Vec::with_capacity(BINDING_DOMAIN.len() + 32 + 20 + 96);
-        preimage.extend_from_slice(BINDING_DOMAIN);
-        preimage.extend_from_slice(&U256::from(self.storage.chain_id()).to_be_bytes::<32>());
-        preimage.extend_from_slice(ATTESTED_KEY_REGISTRY_ADDRESS.as_slice());
-        preimage.extend_from_slice(policy_id.as_slice());
-        preimage.extend_from_slice(x.as_slice());
-        preimage.extend_from_slice(y.as_slice());
+        let chain_id = U256::from(self.storage.chain_id()).to_be_bytes::<32>();
+        let preimage = [
+            BINDING_DOMAIN,
+            &chain_id,
+            ATTESTED_KEY_REGISTRY_ADDRESS.as_slice(),
+            policy_id.as_slice(),
+            x.as_slice(),
+            y.as_slice(),
+        ]
+        .concat();
         self.storage.keccak256(&preimage)
     }
 
@@ -506,8 +509,9 @@ impl AttestedKeyRegistry {
             .epoch
             .checked_add(1)
             .ok_or_else(TempoPrecompileError::under_overflow)?;
-        self.policies[policy_id].write(policy.clone())?;
-        Ok(policy.epoch)
+        let epoch = policy.epoch;
+        self.policies[policy_id].write(policy)?;
+        Ok(epoch)
     }
 }
 
