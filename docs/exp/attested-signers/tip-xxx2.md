@@ -18,14 +18,14 @@ This TIP adds signature type `0x06`, the attested signature. Its address derives
 
 ## Motivation
 
-A signer program in a trusted execution environment checks a user's sign-in, then needs to sign for that user's address. Existing signature types derive an address from the signing key, so every user would share the program key's single address. An attested signature separates the two: the program key proves that approved code signed, and the user tag selects which user's address it signed for.
+A signer program in a trusted execution environment authorizes an operation for a user, then needs to sign for that user's address. Existing signature types derive an address from the signing key, so every user would share the program key's single address. An attested signature separates the two: the program key proves that approved code signed, and the user tag selects which user's address it signed for.
 
-The node cannot check the user's sign-in itself. It checks that the program key is registered, which proves the code is approved ([TIP-XXX3](./tip-xxx3.md#registration)). The approved code is responsible for signing a user tag only after that user's sign-in.
+The node cannot check how the user authorized the operation. It checks that the program key is registered, which proves the code is approved ([TIP-XXX3](./tip-xxx3.md#registration)). The approved code is responsible for signing for a user tag only as its authorization rules allow ([TIP-XXX1](./tip-xxx1.md#reference-authorization-profile)).
 
 ## Assumptions
 
 - [TIP-XXX3](./tip-xxx3.md) is active, with its storage layout fixed.
-- Approved signer programs sign a user tag only after a valid sign-in for that user ([TIP-XXX1](./tip-xxx1.md#assumptions)).
+- Approved signer programs sign for a user tag only as their measured authorization rules allow ([TIP-XXX1](./tip-xxx1.md#assumptions)).
 - Consensus keeps block timestamps close to real time.
 - Configurable accounts (TIP-1114, in draft) are not required. Where they are active, an attested signature can approve as an owner.
 
@@ -162,7 +162,7 @@ attested_cost = 8,000                  // P256 verification, as TIP-0001 prices 
               + calldata_gas(policy_id || user_tag || valid_until)
 ```
 
-As a transaction signature, `attested_cost - 3,000` is added to the 21,000 base, as TIP-0001 does for P256. With non-zero bytes, `calldata_gas` of the 72 extra bytes is 1,152 gas, so a transaction signature adds 10,352 gas to the base. TIP-1020 charges `attested_cost`.
+As a transaction signature, `attested_cost - 3,000` is added to the 21,000 base, as TIP-0001 does for P256. With non-zero bytes, `calldata_gas` of the 72 extra bytes is 1,152 gas, so a transaction signature adds at most 10,352 gas to the base. Zero bytes cost 4 gas, so a `valid_until` below 2^32 costs 48 gas less. TIP-1020 charges `attested_cost`.
 
 ## Activation
 
@@ -182,7 +182,7 @@ Attested signatures add no new contract interface. The registry interface is in 
 | Integration | What changes |
 |---|---|
 | SDKs, such as ox and Viem | Need `attested_address` and `attested_digest` derivation, `0x06` encoding and decoding, and builders for attested-signed transactions, key authorizations, and owner approvals |
-| Wallets | Sign key authorizations through a signer program, then sign later transactions with the access key, as for other access keys |
+| Wallets | Request attested signatures for transactions, key authorizations, owner approvals, and messages through the wallet operator. Access keys stay optional |
 | RPC simulation and gas estimation | MUST apply the same checks and charges as block validation, and report which check failed |
 | TIP-1020 callers | `verify` and `recover` accept attested signatures checked against the current registry state |
 | Existing signature types | Unchanged |
