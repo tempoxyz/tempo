@@ -22,6 +22,11 @@ A signer program in a trusted execution environment authorizes an operation for 
 
 The node cannot check how the user authorized the operation. It checks that the program key is registered, which proves the code is approved ([TIP-XXX3](./tip-xxx3.md#registration)). The approved code is responsible for signing for a user tag only as its authorization rules allow ([TIP-XXX1](./tip-xxx1.md#reference-authorization-profile)).
 
+### Alternatives considered
+
+- **The program key as the signer, with the user tag in calldata:** every user would share one address, and a program key rotation would move every account.
+- **Measurement in the address:** every signer program upgrade would move every account.
+
 ## Assumptions
 
 - [TIP-XXX3](./tip-xxx3.md) is active, with its storage layout fixed.
@@ -35,14 +40,19 @@ The node cannot check how the user authorized the operation. It checks that the 
 
 ## Overview
 
-An attested signature names a policy, a user tag, a program key, and an expiry, and carries the program key's signature. The node checks four things, in this order:
+This TIP owns the last step of the [attested signer lifecycle](./tip-xxx1.md#lifecycle), verification. Its input is a signature that a signer program made with a program key that [TIP-XXX3](./tip-xxx3.md) registered. Its outcome is the signer's address, or a rejection. The terms come from [TIP-XXX1](./tip-xxx1.md#terms).
+
+An attested signature names a policy, a user tag, a program key, and an expiry, and carries the program key's signature. The node checks these things, in this order:
 
 1. The encoding is canonical and the type is active.
-2. The registry holds the program key as current for the policy.
-3. The program key signed the [signed digest](#signed-digest) for this context.
-4. The signer is the address derived from the policy ID and user tag.
+2. The expiry is within the [validity window](#verification) at the block's timestamp.
+3. The registry holds the program key as current for the policy.
+4. The program key signed the [signed digest](#signed-digest) for this context.
+5. The signer is the address derived from the policy ID and user tag.
 
 The registry check is the authority boundary. A valid P256 signature from an unregistered key, or from a key registered for another policy, is rejected.
+
+In the illustrative [TIP-XXX1 scenario](./tip-xxx1.md#sign-in-and-signing), the context is Alice's transaction, so the program key signs over that transaction's signing hash, and the sender is `attested_address(P, userTag)`. The same signature format serves the other [accepted contexts](#accepted-contexts) with a different context digest.
 
 ## Constants
 
@@ -91,11 +101,13 @@ attested_digest = keccak256(
 )
 ```
 
+`d` is the context digest:
+
 | Context | `d` |
 |---|---|
 | Transaction signature | Transaction signing hash ([TIP-0001](./tip-0001.md)) |
 | Key authorization signature | Key authorization digest ([TIP-0001](./tip-0001.md)) |
-| Multisig owner approval | The owner-approval digest defined by TIP-1114, where active |
+| Configurable-account owner approval | The owner-approval digest defined by TIP-1114, where active |
 | TIP-1020 `recover` and `verify` | The hash passed to the precompile |
 
 The program key signs `attested_digest` with ECDSA over P256, with no further hashing. The ASCII domain keeps the digest distinct from other uses of the key. The digest covers every field except `signature`, so no other byte can change without the program key.
@@ -115,6 +127,8 @@ verify_attested_signature(signature, d, block):
     return attested_address(s.policy_id, s.user_tag)
 ```
 
+The validity window is the time check above: `valid_until` is at least the block's timestamp and at most `MAX_VALIDITY_WINDOW` seconds after it.
+
 - `program_key_current` reads registry storage at the transaction's position in the block ([TIP-XXX3](./tip-xxx3.md#node-reads)). A `revokeKeys`, `pause`, or `removeMeasurement` earlier in the same block applies.
 - `p256_verify` checks that `program_key` is on the curve before verifying.
 - Outside pool admission, such as sender recovery during block import, decoding and `p256_verify` MAY run before the registry read. The result MUST equal running every step in order.
@@ -127,7 +141,7 @@ An attested signature is accepted as:
 
 - the signature of a Tempo transaction (type `0x76`) sent from its `attested_address`;
 - the root signature of a key authorization for its `attested_address` ([TIP-0001](./tip-0001.md));
-- an owner approval in a TIP-1114 multisig signature, where TIP-1114 is active;
+- an owner approval in a TIP-1114 configurable-account signature, where TIP-1114 is active;
 - a signature checked by TIP-1020 `recover` and `verify` for any hash, as in [TIP-1020 verification](#tip-1020-verification).
 
 It MUST be rejected:
@@ -168,11 +182,6 @@ As a transaction signature, `attested_cost - 3,000` is added to the 21,000 base,
 
 Activation is hardfork-gated, together with [TIP-XXX3](./tip-xxx3.md) and at least one attestation scheme. The owner-approval context applies once TIP-1114 is also active.
 
-## Alternatives Considered
-
-- **The program key as the signer, with the user tag in calldata:** every user would share one address, and a program key rotation would move every account.
-- **Measurement in the address:** every signer program upgrade would move every account.
-
 ## Interfaces
 
 Attested signatures add no new contract interface. The registry interface is in [TIP-XXX3](./tip-xxx3.md#interfaces).
@@ -207,7 +216,7 @@ The local authority boundary is the registry read. [TIP-XXX1](./tip-xxx1.md#thre
 
 - An attested signature authorizes only the digest its program key signed, and no byte of it can change without the program key.
 - An attested signature is valid only while the registry holds its program key as current for its policy, read at the transaction's position in the block.
-- An attested signature is accepted only as a transaction signature, a key authorization signature, a multisig owner approval, or by TIP-1020 `verify` and `recover`.
+- An attested signature is accepted only as a transaction signature, a key authorization signature, a configurable-account owner approval, or by TIP-1020 `verify` and `recover`.
 - The address is independent of the program key, the measurement, the expiry, and the chain.
 - Before activation, `0x06` is rejected in every context.
 

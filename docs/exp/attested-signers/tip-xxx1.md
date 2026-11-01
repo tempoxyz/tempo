@@ -24,11 +24,11 @@ Wallets that offer "Continue with email" or "Continue with Google" run a server 
 - an insider or a bad deploy can do the same, with no visible change;
 - users cannot tell what the server signs for them until it is onchain.
 
-Moving the key into a key management service (KMS) prevents theft of the key, but the server still decides when to use it. The decision is the problem, not the storage.
+Moving the key into a key management service (KMS) prevents theft of the key, but the server still decides when to use it. The risk lies in that decision.
 
 An attested signer moves the decision into a program whose exact code the chain can identify. A TEE runs the program in memory that the host cannot read or change. An attestation service certifies a measurement of the program, a hash of its code, together with a key that the program generated. The chain accepts that key only if a policy lists the measurement. Different code has a different measurement, so a compromised operator cannot produce an accepted key.
 
-The program, not the protocol, checks how the user signed in. The chain sees only a policy ID and a user tag, so a wallet can add a sign-in method by approving new code, with no protocol change.
+The signer program checks how the user signed in. The chain sees only a policy ID and a user tag, so a wallet can add a sign-in method by approving new code, with no protocol change.
 
 ### Alternatives considered
 
@@ -65,16 +65,18 @@ The program, not the protocol, checks how the user signed in. The chain sees onl
 | Policy | An onchain record naming one scheme, its approved measurements, its trust anchors, an owner, a guardian, and a delay ([TIP-XXX3](./tip-xxx3.md)). |
 | Identity method | A way to prove an identity to the program, such as an email code, an OpenID Connect ID token, or a wallet signature. The program defines each method. |
 | Identity | A method name and a normalized identifier, such as `email:alice@example.com` or `google:<sub>`. |
-| User tag | A 32-byte value that the program derives from an identity. The chain treats it as opaque. |
+| User tag | A 32-byte value that the program derives from an identity with its secret `k` ([Identity methods](#identity-methods)). The chain treats it as opaque. |
 | Device key | A P256 key that the user's client generates at each sign-in. It never leaves the client. |
 | Device binding | A record, issued by the program at sign-in, that binds one device key to one user tag until it expires. |
+| Device proof | A signature by the device key over one digest ([reference profile](#reference-authorization-profile)). |
+| Wallet operator | The party that runs the wallet's servers and its signer program, serves the wallet client's code, and approves each signature. |
 | Operator approval | A signature by the wallet operator over one digest for one device. |
 | Attested signer | The address derived from a policy ID and a user tag ([TIP-XXX2](./tip-xxx2.md#address-derivation)). |
 
 ### Lifecycle
 
 1. **Approval.** A policy owner proposes a measurement. After the policy's delay, the measurement is active.
-2. **Registration.** The program generates a program key and obtains an attestation document that binds the key to this chain, the registry, and the policy. Anyone submits it to `registerKey`. The registry verifies it under the policy's scheme and records the key for 600 seconds. The program registers a new key before each one expires.
+2. **Registration.** The program generates a program key and obtains an attestation document that binds the key to this chain, the registry, and the policy. Anyone submits it to `registerKey`. The registry verifies it under the policy's scheme and records the key for at most 600 seconds. The program registers a new key before each one expires.
 3. **Sign-in.** The client generates a device key. The user proves an identity with one identity method, and the proof commits to the device key. The program checks the proof, derives the user tag, and issues a device binding.
 4. **Signing.** For each operation, the client signs a device proof over the digest, and the wallet operator approves the same digest. The program checks the binding, the device proof, and the approval, then signs the digest with its program key.
 5. **Verification.** The chain checks that the program key is registered and current, verifies the signature, and derives the signer address from the policy ID and user tag.
@@ -83,29 +85,7 @@ Steps 1, 2, and 5 are consensus rules. Steps 3 and 4 are rules of the measured c
 
 The critical authority boundary is the measurement check at registration. Only code whose measurement the policy approved can hold a registered program key, and only a registered program key can sign for the policy's addresses. Inside that code, the second boundary is the pair of device proof and operator approval: neither the device nor the operator gets a signature alone.
 
-### Components
-
-Read the components in this order:
-
-| TIP | What it adds | Why read it here |
-|---|---|---|
-| [TIP-XXX2: Attested Signatures](./tip-xxx2.md) | Signature type `0x06`, address derivation, validity rules, accepted contexts, and gas | Defines what a transaction carries and how the node checks it |
-| [TIP-XXX3: Attested Key Registry](./tip-xxx3.md) | Policies, delays, the guardian, `registerKey`, and the scheme interface | Defines where program keys and approved measurements come from |
-| [TIP-XXX4: AWS Nitro Enclaves Attestation](./tip-xxx4.md) | Scheme `0x01` | First scheme, reusing the Zone verifier's Nitro attestation code |
-| [TIP-XXX5: Google Cloud Confidential Space Attestation](./tip-xxx5.md) | Scheme `0x02` | Second scheme, using RS256 tokens and policy trust anchors |
-
-The signature and registry TIPs activate in the same hardfork as at least one scheme. Later schemes activate independently.
-
-### Scope
-
-- Identity methods, device bindings, and operator approvals are rules of the signer program, not of the protocol. Adding a method is a new measurement, not a hardfork.
-- Attested signatures sign transactions, key authorizations, and configurable-account owner approvals. Contracts verify them for any hash through TIP-1020, against the current registry state.
-- Access keys are optional. An attested signer can authorize one like any account owner.
-- Each identity is a separate attested signer. A configurable account with several attested signers as owners links one person's methods.
-- Each policy uses one scheme. Combining schemes uses configurable-account thresholds.
-- Attested signer addresses do not depend on the measurement, so upgrades of the signer program keep every address.
-
-## Sign-in and signing
+### Sign-in and signing
 
 The following scenario is illustrative. Alice signs in to a wallet with the email address `alice@example.com` under policy `P`, whose signer program runs in an AWS Nitro Enclave. Email is one identity method. Another method changes only the challenge and the proof in steps 10 to 14.
 
@@ -124,7 +104,7 @@ sequenceDiagram
     S->>A: Request a document binding programKey to chain, registry, P
     A-->>S: Attestation document (measurement, binding)
     S->>T: registerKey(P, document, programKey)
-    T-->>S: Registered until now + 600 s
+    T-->>S: Registered until at most now + 600 s
 
     Note over U,S: Sign-in (any identity method)
     U->>W: Continue with alice@example.com
@@ -135,7 +115,7 @@ sequenceDiagram
     U->>W: Code
     W->>O: Code
     O->>S: Finish sign-in (code, deviceKey)
-    S->>S: Check the code<br/>userTag = HMAC(k, "email:alice@example.com")
+    S->>S: Check the code<br/>userTag = HMAC-SHA256(k, "tempo:user-tag:v1" || "email:alice@example.com")
     S-->>O: Device binding for deviceKey and userTag
     O-->>W: Session for the device
 
@@ -160,9 +140,21 @@ sequenceDiagram
 6. The signer program checks the binding, the device proof, and the approval, then signs the digest ([TIP-XXX2](./tip-xxx2.md#signed-digest)).
 7. The transaction is sent from Alice's attested signer address. The node verifies the attested signature ([TIP-XXX2](./tip-xxx2.md#verification)).
 
-The same path signs key authorizations, configurable-account owner approvals, and messages. If Alice enters a wrong code, the program issues no binding. If the device proof or the approval is missing or names another digest, the program signs nothing. If the program key expires before the transaction lands, the node rejects the signature, and the wallet requests a new one. The wallet operator can forward each operation in one round trip from the wallet, and it can revoke the device at once.
+The same path signs key authorizations, configurable-account owner approvals, and messages.
 
-## Trust
+Each failure stops the operation at a different point:
+
+| Failure | Outcome |
+|---|---|
+| Alice enters a wrong code | The program issues no binding |
+| The device proof or the approval is missing or names another digest | The program signs nothing |
+| The program key expires before the transaction lands | The node rejects the signature, and the wallet requests a new one |
+
+The wallet operator can forward each operation in one round trip from the wallet, and it can revoke the device at once.
+
+### Trust
+
+Each party's authority, and its limit:
 
 | Party | Can | Cannot |
 |---|---|---|
@@ -176,18 +168,32 @@ The same path signs key authorizations, configurable-account owner approvals, an
 | User's device | Sign device proofs | Sign without the operator's approval |
 | Validators | Nothing beyond their existing role | |
 
-## Costs
+The [Threat Model](#threat-model) traces what happens when each party is compromised.
 
-Dollar amounts use the [TIP-1067](./tip-1067.md) base-fee cap of 1.2 × 10^10 attodollars per gas.
+### Scope
 
-| Operation | Gas | Cost at the cap | Paid |
-|---|---|---|---|
-| Registering a Nitro program key with a five-certificate chain | 790,000 for verification ([TIP-XXX4](./tip-xxx4.md#gas)), plus storage and calldata | about $0.0095 | Every 600 seconds or less, for each running signer program |
-| Registering a Confidential Space program key | To be measured ([TIP-XXX5](./tip-xxx5.md#gas)) | | Every 600 seconds or less, for each running signer program |
-| Verifying an attested signature | P256 verification plus 4,200 ([TIP-XXX2](./tip-xxx2.md#gas)) | about $0.00015 | Each operation that the attested signer signs |
-| Transactions signed by an access key | No extra gas | | Where the user authorized an access key |
+- Identity methods, device bindings, and operator approvals are rules of the signer program, not of the protocol. Adding a method is a new measurement, not a hardfork. The chain cannot check identity methods, device bindings, or approvals. It checks only that approved code signed.
+- A policy cannot express an approval that depends on claims other than the measurement, such as a cloud project. The signer program enforces those conditions itself.
+- Attested signatures sign transactions, key authorizations, and configurable-account owner approvals. Contracts verify them for any hash through TIP-1020, against the current registry state.
+- Access keys are optional. An attested signer can authorize one like any account owner.
+- Each identity is a separate attested signer. A configurable account with several attested signers as owners links one person's methods.
+- Each policy uses one scheme. Combining schemes uses configurable-account thresholds.
+- Attested signer addresses do not depend on the measurement, so upgrades of the signer program keep every address.
+- Program keys are not portable between chains, because the binding names the chain ID and the registry.
+- Moving an existing account to an attested signer requires a configurable account that adds the attested signer as an owner.
 
-At one registration every 600 seconds, one Nitro signer program costs about $1.37 per day at the cap.
+### Components
+
+Read the components in this order. Each one opens with its role in the lifecycle above and links back here for shared context.
+
+| TIP | What it adds | Why read it here |
+|---|---|---|
+| [TIP-XXX2: Attested Signatures](./tip-xxx2.md) | Signature type `0x06`, address derivation, validity rules, accepted contexts, and gas | Defines what a transaction carries and how the node checks it (lifecycle step 5). The other components produce the registry state that this check reads |
+| [TIP-XXX3: Attested Key Registry](./tip-xxx3.md) | Policies, delays, the guardian, `registerKey`, and the scheme interface | Defines where program keys and approved measurements come from (lifecycle steps 1 and 2) |
+| [TIP-XXX4: AWS Nitro Enclaves Attestation](./tip-xxx4.md) | Scheme `0x01` | First scheme, reusing the Zone verifier's Nitro attestation code. It implements the scheme interface of TIP-XXX3 |
+| [TIP-XXX5: Google Cloud Confidential Space Attestation](./tip-xxx5.md) | Scheme `0x02` | Second scheme, using RS256 tokens and policy trust anchors. It implements the same interface |
+
+The signature and registry TIPs activate in the same hardfork as at least one scheme. Later schemes activate independently.
 
 ## Signer program requirements
 
@@ -196,9 +202,9 @@ These requirements are not consensus rules. They determine whether a policy's ad
 ### General
 
 - **No operator configuration.** The program MUST NOT read security-relevant configuration from its operator, such as identity provider keys, the email account, the operator's approval key, or the KMS key. All of it is part of the measured code. An operator can run approved code anywhere, so its behavior must not depend on where it runs.
-- **Secrets.** `k` and the device binding key are secrets that a KMS releases only to TEEs with an approved measurement. The release policy MUST cover the old and new measurements during an upgrade. Losing `k` prevents users from signing in again.
+- **Secrets.** `k` (the key of the [user tag](#identity-methods)) and the device binding key (which seals bindings in the [reference profile](#reference-authorization-profile)) are secrets that a KMS releases only to TEEs with an approved measurement. The release policy MUST cover the old and new measurements during an upgrade. Losing `k` prevents users from signing in again.
 - **Program keys.** The program SHOULD generate a new program key for each registration and register it at least 120 seconds before the current one expires.
-- **Transport.** The program SHOULD accept requests only from the wallet operator, over mTLS. The operator serves the client's code, so a compromised operator can read sign-in proofs or swap device keys for users who sign in during the compromise. A direct path from the client to the program helps only for clients whose code the operator does not serve.
+- **Transport.** The program SHOULD accept requests only from the wallet operator, over mutual TLS (mTLS). The operator serves the client's code, so a compromised operator can read sign-in proofs or swap device keys for users who sign in during the compromise. A direct path from the client to the program helps only for clients whose code the operator does not serve.
 - **Builds.** The program MUST build reproducibly from published source. Before the owner proposes a measurement, at least two independent parties SHOULD rebuild it and confirm the measurement. During the delay, monitors SHOULD rebuild every proposed measurement from its published commit.
 
 ### Identity methods
@@ -226,18 +232,28 @@ A passkey usually needs no signer program. It is a native Tempo signer and can o
 
 A policy MAY approve code with other authorization rules. This profile is the reference.
 
-- **Device binding.** At sign-in, the program issues the binding as a token that it seals with the device binding key, over the user tag, the device key, the chain, the policy, and an expiry of at most 30 days. Only a verified sign-in issues one.
+- **Device binding.** At sign-in, the program issues the binding as a token that it seals with the device binding key. The token covers the user tag, the device key, the chain, the policy, and an expiry of at most 30 days. Only a verified sign-in issues one.
 - **Device proof.** The device key signs `keccak256("tempo:attested-device" || chainId || policyId || userTag || deviceKeyId || digest || nonce || timestamp)`. The program accepts a timestamp within 60 seconds of its clock and rejects a nonce it saw in that window.
 - **Operator approval.** The operator's approval key signs `keccak256("tempo:attested-approval" || chainId || policyId || userTag || deviceKeyId || digest || nonce || expiry)`, with an expiry of at most 120 seconds. The approval key's public key is fixed in the measured code or in the policy.
 - **Signing.** The program signs a digest only if the binding, the device proof, and the approval are valid and name the same user tag, device key, digest, and nonce.
 - **Rate limits.** The program limits sign-ins for each identity and in total, and signatures for each device.
 
-## Scope boundaries
+## Costs
 
-- A policy cannot express an approval that depends on claims other than the measurement, such as a cloud project. The signer program enforces those conditions itself.
-- The chain cannot check identity methods, device bindings, or approvals. It checks only that approved code signed.
-- Program keys are not portable between chains, because the binding names the chain ID and the registry.
-- Moving an existing account to an attested signer requires a configurable account that adds the attested signer as an owner.
+Dollar amounts use the [TIP-1067](./tip-1067.md) base-fee cap of 1.2 × 10^10 attodollars per gas.
+
+| Operation | Gas | Cost at the cap | Paid |
+|---|---|---|---|
+| Registering a Nitro program key with a five-certificate chain | 790,000 for verification ([TIP-XXX4](./tip-xxx4.md#gas)), plus storage and calldata | about $0.0095 | Every 600 seconds or less, for each running signer program |
+| Registering a Confidential Space program key | To be measured ([TIP-XXX5](./tip-xxx5.md#gas)) | | Every 600 seconds or less, for each running signer program |
+| Verifying an attested signature | P256 verification plus 4,200 ([TIP-XXX2](./tip-xxx2.md#gas)) | about $0.00015 | Each operation that the attested signer signs |
+| Transactions signed by an access key | No extra gas | | Where the user authorized an access key |
+
+At one registration every 600 seconds, one Nitro signer program costs about $1.37 per day at the cap.
+
+## Interfaces
+
+This TIP adds no interface of its own. [TIP-XXX3](./tip-xxx3.md#interfaces) defines the registry interface. The signature type and the attestation schemes add no contract interface.
 
 # Compatibility
 
@@ -250,8 +266,8 @@ No existing transaction, account, or signature changes. Before activation, type 
 | Wallet operators | Run a signer program in a TEE, register its program keys, operate a policy with an owner and guardian ([TIP-XXX3](./tip-xxx3.md)), and approve each signature |
 | Explorers and indexers | Decode type `0x06` signatures and registry events. An attested signer is an ordinary account with no code |
 | Contracts using TIP-1020 | `recover` and `verify` accept attested signatures checked against the current registry state ([TIP-XXX2](./tip-xxx2.md#tip-1020-verification)) |
-| RPC simulation and gas estimation | Apply the same registry reads and charges as block validation, and report which check failed |
-| Existing accounts | Unchanged. Moving to an attested signer needs a configurable account, where active |
+| RPC simulation and gas estimation | Apply the same registry reads and charges as block validation, and report which check failed ([TIP-XXX2](./tip-xxx2.md#compatibility)) |
+| Existing accounts | Unchanged. [Scope](#scope) covers moving one to an attested signer, which needs a configurable account, where active |
 
 # Observability
 
@@ -264,7 +280,7 @@ The registry emits events for policy changes and registrations ([TIP-XXX3](./tip
 | Did an incident response take effect? | `KeysRevoked`, `PolicyPaused`, and `MeasurementRemoved` |
 | Is a signer program healthy? | A `KeyRegistered` event for its policy at least every 600 seconds |
 
-Monitors SHOULD alert on every `MeasurementProposed` whose measurement no independent rebuild reproduces, and on a policy with no current program key. Wallet operators SHOULD log approvals and device revocations. Nodes SHOULD export attested-signature rejections by reason.
+Monitors SHOULD alert on every `MeasurementProposed` whose measurement no independent rebuild reproduces, and on a policy with no current program key. Wallet operators SHOULD log approvals and device revocations. [TIP-XXX2](./tip-xxx2.md#observability) recommends that nodes export attested-signature rejections by reason.
 
 # Threat Model
 

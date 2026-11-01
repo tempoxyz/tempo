@@ -22,6 +22,12 @@ Confidential Space runs one container image in a Confidential VM, whose memory i
 
 The token is an OpenID Connect style JWT, so the node verifies it with RSA and a JSON parser. Google publishes its signing keys and rotates them, so each policy lists the keys it trusts, and additions wait for the policy's delay.
 
+### Alternatives considered
+
+- **Listing anchors in consensus:** each Google key rotation would need a hardfork.
+- **Including the project or service account in the measurement:** the measurement identifies code. Approved code enforces any deployment conditions itself ([TIP-XXX1](./tip-xxx1.md#signer-program-requirements)).
+- **Accepting debug or non-production images:** their memory or launch policy is under the operator's control.
+
 ## Assumptions
 
 - Google Cloud Attestation signs a token only for a VM it verified, with claims that match that VM.
@@ -33,6 +39,8 @@ The token is an OpenID Connect style JWT, so the node verifies it with RSA and a
 # Specification
 
 ## Overview
+
+This TIP is one [attestation scheme](./tip-xxx1.md#terms) for step 2 of the [attested signer lifecycle](./tip-xxx1.md#lifecycle), registration. Its input is a Confidential Space token and RSA modulus that a signer program submits to `registerKey`, with the binding that the registry computes. Its outcome is the measurement, issue time, expiry, and anchor that the [registration checks](./tip-xxx3.md#registration) use, or a failure.
 
 A signer program in Confidential Space generates a program key, computes the registration's [binding](./tip-xxx3.md#binding), and requests a token with audience `ATTESTATION_AUDIENCE` and the binding as a nonce. It registers with the token and the RSA modulus that signed it. The scheme checks that the modulus is a policy anchor, verifies the signature, then checks the claims.
 
@@ -121,12 +129,6 @@ cs_gas = CS_BASE_GAS + CS_BYTE_GAS * len(token)
 
 The modular exponentiation and SHA-256 prices are those of the existing precompiles. `CS_BASE_GAS` and `CS_BYTE_GAS` are set from a benchmark of decoding and parsing a maximum-size token on the reference machine.
 
-## Alternatives Considered
-
-- **Listing anchors in consensus:** each Google key rotation would need a hardfork.
-- **Including the project or service account in the measurement:** the measurement identifies code. Approved code enforces any deployment conditions itself ([TIP-XXX1](./tip-xxx1.md#signer-program-requirements)).
-- **Accepting debug or non-production images:** their memory or launch policy is under the operator's control.
-
 ## Interfaces
 
 This scheme adds no contract interface. Policies select it with `scheme = 0x02` in [`createPolicy`](./tip-xxx3.md#interfaces).
@@ -145,7 +147,7 @@ No new events. `AnchorProposed` and `AnchorRemoved` record key changes, and `Key
 
 # Threat Model
 
-[TIP-XXX1](./tip-xxx1.md#threat-model) owns the shared actors.
+The local authority boundary is the anchor and signature check ([Overview](#overview)). [TIP-XXX1](./tip-xxx1.md#threat-model) owns the shared actors.
 
 | Actor | Capability and trust | Boundary check and failure consequence |
 |---|---|---|

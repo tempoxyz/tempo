@@ -22,6 +22,13 @@ An attested signature is safe only if its program key belongs to approved code. 
 
 Policies let each wallet choose its code, its attestation service, and its governance, instead of validators choosing. The delay makes every approval visible before it can sign. The guardian gives incident response a role that can stop signing but cannot approve code.
 
+### Alternatives considered
+
+- **Validators choosing approved code:** makes the network decide which wallets' code is trusted.
+- **Storing the measurement in each key record and checking it at signature time:** adds a storage read to every signature. Instead, each key record stores the policy's epoch, a revocation counter, and a removal increments it. The epoch revokes every key on a removal, and approved code re-registers within one cycle.
+- **Revoking keys on anchor removal:** anchors rotate routinely, and each rotation would interrupt signing. `revokeKeys` covers a compromised anchor.
+- **A fixed protocol-wide delay:** different wallets hold different value. The delay is per policy and visible to wallets.
+
 ## Assumptions
 
 - At least one attestation scheme is active ([TIP-XXX4](./tip-xxx4.md), [TIP-XXX5](./tip-xxx5.md)).
@@ -33,6 +40,8 @@ Policies let each wallet choose its code, its attestation service, and its gover
 # Specification
 
 ## Overview
+
+This TIP owns steps 1 and 2 of the [attested signer lifecycle](./tip-xxx1.md#lifecycle), approval and registration. Its inputs are policy changes from a policy's owner and guardian, and attestation documents that signer programs submit. Its outcome is the set of program keys that [TIP-XXX2](./tip-xxx2.md#verification) reads as current. The terms come from [TIP-XXX1](./tip-xxx1.md#terms).
 
 A policy holds four kinds of state:
 
@@ -52,13 +61,7 @@ The lifecycle of a program key:
 
 The authority boundary is step 3. The registry records a key only for a document that the policy's scheme verifies, that commits to the key, and whose measurement is active in the policy.
 
-## Precompile address
-
-```solidity
-address constant ATTESTED_KEY_REGISTRY_ADDRESS = 0xXXX3000000000000000000000000000000000000;
-```
-
-The address follows the convention of using the TIP number. Replace `XXX3` when the number is assigned.
+Anyone can create a policy, and a policy's state affects only attested signatures that name it. Each policy uses one attestation scheme, which a [scheme TIP](#scheme-interface) defines.
 
 ## Constants
 
@@ -193,13 +196,23 @@ program_key_current(policy_id, program_key) =
     record.valid_until >= block.timestamp && record.epoch == policy.epoch
 ```
 
-`policy` is slot 0 of the policy, and `record` is the key record. Both are read at the transaction's position in the block. They are two cold storage reads.
+`policy` is slot 0 of the policy, and `record` is the key record ([Storage layout](#storage-layout)). Both are read at the transaction's position in the block. They are two cold storage reads.
 
 ## Gas
 
 `registerKey` charges the scheme's gas plus storage for one key record. Policy changes charge storage costs as other Tempo precompiles do. The view functions charge one cold storage read for each slot they read.
 
-## Storage layout
+## Interfaces
+
+### Precompile address
+
+```solidity
+address constant ATTESTED_KEY_REGISTRY_ADDRESS = 0xXXX3000000000000000000000000000000000000;
+```
+
+The address follows the convention of using the TIP number. Replace `XXX3` when the number is assigned.
+
+### Storage layout
 
 ```solidity
 struct Policy {               // slot 0 of a policy, packed
@@ -230,14 +243,7 @@ mapping(bytes32 => mapping(bytes32 => uint64)) anchorActiveAt;         // slot 4
 mapping(bytes32 => KeyRecord) keys;                                    // slot 5, by key_id
 ```
 
-## Alternatives Considered
-
-- **Validators choosing approved code:** makes the network decide which wallets' code is trusted.
-- **Storing the measurement in each key record and checking it at signature time:** adds a storage read to every signature. The epoch revokes every key on a removal instead, and approved code re-registers within one cycle.
-- **Revoking keys on anchor removal:** anchors rotate routinely, and each rotation would interrupt signing. `revokeKeys` covers a compromised anchor.
-- **A fixed protocol-wide delay:** different wallets hold different value. The delay is per policy and visible to wallets.
-
-## Interfaces
+### Contract interface
 
 ```solidity
 // SPDX-License-Identifier: MIT

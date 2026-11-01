@@ -22,6 +22,13 @@ AWS Nitro Enclaves run code in an isolated environment whose Nitro Security Modu
 
 Tempo already verifies these documents in consensus for Zone settlement ([TIP-1096](./tip-1096.md)). This scheme reuses that code, so attested signers add no new parser or signature algorithm to consensus.
 
+### Alternatives considered
+
+- **Measurement from PCR0 alone:** PCR0 covers the whole enclave image, but PCR1 and PCR2 separate the kernel and application, so a reviewer can check each against its build.
+- **PCR8, the image-signing certificate:** would approve any image signed by one key, which makes that key a single point of failure.
+- **Binding through `public_key` or `nonce`:** `user_data` is the field the Zone verifier binds, so both uses follow one pattern.
+- **Caching intermediate certificates onchain:** would lower the cost, but the shared code verifies the full chain, and registration happens at most every few minutes for each signer program.
+
 ## Assumptions
 
 - The AWS Nitro root certificate and the Nitro Security Module sign only genuine attestations.
@@ -33,6 +40,8 @@ Tempo already verifies these documents in consensus for Zone settlement ([TIP-10
 # Specification
 
 ## Overview
+
+This TIP is one [attestation scheme](./tip-xxx1.md#terms) for step 2 of the [attested signer lifecycle](./tip-xxx1.md#lifecycle), registration. Its input is a Nitro attestation document that a signer program submits to `registerKey`, with the binding that the registry computes. Its outcome is the measurement and issue time that the [registration checks](./tip-xxx3.md#registration) use, or a failure.
 
 A signer program in a Nitro Enclave generates a program key, computes the registration's [binding](./tip-xxx3.md#binding), and asks its Nitro Security Module for a document with `user_data` set to the binding. The registry passes the document to this scheme's `verify`. The scheme checks the certificate chain and the document signature, derives the measurement from the PCRs, and checks the binding.
 
@@ -85,13 +94,6 @@ nitro_gas = NITRO_BASE_GAS + NITRO_SIGNATURE_GAS * (c + 1)
 
 A typical document has four certificates in `cabundle` (the root and three intermediates), so it costs 40,000 + 150,000 × 5 = 790,000 gas. The registry adds storage for one key record, and the transaction pays calldata for the document, about 4 to 5 KB.
 
-## Alternatives Considered
-
-- **Measurement from PCR0 alone:** PCR0 covers the whole enclave image, but PCR1 and PCR2 separate the kernel and application, so a reviewer can check each against its build.
-- **PCR8, the image-signing certificate:** would approve any image signed by one key, which makes that key a single point of failure.
-- **Binding through `public_key` or `nonce`:** `user_data` is the field the Zone verifier binds, so both uses follow one pattern.
-- **Caching intermediate certificates onchain:** would lower the cost, but the shared code verifies the full chain, and registration happens at most every few minutes for each signer program.
-
 ## Interfaces
 
 This scheme adds no contract interface. Policies select it with `scheme = 0x01` in [`createPolicy`](./tip-xxx3.md#interfaces).
@@ -112,7 +114,7 @@ No new events. `KeyRegistered` records each measurement ([TIP-XXX3](./tip-xxx3.m
 
 # Threat Model
 
-[TIP-XXX1](./tip-xxx1.md#threat-model) owns the shared actors.
+The local authority boundary is the pinned root ([Overview](#overview)). [TIP-XXX1](./tip-xxx1.md#threat-model) owns the shared actors.
 
 | Actor | Capability and trust | Boundary check and failure consequence |
 |---|---|---|
