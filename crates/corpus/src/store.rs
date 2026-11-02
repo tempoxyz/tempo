@@ -740,7 +740,7 @@ pub mod tests {
     use object_store::memory::InMemory;
     use proptest::prelude::*;
 
-    fn catalog(start: u64, count: usize, transactions: u64) -> Catalog {
+    pub(crate) fn catalog(start: u64, count: usize, transactions: u64) -> Catalog {
         let records: Vec<_> = (0..count)
             .map(|i| Record {
                 start: start + i as u64,
