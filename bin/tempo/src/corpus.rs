@@ -8,7 +8,7 @@ use reth_cli_util::cancellation::CancellationToken;
 use reth_ethereum::tasks::Runtime;
 use std::sync::Arc;
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
-use tempo_corpus::{fill, replay, store::Store};
+use tempo_corpus::{fill, gc, replay, store::Store};
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_node::node::TempoNode;
 
@@ -21,6 +21,8 @@ pub enum CorpusCommand {
     Replay(ReplayCommand),
     /// Rewrite a legacy corpus in the current format, without the archive DB.
     Migrate(MigrateCommand),
+    /// Delete the superseded checkpoints and unreferenced files of a complete corpus.
+    Gc(GcCommand),
 }
 
 impl CorpusCommand {
@@ -29,6 +31,7 @@ impl CorpusCommand {
             Self::Fill(cmd) => cmd.execute(runtime).await,
             Self::Replay(cmd) => cmd.execute().await,
             Self::Migrate(cmd) => cmd.execute().await,
+            Self::Gc(cmd) => cmd.execute().await,
         }
     }
 }
@@ -228,5 +231,23 @@ impl MigrateCommand {
         let dest = Store::open(&self.corpus, dest_endpoint).await?;
         let (config, consensus) = components(chain);
         tempo_corpus::migrate::migrate(source, dest, self.from, self.to, &config, &consensus).await
+    }
+}
+
+/// Shrink a complete corpus to its published checkpoint.
+#[derive(Debug, Parser)]
+pub struct GcCommand {
+    /// Corpus s3://bucket/prefix or file:///directory; must be complete.
+    #[arg(long)]
+    corpus: String,
+    /// Optional S3-compatible endpoint. Credentials use the standard AWS chain.
+    #[arg(long)]
+    s3_endpoint: Option<String>,
+}
+
+impl GcCommand {
+    async fn execute(self) -> eyre::Result<()> {
+        let store = Store::open(&self.corpus, self.s3_endpoint.as_deref()).await?;
+        gc::gc(&store).await
     }
 }
