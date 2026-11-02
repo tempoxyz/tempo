@@ -237,10 +237,10 @@ impl Inner {
         let return_delay = return_after.saturating_sub(proposal_elapsed);
         // Sample eligibility follows the builder's capped replay reserve, so builds that
         // return on its schedule are not mistaken for overruns when validators are slower.
-        let sampling_return_after = return_budget
-            .saturating_sub(validation_latency_elapsed.min(payload_validation_work_elapsed));
-        let spent =
-            return_budget.saturating_add(proposal_elapsed.saturating_sub(sampling_return_after));
+        let sampling_replay_reserve =
+            validation_latency_elapsed.min(payload_validation_work_elapsed);
+        // Add replay before comparing budgets so a saturated target cannot hide excess work.
+        let spent = return_budget.max(proposal_elapsed.saturating_add(sampling_replay_reserve));
         debug!(
             proposal.digest = %proposal.digest(),
             proposal_elapsed = %display_duration(proposal_elapsed),
