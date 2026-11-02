@@ -15,9 +15,9 @@ use std::{collections::BTreeMap, time::Duration};
 use tracing::info;
 
 /// Deletes every checkpoint except the one the catalog pins and retired ones still within
-/// their grace lifetime, then garbage collects the
-/// manifests, WAL SSTs, compacted SSTs and compactor state nothing references any more, and
-/// logs the objects and bytes of each data directory before and after.
+/// their grace lifetime, then garbage collects the manifests, WAL SSTs, compacted SSTs and
+/// compactor state nothing references any more, and logs the objects and bytes of each data
+/// directory before and after.
 ///
 /// Fails unless the corpus is complete: a fill clears it before opening its writer, so
 /// collection needs no minimum file age as long as no fill starts meanwhile. Run it after a
@@ -40,14 +40,14 @@ pub async fn gc(store: &Store) -> eyre::Result<()> {
         checkpoints.iter().any(|c| c.id.to_string() == pinned),
         "catalog checkpoint is missing from the corpus manifest"
     );
-    let now = std::time::SystemTime::now();
+    let started = std::time::SystemTime::now();
     // A checkpoint a fill retired keeps its grace lifetime, so replays still pinned to it
     // finish; collection keeps the files it references until it expires.
     for checkpoint in checkpoints.iter().filter(|c| {
         c.id.to_string() != pinned
             && !c
                 .expire_time
-                .is_some_and(|expiry| std::time::SystemTime::from(expiry) > now)
+                .is_some_and(|expiry| std::time::SystemTime::from(expiry) > started)
     }) {
         admin.delete_checkpoint(checkpoint.id).await?;
     }
