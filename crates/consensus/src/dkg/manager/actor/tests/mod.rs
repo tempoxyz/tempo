@@ -721,6 +721,92 @@ fn startup_heals_from_boundary_outcome_with_the_trusted_identity() {
     });
 }
 
+/// Starts from a fresh store whose floor and tip are height 19, the last
+/// block of epoch 1, with a tip certificate over `signed` from the identity
+/// trusted since epoch 1, and `outcome` as the boundary's DKG outcome.
+async fn start_healing_at_verified_boundary_tip(
+    context: &commonware_runtime::deterministic::Context,
+    partition_prefix: &str,
+    outcome: &State,
+    signed: Digest,
+) -> Harness {
+    let trusted = dkg_fixture(&mut context.child("trusted"), Epoch::new(1));
+    let mut harness = Harness::builder(context.child("test"), partition_prefix)
+        .epoch_length(10)
+        .identity(PrivateKey::from_seed(u64::MAX))
+        .finalized_floor(Height::new(19))
+        .startup(
+            NetworkIdentity {
+                from_epoch: 1,
+                identity: *trusted.outcome.network_identity(),
+            },
+            Some((
+                Height::new(19),
+                make_certificate(signed, Epoch::new(1), 1, &trusted.schemes),
+            )),
+        )
+        .build()
+        .await;
+    harness
+        .execution
+        .add_header(outcome_header(Height::new(19), outcome));
+    harness.start().await;
+    harness
+}
+
+#[test]
+fn startup_heals_from_a_full_dkg_outcome_in_the_verified_tip() {
+    Runner::default().start(|mut context| async move {
+        // A full DKG in epoch 1 gives epoch 2 a new key.
+        let (rekeyed, _, _) = dkg_state(&mut context, Epoch::new(2), 4, true);
+        let signed = Digest(outcome_header(Height::new(19), &rekeyed).hash_slow());
+        let harness = start_healing_at_verified_boundary_tip(
+            &context,
+            "startup_heals_full_dkg_tip",
+            &rekeyed,
+            signed,
+        )
+        .await;
+
+        assert!(!harness.has_dealer_log(rekeyed.epoch).await);
+        assert_eq!(
+            harness.epoch_manager.events(),
+            vec![EpochEvent::Enter {
+                epoch: rekeyed.epoch,
+                public: rekeyed.output.public().clone(),
+                share: None,
+                participants: rekeyed.dealers().clone(),
+            }]
+        );
+    });
+}
+
+#[test]
+fn startup_rejects_boundary_outcome_not_signed_by_the_tip() {
+    Runner::default().start(|mut context| async move {
+        let (forged, _, _) = dkg_state(&mut context, Epoch::new(2), 4, true);
+        let mut harness = start_healing_at_verified_boundary_tip(
+            &context,
+            "startup_rejects_unsigned_tip_outcome",
+            &forged,
+            Digest(header(Height::new(19)).hash_slow()),
+        )
+        .await;
+        harness.wait_for_exit().await;
+
+        assert!(harness.epoch_manager.events().is_empty());
+        let storage = state::builder()
+            .partition_prefix("startup_rejects_unsigned_tip_outcome")
+            .init_unverified(context.child("reopened"))
+            .await
+            .unwrap();
+        assert!(
+            storage.state().is_none(),
+            "the outcome must not be persisted"
+        );
+    });
+}
+
 #[test]
 fn startup_recovers_v0_share_without_t12() {
     assert_startup_recovers_revealed_share(None);
