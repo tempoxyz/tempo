@@ -212,18 +212,18 @@ impl<P: L1StorageReader> CallRules for TIP20Rules<P> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::primitives::{Address, B256, Bytes, U256, address};
+    use alloy::primitives::{Address, B256, Bytes, U256, address, fixed_bytes};
     use alloy_sol_types::{SolCall, SolError, SolInterface};
     use evm2::precompiles::PrecompileError;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::{
-        precompiles::{ITIP403Registry, TIP20Error, UnknownFunctionSelector},
+        precompiles::{AddrRegistryError, ITIP403Registry, TIP20Error, UnknownFunctionSelector},
         zones::Unauthorized,
     };
     use tempo_precompiles::{
         PATH_USD_ADDRESS, Precompile, RECEIVE_POLICY_GUARD_ADDRESS,
         storage::{Handler, StorageCtx},
-        test_util::{TIP20Setup, VIRTUAL_MASTER, register_virtual_master},
+        test_util::TIP20Setup,
         tip20::{
             IRolesAuth, ISSUER_ROLE, ITIP20,
             ITIP20::InsufficientBalance as TIP20InsufficientBalance, TIP20Token,
@@ -231,6 +231,7 @@ mod tests {
         tip403_registry::{ALLOW_ALL_POLICY_ID, REJECT_ALL_POLICY_ID},
         zone_factory::ZonePortalStorage as ZonePortal,
     };
+    use tempo_primitives::TempoAddressExt;
     use zone_primitives::constants::{ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS};
 
     use crate::{
@@ -692,30 +693,38 @@ mod tests {
     fn receive_policy_blocked_transfers_revert_instead_of_diverting() -> eyre::Result<()> {
         let mut harness = PrecompileHarness::new_at(TempoHardfork::T15)?;
         harness.set_transfers_enabled(true)?;
-        let virtual_recipient = {
-            let mut storage = test_storage_provider(&mut harness.ctx, u64::MAX, false);
-            StorageCtx::enter(&mut storage, || {
-                let (_, virtual_recipient) = register_virtual_master(&mut AddressRegistry::new())?;
-                Ok::<_, eyre::Report>(virtual_recipient)
-            })?
-        };
         harness.reject_all_receipts(harness.bob)?;
-        harness.reject_all_receipts(VIRTUAL_MASTER)?;
 
-        for to in [harness.bob, virtual_recipient] {
-            for (caller, calldata) in harness.transfer_calls(to) {
-                let result = harness.call(caller, calldata, TIP20_FIXED_TRANSFER_GAS, false)?;
-                assert!(result.is_revert(), "{to}");
-                assert_eq!(
-                    result.bytes,
-                    Bytes::from(TIP20Error::policy_forbids().abi_encode()),
-                    "{to}"
-                );
-                assert_eq!(result.gas_used, TIP20_FIXED_TRANSFER_GAS, "{to}");
-            }
-            harness.assert_no_funds_moved(to)?;
+        for (caller, calldata) in harness.transfer_calls(harness.bob) {
+            let result = harness.call(caller, calldata, TIP20_FIXED_TRANSFER_GAS, false)?;
+            assert!(result.is_revert());
+            assert_eq!(
+                result.bytes,
+                Bytes::from(TIP20Error::policy_forbids().abi_encode())
+            );
+            assert_eq!(result.gas_used, TIP20_FIXED_TRANSFER_GAS);
         }
-        assert_eq!(harness.balance_of(VIRTUAL_MASTER)?, U256::ZERO);
+        harness.assert_no_funds_moved(harness.bob)?;
+        Ok(())
+    }
+
+    #[test]
+    fn transfers_to_virtual_addresses_revert() -> eyre::Result<()> {
+        let mut harness = PrecompileHarness::new_at(TempoHardfork::T15)?;
+        harness.set_transfers_enabled(true)?;
+        let virtual_recipient =
+            Address::new_virtual(fixed_bytes!("01020304"), fixed_bytes!("010203040506"));
+
+        for (caller, calldata) in harness.transfer_calls(virtual_recipient) {
+            let result = harness.call(caller, calldata, TIP20_FIXED_TRANSFER_GAS, false)?;
+            assert!(result.is_revert());
+            assert_eq!(
+                result.bytes,
+                Bytes::from(AddrRegistryError::virtual_address_unregistered().abi_encode())
+            );
+            assert_eq!(result.gas_used, TIP20_FIXED_TRANSFER_GAS);
+        }
+        harness.assert_no_funds_moved(virtual_recipient)?;
         Ok(())
     }
 

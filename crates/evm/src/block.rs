@@ -307,8 +307,8 @@ impl<'a> TempoBlockExecutor<'a> {
         Ok(())
     }
 
-    /// Installs the shared Zone runtime set for `fork`, as returned by
-    /// [`Self::zone_runtime_fork_at`]. T15 adds the zone transfer opt-in to the portal.
+    /// Installs the shared Zone runtime set for `fork`, as returned by [`zone_runtime_fork`].
+    /// T15 adds the zone transfer opt-in to the portal.
     fn upgrade_zone_runtimes(&mut self, fork: TempoHardfork) -> Result<(), BlockExecutionError> {
         let [_, portal, verifier, messenger] = if fork.is_t15() {
             t15_zone_factory_state(INITIAL_FACTORY_OWNER)
@@ -316,21 +316,6 @@ impl<'a> TempoBlockExecutor<'a> {
             t13_zone_factory_state(INITIAL_FACTORY_OWNER)
         };
         self.install_zone_runtimes([portal, verifier, messenger])
-    }
-
-    /// Returns the fork whose shared Zone runtimes are live at `timestamp`, or `None` before T13.
-    ///
-    /// A runtime set is live only once every earlier runtime upgrade is also active, matching how
-    /// genesis generation picks the set. So a chain with T15 at genesis and T13 later installs the
-    /// T15 set when T13 activates.
-    fn zone_runtime_fork_at(&self, timestamp: u64) -> Option<TempoHardfork> {
-        if !self.chain_spec.is_t13_active_at_timestamp(timestamp) {
-            None
-        } else if self.chain_spec.is_t15_active_at_timestamp(timestamp) {
-            Some(TempoHardfork::T15)
-        } else {
-            Some(TempoHardfork::T13)
-        }
     }
 
     /// Installs shared Zone runtimes without modifying their existing storage.
@@ -714,10 +699,12 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         // those allocations (including locally compiled contracts on test chains). Chains that
         // activate the fork later follow the normal runtime upgrade path. Only the newest live
         // runtime set is installed, so T13 runtimes are never reinstalled over T15 ones.
-        let runtime_fork =
-            self.zone_runtime_fork_at(self.evm().block().timestamp.saturating_to::<u64>());
+        let runtime_fork = zone_runtime_fork(self.evm().config_spec_id());
+        let genesis_spec = self
+            .chain_spec
+            .tempo_hardfork_at(self.chain_spec.genesis().timestamp);
         if let Some(fork) = runtime_fork
-            && runtime_fork != self.zone_runtime_fork_at(self.chain_spec.genesis().timestamp)
+            && runtime_fork != zone_runtime_fork(genesis_spec)
         {
             self.upgrade_zone_runtimes(fork)?;
         }
@@ -944,6 +931,20 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
 
     fn take_block_access_list(&mut self) -> Option<BlockAccessList> {
         self.inner.take_block_access_list()
+    }
+}
+
+/// Returns the fork whose shared Zone runtimes are live under `spec`, or `None` before T13.
+///
+/// Like every other fork boundary, this follows the EVM spec, so an out-of-order schedule such as
+/// T15 at genesis and T13 later runs the T15 runtimes from genesis.
+fn zone_runtime_fork(spec: TempoHardfork) -> Option<TempoHardfork> {
+    if spec.is_t15() {
+        Some(TempoHardfork::T15)
+    } else if spec.is_t13() {
+        Some(TempoHardfork::T13)
+    } else {
+        None
     }
 }
 
@@ -2682,6 +2683,12 @@ mod tests {
                 .extra_fields
                 .insert_value("t13Time".into(), activation)
                 .unwrap();
+            for fork in ["t14Time", "t15Time"] {
+                genesis
+                    .config
+                    .extra_fields
+                    .insert(fork.into(), serde_json::Value::Null);
+            }
             let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
             let mut db = InMemoryDB::default();
             let mut expected = Vec::new();
@@ -2785,10 +2792,12 @@ mod tests {
                 .extra_fields
                 .insert_value("t13Time".into(), activation)
                 .unwrap();
-            genesis
-                .config
-                .extra_fields
-                .insert("t15Time".into(), serde_json::Value::Null);
+            for fork in ["t14Time", "t15Time"] {
+                genesis
+                    .config
+                    .extra_fields
+                    .insert(fork.into(), serde_json::Value::Null);
+            }
             let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
             let mut db = InMemoryDB::default();
             let mut executor = TestExecutorBuilder::default()
@@ -2844,10 +2853,11 @@ mod tests {
             (in_order, 14, TempoHardfork::T13, t13.clone()),
             (in_order, 19, TempoHardfork::T14, t13),
             (in_order, 20, TempoHardfork::T15, t15.clone()),
-            (in_order, 21, TempoHardfork::T15, t15.clone()),
-            (t15_before_t13, 199, TempoHardfork::T15, initial),
-            (t15_before_t13, 200, TempoHardfork::T15, t15.clone()),
-            (t15_before_t13, 201, TempoHardfork::T15, t15),
+            (in_order, 21, TempoHardfork::T15, t15),
+            // The spec is T15 from genesis, whose allocations supply the T15 runtimes, so the
+            // executor never upgrades the runtimes it finds, even once T13's own time passes.
+            (t15_before_t13, 199, TempoHardfork::T15, initial.clone()),
+            (t15_before_t13, 200, TempoHardfork::T15, initial),
         ] {
             let mut genesis = DEV.genesis().clone();
             for (fork, activation) in ["t13Time", "t14Time", "t15Time"].into_iter().zip(schedule) {

@@ -580,13 +580,19 @@ fn insert_zone_state_at_genesis(
     hardforks: &TempoHardforkArgs,
     genesis_alloc: &mut BTreeMap<Address, GenesisAccount>,
 ) {
-    if hardforks.active_at_genesis(TempoHardfork::T10) {
+    // Match the block executor, which gates the ZoneFactory and its runtime upgrades on the EVM
+    // spec: the newest fork active at genesis, even when an earlier fork activates later.
+    let spec = TempoHardfork::VARIANTS
+        .iter()
+        .rev()
+        .copied()
+        .find(|&fork| hardforks.active_at_genesis(fork))
+        .expect("Genesis is always active at genesis");
+    if spec.is_t10() {
         println!("Initializing ZoneFactory and shared runtimes");
-        // A later runtime set applies only when every earlier upgrade is also active at genesis.
-        let t13_at_genesis = hardforks.active_at_genesis(TempoHardfork::T13);
-        let accounts = if t13_at_genesis && hardforks.active_at_genesis(TempoHardfork::T15) {
+        let accounts = if spec.is_t15() {
             t15_zone_factory_state(INITIAL_FACTORY_OWNER)
-        } else if t13_at_genesis {
+        } else if spec.is_t13() {
             t13_zone_factory_state(INITIAL_FACTORY_OWNER)
         } else {
             initial_zone_factory_state(INITIAL_FACTORY_OWNER)
@@ -1056,6 +1062,7 @@ mod tests {
     fn t10_genesis_installs_factory_and_canonical_shared_runtimes() {
         let mut alloc = BTreeMap::new();
         let hardforks = TempoHardforkArgs {
+            hardfork: Some(TempoHardfork::T12),
             t13_time: Some(1),
             ..Default::default()
         };
@@ -1082,6 +1089,7 @@ mod tests {
     fn future_t10_does_not_install_zone_factory_at_genesis() {
         let mut alloc = BTreeMap::new();
         let hardforks = TempoHardforkArgs {
+            hardfork: Some(TempoHardfork::T9),
             t10_time: Some(1),
             ..Default::default()
         };
@@ -1110,16 +1118,25 @@ mod tests {
 
     #[test]
     fn t15_genesis_installs_t15_shared_runtimes() {
-        let mut alloc = BTreeMap::new();
-        let hardforks = TempoHardforkArgs::default();
-        insert_zone_state_at_genesis(&hardforks, &mut alloc);
-
-        for (destination, expected) in [
-            (ZONE_PORTAL_IMPL_ADDRESS, T15_ZONE_PORTAL_RUNTIME),
-            (ZONE_VERIFIER_ADDRESS, T13_ZONE_VERIFIER_RUNTIME),
-            (ZONE_MESSENGER_ADDRESS, T13_ZONE_MESSENGER_RUNTIME),
+        // The block executor runs a later T10 or T13 activation as T15 from genesis.
+        for hardforks in [
+            TempoHardforkArgs::default(),
+            TempoHardforkArgs {
+                t10_time: Some(200),
+                t13_time: Some(200),
+                ..Default::default()
+            },
         ] {
-            assert_eq!(alloc[&destination].code.as_ref(), Some(&expected));
+            let mut alloc = BTreeMap::new();
+            insert_zone_state_at_genesis(&hardforks, &mut alloc);
+
+            for (destination, expected) in [
+                (ZONE_PORTAL_IMPL_ADDRESS, T15_ZONE_PORTAL_RUNTIME),
+                (ZONE_VERIFIER_ADDRESS, T13_ZONE_VERIFIER_RUNTIME),
+                (ZONE_MESSENGER_ADDRESS, T13_ZONE_MESSENGER_RUNTIME),
+            ] {
+                assert_eq!(alloc[&destination].code.as_ref(), Some(&expected));
+            }
         }
     }
 

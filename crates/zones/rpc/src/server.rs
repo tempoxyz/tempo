@@ -29,7 +29,7 @@ use crate::{
     auth::{self, AuthContext, now_unix_seconds},
     config::RedactedRpcConfig,
     error::{AuthError, AuthenticateError},
-    handlers::{self, Simulation, ZoneRpcApi},
+    handlers::{self, Dispatched, Simulation, ZoneRpcApi},
     metrics::{RedactedRpcAuthMetrics, RedactedRpcCallMetrics, RedactedRpcSimulationMetrics},
     types::{JsonRpcError, JsonRpcRequest, JsonRpcResponse},
     ws::handle_ws_upgrade,
@@ -275,11 +275,10 @@ pub(crate) async fn dispatch_request(
 
     metrics.started_total.increment(1);
     // Params are validated before taking a permit, so invalid simulations never wait for one.
-    let response = match Simulation::parse(req) {
-        None => handlers::dispatch(req, auth, state.api.as_ref()).await,
-        Some(Err(response)) => response,
-        Some(Ok(simulation)) => {
-            simulate(simulation, req.id.clone(), auth, state, permit_deadline).await
+    let response = match handlers::dispatch(req, auth, state.api.as_ref()).await {
+        Dispatched::Response(response) => response,
+        Dispatched::Simulation(simulation) => {
+            simulate(*simulation, req.id.clone(), auth, state, permit_deadline).await
         }
     };
     metrics
@@ -566,7 +565,6 @@ mod tests {
             &self,
             _a: tempo_alloy::rpc::TempoTransactionRequest,
             _b: Option<alloy_rpc_types_eth::BlockId>,
-            _c: Option<alloy_rpc_types_eth::state::StateOverride>,
             _d: crate::auth::AuthContext,
         ) -> BoxFut<'_> {
             let release = self.call_release.clone();
@@ -577,7 +575,7 @@ mod tests {
                 Err(JsonRpcError::internal("not implemented"))
             })
         }
-        stub!(estimate_gas, _a: tempo_alloy::rpc::TempoTransactionRequest, _b: Option<alloy_rpc_types_eth::BlockId>, _c: Option<alloy_rpc_types_eth::state::StateOverride>, _d: crate::auth::AuthContext);
+        stub!(estimate_gas, _a: tempo_alloy::rpc::TempoTransactionRequest, _b: Option<alloy_rpc_types_eth::BlockId>, _d: crate::auth::AuthContext);
         stub!(send_raw_transaction, _a: Bytes, _c: crate::auth::AuthContext);
         stub!(send_raw_transaction_sync, _a: Bytes, _c: crate::auth::AuthContext);
         stub!(fill_transaction, _a: tempo_alloy::rpc::TempoTransactionRequest, _c: crate::auth::AuthContext);

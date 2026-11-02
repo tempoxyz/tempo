@@ -15,13 +15,14 @@ use evm2::{
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_evm::{ExecutionContext, TempoEvmTypes, TempoTxEnv, tempo_tx_registry};
+use tempo_precompiles::tip20::{self, is_tip20_prefix};
 use zone_precompiles::{
     L1State, L1StorageReader, TIP403_REGISTRY_ADDRESS, tempo_state::TEMPO_BLOCK_NUMBER_SLOT,
     tx_context,
 };
 use zone_primitives::constants::{CONTRACT_DEPLOYER_ALLOWLIST, TEMPO_STATE_ADDRESS};
 
-use crate::database::{is_tip20_pause_slot, validate_journal};
+use crate::database::validate_journal;
 
 /// Wraps Tempo's handlers with Zone transaction validation and transaction-local L1 context.
 pub(crate) fn zone_tx_registry<L1: L1StorageReader>(
@@ -86,9 +87,9 @@ impl<L1: L1StorageReader> ZoneTxHandler<L1> {
             cache.remove(&TIP403_REGISTRY_ADDRESS);
             // The Zone never writes pause flags, so dropping them loses no local change.
             for (address, storage) in cache.iter_mut() {
-                storage
-                    .slots
-                    .retain(|slot, _| !is_tip20_pause_slot(address, slot));
+                if is_tip20_prefix(*address) {
+                    storage.slots.remove(&tip20::slots::PAUSED);
+                }
             }
         }
         self.l1.begin_transaction(initial_anchor);
