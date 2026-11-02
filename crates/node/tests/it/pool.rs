@@ -399,7 +399,11 @@ async fn test_fallback_choice_follows_new_chain_after_reorg() -> eyre::Result<()
     let hash = *queued.tx_hash();
     pool.add_consensus_transaction(queued, TransactionOrigin::Local)
         .await?;
-    let fallback_token = || pool.get(&hash).unwrap().transaction.fee_balance_slot();
+    // The pool briefly lacks the transaction while it is revalidated.
+    let fallback_token = || {
+        pool.get(&hash)
+            .and_then(|tx| tx.transaction.fee_balance_slot())
+    };
     assert_eq!(fallback_token(), Some((OUSD_ADDRESS, slot)));
 
     // The orphaned block credits pathUSD, which the earlier fallback token makes the choice.
