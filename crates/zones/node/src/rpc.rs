@@ -450,10 +450,9 @@ fn spf_storage_targets(block_hashes: &alloy_primitives::map::U256Map<B256>) -> H
     let mut history_storage = HashedStorage::default();
     for (number, hash) in block_hashes {
         let slot = *number % U256::from(HISTORY_SERVE_WINDOW);
-        history_storage.storage.insert(
-            keccak256(slot.to_be_bytes::<32>()),
-            U256::from_be_bytes(hash.0),
-        );
+        history_storage
+            .storage
+            .insert(keccak256(slot.to_be_bytes::<32>()), (*hash).into());
     }
     if !history_storage.storage.is_empty() {
         targets.extend(HashedPostState::from_hashed_storage(
