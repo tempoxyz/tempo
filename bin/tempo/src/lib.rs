@@ -26,6 +26,8 @@ use tracy_client as _;
 use opentelemetry_otlp as _;
 
 pub mod cli;
+#[cfg(feature = "corpus")]
+pub mod corpus;
 mod defaults;
 mod follow;
 mod overrides;
