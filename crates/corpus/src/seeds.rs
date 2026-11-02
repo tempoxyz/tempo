@@ -191,10 +191,11 @@ enum Key {
     Slot(Address, U256),
 }
 
-/// The first transaction whose changes differ from its stored delta: a balance, nonce or slot
-/// the harness changed to a value the transaction did not write, or one the transaction changed
-/// that the harness left alone. Writes of the value already there are not changes, so values
-/// are tracked from the witness through the harness's pre-block and per-transaction changes.
+/// The first step whose changes differ from its stored delta: the pre-block system calls, each
+/// transaction, then the post-block system calls. A difference is a balance, nonce or slot the
+/// harness changed to a value the step did not write, or one the step changed that the harness
+/// left alone. Writes of the value already there are not changes, so values are tracked from the
+/// witness through each step.
 fn tx_divergence(
     chunk: &Chunk,
     cases: &[Case],
@@ -239,10 +240,25 @@ fn tx_divergence(
         }
         out
     };
-    values.extend(harness(&steps.pre_block));
-    for (index, (case, changes)) in cases.iter().zip(&steps.txs).enumerate() {
+    let phases = chunk.phases.as_ref();
+    // A legacy chunk recorded no system-call deltas: carry the pre-block writes forward unchecked.
+    if phases.is_none() {
+        values.extend(harness(&steps.pre_block));
+    }
+    let steps = phases
+        .map(|p| ("pre-block".to_string(), &p.pre, &steps.pre_block))
+        .into_iter()
+        .chain(
+            cases
+                .iter()
+                .zip(&steps.txs)
+                .enumerate()
+                .map(|(index, (case, changes))| (format!("tx {index}"), &case.delta, changes)),
+        )
+        .chain(phases.map(|p| ("post-block".to_string(), &p.post, &steps.post_block)));
+    for (step, delta, changes) in steps {
         let mut stored = BTreeMap::new();
-        for (address, change) in case.delta.0.iter().flatten() {
+        for (address, change) in delta.0.iter().flatten() {
             let address = Address::from(*address);
             let (balance, nonce) = match &change.info {
                 None => (Some(U256::ZERO), Some(0)),
@@ -269,7 +285,7 @@ fn tx_divergence(
             return Some((
                 kind,
                 format!(
-                    "tx {index}: (key, value) missing = stored only, extra = harness only\n{report}"
+                    "{step}: (key, value) missing = stored only, extra = harness only\n{report}"
                 ),
             ));
         }
