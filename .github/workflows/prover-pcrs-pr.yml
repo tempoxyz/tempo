@@ -1,0 +1,240 @@
+name: Prover PCRs PR
+
+run-name: Approve PCRs for ${{ inputs.tag }}
+
+# Opens the pull request that adds a prover release's PCRs to
+# crates/precompiles/src/zone_verifier/pcrs.json. Prover Release dispatches it
+# once a prover/vX.Y.Z tag is published. It runs from main because only main
+# (and v* tags) may use the release-pr environment's token.
+#
+# The entry is rebuilt from the published image rather than taken from the
+# dispatch, and checked with verify-zone-verifier-pcrs.sh before it is pushed.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published prover tag (for example, prover/v0.4.1)
+        required: true
+        type: string
+      hardfork:
+        description: Hardfork to key the PCRs to (for example, T14). Defaults to the fork after the newest one in pcrs.json
+        required: false
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: prover-pcrs-pr-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  pr:
+    name: Open pcrs.json pull request
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: release-pr
+    permissions:
+      contents: write
+      packages: read
+      id-token: write
+
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Validate inputs
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag }}
+          HARDFORK: ${{ inputs.hardfork }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "::error::This workflow must be dispatched from main"
+            exit 1
+          fi
+          if [[ ! "$TAG" =~ ^prover/v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
+            echo "::error::tag must be a prover/vX.Y.Z[-prerelease] tag"
+            exit 1
+          fi
+          if [[ -n "$HARDFORK" && ! "$HARDFORK" =~ ^[A-Z][0-9A-Za-z]*$ ]]; then
+            echo "::error::hardfork must be a TempoHardfork variant such as T14"
+            exit 1
+          fi
+
+      - name: Check out main
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Log in to Container Registry
+        uses: tempoxyz/gh-actions/vendor/docker/login-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build the PCR entry from the published image
+        id: entry
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag }}
+          HARDFORK: ${{ inputs.hardfork }}
+        run: |
+          set -euo pipefail
+
+          git fetch --no-tags --depth=1 origin "+refs/tags/${TAG}:refs/tags/${TAG}"
+          commit="$(git rev-parse --verify "refs/tags/${TAG}^{commit}")"
+          version="${TAG#prover/v}"
+
+          image="ghcr.io/tempoxyz/tempo-zone-prover:${version}"
+          docker pull --quiet --platform linux/amd64 "$image" >/dev/null
+          digest="$(docker image inspect --format '{{index .RepoDigests 0}}' "$image")"
+          digest="${digest##*@}"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "::error::Could not resolve the digest of $image"
+            exit 1
+          }
+          labels="$(docker image inspect --format '{{json .Config.Labels}}' "$image")"
+          revision="$(jq -r '.["org.opencontainers.image.revision"] // ""' <<< "$labels")"
+          [[ "$revision" == "$commit" ]] || {
+            echo "::error::$image revision is '$revision', expected $commit from $TAG"
+            exit 1
+          }
+
+          # TempoHardfork variants in declaration order.
+          forks="$(
+            sed -n '/^tempo_hardfork!(/,/^);/p' crates/hardfork/src/lib.rs |
+              sed -n -E 's/^ {8}([A-Z][0-9A-Za-z]*),$/\1/p'
+          )"
+          pcrs=crates/precompiles/src/zone_verifier/pcrs.json
+          fork="$HARDFORK"
+          if [[ -z "$fork" ]]; then
+            # A prover release is for the fork after the newest approved one.
+            newest=""
+            while read -r candidate; do
+              if jq -e --arg fork "$candidate" 'has($fork)' "$pcrs" >/dev/null; then
+                newest="$candidate"
+              fi
+            done <<< "$forks"
+            if [[ -z "$newest" ]]; then
+              echo "::error::pcrs.json has no entry to follow; dispatch with hardfork"
+              exit 1
+            fi
+            fork="$(awk -v newest="$newest" 'found { print; exit } $0 == newest { found = 1 }' <<< "$forks")"
+            if [[ -z "$fork" ]]; then
+              echo "::error::$newest is the newest TempoHardfork; dispatch with hardfork"
+              exit 1
+            fi
+          fi
+          if ! grep -qx -- "$fork" <<< "$forks"; then
+            echo "::error::'$fork' is not a TempoHardfork variant"
+            exit 1
+          fi
+
+          entry="$(jq -n \
+            --arg commit "https://github.com/$GITHUB_REPOSITORY/commit/$commit" \
+            --arg image "ghcr.io/tempoxyz/tempo-zone-prover@$digest" \
+            --argjson labels "$labels" \
+            '{commit: $commit, image: $image, pcrs: {
+              "0": $labels["xyz.tempo.zone-prover.nitro.pcr0"],
+              "1": $labels["xyz.tempo.zone-prover.nitro.pcr1"],
+              "2": $labels["xyz.tempo.zone-prover.nitro.pcr2"]
+            }}')"
+          jq -e '.pcrs | all(.[]; type == "string" and test("^[0-9a-f]{96}$"))' <<< "$entry" >/dev/null || {
+            echo "::error::$image does not carry PCR0-2 labels"
+            exit 1
+          }
+
+          # Keep entries in hardfork order.
+          jq --arg fork "$fork" --argjson entry "$entry" --arg forks "$forks" '
+            ($forks | split("\n")) as $order |
+            .[$fork] = $entry | to_entries | sort_by(.key as $k | $order | index($k)) | from_entries' \
+            "$pcrs" > pcrs.json.new
+          mv pcrs.json.new "$pcrs"
+          jq --arg fork "$fork" '{($fork): .[$fork]}' "$pcrs" > "$RUNNER_TEMP/new-entry.json"
+
+          {
+            echo "fork=$fork"
+            echo "version=$version"
+            echo "commit=$commit"
+            echo "image=ghcr.io/tempoxyz/tempo-zone-prover@$digest"
+          } >> "$GITHUB_OUTPUT"
+          git diff
+
+      - name: Verify the new entry
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/verify-zone-verifier-pcrs.sh "$RUNNER_TEMP/new-entry.json"
+
+      - name: Push the pcrs.json branch
+        id: branch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORK: ${{ steps.entry.outputs.fork }}
+          VERSION: ${{ steps.entry.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          branch="prover-pcrs/${FORK,,}-v${VERSION}"
+          title="feat(zones): approve ${FORK} prover v${VERSION} PCRs"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch --create "$branch"
+          git commit -am "$title"
+          gh auth setup-git
+
+          # An existing branch with the same pcrs.json is a successful retry.
+          if git ls-remote --exit-code --heads origin "refs/heads/$branch" >/dev/null; then
+            git fetch --no-tags origin "+refs/heads/$branch:refs/remotes/origin/$branch"
+            if ! git diff --quiet "refs/remotes/origin/$branch" HEAD -- crates/precompiles/src/zone_verifier/pcrs.json; then
+              echo "::error::Branch $branch already exists with a different pcrs.json"
+              exit 1
+            fi
+          else
+            git push origin "HEAD:refs/heads/$branch"
+          fi
+          {
+            echo "branch=$branch"
+            echo "title=$title"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Fetch GitHub token via STS
+        id: app-token
+        uses: tempoxyz/gh-actions/actions/github-sts@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          policy: release-pr
+
+      - name: Open pull request
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          TAG: ${{ inputs.tag }}
+          HARDFORK: ${{ inputs.hardfork }}
+          BRANCH: ${{ steps.branch.outputs.branch }}
+          TITLE: ${{ steps.branch.outputs.title }}
+          FORK: ${{ steps.entry.outputs.fork }}
+          COMMIT: ${{ steps.entry.outputs.commit }}
+          IMAGE: ${{ steps.entry.outputs.image }}
+        run: |
+          set -euo pipefail
+
+          pr_url="$(gh pr list --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH" \
+            --state open --json url --jq '.[0].url // empty')"
+          if [[ -z "$pr_url" ]]; then
+            if [[ -n "$HARDFORK" ]]; then
+              keyed="Keyed to $FORK as requested."
+            else
+              keyed="Keyed to $FORK, the fork after the newest approved one; rerun Prover PCRs PR with \`hardfork\` if this prover is for another fork."
+            fi
+            tick=$'\x60'
+            body="$(printf 'Approves the PCRs of the [%s](https://github.com/%s/releases/tag/%s) prover, built from %s, for %s onward.\n\nImage: %s\n\n%s\n\nThe PCRs take effect once a tempo node release containing this entry runs on the validators.' \
+              "$TAG" "$GITHUB_REPOSITORY" "$TAG" "$COMMIT" "$FORK" "$tick$IMAGE$tick" "$keyed")"
+            pr_url="$(gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH" \
+              --title "$TITLE" --body "$body")"
+          fi
+          echo "pcrs.json pull request: $pr_url" >> "$GITHUB_STEP_SUMMARY"
