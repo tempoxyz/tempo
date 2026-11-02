@@ -48,6 +48,66 @@ pub(crate) enum BlockSection {
     System { seen_subblocks_signatures: bool },
 }
 
+impl serde::Serialize for BlockSection {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_u8(match self {
+            Self::StartOfBlock => 0,
+            Self::NonShared => 1,
+            Self::GasIncentive => 2,
+            Self::System {
+                seen_subblocks_signatures: false,
+            } => 3,
+            Self::System {
+                seen_subblocks_signatures: true,
+            } => 4,
+        })
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for BlockSection {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(match u8::deserialize(deserializer)? {
+            0 => Self::StartOfBlock,
+            1 => Self::NonShared,
+            2 => Self::GasIncentive,
+            3 => Self::System {
+                seen_subblocks_signatures: false,
+            },
+            4 => Self::System {
+                seen_subblocks_signatures: true,
+            },
+            id => {
+                return Err(serde::de::Error::invalid_value(
+                    serde::de::Unexpected::Unsigned(id.into()),
+                    &"a block section id from 0 to 4",
+                ));
+            }
+        })
+    }
+}
+
+/// Block-level counters of a [`TempoBlockExecutor`] between transactions, from
+/// [`TempoBlockExecutor::executor_state`]. The section serializes as its numeric id, and
+/// deserializing an unknown id fails.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ExecutorState {
+    /// Section the next transaction is admitted in.
+    section: BlockSection,
+    /// Gas left for non-shared transactions.
+    non_shared_gas_left: u64,
+    /// Gas left for non-payment transactions.
+    non_payment_gas_left: u64,
+    /// Gas used by the gas incentive section.
+    incentive_gas_used: u64,
+    /// Block gas used.
+    block_gas_used: u64,
+    /// Inner executor's cumulative gas used.
+    cumulative_gas_used: u64,
+    /// Inner executor's blob gas used.
+    blob_gas_used: u64,
+}
+
 /// Builder for [`TempoReceipt`].
 #[derive(Debug, Clone, Copy, Default)]
 #[non_exhaustive]
@@ -239,66 +299,39 @@ impl<'a> TempoBlockExecutor<'a> {
         }
     }
 
-    /// Block-level counters after all prior transactions were committed: the section tag
-    /// followed by non-shared gas left, non-payment gas left, incentive gas used, block gas
-    /// used, cumulative gas used and blob gas used.
+    /// Block-level counters after all prior transactions were committed.
     ///
-    /// With [`Self::restore_transaction_counters`] this executes one transaction from its exact
+    /// With [`Self::with_executor_state`] this executes one transaction from its exact
     /// prestate (as `tempo-corpus` does), not a whole block. The inner executor's separate
     /// regular/state block gas counters are not restorable; they only gate block-gas
     /// admission, which a canonical transaction passes either way.
     #[doc(hidden)]
-    pub fn transaction_counters(&self) -> [u64; 7] {
-        let section = match self.section {
-            BlockSection::StartOfBlock => 0,
-            BlockSection::NonShared => 1,
-            BlockSection::GasIncentive => 2,
-            BlockSection::System {
-                seen_subblocks_signatures: false,
-            } => 3,
-            BlockSection::System {
-                seen_subblocks_signatures: true,
-            } => 4,
-        };
-        [
-            section,
-            self.non_shared_gas_left,
-            self.non_payment_gas_left,
-            self.incentive_gas_used,
-            self.block_gas_used,
-            self.inner.cumulative_gas_used,
-            self.inner.blob_gas_used,
-        ]
+    pub fn executor_state(&self) -> ExecutorState {
+        ExecutorState {
+            section: self.section,
+            non_shared_gas_left: self.non_shared_gas_left,
+            non_payment_gas_left: self.non_payment_gas_left,
+            incentive_gas_used: self.incentive_gas_used,
+            block_gas_used: self.block_gas_used,
+            cumulative_gas_used: self.inner.cumulative_gas_used,
+            blob_gas_used: self.inner.blob_gas_used,
+        }
     }
 
-    /// Restores counters from [`Self::transaction_counters`] into a fresh executor over the
-    /// matching prestate. Returns `false`, changing nothing, for an unknown section tag.
+    /// Restores [`Self::executor_state`] into a fresh executor over the matching prestate.
     ///
     /// Do not apply pre-execution changes again or finalize this executor. Storage-action
     /// replay memoization is reset: an isolated transaction always executes normally.
     #[doc(hidden)]
-    pub fn restore_transaction_counters(&mut self, counters: [u64; 7]) -> bool {
-        let section = match counters[0] {
-            0 => BlockSection::StartOfBlock,
-            1 => BlockSection::NonShared,
-            2 => BlockSection::GasIncentive,
-            3 => BlockSection::System {
-                seen_subblocks_signatures: false,
-            },
-            4 => BlockSection::System {
-                seen_subblocks_signatures: true,
-            },
-            _ => return false,
-        };
-        self.section = section;
-        self.non_shared_gas_left = counters[1];
-        self.non_payment_gas_left = counters[2];
-        self.incentive_gas_used = counters[3];
-        self.block_gas_used = counters[4];
-        self.inner.cumulative_gas_used = counters[5];
-        self.inner.blob_gas_used = counters[6];
+    pub fn with_executor_state(&mut self, state: ExecutorState) {
+        self.section = state.section;
+        self.non_shared_gas_left = state.non_shared_gas_left;
+        self.non_payment_gas_left = state.non_payment_gas_left;
+        self.incentive_gas_used = state.incentive_gas_used;
+        self.block_gas_used = state.block_gas_used;
+        self.inner.cumulative_gas_used = state.cumulative_gas_used;
+        self.inner.blob_gas_used = state.blob_gas_used;
         self.replay_state = StorageActionReplayState::default();
-        true
     }
 
     /// Deploys `0xEF` marker bytecode and initializes storage at a precompile address.
@@ -1750,7 +1783,7 @@ mod tests {
     }
 
     #[test]
-    fn test_restored_transaction_counters_match_in_block_execution() {
+    fn test_restored_executor_state_matches_in_block_execution() {
         let chainspec = test_chainspec();
         let signer = PrivateKey::from_seed(0);
         let input = create_system_tx_input(vec![create_subblock_metadata(&signer)], 1);
@@ -1760,33 +1793,76 @@ mod tests {
         let mut in_block = TestExecutorBuilder::default()
             .with_section(BlockSection::NonShared)
             .build(&mut db, &chainspec);
-        let start = in_block.transaction_counters();
+        let start = in_block.executor_state();
         in_block
             .execute_transaction(Recovered::new_unchecked(system_tx.clone(), Address::ZERO))
             .unwrap();
-        let end = in_block.transaction_counters();
+        let end = in_block.executor_state();
         let receipts = in_block.receipts().to_vec();
 
         let mut db = InMemoryDB::default();
         let mut restored = TestExecutorBuilder::default().build(&mut db, &chainspec);
-        for section in 0..5 {
-            let counters = [section, 11, 12, 13, 14, 15, 16];
-            assert!(restored.restore_transaction_counters(counters));
-            assert_eq!(restored.transaction_counters(), counters);
+        for section in [
+            BlockSection::StartOfBlock,
+            BlockSection::NonShared,
+            BlockSection::GasIncentive,
+            BlockSection::System {
+                seen_subblocks_signatures: false,
+            },
+            BlockSection::System {
+                seen_subblocks_signatures: true,
+            },
+        ] {
+            let state = ExecutorState {
+                section,
+                non_shared_gas_left: 11,
+                non_payment_gas_left: 12,
+                incentive_gas_used: 13,
+                block_gas_used: 14,
+                cumulative_gas_used: 15,
+                blob_gas_used: 16,
+            };
+            restored.with_executor_state(state);
+            assert_eq!(restored.executor_state(), state);
         }
-        // An unknown section tag changes nothing.
-        let before = restored.transaction_counters();
-        assert!(!restored.restore_transaction_counters([5, 0, 0, 0, 0, 0, 0]));
-        assert_eq!(restored.transaction_counters(), before);
-        assert_ne!(before, start);
+        assert_ne!(restored.executor_state(), start);
 
-        assert!(restored.restore_transaction_counters(start));
-        assert_eq!(restored.transaction_counters(), start);
+        restored.with_executor_state(start);
+        assert_eq!(restored.executor_state(), start);
         restored
             .execute_transaction(Recovered::new_unchecked(system_tx, Address::ZERO))
             .unwrap();
-        assert_eq!(restored.transaction_counters(), end);
+        assert_eq!(restored.executor_state(), end);
         assert_eq!(restored.receipts(), receipts.as_slice());
+    }
+
+    #[test]
+    fn test_executor_state_serde_rejects_unknown_section() {
+        let state = ExecutorState {
+            section: BlockSection::System {
+                seen_subblocks_signatures: true,
+            },
+            non_shared_gas_left: 1,
+            non_payment_gas_left: 2,
+            incentive_gas_used: 3,
+            block_gas_used: 4,
+            cumulative_gas_used: 5,
+            blob_gas_used: 6,
+        };
+        let mut json = serde_json::to_value(state).unwrap();
+        assert_eq!(json["section"], 4);
+        assert_eq!(
+            serde_json::from_value::<ExecutorState>(json.clone()).unwrap(),
+            state
+        );
+
+        json["section"] = 5.into();
+        let err = serde_json::from_value::<ExecutorState>(json).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("expected a block section id from 0 to 4"),
+            "{err}"
+        );
     }
 
     #[test]

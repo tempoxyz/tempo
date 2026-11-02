@@ -11,8 +11,9 @@ use alloy_consensus::{
 };
 use alloy_eip7928::bal::Bal;
 use alloy_primitives::{Address, B256, Bytes, U256};
+use bincode::Options;
 use evm2::evm::Database;
-use eyre::OptionExt;
+use eyre::{OptionExt, WrapErr};
 use parking_lot::Mutex;
 use reth_consensus::FullConsensus;
 use reth_evm::{
@@ -26,7 +27,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     sync::Arc,
 };
-use tempo_evm::{TempoBlockExecutor, TempoEvmConfig};
+use tempo_evm::{ExecutorState, TempoBlockExecutor, TempoEvmConfig};
 use tempo_primitives::{Block, TempoPrimitives, TempoTxEnvelope};
 
 /// A block's execution records and resulting state.
@@ -133,7 +134,7 @@ fn transact(
         index: index as u64,
         hash,
         before,
-        after: encode_boundary(executor.transaction_counters()),
+        after: boundary().serialize(&executor.executor_state())?,
         outcome,
         receipt: alloy_rlp::encode(receipt),
         delta: Delta::default(),
@@ -164,7 +165,7 @@ where
     let pre = drain(&updates);
     let mut records = Vec::new();
     for (index, tx) in block.transactions_recovered().enumerate() {
-        let before = encode_boundary(executor.transaction_counters());
+        let before = boundary().serialize(&executor.executor_state())?;
         let record = transact(&mut executor, tx, first_tx + index as u64, index, before)?;
         records.push((record, drain(&updates)));
     }
@@ -222,10 +223,10 @@ pub fn run_standalone(
     before: &[u8],
 ) -> eyre::Result<Transaction> {
     let mut executor = executor(config, view.clone(), block)?;
-    eyre::ensure!(
-        decode_boundary(before).is_some_and(|c| executor.restore_transaction_counters(c)),
-        "invalid transaction boundary"
-    );
+    let state: ExecutorState = boundary()
+        .deserialize(before)
+        .wrap_err("invalid transaction boundary")?;
+    executor.with_executor_state(state);
     let updates = hooked(&mut executor)?;
     let tx = block
         .transactions_recovered()
@@ -372,30 +373,13 @@ pub fn verify_changesets(
     Ok(())
 }
 
-/// Stored size of a transaction boundary: a section tag followed by six big-endian counters.
-const BOUNDARY_LEN: usize = 1 + 6 * 8;
-
-/// Encodes [`TempoBlockExecutor::transaction_counters`] for storage.
-fn encode_boundary([section, counters @ ..]: [u64; 7]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(BOUNDARY_LEN);
-    // Section tags are 0..=4.
-    bytes.push(section as u8);
-    for value in counters {
-        bytes.extend(value.to_be_bytes());
-    }
-    bytes
-}
-
-/// Decodes a boundary produced by [`encode_boundary`].
-fn decode_boundary(bytes: &[u8]) -> Option<[u64; 7]> {
-    if bytes.len() != BOUNDARY_LEN {
-        return None;
-    }
-    let mut counters = [u64::from(bytes[0]); 7];
-    for (value, word) in counters[1..].iter_mut().zip(bytes[1..].as_chunks().0) {
-        *value = u64::from_be_bytes(*word);
-    }
-    Some(counters)
+/// Codec of a stored transaction boundary, an [`ExecutorState`]: the section id byte followed
+/// by six big-endian counters, 49 bytes. Trailing bytes are rejected.
+fn boundary() -> impl bincode::Options {
+    bincode::DefaultOptions::new()
+        .with_big_endian()
+        .with_fixint_encoding()
+        .reject_trailing_bytes()
 }
 
 #[cfg(test)]
@@ -439,11 +423,31 @@ mod tests {
 
     #[test]
     fn boundary_encoding_roundtrip() {
-        for section in 0..5 {
-            let counters = [section, 1, u64::MAX, 3, 4, 5, 6];
-            let bytes = encode_boundary(counters);
-            assert_eq!(decode_boundary(&bytes), Some(counters));
-            assert_eq!(decode_boundary(&bytes[1..]), None);
+        for section in 0..5u8 {
+            let mut bytes = vec![section];
+            for value in [1, u64::MAX, 3, 4, 5, 6] {
+                bytes.extend(value.to_be_bytes());
+            }
+            let state: ExecutorState = boundary().deserialize(&bytes).unwrap();
+            assert_eq!(boundary().serialize(&state).unwrap(), bytes);
+            assert!(
+                boundary()
+                    .deserialize::<ExecutorState>(&bytes[1..])
+                    .is_err()
+            );
+            let mut trailing = bytes.clone();
+            trailing.push(0);
+            assert!(boundary().deserialize::<ExecutorState>(&trailing).is_err());
         }
+        let mut unknown = vec![5];
+        unknown.extend([0; 48]);
+        let err = boundary()
+            .deserialize::<ExecutorState>(&unknown)
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("expected a block section id from 0 to 4"),
+            "{err}"
+        );
     }
 }
