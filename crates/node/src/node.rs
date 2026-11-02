@@ -48,8 +48,8 @@ use tempo_chainspec::{TempoConsensusSpec, hardfork::TempoHardfork, spec::TempoCh
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_payload_builder::{TempoPayloadBuilder, TempoPayloadBuilderConfig};
 use tempo_payload_types::{
-    Estimator, TempoPayloadAttributes,
-    estimator::{self, BuildTimeMultiplier},
+    Estimator, EstimatorConfig, TempoPayloadAttributes,
+    estimator::{BuildTimeMultiplier, ConfigError},
 };
 use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType};
 use tempo_transaction_pool::{
@@ -1025,16 +1025,14 @@ impl Default for TempoPayloadBuilderBuilder {
 }
 
 impl TempoPayloadBuilderBuilder {
-    /// Returns [`Self::estimator`], or a new estimator seeded from
-    /// [`Self::build_time_multiplier`] when none is set.
-    pub fn resolve_estimator(&self) -> Estimator {
-        self.estimator.clone().unwrap_or_else(|| {
-            Estimator::new(estimator::Config {
-                build_time_multiplier: self.build_time_multiplier,
-                ..Default::default()
-            })
-            .expect("default network budget and typed build multiplier are valid")
-        })
+    /// Returns [`Self::estimator`] unchanged, or constructs one from `config`
+    /// with [`Self::build_time_multiplier`]. Returns an error if that
+    /// configuration is invalid and no estimator override is set.
+    pub fn resolve_estimator(&self, config: EstimatorConfig) -> Result<Estimator, ConfigError> {
+        match &self.estimator {
+            Some(estimator) => Ok(estimator.clone()),
+            None => Estimator::new(config.with_build_time_multiplier(self.build_time_multiplier)),
+        }
     }
 }
 
@@ -1060,7 +1058,7 @@ where
             _ => None,
         });
 
-        let estimator = self.resolve_estimator();
+        let estimator = self.resolve_estimator(EstimatorConfig::default())?;
         Ok(TempoPayloadBuilder::new(
             pool,
             ctx.provider().clone(),
