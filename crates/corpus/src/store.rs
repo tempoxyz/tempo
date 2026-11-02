@@ -27,6 +27,7 @@ use slatedb::{
 };
 use std::{sync::Arc, time::Duration};
 use tempo_primitives::Block;
+use tracing::warn;
 use url::Url;
 
 /// Maximum serialized size of one block record (block plus its transactions) or one
@@ -418,18 +419,32 @@ impl Store {
         Ok(created.id.to_string())
     }
 
-    /// Extends `lease` every third of `LEASE_LIFETIME`; returns only on failure.
+    /// Extends `lease` every third of `LEASE_LIFETIME`, retrying a failed renewal while the lease
+    /// still has time left. Returns only once the lease may expire before the next attempt, so
+    /// the caller must stop reading through it then.
     pub async fn renew_lease(self, lease: String) -> eyre::Result<()> {
         let admin = Admin::builder(self.data(), self.objects.clone()).build();
         let id = lease.parse()?;
+        let mut renewed = tokio::time::Instant::now();
         loop {
             tokio::time::sleep(LEASE_LIFETIME / 3).await;
-            tokio::time::timeout(
+            let error = match tokio::time::timeout(
                 LEASE_OPERATION_TIMEOUT,
                 admin.refresh_checkpoint(id, Some(LEASE_LIFETIME)),
             )
             .await
-            .wrap_err("renewing the replay lease timed out")??;
+            {
+                Ok(Ok(())) => {
+                    renewed = tokio::time::Instant::now();
+                    continue;
+                }
+                Ok(Err(error)) => eyre::Report::from(error),
+                Err(elapsed) => eyre::Report::from(elapsed),
+            };
+            if renewed.elapsed() + LEASE_LIFETIME / 3 + LEASE_OPERATION_TIMEOUT >= LEASE_LIFETIME {
+                return Err(error.wrap_err("replay lease expires before it can be renewed"));
+            }
+            warn!(%error, "Replay lease renewal failed; retrying");
         }
     }
 

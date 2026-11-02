@@ -70,7 +70,18 @@ pub fn run(
     // A replay that fails before releasing it leaves it to expire.
     let lease = runtime.block_on(store.lease(&catalog))?;
     catalog.checkpoint = Some(lease.clone());
-    let renewal = runtime.spawn(store.clone().renew_lease(lease.clone()));
+    let renewal = runtime.spawn({
+        let (renew, cancellation) = (
+            store.clone().renew_lease(lease.clone()),
+            cancellation.clone(),
+        );
+        // Stop reading before the lease may expire.
+        async move {
+            let renewed = renew.await;
+            cancellation.cancel();
+            renewed
+        }
+    });
     let reader = Arc::new(runtime.block_on(store.reader(&catalog))?);
     let tip_timestamp = runtime.block_on(store::tip_timestamp(&reader, &catalog.cursor))?;
     eyre::ensure!(
@@ -269,9 +280,10 @@ pub fn run(
         Ok(())
     };
     let released = runtime.block_on(store.release_lease(&lease));
+    // A failed renewal cancels the replay; report why rather than the cancellation.
+    renewed?;
     result?;
     closed?;
-    renewed?;
     released
 }
 
