@@ -500,7 +500,8 @@ fn is_invalidated_buffered_transaction(
 /// Returns true if the transaction is a candidate for parallel prewarming.
 fn is_parallel_candidate(tx: &BestTransaction) -> bool {
     // Payment lane transactions
-    tx.transaction.is_payment()
+    // TODO: switch to `is_payment_v3` after T15 is active.
+    tx.transaction.is_payment_v2()
         // 2D or expiring nonces, no protocol nonces
         && tx
             .transaction
@@ -511,7 +512,7 @@ fn is_parallel_candidate(tx: &BestTransaction) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_consensus::{BlockHeader, Header, Signed, TxLegacy};
+    use alloy_consensus::{BlockHeader, Header, SignableTransaction, TxLegacy};
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
     use reth_evm::{ConfigureEvm, NextBlockEnvAttributes};
     use reth_primitives_traits::{
@@ -610,8 +611,7 @@ mod tests {
             value: U256::ZERO,
             input: Bytes::new(),
         };
-        let envelope =
-            TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, Signature::test_signature()));
+        let envelope = TempoTxEnvelope::Legacy(tx.into_signed(Signature::test_signature()));
         let pooled = TempoPooledTransaction::new(Recovered::new_unchecked(envelope, sender));
         Arc::new(ValidPoolTransaction {
             transaction_id: TransactionId::new(0u64.into(), nonce),

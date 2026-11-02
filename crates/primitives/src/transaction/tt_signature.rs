@@ -2537,8 +2537,7 @@ mod tests {
                 false,
             ),
         ] {
-            let mut buf = Vec::new();
-            alloy_rlp::Encodable::encode(&sig, &mut buf);
+            let buf = alloy_rlp::encode(&sig);
             let decoded = TempoSignature::decode(&mut buf.as_slice()).unwrap();
             assert_eq!(sig, decoded);
             assert_eq!(decoded.is_legacy_keychain(), expect_legacy);

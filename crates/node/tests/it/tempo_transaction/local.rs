@@ -1029,8 +1029,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     // Also verify pool rejects the transaction
     let signed_tx1 = tx1.into_signed(aa_signature1);
     let envelope1: TempoTxEnvelope = signed_tx1.into();
-    let mut encoded1 = Vec::new();
-    envelope1.encode_2718(&mut encoded1);
+    let encoded1 = envelope1.encoded_2718();
     let inject_result1 = setup.node.inject_tx(encoded1.into()).await;
     assert!(
         inject_result1.is_err(),
@@ -1091,8 +1090,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
 
     let signed_tx2 = tx2.into_signed(aa_signature2);
     let envelope2: TempoTxEnvelope = signed_tx2.into();
-    let mut encoded2 = Vec::new();
-    envelope2.encode_2718(&mut encoded2);
+    let encoded2 = envelope2.encoded_2718();
     let inject_result2 = setup.node.inject_tx(encoded2.into()).await;
     assert!(
         inject_result2.is_err(),
@@ -1153,8 +1151,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
 
     let signed_tx3 = tx3.into_signed(aa_signature3);
     let envelope3: TempoTxEnvelope = signed_tx3.into();
-    let mut encoded3 = Vec::new();
-    envelope3.encode_2718(&mut encoded3);
+    let encoded3 = envelope3.encoded_2718();
     let inject_result3 = setup.node.inject_tx(encoded3.into()).await;
     assert!(
         inject_result3.is_err(),
@@ -1214,8 +1211,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
 
     let signed_tx4 = tx4.into_signed(aa_signature4);
     let envelope4: TempoTxEnvelope = signed_tx4.into();
-    let mut encoded4 = Vec::new();
-    envelope4.encode_2718(&mut encoded4);
+    let encoded4 = envelope4.encoded_2718();
     let inject_result4 = setup.node.inject_tx(encoded4.into()).await;
     assert!(
         inject_result4.is_err(),
@@ -1268,8 +1264,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
 
     let signed_bad_tx = bad_tx.into_signed(bad_tempo_signature);
     let bad_envelope: TempoTxEnvelope = signed_bad_tx.into();
-    let mut encoded_bad = Vec::new();
-    bad_envelope.encode_2718(&mut encoded_bad);
+    let encoded_bad = bad_envelope.encoded_2718();
 
     // Try to inject - should fail
     let inject_result = setup.node.inject_tx(encoded_bad.clone().into()).await;
