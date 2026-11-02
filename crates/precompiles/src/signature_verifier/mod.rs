@@ -287,9 +287,8 @@ struct RecoveredKeychainKey {
 mod tests {
     use super::*;
     use crate::{
-        attested_key_registry::{
-            DEV_CHAIN_ID,
-            tests::{NOW, OWNER, program_key, register_dev_key, with_registry},
+        attested_key_registry::tests::{
+            DEV_CHAIN_ID, NOW, OWNER, program_key, register_dev_key, with_registry,
         },
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
     };

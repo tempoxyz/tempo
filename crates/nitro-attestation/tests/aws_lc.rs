@@ -45,8 +45,8 @@ fn verifies_production_attestation_and_rejects_corrupt_signature() {
 #[test]
 fn verifies_dev_attestation_under_dev_root_only() {
     use tempo_nitro_attestation::{
-        CertificateError, NITRO_DEV_ROOT_DER,
-        testing::{DEV_PCRS, DevAttestation},
+        CertificateError,
+        testing::{DEV_PCRS, DevAttestation, NITRO_DEV_ROOT_DER},
     };
 
     assert_eq!(

@@ -20,9 +20,8 @@ Everything here is DEV/EXPERIMENTAL. Nothing merges.
 - Solidity interface: `IAttestedKeyRegistry` from TIP-1161 → Interfaces. PoC MUST implement, with exactly those
   signatures/selectors: `createPolicy`, `computePolicyId`, `proposeMeasurement`, `cancelProposal`, `removeMeasurement`,
   `revokeKeys`, `pause`, `unpause`, `setMaxKeyLifetime`, `registerKey`, `policy`, `measurementActiveAt`,
-  `keyValidUntil`. Others
-  (`proposeAnchor`, `removeAnchor`, `setDelay`, `setGuardian`, `transferOwnership`, `anchorActiveAt`) MAY revert
-  `Unauthorized()`/be omitted in the PoC. Events and errors as in the TIP (error `PolicyIsPaused`, not `PolicyPaused`).
+  `keyValidUntil`, and, for scheme `0xFE`, `proposeAnchor`, `removeAnchor`, and `anchorActiveAt`. Others
+  (`setDelay`, `setGuardian`, `transferOwnership`) MAY revert `Unauthorized()`/be omitted in the PoC. Events and errors as in the TIP (error `PolicyIsPaused`, not `PolicyPaused`).
 - `policy_id = keccak256(abi.encode(creator, salt))`.
 - Constants: `KEY_SLOTS = 8`, `MAX_KEY_LIFETIME = 604,800` (7 days), `MAX_FUTURE_SKEW = 60`,
   `MAX_ATTESTATION_AGE = 300` (seconds).
@@ -37,10 +36,16 @@ Everything here is DEV/EXPERIMENTAL. Nothing merges.
 
 ## Attestation schemes
 
-| Scheme | Root | Allowed chains |
-|---|---|---|
-| `0x01` Nitro | `AWS_NITRO_ROOT_DER` (already in `tempo-nitro-attestation`) | any |
-| `0xFE` Nitro dev | `dev-root.der` in this folder (hex in `dev-root.der.hex`, SHA-256 `eef02ddde90ed0c4cbcdfa551b60b00ddbaae3824d929ecb9102ddff3f34e666`) | chain id `1337` only. Reject elsewhere with `UnknownScheme` |
+| Scheme | Root | Anchors | Allowed chains |
+|---|---|---|---|
+| `0x01` Nitro | `AWS_NITRO_ROOT_DER`, pinned (in `tempo-nitro-attestation`) | none (`InvalidAnchor`) | any |
+| `0xFE` Nitro dev | the document's `cabundle[0]`, if `keccak256(cabundle[0])` is an active anchor of the policy | `keccak256(root certificate DER)`, non-zero | every chain but Tempo mainnet (`4217`), which reverts `UnknownScheme` |
+
+Scheme `0xFE` attests nothing about the code: whoever holds a listed root's key can register any key. It exists for
+devnets and tests. Registration parses the document (40,000 gas), then reverts `AnchorNotActive` unless
+`keccak256(cabundle[0])` is active in the policy, before it charges signature gas. A policy lists anchors in
+`createPolicy` (active at once) or with `proposeAnchor` (after the delay), up to `MAX_ANCHORS = 16`. `removeAnchor`
+stops new registrations through the anchor. Keys it registered stay current until they expire or `revokeKeys`.
 
 Both use `tempo_nitro_attestation::{parse_attestation, verify_parsed}` with the scheme's root and the Zone verifier gas
 (`40,000 + 150,000 × (cabundle.len() + 1)`), then TIP-1162 → Verification steps 5–7:
@@ -96,8 +101,10 @@ JSON, hex strings `0x`-prefixed. Default port `8790`.
   (stores codes in memory, served by `/dev/codes/:email`).
 - Attestation (compile-time): `dev-attestation` (scheme `0xFE`, dev root) now; `nitro` (real NSM) later.
 - Startup (dev): if the policy does not exist, create it with `SIGNER_ADMIN_KEY` (a funded localnet key), salt
-  `keccak256("tempo-id:attested:dev")`, scheme `0xFE`, delay `0`, measurement `DEV_MEASUREMENT`. Then register a fresh
-  program key and re-register every ~420 s.
+  `keccak256("tempo-id:attested:dev")`, scheme `0xFE`, delay `0`, measurement `DEV_MEASUREMENT`, and anchors
+  `[DEV_ROOT_ANCHOR]`, where `DEV_ROOT_ANCHOR = keccak256(NITRO_DEV_ROOT_DER) =
+  0x9b53aa43efba217abda131551ee35410ecff7a0445311799a8ed251872d55d5a`. Then register a fresh program key and
+  re-register every ~420 s.
 - Env: `SIGNER_RPC_URL`, `SIGNER_ADMIN_KEY`, `SIGNER_USER_TAG_KEY`, `SIGNER_PORT`.
 
 ## Branches and PRs
@@ -115,12 +122,14 @@ Claude-Session: https://claude.ai/code/session_01D3nmWfxsYgSZCf4nZP5cZY
 
 - Gating: the registry and type `0x06` are active from `T14` (no new hardfork). The registry gets its `0xEF`
   marker code at the first block of `T14`, as other precompiles do.
-- Registry: every function of `IAttestedKeyRegistry` is implemented. Both Nitro schemes accept no anchors, so
-  `proposeAnchor` reverts `InvalidAnchor`, `removeAnchor` reverts `NotListed`, and `anchorActiveAt` returns `0`.
-  `createPolicy` reverts `AlreadyListed` for a duplicate initial measurement. `keyValidUntil(policyId, x, y)` reads
+- Registry: every function of `IAttestedKeyRegistry` is implemented. Scheme `0x01` accepts no anchors, so
+  `createPolicy` with anchors and `proposeAnchor` revert `InvalidAnchor`, `removeAnchor` reverts `NotListed`, and
+  `anchorActiveAt` returns `0`. Scheme `0xFE` takes its root from its anchors (see Attestation schemes).
+  `createPolicy` reverts `AlreadyListed` for a duplicate initial measurement or anchor. `keyValidUntil(policyId, x, y)` reads
   every slot and returns the `valid_until` of the one that holds the key as current, or `0`.
-- Scheme `0xFE` root: `tempo_nitro_attestation::NITRO_DEV_ROOT_DER`. Rust test helper:
-  `tempo_nitro_attestation::testing::DevAttestation` (feature `test-utils`), with `DEV_PCRS`.
+- Development root (test fixture only, not used by the node): `tempo_nitro_attestation::testing::NITRO_DEV_ROOT_DER`
+  (SHA-256 `eef02ddde90ed0c4cbcdfa551b60b00ddbaae3824d929ecb9102ddff3f34e666`, anchor `DEV_ROOT_ANCHOR` above).
+  Rust test helper: `tempo_nitro_attestation::testing::DevAttestation` (feature `test-utils`), with `DEV_PCRS`.
 - `0x06` lives in both `AccountSignature::Attested` (key authorization root signature) and
   `TempoSignature::Attested` (transaction signature), as `tempo_primitives::transaction::AttestedSignature`.
   RLP field types: `policy_id` and `user_tag` are 32-byte strings, `slot` a canonical RLP integer below 8,
@@ -225,4 +234,5 @@ for an exact estimate: each zero byte of it costs 12 gas less. After `revokeKeys
 ## Deviations from the TIPs
 
 - Activation: the PoC gates everything on T14. The TIPs leave the hardfork open.
-- Scheme `0xFE` (Nitro dev root, chain 1337 only) is PoC-only. Scheme `0x02` (TIP-1163) is not implemented.
+- Scheme `0xFE` (Nitro development scheme, anchored roots, refused on mainnet) follows TIP-1162 → Development scheme
+  `0xFE`. Scheme `0x02` (TIP-1163) is not implemented.

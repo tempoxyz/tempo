@@ -1,6 +1,7 @@
 //! Attested Key Registry (attested signers PoC).
 //!
-//! Policies list the measurements of approved signer programs. Anyone registers a program key into
+//! Policies list the measurements of approved signer programs and, for the development scheme,
+//! the trust anchors of their attestation roots. Anyone registers a program key into
 //! one of a policy's [`ATTESTED_KEY_SLOTS`] slots with an attestation document whose measurement is
 //! active in the policy, for at most the policy's `maxKeyLifetime`. A registration overwrites the
 //! slot, which ends the key it held. Attested signatures (type `0x06`) are valid only while
@@ -11,17 +12,20 @@ pub mod dispatch;
 use crate::{
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
-    zone_verifier::attestation::verify_attestation_with_root,
+    zone_verifier::attestation::{
+        parse_attestation_metered, verify_attestation_with_root, verify_parsed_metered,
+    },
 };
 use alloy::{
     primitives::{Address, B128, B256, U256, keccak256},
     sol_types::SolValue,
 };
+use tempo_chainspec::constants::mainnet::MAINNET_CHAIN_ID;
 use tempo_contracts::precompiles::{
     ATTESTED_KEY_REGISTRY_ADDRESS, AttestedKeyRegistryError, AttestedKeyRegistryEvent,
     IAttestedKeyRegistry,
 };
-use tempo_nitro_attestation::{AWS_NITRO_ROOT_DER, NITRO_DEV_ROOT_DER};
+use tempo_nitro_attestation::AWS_NITRO_ROOT_DER;
 use tempo_precompiles_macros::{Storable, contract};
 use tempo_primitives::transaction::{ATTESTED_KEY_SLOTS, is_valid_p256_public_key};
 
@@ -35,13 +39,14 @@ pub const MAX_ATTESTATION_AGE: u64 = 300;
 pub const MAX_DELAY: u64 = 2_592_000;
 /// Most active and pending measurements per policy.
 pub const MAX_MEASUREMENTS: u8 = 16;
+/// Most active and pending trust anchors per policy.
+pub const MAX_ANCHORS: u8 = 16;
 
-/// AWS Nitro Enclaves scheme, verified against [`AWS_NITRO_ROOT_DER`].
+/// AWS Nitro Enclaves scheme, verified against [`AWS_NITRO_ROOT_DER`]. Accepts no anchors.
 pub const SCHEME_NITRO: u8 = 0x01;
-/// Development Nitro scheme, verified against [`NITRO_DEV_ROOT_DER`] on [`DEV_CHAIN_ID`] only.
+/// Development Nitro scheme. A document's root certificate is its `cabundle[0]`, whose
+/// `keccak256` must be an active trust anchor of the policy. Unknown on Tempo mainnet.
 pub const SCHEME_NITRO_DEV: u8 = 0xFE;
-/// The only chain that accepts [`SCHEME_NITRO_DEV`].
-pub const DEV_CHAIN_ID: u64 = 1337;
 
 /// Domain prefix of the binding an attestation document commits to.
 pub const BINDING_DOMAIN: &[u8] = b"tempo:attested-key";
@@ -70,7 +75,7 @@ pub struct PolicySettings {
     pub pending_delay_at: u64,
     /// Active and pending measurements.
     pub measurement_count: u8,
-    /// Active and pending anchors. Always zero: the Nitro schemes accept no anchors.
+    /// Active and pending anchors. Always zero for a scheme that accepts no anchors.
     pub anchor_count: u8,
 }
 
@@ -118,6 +123,26 @@ pub struct KeySlot {
     pub epoch: u64,
 }
 
+/// Where a scheme's documents take their root certificate from.
+#[derive(Debug, Clone, Copy)]
+enum Root {
+    /// A root certificate pinned in consensus. The scheme accepts no anchors.
+    Pinned(&'static [u8]),
+    /// The document's `cabundle[0]`, whose `keccak256` must be an active anchor of the policy.
+    Anchored,
+}
+
+impl Root {
+    /// Reverts with `InvalidAnchor` unless the scheme accepts `anchor`: a pinned root accepts
+    /// none, and an anchored root accepts any non-zero hash.
+    fn ensure_accepts(self, anchor: B256) -> Result<()> {
+        match self {
+            Self::Anchored if !anchor.is_zero() => Ok(()),
+            _ => Err(AttestedKeyRegistryError::invalid_anchor().into()),
+        }
+    }
+}
+
 #[contract(addr = ATTESTED_KEY_REGISTRY_ADDRESS)]
 pub struct AttestedKeyRegistry {
     policies: Mapping<B256, Policy>,
@@ -159,7 +184,7 @@ impl AttestedKeyRegistry {
         if call.owner.is_zero() {
             return Err(AttestedKeyRegistryError::zero_address().into());
         }
-        self.root_for(call.scheme)?;
+        let root = self.root_for(call.scheme)?;
         if call.delay > MAX_DELAY {
             return Err(AttestedKeyRegistryError::delay_too_long().into());
         }
@@ -168,11 +193,12 @@ impl AttestedKeyRegistry {
             .ok()
             .filter(|count| *count <= MAX_MEASUREMENTS)
             .ok_or_else(AttestedKeyRegistryError::too_many_entries)?;
-        if call.anchors.len() > usize::from(MAX_MEASUREMENTS) {
-            return Err(AttestedKeyRegistryError::too_many_entries().into());
-        }
-        if !call.anchors.is_empty() {
-            return Err(AttestedKeyRegistryError::invalid_anchor().into());
+        let anchor_count = u8::try_from(call.anchors.len())
+            .ok()
+            .filter(|count| *count <= MAX_ANCHORS)
+            .ok_or_else(AttestedKeyRegistryError::too_many_entries)?;
+        for anchor in &call.anchors {
+            root.ensure_accepts(*anchor)?;
         }
 
         self.policies[policy_id].write(Policy {
@@ -185,6 +211,7 @@ impl AttestedKeyRegistry {
         self.settings[policy_id].write(PolicySettings {
             delay: call.delay,
             measurement_count,
+            anchor_count,
             ..Default::default()
         })?;
         self.key_lifetimes[policy_id].write(KeyLifetime {
@@ -213,6 +240,15 @@ impl AttestedKeyRegistry {
                 policy_id,
                 measurement,
                 active_at,
+            ))?;
+        }
+        for anchor in call.anchors {
+            if self.anchor_active_at[policy_id][anchor].read()? != 0 {
+                return Err(AttestedKeyRegistryError::already_listed().into());
+            }
+            self.anchor_active_at[policy_id][anchor].write(active_at)?;
+            self.emit_event(AttestedKeyRegistryEvent::anchor_proposed(
+                policy_id, anchor, active_at,
             ))?;
         }
         Ok(policy_id)
@@ -251,10 +287,27 @@ impl AttestedKeyRegistry {
         ))
     }
 
-    fn propose_anchor(&mut self, sender: Address, policy_id: B256) -> Result<()> {
-        self.ensure_owner(sender, policy_id)?;
-        // Both Nitro schemes pin their root and accept no anchors.
-        Err(AttestedKeyRegistryError::invalid_anchor().into())
+    fn propose_anchor(&mut self, sender: Address, policy_id: B256, anchor: B256) -> Result<()> {
+        let policy = self.ensure_owner(sender, policy_id)?;
+        self.root_for(policy.scheme)?.ensure_accepts(anchor)?;
+        if self.anchor_active_at[policy_id][anchor].read()? != 0 {
+            return Err(AttestedKeyRegistryError::already_listed().into());
+        }
+        let mut settings = self.settings[policy_id].read()?;
+        if settings.anchor_count >= MAX_ANCHORS {
+            return Err(AttestedKeyRegistryError::too_many_entries().into());
+        }
+        let now = self.now();
+        let active_at = now
+            .checked_add(settings.delay_at(now))
+            .ok_or_else(TempoPrecompileError::under_overflow)?
+            .max(1);
+        settings.anchor_count += 1;
+        self.settings[policy_id].write(settings)?;
+        self.anchor_active_at[policy_id][anchor].write(active_at)?;
+        self.emit_event(AttestedKeyRegistryEvent::anchor_proposed(
+            policy_id, anchor, active_at,
+        ))
     }
 
     fn cancel_proposal(
@@ -273,8 +326,11 @@ impl AttestedKeyRegistry {
         if active_at == 0 || active_at <= self.now() {
             return Err(AttestedKeyRegistryError::not_pending().into());
         }
-        // Anchors are never listed, so only a measurement reaches this point.
-        self.remove_measurement_entry(policy_id, entry)?;
+        if is_anchor {
+            self.remove_anchor_entry(policy_id, entry)?;
+        } else {
+            self.remove_measurement_entry(policy_id, entry)?;
+        }
         self.emit_event(AttestedKeyRegistryEvent::proposal_cancelled(
             policy_id, entry, is_anchor,
         ))
@@ -299,9 +355,15 @@ impl AttestedKeyRegistry {
         ))
     }
 
-    fn remove_anchor(&mut self, sender: Address, policy_id: B256) -> Result<()> {
+    /// Removes an active or pending anchor. Keys registered through it stay current, since
+    /// `revokeKeys` covers a compromised root.
+    fn remove_anchor(&mut self, sender: Address, policy_id: B256, anchor: B256) -> Result<()> {
         self.ensure_owner_or_guardian(sender, policy_id)?;
-        Err(AttestedKeyRegistryError::not_listed().into())
+        if self.anchor_active_at[policy_id][anchor].read()? == 0 {
+            return Err(AttestedKeyRegistryError::not_listed().into());
+        }
+        self.remove_anchor_entry(policy_id, anchor)?;
+        self.emit_event(AttestedKeyRegistryEvent::anchor_removed(policy_id, anchor))
     }
 
     pub(crate) fn revoke_keys(&mut self, sender: Address, policy_id: B256) -> Result<()> {
@@ -449,8 +511,27 @@ impl AttestedKeyRegistry {
 
         let now = self.now();
         let binding = self.binding(policy_id, slot, x, y, call.lifetime)?;
-        let attestation = verify_attestation_with_root(&call.document, now, root)?
-            .ok_or_else(AttestedKeyRegistryError::invalid_attestation)?;
+        let attestation = match root {
+            Root::Pinned(root_der) => verify_attestation_with_root(&call.document, now, root_der)?,
+            Root::Anchored => {
+                let parsed = parse_attestation_metered(&call.document)?
+                    .ok_or_else(AttestedKeyRegistryError::invalid_attestation)?;
+                let root_der = parsed
+                    .cabundle
+                    .first()
+                    .cloned()
+                    .ok_or_else(AttestedKeyRegistryError::invalid_attestation)?;
+                // The anchor is checked before signature gas is charged, so a document under an
+                // unlisted root fails cheaply.
+                let anchor = self.storage.keccak256(&root_der)?;
+                let active_at = self.anchor_active_at[policy_id][anchor].read()?;
+                if active_at == 0 || active_at > now {
+                    return Err(AttestedKeyRegistryError::anchor_not_active().into());
+                }
+                verify_parsed_metered(parsed, now, &root_der)?
+            }
+        }
+        .ok_or_else(AttestedKeyRegistryError::invalid_attestation)?;
         // TIP-XXX4 steps 5 and 6: PCR0-2 present, 48 bytes, not all zero, and `user_data`
         // equal to the binding.
         let mut pcrs = [0u8; 3 * 48];
@@ -535,11 +616,12 @@ impl AttestedKeyRegistry {
         Ok(0)
     }
 
-    /// Returns the pinned root of `scheme` if it is active on this chain.
-    fn root_for(&self, scheme: u8) -> Result<&'static [u8]> {
+    /// Returns the root of `scheme`, or reverts with `UnknownScheme` if the scheme is not active
+    /// on this chain. [`SCHEME_NITRO_DEV`] is active on every chain but Tempo mainnet.
+    fn root_for(&self, scheme: u8) -> Result<Root> {
         match scheme {
-            SCHEME_NITRO => Ok(AWS_NITRO_ROOT_DER),
-            SCHEME_NITRO_DEV if self.storage.chain_id() == DEV_CHAIN_ID => Ok(NITRO_DEV_ROOT_DER),
+            SCHEME_NITRO => Ok(Root::Pinned(AWS_NITRO_ROOT_DER)),
+            SCHEME_NITRO_DEV if self.storage.chain_id() != MAINNET_CHAIN_ID => Ok(Root::Anchored),
             _ => Err(AttestedKeyRegistryError::unknown_scheme().into()),
         }
     }
@@ -570,16 +652,16 @@ impl AttestedKeyRegistry {
     }
 
     /// Reverts with `PolicyNotFound` for a missing policy, then `Unauthorized` unless `sender`
-    /// owns it.
-    fn ensure_owner(&self, sender: Address, policy_id: B256) -> Result<()> {
-        let owner = self.policies[policy_id].read()?.owner;
-        if owner.is_zero() {
+    /// owns it. Returns the policy.
+    fn ensure_owner(&self, sender: Address, policy_id: B256) -> Result<Policy> {
+        let policy = self.policies[policy_id].read()?;
+        if policy.owner.is_zero() {
             return Err(AttestedKeyRegistryError::policy_not_found().into());
         }
-        if owner != sender {
+        if policy.owner != sender {
             return Err(AttestedKeyRegistryError::unauthorized().into());
         }
-        Ok(())
+        Ok(policy)
     }
 
     /// As [`Self::ensure_owner`], also admitting the policy's non-zero guardian.
@@ -599,6 +681,16 @@ impl AttestedKeyRegistry {
         let mut settings = self.settings[policy_id].read()?;
         settings.measurement_count = settings
             .measurement_count
+            .checked_sub(1)
+            .ok_or_else(TempoPrecompileError::under_overflow)?;
+        self.settings[policy_id].write(settings)
+    }
+
+    fn remove_anchor_entry(&mut self, policy_id: B256, anchor: B256) -> Result<()> {
+        self.anchor_active_at[policy_id][anchor].delete()?;
+        let mut settings = self.settings[policy_id].read()?;
+        settings.anchor_count = settings
+            .anchor_count
             .checked_sub(1)
             .ok_or_else(TempoPrecompileError::under_overflow)?;
         self.settings[policy_id].write(settings)
@@ -640,10 +732,13 @@ fn ensure_key_lifetime_in_range(lifetime: u64) -> Result<()> {
 pub(crate) mod tests {
     use super::*;
     use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
+    use alloy::primitives::b256;
     use p256::ecdsa::SigningKey;
-    use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_nitro_attestation::testing::{DEV_PCRS, DevAttestation};
+    use tempo_chainspec::{constants::moderato::MODERATO_CHAIN_ID, hardfork::TempoHardfork};
+    use tempo_nitro_attestation::testing::{DEV_PCRS, DevAttestation, NITRO_DEV_ROOT_DER};
 
+    /// Chain ID of `tempo node --dev`.
+    pub(crate) const DEV_CHAIN_ID: u64 = 1337;
     pub(crate) const NOW: u64 = 1_800_000_000;
     pub(crate) const OWNER: Address = Address::repeat_byte(0x01);
     const GUARDIAN: Address = Address::repeat_byte(0x02);
@@ -653,6 +748,11 @@ pub(crate) mod tests {
 
     fn dev_measurement() -> B256 {
         keccak256(DEV_PCRS.concat())
+    }
+
+    /// The trust anchor of the root that [`DevAttestation`] documents chain to.
+    fn dev_anchor() -> B256 {
+        keccak256(NITRO_DEV_ROOT_DER)
     }
 
     pub(crate) fn program_key(seed: u8) -> (B256, B256) {
@@ -673,7 +773,13 @@ pub(crate) mod tests {
         StorageCtx::enter(&mut storage, || f(&mut AttestedKeyRegistry::new()))
     }
 
+    /// A policy call that lists [`dev_anchor`] for [`SCHEME_NITRO_DEV`] and no anchor otherwise.
     fn create_call(scheme: u8, measurements: Vec<B256>) -> IAttestedKeyRegistry::createPolicyCall {
+        let anchors = if scheme == SCHEME_NITRO_DEV {
+            vec![dev_anchor()]
+        } else {
+            vec![]
+        };
         IAttestedKeyRegistry::createPolicyCall {
             salt: B256::repeat_byte(0x55),
             scheme,
@@ -682,7 +788,7 @@ pub(crate) mod tests {
             delay: 0,
             maxKeyLifetime: LIFETIME,
             measurements,
-            anchors: vec![],
+            anchors,
         }
     }
 
@@ -843,6 +949,18 @@ pub(crate) mod tests {
                     .unwrap(),
                 NOW
             );
+            assert_eq!(
+                registry.anchor_active_at[policy_id][dev_anchor()]
+                    .read()
+                    .unwrap(),
+                NOW
+            );
+            assert_eq!(registry.settings[policy_id].read().unwrap().anchor_count, 1);
+            // The anchor that development signers list, as CONTRACT.md and TIP-1162 state it.
+            assert_eq!(
+                dev_anchor(),
+                b256!("9b53aa43efba217abda131551ee35410ecff7a0445311799a8ed251872d55d5a")
+            );
         });
     }
 
@@ -944,8 +1062,8 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn dev_scheme_is_unknown_outside_dev_chain() {
-        with_registry(1, |registry| {
+    fn dev_scheme_is_unknown_on_mainnet_only() {
+        with_registry(MAINNET_CHAIN_ID, |registry| {
             assert_eq!(
                 registry.create_policy(OWNER, create_call(SCHEME_NITRO_DEV, vec![])),
                 Err(err(AttestedKeyRegistryError::unknown_scheme()))
@@ -954,6 +1072,171 @@ pub(crate) mod tests {
                 registry
                     .create_policy(OWNER, create_call(SCHEME_NITRO, vec![]))
                     .is_ok()
+            );
+        });
+        for chain_id in [DEV_CHAIN_ID, MODERATO_CHAIN_ID, 1] {
+            with_registry(chain_id, |registry| {
+                let policy_id = register_dev_key(registry, 7);
+                assert!(current(registry, policy_id, 0, program_key(7)));
+            });
+        }
+    }
+
+    #[test]
+    fn dev_scheme_registers_only_under_an_active_anchor() {
+        with_registry(DEV_CHAIN_ID, |registry| {
+            // The policy's only anchor is another root.
+            let other_root = keccak256(AWS_NITRO_ROOT_DER);
+            let mut call = create_call(SCHEME_NITRO_DEV, vec![dev_measurement()]);
+            call.anchors = vec![other_root];
+            call.delay = 100;
+            let policy_id = registry.create_policy(OWNER, call).unwrap();
+            let key = program_key(7);
+            let attestation = attestation_for(registry, policy_id, 0, key);
+            assert_eq!(
+                register(registry, policy_id, 0, key, attestation.clone()),
+                Err(err(AttestedKeyRegistryError::anchor_not_active()))
+            );
+
+            // A pending anchor registers no key.
+            registry
+                .propose_anchor(OWNER, policy_id, dev_anchor())
+                .unwrap();
+            assert_eq!(
+                registry.anchor_active_at[policy_id][dev_anchor()]
+                    .read()
+                    .unwrap(),
+                NOW + 100
+            );
+            assert_eq!(
+                register(registry, policy_id, 0, key, attestation),
+                Err(err(AttestedKeyRegistryError::anchor_not_active()))
+            );
+
+            registry.storage.set_timestamp(U256::from(NOW + 100));
+            let attestation = attestation_for(registry, policy_id, 0, key);
+            register(registry, policy_id, 0, key, attestation).unwrap();
+            assert!(current(registry, policy_id, 0, key));
+
+            // A removed anchor registers no new key, and the key it registered stays current.
+            assert_eq!(
+                registry.remove_anchor(OTHER, policy_id, dev_anchor()),
+                Err(err(AttestedKeyRegistryError::unauthorized()))
+            );
+            registry
+                .remove_anchor(GUARDIAN, policy_id, dev_anchor())
+                .unwrap();
+            assert_eq!(
+                registry.anchor_active_at[policy_id][dev_anchor()]
+                    .read()
+                    .unwrap(),
+                0
+            );
+            assert!(current(registry, policy_id, 0, key));
+            assert_eq!(registry.policy(policy_id).unwrap().epoch, 0);
+            let other_key = program_key(8);
+            let attestation = attestation_for(registry, policy_id, 1, other_key);
+            assert_eq!(
+                register(registry, policy_id, 1, other_key, attestation),
+                Err(err(AttestedKeyRegistryError::anchor_not_active()))
+            );
+            assert_eq!(
+                registry.remove_anchor(OWNER, policy_id, dev_anchor()),
+                Err(err(AttestedKeyRegistryError::not_listed()))
+            );
+            assert_eq!(registry.settings[policy_id].read().unwrap().anchor_count, 1);
+        });
+    }
+
+    #[test]
+    fn anchor_proposals_follow_the_delay_and_limits() {
+        with_registry(DEV_CHAIN_ID, |registry| {
+            let mut call = create_call(SCHEME_NITRO_DEV, vec![]);
+            call.delay = 100;
+            let policy_id = registry.create_policy(OWNER, call).unwrap();
+            let anchor = B256::repeat_byte(0x0A);
+
+            for (sender, anchor, expected) in [
+                (GUARDIAN, anchor, AttestedKeyRegistryError::unauthorized()),
+                (
+                    OWNER,
+                    B256::ZERO,
+                    AttestedKeyRegistryError::invalid_anchor(),
+                ),
+                (
+                    OWNER,
+                    dev_anchor(),
+                    AttestedKeyRegistryError::already_listed(),
+                ),
+            ] {
+                assert_eq!(
+                    registry.propose_anchor(sender, policy_id, anchor),
+                    Err(err(expected))
+                );
+            }
+
+            registry.propose_anchor(OWNER, policy_id, anchor).unwrap();
+            assert_eq!(
+                registry.anchor_active_at[policy_id][anchor].read().unwrap(),
+                NOW + 100
+            );
+            registry
+                .cancel_proposal(GUARDIAN, policy_id, anchor, true)
+                .unwrap();
+            assert_eq!(
+                registry.anchor_active_at[policy_id][anchor].read().unwrap(),
+                0
+            );
+            assert_eq!(
+                registry.cancel_proposal(OWNER, policy_id, anchor, true),
+                Err(err(AttestedKeyRegistryError::not_pending()))
+            );
+            // An anchor listed at creation is active, not pending.
+            assert_eq!(
+                registry.cancel_proposal(OWNER, policy_id, dev_anchor(), true),
+                Err(err(AttestedKeyRegistryError::not_pending()))
+            );
+
+            for byte in 1..MAX_ANCHORS {
+                registry
+                    .propose_anchor(OWNER, policy_id, B256::with_last_byte(byte))
+                    .unwrap();
+            }
+            assert_eq!(
+                registry.settings[policy_id].read().unwrap().anchor_count,
+                MAX_ANCHORS
+            );
+            assert_eq!(
+                registry.propose_anchor(OWNER, policy_id, anchor),
+                Err(err(AttestedKeyRegistryError::too_many_entries()))
+            );
+        });
+    }
+
+    #[test]
+    fn nitro_scheme_accepts_no_anchors() {
+        with_registry(DEV_CHAIN_ID, |registry| {
+            let mut call = create_call(SCHEME_NITRO, vec![]);
+            call.anchors = vec![dev_anchor()];
+            assert_eq!(
+                registry.create_policy(OWNER, call),
+                Err(err(AttestedKeyRegistryError::invalid_anchor()))
+            );
+
+            let policy_id = registry
+                .create_policy(OWNER, create_call(SCHEME_NITRO, vec![]))
+                .unwrap();
+            assert_eq!(
+                registry.propose_anchor(OWNER, policy_id, dev_anchor()),
+                Err(err(AttestedKeyRegistryError::invalid_anchor()))
+            );
+            assert_eq!(
+                registry.remove_anchor(OWNER, policy_id, dev_anchor()),
+                Err(err(AttestedKeyRegistryError::not_listed()))
+            );
+            assert_eq!(
+                registry.cancel_proposal(OWNER, policy_id, dev_anchor(), true),
+                Err(err(AttestedKeyRegistryError::not_pending()))
             );
         });
     }
@@ -1001,8 +1284,23 @@ pub(crate) mod tests {
                     AttestedKeyRegistryError::too_many_entries(),
                 ),
                 (
+                    fresh(|c| {
+                        c.anchors = (1..=MAX_ANCHORS + 1).map(B256::with_last_byte).collect()
+                    }),
+                    AttestedKeyRegistryError::too_many_entries(),
+                ),
+                (
                     fresh(|c| c.anchors = vec![B256::ZERO]),
                     AttestedKeyRegistryError::invalid_anchor(),
+                ),
+                // Creation writes entries before it finds a duplicate, so this case uses its own
+                // salt. A transaction would revert those writes.
+                (
+                    fresh(|c| {
+                        c.salt = B256::repeat_byte(0x67);
+                        c.anchors = vec![dev_anchor(), dev_anchor()];
+                    }),
+                    AttestedKeyRegistryError::already_listed(),
                 ),
                 (
                     fresh(|c| c.measurements = vec![B256::ZERO, B256::ZERO]),
@@ -1114,10 +1412,6 @@ pub(crate) mod tests {
             assert_eq!(
                 registry.cancel_proposal(OWNER, policy_id, measurement, false),
                 Err(err(AttestedKeyRegistryError::not_pending()))
-            );
-            assert_eq!(
-                registry.propose_anchor(OWNER, policy_id),
-                Err(err(AttestedKeyRegistryError::invalid_anchor()))
             );
 
             // A decrease waits for the current delay; an increase applies at once.

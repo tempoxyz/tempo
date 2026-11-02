@@ -24,7 +24,7 @@ impl Precompile for AttestedKeyRegistry {
                         self.propose_measurement(sender, c.policyId, c.measurement)
                     }),
                     proposeAnchor(call) => mutate(call, msg_sender, |sender, c| {
-                        self.propose_anchor(sender, c.policyId)
+                        self.propose_anchor(sender, c.policyId, c.anchor)
                     }),
                     cancelProposal(call) => mutate(call, msg_sender, |sender, c| {
                         self.cancel_proposal(sender, c.policyId, c.entry, c.isAnchor)
@@ -33,7 +33,7 @@ impl Precompile for AttestedKeyRegistry {
                         self.remove_measurement(sender, c.policyId, c.measurement)
                     }),
                     removeAnchor(call) => mutate(call, msg_sender, |sender, c| {
-                        self.remove_anchor(sender, c.policyId)
+                        self.remove_anchor(sender, c.policyId, c.anchor)
                     }),
                     revokeKeys(call) => mutate(call, msg_sender, |sender, c| {
                         self.revoke_keys(sender, c.policyId)

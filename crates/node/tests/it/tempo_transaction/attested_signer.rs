@@ -30,7 +30,7 @@ use tempo_alloy::rpc::{
     ConfigurableAccountSimulationSpec, TempoTransactionRequest,
 };
 use tempo_contracts::precompiles::{ATTESTED_KEY_REGISTRY_ADDRESS, IAttestedKeyRegistry};
-use tempo_nitro_attestation::testing::{DEV_PCRS, DevAttestation};
+use tempo_nitro_attestation::testing::{DEV_PCRS, DevAttestation, NITRO_DEV_ROOT_DER};
 use tempo_primitives::{
     SignatureType, TempoTxEnvelope,
     transaction::{
@@ -222,9 +222,6 @@ async fn registered_signer() -> eyre::Result<(Localnet, Signer, B256, B256)> {
         funder_addr: funder_signer.address(),
         funder_signer,
     };
-    let chain_id = env.chain_id;
-    eyre::ensure!(chain_id == 1337, "the dev scheme needs chain 1337");
-
     let owner = env.funder_addr;
     let salt = B256::repeat_byte(0x5A);
     let policy_id = keccak256((owner, salt).abi_encode());
@@ -238,7 +235,7 @@ async fn registered_signer() -> eyre::Result<(Localnet, Signer, B256, B256)> {
             delay: 0,
             maxKeyLifetime: MAX_KEY_LIFETIME,
             measurements: vec![keccak256(DEV_PCRS.concat())],
-            anchors: vec![],
+            anchors: vec![keccak256(NITRO_DEV_ROOT_DER)],
         }
         .abi_encode(),
     )
