@@ -55,8 +55,18 @@ impl SeedCache {
             if let Some(seed) = state.seeds.get(&round) {
                 return *seed;
             }
+            // Proposals and verifications that consensus cancelled leave closed
+            // senders behind; drop them so the map stays bounded while
+            // finalization stalls.
+            state.waiters.retain(|_, senders| {
+                senders.retain(|sender| !sender.is_canceled());
+                !senders.is_empty()
+            });
             let (sender, receiver) = oneshot::channel();
             state.waiters.entry(round).or_default().push(sender);
+            while state.waiters.len() > MAX_SEEDS {
+                state.waiters.pop_first();
+            }
             receiver
         };
         match receiver.await {
@@ -184,6 +194,17 @@ mod tests {
 
         cache.insert(seed(round(5)));
         assert!(cache.get(round(5)).is_some());
+    }
+
+    #[test]
+    fn cancelled_waiters_are_dropped() {
+        let cache = SeedCache::default();
+        drop(cache.wait(round(1)).now_or_never());
+        let mut live = std::pin::pin!(cache.wait(round(2)));
+        assert!(live.as_mut().now_or_never().is_none());
+
+        let waiting_rounds: Vec<_> = cache.state.lock().waiters.keys().copied().collect();
+        assert_eq!(waiting_rounds, vec![round(2)]);
     }
 
     #[test]

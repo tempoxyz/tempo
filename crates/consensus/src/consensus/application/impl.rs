@@ -222,7 +222,7 @@ impl Inner {
             extra_data,
             consensus_context,
         )
-        .with_prev_randao(prev_randao)
+        .with_prev_randao(prev_randao.unwrap_or_default())
         .with_payload_build_budget(build_budget);
 
         // Subscribe to the payload build. The executor owns the build job
@@ -325,9 +325,9 @@ impl Inner {
     }
 
     /// Returns the `mix_hash` that TIP-1153 requires of a block in `epoch` at
-    /// `timestamp` (seconds) on `parent`: zero before the fork and for the
-    /// first block of an epoch, else `keccak256` of the seed of the parent's
-    /// round.
+    /// `timestamp` (seconds) on `parent`: zero for the first block of an
+    /// epoch, else `keccak256` of the seed of the parent's round. `None`
+    /// before the fork, which places no rule on `mix_hash`.
     ///
     /// Waits for that seed if no verified certificate for the parent's round
     /// is known yet, see [`SeedCache::wait`].
@@ -337,9 +337,9 @@ impl Inner {
         timestamp: u64,
         parent: &Block,
         wait: SeedWait,
-    ) -> B256 {
+    ) -> Option<B256> {
         if !self.chainspec.is_t15_active_at_timestamp(timestamp) {
-            return B256::ZERO;
+            return None;
         }
         // The marshal wrappers only pass parents of the same or an earlier epoch.
         let Some(parent_ctx) = parent
@@ -348,18 +348,18 @@ impl Inner {
             .filter(|ctx| ctx.epoch == epoch.get())
         else {
             // The parent is genesis or the boundary block of an earlier epoch.
-            return B256::ZERO;
+            return Some(B256::ZERO);
         };
         let round = Round::new(Epoch::new(parent_ctx.epoch), View::new(parent_ctx.view));
         if let Some(seed) = self.seeds.get(round) {
-            return seed;
+            return Some(seed);
         }
         // A block that is not a boundary re-proposal is finalized only in the
         // round of its own consensus context.
         if let Some(finalization) = self.marshal.get_finalization(parent.height()).await
             && finalization.round() == round
         {
-            return hash_seed(&finalization.seed());
+            return Some(hash_seed(&finalization.seed()));
         }
         match wait {
             SeedWait::Propose => self.metrics.prev_randao_propose_waits.metric().inc(),
@@ -369,7 +369,7 @@ impl Inner {
             ?round,
             "seed of the parent's round unavailable; waiting for its certificate"
         );
-        self.seeds.wait(round).await
+        Some(self.seeds.wait(round).await)
     }
 
     /// Returns whether the block at `height` is the last block of its epoch,
@@ -597,15 +597,16 @@ where
             }
         };
 
-        let expected_mix_hash = self
+        if let Some(expected_mix_hash) = self
             .expected_mix_hash(
                 context.round.epoch(),
                 block.header().timestamp(),
                 &parent,
                 SeedWait::Verify,
             )
-            .await;
-        if block.header().mix_hash() != Some(expected_mix_hash) {
+            .await
+            && block.header().mix_hash() != Some(expected_mix_hash)
+        {
             self.metrics.prev_randao_mismatch.metric().inc();
             warn!(
                 expected = %expected_mix_hash,
