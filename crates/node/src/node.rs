@@ -1031,7 +1031,11 @@ impl TempoPayloadBuilderBuilder {
     pub fn resolve_estimator(&self, config: EstimatorConfig) -> Result<Estimator, ConfigError> {
         match &self.estimator {
             Some(estimator) => Ok(estimator.clone()),
-            None => Estimator::new(config.with_build_time_multiplier(self.build_time_multiplier)),
+            None => {
+                let config = config.with_build_time_multiplier(self.build_time_multiplier);
+                config.validate()?;
+                Ok(Estimator::new(config))
+            }
         }
     }
 }

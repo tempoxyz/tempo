@@ -127,11 +127,12 @@ where
         let partition_prefix = uid.clone();
         // Fixed network reservation: tests pin the return budget instead of
         // learning it from the simulated network.
-        let estimator = tempo_node::Estimator::new(tempo_node::EstimatorConfig::fixed(
-            proposal_return_budget,
-            Duration::from_millis(50),
-        ))
-        .expect("a fixed reservation with a positive proposal return budget is valid");
+        let estimator_config =
+            tempo_node::EstimatorConfig::fixed(proposal_return_budget, Duration::from_millis(50));
+        estimator_config
+            .validate()
+            .expect("a fixed reservation with a positive proposal return budget is valid");
+        let estimator = tempo_node::Estimator::new(estimator_config);
         execution_config.estimator = Some(estimator.clone());
         let execution_node_datadir = execution_runtime
             .nodes_dir()

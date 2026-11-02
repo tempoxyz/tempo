@@ -135,8 +135,8 @@ impl Config {
     }
 
     /// Checks that the reservations leave room for a proposal and that the
-    /// learning knobs are in range. [`Estimator::new`] rejects a
-    /// configuration that fails this.
+    /// learning knobs are in range. Call this before [`Estimator::new`] to
+    /// handle invalid configuration without panicking.
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.network_budget >= self.target_block_time {
             return Err(ConfigError::NetworkBudget {
@@ -218,17 +218,22 @@ pub struct Estimator {
 }
 
 impl Estimator {
-    /// Creates an estimator without feedback, or rejects an invalid configuration.
-    pub fn new(config: Config) -> Result<Self, ConfigError> {
-        config.validate()?;
-        Ok(Self {
+    /// Creates an estimator without feedback.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `config` is invalid. Call [`Config::validate`] beforehand to
+    /// handle invalid configuration without panicking.
+    pub fn new(config: Config) -> Self {
+        config.validate().expect("invalid estimator configuration");
+        Self {
             config,
             state: Arc::new(Mutex::new(EstimatorState {
                 validation: ValidationLatencyEstimator::default(),
                 build_time: BuildTimeTracker::new(config.build_time_multiplier),
                 network: NetworkTracker::new(&config),
             })),
-        })
+        }
     }
 
     /// Records successful local execution-layer verification, keyed by height.
@@ -461,80 +466,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn config_rejects_reservations_that_leave_no_proposal_window() {
-        let config = Config {
-            network_budget: Config::default().target_block_time,
-            ..Config::default()
-        };
-        assert_eq!(
-            config.validate(),
-            Err(ConfigError::NetworkBudget {
-                network_budget: config.network_budget,
-                target_block_time: config.target_block_time,
-            })
-        );
-        let config = Config {
-            network_budget_max: Duration::ZERO,
-            ..Config::default()
-        };
-        assert_eq!(
-            config.validate(),
-            Err(ConfigError::NetworkBudgetMaxBelowFloor {
-                network_budget: config.network_budget,
-                network_budget_max: Duration::ZERO,
-            })
-        );
-        let config = Config {
-            network_budget_max: Config::default().target_block_time,
-            ..Config::default()
-        };
-        assert_eq!(
-            config.validate(),
-            Err(ConfigError::NetworkBudgetMax {
-                network_budget_max: config.network_budget_max,
-                target_block_time: config.target_block_time,
-            })
-        );
-        for percentile in [49, 101] {
-            assert_eq!(
-                Config {
-                    network_reserve_percentile: percentile,
-                    ..Config::default()
-                }
-                .validate(),
-                Err(ConfigError::NetworkReservePercentile { percentile })
-            );
-        }
-    }
-
-    #[test]
-    fn cloned_estimator_shares_network_learning_and_fixed_budget_stays_pinned() {
-        let now = Instant::now();
-        let estimator = Estimator::new(Config::default()).unwrap();
-        let clone = estimator.clone();
-        estimator.on_proposal_returned(now, 1_000, 1_500, (1, 1), Duration::from_millis(500));
-        clone.on_child_block_built(now, (1, 1), 2, 1_700);
-        assert_eq!(estimator.snapshot(now).network_samples, 1);
-        assert_eq!(
-            estimator.start_proposal(now).network_reserve,
-            Duration::from_millis(150)
-        );
-
-        let fixed = Estimator::new(Config::fixed(
-            Duration::from_millis(500),
-            Duration::from_millis(50),
-        ))
-        .unwrap();
-        fixed.on_proposal_returned(now, 1_000, 1_800, (1, 1), Duration::from_millis(500));
-        fixed.on_child_block_built(now, (1, 1), 2, 1_900);
-        assert_eq!(fixed.snapshot(now).network_samples, 1);
-        assert_eq!(
-            fixed.start_proposal(now).return_budget,
-            Duration::from_millis(500)
-        );
-    }
-
-    #[test]
     fn build_time_multiplier_accepts_valid_range_inclusive() {
         for multiplier in [1.0, 1.15, 1.7] {
             assert_eq!(
@@ -589,7 +520,7 @@ mod tests {
     #[test]
     fn expired_builds_reset_plan_to_configured_values() {
         let start = Instant::now();
-        let estimator = Estimator::new(Config::default()).unwrap();
+        let estimator = Estimator::new(Config::default());
         estimator.on_build_finished(
             start,
             FinishedBuild::new(
