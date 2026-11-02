@@ -59,6 +59,15 @@ impl ZoneInbox {
                                 .encode_precompile_result(|()| Bytes::new())
                         }
                     },
+                    #[schedule(since = T15)]
+                    initializeVirtualAddressKey(call) => {
+                        if self.storage.is_static() {
+                            self.storage.revert_result(Bytes::new())
+                        } else {
+                            self.initialize_virtual_address_key(msg_sender, call.version, call.key)
+                                .encode_precompile_result(|()| Bytes::new())
+                        }
+                    },
                     #[schedule(since = T13)]
                     advanceTempoHeaders(call) => {
                         if self.storage.is_static() {

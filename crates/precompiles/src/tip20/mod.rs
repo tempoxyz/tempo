@@ -553,13 +553,18 @@ impl TIP20Token {
         msg_sender: Address,
         call: ITIP20::mintWithMemoCall,
     ) -> Result<()> {
-        let Some((total_supply, to)) = self.validate_mint(
-            msg_sender,
-            call.to,
-            call.amount,
-            call.memo,
-            AuthRole::mint_recipient(),
-        )?
+        self.mint_with_memo_with_role(msg_sender, call, AuthRole::mint_recipient())
+    }
+
+    /// Like [`Self::mint_with_memo`], checking the recipient against `recipient_role`.
+    pub fn mint_with_memo_with_role(
+        &mut self,
+        msg_sender: Address,
+        call: ITIP20::mintWithMemoCall,
+        recipient_role: AuthRole,
+    ) -> Result<()> {
+        let Some((total_supply, to)) =
+            self.validate_mint(msg_sender, call.to, call.amount, call.memo, recipient_role)?
         else {
             return Ok(());
         };

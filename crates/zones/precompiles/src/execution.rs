@@ -48,6 +48,11 @@ pub struct ZonePrecompileEnv {
 }
 
 impl ZonePrecompileEnv {
+    /// The active hardfork.
+    pub(crate) fn spec(&self) -> TempoHardfork {
+        self.spec
+    }
+
     /// Captures the active EVM configuration and transaction-local storage accounting state.
     pub fn new(
         spec: TempoHardfork,

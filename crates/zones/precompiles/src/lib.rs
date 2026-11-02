@@ -53,9 +53,11 @@ macro_rules! zone_precompile {
 pub mod error;
 pub use error::{Result, ZonePrecompileError, ZoneResult};
 
+pub mod address_registry;
 mod aes_gcm;
 mod chaum_pedersen;
 pub mod ecies;
+pub mod ff1;
 pub mod outbox;
 
 /// Zone dispatch helpers for generic typed operations.
@@ -99,7 +101,9 @@ use evm2::{
     precompiles::{MovePrecompileError, PrecompileError, PrecompileId, PrecompileResult},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_contracts::zones::{TEMPO_STATE_ADDRESS, ZONE_INBOX_ADDRESS};
+use tempo_contracts::zones::{
+    TEMPO_STATE_ADDRESS, ZONE_ADDRESS_REGISTRY_ADDRESS, ZONE_INBOX_ADDRESS,
+};
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, NONCE_PRECOMPILE_ADDRESS, Precompile as _,
     RECEIVE_POLICY_GUARD_ADDRESS, STORAGE_CREDITS_ADDRESS,
@@ -189,6 +193,7 @@ where
                     | STORAGE_CREDITS_ADDRESS
             )
             || cfg!(feature = "std") && *address == tempo_contracts::zones::ZONE_OUTBOX_ADDRESS
+            || self.env.spec().is_t15() && *address == ZONE_ADDRESS_REGISTRY_ADDRESS
     }
 
     fn execute(
@@ -243,6 +248,17 @@ where
                 &self.env,
                 execution::NoCallRules,
                 |data, caller| ZoneInbox::new().call(&self.l1, data, caller),
+            )
+        } else if address == ZONE_ADDRESS_REGISTRY_ADDRESS && self.env.spec().is_t15() {
+            execution::execute_precompile(
+                evm,
+                message,
+                gas,
+                &self.env,
+                execution::NoCallRules,
+                |data, caller| {
+                    address_registry::ZoneAddressRegistry::new().call(&self.l1, data, caller)
+                },
             )
         } else if address == ZONE_FEE_MANAGER_ADDRESS {
             zone_precompile!(evm, message, gas, &self.env, ZoneFeeManager)
