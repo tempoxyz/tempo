@@ -366,11 +366,15 @@ impl AccountNet {
         }
     }
 
-    /// Whether the span changed the account other than its slots: its balance, nonce or code,
-    /// whether it exists, or by clearing its storage.
+    /// Whether the span changed the account other than its slots: its balance, nonce, code or
+    /// extension, whether it exists, or by clearing its storage.
     pub(crate) fn changed(&self) -> bool {
-        let info = |info: Option<&AccountInfo>| info.map(|i| (i.balance, i.nonce, i.code_hash));
-        self.storage_cleared || info(self.original.as_ref()) != info(self.current.as_ref())
+        let info = |a: &AccountInfo| (a.balance, a.nonce, a.code_hash);
+        self.storage_cleared
+            || match (&self.original, &self.current) {
+                (Some(a), Some(b)) => info(a) != info(b) || a.extension != b.extension,
+                (a, b) => a.is_some() != b.is_some(),
+            }
     }
 
     /// The slots the span changed, with their values before and after it.

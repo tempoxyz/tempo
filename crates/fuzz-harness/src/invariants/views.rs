@@ -13,7 +13,6 @@ use evm2::{
 use invariants_core::Views;
 use reth_evm::{ConfigureEvm as _, Database};
 use tempo_evm::{TempoEvm, TempoEvmConfig, TempoEvmEnv};
-use tempo_precompiles::{TempoPrecompiles, storage::StorageAction};
 
 use crate::state::{MissingPreState, Net, PreStateDb, Reader};
 
@@ -36,16 +35,8 @@ impl<'a> EvmViews<'a> {
         view_cache: &'a ViewCache,
         before: bool,
     ) -> Self {
-        let spec = env.spec;
-        let mut evm = evm_config.evm_with_env(db, env);
-        // Precompiles keep the recorder they were built with, so they are built again with one.
-        let ext = evm.ext_mut();
-        ext.actions.enable();
-        let precompiles =
-            TempoPrecompiles::new(spec, ext.actions.clone(), ext.non_creditable_slots.clone());
-        evm.set_precompiles(precompiles);
         Self {
-            evm,
+            evm: evm_config.evm_with_env(db, env),
             pre_state,
             view_cache,
             before,
@@ -60,24 +51,32 @@ impl<'a> EvmViews<'a> {
         }
         let (target, input) = call;
         self.pre_state.take_miss();
-        let output = match self
-            .evm
-            .system_call(SystemTx::new(*target, input.clone()).with_caller(Address::ZERO))
-        {
-            Err(err) => Err(err.to_string()),
-            Ok(executed) if !executed.result().is_success() => {
-                Err(format!("{:?}", executed.result()))
+        let tx = SystemTx::new(*target, input.clone()).with_caller(Address::ZERO);
+        // What it read: every account it loaded, and each slot it loaded with its account.
+        // `None` when it could not run, so its reads are unknown.
+        let (output, mut reads) = match self.evm.system_call(tx) {
+            Err(err) => (Err(err.to_string()), None),
+            Ok(executed) => {
+                let reads = executed
+                    .account_changes()
+                    .flat_map(|account| {
+                        let slots = account.storage.slots.keys().map(|slot| Some(*slot));
+                        [None]
+                            .into_iter()
+                            .chain(slots)
+                            .map(move |slot| (account.address, slot))
+                    })
+                    .collect::<Vec<_>>();
+                let result = executed.result();
+                let output = if result.is_success() {
+                    Ok(Some(result.output.clone()).filter(|o| !o.is_empty()))
+                } else {
+                    Err(format!("{result:?}"))
+                };
+                (output, Some(reads))
             }
-            Ok(executed) => Ok(Some(executed.result().output.clone()).filter(|o| !o.is_empty())),
         };
-        let miss = match self.pre_state.take_miss() {
-            None => None,
-            Some(MissingPreState::Account(address)) => Some((address, None)),
-            Some(MissingPreState::Storage(address, slot)) => Some((address, Some(slot))),
-            Some(_) => return Ok(None),
-        };
-        let output = match miss {
-            Some(_) => Ok(None),
+        let output = match self.pre_state.take_miss() {
             None => output.map_err(|reason| ViewFailed {
                 selector: input
                     .get(..4)
@@ -86,23 +85,25 @@ impl<'a> EvmViews<'a> {
                 target: *target,
                 reason,
             }),
+            Some(missing) => {
+                let missed = match missing {
+                    MissingPreState::Account(address) => (address, None),
+                    MissingPreState::Storage(address, slot) => (address, Some(slot)),
+                    MissingPreState::Code(_) | MissingPreState::BlockHash(_) => return Ok(None),
+                };
+                if let Some(reads) = &mut reads {
+                    reads.extend([(missed.0, None), missed]);
+                }
+                Ok(None)
+            }
         };
-        // What it read: the slots it loaded and the key it missed, each with its account, and its
-        // target's account.
-        let actions = self.evm.ext().actions.take().unwrap_or_default();
-        let slots = actions.into_iter().filter_map(|action| match action {
-            StorageAction::Sload(address, slot, _) => Some((address, Some(slot))),
-            _ => None,
-        });
-        let mut reads: Vec<_> = slots
-            .chain(miss)
-            .flat_map(|(address, slot)| [(address, None), (address, slot)])
-            .chain([(*target, None)])
-            .collect();
-        reads.sort_unstable();
-        reads.dedup();
-        self.view_cache
-            .insert(call, self.before, output.clone(), reads);
+        if let Some(mut reads) = reads {
+            reads.push((*target, None));
+            reads.sort_unstable();
+            reads.dedup();
+            self.view_cache
+                .insert(call, self.before, output.clone(), reads);
+        }
         output
     }
 }
