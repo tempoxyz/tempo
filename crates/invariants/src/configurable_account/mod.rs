@@ -46,10 +46,10 @@ impl Observe for Commitments {
         let read = view_many(views, &calls)?;
         let mut of = BTreeMap::new();
         for (&account, commitment) in accounts.iter().zip(read) {
-            let commitment = commitment.map(Ok).unwrap_or(Err(ObserveError::NotAnswered {
+            let commitment = commitment.ok_or(ObserveError::NotAnswered {
                 call: "getConfigCommitment(address)",
                 to: precompile,
-            }));
+            });
             if let Some(commitment) = optional(views, commitment)? {
                 of.insert(account, commitment);
             }

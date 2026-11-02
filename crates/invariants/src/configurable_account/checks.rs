@@ -3,6 +3,7 @@
 use alloy_primitives::{Address, B256, KECCAK256_EMPTY};
 use alloy_sol_types::SolEvent;
 use invariants_core::{check, ensure};
+use tempo_primitives::is_tip20_prefix;
 
 use super::{
     AccountUpgraded, Commitments, ConfigurableAccountConfig, ConfigurableAccountConfigUpdated, Key,
@@ -344,7 +345,7 @@ pub const LEAF_CHECKS: &[Check<Leaves>] = &[
         judge: |l, account| {
             let (pre, post) = l.of.get(*account)?;
             let installed = pre.code_hash != MARKER_CODE_HASH && post.code_hash == MARKER_CODE_HASH;
-            if !installed || is_tip20(**account) {
+            if !installed || is_tip20_prefix(**account) {
                 return None;
             }
             ensure!(
@@ -484,11 +485,4 @@ fn quorum_weight(q: &Quorum) -> Option<String> {
         total += u32::from(weight);
     }
     (total < threshold).then(|| format!("approvals weigh {total}, the threshold is {threshold}"))
-}
-
-/// Whether `account` is in the TIP-20 token address space.
-fn is_tip20(account: Address) -> bool {
-    account
-        .as_slice()
-        .starts_with(&[0x20, 0xc0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
 }

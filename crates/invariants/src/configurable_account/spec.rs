@@ -73,6 +73,23 @@ fn primitive(config: &ConfigurableAccountConfig) -> primitives::ConfigurableAcco
     }
 }
 
+/// `config` as the precompile's interface types it.
+pub fn from_primitive(config: &primitives::ConfigurableAccountConfig) -> ConfigurableAccountConfig {
+    ConfigurableAccountConfig {
+        salt: config.salt,
+        version: config.version,
+        threshold: config.threshold,
+        owners: config
+            .owners
+            .iter()
+            .map(|o| ConfigurableAccountOwner {
+                owner: o.owner,
+                weight: o.weight,
+            })
+            .collect(),
+    }
+}
+
 /// The commitment of `config`, unvalidated so invalid writes are still judged; `None` with more
 /// owners than a byte counts.
 pub fn commitment(config: &ConfigurableAccountConfig) -> Option<B256> {

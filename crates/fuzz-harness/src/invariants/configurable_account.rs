@@ -8,8 +8,7 @@ use invariants_core::Report;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::CONFIGURABLE_ACCOUNT_ADDRESS;
 use tempo_invariants::configurable_account::{
-    Approval, At, Authority, Commitments, ConfigurableAccountConfig, ConfigurableAccountOwner,
-    Grant, Key, Leaf, Leaves, Quorum, Role, VIEW, spec,
+    Approval, At, Authority, Commitments, Grant, Key, Leaf, Leaves, Quorum, Role, VIEW, spec,
 };
 use tempo_precompiles::storage::account_config_commitment;
 use tempo_primitives::{
@@ -88,19 +87,7 @@ fn quorum(role: Role, signature: &ConfigurableAccountSignature, inner_digest: B2
     Quorum {
         role,
         account,
-        config: ConfigurableAccountConfig {
-            salt: config.salt,
-            version: config.version,
-            threshold: config.threshold,
-            owners: config
-                .owners
-                .iter()
-                .map(|owner| ConfigurableAccountOwner {
-                    owner: owner.owner,
-                    weight: owner.weight,
-                })
-                .collect(),
-        },
+        config: spec::from_primitive(config),
         approvals: signature
             .signatures()
             .iter()
