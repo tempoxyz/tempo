@@ -183,7 +183,7 @@ mod runtime_tests {
         *,
     };
     use crate::{TempoBlockEnv, TempoInvalidTransaction, TempoTxEnv};
-    use alloy_consensus::{Signed, TxLegacy, transaction::Recovered};
+    use alloy_consensus::{SignableTransaction, TxLegacy, transaction::Recovered};
     use alloy_primitives::{Address, B256, Bytes, TxKind, U256, keccak256};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
@@ -234,7 +234,7 @@ mod runtime_tests {
     };
     use tempo_primitives::{
         AASigned, TempoAddressExt, TempoTransaction, TempoTxEnvelope,
-        transaction::{Call, KeychainSignature, PrimitiveSignature, TempoSignature},
+        transaction::{Call, KeychainSignature, PrimitiveSignature, TempoSignature, envelope},
     };
 
     fn runtime_returning_selector(selector: [u8; 4]) -> Bytecode {
@@ -273,10 +273,7 @@ mod runtime_tests {
             input,
             ..Default::default()
         };
-        let tx = Signed::new_unhashed(
-            tx,
-            tempo_primitives::transaction::envelope::TEMPO_SYSTEM_TX_SIGNATURE,
-        );
+        let tx = tx.into_signed(envelope::TEMPO_SYSTEM_TX_SIGNATURE);
         Recovered::new_unchecked(TempoTxEnvelope::Legacy(tx), Address::ZERO).into()
     }
 
