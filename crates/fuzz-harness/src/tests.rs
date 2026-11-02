@@ -3,7 +3,7 @@ use std::{
     sync::Arc,
 };
 
-use alloy_consensus::{Signed, TxLegacy, proofs::calculate_transaction_root};
+use alloy_consensus::{SignableTransaction, TxLegacy, proofs::calculate_transaction_root};
 use alloy_eips::{Decodable2718, Encodable2718};
 use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256, address};
 use alloy_sol_types::SolCall;
@@ -51,7 +51,7 @@ fn tip20_transfer(nonce: u64, to: Address, amount: U256, gas_limit: u64) -> Byte
 
 /// A call without value, signed with a placeholder: tests give its sender.
 fn call(nonce: u64, to: Address, input: Bytes, gas_limit: u64) -> Bytes {
-    let tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(
+    let tx = TempoTxEnvelope::Legacy(
         TxLegacy {
             chain_id: Some(CHAIN_ID),
             nonce,
@@ -60,9 +60,9 @@ fn call(nonce: u64, to: Address, input: Bytes, gas_limit: u64) -> Bytes {
             to: TxKind::Call(to),
             value: U256::ZERO,
             input,
-        },
-        Signature::test_signature(),
-    ));
+        }
+        .into_signed(Signature::test_signature()),
+    );
     tx.encoded_2718().into()
 }
 
