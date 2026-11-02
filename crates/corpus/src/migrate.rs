@@ -27,8 +27,8 @@ use tracing::info;
 /// Records per checkpoint and catalog publication, as in fill.
 const RECORDS_PER_PUBLISH: usize = 10 * store::PAGE_RECORDS;
 
-/// Migrates blocks [from, to) of the complete legacy corpus at `source` into a new corpus at
-/// `dest`, which must not exist yet.
+/// Migrates blocks [from, to) of the legacy corpus at `source`, up to its last published block,
+/// into a new corpus at `dest`, which must not exist yet.
 pub async fn migrate(
     source: Store,
     dest: Store,
@@ -41,13 +41,14 @@ pub async fn migrate(
         .catalog()
         .await?
         .ok_or_else(|| eyre::eyre!("no source corpus catalog"))?;
-    eyre::ensure!(catalog.complete, "source corpus is not complete");
+    // An unfinished fill migrates up to its last published block.
     let context = &catalog.context;
+    let published = catalog.cursor.next;
     let from = from.unwrap_or(context.start);
-    let to = to.unwrap_or(context.end).min(context.end);
+    let to = to.unwrap_or(published).min(published);
     eyre::ensure!(
         from >= context.start && from < to,
-        "migration range outside the source corpus"
+        "migration range outside the published source corpus"
     );
     eyre::ensure!(
         dest.catalog().await?.is_none(),
@@ -63,7 +64,7 @@ async fn cursor_at(reader: &DbReader, catalog: &Catalog, block: u64) -> eyre::Re
     if block == catalog.context.start {
         return Cursor::initial(&catalog.context);
     }
-    if block == catalog.context.end {
+    if block == catalog.cursor.next {
         return Ok(catalog.cursor.clone());
     }
     let record = store::metadata(reader, block).await?;

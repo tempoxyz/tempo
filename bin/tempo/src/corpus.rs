@@ -208,7 +208,8 @@ pub struct MigrateCommand {
     /// The chain the corpus was captured from.
     #[arg(long, value_name = "CHAIN_OR_PATH", default_value = "mainnet", value_parser = TempoChainSpecParser::parser())]
     chain: Arc<TempoChainSpec>,
-    /// Source s3://bucket/prefix of a complete legacy corpus.
+    /// Source s3://bucket/prefix of a legacy corpus; an unfinished one migrates up to its
+    /// last published block.
     #[arg(long)]
     source: String,
     /// Destination s3://bucket/prefix; must not exist.
@@ -220,7 +221,7 @@ pub struct MigrateCommand {
     /// First block; defaults to the source start.
     #[arg(long)]
     from: Option<u64>,
-    /// Exclusive end; defaults to the source end.
+    /// Exclusive end; defaults to the source's last published block.
     #[arg(long)]
     to: Option<u64>,
 }
@@ -240,7 +241,13 @@ impl MigrateCommand {
                 && context.forks == chain.display_hardforks().to_string(),
             "corpus chain/fork context mismatch"
         );
-        let dest = Store::open(&self.corpus, self.s3_endpoint.as_deref()).await?;
+        // A local destination (staging on disk before an upload) takes no S3 endpoint.
+        let dest_endpoint = self
+            .corpus
+            .starts_with("s3://")
+            .then_some(self.s3_endpoint.as_deref())
+            .flatten();
+        let dest = Store::open(&self.corpus, dest_endpoint).await?;
         let (config, consensus) = components(chain);
         tempo_corpus::migrate::migrate(source, dest, self.from, self.to, &config, &consensus).await
     }
