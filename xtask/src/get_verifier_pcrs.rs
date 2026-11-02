@@ -3,11 +3,10 @@
 use std::{collections::HashSet, sync::Arc};
 
 use alloy::{
-    network::ReceiptResponse,
-    primitives::{Address, B256, Bytes},
+    primitives::{Address, B256, Bytes, TxKind},
     providers::{Provider, ProviderBuilder, ext::DebugApi},
     rpc::types::{
-        Filter,
+        Filter, TransactionRequest,
         trace::geth::{CallConfig, CallFrame, GethDebugTracingOptions},
     },
     sol_types::{SolCall, SolEvent},
@@ -18,12 +17,15 @@ use serde::Serialize;
 use tempo_alloy::{TempoNetwork, provider::TempoProviderExt, rpc::ForkSchedule};
 use tempo_chainspec::{TempoChainSpec, TempoHardfork};
 use tempo_contracts::{
-    precompiles::{IZoneVerifier, NITRO_VERIFIER_CONFIG_V1, ZONE_VERIFIER_ADDRESS},
+    precompiles::{
+        IZoneFactory, IZoneVerifier, NITRO_VERIFIER_CONFIG_V1, ZONE_FACTORY_ADDRESS,
+        ZONE_VERIFIER_ADDRESS,
+    },
     zones::{BatchSubmitted, submitBatchCall},
 };
 use tempo_nitro_attestation::parse_attestation;
 use tempo_precompiles::zone_factory::portal_address;
-use tempo_primitives::TempoAddressExt;
+use tempo_primitives::{TempoAddressExt, TempoTxEnvelope};
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct GetVerifierPcrs {
@@ -31,7 +33,8 @@ pub(crate) struct GetVerifierPcrs {
     #[arg(long, short, value_parser = tempo_chainspec::spec::chain_value_parser)]
     chain: Arc<TempoChainSpec>,
 
-    /// RPC endpoint supporting tempo_forkSchedule, eth_getLogs and debug_traceTransaction.
+    /// RPC endpoint supporting tempo_forkSchedule and eth_getLogs. debug_traceTransaction is only
+    /// needed for batches submitted through a wrapper contract.
     #[arg(long)]
     rpc_url: Option<String>,
 
@@ -115,23 +118,36 @@ impl GetVerifierPcrs {
             from < upper,
             "no blocks for {hardfork} in the requested range"
         );
-        if let Some(portal) = self.portal {
+        // Filter logs by portal address so look-alike BatchSubmitted events from other contracts
+        // never reach the client. Factory portals live at deterministic addresses.
+        let portals = if let Some(portal) = self.portal {
             ensure!(
                 is_canonical_portal(portal),
                 "{portal} is not a canonical Zone portal address"
             );
-        }
+            vec![portal]
+        } else {
+            let request = TransactionRequest::default()
+                .to(ZONE_FACTORY_ADDRESS)
+                .input(IZoneFactory::nextZoneIdCall {}.abi_encode().into());
+            let output = provider
+                .call(request.into())
+                .block(to.into())
+                .await
+                .wrap_err("failed reading ZoneFactory.nextZoneId")?;
+            let next = IZoneFactory::nextZoneIdCall::abi_decode_returns(&output)?;
+            (1..next).map(portal_address).collect()
+        };
+        ensure!(!portals.is_empty(), "no Zone portals exist at block {to}");
         let mut end = upper - 1;
         loop {
             let mut seen = HashSet::new();
             let start = end.saturating_sub(self.chunk_size - 1).max(from);
-            let mut filter = Filter::new()
+            let filter = Filter::new()
                 .from_block(start)
                 .to_block(end)
-                .event_signature(BatchSubmitted::SIGNATURE_HASH);
-            if let Some(portal) = self.portal {
-                filter = filter.address(portal);
-            }
+                .event_signature(BatchSubmitted::SIGNATURE_HASH)
+                .address(portals.clone());
             let mut logs = provider.get_logs(&filter).await.wrap_err_with(|| {
                 format!("failed to query batch logs in {start}..={end}; try a smaller --chunk-size")
             })?;
@@ -144,34 +160,39 @@ impl GetVerifierPcrs {
                     .transaction_hash
                     .ok_or_eyre("batch log has no transaction hash")?;
                 let portal = log.address();
-                // Any contract can emit a BatchSubmitted-shaped log; skip non-portal emitters
-                // before spending a receipt fetch and a trace on them.
-                if !is_canonical_portal(portal) || !seen.insert((hash, portal)) {
-                    continue;
-                }
-                let receipt = provider
-                    .get_transaction_receipt(hash)
-                    .await?
-                    .ok_or_eyre("batch transaction receipt is unavailable")?;
-                if !receipt.status() {
+                if !seen.insert((hash, portal)) {
                     continue;
                 }
                 let number = log
                     .block_number
                     .ok_or_eyre("batch log has no block number")?;
                 let block_hash = log.block_hash.ok_or_eyre("batch log has no block hash")?;
+                // Reverted transactions keep no logs, so the log alone proves success and no
+                // receipt is needed.
+                let transaction = provider
+                    .get_transaction_by_hash(hash)
+                    .await?
+                    .ok_or_eyre("batch transaction is unavailable")?;
                 ensure!(
-                    receipt.block_hash == Some(block_hash),
-                    "batch log and receipt disagree on block hash; retry after reorg"
+                    transaction.block_hash == Some(block_hash),
+                    "batch log and transaction disagree on block hash; retry after reorg"
                 );
-                let trace = provider
-                    .debug_trace_transaction_call(
-                        hash,
-                        GethDebugTracingOptions::call_tracer(CallConfig::default()),
-                    )
-                    .await
-                    .wrap_err("RPC must support debug_traceTransaction with callTracer and retain history for the candidate transaction")?;
-                if let Some((zone_id, pcrs)) = batch_pcrs(&trace, portal)? {
+                let found = match direct_batch_pcrs(transaction.inner.inner(), portal)? {
+                    DirectBatch::Found(found) => Some(found),
+                    DirectBatch::NotNitro => None,
+                    // Submitted through a wrapper contract: only a trace shows the inner call.
+                    DirectBatch::Absent => {
+                        let trace = provider
+                            .debug_trace_transaction_call(
+                                hash,
+                                GethDebugTracingOptions::call_tracer(CallConfig::default()),
+                            )
+                            .await
+                            .wrap_err("batch was submitted through a contract; RPC must support debug_traceTransaction with callTracer and retain history for it")?;
+                        batch_pcrs(&trace, portal)?
+                    }
+                };
+                if let Some((zone_id, pcrs)) = found {
                     let block = provider
                         .get_block_by_number(number.into())
                         .await?
@@ -273,6 +294,45 @@ fn hardfork_at(schedule: &ForkSchedule, timestamp: u64) -> &str {
         .map_or("Genesis", |entry| entry.name.as_str())
 }
 
+enum DirectBatch {
+    /// A direct Nitro `submitBatch` call to the portal.
+    Found((u32, [Bytes; 3])),
+    /// Direct `submitBatch` calls to the portal, none with the Nitro verifier config.
+    NotNitro,
+    /// No direct `submitBatch` call to the portal.
+    Absent,
+}
+
+/// Read PCRs from a direct `submitBatch` call in the transaction's own calls.
+///
+/// The portal emits `BatchSubmitted` only after its verifier accepted the proof, and factory
+/// portals always use [`ZONE_VERIFIER_ADDRESS`], so an emitted log proves acceptance without a
+/// trace. Tempo AA calls are atomic, so every call of a transaction with the log succeeded.
+fn direct_batch_pcrs(envelope: &TempoTxEnvelope, portal: Address) -> eyre::Result<DirectBatch> {
+    let zone_id = portal
+        .zone_portal_id()
+        .and_then(|zone_id| u32::try_from(zone_id).ok())
+        .ok_or_eyre("batch log emitter is not a canonical Zone portal")?;
+    let mut direct = DirectBatch::Absent;
+    for (to, input) in envelope.calls() {
+        if to != TxKind::Call(portal) {
+            continue;
+        }
+        let Ok(call) = submitBatchCall::abi_decode(input) else {
+            continue;
+        };
+        if call.verifierConfig.as_ref() != NITRO_VERIFIER_CONFIG_V1 {
+            direct = DirectBatch::NotNitro;
+            continue;
+        }
+        return Ok(DirectBatch::Found((
+            zone_id,
+            attestation_pcrs(&call.proof)?,
+        )));
+    }
+    Ok(direct)
+}
+
 /// Ignore failed ancestors, including reverted calls caught by a multicall or AA transaction.
 fn batch_pcrs(frame: &CallFrame, portal: Address) -> eyre::Result<Option<(u32, [Bytes; 3])>> {
     if frame.error.is_some() {
@@ -307,23 +367,7 @@ fn verifier_pcrs(frame: &CallFrame, portal: Address) -> eyre::Result<Option<(u32
         && IZoneVerifier::verifyCall::abi_decode_returns_validate(output)
             .is_ok_and(|accepted| accepted)
     {
-        let parsed = parse_attestation(&call.proof)
-            .map_err(|error| eyre!("{error}"))
-            .wrap_err("accepted Nitro call contains an invalid attestation")?;
-        let mut pcrs = [Bytes::new(), Bytes::new(), Bytes::new()];
-        for (index, value) in pcrs.iter_mut().enumerate() {
-            let pcr = parsed
-                .pcrs
-                .iter()
-                .find(|pcr| usize::from(pcr.index) == index)
-                .ok_or_eyre("accepted attestation is missing PCR0/1/2")?;
-            ensure!(
-                pcr.value.len() == 48 && pcr.value.iter().any(|byte| *byte != 0),
-                "accepted attestation contains an invalid PCR{index}"
-            );
-            *value = Bytes::copy_from_slice(&pcr.value);
-        }
-        return Ok(Some((call.zoneId, pcrs)));
+        return Ok(Some((call.zoneId, attestation_pcrs(&call.proof)?)));
     }
     for child in &frame.calls {
         if let Some(pcrs) = verifier_pcrs(child, portal)? {
@@ -331,6 +375,27 @@ fn verifier_pcrs(frame: &CallFrame, portal: Address) -> eyre::Result<Option<(u32
         }
     }
     Ok(None)
+}
+
+/// PCR0/1/2 of an accepted Nitro attestation.
+fn attestation_pcrs(proof: &[u8]) -> eyre::Result<[Bytes; 3]> {
+    let parsed = parse_attestation(proof)
+        .map_err(|error| eyre!("{error}"))
+        .wrap_err("accepted Nitro call contains an invalid attestation")?;
+    let mut pcrs = [Bytes::new(), Bytes::new(), Bytes::new()];
+    for (index, value) in pcrs.iter_mut().enumerate() {
+        let pcr = parsed
+            .pcrs
+            .iter()
+            .find(|pcr| usize::from(pcr.index) == index)
+            .ok_or_eyre("accepted attestation is missing PCR0/1/2")?;
+        ensure!(
+            pcr.value.len() == 48 && pcr.value.iter().any(|byte| *byte != 0),
+            "accepted attestation contains an invalid PCR{index}"
+        );
+        *value = Bytes::copy_from_slice(&pcr.value);
+    }
+    Ok(pcrs)
 }
 
 #[cfg(test)]
