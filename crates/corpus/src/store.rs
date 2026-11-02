@@ -393,7 +393,7 @@ impl Store {
 
     /// Creates a checkpoint of the catalog's published one that only the caller holds, so a
     /// fill retiring the published checkpoint cannot expire the snapshot a long replay reads.
-    /// Expires after [LEASE_LIFETIME] unless renewed with [Self::renew_lease].
+    /// Expires after `LEASE_LIFETIME` unless renewed with [Self::renew_lease].
     pub async fn lease(&self, catalog: &Catalog) -> eyre::Result<String> {
         let published = catalog
             .checkpoint
@@ -412,7 +412,7 @@ impl Store {
             .to_string())
     }
 
-    /// Extends `lease` every third of [LEASE_LIFETIME]; returns only on failure.
+    /// Extends `lease` every third of `LEASE_LIFETIME`; returns only on failure.
     pub async fn renew_lease(self, lease: String) -> eyre::Result<()> {
         let admin = Admin::builder(self.data(), self.objects.clone()).build();
         let id = lease.parse()?;
