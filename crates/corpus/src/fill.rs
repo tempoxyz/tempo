@@ -34,8 +34,8 @@ use tracing::{info, warn};
 pub struct FillArgs {
     /// First block; genesis is context, not a captured block.
     pub from: u64,
-    /// Exclusive end, clamped to the available head.
-    pub to: u64,
+    /// Exclusive end, clamped to the available head; `None` fills up to the head.
+    pub to: Option<u64>,
     /// Re-read and fully replay published records instead of checking metadata only.
     pub verify_existing: bool,
     /// Capture worker threads.
@@ -66,13 +66,17 @@ where
     };
     let expected = read_only()?;
     let best = expected.best_block_number()?;
-    let end = args.to.min(best);
-    if args.to > best {
-        warn!(
-            requested = args.to,
-            best, "Clamping exclusive end to available head"
-        );
-    }
+    let end = match args.to {
+        Some(to) if to > best => {
+            warn!(
+                requested = to,
+                best, "Clamping exclusive end to available head"
+            );
+            best
+        }
+        Some(to) => to,
+        None => best,
+    };
     eyre::ensure!(end > args.from, "empty/reversed corpus range");
     let canonical_hash = |number| {
         expected

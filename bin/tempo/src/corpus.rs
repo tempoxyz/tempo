@@ -55,9 +55,9 @@ pub struct FillCommand {
     /// First block (genesis is context, not a captured block).
     #[arg(long, default_value = "1")]
     from: u64,
-    /// Exclusive end, clamped to the available head.
+    /// Exclusive end, clamped to the available head; defaults to the head.
     #[arg(long)]
-    to: u64,
+    to: Option<u64>,
     /// Destination s3://bucket/prefix. Existing incompatible data is rejected.
     #[arg(long)]
     corpus: String,
