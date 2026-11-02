@@ -32,6 +32,11 @@ use url::Url;
 /// Maximum serialized size of one block record (block plus its transactions) or one
 /// metadata entry. Capture rejects larger records; readers reject larger entries.
 pub const MAX_RECORD_BYTES: usize = 64 * 1024 * 1024;
+/// wincode configuration of every stored record: the default encoding, with sequences
+/// allowed up to a whole record ([`MAX_RECORD_BYTES`]) instead of wincode's 4 MiB. The limit
+/// only bounds preallocation, so the encoded bytes are unchanged.
+pub(crate) const WINCODE: wincode::config::Configuration<true, MAX_RECORD_BYTES> =
+    wincode::config::Configuration::default().with_preallocation_size_limit::<MAX_RECORD_BYTES>();
 const MAX_CATALOG_BYTES: usize = 1024 * 1024;
 pub const PAGE_RECORDS: usize = 1000;
 /// Cuts every object-store request attempt so a stuck request fails instead of stalling
@@ -446,7 +451,7 @@ pub fn decode(bytes: &[u8], record: &Record) -> eyre::Result<Arc<Chunk>> {
         bytes.len() == record.block_bytes && blake3::hash(bytes).to_hex().as_str() == record.digest,
         "corpus record integrity mismatch"
     );
-    let chunk: Chunk = wincode::deserialize_exact(bytes)?;
+    let chunk: Chunk = wincode::config::deserialize_exact(bytes, WINCODE)?;
     chunk.validate()?;
     eyre::ensure!(
         chunk.start == record.start
@@ -463,7 +468,7 @@ pub fn decode_case(bytes: &[u8], expected: &CaseRecord, ordinal: u64) -> eyre::R
         bytes.len() == expected.bytes && blake3::hash(bytes).to_hex().as_str() == expected.digest,
         "transaction record integrity mismatch"
     );
-    let case: Case = wincode::deserialize_exact(bytes)?;
+    let case: Case = wincode::config::deserialize_exact(bytes, WINCODE)?;
     eyre::ensure!(
         case.ordinal == ordinal && case.index == expected.index,
         "transaction ordinal/index/key mismatch"

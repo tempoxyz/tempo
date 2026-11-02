@@ -237,9 +237,9 @@ where
             let case_bytes = captured
                 .cases()?
                 .iter()
-                .map(wincode::serialize)
+                .map(|case| wincode::config::serialize(case, store::WINCODE))
                 .collect::<Result<Vec<_>, _>>()?;
-            let bytes = wincode::serialize(chunk.as_ref())?;
+            let bytes = wincode::config::serialize(chunk.as_ref(), store::WINCODE)?;
             let total_bytes = case_bytes.iter().try_fold(bytes.len(), |sum, b| {
                 sum.checked_add(b.len())
                     .ok_or_eyre("serialized size overflow")
