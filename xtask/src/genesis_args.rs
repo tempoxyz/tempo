@@ -4,7 +4,7 @@ use alloy::{
     signers::{local::MnemonicBuilder, utils::secret_key_to_address},
 };
 use alloy_eips::eip2935::{HISTORY_STORAGE_ADDRESS, HISTORY_STORAGE_CODE};
-use alloy_primitives::{B256, Bytes};
+use alloy_primitives::{B256, Bytes, b256};
 use commonware_codec::Encode as _;
 use commonware_cryptography::{
     Signer as _,
@@ -16,13 +16,13 @@ use commonware_cryptography::{
 };
 use commonware_math::algebra::Random as _;
 use commonware_utils::{N3f1, TryFromIterator as _, ordered};
+use evm2::bytecode::Bytecode;
 use eyre::{WrapErr as _, eyre};
 use indicatif::{ParallelProgressIterator, ProgressIterator};
 use itertools::Itertools;
 use rand::SeedableRng as _;
 use rand_08::SeedableRng as _;
 use rayon::prelude::*;
-use reth_evm::revm::context_interface::JournalTr as _;
 use std::{
     collections::BTreeMap,
     iter::repeat_with,
@@ -36,8 +36,7 @@ use tempo_chainspec::{
 };
 use tempo_consensus_config::{SigningKey, SigningShare};
 use tempo_contracts::{
-    ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
-    SAFE_DEPLOYER_ADDRESS,
+    CREATEX_ADDRESS, MULTICALL3_ADDRESS, SAFE_DEPLOYER_ADDRESS,
     contracts::{CreateX, Multicall3, SafeDeployer},
     precompiles::{
         INITIAL_FACTORY_OWNER, IValidatorConfigV2, createTokenCall, initial_zone_factory_state,
@@ -54,6 +53,7 @@ use tempo_precompiles::{
     PATH_USD_ADDRESS,
     account_keychain::AccountKeychain,
     address_registry::AddressRegistry,
+    configurable_account::ConfigurableAccount,
     nonce::NonceManager,
     receive_policy_guard::ReceivePolicyGuard,
     signature_verifier::SignatureVerifier,
@@ -65,6 +65,12 @@ use tempo_precompiles::{
     tip403_registry::TIP403Registry,
     validator_config_v2::ValidatorConfigV2,
 };
+
+/// OpenUSD's creator and salt on Tempo mainnet and testnet, which derive its address there.
+const OUSD_CREATOR: Address = address!("0x22c01F26b74c808C89bbBaBDC31A4f03bDD4A020");
+const OUSD_SALT: B256 = b256!("0xf33dc2a859c2e7b057c1b3c1d2c3dd002405b1afab213e14d51cf86bd941e73b");
+/// OpenUSD's address on Tempo mainnet and testnet.
+const OUSD_ADDRESS: Address = address!("0x20c0000000000000000000006a37DA5C996874BE");
 
 /// Generate genesis allocation file for testing
 #[derive(Debug, clap::Args)]
@@ -142,7 +148,7 @@ pub(crate) struct GenesisArgs {
     #[arg(long, value_delimiter = ',')]
     validator_addresses: Vec<Address>,
 
-    /// Disable creating Alpha/Beta/ThetaUSD tokens.
+    /// Disable creating Alpha/Beta/ThetaUSD and OUSD tokens.
     #[arg(long)]
     no_extra_tokens: bool,
 
@@ -276,7 +282,7 @@ impl GenesisArgs {
         println!("Creating pathUSD through factory");
         create_path_usd_token(pathusd_admin, &addresses, self.pathusd_amount, &mut evm)?;
 
-        let (alpha_token_address, beta_token_address, theta_token_address) =
+        let (alpha_token_address, beta_token_address, theta_token_address, ousd_token_address) =
             if !self.no_extra_tokens {
                 println!("Initializing TIP20 tokens");
                 let alpha = create_and_mint_token(
@@ -315,10 +321,26 @@ impl GenesisArgs {
                     &mut evm,
                 )?;
 
-                (Some(alpha), Some(beta), Some(theta))
+                let ousd = create_and_mint_token(
+                    "OUSD",
+                    "OpenUSD",
+                    "USD",
+                    PATH_USD_ADDRESS,
+                    pathusd_admin,
+                    &addresses,
+                    U256::from(u64::MAX),
+                    SaltOrAddress::SenderSalt(OUSD_CREATOR, OUSD_SALT),
+                    &mut evm,
+                )?;
+                eyre::ensure!(
+                    ousd == OUSD_ADDRESS,
+                    "OUSD was created at {ousd}, not {OUSD_ADDRESS}"
+                );
+
+                (Some(alpha), Some(beta), Some(theta), Some(ousd))
             } else {
                 println!("Skipping extra token creation (--no-extra-tokens)");
-                (None, None, None)
+                (None, None, None, None)
             };
 
         if self.deployment_gas_token && self.deployment_gas_token_admin.is_none() {
@@ -420,14 +442,30 @@ impl GenesisArgs {
             with_genesis_storage(&mut evm, || ReceivePolicyGuard::new().initialize())?;
         }
 
+        if self.hardforks.active_at_genesis(TempoHardfork::T14) {
+            println!("Initializing configurable account (T14 active at genesis)");
+            with_genesis_storage(&mut evm, || ConfigurableAccount::new().initialize())?;
+        }
+
         if !self.no_pairwise_liquidity {
-            if let (Some(alpha), Some(beta), Some(theta)) =
-                (alpha_token_address, beta_token_address, theta_token_address)
-            {
+            if let (Some(alpha), Some(beta), Some(theta), Some(ousd)) = (
+                alpha_token_address,
+                beta_token_address,
+                theta_token_address,
+                ousd_token_address,
+            ) {
                 println!("Minting pairwise FeeAMM liquidity");
                 mint_pairwise_liquidity(
                     alpha,
                     vec![PATH_USD_ADDRESS, beta, theta],
+                    U256::from(10u64.pow(10)),
+                    pathusd_admin,
+                    &mut evm,
+                );
+                // OUSD quotes pathUSD, so fees in OUSD need a direct pool against the pathUSD validator token.
+                mint_pairwise_liquidity(
+                    ousd,
+                    vec![PATH_USD_ADDRESS],
                     U256::from(10u64.pow(10)),
                     pathusd_admin,
                     &mut evm,
@@ -439,25 +477,38 @@ impl GenesisArgs {
             println!("Skipping pairwise liquidity (--no-pairwise-liquidity)");
         }
 
-        evm.ctx_mut()
-            .journaled_state
-            .load_account(ARACHNID_CREATE2_FACTORY_ADDRESS)?;
-        evm.ctx_mut()
-            .journaled_state
-            .load_account(PERMIT2_ADDRESS)?;
-
         // Save EVM state to allocation
         println!("Saving EVM state to allocation");
-        let evm_state = evm.ctx_mut().journaled_state.evm_state();
-        let mut genesis_alloc: BTreeMap<Address, GenesisAccount> = evm_state
-            .iter()
+        let state = &evm.overlay_db().cache;
+        let addresses = state
+            .accounts
+            .keys()
+            .chain(state.storage.keys())
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut genesis_alloc: BTreeMap<Address, GenesisAccount> = addresses
+            .into_iter()
             .progress()
-            .map(|(address, account)| {
-                let storage = account
+            .map(|address| {
+                let account = state
+                    .accounts
+                    .get(&address)
+                    .and_then(Option::as_ref)
+                    .cloned()
+                    .unwrap_or_default();
+                let storage = state
                     .storage
-                    .iter()
-                    .map(|(key, val)| (*key, val.present_value));
-                (*address, genesis_account(&account.info, storage))
+                    .get(&address)
+                    .into_iter()
+                    .flat_map(|storage| storage.slots.iter())
+                    .map(|(key, value)| (*key, *value));
+                let mut genesis_account = genesis_account(&account, storage);
+                genesis_account.code = state
+                    .contracts
+                    .get(&account.code_hash)
+                    .filter(|code| !code.is_empty())
+                    .map(Bytecode::original_bytes);
+                (address, genesis_account)
             })
             .collect();
 
@@ -593,6 +644,9 @@ fn create_path_usd_token(
 
 enum SaltOrAddress {
     Salt(B256),
+    /// A salt deployed as `sender` rather than the token's admin, so the token lands where `sender`
+    /// deployed it on another network.
+    SenderSalt(Address, B256),
     Address(Address),
 }
 
@@ -622,6 +676,19 @@ fn create_and_mint_token(
             SaltOrAddress::Salt(salt) => factory
                 .create_token(
                     admin,
+                    createTokenCall {
+                        name: name.into(),
+                        symbol: symbol.into(),
+                        currency: currency.into(),
+                        quoteToken: quote_token,
+                        salt,
+                        admin,
+                    },
+                )
+                .expect("Could not create token"),
+            SaltOrAddress::SenderSalt(sender, salt) => factory
+                .create_token(
+                    sender,
                     createTokenCall {
                         name: name.into(),
                         symbol: symbol.into(),
@@ -922,6 +989,11 @@ mod tests {
                 .alloc
                 .contains_key(&tempo_precompiles::SIGNATURE_VERIFIER_ADDRESS)
         );
+        // T14 is active at genesis, so the configurable account marker is installed.
+        assert_eq!(
+            genesis.alloc[&tempo_precompiles::CONFIGURABLE_ACCOUNT_ADDRESS].code,
+            Some(Bytes::from_static(&[0xef]))
+        );
     }
 
     #[tokio::test]
@@ -944,6 +1016,11 @@ mod tests {
         assert_eq!(
             genesis.alloc[&ZONE_PORTAL_IMPL_ADDRESS].code.as_ref(),
             Some(&T13_ZONE_PORTAL_RUNTIME)
+        );
+        assert!(
+            !genesis
+                .alloc
+                .contains_key(&tempo_precompiles::CONFIGURABLE_ACCOUNT_ADDRESS)
         );
     }
 

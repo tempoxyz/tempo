@@ -18,12 +18,18 @@ on:
       - 'zones/scripts/**'
       - '.github/workflows/zones-docker*.yml'
   pull_request:
+    types: [opened, reopened, synchronize, ready_for_review, converted_to_draft]
     paths:
       - 'Cargo.toml'
       - 'Cargo.lock'
+      - '*-network-identity.json'
+      - '.gitmodules'
       - 'rust-toolchain.toml'
       - '.cargo/**'
       - 'crates/**'
+      # Integration tests do not change the packaged binaries.
+      - '!crates/node/tests/**'
+      - '!crates/zones/node/tests/**'
       - 'bin/**'
       - 'xtask/**'
       - 'zones/docker/**'
@@ -85,6 +91,11 @@ on:
         required: false
         type: string
         default: ""
+      production_image_verify_only:
+        description: "Build and verify images without publishing tags (honored for workflow_dispatch callers)"
+        required: false
+        type: boolean
+        default: false
   schedule:
     - cron: "5 9 * * *"
     - cron: "30 20 * * *"
@@ -92,12 +103,58 @@ on:
 permissions:
   contents: read
 
+# Only automatic PR builds supersede one another; publication runs stay independent.
+concurrency:
+  group: zones-docker-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   REGISTRY: ghcr.io/tempoxyz
   STAGING_REPOSITORY: ghcr.io/tempoxyz/tempo-zone-staging
   TEMPO_DEVNET_GENESIS_URL: ${{ inputs.tempo_genesis_url || 'https://devnet-assets.tempoxyz.dev/tempo-devnet-nextfork.json' }}
 
 jobs:
+  detect-changes:
+    name: Detect Zones image changes
+    if: github.repository == 'tempoxyz/tempo' && github.event.pull_request.draft != true
+    # Images published from a zones/ or prover/ tag are releases: they need the
+    # VK approvals of the release environment. Verify-only runs publish nothing.
+    environment: ${{ (startsWith(github.ref, 'refs/tags/zones/v') || startsWith(github.ref, 'refs/tags/prover/v')) && inputs.production_image_verify_only != true && inputs.reproducible_verify != true && inputs.reproducible_eif_verify != true && 'release' || '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      # Missing output is not proof that the merge group has no image changes.
+      required: ${{ github.event_name != 'merge_group' || steps.paths.outputs.changes == '' || contains(fromJSON(steps.paths.outputs.changes || '[]'), 'images') }}
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+      - name: Detect merge-group image inputs
+        id: paths
+        if: github.event_name == 'merge_group'
+        uses: tempoxyz/gh-actions/actions/changed-paths@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          # Compare the whole group, not any single PR in a batched merge.
+          base: ${{ github.event.merge_group.base_sha }}
+          head: ${{ github.event.merge_group.head_sha }}
+          filters: |
+            images:
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '*-network-identity.json'
+              - '.gitmodules'
+              - 'rust-toolchain.toml'
+              - '.cargo/**'
+              - 'crates/**'
+              - '!crates/node/tests/**'
+              - '!crates/zones/node/tests/**'
+              - 'bin/**'
+              - 'xtask/**'
+              - 'zones/docker/**'
+              - 'zones/scripts/**'
+              - '.github/workflows/zones-docker*.yml'
+
   validate-verification-dispatch:
     name: Validate verification dispatch
     if: >-
@@ -140,8 +197,14 @@ jobs:
 
   resolve-production-build-inputs:
     name: Resolve production Docker build inputs
+    needs: detect-changes
     if: >-
+      !cancelled() &&
+      ((github.event_name == 'merge_group' &&
+        (needs.detect-changes.result != 'success' || needs.detect-changes.outputs.required != 'false')) ||
+       (needs.detect-changes.result == 'success' && needs.detect-changes.outputs.required == 'true')) &&
       github.repository == 'tempoxyz/tempo' &&
+      github.event.pull_request.draft != true &&
       ((github.event_name != 'workflow_dispatch' ||
       (inputs.reproducible_verify != true && inputs.reproducible_eif_verify != true)) &&
       (github.repository == 'tempoxyz/tempo' ||
@@ -227,8 +290,14 @@ jobs:
 
   eif-toolchain:
     name: Resolve trusted EIF toolchain
+    needs: detect-changes
     if: >-
+      !cancelled() &&
+      ((github.event_name == 'merge_group' &&
+        (needs.detect-changes.result != 'success' || needs.detect-changes.outputs.required != 'false')) ||
+       (needs.detect-changes.result == 'success' && needs.detect-changes.outputs.required == 'true')) &&
       github.repository == 'tempoxyz/tempo' &&
+      github.event.pull_request.draft != true &&
       (github.repository == 'tempoxyz/tempo' &&
       ((github.event_name == 'workflow_dispatch' && inputs.reproducible_eif_verify == true &&
       inputs.reproducible_verify != true && github.ref == 'refs/heads/main') ||
@@ -336,7 +405,7 @@ jobs:
       - resolve-production-build-inputs
     if: >-
       github.repository == 'tempoxyz/tempo' &&
-      (always() &&
+      (!cancelled() &&
       (needs.resolve-production-build-inputs.result == 'success' &&
       (needs.eif-toolchain.result == 'success' ||
       (github.repository != 'tempoxyz/tempo' && needs.eif-toolchain.result == 'skipped'))) &&
@@ -344,7 +413,9 @@ jobs:
       (inputs.reproducible_verify != true && inputs.reproducible_eif_verify != true)) &&
       (github.repository == 'tempoxyz/tempo' ||
       (github.event_name != 'schedule' && github.event_name != 'push')))
-    runs-on: depot-ubuntu-latest-16
+    # Compilation runs on the Depot builders; this runner only waits on bake
+    # and packages the EIF, so it needs few cores.
+    runs-on: depot-ubuntu-latest-4
     permissions:
       contents: read
       packages: read
@@ -359,6 +430,8 @@ jobs:
       version: ${{ steps.release-version.outputs.version }}
       is_release: ${{ steps.release-version.outputs.is_release }}
       is_stable: ${{ steps.release-version.outputs.is_stable }}
+      prover_release: ${{ steps.release-version.outputs.prover_release }}
+      prover_stable: ${{ steps.release-version.outputs.prover_stable }}
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
@@ -369,11 +442,11 @@ jobs:
           ref: ${{ needs.resolve-production-build-inputs.outputs.commit_sha }}
           persist-credentials: false
           submodules: recursive
-          fetch-depth: ${{ startsWith(github.ref, 'refs/tags/zones/v') && '0' || '1' }}
+          fetch-depth: ${{ (startsWith(github.ref, 'refs/tags/zones/v') || startsWith(github.ref, 'refs/tags/prover/v')) && '0' || '1' }}
 
       - uses: tempoxyz/gh-actions/vendor/depot/setup-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
-      - name: Validate Zones image release tag
+      - name: Validate Zones or prover image release tag
         id: release-version
         env:
           TAG_REF: ${{ github.ref }}
@@ -381,14 +454,26 @@ jobs:
           set -euo pipefail
 
           # Manual builds from unrelated tags may publish a SHA tag, but must
-          # never publish a Zones release or stable tag.
-          if [[ "$TAG_REF" != refs/tags/zones/v* ]]; then
-            exit 0
-          fi
+          # never publish a release or stable tag. zones/vX.Y.Z versions the
+          # tempo-zone and xtask images; prover/vX.Y.Z (pushed by the Prover
+          # Release workflow) versions the prover and prover-utils images.
+          case "$TAG_REF" in
+            refs/tags/zones/v*)
+              component=zones
+              manifest=bin/tempo-zone/Cargo.toml
+              ;;
+            refs/tags/prover/v*)
+              component=prover
+              manifest=bin/prover/enclave/Cargo.toml
+              ;;
+            *)
+              exit 0
+              ;;
+          esac
 
           tag="${TAG_REF#refs/tags/}"
-          if ! [[ "$tag" =~ ^zones/v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
-            echo "Expected a Zones release tag: zones/vX.Y.Z[-prerelease]" >&2
+          if ! [[ "$tag" =~ ^$component/v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
+            echo "Expected a release tag: $component/vX.Y.Z[-prerelease]" >&2
             exit 1
           fi
 
@@ -403,26 +488,53 @@ jobs:
             exit 1
           fi
           if ! git merge-base --is-ancestor "$commit_sha" refs/remotes/origin/main; then
-            echo "Release tag $tag does not point to a commit on main" >&2
-            exit 1
+            # Prepare Zones Release tags the commit on its pre-release branch,
+            # which a squash merge keeps off main. Accept it only for zones/v*
+            # tags, as one commit on main that changes nothing but Zones
+            # version lines. prover/v* tags must point to a commit on main.
+            read -r -a ancestry <<< "$(git rev-list --parents -n 1 "$commit_sha")"
+            parent="${ancestry[1]:-}"
+            # Without rename detection a moved file shows as a deletion and an
+            # addition, so only in-place edits of regular allowlisted files pass.
+            changed_files="$(git diff --no-renames --raw --no-abbrev "$parent" "$commit_sha" || true)"
+            unexpected_files="$(
+              printf '%s\n' "$changed_files" | grep -v '^$' |
+                grep -Ev $'^:100644 100644 [0-9a-f]{40} [0-9a-f]{40} M\t(Cargo\\.lock|bin/tempo-zone/Cargo\\.toml|crates/zones/[^/]+/Cargo\\.toml)$' || true
+            )"
+            unexpected_lines="$(
+              git diff --no-renames -U0 "$parent" "$commit_sha" | grep -E '^[+-]' |
+                grep -Ev '^(\+\+\+|---) ' | grep -Ev '^[+-]version = "[^"]+"$' || true
+            )"
+            if [[ "$component" != zones || "${#ancestry[@]}" -ne 2 ]] ||
+               ! git merge-base --is-ancestor "$parent" refs/remotes/origin/main ||
+               [[ -z "$changed_files" || -n "$unexpected_files" || -n "$unexpected_lines" ]]; then
+              echo "Release tag $tag does not point to a commit on main or a Zones version bump on one" >&2
+              exit 1
+            fi
           fi
 
-          cargo_ver="$(sed -n '/^\[package\]/,/^\[/ s/^version = "\([^"]*\)"$/\1/p' bin/tempo-zone/Cargo.toml)"
+          cargo_ver="$(sed -n '/^\[package\]/,/^\[/ s/^version = "\([^"]*\)"$/\1/p' "$manifest")"
           if [[ -z "$cargo_ver" ]]; then
-            echo "Could not read tempo-zone version" >&2
+            echo "Could not read the version from $manifest" >&2
             exit 1
           fi
-          version="${tag#zones/v}"
+          version="${tag#"$component"/v}"
           if [[ "$version" != "$cargo_ver" && "$version" != "$cargo_ver-"* ]]; then
-            echo "Tag $tag does not match tempo-zone version $cargo_ver" >&2
+            echo "Tag $tag does not match $manifest version $cargo_ver" >&2
             exit 1
           fi
 
+          release_key=is_release
+          stable_key=is_stable
+          if [[ "$component" == prover ]]; then
+            release_key=prover_release
+            stable_key=prover_stable
+          fi
           {
             echo "version=v$version"
-            echo "is_release=true"
+            echo "$release_key=true"
             if [[ "$version" != *-* ]]; then
-              echo "is_stable=true"
+              echo "$stable_key=true"
             fi
           } >> "$GITHUB_OUTPUT"
 
@@ -459,10 +571,10 @@ jobs:
           tags: |
             type=schedule,pattern=nightly
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
-            type=semver,pattern={{version}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.is_release == 'true' }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.is_release == 'true' }}
-            type=semver,pattern={{major}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.is_release == 'true' }}
-            type=raw,value=stable,enable=${{ steps.release-version.outputs.is_stable == 'true' }}
+            type=semver,pattern={{version}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.prover_release == 'true' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.prover_release == 'true' }}
+            type=semver,pattern={{major}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.prover_release == 'true' }}
+            type=raw,value=stable,enable=${{ steps.release-version.outputs.prover_stable == 'true' }}
             type=raw,value=latest,enable={{is_default_branch}}
             type=edge,branch=main
             type=sha,prefix=sha-
@@ -480,10 +592,10 @@ jobs:
           tags: |
             type=schedule,pattern=nightly
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
-            type=semver,pattern={{version}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.is_release == 'true' }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.is_release == 'true' }}
-            type=semver,pattern={{major}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.is_release == 'true' }}
-            type=raw,value=stable,enable=${{ steps.release-version.outputs.is_stable == 'true' }}
+            type=semver,pattern={{version}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.prover_release == 'true' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.prover_release == 'true' }}
+            type=semver,pattern={{major}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.prover_release == 'true' }}
+            type=raw,value=stable,enable=${{ steps.release-version.outputs.prover_stable == 'true' }}
             type=raw,value=latest,enable={{is_default_branch}}
             type=edge,branch=main
             type=sha,prefix=sha-
@@ -539,8 +651,11 @@ jobs:
         uses: tempoxyz/gh-actions/vendor/depot/bake-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           provenance: false
+          # Pull requests build tempo-zone with the profiling profile instead of
+          # the fat-LTO reproducible profile (see docker-bake-pr.hcl).
           files: |
             zones/docker/docker-bake.hcl
+            ${{ github.event_name == 'pull_request' && 'zones/docker/docker-bake-pr.hcl' || '' }}
             ${{ steps.meta-tempo-zone-xtask.outputs.bake-file }}
             ${{ steps.meta-tempo-zone-prover-utils.outputs.bake-file }}
           targets: |
@@ -714,6 +829,8 @@ jobs:
     permissions:
       packages: write
       id-token: write
+    outputs:
+      prover_image_refs: ${{ steps.publish.outputs.prover_image_refs }}
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
@@ -766,10 +883,10 @@ jobs:
           tags: |
             type=schedule,pattern=nightly
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
-            type=semver,pattern={{version}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.is_release == 'true' }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.is_release == 'true' }}
-            type=semver,pattern={{major}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.is_release == 'true' }}
-            type=raw,value=stable,enable=${{ needs.build-and-push.outputs.is_stable == 'true' }}
+            type=semver,pattern={{version}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.prover_release == 'true' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.prover_release == 'true' }}
+            type=semver,pattern={{major}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.prover_release == 'true' }}
+            type=raw,value=stable,enable=${{ needs.build-and-push.outputs.prover_stable == 'true' }}
             type=raw,value=latest,enable={{is_default_branch}}
             type=edge,branch=main
             type=sha,prefix=sha-
@@ -787,16 +904,17 @@ jobs:
           tags: |
             type=schedule,pattern=nightly
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
-            type=semver,pattern={{version}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.is_release == 'true' }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.is_release == 'true' }}
-            type=semver,pattern={{major}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.is_release == 'true' }}
-            type=raw,value=stable,enable=${{ needs.build-and-push.outputs.is_stable == 'true' }}
+            type=semver,pattern={{version}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.prover_release == 'true' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.prover_release == 'true' }}
+            type=semver,pattern={{major}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.prover_release == 'true' }}
+            type=raw,value=stable,enable=${{ needs.build-and-push.outputs.prover_stable == 'true' }}
             type=raw,value=latest,enable={{is_default_branch}}
             type=edge,branch=main
             type=sha,prefix=sha-
             type=ref,event=pr
 
       - name: Publish fixed companion image names
+        id: publish
         env:
           XTASK_TAGS: ${{ steps.meta-tempo-zone-xtask.outputs.tags }}
           PROVER_TAGS: ${{ steps.meta-tempo-zone-prover.outputs.tags }}
@@ -804,14 +922,26 @@ jobs:
           BUILDER_REF: ${{ needs.build-and-push.outputs.builder_ref }}
         run: |
           set -euo pipefail
+          : > "$RUNNER_TEMP/prover-image-refs.txt"
           publish() {
-            local image="$1" metadata="$2" tag
+            local image="$1" metadata="$2" tag digest
             docker load --input "$RUNNER_TEMP/candidate-images/$image.tar"
             while IFS= read -r tag; do
               [[ -z "$tag" ]] && continue
               [[ "$tag" == "$REGISTRY/$image:"* || "$tag" == "docker.io/tempoxyz/$image:"* ]]
               docker tag "$image:candidate" "$tag"
-              docker push "$tag"
+              if [[ "$image" == tempo-zone-prover ]]; then
+                # Bind signing to this push receipt, never a mutable tag lookup.
+                docker push "$tag" | tee "$RUNNER_TEMP/prover-push.log"
+                digest="$(sed -nE 's/^.*: digest: (sha256:[0-9a-f]{64}) size: [0-9]+$/\1/p' "$RUNNER_TEMP/prover-push.log")"
+                [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+                  echo "Invalid prover push digest for $tag: $digest" >&2
+                  exit 1
+                }
+                printf '%s@%s\n' "${tag%:*}" "$digest" >> "$RUNNER_TEMP/prover-image-refs.txt"
+              else
+                docker push "$tag"
+              fi
             done <<< "$metadata"
           }
           publish tempo-zone-xtask "$XTASK_TAGS"
@@ -823,6 +953,62 @@ jobs:
             docker tag tempo-zone-prover-eif-builder:local "$BUILDER_REF"
             docker push "$BUILDER_REF"
           fi
+          printf 'prover_image_refs=%s\n' "$(sort -u "$RUNNER_TEMP/prover-image-refs.txt" | jq -Rsc 'split("\n") | map(select(length > 0))')" >> "$GITHUB_OUTPUT"
+
+  sign-prover-images:
+    name: Sign published prover images
+    needs: publish-companion-images
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+      id-token: write
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+      - name: Log in to Container Registry
+        uses: tempoxyz/gh-actions/vendor/docker/login-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Log in to Docker Hub
+        uses: tempoxyz/gh-actions/vendor/docker/login-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          username: ${{ vars.DOCKER_HUB_USER }}
+          password: ${{ secrets.DOCKER_HUB_TOKEN }}
+      - name: Install cosign
+        uses: tempoxyz/gh-actions/vendor/sigstore/cosign-installer@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Sign published prover image digests
+        shell: bash
+        env:
+          PROVER_IMAGE_REFS: ${{ needs.publish-companion-images.outputs.prover_image_refs }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$PROVER_IMAGE_REFS" | jq -er '.[]' > "$RUNNER_TEMP/prover-image-refs.txt"
+          [[ -s "$RUNNER_TEMP/prover-image-refs.txt" ]] || {
+            echo "No published prover image digests to sign" >&2
+            exit 1
+          }
+
+          # Keyless signatures identify the publishing workflow, not human/VK
+          # approval or L1-approved PCRs. Tags already exist if signing fails.
+          while IFS= read -r ref; do
+            [[ "$ref" =~ ^(ghcr.io|docker.io)/tempoxyz/tempo-zone-prover@sha256:[0-9a-f]{64}$ ]] || {
+              echo "Invalid prover image reference: $ref" >&2
+              exit 1
+            }
+            for attempt in 1 2 3; do
+              if cosign sign --yes "$ref"; then
+                break
+              fi
+              if [[ "$attempt" -eq 3 ]]; then
+                echo "Failed to sign $ref after $attempt attempts" >&2
+                exit 1
+              fi
+              sleep "$((attempt * 15))"
+            done
+          done < "$RUNNER_TEMP/prover-image-refs.txt"
 
   production-reproducible-clean-rebuild:
     name: Rebuild production tempo-zone image without cache
@@ -832,7 +1018,7 @@ jobs:
       (github.repository == 'tempoxyz/tempo' &&
       (github.event_name == 'push' || github.event_name == 'schedule' ||
       (github.event_name == 'workflow_dispatch' && inputs.reproducible_verify != true && inputs.reproducible_eif_verify != true)))
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-latest-16
     permissions:
       id-token: write
       contents: read

@@ -118,16 +118,17 @@ jobs:
             exit 1
           fi
 
-          # Never prepare a version which has already been tagged.
+          # Never prepare a version which has already been tagged, with or
+          # without the tempo/ prefix.
           set +e
           git ls-remote --exit-code --tags origin \
-            "refs/tags/v${VERSION}" >/dev/null
+            "refs/tags/v${VERSION}" "refs/tags/tempo/v${VERSION}" >/dev/null
           tag_status=$?
           set -e
 
           case "$tag_status" in
             0)
-              echo "::error::Tag v${VERSION} already exists"
+              echo "::error::Tag v${VERSION} or tempo/v${VERSION} already exists"
               exit 1
               ;;
             2)

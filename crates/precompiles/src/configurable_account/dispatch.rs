@@ -3,7 +3,7 @@
 use super::ConfigurableAccount;
 use crate::{Precompile, charge_input_cost, dispatch, mutate, view};
 use alloy::primitives::Address;
-use revm::precompile::PrecompileResult;
+use evm2::precompiles::PrecompileResult;
 use tempo_contracts::precompiles::IConfigurableAccount;
 
 impl Precompile for ConfigurableAccount {

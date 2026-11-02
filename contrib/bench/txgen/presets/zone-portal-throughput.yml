@@ -1,0 +1,15 @@
+# Isolated L1 execution throughput of zone portal deposits and withdrawals, on the
+# public-mix fixtures (synthetic settlement through the dummy verifier, no zone node).
+# Zone journey benchmarks are `derek bench zones` (zones-prover-benchmark.yml).
+# Selects only zone deposits and withdrawals, with equal weights; the vault, MPP
+# and zone fixture setup from public-mix still runs before measurement.
+# Same requirements as public-mix: chain 1337, T10+ and nonzero state bloat.
+# Saturation runs raise both gas limits, e.g.
+# `derek bench preset=zone-portal-throughput bloat=100 gas-limit=1T general-gas-limit=1T`.
+include: public-mix.yml
+
+mix:
+  - template: zone_deposit
+    weight: 50
+  - template: zone_withdraw
+    weight: 50

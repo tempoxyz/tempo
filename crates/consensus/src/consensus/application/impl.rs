@@ -242,10 +242,10 @@ impl Inner {
         // Pace proposal return from the window's opening. Validators still
         // need to repeat replayable build work, so leave room for it before
         // returning the proposal.
-        let return_delay = proposal_budget
+        let return_after = proposal_budget
             .return_budget
-            .saturating_sub(proposal_elapsed)
             .saturating_sub(validation_latency_elapsed);
+        let return_delay = return_after.saturating_sub(proposal_elapsed);
         // Decide before the sleep whether the proposal met its return budget, from
         // what the build spent: the sleep's timer overshoot must not decide it, and in
         // the deterministic e2e runtime the sleep runs on simulated time while
@@ -261,7 +261,9 @@ impl Inner {
             return_time = %display_duration(return_delay),
             "sleeping before returning proposal"
         );
-        runtime.sleep_until(runtime.current() + return_delay).await;
+        runtime
+            .sleep(return_after.saturating_sub(window_opened.elapsed()))
+            .await;
 
         // The proposal leaves this node now; the wait after its window closes is the
         // network sample the block built on top of it completes, so record the window

@@ -1,5 +1,5 @@
-use alloy_evm::revm::precompile::{PrecompileSpecId, Precompiles};
 use alloy_primitives::Address;
+use evm2::{BaseEvmTypes, Precompiles, evm::precompile::PrecompileProvider};
 use tempo_primitives::TempoAddressExt;
 
 use crate::TempoHardfork;
@@ -9,6 +9,6 @@ pub fn is_valid_native_account(address: Address, hardfork: TempoHardfork) -> boo
     !address.is_zero()
         && !address.is_virtual()
         && !address.is_precompile(hardfork)
-        && !Precompiles::new(PrecompileSpecId::from_spec_id(hardfork.into())).contains(&address)
+        && !Precompiles::<BaseEvmTypes>::base(hardfork.into()).contains(&address)
         && address.zone_portal_id().is_none()
 }

@@ -230,7 +230,7 @@ fn test_string_literal_slots() {
 
 #[test]
 #[cfg_attr(
-    all(debug_assertions, not(feature = "dst")),
+    all(debug_assertions, not(feature = "fuzz")),
     should_panic(expected = "Storage slot collision")
 )]
 fn test_collision_same_slot() {
@@ -249,7 +249,7 @@ fn test_collision_same_slot() {
 
 #[test]
 #[cfg_attr(
-    all(debug_assertions, not(feature = "dst")),
+    all(debug_assertions, not(feature = "fuzz")),
     should_panic(expected = "Storage slot collision")
 )]
 fn test_collision_overlapping_slots_manual() {
@@ -267,7 +267,7 @@ fn test_collision_overlapping_slots_manual() {
 
 #[test]
 #[cfg_attr(
-    all(debug_assertions, not(feature = "dst")),
+    all(debug_assertions, not(feature = "fuzz")),
     should_panic(expected = "Storage slot collision")
 )]
 fn test_collision_overlapping_slots_auto() {
@@ -311,7 +311,7 @@ fn test_no_collision_when_using_manual_slot_with_packing() {
 
 #[test]
 #[cfg_attr(
-    all(debug_assertions, not(feature = "dst")),
+    all(debug_assertions, not(feature = "fuzz")),
     should_panic(
         expected = "Storage slot collision: field `c` (slot 1, offset 0) overlaps with field `d` (slot 1, offset 0)"
     )

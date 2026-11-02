@@ -5,20 +5,15 @@
 
 mod attrs;
 mod budget;
-mod build_plan;
-mod estimator;
+pub mod estimator;
 mod proposal_budget;
 
 use alloy_primitives::Bytes;
 pub use attrs::TempoPayloadAttributes;
 pub(crate) use budget::ValidationLatencyEstimator;
 pub use budget::{ValidationLatencyEstimate, ValidationLatencyWorkload};
-pub(crate) use build_plan::BUILD_TIME_MULTIPLIER_SCALE;
-pub use build_plan::{BuildPlan, PayloadBudgetDecision};
 pub use estimator::{
-    DEFAULT_BUILD_TIME_MULTIPLIER, DEFAULT_NETWORK_BUDGET, DEFAULT_NETWORK_BUDGET_MAX,
-    DEFAULT_NETWORK_RESERVE_PERCENTILE, DEFAULT_RETURN_BUDGET_OVERRUN_TOLERANCE,
-    DEFAULT_TARGET_BLOCK_TIME, Estimator, EstimatorConfig, EstimatorSnapshot, FinishedBuild,
+    BuildPlan, Config as EstimatorConfig, Estimator, EstimatorSnapshot, PayloadBudgetDecision,
     ProposalKey,
 };
 pub use proposal_budget::ProposalBudget;
@@ -31,6 +26,8 @@ use alloy_eips::eip7685::Requests;
 use alloy_primitives::U256;
 use alloy_rpc_types_eth::Withdrawal;
 use reth_ethereum_engine_primitives::EthBuiltPayload;
+// TODO: Remove this import and feature-only dependency after updating Reth's feature forwarding.
+use reth_evm as _;
 use reth_node_api::{BlockBody, ExecutionPayload, PayloadTypes};
 use reth_payload_primitives::{BuiltPayload, BuiltPayloadExecutedBlock};
 use reth_primitives_traits::{AlloyBlockHeader as _, SealedBlock, SealedOrRecoveredBlock};
