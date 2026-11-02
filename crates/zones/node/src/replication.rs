@@ -20,6 +20,8 @@ use zone_sequencer::{ProofCollectorHandle, SettlementManager, StoredBlockProof};
 pub(crate) struct PeerBlock {
     pub block: Block,
     pub witness: Option<StoredBlockProof>,
+    /// Encoded block and witness bytes retained while this block is pending.
+    pub encoded_size: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -31,6 +33,7 @@ pub(crate) struct PersistedTip {
 pub(crate) struct EncodedPersistedBlock {
     number: u64,
     hash: B256,
+    timestamp: u64,
     encoded: Vec<u8>,
 }
 
@@ -86,6 +89,7 @@ where
         Ok(EncodedPersistedBlock {
             number: sealed.number(),
             hash: sealed.hash(),
+            timestamp: sealed.timestamp(),
             encoded: alloy_rlp::encode(sealed.into_block()),
         })
     }
@@ -306,7 +310,8 @@ where
                 "persisted zone block hash does not match notification at height {number}: expected={expected}, actual={hash}"
             );
         }
-        let block = encode_block_with_witness(block.encoded, number, hash, proofs)?;
+        let block =
+            encode_block_with_witness(block.encoded, number, hash, block.timestamp, proofs)?;
         commands
             .send(P2pCommand::BroadcastBlock(block))
             .await
@@ -321,12 +326,16 @@ fn encode_block_with_witness(
     block: Vec<u8>,
     number: u64,
     hash: B256,
+    timestamp: u64,
     proofs: Option<&ProofCollectorHandle>,
 ) -> eyre::Result<EncodedBlock> {
     let witness = if let Some(proofs) = proofs {
         let witness = proofs.get(number, hash);
+        // Pre-T15 blocks may become canonical without a witness; peers collect it themselves.
         eyre::ensure!(
-            witness.is_some() || !proofs.requires_witness(number),
+            witness.is_some()
+                || !proofs.requires_witness(number)
+                || !proofs.witness_mandatory(timestamp),
             "unsettled block {number} has no retained witness to replicate"
         );
         witness
@@ -361,7 +370,11 @@ pub(crate) fn decode_peer_block(encoded: &[u8]) -> eyre::Result<PeerBlock> {
         "encoded zone block has {} trailing bytes",
         input.len()
     );
-    Ok(PeerBlock { block, witness })
+    Ok(PeerBlock {
+        block,
+        witness,
+        encoded_size: encoded.len(),
+    })
 }
 
 const BACKFILL_PAGE_SIZE: u64 = 64;
@@ -391,6 +404,7 @@ where
             alloy_rlp::encode(&block),
             number,
             block.header.hash_slow(),
+            block.header.timestamp(),
             proofs,
         )?;
         commands
@@ -560,6 +574,7 @@ mod tests {
             Ok(EncodedPersistedBlock {
                 number,
                 hash: self.tip.hash,
+                timestamp: 0,
                 encoded: vec![number as u8],
             })
         }
@@ -609,6 +624,7 @@ mod tests {
             Ok(EncodedPersistedBlock {
                 number,
                 hash: B256::repeat_byte(number as u8),
+                timestamp: 0,
                 encoded: vec![number as u8],
             })
         }
@@ -645,7 +661,7 @@ mod tests {
         let block = Block::default();
         let bare = alloy_rlp::encode(&block);
         assert_eq!(
-            encode_block_with_witness(bare.clone(), 0, B256::ZERO, None)
+            encode_block_with_witness(bare.clone(), 0, B256::ZERO, 0, None)
                 .unwrap()
                 .encode(),
             bare
@@ -654,7 +670,8 @@ mod tests {
             decode_peer_block(&bare).unwrap(),
             super::PeerBlock {
                 block: block.clone(),
-                witness: None
+                witness: None,
+                encoded_size: bare.len(),
             }
         );
         let mut proof = StoredBlockProof {
@@ -677,7 +694,8 @@ mod tests {
             decode_peer_block(&encoded).unwrap(),
             super::PeerBlock {
                 block,
-                witness: Some(proof.clone())
+                witness: Some(proof.clone()),
+                encoded_size: encoded.len(),
             }
         );
 
