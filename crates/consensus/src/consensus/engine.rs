@@ -33,7 +33,7 @@ use crate::{
     peer_manager, storage,
 };
 
-use super::{ProposalBudget, block::Block};
+use super::{ProposalBudget, block::Block, seeds::SeedCache};
 
 // A bunch of constants to configure commonwarexyz singletons and copied over form alto.
 
@@ -299,6 +299,7 @@ where
         .await
         .wrap_err("failed initializing dkg manager")?;
 
+        let seeds = SeedCache::default();
         let application = application::Inner::new(application::Config {
             context: context.child("application"),
             public_key: self.signer.public_key(),
@@ -311,6 +312,9 @@ where
             proposal_budget: self.proposal_budget,
             estimator: self.estimator.clone(),
             epoch_strategy: epoch_strategy.clone(),
+            chainspec: execution_node.chain_spec(),
+            seeds: seeds.clone(),
+            marshal: marshal_mailbox.clone(),
         });
         let application = application::Factory::new(
             &context,
@@ -337,6 +341,7 @@ where
             partition_prefix: format!("{}_epoch_manager", self.partition_prefix),
             views_to_track: ViewDelta::new(self.views_to_track),
             inactive_time_before_leader_skip: self.inactive_time_before_leader_skip,
+            seeds,
         };
 
         Ok(Engine {

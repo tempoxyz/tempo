@@ -40,6 +40,7 @@ use std::{collections::BTreeMap, num::NonZeroUsize};
 
 use alloy_consensus::BlockHeader as _;
 use commonware_consensus::{
+    Reporters,
     simplex::{self, config::Floor, elector, scheme::bls12381_threshold::vrf::Scheme},
     types::{Epoch, EpochDelta, Epocher as _, Height},
 };
@@ -407,7 +408,7 @@ where
                 elector: elector::Random::<commonware_cryptography::Sha256>::new(elector),
                 strategy: Sequential,
 
-                reporter: self.config.marshal.clone(),
+                reporter: Reporters::from((self.config.marshal.clone(), self.config.seeds.clone())),
                 partition: format!(
                     "{partition_prefix}_consensus_epoch_{epoch}",
                     partition_prefix = self.config.partition_prefix

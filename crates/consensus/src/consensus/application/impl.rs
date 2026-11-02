@@ -6,14 +6,17 @@ use std::{
 };
 
 use alloy_consensus::BlockHeader;
-use alloy_primitives::Bytes;
+use alloy_primitives::{B256, Bytes};
 use commonware_actor::Feedback;
 use commonware_codec::{Encode as _, ReadExt as _};
 use commonware_consensus::{
     Heightable as _, Reporter,
     marshal::{Update, ancestry::Ancestry},
-    simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Context},
-    types::{Epoch, Epocher as _, FixedEpocher, Height},
+    simplex::{
+        scheme::bls12381_threshold::vrf::{Scheme, Seedable as _},
+        types::Context,
+    },
+    types::{Epoch, Epocher as _, FixedEpocher, Height, Round, View},
 };
 use commonware_cryptography::{
     bls12381::{dkg::feldman_desmedt::Output, primitives::variant::MinSig},
@@ -28,6 +31,7 @@ use eyre::{OptionExt as _, WrapErr as _, ensure, eyre};
 use futures::{FutureExt as _, StreamExt as _, channel::oneshot};
 use rand_core::Rng;
 use reth_primitives_traits::BlockBody as _;
+use tempo_chainspec::{TempoChainSpec, TempoHardforks as _};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_payload_types::{Estimator, TempoPayloadAttributes, ValidationLatencyWorkload};
 use tempo_primitives::TempoConsensusContext;
@@ -36,7 +40,11 @@ use tracing::{Level, debug, info, instrument, warn};
 
 use super::parent_state::TempoParentState;
 use crate::{
-    consensus::{Digest, ProposalBudget, block::Block},
+    consensus::{
+        Digest, ProposalBudget,
+        block::Block,
+        seeds::{SeedCache, hash_seed},
+    },
     executor::DeferredExtraData,
 };
 
@@ -63,6 +71,17 @@ pub(in crate::consensus) struct Config<TContext> {
 
     /// The epoch strategy used by tempo, to map block heights to epochs.
     pub(in crate::consensus) epoch_strategy: FixedEpocher,
+
+    /// Decides whether a block's timestamp is past the fork that activates
+    /// TIP-1153.
+    pub(in crate::consensus) chainspec: Arc<TempoChainSpec>,
+
+    /// Seeds of the rounds simplex certified, for `PREVRANDAO`.
+    pub(in crate::consensus) seeds: SeedCache,
+
+    /// Has the finalizations of parents whose seeds are no longer in
+    /// `seeds`, such as after a restart.
+    pub(in crate::consensus) marshal: crate::alias::marshal::Mailbox,
 }
 
 /// Tempo's block builder and verifier, see the module documentation.
@@ -77,6 +96,9 @@ pub(crate) struct Inner {
     dkg_manager: crate::dkg::manager::Mailbox,
     parent_state: TempoParentState,
     estimator: Estimator,
+    chainspec: Arc<TempoChainSpec>,
+    seeds: SeedCache,
+    marshal: crate::alias::marshal::Mailbox,
 
     metrics: Metrics,
 }
@@ -93,6 +115,9 @@ impl Inner {
             dkg_manager: config.dkg_manager,
             parent_state: config.parent_state,
             estimator: config.estimator,
+            chainspec: config.chainspec,
+            seeds: config.seeds,
+            marshal: config.marshal,
             metrics: Metrics::init(&config.context),
         }
     }
@@ -174,6 +199,10 @@ impl Inner {
 
         let (timestamp, timestamp_millis_part) = (epoch_millis / 1000, epoch_millis % 1000);
 
+        let prev_randao = self
+            .expected_mix_hash(round.epoch(), timestamp, parent, SeedWait::Propose)
+            .await;
+
         let consensus_context = Some(TempoConsensusContext {
             epoch: round.epoch().get(),
             view: round.view().get(),
@@ -193,6 +222,7 @@ impl Inner {
             extra_data,
             consensus_context,
         )
+        .with_prev_randao(prev_randao)
         .with_payload_build_budget(build_budget);
 
         // Subscribe to the payload build. The executor owns the build job
@@ -292,6 +322,54 @@ impl Inner {
             }
             .boxed()
         })
+    }
+
+    /// Returns the `mix_hash` that TIP-1153 requires of a block in `epoch` at
+    /// `timestamp` (seconds) on `parent`: zero before the fork and for the
+    /// first block of an epoch, else `keccak256` of the seed of the parent's
+    /// round.
+    ///
+    /// Waits for that seed if no verified certificate for the parent's round
+    /// is known yet, see [`SeedCache::wait`].
+    async fn expected_mix_hash(
+        &self,
+        epoch: Epoch,
+        timestamp: u64,
+        parent: &Block,
+        wait: SeedWait,
+    ) -> B256 {
+        if !self.chainspec.is_t15_active_at_timestamp(timestamp) {
+            return B256::ZERO;
+        }
+        // The marshal wrappers only pass parents of the same or an earlier epoch.
+        let Some(parent_ctx) = parent
+            .header()
+            .consensus_context
+            .filter(|ctx| ctx.epoch == epoch.get())
+        else {
+            // The parent is genesis or the boundary block of an earlier epoch.
+            return B256::ZERO;
+        };
+        let round = Round::new(Epoch::new(parent_ctx.epoch), View::new(parent_ctx.view));
+        if let Some(seed) = self.seeds.get(round) {
+            return seed;
+        }
+        // A block that is not a boundary re-proposal is finalized only in the
+        // round of its own consensus context.
+        if let Some(finalization) = self.marshal.get_finalization(parent.height()).await
+            && finalization.round() == round
+        {
+            return hash_seed(&finalization.seed());
+        }
+        match wait {
+            SeedWait::Propose => self.metrics.prev_randao_propose_waits.metric().inc(),
+            SeedWait::Verify => self.metrics.prev_randao_verify_waits.metric().inc(),
+        };
+        warn!(
+            ?round,
+            "seed of the parent's round unavailable; waiting for its certificate"
+        );
+        self.seeds.wait(round).await
     }
 
     /// Returns whether the block at `height` is the last block of its epoch,
@@ -499,19 +577,17 @@ where
         };
         tracing::Span::current().record("digest", tracing::field::display(block.digest()));
 
-        // Only a boundary block needs its parent. The DKG actor reads no chain
-        // state, so it can work on the ceremony output of a boundary block
-        // while the header is checked and the block is executed.
-        let boundary = if self.is_boundary(block.height()) {
-            let Some(parent) = ancestry.next().await else {
-                warn!("ancestry ended before yielding the parent; abstaining");
-                return std::future::pending().await;
-            };
-            let ceremony = self.dkg_manager.subscribe_dkg_ceremony(Arc::clone(&parent));
-            Some((parent, ceremony))
-        } else {
-            None
+        let Some(parent) = ancestry.next().await else {
+            warn!("ancestry ended before yielding the parent; abstaining");
+            return std::future::pending().await;
         };
+
+        // The DKG actor reads no chain state, so it can work on the ceremony
+        // output of a boundary block while the header is checked and the
+        // block is executed.
+        let ceremony = self
+            .is_boundary(block.height())
+            .then(|| self.dkg_manager.subscribe_dkg_ceremony(Arc::clone(&parent)));
 
         let proposed_outcome = match self.verify_header(&block, &context).await {
             Ok(proposed_outcome) => proposed_outcome,
@@ -520,6 +596,25 @@ where
                 return false;
             }
         };
+
+        let expected_mix_hash = self
+            .expected_mix_hash(
+                context.round.epoch(),
+                block.header().timestamp(),
+                &parent,
+                SeedWait::Verify,
+            )
+            .await;
+        if block.header().mix_hash() != Some(expected_mix_hash) {
+            self.metrics.prev_randao_mismatch.metric().inc();
+            warn!(
+                expected = %expected_mix_hash,
+                got = ?block.header().mix_hash(),
+                proposer = %context.leader,
+                "mix_hash is not the seed of the parent's round; failing block",
+            );
+            return false;
+        }
 
         match self.executor.verify_block(context, (*block).clone()).await {
             Ok(Some(duration)) => {
@@ -549,8 +644,8 @@ where
         match proposed_outcome {
             None => true,
             Some(outcome) => {
-                let (parent, ceremony) =
-                    boundary.expect("`verify_header` decodes an outcome only for a boundary block");
+                let ceremony =
+                    ceremony.expect("`verify_header` decodes an outcome only for a boundary block");
                 self.verify_boundary_outcome(&parent, ceremony, &outcome)
                     .await
                     .is_ok()
@@ -579,9 +674,18 @@ async fn wait_until_timestamp(runtime: &impl Clock, timestamp: u64) {
     }
 }
 
+/// Which lookup of [`Inner::expected_mix_hash`] had to wait for a seed.
+enum SeedWait {
+    Propose,
+    Verify,
+}
+
 #[derive(Clone)]
 struct Metrics {
     parent_ahead_of_local_time: Counter,
+    prev_randao_propose_waits: Counter,
+    prev_randao_verify_waits: Counter,
+    prev_randao_mismatch: Counter,
 }
 
 impl Metrics {
@@ -591,8 +695,27 @@ impl Metrics {
             "number of times the parent block timestamp was ahead of local time when proposing",
         );
 
+        let prev_randao_propose_waits = context.counter(
+            "prev_randao_propose_waits",
+            "number of proposals that waited for the seed of the parent's round \
+            because no verified certificate for it was known",
+        );
+        let prev_randao_verify_waits = context.counter(
+            "prev_randao_verify_waits",
+            "number of verifications that abstained until the seed of the parent's \
+            round arrived because no verified certificate for it was known",
+        );
+        let prev_randao_mismatch = context.counter(
+            "prev_randao_mismatch",
+            "number of proposals rejected because their mix_hash was not the seed \
+            of the parent's round",
+        );
+
         Self {
             parent_ahead_of_local_time,
+            prev_randao_propose_waits,
+            prev_randao_verify_waits,
+            prev_randao_mismatch,
         }
     }
 }
