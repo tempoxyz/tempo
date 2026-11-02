@@ -23,6 +23,7 @@ use tempo_contracts::{
 };
 use tempo_nitro_attestation::parse_attestation;
 use tempo_precompiles::zone_factory::portal_address;
+use tempo_primitives::TempoAddressExt;
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct GetVerifierPcrs {
@@ -114,6 +115,12 @@ impl GetVerifierPcrs {
             from < upper,
             "no blocks for {hardfork} in the requested range"
         );
+        if let Some(portal) = self.portal {
+            ensure!(
+                is_canonical_portal(portal),
+                "{portal} is not a canonical Zone portal address"
+            );
+        }
         let mut end = upper - 1;
         loop {
             let mut seen = HashSet::new();
@@ -137,7 +144,9 @@ impl GetVerifierPcrs {
                     .transaction_hash
                     .ok_or_eyre("batch log has no transaction hash")?;
                 let portal = log.address();
-                if !seen.insert((hash, portal)) {
+                // Any contract can emit a BatchSubmitted-shaped log; skip non-portal emitters
+                // before spending a receipt fetch and a trace on them.
+                if !is_canonical_portal(portal) || !seen.insert((hash, portal)) {
                     continue;
                 }
                 let receipt = provider
@@ -245,6 +254,14 @@ async fn fork_boundary(
         }
     }
     Ok(low)
+}
+
+/// Whether `address` is the deterministic portal address of the zone ID it encodes.
+fn is_canonical_portal(address: Address) -> bool {
+    address
+        .zone_portal_id()
+        .and_then(|zone_id| u32::try_from(zone_id).ok())
+        .is_some_and(|zone_id| portal_address(zone_id) == address)
 }
 
 fn hardfork_at(schedule: &ForkSchedule, timestamp: u64) -> &str {
@@ -451,6 +468,20 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(batch_pcrs(&wrapper, portal).unwrap(), Some((1, expected)));
+    }
+
+    #[test]
+    fn canonical_portal_check() {
+        assert!(is_canonical_portal(portal_address(1)));
+        assert!(is_canonical_portal(portal_address(u32::MAX)));
+        assert!(!is_canonical_portal(Address::ZERO));
+        assert!(!is_canonical_portal(portal_address(0)));
+        let mut wide = portal_address(1);
+        wide.0[12] = 1;
+        assert!(!is_canonical_portal(wide));
+        let mut wrong_prefix = portal_address(1);
+        wrong_prefix.0[0] ^= 1;
+        assert!(!is_canonical_portal(wrong_prefix));
     }
 
     #[test]
