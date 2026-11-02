@@ -258,8 +258,8 @@ pub(crate) fn check(
         validators.sort_unstable();
         validators.dedup();
         let manager = TIP_FEE_MANAGER_ADDRESS;
-        let read = |list: &[Address], a: &Address| list.binary_search(a).is_ok();
-        // Books nothing answered stay so while the first slot they missed is missing and read.
+        let has = |list: &[Address], a: &Address| list.binary_search(a).is_ok();
+        // Books nothing answered stay so while the first slot they missed is still missing and read.
         let prior = seen.books.take().filter(|prior| {
             effects.is_some()
                 && prior.tokens == tokens
@@ -267,8 +267,8 @@ pub(crate) fn check(
                     || prior.missing.is_some_and(|(address, slot, stored)| {
                         db.misses(&address, &slot)
                             && match stored {
-                                Some(Stored::Lp(_, holder)) => read(&all_holders, &holder),
-                                Some(Stored::Fees(validator)) => read(&validators, &validator),
+                                Some(Stored::Lp(_, holder)) => has(&all_holders, &holder),
+                                Some(Stored::Fees(validator)) => has(&validators, &validator),
                                 _ => true,
                             }
                     }))
@@ -293,10 +293,10 @@ pub(crate) fn check(
                 let holders: Vec<Address> = all_holders
                     .iter()
                     .copied()
-                    .filter(|h| !read(&prior.holders, h) || lp.contains(h))
+                    .filter(|h| !has(&prior.holders, h) || lp.contains(h))
                     .collect();
                 // A new holder's LP is read in every pool.
-                let pairs: Vec<usize> = if all_holders.iter().any(|h| !read(&prior.holders, h)) {
+                let pairs: Vec<usize> = if all_holders.iter().any(|h| !has(&prior.holders, h)) {
                     (0..pairs.len()).collect()
                 } else {
                     pools.into_iter().collect()
@@ -304,7 +304,7 @@ pub(crate) fn check(
                 let validators = validators
                     .iter()
                     .copied()
-                    .filter(|v| !read(&prior.validators, v) || fees.contains(v))
+                    .filter(|v| !has(&prior.validators, v) || fees.contains(v))
                     .collect();
                 (pairs, validators, holders)
             }
@@ -324,14 +324,16 @@ pub(crate) fn check(
                 };
             };
             read.map(|fresh| {
-                let mut read = fresh.pools.into_iter();
+                let mut fresh_pools = fresh.pools.into_iter();
                 let pools = before
                     .pools
                     .iter()
                     .enumerate()
                     .map(|(i, before)| {
                         let mut pool = match fresh_pairs.binary_search(&i) {
-                            Ok(_) => read.next().expect("a pool is read for each fresh pair"),
+                            Ok(_) => fresh_pools
+                                .next()
+                                .expect("a pool is read for each fresh pair"),
                             Err(_) => before.clone(),
                         };
                         pool.lp = all_holders
