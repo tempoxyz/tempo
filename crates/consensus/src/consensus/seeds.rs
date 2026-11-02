@@ -2,8 +2,9 @@
 //!
 //! Simplex reports every certificate it verifies (including those replayed from
 //! its journal after a restart) to its reporter. [`SeedCache`] keeps the seed of
-//! each notarized, certified or finalized round, so the application can read the
-//! seed of a parent's round when it proposes or verifies the child.
+//! each round with a notarization, nullification or finalization, so the
+//! application can read the seed of a parent's round when it proposes or
+//! verifies the child.
 
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -115,6 +116,14 @@ impl Reporter for SeedCache {
             Activity::Notarization(notarization) | Activity::Certification(notarization) => {
                 self.insert(notarization.seed());
             }
+            // The seed signs the round alone, so a nullification of the parent's
+            // round carries the same seed. Simplex can certify the first view
+            // of a term on a parent whose notarization this node never saw.
+            Activity::Nullification(nullification) => {
+                if let Some(certificate) = nullification.certificate.get() {
+                    self.insert(Seed::new(nullification.round, certificate.seed_signature));
+                }
+            }
             Activity::Finalization(finalization) => {
                 let seed = finalization.seed();
                 let round = seed.round;
@@ -143,7 +152,13 @@ pub(crate) fn hash_seed(seed: &Seed<MinSig>) -> B256 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use commonware_consensus::types::{Epoch, View};
+    use commonware_consensus::{
+        simplex::{
+            scheme::bls12381_threshold::vrf::{Certificate, Signature},
+            types::Nullification,
+        },
+        types::{Epoch, View},
+    };
     use commonware_cryptography::bls12381::primitives::ops;
     use futures::FutureExt as _;
     use rand::{SeedableRng as _, rngs::StdRng};
@@ -194,6 +209,30 @@ mod tests {
 
         cache.insert(seed(round(5)));
         assert!(cache.get(round(5)).is_some());
+    }
+
+    #[test]
+    fn nullification_provides_seed() {
+        let cache = SeedCache::default();
+        let seed = seed(round(3));
+        let mut wait = std::pin::pin!(cache.wait(round(3)));
+        assert!(wait.as_mut().now_or_never().is_none());
+
+        let nullification = Nullification {
+            round: round(3),
+            certificate: Certificate::from(Signature::<MinSig> {
+                vote_signature: seed.signature,
+                seed_signature: seed.signature,
+            }),
+        };
+        assert_eq!(
+            cache.clone().report(Activity::Nullification(nullification)),
+            Feedback::Ok
+        );
+
+        let expected = keccak256(seed.signature.encode());
+        assert_eq!(wait.now_or_never(), Some(expected));
+        assert_eq!(cache.get(round(3)), Some(expected));
     }
 
     #[test]
