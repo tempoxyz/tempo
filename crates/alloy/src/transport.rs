@@ -633,8 +633,7 @@ mod tests {
             );
         }
         let envelope = TempoTxEnvelope::AA(tx.into_signed(user_sig.into()));
-        let mut encoded = Vec::new();
-        envelope.encode_2718(&mut encoded);
+        let encoded = envelope.encoded_2718();
         hex::encode_prefixed(encoded)
     }
 

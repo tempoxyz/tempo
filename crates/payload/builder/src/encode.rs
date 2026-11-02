@@ -657,8 +657,7 @@ mod tests {
             encoded_transactions.encode_block_with_transactions(&block, &mut encoded_from_cache)
         );
 
-        let mut expected = Vec::new();
-        block.encode(&mut expected);
+        let expected = alloy_rlp::encode(&block);
 
         assert_eq!(encoded_from_cache, expected);
     }
@@ -683,8 +682,7 @@ mod tests {
         let mut encoded = Vec::new();
         assert!(!cached_transactions.encode_block_with_transactions(&block, &mut encoded));
 
-        let mut expected = Vec::new();
-        block.encode(&mut expected);
+        let expected = alloy_rlp::encode(&block);
 
         assert_eq!(encoded, expected);
     }
