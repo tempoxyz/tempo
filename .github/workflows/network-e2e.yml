@@ -113,7 +113,8 @@ jobs:
   dispatch:
     name: Dispatch network tests
     needs: [detect, build]
-    if: always()
+    # A superseded run (cancel-in-progress) is not a dispatch failure; the newer run owns the status.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -157,7 +158,7 @@ jobs:
             --key "$RUNNER_TEMP/network-e2e.key" --cert "$RUNNER_TEMP/network-e2e.crt" \
             -H 'Content-Type: application/json' --data "$payload"
       - name: Report skipped tests or dispatch failure
-        if: always()
+        if: ${{ !cancelled() }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
