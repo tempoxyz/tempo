@@ -25,9 +25,11 @@ use parking_lot::Mutex;
 
 use crate::consensus::Digest;
 
-/// The most seeds kept. Rounds below the latest finalization are pruned, so
-/// this only binds while finalization stalls; the oldest seeds go first, and
-/// the newest certified round is the one a proposal builds on.
+/// The most seeds kept from each [`Source`]. Rounds below the latest
+/// finalization are pruned, so this only binds while finalization stalls; the
+/// oldest seeds go first, and the newest certified round is the one a proposal
+/// builds on. Capping the sources apart keeps a long run of nullified views
+/// from evicting the seed of the certified parent they all build on.
 const MAX_SEEDS: usize = 1024;
 
 /// `keccak256` of the seed of each certified round at or above the latest
@@ -41,7 +43,7 @@ impl SeedCache {
     /// Returns `keccak256` of the seed of `round` if a verified certificate for
     /// it was reported.
     pub(crate) fn get(&self, round: Round) -> Option<B256> {
-        self.state.lock().seeds.get(&round).copied()
+        self.state.lock().get(round)
     }
 
     /// Waits until a verified certificate for `round` is reported and returns
@@ -53,8 +55,8 @@ impl SeedCache {
     pub(crate) async fn wait(&self, round: Round) -> B256 {
         let receiver = {
             let mut state = self.state.lock();
-            if let Some(seed) = state.seeds.get(&round) {
-                return *seed;
+            if let Some(seed) = state.get(round) {
+                return seed;
             }
             // Proposals and verifications that consensus cancelled leave closed
             // senders behind; drop them so the map stays bounded while
@@ -76,7 +78,7 @@ impl SeedCache {
         }
     }
 
-    fn insert(&self, seed: Seed<MinSig>) {
+    fn insert(&self, seed: Seed<MinSig>, source: Source) {
         let mut state = self.state.lock();
         if seed.round < state.floor {
             return;
@@ -88,9 +90,13 @@ impl SeedCache {
                 let _ = waiter.send(hash);
             }
         }
-        state.seeds.insert(seed.round, hash);
-        while state.seeds.len() > MAX_SEEDS {
-            state.seeds.pop_first();
+        let seeds = match source {
+            Source::Notarized => &mut state.notarized,
+            Source::Nullified => &mut state.nullified,
+        };
+        seeds.insert(seed.round, hash);
+        while seeds.len() > MAX_SEEDS {
+            seeds.pop_first();
         }
     }
 
@@ -102,7 +108,8 @@ impl SeedCache {
             return;
         }
         state.floor = floor;
-        state.seeds = state.seeds.split_off(&floor);
+        state.notarized = state.notarized.split_off(&floor);
+        state.nullified = state.nullified.split_off(&floor);
         state.waiters = state.waiters.split_off(&floor);
     }
 }
@@ -114,20 +121,23 @@ impl Reporter for SeedCache {
         // Simplex reports only certificates it has verified.
         match activity {
             Activity::Notarization(notarization) | Activity::Certification(notarization) => {
-                self.insert(notarization.seed());
+                self.insert(notarization.seed(), Source::Notarized);
             }
             // The seed signs the round alone, so a nullification of the parent's
             // round carries the same seed. Simplex can certify the first view
             // of a term on a parent whose notarization this node never saw.
             Activity::Nullification(nullification) => {
                 if let Some(certificate) = nullification.certificate.get() {
-                    self.insert(Seed::new(nullification.round, certificate.seed_signature));
+                    self.insert(
+                        Seed::new(nullification.round, certificate.seed_signature),
+                        Source::Nullified,
+                    );
                 }
             }
             Activity::Finalization(finalization) => {
                 let seed = finalization.seed();
                 let round = seed.round;
-                self.insert(seed);
+                self.insert(seed, Source::Notarized);
                 self.prune_below(round);
             }
             _ => {}
@@ -136,12 +146,29 @@ impl Reporter for SeedCache {
     }
 }
 
+/// The kind of certificate a seed came from.
+enum Source {
+    /// A notarization, certification or finalization.
+    Notarized,
+    Nullified,
+}
+
 #[derive(Default)]
 struct State {
     /// Rounds below the latest finalization are not kept.
     floor: Round,
-    seeds: BTreeMap<Round, B256>,
+    notarized: BTreeMap<Round, B256>,
+    nullified: BTreeMap<Round, B256>,
     waiters: BTreeMap<Round, Vec<oneshot::Sender<B256>>>,
+}
+
+impl State {
+    fn get(&self, round: Round) -> Option<B256> {
+        self.notarized
+            .get(&round)
+            .or_else(|| self.nullified.get(&round))
+            .copied()
+    }
 }
 
 /// `keccak256` over the 48-byte compressed G1 encoding of the seed signature.
@@ -183,7 +210,7 @@ mod tests {
         assert_eq!(cache.get(round(3)), None);
 
         let seed = seed(round(3));
-        cache.insert(seed.clone());
+        cache.insert(seed.clone(), Source::Notarized);
 
         let expected = keccak256(seed.signature.encode());
         assert_eq!(wait.now_or_never(), Some(expected));
@@ -194,7 +221,7 @@ mod tests {
     #[test]
     fn finalization_drops_lower_rounds() {
         let cache = SeedCache::default();
-        cache.insert(seed(round(2)));
+        cache.insert(seed(round(2)), Source::Notarized);
         let mut stale_wait = std::pin::pin!(cache.wait(round(4)));
         assert!(stale_wait.as_mut().now_or_never().is_none());
 
@@ -203,11 +230,11 @@ mod tests {
         assert_eq!(cache.get(round(2)), None);
         // A late certificate below the floor is not kept, and its waiters
         // stay pending instead of resolving.
-        cache.insert(seed(round(4)));
+        cache.insert(seed(round(4)), Source::Notarized);
         assert_eq!(cache.get(round(4)), None);
         assert!(stale_wait.now_or_never().is_none());
 
-        cache.insert(seed(round(5)));
+        cache.insert(seed(round(5)), Source::Notarized);
         assert!(cache.get(round(5)).is_some());
     }
 
@@ -247,10 +274,22 @@ mod tests {
     }
 
     #[test]
+    fn nullifications_do_not_evict_notarized_seeds() {
+        let cache = SeedCache::default();
+        cache.insert(seed(round(1)), Source::Notarized);
+        for view in 2..=MAX_SEEDS as u64 + 2 {
+            cache.insert(seed(round(view)), Source::Nullified);
+        }
+        assert!(cache.get(round(1)).is_some());
+        assert_eq!(cache.get(round(2)), None);
+        assert!(cache.get(round(MAX_SEEDS as u64 + 2)).is_some());
+    }
+
+    #[test]
     fn keeps_at_most_max_seeds() {
         let cache = SeedCache::default();
         for view in 0..=MAX_SEEDS as u64 {
-            cache.insert(seed(round(view)));
+            cache.insert(seed(round(view)), Source::Notarized);
         }
         assert_eq!(cache.get(round(0)), None);
         assert!(cache.get(round(MAX_SEEDS as u64)).is_some());
