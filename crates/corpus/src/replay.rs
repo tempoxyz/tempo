@@ -260,6 +260,7 @@ pub fn run_blocks(
     consensus: TempoConsensus,
     workers: usize,
 ) -> eyre::Result<()> {
+    eyre::ensure!(workers > 0, "num-tasks must be positive");
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
