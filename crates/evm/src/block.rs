@@ -1695,7 +1695,7 @@ mod tests {
 
         let mut input = BytesMut::new();
         input.extend_from_slice(&[0xff, 0xff, 0xff]); // Invalid RLP
-        input.extend_from_slice(&U256::from(1u64).to_be_bytes::<32>());
+        input.extend_from_slice(B256::with_last_byte(1).as_slice());
         let system_tx = create_system_tx(chainspec.chain_id(), input.freeze().into());
 
         let result = executor.validate_system_tx(&system_tx);

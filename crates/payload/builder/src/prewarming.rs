@@ -1082,7 +1082,7 @@ mod tests {
         // transfer(address,uint256), matching a payment transaction eligible for replay.
         let mut input = vec![0xa9, 0x05, 0x9c, 0xbb];
         input.extend_from_slice(&recipient.into_word().0);
-        input.extend_from_slice(&U256::from(100).to_be_bytes::<32>());
+        input.extend_from_slice(B256::with_last_byte(100).as_slice());
         let tx = TempoTransaction {
             chain_id: 42431,
             fee_token: Some(PATH_USD_ADDRESS),

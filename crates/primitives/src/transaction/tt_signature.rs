@@ -1419,8 +1419,7 @@ mod tests {
         let field_bytes = fields.concat();
         let mut cases = Vec::new();
         for parity in [false, true] {
-            let signature =
-                Signature::new(U256::from_be_bytes(r.0), U256::from_be_bytes(s.0), parity);
+            let signature = Signature::new(r.into(), s.into(), parity);
             let mut expected = field_bytes[..64].to_vec();
             expected.push(27 + u8::from(parity));
             cases.push((PrimitiveSignature::Secp256k1(signature), expected));

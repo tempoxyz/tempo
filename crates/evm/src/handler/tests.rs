@@ -593,7 +593,7 @@ fn test_get_fee_token() {
         &mut evm,
         TIP_FEE_MANAGER_ADDRESS,
         validator_slot,
-        U256::from_be_bytes(validator_fee_token.into_word().0),
+        validator_fee_token.into_word().into(),
     );
 
     {

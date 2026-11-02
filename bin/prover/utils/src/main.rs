@@ -1153,7 +1153,7 @@ async fn withdrawal_batch_index_at(
         .get_storage_at(ZONE_OUTBOX_ADDRESS, outbox::slots::WITHDRAWAL_BATCH_INDEX)
         .number(block_number)
         .await?;
-    Ok(index.as_limbs()[0])
+    Ok(index.wrapping_to::<u64>())
 }
 
 async fn tempo_header(tempo: &DynProvider<TempoNetwork>, number: u64) -> Result<TempoHeader> {
