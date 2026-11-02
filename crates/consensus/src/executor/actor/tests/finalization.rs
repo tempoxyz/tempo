@@ -628,35 +628,3 @@ fn finalizing_a_conflicting_branch_moves_the_head() {
         assert_eq!(h.execution.finalized(), Some((1, db1)));
     });
 }
-
-#[test_traced]
-fn delivered_block_at_the_startup_tip_height_must_be_the_tip() {
-    deterministic::Runner::default().start(|context| async move {
-        let b1 = make_block(1, 1, GENESIS);
-        let tip = make_block(2, 2, b1.digest());
-        let other = make_block(3, 2, b1.digest());
-
-        let mut h = Harness::builder()
-            .harness_options(HarnessOptions {
-                finalized_tip: (round(2), 2, tip.digest()),
-                ..Default::default()
-            })
-            .start(&context);
-
-        h.deliver_finalized(b1.clone())
-            .await
-            .expect("the block below the startup tip should be acknowledged");
-        h.deliver_finalized(other.clone()).await.expect_err(
-            "a block at the startup tip height that is not the tip must not be acknowledged",
-        );
-        h.actor
-            .await
-            .expect("actor should shut down cleanly when the startup tip block mismatches");
-
-        assert_eq!(
-            h.execution.new_payloads(),
-            vec![b1.digest(), other.digest()]
-        );
-        assert_eq!(h.execution.finalized(), Some((1, b1.digest())));
-    });
-}

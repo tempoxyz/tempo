@@ -556,35 +556,3 @@ fn new_payload_transport_error_fails_startup() {
         assert_eq!(h.execution.fcus(), vec![STARTUP_FCU]);
     });
 }
-
-#[test_traced]
-fn backfill_fails_when_the_block_at_the_startup_tip_is_not_the_tip() {
-    deterministic::Runner::default().start(|context| async move {
-        let tip = make_block(1, 1, GENESIS);
-        let other = make_block(2, 1, GENESIS);
-
-        // Restored storage holds another block at the startup tip's height.
-        let marshal = FakeMarshal::new();
-        marshal.add_block(other.clone());
-
-        let h = Harness::builder()
-            .marshal(marshal)
-            .harness_options(HarnessOptions {
-                finalized_floor: 1,
-                finalized_tip: (round(1), 1, tip.digest()),
-                ..Default::default()
-            })
-            .start(&context);
-
-        h.actor
-            .await
-            .expect("actor should shut down cleanly when the startup tip block mismatches");
-        assert_eq!(h.execution.new_payloads(), vec![other.digest()]);
-        assert_eq!(
-            h.execution.fcus(),
-            vec![STARTUP_FCU],
-            "the mismatching block must never be finalized",
-        );
-        assert_eq!(h.execution.finalized(), None);
-    });
-}

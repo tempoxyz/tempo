@@ -304,8 +304,10 @@ pub(crate) mod marshal {
                 .ok_or_eyre("archive did not contain finalized tip certificate")?
         };
         let height = Height::new(last);
+        // Look the tip up by height so that a different block stored there is
+        // rejected; if none is stored, marshal fetches the tip by digest.
         let header = blocks
-            .get_header(Identifier::Key(&certificate.proposal.payload))
+            .get_header(Identifier::Index(last))
             .await
             .wrap_err("failed reading finalized tip header")?;
         if let Some(header) = &header {
