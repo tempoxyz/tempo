@@ -492,23 +492,26 @@ where
 
     // Process all maintenance operations on new block commit or reorg.
     while let Some(event) = chain_events.next().await {
-        let (new, reorged) = match event {
-            CanonStateNotification::Reorg { old: _, new } => {
+        let (new, orphaned) = match event {
+            CanonStateNotification::Reorg { old, new } => {
                 // Repopulate AMM liquidity cache from the new canonical chain
                 // to invalidate stale entries from orphaned blocks.
                 if let Err(err) = amm_cache.repopulate(pool.client()) {
                     error!(target: "txpool", ?err, "AMM liquidity cache repopulate after reorg failed");
                 }
 
-                (new, true)
+                (new, Some(old))
             }
-            CanonStateNotification::Commit { new } => (new, false),
+            CanonStateNotification::Commit { new } => (new, None),
         };
 
         let block_update_start = Instant::now();
 
         let tip = &new;
         let bundle_state = tip.execution_outcome().state().state();
+        let orphaned_state = orphaned
+            .as_ref()
+            .map(|old| old.execution_outcome().state().state());
         let tip_timestamp = tip.tip().header().timestamp();
         let spec = pool.client().chain_spec().tempo_hardfork_at(tip_timestamp);
         let fallback_tokens = spec.fallback_fee_tokens();
@@ -560,34 +563,39 @@ where
                 // Fallback balances cannot change a token chosen before the fallback.
                 .filter(|tx| spec.is_t13() && tx.transaction.is_fallback_fee_token())
                 .filter(|tx| {
-                    // The new segment's bundle diffs against the fork point, not the orphaned
-                    // state that the cached choice came from, so a reorg refreshes every choice.
-                    reorged
-                        || tx.transaction.fee_balance_slot().is_some_and(
-                            |(selected_token, slot)| {
-                                // TIP-20 balance slots share a layout. Include credits and protocol
-                                // fee writes, which may change the choice without Transfer logs.
-                                let fee = tx.transaction.fee_token_cost();
-                                for token in fallback_tokens {
-                                    if bundle_state
+                    tx.transaction
+                        .fee_balance_slot()
+                        .is_some_and(|(selected_token, slot)| {
+                            // TIP-20 balance slots share a layout. Include credits and protocol
+                            // fee writes, which may change the choice without Transfer logs.
+                            let fee = tx.transaction.fee_token_cost();
+                            for token in fallback_tokens {
+                                // The cached choice may come from the orphaned chain, which the
+                                // new segment's diff against the fork point cannot show.
+                                if orphaned_state.is_some_and(|state| {
+                                    state
                                         .get(token)
-                                        .and_then(|account| account.storage.get(&slot))
-                                        .is_some_and(|value| {
-                                            let had_sufficient_balance =
-                                                value.original_value() >= fee;
-                                            let has_sufficient_balance = value.present_value >= fee;
-                                            had_sufficient_balance != has_sufficient_balance
-                                        })
-                                    {
-                                        return true;
-                                    }
-                                    if *token == selected_token {
-                                        break;
-                                    }
+                                        .is_some_and(|account| account.storage.contains_key(&slot))
+                                }) {
+                                    return true;
                                 }
-                                false
-                            },
-                        )
+                                if bundle_state
+                                    .get(token)
+                                    .and_then(|account| account.storage.get(&slot))
+                                    .is_some_and(|value| {
+                                        let had_sufficient_balance = value.original_value() >= fee;
+                                        let has_sufficient_balance = value.present_value >= fee;
+                                        had_sufficient_balance != has_sufficient_balance
+                                    })
+                                {
+                                    return true;
+                                }
+                                if *token == selected_token {
+                                    break;
+                                }
+                            }
+                            false
+                        })
                 })
                 .map(|tx| *tx.hash())
                 .collect()
