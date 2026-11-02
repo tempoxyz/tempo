@@ -195,9 +195,11 @@ jobs:
             git fetch --no-tags --depth=2 origin "+refs/heads/$branch:$existing"
             read -r -a ancestry <<< "$(git rev-list --parents -n 1 "$existing")"
             parent="${ancestry[1]:-}"
-            git fetch --no-tags origin main
+            # The checkout is shallow, so ask GitHub whether the parent is on main:
+            # `behind` or `identical` means it is an ancestor of main.
+            parent_status="$(gh api "repos/$GITHUB_REPOSITORY/compare/main...${parent:-missing}" --jq .status 2>/dev/null || echo missing)"
             if [[ "${#ancestry[@]}" -ne 2 ]] ||
-               ! git merge-base --is-ancestor "$parent" FETCH_HEAD ||
+               [[ "$parent_status" != behind && "$parent_status" != identical ]] ||
                [[ "$(git diff --no-renames --name-only "$parent" "$existing")" != crates/precompiles/src/zone_verifier/pcrs.json ]] ||
                ! git diff --quiet "$existing" HEAD -- crates/precompiles/src/zone_verifier/pcrs.json; then
               echo "::error::Branch $branch already exists and is not this pcrs.json change alone on main"
