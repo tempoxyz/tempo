@@ -453,9 +453,14 @@ pub async fn resolve_code(reader: &DbReader, chunk: &Chunk) -> eyre::Result<()> 
 }
 
 /// The published record of `block` and its chunk, checked against it, with its code resolved.
+///
+/// This checks only the block itself: its record's sizes and transaction coverage, and that the
+/// payload matches the record. It does not check the record links to its neighbours (hash chain,
+/// transaction ordinals), which a range scan does; a complete corpus had its whole range checked
+/// when it was published, and a block executes on its own pre-state, so isolated reads need not.
 pub async fn published(reader: &DbReader, block: u64) -> eyre::Result<(Record, Arc<Chunk>)> {
     let record = metadata(reader, block).await?;
-    // The structural checks a range scan runs, before any payload is fetched.
+    // Seeded from the record itself, so only its own sizes and coverage are checked.
     Cursor {
         next: record.start,
         tx: record.first_tx,
