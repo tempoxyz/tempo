@@ -236,8 +236,8 @@ impl Inner {
         // returning the proposal.
         let return_after = return_budget.saturating_sub(validation_latency_elapsed);
         let return_delay = return_after.saturating_sub(proposal_elapsed);
-        // Sampling eligibility depends on planned elapsed work, not timer overshoot.
-        let spent = proposal_elapsed + return_delay;
+        // Lateness past the replay-adjusted return target must not become network latency.
+        let spent = return_budget.saturating_add(proposal_elapsed.saturating_sub(return_after));
         debug!(
             proposal.digest = %proposal.digest(),
             proposal_elapsed = %display_duration(proposal_elapsed),

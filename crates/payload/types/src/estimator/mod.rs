@@ -38,7 +38,7 @@ pub struct ProposalKey {
     pub view: u64,
 }
 
-/// Clock readings and planned elapsed time for a returned proposal.
+/// Clock readings and replay-adjusted elapsed time for a returned proposal.
 #[derive(Debug)]
 pub struct ProposalTiming {
     /// Identity of the returned proposal, not its parent or child.
@@ -47,7 +47,8 @@ pub struct ProposalTiming {
     pub window_opened_millis: u64,
     /// Unix milliseconds when the proposal was returned, on the same clock.
     pub returned_millis: u64,
-    /// Work plus planned pacing delay, excluding timer overshoot.
+    /// Return budget plus lateness past the replay-adjusted return target,
+    /// excluding timer overshoot.
     pub elapsed: Duration,
 }
 
