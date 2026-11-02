@@ -42,7 +42,7 @@ use tempo_precompiles::{
     tip20::TIP20Token,
     tip403_registry::{REJECT_ALL_POLICY_ID, TIP403Registry},
 };
-use tempo_primitives::{Block, TempoHeader};
+use tempo_primitives::{Block, TempoHeader, transaction::calc_gas_balance_spending};
 
 /// Transaction pool operations for Tempo nonce lanes.
 pub trait TempoTransactionPoolExt: TransactionPool {
@@ -190,6 +190,7 @@ where
             .fork_tracker()
             .tip_timestamp();
         let spec = self.protocol_pool.validator().validator().active_hardfork();
+        let pending_basefee = self.protocol_pool.block_info().pending_basefee;
 
         // Cache policy lookups per fee token to avoid redundant storage reads.
         // For compound policies (TIP-1015), the cache stores all sub-policy IDs
@@ -322,7 +323,8 @@ where
                 // AccessKeySpend receipt logs identify the exact (account, key_id, token)
                 // triples whose remaining limit changed during execution. We re-read the
                 // current remaining limit from state for matching pending txs and evict if
-                // the tx's fee cost now exceeds that remaining limit.
+                // the fee execution would charge now exceeds that remaining limit. Execution
+                // debits the limit at the effective gas price, not at `max_fee_per_gas`.
                 if !updates.spending_limit_spends.is_empty()
                     && let Some(ref subject) = keychain_subject
                     && subject.matches_spending_limit_update(&updates.spending_limit_spends)
@@ -331,7 +333,10 @@ where
                     && exceeds_spending_limit(
                         provider,
                         subject,
-                        tx.transaction.fee_token_cost(),
+                        calc_gas_balance_spending(
+                            tx.transaction.gas_limit(),
+                            tx.transaction.effective_gas_price(Some(pending_basefee)),
+                        ),
                         tip_timestamp,
                         spec,
                     )
@@ -1324,8 +1329,8 @@ where
 /// Checks whether a pending keychain tx exceeds its effective remaining spending limit.
 ///
 /// Re-reads the current limit from state for the tx's `(account, key_id, fee_token)` combo,
-/// including any T3 periodic-limit rollover at `current_timestamp`. Returns true if the tx's
-/// fee cost exceeds the effective remaining limit, meaning it should be evicted.
+/// including any T3 periodic-limit rollover at `current_timestamp`. Returns true if
+/// `fee_token_cost` exceeds the effective remaining limit, meaning it should be evicted.
 pub(crate) fn exceeds_spending_limit(
     provider: &mut impl StateProvider,
     subject: &crate::transaction::KeychainSubject,
@@ -1993,6 +1998,49 @@ mod tests {
 
         assert!(pool.evict_invalidated_transactions(&limit_spend).is_empty());
         assert!(pool.get(pooled.hash()).is_some());
+    }
+
+    #[tokio::test]
+    async fn spending_limit_spend_recheck_uses_effective_fee_charge() {
+        let sender = Address::random();
+        let fee_token = PATH_USD_ADDRESS;
+        let access_key_signer = PrivateKeySigner::random();
+        let key_id = access_key_signer.address();
+        let pooled = crate::test_utils::TxBuilder::aa(sender)
+            .fee_token(fee_token)
+            .max_fee(1_000_000_000_000)
+            .build_keychain(sender, &access_key_signer);
+        assert!(pooled.is_sender_paid_fee());
+
+        let provider = create_provider_with_tip();
+        provider.add_account(sender, ExtendedAccount::new(pooled.nonce(), *pooled.cost()));
+        let pool = create_test_pool(provider.clone());
+        let mut block_info = pool.protocol_pool.block_info();
+        block_info.pending_basefee = 20_000_000_000;
+        pool.set_block_info(block_info);
+
+        let charge = calc_gas_balance_spending(
+            pooled.gas_limit(),
+            pooled.effective_gas_price(Some(block_info.pending_basefee)),
+        );
+        assert!(charge < pooled.fee_token_cost());
+
+        let mut limit_spend = crate::maintain::TempoPoolUpdates::new();
+        limit_spend
+            .spending_limit_spends
+            .insert(sender, key_id, Some(fee_token));
+
+        // The remaining limit covers the effective charge but not the fee cap: keep it.
+        set_keychain_spending_limit(&provider, sender, key_id, fee_token, charge);
+        add_validated(&pool, pooled.clone());
+        assert!(pool.evict_invalidated_transactions(&limit_spend).is_empty());
+        assert!(pool.get(pooled.hash()).is_some());
+
+        // The remaining limit no longer covers the effective charge: evict it.
+        set_keychain_spending_limit(&provider, sender, key_id, fee_token, charge - U256::ONE);
+        let evicted = pool.evict_invalidated_transactions(&limit_spend);
+        assert_eq!(tx_hashes(&evicted), vec![*pooled.hash()]);
+        assert!(pool.get(pooled.hash()).is_none());
     }
 
     #[tokio::test]
