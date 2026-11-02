@@ -345,14 +345,15 @@ jobs:
         run: |
           set -euo pipefail
 
+          # --head matches the branch name in forks too; reuse only our own branch.
           pr_url="$(
             gh pr list \
               --repo "$GITHUB_REPOSITORY" \
               --base main \
               --head "$RELEASE_BRANCH" \
               --state open \
-              --json url \
-              --jq '.[0].url // empty'
+              --json url,isCrossRepository \
+              --jq 'map(select(.isCrossRepository | not)) | .[0].url // empty'
           )"
 
           if [[ -z "$pr_url" ]]; then

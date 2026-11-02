@@ -80,6 +80,7 @@ jobs:
         id: entry
         shell: bash
         env:
+          GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag }}
           HARDFORK: ${{ inputs.hardfork }}
         run: |
@@ -103,6 +104,24 @@ jobs:
             echo "::error::$image revision is '$revision', expected $commit from $TAG"
             exit 1
           }
+
+          # Prover Release drafts the release only after two independent EIF
+          # builds reproduced the published PCRs (confirm-pcrs), so propose only
+          # the digest and PCRs its notes record for this tag.
+          release_body="$(
+            gh api --paginate "repos/$GITHUB_REPOSITORY/releases" |
+              jq -rs --arg tag "$TAG"                 '[.[][] | select(.tag_name == $tag and .author.login == "github-actions[bot]")] | .[0].body // empty'
+          )"
+          if [[ -z "$release_body" ]]; then
+            echo "::error::No release drafted by Prover Release for $TAG; its PCRs were not reproduced"
+            exit 1
+          fi
+          for value in "ghcr.io/tempoxyz/tempo-zone-prover@$digest"             "$(jq -r '.["xyz.tempo.zone-prover.nitro.pcr0"] // ""' <<< "$labels")"             "$(jq -r '.["xyz.tempo.zone-prover.nitro.pcr1"] // ""' <<< "$labels")"             "$(jq -r '.["xyz.tempo.zone-prover.nitro.pcr2"] // ""' <<< "$labels")"; do
+            if [[ -z "$value" ]] || ! grep -qF -- "$value" <<< "$release_body"; then
+              echo "::error::The $TAG release does not record '$value'; $image may have changed since it was reproduced"
+              exit 1
+            fi
+          done
 
           # TempoHardfork variants in declaration order.
           forks="$(
@@ -239,8 +258,10 @@ jobs:
         run: |
           set -euo pipefail
 
+          # --head matches the branch name in forks too; reuse only our own branch.
           pr_url="$(gh pr list --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH" \
-            --state open --json url --jq '.[0].url // empty')"
+            --state open --json url,isCrossRepository \
+            --jq 'map(select(.isCrossRepository | not)) | .[0].url // empty')"
           if [[ -z "$pr_url" ]]; then
             if [[ -n "$HARDFORK" ]]; then
               keyed="Keyed to $FORK as requested."
