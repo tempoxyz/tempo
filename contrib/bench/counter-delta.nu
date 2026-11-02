@@ -17,11 +17,13 @@ def counter-delta-total [samples: list<any>, metric: string, first_scrape_ms_by_
                     0.0
                 } else {
                     let first = ($points | first)
-                    let last = ($points | last)
                     let node = ($first.labels | get -o node | default "")
                     let start = if ($first.unix_ms | into int) > ($first_scrape_ms_by_node | get $node) { 0.0 } else { $first.value }
-                    let delta = ($last.value - $start)
-                    if $delta >= 0 { $delta } else { $last.value }
+                    $points | reduce --fold {previous: $start, total: 0.0} { |point, acc|
+                        let delta = ($point.value - $acc.previous)
+                        let increase = if $delta >= 0 { $delta } else { $point.value }
+                        {previous: $point.value, total: ($acc.total + $increase)}
+                    } | get total
                 }
             }
     )
