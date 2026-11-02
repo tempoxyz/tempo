@@ -761,7 +761,7 @@ mod tests {
         TempoSignature,
         tt_authorization::tests::{generate_secp256k1_keypair, sign_hash},
     };
-    use alloy_rlp::{Decodable, Encodable, encode};
+    use alloy_rlp::{Decodable, Encodable};
 
     fn nonzero(value: u64) -> NonZeroU64 {
         NonZeroU64::new(value).expect("test expiry must be non-zero")
@@ -1441,7 +1441,7 @@ mod tests {
         assert_eq!(decoded.limits, None);
         assert_eq!(decoded.allowed_calls, Some(vec![]));
 
-        let reencoded = encode(&decoded);
+        let reencoded = alloy_rlp::encode(&decoded);
         assert_eq!(reencoded, encoded);
     }
 

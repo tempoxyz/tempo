@@ -1019,7 +1019,7 @@ mod tests {
     };
     use alloy_eips::{Decodable2718, Encodable2718, eip7702::Authorization};
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256, b256, bytes};
-    use alloy_rlp::{Decodable, EMPTY_LIST_CODE, Encodable, Header as RlpHeader, encode};
+    use alloy_rlp::{Decodable, EMPTY_LIST_CODE, Encodable, Header as RlpHeader};
 
     fn create_call(to: TxKind) -> Call {
         Call {
@@ -2214,7 +2214,7 @@ mod tests {
             tempo_authorization_list: vec![],
         };
 
-        let encoded = encode(&tx);
+        let encoded = alloy_rlp::encode(&tx);
 
         let (signature_start, signature_end) = transaction_field_bounds(&encoded, 11);
         let (authorization_list_start, authorization_list_end) =

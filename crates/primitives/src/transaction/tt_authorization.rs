@@ -296,7 +296,6 @@ pub mod tests {
     use crate::TempoSignature;
     use alloc::vec::Vec;
     use alloy_primitives::{U256, keccak256};
-    use alloy_rlp::encode;
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
 
@@ -311,7 +310,7 @@ pub mod tests {
         let signature = TempoSignature::default(); // Use secp256k1 test signature
         let signed = TempoSignedAuthorization::new_unchecked(auth.clone(), signature.clone());
 
-        let buf = encode(&signed);
+        let buf = alloy_rlp::encode(&signed);
 
         let decoded = TempoSignedAuthorization::decode(&mut buf.as_slice()).unwrap();
         assert_eq!(buf.len(), signed.length());
