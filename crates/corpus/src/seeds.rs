@@ -9,7 +9,7 @@ use crate::{
     types::{Case, Chunk},
 };
 use alloy_eips::Encodable2718;
-use alloy_primitives::{Address, B256, Bytes, U256};
+use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, U256, keccak256};
 use bytes::Bytes as Payload;
 use parking_lot::Mutex;
 use reth_chainspec::{EthChainSpec, ForkCondition};
@@ -183,16 +183,23 @@ fn divergence(
     Ok(block.or_else(|| tx_divergence(chunk, cases, outcome)))
 }
 
-/// A balance, nonce or storage slot.
+/// A balance, nonce, code hash or storage slot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Key {
     Balance(Address),
     Nonce(Address),
+    Code(Address),
     Slot(Address, U256),
 }
 
+/// A code hash as a value, with no code and empty code both zero.
+fn code_value(hash: Option<B256>) -> U256 {
+    hash.filter(|hash| *hash != KECCAK256_EMPTY)
+        .map_or(U256::ZERO, |hash| hash.into())
+}
+
 /// The first step whose changes differ from its stored delta: the pre-block system calls, each
-/// transaction, then the post-block system calls. A difference is a balance, nonce or slot the
+/// transaction, then the post-block system calls. A difference is a balance, nonce, code or slot the
 /// harness changed to a value the step did not write, or one the step changed that the harness
 /// left alone. Writes of the value already there are not changes, so values are tracked from the
 /// witness through each step.
@@ -216,6 +223,10 @@ fn tx_divergence(
             account.as_ref().map_or(U256::ZERO, |a| a.balance),
         );
         values.insert(
+            Key::Code(address),
+            code_value(account.as_ref().and_then(|a| a.bytecode_hash)),
+        );
+        values.insert(
             Key::Nonce(address),
             U256::from(account.map_or(0, |a| a.nonce)),
         );
@@ -233,6 +244,14 @@ fn tx_divergence(
             }
             if let Some(nonce) = account.nonce.or(gone.then_some(0)) {
                 out.insert(Key::Nonce(account.address), U256::from(nonce));
+            }
+            if let Some(code) = account
+                .code
+                .as_ref()
+                .map(|code| code_value(Some(keccak256(code))))
+                .or(gone.then_some(U256::ZERO))
+            {
+                out.insert(Key::Code(account.address), code);
             }
         }
         for slot in &changes.storage {
@@ -260,10 +279,17 @@ fn tx_divergence(
         let mut stored = BTreeMap::new();
         for (address, change) in delta.0.iter().flatten() {
             let address = Address::from(*address);
-            let (balance, nonce) = match &change.info {
-                None => (Some(U256::ZERO), Some(0)),
-                Some(info) => (info.balance.map(U256::from_be_bytes), info.nonce),
+            let (balance, nonce, code) = match &change.info {
+                None => (Some(U256::ZERO), Some(0), Some(U256::ZERO)),
+                Some(info) => (
+                    info.balance.map(U256::from_be_bytes),
+                    info.nonce,
+                    info.code_hash.map(|hash| code_value(hash.map(B256::from))),
+                ),
             };
+            if let Some(code) = code {
+                stored.insert(Key::Code(address), code);
+            }
             if let Some(balance) = balance {
                 stored.insert(Key::Balance(address), balance);
             }
