@@ -9,8 +9,8 @@ use reth_ethereum::tasks::Runtime;
 use std::{path::PathBuf, sync::Arc};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
 use tempo_corpus::{
+    exec::{fill, replay},
     fuzz, gc,
-    replay::{self, fill},
     store::Store,
 };
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};

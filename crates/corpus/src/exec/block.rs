@@ -2,7 +2,7 @@
 
 use crate::{
     code,
-    replay::view::{View, change_from_update},
+    exec::db::{View, change_from_update},
     types::{Block as BlockInput, Case, Delta, Outcome, Phases, Transaction},
 };
 use alloy_consensus::{

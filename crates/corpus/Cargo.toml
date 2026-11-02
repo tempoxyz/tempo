@@ -17,10 +17,10 @@ publish.workspace = true
 workspace = true
 
 [features]
-default = ["replay"]
-# Capture and replay (the `replay` module), with the EVM and database crates they need. The
+default = ["exec"]
+# Capture and replay (the `exec` module), with the EVM and database crates they need. The
 # format, store, gc and reading blocks as fuzz inputs (`fuzz`) need none of them.
-replay = [
+exec = [
   "dep:alloy-eip7928",
   "dep:reth-execution-types",
   "dep:reth-cli-util",

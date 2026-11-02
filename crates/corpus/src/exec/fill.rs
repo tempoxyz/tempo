@@ -2,7 +2,7 @@
 
 use crate::{
     code,
-    replay::{self, capture},
+    exec::{capture, replay},
     store::{self, CONTEXT_KEY, CaseRecord, Catalog, Context, MAX_RECORD_BYTES, Record, Store},
 };
 use alloy_consensus::BlockHeader;

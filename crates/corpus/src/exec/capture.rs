@@ -2,9 +2,9 @@
 
 use crate::{
     code,
-    replay::{
-        execute::{Executed, execute_block, run_standalone, verify_changesets},
-        view::{Keys, Recording, View},
+    exec::{
+        block::{Executed, execute_block, run_standalone, verify_changesets},
+        db::{Keys, Recording, View},
     },
     types::{Block as BlockInput, Case, ChangeSet, Chunk, Info},
 };
