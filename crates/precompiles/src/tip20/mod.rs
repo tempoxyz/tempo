@@ -26,20 +26,24 @@ use crate::{
     address_registry::AddressRegistry,
     error::{Result, TempoPrecompileError},
     receive_policy_guard::{InboundKind, ReceivePolicyGuard, RecoveryMode},
-    storage::{Handler, Mapping},
+    storage::{Handler, Mapping, NestedCall},
     tip20::{rewards::UserRewardInfo, roles::DEFAULT_ADMIN_ROLE},
     tip20_factory::TIP20Factory,
     tip403_registry::{ALLOW_ALL_POLICY_ID, AuthRole, ITIP403Registry, TIP403Registry},
+    zone_factory::{ZoneFactory, portal_address},
 };
 use alloy::{
     primitives::{Address, B256, U256, uint},
-    sol_types::SolValue,
+    sol_types::{SolCall, SolValue},
 };
 use keccak_const::Keccak256;
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_contracts::precompiles::{
-    DECIMALS as TIP20_DECIMALS, ReceivePolicyGuardError, STABLECOIN_DEX_ADDRESS,
-    TIP20_CHANNEL_RESERVE_ADDRESS,
+use tempo_contracts::{
+    precompiles::{
+        DECIMALS as TIP20_DECIMALS, ReceivePolicyGuardError, STABLECOIN_DEX_ADDRESS,
+        TIP20_CHANNEL_RESERVE_ADDRESS,
+    },
+    zones::{ZoneDepositAddress, ZonePortal},
 };
 use tempo_precompiles_macros::contract;
 use tempo_primitives::TempoAddressExt;
@@ -884,6 +888,7 @@ impl TIP20Token {
         if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
             self.emit_event(hop)?;
         }
+        self.deposit_virtual(msg_sender, &to, call.amount, None)?;
 
         Ok(true)
     }
@@ -917,6 +922,7 @@ impl TIP20Token {
         if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
             self.emit_event(hop)?;
         }
+        self.deposit_virtual(call.from, &to, call.amount, None)?;
 
         Ok(true)
     }
@@ -943,6 +949,7 @@ impl TIP20Token {
         if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
             self.emit_event(hop)?;
         }
+        self.deposit_virtual(call.from, &to, call.amount, Some(call.memo))?;
         Ok(true)
     }
 
@@ -1065,6 +1072,40 @@ impl TIP20Token {
         ))?;
         if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
             self.emit_event(hop)?;
+        }
+        self.deposit_virtual(msg_sender, &to, call.amount, Some(call.memo))?;
+        Ok(())
+    }
+
+    /// TIP-1094: queues a transfer to a zone deposit address on its portal, which the transfer
+    /// has already credited. Any portal revert reverts the whole transfer. No-op for every other
+    /// recipient.
+    fn deposit_virtual(
+        &mut self,
+        originator: Address,
+        to: &Recipient,
+        amount: U256,
+        memo: Option<B256>,
+    ) -> Result<()> {
+        let Some(destination) = to.zone_deposit_address() else {
+            return Ok(());
+        };
+        let call = ZonePortal::depositVirtualCall {
+            originator,
+            grossAmount: u128::try_from(amount).map_err(|_| TIP20Error::invalid_amount())?,
+            destination,
+            hasMemo: memo.is_some(),
+            memo: memo.unwrap_or_default(),
+        };
+        let result = StorageCtx::default().call(NestedCall {
+            target: to.target,
+            input: call.abi_encode().into(),
+            // Capped at all but one 64th of what remains.
+            gas_limit: u64::MAX,
+            is_static: false,
+        })?;
+        if !result.success {
+            return Err(TempoPrecompileError::RawRevert(result.output));
         }
         Ok(())
     }
@@ -1215,6 +1256,15 @@ impl TIP20Token {
             self.check_and_update_spending_limit(from, amount)?;
         }
 
+        // TIP-1094: a blocked portal reverts the transfer instead of guarding the escrow.
+        if to.zone_deposit_address().is_some() {
+            if amount > U256::from(u128::MAX) {
+                return Err(TIP20Error::invalid_amount().into());
+            }
+            self.ensure_receive_policy_authorized(from, to.target)?;
+            return Ok(Some(to));
+        }
+
         if self.validate_inbound_or_block(from, &to, amount, None, memo)? {
             return Ok(None);
         }
@@ -1237,6 +1287,10 @@ impl TIP20Token {
         recipient_role: AuthRole,
     ) -> Result<Option<(U256, Recipient)>> {
         let to = Recipient::resolve(to)?;
+        // TIP-1094: a failed zone deposit refunds its sender, and a mint has none.
+        if to.zone_deposit_address().is_some() {
+            return Err(TIP20Error::invalid_recipient().into());
+        }
         self.check_role(msg_sender, ISSUER_ROLE)?;
         let total_supply = self.total_supply()?;
 
@@ -1579,7 +1633,27 @@ impl Recipient {
     ///
     /// If `addr` is a virtual address its registered master is looked up and stored in `target`,
     /// with the original virtual address preserved in `virtual_addr`.
+    ///
+    /// From T15, a [TIP-1094] zone deposit address resolves to its zone's portal, which the
+    /// transfer credits, with the deposit address kept in `virtual_addr`.
+    ///
+    /// [TIP-1094]: <https://github.com/tempoxyz/tempo/pull/7746>
     pub(crate) fn resolve(addr: Address) -> Result<Self> {
+        if StorageCtx.spec().is_t15()
+            && let Some(deposit) = ZoneDepositAddress::decode(&addr)
+        {
+            let factory = ZoneFactory::new();
+            if deposit.version == 0
+                || deposit.zone_id == 0
+                || deposit.zone_id >= factory.next_zone_id()?
+            {
+                return Err(TIP20Error::invalid_recipient().into());
+            }
+            return Ok(Self {
+                target: portal_address(deposit.zone_id),
+                virtual_addr: Some(addr),
+            });
+        }
         let effective = AddressRegistry::new().resolve_recipient(addr)?;
         Ok(if effective == addr {
             Self::direct(addr)
@@ -1589,6 +1663,11 @@ impl Recipient {
                 virtual_addr: Some(addr),
             }
         })
+    }
+
+    /// Returns the zone deposit address when this recipient routes to a zone portal.
+    fn zone_deposit_address(&self) -> Option<Address> {
+        self.virtual_addr.filter(ZoneDepositAddress::is_reserved)
     }
 
     /// Returns the original recipient address used by the transfer.

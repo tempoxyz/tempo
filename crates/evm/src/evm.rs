@@ -436,6 +436,167 @@ mod runtime_tests {
     }
 
     #[test]
+    fn tip20_transfer_to_zone_deposit_address_queues_virtual_deposit() {
+        let owner = Address::repeat_byte(0x11);
+        let admin = Address::repeat_byte(0x22);
+        let sequencer = Address::repeat_byte(0x33);
+        let alice = Address::repeat_byte(0xa1);
+        let amount = U256::from(1_000_000u64);
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(
+            &ZONE_PORTAL_IMPL_ADDRESS,
+            AccountInfo::default().with_code(Bytecode::new_raw(
+                tempo_contracts::zones::T15_ZONE_PORTAL_RUNTIME,
+            )),
+        );
+        initialize_zone_factory(&mut db, owner);
+        let mut evm = configured_evm(TempoHardfork::T15, 0, false, db);
+        StorageCtx::enter_evm(&mut evm, || {
+            TIP20Setup::path_usd(admin)
+                .with_issuer(admin)
+                .with_mint(alice, amount * U256::from(2))
+                .apply()
+        })
+        .unwrap();
+
+        let result = evm
+            .system_call(
+                SystemTx::new(
+                    ZONE_FACTORY_ADDRESS,
+                    IZoneFactory::createZoneCall {
+                        params: IZoneFactory::CreateZoneParams {
+                            initialToken: PATH_USD_ADDRESS,
+                            accessMode: false,
+                            gatewayMode: false,
+                            allowedAccounts: vec![],
+                            zoneGateways: vec![],
+                            admin,
+                            sequencers: vec![sequencer],
+                            threshold: 1,
+                            rpcUrl: "https://zone.example".to_string(),
+                        },
+                    }
+                    .abi_encode()
+                    .into(),
+                )
+                .with_caller(owner),
+            )
+            .unwrap()
+            .commit();
+        assert!(result.status, "createZone failed: {result:?}");
+        let created = IZoneFactory::createZoneCall::abi_decode_returns(&result.output).unwrap();
+        let destination = tempo_contracts::zones::ZoneDepositAddress {
+            zone_id: created.zoneId,
+            version: 1,
+            ciphertext: [1, 2, 3, 4, 5, 6].into(),
+        }
+        .encode();
+        let transfer = ITIP20::transferCall {
+            to: destination,
+            amount,
+        }
+        .abi_encode();
+        let balance = |evm: &mut TempoEvm<'static>, account| {
+            StorageCtx::enter_evm(evm, || {
+                TIP20Token::from_address(PATH_USD_ADDRESS)?
+                    .balance_of(ITIP20::balanceOfCall { account })
+            })
+            .unwrap()
+        };
+
+        // Virtual deposits start disabled: the whole transfer reverts.
+        let result = evm
+            .system_call(
+                SystemTx::new(PATH_USD_ADDRESS, transfer.clone().into()).with_caller(alice),
+            )
+            .unwrap()
+            .commit();
+        assert!(!result.status);
+        assert_eq!(
+            result.output.as_ref(),
+            IZonePortal::VirtualDepositsDisabled {}.abi_encode()
+        );
+        assert_eq!(balance(&mut evm, alice), amount * U256::from(2));
+
+        let result = evm
+            .system_call(
+                SystemTx::new(
+                    created.portal,
+                    IZonePortal::setVirtualDepositsEnabledCall { enabled: true }
+                        .abi_encode()
+                        .into(),
+                )
+                .with_caller(admin),
+            )
+            .unwrap()
+            .commit();
+        assert!(result.status, "enable failed: {result:?}");
+
+        let result = evm
+            .system_call(SystemTx::new(PATH_USD_ADDRESS, transfer.into()).with_caller(alice))
+            .unwrap()
+            .commit();
+        assert!(result.status, "transfer failed: {result:?}");
+        assert_eq!(balance(&mut evm, alice), amount);
+        assert_eq!(balance(&mut evm, destination), U256::ZERO);
+        let queued = result
+            .logs
+            .iter()
+            .find_map(|log| IZonePortal::VirtualDepositMade::decode_log(log).ok())
+            .expect("portal queued the deposit");
+        assert_eq!(queued.originator, alice);
+        assert_eq!(queued.destination, destination);
+        assert_eq!(queued.depositNumber, 1);
+        assert_eq!(
+            balance(&mut evm, created.portal) + balance(&mut evm, admin),
+            amount
+        );
+
+        // A deposit address for a zone that does not exist is an invalid recipient.
+        let unregistered = tempo_contracts::zones::ZoneDepositAddress {
+            zone_id: created.zoneId + 1,
+            version: 1,
+            ciphertext: [1, 2, 3, 4, 5, 6].into(),
+        }
+        .encode();
+        let result = evm
+            .system_call(
+                SystemTx::new(
+                    PATH_USD_ADDRESS,
+                    ITIP20::transferCall {
+                        to: unregistered,
+                        amount,
+                    }
+                    .abi_encode()
+                    .into(),
+                )
+                .with_caller(alice),
+            )
+            .unwrap()
+            .commit();
+        assert!(!result.status);
+        assert_eq!(balance(&mut evm, alice), amount);
+
+        // Mints to deposit addresses revert.
+        let result = evm
+            .system_call(
+                SystemTx::new(
+                    PATH_USD_ADDRESS,
+                    ITIP20::mintCall {
+                        to: destination,
+                        amount,
+                    }
+                    .abi_encode()
+                    .into(),
+                )
+                .with_caller(admin),
+            )
+            .unwrap()
+            .commit();
+        assert!(!result.status);
+    }
+
+    #[test]
     fn test_zone_verifier_runtime_is_shadowed_at_t13() {
         let calldata = IZoneVerifier::verifyCall {
             zoneId: 1,
