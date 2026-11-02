@@ -40,7 +40,7 @@ use reth_ethereum::tasks::{
 };
 use reth_evm::{BlockExecutorFactory, ConfigureEvm, Database, EvmEnvFor, TxEnvFor};
 use reth_node_api::{FullNodeComponents, FullNodeTypes, NodeTypes};
-use reth_node_builder::rpc::{EthApiBuilder, EthApiCtx};
+use reth_node_builder::rpc::{EthApiBuilder, EthApiCtx, RpcNodeCoreFor};
 use reth_provider::{ChainSpecProvider, ProviderError, StateProvider as _};
 use reth_rpc::{DynRpcConverter, eth::EthApi};
 use reth_rpc_eth_api::{
@@ -605,16 +605,19 @@ impl<N> Default for TempoEthApiBuilder<N> {
 
 impl<N> EthApiBuilder<N> for TempoEthApiBuilder<N>
 where
-    N: FullNodeComponents<
-            Types: NodeTypes<Primitives = TempoPrimitives>,
-            Pool = <N as RpcNodeCore>::Pool,
-            Evm = <N as RpcNodeCore>::Evm,
-        > + FullNodeTypes<Provider = <N as RpcNodeCore>::Provider>
-        + TempoEthApiBounds,
-    <<N as RpcNodeCore>::Evm as ConfigureEvm>::NextBlockEnvCtx: BuildPendingEnv<TempoHeader>,
+    N: FullNodeComponents<Types: NodeTypes<Primitives = TempoPrimitives>>,
+    RpcNodeCoreFor<N>: TempoEthApiBounds
+        + RpcNodeCore<
+            Provider = <N as FullNodeTypes>::Provider,
+            Pool = <N as FullNodeComponents>::Pool,
+            Evm = <N as FullNodeComponents>::Evm,
+            Network = <N as FullNodeComponents>::Network,
+        >,
+    <<RpcNodeCoreFor<N> as RpcNodeCore>::Evm as ConfigureEvm>::NextBlockEnvCtx:
+        BuildPendingEnv<TempoHeader>,
     <N::Types as NodeTypes>::ChainSpec: Hardforks + EthereumHardforks,
 {
-    type EthApi = TempoEthApi<N>;
+    type EthApi = TempoEthApi<RpcNodeCoreFor<N>>;
 
     async fn build_eth_api(self, ctx: EthApiCtx<'_, N>) -> eyre::Result<Self::EthApi> {
         let chain_spec = FullNodeComponents::provider(ctx.components).chain_spec();

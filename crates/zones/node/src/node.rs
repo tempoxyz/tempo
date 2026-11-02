@@ -2127,6 +2127,7 @@ mod tests {
     use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
     use reth_chainspec::EthChainSpec;
     use reth_primitives_traits::Recovered;
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_primitives::transaction::{Call, TempoTransaction};
     use zone_chainspec::tempo_chain_spec_for_l1;
 
@@ -2287,12 +2288,16 @@ mod tests {
         ));
         let transaction = pooled_transaction(envelope, sender);
 
-        let err = zone_evm::validate_transaction(transaction.tx_env(), &[]).unwrap_err();
+        let err = zone_evm::validate_transaction(transaction.tx_env(), &[], TempoHardfork::T7)
+            .unwrap_err();
         assert!(matches!(
             err,
             tempo_evm::TempoInvalidTransaction::CallsValidation(_)
         ));
-        assert!(zone_evm::validate_transaction(transaction.tx_env(), &[sender]).is_ok());
+        assert!(
+            zone_evm::validate_transaction(transaction.tx_env(), &[sender], TempoHardfork::T7)
+                .is_ok()
+        );
     }
 
     #[test]
@@ -2313,6 +2318,8 @@ mod tests {
             ],
         );
 
-        assert!(zone_evm::validate_transaction(transaction.tx_env(), &[]).is_err());
+        assert!(
+            zone_evm::validate_transaction(transaction.tx_env(), &[], TempoHardfork::T7).is_err()
+        );
     }
 }

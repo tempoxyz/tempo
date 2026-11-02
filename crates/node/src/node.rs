@@ -25,7 +25,7 @@ use reth_node_builder::{
     },
     rpc::{
         EngineValidatorAddOn, NoopEngineApiBuilder, PayloadValidatorBuilder, RethRpcAddOns,
-        RpcAddOns, RpcHandle, RpcHooks,
+        RpcAddOns, RpcHandle, RpcHooks, RpcNodeCoreFor,
     },
 };
 use reth_node_core::args::JitArgs;
@@ -429,7 +429,7 @@ impl<N> NodeAddOns<NodeAdapter<N>> for TempoAddOns<N>
 where
     N: FullNodeTypes<Types = TempoNode>,
 {
-    type Handle = RpcHandle<NodeAdapter<N>, TempoEthApi<NodeAdapter<N>>>;
+    type Handle = RpcHandle<NodeAdapter<N>, TempoEthApi<RpcNodeCoreFor<NodeAdapter<N>>>>;
 
     async fn launch_add_ons(
         self,
@@ -476,7 +476,7 @@ impl<N> RethRpcAddOns<NodeAdapter<N>> for TempoAddOns<N>
 where
     N: FullNodeTypes<Types = TempoNode>,
 {
-    type EthApi = TempoEthApi<NodeAdapter<N>>;
+    type EthApi = TempoEthApi<RpcNodeCoreFor<NodeAdapter<N>>>;
 
     fn hooks_mut(&mut self) -> &mut RpcHooks<NodeAdapter<N>, Self::EthApi> {
         self.inner.hooks_mut()

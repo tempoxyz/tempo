@@ -1,6 +1,7 @@
 //! Configurable account management and protocol account code.
 
 pub mod dispatch;
+pub mod shim;
 
 use crate::{
     error::{Result, TempoPrecompileError},

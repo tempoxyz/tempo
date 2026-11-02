@@ -56,8 +56,8 @@ use std::{
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_evm::{
-    StorageActionReplayError, TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess,
-    TempoTxResult,
+    StorageActionReplayError, TempoEvmConfig, TempoInvalidTransaction, TempoNextBlockEnvAttributes,
+    TempoStateAccess, TempoTxResult,
 };
 use tempo_payload_types::{
     Estimator, TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload,
@@ -631,6 +631,15 @@ where
                             // if the nonce is too low, we can skip this transaction
                             trace!(%error, tx = %tx_debug_repr, "skipping nonce too low transaction");
                             self.metrics.inc_pool_tx_skipped("nonce_too_low");
+                        } else if matches!(
+                            TempoInvalidTransaction::from_invalid_tx_error(error.as_ref()),
+                            Some(TempoInvalidTransaction::ExpiringNonceReplay)
+                        ) {
+                            // This exact transaction is already included, typically in the parent
+                            // block before pool maintenance evicted it. Skip it without marking it
+                            // invalid.
+                            trace!(%error, tx = %tx_debug_repr, "skipping already included expiring nonce transaction");
+                            self.metrics.inc_pool_tx_skipped("expiring_nonce_replay");
                         } else {
                             // if the transaction is invalid, we can skip it and all of its
                             // descendants
