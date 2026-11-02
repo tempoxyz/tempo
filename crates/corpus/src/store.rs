@@ -452,7 +452,7 @@ pub async fn resolve_code(reader: &DbReader, chunk: &Chunk) -> eyre::Result<()> 
     Ok(())
 }
 
-/// The published record of `block` and its chunk, checked against it, with its code resolved.
+/// The published record of `block` and its decoded chunk, with its code resolved.
 ///
 /// Checks the block alone, not its links to neighbouring blocks. A block runs on its own recorded
 /// pre-state, and a complete corpus had its whole range checked when it was published.

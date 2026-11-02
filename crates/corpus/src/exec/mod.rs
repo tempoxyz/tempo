@@ -1,5 +1,5 @@
-//! Everything that executes corpus blocks on the EVM: capturing an archive range into a corpus
-//! ([`fill`], [`capture`]) and replaying one against its records ([`replay`]).
+//! Corpus execution on the EVM: capture an archive range ([`fill`], [`capture`]) and replay it
+//! against its records ([`replay`]).
 
 pub mod block;
 pub mod capture;

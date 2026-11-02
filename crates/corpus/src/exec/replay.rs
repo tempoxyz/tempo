@@ -262,8 +262,7 @@ pub fn run(
     Ok(closed?)
 }
 
-/// Replays the listed `blocks` of a published corpus, each read on its own, with `workers`
-/// execution threads, as [`run`] replays a range.
+/// Replays the listed `blocks` of a published corpus on `workers` threads, like [`run`] for a range.
 pub fn run_blocks(
     store: Store,
     catalog: Catalog,

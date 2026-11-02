@@ -1,6 +1,6 @@
-//! Corpus blocks as fuzz harness inputs, read straight from the corpus: each block, on the exact
-//! pre-state it read, becomes a [`TempoHarnessInput::Blockchain`] on the corpus's chain. A block
-//! list file names a subset of a corpus, such as the blocks a corpus minimizer kept.
+//! Corpus blocks as fuzz harness inputs. Each block, on the exact pre-state it read, becomes a
+//! [`TempoHarnessInput::Blockchain`] on the corpus's chain. A block list file names a subset of a
+//! corpus, such as the blocks a minimizer kept.
 
 use crate::{
     code,
@@ -33,8 +33,8 @@ pub struct Corpus {
 }
 
 impl Corpus {
-    /// Opens the complete corpus at `url` (`s3://bucket/prefix` or `file:///directory`). S3 reads
-    /// go to `endpoint` when given, with the standard AWS credential chain.
+    /// Opens the complete corpus at `url` (`s3://bucket/prefix` or `file:///directory`), with S3
+    /// reads going to `endpoint` when given.
     pub fn open(url: &str, endpoint: Option<&str>) -> eyre::Result<Self> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -84,9 +84,8 @@ impl Corpus {
     }
 }
 
-/// The harness chain of `catalog`'s corpus: its chain ID and hardfork schedule, from the known
-/// chain it was captured from, whose forks must agree with the corpus up to its `tip` timestamp
-/// ([`store::forks_agree`]). A hardfork that chain never activates is scheduled at `u64::MAX`.
+/// The harness chain of `catalog`'s corpus, taken from the known chain whose forks agree with it
+/// up to its `tip` timestamp ([`store::forks_agree`]). Forks that never activate get `u64::MAX`.
 fn chain_spec_input(catalog: &Catalog, tip: u64) -> eyre::Result<ChainSpecInput> {
     let context = &catalog.context;
     let spec: &TempoChainSpec = [&**PRESTO, &**MODERATO]
@@ -194,8 +193,8 @@ pub fn block_list(catalog: &Catalog, blocks: &[u64]) -> String {
         .fold(header, |text, block| text + &format!("{block}\n"))
 }
 
-/// The blocks of `catalog`'s corpus a block list file lists: those under a section header naming
-/// its tip, and those before any header, which must be in its range.
+/// The blocks a block list file lists for `catalog`'s corpus: those under its section header, and
+/// any before the first header, which must be in its range.
 pub fn read_blocks(path: &Path, catalog: &Catalog) -> eyre::Result<Vec<u64>> {
     let context = &catalog.context;
     let tip = format!(" tip {} ", context.tip);
