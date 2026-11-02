@@ -17,9 +17,8 @@ env:
   CARGO_HTTP_TIMEOUT: "180"
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: full
-  RUSTC_WRAPPER: "sccache"
   # Pin vergen's build timestamp so reth-node-core and tempo-node compile identically across runs;
-  # otherwise they and every crate depending on them miss sccache on every build.
+  # otherwise they and every crate depending on them miss kache on every build.
   SOURCE_DATE_EPOCH: "1700000000"
 
 jobs:
@@ -75,9 +74,7 @@ jobs:
           toolchain: nightly-2026-10-31
           components: clippy
       - uses: tempoxyz/gh-actions/actions/setup-mold@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
-      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
-        with:
-          version: v0.15.0
+      - uses: ./.github/actions/setup-kache # zizmor: ignore[self-repository] actionlint does not support $/ references yet.
       - name: Install LLVM for JIT targets
         run: .github/scripts/install_llvm.sh
       - uses: ./.github/actions/native-libs # zizmor: ignore[self-repository] actionlint does not support $/ references yet.
@@ -101,6 +98,12 @@ jobs:
         run: cargo clippy --workspace --benches --examples --all-features --locked
         env:
           RUSTFLAGS: -D warnings
+      - name: Finish kache uploads
+        if: always() && env.KACHE_REMOTE_WRITE == 'true'
+        continue-on-error: true
+        run: |
+          kache save-manifest
+          kache daemon stop
 
   fmt:
     name: fmt
@@ -144,15 +147,19 @@ jobs:
           persist-credentials: false
       - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
       - uses: tempoxyz/gh-actions/actions/setup-mold@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
-      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
-        with:
-          version: v0.15.0
+      - uses: ./.github/actions/setup-kache # zizmor: ignore[self-repository] actionlint does not support $/ references yet.
       - uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           tool: cargo-hack
       - name: Install LLVM for JIT targets
         run: .github/scripts/install_llvm.sh
       - run: cargo hack check --feature-powerset --depth 1 --partition ${{ matrix.partition }}/2
+      - name: Finish kache uploads
+        if: always() && env.KACHE_REMOTE_WRITE == 'true'
+        continue-on-error: true
+        run: |
+          kache save-manifest
+          kache daemon stop
 
   docs:
     needs: changes
@@ -175,9 +182,7 @@ jobs:
         with:
           toolchain: nightly-2026-10-31
       - uses: tempoxyz/gh-actions/actions/setup-mold@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
-      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
-        with:
-          version: v0.15.0
+      - uses: ./.github/actions/setup-kache # zizmor: ignore[self-repository] actionlint does not support $/ references yet.
       - name: Install LLVM for JIT targets
         run: .github/scripts/install_llvm.sh
       - uses: ./.github/actions/native-libs # zizmor: ignore[self-repository] actionlint does not support $/ references yet.
@@ -204,6 +209,12 @@ jobs:
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: ./target/doc
+      - name: Finish kache uploads
+        if: always() && env.KACHE_REMOTE_WRITE == 'true'
+        continue-on-error: true
+        run: |
+          kache save-manifest
+          kache daemon stop
 
   deploy-docs:
     if: ${{ github.repository == 'tempoxyz/tempo' && github.ref_name == 'main' && github.event_name == 'push' }}
@@ -268,15 +279,19 @@ jobs:
           persist-credentials: false
       - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
       - uses: tempoxyz/gh-actions/actions/setup-mold@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
-      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
-        with:
-          version: v0.15.0
+      - uses: ./.github/actions/setup-kache # zizmor: ignore[self-repository] actionlint does not support $/ references yet.
       - uses: tempoxyz/gh-actions/actions/cargo-install@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           tool: zepter
       - name: Eagerly pull dependencies
         run: cargo metadata --format-version=1 --all-features --locked > /dev/null
       - run: zepter run check
+      - name: Finish kache uploads
+        if: always() && env.KACHE_REMOTE_WRITE == 'true'
+        continue-on-error: true
+        run: |
+          kache save-manifest
+          kache daemon stop
 
   no-std:
     name: no-std
@@ -297,15 +312,19 @@ jobs:
       - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           target: riscv32imac-unknown-none-elf
-      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
-        with:
-          version: v0.15.0
+      - uses: ./.github/actions/setup-kache # zizmor: ignore[self-repository] actionlint does not support $/ references yet.
       - name: Install RISC-V C toolchain
         run: sudo apt-get update && sudo apt-get install -y gcc-riscv64-unknown-elf
       - name: Run no_std checks
         run: .github/scripts/check_no_std.sh
         env:
           CC_riscv32imac_unknown_none_elf: riscv64-unknown-elf-gcc
+      - name: Finish kache uploads
+        if: always() && env.KACHE_REMOTE_WRITE == 'true'
+        continue-on-error: true
+        run: |
+          kache save-manifest
+          kache daemon stop
 
   readme:
     name: generated README
