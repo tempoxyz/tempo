@@ -110,8 +110,8 @@ impl BestTransactionsPrewarming {
                 let parallel = ctx.prewarm.parallel;
                 let prewarm = ctx.prewarm.clone();
                 let commands_tx = ctx.commands_tx.clone();
-                // Only parallel jobs send their result. A sender held by every job would make
-                // the drain on invalidation wait for all in-flight and queued prewarms.
+                // Only parallel jobs send their result; in sequential mode the transaction is
+                // forwarded below before its prewarm job runs.
                 let transactions_tx = parallel.then(|| ctx.transactions_tx.clone());
 
                 if !parallel {
@@ -1240,6 +1240,41 @@ mod tests {
         assert_eq!(prewarming.next().unwrap().tx.hash(), buffered[3].hash());
         // Both transactions were already buffered, so no source poll was needed.
         assert!(commands_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn next_skips_invalidated_transactions_that_arrive_after_mark_invalid() {
+        let (transactions_tx, transactions_rx) = mpsc::channel();
+        let (commands_tx, _commands_rx) = mpsc::channel();
+        let sender = Address::random();
+        let invalid = test_tx(sender, 0);
+        let late_same_sender = test_tx(sender, 1);
+        let other = test_tx(Address::random(), 0);
+        let mut prewarming = BestTransactionsPrewarming {
+            transactions_rx,
+            commands_tx,
+            stop: Arc::default(),
+            invalidated: InvalidatedLanes::default(),
+        };
+        prewarming.mark_invalid(
+            &PrewarmedTransaction::without_replay(invalid),
+            InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported),
+        );
+
+        // Deliver only after `next` has found the buffer empty and is waiting on the
+        // coordinator, so the invalidated transaction is the one it receives.
+        let delivered = [late_same_sender, other.clone()];
+        let producer = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(50));
+            for tx in delivered {
+                transactions_tx
+                    .send(Some(PrewarmedTransaction::without_replay(tx)))
+                    .unwrap();
+            }
+        });
+
+        assert_eq!(prewarming.next().unwrap().tx.hash(), other.hash());
+        producer.join().unwrap();
     }
 
     #[test]
