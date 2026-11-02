@@ -12,8 +12,6 @@ pub mod fuzz;
 #[cfg(feature = "replay")]
 pub mod gc;
 #[cfg(feature = "replay")]
-pub mod migrate;
-#[cfg(feature = "replay")]
 pub mod replay;
 pub mod store;
 pub mod types;

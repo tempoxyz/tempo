@@ -1769,7 +1769,17 @@ mod tests {
 
         let mut db = InMemoryDB::default();
         let mut restored = TestExecutorBuilder::default().build(&mut db, &chainspec);
-        assert_ne!(restored.transaction_counters(), start);
+        for section in 0..5 {
+            let counters = [section, 11, 12, 13, 14, 15, 16];
+            assert!(restored.restore_transaction_counters(counters));
+            assert_eq!(restored.transaction_counters(), counters);
+        }
+        // An unknown section tag changes nothing.
+        let before = restored.transaction_counters();
+        assert!(!restored.restore_transaction_counters([5, 0, 0, 0, 0, 0, 0]));
+        assert_eq!(restored.transaction_counters(), before);
+        assert_ne!(before, start);
+
         assert!(restored.restore_transaction_counters(start));
         assert_eq!(restored.transaction_counters(), start);
         restored
@@ -1777,21 +1787,6 @@ mod tests {
             .unwrap();
         assert_eq!(restored.transaction_counters(), end);
         assert_eq!(restored.receipts(), receipts.as_slice());
-    }
-
-    #[test]
-    fn test_restore_transaction_counters_sets_every_counter() {
-        let chainspec = test_chainspec();
-        let mut db = InMemoryDB::default();
-        let mut executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
-        for section in 0..5 {
-            let counters = [section, 11, 12, 13, 14, 15, 16];
-            assert!(executor.restore_transaction_counters(counters));
-            assert_eq!(executor.transaction_counters(), counters);
-        }
-        let before = executor.transaction_counters();
-        assert!(!executor.restore_transaction_counters([5, 0, 0, 0, 0, 0, 0]));
-        assert_eq!(executor.transaction_counters(), before);
     }
 
     #[test]

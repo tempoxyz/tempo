@@ -1,7 +1,7 @@
 //! Reclaims the SlateDB files a complete corpus no longer needs.
 //!
-//! Writers keep superseded checkpoints, compacted sorted runs, WAL SSTs and manifests (migrate
-//! runs no garbage collector at all), so a finished corpus holds far more than its live records.
+//! Writers keep superseded checkpoints, compacted sorted runs, WAL SSTs and manifests, so a
+//! finished corpus holds far more than its live records.
 
 use crate::store::{SLATEDB_RETRIES, Store};
 use eyre::OptionExt;
@@ -18,9 +18,9 @@ use tracing::info;
 /// manifests, WAL SSTs, compacted SSTs and compactor state nothing references any more, and
 /// logs the objects and bytes of each data directory before and after.
 ///
-/// Fails unless the corpus is complete: fill and migrate never open a writer on a complete
-/// corpus, so collection needs no minimum file age. Fails as well if the catalog changed
-/// meanwhile or its checkpoint no longer opens.
+/// Fails unless the corpus is complete: fill never opens a writer on a complete corpus, so
+/// collection needs no minimum file age. Fails as well if the catalog changed meanwhile or its
+/// checkpoint no longer opens.
 pub async fn gc(store: &Store) -> eyre::Result<()> {
     let (catalog, version) = store.catalog().await?.ok_or_eyre("no corpus catalog")?;
     eyre::ensure!(
@@ -31,9 +31,8 @@ pub async fn gc(store: &Store) -> eyre::Result<()> {
         .checkpoint
         .as_deref()
         .ok_or_eyre("corpus has no published checkpoint")?;
-    let data = store.path.clone().join("data");
     let before = usage(store).await?;
-    let admin = Admin::builder(data, store.objects.clone()).build();
+    let admin = Admin::builder(store.data(), store.objects.clone()).build();
     let checkpoints = admin.list_checkpoints(None).await?;
     eyre::ensure!(
         checkpoints.iter().any(|c| c.id.to_string() == pinned),
@@ -76,10 +75,7 @@ pub async fn gc(store: &Store) -> eyre::Result<()> {
             "Collected corpus garbage"
         );
     }
-    let current = store
-        .objects
-        .head(&store.path.clone().join("catalog.json"))
-        .await?;
+    let current = store.objects.head(&store.catalog_path()).await?;
     eyre::ensure!(
         current.e_tag == version.e_tag,
         "corpus catalog changed during gc; another writer published"
@@ -90,7 +86,7 @@ pub async fn gc(store: &Store) -> eyre::Result<()> {
 
 /// Object count and bytes under each top-level directory of the corpus data.
 async fn usage(store: &Store) -> eyre::Result<BTreeMap<String, (u64, u64)>> {
-    let data = store.path.clone().join("data");
+    let data = store.data();
     let mut usage = BTreeMap::<String, (u64, u64)>::new();
     let mut objects = store.objects.list(Some(&data));
     while let Some(object) = objects.try_next().await? {
@@ -109,24 +105,14 @@ async fn usage(store: &Store) -> eyre::Result<BTreeMap<String, (u64, u64)>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{CONTEXT_KEY, CURSOR_KEY, tests::catalog};
-    use object_store::{memory::InMemory, path::Path};
-    use slatedb::Db;
-    use std::sync::Arc;
+    use crate::store::tests::{catalog, in_memory, open_db};
 
     #[tokio::test]
     async fn keeps_only_the_published_checkpoint_of_a_complete_corpus() -> eyre::Result<()> {
-        let store = Store {
-            objects: Arc::new(InMemory::new()),
-            path: Path::from("gc"),
-        };
+        let store = in_memory("gc");
         let mut catalog = catalog(1, 1, 0);
         catalog.seal()?;
-        let db = Db::open(store.path.clone().join("data"), store.objects.clone()).await?;
-        db.put(CONTEXT_KEY, serde_json::to_vec(&catalog.context)?)
-            .await?;
-        db.put(CURSOR_KEY, serde_json::to_vec(&catalog.cursor)?)
-            .await?;
+        let db = open_db(&store, &catalog).await?;
         store.checkpoint(&db).await?;
         catalog.checkpoint = Some(store.checkpoint(&db).await?);
         db.close().await?;
@@ -139,7 +125,7 @@ mod tests {
         catalog.complete = true;
         store.publish(&catalog, Some(version)).await?;
         gc(&store).await?;
-        let checkpoints = Admin::builder(store.path.clone().join("data"), store.objects.clone())
+        let checkpoints = Admin::builder(store.data(), store.objects.clone())
             .build()
             .list_checkpoints(None)
             .await?;

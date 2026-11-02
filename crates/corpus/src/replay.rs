@@ -1,14 +1,15 @@
 //! Bounded in-process checkpoint reads feeding native execution workers.
 
 use crate::{
-    execute::{decode_block, execute_block, standalone_cases},
+    execute::{decode_block, execute_block, standalone_cases, verify_changesets},
     store::{self, Catalog, MAX_RECORD_BYTES, Record, Store},
-    types::{Chunk, Transaction},
+    types::{Case, Chunk, Phases},
     view::View,
 };
 use alloy_primitives::B256;
 use bytes::Bytes;
 use crossbeam_channel::{RecvTimeoutError, Sender, TrySendError};
+use eyre::OptionExt;
 use parking_lot::Mutex;
 use reth_cli_util::cancellation::CancellationToken;
 use reth_primitives_traits::RecoveredBlock;
@@ -60,34 +61,29 @@ pub fn run(
 ) -> eyre::Result<()> {
     eyre::ensure!(workers > 0, "num-tasks must be positive");
     let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(
-            std::env::var("RETH_CORPUS_IO_THREADS")
-                .ok()
-                .and_then(|v| v.parse::<usize>().ok())
-                .unwrap_or_else(|| (workers * 3 / 4).max(4)),
-        )
+        .worker_threads(env_usize("RETH_CORPUS_IO_THREADS").unwrap_or((workers * 3 / 4).max(4)))
         .enable_all()
         .build()?;
     let reader = Arc::new(runtime.block_on(store.reader(&catalog))?);
     if let Some((from, to)) = standalone {
         range = runtime.block_on(transaction_range(&reader, &catalog, from, to))?;
     }
-    let replay_budget = std::env::var("RETH_CORPUS_BUDGET_MIB")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .map_or(REPLAY_BUDGET, |mib| mib << 20);
-    let budget = Arc::new(Semaphore::new(replay_budget));
-    let (sender, receiver) = crossbeam_channel::bounded::<Ready>(
-        std::env::var("RETH_CORPUS_QUEUE")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(64),
-    );
+    let budget = Arc::new(Semaphore::new(
+        env_usize("RETH_CORPUS_BUDGET_MIB").map_or(REPLAY_BUDGET, |mib| mib << 20),
+    ));
+    let (sender, receiver) =
+        crossbeam_channel::bounded::<Ready>(env_usize("RETH_CORPUS_QUEUE").unwrap_or(64));
     let started = Instant::now();
     // Save the triggering error before cancelling peers. Join order must not
     // replace missing/corrupt state with a secondary cancellation error.
     let failure = Mutex::new(None);
+    let fail = |error: eyre::Report| {
+        failure.lock().get_or_insert(error);
+        cancellation.cancel();
+        budget.close();
+    };
     // Shared counters for periodic progress, as the database path logs every 10 s.
+    // Once every worker has joined they are also the completed totals.
     let done_blocks = AtomicU64::new(0);
     let done_transactions = AtomicU64::new(0);
     let done_gas = AtomicU64::new(0);
@@ -128,38 +124,31 @@ pub fn run(
             }
         });
         let producer = scope.spawn(|| {
-            match runtime.block_on(feed_catalog(
-                &reader,
-                &catalog,
-                range.clone(),
-                standalone,
-                sender,
-                budget.clone(),
-                &cancellation,
-            )) {
-                Ok(totals) => totals,
-                Err(error) => {
-                    failure.lock().get_or_insert(error);
-                    cancellation.cancel();
-                    budget.close();
+            runtime
+                .block_on(feed_catalog(
+                    &reader,
+                    &catalog,
+                    range.clone(),
+                    standalone,
+                    sender,
+                    budget.clone(),
+                    &cancellation,
+                ))
+                .unwrap_or_else(|error| {
+                    fail(error);
                     (0, 0, 0)
-                }
-            }
+                })
         });
+        let (config, consensus, cancellation, runtime, reader) =
+            (&config, &consensus, &cancellation, &runtime, &*reader);
+        let (done_blocks, done_transactions, done_gas) =
+            (&done_blocks, &done_transactions, &done_gas);
         let mut threads = Vec::new();
         for _ in 0..workers {
             let receiver = receiver.clone();
-            let config = &config;
-            let consensus = &consensus;
-            let cancellation = &cancellation;
-            let budget = &budget;
-            let failure = &failure;
-            let (runtime, reader) = (&runtime, &*reader);
-            let (done_blocks, done_transactions, done_gas) =
-                (&done_blocks, &done_transactions, &done_gas);
             threads.push(scope.spawn(move || {
-                let result = (|| -> eyre::Result<(u64, u64, u64)> {
-                    let mut completed = (0, 0, 0);
+                let result = (|| -> eyre::Result<()> {
+                    let mut records = 0u64;
                     let mut receive_wait = Duration::ZERO;
                     loop {
                         eyre::ensure!(!cancellation.is_cancelled(), "corpus worker cancelled");
@@ -177,17 +166,9 @@ pub fn run(
                         let (transactions, gas) = if let Some((from, to)) = standalone {
                             // The stored deltas restore each transaction's prestate, so the
                             // block itself is not executed.
+                            let (cases, block, phases) =
+                                decode_record(&chunk, &ready.cases, &ready.record)?;
                             let (mut transactions, mut gas) = (0, 0);
-                            let cases = decode_cases(&ready.cases, &ready.record)?;
-                            let block = decode_block(
-                                &chunk.blocks[0],
-                                chunk.start,
-                                B256::from(chunk.parent),
-                            )?;
-                            let phases = chunk
-                                .phases
-                                .as_ref()
-                                .ok_or_else(|| eyre::eyre!("missing phase expectations"))?;
                             standalone_cases(
                                 config,
                                 &block,
@@ -208,45 +189,25 @@ pub fn run(
                             verify(config, consensus, &chunk, &ready.cases, &ready.record)?;
                             (ready.record.transactions, ready.record.gas)
                         };
-                        completed.0 += 1;
-                        completed.1 += transactions;
-                        completed.2 += gas;
+                        records += 1;
                         done_blocks.fetch_add(1, Ordering::Relaxed);
                         done_transactions.fetch_add(transactions, Ordering::Relaxed);
                         done_gas.fetch_add(gas, Ordering::Relaxed);
                         // Drop decoded state, serialized Bytes, and its permit
                         // together, before receiving more work.
                     }
-                    tracing::debug!(target: "reth::corpus::feed", receive_us = receive_wait.as_micros() as u64, records = completed.0, "Worker receive intervals (summed overlap)");
-                    Ok(completed)
+                    tracing::debug!(target: "reth::corpus::feed", receive_us = receive_wait.as_micros() as u64, records, "Worker receive intervals (summed overlap)");
+                    Ok(())
                 })();
-                match result {
-                    Ok(items) => items,
-                    Err(error) => {
-                        failure.lock().get_or_insert(error);
-                        cancellation.cancel();
-                        budget.close();
-                        (0, 0, 0)
-                    }
+                if let Err(error) = result {
+                    fail(error);
                 }
             }));
         }
         drop(receiver);
-        let mut completed = (0, 0, 0);
         for worker in threads {
-            match worker.join() {
-                Ok(items) => {
-                    completed.0 += items.0;
-                    completed.1 += items.1;
-                    completed.2 += items.2;
-                }
-                Err(_) => {
-                    failure
-                        .lock()
-                        .get_or_insert_with(|| eyre::eyre!("corpus worker panicked"));
-                    cancellation.cancel();
-                    budget.close();
-                }
+            if worker.join().is_err() {
+                fail(eyre::eyre!("corpus worker panicked"));
             }
         }
         let wanted = producer
@@ -257,6 +218,11 @@ pub fn run(
         if let Some(error) = failure.lock().take() {
             return Err(error);
         }
+        let completed = (
+            done_blocks.load(Ordering::Relaxed),
+            done_transactions.load(Ordering::Relaxed),
+            done_gas.load(Ordering::Relaxed),
+        );
         // The metadata cursor rejects gaps/duplicates before each single send;
         // MPMC receive transfers each record to exactly one worker. Counts close
         // the coverage check without retaining a history-sized completion set.
@@ -266,17 +232,10 @@ pub fn run(
                 && (standalone.is_some() || completed.2 == wanted.2),
             "missing/duplicate completed corpus records"
         );
-        let transactions = completed.1;
-        let gas = completed.2;
-        let blocks = if standalone.is_some() {
-            0
-        } else {
-            range.end - range.start
-        };
         info!(
-            blocks,
-            transactions,
-            gas,
+            blocks = total_blocks,
+            transactions = completed.1,
+            gas = completed.2,
             records = completed.0,
             workers,
             standalone = standalone.is_some(),
@@ -288,8 +247,7 @@ pub fn run(
     });
     let closed = runtime.block_on(reader.close());
     result?;
-    closed?;
-    Ok(())
+    Ok(closed?)
 }
 
 /// Replays the listed `blocks` of a published corpus, each read on its own, with `workers`
@@ -364,18 +322,14 @@ async fn feed_pages(
     let space = Arc::new(Notify::new());
     let mut records = Vec::<Record>::new().into_iter().peekable();
     let mut closed = false;
+    let fetch_tasks = env_usize("RETH_CORPUS_FETCH_TASKS").unwrap_or(64);
     // Reserve whole read batches before opening scans, then transfer exact byte
     // permits to individual ready records. No task acquires a second reservation
     // while retaining its first, including when a record fills the entire budget.
     let batch_limit = budget.available_permits().min(8 * 1024 * 1024);
     loop {
         eyre::ensure!(!cancellation.is_cancelled(), "corpus replay cancelled");
-        while tasks.len()
-            < std::env::var("RETH_CORPUS_FETCH_TASKS")
-                .ok()
-                .and_then(|v| v.parse::<usize>().ok())
-                .unwrap_or(64)
-        {
+        while tasks.len() < fetch_tasks {
             let Some(record) = records.next() else { break };
             let (mut end, mut bytes) = (record.end, record.bytes);
             let mut batch = vec![record];
@@ -462,29 +416,31 @@ async fn transaction_range(
     from: u64,
     to: u64,
 ) -> eyre::Result<Range<u64>> {
-    let mut bounds = Vec::new();
-    for ordinal in [from, to - 1] {
+    let mut bounds = [0; 2];
+    for (bound, ordinal) in bounds.iter_mut().zip([from, to - 1]) {
         let (mut low, mut high) = (catalog.context.start, catalog.context.end);
+        // Metadata of the final `high`: the first block whose ordinals end after `ordinal`.
+        let mut found = None;
         while low < high {
             let mid = low + (high - low) / 2;
             let record = store::metadata(reader, mid).await?;
             let end = record
                 .first_tx
                 .checked_add(record.transactions)
-                .ok_or_else(|| eyre::eyre!("ordinal overflow"))?;
+                .ok_or_eyre("ordinal overflow")?;
             if end <= ordinal {
                 low = mid + 1;
             } else {
                 high = mid;
+                found = Some(record);
             }
         }
-        eyre::ensure!(low < catalog.context.end, "missing transaction metadata");
-        let record = store::metadata(reader, low).await?;
+        let record = found.ok_or_eyre("missing transaction metadata")?;
         eyre::ensure!(
-            record.first_tx <= ordinal && ordinal < record.first_tx + record.transactions,
+            record.first_tx <= ordinal,
             "transaction ordinal metadata gap"
         );
-        bounds.push(low);
+        *bound = low;
     }
     Ok(bounds[0]..bounds[1] + 1)
 }
@@ -577,17 +533,35 @@ async fn read_catalog(
     Ok(totals)
 }
 
-/// Decodes and checks every transaction record of a block.
-fn decode_cases(cases: &[Bytes], record: &Record) -> eyre::Result<Vec<crate::types::Case>> {
+/// Parses a `usize` tuning override from the environment; unset or invalid means `None`.
+fn env_usize(name: &str) -> Option<usize> {
+    std::env::var(name).ok()?.parse().ok()
+}
+
+/// Decodes a published block, its checked transaction records and its phase expectations.
+fn decode_record<'a>(
+    chunk: &'a Chunk,
+    cases: &[Bytes],
+    record: &Record,
+) -> eyre::Result<(Vec<Case>, RecoveredBlock<Block>, &'a Phases)> {
     eyre::ensure!(
         cases.len() == record.cases.len(),
         "transaction count mismatch"
     );
-    cases
+    let cases = cases
         .iter()
+        .zip(&record.cases)
         .enumerate()
-        .map(|(i, b)| store::decode_case(b, &record.cases[i], record.first_tx + i as u64))
-        .collect()
+        .map(|(i, (bytes, expected))| {
+            store::decode_case(bytes, expected, record.first_tx + i as u64)
+        })
+        .collect::<eyre::Result<_>>()?;
+    let block = decode_block(&chunk.blocks[0], chunk.start, B256::from(chunk.parent))?;
+    let phases = chunk
+        .phases
+        .as_ref()
+        .ok_or_eyre("missing phase expectations")?;
+    Ok((cases, block, phases))
 }
 
 /// Verifies one published block: executes it from its record alone and checks every
@@ -598,13 +572,8 @@ pub fn verify(
     chunk: &Arc<Chunk>,
     cases: &[Bytes],
     record: &Record,
-) -> eyre::Result<(RecoveredBlock<Block>, Vec<Transaction>)> {
-    let expected = decode_cases(cases, record)?;
-    let block = decode_block(&chunk.blocks[0], chunk.start, B256::from(chunk.parent))?;
-    let phases = chunk
-        .phases
-        .as_ref()
-        .ok_or_else(|| eyre::eyre!("missing phase expectations"))?;
+) -> eyre::Result<()> {
+    let (expected, block, phases) = decode_record(chunk, cases, record)?;
     let executed = execute_block(
         config,
         consensus,
@@ -613,10 +582,10 @@ pub fn verify(
         record.first_tx,
         Some((&expected, phases)),
     )?;
-    crate::execute::verify_changesets(&executed.bundle, &chunk.changeset()?, chunk.start)?;
+    verify_changesets(&executed.bundle, &chunk.changeset()?, chunk.start)?;
     eyre::ensure!(
         executed.transactions.len() as u64 == record.transactions && executed.gas == record.gas,
         "transaction/gas totals mismatch"
     );
-    Ok((block, executed.transactions))
+    Ok(())
 }

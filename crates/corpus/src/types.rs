@@ -47,21 +47,6 @@ pub struct ChangeSet {
     pub storage: BTreeMap<([u8; 20], [u8; 32]), [u8; 32]>,
 }
 
-/// Packs `len` flags, set where `changed` holds, into a little-endian bitmap.
-pub fn bitmap(len: usize, mut changed: impl FnMut(usize) -> bool) -> Vec<u8> {
-    let mut bits = vec![0u8; len.div_ceil(8)];
-    for i in 0..len {
-        if changed(i) {
-            bits[i / 8] |= 1 << (i % 8);
-        }
-    }
-    bits
-}
-
-fn bit(bits: &[u8], i: usize) -> bool {
-    bits[i / 8] & (1 << (i % 8)) != 0
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct Info {
     nonce: u64,
@@ -94,41 +79,10 @@ impl Chunk {
     /// Bitmaps marking `changeset` within this chunk's witness. Every changed key must be in
     /// the witness with the same pre-value.
     pub fn mark(&self, changeset: &ChangeSet) -> eyre::Result<(Vec<u8>, Vec<u8>)> {
-        for (address, info) in &changeset.accounts {
-            let witness = self
-                .accounts
-                .get(address)
-                .and_then(|v| v.first())
-                .map(|(_, i)| i);
-            eyre::ensure!(
-                witness == Some(info),
-                "account changeset disagrees with witness"
-            );
-        }
-        for (key, value) in &changeset.storage {
-            let witness = self
-                .storage
-                .get(key)
-                .and_then(|v| v.first())
-                .map(|(_, v)| v);
-            eyre::ensure!(
-                witness == Some(value),
-                "storage changeset disagrees with witness"
-            );
-        }
-        let accounts: Vec<bool> = self
-            .accounts
-            .keys()
-            .map(|k| changeset.accounts.contains_key(k))
-            .collect();
-        let storage: Vec<bool> = self
-            .storage
-            .keys()
-            .map(|k| changeset.storage.contains_key(k))
-            .collect();
-        let accounts = bitmap(accounts.len(), |i| accounts[i]);
-        let storage = bitmap(storage.len(), |i| storage[i]);
-        Ok((accounts, storage))
+        Ok((
+            mark(&self.accounts, &changeset.accounts, "account")?,
+            mark(&self.storage, &changeset.storage, "storage")?,
+        ))
     }
 
     /// The block's historical changeset, resolved from its bitmaps over the witness.
@@ -142,18 +96,10 @@ impl Chunk {
                 && block.changed_storage.len() == self.storage.len().div_ceil(8),
             "changeset bitmap size mismatch"
         );
-        let mut changeset = ChangeSet::default();
-        for (i, (address, versions)) in self.accounts.iter().enumerate() {
-            if bit(&block.changed_accounts, i) {
-                changeset.accounts.insert(*address, versions[0].1.clone());
-            }
-        }
-        for (i, (key, versions)) in self.storage.iter().enumerate() {
-            if bit(&block.changed_storage, i) {
-                changeset.storage.insert(*key, versions[0].1);
-            }
-        }
-        Ok(changeset)
+        Ok(ChangeSet {
+            accounts: marked(&self.accounts, &block.changed_accounts),
+            storage: marked(&self.storage, &block.changed_storage),
+        })
     }
 
     pub fn validate(&self) -> eyre::Result<()> {
@@ -207,6 +153,14 @@ impl Transaction {
         self.outcome.charged_gas
     }
 
+    fn outputs(&self) -> eyre::Result<Outputs> {
+        Ok(Outputs {
+            outcome: digest(&wincode::serialize(&self.outcome)?),
+            receipt: digest(&self.receipt),
+            after: digest(&self.after),
+        })
+    }
+
     /// The stored form: input and state delta in full, other outputs as per-field digests.
     pub fn stored(&self) -> eyre::Result<Case> {
         Ok(Case {
@@ -218,11 +172,7 @@ impl Transaction {
             charged_gas: self.outcome.charged_gas,
             created: self.outcome.created,
             delta: self.delta.clone(),
-            outputs: Outputs {
-                outcome: digest(&wincode::serialize(&self.outcome)?),
-                receipt: digest(&self.receipt),
-                after: digest(&self.after),
-            },
+            outputs: self.outputs()?,
         })
     }
 }
@@ -253,14 +203,10 @@ pub struct Outputs {
     pub after: [u8; 16],
 }
 
-fn digest(bytes: &[u8]) -> [u8; 16] {
-    xxhash_rust::xxh3::xxh3_128(bytes).to_le_bytes()
-}
-
 impl Case {
     /// Compares an executed transaction against this record, field by field.
     pub fn check(&self, actual: &Transaction) -> eyre::Result<()> {
-        let actual = actual.stored()?;
+        let outputs = actual.outputs()?;
         let at = self.ordinal;
         eyre::ensure!(
             actual.ordinal == self.ordinal
@@ -270,14 +216,14 @@ impl Case {
             "transaction context mismatch at {at}"
         );
         eyre::ensure!(
-            actual.status == self.status
-                && actual.charged_gas == self.charged_gas
-                && actual.created == self.created
-                && actual.outputs.outcome == self.outputs.outcome,
+            actual.outcome.status == self.status
+                && actual.outcome.charged_gas == self.charged_gas
+                && actual.outcome.created == self.created
+                && outputs.outcome == self.outputs.outcome,
             "transaction outcome mismatch at {at}"
         );
         eyre::ensure!(
-            actual.outputs.receipt == self.outputs.receipt,
+            outputs.receipt == self.outputs.receipt,
             "transaction receipt mismatch at {at}"
         );
         eyre::ensure!(
@@ -285,7 +231,7 @@ impl Case {
             "transaction delta mismatch at {at}"
         );
         eyre::ensure!(
-            actual.outputs.after == self.outputs.after,
+            outputs.after == self.outputs.after,
             "transaction boundary mismatch at {at}"
         );
         Ok(())
@@ -330,129 +276,41 @@ pub struct Outcome {
     pub output: Option<Vec<u8>>,
 }
 
-/// Pre-bitmap block record with the historical changeset stored explicitly. Read only by
-/// [`crate::migrate`].
-#[derive(Debug, SchemaRead, SchemaWrite)]
-pub struct LegacyBlock {
-    pub hash: [u8; 32],
-    pub rlp: Vec<u8>,
-    pub senders: Vec<[u8; 20]>,
-    pub accounts: Vec<([u8; 20], Option<Info>)>,
-    pub storage: Vec<([u8; 20], [u8; 32], [u8; 32])>,
+fn digest(bytes: &[u8]) -> [u8; 16] {
+    xxhash_rust::xxh3::xxh3_128(bytes).to_le_bytes()
 }
 
-/// Pre-bitmap chunk record; identical to [`Chunk`] except for its blocks.
-#[derive(Debug, SchemaRead, SchemaWrite)]
-pub struct LegacyChunk {
-    pub start: u64,
-    pub end: u64,
-    pub parent: [u8; 32],
-    pub blocks: Vec<LegacyBlock>,
-    pub accounts: BTreeMap<[u8; 20], Vec<(u64, Option<Info>)>>,
-    #[allow(clippy::type_complexity)]
-    pub storage: BTreeMap<([u8; 20], [u8; 32]), Vec<(u64, [u8; 32])>>,
-    pub code: BTreeSet<[u8; 32]>,
-    pub hashes: BTreeMap<u64, [u8; 32]>,
-    pub phases: Option<Phases>,
-}
-
-impl LegacyChunk {
-    /// Converts to the bitmap format, checking every changeset entry against the witness.
-    pub fn upgrade(self) -> eyre::Result<Chunk> {
-        let [legacy]: [LegacyBlock; 1] = self
-            .blocks
-            .try_into()
-            .map_err(|_| eyre::eyre!("legacy chunk must hold one block"))?;
-        let changeset = ChangeSet {
-            accounts: legacy.accounts.iter().cloned().collect(),
-            storage: legacy
-                .storage
-                .iter()
-                .map(|(address, slot, value)| ((*address, *slot), *value))
-                .collect(),
-        };
+/// Little-endian bitmap over `witness` in key order, marking the keys in `changed`. Every changed
+/// key must be in the witness with the same pre-value.
+fn mark<K: Ord, V: PartialEq>(
+    witness: &BTreeMap<K, Vec<(u64, V)>>,
+    changed: &BTreeMap<K, V>,
+    kind: &str,
+) -> eyre::Result<Vec<u8>> {
+    for (key, value) in changed {
         eyre::ensure!(
-            changeset.accounts.len() == legacy.accounts.len()
-                && changeset.storage.len() == legacy.storage.len(),
-            "duplicate legacy changeset entries"
+            witness.get(key).and_then(|v| v.first()).map(|(_, v)| v) == Some(value),
+            "{kind} changeset disagrees with witness"
         );
-        let mut chunk = Chunk {
-            start: self.start,
-            end: self.end,
-            parent: self.parent,
-            blocks: vec![Block {
-                hash: legacy.hash,
-                rlp: legacy.rlp,
-                senders: legacy.senders,
-                changed_accounts: Vec::new(),
-                changed_storage: Vec::new(),
-            }],
-            accounts: self.accounts,
-            storage: self.storage,
-            code: self.code,
-            hashes: self.hashes,
-            phases: self.phases,
-        };
-        let (accounts, storage) = chunk.mark(&changeset)?;
-        chunk.blocks[0].changed_accounts = accounts;
-        chunk.blocks[0].changed_storage = storage;
-        eyre::ensure!(
-            chunk.changeset()? == changeset,
-            "upgraded changeset round trip mismatch"
-        );
-        Ok(chunk)
     }
-}
-
-/// Pre-delta transaction record: the state delta stored only as a digest. Read only by
-/// [`crate::migrate`].
-#[derive(Debug, PartialEq, Eq, SchemaRead, SchemaWrite)]
-pub struct LegacyCase {
-    pub ordinal: u64,
-    pub index: u64,
-    pub hash: [u8; 32],
-    pub before: Vec<u8>,
-    pub status: u8,
-    pub charged_gas: u64,
-    pub created: Option<[u8; 20]>,
-    pub outputs: LegacyOutputs,
-}
-
-/// Per-field output digests of a [`LegacyCase`].
-#[derive(Debug, PartialEq, Eq, SchemaRead, SchemaWrite)]
-pub struct LegacyOutputs {
-    pub outcome: [u8; 16],
-    pub receipt: [u8; 16],
-    pub delta: [u8; 16],
-    pub after: [u8; 16],
-}
-
-impl LegacyCase {
-    /// Checks a re-executed transaction against this record, including its delta digest, and
-    /// returns its record in the current format.
-    pub fn upgrade(&self, actual: &Transaction) -> eyre::Result<Case> {
-        let case = actual.stored()?;
-        let at = self.ordinal;
-        eyre::ensure!(
-            case.ordinal == self.ordinal
-                && case.index == self.index
-                && case.hash == self.hash
-                && case.before == self.before
-                && case.status == self.status
-                && case.charged_gas == self.charged_gas
-                && case.created == self.created,
-            "legacy transaction context/outcome mismatch at {at}"
-        );
-        eyre::ensure!(
-            case.outputs.outcome == self.outputs.outcome
-                && case.outputs.receipt == self.outputs.receipt
-                && case.outputs.after == self.outputs.after,
-            "legacy transaction output digest mismatch at {at}"
-        );
-        eyre::ensure!(
-            digest(&wincode::serialize(&case.delta)?) == self.outputs.delta,
-            "legacy transaction delta digest mismatch at {at}"
-        );
-        Ok(case)
+    let mut bits = vec![0u8; witness.len().div_ceil(8)];
+    for (i, key) in witness.keys().enumerate() {
+        if changed.contains_key(key) {
+            bits[i / 8] |= 1 << (i % 8);
+        }
     }
+    Ok(bits)
+}
+
+/// Pre-values of the `witness` entries `bits` marks (see [`mark`]).
+fn marked<K: Ord + Copy, V: Clone>(
+    witness: &BTreeMap<K, Vec<(u64, V)>>,
+    bits: &[u8],
+) -> BTreeMap<K, V> {
+    witness
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| bits[i / 8] & (1 << (i % 8)) != 0)
+        .map(|(_, (key, versions))| (*key, versions[0].1.clone()))
+        .collect()
 }
