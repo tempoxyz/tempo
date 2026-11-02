@@ -444,6 +444,13 @@ pub async fn published(
     block: u64,
 ) -> eyre::Result<(Record, Arc<crate::types::Chunk>)> {
     let record = metadata(reader, block).await?;
+    // The structural checks a range scan runs, before any payload is fetched.
+    Cursor {
+        next: record.start,
+        tx: record.first_tx,
+        parent: record.parent,
+    }
+    .advance(&record)?;
     let bytes = reader
         .get(key(block))
         .await?
