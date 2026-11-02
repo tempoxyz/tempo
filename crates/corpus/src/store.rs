@@ -440,10 +440,7 @@ pub async fn resolve_code(reader: &DbReader, chunk: &Chunk) -> eyre::Result<()> 
 }
 
 /// The published record of `block` and its chunk, checked against it, with its code resolved.
-pub async fn published(
-    reader: &DbReader,
-    block: u64,
-) -> eyre::Result<(Record, Arc<Chunk>)> {
+pub async fn published(reader: &DbReader, block: u64) -> eyre::Result<(Record, Arc<Chunk>)> {
     let record = metadata(reader, block).await?;
     // The structural checks a range scan runs, before any payload is fetched.
     Cursor {
