@@ -1276,12 +1276,13 @@ def txgen-neobank-instance-text [text: string, instance: record, index: int] {
 # disjoint user slice with its own random-sender and treasury pools, sinks, keychain
 # setup, vault/zone templates and portals (when zones >= instances); its mix is its
 # share times its modules' neobank-generic weights renormalised within the instance.
-# Portal deploys fill the general lane (10M each, up to 16 senders at once); start them after
-# the vault fixture, whose 30M deploys need an otherwise empty lane and would starve.
-def txgen-portals-after-vault [zone_steps: list<any>, vault_setup: list<any>] {
-    let vault_last = ($vault_setup | last | get id)
-    $zone_steps | each { |step|
-        if ($step.id | str starts-with "portal_") { $step | upsert depends_on [$vault_last] } else { $step }
+# The vault fixture's 30M deploys only fit an otherwise empty 30M general lane, so every other
+# setup step (users' 20M prepare and 5M approve, portals, DEX walls, keychain) waits for the whole
+# fixture; otherwise they keep the lane partly full and the fixture never lands.
+def txgen-after-vault [steps: list<any>, vault_setup: list<any>] {
+    let vault_ids = ($vault_setup | get id)
+    $steps | each { |step|
+        $step | upsert depends_on (($step | get -o depends_on | default []) | append $vault_ids | uniq)
     }
 }
 
@@ -1410,7 +1411,7 @@ def txgen-prepare-neobank-multi-preset [spec_path: string, count: int, accounts:
     $"# Per-instance copies of neobank-generic templates, rendered by helpers.nu.\ntemplates:\n($raw_templates | str join "\n")\n"
         | save -f ($output_dir | path join $raw_name)
     let body = ({include: [($spec_path | path expand) $raw_name], accounts: $accounts_record,
-        setup: {steps: ($vault_setup | append $users | append (txgen-portals-after-vault $zone_spec.setup.steps $vault_setup) | append $dex_setup)},
+        setup: {steps: ($vault_setup | append (txgen-after-vault ($users | append $zone_spec.setup.steps | append $dex_setup) $vault_setup))},
         templates: $templates,
         mix: ($entries | each { |entry| {template: $entry.name, weight: $entry.weight} })} | to yaml)
     # Keychain steps hold ${TXGEN_*} placeholders: appended as text after the setup above.
@@ -1529,9 +1530,8 @@ def txgen-prepare-public-mix-preset [spec_path: string, count: int, accounts: in
         if $result.exit_code != 0 { error make {msg: $"Failed to read access-key setup: ($result.stderr)"} }
         $result.stdout | from json
     } else { [] }
-    let zone_steps = (txgen-portals-after-vault $zone_spec.setup.steps $vault_setup)
     {include: $spec_path, accounts: {users: {range: [0 $accounts]}},
-        setup: {steps: ($vault_setup | append $users | append $zone_steps | append $dex_setup | append $keychain_setup)},
+        setup: {steps: ($vault_setup | append (txgen-after-vault ($users | append $zone_spec.setup.steps | append $dex_setup | append $keychain_setup) $vault_setup))},
         templates: $templates,
         mix: $mix} | to yaml | save -f $output
     $output
