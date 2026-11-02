@@ -31,7 +31,17 @@ jobs:
         GH_REPO: ${{ github.repository }}
         PR_NUMBER: ${{ github.event.issue.number }}
       run: |
+        set -euo pipefail
+
         PR_DATA=$(gh api "repos/${GH_REPO}/pulls/${PR_NUMBER}")
+        # Only open PRs from branches in this repository: the build runs the
+        # head's code with registry credentials (same rule as docker-pr.yml).
+        state=$(echo "$PR_DATA" | jq -r .state)
+        head_repo=$(echo "$PR_DATA" | jq -r '.head.repo.full_name // empty')
+        if [[ "$state" != "open" || "$head_repo" != "$GH_REPO" ]]; then
+          echo "Zones devnets require an open PR with a branch in this repository (state: $state, head: ${head_repo:-fork})" >&2
+          exit 1
+        fi
         echo "sha=$(echo "$PR_DATA" | jq -r .head.sha)" >> "$GITHUB_OUTPUT"
         echo "branch=$(echo "$PR_DATA" | jq -r .head.ref)" >> "$GITHUB_OUTPUT"
 
@@ -43,7 +53,7 @@ jobs:
         set -euo pipefail
 
         # "/build-zones-devnet" alone activates every hardfork; "/build-zones-devnet T14" stops at T14.
-        read -r command hardfork _ <<< "$(printf '%s\n' "$COMMENT_BODY" | head -n 1)"
+        read -r command hardfork _ <<< "$(printf '%s\n' "$COMMENT_BODY" | tr -d '\r' | head -n 1)"
         if [[ "$command" != "/build-zones-devnet" ]]; then
           echo "Unrecognized command: $command" >&2
           exit 1
