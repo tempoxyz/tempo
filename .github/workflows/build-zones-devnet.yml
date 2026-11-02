@@ -82,19 +82,18 @@ jobs:
         echo "$EVENTS_KEY" > "${RUNNER_TEMP}/key"
         echo "$EVENTS_CERT" > "${RUNNER_TEMP}/cert"
 
+        # jq builds the body so branch names with quotes or backslashes stay valid JSON.
+        payload=$(jq -cn \
+          --arg repository "$GH_REPO" \
+          --arg pr_number "$PR_NUMBER" \
+          --arg branch "$PR_BRANCH" \
+          --arg sha "$PR_SHA" \
+          --arg hardfork "$HARDFORK" \
+          --arg requested_by "$REQUESTED_BY" \
+          '{repository: $repository, event: "build_zones_devnet", data: {pr_number: $pr_number, name: ("zones-pr-" + $pr_number), branch: $branch, sha: $sha, hardfork: $hardfork, requested_by: $requested_by}}')
+
         curl -sf -o /dev/null -X POST ${{ secrets.EVENTS_ARGS }} \
           -H "Content-Type: application/json" \
           --key "${RUNNER_TEMP}/key" \
           --cert "${RUNNER_TEMP}/cert" \
-          -d "{
-            \"repository\": \"${GH_REPO}\",
-            \"event\": \"build_zones_devnet\",
-            \"data\": {
-              \"pr_number\": \"${PR_NUMBER}\",
-              \"name\": \"zones-pr-${PR_NUMBER}\",
-              \"branch\": \"${PR_BRANCH}\",
-              \"sha\": \"${PR_SHA}\",
-              \"hardfork\": \"${HARDFORK}\",
-              \"requested_by\": \"${REQUESTED_BY}\"
-            }
-          }"
+          -d "$payload"
