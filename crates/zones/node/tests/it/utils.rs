@@ -1047,6 +1047,39 @@ impl ZoneTestNode {
         .await
     }
 
+    /// Start a zone node connected to a real L1 whose genesis already holds TIP-1094 address key
+    /// version 1. Stands in for key initialization, which no sequencer emits yet.
+    pub(crate) async fn start_from_l1_with_virtual_address_key(
+        l1_http_url: &url::Url,
+        l1_ws_url: &url::Url,
+        portal_address: Address,
+        key: B256,
+    ) -> eyre::Result<Self> {
+        let (mut genesis, _) = build_l1_anchored_genesis(l1_http_url, portal_address).await?;
+        // Slots from the native inbox layout: flag at keccak256(abi.encode(1, S)), key next.
+        let namespace = keccak256(b"tempo.zvda.addressKeys");
+        let flag = U256::from_be_bytes(keccak256((U256::from(1), namespace).abi_encode()).0);
+        genesis
+            .alloc
+            .entry(tempo_contracts::zones::ZONE_INBOX_ADDRESS)
+            .or_default()
+            .storage
+            .get_or_insert_default()
+            .extend([
+                (B256::from(flag), B256::from(U256::ONE)),
+                (B256::from(flag + U256::ONE), key),
+            ]);
+
+        Self::launch_with_genesis(
+            l1_ws_url.to_string(),
+            portal_address,
+            next_unique_chain_id(),
+            Some(genesis),
+            l1_dev_signer(),
+        )
+        .await
+    }
+
     /// Run the scheduled T12 -> T13 transition against a real L1 and return the proof chain spec.
     pub(crate) async fn start_from_l1_with_t13(
         l1_http_url: &url::Url,
@@ -2731,7 +2764,12 @@ impl L1TestNode {
     pub(crate) async fn start_with(
         f: impl FnOnce(&mut NodeConfig<TempoChainSpec>),
     ) -> eyre::Result<Self> {
-        Self::launch(f, false).await
+        Self::launch(f, false, None).await
+    }
+
+    /// Start an L1 dev node with every hardfork through T15 active at genesis.
+    pub(crate) async fn start_at_t15() -> eyre::Result<Self> {
+        Self::launch(|_| {}, false, Some(TempoHardfork::T15)).await
     }
 
     /// Start an L1 dev node, like [`Self::start_with`], whose RPC refuses every state proof
@@ -2739,18 +2777,24 @@ impl L1TestNode {
     pub(crate) async fn start_without_state_proofs(
         f: impl FnOnce(&mut NodeConfig<TempoChainSpec>),
     ) -> eyre::Result<Self> {
-        Self::launch(f, true).await
+        Self::launch(f, true, None).await
     }
 
+    /// Launches the L1 from `test-genesis.json`, which activates T13 at genesis, or every fork
+    /// through `latest_fork` when given.
     async fn launch(
         f: impl FnOnce(&mut NodeConfig<TempoChainSpec>),
         refuse_state_proofs: bool,
+        latest_fork: Option<TempoHardfork>,
     ) -> eyre::Result<Self> {
         let tasks = Runtime::test();
 
         let genesis: serde_json::Value =
             serde_json::from_str(include_str!("../assets/test-genesis.json"))?;
         let mut genesis = serde_json::from_value(genesis)?;
+        if let Some(fork) = latest_fork {
+            set_tempo_fork(&mut genesis, fork, 0);
+        }
         install_native_zone_factory(&mut genesis, l1_dev_signer().address())?;
         let chain_spec = TempoChainSpec::from_genesis(genesis);
 
@@ -3609,6 +3653,11 @@ impl ZoneAccount {
         );
 
         Ok(())
+    }
+
+    /// Wallet-attached provider for the zone.
+    pub(crate) fn l2_provider(&self) -> &alloy_provider::DynProvider {
+        &self.l2_provider
     }
 
     /// Approve the ZoneOutbox for a token without submitting a withdrawal.
