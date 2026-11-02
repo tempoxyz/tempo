@@ -212,6 +212,13 @@ impl NetworkTransactionBuilder<TempoNetwork> for TempoTransactionRequest {
             TempoTxType::AA => match self.complete_aa() {
                 Ok(..) => {
                     let tx = self.clone().build_aa().expect("checked by above condition");
+                    // Execution rejects this (EVM PRIORITY_FEE_CHECK), so never build it for signing.
+                    if tx.max_priority_fee_per_gas > tx.max_fee_per_gas {
+                        return Err(TransactionBuilderError::Custom(
+                            "max_priority_fee_per_gas must not exceed max_fee_per_gas".into(),
+                        )
+                        .into_unbuilt(self));
+                    }
                     // Refuse to build what the node will not decode, so it is never signed.
                     if let Err(err) = tx.validate() {
                         return Err(TransactionBuilderError::Custom(err.into()).into_unbuilt(self));
