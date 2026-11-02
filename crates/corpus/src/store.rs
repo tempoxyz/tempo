@@ -156,6 +156,8 @@ impl Catalog {
 pub struct Store {
     pub objects: Arc<dyn ObjectStore>,
     pub path: Path,
+    /// A `file://` corpus, whose store has no conditional update.
+    local: bool,
 }
 
 #[derive(Debug)]
@@ -223,6 +225,7 @@ impl Store {
                         directory,
                     )?),
                     path: Path::from("corpus"),
+                    local: true,
                 })
             }
             "s3" => {
@@ -255,6 +258,7 @@ impl Store {
                 Ok(Self {
                     objects: Arc::new(builder.build()?),
                     path: Path::from(prefix).join("corpus"),
+                    local: false,
                 })
             }
             _ => eyre::bail!("corpus must use s3://bucket/prefix or file:///directory"),
@@ -323,7 +327,9 @@ impl Store {
             // `LocalFileSystem` has no conditional update. A local corpus has a single
             // writer on one machine (SlateDB still fences its data), so check the catalog
             // is unchanged and overwrite it.
-            (Err(object_store::Error::NotImplemented { .. }), Some(prior)) => {
+            // An S3 store without conditional writes must not fall back: two writers could both
+            // pass the check below and the later one would overwrite a newer catalog.
+            (Err(object_store::Error::NotImplemented { .. }), Some(prior)) if self.local => {
                 let current = self.objects.head(&path).await?;
                 eyre::ensure!(
                     current.e_tag == prior.e_tag,
@@ -766,6 +772,7 @@ pub mod tests {
         Store {
             objects: Arc::new(InMemory::new()),
             path: Path::from(path),
+            local: false,
         }
     }
 
