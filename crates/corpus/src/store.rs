@@ -438,6 +438,21 @@ pub async fn resolve_code(reader: &DbReader, chunk: &crate::types::Chunk) -> eyr
     Ok(())
 }
 
+/// The published record of `block` and its chunk, checked against it, with its code resolved.
+pub async fn published(
+    reader: &DbReader,
+    block: u64,
+) -> eyre::Result<(Record, Arc<crate::types::Chunk>)> {
+    let record = metadata(reader, block).await?;
+    let bytes = reader
+        .get(key(block))
+        .await?
+        .ok_or_else(|| eyre::eyre!("missing block record at {block}"))?;
+    let chunk = decode(&bytes, &record)?;
+    resolve_code(reader, &chunk).await?;
+    Ok((record, chunk))
+}
+
 pub fn decode(bytes: &[u8], record: &Record) -> eyre::Result<Arc<crate::types::Chunk>> {
     eyre::ensure!(
         bytes.len() == record.block_bytes && blake3::hash(bytes).to_hex().as_str() == record.digest,

@@ -9,12 +9,11 @@ use reth_ethereum::tasks::Runtime;
 use std::{ops::Range, path::PathBuf, sync::Arc};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
 use tempo_corpus::{
-    fill, gc, replay, seeds,
+    fill, fuzz, gc, replay,
     store::{Catalog, Store},
 };
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_node::node::TempoNode;
-use tracing::info;
 
 /// Historical execution corpus commands.
 #[derive(Debug, Subcommand)]
@@ -27,8 +26,6 @@ pub enum CorpusCommand {
     Migrate(MigrateCommand),
     /// Delete the superseded checkpoints and unreferenced files of a complete corpus.
     Gc(GcCommand),
-    /// Export a corpus range as fuzz harness seeds, keeping the blocks the harness reproduces.
-    Seeds(SeedsCommand),
 }
 
 impl CorpusCommand {
@@ -38,7 +35,6 @@ impl CorpusCommand {
             Self::Replay(cmd) => cmd.execute().await,
             Self::Migrate(cmd) => cmd.execute().await,
             Self::Gc(cmd) => cmd.execute().await,
-            Self::Seeds(cmd) => cmd.execute().await,
         }
     }
 }
@@ -177,11 +173,22 @@ pub struct ReplayCommand {
     /// Exclusive end of the standalone transaction ordinal range.
     #[arg(long, requires = "tx_from")]
     tx_to: Option<u64>,
+    /// Replay only the blocks a block list file names, such as a fuzz corpus minimizer's.
+    #[arg(long, conflicts_with_all = ["from", "to", "tx_from"])]
+    blocks: Option<PathBuf>,
 }
 
 impl ReplayCommand {
     async fn execute(self) -> eyre::Result<()> {
         let (store, catalog, range, workers) = self.source.open().await?;
+        let (config, consensus) = components(self.source.chain.clone());
+        if let Some(path) = &self.blocks {
+            let blocks = fuzz::read_blocks(path, &catalog)?;
+            return tokio::task::spawn_blocking(move || {
+                replay::run_blocks(store, catalog, &blocks, config, consensus, workers)
+            })
+            .await?;
+        }
         let standalone = self.tx_from.zip(self.tx_to);
         if let Some((from, to)) = standalone {
             let context = &catalog.context;
@@ -192,7 +199,6 @@ impl ReplayCommand {
         } else {
             ensure_blocks(&catalog, &range)?;
         }
-        let (config, consensus) = components(self.source.chain.clone());
         let cancellation = CancellationToken::new();
         let _guard = cancellation.drop_guard();
         let token = cancellation.clone();
@@ -271,40 +277,5 @@ impl GcCommand {
     async fn execute(self) -> eyre::Result<()> {
         let store = Store::open(&self.corpus, self.s3_endpoint.as_deref()).await?;
         gc::gc(&store).await
-    }
-}
-
-/// Export a published corpus range as fuzz harness seeds.
-#[derive(Debug, Parser)]
-pub struct SeedsCommand {
-    #[command(flatten)]
-    source: CorpusSource,
-    /// Directory for the seeds, with `divergent/` and `invariants/` beneath it.
-    #[arg(long)]
-    out: PathBuf,
-}
-
-impl SeedsCommand {
-    async fn execute(self) -> eyre::Result<()> {
-        let (store, catalog, range, workers) = self.source.open().await?;
-        ensure_blocks(&catalog, &range)?;
-        let summary = tokio::task::spawn_blocking(move || {
-            seeds::export(
-                store,
-                catalog,
-                range,
-                &self.source.chain,
-                &self.out,
-                workers,
-            )
-        })
-        .await??;
-        info!(
-            blocks = summary.blocks,
-            seeds = summary.seeds,
-            findings = ?summary.findings,
-            "Corpus seed export finished"
-        );
-        Ok(())
     }
 }

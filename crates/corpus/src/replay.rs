@@ -17,7 +17,7 @@ use std::{
     ops::Range,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -289,6 +289,66 @@ pub fn run(
     let closed = runtime.block_on(reader.close());
     result?;
     closed?;
+    Ok(())
+}
+
+/// Replays the listed `blocks` of a published corpus, each read on its own, with `workers`
+/// execution threads, as [`run`] replays a range.
+pub fn run_blocks(
+    store: Store,
+    catalog: Catalog,
+    blocks: &[u64],
+    config: TempoEvmConfig,
+    consensus: TempoConsensus,
+    workers: usize,
+) -> eyre::Result<()> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let reader = runtime.block_on(store.reader(&catalog))?;
+    let started = Instant::now();
+    let next = AtomicUsize::new(0);
+    let replay =
+        || -> eyre::Result<()> {
+            while let Some(&block) = blocks.get(next.fetch_add(1, Ordering::Relaxed)) {
+                let replayed =
+                    runtime.block_on(async {
+                        let (record, chunk) = store::published(&reader, block).await?;
+                        let mut cases = Vec::with_capacity(record.cases.len());
+                        for ordinal in record.first_tx..record.first_tx + record.transactions {
+                            let key = store::transaction_key(ordinal);
+                            cases.push(reader.get(key).await?.ok_or_else(|| {
+                                eyre::eyre!("missing transaction record {ordinal}")
+                            })?);
+                        }
+                        eyre::Ok((record, chunk, cases))
+                    });
+                if let Err(error) = replayed.and_then(|(record, chunk, cases)| {
+                    verify(&config, &consensus, &chunk, &cases, &record)
+                }) {
+                    // Stop the other workers too.
+                    next.store(blocks.len(), Ordering::Relaxed);
+                    return Err(error.wrap_err(format!("block {block}")));
+                }
+            }
+            Ok(())
+        };
+    let result = std::thread::scope(|scope| {
+        let threads: Vec<_> = (0..workers).map(|_| scope.spawn(replay)).collect();
+        threads.into_iter().try_for_each(|thread| {
+            thread
+                .join()
+                .map_err(|_| eyre::eyre!("corpus worker panicked"))?
+        })
+    });
+    runtime.block_on(reader.close())?;
+    result?;
+    info!(
+        blocks = blocks.len(),
+        workers,
+        seconds = started.elapsed().as_secs_f64(),
+        "Corpus replay verified"
+    );
     Ok(())
 }
 

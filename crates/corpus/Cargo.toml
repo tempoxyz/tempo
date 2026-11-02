@@ -16,45 +16,64 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = ["replay"]
+# Capture, replay, migration and gc, with the EVM and database crates they need. Reading blocks as
+# fuzz inputs (`fuzz`) needs none of them.
+replay = [
+  "dep:alloy-consensus",
+  "dep:alloy-eip7928",
+  "dep:reth-execution-types",
+  "dep:reth-cli-util",
+  "dep:crossbeam-channel",
+  "dep:reth-consensus",
+  "dep:reth-trie-common",
+  "dep:reth-storage-api",
+  "dep:reth-evm",
+  "dep:reth-provider",
+  "dep:evm2",
+  "dep:tempo-evm",
+  "dep:schnellru",
+  "dep:tracing",
+]
+
 [dependencies]
 alloy-primitives.workspace = true
 reth-primitives-traits.workspace = true
-reth-execution-types.workspace = true
-evm2.workspace = true
-tempo-evm = { workspace = true, features = ["default"] }
+reth-execution-types = { workspace = true, optional = true }
+evm2 = { workspace = true, optional = true }
+tempo-evm = { workspace = true, features = ["default"], optional = true }
 tempo-primitives = { workspace = true, features = ["default"] }
-reth-evm.workspace = true
-reth-provider.workspace = true
+reth-evm = { workspace = true, optional = true }
+reth-provider = { workspace = true, optional = true }
 reth-chainspec.workspace = true
-reth-cli-util.workspace = true
-crossbeam-channel.workspace = true
-reth-consensus.workspace = true
-reth-trie-common.workspace = true
-reth-storage-api = { workspace = true, features = ["db-api"] }
-alloy-consensus.workspace = true
+reth-cli-util = { workspace = true, optional = true }
+crossbeam-channel = { workspace = true, optional = true }
+reth-consensus = { workspace = true, optional = true }
+reth-trie-common = { workspace = true, optional = true }
+reth-storage-api = { workspace = true, features = ["db-api"], optional = true }
+alloy-consensus = { workspace = true, optional = true }
 alloy-rlp.workspace = true
-alloy-eip7928.workspace = true
+alloy-eip7928 = { workspace = true, optional = true }
 alloy-eips.workspace = true
 tempo-chainspec = { workspace = true, features = ["reth"] }
-tempo-fuzz-harness.workspace = true
 tempo-fuzz-types.workspace = true
 
 async-trait.workspace = true
 aws-config = "1.8"
 aws-credential-types = "1.2"
-bincode.workspace = true
 blake3.workspace = true
 bytes.workspace = true
 eyre.workspace = true
 futures.workspace = true
 object_store = { version = "0.14.2", features = ["aws"] }
 parking_lot.workspace = true
-schnellru.workspace = true
+schnellru = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 slatedb = { version = "=0.17.0", default-features = false, features = ["aws", "moka", "zstd"] }
 tokio.workspace = true
-tracing.workspace = true
+tracing = { workspace = true, optional = true }
 url.workspace = true
 wincode = { version = "0.6", features = ["derive"] }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
