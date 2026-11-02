@@ -11,6 +11,7 @@ use bytes::Bytes;
 use crossbeam_channel::{RecvTimeoutError, Sender, TrySendError};
 use eyre::OptionExt;
 use parking_lot::Mutex;
+use reth_chainspec::EthChainSpec;
 use reth_cli_util::cancellation::CancellationToken;
 use reth_primitives_traits::RecoveredBlock;
 use slatedb::DbReader;
@@ -65,6 +66,15 @@ pub fn run(
         .enable_all()
         .build()?;
     let reader = Arc::new(runtime.block_on(store.reader(&catalog))?);
+    let tip_timestamp = runtime.block_on(store::tip_timestamp(&reader, &catalog.context))?;
+    eyre::ensure!(
+        store::forks_agree(
+            &catalog.context.forks,
+            &config.chain_spec().display_hardforks().to_string(),
+            tip_timestamp,
+        ),
+        "corpus fork schedule mismatch"
+    );
     if let Some((from, to)) = standalone {
         range = runtime.block_on(transaction_range(&reader, &catalog, from, to))?;
     }
@@ -327,7 +337,8 @@ async fn feed_pages(
     // Reserve whole read batches before opening scans, then transfer exact byte
     // permits to individual ready records. No task acquires a second reservation
     // while retaining its first, including when a record fills the entire budget.
-    let batch_limit = budget.available_permits().min(8 * 1024 * 1024);
+    let total = budget.available_permits();
+    let batch_limit = total.min(8 * 1024 * 1024);
     loop {
         eyre::ensure!(!cancellation.is_cancelled(), "corpus replay cancelled");
         while tasks.len() < fetch_tasks {
@@ -342,13 +353,20 @@ async fn feed_pages(
                 (end, bytes) = (next.end, bytes + next.bytes);
                 batch.push(next);
             }
+            // A batch over the limit is a single record; one over the whole budget would wait
+            // for permits that never exist.
+            eyre::ensure!(
+                bytes <= total,
+                "corpus record of {bytes} bytes exceeds the {total}-byte replay budget (RETH_CORPUS_BUDGET_MIB)"
+            );
+            let permits = u32::try_from(bytes)?;
             let sender = sender.clone();
             let reader = reader.clone();
             let budget = budget.clone();
             let space = space.clone();
             tasks.spawn(async move {
                 let waiting = Instant::now();
-                let mut reservation = budget.acquire_many_owned(bytes as u32).await?;
+                let mut reservation = budget.acquire_many_owned(permits).await?;
                 let budget_wait = waiting.elapsed();
                 let mut queue_wait = Duration::ZERO;
                 let mut payloads = store::PayloadScan::open(&reader, &batch).await?;

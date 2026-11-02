@@ -2,6 +2,7 @@
 //!
 //! Every type here is the stored representation; execution lives in other modules.
 
+use crate::store::WINCODE;
 use alloy_primitives::{B256, U256};
 use reth_primitives_traits::Account;
 use std::collections::{BTreeMap, BTreeSet};
@@ -155,7 +156,7 @@ impl Transaction {
 
     fn outputs(&self) -> eyre::Result<Outputs> {
         Ok(Outputs {
-            outcome: digest(&wincode::serialize(&self.outcome)?),
+            outcome: digest(&wincode::config::serialize(&self.outcome, WINCODE)?),
             receipt: digest(&self.receipt),
             after: digest(&self.after),
         })

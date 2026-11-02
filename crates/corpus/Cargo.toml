@@ -21,7 +21,6 @@ default = ["replay"]
 # Capture, replay, migration and gc, with the EVM and database crates they need. Reading blocks as
 # fuzz inputs (`fuzz`) needs none of them.
 replay = [
-  "dep:alloy-consensus",
   "dep:alloy-eip7928",
   "dep:reth-execution-types",
   "dep:reth-cli-util",
@@ -52,7 +51,7 @@ crossbeam-channel = { workspace = true, optional = true }
 reth-consensus = { workspace = true, optional = true }
 reth-trie-common = { workspace = true, optional = true }
 reth-storage-api = { workspace = true, features = ["db-api"], optional = true }
-alloy-consensus = { workspace = true, optional = true }
+alloy-consensus.workspace = true
 alloy-rlp.workspace = true
 alloy-eip7928 = { workspace = true, optional = true }
 alloy-eips.workspace = true
@@ -60,6 +59,7 @@ tempo-chainspec = { workspace = true, features = ["reth"] }
 tempo-fuzz-types.workspace = true
 
 async-trait.workspace = true
+bincode.workspace = true
 aws-config = "1.8"
 aws-credential-types = "1.2"
 blake3.workspace = true

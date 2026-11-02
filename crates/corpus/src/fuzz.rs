@@ -39,16 +39,18 @@ impl Corpus {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        let (reader, catalog) = runtime.block_on(async {
+        let (reader, catalog, tip) = runtime.block_on(async {
             let store = Store::open(url, endpoint).await?;
             let (catalog, _) = store
                 .catalog()
                 .await?
                 .ok_or_else(|| eyre::eyre!("no corpus catalog at {url}"))?;
             eyre::ensure!(catalog.complete, "corpus {url} is not complete");
-            eyre::Ok((store.reader(&catalog).await?, catalog))
+            let reader = store.reader(&catalog).await?;
+            let tip = store::tip_timestamp(&reader, &catalog.context).await?;
+            eyre::Ok((reader, catalog, tip))
         })?;
-        let chain_spec = chain_spec_input(&catalog)?;
+        let chain_spec = chain_spec_input(&catalog, tip)?;
         Ok(Self {
             runtime,
             reader,
@@ -83,15 +85,16 @@ impl Corpus {
 }
 
 /// The harness chain of `catalog`'s corpus: its chain ID and hardfork schedule, from the known
-/// chain it was captured from. A hardfork that chain never activates is scheduled at `u64::MAX`.
-fn chain_spec_input(catalog: &Catalog) -> eyre::Result<ChainSpecInput> {
+/// chain it was captured from, whose forks must agree with the corpus up to its `tip` timestamp
+/// ([`store::forks_agree`]). A hardfork that chain never activates is scheduled at `u64::MAX`.
+fn chain_spec_input(catalog: &Catalog, tip: u64) -> eyre::Result<ChainSpecInput> {
     let context = &catalog.context;
     let spec: &TempoChainSpec = [&**PRESTO, &**MODERATO]
         .into_iter()
         .find(|spec| {
             context.chain_id == spec.chain_id()
                 && context.genesis == spec.genesis_hash().to_string()
-                && context.forks == spec.display_hardforks().to_string()
+                && store::forks_agree(&context.forks, &spec.display_hardforks().to_string(), tip)
         })
         .ok_or_else(|| eyre::eyre!("corpus chain {} is not a known chain", context.chain_id))?;
     let hardforks = TempoHardfork::VARIANTS
