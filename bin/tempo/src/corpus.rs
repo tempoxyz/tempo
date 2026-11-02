@@ -169,6 +169,11 @@ impl ReplayCommand {
         let (config, consensus) = components(chain);
         if let Some(path) = &self.blocks {
             let blocks = fuzz::read_blocks(path, &catalog)?;
+            eyre::ensure!(
+                !blocks.is_empty(),
+                "{} lists no block of the corpus",
+                path.display()
+            );
             return tokio::task::spawn_blocking(move || {
                 replay::run_blocks(store, catalog, &blocks, config, consensus, workers)
             })
