@@ -24,6 +24,9 @@ mod aws_lc;
 #[cfg(feature = "aws-lc")]
 pub use aws_lc::AwsLcP384;
 
+#[cfg(feature = "test-utils")]
+pub mod testing;
+
 /// Maximum accepted size of the complete COSE_Sign1 document.
 pub const MAX_DOCUMENT_SIZE: usize = 24_576;
 /// Maximum accepted size of the signed CBOR payload.

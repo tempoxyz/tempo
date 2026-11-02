@@ -1,16 +1,16 @@
 #![cfg(feature = "reth")]
 
-use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
+use alloy_primitives::{Address, B256, B512, Bytes, Signature, TxKind, U256};
 use alloy_rpc_types_eth::TransactionRequest;
 use reth_rpc_convert::{TryIntoSimTx, TryIntoTxEnv};
 use reth_rpc_eth_types::EthApiError;
 use tempo_alloy::rpc::{
-    ConfigurableAccountSimulationApproval, ConfigurableAccountSimulationSpec,
-    TempoTransactionRequest,
+    AttestedSimulationSpec, ConfigurableAccountSimulationApproval,
+    ConfigurableAccountSimulationSpec, TempoTransactionRequest,
 };
 use tempo_evm::TempoEvmEnv;
 use tempo_primitives::{
-    SignatureType, TempoTxEnvelope,
+    SignatureType, TempoSignature, TempoTxEnvelope,
     transaction::{
         ConfigurableAccountConfig, ConfigurableAccountOwner, ConfigurableAccountSignature,
         KeyAuthorization, PrimitiveSignature,
@@ -49,6 +49,41 @@ fn configurable_account_key_type_cannot_fabricate_a_primitive_simulation_signatu
     assert!(matches!(error, EthApiError::InvalidParams(_)));
 }
 
+fn attested() -> AttestedSimulationSpec {
+    AttestedSimulationSpec {
+        policy_id: B256::repeat_byte(0xAA),
+        user_tag: B256::repeat_byte(0xBB),
+        slot: 1,
+        program_key: B512::repeat_byte(0x03),
+        valid_until: None,
+    }
+}
+
+/// An attested sender simulates with a placeholder of its fields, valid 300 seconds past the
+/// block timestamp.
+#[test]
+fn attested_sender_simulates_with_a_placeholder_signature() {
+    let mut request = aa_request(SignatureType::Secp256k1);
+    request.inner.from = Some(attested().address());
+    request.attested_simulation = Some(attested());
+    let mut env = TempoEvmEnv::default();
+    env.block.timestamp = U256::from(1_800_000_000u64);
+
+    let tx_env = request.clone().try_into_tx_env(&env).unwrap();
+    let TempoSignature::Attested(signature) = tx_env.inner().as_aa().unwrap().inner().signature()
+    else {
+        panic!("the outer signature is the attested placeholder");
+    };
+    assert_eq!(signature, &attested().mock_signature(1_800_000_000));
+
+    let TempoTxEnvelope::AA(signed) =
+        TryIntoSimTx::<TempoTxEnvelope>::try_into_sim_tx(request).unwrap()
+    else {
+        panic!("an attested simulation is a Tempo transaction");
+    };
+    assert!(matches!(signed.signature(), TempoSignature::Attested(_)));
+}
+
 /// Two of three owners, each of weight one.
 fn config() -> ConfigurableAccountConfig {
     ConfigurableAccountConfig {
@@ -69,6 +104,7 @@ fn approval(owner: u8) -> ConfigurableAccountSimulationApproval {
         owner: Address::repeat_byte(owner),
         key_type: Some(SignatureType::Secp256k1),
         key_data: None,
+        attested: None,
     }
 }
 
@@ -182,6 +218,60 @@ fn grant_simulation_signs_the_grant_with_mock_owner_approvals(
     |request| request.key_authorization_simulation = Some(spec(vec![approval(1), approval(2)])),
     "keyAuthorizationSimulation requires keyAuthorization";
     "grant simulation without a grant"
+)]
+#[test_case(
+    |request| request.key_authorization_attested_simulation = Some(attested()),
+    "keyAuthorizationAttestedSimulation requires keyAuthorization";
+    "attested grant simulation without a grant"
+)]
+#[test_case(
+    |request| {
+        request.key_authorization_simulation = Some(spec(vec![approval(1), approval(2)]));
+        request.key_authorization_attested_simulation = Some(attested());
+    },
+    "keyAuthorizationSimulation and keyAuthorizationAttestedSimulation are exclusive";
+    "two grant simulations"
+)]
+#[test_case(
+    |request| request.attested_simulation = Some(attested()),
+    "attestedSimulation address does not match from";
+    "attested sender mismatch"
+)]
+#[test_case(
+    |request| {
+        request.inner.from = Some(attested().address());
+        request.key_id = Some(Address::repeat_byte(0xcc));
+        request.attested_simulation = Some(attested());
+    },
+    "attestedSimulation excludes configurableAccountSimulation and keyId";
+    "attested sender under an access key"
+)]
+#[test_case(
+    |request| {
+        request.configurable_account_simulation = Some(spec(vec![
+            ConfigurableAccountSimulationApproval {
+                key_type: None,
+                attested: Some(attested()),
+                ..approval(1)
+            },
+            approval(2),
+        ]));
+    },
+    "attested approval address does not match its owner";
+    "attested approval for another owner"
+)]
+#[test_case(
+    |request| {
+        request.configurable_account_simulation = Some(spec(vec![
+            ConfigurableAccountSimulationApproval {
+                attested: Some(attested()),
+                ..approval(1)
+            },
+            approval(2),
+        ]));
+    },
+    "an attested approval excludes keyType and keyData";
+    "attested approval with a key type"
 )]
 fn simulation_rejects_inconsistent_roles(
     configure: fn(&mut TempoTransactionRequest),

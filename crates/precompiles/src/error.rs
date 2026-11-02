@@ -23,11 +23,12 @@ use evm2::{
 use tempo_contracts::{
     TempoHardfork,
     precompiles::{
-        AccountKeychainError, AddrRegistryError, ConfigurableAccountError, CurrentCommitteeError,
-        FeeManagerError, NonceError, ReceivePolicyGuardError, RolesAuthError,
-        SignatureVerifierError, StablecoinDEXError, StorageCreditsError, TIP20ChannelReserveError,
-        TIP20FactoryError, TIP403RegistryError, TIPFeeAMMError, UnknownFunctionSelector,
-        ValidatorConfigError, ValidatorConfigV2Error, ZoneFactoryError,
+        AccountKeychainError, AddrRegistryError, AttestedKeyRegistryError,
+        ConfigurableAccountError, CurrentCommitteeError, FeeManagerError, NonceError,
+        ReceivePolicyGuardError, RolesAuthError, SignatureVerifierError, StablecoinDEXError,
+        StorageCreditsError, TIP20ChannelReserveError, TIP20FactoryError, TIP403RegistryError,
+        TIPFeeAMMError, UnknownFunctionSelector, ValidatorConfigError, ValidatorConfigV2Error,
+        ZoneFactoryError,
     },
 };
 use tempo_primitives::transaction::ConfigurableAccountConfigError;
@@ -120,6 +121,10 @@ pub enum TempoPrecompileError {
     #[error("configurable account error: {0:?}")]
     ConfigurableAccountError(ConfigurableAccountError),
 
+    /// Error from the attested key registry precompile.
+    #[error("attested key registry error: {0:?}")]
+    AttestedKeyRegistryError(AttestedKeyRegistryError),
+
     /// Gas limit exceeded during precompile execution.
     #[error("Gas limit exceeded")]
     OutOfGas,
@@ -181,6 +186,7 @@ impl From<TempoPrecompileError> for HandlerError {
             | TempoPrecompileError::CurrentCommitteeError(_)
             | TempoPrecompileError::ZoneFactoryError(_)
             | TempoPrecompileError::ConfigurableAccountError(_)
+            | TempoPrecompileError::AttestedKeyRegistryError(_)
             | TempoPrecompileError::InvalidConfigCommitmentWrite
             | TempoPrecompileError::OutOfGas
             | TempoPrecompileError::StaticCallNotAllowed
@@ -248,6 +254,7 @@ impl TempoPrecompileError {
             Self::CurrentCommitteeError(e) => e.selector(),
             Self::ZoneFactoryError(e) => e.selector(),
             Self::ConfigurableAccountError(e) => e.selector(),
+            Self::AttestedKeyRegistryError(e) => e.selector(),
             Self::UnknownFunctionSelector(selector) => *selector,
             Self::Panic(_) | Self::StorageDeltaUnderflow(_) => Panic::SELECTOR,
             Self::OutOfGas
@@ -288,6 +295,7 @@ impl TempoPrecompileError {
             | Self::CurrentCommitteeError(_)
             | Self::ZoneFactoryError(_)
             | Self::ConfigurableAccountError(_)
+            | Self::AttestedKeyRegistryError(_)
             | Self::UnknownFunctionSelector(_)
             | Self::InvalidConfigCommitmentWrite => false,
         }
@@ -349,6 +357,7 @@ impl TempoPrecompileError {
             Self::CurrentCommitteeError(e) => e.abi_encode().into(),
             Self::ZoneFactoryError(e) => e.abi_encode().into(),
             Self::ConfigurableAccountError(e) => e.abi_encode().into(),
+            Self::AttestedKeyRegistryError(e) => e.abi_encode().into(),
             Self::OutOfGas => {
                 return Err(PrecompileHalt::OutOfGas.into());
             }
@@ -412,6 +421,11 @@ pub type TempoPrecompileErrorRegistry = HashMap<
 /// Builds a [`TempoPrecompileErrorRegistry`] mapping every known error selector to its decoder.
 pub fn error_decoder_registry() -> TempoPrecompileErrorRegistry {
     let mut registry: TempoPrecompileErrorRegistry = HashMap::new();
+    // First, so the selectors it shares with other precompiles keep their existing decoders.
+    add_errors_to_registry(
+        &mut registry,
+        TempoPrecompileError::AttestedKeyRegistryError,
+    );
     add_errors_to_registry(&mut registry, TempoPrecompileError::StablecoinDEX);
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIP20);
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIP20Factory);

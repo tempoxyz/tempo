@@ -25,8 +25,8 @@ use reth_execution_types::StateUpdate;
 use std::sync::Arc;
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::precompiles::{
-    ADDRESS_REGISTRY_ADDRESS, CONFIGURABLE_ACCOUNT_ADDRESS, CURRENT_COMMITTEE_ADDRESS,
-    ICurrentCommittee, INITIAL_FACTORY_OWNER, InitialZoneFactoryAccount,
+    ADDRESS_REGISTRY_ADDRESS, ATTESTED_KEY_REGISTRY_ADDRESS, CONFIGURABLE_ACCOUNT_ADDRESS,
+    CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, INITIAL_FACTORY_OWNER, InitialZoneFactoryAccount,
     RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, STORAGE_CREDITS_ADDRESS,
     TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS, initial_zone_factory_state,
     t13_zone_factory_state,
@@ -682,6 +682,8 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         }
         if self.evm().config_spec_id().is_t14() {
             self.deploy_precompile_at_boundary(CONFIGURABLE_ACCOUNT_ADDRESS, &[])?;
+            // PoC: the attested key registry rides on T14 instead of a new hardfork.
+            self.deploy_precompile_at_boundary(ATTESTED_KEY_REGISTRY_ADDRESS, &[])?;
         }
         // Chains starting at T13 supply their runtime code in genesis. Preserve those
         // allocations (including locally compiled contracts on test chains). Chains

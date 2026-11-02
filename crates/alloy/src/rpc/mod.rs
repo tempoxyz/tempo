@@ -3,8 +3,10 @@
 mod header;
 pub use header::TempoHeaderResponse;
 
+mod attested;
 mod configurable_account;
 mod request;
+pub use attested::{ATTESTED_SIMULATION_VALIDITY, AttestedSimulationSpec};
 pub use configurable_account::{
     ConfigurableAccountSimulationApproval, ConfigurableAccountSimulationSpec,
 };

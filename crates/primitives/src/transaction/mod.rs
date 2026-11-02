@@ -1,3 +1,5 @@
+pub mod attested;
+pub use attested::*;
 pub mod configurable_account;
 pub use configurable_account::*;
 pub mod envelope;

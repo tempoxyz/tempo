@@ -235,7 +235,9 @@ fn tempo_signature_roundtrip_keychain_v1_from_token_bytes() {
         TempoSignature::Keychain(keychain) => {
             assert_eq!(keychain.key_id(&token.digest).unwrap(), expected_key_id);
         }
-        TempoSignature::Primitive(_) | TempoSignature::ConfigurableAccount(_) => {
+        TempoSignature::Primitive(_)
+        | TempoSignature::ConfigurableAccount(_)
+        | TempoSignature::Attested(_) => {
             panic!("expected keychain signature")
         }
     }
@@ -259,7 +261,9 @@ fn tempo_signature_roundtrip_keychain_v2_from_token_bytes() {
         TempoSignature::Keychain(keychain) => {
             assert_eq!(keychain.key_id(&token.digest).unwrap(), expected_key_id);
         }
-        TempoSignature::Primitive(_) | TempoSignature::ConfigurableAccount(_) => {
+        TempoSignature::Primitive(_)
+        | TempoSignature::ConfigurableAccount(_)
+        | TempoSignature::Attested(_) => {
             panic!("expected keychain signature")
         }
     }

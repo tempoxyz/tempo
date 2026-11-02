@@ -5367,7 +5367,7 @@ fn native_threshold_above_eight_is_met_by_eight_approvals() {
     let approvals = owners[..8]
         .iter()
         .map(|owner| PrimitiveSignature::Secp256k1(owner.sign_hash_sync(&digest).unwrap()))
-        .collect();
+        .collect::<Vec<_>>();
     let signature =
         ConfigurableAccountSignature::try_new(account, config.clone(), approvals).unwrap();
     let result = f.run_as(

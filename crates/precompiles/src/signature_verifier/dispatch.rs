@@ -33,9 +33,7 @@ impl Precompile for SignatureVerifier {
             |call| match call {
                 ISignatureVerifier::ISignatureVerifierCalls {
                     recover(call) => view(call, |c| self.recover(c.hash, c.signature)),
-                    verify(call) => view(call, |c| {
-                        self.recover(c.hash, c.signature).map(|sig| sig == c.signer)
-                    }),
+                    verify(call) => view(call, |c| self.verify(c.signer, c.hash, c.signature)),
                     #[schedule(since = T6)]
                     verifyKeychain(call) => view(call, |c| {
                         self.verify_keychain(c.account, c.hash, c.signature)

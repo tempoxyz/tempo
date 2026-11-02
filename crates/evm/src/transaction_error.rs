@@ -240,6 +240,16 @@ pub enum TempoInvalidTransaction {
     #[error(transparent)]
     ConfigurableAccount(#[from] ConfigurableAccountError),
 
+    /// An attested signature (type `0x06`) failed a check that needs block state: activation,
+    /// its validity window, or the Attested Key Registry (attested signers PoC).
+    ///
+    /// State-dependent: a later block or registration can change the result.
+    #[error("attested signature rejected: {reason}")]
+    AttestedSignatureRejected {
+        /// Failed check.
+        reason: &'static str,
+    },
+
     /// A primitive key acted alone in `role` for an account with a nonzero configuration
     /// commitment (TIP-1112).
     ///
@@ -296,7 +306,8 @@ impl TempoInvalidTransaction {
             | Self::CollectFeePreTx(_)
             | Self::NonceManagerError(_)
             | Self::V2KeychainBeforeActivation
-            | Self::RootKeyRetired { .. } => false,
+            | Self::RootKeyRetired { .. }
+            | Self::AttestedSignatureRejected { .. } => false,
 
             Self::ConfigurableAccount(error) => match error {
                 ConfigurableAccountError::AccountMismatch { .. }

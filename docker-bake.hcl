@@ -7,11 +7,11 @@ variable "VERGEN_GIT_SHA_SHORT" {
 }
 
 group "default" {
-  targets = ["tempo", "tempo-devnet", "tempo-localnet", "tempo-sidecar", "tempo-xtask"]
+  targets = ["tempo", "tempo-devnet", "tempo-localnet", "tempo-xtask"]
 }
 
 group "nightly" {
-  targets = ["tempo", "tempo-devnet", "tempo-localnet", "tempo-sidecar", "tempo-xtask"]
+  targets = ["tempo", "tempo-devnet", "tempo-localnet", "tempo-xtask"]
 }
 
 target "docker-metadata" {}

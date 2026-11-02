@@ -42,6 +42,7 @@ serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 
 [dev-dependencies]
+tempo-nitro-attestation = { workspace = true, features = ["aws-lc", "test-utils"] }
 criterion.workspace = true
 base64.workspace = true
 alloy-signer.workspace = true
@@ -74,6 +75,7 @@ test-utils = [
     "dep:itertools",
     "dep:serde",
     "dep:serde_json",
+    "tempo-nitro-attestation/test-utils",
     "tempo-primitives/test-utils",
 ]
 rpc = ["tempo-contracts/rpc"]

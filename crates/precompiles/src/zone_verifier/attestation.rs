@@ -1,32 +1,54 @@
 //! Gas-metered AWS Nitro attestation verification for the Zone verifier.
 
 use tempo_nitro_attestation::{
-    AwsLcP384, MAX_DOCUMENT_SIZE, NitroAttestation, parse_attestation, verify_parsed,
+    AwsLcP384, MAX_DOCUMENT_SIZE, NitroAttestation, ParsedAttestation, parse_attestation,
+    verify_parsed,
 };
 
 use crate::storage::StorageCtx;
 
-pub(super) const BASE_GAS: u64 = 40_000;
-pub(super) const SIGNATURE_GAS: u64 = 150_000;
+pub(crate) const BASE_GAS: u64 = 40_000;
+pub(crate) const SIGNATURE_GAS: u64 = 150_000;
 
 /// Parses and verifies a Nitro attestation against `root_der` at the given block timestamp.
 /// Base gas is charged before parsing, and signature gas before cryptographic verification.
 ///
 /// Returns `Ok(Some(_))` for a valid attestation, `Ok(None)` for validation failure.
-pub(super) fn verify_attestation_with_root(
+pub(crate) fn verify_attestation_with_root(
     document: &[u8],
     block_timestamp: u64,
     root_der: &[u8],
 ) -> crate::error::Result<Option<NitroAttestation>> {
+    let Some(parsed) = parse_attestation_metered(document)? else {
+        return Ok(None);
+    };
+    verify_parsed_metered(parsed, block_timestamp, root_der)
+}
+
+/// Charges base gas and parses `document`, the first half of [`verify_attestation_with_root`].
+///
+/// Returns `Ok(None)` for an oversized or malformed document, before charging gas for an oversized
+/// one.
+pub(crate) fn parse_attestation_metered(
+    document: &[u8],
+) -> crate::error::Result<Option<ParsedAttestation>> {
     if document.len() > MAX_DOCUMENT_SIZE {
         return Ok(None);
     }
 
     StorageCtx.deduct_gas(BASE_GAS)?;
-    let Ok(parsed) = parse_attestation(document) else {
-        return Ok(None);
-    };
+    Ok(parse_attestation(document).ok())
+}
 
+/// Charges signature gas and verifies `parsed` against `root_der` at the given block timestamp,
+/// the second half of [`verify_attestation_with_root`].
+///
+/// Returns `Ok(Some(_))` for a valid attestation, `Ok(None)` for validation failure.
+pub(crate) fn verify_parsed_metered(
+    parsed: ParsedAttestation,
+    block_timestamp: u64,
+    root_der: &[u8],
+) -> crate::error::Result<Option<NitroAttestation>> {
     let verification_gas = u64::try_from(parsed.signature_count())
         .unwrap_or(u64::MAX)
         .saturating_mul(SIGNATURE_GAS);

@@ -358,7 +358,8 @@ fn verify_configurable_account_accepts_calldata_beyond_the_primitive_cap_at_t14(
     };
     let account = config.derive_account().unwrap();
     let digest = configurable_account_digest(HASH, account, config.version);
-    let approvals = signers.iter().map(|signer| signer.sign(digest)).collect();
+    let approvals: Vec<PrimitiveSignature> =
+        signers.iter().map(|signer| signer.sign(digest)).collect();
     let signature = TempoSignature::ConfigurableAccount(
         ConfigurableAccountSignature::try_new(account, config, approvals).unwrap(),
     )

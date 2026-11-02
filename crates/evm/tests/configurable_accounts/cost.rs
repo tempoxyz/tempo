@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use tempo_primitives::{
     MAX_WEBAUTHN_SIGNATURE_LENGTH,
     transaction::{
-        ConfigurableAccountQuorumError,
+        ConfigurableAccountQuorumError, OwnerApproval,
         tt_signature::{WebAuthnSignature, derive_p256_address, normalize_p256_s},
     },
 };
@@ -63,14 +63,16 @@ impl MaximumQuorums {
             let approvals = keys[40..]
                 .iter()
                 .map(|owner| Self::max_webauthn(&owner.key, owner.x, owner.y, digest))
-                .collect();
+                .collect::<Vec<_>>();
             (
                 inner,
                 ConfigurableAccountSignature::try_new(account, config, approvals).unwrap(),
             )
         });
         let mut approvals = roles[1].1.signatures().to_vec();
-        let PrimitiveSignature::WebAuthn(last) = approvals.last_mut().unwrap() else {
+        let OwnerApproval::Primitive(PrimitiveSignature::WebAuthn(last)) =
+            approvals.last_mut().unwrap()
+        else {
             unreachable!()
         };
         // Valid low-s scalars from the same key, but the wrong prehash: parsing

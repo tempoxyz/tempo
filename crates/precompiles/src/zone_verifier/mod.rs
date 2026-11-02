@@ -1,6 +1,6 @@
 //! TIP-1098 native Nitro-backed Zone verifier.
 
-mod attestation;
+pub(crate) mod attestation;
 pub mod dispatch;
 mod pcr;
 

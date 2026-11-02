@@ -1,6 +1,11 @@
-use super::{tempo_transaction::MAX_WEBAUTHN_SIGNATURE_LENGTH, tt_signature::PrimitiveSignature};
+use super::{
+    attested::{AttestedSignature, SIGNATURE_TYPE_ATTESTED},
+    tempo_transaction::{MAX_WEBAUTHN_SIGNATURE_LENGTH, SECP256K1_SIGNATURE_LENGTH},
+    tt_signature::PrimitiveSignature,
+};
 use crate::gas::{SECP256K1_VERIFY_GAS, keccak_gas};
 use alloc::vec::Vec;
+use alloy_consensus::crypto::RecoveryError;
 use alloy_eips::eip7623::{STANDARD_TOKEN_COST, tokens_in_calldata};
 use alloy_primitives::{Address, B256, Keccak256, keccak256};
 use alloy_rlp::{BufMut, Decodable, Encodable, Error as RlpError};
@@ -250,8 +255,9 @@ pub struct ConfigurableAccountSignature {
     config: ConfigurableAccountConfig,
     /// Owner approvals over the configurable account digest.
     ///
-    /// Each approval is a primitive signature; recursive authorization is not supported.
-    signatures: Vec<PrimitiveSignature>,
+    /// Each approval is a primitive or attested signature; recursive authorization is not
+    /// supported.
+    signatures: Vec<OwnerApproval>,
 }
 
 impl ConfigurableAccountSignature {
@@ -262,12 +268,12 @@ impl ConfigurableAccountSignature {
     pub fn try_new(
         account: Address,
         config: ConfigurableAccountConfig,
-        signatures: Vec<PrimitiveSignature>,
+        signatures: impl IntoIterator<Item = impl Into<OwnerApproval>>,
     ) -> Result<Self, ConfigurableAccountSignatureError> {
         let signature = Self {
             account,
             config,
-            signatures,
+            signatures: signatures.into_iter().map(Into::into).collect(),
         };
         signature.validate_shape()?;
         Ok(signature)
@@ -284,7 +290,7 @@ impl ConfigurableAccountSignature {
     }
 
     /// Returns encoded owner approvals.
-    pub fn signatures(&self) -> &[PrimitiveSignature] {
+    pub fn signatures(&self) -> &[OwnerApproval] {
         &self.signatures
     }
 
@@ -390,11 +396,16 @@ impl ConfigurableAccountSignature {
     pub(crate) fn size(&self) -> usize {
         size_of::<Self>()
             + self.config.owners.capacity() * size_of::<ConfigurableAccountOwner>()
-            + self.signatures.capacity() * size_of::<PrimitiveSignature>()
+            + self.signatures.capacity() * size_of::<OwnerApproval>()
             + self
                 .signatures
                 .iter()
-                .map(|signature| signature.size() - size_of::<PrimitiveSignature>())
+                .map(|signature| match signature {
+                    OwnerApproval::Primitive(signature) => {
+                        signature.size() - size_of::<PrimitiveSignature>()
+                    }
+                    OwnerApproval::Attested(_) => 0,
+                })
                 .sum::<usize>()
     }
 
@@ -408,7 +419,7 @@ impl ConfigurableAccountSignature {
         self.config.encode(&mut witness);
         self.signatures
             .iter()
-            .map(PrimitiveSignature::verification_gas)
+            .map(OwnerApproval::verification_gas)
             .chain([
                 tokens_in_calldata(&witness) * STANDARD_TOKEN_COST,
                 keccak_gas(self.config.commitment_preimage_len())?,
@@ -425,6 +436,107 @@ impl ConfigurableAccountSignature {
     }
 }
 
+/// One owner approval in a configurable account signature.
+///
+/// An attested approval (attested signers PoC) approves for its attested address, which the
+/// configuration lists as an ordinary owner. It is valid only while its program key is current
+/// in the Attested Key Registry; callers check that against state.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum OwnerApproval {
+    /// A secp256k1, P256 or WebAuthn signature by the owner's key.
+    Primitive(PrimitiveSignature),
+    /// A registered program key's signature for the owner's attested address.
+    Attested(AttestedSignature),
+}
+
+impl OwnerApproval {
+    /// Verifies the approval of `digest` and returns the approving owner address.
+    pub fn recover_signer(&self, digest: &B256) -> Result<Address, RecoveryError> {
+        match self {
+            Self::Primitive(signature) => signature.recover_signer(digest),
+            Self::Attested(signature) => signature.recover_signer(digest),
+        }
+    }
+
+    /// Full verification gas, as for the same signature standing alone.
+    pub fn verification_gas(&self) -> u64 {
+        match self {
+            Self::Primitive(signature) => signature.verification_gas(),
+            Self::Attested(signature) => signature.verification_gas(),
+        }
+    }
+
+    /// Returns the attested signature, when applicable.
+    pub const fn as_attested(&self) -> Option<&AttestedSignature> {
+        match self {
+            Self::Attested(signature) => Some(signature),
+            Self::Primitive(_) => None,
+        }
+    }
+
+    /// Length of the typed signature bytes.
+    pub fn encoded_length(&self) -> usize {
+        match self {
+            Self::Primitive(signature) => signature.encoded_length(),
+            Self::Attested(signature) => signature.encoded_length(),
+        }
+    }
+}
+
+impl From<PrimitiveSignature> for OwnerApproval {
+    fn from(signature: PrimitiveSignature) -> Self {
+        Self::Primitive(signature)
+    }
+}
+
+impl From<AttestedSignature> for OwnerApproval {
+    fn from(signature: AttestedSignature) -> Self {
+        Self::Attested(signature)
+    }
+}
+
+// Each approval is an RLP byte string of its typed signature bytes, so primitive approvals keep
+// their existing encoding and an attested approval is `0x06 || rlp(fields)`.
+impl Encodable for OwnerApproval {
+    fn encode(&self, out: &mut dyn BufMut) {
+        match self {
+            Self::Primitive(signature) => signature.encode(out),
+            Self::Attested(signature) => {
+                alloy_rlp::Header {
+                    list: false,
+                    payload_length: signature.encoded_length(),
+                }
+                .encode(out);
+                signature.encode_bytes_into(out);
+            }
+        }
+    }
+
+    fn length(&self) -> usize {
+        alloy_rlp::Header {
+            list: false,
+            payload_length: self.encoded_length(),
+        }
+        .length_with_payload()
+    }
+}
+
+impl Decodable for OwnerApproval {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let bytes = alloy_rlp::Header::decode_bytes(buf, false)?;
+        match bytes {
+            [SIGNATURE_TYPE_ATTESTED, rest @ ..] if bytes.len() != SECP256K1_SIGNATURE_LENGTH => {
+                AttestedSignature::decode_exact(rest)
+                    .map(Self::Attested)
+                    .map_err(RlpError::Custom)
+            }
+            _ => PrimitiveSignature::from_bytes(bytes)
+                .map(Self::Primitive)
+                .map_err(RlpError::Custom),
+        }
+    }
+}
+
 impl Decodable for ConfigurableAccountSignature {
     /// Decodes the signature and checks its configuration and size limits.
     /// Does not verify owner signatures or account state.
@@ -433,7 +545,7 @@ impl Decodable for ConfigurableAccountSignature {
         struct WireSignature {
             account: Address,
             config: ConfigurableAccountConfig,
-            signatures: Vec<PrimitiveSignature>,
+            signatures: Vec<OwnerApproval>,
         }
         let wire = <WireSignature as Decodable>::decode(buf)?;
         Self::try_new(wire.account, wire.config, wire.signatures)
@@ -747,7 +859,8 @@ mod serde_impls {
 mod arbitrary_impl {
     use super::{
         ConfigurableAccountConfig, ConfigurableAccountOwner, ConfigurableAccountSignature,
-        MAX_CONFIGURABLE_ACCOUNT_SIGNATURES, MAX_WEBAUTHN_SIGNATURE_LENGTH, PrimitiveSignature,
+        MAX_CONFIGURABLE_ACCOUNT_SIGNATURES, MAX_WEBAUTHN_SIGNATURE_LENGTH, OwnerApproval,
+        PrimitiveSignature,
     };
     use alloc::{vec, vec::Vec};
     use alloy_primitives::Address;
@@ -767,7 +880,7 @@ mod arbitrary_impl {
                         .min(MAX_WEBAUTHN_SIGNATURE_LENGTH - 128);
                     signature.webauthn_data = signature.webauthn_data.slice(..len);
                 }
-                signatures.push(signature);
+                signatures.push(OwnerApproval::Primitive(signature));
             }
 
             let mut owner = Address::arbitrary(u)?;

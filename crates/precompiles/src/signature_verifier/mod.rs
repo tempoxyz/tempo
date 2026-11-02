@@ -3,6 +3,7 @@ pub mod dispatch;
 use crate::{
     SIGNATURE_VERIFIER_ADDRESS,
     account_keychain::{AccountKeychain, AuthorizedKey},
+    attested_key_registry::AttestedKeyRegistry,
     configurable_account::valid_account,
     error::{Result, TempoPrecompileError},
     storage::account_config_commitment,
@@ -11,10 +12,14 @@ use alloy::primitives::{Address, B256, Bytes, KECCAK256_EMPTY};
 use tempo_contracts::precompiles::SignatureVerifierError;
 use tempo_precompiles_macros::contract;
 use tempo_primitives::transaction::{
-    SignatureType,
+    ATTESTED_MAX_VALIDITY_WINDOW, AttestedSignature, OwnerApproval, SECP256K1_SIGNATURE_LENGTH,
+    SIGNATURE_TYPE_ATTESTED, SignatureType,
     tt_signature::{AccountSignature, KeychainSignature, PrimitiveSignature, TempoSignature},
 };
 use tracing::trace;
+
+/// Cold storage read cost of each Attested Key Registry read.
+const ATTESTED_REGISTRY_READ_GAS: u64 = 2_100;
 
 #[contract(addr = SIGNATURE_VERIFIER_ADDRESS)]
 pub struct SignatureVerifier {}
@@ -24,7 +29,17 @@ impl SignatureVerifier {
         self.__initialize()
     }
 
+    /// Recovers the signer of `hash`.
+    ///
+    /// From T14, an attested signature (type `0x06`) recovers its attested address if it passes
+    /// every attested signature check, and reverts with `InvalidSignature` otherwise.
     pub fn recover(&self, hash: B256, signature: Bytes) -> Result<Address> {
+        if let Some(attested) = self.decode_attested(&signature)? {
+            return self
+                .verify_attested(hash, &attested)?
+                .ok_or_else(|| SignatureVerifierError::invalid_signature().into());
+        }
+
         // Parse and validate signature (handles size checks + type disambiguation).
         let sig = PrimitiveSignature::from_bytes(&signature)
             .map_err(|_| SignatureVerifierError::invalid_format())?;
@@ -36,6 +51,71 @@ impl SignatureVerifier {
         // Verify and recover signer.
         sig.recover_signer(&hash)
             .map_err(|_| SignatureVerifierError::invalid_signature().into())
+    }
+
+    /// Returns whether `signature` signs `hash` for `signer`.
+    ///
+    /// From T14, an attested signature returns `false`, instead of reverting, when it fails the
+    /// validity window or registry check, or names another address.
+    pub fn verify(&self, signer: Address, hash: B256, signature: Bytes) -> Result<bool> {
+        if let Some(attested) = self.decode_attested(&signature)? {
+            return Ok(self.verify_attested(hash, &attested)? == Some(signer));
+        }
+        self.recover(hash, signature)
+            .map(|recovered| recovered == signer)
+    }
+
+    /// Decodes a `0x06` attested signature from T14, reverting with `InvalidFormat` for a
+    /// non-canonical one. Returns `None` for other signature types.
+    fn decode_attested(&self, signature: &[u8]) -> Result<Option<AttestedSignature>> {
+        if !self.storage.spec().is_t14() {
+            return Ok(None);
+        }
+        match signature {
+            [SIGNATURE_TYPE_ATTESTED, ..] if signature.len() != SECP256K1_SIGNATURE_LENGTH => {
+                match TempoSignature::from_bytes(signature) {
+                    Ok(TempoSignature::Attested(attested)) => Ok(Some(attested)),
+                    _ => Err(SignatureVerifierError::invalid_format().into()),
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Checks an attested signature against current state, as a transaction signature is
+    /// checked: `valid_until` within `[now, now + 600]`, the program key current in its
+    /// Attested Key Registry slot, and the P256 signature over the attested digest of `hash`.
+    ///
+    /// Charges the P256 verification and calldata gas before any check; the two registry reads
+    /// charge their own storage gas. Returns the attested address, or `None` if a check fails.
+    fn verify_attested(
+        &self,
+        hash: B256,
+        signature: &AttestedSignature,
+    ) -> Result<Option<Address>> {
+        // `verification_gas` includes the two cold reads, which the storage reads charge.
+        self.storage
+            .deduct_gas(signature.verification_gas() - 2 * ATTESTED_REGISTRY_READ_GAS)?;
+        if !self.attested_key_current(signature)? {
+            return Ok(None);
+        }
+        Ok(signature.recover_signer(&hash).ok())
+    }
+
+    /// Returns whether `now <= valid_until <= now + 600` and the Attested Key Registry slot the
+    /// signature names holds the program key as current for the policy. Reads the registry only inside the window.
+    fn attested_key_current(&self, signature: &AttestedSignature) -> Result<bool> {
+        let now = self.storage.timestamp().saturating_to::<u64>();
+        if signature.valid_until < now || signature.valid_until - now > ATTESTED_MAX_VALIDITY_WINDOW
+        {
+            return Ok(false);
+        }
+        AttestedKeyRegistry::new().program_key_current(
+            signature.policy_id,
+            signature.slot,
+            signature.program_key_x(),
+            signature.program_key_y(),
+        )
     }
 
     /// Returns whether `signature` is an active access-key signature for `account`.
@@ -93,6 +173,11 @@ impl SignatureVerifier {
         let Some(signature) = signature.as_configurable_account() else {
             return Err(SignatureVerifierError::invalid_format().into());
         };
+        let attested: Vec<_> = signature
+            .signatures()
+            .iter()
+            .filter_map(OwnerApproval::as_attested)
+            .collect();
         let config = signature.config();
         let spec = self.storage.spec();
         let (commitment, has_code) = self.storage.with_account_info(account, |info| {
@@ -109,9 +194,12 @@ impl SignatureVerifier {
         } else {
             0
         };
+        // Each attested approval costs a standalone `0x06` signature: its two registry reads
+        // charge their own storage gas instead of the cold reads `verification_gas` includes.
         let verification_gas = signature
             .verification_gas()
             .and_then(|gas| gas.checked_add(initial_proof_gas))
+            .and_then(|gas| gas.checked_sub(attested.len() as u64 * 2 * ATTESTED_REGISTRY_READ_GAS))
             .ok_or(TempoPrecompileError::OutOfGas)?;
         self.storage.deduct_gas(verification_gas)?;
         if signature.account() != account || !valid_account(account, spec) || has_code {
@@ -119,6 +207,11 @@ impl SignatureVerifier {
         }
         if signature.validate_account_commitment(commitment).is_err() {
             return Ok(false);
+        }
+        for approval in attested {
+            if !self.attested_key_current(approval)? {
+                return Ok(false);
+            }
         }
 
         signature.verify_approvals(hash).map_err(|error| {
@@ -193,13 +286,24 @@ struct RecoveredKeychainKey {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
+    use crate::{
+        attested_key_registry::tests::{
+            DEV_CHAIN_ID, NOW, OWNER, program_key, register_dev_key, with_registry,
+        },
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+    };
+    use alloy::primitives::B512;
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
+    use p256::ecdsa::{Signature, SigningKey, signature::hazmat::PrehashSigner};
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_primitives::transaction::{
-        ConfigurableAccountConfig, ConfigurableAccountOwner, ConfigurableAccountSignature,
-        tt_signature::{SIGNATURE_TYPE_P256, SIGNATURE_TYPE_WEBAUTHN},
+        AttestedSignature, ConfigurableAccountConfig, ConfigurableAccountOwner,
+        ConfigurableAccountSignature, configurable_account_digest,
+        tt_signature::{
+            P256SignatureWithPreHash, SIGNATURE_TYPE_P256, SIGNATURE_TYPE_WEBAUTHN,
+            derive_p256_address, normalize_p256_s,
+        },
     };
 
     fn sign_recover(hash: B256, signature: Vec<u8>) -> Result<Address> {
@@ -239,6 +343,238 @@ mod tests {
             }
             Ok(())
         })
+    }
+
+    #[test]
+    fn attested_signatures_are_invalid_format() -> eyre::Result<()> {
+        let mut signature = B512::ZERO;
+        signature[31] = 1;
+        signature[63] = 1;
+        let attested = TempoSignature::Attested(AttestedSignature {
+            policy_id: B256::repeat_byte(1),
+            user_tag: B256::repeat_byte(2),
+            slot: 0,
+            program_key: B512::repeat_byte(3),
+            valid_until: 1,
+            signature,
+        });
+        let bytes = attested.to_bytes();
+        assert_eq!(TempoSignature::from_bytes(&bytes).unwrap(), attested);
+        let account = Address::repeat_byte(4);
+
+        // Before T14 the type is unknown.
+        let mut storage = HashMapStorageProvider::new_with_spec(1337, TempoHardfork::T13);
+        StorageCtx::enter(&mut storage, || {
+            let verifier = SignatureVerifier::new();
+            assert_eq!(
+                verifier.recover(B256::ZERO, bytes.clone()).unwrap_err(),
+                SignatureVerifierError::invalid_format().into()
+            );
+            assert_eq!(
+                verifier
+                    .verify(account, B256::ZERO, bytes.clone())
+                    .unwrap_err(),
+                SignatureVerifierError::invalid_format().into()
+            );
+        });
+
+        // From T14 a non-canonical encoding is still an invalid format.
+        let mut non_canonical = bytes.to_vec();
+        non_canonical.push(0);
+        let mut storage = HashMapStorageProvider::new_with_spec(1337, TempoHardfork::T14);
+        StorageCtx::enter(&mut storage, || {
+            let verifier = SignatureVerifier::new();
+            assert_eq!(
+                verifier
+                    .verify(account, B256::ZERO, non_canonical.into())
+                    .unwrap_err(),
+                SignatureVerifierError::invalid_format().into()
+            );
+            assert_eq!(
+                verifier
+                    .verify_configurable_account(account, B256::ZERO, &bytes)
+                    .unwrap_err(),
+                SignatureVerifierError::invalid_format().into()
+            );
+            let keychain = [&[0x04][..], account.as_slice(), &bytes].concat();
+            for result in [
+                verifier.verify_keychain(account, B256::ZERO, keychain.clone().into()),
+                verifier.verify_keychain_admin(account, B256::ZERO, keychain.into()),
+            ] {
+                assert_eq!(
+                    result.unwrap_err(),
+                    SignatureVerifierError::invalid_format().into()
+                );
+            }
+            Ok(())
+        })
+    }
+
+    /// Signs `hash` as an attested signature for user tag `0x7A…` with the program key of
+    /// `seed`, naming `slot` of `policy_id`.
+    fn attested_sign(
+        policy_id: B256,
+        slot: u8,
+        seed: u8,
+        hash: B256,
+        valid_until: u64,
+    ) -> AttestedSignature {
+        let (x, y) = program_key(seed);
+        let key = SigningKey::from_slice(&[seed; 32]).unwrap();
+        let mut signature = AttestedSignature {
+            policy_id,
+            user_tag: B256::repeat_byte(0x7A),
+            slot,
+            program_key: B512::from_slice(&[x.as_slice(), y.as_slice()].concat()),
+            valid_until,
+            signature: B512::ZERO,
+        };
+        let raw: Signature = key.sign_prehash(signature.digest(hash).as_slice()).unwrap();
+        let raw = raw.normalize_s().unwrap_or(raw);
+        signature.signature = B512::from_slice(&raw.to_bytes());
+        signature
+    }
+
+    #[test]
+    fn verifies_attested_signatures_against_the_registry() {
+        with_registry(DEV_CHAIN_ID, |registry| {
+            let policy_id = register_dev_key(registry, 7);
+            let sign =
+                |hash: B256, valid_until: u64| attested_sign(policy_id, 0, 7, hash, valid_until);
+            let verifier = SignatureVerifier::new();
+            let hash = B256::repeat_byte(0x42);
+            let valid = sign(hash, NOW + 600);
+            let signer = valid.address();
+            let bytes = TempoSignature::Attested(valid).to_bytes();
+            let verify = |signer: Address, hash: B256, signature: &Bytes| {
+                verifier.verify(signer, hash, signature.clone()).unwrap()
+            };
+
+            assert!(verify(signer, hash, &bytes));
+            assert_eq!(verifier.recover(hash, bytes.clone()).unwrap(), signer);
+            assert!(!verify(Address::repeat_byte(9), hash, &bytes));
+            assert!(!verify(signer, B256::ZERO, &bytes));
+
+            // The registered key signing for a slot that does not hold it.
+            let wrong_slot =
+                TempoSignature::Attested(attested_sign(policy_id, 1, 7, hash, NOW + 600))
+                    .to_bytes();
+            assert!(!verify(signer, hash, &wrong_slot));
+            assert_eq!(
+                verifier.recover(hash, wrong_slot).unwrap_err(),
+                SignatureVerifierError::invalid_signature().into()
+            );
+
+            for valid_until in [NOW - 1, NOW + 601] {
+                let bytes = TempoSignature::Attested(sign(hash, valid_until)).to_bytes();
+                assert!(!verify(signer, hash, &bytes));
+                assert_eq!(
+                    verifier.recover(hash, bytes).unwrap_err(),
+                    SignatureVerifierError::invalid_signature().into()
+                );
+            }
+
+            registry.set_paused(OWNER, policy_id, true).unwrap();
+            assert!(!verify(signer, hash, &bytes));
+            registry.set_paused(OWNER, policy_id, false).unwrap();
+            assert!(verify(signer, hash, &bytes));
+
+            registry.revoke_keys(OWNER, policy_id).unwrap();
+            assert!(!verify(signer, hash, &bytes));
+            assert_eq!(
+                verifier.recover(hash, bytes).unwrap_err(),
+                SignatureVerifierError::invalid_signature().into()
+            );
+        });
+    }
+
+    #[test]
+    fn verifies_attested_owner_approvals_against_the_registry() {
+        with_registry(DEV_CHAIN_ID, |registry| {
+            let policy_id = register_dev_key(registry, 7);
+            let attested_owner = attested_sign(policy_id, 0, 7, B256::ZERO, NOW).address();
+            let p256_key = SigningKey::from_slice(&[9; 32]).unwrap();
+            let (p256_x, p256_y) = program_key(9);
+            let p256_owner = derive_p256_address(&p256_x, &p256_y);
+            let hash = B256::repeat_byte(0x42);
+
+            // Owners of weight one each: the attested address and a P256 key.
+            let account_with = |threshold: u8| {
+                let mut owners = [attested_owner, p256_owner]
+                    .map(|owner| ConfigurableAccountOwner { owner, weight: 1 })
+                    .to_vec();
+                owners.sort_by_key(|owner| owner.owner);
+                let config = ConfigurableAccountConfig {
+                    salt: B256::ZERO,
+                    version: 0,
+                    threshold,
+                    owners,
+                };
+                (config.derive_account().unwrap(), config)
+            };
+            let sign = |account: Address,
+                        config: &ConfigurableAccountConfig,
+                        slot: u8,
+                        valid_until: u64,
+                        with_p256: bool| {
+                let digest = configurable_account_digest(hash, account, config.version);
+                let mut approvals: Vec<(Address, OwnerApproval)> = vec![(
+                    attested_owner,
+                    attested_sign(policy_id, slot, 7, digest, valid_until).into(),
+                )];
+                if with_p256 {
+                    let (raw, _) = p256_key
+                        .sign_prehash_recoverable(digest.as_slice())
+                        .unwrap();
+                    let approval = PrimitiveSignature::P256(P256SignatureWithPreHash {
+                        r: B256::from_slice(&raw.r().to_bytes()),
+                        s: normalize_p256_s(&raw.s().to_bytes()).unwrap(),
+                        pub_key_x: p256_x,
+                        pub_key_y: p256_y,
+                        pre_hash: false,
+                    });
+                    approvals.push((p256_owner, approval.into()));
+                }
+                approvals.sort_by_key(|(owner, _)| *owner);
+                TempoSignature::ConfigurableAccount(
+                    ConfigurableAccountSignature::try_new(
+                        account,
+                        config.clone(),
+                        approvals.into_iter().map(|(_, approval)| approval),
+                    )
+                    .unwrap(),
+                )
+                .to_bytes()
+            };
+            let verifier = SignatureVerifier::new();
+            let verify = |account: Address, bytes: &[u8]| {
+                verifier.verify_configurable_account(account, hash, bytes)
+            };
+
+            // Threshold 1: the attested approval alone verifies, within its validity window.
+            let (single, single_config) = account_with(1);
+            assert!(verify(single, &sign(single, &single_config, 0, NOW + 600, false)).unwrap());
+            for valid_until in [NOW - 1, NOW + 601] {
+                let bytes = sign(single, &single_config, 0, valid_until, false);
+                assert!(!verify(single, &bytes).unwrap());
+            }
+            // An approval naming a slot that does not hold its program key.
+            assert!(!verify(single, &sign(single, &single_config, 1, NOW + 600, false)).unwrap());
+
+            // Threshold 2: the attested approval needs the P256 approval too.
+            let (pair, pair_config) = account_with(2);
+            assert_eq!(
+                verify(pair, &sign(pair, &pair_config, 0, NOW + 600, false)).unwrap_err(),
+                SignatureVerifierError::invalid_signature().into()
+            );
+            let both = sign(pair, &pair_config, 0, NOW + 600, true);
+            assert!(verify(pair, &both).unwrap());
+
+            // A revoked program key no longer approves, alone or with the P256 approval.
+            registry.revoke_keys(OWNER, policy_id).unwrap();
+            assert!(!verify(single, &sign(single, &single_config, 0, NOW + 600, false)).unwrap());
+            assert!(!verify(pair, &both).unwrap());
+        });
     }
 
     #[test]

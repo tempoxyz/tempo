@@ -433,6 +433,9 @@ impl DerefMut for TestNode {
     }
 }
 
+/// Timestamp before the first block `node.mine` builds (reth's e2e payload helper).
+const RETH_E2E_TIMESTAMP: u64 = 1_710_338_135;
+
 /// Returns the harness setup for `num_nodes` Tempo nodes on `chain_spec`.
 ///
 /// The nodes build their payloads with [`TempoPayloadAttributes::new`] for the payload timestamp,
@@ -573,6 +576,7 @@ impl TestNodeBuilder {
         self
     }
 
+    /// Stamps the first block `first` and each later block one second after its parent.
     pub(crate) fn with_block_timestamps_from(mut self, first: u64) -> Self {
         self.first_block_timestamp = Some(first);
         self
@@ -621,11 +625,23 @@ impl TestNodeBuilder {
 
         let chain_spec = self.build_chain_spec()?;
         let hardfork = chain_spec.tempo_hardfork_at(0);
+        let setup = match self.first_block_timestamp {
+            // `node.mine` stamps block `n` with reth's Cancun test timestamp plus `n`; shift it
+            // so the first block is stamped `first`.
+            Some(first) => {
+                let offset = first.saturating_sub(RETH_E2E_TIMESTAMP + 1);
+                E2ETestSetupBuilder::new_with_attributes_generator(
+                    1,
+                    Arc::new(chain_spec),
+                    move |timestamp| {
+                        TempoPayloadAttributes::new(None, timestamp + offset, 0, Bytes::new(), None)
+                    },
+                )
+            }
+            None => tempo_test_setup(1, Arc::new(chain_spec)),
+        };
 
-        let (node, _wallet) = tempo_test_setup(1, Arc::new(chain_spec))
-            .with_dev_mode(true)
-            .build_single()
-            .await?;
+        let (node, _wallet) = setup.with_dev_mode(true).build_single().await?;
 
         Ok(SingleNodeSetup {
             node: node.into(),

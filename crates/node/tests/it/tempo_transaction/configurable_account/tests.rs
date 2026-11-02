@@ -445,6 +445,7 @@ async fn configurable_account_rpc_fill_and_access_list_preserve_authority() -> e
                 owner: owner.address(),
                 key_type: Some(signature.signature_type()),
                 key_data,
+                attested: None,
             })
         })
         .collect::<eyre::Result<Vec<_>>>()?;

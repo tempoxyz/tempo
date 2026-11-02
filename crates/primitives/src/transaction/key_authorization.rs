@@ -458,14 +458,19 @@ impl SignedKeyAuthorization {
         Ok(signer)
     }
 
-    /// Recovers a primitive signer or returns the named configurable account.
+    /// Recovers a primitive signer, returns the named configurable account, or verifies an
+    /// attested signature over [`KeyAuthorization::signature_hash`] and returns its address.
     ///
     /// For configurable account results, callers must verify the parent account, configuration and
-    /// owner quorum against state. Primitive results still require grant-authority checks.
+    /// owner quorum against state, and for attested results the registry and validity window.
+    /// Primitive results still require grant-authority checks.
     pub fn recover_account(&self) -> Result<Address, RecoveryError> {
         match &self.signature {
             AccountSignature::Primitive(_) => self.recover_signer(),
             AccountSignature::ConfigurableAccount(signature) => Ok(signature.account()),
+            AccountSignature::Attested(signature) => {
+                signature.recover_signer(&self.authorization.signature_hash())
+            }
         }
     }
 

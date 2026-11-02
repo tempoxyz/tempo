@@ -92,6 +92,7 @@ fn simulated_webauthn_approvals_charge_worst_case_data() {
                 owner: owner.address(),
                 key_type: Some(key_type),
                 key_data,
+                attested: None,
             }],
         };
         let request = TempoTransactionRequest {

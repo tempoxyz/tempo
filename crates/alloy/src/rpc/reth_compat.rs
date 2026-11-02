@@ -15,7 +15,7 @@ use tempo_primitives::{
     transaction::{
         ConfigurableAccountQuorumError, ConfigurableAccountSignature,
         ConfigurableAccountWeightAccumulator, KeychainSignature, MAX_WEBAUTHN_SIGNATURE_LENGTH,
-        PrimitiveSignature, tt_signature::WebAuthnSignature,
+        OwnerApproval, PrimitiveSignature, tt_signature::WebAuthnSignature,
     },
 };
 
@@ -38,7 +38,12 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
     fn try_into_sim_tx(mut self) -> Result<TempoTxEnvelope, ValueError<Self>> {
         match self.output_tx_type() {
             TempoTxType::AA => {
-                let signature = match self.simulated_block_signature() {
+                // A simulated block has no timestamp here. Simulated blocks follow wall-clock
+                // time, within the attested validity window either side.
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |elapsed| elapsed.as_secs());
+                let signature = match self.simulated_block_signature(now) {
                     Ok(Some(signature)) => signature,
                     Ok(None) => TempoSignature::default(),
                     Err(error) => return Err(ValueError::new(self, error)),
@@ -63,6 +68,8 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                     key_authorization,
                     configurable_account_simulation,
                     key_authorization_simulation,
+                    attested_simulation,
+                    key_authorization_attested_simulation,
                     valid_before,
                     valid_after,
                     fee_payer_signature,
@@ -84,6 +91,8 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                             key_authorization,
                             configurable_account_simulation,
                             key_authorization_simulation,
+                            attested_simulation,
+                            key_authorization_attested_simulation,
                             valid_before,
                             valid_after,
                             fee_payer_signature,
@@ -105,6 +114,8 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                             key_authorization,
                             configurable_account_simulation,
                             key_authorization_simulation,
+                            attested_simulation,
+                            key_authorization_attested_simulation,
                             valid_before,
                             valid_after,
                             fee_payer_signature,
@@ -147,17 +158,18 @@ impl TryIntoTxEnv<Recovered<TempoTxEnv>, TempoEvmEnv> for TempoTransactionReques
         let key_type = self.key_type.unwrap_or(SignatureType::Secp256k1);
         let key_data = self.key_data.clone();
         let key_id = self.key_id;
-        let signature = match self.simulated_block_signature()? {
-            Some(signature) => signature,
-            None => create_mock_tempo_sig(
-                &key_type,
-                key_data.as_ref(),
-                key_id,
-                caller_addr,
-                evm_env.spec.is_t1c(),
-            )
-            .ok_or_else(|| EthApiError::InvalidParams(MISSING_CONFIGURATION_WITNESS.into()))?,
-        };
+        let signature =
+            match self.simulated_block_signature(evm_env.block.timestamp.saturating_to())? {
+                Some(signature) => signature,
+                None => create_mock_tempo_sig(
+                    &key_type,
+                    key_data.as_ref(),
+                    key_id,
+                    caller_addr,
+                    evm_env.spec.is_t1c(),
+                )
+                .ok_or_else(|| EthApiError::InvalidParams(MISSING_CONFIGURATION_WITNESS.into()))?,
+            };
         let has_fee_payer_signature = self.fee_payer_signature.is_some();
         let tx = self
             .build_aa()
@@ -176,15 +188,26 @@ impl TryIntoTxEnv<Recovered<TempoTxEnv>, TempoEvmEnv> for TempoTransactionReques
 }
 
 impl TempoTransactionRequest {
-    /// Configurable account signatures for a call in a simulated block.
+    /// Configurable account and attested signatures for a call in a simulated block at `now`.
     ///
-    /// Installs the mock grant described by `keyAuthorizationSimulation` and returns the mock
-    /// outer signature described by `configurableAccountSimulation`, or `None` when the outer
-    /// signature is not configurable. Stateful configurable account checks run when the call
-    /// executes at its position, so only the stateless ones are done here.
-    fn simulated_block_signature(&mut self) -> Result<Option<TempoSignature>, EthApiError> {
+    /// Installs the mock grant described by `keyAuthorizationSimulation` or
+    /// `keyAuthorizationAttestedSimulation`, and returns the mock outer signature described by
+    /// `configurableAccountSimulation` or `attestedSimulation`, or `None` when the outer signature
+    /// is neither. Stateful configurable account and attested checks run when the call executes at
+    /// its position, so only the stateless ones are done here.
+    fn simulated_block_signature(
+        &mut self,
+        now: u64,
+    ) -> Result<Option<TempoSignature>, EthApiError> {
         let invalid = |message: &str| EthApiError::InvalidParams(message.into());
         let parent = self.inner.from.unwrap_or_default();
+        if self.key_authorization_simulation.is_some()
+            && self.key_authorization_attested_simulation.is_some()
+        {
+            return Err(invalid(
+                "keyAuthorizationSimulation and keyAuthorizationAttestedSimulation are exclusive",
+            ));
+        }
         if let Some(spec) = &self.key_authorization_simulation {
             let grant = self
                 .key_authorization
@@ -193,7 +216,16 @@ impl TempoTransactionRequest {
             let grant = grant
                 .authorization
                 .clone()
-                .into_signed(spec.mock_signature(spec.signer.unwrap_or(parent))?);
+                .into_signed(spec.mock_signature(spec.signer.unwrap_or(parent), now)?);
+            self.set_key_authorization(grant);
+        } else if let Some(spec) = &self.key_authorization_attested_simulation {
+            let grant = self.key_authorization.as_ref().ok_or_else(|| {
+                invalid("keyAuthorizationAttestedSimulation requires keyAuthorization")
+            })?;
+            let grant = grant
+                .authorization
+                .clone()
+                .into_signed(spec.mock_signature(now));
             self.set_key_authorization(grant);
         } else if let Some(grant) = &self.key_authorization
             && let Some(signature) = grant.signature.as_configurable_account()
@@ -203,6 +235,17 @@ impl TempoTransactionRequest {
                 .map_err(|error| {
                     EthApiError::InvalidParams(ConfigurableAccountError::Quorum(error).to_string())
                 })?;
+        }
+        if let Some(spec) = &self.attested_simulation {
+            if self.configurable_account_simulation.is_some() || self.key_id.is_some() {
+                return Err(invalid(
+                    "attestedSimulation excludes configurableAccountSimulation and keyId",
+                ));
+            }
+            if spec.address() != parent {
+                return Err(invalid("attestedSimulation address does not match from"));
+            }
+            return Ok(Some(TempoSignature::Attested(spec.mock_signature(now))));
         }
         let Some(spec) = self.configurable_account_simulation.as_ref() else {
             return if self.key_type == Some(SignatureType::ConfigurableAccount) {
@@ -221,7 +264,7 @@ impl TempoTransactionRequest {
             ));
         }
         Ok(Some(configurable_account_tempo_sig(
-            spec.mock_signature(account)?,
+            spec.mock_signature(account, now)?,
             self.key_id,
             parent,
         )))
@@ -244,10 +287,11 @@ fn configurable_account_tempo_sig(
 
 impl ConfigurableAccountSimulationSpec {
     /// Builds dummy owner approvals for `account` after checking the claimed quorum, which
-    /// simulation does not recover.
+    /// simulation does not recover. Attested approvals are valid at `now`.
     fn mock_signature(
         &self,
         account: Address,
+        now: u64,
     ) -> Result<ConfigurableAccountSignature, EthApiError> {
         let quorum_error =
             |error: ConfigurableAccountQuorumError| EthApiError::InvalidParams(error.to_string());
@@ -262,22 +306,37 @@ impl ConfigurableAccountSimulationSpec {
             weight
                 .record_owner(approval.owner, owner_weight)
                 .map_err(quorum_error)?;
-            signatures.push(match approval.key_type {
-                None => PrimitiveSignature::WebAuthn(WebAuthnSignature {
-                    webauthn_data: Bytes::from(vec![0xff; MAX_OWNER_WEBAUTHN_DATA_LEN]),
-                    r: B256::ZERO,
-                    s: B256::ZERO,
-                    pub_key_x: B256::ZERO,
-                    pub_key_y: B256::ZERO,
-                }),
-                Some(key_type) => {
+            signatures.push(match (&approval.attested, approval.key_type) {
+                (Some(attested), None) if approval.key_data.is_none() => {
+                    if attested.address() != approval.owner {
+                        return Err(EthApiError::InvalidParams(
+                            "attested approval address does not match its owner".into(),
+                        ));
+                    }
+                    OwnerApproval::Attested(attested.mock_signature(now))
+                }
+                (Some(_), _) => {
+                    return Err(EthApiError::InvalidParams(
+                        "an attested approval excludes keyType and keyData".into(),
+                    ));
+                }
+                (None, None) => {
+                    OwnerApproval::Primitive(PrimitiveSignature::WebAuthn(WebAuthnSignature {
+                        webauthn_data: Bytes::from(vec![0xff; MAX_OWNER_WEBAUTHN_DATA_LEN]),
+                        r: B256::ZERO,
+                        s: B256::ZERO,
+                        pub_key_x: B256::ZERO,
+                        pub_key_y: B256::ZERO,
+                    }))
+                }
+                (None, Some(key_type)) => OwnerApproval::Primitive(
                     create_mock_primitive_signature(&key_type, approval.key_data.clone())
                         .ok_or_else(|| {
                             EthApiError::InvalidParams(
                                 "configurable account owners must use primitive signatures".into(),
                             )
-                        })?
-                }
+                        })?,
+                ),
             });
         }
         weight.finish().map_err(quorum_error)?;
@@ -385,6 +444,8 @@ impl SignableTxRequest<TempoTxEnvelope> for TempoTransactionRequest {
     ) -> Result<TempoTxEnvelope, SignTxRequestError> {
         if self.configurable_account_simulation.is_some()
             || self.key_authorization_simulation.is_some()
+            || self.attested_simulation.is_some()
+            || self.key_authorization_attested_simulation.is_some()
             || self.key_type == Some(SignatureType::ConfigurableAccount)
         {
             return Err(SignTxRequestError::InvalidTransactionRequest);
