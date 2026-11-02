@@ -61,19 +61,24 @@ impl Corpus {
         &self.catalog
     }
 
+    /// `block`'s harness input.
+    pub fn input(&self, block: u64) -> eyre::Result<TempoHarnessInput> {
+        let chunk = self
+            .runtime
+            .block_on(store::published(&self.reader, block))?
+            .1;
+        let input = harness_input(&chunk, self.chain_spec.clone())?;
+        Ok(TempoHarnessInput::Blockchain(input))
+    }
+
     /// Each of `blocks` with its harness input, in the order given.
     pub fn inputs(
         &self,
         blocks: impl IntoIterator<Item = u64>,
     ) -> impl Iterator<Item = eyre::Result<(u64, TempoHarnessInput)>> {
-        blocks.into_iter().map(|block| {
-            let chunk = self
-                .runtime
-                .block_on(store::published(&self.reader, block))?
-                .1;
-            let input = harness_input(&chunk, self.chain_spec.clone())?;
-            Ok((block, TempoHarnessInput::Blockchain(input)))
-        })
+        blocks
+            .into_iter()
+            .map(|block| Ok((block, self.input(block)?)))
     }
 }
 
