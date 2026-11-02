@@ -1,0 +1,90 @@
+# Batch payouts: payroll fan-out and reward distribution. A small treasury pool
+# (16 senders, expiring nonces so they saturate without nonce ordering) pays N
+# recipients in one Tempo transaction, one call per recipient. The helper repeats
+# each template's last call N times (TXGEN_BATCH_PAYOUT_RECIPIENTS, default 32: the
+# txpool admits at most 32 calls per Tempo transaction), scales the reward approval
+# to N and sets gas_limit to N times the per-recipient gas_limit below plus 500K,
+# capping N per template so it fits the 30M transaction gas cap.
+#
+#   module   gas  template             what it models
+#   Deposit   60  payroll_existing     payroll to existing accounts (state-bloat recipients, ~13K gas each)
+#             39  payroll_new          payroll to fresh addresses (new account + balance slot, ~262K gas each)
+#   Earn       1  reward_distribution  rewards deposited into the Earn vault for each recipient
+#
+# Earn deposits use ~210K gas each but need ~1.75M of gas limit each (the vault's
+# peak before refunds), so reward batches hold at most 16 recipients and, as
+# non-payment transactions, fit about once per block in the 30M general lane;
+# their weight is sized to that. Reward recipients are vault users, which the vault
+# setup allowlists. Weights are gas shares. Same fixtures and requirements as
+# public-mix: chain 1337, T10+ and nonzero state bloat.
+include: public-mix.yml
+
+accounts:
+  # users[0..16): funded and allowlisted by the public-mix vault setup.
+  treasury:
+    mnemonic: "test test test test test test test test test test test junk"
+    range:
+      - 0
+      - 16
+
+templates:
+  payroll_existing:
+    type: tempo
+    from: {pool: treasury, select: random}
+    gas_limit: 20000 # per recipient
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    nonce: { uniform: [0, 9223372036854775807] } # TIP-1106, requires T12+
+    valid_for_secs: 25
+    calls:
+      - to: "0x20c0000000000000000000000000000000000000"
+        abi: ERC20
+        function: transfer
+        args:
+          - {address_pool: {pool: existing_recipients, select: random}}
+          - 1
+  payroll_new:
+    type: tempo
+    from: {pool: treasury, select: random}
+    gas_limit: 280000 # per recipient
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    nonce: { uniform: [0, 9223372036854775807] } # TIP-1106, requires T12+
+    valid_for_secs: 25
+    calls:
+      - to: "0x20c0000000000000000000000000000000000000"
+        abi: ERC20
+        function: transfer
+        args:
+          - random
+          - 1
+  reward_distribution:
+    type: tempo
+    from: {pool: treasury, select: random}
+    gas_limit: 1800000 # per recipient
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    nonce: { uniform: [0, 9223372036854775807] } # TIP-1106, requires T12+
+    valid_for_secs: 25
+    calls:
+      - to: "0x20c0000000000000000000000000000000000000"
+        abi: ERC20
+        function: approve
+        args:
+          - "0x7ab1b8f13760b57021ad9baff0be170259245992"
+          - 1000000 # per recipient
+      - to: "0x7ab1b8f13760b57021ad9baff0be170259245992"
+        abi: UserVault
+        function: deposit
+        args:
+          - 1000000
+          - {pool: {pool: users, select: random}}
+          - 990000
+
+mix:
+  - template: payroll_existing
+    weight: 60
+  - template: payroll_new
+    weight: 39
+  - template: reward_distribution
+    weight: 1

@@ -74,7 +74,7 @@ impl From<CreditMode> for Mode {
 
 // NOTE: Encoded manually as a U256 instead of deriving `Storable` because precompile methods
 // access it through `StorageCtx`, while the opcode-level SSTORE hook and end-of-tx refund
-// settlement read the same transient words directly from revm, where `StorageCtx` handlers are
+// settlement read the same transient words directly from EVM2, where `StorageCtx` handlers are
 // not available.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TransientState {

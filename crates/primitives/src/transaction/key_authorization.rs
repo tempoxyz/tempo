@@ -1,5 +1,5 @@
 use super::SignatureType;
-use crate::transaction::PrimitiveSignature;
+use crate::transaction::AccountSignature;
 use alloc::vec::Vec;
 use alloy_consensus::crypto::RecoveryError;
 use alloy_primitives::{Address, B256, U256, keccak256};
@@ -356,7 +356,7 @@ impl KeyAuthorization {
     }
 
     /// Convert the key authorization into a [`SignedKeyAuthorization`] with a signature.
-    pub fn into_signed(self, signature: PrimitiveSignature) -> SignedKeyAuthorization {
+    pub fn into_signed(self, signature: impl Into<AccountSignature>) -> SignedKeyAuthorization {
         SignedKeyAuthorization::new(self, signature)
     }
 
@@ -420,8 +420,8 @@ pub struct SignedKeyAuthorization {
     #[deref]
     pub authorization: KeyAuthorization,
 
-    /// Signature authorizing this key (signed by root key)
-    pub signature: PrimitiveSignature,
+    /// Direct primitive or configurable account signature authorizing this key.
+    pub signature: AccountSignature,
 
     /// Cached signer recovered from `signature`.
     ///
@@ -434,26 +434,41 @@ pub struct SignedKeyAuthorization {
 
 impl SignedKeyAuthorization {
     /// Create a signed key authorization with an empty signer cache.
-    pub fn new(authorization: KeyAuthorization, signature: PrimitiveSignature) -> Self {
+    pub fn new(authorization: KeyAuthorization, signature: impl Into<AccountSignature>) -> Self {
         Self {
             authorization,
-            signature,
+            signature: signature.into(),
             signer: OnceLock::new(),
         }
     }
 
-    /// Recover the signer of the [`KeyAuthorization`].
+    /// Recover the signer of the [`KeyAuthorization`]. Returns `Err` for a configurable account
+    /// signature, which has no single signer.
     pub fn recover_signer(&self) -> Result<Address, RecoveryError> {
+        let AccountSignature::Primitive(signature) = &self.signature else {
+            return Err(RecoveryError::new());
+        };
         if let Some(signer) = self.signer.get() {
             return Ok(*signer);
         }
 
-        let signer = self
-            .signature
-            .recover_signer(&self.authorization.signature_hash())?;
+        let signer = signature.recover_signer(&self.authorization.signature_hash())?;
         self.cache_signer(signer);
 
         Ok(signer)
+    }
+
+    /// Recovers a primitive signer or returns the named configurable account.
+    ///
+    /// For configurable account results, the owner quorum needs only stateless verification
+    /// ([`verify_approvals`](crate::transaction::ConfigurableAccountSignature::verify_approvals));
+    /// only the account's configuration commitment and code must be checked against state.
+    /// Primitive results still require grant-authority checks.
+    pub fn authorizing_account(&self) -> Result<Address, RecoveryError> {
+        match &self.signature {
+            AccountSignature::Primitive(_) => self.recover_signer(),
+            AccountSignature::ConfigurableAccount(signature) => Ok(signature.account()),
+        }
     }
 
     #[cfg(feature = "std")]
