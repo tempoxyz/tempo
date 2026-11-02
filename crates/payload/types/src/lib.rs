@@ -6,17 +6,16 @@
 mod attrs;
 mod budget;
 pub mod estimator;
-mod proposal_budget;
+mod samples;
 
 use alloy_primitives::Bytes;
 pub use attrs::TempoPayloadAttributes;
 pub(crate) use budget::ValidationLatencyEstimator;
 pub use budget::{ValidationLatencyEstimate, ValidationLatencyWorkload};
 pub use estimator::{
-    BuildPlan, Config as EstimatorConfig, Estimator, EstimatorSnapshot, PayloadBudgetDecision,
-    ProposalKey,
+    BuildPlan, Estimator, PayloadBudgetDecision, ProposalBudget, ProposalKey, ProposalTiming,
+    config::{ConfigError, EstimatorConfig, NetworkReservation},
 };
-pub use proposal_budget::ProposalBudget;
 use std::{
     sync::{Arc, OnceLock},
     time::Duration,

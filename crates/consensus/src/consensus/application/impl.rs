@@ -29,7 +29,9 @@ use futures::{FutureExt as _, StreamExt as _, channel::oneshot};
 use rand_core::Rng;
 use reth_primitives_traits::BlockBody as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
-use tempo_payload_types::{Estimator, TempoPayloadAttributes, ValidationLatencyWorkload};
+use tempo_payload_types::{
+    Estimator, ProposalKey, ProposalTiming, TempoPayloadAttributes, ValidationLatencyWorkload,
+};
 use tempo_primitives::TempoConsensusContext;
 use tempo_telemetry_util::display_duration;
 use tracing::{Level, debug, info, instrument, warn};
@@ -56,10 +58,7 @@ pub(in crate::consensus) struct Config<TContext> {
     /// post-state of its parent.
     pub(in crate::consensus) parent_state: TempoParentState,
 
-    /// Shared proposal budget estimator. Provides the proposal return budget (the
-    /// target block time minus the learned network reservation); this application
-    /// feeds it validation times, each own proposal's window and the header
-    /// timestamp of the block built on top of it.
+    /// Proposal pacing and execution feedback shared with the payload builder.
     pub(in crate::consensus) estimator: Estimator,
 
     /// The epoch strategy used by tempo, to map block heights to epochs.
@@ -71,9 +70,7 @@ pub(in crate::consensus) struct Config<TContext> {
 pub(crate) struct Inner {
     public_key: PublicKey,
     epoch_strategy: FixedEpocher,
-    /// Shared proposal budget estimator: provides the proposal window and
-    /// learns from this node's validations and from how long the chain took
-    /// to build on its proposals.
+    /// Shared proposal pacing and execution feedback.
     estimator: Estimator,
 
     executor: crate::executor::Mailbox,
@@ -167,10 +164,10 @@ impl Inner {
         // earlier instant would charge the preparation above twice, here and in the
         // previous proposer's network sample.
         let window_opened = Instant::now();
-        let window_opened_unix_ms = runtime.current().epoch_millis();
+        let window_opened_millis = runtime.current().epoch_millis();
 
         // Use current timestamp but make sure that if parent's timestamp is in the future, we account for that.
-        let mut epoch_millis = window_opened_unix_ms;
+        let mut epoch_millis = window_opened_millis;
         if epoch_millis <= parent.timestamp_millis() {
             self.metrics.parent_ahead_of_local_time.metric().inc();
             epoch_millis = parent.timestamp_millis() + 1
@@ -186,19 +183,14 @@ impl Inner {
         });
 
         let proposer_public_key = crate::utils::public_key_to_b256(&self.public_key);
-        // The window is the target block time minus the learned network reservation.
-        // Starting the proposal is the one estimator call per own proposal that moves
-        // the reservation, by at most one bounded step; a build that fails after this
-        // point has still stepped it. A long preparation shortens the window, since
-        // the peers' proposal timeout started before it. The builder gets what remains
-        // of the window when payload construction is requested.
-        let proposal_budget = self
-            .estimator
-            .start_proposal(window_opened)
-            .after_preparation(window_opened.saturating_duration_since(propose_start));
-        let build_budget = proposal_budget
-            .return_budget
-            .saturating_sub(window_opened.elapsed());
+        // Charge preparation only through the peer-timeout cap, not twice to
+        // adjacent proposers' windows.
+        let proposal_budget = self.estimator.start_proposal(
+            window_opened,
+            window_opened.saturating_duration_since(propose_start),
+        );
+        let return_budget = proposal_budget.return_budget();
+        let build_budget = return_budget.saturating_sub(window_opened.elapsed());
         let attrs = TempoPayloadAttributes::new(
             Some(proposer_public_key),
             timestamp,
@@ -242,16 +234,10 @@ impl Inner {
         // Pace proposal return from the window's opening. Validators still
         // need to repeat replayable build work, so leave room for it before
         // returning the proposal.
-        let return_after = proposal_budget
-            .return_budget
-            .saturating_sub(validation_latency_elapsed);
+        let return_after = return_budget.saturating_sub(validation_latency_elapsed);
         let return_delay = return_after.saturating_sub(proposal_elapsed);
-        // Decide before the sleep whether the proposal met its return budget, from
-        // what the build spent: the sleep's timer overshoot must not decide it, and in
-        // the deterministic e2e runtime the sleep runs on simulated time while
-        // `window_opened` is a real `Instant`.
+        // Sampling eligibility depends on planned elapsed work, not timer overshoot.
         let spent = proposal_elapsed + return_delay;
-        let overran = proposal_budget.overran(spent);
         debug!(
             proposal.digest = %proposal.digest(),
             proposal_elapsed = %display_duration(proposal_elapsed),
@@ -265,28 +251,25 @@ impl Inner {
             .sleep(return_after.saturating_sub(window_opened.elapsed()))
             .await;
 
-        // The proposal leaves this node now; the wait after its window closes is the
-        // network sample the block built on top of it completes, so record the window
-        // on the clock header timestamps use. A proposal that overran its budget by
-        // more than the tolerance takes no sample: its overrun is the build time
-        // multiplier's to absorb. Overruns within the tolerance are dry builds
-        // returning a millisecond or two late and still count, or nearly every sample
-        // taken while the pool is dry would be dropped.
-        let returned_at = Instant::now();
-        let returned_unix_ms = runtime.current().epoch_millis();
-        if overran {
+        // Record both clocks at return; the estimator owns sampling eligibility.
+        let recorded = self.estimator.on_proposal_returned(
+            Instant::now(),
+            proposal_budget,
+            ProposalTiming {
+                key: ProposalKey {
+                    epoch: round.epoch().get(),
+                    view: round.view().get(),
+                },
+                window_opened_millis,
+                returned_millis: runtime.current().epoch_millis(),
+                elapsed: spent,
+            },
+        );
+        if !recorded {
             debug!(
                 proposal.digest = %proposal.digest(),
-                overrun = %display_duration(spent.saturating_sub(proposal_budget.return_budget)),
+                overrun = %display_duration(spent.saturating_sub(return_budget)),
                 "proposal overran its return budget; taking no network sample"
-            );
-        } else {
-            self.estimator.on_proposal_returned(
-                returned_at,
-                window_opened_unix_ms,
-                returned_unix_ms,
-                (round.epoch().get(), round.view().get()),
-                proposal_budget.return_budget,
             );
         }
 
@@ -610,18 +593,29 @@ impl Reporter for Inner {
 
     fn report(&mut self, update: Self::Activity) -> Feedback {
         if let Update::Block(block, ack) = update {
-            // A finalized child's timestamp completes its parent's network sample if this
-            // node proposed the parent; the estimator ignores other parents. Finalized
-            // blocks make the child that counts the canonical one and cover this node's
-            // own children as well as other leaders'.
-            if let Some(ctx) = block.header().consensus_context {
-                let now = Instant::now();
-                self.estimator.on_child_block_built(
-                    now,
-                    (ctx.epoch, ctx.parent_view),
-                    ctx.view,
+            // Only finalized children supply canonical sampling observations.
+            // Derive the parent's epoch from its height, not the child's epoch.
+            if let Some(ctx) = block.header().consensus_context
+                && let Some(parent_height) = block.height().previous()
+            {
+                let parent_epoch = self
+                    .epoch_strategy
+                    .containing(parent_height)
+                    .expect("epoch strategy is for all heights");
+                if self.estimator.on_child_block_finalized(
+                    Instant::now(),
+                    ProposalKey {
+                        epoch: parent_epoch.epoch().get(),
+                        view: ctx.parent_view,
+                    },
+                    ProposalKey {
+                        epoch: ctx.epoch,
+                        view: ctx.view,
+                    },
                     block.timestamp_millis(),
-                );
+                ) {
+                    self.metrics.network_samples.metric().inc();
+                }
             }
             ack.acknowledge();
         }
@@ -641,6 +635,7 @@ async fn wait_until_timestamp(runtime: &impl Clock, timestamp: u64) {
 #[derive(Clone)]
 struct Metrics {
     parent_ahead_of_local_time: Counter,
+    network_samples: Counter,
 }
 
 impl Metrics {
@@ -650,8 +645,13 @@ impl Metrics {
             "number of times the parent block timestamp was ahead of local time when proposing",
         );
 
+        let network_samples = context.counter(
+            "network_samples",
+            "number of network samples recorded from finalized successors of own proposals",
+        );
         Self {
             parent_ahead_of_local_time,
+            network_samples,
         }
     }
 }

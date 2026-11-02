@@ -55,6 +55,11 @@ const MAINNET_TESTNET_EPOCH_LENGTH_BLOCKS: u64 = 21_600;
 /// the finalized tip should be able to sync from peers.
 pub const MINIMAL_PEER_SYNC_FINALIZED_BLOCKS: u64 = 3 * MAINNET_TESTNET_EPOCH_LENGTH_BLOCKS;
 
+/// Starts consensus using `estimator` as the authority for proposal pacing.
+///
+/// The estimator must be shared with the payload builder. Timing fields in
+/// `config` seed that estimator at the launch boundary; this function does not
+/// apply them again, so an explicit estimator override takes precedence.
 pub async fn run_consensus_stack(
     context: commonware_runtime::tokio::Context,
     config: Args,

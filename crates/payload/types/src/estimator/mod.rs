@@ -1,8 +1,14 @@
-//! Shared build-time and validation feedback for paced payloads.
+//! Shared payload-work estimates and proposal pacing learned from finalized successors.
 
 mod build_plan;
 mod build_time;
+pub(crate) mod config;
 mod network;
+mod proposal;
+
+pub use config::{DEFAULT_NETWORK_BUDGET, DEFAULT_TARGET_BLOCK_TIME};
+use config::{EstimatorConfig, NetworkReservation};
+pub use proposal::ProposalBudget;
 
 pub use build_plan::{BuildPlan, PayloadBudgetDecision};
 
@@ -14,206 +20,45 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::{ProposalBudget, ValidationLatencyEstimator, ValidationLatencyWorkload};
+use crate::{ValidationLatencyEstimator, ValidationLatencyWorkload};
 use build_time::BuildTimeTracker;
-use network::{NetworkTracker, PendingProposal};
+use network::NetworkTracker;
 
-/// Target wall-clock time between blocks used when no configuration is given.
-pub const DEFAULT_TARGET_BLOCK_TIME: Duration = Duration::from_millis(550);
-/// Initial and minimum network reservation (proposal propagation plus votes).
-pub const DEFAULT_NETWORK_BUDGET: Duration = Duration::from_millis(50);
-/// Largest network reservation the estimator may learn on its own.
-///
-/// Bounds how much of the block time the wait after a proposal window may claim
-/// before an operator has to look at the network. Validator replay beyond the
-/// builder's own projected work is learned as network time, so the cap bounds
-/// that as well.
-pub const DEFAULT_NETWORK_BUDGET_MAX: Duration = Duration::from_millis(300);
-/// Percentile of recent network samples reserved when no configuration is given.
-pub const DEFAULT_NETWORK_RESERVE_PERCENTILE: u8 = 75;
-/// How far a proposal may run past its return budget and still count as having
-/// met it, see [`Config::return_budget_overrun_tolerance`].
-///
-/// This is the builder's pacing precision on a dry build, which idles up to its
-/// budget in 1 ms steps and returns a millisecond or two late; real overruns
-/// under load are tens of milliseconds.
-pub const DEFAULT_RETURN_BUDGET_OVERRUN_TOLERANCE: Duration = Duration::from_millis(5);
+/// Percentile followed by both build and network estimates.
+const RESERVE_PERCENTILE: usize = 75;
+/// Dry builds pace in 1 ms steps and can return a millisecond or two late.
+const OVERRUN_TOLERANCE: Duration = Duration::from_millis(5);
 
-/// Lowest accepted network reserve percentile: the median of the window.
-const MIN_NETWORK_RESERVE_PERCENTILE: u8 = 50;
-/// Highest accepted network reserve percentile: the slowest sample in the window.
-const MAX_NETWORK_RESERVE_PERCENTILE: u8 = 100;
-
-/// Identifies a proposal by its own round as `(epoch, view)`: the epoch and
-/// the view in which the proposal itself was made, not those of its parent
-/// or of the block built on top of it.
-pub type ProposalKey = (u64, u64);
-
-/// Static proposal budget configuration, validated at construction.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Config {
-    /// Target interval between block header timestamps.
-    pub target_block_time: Duration,
-    /// Initial and minimum network reservation.
-    pub network_budget: Duration,
-    /// Maximum network reservation; equal to the floor disables learning.
-    pub network_budget_max: Duration,
-    /// Reserved network percentile, from 50 to 100 inclusive.
-    pub network_reserve_percentile: u8,
-    /// Whether two consecutive slow samples can raise the percentile target.
-    pub network_reserve_fast_rise: bool,
-    /// Initial build multiplier, from 1.0 to 1.7 inclusive.
-    pub build_time_multiplier: BuildTimeMultiplier,
-    /// Maximum accepted proposal overrun; `Duration::MAX` records all proposals.
-    pub return_budget_overrun_tolerance: Duration,
+/// Identifies a proposal by its own epoch and view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProposalKey {
+    /// Epoch in which this proposal was made.
+    pub epoch: u64,
+    /// View in which this proposal was made.
+    pub view: u64,
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            target_block_time: DEFAULT_TARGET_BLOCK_TIME,
-            network_budget: DEFAULT_NETWORK_BUDGET,
-            network_budget_max: DEFAULT_NETWORK_BUDGET_MAX,
-            network_reserve_percentile: DEFAULT_NETWORK_RESERVE_PERCENTILE,
-            network_reserve_fast_rise: true,
-            build_time_multiplier: BuildTimeMultiplier::default(),
-            return_budget_overrun_tolerance: DEFAULT_RETURN_BUDGET_OVERRUN_TOLERANCE,
-        }
-    }
+/// Clock readings and planned elapsed time for a returned proposal.
+#[derive(Debug)]
+pub struct ProposalTiming {
+    /// Identity of the returned proposal, not its parent or child.
+    pub key: ProposalKey,
+    /// Unix milliseconds when the proposal window opened, on the header clock.
+    pub window_opened_millis: u64,
+    /// Unix milliseconds when the proposal was returned, on the same clock.
+    pub returned_millis: u64,
+    /// Work plus planned pacing delay, excluding timer overshoot.
+    pub elapsed: Duration,
 }
 
-impl Config {
-    /// Creates a configuration for the given block time and network floor,
-    /// with the network cap and build multiplier at their defaults.
-    pub fn new(target_block_time: Duration, network_budget: Duration) -> Self {
-        Self {
-            target_block_time,
-            network_budget,
-            network_budget_max: Self::default_network_budget_max(target_block_time, network_budget),
-            ..Self::default()
-        }
-    }
-
-    /// The network reservation cap used when none is configured: the floor plus
-    /// half the initial proposal window, at most [`DEFAULT_NETWORK_BUDGET_MAX`] and
-    /// never below the floor, so it stays below the target whenever the floor does.
-    pub fn default_network_budget_max(
-        target_block_time: Duration,
-        network_budget: Duration,
-    ) -> Duration {
-        let initial_window = target_block_time.saturating_sub(network_budget);
-        network_budget
-            .saturating_add(initial_window / 2)
-            .min(DEFAULT_NETWORK_BUDGET_MAX)
-            .max(network_budget)
-    }
-
-    /// Creates a configuration with the network reservation pinned to
-    /// `network_budget`, so the return budget is exactly `proposal_return_budget`
-    /// for the lifetime of the node.
-    ///
-    /// Every own proposal takes a network sample, however far it overran: a pinned
-    /// reservation never learns from them, so excluding overruns would only hide
-    /// them from tests whose builds are slow relative to the budget.
-    pub fn fixed(proposal_return_budget: Duration, network_budget: Duration) -> Self {
-        Self {
-            target_block_time: proposal_return_budget.saturating_add(network_budget),
-            network_budget,
-            network_budget_max: network_budget,
-            return_budget_overrun_tolerance: Duration::MAX,
-            ..Self::default()
-        }
-    }
-
-    /// Sets the initial build time multiplier.
-    pub fn with_build_time_multiplier(
-        mut self,
-        build_time_multiplier: BuildTimeMultiplier,
-    ) -> Self {
-        self.build_time_multiplier = build_time_multiplier;
-        self
-    }
-
-    /// Checks that the reservations leave room for a proposal and that the
-    /// learning knobs are in range. Call this before [`Estimator::new`] to
-    /// handle invalid configuration without panicking.
-    pub fn validate(&self) -> Result<(), ConfigError> {
-        if self.network_budget >= self.target_block_time {
-            return Err(ConfigError::NetworkBudget {
-                network_budget: self.network_budget,
-                target_block_time: self.target_block_time,
-            });
-        }
-        if self.network_budget_max < self.network_budget {
-            return Err(ConfigError::NetworkBudgetMaxBelowFloor {
-                network_budget_max: self.network_budget_max,
-                network_budget: self.network_budget,
-            });
-        }
-        if self.network_budget_max >= self.target_block_time {
-            return Err(ConfigError::NetworkBudgetMax {
-                network_budget_max: self.network_budget_max,
-                target_block_time: self.target_block_time,
-            });
-        }
-        if !(MIN_NETWORK_RESERVE_PERCENTILE..=MAX_NETWORK_RESERVE_PERCENTILE)
-            .contains(&self.network_reserve_percentile)
-        {
-            return Err(ConfigError::NetworkReservePercentile {
-                percentile: self.network_reserve_percentile,
-            });
-        }
-        Ok(())
-    }
-}
-
-/// Why a proposal budget configuration is invalid.
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-pub enum ConfigError {
-    /// The network floor leaves no time for a proposal.
-    #[error(
-        "network budget ({network_budget:?}) must be smaller than the target block time ({target_block_time:?})"
-    )]
-    NetworkBudget {
-        /// The configured floor.
-        network_budget: Duration,
-        /// The configured block interval.
-        target_block_time: Duration,
-    },
-    /// The network cap is below the floor.
-    #[error(
-        "maximum network budget ({network_budget_max:?}) must not be smaller than the network budget ({network_budget:?})"
-    )]
-    NetworkBudgetMaxBelowFloor {
-        /// The configured cap.
-        network_budget_max: Duration,
-        /// The configured floor.
-        network_budget: Duration,
-    },
-    /// The network cap leaves no time for a proposal.
-    #[error(
-        "maximum network budget ({network_budget_max:?}) must be smaller than the target block time ({target_block_time:?})"
-    )]
-    NetworkBudgetMax {
-        /// The configured cap.
-        network_budget_max: Duration,
-        /// The configured block interval.
-        target_block_time: Duration,
-    },
-    /// The percentile is outside the median-to-maximum range.
-    #[error("network reserve percentile ({percentile}) must be between 50 and 100, inclusive")]
-    NetworkReservePercentile {
-        /// The rejected percentile.
-        percentile: u8,
-    },
-}
-
-/// Cloneable pacing feedback shared by consensus and the payload builder.
+/// Shared build and validation estimates with an adaptive proposal return budget.
+/// Network reservations follow finalized successors of this node's proposals.
 ///
 /// Clones share state: feedback recorded on one is seen by every other.
 #[derive(Clone, Debug)]
 pub struct Estimator {
-    config: Config,
+    target_block_time: Duration,
+    overrun_tolerance: Option<Duration>,
     state: Arc<Mutex<EstimatorState>>,
 }
 
@@ -222,16 +67,24 @@ impl Estimator {
     ///
     /// # Panics
     ///
-    /// Panics if `config` is invalid. Call [`Config::validate`] beforehand to
+    /// Panics if `config` is invalid. Call [`EstimatorConfig::validate`] beforehand to
     /// handle invalid configuration without panicking.
-    pub fn new(config: Config) -> Self {
+    pub fn new(config: EstimatorConfig) -> Self {
         config.validate().expect("invalid estimator configuration");
         Self {
-            config,
+            target_block_time: config.target_block_time,
+            overrun_tolerance: match config.network_reservation_policy {
+                NetworkReservation::Adaptive => Some(OVERRUN_TOLERANCE),
+                NetworkReservation::Fixed => None,
+            },
             state: Arc::new(Mutex::new(EstimatorState {
                 validation: ValidationLatencyEstimator::default(),
                 build_time: BuildTimeTracker::new(config.build_time_multiplier),
-                network: NetworkTracker::new(&config),
+                network: NetworkTracker::new(
+                    config.network_budget,
+                    config.target_block_time,
+                    config.network_reservation_policy,
+                ),
             })),
         }
     }
@@ -269,55 +122,63 @@ impl Estimator {
         self.lock_state().build_time.observe(now, finished_build);
     }
 
-    /// Records a proposal that met its budget; clocks use header timestamp milliseconds.
+    /// Records an own proposal returned at monotonic `now` for a future network sample.
+    ///
+    /// `budget` must be the result of this proposal's `start_proposal` call.
+    /// Returns false when `timing.elapsed` exceeds that budget's sampling tolerance.
+    /// Timer overshoot is not part of elapsed work. Duplicate identities replace
+    /// earlier returns; unmatched returns expire after ten seconds, with at most
+    /// eight retained. Both millisecond readings use the header timestamp clock.
     pub fn on_proposal_returned(
         &self,
         now: Instant,
-        window_opened_unix_ms: u64,
-        returned_unix_ms: u64,
-        key: ProposalKey,
-        return_budget: Duration,
-    ) {
-        self.lock_state().network.proposal_returned(
-            now,
-            PendingProposal {
-                key,
-                returned_at: now,
-                window_opened_unix_ms,
-                returned_unix_ms,
-                return_budget,
-            },
-        );
+        budget: ProposalBudget,
+        timing: ProposalTiming,
+    ) -> bool {
+        if budget.overran(timing.elapsed) {
+            return false;
+        }
+        self.lock_state()
+            .network
+            .proposal_returned(now, budget.return_budget(), timing);
+        true
     }
 
-    /// Completes pending samples from finalized children only.
-    pub fn on_child_block_built(
+    /// Observes a finalized child of `parent`, using its own `child` identity.
+    ///
+    /// The caller must guarantee finality. Unmatched parents are ignored; a
+    /// matched return is consumed even when discarded. Only consecutive views
+    /// in the same epoch count. Timestamps before the parent's return, and
+    /// samples longer than five seconds, are discarded as skew or stalls.
+    /// `now` is monotonic; `child_timestamp_millis` uses the header clock.
+    /// Returns true when a network sample was recorded.
+    pub fn on_child_block_finalized(
         &self,
         now: Instant,
         parent: ProposalKey,
-        child_view: u64,
-        child_timestamp_ms: u64,
-    ) {
+        child: ProposalKey,
+        child_timestamp_millis: u64,
+    ) -> bool {
         self.lock_state()
             .network
-            .child_built(now, parent, child_view, child_timestamp_ms);
+            .child_finalized(now, parent, child, child_timestamp_millis)
     }
 
-    /// Advances the reservation once per own proposal, including failed builds.
+    /// Returns the prepared proposal's pacing allowance, not a build timeout.
+    ///
+    /// Call exactly once per own proposal: each call moves the network reservation
+    /// by at most 100 ms. `now` is monotonic and expires old feedback; `preparation`
+    /// is time spent preparing before opening the header's proposal window.
+    /// Required payload work may overrun the returned allowance.
     #[must_use]
-    pub fn start_proposal(&self, now: Instant) -> ProposalBudget {
-        let network_reserve = self.lock_state().network.reserve_for_proposal(now);
-        ProposalBudget::new(self.config.target_block_time, network_reserve)
-            .with_overrun_tolerance(self.config.return_budget_overrun_tolerance)
-    }
-
-    /// Counts completed samples after expiring stale network observations.
-    pub fn snapshot(&self, now: Instant) -> EstimatorSnapshot {
-        let mut state = self.lock_state();
-        state.network.prune(now);
-        EstimatorSnapshot {
-            network_samples: state.network.sample_count(),
-        }
+    pub fn start_proposal(&self, now: Instant, preparation: Duration) -> ProposalBudget {
+        let network_reservation = self.lock_state().network.reserve_for_proposal(now);
+        ProposalBudget::new(
+            self.target_block_time,
+            network_reservation,
+            preparation,
+            self.overrun_tolerance,
+        )
     }
 
     /// Locks the shared state, blocking while another clone holds it.
@@ -454,13 +315,6 @@ struct EstimatorState {
     network: NetworkTracker,
 }
 
-/// Completed network observations, exposed for deterministic e2e checks.
-#[derive(Clone, Copy, Debug)]
-pub struct EstimatorSnapshot {
-    /// Number of retained finalized-child network samples.
-    pub network_samples: usize,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -520,7 +374,7 @@ mod tests {
     #[test]
     fn expired_builds_reset_plan_to_configured_values() {
         let start = Instant::now();
-        let estimator = Estimator::new(Config::default());
+        let estimator = Estimator::new(EstimatorConfig::default());
         estimator.on_build_finished(
             start,
             FinishedBuild::new(
