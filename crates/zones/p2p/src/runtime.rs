@@ -17,6 +17,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::{
     LeadershipSchedule, P2pNetworkId, Role, ZoneManifest,
+    allowlist::{AllowlistCoordinator, AllowlistNodeChannels, AllowlistPorts, allowlist_ports},
     backfill::{
         BackfillCommand, BackfillCoordinator, BackfillPorts, BackfillRequest, BackfillResponse,
         BackfillRuntimeChannels,
@@ -24,9 +25,9 @@ use crate::{
     capabilities::PeerCapabilities,
     identity::{Ed25519Identity, Secp256k1Identity},
     network::{
-        self, BACKFILL_REQUEST_CHANNEL, BACKFILL_RESPONSE_CHANNEL, BLOCK_CHANNEL, MAX_MESSAGE_SIZE,
-        MAX_TRANSACTION_MESSAGE_SIZE, SETTLEMENT_PROPOSAL_CHANNEL, SETTLEMENT_SIGNATURE_CHANNEL,
-        TRANSACTION_CHANNEL,
+        self, ALLOWLIST_CHANNEL, BACKFILL_REQUEST_CHANNEL, BACKFILL_RESPONSE_CHANNEL,
+        BLOCK_CHANNEL, MAX_MESSAGE_SIZE, MAX_TRANSACTION_MESSAGE_SIZE, SETTLEMENT_PROPOSAL_CHANNEL,
+        SETTLEMENT_SIGNATURE_CHANNEL, TRANSACTION_CHANNEL,
     },
     protocol::EncodedBlock,
     routing::{RoutingMembership, RoutingPolicy},
@@ -283,6 +284,8 @@ pub struct P2pHandleParts {
     pub events: mpsc::Receiver<P2pEvent>,
     /// Typed backfill command, request, and response channels.
     pub backfill: BackfillPorts,
+    /// Deposit allowlist request client and relayed-request channel.
+    pub allowlist: AllowlistPorts,
 }
 
 impl P2pHandle {
@@ -304,16 +307,13 @@ impl P2pHandle {
             commands,
             events,
             backfill,
+            allowlist,
         } = self.parts.take().expect("P2P handle already consumed");
         shutdown.cancel();
 
-        // Close the caller-side channels while the runtime is winding down.
-        drop(commands);
-        drop(events);
-        drop(backfill);
         let stopped_result = stopped.await;
-
         join_runtime_thread(thread).await?;
+        drop((commands, events, backfill, allowlist));
         stopped_result
             .map_err(|err| eyre::eyre!("P2P runtime dropped its completion channel: {err}"))?
             .map_err(|err| eyre::eyre!("P2P runtime failed: {err}"))
@@ -350,6 +350,7 @@ pub fn spawn_p2p(config: P2pConfig, network_id: P2pNetworkId) -> eyre::Result<P2
     let (backfill_commands, backfill_command_rx) = mpsc::channel(COMMAND_BACKLOG);
     let (backfill_requests_tx, backfill_requests) = mpsc::channel(EVENT_BACKLOG);
     let (backfill_responses_tx, backfill_responses) = mpsc::channel(EVENT_BACKLOG);
+    let (allowlist, allowlist_channels) = allowlist_ports();
 
     let thread = std::thread::Builder::new()
         .name("zone-p2p".to_owned())
@@ -365,6 +366,7 @@ pub fn spawn_p2p(config: P2pConfig, network_id: P2pNetworkId) -> eyre::Result<P2
                     requests: backfill_requests_tx,
                     responses: backfill_responses_tx,
                 },
+                allowlist_channels,
             )
             .map_err(|err| format!("{err:?}"));
             let _ = stopped_tx.send(result);
@@ -383,6 +385,7 @@ pub fn spawn_p2p(config: P2pConfig, network_id: P2pNetworkId) -> eyre::Result<P2
                 requests: backfill_requests,
                 responses: backfill_responses,
             },
+            allowlist,
         }),
     })
 }
@@ -394,6 +397,7 @@ fn run(
     command_rx: mpsc::Receiver<P2pCommand>,
     events: mpsc::Sender<P2pEvent>,
     backfill: BackfillNodeChannels,
+    allowlist: AllowlistNodeChannels,
 ) -> eyre::Result<()> {
     let mut runtime_config = commonware_runtime::tokio::Config::default()
         .with_tcp_nodelay(Some(true))
@@ -439,6 +443,7 @@ fn run(
             TRANSACTION_CHANNEL,
             network::transaction_quota(),
         );
+        let allowlist_channel = commonware.register(ALLOWLIST_CHANNEL, network::allowlist_quota());
         let mut network_task = commonware.start();
 
         if config.bypass_ip_check {
@@ -481,6 +486,17 @@ fn run(
             command_rx,
         );
         tokio::pin!(command_loop);
+
+        let allowlist_loop = AllowlistCoordinator::new(
+            local_ed25519_public_key.clone(),
+            membership.clone(),
+            leadership.clone(),
+            oracle.clone(),
+            allowlist_channel,
+            allowlist,
+        )
+        .run();
+        tokio::pin!(allowlist_loop);
 
         let receive_loop = run_receivers(
             local_ed25519_public_key.clone(),
@@ -525,6 +541,7 @@ fn run(
             result = &mut command_loop => result,
             result = &mut receive_loop => result,
             result = &mut backfill_loop => result,
+            result = &mut allowlist_loop => result,
         };
 
         context
@@ -825,7 +842,7 @@ mod tests {
 
     use std::{
         io,
-        net::{SocketAddr, TcpListener},
+        net::{SocketAddr, TcpListener, TcpStream},
         sync::{Arc, Mutex},
         time::Duration,
     };
@@ -844,7 +861,7 @@ mod tests {
         spawn_p2p, validate_ip_check_configuration,
     };
     use crate::{
-        P2pHandle, P2pHandleParts, P2pNetworkId, ZoneManifest,
+        P2pNetworkId, ZoneManifest,
         identity::{Ed25519Identity, Secp256k1Identity},
         network::MAX_TRANSACTION_MESSAGE_SIZE,
         routing::RoutingMembership,
@@ -902,9 +919,18 @@ mod tests {
         }
     }
 
+    /// Returns a loopback address for a P2P listener, which Commonware binds later itself.
+    ///
+    /// The accepted side closes first and leaves the port in `TIME_WAIT`. Until the listener binds
+    /// it, the kernel skips the port for other processes' `bind(0)` calls and outbound
+    /// connections, while Commonware's `SO_REUSEADDR` listener can still claim it.
     fn available_address() -> SocketAddr {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.local_addr().unwrap()
+        let address = listener.local_addr().unwrap();
+        let client = TcpStream::connect(address).unwrap();
+        drop(listener.accept().unwrap());
+        drop(client);
+        address
     }
 
     fn ed25519_identity(seed: u64) -> Ed25519Identity {
@@ -939,34 +965,6 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
         })
-    }
-
-    /// Stop a peer that may still be receiving traffic.
-    ///
-    /// Unlike [`P2pHandle::shutdown`], this keeps the event receiver alive until the runtime
-    /// observes cancellation, so an in-flight `BlockReceived` cannot fail the runtime with
-    /// "P2P event channel closed" during mid-test peer restarts.
-    async fn shutdown_while_receiving(handle: P2pHandle) -> eyre::Result<()> {
-        let P2pHandleParts {
-            shutdown,
-            stopped,
-            thread,
-            commands,
-            events,
-            backfill,
-        } = handle.into_parts();
-        shutdown.cancel();
-        drop(commands);
-        drop(backfill);
-        let stopped_result = stopped.await;
-        tokio::task::spawn_blocking(move || thread.join())
-            .await
-            .map_err(|err| eyre::eyre!("failed joining P2P runtime thread: {err}"))?
-            .map_err(|_| eyre::eyre!("P2P runtime thread panicked"))?;
-        drop(events);
-        stopped_result
-            .map_err(|err| eyre::eyre!("P2P runtime dropped its completion channel: {err}"))?
-            .map_err(|err| eyre::eyre!("P2P runtime failed: {err}"))
     }
 
     /// Drain events for `duration`, failing if any of them satisfies `forbidden`.
@@ -1380,8 +1378,8 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        shutdown_while_receiving(leader).await.unwrap();
-        shutdown_while_receiving(upgraded).await.unwrap();
+        leader.shutdown().await.unwrap();
+        upgraded.shutdown().await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1973,6 +1971,8 @@ mod tests {
         let manifest = Arc::new(ZoneManifest::parse(&input).unwrap());
         let leader_peer = identities[LEADER].ed25519_public_key();
         let rpc_follower_peer = identities[RPC_FOLLOWER].ed25519_public_key();
+        let quorum = [LEADER, QUORUM_FOLLOWER, QUORUM_FOLLOWER_B]
+            .map(|index| (index, identities[index].ed25519_public_key()));
         let mut handles = identities
             .into_iter()
             .zip(addresses)
@@ -2104,7 +2104,7 @@ mod tests {
         // Transactions submitted to a quorum follower stay within the quorum. The RPC-only
         // standby continues replicating blocks but does not retain unrelated pending bodies.
         let quorum_forwarder = repeat(
-            quorum_follower_commands,
+            quorum_follower_commands.clone(),
             P2pCommand::ForwardTransaction {
                 transaction_hash: B256::with_last_byte(8),
                 transaction: vec![0x76, 0x08],
@@ -2118,6 +2118,72 @@ mod tests {
         )
         .await;
         quorum_forwarder.abort();
+
+        // The RPC-only member relays an allowlist request to every quorum member and gets each
+        // one's answer. The leader answers after a resend, which must not reach its node twice.
+        let rpc_client = handles[RPC_FOLLOWER]
+            .parts
+            .as_ref()
+            .unwrap()
+            .allowlist
+            .client
+            .clone();
+        let relayed = tokio::spawn(async move { rpc_client.request(b"request".to_vec()).await });
+        for &(index, _) in &quorum {
+            let requests = &mut handles[index].parts.as_mut().unwrap().allowlist.requests;
+            let request = tokio::time::timeout(Duration::from_secs(15), requests.recv())
+                .await
+                .unwrap_or_else(|_| panic!("node-{index} did not receive the allowlist request"))
+                .expect("allowlist request channel closed");
+            assert_eq!(request.peer, rpc_follower_peer);
+            assert_eq!(request.payload, b"request");
+            if index == LEADER {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+            request.respond(vec![index as u8]).await;
+        }
+        let responses = tokio::time::timeout(Duration::from_secs(15), relayed)
+            .await
+            .expect("allowlist request did not finish")
+            .unwrap()
+            .expect("allowlist request failed");
+        assert!(responses.unanswered.is_empty(), "{responses:?}");
+        let mut answers = responses.answers;
+        answers.sort_by_key(|(_, answer)| answer.clone());
+        assert_eq!(
+            answers,
+            quorum
+                .map(|(index, peer)| (peer, vec![index as u8]))
+                .to_vec()
+        );
+        assert!(
+            tokio::time::timeout(
+                Duration::from_secs(1),
+                handles[LEADER]
+                    .parts
+                    .as_mut()
+                    .unwrap()
+                    .allowlist
+                    .requests
+                    .recv(),
+            )
+            .await
+            .is_err(),
+            "a resent allowlist request reached the leader's node twice"
+        );
+
+        // Quorum members cannot relay allowlist requests.
+        let quorum_client = handles[QUORUM_FOLLOWER]
+            .parts
+            .as_ref()
+            .unwrap()
+            .allowlist
+            .client
+            .clone();
+        assert_eq!(
+            quorum_client.request(b"forged".to_vec()).await,
+            Err(crate::AllowlistRequestError::NotRelayer)
+        );
 
         for handle in handles {
             tokio::time::timeout(Duration::from_secs(10), handle.shutdown())
@@ -2398,13 +2464,10 @@ mod tests {
         }
         initial_broadcaster.abort();
 
-        tokio::time::timeout(
-            Duration::from_secs(10),
-            shutdown_while_receiving(follower_b),
-        )
-        .await
-        .expect("stopped follower did not shut down")
-        .expect("stopped follower runtime failed");
+        tokio::time::timeout(Duration::from_secs(10), follower_b.shutdown())
+            .await
+            .expect("stopped follower did not shut down")
+            .expect("stopped follower runtime failed");
 
         // While the peer is down, the remaining follower must keep receiving broadcasts.
         let offline_block = vec![0xf8, 0x02, 0x80];

@@ -14,8 +14,10 @@ use std::{
     time::Duration,
 };
 use tempo_alloy::TempoNetwork;
-use tempo_contracts::precompiles::ITIP20 as TIP20Token;
-use tempo_contracts::zones::{IZoneInbox, ZONE_FACTORY_ADDRESS, ZoneFactory, ZonePortal};
+use tempo_contracts::{
+    precompiles::ITIP20 as TIP20Token,
+    zones::{IZoneInbox, ZONE_FACTORY_ADDRESS, ZoneFactory, ZonePortal},
+};
 
 /// Write a file that may contain key material with owner-only permissions on Unix.
 ///
@@ -51,7 +53,7 @@ pub(crate) use tempo_contracts::precompiles::STABLECOIN_DEX_ADDRESS;
 /// `create-zone`, `deploy-router`, and `zone-info` use this as their default
 /// factory unless the caller overrides `--zone-factory` or `ZONE_FACTORY`, or
 /// `zone.json` already provides a zone-specific value.
-/// Explorer: https://explore.moderato.tempo.xyz/address/0x5aF2000000000000000000000000000000000000
+/// Explorer: <https://explore.moderato.tempo.xyz/address/0x5aF2000000000000000000000000000000000000>
 pub(crate) use tempo_contracts::zones::ZONE_FACTORY_ADDRESS as MODERATO_ZONE_FACTORY;
 pub(crate) const ROUTER_CALLBACK_GAS_LIMIT: u64 = 2_000_000;
 const DEFAULT_WAIT_ATTEMPTS: usize = 120;

@@ -8,8 +8,10 @@ pub mod simulate;
 pub mod token;
 
 pub use admin::{TempoAdminApi, TempoAdminApiServer};
+use alloy::consensus::Transaction;
+use alloy_eips::BlockId;
 use alloy_primitives::B256;
-use alloy_rpc_types_eth::{Log, ReceiptWithBloom};
+use alloy_rpc_types_eth::{Log, ReceiptWithBloom, state::EvmOverrides};
 pub use consensus::{TempoConsensusApiServer, TempoConsensusRpc};
 pub use eth_ext::{TempoEthExt, TempoEthExtApiServer};
 pub use fork_schedule::{TempoForkScheduleApiServer, TempoForkScheduleRpc};
@@ -21,31 +23,25 @@ use reth_transaction_pool::{PoolTransaction, PoolTx, TransactionOrigin};
 pub use simulate::{TempoSimulate, TempoSimulateApiServer, TempoSimulateV1Response};
 use std::{marker::PhantomData, sync::Arc};
 pub use tempo_alloy::rpc::TempoTransactionRequest;
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
-use tempo_evm::{FeeTokenResolver, TempoStateAccess};
-use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce::NonceManager, storage::StorageActions};
-use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
+use tempo_chainspec::TempoChainSpec;
+use tempo_precompiles::{
+    NONCE_PRECOMPILE_ADDRESS, error::TempoPrecompileError, nonce::NonceManager,
+    storage::StorageActions, tip20::TIP20Error,
+};
+use tempo_primitives::transaction::{FEE_PAYER_SIGNATURE_MARKER, TEMPO_EXPIRING_NONCE_KEY};
 pub use token::{TempoToken, TempoTokenApiServer};
 
 use crate::rpc::error::TempoEthApiError;
 use alloy::primitives::{U256, uint};
-use alloy_evm::{EvmFactory, block::BlockExecutorFactory};
 use reth_chainspec::{EthChainSpec, EthereumHardforks, Hardforks};
 use reth_ethereum::tasks::{
     Runtime,
     pool::{BlockingTaskGuard, BlockingTaskPool},
 };
-use reth_evm::{
-    ConfigureEvm, EvmEnvFor, TxEnvFor,
-    revm::{
-        Database,
-        context::result::{EVMError, HaltReason},
-        database_interface::bal::EvmDatabaseError,
-    },
-};
+use reth_evm::{BlockExecutorFactory, ConfigureEvm, Database, EvmEnvFor, TxEnvFor};
 use reth_node_api::{FullNodeComponents, FullNodeTypes, NodeTypes};
-use reth_node_builder::rpc::{EthApiBuilder, EthApiCtx};
-use reth_provider::{ChainSpecProvider, ProviderError};
+use reth_node_builder::rpc::{EthApiBuilder, EthApiCtx, RpcNodeCoreFor};
+use reth_provider::{ChainSpecProvider, ProviderError, StateProvider as _};
 use reth_rpc::{DynRpcConverter, eth::EthApi};
 use reth_rpc_eth_api::{
     EthApiTypes, RpcConverter, RpcNodeCore, RpcNodeCoreExt,
@@ -66,11 +62,12 @@ use reth_rpc_eth_types::{
     receipt::EthReceiptConverter,
 };
 use tempo_alloy::{TempoNetwork, rpc::TempoTransactionReceipt};
-use tempo_evm::{TempoBlockEnv, TempoInvalidTransaction};
+use tempo_evm::{
+    FeeTokenResolver, TempoEvmEnv, TempoEvmTypes, TempoStateAccess, account_access_gas,
+};
 use tempo_primitives::{
     TEMPO_GAS_PRICE_SCALING_FACTOR, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
 };
-use tempo_revm::TempoTxEnv;
 use tempo_transaction_pool::TempoTransactionPoolExt;
 use tokio::sync::Mutex;
 
@@ -89,18 +86,10 @@ pub trait TempoEthApiBounds:
         Primitives = TempoPrimitives,
         Pool: TempoTransactionPoolExt<Transaction: PoolTransaction<Pooled = TempoTxEnvelope>>,
         Evm: ConfigureEvm<
-            Primitives = TempoPrimitives,
             BlockExecutorFactory: BlockExecutorFactory<
-                EvmFactory: EvmFactory<
-                    Tx = TempoTxEnv,
-                    Spec = TempoHardfork,
-                    BlockEnv = TempoBlockEnv,
-                    HaltReason = HaltReason,
-                    Error<EvmDatabaseError<ProviderError>> = EVMError<
-                        EvmDatabaseError<ProviderError>,
-                        TempoInvalidTransaction,
-                    >,
-                >,
+                EvmTypes = TempoEvmTypes,
+                Transaction = TempoTxEnvelope,
+                EvmEnv = TempoEvmEnv,
             >,
         > + FeeTokenResolver,
     >
@@ -112,18 +101,10 @@ impl<N> TempoEthApiBounds for N where
             Primitives = TempoPrimitives,
             Pool: TempoTransactionPoolExt<Transaction: PoolTransaction<Pooled = TempoTxEnvelope>>,
             Evm: ConfigureEvm<
-                Primitives = TempoPrimitives,
                 BlockExecutorFactory: BlockExecutorFactory<
-                    EvmFactory: EvmFactory<
-                        Tx = TempoTxEnv,
-                        Spec = TempoHardfork,
-                        BlockEnv = TempoBlockEnv,
-                        HaltReason = HaltReason,
-                        Error<EvmDatabaseError<ProviderError>> = EVMError<
-                            EvmDatabaseError<ProviderError>,
-                            TempoInvalidTransaction,
-                        >,
-                    >,
+                    EvmTypes = TempoEvmTypes,
+                    Transaction = TempoTxEnvelope,
+                    EvmEnv = TempoEvmEnv,
                 >,
             > + FeeTokenResolver,
         >
@@ -141,10 +122,7 @@ impl<N> TempoEthApiBounds for N where
 /// This type implements the [`FullEthApi`](reth_rpc_eth_api::helpers::FullEthApi) by implemented
 /// all the `Eth` helper traits and prerequisite traits.
 #[derive(Debug, Clone)]
-pub struct TempoEthApi<N>
-where
-    N: TempoEthApiBounds,
-{
+pub struct TempoEthApi<N: RpcNodeCore<Primitives = TempoPrimitives>> {
     /// Gateway to node's core components.
     inner: EthApi<N, DynRpcConverter<N::Evm, TempoNetwork>>,
 }
@@ -398,28 +376,33 @@ where
     ) -> Result<u64, Self::Error> {
         let fee_payer = tx_env
             .fee_payer()
-            .map_err(EVMError::<ProviderError, _>::from)?;
+            .map_err(|_| Self::Error::from_eth_err(EthApiError::InvalidTransactionSignature))?;
 
         let actions = StorageActions::disabled();
-        let fee_token = self
-            .evm_config()
-            .resolve_fee_token(
-                &mut db,
-                tx_env,
-                fee_payer,
-                evm_env.cfg_env.spec,
-                actions.clone(),
-            )
-            .map_err(ProviderError::other)?;
-        let fee_token_balance = db
-            .get_token_balance(fee_token, fee_payer, evm_env.cfg_env.spec, actions)
-            .map_err(ProviderError::other)?;
+        let fee_token_balance = match self.evm_config().resolve_fee_token(
+            &mut db,
+            tx_env.inner(),
+            fee_payer,
+            evm_env.spec,
+            actions.clone(),
+        ) {
+            Ok(fee_token) => db
+                .get_token_balance(fee_token, fee_payer, evm_env.spec, actions)
+                .map_err(ProviderError::other)?,
+            // No token covers the initial gas bound; cap it by the largest candidate balance.
+            Err(TempoPrecompileError::TIP20(TIP20Error::InsufficientBalance(error))) => {
+                error.available
+            }
+            Err(error) => return Err(ProviderError::other(error).into()),
+        };
+        // The handler checks the balance against `gas_limit * max_fee_per_gas`.
+        let gas_price = Transaction::max_fee_per_gas(tx_env.inner());
 
         Ok(fee_token_balance
             // multiply by the scaling factor
             .saturating_mul(TEMPO_GAS_PRICE_SCALING_FACTOR)
             // Calculate the amount of gas the caller can afford with the specified gas price.
-            .checked_div(U256::from(tx_env.inner.gas_price))
+            .checked_div(U256::from(gas_price))
             // This will be 0 if gas price is 0. It is fine, because we check it before.
             .unwrap_or_default()
             .saturating_to())
@@ -441,7 +424,7 @@ where
                 // 2D nonce: fetch from storage
                 let slot =
                     NonceManager::new().nonces[request.from.unwrap_or_default()][nonce_key].slot();
-                db.storage(NONCE_PRECOMPILE_ADDRESS, slot)
+                db.get_storage(&NONCE_PRECOMPILE_ADDRESS, &slot)
                     .map_err(Into::into)?
                     .saturating_to()
             };
@@ -452,7 +435,43 @@ where
     }
 }
 
-impl<N> EstimateCall for TempoEthApi<N> where N: TempoEthApiBounds {}
+impl<N> EstimateCall for TempoEthApi<N>
+where
+    N: TempoEthApiBounds,
+{
+    /// Estimates gas for `request`, which `eth_estimateGas` and `eth_fillTransaction` both use.
+    ///
+    /// From T14 a fee payer signature costs one cold account access: the fee payer's account is
+    /// read to check its root key. A request carrying [`FEE_PAYER_SIGNATURE_MARKER`] is sponsored
+    /// by a fee payer that is not known yet, so the estimate adds that access on top of the
+    /// unsponsored estimate and keeps a request gas limit as a bound on the total. Before T14 the
+    /// marker is not handled and the request is estimated as it is.
+    async fn estimate_gas_at(
+        &self,
+        mut request: RpcTxReq<Self::NetworkTypes>,
+        at: BlockId,
+        overrides: EvmOverrides,
+    ) -> Result<U256, Self::Error> {
+        let (evm_env, at) = self.evm_env_at(at).await?;
+        let mut fee_payer_access = 0;
+        if request.fee_payer_signature == Some(FEE_PAYER_SIGNATURE_MARKER) && evm_env.spec.is_t14()
+        {
+            fee_payer_access = account_access_gas(&evm_env.version.gas_params, true);
+            request.fee_payer_signature = None;
+            request.inner.gas = request
+                .inner
+                .gas
+                .map(|limit| limit.saturating_sub(fee_payer_access));
+        }
+        let estimate = self
+            .spawn_blocking_io_with_state(at, move |this, state| {
+                this.estimate_gas_with(evm_env, request, state.into_evm_state_provider(), overrides)
+            })
+            .await?;
+        Ok(estimate.saturating_add(U256::from(fee_payer_access)))
+    }
+}
+
 impl<N> EthSubscriptions for TempoEthApi<N> where N: TempoEthApiBounds {}
 impl<N> LoadBlock for TempoEthApi<N> where N: TempoEthApiBounds {}
 impl<N> LoadReceipt for TempoEthApi<N> where N: TempoEthApiBounds {}
@@ -586,23 +605,24 @@ impl<N> Default for TempoEthApiBuilder<N> {
 
 impl<N> EthApiBuilder<N> for TempoEthApiBuilder<N>
 where
-    N: FullNodeComponents<
-            Types: NodeTypes<Primitives = TempoPrimitives>,
-            Pool = <N as RpcNodeCore>::Pool,
-            Evm = <N as RpcNodeCore>::Evm,
-        > + FullNodeTypes<Provider = <N as RpcNodeCore>::Provider>
-        + TempoEthApiBounds,
-    <N as RpcNodeCore>::Provider: ChainSpecProvider<ChainSpec = <N::Types as NodeTypes>::ChainSpec>,
-    <<N as RpcNodeCore>::Evm as ConfigureEvm>::NextBlockEnvCtx: BuildPendingEnv<TempoHeader>,
+    N: FullNodeComponents<Types: NodeTypes<Primitives = TempoPrimitives>>,
+    RpcNodeCoreFor<N>: TempoEthApiBounds
+        + RpcNodeCore<
+            Provider = <N as FullNodeTypes>::Provider,
+            Pool = <N as FullNodeComponents>::Pool,
+            Evm = <N as FullNodeComponents>::Evm,
+            Network = <N as FullNodeComponents>::Network,
+        >,
+    <<RpcNodeCoreFor<N> as RpcNodeCore>::Evm as ConfigureEvm>::NextBlockEnvCtx:
+        BuildPendingEnv<TempoHeader>,
     <N::Types as NodeTypes>::ChainSpec: Hardforks + EthereumHardforks,
 {
-    type EthApi = TempoEthApi<N>;
+    type EthApi = TempoEthApi<RpcNodeCoreFor<N>>;
 
     async fn build_eth_api(self, ctx: EthApiCtx<'_, N>) -> eyre::Result<Self::EthApi> {
         let chain_spec = FullNodeComponents::provider(ctx.components).chain_spec();
         let eth_api = ctx
             .eth_api_builder()
-            .modify_gas_oracle_config(|config| config.default_suggested_fee = Some(U256::ZERO))
             .map_converter(|_| RpcConverter::new(TempoReceiptConverter::new(chain_spec)).erased())
             .build();
 

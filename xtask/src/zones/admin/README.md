@@ -1,6 +1,6 @@
 # Admin commands
 
-`tempo-xtask admin` contains one-off operational commands for deployed Tempo
+`tempo-zone-xtask admin` contains one-off operational commands for deployed Tempo
 Zones:
 
 - `admin check`: read-only cluster health and consistency checks
@@ -50,18 +50,18 @@ arguments replaces the file's complete node list.
 ## Health checks and leader handoffs
 
 ```bash
-tempo-xtask admin check --config zone-admin.toml
+tempo-zone-xtask admin check --config zone-admin.toml
 
-tempo-xtask admin check \
+tempo-zone-xtask admin check \
   --config zone-admin.toml \
   --wait-ready --node follower --timeout 5m
 
-tempo-xtask admin leader set \
+tempo-zone-xtask admin leader set \
   --config zone-admin.toml \
   --target follower --via leader
 
 # Repeat only after reviewing the dry run.
-tempo-xtask admin leader set \
+tempo-zone-xtask admin leader set \
   --config zone-admin.toml \
   --target follower --via leader --execute
 ```
@@ -125,7 +125,7 @@ Prepare creates two owner-readable secret files:
 ```
 
 ```bash
-tempo-xtask admin encryption-key prepare \
+tempo-zone-xtask admin encryption-key prepare \
   --config zone-admin.toml \
   --current-key-file /secure/current-shared.key \
   --existing-decryption-keys-file /secure/deployed/deposit-decryption-keys \
@@ -143,7 +143,7 @@ Deploy the merged `deposit-decryption-keys` output, then roll all potential
 leaders before running registration without `--execute`:
 
 ```bash
-tempo-xtask admin encryption-key register \
+tempo-zone-xtask admin encryption-key register \
   --config zone-admin.toml \
   --new-key-file /secure/rotation/new-shared.key \
   --transaction-key-file /secure/individual-sequencer.key
@@ -157,7 +157,7 @@ Portal call.
 Submit only after reviewing the dry run:
 
 ```bash
-tempo-xtask admin encryption-key register \
+tempo-zone-xtask admin encryption-key register \
   --config zone-admin.toml \
   --new-key-file /secure/rotation/new-shared.key \
   --transaction-key-file /secure/individual-sequencer.key \
@@ -170,7 +170,7 @@ before submitting, the command checks the latest Portal state. If the replacemen
 key is included but not finalized, it waits instead of appending the key again. A
 post-submission timeout includes the successful transaction hash.
 
-After registration, use the normal `tempo-xtask deposit` command for the
+After registration, use the normal `tempo-zone-xtask deposit` command for the
 decryption test. Then update `--sequencer-key-file`, roll nodes follower-first,
 run `admin check`, and send a second deposit. Retain every grace-valid or
 draining decryption key in the deployed keyring. Retire a specific old key only
@@ -184,7 +184,7 @@ after its Portal expiry and the deposit queue have drained.
 Generate a node's independent Ed25519 P2P key and secp256k1 sequencer key:
 
 ```bash
-tempo-xtask admin identity prepare \
+tempo-zone-xtask admin identity prepare \
   --node node-a \
   --rotation-dir /secure/rotation/node-a
 ```
@@ -197,7 +197,7 @@ After preparing a next-version manifest containing those public identities,
 dry-run the exact one-for-one Portal replacement:
 
 ```bash
-tempo-xtask admin sequencer-set replace \
+tempo-zone-xtask admin sequencer-set replace \
   --config zone-admin.toml \
   --next-manifest next-zone-manifest.toml \
   --old-member 0x... \

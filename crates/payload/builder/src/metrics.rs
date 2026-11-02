@@ -174,7 +174,7 @@ reth_storage_api::delegate_impls_to_as_ref!(
     StateProofProvider {
         fn proof(&self, input: TrieInput, address: Address, slots: &[B256]) -> ProviderResult<AccountProof>;
         fn multiproof(&self, input: TrieInput, targets: MultiProofTargets) -> ProviderResult<MultiProof>;
-        fn multiproof_v2(&self, input: TrieInput, targets: MultiProofTargetsV2) -> ProviderResult<DecodedMultiProofV2>;
+        fn multiproof_v2(&self, targets: MultiProofTargetsV2, requires_masks: bool) -> ProviderResult<DecodedMultiProofV2>;
         fn witness(&self, input: TrieInput, target: HashedPostState, mode: ExecutionWitnessMode) -> ProviderResult<Vec<Bytes>>;
     }
 );
@@ -182,7 +182,7 @@ reth_storage_api::delegate_impls_to_as_ref!(
 impl HashedPostStateProvider for InstrumentedFinishProvider<'_> {
     fn hashed_post_state(
         &self,
-        bundle_state: &reth_revm::db::BundleState,
+        bundle_state: &reth_trie_common::bundle_state::BundleState,
     ) -> ProviderResult<HashedPostState> {
         let start = Instant::now();
         let _span = debug_span!(target: "payload_builder", "hashed_post_state").entered();

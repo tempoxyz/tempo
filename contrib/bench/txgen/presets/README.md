@@ -38,3 +38,129 @@ also keeps the transfer-only series under its existing state key.
 Reports resolve aliases to the concrete scenario and record the selected preset.
 The original alias is retained separately as `requested_preset`; workload category
 metadata describes the mix without changing historical transfer-only labels.
+
+`zone-portal-throughput` and `vault-throughput` isolate one public-mix workload for
+L1 saturation runs: they include `public-mix.yml`, run its full fixture setup, and
+select only zone portal deposits/withdrawals or vault deposits/withdrawals (50/50).
+Zone operations settle synthetically on chain 1337; Zone journey latency is measured
+by `derek bench zones` instead. Raise both gas limits to saturate, for example
+`derek bench preset=zone-portal-throughput bloat=100 gas-limit=1T general-gas-limit=1T`.
+
+`tip20-policy` isolates the successful policy-heavy payment case: pathUSD transfers
+to configured receivers in a disjoint account pool, paid in AlphaUSD through the FeeAMM, with protocol nonces.
+It requires at least two selected tokens. Setup installs distinct blacklist leaves
+under a separate compound issuer policy per token and both address-level receiver
+filters, using the current TIP-403 APIs on T13 and T14. Empty blacklists
+allow every user while forcing membership reads. All account pools are faucet-funded
+even with state bloat, so receiver setup can pay fees. Setup runs outside measurement.
+Runs require nonzero submitted payments, full inclusion, and no reverted receipts.
+For example: `derek bench preset=tip20-policy bloat=100` (E2E), or
+`nu tempo.nu bench --preset tip20-policy` (local). Compare the same preset on
+`main` and candidate changes; the policy-payment snapshots record storage actions
+and transaction gas on T13/T14, while benchmark timings use normal node caches.
+The snapshots create a fresh recipient balance and initial validator fee accrual;
+benchmark receivers already have balances from faucet funding.
+
+`institutional` covers tokenized deposits, institutional settlement and treasury under the
+same policy setup as `tip20-policy`: policy-checked payments, memo settlement transfers from a
+16-account treasury pool, 8-call treasury sweeps, issuer mints and burns of the tokenized deposit
+(pathUSD, issued by users[0]) and stablecoin DEX conversion with `dex.yml`'s liquidity and a
+small order-placement flow. Every counterparty carries receiver filters; unlike `tip20-policy`,
+runs do not require full inclusion. The file lists the shares and gaps. For example
+`derek bench preset=institutional gas-limit=500M general-gas-limit=30M`.
+
+`zone-earn-mix` and `bridge-mix` model live customer traffic shapes, with gas-share
+weights taken from mainnet; each file lists its window, the mainnet shares and
+what it does not model. `zone-earn-mix` reuses the public-mix fixtures (zone
+portal settlement, Earn vault and transfers), so it has the same requirements.
+`bridge-mix` deploys a bridge fixture (`bridge/`) and splits bridge payouts from a
+small operator pool and sponsored bridge deposits, for example
+`derek bench preset=bridge-mix`. Refresh the weights when the traffic changes.
+
+`cross-border` covers remittance, global payouts and payroll: bridge deposits and payouts on
+`bridge-mix`'s fixture, FX swaps on the stablecoin DEX (`dex/walls.yml` liquidity, the walls
+`dex.yml` also includes), memo payouts to existing accounts, and 32-call payroll batches plus
+8-call batches to fresh addresses from a 16-account treasury. The file lists the shares and gaps.
+For example `derek bench preset=cross-border gas-limit=500M general-gas-limit=30M`.
+
+Gap variants: `zone-earn-hot` pins every zone operation to one portal (shared
+portal and vault state, up to the TIP-1096 deposit cap); `zone-earn-serial`
+sends zone settlement and Earn deposits from one account with ordered nonces;
+`bridge-mix-new-accounts` pays every bridge payout to a fresh address; and
+`zone-portal-hot` puts all zone portal deposits and withdrawals on one portal.
+`card-settlement` models card-program settlement: 18 unsponsored shard senders
+redeem vault shares and forward the proceeds to one settlement account.
+Run them at mainnet limits (`gas-limit=500M general-gas-limit=30M`) to compare.
+
+`zone-to-zone` moves value from zone A to zone B through withdrawal callbacks: zone A's
+portal pays a gateway that deposits into zone B's portal. It defaults to closed access, where
+the gateway also returns one unit to zone A (otherwise the callback bounces), and records
+delivered transfers, bounce-backs and gas per transfer from the receipts.
+`zone-to-zone-hot` sends every transfer from one source portal to one target portal. The
+file header lists the knobs and limits; run them like the gap variants, for example
+`derek bench preset=zone-to-zone gas-limit=500M general-gas-limit=30M`.
+
+`neobank-generic` is one workload across the six neobank modules (Account, Deposit,
+Earn, Transfer, Spend, Cash out), weighted by planned gas shares; the file lists
+each module's templates and what is not modelled yet. It reuses the public-mix
+fixtures and adds card settlement from Earn (`card_settlement`, the same shard
+redemptions as `card-settlement`, next to ordinary vault withdrawals), cash card
+spend and cash-out transfers into single accounts, cash refunds from one issuer
+account, stablecoin DEX swaps (with `dex.yml`'s liquidity setup), and first
+payments to fresh addresses. Customer-shaped presets are flavors of this shape. For example:
+`derek bench preset=neobank-generic gas-limit=500M general-gas-limit=30M`.
+
+`TXGEN_NEOBANK_MODULES` (comma list of `account`, `deposit`, `earn`, `transfer`, `spend`, `cashout`;
+default all) runs only those modules: the helper drops the other modules' templates from
+the mix before composing it, so the rest keep their relative gas shares, and adds DEX
+liquidity and keychain setup only when the remaining mix uses them. Unknown names fail.
+
+`neobank-multi` runs several neobank setups side by side, to size combined headroom for
+several live programs. Instances (traffic-shape names, gas share and modules) live in
+`neobank/instances.yml`; `TXGEN_NEOBANK_INSTANCES=<path>` selects another file. Each
+instance gets its own user slice and sender pool, batch treasury, card shards, refund
+sender, card settlement, cash-out and merchant accounts, keychain setup, vault and zone
+templates and, when there are at least as many zone portals as instances, its own
+portals. Its weight is its share times its modules' `neobank-generic` weights,
+renormalised within the instance; report metadata lists weights as `<instance>/<family>`.
+The Earn vault, zone settlement fixture, DEX books and state-bloat recipients are
+shared; the preset header lists the details. For example:
+`derek bench preset=neobank-multi gas-limit=500M general-gas-limit=30M`.
+An instance may override template weights (`weights: {card_settlement: 0, card_spend: 13}`),
+merged over `neobank-generic`'s before renormalising; zero drops a template. `neobank/instances-pipeline.yml`
+holds the pipeline's flows and `instances-pipeline-plain-cards.yml` the same with plain card swipes.
+`TXGEN_NEOBANK_INSTANCES` also takes a deployment-shapes file (`shapes/`): a shared description of a
+customer deployment (pillar, flows and the templates behind them, monthly volume, peak factor) that
+`neobank-multi` turns into one instance per shape. `shapes/README.md` documents the format and
+`shapes/examples.yml` holds one shape per pillar.
+\`projected-pipeline\` is \`neobank-multi\` over \`shapes/pipeline.yml\`: the planning sheet's customer
+pipeline aggregated into the four pillars (gas shares from measured gas per transaction). Run it at a
+projected peak-minute rate, not maximum load (the file lists Year 1 and Year 2 rates), to see whether
+the chain sustains that traffic: for example \`derek bench preset=projected-pipeline tps=86\`.
+CI renders the spec with bench-env's `TXGEN_*` assignments, for example
+`derek bench preset=neobank-multi bench-env="TXGEN_NEOBANK_INSTANCES=contrib/bench/txgen/presets/neobank/instances-pipeline.yml"`.
+
+`batch-payout` models payroll fan-out and reward distribution: a 16-sender treasury
+pool with expiring nonces pays 32 recipients per Tempo transaction (the txpool's call
+limit; `TXGEN_BATCH_PAYOUT_RECIPIENTS` lowers it), as payroll to existing state-bloat
+accounts, payroll to fresh addresses, and per-recipient Earn deposits. The helper
+repeats each template's payout call and sizes its gas limit to the batch. Earn deposits
+need ~1.75M gas limit each, so reward batches stop at 16 recipients and fit about once
+per block in the general lane. It reuses the public-mix fixtures. For example:
+`derek bench preset=batch-payout gas-limit=500M general-gas-limit=30M`.
+
+`access-key-mix` covers the Account and Spend access-key flows: transfers that
+authorise a new key inline (creation and rotation), and payments signed by keys
+authorised in setup, split between pulls into one merchant settlement account
+(subscriptions, issuer card pulls) and agent spend to random users. The file lists
+the gas shares and the gaps: rotation does not revoke the old key yet, because
+txgen has no revoke flow. It needs funded users (nonzero state bloat), for example
+`derek bench preset=access-key-mix gas-limit=500M general-gas-limit=30M`.
+
+`agentic` covers agent payments: agents open MPP sessions on the native TIP-20 Channel
+Reserve and pay one-off MPP charges (`transferWithMemo`) to a pool of 16 service
+accounts, and spend through access keys authorised in setup. Vouchers are off-chain, so
+a session's on-chain cost is its open plus one settle or close; settle and close are not
+generated yet because the channel descriptor needs the opening transaction's identifier
+(https://github.com/tempoxyz/txgen/pull/200). The file lists the shares and gaps. For example
+`derek bench preset=agentic gas-limit=500M general-gas-limit=30M`.

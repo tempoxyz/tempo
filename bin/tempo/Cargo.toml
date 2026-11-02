@@ -70,6 +70,7 @@ commonware-math.workspace = true
 commonware-runtime = { workspace = true, features = ["external"] }
 commonware-utils.workspace = true
 futures = { workspace = true, features = ["executor"] }
+parking_lot.workspace = true
 rand.workspace = true
 reth-chainspec.workspace = true
 reth-cli.workspace = true
@@ -103,8 +104,8 @@ secp256k1.workspace = true
 reth-storage-api.workspace = true
 reth-static-file-types.workspace = true
 reth-trie.workspace = true
+reth-trie-common.workspace = true
 reth-trie-db.workspace = true
-revm.workspace = true
 clap.workspace = true
 eyre.workspace = true
 reqwest = { workspace = true, features = ["stream"] }
@@ -121,6 +122,9 @@ tracy-client = { workspace = true, optional = true }
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.30.1", features = ["signal"], optional = true }
 
+[dev-dependencies]
+jsonrpsee.workspace = true
+
 [[bin]]
 name = "tempo"
 path = "src/main.rs"
@@ -133,7 +137,7 @@ required-features = ["localnet"]
 [features]
 default = ["asm-keccak", "jemalloc", "otlp", "keccak-cache-global"]
 
-dst = ["tempo-precompiles/dst", "reth-db/dst", "reth-trie/dst"]
+fuzz = ["tempo-precompiles/fuzz", "reth-db/dst", "reth-trie/dst"]
 
 localnet = ["dep:nix"]
 
@@ -143,7 +147,7 @@ asm-keccak = [
 	"tempo-alloy/asm-keccak",
 	"tempo-node/asm-keccak",
 	"reth-ethereum-cli/asm-keccak",
-	"revm/asm-keccak",
+	"reth-ethereum/asm-keccak",
 ]
 keccak-cache-global = [
 	"alloy-primitives/keccak-cache-global",
@@ -170,7 +174,6 @@ jemalloc = [
 	"reth-cli-util/jemalloc",
 	"reth-ethereum-cli/jemalloc",
 	"reth-ethereum/jemalloc",
-	"reth-provider/jemalloc",
 	"tempo-node/jemalloc",
 ]
 jemalloc-prof = [
@@ -226,3 +229,5 @@ min-trace-logs = [
 trie-debug = ["tempo-node/trie-debug"]
 # Devnet-only: accept zone verifier PCRs via `--zone-verifier.custom-pcrs`.
 custom-pcrs = ["tempo-precompiles/custom-pcrs"]
+# Native EVM2 JIT compilation; building requires LLVM.
+jit = ["tempo-evm/jit", "tempo-node/jit"]

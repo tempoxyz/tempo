@@ -13,7 +13,7 @@ pub trait PeerControl: Send + Sync + 'static {
     fn penalize(&self, peer: PeerId);
 }
 
-impl<N: Peers + Send + Sync + 'static> PeerControl for N {
+impl<N: Peers + 'static> PeerControl for N {
     fn penalize(&self, peer: PeerId) {
         self.reputation_change(peer, ReputationChangeKind::BadMessage);
     }

@@ -937,3 +937,63 @@ fn code(value: &str) -> String {
         .replace(['\n', '\r'], " ");
     format!("`{escaped}`")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_rendered_scenario_operations() {
+        let scenario = serde_yaml::from_str::<ScenarioSpec>(
+            r#"
+version: 1
+chains:
+  zone: { chain_id: 42431 }
+scenario:
+  name: transfer
+  steps:
+    - id: submit
+      timeout: 30s
+      send_transaction: &transaction
+        chain: zone
+        value: 0
+        wait_for_receipt: true
+        labels: [benchmark, transfer]
+    - id: repeat
+      depends_on: [submit]
+      send_transaction: *transaction
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(scenario.chains["zone"].chain_id, 42431);
+        let steps = &scenario.scenario.steps;
+        assert_eq!(
+            steps[0]._timeout,
+            Some(serde_yaml::Value::String("30s".to_owned()))
+        );
+        assert_eq!(
+            steps[0].operation["send_transaction"],
+            serde_yaml::to_value(serde_json::json!({
+                "chain": "zone",
+                "value": 0,
+                "wait_for_receipt": true,
+                "labels": ["benchmark", "transfer"],
+            }))
+            .unwrap()
+        );
+        assert_eq!(steps[1].operation, steps[0].operation);
+        assert_eq!(steps[1].depends_on, ["submit"]);
+    }
+
+    #[test]
+    fn reject_invalid_scenario_yaml() {
+        assert!(serde_yaml::from_str::<ScenarioSpec>("version: [").is_err());
+        assert!(
+            serde_yaml::from_str::<ScenarioSpec>(
+                "version: 1\nchains: {zone: {chain_id: invalid}}\nscenario: {name: transfer, steps: []}"
+            )
+            .is_err()
+        );
+    }
+}

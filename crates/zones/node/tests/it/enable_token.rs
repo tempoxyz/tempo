@@ -160,7 +160,7 @@ async fn test_pool_validation_uses_enabled_token_anchored_policy() -> eyre::Resu
     let simulated = token
         .transfer(recipient, U256::from(transfer_amount))
         .fee_token(token_address)
-        .max_fee_per_gas(TEMPO_T0_BASE_FEE as u128)
+        .max_fee_per_gas(u128::from(TEMPO_T0_BASE_FEE))
         .max_priority_fee_per_gas(0)
         .gas(TIP20_TX_GAS)
         .call()
@@ -170,7 +170,7 @@ async fn test_pool_validation_uses_enabled_token_anchored_policy() -> eyre::Resu
     let pending = token
         .transfer(recipient, U256::from(transfer_amount))
         .fee_token(token_address)
-        .max_fee_per_gas(TEMPO_T0_BASE_FEE as u128)
+        .max_fee_per_gas(u128::from(TEMPO_T0_BASE_FEE))
         .max_priority_fee_per_gas(0)
         .gas(TIP20_TX_GAS)
         .send()
@@ -194,7 +194,7 @@ async fn test_pool_validation_uses_enabled_token_anchored_policy() -> eyre::Resu
 }
 
 /// Longer timeout for real L1 tests — the L1 dev node produces blocks every
-/// 500ms and the L1Subscriber needs to connect, backfill, and subscribe.
+/// 250ms and the L1Subscriber needs to connect, backfill, and subscribe.
 const L1_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Full TokenEnabled pipeline with a real in-process L1 node:

@@ -6,11 +6,12 @@
 //! [TIP-1000]: <https://docs.tempo.xyz/protocol/tips/tip-1000>
 //! [TIP-1010]: <https://docs.tempo.xyz/protocol/tips/tip-1010>
 
-use alloy::{primitives::Address, providers::Provider};
+use alloy::{consensus::transaction::TxHashRef, primitives::Address, providers::Provider};
 use alloy_eips::eip7825::MAX_TX_GAS_LIMIT_OSAKA;
 use alloy_primitives::Bytes;
 use eyre::WrapErr;
 use reth_e2e_test_utils::wallet::Wallet;
+use reth_node_api::BuiltPayload;
 use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_TX_GAS_LIMIT_CAP};
 
 use crate::utils::{TestNodeBuilder, make_genesis_at, t1_account};
@@ -122,11 +123,17 @@ async fn test_pre_t1a_tx_at_osaka_limit() -> eyre::Result<()> {
     let chain_id = provider.get_chain_id().await?;
 
     let raw_tx = build_tx(chain_id, MAX_TX_GAS_LIMIT_OSAKA).await;
-    setup
-        .node
-        .mine([raw_tx])
-        .await
-        .wrap_err("pre-T1A should accept tx at Osaka limit (16M)")?;
+    let tx_hash = setup.node.inject_tx(raw_tx).await?;
+
+    let payload = setup.node.new_payload().await?;
+    assert!(
+        payload
+            .block()
+            .body()
+            .transactions()
+            .any(|tx| *tx.tx_hash() == tx_hash),
+        "pre-T1A should include tx at Osaka limit (16M)"
+    );
 
     Ok(())
 }

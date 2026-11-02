@@ -9,24 +9,25 @@ use crate::{
 };
 use alloy_consensus::{Signed, TxLegacy};
 use alloy_eips::eip4895::Withdrawals;
-use alloy_evm::Evm;
 use alloy_primitives::{Bytes, U256};
 use alloy_sol_types::SolCall;
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
 };
 use reth_chainspec::{ChainSpecProvider, EthChainSpec, EthereumHardforks};
-use reth_errors::ProviderError;
 use reth_evm::{
-    ConfigureEvm, Database, NextBlockEnvAttributes,
-    execute::{BlockBuilder, BlockBuilderOutcome, BlockExecutionOutput, WithTxEnv},
+    BlockExecutionError, BlockExecutor, BlockValidationError, ConfigureEvm,
+    InternalBlockExecutionError, NextBlockEnvAttributes,
+    database::StateProviderDatabase,
+    execute::{
+        BlockBuilder, BlockBuilderOutcome, BlockExecutionOutput, WithTxEnv, map_handler_error,
+    },
 };
 use reth_node_api::{FullNodeTypes, NodeTypes};
 use reth_node_builder::{BuilderContext, components::PayloadBuilderBuilder};
 use reth_payload_builder::{EthBuiltPayload, PayloadBuilderError};
 use reth_payload_primitives::{BuiltPayloadExecutedBlock, PayloadAttributes};
 use reth_primitives_traits::{AlloyBlockHeader as _, Recovered};
-use reth_revm::{State, database::StateProviderDatabase};
 use reth_storage_api::{StateProvider, StateProviderFactory};
 use reth_tasks::{TaskExecutor, cancel::CancelOnDrop};
 use reth_transaction_pool::{
@@ -34,7 +35,7 @@ use reth_transaction_pool::{
     ValidPoolTransaction, error::InvalidPoolTransactionError,
 };
 use std::{error::Error, sync::Arc, time::Instant};
-use tempo_evm::TempoNextBlockEnvAttributes;
+use tempo_evm::{TempoNextBlockEnvAttributes, TempoTxEnv};
 use tempo_payload_types::{EncodedBlock, TempoBuiltPayload};
 use tempo_primitives::{
     TempoHeader, TempoTxEnvelope,
@@ -45,7 +46,7 @@ use tempo_transaction_pool::{
 };
 use tracing::{error, info, warn};
 use zone_chainspec::ZoneChainSpec;
-use zone_evm::ZoneEvmConfig;
+use zone_evm::{ZoneEvm, ZoneEvmConfig};
 use zone_l1::{PreparedL1Block, TempoStateExt};
 use zone_precompiles::L1StateError;
 use zone_primitives::constants::MAX_RLP_BLOCK_SIZE;
@@ -208,13 +209,9 @@ where
             );
         }
 
-        let state = StateProviderDatabase::new(state_provider.as_ref().into_evm_state_provider());
-        let mut db = State::builder()
-            .with_database(
-                Box::new(cached_reads.as_db_mut(state)) as Box<dyn Database<Error = ProviderError>>
-            )
-            .with_bundle_update()
-            .build();
+        let evm_state_provider = state_provider.as_ref().into_evm_state_provider();
+        let db = StateProviderDatabase::new(evm_state_provider);
+        let db = cached_reads.as_db_mut(db);
 
         let chain_spec = self.provider.chain_spec();
         let chain_id = chain_spec.chain_id();
@@ -240,9 +237,9 @@ where
         };
         let mut builder = self
             .evm_config
-            .builder_for_next_block(&mut db, &parent_header, next_block_env_attributes.clone())
+            .builder_for_next_block(db, &parent_header, next_block_env_attributes.clone())
             .map_err(PayloadBuilderError::other)?;
-        let base_fee = builder.evm().block().basefee;
+        let base_fee = builder.evm().block().basefee.to::<u64>();
         let block_number: u64 = builder
             .evm()
             .block()
@@ -301,7 +298,8 @@ where
             let raw_best_txs = self
                 .pool
                 .best_transactions_with_attributes(BestTransactionsAttributes::new(base_fee, None));
-            let mut best_txs = StateAwareBestTransactions::new(raw_best_txs);
+            // Zones resolve fee tokens without a fallback list.
+            let mut best_txs = StateAwareBestTransactions::new(raw_best_txs, &[]);
             if execute_pool_transactions(
                 |tx, best_txs| {
                     builder
@@ -331,6 +329,7 @@ where
 
         let BlockBuilderOutcome {
             execution_result,
+            execution_state,
             hashed_state,
             trie_updates,
             block,
@@ -373,7 +372,7 @@ where
 
         let execution_output = BlockExecutionOutput {
             result: execution_result,
-            state: db.take_bundle(),
+            state: execution_state,
         };
 
         let executed_block = BuiltPayloadExecutedBlock {
@@ -506,9 +505,9 @@ fn execute_pool_transactions<T, F>(
 where
     T: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
     F: FnMut(
-        WithTxEnv<tempo_revm::TempoTxEnv, Recovered<TempoTxEnvelope>>,
+        WithTxEnv<Recovered<TempoTxEnv>, Recovered<TempoTxEnvelope>>,
         &mut T,
-    ) -> Result<(), reth_evm::block::BlockExecutionError>,
+    ) -> Result<(), BlockExecutionError>,
 {
     let mut packed_tx_bytes = 0usize;
     while let Some(pool_tx) = best_txs.next() {
@@ -532,8 +531,8 @@ where
         let tx_with_env = pool_tx.transaction.clone().into_with_tx_env();
         match execute_tx(tx_with_env, best_txs) {
             Ok(_) => packed_tx_bytes = packed_bytes_with_tx,
-            Err(reth_evm::block::BlockExecutionError::Validation(
-                reth_evm::block::BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas {
+            Err(BlockExecutionError::Validation(
+                BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas {
                     transaction_gas_limit,
                     block_available_gas,
                 },
@@ -546,9 +545,9 @@ where
                     ),
                 );
             }
-            Err(reth_evm::block::BlockExecutionError::Validation(
-                reth_evm::block::BlockValidationError::InvalidTx { error, .. },
-            )) => {
+            Err(BlockExecutionError::Validation(BlockValidationError::InvalidTx {
+                error, ..
+            })) => {
                 if !error.is_nonce_too_low() {
                     best_txs.mark_invalid(
                         &pool_tx,
@@ -558,9 +557,10 @@ where
                     );
                 }
             }
-            Err(reth_evm::block::BlockExecutionError::Internal(
-                reth_evm::block::InternalBlockExecutionError::EVM { ref error, .. },
-            )) if is_l1_storage_unavailable(error.as_ref()) => {
+            Err(BlockExecutionError::Internal(InternalBlockExecutionError::EVM {
+                ref error,
+                ..
+            })) if is_l1_storage_unavailable(error.as_ref()) => {
                 warn!(
                     target: "zone::payload",
                     %error,
@@ -593,7 +593,7 @@ fn is_l1_storage_unavailable(error: &(dyn Error + 'static)) -> bool {
 }
 
 /// Finalize a batch after processing deposits, with pending withdrawals, or at a batch boundary.
-fn finalize_withdrawal_batch_if_needed<B>(
+fn finalize_withdrawal_batch_if_needed<'a, B>(
     builder: &mut B,
     block_number: u64,
     interval_blocks: u64,
@@ -603,7 +603,10 @@ fn finalize_withdrawal_batch_if_needed<B>(
     chain_id: u64,
 ) -> Result<(), PayloadBuilderError>
 where
-    B: BlockBuilder<Primitives = tempo_primitives::TempoPrimitives>,
+    B: BlockBuilder<
+            Primitives = tempo_primitives::TempoPrimitives,
+            Executor: BlockExecutor<Evm = ZoneEvm<'a>>,
+        >,
 {
     let pending_withdrawals =
         read_pending_withdrawals_from_outbox(builder.evm_mut(), block_number)?;
@@ -716,36 +719,36 @@ pub(crate) fn build_finalize_withdrawal_batch_tx(
 }
 
 /// Read all pending withdrawals in the ZoneOutbox
-fn read_pending_withdrawals_from_outbox<E>(
-    evm: &mut E,
+fn read_pending_withdrawals_from_outbox(
+    evm: &mut ZoneEvm<'_>,
     block_number: u64,
-) -> Result<Vec<abi::IZoneOutbox::PendingWithdrawal>, PayloadBuilderError>
-where
-    E: Evm,
-{
+) -> Result<Vec<abi::IZoneOutbox::PendingWithdrawal>, PayloadBuilderError> {
     let calldata = abi::IZoneOutbox::getPendingWithdrawalsCall {}.abi_encode();
     let call_result = evm
-        .transact_system_call(TEMPO_SYSTEM_TX_SENDER, ZONE_OUTBOX_ADDRESS, calldata.into())
+        .system_call(
+            evm2::evm::SystemTx::new(ZONE_OUTBOX_ADDRESS, calldata.into())
+                .with_caller(TEMPO_SYSTEM_TX_SENDER),
+        )
         .map_err(|err| {
             error!(
                 ?err,
                 block_number, "ZoneOutbox getPendingWithdrawals view call failed"
             );
-            PayloadBuilderError::evm(err)
+            PayloadBuilderError::evm(map_handler_error(err))
         })?;
 
-    if !call_result.result.is_success() {
+    if !call_result.result().status {
         error!(
             target: "zone::payload",
             block_number,
-            result = ?call_result.result,
+            result = ?call_result.result(),
             "ZoneOutbox getPendingWithdrawals view call failed"
         );
         return Err(PayloadBuilderError::Internal(reth_errors::RethError::msg(
             format!("ZoneOutbox getPendingWithdrawals view failed at zone block {block_number}"),
         )));
     }
-    let output = call_result.result.into_output().unwrap_or_default();
+    let output = call_result.discard().output;
 
     abi::IZoneOutbox::getPendingWithdrawalsCall::abi_decode_returns(&output).map_err(|err| {
         PayloadBuilderError::Internal(reth_errors::RethError::msg(format!(
@@ -1023,7 +1026,7 @@ mod tests {
         let cancel = CancelOnDrop::default();
 
         let outcome = super::execute_pool_transactions(
-            |_tx, _best_txs| -> Result<(), reth_evm::block::BlockExecutionError> {
+            |_tx, _best_txs| -> Result<(), reth_evm::BlockExecutionError> {
                 executed += 1;
                 Ok(())
             },

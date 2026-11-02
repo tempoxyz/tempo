@@ -2,11 +2,6 @@ name: Zones Docker Build (Profiling)
 
 on:
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "Tag for the profiling image (e.g., profiling-latest)"
-        type: string
-        default: "profiling"
 
 env:
   REGISTRY: ghcr.io/tempoxyz
@@ -14,8 +9,7 @@ env:
 jobs:
   build-and-push:
     name: Build and Push Profiling Docker Images
-    # Same layout dependency as zones-docker.yml; see zones/MIGRATION.md.
-    if: github.repository == 'tempoxyz/zones'
+    if: github.repository == 'tempoxyz/tempo'
     runs-on: depot-ubuntu-latest-16
     permissions:
       contents: read
@@ -23,27 +17,27 @@ jobs:
       id-token: write
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: tempoxyz/gh-actions/vendor/depot/setup-action@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+      - uses: tempoxyz/gh-actions/vendor/depot/setup-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
       - name: Docker metadata for tempo-zone-profiling
         id: meta-tempo-zone
-        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           images: ${{ env.REGISTRY }}/tempo-zone
           bake-target: tempo-zone
           tags: |
-            type=raw,value=${{ github.event.inputs.tag }}
-            type=sha,prefix=${{ github.event.inputs.tag }}-sha-
+            type=raw,value=profiling
+            type=sha,prefix=profiling-sha-
 
       - name: Log in to Container Registry
-        uses: tempoxyz/gh-actions/vendor/docker/login-action@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+        uses: tempoxyz/gh-actions/vendor/docker/login-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -53,11 +47,11 @@ jobs:
         run: echo "shortsha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push Docker images
-        uses: tempoxyz/gh-actions/vendor/depot/bake-action@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+        uses: tempoxyz/gh-actions/vendor/depot/bake-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           files: |
-            docker/docker-bake.hcl
-            docker/docker-bake-profiling.hcl
+            zones/docker/docker-bake.hcl
+            zones/docker/docker-bake-profiling.hcl
             ${{ steps.meta-tempo-zone.outputs.bake-file }}
           targets: tempo-zone
           project: 0c6tg19qsp

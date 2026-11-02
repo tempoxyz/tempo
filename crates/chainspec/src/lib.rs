@@ -20,6 +20,13 @@ pub use network_identity::NetworkIdentity;
 #[cfg(feature = "reth")]
 pub use spec::{TempoChainSpec, TempoConsensusSpec, TempoHardforks};
 
+#[cfg(feature = "evm")]
+pub use tempo_hardfork::gas_params;
+#[cfg(feature = "evm")]
+mod native_account;
+#[cfg(feature = "evm")]
+pub use native_account::is_valid_native_account;
+
 pub use tempo_hardfork::{TempoHardfork, constants};
 
 /// Backwards-compatible hardfork import path.

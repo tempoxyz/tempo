@@ -12,11 +12,11 @@ use eyre::{OptionExt as _, WrapErr as _};
 use reth_provider::HeaderProvider;
 use reth_storage_api::ReceiptProvider;
 use tempo_alloy::TempoNetwork;
-use tempo_primitives::TempoHeader;
 use tempo_contracts::zones::{
     IZoneOutbox, LegacyTempoAdvanced, TempoAdvanced, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS,
     ZonePortal,
 };
+use tempo_primitives::TempoHeader;
 use tracing::info;
 use zone_chainspec::ZoneChainSpec;
 use zone_prover::VerifierMode;

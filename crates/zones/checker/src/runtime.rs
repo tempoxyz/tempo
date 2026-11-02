@@ -6,12 +6,16 @@ use alloy_consensus::BlockHeader as _;
 use alloy_eips::BlockNumHash;
 use alloy_provider::{DynProvider, Provider as _, ProviderBuilder};
 use alloy_rpc_client::{ConnectionConfig, RpcClient, WebSocketConfig};
+#[cfg(feature = "fuzz")]
+use antithesis_sdk::{assert_always, assert_unreachable};
 use futures::{StreamExt as _, TryStreamExt as _, future};
 use reth_chainspec::ChainSpecProvider;
 use reth_exex::{ExExContext, ExExHead, ExExNotification};
 use reth_node_api::{FullNodeComponents, NodePrimitives, NodeTypes};
 use reth_primitives_traits::RecoveredBlock;
-use reth_storage_api::{BlockHashReader as _, BlockNumReader, StateProviderFactory};
+use reth_storage_api::{BlockHashReader as _, StateProviderFactory};
+#[cfg(feature = "fuzz")]
+use serde_json::json;
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::TempoHardforks;
 use tempo_primitives::{TempoPrimitives, TempoReceipt};
@@ -43,7 +47,6 @@ pub(crate) async fn run<Node>(
 ) -> eyre::Result<()>
 where
     Node: FullNodeComponents<Types: NodeTypes<Primitives = TempoPrimitives>>,
-    Node::Provider: BlockNumReader + ChainSpecProvider + StateProviderFactory,
     <Node::Provider as ChainSpecProvider>::ChainSpec: TempoHardforks,
 {
     let metrics = CheckerMetrics::default();
@@ -57,7 +60,7 @@ where
         ),
         Err(error) => tracing::error!(
             target: "zone::checker",
-            %error,
+            error = %format_args!("{error:#}"),
             "checker disabled; Zone execution continues"
         ),
     }
@@ -93,7 +96,6 @@ async fn run_inner<Node>(
 ) -> eyre::Result<()>
 where
     Node: FullNodeComponents<Types: NodeTypes<Primitives = TempoPrimitives>>,
-    Node::Provider: BlockNumReader + ChainSpecProvider + StateProviderFactory,
     <Node::Provider as ChainSpecProvider>::ChainSpec: TempoHardforks,
 {
     tracing::info!(target: "zone::checker", "checker started");
@@ -188,6 +190,15 @@ where
             Err(BlockError::Finding { zone, error }) => {
                 snapshot = store.load()?;
                 tracing::error!(target: "zone::checker", %error, zone_block = zone.number, zone_hash = %zone.hash, "checker divergence");
+                #[cfg(feature = "fuzz")]
+                assert_unreachable!(
+                    "Zone checker records a divergence",
+                    &json!({
+                        "zone_block": zone.number,
+                        "zone_hash": zone.hash,
+                        "error": format!("{error:#}"),
+                    })
+                );
                 snapshot = store.record_finding(
                     &snapshot,
                     Finding {
@@ -340,7 +351,7 @@ async fn process_notification<P>(
     context: &mut VerificationContext<'_>,
 ) -> Result<Box<Snapshot>, BlockError>
 where
-    P: BlockNumReader + ChainSpecProvider + StateProviderFactory,
+    P: ChainSpecProvider + StateProviderFactory,
     P::ChainSpec: TempoHardforks,
 {
     let mut current = snapshot;
@@ -390,7 +401,7 @@ async fn verify_block<P>(
     receipts: &[TempoReceipt],
 ) -> Result<Snapshot, BlockError>
 where
-    P: BlockNumReader + ChainSpecProvider + StateProviderFactory,
+    P: ChainSpecProvider + StateProviderFactory,
     P::ChainSpec: TempoHardforks,
 {
     let (config, metrics) = (context.config, context.metrics);
@@ -453,6 +464,7 @@ where
                     zone_hash = %zone.hash,
                     attempt = state_attempts,
                     max_attempts = MAX_STATE_ATTEMPTS,
+                    error = %format_args!("{error:#}"),
                     "checker local state unavailable; retrying"
                 );
                 tokio::time::sleep(RETRY_DELAY).await;
@@ -462,13 +474,21 @@ where
             }
         }
     };
-    state
-        .verify_zone_state(
-            observed
-                .into_iter()
-                .map(|evidence| (evidence.token, evidence.total_supply, evidence.balances)),
-        )
-        .map_err(|error| fail(error.into()))?;
+    let zone_state = state.verify_zone_state(
+        observed
+            .into_iter()
+            .map(|evidence| (evidence.token, evidence.total_supply, evidence.balances)),
+    );
+    #[cfg(feature = "fuzz")]
+    assert_always!(
+        zone_state.is_ok(),
+        "Zone balances and supply match bridge accounting",
+        &json!({
+            "zone_block": zone.number,
+            "error": zone_state.as_ref().err().map(ToString::to_string),
+        })
+    );
+    zone_state.map_err(|error| fail(error.into()))?;
 
     let balances = loop {
         match portal_balances(
@@ -492,9 +512,17 @@ where
             Err(error) => return Err(classify_block_l1_error(error, zone)),
         }
     };
-    state
-        .verify_portal_balances(balances)
-        .map_err(|error| fail(error.into()))?;
+    let custody = state.verify_portal_balances(balances);
+    #[cfg(feature = "fuzz")]
+    assert_always!(
+        custody.is_ok(),
+        "Portal custody covers zone liabilities",
+        &json!({
+            "zone_block": zone.number,
+            "error": custody.as_ref().err().map(ToString::to_string),
+        })
+    );
+    custody.map_err(|error| fail(error.into()))?;
 
     let next = store
         .apply(candidate)

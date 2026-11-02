@@ -389,7 +389,7 @@ fn state_changing_transaction(recipient: Address) -> TransactionRequest {
         .to(recipient)
         .value(U256::ZERO)
         .gas_limit(TIP20_TX_GAS)
-        .gas_price(TEMPO_T0_BASE_FEE as u128)
+        .gas_price(u128::from(TEMPO_T0_BASE_FEE))
 }
 
 fn funded_zone_genesis() -> Genesis {
@@ -474,6 +474,7 @@ fn genesis_state_witness(genesis: &Genesis) -> (B256, Vec<Bytes>, Vec<Bytes>) {
             balance: account.balance,
             storage_root,
             code_hash,
+            ..Default::default()
         };
         account_leaves.push((keccak256(address), alloy_rlp::encode(trie_account)));
     }

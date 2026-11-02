@@ -153,6 +153,25 @@ impl<'a> RoutingPolicy<'a> {
         self.is_remote_peer(peer) && self.membership.is_quorum_member(self.local)
     }
 
+    /// RPC-only members relay operator allowlist requests to every quorum member.
+    pub(crate) fn may_relay_allowlist_update(&self) -> bool {
+        !self.am_i_quorum_member()
+    }
+
+    pub(crate) fn allowlist_update_recipients(&self) -> Vec<PublicKey> {
+        self.membership.other_quorum_peers(self.local)
+    }
+
+    pub(crate) fn may_accept_allowlist_update(&self, peer: &PublicKey) -> bool {
+        self.am_i_quorum_member()
+            && self.is_remote_peer(peer)
+            && !self.membership.is_quorum_member(peer)
+    }
+
+    pub(crate) fn may_accept_allowlist_ack(&self, peer: &PublicKey) -> bool {
+        self.may_relay_allowlist_update() && self.is_remote_quorum_peer(peer)
+    }
+
     fn is_retained_leader(&self, peer: &PublicKey) -> bool {
         self.authority.retained_leaders.contains(peer)
     }
@@ -253,6 +272,34 @@ mod tests {
         let rpc = RoutingPolicy::new(&rpc_key, &membership, &schedule);
         assert!(!rpc.may_accept_settlement_proposal(&key(1)));
         assert!(!rpc.may_accept_transaction(&key(3)));
+    }
+
+    #[test]
+    fn allowlist_updates_flow_from_rpc_only_members_to_the_quorum() {
+        let manifest = manifest();
+        let membership = RoutingMembership::from_manifest(&manifest);
+        let schedule = manifest.leadership_schedule();
+
+        let rpc_key = key(4);
+        let rpc = RoutingPolicy::new(&rpc_key, &membership, &schedule);
+        assert!(rpc.may_relay_allowlist_update());
+        assert_eq!(
+            rpc.allowlist_update_recipients()
+                .into_iter()
+                .collect::<BTreeSet<_>>(),
+            [key(1), key(2), key(3)].into_iter().collect()
+        );
+        assert!(rpc.may_accept_allowlist_ack(&key(2)));
+        assert!(!rpc.may_accept_allowlist_update(&key(2)));
+
+        let sequencer_key = key(2);
+        let sequencer = RoutingPolicy::new(&sequencer_key, &membership, &schedule);
+        assert!(!sequencer.may_relay_allowlist_update());
+        assert!(sequencer.may_accept_allowlist_update(&key(4)));
+        // Sequencers never take updates from each other or from peers outside the manifest.
+        assert!(!sequencer.may_accept_allowlist_update(&key(1)));
+        assert!(!sequencer.may_accept_allowlist_update(&key(99)));
+        assert!(!sequencer.may_accept_allowlist_ack(&key(4)));
     }
 
     #[test]

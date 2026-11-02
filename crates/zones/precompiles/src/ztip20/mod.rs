@@ -10,12 +10,12 @@
 
 use alloy_primitives::Address;
 use alloy_sol_types::{SolCall, SolError, SolInterface};
+pub use tempo_contracts::zones::InsufficientBalance;
+use tempo_contracts::zones::Unauthorized;
 use tempo_precompiles::{
     dispatch::abi_decoder_config_for_spec,
     tip20::{IRolesAuth, ITIP20},
 };
-pub use tempo_contracts::zones::InsufficientBalance;
-use tempo_contracts::zones::Unauthorized;
 
 use crate::{
     execution::{CallCheck, CallRules},
@@ -149,11 +149,13 @@ impl CallRules for TIP20Rules {
 mod tests {
     use super::*;
     use alloy::primitives::{Address, B256, Bytes, U256, address};
-    use alloy_evm::precompiles::DynPrecompile;
     use alloy_sol_types::{SolCall, SolError, SolInterface};
-    use revm::precompile::PrecompileResult;
+    use evm2::precompiles::PrecompileError;
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::{TIP20Error, UnknownFunctionSelector};
+    use tempo_contracts::{
+        precompiles::{TIP20Error, UnknownFunctionSelector},
+        zones::Unauthorized,
+    };
     use tempo_precompiles::{
         PATH_USD_ADDRESS, Precompile,
         storage::{Handler, StorageCtx},
@@ -164,14 +166,13 @@ mod tests {
         },
         zone_factory::ZonePortalStorage as ZonePortal,
     };
-    use tempo_contracts::zones::Unauthorized;
     use zone_primitives::constants::{ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS};
 
     use crate::{
         TempoState,
         test_utils::{
-            MockL1Reader, TestContext, call_precompile, test_context, test_env,
-            test_storage_provider,
+            MockL1Reader, PrecompileResult, TestContext, TestPrecompiles, call_precompile,
+            test_context, test_precompiles, test_storage_provider,
         },
     };
 
@@ -216,7 +217,7 @@ mod tests {
         spender: Address,
         sequencer: Address,
         l1_reader: MockL1Reader,
-        precompile: DynPrecompile,
+        precompile: TestPrecompiles,
     }
 
     impl PrecompileHarness {
@@ -256,8 +257,8 @@ mod tests {
                 })?;
             }
 
-            let env = test_env(&ctx);
-            let precompile = crate::create_tip20_precompile(token, &env);
+            let precompile =
+                test_precompiles(&ctx, crate::L1State::new(l1_reader.clone(), PORTAL_ADDRESS));
 
             Ok(Self {
                 ctx,
@@ -280,7 +281,7 @@ mod tests {
         ) -> PrecompileResult {
             call_precompile(
                 &mut self.ctx,
-                &self.precompile,
+                &mut self.precompile,
                 caller,
                 &calldata,
                 gas,
@@ -498,8 +499,9 @@ mod tests {
             let mut portal = ZonePortal::new(PORTAL_ADDRESS);
             portal.role[harness.sequencer]
                 .write(u8::from(tempo_contracts::zones::ZonePortal::Role::None))?;
-            portal.role[next_sequencer]
-                .write(u8::from(tempo_contracts::zones::ZonePortal::Role::Sequencer))
+            portal.role[next_sequencer].write(u8::from(
+                tempo_contracts::zones::ZonePortal::Role::Sequencer,
+            ))
         })?;
 
         assert!(
@@ -606,8 +608,8 @@ mod tests {
         let caller = Address::with_last_byte(0xa2);
         let spender = Address::with_last_byte(0xa3);
         let mut ctx = test_context();
-        let env = test_env(&ctx);
-        let precompile = crate::create_tip20_precompile(token, &env);
+        let mut precompile =
+            test_precompiles(&ctx, crate::L1State::new(Default::default(), Address::ZERO));
         let calldata: Bytes = ITIP20::approveCall {
             spender,
             amount: U256::ONE,
@@ -617,7 +619,7 @@ mod tests {
 
         let result = call_precompile(
             &mut ctx,
-            &precompile,
+            &mut precompile,
             caller,
             &calldata,
             TIP20_FIXED_TRANSFER_GAS,
@@ -926,18 +928,19 @@ mod tests {
                 admit_at(&rules(), data, harness.alice, harness.ctx.cfg.spec),
                 CallCheck::Continue
             ));
-            let expected = {
-                let mut storage = test_storage_provider(&mut harness.ctx, 100_000, false);
-                StorageCtx::enter(&mut storage, || {
-                    TIP20Token::from_address(harness.token)
-                        .expect("token must exist")
-                        .call(data, harness.alice)
-                })?
+            let mut storage = test_storage_provider(&mut harness.ctx, 100_000, false);
+            let Err(PrecompileError::Revert(expected)) = StorageCtx::enter(&mut storage, || {
+                TIP20Token::from_address(harness.token)
+                    .expect("token must exist")
+                    .call(data, harness.alice)
+            }) else {
+                panic!("upstream dispatch must revert malformed calldata");
             };
+            drop(storage);
             let result =
                 harness.call(harness.alice, Bytes::copy_from_slice(data), 100_000, false)?;
             assert!(result.is_revert());
-            assert_eq!(result.bytes, expected.bytes);
+            assert_eq!(result.bytes, expected);
         }
         Ok(())
     }

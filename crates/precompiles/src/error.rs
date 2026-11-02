@@ -11,24 +11,26 @@ use std::{
 
 use crate::{storage_credits::StorageCreditsErr, tip20::TIP20Error};
 use alloy::{
-    primitives::{FixedBytes, Selector, U256},
+    primitives::{Bytes, FixedBytes, Selector, U256},
     sol_types::{Panic, PanicKind, SolError, SolInterface},
 };
-use alloy_evm::EvmInternalsError;
-use revm::{
-    context::journaled_state::{JournalLoadErasedError, JournalLoadError},
-    precompile::{PrecompileError, PrecompileHalt, PrecompileOutput, PrecompileResult},
+use evm2::{
+    DatabaseError, LoadError,
+    evm::precompile::PrecompileOutput,
+    precompiles::{PrecompileError, PrecompileHalt, PrecompileResult},
+    registry::HandlerError,
 };
 use tempo_contracts::{
     TempoHardfork,
     precompiles::{
-        AccountKeychainError, AddrRegistryError, CurrentCommitteeError, FeeManagerError,
-        NonceError, ReceivePolicyGuardError, RolesAuthError, SignatureVerifierError,
-        StablecoinDEXError, StorageCreditsError, TIP20ChannelReserveError, TIP20FactoryError,
-        TIP403RegistryError, TIPFeeAMMError, UnknownFunctionSelector, ValidatorConfigError,
-        ValidatorConfigV2Error, ZoneFactoryError,
+        AccountKeychainError, AddrRegistryError, ConfigurableAccountError, CurrentCommitteeError,
+        FeeManagerError, NonceError, ReceivePolicyGuardError, RolesAuthError,
+        SignatureVerifierError, StablecoinDEXError, StorageCreditsError, TIP20ChannelReserveError,
+        TIP20FactoryError, TIP403RegistryError, TIPFeeAMMError, UnknownFunctionSelector,
+        ValidatorConfigError, ValidatorConfigV2Error, ZoneFactoryError,
     },
 };
+use tempo_primitives::transaction::ConfigurableAccountConfigError;
 
 /// Top-level error type for all Tempo precompile operations
 #[derive(
@@ -115,9 +117,16 @@ pub enum TempoPrecompileError {
     #[error("ZoneFactory error: {0:?}")]
     ZoneFactoryError(ZoneFactoryError),
 
+    #[error("configurable account error: {0:?}")]
+    ConfigurableAccountError(ConfigurableAccountError),
+
     /// Gas limit exceeded during precompile execution.
     #[error("Gas limit exceeded")]
     OutOfGas,
+
+    /// An owned database failure, including invalid BAL coverage.
+    #[error(transparent)]
+    Database(DatabaseError),
 
     /// State mutation attempted during static execution.
     #[error("State change during static call")]
@@ -131,31 +140,85 @@ pub enum TempoPrecompileError {
     #[error("Fatal precompile error: {0:?}")]
     #[from(skip)]
     Fatal(String),
+
+    /// A commitment write is zero, predates T14, or occurs in a read-only context.
+    #[error("Invalid account commitment write")]
+    InvalidConfigCommitmentWrite,
 }
 
-impl From<EvmInternalsError> for TempoPrecompileError {
-    fn from(value: EvmInternalsError) -> Self {
-        match value {
-            EvmInternalsError::Database(e) => Self::Fatal(e.to_string()),
+impl From<LoadError> for TempoPrecompileError {
+    fn from(error: LoadError) -> Self {
+        match error {
+            LoadError::ColdLoadSkipped => Self::OutOfGas,
+            LoadError::Database(error) => Self::Database(error),
         }
     }
 }
 
-impl From<JournalLoadError<EvmInternalsError>> for TempoPrecompileError {
-    fn from(value: JournalLoadError<EvmInternalsError>) -> Self {
-        match value {
-            JournalLoadError::DBError(e) => Self::from(e),
-            JournalLoadError::ColdLoadSkipped => Self::OutOfGas,
+impl From<TempoPrecompileError> for HandlerError {
+    fn from(error: TempoPrecompileError) -> Self {
+        match error {
+            TempoPrecompileError::Database(error) => Self::Database(error),
+            TempoPrecompileError::Fatal(error) => Self::Fatal(error.into()),
+            error @ (TempoPrecompileError::StablecoinDEX(_)
+            | TempoPrecompileError::TIP20(_)
+            | TempoPrecompileError::TIP20Factory(_)
+            | TempoPrecompileError::TIP20ChannelReserveError(_)
+            | TempoPrecompileError::RolesAuthError(_)
+            | TempoPrecompileError::AddrRegistryError(_)
+            | TempoPrecompileError::TIP403RegistryError(_)
+            | TempoPrecompileError::FeeManagerError(_)
+            | TempoPrecompileError::TIPFeeAMMError(_)
+            | TempoPrecompileError::NonceError(_)
+            | TempoPrecompileError::Panic(_)
+            | TempoPrecompileError::StorageDeltaUnderflow(_)
+            | TempoPrecompileError::ValidatorConfigError(_)
+            | TempoPrecompileError::ValidatorConfigV2Error(_)
+            | TempoPrecompileError::AccountKeychainError(_)
+            | TempoPrecompileError::SignatureVerifierError(_)
+            | TempoPrecompileError::ReceivePolicyGuardError(_)
+            | TempoPrecompileError::StorageCreditsError(_)
+            | TempoPrecompileError::CurrentCommitteeError(_)
+            | TempoPrecompileError::ZoneFactoryError(_)
+            | TempoPrecompileError::ConfigurableAccountError(_)
+            | TempoPrecompileError::InvalidConfigCommitmentWrite
+            | TempoPrecompileError::OutOfGas
+            | TempoPrecompileError::StaticCallNotAllowed
+            | TempoPrecompileError::UnknownFunctionSelector(_)) => Self::external(error),
         }
     }
 }
 
-impl From<JournalLoadErasedError> for TempoPrecompileError {
-    fn from(value: JournalLoadErasedError) -> Self {
-        match value {
-            JournalLoadError::DBError(e) => Self::Fatal(e.to_string()),
-            JournalLoadError::ColdLoadSkipped => Self::OutOfGas,
+impl From<ConfigurableAccountConfigError> for TempoPrecompileError {
+    fn from(error: ConfigurableAccountConfigError) -> Self {
+        match error {
+            ConfigurableAccountConfigError::EmptyOwners
+            | ConfigurableAccountConfigError::ZeroOwner
+            | ConfigurableAccountConfigError::AccountIsOwner => {
+                ConfigurableAccountError::invalid_configurable_account_owner()
+            }
+            ConfigurableAccountConfigError::TooManyOwners => {
+                ConfigurableAccountError::too_many_owners()
+            }
+            ConfigurableAccountConfigError::ZeroThreshold
+            | ConfigurableAccountConfigError::ThresholdExceedsWeight => {
+                ConfigurableAccountError::invalid_threshold()
+            }
+            ConfigurableAccountConfigError::ZeroWeight
+            | ConfigurableAccountConfigError::TotalWeightExceedsMax => {
+                ConfigurableAccountError::invalid_weight()
+            }
+            ConfigurableAccountConfigError::DuplicateOwner => {
+                ConfigurableAccountError::duplicate_owner()
+            }
+            ConfigurableAccountConfigError::OwnersNotAscending => {
+                ConfigurableAccountError::invalid_owner_order()
+            }
+            ConfigurableAccountConfigError::DerivedAccountZero => {
+                ConfigurableAccountError::invalid_account()
+            }
         }
+        .into()
     }
 }
 
@@ -184,9 +247,14 @@ impl TempoPrecompileError {
             Self::StorageCreditsError(e) => e.selector(),
             Self::CurrentCommitteeError(e) => e.selector(),
             Self::ZoneFactoryError(e) => e.selector(),
+            Self::ConfigurableAccountError(e) => e.selector(),
             Self::UnknownFunctionSelector(selector) => *selector,
             Self::Panic(_) | Self::StorageDeltaUnderflow(_) => Panic::SELECTOR,
-            Self::OutOfGas | Self::StaticCallNotAllowed | Self::Fatal(_) => [0, 0, 0, 0],
+            Self::OutOfGas
+            | Self::Database(_)
+            | Self::StaticCallNotAllowed
+            | Self::Fatal(_)
+            | Self::InvalidConfigCommitmentWrite => [0, 0, 0, 0],
         }
         .into()
     }
@@ -196,6 +264,7 @@ impl TempoPrecompileError {
     pub fn is_system_error(&self) -> bool {
         match self {
             Self::OutOfGas
+            | Self::Database(_)
             | Self::StaticCallNotAllowed
             | Self::Fatal(_)
             | Self::Panic(_)
@@ -218,7 +287,9 @@ impl TempoPrecompileError {
             | Self::StorageCreditsError(_)
             | Self::CurrentCommitteeError(_)
             | Self::ZoneFactoryError(_)
-            | Self::UnknownFunctionSelector(_) => false,
+            | Self::ConfigurableAccountError(_)
+            | Self::UnknownFunctionSelector(_)
+            | Self::InvalidConfigCommitmentWrite => false,
         }
     }
 
@@ -242,12 +313,8 @@ impl TempoPrecompileError {
         Self::Panic(PanicKind::ArrayOutOfBounds)
     }
 
-    /// ABI-encodes this error and wraps it as a reverted [`PrecompileResult`].
-    ///
-    /// # Errors
-    /// - `PrecompileOutput::halt(PrecompileHalt::OutOfGas, ..)` — if the variant is [`OutOfGas`](Self::OutOfGas)
-    /// - `PrecompileError::Fatal` — if the variant is [`Fatal`](Self::Fatal)
-    pub fn into_precompile_result(self, gas: u64, reservoir: u64) -> PrecompileResult {
+    /// Converts this error into EVM2's native precompile result.
+    pub fn into_precompile_result(self) -> PrecompileResult {
         let bytes = match self {
             Self::StablecoinDEX(e) => e.abi_encode().into(),
             Self::TIP20(e) => e.abi_encode().into(),
@@ -281,14 +348,15 @@ impl TempoPrecompileError {
             Self::StorageCreditsError(e) => e.abi_encode().into(),
             Self::CurrentCommitteeError(e) => e.abi_encode().into(),
             Self::ZoneFactoryError(e) => e.abi_encode().into(),
+            Self::ConfigurableAccountError(e) => e.abi_encode().into(),
             Self::OutOfGas => {
-                return Ok(PrecompileOutput::halt(PrecompileHalt::OutOfGas, reservoir));
+                return Err(PrecompileHalt::OutOfGas.into());
+            }
+            Self::Database(error) => {
+                return Err(PrecompileError::Database(error));
             }
             Self::StaticCallNotAllowed => {
-                return Ok(PrecompileOutput::halt(
-                    PrecompileHalt::other_static("state change during static call"),
-                    reservoir,
-                ));
+                return Err(PrecompileHalt::Other("state change during static call".into()).into());
             }
             Self::UnknownFunctionSelector(selector) => UnknownFunctionSelector {
                 selector: selector.into(),
@@ -296,10 +364,11 @@ impl TempoPrecompileError {
             .abi_encode()
             .into(),
             Self::Fatal(msg) => {
-                return Err(PrecompileError::Fatal(msg));
+                return Err(msg.into());
             }
+            Self::InvalidConfigCommitmentWrite => Bytes::new(),
         };
-        Ok(PrecompileOutput::revert(gas, bytes, reservoir))
+        Err(PrecompileError::Revert(bytes))
     }
 }
 
@@ -343,7 +412,6 @@ pub type TempoPrecompileErrorRegistry = HashMap<
 /// Builds a [`TempoPrecompileErrorRegistry`] mapping every known error selector to its decoder.
 pub fn error_decoder_registry() -> TempoPrecompileErrorRegistry {
     let mut registry: TempoPrecompileErrorRegistry = HashMap::new();
-
     add_errors_to_registry(&mut registry, TempoPrecompileError::StablecoinDEX);
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIP20);
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIP20Factory);
@@ -365,6 +433,10 @@ pub fn error_decoder_registry() -> TempoPrecompileErrorRegistry {
     add_errors_to_registry(&mut registry, TempoPrecompileError::StorageCreditsError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::CurrentCommitteeError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::ZoneFactoryError);
+    add_errors_to_registry(
+        &mut registry,
+        TempoPrecompileError::ConfigurableAccountError,
+    );
 
     registry
 }
@@ -390,13 +462,13 @@ pub fn decode_error<'a>(data: &'a [u8]) -> Option<DecodedTempoPrecompileError<'a
 /// Extension trait to convert an error into a [`PrecompileResult`].
 pub trait IntoPrecompileResult {
     /// Converts `self` into a [`PrecompileResult`].
-    fn into_precompile_result(self, gas: u64, reservoir: u64) -> PrecompileResult;
+    fn into_precompile_result(self) -> PrecompileResult;
 }
 
 impl<E: Into<TempoPrecompileError>> IntoPrecompileResult for E {
     #[inline]
-    fn into_precompile_result(self, gas: u64, reservoir: u64) -> PrecompileResult {
-        self.into().into_precompile_result(gas, reservoir)
+    fn into_precompile_result(self) -> PrecompileResult {
+        self.into().into_precompile_result()
     }
 }
 
@@ -405,8 +477,6 @@ pub trait EncodePrecompileResult<T> {
     /// Converts `self` into a [`PrecompileResult`], using `encode_ok` for the success path.
     fn encode_precompile_result(
         self,
-        gas: u64,
-        reservoir: u64,
         encode_ok: impl FnOnce(T) -> alloy::primitives::Bytes,
     ) -> PrecompileResult;
 }
@@ -417,13 +487,11 @@ where
 {
     fn encode_precompile_result(
         self,
-        gas: u64,
-        reservoir: u64,
         encode_ok: impl FnOnce(T) -> alloy::primitives::Bytes,
     ) -> PrecompileResult {
         match self {
-            Ok(res) => Ok(PrecompileOutput::new(gas, encode_ok(res), reservoir)),
-            Err(err) => err.into_precompile_result(gas, reservoir),
+            Ok(res) => Ok(PrecompileOutput::new(encode_ok(res))),
+            Err(err) => err.into_precompile_result(),
         }
     }
 }
@@ -442,6 +510,37 @@ impl StorageCreditsErr for TempoPrecompileError {
 mod tests {
     use super::*;
     use tempo_contracts::precompiles::StablecoinDEXError;
+
+    #[test]
+    fn evm2_state_errors_match_storage_load_semantics() {
+        assert_eq!(
+            TempoPrecompileError::from(LoadError::ColdLoadSkipped),
+            TempoPrecompileError::OutOfGas
+        );
+        let error = DatabaseError::new(core::fmt::Error, false);
+        assert_eq!(
+            TempoPrecompileError::from(LoadError::Database(error.clone())),
+            TempoPrecompileError::Database(error)
+        );
+    }
+
+    #[test]
+    fn storage_failures_stay_fatal_handler_errors() {
+        let database = DatabaseError::new(core::fmt::Error, true);
+        assert!(matches!(
+            HandlerError::from(TempoPrecompileError::Database(database)),
+            HandlerError::Database(_)
+        ));
+        assert!(matches!(
+            HandlerError::from(TempoPrecompileError::Fatal("db".into())),
+            HandlerError::Fatal(_)
+        ));
+        // Protocol failures stay transaction-level errors.
+        assert!(matches!(
+            HandlerError::from(TempoPrecompileError::OutOfGas),
+            HandlerError::External(_)
+        ));
+    }
 
     #[test]
     fn test_add_errors_to_registry_populates_registry() {
@@ -529,34 +628,24 @@ mod tests {
     #[test]
     fn test_into_precompile_result_revert() {
         let error = TempoPrecompileError::StablecoinDEX(StablecoinDEXError::order_does_not_exist());
-        let result = error.into_precompile_result(0, 0);
-
-        let output = result.expect("business-logic revert should be Ok");
-        assert!(output.status.is_revert());
+        let result = error.into_precompile_result();
+        assert!(matches!(result, Err(PrecompileError::Revert(_))));
     }
 
     #[test]
     fn test_static_call_violation_becomes_exceptional_halt() {
-        let output = TempoPrecompileError::StaticCallNotAllowed
-            .into_precompile_result(0, 123)
-            .expect("static-call violation should be a frame-local halt");
-
         assert!(matches!(
-            output.status,
-            revm::precompile::PrecompileStatus::Halt(PrecompileHalt::Other(_))
+            TempoPrecompileError::StaticCallNotAllowed.into_precompile_result(),
+            Err(PrecompileError::Halt(PrecompileHalt::Other(_)))
         ));
-        assert!(output.bytes.is_empty());
-        assert_eq!(output.reservoir, 123);
     }
 
     #[test]
     fn test_encode_precompile_result_trait_success() {
         let result: Result<u64> = Ok(42);
-        let precompile_result =
-            result.encode_precompile_result(0, 0, |val| val.to_be_bytes().into());
+        let precompile_result = result.encode_precompile_result(|val| val.to_be_bytes().into());
 
-        let output = precompile_result.expect("success should be Ok");
-        assert!(output.status.is_success());
+        assert!(precompile_result.is_ok());
     }
 
     #[test]

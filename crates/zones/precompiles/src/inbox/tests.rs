@@ -1,12 +1,12 @@
 use super::*;
 
-use alloy_evm::EvmInternals;
 use alloy_primitives::{B256, Bytes, U256, address, keccak256};
 use alloy_sol_types::{SolCall, SolError, SolValue};
-use revm::precompile::PrecompileResult;
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_contracts::precompiles::UnknownFunctionSelector;
-use tempo_contracts::zones::{MAX_UNPROCESSED_DEPOSITS, MAX_UNPROCESSED_TOKEN_ENABLEMENTS};
+use tempo_contracts::{
+    precompiles::UnknownFunctionSelector,
+    zones::{MAX_UNPROCESSED_DEPOSITS, MAX_UNPROCESSED_TOKEN_ENABLEMENTS},
+};
 use tempo_precompiles::{
     PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, TIP403_REGISTRY_ADDRESS,
     receive_policy_guard::ReceivePolicyGuard,
@@ -20,9 +20,9 @@ use tempo_primitives::TempoHeader;
 use zone_primitives::constants::ZONE_OUTBOX_ADDRESS;
 
 use crate::test_utils::{
-    EncryptedDepositFixture, MockL1Reader, TestContext, build_plaintext, call_precompile,
-    compressed_x_and_parity, encrypt_plaintext, test_context, test_context_with_hardfork, test_env,
-    test_storage_provider,
+    EncryptedDepositFixture, MockL1Reader, PrecompileResult, TestContext, TestPrecompiles,
+    build_plaintext, call_precompile, compressed_x_and_parity, encrypt_plaintext, test_context,
+    test_context_with_hardfork, test_precompiles, test_storage_provider,
 };
 
 const GAS: u64 = 30_000_000;
@@ -35,8 +35,8 @@ struct Harness {
     ctx: TestContext,
     l1: MockL1Reader,
     l1_state: L1State<MockL1Reader>,
-    precompile: DynPrecompile,
-    outbox_precompile: DynPrecompile,
+    precompile: TestPrecompiles,
+    outbox_precompile: TestPrecompiles,
     genesis_hash: B256,
 }
 
@@ -61,8 +61,8 @@ impl Harness {
             },
             ..Default::default()
         };
-        ctx.block.inner.timestamp = U256::from(child_header.inner.timestamp);
-        ctx.block.timestamp_millis_part = child_header.timestamp_millis_part;
+        ctx.block.timestamp = U256::from(child_header.inner.timestamp);
+        ctx.block.ext.timestamp_millis_part = child_header.timestamp_millis_part;
         {
             let mut storage = test_storage_provider(&mut ctx, u64::MAX, false);
             StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
@@ -81,9 +81,8 @@ impl Harness {
 
         l1.seed_active_sequencer(PORTAL, 1, SEQUENCER);
         let l1_state = L1State::new(l1.clone(), PORTAL);
-        let env = test_env(&ctx);
-        let precompile = ZoneInbox::create(l1_state.clone(), &env);
-        let outbox_precompile = crate::create_outbox_precompile(l1_state.clone(), &env);
+        let precompile = test_precompiles(&ctx, l1_state.clone());
+        let outbox_precompile = test_precompiles(&ctx, l1_state.clone());
         Ok(Self {
             ctx,
             l1,
@@ -164,7 +163,7 @@ impl Harness {
     ) -> PrecompileResult {
         call_precompile(
             &mut self.ctx,
-            &self.precompile,
+            &mut self.precompile,
             caller,
             calldata.as_ref(),
             gas,
@@ -175,14 +174,11 @@ impl Harness {
     }
 
     fn call_atomic(&mut self, caller: Address, calldata: impl AsRef<[u8]>) -> PrecompileResult {
-        let checkpoint = EvmInternals::from_context(&mut self.ctx).checkpoint();
+        let checkpoint = self.ctx.checkpoint();
         let result = self.call(caller, calldata);
         let success = result.as_ref().is_ok_and(|output| output.is_success());
-        let mut internals = EvmInternals::from_context(&mut self.ctx);
-        if success {
-            internals.checkpoint_commit();
-        } else {
-            internals.checkpoint_revert(checkpoint);
+        if !success {
+            self.ctx.checkpoint_revert(checkpoint);
         }
         result
     }
@@ -199,7 +195,7 @@ impl Harness {
         let calldata = IZoneOutbox::getPendingWithdrawalsCall {}.abi_encode();
         let output = call_precompile(
             &mut self.ctx,
-            &self.outbox_precompile,
+            &mut self.outbox_precompile,
             Address::ZERO,
             &calldata,
             GAS,
@@ -440,11 +436,9 @@ fn processed_enabled_token_count_activates_at_t13() -> eyre::Result<()> {
     );
 
     let mut harness = Harness::new()?;
-    let t13_env = test_env(&harness.ctx);
-    let t13_precompile = ZoneInbox::create(harness.l1_state.clone(), &t13_env);
     let post_t13 = call_precompile(
         &mut harness.ctx,
-        &t13_precompile,
+        &mut harness.precompile,
         ALICE,
         &calldata,
         GAS,
@@ -466,7 +460,7 @@ fn static_advance_and_delegate_call_revert_before_l1_reads() -> eyre::Result<()>
     let calldata = harness.advance_call(Vec::new(), Vec::new()).abi_encode();
     let output = call_precompile(
         &mut harness.ctx,
-        &harness.precompile,
+        &mut harness.precompile,
         Address::ZERO,
         &calldata,
         GAS,
@@ -480,13 +474,13 @@ fn static_advance_and_delegate_call_revert_before_l1_reads() -> eyre::Result<()>
 
     let output = call_precompile(
         &mut harness.ctx,
-        &harness.precompile,
+        &mut harness.precompile,
         Address::ZERO,
         &calldata,
         GAS,
         false,
-        ZONE_INBOX_ADDRESS,
         Address::repeat_byte(0x44),
+        ZONE_INBOX_ADDRESS,
     )?;
     assert!(output.is_revert());
     assert_eq!(
@@ -1043,6 +1037,25 @@ fn refund_reads_are_limited_to_owner_and_active_sequencer() -> eyre::Result<()> 
 }
 
 #[test]
+fn claim_refund_zero_amount_is_gated_by_t13() -> eyre::Result<()> {
+    for (hardfork, expected) in [
+        (TempoHardfork::T12, 0u128.abi_encode()),
+        (TempoHardfork::T13, IZoneInbox::NoRefund {}.abi_encode()),
+    ] {
+        let output = Harness::new_with_hardfork(hardfork)?.call(
+            BOB,
+            IZoneInbox::claimRefundCall {
+                token: PATH_USD_ADDRESS,
+            }
+            .abi_encode(),
+        )?;
+        assert_eq!(output.is_revert(), hardfork.is_t13());
+        assert_eq!(output.bytes, expected);
+    }
+    Ok(())
+}
+
+#[test]
 fn claim_refund_clears_balance_and_mints_to_caller() -> eyre::Result<()> {
     let mut harness = Harness::new()?;
     {
@@ -1065,6 +1078,15 @@ fn claim_refund_clears_balance_and_mints_to_caller() -> eyre::Result<()> {
         444
     );
     assert_eq!(harness.balance(PATH_USD_ADDRESS, BOB)?, U256::from(444));
+    let repeated = harness.call(
+        BOB,
+        IZoneInbox::claimRefundCall {
+            token: PATH_USD_ADDRESS,
+        }
+        .abi_encode(),
+    )?;
+    assert!(repeated.is_revert());
+    assert_eq!(repeated.bytes, IZoneInbox::NoRefund {}.abi_encode());
     let mut storage = test_storage_provider(&mut harness.ctx, u64::MAX, false);
     StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
         assert_eq!(
@@ -1161,5 +1183,80 @@ fn withdrawal_bounce_back_consumes_fallback_nonce() -> eyre::Result<()> {
     assert_eq!(harness.balance(PATH_USD_ADDRESS, BOB)?, U256::from(321));
     assert!(harness.pending_withdrawals()?.is_empty());
     assert_eq!(harness.fallback_recipient(nonce)?, Address::ZERO);
+    Ok(())
+}
+
+#[test]
+fn bridged_credits_use_recipient_policy_from_t13() -> eyre::Result<()> {
+    for (hardfork, recipient_allowed, authorized) in [
+        (TempoHardfork::T12, true, false),
+        (TempoHardfork::T12, false, true),
+        (TempoHardfork::T13, true, true),
+        (TempoHardfork::T13, false, false),
+    ] {
+        let mut harness = Harness::new_with_hardfork(hardfork)?;
+        let mut storage = test_storage_provider(&mut harness.ctx, u64::MAX, false);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let (recipient, mint_recipient) = if recipient_allowed {
+                (ALLOW_ALL_POLICY_ID, REJECT_ALL_POLICY_ID)
+            } else {
+                (REJECT_ALL_POLICY_ID, ALLOW_ALL_POLICY_ID)
+            };
+            let policy = TIP403Registry::new().create_compound_policy(
+                ALICE,
+                ITIP403Registry::createCompoundPolicyCall {
+                    senderPolicyId: REJECT_ALL_POLICY_ID,
+                    recipientPolicyId: recipient,
+                    mintRecipientPolicyId: mint_recipient,
+                },
+            )?;
+            let mut token = TIP20Token::from_address(PATH_USD_ADDRESS)?;
+            token.change_transfer_policy_id(
+                ALICE,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: policy,
+                },
+            )?;
+
+            let credited = U256::from(if authorized { 100 } else { 0 });
+            let balance = |account| token.balance_of(ITIP20::balanceOfCall { account });
+            let mut inbox = ZoneInbox::new();
+            assert_eq!(inbox.try_mint(PATH_USD_ADDRESS, ALICE, 100)?, authorized);
+            assert_eq!(balance(ALICE)?, credited);
+
+            let mut outbox = ZoneOutbox::new();
+            outbox.seed_fallback_recipient(7, BOB)?;
+            inbox.process_withdrawal_bounce_back(
+                &mut outbox,
+                WithdrawalBounceBackDeposit {
+                    token: PATH_USD_ADDRESS,
+                    to: Address::left_padding_from(&7u64.to_be_bytes()),
+                    amount: 100,
+                },
+            )?;
+            assert_eq!(outbox.fallback_recipient(7)?, Address::ZERO);
+            assert_eq!(balance(BOB)?, credited);
+            assert_eq!(
+                inbox.withdrawal_bounce_backs[PATH_USD_ADDRESS][BOB].read()?,
+                if authorized { 0 } else { 100 }
+            );
+
+            inbox.withdrawal_bounce_backs[PATH_USD_ADDRESS][BOB].write(100)?;
+            if authorized {
+                assert_eq!(inbox.claim_refund(BOB, PATH_USD_ADDRESS)?, 100);
+            } else {
+                assert!(inbox.claim_refund(BOB, PATH_USD_ADDRESS).is_err());
+            }
+            assert_eq!(balance(BOB)?, credited + credited);
+            assert_eq!(
+                inbox.withdrawal_bounce_backs[PATH_USD_ADDRESS][BOB].read()?,
+                if authorized { 0 } else { 100 }
+            );
+            assert_eq!(balance(RECEIVE_POLICY_GUARD_ADDRESS)?, U256::ZERO);
+            Ok(())
+        })?;
+        drop(storage);
+        assert!(harness.pending_withdrawals()?.is_empty());
+    }
     Ok(())
 }

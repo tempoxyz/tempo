@@ -811,7 +811,8 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
     }
 
     /// @notice Handler for testing invalid signature type
-    /// @dev Tests TEMPO-KEY19 (invalid enum values >= 3 are rejected with InvalidSignatureType)
+    /// @dev Tests TEMPO-KEY19 (unsupported signature types are rejected with InvalidSignatureType;
+    ///      type 3 is ConfigurableAccount from T14, so it is only unsupported before T14)
     function testInvalidSignatureType(
         uint256 accountSeed,
         uint256 keyIdSeed,
@@ -825,8 +826,8 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
         // Skip if key already exists or was revoked
         if (_ghostKeyExists[account][keyId] || _ghostKeyRevoked[account][keyId]) return;
 
-        // Only test with values >= 3 (invalid enum values)
-        badType = uint8(bound(badType, 3, 255));
+        // Only test unsupported values: >= 3 before T14, >= 4 from T14
+        badType = uint8(bound(badType, _isT14OrLater() ? 4 : 3, 255));
 
         uint64 expiry = uint64(block.timestamp + 1 days);
 

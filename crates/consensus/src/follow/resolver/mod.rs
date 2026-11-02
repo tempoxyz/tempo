@@ -321,7 +321,7 @@ impl BlockNetwork for NoopBlockNetwork {
 
 impl<C> BlockNetwork for FullBlockClient<C>
 where
-    C: BlockClient<Block = TempoBlock> + Send + Sync + 'static,
+    C: BlockClient<Block = TempoBlock> + 'static,
     C::Header: alloy_consensus::BlockHeader + alloy_primitives::Sealable,
 {
     fn get_block(&self, digest: Digest) -> impl Future<Output = Option<Block>> + Send + 'static {

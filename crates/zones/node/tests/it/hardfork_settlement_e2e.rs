@@ -12,7 +12,13 @@ use alloy_sol_types::{SolCall, SolError};
 use reth_chainspec::EthChainSpec;
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::{hardfork::TempoHardfork, spec::TempoChainSpec};
-use tempo_contracts::precompiles::ITIP20;
+use tempo_contracts::{
+    precompiles::ITIP20,
+    zones::{
+        IZoneInbox, IZoneOutbox, TEMPO_STATE_ADDRESS, TempoState, ZONE_INBOX_ADDRESS,
+        ZONE_OUTBOX_ADDRESS, ZonePortal,
+    },
+};
 use tempo_precompiles::{
     PATH_USD_ADDRESS,
     storage::{
@@ -20,10 +26,6 @@ use tempo_precompiles::{
     },
 };
 use tempo_primitives::TempoHeader;
-use tempo_contracts::zones::{
-    IZoneInbox, IZoneOutbox, TEMPO_STATE_ADDRESS, TempoState, ZONE_INBOX_ADDRESS,
-    ZONE_OUTBOX_ADDRESS, ZonePortal,
-};
 use zone_chainspec::test_utils::set_tempo_fork;
 use zone_rpc::types::ZoneExecutionWitness;
 use zone_sequencer::{BatchData, BatchSubmitter};
@@ -40,7 +42,7 @@ use crate::utils::{
 #[tokio::test(flavor = "multi_thread")]
 async fn test_t13_migrates_and_settles_existing_portal() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
-    let activation = now_secs() + 60;
+    let activation = now_secs() + 30;
     let mut portal_address = Address::ZERO;
     let l1 = L1TestNode::start_with(|cfg| {
         let mut genesis = cfg.chain.genesis().clone();
@@ -342,7 +344,6 @@ async fn test_t13_migrates_and_settles_existing_portal() -> eyre::Result<()> {
 
 /// Predeploy a T12 portal whose mock verifier storage survives the canonical T13 runtime upgrade.
 fn init_migration_portal(genesis: &mut Genesis, activation: u64) -> eyre::Result<Address> {
-    use revm::state::Bytecode;
     use tempo_contracts::precompiles::{IZoneFactory, initial_zone_factory_state};
     use tempo_precompiles::zone_factory::{
         ZoneFactory, ZoneInfoStorageHandler, ZonePortalStorage, slots,
@@ -371,7 +372,7 @@ fn init_migration_portal(genesis: &mut Genesis, activation: u64) -> eyre::Result
     storage.set_timestamp(U256::from(genesis.timestamp));
     for (&address, account) in &genesis.alloc {
         if let Some(code) = &account.code {
-            storage.set_code(address, Bytecode::new_legacy(code.clone()))?;
+            storage.set_code(address, code.clone())?;
         }
         if let Some(slots) = &account.storage {
             for (&slot, &value) in slots {
@@ -410,7 +411,12 @@ fn init_migration_portal(genesis: &mut Genesis, activation: u64) -> eyre::Result
         .write(verifier)?;
         Ok(created.portal)
     })?;
-    let (_, code) = storage.account_code(portal_address)?;
+    let code = storage
+        .get_account_info(portal_address)
+        .expect("factory created the portal account")
+        .code
+        .as_ref()
+        .expect("factory installed the portal code");
     genesis.alloc.entry(portal_address).or_default().code = Some(code.original_bytes());
     for (address, slot, value) in storage.into_storage() {
         genesis

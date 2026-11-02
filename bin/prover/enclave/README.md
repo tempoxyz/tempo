@@ -90,6 +90,15 @@ pass `--port` to change the selected transport's port. The maximum request paylo
 GiB and can be changed with `SPF_MAX_REQUEST_BYTES` or `--max-request-bytes`. The host runner
 allocates 10 GiB to the enclave by default; override it with `ENCLAVE_MEMORY_MIB`.
 
+Before typed decoding, the receiver independently limits CBOR values to `max_request_bytes / 256`
+(default 8,388,608), including collection headers, map keys, and indefinite-length terminators.
+Both limits scale with `SPF_MAX_REQUEST_BYTES` or `--max-request-bytes`. The value-count allowance
+estimates overhead from owned values, vector capacity, and witness hash indexing without reducing
+the encoded byte limit. An allocation-free preflight checks declared collection lengths and counts
+values across the entire message, including both node pools and the bytecode pool. Requests
+exceeding either limit return `request_too_large`. These limits do not impose a ceiling on process
+memory or execution time.
+
 The enclave applies separate absolute deadlines to request reception and response transmission.
 `--request-timeout-secs` (`SPF_REQUEST_TIMEOUT_SECS`, default 300) covers reception and decoding of
 the complete CBOR request. `--response-timeout-secs` (`SPF_RESPONSE_TIMEOUT_SECS`, default 300)
@@ -181,17 +190,28 @@ not require a wall clock: certificate validity spans 2024–9999 and the client 
 timestamps and fresh nonces. Clients require an accurate wall clock. The default maximum evidence
 age is 300 seconds, with at most 300 seconds of future clock skew.
 
-Remote node proving requires an explicit `--sequencer.prover-attestation-policy` PCR0–2 allowlist
-because the pinned Tempo release does not expose the native verifier's compiled policy. Pin these
-measurements independently from the trusted EIF build, never from a prover response. The prover
-utils likewise require `--attestation-policy`; see the [policy example](../utils/README.md).
+Remote node proving authenticates each endpoint with the PCR0–2 measurements compiled into the
+binary for its hardfork (`crates/precompiles/src/zone_verifier/pcrs.json`), and the node refuses to
+start with an assignment for a fork that has none. `--sequencer.prover-attestation-policy`
+overrides them with an explicit allowlist for all endpoints; pin those measurements independently
+from the trusted EIF build, never from a prover response. The prover utils require
+`--attestation-policy`; see the [policy example](../utils/README.md).
 Debug-mode zero PCRs are rejected. Rebuild the EIF and distribute its trusted measurements when
 deploying this change; coordinate client/server upgrades because plaintext clients are no longer
 accepted.
 
 The host image launches the enclave in non-debug mode and exposes TCP port `5000`. It accepts
 `PROVER_EIF_PATH`, `ENCLAVE_NAME`, `ENCLAVE_CPU_COUNT`, `ENCLAVE_MEMORY_MIB`, `ENCLAVE_CID`,
-`PROVER_TCP_PORT`, `PROVER_VSOCK_PORT`, and `MONITOR_INTERVAL_SECONDS` as runtime configuration.
+`PROVER_TCP_PORT`, `PROVER_VSOCK_PORT`, `PROVER_METRICS_ADDR`, and `MONITOR_INTERVAL_SECONDS`
+as runtime configuration.
+
+The host launcher binds the proxy's Prometheus `/metrics` endpoint to `0.0.0.0:9100` by default;
+set `PROVER_METRICS_ADDR` to override it. Unlike the standalone proxy's loopback default, this
+allows scraping from outside the container. The endpoint has no authentication: restrict access
+to the scraper with a network policy and do not expose it through the prover's public Service.
+Kubernetes deployments also need a named metrics container port and a `VMPodScrape` selecting
+the prover pods; Docker's `EXPOSE` alone does not configure scraping. See the
+[proxy metrics reference](../vsock-proxy/README.md#metrics).
 
 ### Upgrading across an L1 hardfork
 
@@ -206,17 +226,16 @@ For example, after both forks' measurements have been approved in Tempo, a T13/T
 
 ```sh
 --sequencer.enable-prover \
---sequencer.prover-attestation-policy prover-attestation-policy.json \
 --sequencer.prover-address T13=prover-t13:5000 \
 --sequencer.prover-address T14=prover-t14:5000
 ```
 
 The equivalent address setting is
-`SEQUENCER_PROVER_ADDRESS=T13=prover-t13:5000,T14=prover-t14:5000`, with
-`SEQUENCER_PROVER_ATTESTATION_POLICY=prover-attestation-policy.json`. The policy file is required
-for all remote endpoints; the node refuses to start without it rather than send witnesses without
-authentication. Include both deployments' independently approved measurements during an upgrade.
-This transport policy does not change what the L1 verifier accepts for settlement.
+`SEQUENCER_PROVER_ADDRESS=T13=prover-t13:5000,T14=prover-t14:5000`. Each endpoint is
+authenticated with its fork's compiled-in measurements. An optional
+`SEQUENCER_PROVER_ATTESTATION_POLICY` file replaces them for all endpoints, so it must include both
+deployments' independently approved measurements during an upgrade. Neither changes what the L1
+verifier accepts for settlement.
 Use the actual forks supported by the node binary; a future fork assignment requires a binary
 whose Tempo dependency recognizes it.
 Assign the same endpoint explicitly to adjacent forks when the accepted prover image is unchanged.
@@ -238,7 +257,8 @@ a fresh proof; retries reconcile portal progress before deciding to submit again
 proving also uses the live fork's endpoint to validate historical submissions.
 
 When colocating releases, use distinct `ENCLAVE_NAME`, `ENCLAVE_CID`, and `PROVER_TCP_PORT`
-settings and reserve enough Nitro CPU and memory for both. Separate hosts can use the defaults.
+settings and reserve enough Nitro CPU and memory for both. Use distinct `PROVER_METRICS_ADDR`
+ports when sharing a network namespace. Separate hosts can use the defaults.
 Retain the old deployment through the operational reorg window, then retire it after the new
 fork is stable. Retaining a deployment does not extend acceptance of its PCRs on L1.
 

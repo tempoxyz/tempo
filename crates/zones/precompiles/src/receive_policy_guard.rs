@@ -11,12 +11,11 @@ use crate::{
 };
 use alloy_primitives::Address;
 use alloy_sol_types::{SolCall, SolError};
-use tempo_contracts::precompiles::IReceivePolicyGuard;
+use tempo_contracts::{precompiles::IReceivePolicyGuard, zones::Unauthorized};
 use tempo_precompiles::{
     address_registry::AddressRegistry,
     dispatch::{abi_decoder_config_for_spec, selector_from_calldata},
 };
-use tempo_contracts::zones::Unauthorized;
 
 /// Stakeholder-only admission for receipt balance lookups.
 pub(crate) struct ReceivePolicyGuardRules;
@@ -66,10 +65,8 @@ mod tests {
 
     use super::*;
 
-    use alloy_evm::precompiles::DynPrecompile;
     use alloy_primitives::{B256, Bytes, U256};
     use alloy_sol_types::SolValue;
-    use revm::precompile::{PrecompileOutput, PrecompileResult};
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{IReceivePolicyGuard::InboundKind, ITIP20, ITIP403Registry};
     use tempo_precompiles::{
@@ -82,7 +79,8 @@ mod tests {
     };
 
     use crate::test_utils::{
-        TestContext, call_precompile, test_context, test_env, test_storage_provider,
+        PrecompileOutput, PrecompileResult, TestContext, TestPrecompiles, call_precompile,
+        test_context, test_precompiles, test_storage_provider,
     };
 
     const ADMIN: Address = Address::with_last_byte(0xa1);
@@ -257,7 +255,7 @@ mod tests {
 
     struct GuardHarness {
         ctx: TestContext,
-        precompile: DynPrecompile,
+        precompile: TestPrecompiles,
         receipt: IReceivePolicyGuard::ClaimReceiptV1,
     }
 
@@ -295,12 +293,8 @@ mod tests {
 
             let receipt = receipt(RECEIVER, RECEIVER);
             assert_eq!(receipt.version, BLOCKED_RECEIPT_VERSION);
-            let env = test_env(&ctx);
-            let precompile = zone_precompile!(
-                env,
-                tempo_precompiles::receive_policy_guard::ReceivePolicyGuard,
-                ReceivePolicyGuardRules
-            );
+            let precompile =
+                test_precompiles(&ctx, crate::L1State::new(Default::default(), Address::ZERO));
             Ok(Self {
                 ctx,
                 precompile,
@@ -321,7 +315,7 @@ mod tests {
         ) -> PrecompileResult {
             call_precompile(
                 &mut self.ctx,
-                &self.precompile,
+                &mut self.precompile,
                 caller,
                 &data,
                 gas,

@@ -1,5 +1,8 @@
 # tempo-xtask
 
+Zones tooling is available through `cargo zone-xtask` (the `tempo-zone-xtask`
+binary). See the [Zones command reference](src/zones/README.md).
+
 A polyfill to perform various operations on the codebase.
 
 Subcommands currently supported:

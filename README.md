@@ -1,5 +1,5 @@
-<br>
-<br>
+<!-- Generated from README.md.template and the network identity JSON files.
+Edit the template or JSON files, then run: uv run --no-project python scripts/generate_readme.py -->
 
 <p align="center">
   <a href="https://tempo.xyz">
@@ -9,9 +9,6 @@
     </picture>
   </a>
 </p>
-
-<br>
-<br>
 
 # Tempo
 
@@ -167,19 +164,19 @@ Our contributor guidelines can be found in [`CONTRIBUTING.md`](https://github.co
 
 These BLS threshold public keys are built into Tempo nodes and used by both follow/RPC nodes and validators to verify consensus finalisation certificates, including those used to authenticate snapshots.
 
-**Mainnet — from epoch 0**
+**[Mainnet](./mainnet-network-identity.json) — from epoch 2042**
 
 ```text
-0xa217bb85001d4dcf8e5c50136f77af88cb2cab1857279b91c6240f41cca95c4f43f6dcab3e0dfb87dafb3ecbeb6251e90a5df2e6c47432482821cd8b84665ee4642589d2d9628a92b03e2bbfb00e006d038cd98def76d2a41b7c228c05f5a193
+0x8627d33753b0d90a8eae75363d6b393ab9204076545b3af6caf831903e4bedde4374f1106551b481fb5ea35e59d51c92165c963881c718216e3e4570a307c08885af55c274f19488f709afe021ca3d9e567138ab097860d9146e895407bea182
 ```
 
-**Testnet (Moderato) — from epoch 1747**
+**[Testnet (Moderato)](./testnet-network-identity.json) — from epoch 1747**
 
 ```text
 0x967ae1a6d3ddbe5cb0fe5e6fc58e74249787b4a277619b549fed6609d04660540dd2449cd7174def35e40f544e5ad72d15d064191a205ed6e0c49619c68f975108b614d0d51def9a8416a10a07c4193bea0cbbc4252ec1b33f21095a5d7aa590
 ```
 
-See the [compiled network identities](./crates/chainspec/src/network_identity.rs) for the built-in values. To override them, see [How do I override the network identity?](https://tempo.xyz/developers/docs/guide/node/validator-troubleshooting#my-node-fails-to-start-finalized-tip-certificate-failed-verification-against-the-trusted-network-identity).
+See the [network identity loader](./crates/chainspec/src/network_identity.rs) for how these files are loaded. To override them, see [How do I override the network identity?](https://tempo.xyz/developers/docs/guide/node/validator-troubleshooting#my-node-fails-to-start-finalized-tip-certificate-failed-verification-against-the-trusted-network-identity).
 
 ## Security
 

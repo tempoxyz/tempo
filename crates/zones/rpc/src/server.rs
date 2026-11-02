@@ -17,10 +17,7 @@ use std::{io, sync::Arc, time::Instant};
 use tempo_contracts::precompiles::account_keychain::IAccountKeychain::{
     KeyInfo, SignatureType as KeyInfoSignatureType,
 };
-use tempo_primitives::transaction::{
-    SignatureType as TempoSignatureType,
-    tt_signature::{KeychainSignature, TempoSignature},
-};
+use tempo_primitives::transaction::tt_signature::{KeychainSignature, TempoSignature};
 use tracing::info;
 
 use crate::{
@@ -330,6 +327,11 @@ pub(crate) async fn authenticate_token(
 
     let signature =
         TempoSignature::from_bytes(&token.signature).map_err(|_| AuthError::InvalidSignature)?;
+    // Zone auth cannot check a configurable account's commitment against state, so reject a
+    // configurable signer, direct or keychain-wrapped, before verifying its quorum.
+    if signature.is_or_wraps_configurable_account() {
+        return Err(AuthError::InvalidSignature.into());
+    }
     let caller = signature
         .recover_signer(&token.digest)
         .map_err(|_| AuthError::InvalidSignature)?;
@@ -353,18 +355,17 @@ async fn validate_keychain_signature(
     keychain_signature: &KeychainSignature,
     digest: &alloy_primitives::B256,
 ) -> Result<alloy_primitives::Address, AuthenticateError> {
+    let expected_signature_type: KeyInfoSignatureType = keychain_signature
+        .signature
+        .primitive_signature_type()
+        .ok_or(AuthError::InvalidSignature)?
+        .into();
     let key_id = keychain_signature
         .key_id(digest)
         .map_err(|_| AuthError::InvalidSignature)?;
     let key_info = api.get_keychain_key(caller, key_id).await?;
 
     validate_keychain_key_info(&key_info)?;
-
-    let expected_signature_type = match keychain_signature.signature.signature_type() {
-        TempoSignatureType::Secp256k1 => KeyInfoSignatureType::Secp256k1,
-        TempoSignatureType::P256 => KeyInfoSignatureType::P256,
-        TempoSignatureType::WebAuthn => KeyInfoSignatureType::WebAuthn,
-    };
 
     if key_info.signatureType != expected_signature_type {
         return Err(AuthError::KeychainSignatureTypeMismatch.into());
@@ -402,9 +403,8 @@ mod tests {
     };
     use alloy_primitives::{Address, Bytes};
     use axum::http::StatusCode;
-    use p256::ecdsa::SigningKey as P256SigningKey;
+    use p256::{ecdsa::SigningKey as P256SigningKey, elliptic_curve::rand_core::OsRng};
     use parking_lot::Mutex;
-    use rand::thread_rng;
     use std::collections::HashMap;
     use tempo_contracts::precompiles::account_keychain::IAccountKeychain::{
         KeyInfo, SignatureType as KeyInfoSignatureType,
@@ -609,7 +609,7 @@ mod tests {
     #[tokio::test]
     async fn revoked_keychain_key_is_classified_as_revoked() {
         let root_account = Address::repeat_byte(0x55);
-        let access_signer = P256SigningKey::random(&mut thread_rng());
+        let access_signer = P256SigningKey::random(&mut OsRng);
         let now = now_secs();
         let (fields, digest) = build_token_fields(ZONE_ID, CHAIN_ID, now, now + 600);
         let (signature, key_id) =
@@ -641,7 +641,7 @@ mod tests {
     #[tokio::test]
     async fn expired_keychain_key_is_classified_as_expired() {
         let root_account = Address::repeat_byte(0x55);
-        let access_signer = P256SigningKey::random(&mut thread_rng());
+        let access_signer = P256SigningKey::random(&mut OsRng);
         let now = now_secs();
         let (fields, digest) = build_token_fields(ZONE_ID, CHAIN_ID, now, now + 600);
         let (signature, key_id) =

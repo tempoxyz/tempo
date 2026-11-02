@@ -64,7 +64,7 @@ use tempo_primitives::TempoHeader;
 use tracing::{Level, Span, debug, error, error_span, info, instrument, warn, warn_span};
 
 use crate::{
-    consensus::Digest,
+    consensus::{Digest, application::Application},
     epoch::manager::ingress::{EpochTransition, Exit},
     storage::FinalizedBlocksProvider as _,
 };
@@ -120,6 +120,10 @@ where
             "elector_version",
             "the elector version in the most recently started epoch (0 = V0, 1 = V1)",
         );
+        let deferred_verification = context.gauge(
+            "deferred_verification",
+            "verification mode in the most recently started epoch (0 = immediate, 1 = deferred)",
+        );
         let how_often_signer = context.counter(
             "how_often_signer",
             "how often a node is a signer; a node is a signer if it has a share",
@@ -138,6 +142,7 @@ where
                 latest_epoch,
                 latest_participants,
                 elector_version,
+                deferred_verification,
                 how_often_signer,
                 how_often_verifier,
             },
@@ -385,7 +390,13 @@ where
         let certificate = certificates_mux.register(epoch.get()).await.unwrap();
         let resolver = resolver_mux.register(epoch.get()).await.unwrap();
 
-        info!(mode = %self.config.verification_mode, "starting simplex engine");
+        let application = self.config.application.for_timestamp(boundary_timestamp);
+        let deferred = matches!(application, Application::Deferred(_));
+        self.metrics
+            .deferred_verification
+            .metric()
+            .set(i64::from(deferred));
+        info!(deferred, boundary_timestamp, "starting simplex engine");
 
         let engine = simplex::Engine::new(
             engine_ctx,
@@ -406,8 +417,8 @@ where
                 write_buffer: WRITE_BUFFER,
 
                 blocker: self.config.blocker.clone(),
-                automaton: self.config.application.clone(),
-                relay: self.config.application.clone(),
+                automaton: application.clone(),
+                relay: application,
                 page_cache: self.config.page_cache.clone(),
                 leader_timeout: self.config.time_to_propose,
                 certification_timeout: self.config.time_to_collect_notarizations,
@@ -532,6 +543,7 @@ struct Metrics {
     latest_epoch: Gauge,
     latest_participants: Gauge,
     elector_version: Gauge,
+    deferred_verification: Gauge,
     how_often_signer: Counter,
     how_often_verifier: Counter,
 }

@@ -37,7 +37,7 @@ jobs:
 
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
       - name: Validate inputs
         id: release
@@ -118,16 +118,17 @@ jobs:
             exit 1
           fi
 
-          # Never prepare a version which has already been tagged.
+          # Never prepare a version which has already been tagged, with or
+          # without the tempo/ prefix.
           set +e
           git ls-remote --exit-code --tags origin \
-            "refs/tags/v${VERSION}" >/dev/null
+            "refs/tags/v${VERSION}" "refs/tags/tempo/v${VERSION}" >/dev/null
           tag_status=$?
           set -e
 
           case "$tag_status" in
             0)
-              echo "::error::Tag v${VERSION} already exists"
+              echo "::error::Tag v${VERSION} or tempo/v${VERSION} already exists"
               exit 1
               ;;
             2)
@@ -193,7 +194,7 @@ jobs:
           echo "existing_commit=${existing_commit}" >> "$GITHUB_OUTPUT"
 
       - name: Install Rust toolchain
-        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
       - name: Update workspace version
         shell: bash
@@ -329,7 +330,7 @@ jobs:
 
       - name: Fetch GitHub token via STS
         id: app-token
-        uses: tempoxyz/gh-actions/actions/github-sts@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        uses: tempoxyz/gh-actions/actions/github-sts@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           policy: release-pr
 

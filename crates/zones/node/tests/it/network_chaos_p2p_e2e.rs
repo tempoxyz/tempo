@@ -25,6 +25,8 @@ const L1_BLOCK_TIME: Duration = Duration::from_millis(250);
 const P2P_LATENCY: Duration = Duration::from_millis(400);
 const L1_LATENCY: Duration = Duration::from_millis(500);
 const RECOVERY_GAP: u64 = 6;
+// Replication-only cases do not need periodic empty-batch settlement.
+const REPLICATION_BATCH_INTERVAL_BLOCKS: u64 = 1_000;
 const INITIAL_DEPOSIT: u128 = 10_000_000;
 const WITHDRAWAL_AMOUNT: u128 = 250_000;
 
@@ -70,12 +72,16 @@ struct LeadershipFaultCase {
     expected: ExpectedDuringFault,
 }
 
-async fn start_cluster() -> eyre::Result<(
+async fn start_cluster(
+    withdrawal_batch_interval_blocks: u64,
+) -> eyre::Result<(
     RealP2pCluster,
     P2pChaosNetwork,
     [crate::utils::TcpChaosProxy; 3],
 )> {
-    let fixture = start_real_p2p_network_chaos_cluster(4, L1_BLOCK_TIME).await?;
+    let fixture =
+        start_real_p2p_network_chaos_cluster(withdrawal_batch_interval_blocks, L1_BLOCK_TIME)
+            .await?;
     let cluster = &fixture.0;
     eyre::ensure!(
         cluster.nodes.len() == 3,
@@ -696,7 +702,7 @@ async fn assert_stable_b_leadership(cluster: &RealP2pCluster, baseline: u64) -> 
 }
 
 async fn run_leadership_fault_case(case: LeadershipFaultCase) -> eyre::Result<()> {
-    let (cluster, network, l1_proxies) = start_cluster().await?;
+    let (cluster, network, l1_proxies) = start_cluster(4).await?;
     let portal = ZonePortal::new(cluster.portal_address, cluster.l1.provider());
     eyre::ensure!(
         portal.sequencerThreshold().call().await? == 2,
@@ -910,7 +916,7 @@ leadership_fault_tests! {
 async fn test_handoff_recovers_across_settlement_boundary() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let (cluster, network, _l1_proxies) = start_cluster().await?;
+    let (cluster, network, _l1_proxies) = start_cluster(4).await?;
     let portal = ZonePortal::new(cluster.portal_address, cluster.l1.provider());
     poll_until(
         NETWORK_TIMEOUT,
@@ -1118,7 +1124,7 @@ async fn assert_isolation_recovers(
 async fn test_followers_catch_up_after_leader_p2p_disconnect() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let (cluster, network, _l1_proxies) = start_cluster().await?;
+    let (cluster, network, _l1_proxies) = start_cluster(REPLICATION_BATCH_INTERVAL_BLOCKS).await?;
     assert_isolation_recovers(&cluster, &network, &[0]).await
 }
 
@@ -1128,7 +1134,7 @@ async fn test_followers_catch_up_after_leader_p2p_disconnect() -> eyre::Result<(
 async fn test_followers_catch_up_after_their_p2p_disconnect() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let (cluster, network, _l1_proxies) = start_cluster().await?;
+    let (cluster, network, _l1_proxies) = start_cluster(REPLICATION_BATCH_INTERVAL_BLOCKS).await?;
     assert_isolation_recovers(&cluster, &network, &[1, 2]).await
 }
 
@@ -1138,7 +1144,7 @@ async fn test_followers_catch_up_after_their_p2p_disconnect() -> eyre::Result<()
 async fn test_follower_mempool_transaction_propagates_after_reconnect() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let (cluster, network, _l1_proxies) = start_cluster().await?;
+    let (cluster, network, _l1_proxies) = start_cluster(REPLICATION_BATCH_INTERVAL_BLOCKS).await?;
     let mut account =
         ZoneAccount::from_l1_and_zone(&cluster.l1, &cluster.nodes[1], cluster.portal_address);
     cluster
@@ -1216,7 +1222,7 @@ async fn test_follower_mempool_transaction_propagates_after_reconnect() -> eyre:
 async fn test_follower_keeps_up_with_high_p2p_latency() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let (cluster, network, _l1_proxies) = start_cluster().await?;
+    let (cluster, network, _l1_proxies) = start_cluster(REPLICATION_BATCH_INTERVAL_BLOCKS).await?;
     synchronized_head(&cluster).await?;
     network.set_nodes_latency(&[1], P2P_LATENCY);
 
@@ -1236,7 +1242,7 @@ async fn test_follower_keeps_up_with_high_l1_latency() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let (cluster, _network, [_leader_l1, follower_l1, _other_follower_l1]) =
-        start_cluster().await?;
+        start_cluster(REPLICATION_BATCH_INTERVAL_BLOCKS).await?;
     synchronized_head(&cluster).await?;
     let follower_anchor = cluster.nodes[1].tempo_block_number().await?;
     let highest_observed_anchor = cluster.nodes[1]

@@ -19,15 +19,19 @@ use alloy_primitives::{B256, Bytes, keccak256};
 use alloy_provider::{DynProvider, Provider as _};
 use alloy_rpc_types_eth::BlockNumberOrTag;
 use alloy_sol_types::{SolCall as _, SolInterface as _};
+#[cfg(feature = "fuzz")]
+use antithesis_sdk::assert_always;
 use eyre::{Context as _, OptionExt as _, Result, bail, ensure};
 use futures::{StreamExt as _, TryStreamExt as _, stream};
 use reth_primitives_traits::RecoveredBlock;
+#[cfg(feature = "fuzz")]
+use serde_json::json;
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_primitives::{Block, TempoHeader};
 use tempo_contracts::zones::{
     IZoneInbox as ZoneInbox, IZoneOutbox as ZoneOutbox, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS,
 };
+use tempo_primitives::{Block, TempoHeader};
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     sync::{mpsc, oneshot},
@@ -48,7 +52,8 @@ use zone_spf::{
 
 use crate::{
     BatchAnchor, BatchData, PreparedBatch, ProverAddresses, ZoneSequencerProvider,
-    metrics::ProverMetrics, proofs::ProofCollectorHandle,
+    metrics::ProverMetrics, proofs::ProofCollectorHandle, prover_config::active_l1_hardfork,
+    settlement::BatchSubmitError,
 };
 
 /// Number of candidates allowed to wait behind the active validation.
@@ -267,6 +272,10 @@ fn spawn_prover<P: ZoneSequencerProvider>(
                 .record(job.enqueued_at.elapsed().as_secs_f64());
             let started = Instant::now();
             let result = validate_candidate(&context, &job, proofs.as_ref(), &metrics).await;
+            if let Some(proofs) = &proofs {
+                // Jobs are processed in order, and failed ones are not retried.
+                proofs.mark_shadow_proven(job.to);
+            }
             metrics
                 .validation_duration_seconds
                 .record(started.elapsed().as_secs_f64());
@@ -445,8 +454,18 @@ async fn validate_candidate<P: ZoneSequencerProvider>(
         let spf_config = SpfConfig::new(context.config.chain_spec.clone());
         let output = tokio::task::spawn_blocking(move || prove_zone_batch(&spf_config, witness))
             .await
-            .context("SPF worker panicked")?
-            .context("SPF rejected generated witness")?;
+            .context("SPF worker panicked")?;
+        #[cfg(feature = "fuzz")]
+        assert_always!(
+            output.is_ok(),
+            "Native prover accepts the sequencer witness",
+            &json!({
+                "zone_from": job.from,
+                "zone_to": job.to,
+                "error": output.as_ref().err().map(|error| format!("{error:#}")),
+            })
+        );
+        let output = output.context("SPF rejected generated witness")?;
         (output, None)
     };
     metrics
@@ -454,7 +473,18 @@ async fn validate_candidate<P: ZoneSequencerProvider>(
         .record(started.elapsed().as_secs_f64());
 
     let started = Instant::now();
-    compare_output(&output, batch, batch.prev_block_hash)?;
+    let comparison = compare_output(&output, batch, batch.prev_block_hash);
+    #[cfg(feature = "fuzz")]
+    assert_always!(
+        comparison.is_ok(),
+        "Prover output matches the sequencer batch",
+        &json!({
+            "zone_from": job.from,
+            "zone_to": job.to,
+            "error": comparison.as_ref().err().map(|error| format!("{error:#}")),
+        })
+    );
+    comparison?;
     metrics
         .output_validation_duration_seconds
         .record(started.elapsed().as_secs_f64());
@@ -485,6 +515,21 @@ async fn validate_candidate<P: ZoneSequencerProvider>(
                     "On-chain proof verification skipped before T13");
             }
             Ok(ProofVerification::Rejected) => {
+                // L1 may have activated a fork with new PCRs while proving.
+                if context.config.proof_verifier.is_none() {
+                    let current = active_l1_hardfork(
+                        &context.l1_provider,
+                        context.config.chain_spec.as_ref(),
+                    )
+                    .await?;
+                    if current != proof.hardfork {
+                        return Err(BatchSubmitError::ProverHardforkChanged {
+                            proved: proof.hardfork,
+                            current,
+                        }
+                        .into());
+                    }
+                }
                 metrics.proof_verification_failure_total.increment(1);
                 bail!("verifier rejected the proof");
             }
@@ -1038,7 +1083,7 @@ async fn zone_witnesses(
             } else if let Some(proof) = proofs.and_then(|proofs| proofs.get(number, hash)) {
                 proof.witness.clone()
             } else {
-                // Shadow jobs run after finalization, when their retained inputs may be pruned.
+                // Witnesses past the shadow retention window, or in flight across a restart, are pruned.
                 debug_api
                     .zone_execution_witness(hash.into())
                     .await

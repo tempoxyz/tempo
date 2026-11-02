@@ -62,8 +62,6 @@ build_scenario_report_args() {
         --metadata "phase=$ZONES_BENCH_PHASE"
     )
     destination+=(--metadata "neobank-preset=$ZONES_BENCH_NEOBANK_PRESET")
-    [[ -z "${ZONES_BENCH_SWAP_MECHANISM:-}" ]] ||
-        destination+=(--metadata "swap-mechanism=$ZONES_BENCH_SWAP_MECHANISM")
     [[ -z "${ZONES_BENCH_SWAP_LIQUIDITY:-}" ]] ||
         destination+=(--metadata "swap-liquidity=$ZONES_BENCH_SWAP_LIQUIDITY")
     [[ -z "${ZONES_BENCH_CALLBACK_GAS_LIMIT:-}" ]] ||
@@ -76,6 +74,11 @@ build_scenario_report_args() {
         [[ -z "${!environment_name:-}" ]] ||
             destination+=(--metadata "$metadata_name=${!environment_name}")
     done
+    # Same labels as the prover benchmark's VictoriaMetrics series and the L1 nightlies.
+    [[ -z "${ZONES_BENCH_PROVER:-}" ]] ||
+        destination+=(--metadata "prover=$ZONES_BENCH_PROVER")
+    [[ -z "${ZONES_BENCH_RUN_TYPE:-}" ]] ||
+        destination+=(--metadata "run_type=$ZONES_BENCH_RUN_TYPE")
     [[ -z "${ZONES_BENCH_RUN_ID:-}" ]] ||
         destination+=(--metadata "zones-run-id=$ZONES_BENCH_RUN_ID")
     [[ -z "${ZONES_BENCH_BLOAT_GIB:-}" ]] ||

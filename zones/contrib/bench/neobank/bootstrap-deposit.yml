@@ -16,7 +16,6 @@ artifacts:
 templates:
   control_portal_approval:
     type: tempo
-    from: { var: account.ref }
     gas_limit: ${ZONES_BENCH_APPROVAL_GAS_LIMIT}
     fee_token: "${ZONES_BENCH_TOKEN}"
     call:
@@ -29,7 +28,6 @@ templates:
 
   bootstrap_deposit:
     type: tempo
-    from: { var: account.ref }
     gas_limit: ${ZONES_BENCH_DEPOSIT_GAS_LIMIT}
     fee_token: "${ZONES_BENCH_TOKEN}"
     call:

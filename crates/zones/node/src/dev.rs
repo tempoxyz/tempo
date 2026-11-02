@@ -12,8 +12,10 @@ use alloy_primitives::{Address, B256};
 use alloy_provider::{PendingTransactionBuilder, Provider, ProviderBuilder};
 use alloy_signer_local::PrivateKeySigner;
 use tempo_alloy::TempoNetwork;
-use tempo_contracts::precompiles::{ITIP20, PATH_USD_ADDRESS};
-use tempo_contracts::zones::{ZONE_FACTORY_ADDRESS, ZoneFactory};
+use tempo_contracts::{
+    precompiles::{ITIP20, PATH_USD_ADDRESS},
+    zones::{ZONE_FACTORY_ADDRESS, ZoneFactory},
+};
 use zone_primitives::constants::zone_chain_id;
 use zone_sequencer::register_encryption_key;
 
@@ -419,8 +421,6 @@ mod command {
                 &genesis_path.display().to_string(),
                 "--l1.rpc-url",
                 &self.l1_rpc_url,
-                "--l1.portal-address",
-                &provisioned.portal.to_string(),
                 "--http",
                 "--http.addr",
                 &self.http_addr,

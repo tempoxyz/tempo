@@ -23,6 +23,25 @@ alloy::sol! {
         function vaultAsset() external view returns (address);
         function earnShare() external view returns (address);
         function supportsFlow(uint8 flow) external view returns (bool);
+        function pool() external view returns (address);
+        function customerId() external view returns (bytes32);
+        function privateAssetIsBase() external view returns (bool);
+        function liquidityStatus()
+            external
+            view
+            returns (
+                bool paused,
+                bool admitted,
+                bool atPar,
+                uint256 depositLiquidity,
+                uint256 redeemLiquidity
+            );
+    }
+
+    #[sol(rpc)]
+    interface ParPoolView {
+        function baseToken() external view returns (address);
+        function quoteToken() external view returns (address);
     }
 
     #[sol(rpc)]
@@ -95,6 +114,27 @@ impl VerifyClosedLoop {
             .await
             .wrap_err("failed reading Earn router configuration")?;
 
+        let (pool, customer_id, private_asset_is_base, liquidity) = provider
+            .multicall()
+            .block(snapshot_block_id)
+            .add(router.pool())
+            .add(router.customerId())
+            .add(router.privateAssetIsBase())
+            .add(router.liquidityStatus())
+            .aggregate()
+            .await
+            .wrap_err("failed reading Earn router conversion pool")?;
+        ensure_has_code(&provider, pool, "Earn router pool", snapshot_block_id).await?;
+        let pool_view = ParPoolView::new(pool, &provider);
+        let (pool_base, pool_quote) = provider
+            .multicall()
+            .block(snapshot_block_id)
+            .add(pool_view.baseToken())
+            .add(pool_view.quoteToken())
+            .aggregate()
+            .await
+            .wrap_err("failed reading Earn router pool pair")?;
+
         let zone = ZoneFactory::new(ZONE_FACTORY_ADDRESS, &provider)
             .zones(zone_id)
             .block(snapshot_block_id)
@@ -133,6 +173,18 @@ impl VerifyClosedLoop {
         println!("  Private asset: {private_asset}");
         println!("  Vault asset:  {vault_asset}");
         println!("  EarnShare:    {earn_share}");
+        println!("  Pool:         {pool}");
+        println!("  Customer ID:  {customer_id}");
+        println!();
+
+        println!("MANUAL REVIEW: Earn router pool liquidity");
+        println!("  Paused:            {}", liquidity.paused);
+        println!("  Oracle at par:     {}", liquidity.atPar);
+        println!("  Deposit liquidity: {}", liquidity.depositLiquidity);
+        println!("  Redeem liquidity:  {}", liquidity.redeemLiquidity);
+        if liquidity.paused || !liquidity.atPar {
+            println!("  WARNING: the pool cannot convert at par until it is unpaused and at par");
+        }
         println!();
 
         println!("MANUAL REVIEW: ZonePortal admin");
@@ -227,6 +279,21 @@ impl VerifyClosedLoop {
         checks.expect(
             "Earn router rejects unsupported callback flow 2",
             !supports_unknown,
+        );
+        checks.expect("Earn router customer ID is nonzero", !customer_id.is_zero());
+        let (expected_base, expected_quote) = if private_asset_is_base {
+            (private_asset, vault_asset)
+        } else {
+            (vault_asset, private_asset)
+        };
+        checks.expect_equal(
+            "Earn router pool pair matches the private asset and vault asset",
+            &(pool_base, pool_quote),
+            &(expected_base, expected_quote),
+        );
+        checks.expect(
+            "Earn router is an admitted pool taker and recipient",
+            liquidity.admitted,
         );
         checks.expect(
             "Earn router vault asset matches EarnVault",

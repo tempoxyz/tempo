@@ -26,6 +26,38 @@ The proxy limits resource usage with two optional settings:
 Clients above the connection limit are rejected. Transient TCP accept failures
 are retried after a short delay.
 
+## Metrics
+
+Prometheus metrics are served at `http://127.0.0.1:9100/metrics`. Set
+`--metrics-addr <IP:PORT>` to change the listener (use a different port for each
+proxy instance). Bind to a non-loopback address only on a trusted network; the
+endpoint has no authentication. Failure to bind the metrics listener fails startup.
+
+All metrics have the `vsock_proxy_` prefix:
+
+| Metric | Type | Meaning |
+| --- | --- | --- |
+| `accepted_connections_total` | Counter | Accepted TCP connections, including rejected clients. |
+| `rejected_connections_total` | Counter | Clients rejected at the connection limit. |
+| `connected_connections_total` | Counter | Successfully established VSOCK sessions. |
+| `completed_connections_total` | Counter | Sessions whose bidirectional forwarding completed without error. |
+| `active_connections` | Gauge | Occupied connection slots, including connecting sessions. |
+| `max_connections` | Gauge | Configured connection limit. |
+| `accept_errors_total` | Counter | TCP accept failures. |
+| `connect_errors_total` | Counter | VSOCK setup failures, excluding timeouts. |
+| `connect_timeouts_total` | Counter | VSOCK setup timeouts. |
+| `forward_errors_total` | Counter | Bidirectional forwarding failures. |
+| `connect_duration_seconds` | Histogram | Time awaiting VSOCK setup, including failures and timeouts. |
+| `session_duration_seconds` | Histogram | Time holding a connection slot, including setup and failed sessions. |
+| `tcp_to_vsock_bytes_total` | Counter | Bytes successfully written to VSOCK. |
+| `vsock_to_tcp_bytes_total` | Counter | Bytes successfully written to TCP. |
+
+Byte totals update during forwarding and retain bytes written before an error.
+A timed-out blocking connect still occupies a slot until the kernel call returns;
+the active gauge and session duration reflect that lifetime. All metrics are
+registered at startup, with descriptions derived from the `ProxyMetrics` struct.
+No client addresses or error strings are used as labels.
+
 ## Why not `socat`?
 
 Nitro Enclave connections must use the guest-to-host VSOCK transport. When a

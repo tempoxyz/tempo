@@ -139,7 +139,7 @@ impl ValidationLatencyEstimate {
 /// reserving validator headroom when the builder grows beyond the workloads
 /// that produced the feedback.
 #[derive(Clone, Debug, Default)]
-pub struct ValidationLatencyEstimator {
+pub(crate) struct ValidationLatencyEstimator {
     /// Samples are kept in id order for retention; count maps are keyed by
     /// observed values so estimate snapshots can read percentiles without
     /// sorting.
@@ -190,7 +190,7 @@ impl ValidationLatencyEstimator {
     }
 
     /// Records local time spent validating a block through the execution layer.
-    pub fn observe(
+    pub(crate) fn observe(
         &mut self,
         sample_id: u64,
         workload: ValidationLatencyWorkload,
@@ -218,7 +218,7 @@ impl ValidationLatencyEstimator {
     /// `None` means this node has not yet observed any successful validations.
     /// Callers should fall back to their conservative validator-work estimate in
     /// that case.
-    pub fn estimate(&self) -> Option<ValidationLatencyEstimate> {
+    pub(crate) fn estimate(&self) -> Option<ValidationLatencyEstimate> {
         let sample_count = self.sample_window.len();
         let p90_elapsed = percentile_from_counts(&self.elapsed_counts, sample_count, 9, 10)?;
         Some(ValidationLatencyEstimate {

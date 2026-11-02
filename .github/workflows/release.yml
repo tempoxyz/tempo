@@ -7,11 +7,11 @@ on:
     branches:
       - "rc/*"
     tags:
-      - "v*.*.*"
+      - "tempo/v*.*.*"
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to release (e.g., v0.1.0)"
+        description: "Tag to release (e.g., tempo/v1.17.0)"
         required: true
         type: string
       profile:
@@ -40,25 +40,46 @@ jobs:
     permissions:
       id-token: write
     outputs:
+      tag: ${{ steps.get_version.outputs.tag }}
       version: ${{ steps.get_version.outputs.version }}
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
       - name: Get version from tag or branch
         id: get_version
         env:
           EVENT_NAME: ${{ github.event_name }}
           INPUT_TAG: ${{ inputs.tag }}
+          DRY_RUN: ${{ inputs.dry_run }}
           SHA: ${{ github.sha }}
         run: |
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            echo "version=$INPUT_TAG" >> "$GITHUB_OUTPUT"
+            tag="$INPUT_TAG"
+            # VK picks the approving code owners from the dispatched ref, so a
+            # publishing dispatch must run from the tempo/v* tag it releases.
+            # Another product's tag would get that product's code owners.
+            if [ "$DRY_RUN" != "true" ]; then
+              if [[ "$tag" != tempo/v* ]]; then
+                echo "::error::Publishing dispatches release a tempo/vX.Y.Z tag, not $tag"
+                exit 1
+              fi
+              if [ "$GITHUB_REF" != "refs/tags/$tag" ]; then
+                echo "::error::Dispatch release.yml from refs/tags/$tag, not $GITHUB_REF"
+                exit 1
+              fi
+            fi
           elif [[ "$GITHUB_REF" == refs/heads/rc/* ]]; then
-            echo "version=sha-${SHA::7}" >> "$GITHUB_OUTPUT"
+            tag="sha-${SHA::7}"
           else
-            echo "version=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+            tag="${GITHUB_REF#refs/tags/}"
           fi
+          # Releases are tagged tempo/vX.Y.Z (earlier ones vX.Y.Z): the GitHub
+          # release uses the tag, and artifacts keep the unprefixed vX.Y.Z.
+          {
+            echo "tag=$tag"
+            echo "version=${tag#tempo/}"
+          } >> "$GITHUB_OUTPUT"
   check-version:
     name: check version
     runs-on: ubuntu-latest
@@ -69,12 +90,12 @@ jobs:
       contents: read
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
       - name: Verify crate version matches tag
         # Check that the Cargo version starts with the tag,
         # so that Cargo version 1.4.8 can be matched against both v1.4.8 and v1.4.8-rc.1
@@ -89,7 +110,11 @@ jobs:
   build-release:
     name: Build Release Binaries
     needs: get-version
-    environment: release
+    # Dry runs publish nothing, so they skip the release environment (which
+    # only admits release tags) and the signing and attestation that need it.
+    environment: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) && 'release' || '' }}
+    env:
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
     runs-on: ${{ matrix.platform.os }}
     permissions:
       contents: read
@@ -104,8 +129,6 @@ jobs:
         binary:
           - name: tempo
             features: "asm-keccak,jemalloc,otlp"
-          - name: tempo-sidecar
-            features: ""
         platform:
           - os: depot-ubuntu-latest-16
             target: x86_64-unknown-linux-gnu
@@ -116,7 +139,7 @@ jobs:
 
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -124,12 +147,12 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           targets: ${{ matrix.platform.target }}
 
       - name: Setup mold linker
-        uses: tempoxyz/gh-actions/actions/setup-mold@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        uses: tempoxyz/gh-actions/actions/setup-mold@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
       - name: Get build profile
         id: profile
@@ -196,6 +219,7 @@ jobs:
           shasum -a 256 "$BINARY_NAME"  > "${BINARY_NAME}.sha256"
 
       - name: GPG sign archive
+        if: env.DRY_RUN != 'true'
         shell: bash
         env:
           GPG_SIGNING_KEY: ${{ secrets.GPG_SIGNING_KEY }}
@@ -208,7 +232,7 @@ jobs:
           printf '%s' "$GPG_PASSPHRASE" | gpg --passphrase-fd 0 --pinentry-mode loopback --batch -ab "$ARCHIVE_PATH"
 
       - name: Generate SBOM (SPDX-JSON) for archive
-        uses: tempoxyz/gh-actions/vendor/anchore/sbom-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        uses: tempoxyz/gh-actions/vendor/anchore/sbom-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           file: ${{ steps.prepare.outputs.archive_path }}
           format: spdx-json
@@ -220,6 +244,7 @@ jobs:
           upload-release-assets: false
 
       - name: Attest SBOM
+        if: env.DRY_RUN != 'true'
         uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
         with:
           # Attest both the archive and the bare binary so consumers can verify
@@ -232,6 +257,7 @@ jobs:
           sbom-path: ${{ steps.prepare.outputs.archive_name }}.spdx.json
 
       - name: Attest build provenance (SLSA v1)
+        if: env.DRY_RUN != 'true'
         uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
         with:
           # No `sbom-path` / `predicate-*` → actions/attest auto-emits a SLSA
@@ -265,7 +291,7 @@ jobs:
       # This is necessary for generating the changelog.
       # It has to come before "Download Artifacts" or else it deletes the artifacts.
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -282,6 +308,7 @@ jobs:
       - name: Create Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.get-version.outputs.tag }}
           VERSION: ${{ needs.get-version.outputs.version }}
         run: |
           # Determine if this is a prerelease
@@ -291,7 +318,7 @@ jobs:
           fi
 
           # Create draft release with all artifacts
-          gh release create "$VERSION" \
+          gh release create "$TAG" \
             --repo ${{ github.repository }} \
             --title "Release $VERSION" \
             --draft \
@@ -309,11 +336,11 @@ jobs:
       id-token: write
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
       - name: Fetch GitHub token via STS
         id: app-token
-        uses: tempoxyz/gh-actions/actions/github-sts@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        uses: tempoxyz/gh-actions/actions/github-sts@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           policy: release-pr
 
@@ -325,7 +352,7 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
           persist-credentials: true
 
-      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
       - name: Open Cargo version bump PR
         env:
@@ -412,7 +439,7 @@ jobs:
       actions: read
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -446,7 +473,7 @@ jobs:
             echo "dir=binaries/${VERSION}" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: tempoxyz/gh-actions/vendor/shallwefootball/upload-s3-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+      - uses: tempoxyz/gh-actions/vendor/shallwefootball/upload-s3-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           aws_key_id: ${{ secrets.R2_BINARIES_KEY_ID }}
           aws_secret_access_key: ${{ secrets.R2_BINARIES_SECRET_KEY }}
