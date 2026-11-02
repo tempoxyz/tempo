@@ -233,9 +233,10 @@ impl Inner {
         );
         let proposal_elapsed = window_opened.elapsed();
         // Pace proposal return from the window's opening. Validators still
-        // need to repeat replayable build work, so leave room for it before
-        // returning the proposal.
-        let return_after = return_budget.saturating_sub(validation_latency_elapsed);
+        // need to repeat replayable build work. Match the builder plan by capping
+        // the validation reserve at that work, rather than an uncapped p90 estimate.
+        let return_after = return_budget
+            .saturating_sub(validation_latency_elapsed.min(payload_validation_work_elapsed));
         let return_delay = return_after.saturating_sub(proposal_elapsed);
         // Lateness past the replay-adjusted return target must not become network latency.
         let spent = return_budget.saturating_add(proposal_elapsed.saturating_sub(return_after));
