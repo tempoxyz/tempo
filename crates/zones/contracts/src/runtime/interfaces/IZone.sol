@@ -100,6 +100,15 @@ enum DepositType {
     ZoneVirtual // TIP-1094 TIP-20 transfer to a zone deposit address (T15)
 }
 
+/// @notice Private failure reasons recorded for a TIP-1094 virtual deposit
+enum VirtualDepositFailureReason {
+    InvalidAddress,
+    KeyUnconfigured,
+    UnregisteredMaster,
+    InvalidMaster,
+    MintFailed
+}
+
 /// @notice TIP-1094 queue entry for a TIP-20 transfer to a zone deposit address
 /// @dev The zone decrypts `destination` to a registered recipient; a failure refunds `originator`.
 struct VirtualDeposit {
@@ -1141,6 +1150,33 @@ interface IZoneInbox {
     /// @notice Emitted when a TIP-20 token is enabled on the zone via advanceTempo
     event TokenEnabled(address indexed token, string name, string symbol, string currency);
 
+    /// @notice TIP-1094: a virtual deposit credited its registered recipient (operator-visible).
+    event VirtualDepositProcessed(
+        bytes32 indexed depositHash,
+        address indexed originator,
+        address indexed to,
+        address token,
+        uint128 amount,
+        uint8 version,
+        bytes4 masterId,
+        bytes2 userTag,
+        bytes32 memo
+    );
+
+    /// @notice TIP-1094: a virtual deposit failed and was queued as a refund to the originator.
+    event VirtualDepositFailed(
+        bytes32 indexed depositHash,
+        address indexed originator,
+        address indexed to,
+        address token,
+        uint128 amount,
+        VirtualDepositFailureReason reason
+    );
+
+    /// @notice TIP-1094: an address key version was initialized. Carries no key material.
+    event VirtualAddressKeyInitialized(uint8 version);
+
+    error InvalidAddressKeyVersion(uint8 version);
     error InvalidTokenEnablementHash();
     error OnlySequencer();
     error InvalidDepositQueueHash();
@@ -1150,6 +1186,9 @@ interface IZoneInbox {
     error NoRefund();
     error InvalidSharedSecretProof();
     error Unauthorized();
+
+    /// @notice TIP-1094: initialize the next address key version. System-only, from T15.
+    function initializeVirtualAddressKey(uint8 version, bytes32 key) external;
 
     /// @notice Get the number of enabled tokens processed by the Zone Inbox
     function processedEnabledTokenCount() external view returns (uint64);
