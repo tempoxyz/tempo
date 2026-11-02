@@ -3,10 +3,11 @@
 
 use alloy::{
     primitives::{Address, B256, Bytes},
-    sol_types::{SolCall, SolValue},
+    sol_types::{SolCall, SolError, SolValue},
 };
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
+use evm2::precompiles::PrecompileError;
 use p256::{ecdsa::SigningKey, elliptic_curve::rand_core::OsRng};
 use tempo_chainspec::hardfork::TempoHardfork::{self, T13, T14};
 use tempo_contracts::precompiles::{
@@ -301,6 +302,65 @@ fn keychain_signature_must_embed_the_verified_account() {
                 .unwrap()
         );
     });
+}
+
+#[test]
+fn keychain_verification_rejects_a_configurable_inner_signature() {
+    let owner = Key::random(Secp256k1);
+    let config = ConfigurableAccountConfig {
+        salt: B256::ZERO,
+        version: 0,
+        threshold: 1,
+        owners: vec![ConfigurableAccountOwner {
+            owner: owner.address(),
+            weight: 1,
+        }],
+    };
+    let delegate = config.derive_account().unwrap();
+    let account = Address::repeat_byte(0x01);
+    let mut storage = storage_at(
+        T14,
+        account,
+        delegate,
+        key(SignatureType::ConfigurableAccount),
+        &[],
+    );
+    let digest = configurable_account_digest(
+        KeychainSignature::signing_hash(HASH, account),
+        delegate,
+        config.version,
+    );
+    let signature = TempoSignature::Keychain(KeychainSignature::new(
+        account,
+        ConfigurableAccountSignature::try_new(delegate, config, vec![owner.sign(digest)]).unwrap(),
+    ))
+    .to_bytes();
+    for calldata in [
+        ISignatureVerifier::verifyKeychainCall {
+            account,
+            hash: HASH,
+            signature: signature.clone(),
+        }
+        .abi_encode(),
+        ISignatureVerifier::verifyKeychainAdminCall {
+            account,
+            hash: HASH,
+            signature,
+        }
+        .abi_encode(),
+    ] {
+        let result = StorageCtx::enter(&mut storage, || {
+            SignatureVerifier::new().call(&calldata, Address::ZERO)
+        });
+        assert!(
+            matches!(
+                &result,
+                Err(PrecompileError::Revert(output))
+                    if *output == ISignatureVerifier::InvalidFormat {}.abi_encode()
+            ),
+            "{result:?}"
+        );
+    }
 }
 
 #[test]

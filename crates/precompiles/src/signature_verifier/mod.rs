@@ -41,7 +41,7 @@ impl SignatureVerifier {
     /// Returns whether `signature` is an active access-key signature for `account`.
     ///
     /// From T14, `false` when the recovered key ID has a nonzero configuration commitment
-    /// (TIP-1112), even under a stored grant, or when the inner signature type differs from the
+    /// (TIP-1113), even under a stored grant, or when the inner signature type differs from the
     /// stored key type.
     pub fn verify_keychain(&self, account: Address, hash: B256, signature: Bytes) -> Result<bool> {
         let recovered = self.recover_keychain_key(hash, signature)?;
@@ -58,7 +58,7 @@ impl SignatureVerifier {
     /// root key's.
     ///
     /// From T14, `false` when the recovered key ID has a nonzero configuration commitment
-    /// (TIP-1112), including the implicit root of `account` itself, or when the inner signature
+    /// (TIP-1113), including the implicit root of `account` itself, or when the inner signature
     /// type of an access-key signature differs from the stored key type.
     pub fn verify_keychain_admin(
         &self,

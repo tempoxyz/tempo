@@ -246,7 +246,7 @@ async fn latest_block_hash(env: &Localnet) -> eyre::Result<B256> {
 
 /// Pending transactions that depend on a root key leave the pool when their account's migration
 /// commits, whether the key sends them or is their fee payer, access key or grant signer
-/// (TIP-1112). Each variant migrates a fresh account. The builder skips the dependent
+/// (TIP-1113). Each variant migrates a fresh account. The builder skips the dependent
 /// transaction, so only the pool's revalidation of the changed commitment removes it.
 #[tokio::test(flavor = "multi_thread")]
 async fn retired_root_pending_transactions_evicted() -> eyre::Result<()> {
@@ -288,7 +288,7 @@ async fn retired_root_pending_transactions_evicted() -> eyre::Result<()> {
 /// What stays valid after a migration commits: a bystander's transaction, a transaction that an
 /// uncommitted access key of the migrated account signs (the migration leaves its grant valid),
 /// and a transaction that carries an authorization list entry of the migrated account, which the
-/// block skips (TIP-1112). All of them follow the migration in its block and succeed.
+/// block skips (TIP-1113). All of them follow the migration in its block and succeed.
 #[tokio::test(flavor = "multi_thread")]
 async fn retired_root_leaves_unrelated_pending_transactions_valid() -> eyre::Result<()> {
     let mut env = environment().await?;
@@ -364,7 +364,7 @@ async fn retired_root_leaves_unrelated_pending_transactions_valid() -> eyre::Res
 
 /// A migration that arrives with a reorg evicts the pending transactions of its account's root
 /// key, as one that arrives with a canonical commit does, and a reorg that commits nothing evicts
-/// nothing (TIP-1112). The reorg's changes are those of the new chain since the fork point.
+/// nothing (TIP-1113). The reorg's changes are those of the new chain since the fork point.
 /// Neither reorg removes, not even to revalidate it, a pending transaction that the migration
 /// leaves valid.
 #[tokio::test(flavor = "multi_thread")]
@@ -398,7 +398,7 @@ async fn retired_root_reorg_evicts_pending_transactions() -> eyre::Result<()> {
     // All transactions wait for a nonce that nothing has mined: the root key's and the access
     // key's behind the migration, the others behind a nonce that their sender never sends. The
     // migration leaves the others valid. The bystander's has a fee payer and carries an
-    // authorization entry of the account, which a block skips for a retired account (TIP-1112).
+    // authorization entry of the account, which a block skips for a retired account (TIP-1113).
     // The sponsor sends a legacy one, and the grantor's carries the grant of the access key that
     // signs it.
     let old_chain = env.setup.node.advance_block().await?;
@@ -529,7 +529,7 @@ fn assert_call_reverts(result: Result<Bytes, TransportError>, expected: Vec<u8>)
 /// An EOA migrates through the RPC, for a root of each signature type: simulations of the upgrade
 /// write nothing and a contract cannot be upgraded, the root signs the upgrade, the retired root
 /// can no longer send but the witness can, calls and estimates from the retired address stay
-/// allowed, and the witness rotates the configuration (TIP-1112).
+/// allowed, and the witness rotates the configuration (TIP-1113).
 #[tokio::test(flavor = "multi_thread")]
 async fn eoa_migration_rpc_lifecycle() -> eyre::Result<()> {
     let mut env = environment().await?;
@@ -910,7 +910,7 @@ async fn configurable_account_rpc_registration_revert_retry_and_rotation() -> ey
         next.commitment().unwrap()
     );
     // The rotation changes the commitment, so the pool revalidates the transactions and evicts
-    // them (TIP-1112).
+    // them (TIP-1113).
     env.setup.node.wait_for_pool_removal(stale).await?;
     // The rotated-out witness no longer verifies through the account.
     assert_eq!(
@@ -938,7 +938,7 @@ async fn configurable_account_rpc_registration_revert_retry_and_rotation() -> ey
 
     // A simulated block checks each call against the state the calls before it leave: once its
     // first call rotates the configuration, the old one is stale and the new one signs. The
-    // rotation stays in the simulation's state (TIP-1114).
+    // rotation stays in the simulation's state (TIP-1107).
     let stale = account.simulation_request();
     let current = account.config.commitment().unwrap();
     let replacement = ConfigurableAccount::new(0x22, 2);

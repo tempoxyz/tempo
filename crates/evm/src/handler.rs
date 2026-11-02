@@ -1104,7 +1104,7 @@ fn apply_nonce(
     let nonce_check = host.feature(EvmFeatures::NONCE_CHECK);
     let mut account = host.state_mut().account(&caller)?;
     if eip3607 && account.code_hash() != KECCAK256_EMPTY {
-        // From T14 a registered configurable account carries the `0xef` marker (TIP-1114) and may
+        // From T14 a registered configurable account carries the `0xef` marker (TIP-1107) and may
         // still send owner-signed, keychain-signed or simulated transactions.
         let configurable_sender = spec.is_t14()
             && account.code_hash() == CONFIGURABLE_ACCOUNT_CODE_HASH

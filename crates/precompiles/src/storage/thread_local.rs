@@ -359,7 +359,7 @@ impl StorageCtx {
         Self::try_with_storage(|s| s.set_config_commitment(address, commitment, gas))
     }
 
-    /// Returns whether `address` is a retired root key (TIP-1112): from T14, an address with a
+    /// Returns whether `address` is a retired root key (TIP-1113): from T14, an address with a
     /// nonzero configuration commitment no longer acts through its own key. Reads the commitment
     /// at call time, so a migration earlier in the block counts.
     pub fn is_retired_root(&self, address: Address) -> Result<bool> {

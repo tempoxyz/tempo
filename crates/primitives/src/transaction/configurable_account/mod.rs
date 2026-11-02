@@ -115,7 +115,7 @@ impl ConfigurableAccountConfig {
         CONFIGURABLE_ACCOUNT_DOMAIN.len() + 32 + 2 + self.owners.len() * 21
     }
 
-    /// Hashing gas to derive the account address from this configuration (TIP-1114).
+    /// Hashing gas to derive the account address from this configuration (TIP-1107).
     /// Returns `None` if the cost overflows `u64`.
     pub fn derivation_gas(&self) -> Option<u64> {
         keccak_gas(self.account_preimage_len())
@@ -167,7 +167,7 @@ impl ConfigurableAccountConfig {
         if self.threshold == 0 {
             return Err(ConfigurableAccountConfigError::ZeroThreshold);
         }
-        // TIP-1109 orders errors across the entire owner list, not within each owner.
+        // TIP-1107 orders errors across the entire owner list, not within each owner.
         for owner in &self.owners {
             if owner.owner.is_zero() {
                 return Err(ConfigurableAccountConfigError::ZeroOwner);

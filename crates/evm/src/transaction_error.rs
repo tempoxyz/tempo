@@ -247,7 +247,7 @@ pub enum TempoInvalidTransaction {
     ConfigurableAccount(#[from] ConfigurableAccountError),
 
     /// A primitive key acted alone in `role` for an account with a nonzero configuration
-    /// commitment (TIP-1112).
+    /// commitment (TIP-1113).
     ///
     /// State-dependent: a migration can be undone by a reorg, so the transaction is not bad.
     #[error("root key of {account} is retired and cannot act as {role}")]
@@ -326,7 +326,7 @@ impl TempoInvalidTransaction {
     }
 }
 
-/// Configurable authorization failure (TIP-1112).
+/// Configurable authorization failure (TIP-1113).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum ConfigurableAccountError {
     /// Configurable authorization is not active in this execution context.
@@ -362,7 +362,7 @@ pub enum ConfigurableAccountError {
     Quorum(ConfigurableAccountQuorumError),
 }
 
-/// Authority role a primitive key can fill in a transaction (TIP-1112).
+/// Authority role a primitive key can fill in a transaction (TIP-1113).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RootKeyRole {
     /// Direct transaction sender.

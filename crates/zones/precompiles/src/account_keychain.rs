@@ -87,7 +87,7 @@ impl CallRules for AccountKeychainRules {
     }
 }
 
-/// Rejects configurable account delegates until zones sync configurations (TIP-1114 Zones).
+/// Rejects configurable account delegates until zones sync configurations (TIP-1154).
 fn reject_configurable_account_key_type(
     key_type: IAccountKeychain::SignatureType,
     spec: TempoHardfork,

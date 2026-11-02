@@ -865,7 +865,7 @@ impl TIP20ChannelReserve {
         Ok(())
     }
 
-    /// Rejects a retired root key (TIP-1112) as the voucher signer for new deposit.
+    /// Rejects a retired root key (TIP-1113) as the voucher signer for new deposit.
     ///
     /// Vouchers stay valid after their signer migrates, so a retired key keeps authority over
     /// funds already in its channels but must not gain authority over new funds.
