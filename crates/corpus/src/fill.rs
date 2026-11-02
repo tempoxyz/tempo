@@ -476,6 +476,12 @@ where
                             .is_some_and(|hash| hash == tip),
                         "canonical pin changed during capture"
                     );
+                    // Records chain by parent hash from the canonical published tip, so ending
+                    // at the pinned tip proves every captured block canonical.
+                    eyre::ensure!(
+                        stop != end || catalog.cursor.parent == tip.0,
+                        "captured chain does not end at the pinned tip"
+                    );
                     let superseded = catalog.checkpoint.replace(checkpoint);
                     catalog.complete = stop == end;
                     let reader = handle.block_on(store.reader(&catalog))?;
