@@ -242,7 +242,7 @@ mod tests {
         eip4895::{Withdrawal, Withdrawals},
     };
     use alloy_primitives::{Address, B256, Bytes, Signature, U256};
-    use alloy_rlp::{Encodable, encode};
+    use alloy_rlp::Encodable;
     use proptest::prelude::*;
     use reth_primitives_traits::{RecoveredBlock, SealedBlock};
     use std::sync::Arc;
@@ -655,7 +655,7 @@ mod tests {
             encoded_transactions.encode_block_with_transactions(&block, &mut encoded_from_cache)
         );
 
-        let expected = encode(&block);
+        let expected = alloy_rlp::encode(&block);
 
         assert_eq!(encoded_from_cache, expected);
     }
@@ -680,7 +680,7 @@ mod tests {
         let mut encoded = Vec::new();
         assert!(!cached_transactions.encode_block_with_transactions(&block, &mut encoded));
 
-        let expected = encode(&block);
+        let expected = alloy_rlp::encode(&block);
 
         assert_eq!(encoded, expected);
     }
