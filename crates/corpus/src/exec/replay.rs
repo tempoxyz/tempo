@@ -67,16 +67,7 @@ pub fn run(
         .worker_threads(env_usize("RETH_CORPUS_IO_THREADS").unwrap_or((workers * 3 / 4).max(4)))
         .enable_all()
         .build()?;
-    let reader = Arc::new(runtime.block_on(store.reader(&catalog))?);
-    let tip_timestamp = runtime.block_on(store::tip_timestamp(&reader, &catalog.context))?;
-    eyre::ensure!(
-        store::forks_agree(
-            &catalog.context.forks,
-            &config.chain_spec().display_hardforks().to_string(),
-            tip_timestamp,
-        ),
-        "corpus fork schedule mismatch"
-    );
+    let reader = Arc::new(runtime.block_on(open(&store, &catalog, &config))?);
     if let Some((from, to)) = standalone {
         range = runtime.block_on(transaction_range(&reader, &catalog, from, to))?;
     }
@@ -262,6 +253,21 @@ pub fn run(
     Ok(closed?)
 }
 
+/// Opens the corpus and checks it was captured under `config`'s fork schedule.
+async fn open(store: &Store, catalog: &Catalog, config: &TempoEvmConfig) -> eyre::Result<DbReader> {
+    let reader = store.reader(catalog).await?;
+    let tip_timestamp = store::tip_timestamp(&reader, &catalog.context).await?;
+    eyre::ensure!(
+        store::forks_agree(
+            &catalog.context.forks,
+            &config.chain_spec().display_hardforks().to_string(),
+            tip_timestamp,
+        ),
+        "corpus fork schedule mismatch"
+    );
+    Ok(reader)
+}
+
 /// Replays the listed `blocks` of a published corpus on `workers` threads, as [`run`] does a
 /// range.
 pub fn run_blocks(
@@ -276,7 +282,7 @@ pub fn run_blocks(
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    let reader = runtime.block_on(store.reader(&catalog))?;
+    let reader = runtime.block_on(open(&store, &catalog, &config))?;
     let started = Instant::now();
     let next = AtomicUsize::new(0);
     let replay =
