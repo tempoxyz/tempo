@@ -1407,18 +1407,12 @@ where
             outcome from last boundary height"
         );
 
-        let boundary_header = get_header(
+        let (boundary_header, onchain_outcome) = read_outcome_from_boundary(
             &self.config.execution_node,
             &self.config.marshal,
             latest_boundary,
         )
-        .await
-        .wrap_err_with(|| {
-            format!("failed to read latest boundary header at height `{latest_boundary}`")
-        })?;
-        let onchain_outcome =
-            OnchainDkgOutcome::read(&mut boundary_header.extra_data().as_ref())
-                .wrap_err("the boundary block did not contain the on-chain DKG outcome")?;
+        .await?;
 
         // The boundary header is not checked against the finalized floor's
         // certificate, so an outcome for a later epoch could otherwise persist
@@ -1541,7 +1535,7 @@ where
                 .expect("epoch strategy is valid for all epochs")
         });
 
-        let ceremony_outcome = read_outcome_from_boundary(
+        let (_, ceremony_outcome) = read_outcome_from_boundary(
             &self.config.execution_node,
             &self.config.marshal,
             ceremony_boundary,
@@ -1688,7 +1682,7 @@ async fn read_outcome_from_boundary<TExecutionLayer, TMarshal>(
     node: &TExecutionLayer,
     marshal: &TMarshal,
     boundary: Height,
-) -> eyre::Result<OnchainDkgOutcome>
+) -> eyre::Result<(TempoHeader, OnchainDkgOutcome)>
 where
     TExecutionLayer: ExecutionLayer,
     TMarshal: Marshal,
@@ -1699,8 +1693,9 @@ where
             format!("failed to read latest boundary header at height `{boundary}`")
         })?;
 
-    OnchainDkgOutcome::read(&mut header.extra_data().as_ref())
-        .wrap_err("the boundary block did not contain the on-chain DKG outcome")
+    let outcome = OnchainDkgOutcome::read(&mut header.extra_data().as_ref())
+        .wrap_err("the boundary block did not contain the on-chain DKG outcome")?;
+    Ok((header, outcome))
 }
 
 #[instrument(skip_all, fields(%height))]
