@@ -766,7 +766,8 @@ fn eoa_migration_error_order() {
     };
     let delegate = Address::repeat_byte(0x74);
 
-    // 1: the call must be top-level, with no authorization beside it, however the account signs.
+    // 1: the call must be top-level, with no authorization list beside it, however the account
+    // signs.
     expect_revert(
         Fixture::with_parent(false),
         "nested call",
@@ -809,21 +810,6 @@ fn eoa_migration_error_order() {
                     authorization,
                     signature.into(),
                 )],
-                ..aa_tx(3, vec![upgrade.clone()])
-            })
-            .into()
-        },
-        &direct_call,
-    );
-    expect_revert(
-        Fixture::with_parent(false),
-        "key authorization",
-        |f| {
-            let grant =
-                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, signer(6).address());
-            let approval = f.owner.sign_hash_sync(&grant.signature_hash()).unwrap();
-            f.sign_primitive(TempoTransaction {
-                key_authorization: Some(grant.into_signed(PrimitiveSignature::Secp256k1(approval))),
                 ..aa_tx(3, vec![upgrade.clone()])
             })
             .into()
@@ -1016,6 +1002,41 @@ fn eoa_migration_anywhere_in_batch() {
             CONFIGURABLE_ACCOUNT_CODE_HASH,
             "position {position}"
         );
+    }
+}
+
+#[test]
+fn eoa_migration_with_key_authorization() {
+    let member = signer(2).address();
+    let base = Fixture::with_parent(false).upgraded(1, owner_set(vec![member]));
+    let zero_threshold = ConfigurableAccountConfig {
+        threshold: 0,
+        ..base.clone()
+    };
+    for migrates in [true, false] {
+        let mut f = Fixture::with_parent(false);
+        let key = signer(6);
+        let grant = KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key.address());
+        let approval = f.owner.sign_hash_sync(&grant.signature_hash()).unwrap();
+        let config = if migrates { &base } else { &zero_threshold };
+        let tx = f.sign_primitive(TempoTransaction {
+            key_authorization: Some(grant.into_signed(PrimitiveSignature::Secp256k1(approval))),
+            ..aa_tx(3, vec![Fixture::upgrade(config)])
+        });
+        let result = f.run(&tx);
+        if migrates {
+            assert_upgraded(&mut f, &result, &base);
+        } else {
+            assert_eq!(
+                result.output,
+                IConfigurableAccount::InvalidConfig {}.abi_encode()
+            );
+            assert_eq!(f.commitment(), B256::ZERO);
+        }
+
+        // The grant is applied before execution, so it stays whether or not the account migrated.
+        let result = f.run(&keychain_tx(&f, &key, 4, vec![f.getter()]));
+        assert!(result.status, "migrates {migrates}: {result:?}");
     }
 }
 

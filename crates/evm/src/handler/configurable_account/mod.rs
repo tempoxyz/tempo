@@ -88,18 +88,16 @@ impl TempoTxEnv {
     /// Seeds the transaction authority read by the configurable-account precompile.
     ///
     /// `upgradeAccount` may sit anywhere in a batch, but the transaction must carry no authorization
-    /// or key authorization that could change the account beside it. The precompile checks that the
-    /// call itself is top-level.
+    /// list that could delegate the account beside it. A key authorization is allowed: it is
+    /// applied before execution and stays in place whether or not the migration succeeds. The
+    /// precompile checks that the call itself is top-level.
     pub(crate) fn seed_upgrade_authority(&self) -> Result<(), TempoPrecompileError> {
         let aa = self.as_aa();
         let no_authorizations = match aa {
             None => self
                 .as_eip7702()
                 .is_none_or(|tx| tx.authorization_list.is_empty()),
-            Some(aa) => {
-                let tx = aa.tx();
-                tx.tempo_authorization_list.is_empty() && tx.key_authorization.is_none()
-            }
+            Some(aa) => aa.tx().tempo_authorization_list.is_empty(),
         };
         let eligibility = if !no_authorizations {
             UpgradeEligibility::HasAuthorizations
