@@ -2,8 +2,8 @@ name: "Set up kache"
 description: >-
   Installs kache and makes it Cargo's rustc wrapper, backed by the shared cache at kache.tempo.xyz.
   Pushes to main exchange the job's GitHub OIDC token for write credentials, every other run for
-  read-only ones. Without a token or credentials (such as on fork pull requests) it warns and keeps a
-  local-only cache. Run after the Rust toolchain is installed and before the first cargo build, and
+  read-only ones. Without a token or credentials (fork pull requests, or while kache-sts is down) it
+  warns and falls back to sccache, which Depot's runners back with their shared cache, as before kache. Run after the Rust toolchain is installed and before the first cargo build, and
   end write jobs with `kache save-manifest` and `kache daemon stop` so queued uploads finish.
 
 runs:
@@ -40,6 +40,7 @@ runs:
         echo "bin=$dir/bin/kache" >> "$GITHUB_OUTPUT"
 
     - name: Configure kache
+      id: configure
       if: steps.install.outputs.bin != ''
       shell: bash
       env:
@@ -51,15 +52,11 @@ runs:
       run: |
         set -uo pipefail
         local_only() {
-          echo "::warning title=kache::$1; using a local-only cache"
+          echo "::warning title=kache::$1; falling back to sccache"
+          echo "fallback=true" >> "$GITHUB_OUTPUT"
           exit 0
         }
         dir="$RUNNER_TEMP/kache"
-        # Keep the store on the workspace's mount so restores hardlink instead of copying.
-        {
-          echo "RUSTC_WRAPPER=kache"
-          echo "KACHE_CACHE_DIR=$dir/store"
-        } >> "$GITHUB_ENV"
 
         # Only reviewed code on main writes; the STS enforces the same rule on the write route.
         route=read
@@ -94,6 +91,9 @@ runs:
           printf '[cache.remote]\ntype = "s3"\nbucket = "kache"\nregion = "garage"\nendpoint = "%s"\n' "$S3_ENDPOINT"
         } > "$config"
         {
+          echo "RUSTC_WRAPPER=kache"
+          # Keep the store on the workspace's mount so restores hardlink instead of copying.
+          echo "KACHE_CACHE_DIR=$dir/store"
           echo "KACHE_CONFIG=$config"
           echo "KACHE_S3_ENDPOINT=$S3_ENDPOINT"
           echo "KACHE_S3_BUCKET=kache"
@@ -112,3 +112,15 @@ runs:
         if [[ "$route" == read ]]; then export KACHE_REMOTE_READONLY=1; fi
         "$KACHE" daemon start || echo "::warning title=kache::kache daemon did not start; the first build starts it"
         echo "kache uses s3://kache at $S3_ENDPOINT with $route credentials"
+
+    # Without kache's shared cache, build through sccache as before kache: Depot's runners give it
+    # a shared backend, so fork pull requests and runs while kache-sts is down don't compile cold.
+    - name: Fall back to sccache
+      if: steps.install.outputs.bin == '' || steps.configure.outputs.fallback == 'true'
+      shell: bash
+      run: echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+    - name: Install sccache
+      if: steps.install.outputs.bin == '' || steps.configure.outputs.fallback == 'true'
+      uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+      with:
+        version: v0.15.0
