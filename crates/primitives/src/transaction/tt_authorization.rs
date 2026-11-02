@@ -1,7 +1,7 @@
 use alloy_consensus::crypto::RecoveryError;
 use alloy_eips::eip7702::{Authorization, RecoveredAuthority, RecoveredAuthorization};
 use alloy_primitives::{Address, B256};
-use alloy_rlp::{BufMut, Decodable, Encodable, Header, Result as RlpResult, length_of_length};
+use alloy_rlp::{BufMut, Decodable, Encodable, Header, Result as RlpResult};
 use core::ops::Deref;
 
 #[cfg(not(feature = "std"))]
@@ -154,7 +154,11 @@ impl Encodable for TempoSignedAuthorization {
 
     fn length(&self) -> usize {
         let len = self.fields_len();
-        len + length_of_length(len)
+        Header {
+            list: true,
+            payload_length: len,
+        }
+        .length_with_payload()
     }
 }
 
@@ -292,6 +296,7 @@ pub mod tests {
     use crate::TempoSignature;
     use alloc::vec::Vec;
     use alloy_primitives::{U256, keccak256};
+    use alloy_rlp::encode;
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
 
@@ -306,8 +311,7 @@ pub mod tests {
         let signature = TempoSignature::default(); // Use secp256k1 test signature
         let signed = TempoSignedAuthorization::new_unchecked(auth.clone(), signature.clone());
 
-        let mut buf = Vec::new();
-        signed.encode(&mut buf);
+        let buf = encode(&signed);
 
         let decoded = TempoSignedAuthorization::decode(&mut buf.as_slice()).unwrap();
         assert_eq!(buf.len(), signed.length());

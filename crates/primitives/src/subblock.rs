@@ -68,7 +68,7 @@ pub struct SubBlockMetadata {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::vec::Vec;
+    use alloy_rlp::encode;
 
     #[test]
     fn test_has_sub_block_nonce_key_prefix() {
@@ -100,8 +100,7 @@ mod tests {
         assert_eq!(SubBlockVersion::try_from(255u8), Err(255));
 
         // RLP encode/decode
-        let mut buf = Vec::new();
-        SubBlockVersion::V1.encode(&mut buf);
+        let buf = encode(SubBlockVersion::V1);
         assert_eq!(buf.len(), SubBlockVersion::V1.length());
         let decoded = SubBlockVersion::decode(&mut buf.as_slice()).unwrap();
         assert_eq!(decoded, SubBlockVersion::V1);

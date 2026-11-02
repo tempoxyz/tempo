@@ -1313,7 +1313,7 @@ where
 mod tests {
     use super::*;
     use alloy_primitives::{b256, hex};
-    use alloy_rlp::{Decodable, Encodable};
+    use alloy_rlp::{Decodable, Encodable, encode};
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use p256::{
         ecdsa::{SigningKey as P256SigningKey, signature::hazmat::PrehashSigner},
@@ -2537,8 +2537,7 @@ mod tests {
                 false,
             ),
         ] {
-            let mut buf = Vec::new();
-            alloy_rlp::Encodable::encode(&sig, &mut buf);
+            let buf = encode(&sig);
             let decoded = TempoSignature::decode(&mut buf.as_slice()).unwrap();
             assert_eq!(sig, decoded);
             assert_eq!(decoded.is_legacy_keychain(), expect_legacy);

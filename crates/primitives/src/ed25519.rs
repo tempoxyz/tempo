@@ -73,7 +73,7 @@ impl<'a> arbitrary::Arbitrary<'a> for PublicKey {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_rlp::{Decodable, Encodable};
+    use alloy_rlp::{Decodable, Encodable, encode};
 
     #[test]
     fn public_key_conversions_and_rlp() {
@@ -91,8 +91,7 @@ mod tests {
         assert_eq!(pk, recovered);
 
         // RLP encode → decode roundtrip
-        let mut buf = Vec::new();
-        pk.encode(&mut buf);
+        let buf = encode(pk);
         assert_eq!(buf, alloy_rlp::encode(b256));
         assert_eq!(buf.len(), pk.length());
         let decoded = PublicKey::decode(&mut buf.as_slice()).unwrap();

@@ -1019,7 +1019,7 @@ mod tests {
     };
     use alloy_eips::{Decodable2718, Encodable2718, eip7702::Authorization};
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256, b256, bytes};
-    use alloy_rlp::{Decodable, EMPTY_LIST_CODE, Encodable, Header as RlpHeader};
+    use alloy_rlp::{Decodable, EMPTY_LIST_CODE, Encodable, Header as RlpHeader, encode};
 
     fn create_call(to: TxKind) -> Call {
         Call {
@@ -1393,8 +1393,7 @@ mod tests {
         };
 
         // Encode
-        let mut buf = Vec::new();
-        tx.encode(&mut buf);
+        let buf = alloy_rlp::encode(&tx);
 
         // Decode
         let decoded = TempoTransaction::decode(&mut buf.as_slice()).unwrap();
@@ -1488,8 +1487,7 @@ mod tests {
         };
 
         // Encode
-        let mut buf = Vec::new();
-        tx.encode(&mut buf);
+        let buf = alloy_rlp::encode(&tx);
 
         // Decode
         let decoded = TempoTransaction::decode(&mut buf.as_slice()).unwrap();
@@ -1850,11 +1848,9 @@ mod tests {
         };
 
         // Encode both transactions
-        let mut buf_with = Vec::new();
-        tx_with_token.encode(&mut buf_with);
+        let buf_with = alloy_rlp::encode(&tx_with_token);
 
-        let mut buf_without = Vec::new();
-        tx_without_token.encode(&mut buf_without);
+        let buf_without = alloy_rlp::encode(&tx_without_token);
 
         // The encoded bytes should be different lengths
         assert_ne!(
@@ -2007,8 +2003,7 @@ mod tests {
         };
 
         // Encode the transaction
-        let mut buf_with = Vec::new();
-        tx_with.encode(&mut buf_with);
+        let buf_with = alloy_rlp::encode(&tx_with);
 
         // Decode it back
         let decoded_with = TempoTransaction::decode(&mut buf_with.as_slice()).unwrap();
@@ -2106,8 +2101,7 @@ mod tests {
         let envelope = TempoTxEnvelope::AA(signed);
 
         // Encode and decode the envelope
-        let mut buf = Vec::new();
-        envelope.encode_2718(&mut buf);
+        let buf = envelope.encoded_2718();
         let decoded = TempoTxEnvelope::decode_2718(&mut buf.as_slice())
             .expect("Should decode envelope successfully");
 
@@ -2220,8 +2214,7 @@ mod tests {
             tempo_authorization_list: vec![],
         };
 
-        let mut encoded = Vec::new();
-        tx.encode(&mut encoded);
+        let encoded = encode(&tx);
 
         let (signature_start, signature_end) = transaction_field_bounds(&encoded, 11);
         let (authorization_list_start, authorization_list_end) =
