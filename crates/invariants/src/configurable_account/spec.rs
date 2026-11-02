@@ -1,28 +1,17 @@
-//! TIP formulas, written from the TIP text rather than the implementation.
+//! Configuration rules written from the TIP text; hashes come from `tempo_primitives`.
 
 use alloy_primitives::{Address, B256, b256, keccak256};
+use tempo_primitives::transaction::configurable_account::{
+    self as primitives, CONFIGURABLE_ACCOUNT_UPGRADE_DOMAIN, MAX_CONFIGURABLE_ACCOUNT_OWNERS,
+};
+pub use tempo_primitives::transaction::configurable_account::{
+    MAX_CONFIGURABLE_ACCOUNT_OWNER_SIGNATURE_BYTES as MAX_APPROVAL_BYTES,
+    MAX_CONFIGURABLE_ACCOUNT_SIGNATURES as MAX_APPROVALS,
+    configurable_account_digest as approval_digest,
+};
 
 use super::IConfigurableAccount::{ConfigurableAccountConfig, ConfigurableAccountOwner};
 
-/// Domain of a derived account address.
-// <https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L84-L93>
-const ACCOUNT_DOMAIN: &[u8] = b"tempo:configurable-account:account";
-/// Domain of a configuration commitment.
-// <https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L180-L188>
-const CONFIG_DOMAIN: &[u8] = b"tempo:configurable-account:config";
-/// Domain of the digest owners approve.
-// <https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L121-L126>
-const SIGNATURE_DOMAIN: &[u8] = b"tempo:configurable-account:signature";
-/// Domain of a migrated account's salt.
-// <https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1113.md#L77-L80>
-const UPGRADE_DOMAIN: &[u8] = b"tempo:configurable-account:upgrade";
-
-/// Most owners a configuration has.
-pub const MAX_OWNERS: usize = 48;
-/// Most approvals one configurable-account signature carries.
-pub const MAX_APPROVALS: usize = 8;
-/// Most bytes one approval takes.
-pub const MAX_APPROVAL_BYTES: usize = 2049;
 /// The key type of a grant to a configurable delegate (TIP-1111).
 pub const CONFIGURABLE_KEY_TYPE: u8 = 3;
 
@@ -34,7 +23,7 @@ pub const MARKER_CODE_HASH: B256 =
 /// The first configuration rule `config` breaks, `None` when it passes them all.
 // <https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L74-L80>
 pub fn broken_rule(threshold: u8, owners: &[ConfigurableAccountOwner]) -> Option<&'static str> {
-    if owners.is_empty() || owners.len() > MAX_OWNERS {
+    if owners.is_empty() || owners.len() > MAX_CONFIGURABLE_ACCOUNT_OWNERS {
         return Some("it does not have 1 to 48 owners");
     }
     if owners.iter().any(|owner| owner.owner.is_zero()) {
@@ -70,58 +59,40 @@ pub fn broken_rule(threshold: u8, owners: &[ConfigurableAccountOwner]) -> Option
     None
 }
 
-/// The encoded threshold and owners, `None` with over 255 owners.
-fn owner_set(threshold: u8, owners: &[ConfigurableAccountOwner]) -> Option<Vec<u8>> {
-    let mut set = vec![threshold, u8::try_from(owners.len()).ok()?];
-    for owner in owners {
-        set.extend_from_slice(owner.owner.as_slice());
-        set.push(owner.weight);
+/// `config` as `tempo_primitives` types it.
+fn primitive(config: &ConfigurableAccountConfig) -> primitives::ConfigurableAccountConfig {
+    primitives::ConfigurableAccountConfig {
+        salt: config.salt,
+        version: config.version,
+        threshold: config.threshold,
+        owners: config
+            .owners
+            .iter()
+            .map(|o| primitives::ConfigurableAccountOwner {
+                owner: o.owner,
+                weight: o.weight,
+            })
+            .collect(),
     }
-    Some(set)
 }
 
-/// The commitment of `config`, `None` with more owners than a byte counts.
-// <https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L180-L188>
+/// The commitment of `config`, unvalidated so invalid writes are still judged; `None` with more
+/// owners than a byte counts.
 pub fn commitment(config: &ConfigurableAccountConfig) -> Option<B256> {
-    let set = owner_set(config.threshold, &config.owners)?;
-    Some(keccak256(
-        [
-            CONFIG_DOMAIN,
-            config.salt.as_slice(),
-            &config.version.to_be_bytes(),
-            &set,
-        ]
-        .concat(),
-    ))
+    primitive(config).commitment_preimage().ok().map(keccak256)
 }
 
-/// The address a version-0 configuration derives.
-// <https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L86-L95>
+/// The address a version-0 configuration derives, unvalidated.
 pub fn derived_address(config: &ConfigurableAccountConfig) -> Option<Address> {
-    let set = owner_set(config.threshold, &config.owners)?;
-    Some(Address::from_word(keccak256(
-        [ACCOUNT_DOMAIN, config.salt.as_slice(), &set].concat(),
-    )))
+    primitive(config)
+        .account_preimage()
+        .ok()
+        .map(|preimage| Address::from_word(keccak256(preimage)))
 }
 
 /// The salt of `account`'s configuration after it migrates.
-// <https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1113.md#L77-L82>
 pub fn upgrade_salt(account: Address) -> B256 {
-    keccak256([UPGRADE_DOMAIN, account.as_slice()].concat())
-}
-
-/// The digest an owner of `account` approves at configuration `version` for `inner_digest`.
-// <https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L121-L128>
-pub fn approval_digest(inner_digest: B256, account: Address, version: u64) -> B256 {
-    keccak256(
-        [
-            SIGNATURE_DOMAIN,
-            inner_digest.as_slice(),
-            account.as_slice(),
-            &version.to_be_bytes(),
-        ]
-        .concat(),
-    )
+    keccak256([CONFIGURABLE_ACCOUNT_UPGRADE_DOMAIN, account.as_slice()].concat())
 }
 
 #[cfg(test)]
