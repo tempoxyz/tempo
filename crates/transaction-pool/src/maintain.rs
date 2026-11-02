@@ -710,6 +710,13 @@ where
             whitelist_removals = updates.whitelist_removals.len(),
             "Processing transaction invalidation events"
         );
+        // Derive the next block's base fee from this tip: reth updates the pool's
+        // `pending_basefee` in a separate, unordered task, so it may still be one block behind.
+        let pending_basefee = pool
+            .client()
+            .chain_spec()
+            .next_block_base_fee(tip.tip().header(), tip_timestamp)
+            .unwrap_or_default();
         let evicted = {
             let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
             pool.evict_invalidated_transactions_from(
@@ -718,6 +725,7 @@ where
                     .iter()
                     .filter(|tx| !removed_this_iteration.contains(tx.hash())),
                 Some(tip_timestamp.saturating_add(EVICTION_BUFFER_SECS)),
+                pending_basefee,
             )
         };
         metrics

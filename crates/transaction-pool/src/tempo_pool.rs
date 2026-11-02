@@ -150,16 +150,25 @@ where
         }
 
         let all_txs = self.all_transactions();
-        self.evict_invalidated_transactions_from(updates, all_txs.iter(), None)
+        self.evict_invalidated_transactions_from(
+            updates,
+            all_txs.iter(),
+            None,
+            self.protocol_pool.block_info().pending_basefee,
+        )
     }
 
     /// See [`Self::evict_invalidated_transactions`]; returns the removed transactions so
     /// the caller controls when they are dropped.
+    ///
+    /// `pending_basefee` is the next block's base fee, used to price the spending-limit
+    /// recheck at the fee execution would charge.
     pub(crate) fn evict_invalidated_transactions_from<'a>(
         &self,
         updates: &crate::maintain::TempoPoolUpdates,
         transactions: impl IntoIterator<Item = &'a Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
         expiry_cutoff: Option<u64>,
+        pending_basefee: u64,
     ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         if !updates.has_invalidation_events() && expiry_cutoff.is_none() {
             return Vec::new();
@@ -190,7 +199,6 @@ where
             .fork_tracker()
             .tip_timestamp();
         let spec = self.protocol_pool.validator().validator().active_hardfork();
-        let pending_basefee = self.protocol_pool.block_info().pending_basefee;
 
         // Cache policy lookups per fee token to avoid redundant storage reads.
         // For compound policies (TIP-1015), the cache stores all sub-policy IDs
