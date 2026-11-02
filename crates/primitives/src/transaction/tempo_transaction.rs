@@ -40,6 +40,8 @@ pub enum SignatureType {
     Secp256k1 = 0,
     P256 = 1,
     WebAuthn = 2,
+    /// A configurable delegate authenticated by its primitive owner quorum (T14).
+    ConfigurableAccount = 3,
 }
 
 impl From<SignatureType> for u8 {
@@ -48,6 +50,7 @@ impl From<SignatureType> for u8 {
             SignatureType::Secp256k1 => 0,
             SignatureType::P256 => 1,
             SignatureType::WebAuthn => 2,
+            SignatureType::ConfigurableAccount => 3,
         }
     }
 }
@@ -60,6 +63,7 @@ impl From<SignatureType> for AbiSignatureType {
             SignatureType::Secp256k1 => Self::Secp256k1,
             SignatureType::P256 => Self::P256,
             SignatureType::WebAuthn => Self::WebAuthn,
+            SignatureType::ConfigurableAccount => Self::ConfigurableAccount,
         }
     }
 }
@@ -72,6 +76,7 @@ impl TryFrom<AbiSignatureType> for SignatureType {
             AbiSignatureType::Secp256k1 => Ok(Self::Secp256k1),
             AbiSignatureType::P256 => Ok(Self::P256),
             AbiSignatureType::WebAuthn => Ok(Self::WebAuthn),
+            AbiSignatureType::ConfigurableAccount => Ok(Self::ConfigurableAccount),
             _ => Err(sig_type as u8),
         }
     }
@@ -94,6 +99,7 @@ impl alloy_rlp::Decodable for SignatureType {
             0 => Ok(Self::Secp256k1),
             1 => Ok(Self::P256),
             2 => Ok(Self::WebAuthn),
+            3 => Ok(Self::ConfigurableAccount),
             _ => Err(alloy_rlp::Error::Custom("Invalid signature type")),
         }
     }
@@ -249,7 +255,7 @@ pub struct TempoTransaction {
 /// Validates the calls list structure for Tempo transactions.
 ///
 /// This is a shared validation function used by both `TempoTransaction::validate()`
-/// and the revm handler's `validate_env()` to ensure consistent validation.
+/// and the EVM2 transaction handler to ensure consistent validation.
 ///
 /// Rules:
 /// - Calls list must not be empty
@@ -1015,6 +1021,84 @@ mod tests {
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256, b256, bytes};
     use alloy_rlp::{Decodable, EMPTY_LIST_CODE, Encodable, Header as RlpHeader};
 
+    fn create_call(to: TxKind) -> Call {
+        Call {
+            to,
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }
+    }
+
+    #[test]
+    fn test_validate_empty_calls_list() {
+        let result = validate_calls(&[], false);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("empty"));
+    }
+
+    #[test]
+    fn test_validate_single_call_ok() {
+        let calls = vec![create_call(TxKind::Call(Address::ZERO))];
+        assert!(validate_calls(&calls, false).is_ok());
+    }
+
+    #[test]
+    fn test_validate_single_create_ok() {
+        let calls = vec![create_call(TxKind::Create)];
+        assert!(validate_calls(&calls, false).is_ok());
+    }
+
+    #[test]
+    fn test_validate_create_with_authorization_list_fails() {
+        let calls = vec![create_call(TxKind::Create)];
+        let result = validate_calls(&calls, true); // has_authorization_list = true
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("CREATE"));
+    }
+
+    #[test]
+    fn test_validate_create_not_first_call_fails() {
+        let calls = vec![
+            create_call(TxKind::Call(Address::ZERO)),
+            create_call(TxKind::Create), // CREATE as second call - should fail
+        ];
+        let result = validate_calls(&calls, false);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("first call"));
+    }
+
+    #[test]
+    fn test_validate_multiple_creates_fails() {
+        let calls = vec![
+            create_call(TxKind::Create),
+            create_call(TxKind::Create), // Second CREATE - should fail
+        ];
+        let result = validate_calls(&calls, false);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("first call"));
+    }
+
+    #[test]
+    fn test_validate_create_first_then_calls_ok() {
+        let calls = vec![
+            create_call(TxKind::Create),
+            create_call(TxKind::Call(Address::ZERO)),
+            create_call(TxKind::Call(Address::random())),
+        ];
+        // No auth list, so CREATE is allowed
+        assert!(validate_calls(&calls, false).is_ok());
+    }
+
+    #[test]
+    fn test_validate_multiple_calls_ok() {
+        let calls = vec![
+            create_call(TxKind::Call(Address::ZERO)),
+            create_call(TxKind::Call(Address::random())),
+            create_call(TxKind::Call(Address::random())),
+        ];
+        assert!(validate_calls(&calls, false).is_ok());
+    }
+
     proptest::proptest! {
         #[test]
         fn call_encoding_matches_field_encoding(call in proptest_arbitrary_interop::arb::<Call>()) {
@@ -1262,19 +1346,25 @@ mod tests {
         // Secp256k1 (detected by 65-byte length, no type identifier)
         let sig1_bytes = vec![0u8; SECP256K1_SIGNATURE_LENGTH];
         let sig1 = TempoSignature::from_bytes(&sig1_bytes).unwrap();
-        assert_eq!(sig1.signature_type(), SignatureType::Secp256k1);
+        assert_eq!(
+            sig1.primitive_signature_type(),
+            Some(SignatureType::Secp256k1)
+        );
 
         // P256
         let mut sig2_bytes = vec![SIGNATURE_TYPE_P256];
         sig2_bytes.extend_from_slice(&[0u8; P256_SIGNATURE_LENGTH]);
         let sig2 = TempoSignature::from_bytes(&sig2_bytes).unwrap();
-        assert_eq!(sig2.signature_type(), SignatureType::P256);
+        assert_eq!(sig2.primitive_signature_type(), Some(SignatureType::P256));
 
         // WebAuthn
         let mut sig3_bytes = vec![SIGNATURE_TYPE_WEBAUTHN];
         sig3_bytes.extend_from_slice(&[0u8; 200]);
         let sig3 = TempoSignature::from_bytes(&sig3_bytes).unwrap();
-        assert_eq!(sig3.signature_type(), SignatureType::WebAuthn);
+        assert_eq!(
+            sig3.primitive_signature_type(),
+            Some(SignatureType::WebAuthn)
+        );
     }
 
     #[test]
@@ -2479,6 +2569,7 @@ mod compact_tests {
             (SignatureType::Secp256k1, 0x00u8),
             (SignatureType::P256, 0x01),
             (SignatureType::WebAuthn, 0x02),
+            (SignatureType::ConfigurableAccount, 0x03),
         ] {
             let mut buf = vec![];
             let len = variant.to_compact(&mut buf);

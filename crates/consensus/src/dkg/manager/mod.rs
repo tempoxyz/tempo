@@ -8,6 +8,7 @@ use commonware_cryptography::{
     bls12381::primitives::{group::Share, sharing::Sharing, variant::MinSig},
     ed25519::{PrivateKey, PublicKey},
 };
+use commonware_p2p::Blocker;
 use commonware_runtime::{BufferPooler, Clock, Metrics, Spawner, Storage};
 use commonware_utils::ordered;
 use eyre::{Report, WrapErr as _};
@@ -33,14 +34,18 @@ use crate::{
 use ingress::{Command, Message};
 
 /// Authenticates the startup tip and registers its trusted identity before returning the actor.
-pub(crate) async fn init<TContext, TExecutionLayer, TMarshal>(
+pub(crate) async fn init<TContext, TExecutionLayer, TMarshal, TBlocker>(
     context: TContext,
-    config: Config<TExecutionLayer, TMarshal>,
-) -> eyre::Result<(Actor<TContext, TExecutionLayer, TMarshal>, Mailbox)>
+    config: Config<TExecutionLayer, TMarshal, TBlocker>,
+) -> eyre::Result<(
+    Actor<TContext, TBlocker, TExecutionLayer, TMarshal>,
+    Mailbox,
+)>
 where
     TContext: BufferPooler + Clock + CryptoRng + Metrics + Spawner + Storage,
     TExecutionLayer: ExecutionLayer,
     TMarshal: Marshal,
+    TBlocker: Blocker<PublicKey = PublicKey> + Sync,
 {
     let (tx, rx) = mpsc::unbounded();
 
@@ -51,7 +56,7 @@ where
     Ok((actor, mailbox))
 }
 
-pub(crate) struct Config<TExecutionLayer, TMarshal> {
+pub(crate) struct Config<TExecutionLayer, TMarshal, TBlocker> {
     pub(crate) epoch_strategy: FixedEpocher,
 
     /// The namespace the dkg manager will use when sending messages during
@@ -59,6 +64,9 @@ pub(crate) struct Config<TExecutionLayer, TMarshal> {
     pub(crate) namespace: Vec<u8>,
 
     pub(crate) me: PrivateKey,
+
+    /// Blocks peers that send invalid DKG dealings.
+    pub(crate) blocker: TBlocker,
 
     pub(crate) mailbox_size: NonZeroUsize,
 

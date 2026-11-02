@@ -37,6 +37,17 @@ impl RpcModuleValidator for TempoRpcModuleValidator {
     }
 }
 
+/// Returns whether a transport is enabled with a module selection that does
+/// not include the `consensus` module.
+///
+/// `None` means the transport is disabled.
+// TODO: remove once implicit activation of the consensus module is dropped
+// and it is registered with `merge_if_module_configured`.
+pub(crate) fn selection_lacks_consensus(selection: Option<&RpcModuleSelection>) -> bool {
+    selection
+        .is_some_and(|selection| !selection.contains(&RethRpcModule::Other("consensus".to_owned())))
+}
+
 // TODO: migrate this to tempo_node eventually.
 #[derive(Debug, Clone, clap::Args)]
 pub struct TempoArgs {
@@ -150,4 +161,34 @@ pub(crate) struct PyroscopeArgs {
     /// Sample rate for profiling (default: 100 Hz)
     #[arg(long = "pyroscope.sample-rate", default_value_t = 100)]
     pub(crate) sample_rate: u32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn selection(modules: &str) -> RpcModuleSelection {
+        TempoRpcModuleValidator::parse_selection(modules).unwrap()
+    }
+
+    #[test]
+    fn selection_lacks_consensus_when_not_listed() {
+        assert!(selection_lacks_consensus(Some(
+            &RpcModuleSelection::Standard
+        )));
+        assert!(selection_lacks_consensus(Some(&selection("eth,net,web3"))));
+    }
+
+    #[test]
+    fn selection_has_consensus_when_listed_or_all() {
+        assert!(!selection_lacks_consensus(Some(&selection(
+            "eth,consensus"
+        ))));
+        assert!(!selection_lacks_consensus(Some(&selection("all"))));
+    }
+
+    #[test]
+    fn disabled_transport_does_not_lack_consensus() {
+        assert!(!selection_lacks_consensus(None));
+    }
 }

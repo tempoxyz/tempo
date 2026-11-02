@@ -258,6 +258,7 @@ impl FollowerBuilder {
             // A follower is the only mode with a driver that can verify an
             // inbound certificate, so it is also the only one that ingests.
             gossip: with_gossip.then(|| crate::execution_runtime::gossip_config(true)),
+            estimator: None,
         };
 
         let (spawn_name, db, rocksdb) = if let Some(donor) = donor {
@@ -631,7 +632,6 @@ fn follower_bootstraps_from_follower() {
 fn follower_starts_from_validator_archives() {
     let _ = tempo_eyre::install();
     let target_height = 15;
-    let follower_target_height = target_height + 5;
 
     let setup = Setup::new(crate::VERIFICATION_MODE)
         .how_many_signers(4)
@@ -650,6 +650,14 @@ fn follower_starts_from_validator_archives() {
         // Stop validator[0] and donate both its consensus archive and EL chaindata
         // to the follower. Block production continues with 3/4 validators.
         let mut donor = validators.remove(0);
+        // The follower starts from the donor's processed height, which can
+        // be well past `target_height`; require progress beyond it.
+        let follower_target_height = context
+            .to_metrics()
+            .for_scope(&donor)
+            .latest_consensus_height()
+            .unwrap()
+            + 5;
         donor.stop().await;
 
         let follower = Follower::builder()

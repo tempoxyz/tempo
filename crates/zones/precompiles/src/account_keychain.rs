@@ -1,7 +1,8 @@
 //! Zone read-privacy rules for the upstream Tempo AccountKeychain precompile.
 
 use alloy_primitives::Address;
-use alloy_sol_types::{SolCall, SolInterface};
+use alloy_sol_types::{SolCall, SolError, SolInterface};
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::IAccountKeychain;
 use tempo_precompiles::dispatch::abi_decoder_config_for_spec;
 
@@ -17,8 +18,6 @@ pub(crate) struct AccountKeychainRules;
 
 const UNRESTRICTED_SELECTORS: &[[u8; 4]] = &[
     IAccountKeychain::authorizeKey_0Call::SELECTOR,
-    IAccountKeychain::authorizeKey_1Call::SELECTOR,
-    IAccountKeychain::authorizeKey_2Call::SELECTOR,
     IAccountKeychain::authorizeAdminKeyCall::SELECTOR,
     IAccountKeychain::burnKeyAuthorizationWitnessCall::SELECTOR,
     IAccountKeychain::revokeKeyCall::SELECTOR,
@@ -70,9 +69,13 @@ impl CallRules for AccountKeychainRules {
             IAccountKeychain::IAccountKeychainCalls::isAdminKey(call) => {
                 check_caller(caller, &[call.account])
             }
+            IAccountKeychain::IAccountKeychainCalls::authorizeKey_1(call) => {
+                reject_configurable_account_key_type(call.signatureType, spec)
+            }
+            IAccountKeychain::IAccountKeychainCalls::authorizeKey_2(call) => {
+                reject_configurable_account_key_type(call.signatureType, spec)
+            }
             IAccountKeychain::IAccountKeychainCalls::authorizeKey_0(_)
-            | IAccountKeychain::IAccountKeychainCalls::authorizeKey_1(_)
-            | IAccountKeychain::IAccountKeychainCalls::authorizeKey_2(_)
             | IAccountKeychain::IAccountKeychainCalls::authorizeAdminKey(_)
             | IAccountKeychain::IAccountKeychainCalls::burnKeyAuthorizationWitness(_)
             | IAccountKeychain::IAccountKeychainCalls::revokeKey(_)
@@ -81,6 +84,23 @@ impl CallRules for AccountKeychainRules {
             | IAccountKeychain::IAccountKeychainCalls::removeAllowedCalls(_)
             | IAccountKeychain::IAccountKeychainCalls::getTransactionKey(_) => CallCheck::Continue,
         }
+    }
+}
+
+/// Rejects configurable account delegates until zones sync configurations (TIP-1114 Zones).
+fn reject_configurable_account_key_type(
+    key_type: IAccountKeychain::SignatureType,
+    spec: TempoHardfork,
+) -> CallCheck {
+    // Before T14 upstream rejects the type itself; gating keeps historical zone blocks unchanged.
+    if spec.is_t14() && key_type == IAccountKeychain::SignatureType::ConfigurableAccount {
+        CallCheck::Revert(
+            IAccountKeychain::InvalidSignatureType {}
+                .abi_encode()
+                .into(),
+        )
+    } else {
+        CallCheck::Continue
     }
 }
 
