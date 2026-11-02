@@ -22,24 +22,29 @@ pub(super) struct Reader<'a> {
 }
 
 impl Reader<'_> {
-    /// Reads the model `at` names at `contract` after the step and checks it into `report`; with
-    /// the step's effects, also reads it before the step and checks the step. A read that fails
-    /// is counted under `view` as [`observed`] does.
+    /// Reads the model `at` names at `contract` after the step, completed by `complete`, and
+    /// checks it into `report`. With the step's effects, also reads and completes it before the
+    /// step and checks the step. Returns the model after the step, `Some(None)` if nothing
+    /// answered it and `None` if its read failed, which is counted under `view` as
+    /// [`observed`] does.
     pub(super) fn check<M: Observe + 'static>(
         &self,
         report: &mut Report,
         at: M::At<'_>,
         contract: Address,
         view: &'static str,
-    ) {
+        complete: impl Fn(Read<M>) -> Read<M>,
+    ) -> Option<Option<M>> {
         let pre_state = &self.db.pre;
         let after = EvmViews::new(self.db.view(), self.evm_config, self.env.clone(), pre_state);
-        let Some(post) = observed(report, view, contract, M::observe(&mut { after }, at)) else {
-            return;
+        let read = complete(M::observe(&mut { after }, at));
+        let unanswered = matches!(&read, Err(err) if err.is_not_answered());
+        let Some(post) = observed(report, view, contract, read) else {
+            return unanswered.then_some(None);
         };
         report.run_any(all(), &post);
         let Some(effects) = self.effects else {
-            return;
+            return Some(Some(post));
         };
         // A contract the step deployed has no state before it to read.
         let deployed = |address: &Address| {
@@ -50,7 +55,7 @@ impl Reader<'_> {
             })
         };
         if deployed(&contract) {
-            return;
+            return Some(Some(post));
         }
         let before = PreView {
             reader: self.db.view(),
@@ -63,14 +68,19 @@ impl Reader<'_> {
         if let Err(ObserveError::Views(failed)) = &read
             && deployed(&failed.target())
         {
-            return;
+            return Some(Some(post));
         }
-        let Some(pre) = observed(report, view, subject, read) else {
-            return;
+        let Some(pre) = observed(report, view, subject, complete(read)) else {
+            return Some(Some(post));
         };
-        report.run_any(all(), &effects.step(contract, pre, post));
+        let step = effects.step(contract, pre, post);
+        report.run_any(all(), &step);
+        Some(Some(step.post))
     }
 }
+
+/// A model's read.
+pub(super) type Read<M> = Result<M, ObserveError<ViewFailed>>;
 
 /// `read`'s value, counting it under `view`: a read nothing answered is not armed, one that
 /// failed otherwise breaks `view`.

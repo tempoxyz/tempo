@@ -49,6 +49,17 @@ impl Db {
         }
     }
 
+    /// Whether reading `slot` of `address` misses an exact pre-state, as [`Reader`] does.
+    pub(crate) fn misses(&self, address: &Address, slot: &U256) -> bool {
+        let cache = self.cache.borrow();
+        self.pre.exact
+            && cache
+                .storage
+                .get(address)
+                .is_none_or(|storage| !storage.wiped && !storage.slots.contains_key(slot))
+            && !cache.accounts.get(address).is_some_and(Option::is_none)
+    }
+
     /// Writes the net changes of an execution step to the cache. `code` finds the bytecode of an
     /// account the step gave new code.
     pub(crate) fn commit(&self, net: &Net, code: impl Fn(&B256) -> Option<Bytecode>) {
