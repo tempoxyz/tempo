@@ -19,7 +19,7 @@ use tempo_primitives::is_tip20_prefix;
 use crate::state::{Db, Net};
 
 use reader::Reader;
-pub(crate) use views::Memo;
+pub(crate) use views::ViewCache;
 
 mod reader;
 mod views;
@@ -75,8 +75,8 @@ pub(crate) fn logged_addresses<'a>(
 /// are read as balance holders too, but never checked as contracts. `env` is the block's
 /// environment, which the views run in. Only contracts for which `selected` holds are checked, e.g. those whose state
 /// changed, as no other contract's invariants can have broken. With `effects`, a token's step
-/// checks also run on its ledger before the step against its ledger after it. `memo` holds the
-/// views the block's earlier steps called, of which the step makes again only those it changed.
+/// checks also run on its ledger before the step against its ledger after it. Views are answered
+/// from `view_cache`, the calls the block's earlier steps made that this step left as they were.
 #[expect(clippy::too_many_arguments)]
 pub(crate) fn check(
     db: &Db,
@@ -86,13 +86,13 @@ pub(crate) fn check(
     selected: impl Fn(&Address) -> bool,
     holders: &[Address],
     effects: Option<StepEffects<'_>>,
-    memo: &Memo,
+    view_cache: &ViewCache,
     failures: &mut Vec<InvariantFailure>,
     report: &mut Report,
 ) {
     let missed = db.pre.take_miss();
     if let Some(effects) = &effects {
-        memo.step(effects.net);
+        view_cache.advance(effects.net);
     }
     let mut accounts: Vec<Address> = db
         .cache
@@ -125,7 +125,7 @@ pub(crate) fn check(
         evm_config,
         env: &env,
         effects: effects.as_ref(),
-        memo,
+        view_cache,
     };
     let mut step = Report::default();
     step.register_any(all());
@@ -164,8 +164,7 @@ pub(crate) fn check(
     }
     if selected(&STABLECOIN_DEX_ADDRESS) {
         // The newest orders the DEX numbered (ids start at 1), so DEX10 counts their escrow.
-        let mut views =
-            views::EvmViews::new(db.view(), evm_config, env.clone(), &db.pre, memo, false);
+        let mut views = reader.views(db.view(), false);
         let next = invariants_core::view(
             &mut views,
             STABLECOIN_DEX_ADDRESS,
