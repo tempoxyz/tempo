@@ -1,6 +1,6 @@
 //! Recover PCR measurements from a successful on-chain Nitro batch verification.
 
-use std::{collections::HashSet, sync::Arc};
+use std::sync::Arc;
 
 use alloy::{
     primitives::{Address, B256, Bytes, TxKind},
@@ -92,32 +92,37 @@ impl GetVerifierPcrs {
             self.from_block <= to && to <= head,
             "expected from-block <= to-block <= RPC head ({head})"
         );
-        let hardfork = if let Some(hardfork) = self.hardfork {
-            hardfork
-        } else {
-            hardfork_at(&schedule, block_timestamp(&provider, to).await?)
+        let hardfork = match self.hardfork {
+            Some(hardfork) => hardfork,
+            None => active_fork(&schedule, block_timestamp(&provider, to).await?)
+                .map_or("Genesis", |index| schedule.schedule[index].name.as_str())
                 .parse::<TempoHardfork>()
-                .wrap_err("RPC reports a hardfork unsupported by this xtask version")?
+                .wrap_err("RPC reports a hardfork unsupported by this xtask version")?,
         };
         ensure!(
             hardfork >= TempoHardfork::T13,
             "{hardfork} predates the Nitro verifier (T13); no accepted Nitro PCRs are available"
         );
+        let fork_index = schedule
+            .schedule
+            .iter()
+            .position(|entry| entry.name == hardfork.to_string())
+            .ok_or_else(|| eyre!("{hardfork} is not scheduled by the RPC"))?;
 
-        // Locate the selected fork's block interval using RPC timestamps and the selected
-        // RPC's fork schedule. This avoids scanning unrelated history, including proofless rollouts.
-        let from =
-            fork_boundary(&provider, &schedule, self.from_block, to, hardfork, false).await?;
-        let upper = fork_boundary(&provider, &schedule, from, to, hardfork, true).await?;
+        // Only scan the selected fork's blocks, located by timestamp against the RPC's schedule.
+        // This skips unrelated history, including proofless rollouts.
+        let from = fork_start(&provider, &schedule, self.from_block, to, fork_index).await?;
+        let upper = fork_start(&provider, &schedule, from, to, fork_index + 1).await?;
         ensure!(
             from < upper,
             "no blocks for {hardfork} in the requested range"
         );
+
         // Filter logs by portal address so look-alike BatchSubmitted events from other contracts
         // never reach the client. Factory portals live at deterministic addresses.
         let portals = if let Some(portal) = self.portal {
             ensure!(
-                is_canonical_portal(portal),
+                zone_id(portal).is_some(),
                 "{portal} is not a canonical Zone portal address"
             );
             vec![portal]
@@ -134,9 +139,9 @@ impl GetVerifierPcrs {
             (1..next).map(portal_address).collect()
         };
         ensure!(!portals.is_empty(), "no Zone portals exist at block {to}");
+
         let mut end = upper - 1;
         loop {
-            let mut seen = HashSet::new();
             let start = end.saturating_sub(self.chunk_size - 1).max(from);
             let filter = Filter::new()
                 .from_block(start)
@@ -146,64 +151,50 @@ impl GetVerifierPcrs {
             let mut logs = provider.get_logs(&filter).await.wrap_err_with(|| {
                 format!("failed to query batch logs in {start}..={end}; try a smaller --chunk-size")
             })?;
+            logs.retain(|log| !log.removed);
             logs.sort_by_key(|log| (log.block_number, log.transaction_index, log.log_index));
+            // Several batches for one portal in one transaction need a single lookup.
+            logs.dedup_by_key(|log| (log.transaction_hash, log.address()));
             for log in logs.into_iter().rev() {
-                if log.removed {
-                    continue;
-                }
-                let hash = log
-                    .transaction_hash
-                    .ok_or_eyre("batch log has no transaction hash")?;
+                let (Some(hash), Some(number), Some(block_hash)) =
+                    (log.transaction_hash, log.block_number, log.block_hash)
+                else {
+                    return Err(eyre!("batch log has no transaction or block"));
+                };
                 let portal = log.address();
-                if !seen.insert((hash, portal)) {
-                    continue;
-                }
-                let number = log
-                    .block_number
-                    .ok_or_eyre("batch log has no block number")?;
-                let block_hash = log.block_hash.ok_or_eyre("batch log has no block hash")?;
-                // Reverted transactions keep no logs, so the log alone proves success and no
-                // receipt is needed.
+                // Reverted transactions keep no logs, so the log alone proves success. The
+                // sequencer submits batches directly, so the proof is in the calldata.
                 let transaction = provider
                     .get_transaction_by_hash(hash)
                     .await?
                     .ok_or_eyre("batch transaction is unavailable")?;
+                let Some(pcrs) = direct_batch_pcrs(transaction.inner.inner().calls(), portal)?
+                else {
+                    continue;
+                };
+                let block = provider
+                    .get_block_by_number(number.into())
+                    .await?
+                    .ok_or_eyre("batch block is unavailable")?;
                 ensure!(
-                    transaction.block_hash == Some(block_hash),
-                    "batch log and transaction disagree on block hash; retry after reorg"
+                    block.header.hash == block_hash,
+                    "batch block is no longer canonical; retry after reorg"
                 );
-                // The sequencer submits batches directly, so the proof is in the calldata.
-                if let Some((zone_id, pcrs)) =
-                    direct_batch_pcrs(transaction.inner.inner().calls(), portal)?
-                {
-                    let block = provider
-                        .get_block_by_number(number.into())
-                        .await?
-                        .ok_or_eyre("batch block is unavailable")?;
-                    ensure!(
-                        block.header.hash == block_hash,
-                        "batch block is no longer canonical; retry after reorg"
-                    );
-                    ensure!(
-                        hardfork_at(&schedule, block.header.timestamp()) == hardfork.to_string(),
-                        "batch does not belong to selected hardfork"
-                    );
-                    println!(
-                        "{}",
-                        serde_json::to_string_pretty(&VerifierPcrs {
-                            chain_id,
-                            hardfork: hardfork.to_string(),
-                            block_number: number,
-                            block_hash,
-                            transaction_hash: hash,
-                            portal,
-                            zone_id,
-                            verifier: ZONE_VERIFIER_ADDRESS,
-                            pcrs,
-                        })?
-                    );
-                    return Ok(());
-                }
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&VerifierPcrs {
+                        chain_id,
+                        hardfork: hardfork.to_string(),
+                        block_number: number,
+                        block_hash,
+                        transaction_hash: hash,
+                        portal,
+                        zone_id: zone_id(portal).ok_or_eyre("batch log emitter is not a portal")?,
+                        verifier: ZONE_VERIFIER_ADDRESS,
+                        pcrs,
+                    })?
+                );
+                return Ok(());
             }
             if start == from {
                 break;
@@ -226,31 +217,28 @@ async fn block_timestamp(provider: &impl Provider<TempoNetwork>, number: u64) ->
         .timestamp())
 }
 
-/// First block at (or strictly after) the requested hardfork, or `to + 1` if absent.
-async fn fork_boundary(
+/// Index of the schedule entry active at `timestamp`.
+fn active_fork(schedule: &ForkSchedule, timestamp: u64) -> Option<usize> {
+    schedule
+        .schedule
+        .iter()
+        .rposition(|entry| entry.activation_time <= timestamp)
+}
+
+/// First block in `from..=to` at or after schedule entry `fork_index`, or `to + 1` if none is.
+async fn fork_start(
     provider: &impl Provider<TempoNetwork>,
     schedule: &ForkSchedule,
     from: u64,
     to: u64,
-    fork: TempoHardfork,
-    strictly_after: bool,
+    fork_index: usize,
 ) -> eyre::Result<u64> {
-    let fork_index = schedule
-        .schedule
-        .iter()
-        .position(|entry| entry.name == fork.to_string())
-        .ok_or_else(|| eyre!("{fork} is not scheduled by the RPC"))?;
     let mut low = from;
     let mut high = to.checked_add(1).ok_or_eyre("block range overflows")?;
     while low < high {
         let mid = low + (high - low) / 2;
-        let timestamp = block_timestamp(provider, mid).await?;
-        let active = schedule
-            .schedule
-            .iter()
-            .rposition(|entry| entry.activation_time <= timestamp);
-        if active
-            .is_some_and(|index| index > fork_index || (!strictly_after && index == fork_index))
+        if active_fork(schedule, block_timestamp(provider, mid).await?)
+            .is_some_and(|index| index >= fork_index)
         {
             high = mid;
         } else {
@@ -260,21 +248,11 @@ async fn fork_boundary(
     Ok(low)
 }
 
-/// Whether `address` is the deterministic portal address of the zone ID it encodes.
-fn is_canonical_portal(address: Address) -> bool {
-    address
+/// Zone ID of a canonical factory portal address, which is the prefix followed by a nonzero u32.
+fn zone_id(portal: Address) -> Option<u32> {
+    portal
         .zone_portal_id()
         .and_then(|zone_id| u32::try_from(zone_id).ok())
-        .is_some_and(|zone_id| portal_address(zone_id) == address)
-}
-
-fn hardfork_at(schedule: &ForkSchedule, timestamp: u64) -> &str {
-    schedule
-        .schedule
-        .iter()
-        .rev()
-        .find(|entry| entry.activation_time <= timestamp)
-        .map_or("Genesis", |entry| entry.name.as_str())
 }
 
 /// Read PCRs from a direct `submitBatch` call in the transaction's own calls.
@@ -285,23 +263,14 @@ fn hardfork_at(schedule: &ForkSchedule, timestamp: u64) -> &str {
 fn direct_batch_pcrs<'a>(
     calls: impl IntoIterator<Item = (TxKind, &'a Bytes)>,
     portal: Address,
-) -> eyre::Result<Option<(u32, [Bytes; 3])>> {
-    let zone_id = portal
-        .zone_portal_id()
-        .and_then(|zone_id| u32::try_from(zone_id).ok())
-        .ok_or_eyre("batch log emitter is not a canonical Zone portal")?;
-    for (to, input) in calls {
-        if to != TxKind::Call(portal) {
-            continue;
-        }
-        let Ok(call) = submitBatchCall::abi_decode(input) else {
-            continue;
-        };
-        if call.verifierConfig.as_ref() == NITRO_VERIFIER_CONFIG_V1 {
-            return Ok(Some((zone_id, attestation_pcrs(&call.proof)?)));
-        }
-    }
-    Ok(None)
+) -> eyre::Result<Option<[Bytes; 3]>> {
+    calls
+        .into_iter()
+        .filter(|(to, _)| *to == TxKind::Call(portal))
+        .filter_map(|(_, input)| submitBatchCall::abi_decode(input).ok())
+        .find(|call| call.verifierConfig.as_ref() == NITRO_VERIFIER_CONFIG_V1)
+        .map(|call| attestation_pcrs(&call.proof))
+        .transpose()
 }
 
 /// PCR0/1/2 of an accepted Nitro attestation.
@@ -309,20 +278,20 @@ fn attestation_pcrs(proof: &[u8]) -> eyre::Result<[Bytes; 3]> {
     let parsed = parse_attestation(proof)
         .map_err(|error| eyre!("{error}"))
         .wrap_err("accepted Nitro call contains an invalid attestation")?;
-    let mut pcrs = [Bytes::new(), Bytes::new(), Bytes::new()];
-    for (index, value) in pcrs.iter_mut().enumerate() {
-        let pcr = parsed
+    let pcr = |index: usize| -> eyre::Result<Bytes> {
+        let value = &parsed
             .pcrs
             .iter()
             .find(|pcr| usize::from(pcr.index) == index)
-            .ok_or_eyre("accepted attestation is missing PCR0/1/2")?;
+            .ok_or_eyre("accepted attestation is missing PCR0/1/2")?
+            .value;
         ensure!(
-            pcr.value.len() == 48 && pcr.value.iter().any(|byte| *byte != 0),
+            value.len() == 48 && value.iter().any(|byte| *byte != 0),
             "accepted attestation contains an invalid PCR{index}"
         );
-        *value = Bytes::copy_from_slice(&pcr.value);
-    }
-    Ok(pcrs)
+        Ok(Bytes::copy_from_slice(value))
+    };
+    Ok([pcr(0)?, pcr(1)?, pcr(2)?])
 }
 
 #[cfg(test)]
@@ -335,7 +304,8 @@ mod tests {
         zones::{BlockTransition, DepositQueueTransition, TokenEnablementTransition},
     };
 
-    fn batch() -> (Address, submitBatchCall, [Bytes; 3]) {
+    #[test]
+    fn reads_pcrs_only_from_direct_nitro_batches() {
         let encoded: String =
             include_str!("../../crates/nitro-attestation/testdata/aws_attestation_2026_01_03.b64")
                 .split_whitespace()
@@ -343,10 +313,10 @@ mod tests {
         let proof = base64::engine::general_purpose::STANDARD
             .decode(encoded)
             .unwrap();
-        let parsed = parse_attestation(&proof).unwrap();
-        let expected =
-            std::array::from_fn(|index| Bytes::copy_from_slice(&parsed.pcrs[index].value));
-        let submission = submitBatchCall {
+        let expected: [Bytes; 3] = std::array::from_fn(|index| {
+            Bytes::copy_from_slice(&parse_attestation(&proof).unwrap().pcrs[index].value)
+        });
+        let mut submission = submitBatchCall {
             tempoBlockNumber: 0,
             recentTempoBlockNumber: 0,
             blockTransition: BlockTransition {
@@ -369,71 +339,61 @@ mod tests {
             nextZoneHeight: U256::ZERO,
             signatures: Vec::new(),
         };
-        (portal_address(1), submission, expected)
-    }
-
-    #[test]
-    fn extracts_pcrs_from_direct_call_among_others() {
-        let (portal, submission, expected) = batch();
-        let unrelated = Bytes::from_static(&[1, 2, 3, 4]);
-        let input = Bytes::from(submission.abi_encode());
-        let calls = [
-            (TxKind::Call(Address::ZERO), &input),
-            (TxKind::Call(portal), &unrelated),
-            (TxKind::Call(portal), &input),
-        ];
-        assert_eq!(
-            direct_batch_pcrs(calls, portal).unwrap(),
-            Some((1, expected))
-        );
-    }
-
-    #[test]
-    fn skips_non_nitro_and_unrelated_calls() {
-        let (portal, mut submission, _) = batch();
-        let input = Bytes::from(submission.abi_encode());
+        let nitro = Bytes::from(submission.abi_encode());
+        submission.proof = Bytes::from_static(&[0xff]);
+        let malformed = Bytes::from(submission.abi_encode());
         submission.verifierConfig = Bytes::copy_from_slice(NO_PROOF_FALLBACK_VERIFIER);
         submission.proof = Bytes::new();
         let no_proof = Bytes::from(submission.abi_encode());
-        for calls in [
-            vec![(TxKind::Call(portal), &no_proof)],
-            vec![(TxKind::Call(portal_address(2)), &input)],
-            vec![(TxKind::Create, &input)],
-            vec![],
-        ] {
-            assert_eq!(direct_batch_pcrs(calls, portal).unwrap(), None);
-        }
-    }
+        let unrelated = Bytes::from_static(&[1, 2, 3, 4]);
+        let portal = portal_address(1);
+        let pcrs = |calls: Vec<(TxKind, &Bytes)>| direct_batch_pcrs(calls, portal);
 
-    #[test]
-    fn canonical_portal_check() {
-        assert!(is_canonical_portal(portal_address(1)));
-        assert!(is_canonical_portal(portal_address(u32::MAX)));
-        assert!(!is_canonical_portal(Address::ZERO));
-        assert!(!is_canonical_portal(portal_address(0)));
-        let mut wide = portal_address(1);
-        wide.0[12] = 1;
-        assert!(!is_canonical_portal(wide));
-        let mut wrong_prefix = portal_address(1);
-        wrong_prefix.0[0] ^= 1;
-        assert!(!is_canonical_portal(wrong_prefix));
-    }
-
-    #[test]
-    fn rejects_malformed_accepted_attestation() {
-        let (portal, mut submission, _) = batch();
-        submission.proof = Bytes::from_static(&[0xff]);
-        let input = Bytes::from(submission.abi_encode());
         assert_eq!(
-            direct_batch_pcrs([(TxKind::Call(portal), &input)], portal)
+            pcrs(vec![
+                (TxKind::Call(Address::ZERO), &nitro),
+                (TxKind::Call(portal), &unrelated),
+                (TxKind::Call(portal), &no_proof),
+                (TxKind::Call(portal), &nitro),
+            ])
+            .unwrap(),
+            Some(expected)
+        );
+        for calls in [
+            vec![],
+            vec![(TxKind::Call(portal), &no_proof)],
+            vec![(TxKind::Call(portal_address(2)), &nitro)],
+            vec![(TxKind::Create, &nitro)],
+        ] {
+            assert_eq!(pcrs(calls).unwrap(), None);
+        }
+        assert_eq!(
+            pcrs(vec![(TxKind::Call(portal), &malformed)])
                 .unwrap_err()
                 .to_string(),
             "accepted Nitro call contains an invalid attestation"
         );
     }
 
+    #[test]
+    fn zone_id_accepts_only_canonical_portals() {
+        let mut wide = portal_address(1);
+        wide.0[12] = 1;
+        let mut wrong_prefix = portal_address(1);
+        wrong_prefix.0[0] ^= 1;
+        for (address, expected) in [
+            (portal_address(1), Some(1)),
+            (portal_address(u32::MAX), Some(u32::MAX)),
+            (portal_address(0), None),
+            (wide, None),
+            (wrong_prefix, None),
+        ] {
+            assert_eq!(zone_id(address), expected, "{address}");
+        }
+    }
+
     #[tokio::test]
-    async fn bounds_search_to_rpc_fork_including_unknown_successor() {
+    async fn fork_start_follows_rpc_schedule_including_unknown_forks() {
         let schedule: ForkSchedule = serde_json::from_value(serde_json::json!({
             "active": "T14",
             "schedule": [
@@ -443,13 +403,13 @@ mod tests {
             ]
         }))
         .unwrap();
-        for (fork, after, timestamps, expected) in [
-            (TempoHardfork::T13, false, vec![50, 20, 40, 30], 3),
-            (TempoHardfork::T13, true, vec![50, 80, 70, 60], 7),
-            (TempoHardfork::T14, true, vec![50, 80, 90], 9),
+        // Ten blocks at timestamps 0, 10, ..., 90; each case lists the probed timestamps.
+        for (fork_index, timestamps, expected) in [
+            (0, vec![50, 20, 40, 30], 3),
+            (1, vec![50, 80, 70, 60], 7),
+            (2, vec![50, 80, 90], 9),
         ] {
             let asserter = Asserter::new();
-            asserter.push_success(&schedule);
             for timestamp in timestamps {
                 let mut block = Block::<B256>::default();
                 block.header.inner.timestamp = timestamp;
@@ -462,53 +422,15 @@ mod tests {
             }
             let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
                 .connect_mocked_client(asserter.clone());
-            let schedule = provider.get_fork_schedule().await.unwrap();
             assert_eq!(
-                fork_boundary(&provider, &schedule, 0, 9, fork, after)
+                fork_start(&provider, &schedule, 0, 9, fork_index)
                     .await
                     .unwrap(),
                 expected
             );
             assert!(asserter.read_q().is_empty());
         }
-    }
-
-    #[test]
-    fn historical_hardfork_selection_uses_timestamps_and_preserves_unknown_forks() {
-        let schedule: ForkSchedule = serde_json::from_value(serde_json::json!({
-            "active": "T13",
-            "schedule": [
-                {"name": "T13", "activationTime": 30, "active": true},
-                {"name": "T14", "activationTime": 70, "active": false},
-                {"name": "FutureFork", "activationTime": 90, "active": false}
-            ]
-        }))
-        .unwrap();
-        for (timestamp, expected) in [
-            (29, "Genesis"),
-            (30, "T13"),
-            (69, "T13"),
-            (70, "T14"),
-            (90, "FutureFork"),
-        ] {
-            assert_eq!(hardfork_at(&schedule, timestamp), expected);
-        }
-    }
-
-    #[tokio::test]
-    async fn rejects_forks_missing_from_rpc_schedule() {
-        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
-            .connect_mocked_client(Asserter::new());
-        let schedule = ForkSchedule {
-            schedule: Vec::new(),
-            active: "Genesis".to_owned(),
-        };
-        assert_eq!(
-            fork_boundary(&provider, &schedule, 0, 9, TempoHardfork::T13, false)
-                .await
-                .unwrap_err()
-                .to_string(),
-            "T13 is not scheduled by the RPC"
-        );
+        assert_eq!(active_fork(&schedule, 29), None);
+        assert_eq!(active_fork(&schedule, 95), Some(2));
     }
 }
