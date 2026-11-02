@@ -329,21 +329,31 @@ impl ValidatorConfigV2 {
         Ok((parsed_ingress, parsed_egress))
     }
 
-    /// Parses `ingress` as an `<ip>:<port>` pair and returns the hash of the
-    /// ingress' binary representation.
+    /// Parses `ingress` as an `<ip>:<port>` pair.
     ///
-    /// For V4 addresses, that's `keccak256(octets(ip) || big_endian(port))`.
-    ///
-    /// For V6 addresses, that's `keccak256(octets(ip) || big_endian(scope_id) || big_endian(port))`.
-    fn ingress_key(ingress: &str) -> Result<B256> {
-        let ingress = ingress
+    /// From T14, an IPv4-mapped IPv6 address is returned as its IPv4 form, so both spellings of
+    /// an endpoint share one key in `active_ingress_ips`.
+    fn parse_ingress(&self, ingress: &str) -> Result<std::net::SocketAddr> {
+        let mut addr = ingress
             .parse::<std::net::SocketAddr>()
             .map_err(IpWithPortParseError::from)
             .map_err(|err| {
                 ValidatorConfigV2Error::not_ip_port(ingress.to_string(), err.to_string())
             })?;
+        if self.storage.spec().is_t14() {
+            addr.set_ip(addr.ip().to_canonical());
+        }
+        Ok(addr)
+    }
+
+    /// Returns the key of `ingress` in `active_ingress_ips`.
+    ///
+    /// For V4 addresses, that's `keccak256(octets(ip) || big_endian(port))`.
+    ///
+    /// For V6 addresses, that's `keccak256(octets(ip) || big_endian(scope_id) || big_endian(port))`.
+    fn ingress_key(addr: std::net::SocketAddr) -> B256 {
         let mut hasher = Keccak256::new();
-        match ingress {
+        match addr {
             std::net::SocketAddr::V4(v4) => {
                 hasher.update(v4.ip().octets());
                 hasher.update(v4.port().to_be_bytes());
@@ -354,12 +364,52 @@ impl ValidatorConfigV2 {
                 hasher.update(v6.port().to_be_bytes());
             }
         }
-        Ok(hasher.finalize())
+        hasher.finalize()
+    }
+
+    /// Returns the key of `ingress`, and whether an active validator already uses it.
+    fn ingress_in_use(&self, ingress: &str) -> Result<(B256, bool)> {
+        let addr = self.parse_ingress(ingress)?;
+        let key = Self::ingress_key(addr);
+        let mut in_use = self.active_ingress_ips[key].read()?;
+        // An IPv4-mapped ingress added before T14 is keyed by its IPv6 form.
+        if !in_use
+            && self.storage.spec().is_t14()
+            && let std::net::SocketAddr::V4(v4) = addr
+        {
+            let mapped = std::net::SocketAddrV6::new(v4.ip().to_ipv6_mapped(), v4.port(), 0, 0);
+            in_use = self.active_ingress_ips[Self::ingress_key(mapped.into())].read()?;
+        }
+        Ok((key, in_use))
+    }
+
+    /// Frees the stored `ingress` of an active validator.
+    fn release_ingress(&mut self, ingress: &str) -> Result<()> {
+        let key = Self::ingress_key(self.parse_ingress(ingress)?);
+        self.active_ingress_ips[key].delete()?;
+        if let Some(legacy) = self.legacy_mapped_ingress_key(ingress)? {
+            self.active_ingress_ips[legacy].delete()?;
+        }
+        Ok(())
+    }
+
+    /// From T14, returns the pre-T14 key of a stored IPv4-mapped `ingress`, which was keyed by
+    /// its IPv6 form.
+    fn legacy_mapped_ingress_key(&self, ingress: &str) -> Result<Option<B256>> {
+        if !self.storage.spec().is_t14() {
+            return Ok(None);
+        }
+        Ok(match ingress.parse::<std::net::SocketAddr>() {
+            Ok(addr @ std::net::SocketAddr::V6(v6)) if v6.ip().to_ipv4_mapped().is_some() => {
+                Some(Self::ingress_key(addr))
+            }
+            _ => None,
+        })
     }
 
     fn require_unique_ingress(&self, ingress: &str) -> Result<B256> {
-        let ingress_hash = Self::ingress_key(ingress)?;
-        if self.active_ingress_ips[ingress_hash].read()? {
+        let (ingress_hash, in_use) = self.ingress_in_use(ingress)?;
+        if in_use {
             Err(ValidatorConfigV2Error::ingress_already_exists(
                 ingress.to_string(),
             ))?
@@ -368,18 +418,25 @@ impl ValidatorConfigV2 {
     }
 
     fn update_ingress_ip_tracking(&mut self, old_ingress: &str, new_ingress: &str) -> Result<()> {
-        let old_ingress_hash = Self::ingress_key(old_ingress)?;
-        let new_ingress_hash = Self::ingress_key(new_ingress)?;
+        let old_ingress_hash = Self::ingress_key(self.parse_ingress(old_ingress)?);
+        let new_ingress_hash = Self::ingress_key(self.parse_ingress(new_ingress)?);
 
-        if old_ingress_hash != new_ingress_hash {
-            if self.active_ingress_ips[new_ingress_hash].read()? {
-                Err(ValidatorConfigV2Error::ingress_already_exists(
-                    new_ingress.to_string(),
-                ))?
+        if old_ingress_hash == new_ingress_hash {
+            // Same endpoint: only move an IPv4-mapped entry added before T14 onto its T14 key.
+            if let Some(legacy) = self.legacy_mapped_ingress_key(old_ingress)? {
+                self.active_ingress_ips[legacy].delete()?;
+                self.active_ingress_ips[new_ingress_hash].write(true)?;
             }
-            self.active_ingress_ips[old_ingress_hash].delete()?;
-            self.active_ingress_ips[new_ingress_hash].write(true)?;
+            return Ok(());
         }
+
+        if self.ingress_in_use(new_ingress)?.1 {
+            Err(ValidatorConfigV2Error::ingress_already_exists(
+                new_ingress.to_string(),
+            ))?
+        }
+        self.release_ingress(old_ingress)?;
+        self.active_ingress_ips[new_ingress_hash].write(true)?;
 
         Ok(())
     }
@@ -588,7 +645,7 @@ impl ValidatorConfigV2 {
             .read()?
             .require_owner_or_validator(sender, v.validator_address)?;
 
-        self.active_ingress_ips[Self::ingress_key(&v.ingress)?].delete()?;
+        self.release_ingress(&v.ingress)?;
 
         let block_height = self.storage.block_number();
         self.validators[call.idx as usize]
@@ -965,10 +1022,10 @@ impl ValidatorConfigV2 {
         }
 
         let now_active = v1_val.active;
-        let ingress_hash = Self::ingress_key(&v1_val.inboundAddress)?;
+        let (ingress_hash, ingress_in_use) = self.ingress_in_use(&v1_val.inboundAddress)?;
 
         // Skip if ingress ip hash is a duplicate of an existing entry
-        if now_active && self.active_ingress_ips[ingress_hash].read()? {
+        if now_active && ingress_in_use {
             return skip(self);
         }
 
@@ -1045,6 +1102,7 @@ mod tests {
     use alloy_primitives::FixedBytes;
     use commonware_codec::Encode;
     use commonware_cryptography::{Signer, ed25519::PrivateKey};
+    use tempo_chainspec::hardfork::TempoHardfork;
 
     /// Generate a test Ed25519 key pair and create a valid signature
     fn make_test_keypair_and_signature(
@@ -2973,6 +3031,152 @@ mod tests {
             assert_eq!(v.validatorAddress, validator);
             assert_eq!(v.ingress, "[::1]:8000");
             assert_eq!(v.egress, "::1");
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_ipv4_mapped_ingress_is_distinct_before_t14() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
+        let owner = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut vc = ValidatorConfigV2::new();
+            vc.initialize(owner)?;
+
+            vc.storage.set_block_number(200);
+            let v1 = Address::random();
+            vc.add_validator(
+                owner,
+                make_valid_add_call(v1, "192.168.1.1:8000", "192.168.1.1", v1),
+            )?;
+            let v2 = Address::random();
+            vc.add_validator(
+                owner,
+                make_valid_add_call(v2, "[::ffff:192.168.1.1]:8000", "192.168.1.1", v2),
+            )?;
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_ipv4_mapped_ingress_collides_with_ipv4_from_t14() -> eyre::Result<()> {
+        for (first, second) in [
+            ("192.168.1.1:8000", "[::ffff:192.168.1.1]:8000"),
+            ("[::ffff:192.168.1.1]:8000", "192.168.1.1:8000"),
+        ] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
+            let owner = Address::random();
+            StorageCtx::enter(&mut storage, || {
+                let mut vc = ValidatorConfigV2::new();
+                vc.initialize(owner)?;
+
+                vc.storage.set_block_number(200);
+                let v1 = Address::random();
+                vc.add_validator(owner, make_valid_add_call(v1, first, "192.168.1.1", v1))?;
+
+                let v2 = Address::random();
+                let result =
+                    vc.add_validator(owner, make_valid_add_call(v2, second, "192.168.1.1", v2));
+                assert_eq!(
+                    result,
+                    Err(ValidatorConfigV2Error::ingress_already_exists(second.to_string()).into())
+                );
+
+                // Deactivating the first spelling frees the endpoint for the other.
+                vc.deactivate_validator(
+                    owner,
+                    IValidatorConfigV2::deactivateValidatorCall { idx: 0 },
+                )?;
+                vc.add_validator(owner, make_valid_add_call(v2, second, "192.168.1.1", v2))?;
+
+                eyre::Ok(())
+            })?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_ipv4_mapped_ingress_added_before_t14_is_tracked_after() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
+        let owner = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut vc = ValidatorConfigV2::new();
+            vc.initialize(owner)?;
+
+            vc.storage.set_block_number(200);
+            let v1 = Address::random();
+            vc.add_validator(
+                owner,
+                make_valid_add_call(v1, "[::ffff:192.168.1.1]:8000", "192.168.1.1", v1),
+            )?;
+
+            vc.storage.set_spec(TempoHardfork::T14);
+
+            // The pre-T14 entry still blocks the IPv4 spelling.
+            let v2 = Address::random();
+            let result = vc.add_validator(
+                owner,
+                make_valid_add_call(v2, "192.168.1.1:8000", "192.168.1.1", v2),
+            );
+            assert_eq!(
+                result,
+                Err(
+                    ValidatorConfigV2Error::ingress_already_exists("192.168.1.1:8000".into())
+                        .into()
+                )
+            );
+
+            // Respelling the same endpoint moves it onto its T14 key, and deactivating then
+            // frees it completely.
+            vc.set_ip_addresses(
+                owner,
+                IValidatorConfigV2::setIpAddressesCall {
+                    idx: 0,
+                    ingress: "192.168.1.1:8000".to_string(),
+                    egress: "192.168.1.1".to_string(),
+                },
+            )?;
+            vc.deactivate_validator(
+                owner,
+                IValidatorConfigV2::deactivateValidatorCall { idx: 0 },
+            )?;
+            vc.add_validator(
+                owner,
+                make_valid_add_call(v2, "[::ffff:192.168.1.1]:8000", "192.168.1.1", v2),
+            )?;
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_deactivating_pre_t14_ipv4_mapped_ingress_frees_it() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
+        let owner = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut vc = ValidatorConfigV2::new();
+            vc.initialize(owner)?;
+
+            vc.storage.set_block_number(200);
+            let v1 = Address::random();
+            vc.add_validator(
+                owner,
+                make_valid_add_call(v1, "[::ffff:192.168.1.1]:8000", "192.168.1.1", v1),
+            )?;
+
+            vc.storage.set_spec(TempoHardfork::T14);
+            vc.deactivate_validator(
+                owner,
+                IValidatorConfigV2::deactivateValidatorCall { idx: 0 },
+            )?;
+
+            let v2 = Address::random();
+            vc.add_validator(
+                owner,
+                make_valid_add_call(v2, "192.168.1.1:8000", "192.168.1.1", v2),
+            )?;
 
             Ok(())
         })
