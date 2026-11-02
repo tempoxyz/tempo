@@ -1,0 +1,162 @@
+# Bridge payout/deposit mix, modelled on a live customer's mainnet L1 traffic
+# over 30 days to 2026-10-21. Weights are gas shares:
+#   bridge payout  66%  operator withdrawV2 from one EOA (~62.6K gas each)
+#   bridge deposit 34%  ERC-4337 handleOps moving user funds into the bridge (~135K gas)
+# Plain TIP-20 transfers were 0.4% of gas and are left out.
+#
+# Known gaps: the fixture is a minimal bridge stand-in, deposits are sponsored
+# Tempo multicalls rather than ERC-4337 bundles (no EntryPoint or smart-account
+# validation), and payouts come from eight operators with expiring nonces instead
+# of one EOA with sequential nonces, so txgen can saturate the node.
+chain_id: 1337
+
+gas:
+  max_fee_per_gas: 100000000000
+  max_priority_fee_per_gas: 100000000000
+
+accounts:
+  users:
+    mnemonic: "test test test test test test test test test test test junk"
+    range:
+      - 0
+      - ${TXGEN_ACCOUNTS}
+  fee_payers:
+    mnemonic: "test test test test test test test test test test test junk"
+    index: 100000
+  bridge_operators:
+    mnemonic: "test test test test test test test test test test test junk"
+    range:
+      - 100010
+      - 100018
+
+artifacts:
+  ERC20: ../tip20.abi.json
+  BridgeFixture: ../bridge/BridgeFixture.json
+
+setup:
+  steps:
+    - id: bridge
+      deploy:
+        type: eip1559
+        from:
+          pool: fee_payers
+          select: { index: 0 }
+        artifact: BridgeFixture
+        gas_limit: 8000000
+        constructor_args: []
+    - id: bridge_operators
+      depends_on: [bridge]
+      tx:
+        type: tempo
+        from:
+          pool: fee_payers
+          select: { index: 0 }
+        gas_limit: 5000000
+        fee_token: "0x20c0000000000000000000000000000000000000"
+        calls:
+            - to: { var: setup.bridge.address }
+              abi: BridgeFixture
+              function: setOperator
+              args:
+                - { pool: { pool: bridge_operators, select: { index: 0 } } }
+            - to: { var: setup.bridge.address }
+              abi: BridgeFixture
+              function: setOperator
+              args:
+                - { pool: { pool: bridge_operators, select: { index: 1 } } }
+            - to: { var: setup.bridge.address }
+              abi: BridgeFixture
+              function: setOperator
+              args:
+                - { pool: { pool: bridge_operators, select: { index: 2 } } }
+            - to: { var: setup.bridge.address }
+              abi: BridgeFixture
+              function: setOperator
+              args:
+                - { pool: { pool: bridge_operators, select: { index: 3 } } }
+            - to: { var: setup.bridge.address }
+              abi: BridgeFixture
+              function: setOperator
+              args:
+                - { pool: { pool: bridge_operators, select: { index: 4 } } }
+            - to: { var: setup.bridge.address }
+              abi: BridgeFixture
+              function: setOperator
+              args:
+                - { pool: { pool: bridge_operators, select: { index: 5 } } }
+            - to: { var: setup.bridge.address }
+              abi: BridgeFixture
+              function: setOperator
+              args:
+                - { pool: { pool: bridge_operators, select: { index: 6 } } }
+            - to: { var: setup.bridge.address }
+              abi: BridgeFixture
+              function: setOperator
+              args:
+                - { pool: { pool: bridge_operators, select: { index: 7 } } }
+    - id: bridge_liquidity
+      depends_on: [bridge]
+      # users[0] is the devnet pathUSD issuer; minting keeps payout liquidity
+      # independent of the faucet allocation.
+      tx:
+        type: eip1559
+        from:
+          pool: users
+          select: { index: 0 }
+        gas_limit: 1000000
+        call:
+          to: "0x20c0000000000000000000000000000000000000"
+          abi: ERC20
+          function: mint
+          args:
+            - { var: setup.bridge.address }
+            - "1000000000000000000"
+
+templates:
+  bridge_payout:
+    type: tempo
+    from: { pool: bridge_operators, select: random }
+    gas_limit: 300000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    nonce: { uniform: [0, 18446744073709551615] } # TIP-1106, requires T12+
+    valid_for_secs: 25
+    call:
+      to: { var: setup.bridge.address }
+      abi: BridgeFixture
+      function: withdrawV2
+      args:
+        - "0x20c0000000000000000000000000000000000000"
+        - { pool: { pool: users, select: random } }
+        - 1
+  bridge_deposit:
+    type: tempo
+    from: { pool: users, select: random }
+    sponsor:
+      pool: fee_payers
+      select: { index: 0 }
+    gas_limit: 500000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    nonce: { uniform: [0, 18446744073709551615] } # TIP-1106, requires T12+
+    valid_for_secs: 25
+    calls:
+      - to: "0x20c0000000000000000000000000000000000000"
+        abi: ERC20
+        function: approve
+        args:
+          - { var: setup.bridge.address }
+          - 1
+      - to: { var: setup.bridge.address }
+        abi: BridgeFixture
+        function: depositWithId
+        args:
+          - "0x20c0000000000000000000000000000000000000"
+          - 1
+          - { random_bytes: 32 }
+
+mix:
+  - template: bridge_payout
+    weight: 66
+  - template: bridge_deposit
+    weight: 34

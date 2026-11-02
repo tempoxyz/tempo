@@ -27,9 +27,9 @@ use eyre::{OptionExt as _, WrapErr};
 use futures::StreamExt;
 use jsonrpsee::{RpcModule, core::RpcResult, proc_macros::rpc, types::ErrorObjectOwned};
 use reth_chainspec::Hardforks;
-use reth_evm::{ConfigureEvm as _, execute::Executor as _};
+use reth_evm::{ConfigureEvm as _, execute::Executor as _, witness::ExecutionWitnessRecord};
+use reth_execution_types::BundleSource;
 use reth_provider::{BlockReader, CanonStateSubscriptions, ChainSpecProvider, HeaderProvider};
-use reth_revm::{db::State, witness::ExecutionWitnessRecord};
 use reth_rpc::{EthFilter, eth::filter::EthFilterError};
 use reth_rpc_api::Web3ApiServer;
 use reth_rpc_builder::EthHandlers;
@@ -318,28 +318,28 @@ where
         let (execution_witness, reads, initial_tempo) = self
             .eth_api
             .spawn_with_state_at_block(block.parent_hash(), move |eth_api, mut db| {
-                let initial_tempo = db.database.0.tempo_num_hash().map_err(EthApiError::from)?;
+                let initial_tempo = db
+                    .db
+                    .inner()
+                    .0
+                    .tempo_num_hash()
+                    .map_err(EthApiError::from)?;
                 let (evm_config, recorder) = eth_api.evm_config().with_l1_storage_recorder();
                 let block_executor = evm_config.executor(&mut db);
                 let mode = ExecutionWitnessMode::default();
-
-                let mut witness = None;
-                let _ = block_executor
-                    .execute_with_state_closure(&block, |statedb: &State<_>| {
-                        witness = Some(
-                            ExecutionWitnessRecord::new(statedb)
-                                .with_additional_state(spf_storage_targets(statedb))
-                                .into_execution_witness(
-                                    &statedb.database.database.0.0,
-                                    eth_api.provider(),
-                                    block_number,
-                                    mode,
-                                ),
-                        );
-                    })
+                let output = block_executor
+                    .execute(&block)
                     .map_err(|error| EthApiError::Internal(error.into()))?;
-                let witness = witness
-                    .expect("state closure is called after successful execution")
+                db.commit_source(&BundleSource(&output.state));
+
+                let witness = ExecutionWitnessRecord::new(&db)
+                    .with_additional_state(spf_storage_targets(&db.cache.block_hashes))
+                    .into_execution_witness(
+                        &db.db.inner().0.0,
+                        eth_api.provider(),
+                        block_number,
+                        mode,
+                    )
                     .map_err(EthApiError::from)?;
                 Ok((witness, recorder.take_reads(), initial_tempo))
             })
@@ -430,10 +430,10 @@ async fn collect_tempo_witness(
 
 /// Build storage targets for SPF reads not necessarily covered by execution.
 ///
-/// Reth records BLOCKHASH reads in REVM's block-hash cache and normally proves them with ancestor
+/// Reth records BLOCKHASH reads in the EVM block-hash cache and normally proves them with ancestor
 /// headers. Zones already commit the EIP-2935 history contract in state, so adding the matching
 /// storage targets lets the SPF authenticate the same values against the parent state root.
-fn spf_storage_targets<DB>(state: &State<DB>) -> HashedPostState {
+fn spf_storage_targets(block_hashes: &alloy_primitives::map::U256Map<B256>) -> HashedPostState {
     // SPF always reads the token cursor, but pre-T13 execution never touches it. Include its
     // absence proof explicitly; ExecutionWitnessRecord overrides this zero with any value
     // recorded during execution.
@@ -448,11 +448,12 @@ fn spf_storage_targets<DB>(state: &State<DB>) -> HashedPostState {
     );
 
     let mut history_storage = HashedStorage::default();
-    for (number, hash) in state.block_hashes.iter() {
-        let slot = U256::from(number % HISTORY_SERVE_WINDOW as u64);
-        history_storage
-            .storage
-            .insert(keccak256(slot.to_be_bytes::<32>()), hash.into());
+    for (number, hash) in block_hashes {
+        let slot = *number % U256::from(HISTORY_SERVE_WINDOW);
+        history_storage.storage.insert(
+            keccak256(slot.to_be_bytes::<32>()),
+            U256::from_be_bytes(hash.0),
+        );
     }
     if !history_storage.storage.is_empty() {
         targets.extend(HashedPostState::from_hashed_storage(
@@ -1629,11 +1630,9 @@ mod tests {
     fn records_block_hashes_as_eip2935_storage_targets() {
         let number = 42;
         let hash = B256::repeat_byte(0x42);
-        let mut state = State::builder()
-            .with_database(revm::database::EmptyDB::default())
-            .build();
-        state.block_hashes.insert(number, hash);
-        let targets = spf_storage_targets(&state);
+        let mut block_hashes = alloy_primitives::map::U256Map::default();
+        block_hashes.insert(U256::from(number), hash);
+        let targets = spf_storage_targets(&block_hashes);
 
         let storage = targets
             .storages

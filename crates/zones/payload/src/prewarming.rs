@@ -4,12 +4,11 @@
 //! discarded; only exact-L1 reads populate the cache shared with canonical execution.
 
 use crate::builder::build_advance_tempo_tx_owned;
-use alloy_evm::block::BlockExecutor;
 use alloy_primitives::B256;
-use reth_errors::ProviderError;
-use reth_evm::{ConfigureEvm, Database, execute::BlockBuilder};
+use reth_evm::{
+    BlockExecutor as _, ConfigureEvm, database::StateProviderDatabase, execute::BlockBuilder,
+};
 use reth_primitives_traits::SealedHeader;
-use reth_revm::{State, database::StateProviderDatabase};
 use reth_storage_api::{StateProvider, StateProviderFactory};
 use reth_tasks::{TaskExecutor, cancel::ManualCancel};
 use std::{error::Error, sync::Arc};
@@ -83,13 +82,9 @@ where
                 .state_by_block_hash(self.parent_hash)?
                 .into_evm_state_provider(),
         );
-        let mut db = State::builder()
-            .with_database(Box::new(state) as Box<dyn Database<Error = ProviderError>>)
-            .with_bundle_update()
-            .build();
 
         let mut worker = self.evm_config.builder_for_next_block(
-            &mut db,
+            state,
             &self.parent_header,
             self.next_block_env_attributes.clone(),
         )?;

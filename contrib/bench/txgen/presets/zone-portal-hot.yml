@@ -1,0 +1,12 @@
+# All zone portal deposits and withdrawals on a single portal, to find where one
+# portal's per-block deposit cap and shared portal state limit throughput. Same
+# fixtures as zone-portal-throughput (synthetic settlement, no zone node); the helper
+# pins the portal count to 1 (TXGEN_ZONE_COUNT still overrides). Compare against
+# zone-portal-throughput, which spreads load across TPS-sized portals.
+include: public-mix.yml
+
+mix:
+  - template: zone_deposit
+    weight: 50
+  - template: zone_withdraw
+    weight: 50

@@ -37,6 +37,10 @@ crate::sol! {
         /// @return True if the recovered key is account or an active admin key on account.
         function verifyKeychainAdmin(address account, bytes32 hash, bytes calldata signature) external view returns (bool);
 
+        /// @notice Verifies a configurable account signature against current account state.
+        /// @return False for an account or configuration mismatch; reverts for malformed or invalid approvals.
+        function verifyConfigurableAccount(address account, bytes32 hash, bytes calldata signature) external view returns (bool);
+
         error InvalidFormat();
         error InvalidSignature();
     }

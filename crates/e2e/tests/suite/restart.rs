@@ -5,13 +5,11 @@
 
 use std::time::Duration;
 
-use commonware_consensus::types::{Epocher, FixedEpocher, Height};
 use commonware_macros::test_traced;
 use commonware_runtime::{
     Clock, Runner as _,
     deterministic::{self, Context, Runner},
 };
-use commonware_utils::NZU64;
 use futures::future::join_all;
 use rand::RngExt as _;
 use reth_ethereum::storage::BlockNumReader;
@@ -163,64 +161,82 @@ fn validator_catches_up_with_gap_of_three_epochs() {
     .run();
 }
 
+/// Restarts a validator while its execution layer has finalized an epoch
+/// boundary that marshal has not yet processed, because the boundary is not
+/// yet durable. After the restart, marshal re-delivers the boundary to the
+/// DKG manager, which must neither stall nor produce bad dealings.
+///
+/// The restart point depends on timing across the deterministic and the
+/// execution layer's runtimes, so the test asserts that it reached the
+/// intended state instead of assuming it.
 #[test_traced]
-fn single_node_recovers_after_finalizing_ceremony() {
-    AssertNodeRecoversAfterFinalizingBlock {
-        n_validators: 1,
-        epoch_length: 6,
-        shutdown_after_finalizing: ShutdownAfterFinalizing::Ceremony,
-    }
-    .run()
-}
+fn node_recovers_after_restart_with_unprocessed_boundary() {
+    let _ = tempo_eyre::install();
 
-#[test_traced]
-fn node_recovers_after_finalizing_ceremony_four_validators() {
-    AssertNodeRecoversAfterFinalizingBlock {
-        n_validators: 4,
-        epoch_length: 30,
-        shutdown_after_finalizing: ShutdownAfterFinalizing::Ceremony,
-    }
-    .run()
-}
+    let epoch_length = 30;
+    // The second boundary, once the execution layer persists in steady state.
+    let boundary = 2 * epoch_length - 1;
+    let setup = Setup::new(crate::VERIFICATION_MODE)
+        .how_many_signers(4)
+        .epoch_length(epoch_length);
 
-#[test_traced]
-fn node_recovers_after_finalizing_middle_of_epoch_four_validators() {
-    AssertNodeRecoversAfterFinalizingBlock {
-        n_validators: 4,
-        epoch_length: 30,
-        shutdown_after_finalizing: ShutdownAfterFinalizing::MiddleOfEpoch,
-    }
-    .run()
-}
+    let cfg = deterministic::Config::default().with_seed(setup.seed);
+    Runner::from(cfg).start(|mut context| async move {
+        let (mut validators, _execution_runtime) =
+            setup_validators(&mut context, setup.clone()).await;
+        join_all(validators.iter_mut().map(|node| node.start(&context))).await;
 
-#[test_traced]
-fn node_recovers_before_finalizing_middle_of_epoch_four_validators() {
-    AssertNodeRecoversAfterFinalizingBlock {
-        n_validators: 4,
-        epoch_length: 30,
-        shutdown_after_finalizing: ShutdownAfterFinalizing::BeforeMiddleOfEpoch,
-    }
-    .run()
-}
+        let restarted = 0;
+        let mut attempts = 0;
+        while validators[restarted]
+            .execution()
+            .provider
+            .canonical_in_memory_state()
+            .get_finalized_num_hash()
+            .is_none_or(|finalized| finalized.number < boundary)
+        {
+            attempts += 1;
+            assert!(
+                attempts < 3_000,
+                "execution layer did not finalize the boundary `{boundary}` in time"
+            );
+            context.sleep(Duration::from_millis(20)).await;
+        }
+        let processed = context
+            .to_metrics()
+            .for_scope(&validators[restarted])
+            .latest_consensus_height()
+            .unwrap_or_default();
+        assert!(
+            processed < boundary,
+            "marshal already processed height `{processed}`, so the restart \
+            would not replay the boundary `{boundary}`",
+        );
 
-#[test_traced]
-fn single_node_recovers_after_finalizing_boundary() {
-    AssertNodeRecoversAfterFinalizingBlock {
-        n_validators: 1,
-        epoch_length: 10,
-        shutdown_after_finalizing: ShutdownAfterFinalizing::Boundary,
-    }
-    .run()
-}
+        validators[restarted].stop().await;
+        validators[restarted].start(&context).await;
 
-#[test_traced]
-fn node_recovers_after_finalizing_boundary_four_validators() {
-    AssertNodeRecoversAfterFinalizingBlock {
-        n_validators: 4,
-        epoch_length: 30,
-        shutdown_after_finalizing: ShutdownAfterFinalizing::Boundary,
-    }
-    .run()
+        for attempt in 0.. {
+            context.sleep(Duration::from_secs(1)).await;
+            let metrics = context.to_metrics();
+            assert!(
+                metrics
+                    .values::<u64>("ceremony_bad_dealings")
+                    .all(|bad_dealings| bad_dealings == 0)
+            );
+            if metrics
+                .for_scope(&validators[restarted])
+                .latest_consensus_height()
+                .is_some_and(|height| height > boundary + 10)
+            {
+                break;
+            }
+            assert!(
+                attempt < 30,
+                "restarted validator did not progress past the replayed boundary"
+            );
+        }
+    });
 }
 
 /// Test configuration for restart scenarios
@@ -329,137 +345,6 @@ async fn ensure_no_progress(context: &Context, tries: u32) {
 fn max_consensus_height(metrics: &Metrics) -> Option<u64> {
     metrics.values::<u64>("_marshal_processed_height").max()
 }
-
-enum ShutdownAfterFinalizing {
-    Boundary,
-    Ceremony,
-    BeforeMiddleOfEpoch,
-    MiddleOfEpoch,
-}
-
-impl ShutdownAfterFinalizing {
-    fn is_target_height(&self, epoch_length: u64, block_height: Height) -> bool {
-        let epoch_strategy = FixedEpocher::new(NZU64!(epoch_length));
-        match self {
-            // NOTE: ceremonies are finalized on the pre-to-last block, so
-            // block + 1 needs to be the boundary / last block.
-            Self::Ceremony => {
-                block_height.next()
-                    == epoch_strategy
-                        .containing(block_height.next())
-                        .unwrap()
-                        .last()
-            }
-            Self::Boundary => {
-                block_height == epoch_strategy.containing(block_height).unwrap().last()
-            }
-            Self::BeforeMiddleOfEpoch => {
-                block_height.next().get().rem_euclid(epoch_length) == epoch_length / 2
-            }
-            Self::MiddleOfEpoch => block_height.get().rem_euclid(epoch_length) == epoch_length / 2,
-        }
-    }
-}
-
-impl std::fmt::Display for ShutdownAfterFinalizing {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let msg = match self {
-            Self::Boundary => "boundary",
-            Self::Ceremony => "ceremony",
-            Self::BeforeMiddleOfEpoch => "before-middle-of-epoch",
-            Self::MiddleOfEpoch => "middle-of-epoch",
-        };
-        f.write_str(msg)
-    }
-}
-
-struct AssertNodeRecoversAfterFinalizingBlock {
-    n_validators: u32,
-    epoch_length: u64,
-    shutdown_after_finalizing: ShutdownAfterFinalizing,
-}
-
-impl AssertNodeRecoversAfterFinalizingBlock {
-    fn run(self) {
-        let _ = tempo_eyre::install();
-
-        let Self {
-            n_validators,
-            epoch_length,
-            shutdown_after_finalizing,
-        } = self;
-
-        let setup = Setup::new(crate::VERIFICATION_MODE)
-            .how_many_signers(n_validators)
-            .epoch_length(epoch_length);
-
-        let cfg = deterministic::Config::default().with_seed(setup.seed);
-        let executor = Runner::from(cfg);
-
-        executor.start(|mut context| async move {
-            let (mut validators, _execution_runtime) =
-                setup_validators(&mut context, setup.clone()).await;
-
-            join_all(validators.iter_mut().map(|node| node.start(&context))).await;
-
-            // Catch a node right after it processed the pre-to-boundary height.
-            // Best-effort: we hot-loop in 20ms steps, but if processing is too
-            // fast we might miss the window and the test will succeed no matter
-            // what.
-            let (stopped_val_idx, height) = 'wait_to_boundary: loop {
-                let metrics = context.to_metrics();
-                for (idx, validator) in validators.iter().enumerate() {
-                    let scoped = metrics.for_scope(validator);
-                    let Some(value) = scoped.latest_consensus_height() else {
-                        continue;
-                    };
-
-                    if shutdown_after_finalizing
-                        .is_target_height(setup.epoch_length, Height::new(value))
-                    {
-                        break 'wait_to_boundary (idx, value);
-                    }
-                }
-                context.sleep(Duration::from_millis(20)).await;
-            };
-
-            tracing::debug!(
-                stopped_val_uid = validators[stopped_val_idx].uid(),
-                height,
-                target = %shutdown_after_finalizing,
-                "found a node that finalized the target height",
-            );
-            // Now restart the node for which we found the metric.
-            validators[stopped_val_idx].stop().await;
-            validators[stopped_val_idx].start(&context).await;
-
-            let mut iteration = 0;
-            'look_for_progress: loop {
-                context.sleep(Duration::from_secs(1)).await;
-                let metrics = context.to_metrics();
-                let restarted = metrics.for_scope(&validators[stopped_val_idx]);
-                if restarted
-                    .latest_consensus_height()
-                    .is_some_and(|value| value > height + 10)
-                {
-                    break 'look_for_progress;
-                }
-                assert!(
-                    metrics
-                        .values::<u64>("ceremony_bad_dealings")
-                        .all(|bad_dealings| bad_dealings == 0)
-                );
-
-                iteration += 1;
-                assert!(
-                    iteration < 10,
-                    "node did not progress for 10 iterations; restart on boundary likely failed"
-                );
-            }
-        });
-    }
-}
-
 /// After a clean stop, unwind reth's DB by 2 blocks, then restart. The CL's
 /// marshal storage still has the higher finalized height, so the executor's
 /// `backfill_on_start` path fires to replay the missing blocks.

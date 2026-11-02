@@ -3,7 +3,6 @@
 mod error;
 
 use alloy_consensus::{BlockHeader, Transaction, transaction::TxHashRef};
-use alloy_evm::block::BlockExecutionResult;
 pub use error::TempoConsensusError;
 use reth_chainspec::EthChainSpec;
 use reth_consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator, ReceiptRootBloom};
@@ -12,6 +11,7 @@ use reth_consensus_common::validation::{
     validate_against_parent_gas_limit, validate_against_parent_hash_number,
 };
 use reth_ethereum_consensus::EthBeaconConsensus;
+use reth_execution_types::BlockExecutionResult;
 use reth_primitives_traits::{RecoveredBlock, SealedBlock, SealedHeader};
 use std::sync::Arc;
 use tempo_chainspec::{

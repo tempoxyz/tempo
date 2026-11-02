@@ -73,6 +73,8 @@ jobs:
             # Keep a distinct state key for each benchmark series.
             '{"preset":"default","state_key":"default","token_count":"4"}'
             '{"preset":"tip20:recipient=existing,fee-token=any_tip20","state_key":"tip20-existing-any","token_count":"4"}'
+            # Saturates L1 with zone portal deposits and withdrawals, so it lifts the general gas cap too.
+            '{"preset":"zone-portal-throughput","state_key":"zone-portal-throughput","token_count":"4","general_gas_limit":"1000000000000"}'
           )
           bench_entries=()
           save_entries=()
@@ -88,6 +90,7 @@ jobs:
             preset="$(jq -r '.preset' <<< "$scenario")"
             state_key="$(jq -r '.state_key' <<< "$scenario")"
             token_count="$(jq -r '.token_count' <<< "$scenario")"
+            general_gas_limit="$(jq -r '.general_gas_limit // ""' <<< "$scenario")"
             out="$(mktemp)"
             GITHUB_OUTPUT="$out" bash .github/scripts/bench-e2e-scheduled-refs.sh "$INPUT_FORCE" "$state_key"
 
@@ -115,7 +118,8 @@ jobs:
                 --arg run_type "$run_type" \
                 --arg token_count "$token_count" \
                 --arg state_key "$state_key" \
-                '{preset:$preset, state_key:$state_key, actor:$actor, baseline_ref:$baseline_ref, feature_ref:$feature_ref, baseline_name:$baseline_name, feature_name:$feature_name, run_type:$run_type, token_count:$token_count}')"
+                --arg general_gas_limit "$general_gas_limit" \
+                '{preset:$preset, state_key:$state_key, actor:$actor, baseline_ref:$baseline_ref, feature_ref:$feature_ref, baseline_name:$baseline_name, feature_name:$feature_name, run_type:$run_type, token_count:$token_count, general_gas_limit:$general_gas_limit}')"
               bench_entries+=("$entry")
               if [ "$run_type" = "nightly" ]; then
                 save_entries+=("$entry")
@@ -172,6 +176,7 @@ jobs:
       feature-name: ${{ matrix.feature_name }}
       preset: ${{ matrix.preset }}
       token-count: ${{ matrix.token_count }}
+      general-gas-limit: ${{ matrix.general_gas_limit }}
       duration: "600"
       tps: "50000"
       run-type: ${{ matrix.run_type }}
@@ -192,13 +197,16 @@ jobs:
 
   save-state:
     needs: [resolve-refs, bench-e2e]
+    # Each scenario saves its baseline when its own leg passed, so one failing leg
+    # doesn't hold back the others (the matrix result is the aggregate).
     if: |
-      always() &&
+      !cancelled() &&
       needs.resolve-refs.outputs.has-nightly-benchmarks == 'true' &&
-      needs.bench-e2e.result == 'success'
+      needs.bench-e2e.result != 'skipped'
     name: save-state (${{ matrix.state_key }})
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       id-token: write
     strategy:
       fail-fast: false
@@ -207,7 +215,19 @@ jobs:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
+      - name: Check this scenario's benchmark passed
+        id: leg
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JOB_NAME: bench-e2e (${{ matrix.preset }}, ${{ matrix.feature_name }}) / bench-e2e
+        run: |
+          conclusion="$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?filter=latest" \
+            --paginate --jq '.jobs[] | select(.name == env.JOB_NAME) | .conclusion' | head -n 1)"
+          echo "$JOB_NAME: ${conclusion:-missing}"
+          echo "passed=$([ "$conclusion" = success ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
       - name: Prepare benchmark state
+        if: steps.leg.outputs.passed == 'true'
         env:
           FEATURE_REF: ${{ matrix.feature_ref }}
         run: |
@@ -216,6 +236,7 @@ jobs:
           printf '%s\n' "$FEATURE_REF" > "$RUNNER_TEMP/bench-state/feature-ref"
 
       - name: Save benchmark state
+        if: steps.leg.outputs.passed == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: bench-state-e2e-${{ matrix.state_key }}

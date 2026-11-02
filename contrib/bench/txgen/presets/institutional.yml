@@ -1,0 +1,166 @@
+# Institutional: tokenized deposits, institutional settlement and treasury, under
+# TIP-403 policy. Weights are gas shares, proposed from the institutional pillar's
+# traffic shape rather than any one deployment's traffic.
+#
+#   flow         gas  template              what it models
+#   Payment       25  policy_transfer       client payment to a counterparty with receive filters,
+#                                           fee paid in AlphaUSD through the FeeAMM (tip20-policy's transfer)
+#   Settlement    20  settlement_transfer   settlement between known institutions: one of 16 treasury
+#                                           accounts to a counterparty, with a memo (reference)
+#   Treasury      15  treasury_sweep        one treasury transaction rebalancing to 8 counterparties
+#   Mint          10  deposit_mint          the issuer mints the tokenized deposit to a client
+#   Burn          10  deposit_burn          the issuer burns redeemed deposits from its own balance
+#   Conversion    17  dex_swap              asset conversion on the stablecoin DEX (dex.yml liquidity)
+#   Liquidity      3  dex_place             a market maker placing flip orders, so long runs keep
+#                                           liquidity on both sides of the book (dex.yml's template)
+#
+# Setup is tip20-policy's: every selected token gets a compound issuer policy of empty
+# blacklists and every counterparty (policy_receivers) both receiver filters, so every
+# transfer, mint and swap here reads TIP-403 policy state; dex.yml places the DEX
+# liquidity walls and the FeeAMM gets AlphaUSD/pathUSD liquidity. Setup runs outside
+# measurement. Unlike tip20-policy, runs do not require full inclusion: at saturation
+# expiring transactions lapse, and a drained book reverts swaps, both visible in the report.
+#
+# Settlement and treasury transfers are few and large in value, but value does not
+# change gas, so amounts stay small and balances last; their weight is their gas share.
+# Drop the dex_swap and dex_place mix entries to run without conversion.
+#
+# Gaps:
+# - The tokenized deposit is pathUSD, whose issuer role dev genesis grants users[0]. A
+#   dedicated deposit token needs TIP20Factory createToken in setup and its address
+#   as a later binding; txgen exposes addresses only for setup deploys.
+# - Redemption is the issuer's burn alone: a client's transfer back to the issuer is
+#   not paired with it.
+# - Approvals, limits and multi-party sign-off happen off-chain; reserve attestations
+#   and freezes (burnBlocked, policy membership changes) are not exercised.
+# Requires T13+ (current TIP-403 APIs), at least two selected tokens and nonzero
+# state bloat.
+include:
+  - dex.yml
+  - tip20-policy.yml
+
+artifacts:
+  ERC20: ../tip20.abi.json
+
+accounts:
+  # users[0..16): institutions' treasury accounts, faucet-funded with the other pools.
+  treasury:
+    mnemonic: "test test test test test test test test test test test junk"
+    range:
+      - 0
+      - 16
+
+templates:
+  policy_transfer:
+    type: tempo
+    from: {pool: users, select: random}
+    gas_limit: 350000
+    fee_token: "0x20c0000000000000000000000000000000000001"
+    call:
+      to: "0x20c0000000000000000000000000000000000000"
+      abi: ERC20
+      function: transfer
+      args:
+        - pool: {pool: policy_receivers, select: random}
+        - 1
+  settlement_transfer:
+    type: tempo
+    from: {pool: treasury, select: random}
+    gas_limit: 350000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    nonce: { uniform: [0, 9223372036854775807] } # TIP-1106, requires T12+
+    valid_for_secs: 25
+    call:
+      to: "0x20c0000000000000000000000000000000000000"
+      abi: ERC20
+      function: transferWithMemo
+      args:
+        - pool: {pool: policy_receivers, select: random}
+        - 1
+        - random_bytes: 32
+  treasury_sweep:
+    type: tempo
+    from: {pool: treasury, select: random}
+    gas_limit: 2500000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    nonce: { uniform: [0, 9223372036854775807] } # TIP-1106, requires T12+
+    valid_for_secs: 25
+    calls:
+      - &sweep
+        to: "0x20c0000000000000000000000000000000000000"
+        abi: ERC20
+        function: transferWithMemo
+        args:
+          - pool: {pool: policy_receivers, select: random}
+          - 1
+          - random_bytes: 32
+      - *sweep
+      - *sweep
+      - *sweep
+      - *sweep
+      - *sweep
+      - *sweep
+      - *sweep
+  deposit_mint:
+    type: tempo
+    # Dev genesis grants the pathUSD issuer role to users[0].
+    from: {pool: users, select: {index: 0}}
+    gas_limit: 300000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    nonce: { uniform: [0, 9223372036854775807] } # TIP-1106, requires T12+
+    valid_for_secs: 25
+    call:
+      to: "0x20c0000000000000000000000000000000000000"
+      abi: ERC20
+      function: mint
+      args:
+        - pool: {pool: users, select: random}
+        - 1
+  deposit_burn:
+    type: tempo
+    from: {pool: users, select: {index: 0}}
+    gas_limit: 300000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    nonce: { uniform: [0, 9223372036854775807] } # TIP-1106, requires T12+
+    valid_for_secs: 25
+    call:
+      to: "0x20c0000000000000000000000000000000000000"
+      abi: ERC20
+      function: burn
+      args:
+        - 1
+  dex_swap:
+    call:
+      args:
+        values:
+          - if:
+              cond: { var: base_to_quote }
+              then: { var: base_token }
+              else: "0x20c0000000000000000000000000000000000000"
+          - if:
+              cond: { var: base_to_quote }
+              then: "0x20c0000000000000000000000000000000000000"
+              else: { var: base_token }
+          # 1-5 tokens per swap, so dex.yml's 10,000-token walls last ~2,000 swaps per side.
+          - uniform: [1000000, 5000000]
+          - 0
+
+mix:
+  - template: policy_transfer
+    weight: 25
+  - template: settlement_transfer
+    weight: 20
+  - template: treasury_sweep
+    weight: 15
+  - template: deposit_mint
+    weight: 10
+  - template: deposit_burn
+    weight: 10
+  - template: dex_swap
+    weight: 17
+  - template: dex_place
+    weight: 3
