@@ -685,12 +685,7 @@ where
         origin: TransactionOrigin,
         transaction: Self::Transaction,
     ) -> PoolResult<TransactionEvents> {
-        let tx = self
-            .protocol_pool
-            .validator()
-            .validate_transaction(origin, transaction)
-            .await;
-        let res = self.add_validated_transaction(origin, tx)?;
+        let res = self.add_transaction(origin, transaction).await?;
         self.transaction_event_listener(res.hash)
             .ok_or_else(|| PoolError::new(res.hash, PoolErrorKind::DiscardedOnInsert))
     }
@@ -2309,16 +2304,7 @@ mod tests {
         let pool = TempoTransactionPool::new(protocol_pool, AA2dPool::new(Default::default()));
 
         for pooled in [&matching, &untouched] {
-            let validated = TransactionValidationOutcome::Valid {
-                balance: *pooled.cost(),
-                state_nonce: pooled.nonce(),
-                bytecode_hash: None,
-                transaction: ValidTransaction::new(pooled.clone(), None),
-                propagate: true,
-                authorities: None,
-            };
-            pool.add_validated_transaction(TransactionOrigin::External, validated)
-                .expect("transaction should be admitted");
+            add_validated(&pool, pooled.clone());
         }
 
         let mut updates = crate::maintain::TempoPoolUpdates::new();
@@ -2400,16 +2386,7 @@ mod tests {
         let pool = TempoTransactionPool::new(protocol_pool, AA2dPool::new(Default::default()));
 
         for pooled in [&matching, &untouched] {
-            let validated = TransactionValidationOutcome::Valid {
-                balance: *pooled.cost(),
-                state_nonce: pooled.nonce(),
-                bytecode_hash: None,
-                transaction: ValidTransaction::new(pooled.clone(), None),
-                propagate: true,
-                authorities: None,
-            };
-            pool.add_validated_transaction(TransactionOrigin::External, validated)
-                .expect("transaction should be admitted");
+            add_validated(&pool, pooled.clone());
         }
 
         let mut updates = crate::maintain::TempoPoolUpdates::new();
@@ -2487,16 +2464,7 @@ mod tests {
         let pool = TempoTransactionPool::new(protocol_pool, AA2dPool::new(Default::default()));
 
         for pooled in [&matching, &untouched] {
-            let validated = TransactionValidationOutcome::Valid {
-                balance: *pooled.cost(),
-                state_nonce: pooled.nonce(),
-                bytecode_hash: None,
-                transaction: ValidTransaction::new(pooled.clone(), None),
-                propagate: true,
-                authorities: None,
-            };
-            pool.add_validated_transaction(TransactionOrigin::External, validated)
-                .expect("transaction should be admitted");
+            add_validated(&pool, pooled.clone());
         }
 
         let mut updates = crate::maintain::TempoPoolUpdates::new();

@@ -2,7 +2,7 @@ use std::{cmp::Ordering, collections::BTreeMap, num::NonZeroU32, sync::Arc};
 
 use alloy_consensus::{BlockHeader as _, Sealable};
 use bytes::{Buf, BufMut};
-use commonware_codec::{Encode as _, EncodeSize, Read, ReadExt as _, Write};
+use commonware_codec::{Decode as _, Encode as _, EncodeSize, Read, ReadExt as _, Write};
 use commonware_consensus::{
     CertifiableBlock as _, Heightable as _,
     marshal::{Update, core::DigestFallback},
@@ -974,13 +974,16 @@ where
         dealer_state: Option<&mut Dealer>,
         player_state: Option<&mut Player>,
         from: PublicKey,
-        mut message: IoBuf,
+        message: IoBuf,
     ) -> eyre::Result<()>
     where
         TStorageContext: BufferPooler + commonware_runtime::Metrics + Clock + Storage,
     {
-        let msg = Message::read_cfg(&mut message, &NZU32!(round.players().len() as u32))
-            .wrap_err("failed reading p2p message")?;
+        let msg = Message::decode_cfg(message, &NZU32!(round.players().len() as u32))
+            .inspect_err(|error| {
+                commonware_p2p::block!(self.config.blocker, from.clone(), %error, "failed decoding DKG message");
+            })
+            .wrap_err("failed decoding p2p message")?;
 
         match msg {
             Message::Dealer(pub_msg, priv_msg) => {

@@ -245,6 +245,10 @@ pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal> {
     /// The highest finalized block accepted by the execution layer, with its
     /// consensus round. Initialized from the local finalized state.
     delivered_finalized_tip: (Round, Height, Digest),
+    /// The finalized tip startup selected, whose certificate is authenticated
+    /// before any actor starts. The finalized block delivered at its height
+    /// must be this block.
+    startup_finalized_tip: (Height, Digest),
     /// The latest finalized tip announced by consensus, which may still
     /// need to be delivered to the execution layer. Never below the finalized
     /// blocks received from the marshal actor: each counts as a tip in the
@@ -429,6 +433,7 @@ where
 
             local_state,
             delivered_finalized_tip: (finalized_round, finalized.0, finalized.1),
+            startup_finalized_tip: (finalized_tip.1, finalized_tip.2),
             network_finalized_tip: finalized_tip,
             pending_head: PendingHead::finalized(finalized_tip),
             built_blocks: HashMap::new(),
@@ -959,7 +964,10 @@ where
     /// finalizing it lands - or without another update if the execution
     /// layer already finalized it (a re-delivery) - and the execution layer
     /// durably persisted it. The marshal actor delivers the finalized chain
-    /// in order; that order is trusted, not checked.
+    /// in order; that order is trusted, not checked, except that the block at
+    /// the startup finalized tip's height must be that tip: marshal reads
+    /// finalized blocks by height, so restored storage could otherwise pair
+    /// the authenticated tip certificate with a different block.
     #[instrument(
         skip_all,
         fields(
@@ -996,6 +1004,15 @@ where
                 )));
             }
         }
+
+        let (tip_height, tip_digest) = self.startup_finalized_tip;
+        ensure!(
+            block.height() != tip_height || block.digest() == tip_digest,
+            "finalized block `{}` at height `{tip_height}` is not the startup finalized tip \
+            `{tip_digest}` its certificate finalized; the consensus storage does not hold the \
+            certified chain: delete consensus storage or restore a consistent snapshot",
+            block.digest(),
+        );
 
         if block.height() > self.delivered_finalized_tip.1 {
             self.delivered_finalized_tip = (block.context().round, block.height(), block.digest());
