@@ -1,8 +1,7 @@
 name: Tempo Network E2E
 
 on:
-  # Detection reads PR data through pinned actions; fork code is never executed.
-  pull_request_target: # zizmor: ignore[dangerous-triggers]
+  pull_request:
     types: [opened, reopened, synchronize, ready_for_review, converted_to_draft]
   merge_group:
 
