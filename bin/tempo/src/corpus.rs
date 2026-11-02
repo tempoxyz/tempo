@@ -19,8 +19,6 @@ pub enum CorpusCommand {
     Fill(Box<FillCommand>),
     /// Replay a corpus range without opening a database.
     Replay(ReplayCommand),
-    /// Rewrite a legacy corpus in the current format, without the archive DB.
-    Migrate(MigrateCommand),
     /// Delete the superseded checkpoints and unreferenced files of a complete corpus.
     Gc(GcCommand),
 }
@@ -30,7 +28,6 @@ impl CorpusCommand {
         match self {
             Self::Fill(cmd) => cmd.execute(runtime).await,
             Self::Replay(cmd) => cmd.execute().await,
-            Self::Migrate(cmd) => cmd.execute().await,
             Self::Gc(cmd) => cmd.execute().await,
         }
     }
@@ -180,57 +177,6 @@ impl ReplayCommand {
             )
         })
         .await?
-    }
-}
-
-/// Migrate a complete legacy corpus to changeset bitmaps and full transaction deltas.
-#[derive(Debug, Parser)]
-pub struct MigrateCommand {
-    /// The chain the corpus was captured from.
-    #[arg(long, value_name = "CHAIN_OR_PATH", default_value = "mainnet", value_parser = TempoChainSpecParser::parser())]
-    chain: Arc<TempoChainSpec>,
-    /// Source s3://bucket/prefix of a legacy corpus; an unfinished one migrates up to its
-    /// last published block.
-    #[arg(long)]
-    source: String,
-    /// Destination s3://bucket/prefix; must not exist.
-    #[arg(long)]
-    corpus: String,
-    /// Optional S3-compatible endpoint for both. Credentials use the standard AWS chain.
-    #[arg(long)]
-    s3_endpoint: Option<String>,
-    /// First block; defaults to the source start.
-    #[arg(long)]
-    from: Option<u64>,
-    /// Exclusive end; defaults to the source's last published block.
-    #[arg(long)]
-    to: Option<u64>,
-}
-
-impl MigrateCommand {
-    async fn execute(self) -> eyre::Result<()> {
-        let source = Store::open(&self.source, self.s3_endpoint.as_deref()).await?;
-        let (catalog, _) = source
-            .catalog()
-            .await?
-            .ok_or_else(|| eyre::eyre!("no corpus catalog at {}", self.source))?;
-        let context = &catalog.context;
-        let chain = self.chain.clone();
-        eyre::ensure!(
-            context.chain_id == chain.chain_id()
-                && context.genesis == chain.genesis_hash().to_string()
-                && context.forks == chain.display_hardforks().to_string(),
-            "corpus chain/fork context mismatch"
-        );
-        // A local destination (staging on disk before an upload) takes no S3 endpoint.
-        let dest_endpoint = self
-            .corpus
-            .starts_with("s3://")
-            .then_some(self.s3_endpoint.as_deref())
-            .flatten();
-        let dest = Store::open(&self.corpus, dest_endpoint).await?;
-        let (config, consensus) = components(chain);
-        tempo_corpus::migrate::migrate(source, dest, self.from, self.to, &config, &consensus).await
     }
 }
 
