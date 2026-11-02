@@ -57,10 +57,17 @@ jobs:
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             tag="$INPUT_TAG"
             # VK picks the approving code owners from the dispatched ref, so a
-            # publishing dispatch must run from the tag it releases.
-            if [ "$DRY_RUN" != "true" ] && [ "$GITHUB_REF" != "refs/tags/$tag" ]; then
-              echo "::error::Dispatch release.yml from refs/tags/$tag, not $GITHUB_REF"
-              exit 1
+            # publishing dispatch must run from the tempo/v* tag it releases.
+            # Another product's tag would get that product's code owners.
+            if [ "$DRY_RUN" != "true" ]; then
+              if [[ "$tag" != tempo/v* ]]; then
+                echo "::error::Publishing dispatches release a tempo/vX.Y.Z tag, not $tag"
+                exit 1
+              fi
+              if [ "$GITHUB_REF" != "refs/tags/$tag" ]; then
+                echo "::error::Dispatch release.yml from refs/tags/$tag, not $GITHUB_REF"
+                exit 1
+              fi
             fi
           elif [[ "$GITHUB_REF" == refs/heads/rc/* ]]; then
             tag="sha-${SHA::7}"
@@ -103,7 +110,11 @@ jobs:
   build-release:
     name: Build Release Binaries
     needs: get-version
-    environment: release
+    # Dry runs publish nothing, so they skip the release environment (which
+    # only admits release tags) and the signing and attestation that need it.
+    environment: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) && 'release' || '' }}
+    env:
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
     runs-on: ${{ matrix.platform.os }}
     permissions:
       contents: read
@@ -208,6 +219,7 @@ jobs:
           shasum -a 256 "$BINARY_NAME"  > "${BINARY_NAME}.sha256"
 
       - name: GPG sign archive
+        if: env.DRY_RUN != 'true'
         shell: bash
         env:
           GPG_SIGNING_KEY: ${{ secrets.GPG_SIGNING_KEY }}
@@ -232,6 +244,7 @@ jobs:
           upload-release-assets: false
 
       - name: Attest SBOM
+        if: env.DRY_RUN != 'true'
         uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
         with:
           # Attest both the archive and the bare binary so consumers can verify
@@ -244,6 +257,7 @@ jobs:
           sbom-path: ${{ steps.prepare.outputs.archive_name }}.spdx.json
 
       - name: Attest build provenance (SLSA v1)
+        if: env.DRY_RUN != 'true'
         uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
         with:
           # No `sbom-path` / `predicate-*` → actions/attest auto-emits a SLSA
