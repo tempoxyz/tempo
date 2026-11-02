@@ -48,7 +48,7 @@ use tempo_contracts::{
         account_keychain::IAccountKeychain::{
             IAccountKeychainInstance, KeyRestrictions, SignatureType as KeyInfoSignatureType,
         },
-        t13_zone_factory_state,
+        t15_zone_factory_state,
     },
     zones::{
         ZONE_OUTBOX_ADDRESS,
@@ -205,7 +205,7 @@ pub(crate) fn forge_bytecode(contract: &str) -> eyre::Result<alloy_primitives::B
 }
 
 fn install_native_zone_factory(genesis: &mut Genesis, owner: Address) -> eyre::Result<()> {
-    for account in t13_zone_factory_state(owner) {
+    for account in t15_zone_factory_state(owner) {
         let storage = account
             .storage
             .map(|(slot, value)| BTreeMap::from([(slot.into(), value.into())]));
@@ -5516,6 +5516,8 @@ impl L1Fixture {
         self.apply_enabled_token_events(&events.enabled_tokens);
         for deposit in &events.deposits {
             match deposit {
+                // The recipient is only known after zone-side decryption.
+                L1Deposit::ZoneVirtual(_) => {}
                 L1Deposit::WithdrawalBounceBack(deposit) => {
                     self.seed_no_receive_policy_at(block_number, deposit.to)
                         .expect("event receive-policy fixture seed must be admitted");

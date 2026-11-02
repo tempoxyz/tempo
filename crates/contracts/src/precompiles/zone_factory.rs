@@ -1,6 +1,6 @@
 use crate::zones::{
     T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
-    ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
+    T15_ZONE_PORTAL_RUNTIME, ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
 };
 use alloy_primitives::{Address, Bytes, FixedBytes, U256, address, fixed_bytes};
 
@@ -72,6 +72,21 @@ pub fn initial_zone_factory_state(owner: Address) -> [InitialZoneFactoryAccount;
             code: ZONE_MESSENGER_RUNTIME,
             storage: None,
         },
+    ]
+}
+
+/// Returns the native ZoneFactory state with the T15 portal runtime (TIP-1094) and the T13
+/// verifier and messenger runtimes.
+pub fn t15_zone_factory_state(owner: Address) -> [InitialZoneFactoryAccount; 4] {
+    let [factory, portal, verifier, messenger] = t13_zone_factory_state(owner);
+    [
+        factory,
+        InitialZoneFactoryAccount {
+            code: T15_ZONE_PORTAL_RUNTIME,
+            ..portal
+        },
+        verifier,
+        messenger,
     ]
 }
 

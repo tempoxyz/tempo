@@ -14,7 +14,8 @@ use tempo_contracts::{
     precompiles::*,
     zones::{
         T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
-        ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
+        T15_ZONE_PORTAL_RUNTIME, ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME,
+        ZONE_VERIFIER_RUNTIME,
     },
 };
 use tempo_precompiles::{storage::StorageAction, tip_fee_manager::amm::compute_amount_out};
@@ -152,9 +153,39 @@ const T13_ZONE_RUNTIME_UPGRADE: Expectation = Expectation {
     },
 };
 
+/// TIP-1094: T15 replaces the portal runtime; the verifier and messenger keep their T13 code.
+const T15_ZONE_PORTAL_RUNTIME_UPGRADE: Expectation = Expectation {
+    id: "t15.zone-portal-runtime-upgrade",
+    check: |ctx, field| {
+        if ctx.boundary != Boundary::PreBlock
+            || field.name != "code"
+            || field.slot.is_some()
+            || field.address? != ZONE_PORTAL_IMPL_ADDRESS
+        {
+            return None;
+        }
+        let real = ctx.real.pre_block.as_ref()?;
+        let shadow = ctx.shadow.pre_block.as_ref()?;
+        if AccountDelta(real.transitions.get(&ZONE_PORTAL_IMPL_ADDRESS))
+            .info(|info| info.code_hash)
+            .is_some()
+        {
+            return None;
+        }
+        let transition = shadow.transitions.get(&ZONE_PORTAL_IMPL_ADDRESS)?;
+        let after = transition.info.as_ref()?.code_hash;
+        (transition.previous_info.as_ref().is_none_or(|info| {
+            info.is_empty_code_hash() || info.code_hash == keccak256(&T13_ZONE_PORTAL_RUNTIME)
+        }) && after == keccak256(&T15_ZONE_PORTAL_RUNTIME))
+        .then_some(())
+    },
+};
+
 /// Fork-specific checks are ordered oldest-first; baseline fee normalization is added separately.
-const REGISTRY: &[(TempoHardfork, &[Expectation])] =
-    &[(TempoHardfork::T13, &[T13_ZONE_RUNTIME_UPGRADE])];
+const REGISTRY: &[(TempoHardfork, &[Expectation])] = &[
+    (TempoHardfork::T13, &[T13_ZONE_RUNTIME_UPGRADE]),
+    (TempoHardfork::T15, &[T15_ZONE_PORTAL_RUNTIME_UPGRADE]),
+];
 
 pub(crate) fn between(
     canonical: TempoHardfork,
