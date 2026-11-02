@@ -6,6 +6,7 @@ pub mod code;
 pub mod execute;
 pub mod fill;
 pub mod gc;
+pub mod migrate;
 pub mod replay;
 pub mod store;
 pub mod types;
