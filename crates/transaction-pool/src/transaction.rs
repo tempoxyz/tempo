@@ -49,6 +49,7 @@ pub struct TempoPooledTransaction {
     /// Cached cost of the transaction in the fee token.
     fee_token_cost: U256,
     /// Cached T5-T14 payment classification for efficient block building.
+    // TODO: remove after T15 is active.
     is_payment_v2: bool,
     /// Cached T15+ payment classification for efficient block building.
     is_payment_v3: bool,
