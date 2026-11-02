@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/tempoxyz/tempo/blob/main/contrib/bench/txgen/presets/shapes/schema.json",
+  "title": "Deployment shapes",
+  "description": "Customer deployment shapes that drive Tempo capacity benches (see README.md).",
+  "type": "object",
+  "required": [
+    "version",
+    "shapes"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "shapes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/shape"
+      }
+    }
+  },
+  "$defs": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$"
+    },
+    "shape": {
+      "type": "object",
+      "required": [
+        "name",
+        "pillar",
+        "volume",
+        "flows"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/name",
+          "description": "Traffic-shape name, never a customer or partner name."
+        },
+        "pillar": {
+          "enum": [
+            "cross-border",
+            "institutional",
+            "embedded-finance",
+            "agentic"
+          ]
+        },
+        "description": {
+          "type": "string"
+        },
+        "volume": {
+          "type": "object",
+          "required": [
+            "tx_per_month"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "tx_per_month": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "description": "On-chain transactions per 30-day month."
+            },
+            "peak_factor": {
+              "type": "number",
+              "minimum": 1,
+              "default": 1,
+              "description": "Peak TPS over average TPS."
+            }
+          }
+        },
+        "share": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Gas share in a combined run; defaults to tx_per_month times peak_factor."
+        },
+        "flows": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_]*$"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "required": [
+              "weight",
+              "templates"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "weight": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "description": "Gas share of the flow within the shape."
+              },
+              "templates": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "enum": [
+                    "account_first_receive",
+                    "access_key_create",
+                    "access_key_rotate",
+                    "zone_deposit",
+                    "public_transfer",
+                    "payroll_existing",
+                    "payroll_new",
+                    "vault_deposit",
+                    "vault_withdraw",
+                    "reward_distribution",
+                    "public_transfer_memo",
+                    "zone_withdraw",
+                    "dex_swap",
+                    "card_settlement",
+                    "card_spend",
+                    "card_refund",
+                    "keychain_merchant_pull",
+                    "keychain_agent_spend",
+                    "cash_out"
+                  ]
+                },
+                "description": "neobank-generic templates that implement the flow."
+              }
+            }
+          }
+        },
+        "presets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/name"
+          },
+          "description": "Dedicated presets that stress this shape's flows alone."
+        }
+      }
+    }
+  }
+}

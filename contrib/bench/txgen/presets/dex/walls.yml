@@ -1,0 +1,112 @@
+# Stablecoin DEX liquidity walls: a placeFlip bid and ask of 10,000 tokens around the
+# peg for tokens 1-3, placed by users[0] in setup. An append piece, so presets can
+# combine it with other fixtures without replacing their setup steps.
+merge:
+  artifacts:
+    StablecoinDEX: ../../stablecoin-dex.abi.json
+
+append:
+  setup:
+    steps:
+      - id: dex_wall_bid_token1
+        tx:
+          type: eip1559
+          from:
+            pool: users
+            select: { index: 0 }
+          gas_limit: 8000000
+          call:
+            to: "0xdec0000000000000000000000000000000000000"
+            abi: StablecoinDEX
+            function: placeFlip
+            args:
+              - "0x20c0000000000000000000000000000000000001"
+              - 10000000000
+              - true
+              - -100
+              - 100
+      - id: dex_wall_ask_token1
+        tx:
+          type: eip1559
+          from:
+            pool: users
+            select: { index: 0 }
+          gas_limit: 8000000
+          call:
+            to: "0xdec0000000000000000000000000000000000000"
+            abi: StablecoinDEX
+            function: placeFlip
+            args:
+              - "0x20c0000000000000000000000000000000000001"
+              - 10000000000
+              - false
+              - 100
+              - -100
+      - id: dex_wall_bid_token2
+        tx:
+          type: eip1559
+          from:
+            pool: users
+            select: { index: 0 }
+          gas_limit: 8000000
+          call:
+            to: "0xdec0000000000000000000000000000000000000"
+            abi: StablecoinDEX
+            function: placeFlip
+            args:
+              - "0x20c0000000000000000000000000000000000002"
+              - 10000000000
+              - true
+              - -100
+              - 100
+      - id: dex_wall_ask_token2
+        tx:
+          type: eip1559
+          from:
+            pool: users
+            select: { index: 0 }
+          gas_limit: 8000000
+          call:
+            to: "0xdec0000000000000000000000000000000000000"
+            abi: StablecoinDEX
+            function: placeFlip
+            args:
+              - "0x20c0000000000000000000000000000000000002"
+              - 10000000000
+              - false
+              - 100
+              - -100
+      - id: dex_wall_bid_token3
+        tx:
+          type: eip1559
+          from:
+            pool: users
+            select: { index: 0 }
+          gas_limit: 8000000
+          call:
+            to: "0xdec0000000000000000000000000000000000000"
+            abi: StablecoinDEX
+            function: placeFlip
+            args:
+              - "0x20c0000000000000000000000000000000000003"
+              - 10000000000
+              - true
+              - -100
+              - 100
+      - id: dex_wall_ask_token3
+        tx:
+          type: eip1559
+          from:
+            pool: users
+            select: { index: 0 }
+          gas_limit: 8000000
+          call:
+            to: "0xdec0000000000000000000000000000000000000"
+            abi: StablecoinDEX
+            function: placeFlip
+            args:
+              - "0x20c0000000000000000000000000000000000003"
+              - 10000000000
+              - false
+              - 100
+              - -100

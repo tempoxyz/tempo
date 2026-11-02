@@ -1,0 +1,11 @@
+# Projected pipeline load: the internal planning sheet's customer pipeline, aggregated
+# into the four pillars (shapes/pipeline.yml), run as one neobank-multi workload. Run it
+# at a projected peak-minute rate rather than at maximum load, to see whether the chain
+# sustains that year's traffic or falls behind: the bench's tps sets the offered rate,
+# and the shapes' gas shares split it across pillars. The shapes file's header lists
+# the source, the per-year rates and the mapping. TXGEN_NEOBANK_INSTANCES=<path>
+# selects another shapes file.
+#
+# Same fixtures and requirements as neobank-generic and neobank-multi: chain 1337,
+# T12+ and nonzero state bloat.
+include: neobank-generic.yml

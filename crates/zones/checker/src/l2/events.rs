@@ -1054,7 +1054,7 @@ mod tests {
             BlockNumHash::new(4, B256::ZERO),
         )
         .unwrap_err();
-        assert!(error.to_string().contains("non-canonical TempoAdvanced"));
+        assert!(error.to_string().contains("malformed TempoAdvanced"));
     }
 
     #[test]

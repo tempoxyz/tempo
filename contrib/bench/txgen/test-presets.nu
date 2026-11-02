@@ -41,6 +41,23 @@ assert equal ($policy.admin_calls | where function == createCompoundPolicy | get
 assert equal ($policy.admin_calls | where function == createPolicy | length) 8
 assert equal $policy.receive_call.function setReceivePolicy
 assert equal $policy.receive_call.args [25 26 "0x0000000000000000000000000000000000000000"]
+# The institutional preset runs tip20-policy's policy setup, adds DEX liquidity, and pays
+# counterparties that carry receiver filters.
+let institutional_spec = (txgen-resolve-bench-spec institutional)
+assert equal $institutional_spec.kind static
+assert ("institutional" in $TXGEN_HELPER_POLICY_PRESETS)
+assert ("institutional" in $TXGEN_HELPER_ALWAYS_FUND_PRESETS)
+assert equal (open $institutional_spec.spec_path | get include) [dex.yml tip20-policy.yml]
+let institutional = (open $institutional_spec.spec_path)
+assert equal ($institutional.mix | get weight | math sum) 100
+assert equal ($institutional.mix | get template | sort) [deposit_burn deposit_mint dex_place dex_swap policy_transfer settlement_transfer treasury_sweep]
+assert equal ($institutional.templates.treasury_sweep.calls | length) 8
+assert ($institutional.templates.treasury_sweep.calls | all { |call| $call.args.0.pool.pool == policy_receivers })
+assert equal $institutional.templates.policy_transfer.fee_token (txgen-tip20-token-address 1)
+assert equal $institutional.templates.deposit_mint.from {pool: users, select: {index: 0}}
+assert equal $institutional.templates.deposit_burn.call.function burn
+assert ((open (txgen-repo-root | path join contrib bench txgen tip20.abi.json)) | any { |item| $item.name == burn })
+assert equal ($institutional.templates.dex_swap.call.args.values | last 2) [{uniform: [1000000 5000000]} 0]
 # Single-workload throughput presets reuse public-mix fixtures and keep their own label.
 for preset in [zone-portal-throughput vault-throughput] {
     let spec = (txgen-resolve-bench-spec $preset)
@@ -277,6 +294,76 @@ for bad in [{card_shards: 1} {card_spend: -1} {zone_deposit: 1}] {
 assert (try { txgen-neobank-instance-mix $base_mix (txgen-neobank-instances ($pipeline_dir | path join bad.yml) | first); false } catch { true })
 assert equal (txgen-neobank-instances ($presets_dir | path join neobank instances-pipeline.yml) | get share | math sum) 100
 rm -rf $pipeline_dir
+# Deployment shapes: a shapes file drives neobank-multi; each shape is one instance with
+# its flows' weights, the modules its templates belong to and its peak-rate share.
+let shapes_dir = (mktemp -d)
+let shapes_path = ($presets_dir | path join shapes examples.yml)
+let shapes = (txgen-deployment-shapes $shapes_path)
+assert equal ($shapes | get name) [remittance-payout treasury-settlement card-earn-app agent-payments]
+assert equal ((open $shapes_path).shapes | get pillar | sort) ($TXGEN_HELPER_SHAPE_PILLARS | sort)
+let remittance = ($shapes | first)
+assert equal $remittance.modules [account deposit transfer cashout]
+assert equal $remittance.weights.payroll_new 10.0
+assert equal $remittance.weights.zone_deposit 0
+assert equal $remittance.share 9000000
+assert (($remittance.peak_tps - (3000000 / 2592000 * 3) | math abs) < 0.000001)
+assert equal ($shapes | where name == agent-payments | first | get modules) [account spend]
+let schema = (open ($presets_dir | path join shapes schema.json))
+assert equal ($schema | get '$defs'.shape.properties.flows.additionalProperties.properties.templates.items.enum | sort) ($TXGEN_HELPER_NEOBANK_MODULES | values | flatten | sort)
+assert equal ($schema | get '$defs'.shape.properties.pillar.enum) $TXGEN_HELPER_SHAPE_PILLARS
+let validated = (^uv run --no-project --with jsonschema==4.23.0 --with pyyaml==6.0.2 python3 -c "import json, sys, yaml, jsonschema; jsonschema.validate(yaml.safe_load(open(sys.argv[1])), json.load(open(sys.argv[2])))" $shapes_path ($presets_dir | path join shapes schema.json) | complete)
+assert equal $validated.exit_code 0 $validated.stderr
+with-env {TXGEN_NEOBANK_INSTANCES: "contrib/bench/txgen/presets/shapes/examples.yml"} {
+    let path = (txgen-prepare-public-mix-preset $multi_spec.spec_path 1000 40 6 1337 --out-dir $shapes_dir)
+    let rendered = (open $path)
+    let weights = (txgen-workload-metadata-args neobank-multi $path | last | str replace "workload_mix_weights=" "" | from json)
+    let total = ($weights | values | math sum)
+    let share_total = ($shapes | get share | math sum)
+    for shape in $shapes {
+        let mine = ($weights | items { |key, value| {key: $key, value: $value} } | where { |entry| $entry.key | str starts-with $"($shape.name)/" })
+        assert ((($mine | get value | math sum) / $total - ($shape.share / $share_total) | math abs) < 0.000001)
+        # Only the shape's flow templates run.
+        let flows = ($shape.weights | items { |template, weight| {template: $template, weight: $weight} } | where weight > 0 | get template | sort)
+        assert equal ($mine | get key | each { |key| $key | split row "/" | last } | sort) $flows
+    }
+    assert equal ($weights | get "treasury-settlement/public_transfer_memo") (($weights | get "treasury-settlement/dex_swap") * 5 / 2)
+    assert equal ($rendered.templates | columns | where { |name| $name =~ '^card-earn-app/card_settlement_' } | length) 18
+    let keychain = (^uv run --no-project --with yq==3.4.3 yq -c '.append.setup.steps | map(.id)' $path | from json)
+    assert equal $keychain [authorize_keychain_agent_payments]
+}
+for bad in [
+    {name: a, pillar: retail, volume: {tx_per_month: 1}, flows: {x: {weight: 1, templates: [cash_out]}}}
+    {name: a, pillar: agentic, volume: {tx_per_month: 0}, flows: {x: {weight: 1, templates: [cash_out]}}}
+    {name: a, pillar: agentic, volume: {tx_per_month: 1, peak_factor: 0.5}, flows: {x: {weight: 1, templates: [cash_out]}}}
+    {name: a, pillar: agentic, volume: {tx_per_month: 1}, flows: {}}
+    {name: a, pillar: agentic, volume: {tx_per_month: 1}, flows: {x: {weight: 0, templates: [cash_out]}}}
+    {name: a, pillar: agentic, volume: {tx_per_month: 1}, flows: {x: {weight: 1, templates: [mpp_open]}}}
+    {name: a, pillar: agentic, volume: {tx_per_month: 1}, flows: {x: {weight: 1, templates: [cash_out]}}, presets: [no-such-preset]}
+    {name: Big, pillar: agentic, volume: {tx_per_month: 1}, flows: {x: {weight: 1, templates: [cash_out]}}}
+] {
+    {version: 1, shapes: [$bad]} | to yaml | save -f ($shapes_dir | path join bad.yml)
+    assert (try { txgen-neobank-instances ($shapes_dir | path join bad.yml); false } catch { true })
+}
+rm -rf $shapes_dir
+# projected-pipeline: a neobank-multi style preset whose default shapes file is the pipeline
+# by pillar, so the preset name alone selects it (multi-region runs pass no env).
+let projected_spec = (txgen-resolve-bench-spec projected-pipeline)
+for list in [$TXGEN_HELPER_PUBLIC_MIX_PRESETS $TXGEN_HELPER_ALWAYS_FUND_PRESETS ($TXGEN_HELPER_NEOBANK_MULTI_PRESETS | columns)] {
+    assert ("projected-pipeline" in $list)
+}
+let pipeline = (txgen-deployment-shapes ($presets_dir | path join shapes pipeline.yml))
+assert equal ($pipeline | get name) [embedded-finance cross-border institutional]
+assert (((($pipeline | get peak_tps | math sum) - (2652435 / 2592000 * 84)) | math abs) < 0.000001)
+let projected_dir = (mktemp -d)
+let projected_path = (txgen-prepare-public-mix-preset $projected_spec.spec_path 1000 40 6 1337 --out-dir $projected_dir)
+assert equal ($projected_path | path basename) "projected-pipeline.yml"
+let projected_weights = (txgen-workload-metadata-args projected-pipeline $projected_path | last | str replace "workload_mix_weights=" "" | from json)
+let projected_total = ($projected_weights | values | math sum)
+for shape in $pipeline {
+    let weight = ($projected_weights | items { |key, value| {key: $key, value: $value} } | where { |entry| $entry.key | str starts-with $"($shape.name)/" } | get value | math sum)
+    assert ((($weight / $projected_total) - ($shape.share / ($pipeline | get share | math sum)) | math abs) < 0.000001)
+}
+rm -rf $projected_dir
 # Batch payouts: a 16-sender treasury pays 32 recipients per transaction (the txpool's
 # call limit); reward batches stop at 16 Earn deposits to fit the transaction gas cap.
 let batch_dir = (mktemp -d)
@@ -303,6 +390,24 @@ with-env {TXGEN_BATCH_PAYOUT_RECIPIENTS: "8"} {
     assert equal ($small.templates.reward_distribution.calls | length) 9
 }
 rm -rf $batch_dir
+# Cross-border: bridge-mix's fixture and dex/walls.yml's liquidity both reach setup; payroll
+# batches stay within the txpool's 32 calls and pay existing state-bloat accounts.
+let cross_spec = (txgen-resolve-bench-spec cross-border)
+assert equal $cross_spec.kind static
+assert ("cross-border" in $TXGEN_HELPER_ALWAYS_FUND_PRESETS)
+let cross = (open $cross_spec.spec_path)
+assert equal $cross.include [bridge-mix.yml dex/walls.yml]
+assert equal ($cross.mix | get weight | math sum) 100
+assert equal ($cross.mix | get template | sort) [bridge_deposit bridge_payout corridor_payout dex_swap payroll_batch payroll_new_batch]
+assert equal ($cross.templates.payroll_batch.calls | length) $TXGEN_HELPER_MAX_AA_CALLS
+assert ($cross.templates.payroll_batch.calls | all { |call| $call.args.0 == {address_pool: {pool: existing_recipients, select: random}} })
+assert equal ($cross.templates.payroll_new_batch.calls | length) 8
+assert equal ($cross.templates.dex_swap.call.args.values | last 2) [{uniform: [1000000 5000000]} 0]
+txgen-configure-existing-recipients-env $cross_spec.spec_path 1024 4
+assert (($env.TXGEN_EXISTING_RECIPIENTS_END | into int) > 10000)
+# dex.yml keeps its walls through the shared append piece.
+assert equal ((^uv run --no-project --with yq==3.4.3 yq -c '.include' ($cross_spec.spec_path | path dirname | path join dex.yml)) | from json) [dex/walls.yml]
+assert equal ((^uv run --no-project --with yq==3.4.3 yq -c '.append.setup.steps | map(.id)' ($cross_spec.spec_path | path dirname | path join dex walls.yml)) | from json | length) 6
 # The access-key mix authorises keys in setup and inline, and pays one merchant account.
 let access_spec = (txgen-resolve-bench-spec access-key-mix)
 assert equal $access_spec.kind static
@@ -318,6 +423,26 @@ for name in [keychain_merchant_pull keychain_agent_spend] {
     assert equal ($access.templates | get $name | get auth.access_key.from_setup) authorize_keychain_users
 }
 assert equal ($access.templates.keychain_merchant_pull.call.args | first) "0x0000000000000000000000000000000000005e77"
+# The agentic preset: MPP session opens and charges to a small service pool, and agent
+# spend with keys authorised in setup.
+let agentic_spec = (txgen-resolve-bench-spec agentic)
+assert equal $agentic_spec.kind static
+assert equal $agentic_spec.requires_keychain_setup true
+assert ("agentic" in $TXGEN_HELPER_ALWAYS_FUND_PRESETS)
+assert equal (txgen-workload-metadata-args agentic $agentic_spec.spec_path) ["-m" "workload_mix_weighting=gas"]
+let agentic = (^uv run --no-project --with yq==3.4.3 yq -c '{mix, templates, accounts}' $agentic_spec.spec_path | from json)
+assert equal ($agentic.mix | get weight | math sum) 100
+assert equal ($agentic.mix | get template | sort) [access_key_create keychain_agent_spend mpp_charge mpp_session_open]
+assert equal $agentic.accounts.services.range [200000 200016]
+assert equal $agentic.templates.mpp_session_open.call.to "0x4d50500000000000000000000000000000000000"
+assert equal $agentic.templates.mpp_session_open.call.function open
+assert equal $agentic.templates.mpp_charge.call.function transferWithMemo
+assert equal $agentic.templates.keychain_agent_spend.auth.access_key.from_setup authorize_keychain_users
+for name in [mpp_session_open mpp_charge keychain_agent_spend access_key_create] {
+    let template = ($agentic.templates | get $name)
+    assert equal $template.expiring_nonce true
+    assert equal ($template | get -o call.args.0.pool.pool | default "") services $name
+}
 # Zone -> zone: a ring of callback portals, warmed in setup; closed access returns one unit to the source.
 for preset in [zone-to-zone zone-to-zone-hot] {
     let spec = (txgen-resolve-bench-spec $preset)

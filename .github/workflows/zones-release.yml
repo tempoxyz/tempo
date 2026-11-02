@@ -37,6 +37,10 @@ jobs:
   resolve-release:
     if: github.repository == 'tempoxyz/tempo'
     name: Resolve release inputs
+    # Publishing needs the triggering user and a code owner of bin/tempo-zone/
+    # to approve in VK (review.yml deployments). The environment
+    # only admits release tags, so publishing dispatches run from the tag.
+    environment: ${{ (github.event_name == 'push' || inputs.dry_run == false) && 'release' || '' }}
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.release.outputs.tag }}
@@ -70,6 +74,12 @@ jobs:
             }
           elif [[ -z "$INPUT_TAG" && "$DRY_RUN" != "true" ]]; then
             echo "Provide a release tag, or set dry_run to verify a commit" >&2
+            exit 1
+          fi
+          # VK picks the approving code owners from the dispatched ref, so a
+          # publishing dispatch must run from the tag it releases.
+          if [[ "$DRY_RUN" != "true" && "$GITHUB_REF" != "refs/tags/$INPUT_TAG" ]]; then
+            echo "Publishing dispatches must run from refs/tags/$INPUT_TAG, not $GITHUB_REF" >&2
             exit 1
           fi
 

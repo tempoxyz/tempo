@@ -569,13 +569,18 @@ impl<'a> TempoBlockExecutor<'a> {
 
     /// Returns whether `tx` qualifies for the payment lane under the active hardfork.
     ///
+    /// T15+: TIP-1045 classification with bounded trailing calldata ([`is_payment_v3`]).
     /// T5+: TIP-1045 classification ([`is_payment_v2`]).
     /// Pre-T5: legacy TIP-20 prefix-only check ([`is_payment_v1`]).
     ///
     /// [`is_payment_v1`]: TempoTxEnvelope::is_payment_v1
     /// [`is_payment_v2`]: TempoTxEnvelope::is_payment_v2
+    /// [`is_payment_v3`]: TempoTxEnvelope::is_payment_v3
     pub(crate) fn is_payment(&self, tx: &TempoTxEnvelope) -> bool {
-        if self.evm().config_spec_id().is_t5() {
+        let spec = self.evm().config_spec_id();
+        if spec.is_t15() {
+            tx.is_payment_v3()
+        } else if spec.is_t5() {
             tx.is_payment_v2()
         } else {
             tx.is_payment_v1()

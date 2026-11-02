@@ -61,6 +61,14 @@ and transaction gas on T13/T14, while benchmark timings use normal node caches.
 The snapshots create a fresh recipient balance and initial validator fee accrual;
 benchmark receivers already have balances from faucet funding.
 
+`institutional` covers tokenized deposits, institutional settlement and treasury under the
+same policy setup as `tip20-policy`: policy-checked payments, memo settlement transfers from a
+16-account treasury pool, 8-call treasury sweeps, issuer mints and burns of the tokenized deposit
+(pathUSD, issued by users[0]) and stablecoin DEX conversion with `dex.yml`'s liquidity and a
+small order-placement flow. Every counterparty carries receiver filters; unlike `tip20-policy`,
+runs do not require full inclusion. The file lists the shares and gaps. For example
+`derek bench preset=institutional gas-limit=500M general-gas-limit=30M`.
+
 `zone-earn-mix` and `bridge-mix` model live customer traffic shapes, with gas-share
 weights taken from mainnet; each file lists its window, the mainnet shares and
 what it does not model. `zone-earn-mix` reuses the public-mix fixtures (zone
@@ -68,6 +76,12 @@ portal settlement, Earn vault and transfers), so it has the same requirements.
 `bridge-mix` deploys a bridge fixture (`bridge/`) and splits bridge payouts from a
 small operator pool and sponsored bridge deposits, for example
 `derek bench preset=bridge-mix`. Refresh the weights when the traffic changes.
+
+`cross-border` covers remittance, global payouts and payroll: bridge deposits and payouts on
+`bridge-mix`'s fixture, FX swaps on the stablecoin DEX (`dex/walls.yml` liquidity, the walls
+`dex.yml` also includes), memo payouts to existing accounts, and 32-call payroll batches plus
+8-call batches to fresh addresses from a 16-account treasury. The file lists the shares and gaps.
+For example `derek bench preset=cross-border gas-limit=500M general-gas-limit=30M`.
 
 Gap variants: `zone-earn-hot` pins every zone operation to one portal (shared
 portal and vault state, up to the TIP-1096 deposit cap); `zone-earn-serial`
@@ -115,6 +129,14 @@ shared; the preset header lists the details. For example:
 An instance may override template weights (`weights: {card_settlement: 0, card_spend: 13}`),
 merged over `neobank-generic`'s before renormalising; zero drops a template. `neobank/instances-pipeline.yml`
 holds the pipeline's flows and `instances-pipeline-plain-cards.yml` the same with plain card swipes.
+`TXGEN_NEOBANK_INSTANCES` also takes a deployment-shapes file (`shapes/`): a shared description of a
+customer deployment (pillar, flows and the templates behind them, monthly volume, peak factor) that
+`neobank-multi` turns into one instance per shape. `shapes/README.md` documents the format and
+`shapes/examples.yml` holds one shape per pillar.
+\`projected-pipeline\` is \`neobank-multi\` over \`shapes/pipeline.yml\`: the planning sheet's customer
+pipeline aggregated into the four pillars (gas shares from measured gas per transaction). Run it at a
+projected peak-minute rate, not maximum load (the file lists Year 1 and Year 2 rates), to see whether
+the chain sustains that traffic: for example \`derek bench preset=projected-pipeline tps=86\`.
 CI renders the spec with bench-env's `TXGEN_*` assignments, for example
 `derek bench preset=neobank-multi bench-env="TXGEN_NEOBANK_INSTANCES=contrib/bench/txgen/presets/neobank/instances-pipeline.yml"`.
 
@@ -134,3 +156,11 @@ authorised in setup, split between pulls into one merchant settlement account
 the gas shares and the gaps: rotation does not revoke the old key yet, because
 txgen has no revoke flow. It needs funded users (nonzero state bloat), for example
 `derek bench preset=access-key-mix gas-limit=500M general-gas-limit=30M`.
+
+`agentic` covers agent payments: agents open MPP sessions on the native TIP-20 Channel
+Reserve and pay one-off MPP charges (`transferWithMemo`) to a pool of 16 service
+accounts, and spend through access keys authorised in setup. Vouchers are off-chain, so
+a session's on-chain cost is its open plus one settle or close; settle and close are not
+generated yet because the channel descriptor needs the opening transaction's identifier
+(https://github.com/tempoxyz/txgen/pull/200). The file lists the shares and gaps. For example
+`derek bench preset=agentic gas-limit=500M general-gas-limit=30M`.
