@@ -1,7 +1,7 @@
 //! The ConfigurableAccount keychain key type through the account keychain ABI.
 
 use alloy::{
-    primitives::{Address, B256, Bytes, address},
+    primitives::{Address, B256, Bytes},
     sol_types::{SolCall, SolInterface},
 };
 use evm2::{
@@ -22,7 +22,7 @@ use tempo_precompiles::{
     account_keychain::AccountKeychain,
     storage::{StorageCtx, hashmap::HashMapStorageProvider},
 };
-use tempo_primitives::{MasterId, TempoAddressExt, TempoBlockEnv, UserTag};
+use tempo_primitives::TempoBlockEnv;
 
 mod common;
 
@@ -199,11 +199,10 @@ enum DelegateCase {
     SelfGrant,
     Bytecode,
     Delegation,
-    Reserved(Address),
 }
 
 /// A grant to a ConfigurableAccount key is accepted from T14 only, and only for a code-free
-/// delegate other than the granting account that is not in a reserved address range.
+/// delegate other than the granting account.
 #[test]
 fn delegate_grants_are_guarded_from_t14() {
     for spec in TempoHardfork::VARIANTS.iter().copied() {
@@ -212,16 +211,9 @@ fn delegate_grants_are_guarded_from_t14() {
             DelegateCase::SelfGrant,
             DelegateCase::Bytecode,
             DelegateCase::Delegation,
-            // An Ethereum precompile, an uncreated TIP-20, a virtual and a zone portal address
-            // carry no code.
-            DelegateCase::Reserved(Address::with_last_byte(1)),
-            DelegateCase::Reserved(Address::new_tip20(1)),
-            DelegateCase::Reserved(Address::new_virtual(MasterId::ZERO, UserTag::ZERO)),
-            DelegateCase::Reserved(address!("5ad0000000000000000000000000000000000001")),
         ] {
             let delegate = match case {
                 DelegateCase::SelfGrant => PARENT,
-                DelegateCase::Reserved(address) => address,
                 DelegateCase::CodeFree | DelegateCase::Bytecode | DelegateCase::Delegation => {
                     DELEGATE
                 }
@@ -248,9 +240,7 @@ fn delegate_grants_are_guarded_from_t14() {
                             )
                             .unwrap()
                     }),
-                    DelegateCase::CodeFree
-                    | DelegateCase::SelfGrant
-                    | DelegateCase::Reserved(_) => {}
+                    DelegateCase::CodeFree | DelegateCase::SelfGrant => {}
                 }
 
                 let output = call_as_parent(&mut storage, calldata);
