@@ -6,22 +6,20 @@
 //! subset of accounts, and a view that reads a key the pre-state lacks answers nothing rather than
 //! failing.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
-
-use alloy_primitives::{Address, Log, U256};
-use invariants_core::{ObserveError, Report, SlotChange, Step};
+use alloy_primitives::{Address, Log};
+use invariants_core::{Report, SlotChange, Step};
 use tempo_contracts::precompiles::{
     CONFIGURABLE_ACCOUNT_ADDRESS, IStablecoinDEX, STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
 };
 use tempo_evm::{TempoEvmConfig, TempoEvmEnv};
 use tempo_fuzz_types::{InvariantFailure, InvariantScope};
 use tempo_invariants::{Tx, account, all, dex, fee_amm, tip20};
-use tempo_precompiles::{storage::StorageKey, tip_fee_manager::amm::PoolKey};
 use tempo_primitives::is_tip20_prefix;
 
 use crate::state::{Db, Net};
 
 use reader::Reader;
+pub(crate) use views::Memo;
 
 mod reader;
 mod views;
@@ -62,84 +60,6 @@ impl StepEffects<'_> {
     }
 }
 
-/// What a block's last checked step read of each token's ledger and of the fee manager's books,
-/// which is the state before its next step. A transaction's step rereads only the balances, pools,
-/// LP balances and collected fees whose storage it wrote, and those new to the check, and takes the
-/// rest from here, so its checks judge the same models a full read would.
-#[derive(Default)]
-pub(crate) struct Seen {
-    /// Each token's ledger, with the holders read of it.
-    ledgers: BTreeMap<Address, (Vec<Address>, tip20::Ledger)>,
-    books: Option<SeenBooks>,
-}
-
-/// The fee manager's books, `None` if nothing answered them, what they were read over, the first
-/// slot they missed, and what each slot read stores.
-struct SeenBooks {
-    tokens: Vec<Address>,
-    validators: Vec<Address>,
-    holders: Vec<Address>,
-    books: Option<fee_amm::Books>,
-    missing: Option<(Address, U256, Option<Stored>)>,
-    slots: HashMap<U256, Stored>,
-}
-
-/// What a fee manager slot stores: a pool's reserves or LP supply, a holder's LP balance in it (by
-/// the pool's index in the pairs read), or a validator's collected fees.
-#[derive(Clone, Copy)]
-enum Stored {
-    Pool(usize),
-    Lp(usize, Address),
-    Fees(Address),
-}
-
-/// The slots of `address` the step wrote.
-fn written(effects: Option<&StepEffects<'_>>, address: Address) -> BTreeSet<U256> {
-    effects
-        .and_then(|effects| effects.net.get(&address))
-        .into_iter()
-        .flat_map(|account| account.changed_slots())
-        .map(|(slot, _)| *slot)
-        .collect()
-}
-
-/// The slots the fee manager's books are read from, in the order they are read: the fee manager's
-/// balance of each token, then each pool's reserves, LP supply and holders' LP balances, then the
-/// validators' collected fees. Each with what it stores, `None` for a token balance.
-fn fee_slots<'a>(
-    tokens: &'a [Address],
-    pairs: impl Iterator<Item = (usize, (Address, Address))> + 'a,
-    holders: &'a [Address],
-    validators: &'a [Address],
-) -> impl Iterator<Item = (Address, U256, Option<Stored>)> + 'a {
-    use tempo_precompiles::tip_fee_manager::slots;
-    let manager = TIP_FEE_MANAGER_ADDRESS;
-    let held = manager.mapping_slot(tempo_precompiles::tip20::slots::BALANCES);
-    let pools = pairs.flat_map(move |(i, (user, validator))| {
-        let id = PoolKey::new(user, validator).get_id();
-        let lp = id.mapping_slot(slots::LIQUIDITY_BALANCES);
-        [slots::POOLS, slots::TOTAL_SUPPLY]
-            .map(|base| (manager, id.mapping_slot(base), Some(Stored::Pool(i))))
-            .into_iter()
-            .chain(
-                holders
-                    .iter()
-                    .map(move |&h| (manager, h.mapping_slot(lp), Some(Stored::Lp(i, h)))),
-            )
-    });
-    let fees = validators.iter().flat_map(move |&v| {
-        let fees = v.mapping_slot(slots::COLLECTED_FEES);
-        tokens
-            .iter()
-            .map(move |&t| (manager, t.mapping_slot(fees), Some(Stored::Fees(v))))
-    });
-    tokens
-        .iter()
-        .map(move |&token| (token, held, None))
-        .chain(pools)
-        .chain(fees)
-}
-
 /// The addresses in the topics of `logs`, such as the holders a `Transfer` names.
 pub(crate) fn logged_addresses<'a>(
     logs: impl IntoIterator<Item = &'a Log>,
@@ -155,8 +75,8 @@ pub(crate) fn logged_addresses<'a>(
 /// are read as balance holders too, but never checked as contracts. `env` is the block's
 /// environment, which the views run in. Only contracts for which `selected` holds are checked, e.g. those whose state
 /// changed, as no other contract's invariants can have broken. With `effects`, a token's step
-/// checks also run on its ledger before the step against its ledger after it, and `seen` holds
-/// what the block's last step read, updated to what this one read.
+/// checks also run on its ledger before the step against its ledger after it. `memo` holds the
+/// views the block's earlier steps called, of which the step makes again only those it changed.
 #[expect(clippy::too_many_arguments)]
 pub(crate) fn check(
     db: &Db,
@@ -166,11 +86,14 @@ pub(crate) fn check(
     selected: impl Fn(&Address) -> bool,
     holders: &[Address],
     effects: Option<StepEffects<'_>>,
-    seen: &mut Seen,
+    memo: &Memo,
     failures: &mut Vec<InvariantFailure>,
     report: &mut Report,
 ) {
-    let missed = db.pre.missed();
+    let missed = db.pre.take_miss();
+    if let Some(effects) = &effects {
+        memo.step(effects.net);
+    }
     let mut accounts: Vec<Address> = db
         .cache
         .borrow()
@@ -202,6 +125,7 @@ pub(crate) fn check(
         evm_config,
         env: &env,
         effects: effects.as_ref(),
+        memo,
     };
     let mut step = Report::default();
     step.register_any(all());
@@ -210,39 +134,11 @@ pub(crate) fn check(
     }
 
     for &token in tokens.iter().filter(|token| selected(token)) {
-        let prior = seen.ledgers.remove(&token).filter(|_| effects.is_some());
-        let written = written(effects.as_ref(), token);
-        let balance =
-            |holder: &Address| holder.mapping_slot(tempo_precompiles::tip20::slots::BALANCES);
-        let fresh: Vec<Address> = all_holders
-            .iter()
-            .copied()
-            .filter(|holder| {
-                prior.as_ref().is_none_or(|(read, _)| {
-                    read.binary_search(holder).is_err() || written.contains(&balance(holder))
-                })
-            })
-            .collect();
-        let complete = |read: reader::Read<tip20::Ledger>| {
-            read.map(|mut ledger| {
-                if let Some((_, prior)) = &prior {
-                    let kept = all_holders
-                        .iter()
-                        .filter(|h| fresh.binary_search(h).is_err());
-                    ledger
-                        .balances
-                        .extend(kept.filter_map(|h| Some((*h, *prior.balances.get(h)?))));
-                }
-                ledger
-            })
-        };
         let at = tip20::At {
             token,
-            holders: &fresh,
+            holders: &all_holders,
         };
-        if let Some(Some(ledger)) = reader.check(&mut step, at, token, tip20::VIEW, complete) {
-            seen.ledgers.insert(token, (all_holders.clone(), ledger));
-        }
+        reader.check::<tip20::Ledger>(&mut step, at, token, tip20::VIEW);
     }
     if selected(&TIP_FEE_MANAGER_ADDRESS) {
         let pairs: Vec<(Address, Address)> = tokens
@@ -257,152 +153,19 @@ pub(crate) fn check(
             .collect();
         validators.sort_unstable();
         validators.dedup();
-        let manager = TIP_FEE_MANAGER_ADDRESS;
-        let has = |list: &[Address], a: &Address| list.binary_search(a).is_ok();
-        // Books nothing answered stay so while the first slot they missed is still missing and read.
-        let prior = seen.books.take().filter(|prior| {
-            effects.is_some()
-                && prior.tokens == tokens
-                && (prior.books.is_some()
-                    || prior.missing.is_some_and(|(address, slot, stored)| {
-                        db.misses(&address, &slot)
-                            && match stored {
-                                Some(Stored::Lp(_, holder)) => has(&all_holders, &holder),
-                                Some(Stored::Fees(validator)) => has(&validators, &validator),
-                                _ => true,
-                            }
-                    }))
-        });
-        let (fresh_pairs, fresh_validators, fresh_holders) = match &prior {
-            None => (
-                (0..pairs.len()).collect(),
-                validators.clone(),
-                all_holders.clone(),
-            ),
-            Some(prior) => {
-                let (mut pools, mut lp, mut fees) =
-                    (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
-                let written = written(effects.as_ref(), manager);
-                for stored in written.iter().filter_map(|slot| prior.slots.get(slot)) {
-                    match *stored {
-                        Stored::Pool(pool) => pools.insert(pool),
-                        Stored::Lp(pool, holder) => pools.insert(pool) | lp.insert(holder),
-                        Stored::Fees(validator) => fees.insert(validator),
-                    };
-                }
-                let holders: Vec<Address> = all_holders
-                    .iter()
-                    .copied()
-                    .filter(|h| !has(&prior.holders, h) || lp.contains(h))
-                    .collect();
-                // A new holder's LP is read in every pool.
-                let pairs: Vec<usize> = if all_holders.iter().any(|h| !has(&prior.holders, h)) {
-                    (0..pairs.len()).collect()
-                } else {
-                    pools.into_iter().collect()
-                };
-                let validators = validators
-                    .iter()
-                    .copied()
-                    .filter(|v| !has(&prior.validators, v) || fees.contains(v))
-                    .collect();
-                (pairs, validators, holders)
-            }
-        };
-        let read_pairs: Vec<(Address, Address)> = fresh_pairs.iter().map(|&i| pairs[i]).collect();
-        let complete = |read: reader::Read<fee_amm::Books>| {
-            let Some(prior) = &prior else {
-                return read;
-            };
-            let Some(before) = &prior.books else {
-                return match read {
-                    Err(err) if !err.is_not_answered() => Err(err),
-                    _ => Err(ObserveError::NotAnswered {
-                        call: "the fee manager's books",
-                        to: manager,
-                    }),
-                };
-            };
-            read.map(|fresh| {
-                let mut fresh_pools = fresh.pools.into_iter();
-                let pools = before
-                    .pools
-                    .iter()
-                    .enumerate()
-                    .map(|(i, before)| {
-                        let mut pool = match fresh_pairs.binary_search(&i) {
-                            Ok(_) => fresh_pools
-                                .next()
-                                .expect("a pool is read for each fresh pair"),
-                            Err(_) => before.clone(),
-                        };
-                        pool.lp = all_holders
-                            .iter()
-                            .filter_map(|h| Some((*h, *pool.lp.get(h).or(before.lp.get(h))?)))
-                            .collect();
-                        pool
-                    })
-                    .collect();
-                let collected = validators
-                    .iter()
-                    .flat_map(|&v| tokens.iter().map(move |&t| (v, t)))
-                    .filter_map(|key| {
-                        let fees = fresh.collected.get(&key).or(before.collected.get(&key))?;
-                        Some((key, *fees))
-                    })
-                    .collect();
-                fee_amm::Books {
-                    pools,
-                    collected,
-                    ..fresh
-                }
-            })
-        };
         let at = fee_amm::At {
-            fee_manager: manager,
+            fee_manager: TIP_FEE_MANAGER_ADDRESS,
             tokens: &tokens,
-            pairs: &read_pairs,
-            validators: &fresh_validators,
-            holders: &fresh_holders,
+            pairs: &pairs,
+            validators: &validators,
+            holders: &all_holders,
         };
-        if let Some(books) = reader.check(&mut step, at, manager, fee_amm::VIEW, complete) {
-            let fresh = fresh_pairs.iter().copied().zip(read_pairs.iter().copied());
-            let missing = match (&books, &prior) {
-                (Some(_), _) => None,
-                (
-                    None,
-                    Some(SeenBooks {
-                        books: None,
-                        missing,
-                        ..
-                    }),
-                ) => *missing,
-                (None, _) => {
-                    let pairs = pairs.iter().copied().enumerate();
-                    fee_slots(&tokens, pairs, &all_holders, &validators)
-                        .find(|(address, slot, _)| db.misses(address, slot))
-                }
-            };
-            let mut slots = prior.map(|prior| prior.slots).unwrap_or_default();
-            slots.extend(
-                fee_slots(&tokens, fresh, &fresh_holders, &fresh_validators)
-                    .filter_map(|(_, slot, stored)| Some((slot, stored?))),
-            );
-            if books.is_some() || missing.is_some() {
-                seen.books = Some(SeenBooks {
-                    tokens: tokens.clone(),
-                    validators,
-                    holders: all_holders.clone(),
-                    books,
-                    missing,
-                    slots,
-                });
-            }
-        }
+        reader.check::<fee_amm::Books>(&mut step, at, TIP_FEE_MANAGER_ADDRESS, fee_amm::VIEW);
     }
     if selected(&STABLECOIN_DEX_ADDRESS) {
         // The newest orders the DEX numbered (ids start at 1), so DEX10 counts their escrow.
-        let mut views = views::EvmViews::new(db.view(), evm_config, env.clone(), &db.pre);
+        let mut views =
+            views::EvmViews::new(db.view(), evm_config, env.clone(), &db.pre, memo, false);
         let next = invariants_core::view(
             &mut views,
             STABLECOIN_DEX_ADDRESS,
@@ -416,9 +179,7 @@ pub(crate) fn check(
             users: &all_holders,
             orders: &orders,
         };
-        reader.check::<dex::Books>(&mut step, at, STABLECOIN_DEX_ADDRESS, dex::VIEW, |read| {
-            read
-        });
+        reader.check::<dex::Books>(&mut step, at, STABLECOIN_DEX_ADDRESS, dex::VIEW);
     }
     if let Some(effects) = &effects {
         // A transaction changes a commitment only by changing its account, so the accounts it
@@ -436,7 +197,7 @@ pub(crate) fn check(
             accounts: &changed,
         };
         let precompile = CONFIGURABLE_ACCOUNT_ADDRESS;
-        reader.check::<account::Commitments>(&mut step, at, precompile, account::VIEW, |read| read);
+        reader.check::<account::Commitments>(&mut step, at, precompile, account::VIEW);
     }
 
     failures.extend(step.violations.drain(..).map(|violation| InvariantFailure {
@@ -445,5 +206,5 @@ pub(crate) fn check(
         scope: scope.clone(),
     }));
     report.merge(step);
-    db.pre.restore_missed(missed);
+    db.pre.restore_miss(missed);
 }

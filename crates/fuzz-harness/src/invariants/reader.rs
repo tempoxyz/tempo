@@ -9,7 +9,7 @@ use tempo_invariants::all;
 
 use super::{
     StepEffects,
-    views::{EvmViews, PreView, ViewFailed},
+    views::{EvmViews, Memo, PreView, ViewFailed},
 };
 use crate::state::Db;
 
@@ -19,32 +19,29 @@ pub(super) struct Reader<'a> {
     pub(super) evm_config: &'a TempoEvmConfig,
     pub(super) env: &'a TempoEvmEnv,
     pub(super) effects: Option<&'a StepEffects<'a>>,
+    pub(super) memo: &'a Memo,
 }
 
 impl Reader<'_> {
-    /// Reads the model `at` names at `contract` after the step, completed by `complete`, and
-    /// checks it into `report`. With the step's effects, also reads and completes it before the
-    /// step and checks the step. Returns the model after the step, `Some(None)` if nothing
-    /// answered it and `None` if its read failed, which is counted under `view` as
-    /// [`observed`] does.
+    /// Reads the model `at` names at `contract` after the step and checks it into `report`; with
+    /// the step's effects, also reads it before the step and checks the step. A read that fails
+    /// is counted under `view` as [`observed`] does.
     pub(super) fn check<M: Observe + 'static>(
         &self,
         report: &mut Report,
         at: M::At<'_>,
         contract: Address,
         view: &'static str,
-        complete: impl Fn(Read<M>) -> Read<M>,
-    ) -> Option<Option<M>> {
+    ) {
         let pre_state = &self.db.pre;
-        let after = EvmViews::new(self.db.view(), self.evm_config, self.env.clone(), pre_state);
-        let read = complete(M::observe(&mut { after }, at));
-        let unanswered = matches!(&read, Err(err) if err.is_not_answered());
-        let Some(post) = observed(report, view, contract, read) else {
-            return unanswered.then_some(None);
+        let (env, memo) = (self.env.clone(), self.memo);
+        let after = EvmViews::new(self.db.view(), self.evm_config, env, pre_state, memo, false);
+        let Some(post) = observed(report, view, contract, M::observe(&mut { after }, at)) else {
+            return;
         };
         report.run_any(all(), &post);
         let Some(effects) = self.effects else {
-            return Some(Some(post));
+            return;
         };
         // A contract the step deployed has no state before it to read.
         let deployed = |address: &Address| {
@@ -55,32 +52,34 @@ impl Reader<'_> {
             })
         };
         if deployed(&contract) {
-            return Some(Some(post));
+            return;
         }
         let before = PreView {
             reader: self.db.view(),
             net: effects.net,
         };
-        let before = EvmViews::new(before, self.evm_config, self.env.clone(), pre_state);
+        let before = EvmViews::new(
+            before,
+            self.evm_config,
+            self.env.clone(),
+            pre_state,
+            memo,
+            true,
+        );
         let subject = format!("{contract} before the step");
         let read = M::observe(&mut { before }, at);
         // Nor does one it reads, such as a token the step created.
         if let Err(ObserveError::Views(failed)) = &read
             && deployed(&failed.target())
         {
-            return Some(Some(post));
+            return;
         }
-        let Some(pre) = observed(report, view, subject, complete(read)) else {
-            return Some(Some(post));
+        let Some(pre) = observed(report, view, subject, read) else {
+            return;
         };
-        let step = effects.step(contract, pre, post);
-        report.run_any(all(), &step);
-        Some(Some(step.post))
+        report.run_any(all(), &effects.step(contract, pre, post));
     }
 }
-
-/// A model's read.
-pub(super) type Read<M> = Result<M, ObserveError<ViewFailed>>;
 
 /// `read`'s value, counting it under `view`: a read nothing answered is not armed, one that
 /// failed otherwise breaks `view`.

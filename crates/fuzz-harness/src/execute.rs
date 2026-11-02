@@ -174,7 +174,7 @@ fn broken_start(
         |address| listed.accounts.contains_key(address),
         &holders,
         None,
-        &mut invariants::Seen::default(),
+        &invariants::Memo::default(),
         &mut failures,
         &mut Report::default(),
     );
@@ -340,7 +340,7 @@ fn execute_txs(
     outputs: &mut BlockOutputs,
 ) -> Result<(), BlockExecutionError> {
     executor.apply_pre_execution_changes()?;
-    let mut seen = invariants::Seen::default();
+    let memo = invariants::Memo::default();
     outputs.changes.pre_block = step(
         evm_config,
         executor,
@@ -348,7 +348,7 @@ fn execute_txs(
         hooked,
         InvariantScope::Block { block_index },
         None,
-        &mut seen,
+        &memo,
         updates,
         &mut outputs.invariant_failures,
         &mut outputs.invariant_report,
@@ -407,7 +407,7 @@ fn execute_txs(
             hooked,
             scope,
             Some((tx, &receipt.logs)),
-            &mut seen,
+            &memo,
             updates,
             &mut outputs.invariant_failures,
             &mut outputs.invariant_report,
@@ -424,8 +424,8 @@ fn take(hooked: &Updates) -> Vec<StateUpdate> {
 
 /// Ends an execution step: writes its changes to `db`, checks invariants at `scope`, and returns the
 /// step's changes. A transaction's step, given the transaction and its logs as `tx`, is checked only
-/// for the contracts it changed, and also on what it did, rereading only what it changed of what
-/// the block's earlier steps read into `seen`.
+/// for the contracts it changed, and also on what it did, making again only the views of `memo`
+/// that read what it changed.
 #[allow(clippy::too_many_arguments)]
 fn step(
     evm_config: &TempoEvmConfig,
@@ -434,7 +434,7 @@ fn step(
     hooked: &Updates,
     scope: InvariantScope,
     tx: Option<(Tx, &[Log])>,
-    seen: &mut invariants::Seen,
+    memo: &invariants::Memo,
     updates: &mut Vec<StateUpdate>,
     failures: &mut Vec<InvariantFailure>,
     report: &mut Report,
@@ -464,7 +464,7 @@ fn step(
         selected,
         &[],
         effects,
-        seen,
+        memo,
         failures,
         report,
     );

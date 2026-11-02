@@ -49,17 +49,6 @@ impl Db {
         }
     }
 
-    /// Whether reading `slot` of `address` misses an exact pre-state, as [`Reader`] does.
-    pub(crate) fn misses(&self, address: &Address, slot: &U256) -> bool {
-        let cache = self.cache.borrow();
-        self.pre.exact
-            && cache
-                .storage
-                .get(address)
-                .is_none_or(|storage| !storage.wiped && !storage.slots.contains_key(slot))
-            && !cache.accounts.get(address).is_some_and(Option::is_none)
-    }
-
     /// Writes the net changes of an execution step to the cache. `code` finds the bytecode of an
     /// account the step gave new code.
     pub(crate) fn commit(&self, net: &Net, code: impl Fn(&B256) -> Option<Bytecode>) {
@@ -98,17 +87,23 @@ impl Db {
 #[derive(Debug)]
 pub(crate) struct PreStateDb {
     exact: bool,
-    missed: Cell<bool>,
+    /// The first key read since the last [`Self::take_miss`] that the pre-state lacks.
+    missed: Cell<Option<MissingPreState>>,
 }
 
 impl PreStateDb {
     /// Whether a read missed an exact pre-state.
     pub(crate) fn missed(&self) -> bool {
-        self.missed.get()
+        self.missed.get().is_some()
     }
 
-    /// Sets the miss flag, e.g. back to a value saved before reads that are not part of execution.
-    pub(crate) fn restore_missed(&self, missed: bool) {
+    /// The first key missed since the last call, clearing it.
+    pub(crate) fn take_miss(&self) -> Option<MissingPreState> {
+        self.missed.take()
+    }
+
+    /// Sets the miss, e.g. back to one taken before reads that are not part of execution.
+    pub(crate) fn restore_miss(&self, missed: Option<MissingPreState>) {
         self.missed.set(missed);
     }
 
@@ -116,7 +111,7 @@ impl PreStateDb {
         if !self.exact {
             return Ok(());
         }
-        self.missed.set(true);
+        self.missed.set(self.missed.get().or(Some(missing)));
         Err(missing)
     }
 
@@ -143,7 +138,7 @@ impl PreStateDb {
 }
 
 /// A read of a key an exact pre-state does not hold.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum MissingPreState {
     Account(Address),
     Storage(Address, U256),
@@ -300,7 +295,7 @@ pub(crate) fn seed(pre_state: &PreState) -> Result<Db, ErrorClass> {
         cache: RefCell::new(cache),
         pre: PreStateDb {
             exact,
-            missed: Cell::new(false),
+            missed: Cell::new(None),
         },
     })
 }
@@ -369,6 +364,14 @@ impl AccountNet {
             Some(value) => Some(value.original_value()),
             None => self.original.is_none().then_some(U256::ZERO),
         }
+    }
+
+    /// Whether the span changed the account other than its storage, or `slot` of it.
+    pub(crate) fn changed(&self, slot: Option<&U256>) -> bool {
+        let info = |info: Option<&AccountInfo>| info.map(|i| (i.balance, i.nonce, i.code_hash));
+        self.storage_cleared
+            || info(self.original.as_ref()) != info(self.current.as_ref())
+            || slot.is_some_and(|slot| self.storage.get(slot).is_some_and(|s| s.is_changed()))
     }
 
     /// The slots the span changed, with their values before and after it.

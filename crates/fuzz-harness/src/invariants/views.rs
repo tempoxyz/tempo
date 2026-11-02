@@ -1,8 +1,12 @@
 //! View calls against the harness's state after a step or, with its changes undone, before it.
 
-use std::fmt::{self, Display};
+use std::{
+    cell::RefCell,
+    fmt::{self, Display},
+    mem,
+};
 
-use alloy_primitives::{Address, B256, Bytes, U256};
+use alloy_primitives::{Address, B256, Bytes, U256, map::HashMap};
 use evm2::{
     bytecode::Bytecode,
     evm::{AccountInfo, SystemTx},
@@ -10,13 +14,18 @@ use evm2::{
 use invariants_core::Views;
 use reth_evm::{ConfigureEvm as _, Database};
 use tempo_evm::{TempoEvm, TempoEvmConfig, TempoEvmEnv};
+use tempo_precompiles::storage::StorageAction;
 
-use crate::state::{Net, PreStateDb, Reader};
+use crate::state::{MissingPreState, Net, PreStateDb, Reader};
 
-/// Read-only calls against the state an EVM reads, noting reads the seeded pre-state misses.
+/// Read-only calls against the state an EVM reads, noting reads the seeded pre-state misses, and
+/// answered from `memo` where an earlier call on the same state did.
 pub(super) struct EvmViews<'a> {
     evm: TempoEvm<'a>,
     pre_state: &'a PreStateDb,
+    memo: &'a Memo,
+    /// Whether the state is the one before the step.
+    before: bool,
 }
 
 impl<'a> EvmViews<'a> {
@@ -25,38 +34,139 @@ impl<'a> EvmViews<'a> {
         evm_config: &TempoEvmConfig,
         env: TempoEvmEnv,
         pre_state: &'a PreStateDb,
+        memo: &'a Memo,
+        before: bool,
     ) -> Self {
+        let mut evm = evm_config.evm_with_env(db, env);
+        evm.ext_mut().actions.enable();
         Self {
-            evm: evm_config.evm_with_env(db, env),
+            evm,
             pre_state,
+            memo,
+            before,
         }
     }
 
     /// `input`'s output from `target`. `Ok(None)` when nothing answers: `target` has no code, or
     /// the call read a key the pre-state lacks. `Err` when the call reverts or halts.
     fn call_one(&mut self, target: Address, input: &Bytes) -> Result<Option<Bytes>, ViewFailed> {
+        let key = (target, input.clone());
+        if let Some(output) = self.memo.get(&key, self.before) {
+            return output;
+        }
         let selector = input
             .get(..4)
             .map(Bytes::copy_from_slice)
             .unwrap_or_default();
-        self.pre_state.restore_missed(false);
-        let result = self
-            .evm
-            .system_call(SystemTx::new(target, input.clone()).with_caller(Address::ZERO));
-        if self.pre_state.missed() {
-            return Ok(None);
-        }
+        self.pre_state.take_miss();
         let failed = |reason| ViewFailed {
             selector: selector.clone(),
             target,
             reason,
         };
-        let executed = result.map_err(|err| failed(err.to_string()))?;
-        let result = executed.result();
-        if !result.is_success() {
-            return Err(failed(format!("{result:?}")));
-        }
-        Ok(Some(result.output.clone()).filter(|output| !output.is_empty()))
+        let output = match self
+            .evm
+            .system_call(SystemTx::new(target, input.clone()).with_caller(Address::ZERO))
+        {
+            Err(err) => Err(failed(err.to_string())),
+            Ok(executed) if !executed.result().is_success() => {
+                Err(failed(format!("{:?}", executed.result())))
+            }
+            Ok(executed) => Ok(Some(executed.result().output.clone()).filter(|o| !o.is_empty())),
+        };
+        // What the call read: its target's account, the slots it loaded and the key it missed.
+        let mut reads = vec![(target, None)];
+        let actions = self.evm.ext().actions.take().into_iter().flatten();
+        reads.extend(actions.filter_map(|action| match action {
+            StorageAction::Sload(address, slot, _) => Some((address, Some(slot))),
+            _ => None,
+        }));
+        let output = match self.pre_state.take_miss() {
+            None => output,
+            Some(MissingPreState::Account(address)) => {
+                reads.push((address, None));
+                Ok(None)
+            }
+            Some(MissingPreState::Storage(address, slot)) => {
+                reads.push((address, Some(slot)));
+                Ok(None)
+            }
+            Some(_) => return Ok(None),
+        };
+        self.memo.insert(key, self.before, output.clone(), reads);
+        output
+    }
+}
+
+/// The view calls a block's steps made, with what each read: storage slots, and accounts as
+/// `None`. A step's changes undo only the calls that read what they changed, so later steps make
+/// only those again, however many tokens, pools and holders the block reaches.
+#[derive(Default)]
+pub(crate) struct Memo(RefCell<Calls>);
+
+#[derive(Default)]
+struct Calls {
+    /// The transaction step being checked, counted from the block's first.
+    step: u64,
+    /// Calls as of the state after it.
+    after: HashMap<(Address, Bytes), Call>,
+    /// Calls that hold only before it: made before it, or made earlier and undone by it.
+    before: HashMap<(Address, Bytes), Call>,
+}
+
+struct Call {
+    step: u64,
+    output: Result<Option<Bytes>, ViewFailed>,
+    reads: Vec<(Address, Option<U256>)>,
+}
+
+impl Memo {
+    /// Starts checking a transaction step that made `net`'s changes.
+    pub(crate) fn step(&self, net: &Net) {
+        let calls = &mut *self.0.borrow_mut();
+        calls.step += 1;
+        let undone = |call: &Call| {
+            call.reads
+                .iter()
+                .any(|(address, slot)| net.get(address).is_some_and(|a| a.changed(slot.as_ref())))
+        };
+        (calls.before, calls.after) = mem::take(&mut calls.after)
+            .into_iter()
+            .partition(|(_, call)| undone(call));
+    }
+
+    fn get(
+        &self,
+        key: &(Address, Bytes),
+        before: bool,
+    ) -> Option<Result<Option<Bytes>, ViewFailed>> {
+        let calls = self.0.borrow();
+        let call = if before {
+            let earlier = calls.after.get(key).filter(|call| call.step < calls.step);
+            calls.before.get(key).or(earlier)
+        } else {
+            calls.after.get(key)
+        };
+        call.map(|call| call.output.clone())
+    }
+
+    fn insert(
+        &self,
+        key: (Address, Bytes),
+        before: bool,
+        output: Result<Option<Bytes>, ViewFailed>,
+        reads: Vec<(Address, Option<U256>)>,
+    ) {
+        let calls = &mut *self.0.borrow_mut();
+        let call = Call {
+            step: calls.step,
+            output,
+            reads,
+        };
+        match before {
+            true => calls.before.insert(key, call),
+            false => calls.after.insert(key, call),
+        };
     }
 }
 
@@ -117,7 +227,7 @@ impl Database for PreView<'_> {
 }
 
 /// A view call that reverted, halted or could not run.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(super) struct ViewFailed {
     selector: Bytes,
     target: Address,
