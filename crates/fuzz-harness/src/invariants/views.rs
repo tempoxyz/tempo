@@ -14,7 +14,7 @@ use evm2::{
 use invariants_core::Views;
 use reth_evm::{ConfigureEvm as _, Database};
 use tempo_evm::{TempoEvm, TempoEvmConfig, TempoEvmEnv};
-use tempo_precompiles::storage::StorageAction;
+use tempo_precompiles::{TempoPrecompiles, storage::StorageAction};
 
 use crate::state::{MissingPreState, Net, PreStateDb, Reader};
 
@@ -37,8 +37,14 @@ impl<'a> EvmViews<'a> {
         memo: &'a Memo,
         before: bool,
     ) -> Self {
+        let spec = env.spec;
         let mut evm = evm_config.evm_with_env(db, env);
-        evm.ext_mut().actions.enable();
+        // Precompiles keep the recorder they were built with, so they are built again with one.
+        let ext = evm.ext_mut();
+        ext.actions.enable();
+        let precompiles =
+            TempoPrecompiles::new(spec, ext.actions.clone(), ext.non_creditable_slots.clone());
+        evm.set_precompiles(precompiles);
         Self {
             evm,
             pre_state,
