@@ -55,11 +55,35 @@ impl TryFrom<B256> for PublicKey {
     type Error = InvalidPublicKey;
 
     fn try_from(value: B256) -> Result<Self, Self::Error> {
+        #[cfg(feature = "std")]
+        if VALIDATED.with_borrow(|keys| keys.contains(&value)) {
+            return Ok(Self(value));
+        }
         commonware_cryptography::ed25519::PublicKey::try_from(<[u8; 32]>::from(value))
             .map_err(|_| InvalidPublicKey)?;
+        #[cfg(feature = "std")]
+        VALIDATED.with_borrow_mut(|keys| {
+            if keys.len() >= MAX_VALIDATED {
+                keys.clear();
+            }
+            keys.insert(value);
+        });
 
         Ok(Self(value))
     }
+}
+
+/// Most validated keys remembered per thread; the set is cleared when full.
+#[cfg(feature = "std")]
+const MAX_VALIDATED: usize = 1024;
+
+#[cfg(feature = "std")]
+std::thread_local! {
+    /// Keys that already passed point decompression on this thread. Every header carries its
+    /// proposer's key and validators repeat, so decoding a run of headers validates each key
+    /// once instead of decompressing it per header.
+    static VALIDATED: std::cell::RefCell<alloy_primitives::map::B256HashSet> =
+        std::cell::RefCell::default();
 }
 
 #[cfg(any(test, feature = "arbitrary"))]
@@ -105,5 +129,27 @@ mod tests {
         // Hash + Eq: same seed → same key
         let pk_dup = PublicKey::from_seed(41);
         assert_eq!(pk, pk_dup);
+    }
+
+    #[test]
+    fn invalid_key_rejected_after_valid_keys_cached() {
+        let valid = B256::from(PublicKey::from_seed(7));
+        assert_eq!(PublicKey::try_from(valid).unwrap(), PublicKey(valid));
+        // Served from the validated set the second time.
+        assert_eq!(PublicKey::try_from(valid).unwrap(), PublicKey(valid));
+
+        let invalid = (0..=u8::MAX)
+            .map(B256::repeat_byte)
+            .find(|bytes| {
+                commonware_cryptography::ed25519::PublicKey::try_from(<[u8; 32]>::from(*bytes))
+                    .is_err()
+            })
+            .expect("some repeated byte is not a curve point");
+        for _ in 0..2 {
+            assert!(matches!(
+                PublicKey::try_from(invalid),
+                Err(InvalidPublicKey)
+            ));
+        }
     }
 }
