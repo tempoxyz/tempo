@@ -1,6 +1,6 @@
 //! Configuration rules written from the TIP text; hashes come from `tempo_primitives`.
 
-use alloy_primitives::{Address, B256, b256, keccak256};
+use alloy_primitives::{Address, B256, keccak256};
 use tempo_primitives::transaction::configurable_account::{
     self as primitives, CONFIGURABLE_ACCOUNT_UPGRADE_DOMAIN, MAX_CONFIGURABLE_ACCOUNT_OWNERS,
 };
@@ -15,10 +15,7 @@ use super::IConfigurableAccount::{ConfigurableAccountConfig, ConfigurableAccount
 /// The key type of a grant to a configurable delegate (TIP-1111).
 pub const CONFIGURABLE_KEY_TYPE: u8 = 3;
 
-/// Code hash of the account code marker, `keccak256(0xef)`.
-// <https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L266-L269>
-pub const MARKER_CODE_HASH: B256 =
-    b256!("309b8896ee4c1ff7ec1966155373dee42663b6b40c3fedc70ba501684848d2a3");
+pub use tempo_primitives::account::CONFIGURABLE_ACCOUNT_CODE_HASH as MARKER_CODE_HASH;
 
 /// The first configuration rule `config` breaks, `None` when it passes them all.
 // <https://github.com/tempoxyz/tempo/blob/868ec908f5c04a9419aa78cddb0d95d32971c4d1/tips/tip-1107.md#L74-L80>
