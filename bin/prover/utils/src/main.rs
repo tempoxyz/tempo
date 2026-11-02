@@ -644,8 +644,7 @@ async fn find_submitted_batch(
         let lo = hi.saturating_sub(LOG_QUERY_BLOCK_CHUNK - 1);
         let mut events = portal
             .BatchSubmitted_1_filter()
-            .from_block(lo)
-            .to_block(hi)
+            .select(lo..=hi)
             .query()
             .await
             .wrap_err_with(|| format!("read submitted batches in Tempo blocks {lo}..={hi}"))?;
