@@ -45,8 +45,8 @@ pub struct Summary {
     pub blocks: u64,
     /// Seeds written: blocks the harness reproduced without breaking an invariant.
     pub seeds: u64,
-    /// The other blocks, by `divergent/<kind>` of their first difference from history or
-    /// `invariants/<id>` of each invariant they broke.
+    /// The other blocks, by `divergent/<kind>` of their first difference from history and
+    /// `invariants/<id>` of each invariant they broke, divergent or not.
     pub findings: BTreeMap<String, u64>,
 }
 
@@ -467,24 +467,30 @@ fn seed(
     let finding = match std::panic::catch_unwind(AssertUnwindSafe(|| {
         tempo_fuzz_harness::run(input)
     })) {
-        Ok(TempoHarnessOutcome::Blockchain(outcome)) => match divergence(&chunk, &cases, &outcome)?
-        {
-            Some((kind, report)) => Some(("divergent", vec![kind.to_string()], report)),
-            None if outcome.invariant_failures.is_empty() => None,
-            None => Some((
-                "invariants",
-                outcome
-                    .invariant_failures
-                    .iter()
-                    .map(|f| f.id.clone())
-                    .collect(),
-                format!("{:#?}", outcome.invariant_failures),
-            )),
-        },
+        Ok(TempoHarnessOutcome::Blockchain(outcome)) => {
+            let failures = &outcome.invariant_failures;
+            // A divergent block keeps its invariant failures too, counted and reported with it.
+            let mut keys: Vec<_> = failures
+                .iter()
+                .map(|f| format!("invariants/{}", f.id))
+                .collect();
+            let invariants = (!failures.is_empty()).then(|| format!("{failures:#?}"));
+            match divergence(&chunk, &cases, &outcome)? {
+                Some((kind, report)) => {
+                    keys.insert(0, format!("divergent/{kind}"));
+                    let report = match invariants {
+                        Some(invariants) => format!("{report}\n\ninvariant failures\n{invariants}"),
+                        None => report,
+                    };
+                    Some(("divergent", keys, report))
+                }
+                None => invariants.map(|report| ("invariants", keys, report)),
+            }
+        }
         Ok(_) => eyre::bail!("a blockchain input has a blockchain outcome"),
         Err(panic) => Some((
             "divergent",
-            vec!["panic".to_string()],
+            vec!["divergent/panic".to_string()],
             panic
                 .downcast_ref::<&str>()
                 .map(|s| s.to_string())
@@ -500,7 +506,5 @@ fn seed(
     let path = |ext| out.join(dir).join(format!("{number}.{ext}"));
     fs::write(path("bin"), &bytes)?;
     fs::write(path("txt"), report)?;
-    Ok(Some(
-        keys.into_iter().map(|key| format!("{dir}/{key}")).collect(),
-    ))
+    Ok(Some(keys))
 }
