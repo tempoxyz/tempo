@@ -23,7 +23,7 @@ use evm2::{
         prepare_initial_frame, validate_block_gas_limit, validate_chain_id,
         validate_create_initcode, validate_execution_gas_limit_cap, validate_floor_gas,
         validate_gas_price, validate_intrinsic_gas, validate_nonce_not_overflow,
-        validate_priority_fee, validate_tx_gas_limit_cap, warm_access_list, warm_base_accounts,
+        validate_priority_fee, validate_tx_gas_limit_cap, warm_access_list,
     },
     evm::handler::{GasSettlement, TxHandlerHooks},
     interpreter::{
@@ -1466,18 +1466,12 @@ fn prepare_aa(
     // From T14, configurable-account state checks load more accounts, so transaction warmth
     // goes first, and the beneficiary after them so their gas ignores the fee recipient.
     if spec.is_t14() {
-        request.host.state_mut().prewarm(&caller);
-        if let TxKind::Call(to) = tx.calls[0].to {
-            request.host.state_mut().prewarm(&to);
-        }
-        request.host.warm_precompiles();
-        warm_access_list(request.host, &tx.access_list);
+        warm_aa_accounts(request.host, caller, tx);
     }
     let (configurable_gas, configurable_state_gas) =
         configurable_account::validate_state(request.host, request.envelope, spec)?;
-    if spec.is_t14() && request.host.feature(EvmFeatures::EIP3651) {
-        let beneficiary = request.host.block().beneficiary;
-        request.host.state_mut().prewarm(&beneficiary);
+    if spec.is_t14() {
+        warm_beneficiary(request.host);
     }
 
     // Route to the AA gas calculation and validation path.
@@ -1535,6 +1529,7 @@ fn prepare_aa(
 
     if !spec.is_t14() {
         warm_aa_accounts(request.host, caller, tx);
+        warm_beneficiary(request.host);
     }
 
     // Collect fees for the transaction.
@@ -1617,11 +1612,23 @@ fn prepare_aa(
     })
 }
 
-/// Warms the AA transaction's caller, base accounts and access list.
+/// Warms the AA transaction's caller, base accounts and access list: evm2's `warm_base_accounts`
+/// without the beneficiary, which [`warm_beneficiary`] warms.
 fn warm_aa_accounts(host: &mut Evm<'_, TempoEvmTypes>, caller: Address, tx: &TempoTransaction) {
     host.state_mut().prewarm(&caller);
-    warm_base_accounts(host, tx.calls[0].to);
+    if let TxKind::Call(to) = tx.calls[0].to {
+        host.state_mut().prewarm(&to);
+    }
+    host.warm_precompiles();
     warm_access_list(host, &tx.access_list);
+}
+
+/// Warms the block beneficiary (EIP-3651).
+fn warm_beneficiary(host: &mut Evm<'_, TempoEvmTypes>) {
+    if host.feature(EvmFeatures::EIP3651) {
+        let beneficiary = host.block().beneficiary;
+        host.state_mut().prewarm(&beneficiary);
+    }
 }
 
 fn execute_aa(
