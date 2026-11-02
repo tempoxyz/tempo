@@ -1410,6 +1410,25 @@ where
         )
         .await?;
 
+        // The boundary header is not checked against the finalized floor's
+        // certificate, so an outcome for a later epoch could otherwise persist
+        // a future identity that startup then trusts over the configured one.
+        let expected_epoch = if latest_boundary.is_zero() {
+            Epoch::zero()
+        } else {
+            self.config
+                .epoch_strategy
+                .containing(latest_boundary)
+                .expect("epoch strategy is for all heights")
+                .epoch()
+                .next()
+        };
+        ensure!(
+            onchain_outcome.epoch() == expected_epoch,
+            "boundary outcome at height `{latest_boundary}` is for epoch `{}`, expected epoch `{expected_epoch}`",
+            onchain_outcome.epoch,
+        );
+
         // The configured initial share takes precedence over the candidate
         // salvaged from a stale state. Either is only usable if it matches
         // the polynomial of the on-chain DKG outcome.
