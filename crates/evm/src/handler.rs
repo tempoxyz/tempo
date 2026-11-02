@@ -12,6 +12,7 @@ use self::config::{TempoFeeContext, TempoHandlerHooks};
 use crate::{
     ExecutionContext, FeePaymentError, TempoAaTx, TempoInvalidTransaction, TempoTxEnv,
     signature_gas::{calldata_tokens, tempo_signature_verification_gas},
+    transaction_error::ConfigurableAccountError,
 };
 use alloy_primitives::{Address, B256, KECCAK256_EMPTY, TxKind, U256};
 use evm2::{
@@ -211,7 +212,7 @@ fn calculate_key_authorization_gas(
 ) -> (u64, u64) {
     // The base 21k includes one ecrecover, for the transaction's own signature. The key
     // authorization's signature is verified on top of that, so it pays the full verification gas.
-    let sig_gas = key_auth.signature.verification_gas();
+    let sig_gas = key_auth.signature.verification_gas().unwrap_or(u64::MAX);
 
     let num_limits = key_auth
         .authorization
@@ -452,23 +453,33 @@ fn validate_time_window(
     Ok(())
 }
 
-fn access_key_id(aa: &TempoAaTx) -> Result<Option<Address>, TempoInvalidTransaction> {
+fn access_key_id(
+    aa: &TempoAaTx,
+    context: ExecutionContext,
+) -> Result<Option<Address>, TempoInvalidTransaction> {
     let signed = aa.inner();
     let Some(signature) = signed.signature().as_keychain() else {
         return Ok(None);
     };
-    let key_id = if let Some(key_id) = aa.override_key_id() {
-        key_id
-    } else {
-        signature
-            .key_id(&signed.signature_hash())
-            .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
-    };
-    Ok(Some(key_id))
+    if let Some(key_id) = aa.override_key_id() {
+        return Ok(Some(key_id));
+    }
+    // A simulated configurable delegate carries placeholder owner approvals: name the delegate
+    // instead of recovering it from them.
+    if matches!(context, ExecutionContext::Simulation)
+        && let Some(delegate) = signature.signature.as_configurable_account()
+    {
+        return Ok(Some(delegate.account()));
+    }
+    signature
+        .key_id(&signed.signature_hash())
+        .map(Some)
+        .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)
 }
 
 fn validate_key_authorization(
     aa: &TempoAaTx,
+    context: ExecutionContext,
     chain_id: u64,
     spec: TempoHardfork,
 ) -> Result<(), TempoInvalidTransaction> {
@@ -477,8 +488,11 @@ fn validate_key_authorization(
     let Some(key_auth) = tx.key_authorization.as_ref() else {
         return Ok(());
     };
+    if aa.granted_configurable_account().is_some() && !spec.is_t14() {
+        return Err(ConfigurableAccountError::UnsupportedContext.into());
+    }
 
-    let access_key = access_key_id(aa)?;
+    let access_key = access_key_id(aa, context)?;
     let same_tx_auth_use = access_key == Some(key_auth.key_id);
     if access_key.is_some() && !same_tx_auth_use && !spec.is_t6() {
         return Err(TempoInvalidTransaction::AccessKeyCannotAuthorizeOtherKeys);
@@ -526,7 +540,7 @@ fn validate_key_authorization(
     }
 
     let signer = key_auth
-        .recover_signer()
+        .authorizing_account()
         .map_err(|_| TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed)?;
     if !spec.is_t6() && signer != aa.signer() {
         return Err(TempoInvalidTransaction::KeyAuthorizationNotSignedByRoot {
@@ -618,6 +632,7 @@ fn keychain_error(error: TempoPrecompileError) -> HandlerError {
 fn prepare_keychain(
     host: &mut Evm<'_, TempoEvmTypes>,
     aa: &TempoAaTx,
+    context: ExecutionContext,
     fee: TempoFeeContext,
 ) -> HandlerResult<KeychainState> {
     let signed = aa.inner();
@@ -638,7 +653,8 @@ fn prepare_keychain(
     }
 
     // Use override_key_id if provided (for gas estimation), otherwise recover from signature.
-    let access_key = access_key_id(aa)?.expect("keychain signature must have an access key");
+    let access_key =
+        access_key_id(aa, context)?.expect("keychain signature must have an access key");
     let key_authorization = tx.key_authorization.as_ref();
 
     // Classify whether this keychain-signed tx is using the same access key that the
@@ -684,9 +700,10 @@ fn prepare_keychain(
         //   the loaded admin/signature-type facts below when the sidecar signer is the same key
         let timestamp = host.block().timestamp.saturating_to::<u64>();
 
-        // Extract the signature type from the inner signature to validate it matches
-        // the key_type stored in the keychain. This prevents using a signature of one
-        // type to authenticate as a key registered with a different type.
+        // Extract the signature type from the inner signature to validate it against
+        // the key_type stored in the keychain: a signature must have the key's stored type,
+        // except a migrated delegate's owner quorum on its primitive grant (see
+        // `AccountKeychain::accepts_signature_type`).
         // Only validate signature type on T1+ to maintain backward compatibility
         // with historical blocks during re-execution.
         let expected_signature_type = (key_authorization.is_some()
@@ -735,7 +752,7 @@ fn prepare_keychain(
         && let Some(key_authorization) = key_authorization
     {
         let signer = key_authorization
-            .recover_signer()
+            .authorizing_account()
             .map_err(|_| TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed)?;
         if signer != aa.signer() {
             let signature_type: u8 = key_authorization.signature.signature_type().into();
@@ -1088,16 +1105,17 @@ fn apply_nonce(
     let mut account = host.state_mut().account(&caller)?;
     if eip3607 && account.code_hash() != KECCAK256_EMPTY {
         // From T14 a registered configurable account carries the `0xef` marker (TIP-1114) and may
-        // still send keychain-signed or simulated transactions.
-        let registered_sender = spec.is_t14()
+        // still send owner-signed, keychain-signed or simulated transactions.
+        let configurable_sender = spec.is_t14()
             && account.code_hash() == CONFIGURABLE_ACCOUNT_CODE_HASH
-            && (aa.signature().is_keychain()
+            && (aa.signature().is_configurable_account()
+                || aa.signature().is_keychain()
                 || matches!(envelope.execution_context(), ExecutionContext::Simulation))
             && !account
                 .get()
                 .map_or(Ok(B256::ZERO), |info| account_config_commitment(info, spec))?
                 .is_zero();
-        if !registered_sender {
+        if !configurable_sender {
             let code = account.load_code()?;
             if !code.is_empty() && !code.is_eip7702() {
                 return Err(HandlerError::RejectCallerWithCode);
@@ -1355,6 +1373,14 @@ fn prepare_aa(
         return Err(TempoInvalidTransaction::SubblockTransactionsDisabled.into());
     }
 
+    // A configurable-account quorum cannot sign an EIP-7702 delegation.
+    if tx
+        .tempo_authorization_list
+        .iter()
+        .any(|authorization| authorization.signature().is_or_wraps_configurable_account())
+    {
+        return Err(ConfigurableAccountError::InvalidSignatureContext.into());
+    }
     // Validate AA transaction structure (calls list, CREATE rules)
     validate_calls(&tx.calls, !tx.tempo_authorization_list.is_empty())
         .map_err(TempoInvalidTransaction::from)?;
@@ -1369,7 +1395,12 @@ fn prepare_aa(
             .validate_version(spec.is_t1c())
             .map_err(TempoInvalidTransaction::from)?;
     }
-    validate_key_authorization(request.tx.inner(), request.host.version().chain_id, spec)?;
+    validate_key_authorization(
+        request.tx.inner(),
+        request.envelope.execution_context(),
+        request.host.version().chain_id,
+        spec,
+    )?;
     // Access-key CREATE is a cheap structural rejection that does not depend on any
     // per-call scope walk or state mutation. Rejecting it here keeps validation work
     // constant and avoids entering CREATE execution paths that require special protocol-
@@ -1437,12 +1468,14 @@ fn prepare_aa(
     if spec.is_t14() {
         warm_aa_accounts(request.host, caller, tx);
     }
-    let native_gas = configurable_account::validate_state(request.host, request.envelope, spec)?;
+    let (configurable_gas, configurable_state_gas) =
+        configurable_account::validate_state(request.host, request.envelope, spec)?;
 
     // Route to the AA gas calculation and validation path.
     let (mut intrinsic, mut initial_state_gas, floor_gas) =
         intrinsic_gas(request.host, request.tx.inner())?;
-    intrinsic = intrinsic.saturating_add(native_gas);
+    intrinsic = intrinsic.saturating_add(configurable_gas);
+    initial_state_gas = initial_state_gas.saturating_add(configurable_state_gas);
     let (nonce_gas, nonce_state_gas) = nonce_intrinsic_gas(request.host, request.tx.inner());
 
     // For T0+, include 2D nonce gas in validation (charged upfront)
@@ -1499,11 +1532,18 @@ fn prepare_aa(
     let fee_context = TempoHandlerHooks::resolve_fee_context(request.host, request.envelope)?;
 
     let create_nonce = apply_nonce(request.host, request.envelope, request.tx.inner())?;
+    // Owner quorums are verified after the nonce checks and before the access-key checks.
+    configurable_account::verify(request.envelope.execution_context(), request.tx.inner())?;
 
     // For Keychain signatures, validate the acting access key before fee collection when it
     // already exists. Same-tx auth+use is the exception: that key is registered only after fees
     // are collected, so fee-limit validation uses the inline authorization payload instead.
-    let keychain = prepare_keychain(request.host, request.tx.inner(), fee_context)?;
+    let keychain = prepare_keychain(
+        request.host,
+        request.tx.inner(),
+        request.envelope.execution_context(),
+        fee_context,
+    )?;
     if request.host.feature(EvmFeatures::FEE_CHARGE) {
         TempoHandlerHooks::collect_fee(
             request.host,
@@ -1612,6 +1652,7 @@ fn execute_aa(
             )
         };
     reservoir += state_refund;
+    configurable_account::register_commitments(request.host, request.tx.inner())?;
     let mut result = execute_batch(
         request.host,
         caller,
