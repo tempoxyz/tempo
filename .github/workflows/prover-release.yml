@@ -2,7 +2,8 @@ name: Prover Release
 
 # A prover/vX.Y.Z tag builds and publishes the tempo-zone-prover and
 # tempo-zone-prover-utils images with that version, then drafts a GitHub
-# release carrying the enclave's PCR measurements and image digest.
+# release carrying the enclave's PCR measurements and image digest, and
+# dispatches Prover PCRs PR to add those PCRs to pcrs.json.
 #
 # Before anything is drafted, the enclave is rebuilt on Depot and on a separate
 # GitHub-hosted runner, and both must reproduce the published PCRs.
@@ -315,3 +316,28 @@ jobs:
             $prerelease \
             measurements/measurements.json \
             measurements/identity.json
+
+  pcrs-pr:
+    name: Dispatch the pcrs.json pull request
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      id-token: write
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      # Prover PCRs PR runs from main, where the release-pr environment can
+      # mint the token that pushes the branch and opens the pull request.
+      - name: Dispatch Prover PCRs PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh workflow run prover-pcrs-pr.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            -f tag="$TAG"
+          echo "Dispatched Prover PCRs PR for $TAG" >> "$GITHUB_STEP_SUMMARY"
