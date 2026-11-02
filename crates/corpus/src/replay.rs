@@ -66,7 +66,7 @@ pub fn run(
         .enable_all()
         .build()?;
     let reader = Arc::new(runtime.block_on(store.reader(&catalog))?);
-    let tip_timestamp = runtime.block_on(store::tip_timestamp(&reader, &catalog.context))?;
+    let tip_timestamp = runtime.block_on(store::tip_timestamp(&reader, &catalog.cursor))?;
     eyre::ensure!(
         store::forks_agree(
             &catalog.context.forks,
@@ -376,7 +376,7 @@ async fn transaction_range(
 ) -> eyre::Result<Range<u64>> {
     let mut bounds = [0; 2];
     for (bound, ordinal) in bounds.iter_mut().zip([from, to - 1]) {
-        let (mut low, mut high) = (catalog.context.start, catalog.context.end);
+        let (mut low, mut high) = (catalog.context.start, catalog.cursor.next);
         // Metadata of the final `high`: the first block whose ordinals end after `ordinal`.
         let mut found = None;
         while low < high {
@@ -471,7 +471,7 @@ async fn read_catalog(
         slot.send(page);
     }
     let cursor = metadata.cursor;
-    if range.end == catalog.context.end {
+    if range.end == catalog.cursor.next {
         eyre::ensure!(cursor == catalog.cursor, "final metadata boundary mismatch");
     } else {
         let next = store::metadata(reader, range.end).await?;

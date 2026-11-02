@@ -18,9 +18,10 @@ use tracing::info;
 /// manifests, WAL SSTs, compacted SSTs and compactor state nothing references any more, and
 /// logs the objects and bytes of each data directory before and after.
 ///
-/// Fails unless the corpus is complete: fill never opens a writer on a complete corpus, so
-/// collection needs no minimum file age. Fails as well if the catalog changed meanwhile or its
-/// checkpoint no longer opens.
+/// Fails unless the corpus is complete: a fill clears it before opening its writer, so
+/// collection needs no minimum file age as long as no fill starts meanwhile. Run it after a
+/// fill, not alongside one. Fails as well if the catalog changed meanwhile or its checkpoint
+/// no longer opens.
 pub async fn gc(store: &Store) -> eyre::Result<()> {
     let (catalog, version) = store.catalog().await?.ok_or_eyre("no corpus catalog")?;
     eyre::ensure!(
