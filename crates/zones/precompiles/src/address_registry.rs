@@ -2,7 +2,7 @@
 //!
 //! Assigns sequential 4-byte master IDs to recipients. Bindings are immutable, live in
 //! namespaced storage slots (so they cannot overlap TIP-1022's layout at the same address), and
-//! have no public getter: only the native inbox reads them, through [`recipient_of`].
+//! have no public getter: only the native inbox reads them, through `recipient_of`.
 
 use alloc::vec::Vec;
 
