@@ -219,7 +219,13 @@ impl MigrateCommand {
                 && context.forks == chain.display_hardforks().to_string(),
             "corpus chain/fork context mismatch"
         );
-        let dest = Store::open(&self.corpus, self.s3_endpoint.as_deref()).await?;
+        // A local destination (staging on disk before an upload) takes no S3 endpoint.
+        let dest_endpoint = self
+            .corpus
+            .starts_with("s3://")
+            .then_some(self.s3_endpoint.as_deref())
+            .flatten();
+        let dest = Store::open(&self.corpus, dest_endpoint).await?;
         let (config, consensus) = components(chain);
         tempo_corpus::migrate::migrate(source, dest, self.from, self.to, &config, &consensus).await
     }
