@@ -33,19 +33,16 @@ use tracing::info;
 /// Serialized bytes reserved across in-flight scans, queued and executing records.
 /// Each scan reserves its whole batch (at most 8 MiB) before opening, so this fits
 /// ~16 maximum-size batches or two maximum-size records. Not an RSS cap: decoded
-/// chunks (queued ones included), SlateDB scan/cache buffers and SDK allocations are
-/// excluded.
+/// state, SlateDB scan/cache buffers and SDK allocations are excluded.
 const REPLAY_BUDGET: usize = 2 * MAX_RECORD_BYTES;
 
 struct Ready {
     record: Record,
-    /// Decoded and checked in the fetch task, with its code already resolved, so
-    /// execution workers never wait on the object store.
-    chunk: Arc<Chunk>,
+    bytes: Bytes,
     cases: Vec<Bytes>,
     space: Arc<Notify>,
-    // Acquired before fetching, held through decoding and execution. The case Bytes
-    // move between tasks without a framing copy or an input mutex.
+    // Acquired before fetching, held through decoding and execution. The Bytes
+    // value moves between tasks without a framing copy or an input mutex.
     _reservation: OwnedSemaphorePermit,
 }
 
@@ -142,7 +139,8 @@ pub fn run(
                     (0, 0, 0)
                 })
         });
-        let (config, consensus, cancellation) = (&config, &consensus, &cancellation);
+        let (config, consensus, cancellation, runtime, reader) =
+            (&config, &consensus, &cancellation, &runtime, &*reader);
         let (done_blocks, done_transactions, done_gas) =
             (&done_blocks, &done_transactions, &done_gas);
         let mut threads = Vec::new();
@@ -163,12 +161,13 @@ pub fn run(
                             Err(RecvTimeoutError::Disconnected) => break,
                         };
                         ready.space.notify_one();
-                        let chunk = &ready.chunk;
+                        let chunk = store::decode(&ready.bytes, &ready.record)?;
+                        runtime.block_on(store::resolve_code(reader, &chunk))?;
                         let (transactions, gas) = if let Some((from, to)) = standalone {
                             // The stored deltas restore each transaction's prestate, so the
                             // block itself is not executed.
                             let (cases, block, phases) =
-                                decode_record(chunk, &ready.cases, &ready.record)?;
+                                decode_record(&chunk, &ready.cases, &ready.record)?;
                             let (mut transactions, mut gas) = (0, 0);
                             standalone_cases(
                                 config,
@@ -187,7 +186,7 @@ pub fn run(
                             )?;
                             (transactions, gas)
                         } else {
-                            verify(config, consensus, chunk, &ready.cases, &ready.record)?;
+                            verify(config, consensus, &chunk, &ready.cases, &ready.record)?;
                             (ready.record.transactions, ready.record.gas)
                         };
                         records += 1;
@@ -294,12 +293,10 @@ async fn feed_pages(
                 let mut payloads = store::PayloadScan::open(&reader, &batch).await?;
                 for record in batch {
                     let (block, cases) = payloads.next(&record).await?;
-                    let chunk = store::decode(&block, &record)?;
-                    store::resolve_code(&reader, &chunk).await?;
                     let permit = reservation.split(record.bytes).expect("batch sum reserved");
                     let mut ready = Ready {
                         record,
-                        chunk,
+                        bytes: block,
                         cases,
                         space: space.clone(),
                         _reservation: permit,
