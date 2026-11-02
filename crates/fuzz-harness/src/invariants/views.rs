@@ -3,7 +3,6 @@
 use std::{
     cell::RefCell,
     fmt::{self, Display},
-    mem,
 };
 
 use alloy_primitives::{Address, B256, Bytes, U256, map::HashMap};
@@ -136,9 +135,7 @@ impl Memo {
                 .iter()
                 .any(|(address, slot)| net.get(address).is_some_and(|a| a.changed(slot.as_ref())))
         };
-        (calls.before, calls.after) = mem::take(&mut calls.after)
-            .into_iter()
-            .partition(|(_, call)| undone(call));
+        calls.before = calls.after.extract_if(|_, call| undone(call)).collect();
     }
 
     fn get(
