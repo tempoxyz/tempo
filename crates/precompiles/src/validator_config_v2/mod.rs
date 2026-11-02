@@ -395,12 +395,23 @@ impl ValidatorConfigV2 {
 
     /// Frees the stored `ingress` of an active validator.
     fn release_ingress(&mut self, ingress: &str) -> Result<()> {
-        let key = self.ingress_key(ingress)?;
+        let key = self.stored_ingress_key(ingress)?;
         self.active_ingress_ips[key].delete()?;
-        if let Some(legacy) = self.legacy_mapped_ingress_key(ingress)? {
-            self.active_ingress_ips[legacy].delete()?;
-        }
         Ok(())
+    }
+
+    /// Returns the key a stored active `ingress` is tracked under: its pre-T14 key if it is
+    /// IPv4-mapped and was added before T14, its `ingress_key` otherwise.
+    fn stored_ingress_key(&self, ingress: &str) -> Result<B256> {
+        if ingress
+            .parse::<std::net::SocketAddr>()
+            .is_ok_and(|addr| addr.is_ipv6())
+            && let Some(legacy) = self.legacy_mapped_ingress_key(ingress)?
+            && self.active_ingress_ips[legacy].read()?
+        {
+            return Ok(legacy);
+        }
+        self.ingress_key(ingress)
     }
 
     fn require_unique_ingress(&self, ingress: &str) -> Result<B256> {
@@ -414,16 +425,22 @@ impl ValidatorConfigV2 {
     }
 
     fn update_ingress_ip_tracking(&mut self, old_ingress: &str, new_ingress: &str) -> Result<()> {
-        let old_ingress_hash = self.ingress_key(old_ingress)?;
+        let old_ingress_hash = self.stored_ingress_key(old_ingress)?;
         let new_ingress_hash = self.ingress_key(new_ingress)?;
 
         if old_ingress_hash != new_ingress_hash {
-            if self.ingress_in_use(new_ingress)?.1 {
+            let legacy_in_use = match self.legacy_mapped_ingress_key(new_ingress)? {
+                Some(legacy) if legacy != old_ingress_hash => {
+                    self.active_ingress_ips[legacy].read()?
+                }
+                _ => false,
+            };
+            if self.active_ingress_ips[new_ingress_hash].read()? || legacy_in_use {
                 Err(ValidatorConfigV2Error::ingress_already_exists(
                     new_ingress.to_string(),
                 ))?
             }
-            self.release_ingress(old_ingress)?;
+            self.active_ingress_ips[old_ingress_hash].delete()?;
             self.active_ingress_ips[new_ingress_hash].write(true)?;
         }
 
@@ -1011,10 +1028,10 @@ impl ValidatorConfigV2 {
         }
 
         let now_active = v1_val.active;
-        let (ingress_hash, ingress_in_use) = self.ingress_in_use(&v1_val.inboundAddress)?;
+        let ingress_hash = self.ingress_key(&v1_val.inboundAddress)?;
 
         // Skip if ingress ip hash is a duplicate of an existing entry
-        if now_active && ingress_in_use {
+        if now_active && self.ingress_in_use(&v1_val.inboundAddress)?.1 {
             return skip(self);
         }
 
@@ -3166,6 +3183,68 @@ mod tests {
                 owner,
                 make_valid_add_call(v2, "192.168.1.1:8000", "192.168.1.1", v2),
             )?;
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_releasing_pre_t14_mapped_ingress_keeps_ipv4_twin() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
+        let owner = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut vc = ValidatorConfigV2::new();
+            vc.initialize(owner)?;
+
+            // Before T14 both spellings of one endpoint can be active at once.
+            vc.storage.set_block_number(200);
+            let v1 = Address::random();
+            vc.add_validator(
+                owner,
+                make_valid_add_call(v1, "192.168.1.1:8000", "192.168.1.1", v1),
+            )?;
+            let v2 = Address::random();
+            vc.add_validator(
+                owner,
+                make_valid_add_call(v2, "[::ffff:192.168.1.1]:8000", "192.168.1.1", v2),
+            )?;
+
+            vc.storage.set_spec(TempoHardfork::T14);
+
+            // The mapped twin cannot respell itself onto the IPv4 key still held by v1.
+            let result = vc.set_ip_addresses(
+                owner,
+                IValidatorConfigV2::setIpAddressesCall {
+                    idx: 1,
+                    ingress: "192.168.1.1:8000".to_string(),
+                    egress: "192.168.1.1".to_string(),
+                },
+            );
+            assert_eq!(
+                result,
+                Err(
+                    ValidatorConfigV2Error::ingress_already_exists("192.168.1.1:8000".into())
+                        .into()
+                )
+            );
+
+            // Deactivating the mapped twin must not free v1's endpoint.
+            vc.deactivate_validator(
+                owner,
+                IValidatorConfigV2::deactivateValidatorCall { idx: 1 },
+            )?;
+            let v3 = Address::random();
+            let result = vc.add_validator(
+                owner,
+                make_valid_add_call(v3, "192.168.1.1:8000", "192.168.1.1", v3),
+            );
+            assert_eq!(
+                result,
+                Err(
+                    ValidatorConfigV2Error::ingress_already_exists("192.168.1.1:8000".into())
+                        .into()
+                )
+            );
 
             Ok(())
         })
