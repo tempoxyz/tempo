@@ -80,49 +80,54 @@ impl<'a> EvmViews<'a> {
             Ok(executed) => Ok(Some(executed.result().output.clone()).filter(|o| !o.is_empty())),
         };
         // What the call read: its target's account, the slots it loaded and the key it missed.
-        let mut reads = vec![(target, None)];
-        let actions = self.evm.ext().actions.take().into_iter().flatten();
-        reads.extend(actions.filter_map(|action| match action {
-            StorageAction::Sload(address, slot, _) => Some((address, Some(slot))),
-            _ => None,
-        }));
-        let output = match self.pre_state.take_miss() {
-            None => output,
-            Some(MissingPreState::Account(address)) => {
-                reads.push((address, None));
-                Ok(None)
-            }
-            Some(MissingPreState::Storage(address, slot)) => {
-                reads.push((address, Some(slot)));
-                Ok(None)
-            }
+        let mut slots: Vec<(Address, Option<U256>)> = (self.evm.ext().actions.take())
+            .into_iter()
+            .flatten()
+            .filter_map(|action| match action {
+                StorageAction::Sload(address, slot, _) => Some((address, Some(slot))),
+                _ => None,
+            })
+            .collect();
+        let miss = match self.pre_state.take_miss() {
+            None => None,
+            Some(MissingPreState::Account(address)) => Some((address, None)),
+            Some(MissingPreState::Storage(address, slot)) => Some((address, Some(slot))),
             Some(_) => return Ok(None),
         };
+        let output = if miss.is_some() { Ok(None) } else { output };
+        slots.extend(miss);
+        // A slot's call also reads its account, as a change to the account undoes it.
+        let mut reads: Vec<_> = slots
+            .iter()
+            .flat_map(|&(address, slot)| [(address, None), (address, slot)])
+            .chain([(target, None)])
+            .collect();
+        reads.sort_unstable();
+        reads.dedup();
         self.memo.insert(key, self.before, output.clone(), reads);
         output
     }
 }
 
-/// The view calls a block's steps made, with what each read: storage slots, and accounts as
-/// `None`. A step's changes undo only the calls that read what they changed, so later steps make
-/// only those again, however many tokens, pools and holders the block reaches.
+/// The view calls a block's steps made, by what each read: storage slots, and accounts as `None`.
+/// A step's changes undo only the calls that read what they changed, so later steps make only
+/// those again, however many tokens, pools and holders the block reaches.
 #[derive(Default)]
 pub(crate) struct Memo(RefCell<Calls>);
+
+type Call = (Address, Bytes);
+type Output = Result<Option<Bytes>, ViewFailed>;
 
 #[derive(Default)]
 struct Calls {
     /// The transaction step being checked, counted from the block's first.
     step: u64,
-    /// Calls as of the state after it.
-    after: HashMap<(Address, Bytes), Call>,
-    /// Calls that hold only before it: made before it, or made earlier and undone by it.
-    before: HashMap<(Address, Bytes), Call>,
-}
-
-struct Call {
-    step: u64,
-    output: Result<Option<Bytes>, ViewFailed>,
-    reads: Vec<(Address, Option<U256>)>,
+    /// Outputs as of the state after it, with the step each was read at.
+    after: HashMap<Call, (u64, Output)>,
+    /// Outputs that hold only before it: read before it, or read earlier and undone by it.
+    before: HashMap<Call, Output>,
+    /// The calls that read each slot or account, possibly undone since.
+    readers: HashMap<(Address, Option<U256>), Vec<Call>>,
 }
 
 impl Memo {
@@ -130,46 +135,53 @@ impl Memo {
     pub(crate) fn step(&self, net: &Net) {
         let calls = &mut *self.0.borrow_mut();
         calls.step += 1;
-        let undone = |call: &Call| {
-            call.reads
-                .iter()
-                .any(|(address, slot)| net.get(address).is_some_and(|a| a.changed(slot.as_ref())))
-        };
-        calls.before = calls.after.extract_if(|_, call| undone(call)).collect();
+        calls.before.clear();
+        for address in net.addresses() {
+            let account = net.get(address).expect("the span changed it");
+            let slots = account.changed_slots().map(|(slot, _)| Some(*slot));
+            for read in account.changed().then_some(None).into_iter().chain(slots) {
+                for call in calls
+                    .readers
+                    .remove(&(*address, read))
+                    .into_iter()
+                    .flatten()
+                {
+                    if let Some((_, output)) = calls.after.remove(&call) {
+                        calls.before.insert(call, output);
+                    }
+                }
+            }
+        }
     }
 
-    fn get(
-        &self,
-        key: &(Address, Bytes),
-        before: bool,
-    ) -> Option<Result<Option<Bytes>, ViewFailed>> {
+    fn get(&self, call: &Call, before: bool) -> Option<Output> {
         let calls = self.0.borrow();
-        let call = if before {
-            let earlier = calls.after.get(key).filter(|call| call.step < calls.step);
-            calls.before.get(key).or(earlier)
-        } else {
-            calls.after.get(key)
-        };
-        call.map(|call| call.output.clone())
+        let after = calls.after.get(call);
+        match before {
+            true => (calls.before.get(call)).or(after
+                .filter(|(step, _)| *step < calls.step)
+                .map(|(_, output)| output)),
+            false => after.map(|(_, output)| output),
+        }
+        .cloned()
     }
 
     fn insert(
         &self,
-        key: (Address, Bytes),
+        call: Call,
         before: bool,
-        output: Result<Option<Bytes>, ViewFailed>,
+        output: Output,
         reads: Vec<(Address, Option<U256>)>,
     ) {
         let calls = &mut *self.0.borrow_mut();
-        let call = Call {
-            step: calls.step,
-            output,
-            reads,
-        };
-        match before {
-            true => calls.before.insert(key, call),
-            false => calls.after.insert(key, call),
-        };
+        if before {
+            calls.before.insert(call, output);
+            return;
+        }
+        for read in reads {
+            calls.readers.entry(read).or_default().push(call.clone());
+        }
+        calls.after.insert(call, (calls.step, output));
     }
 }
 
