@@ -135,6 +135,9 @@ pub(crate) struct Actor<
     /// Opened during initialization, before authenticating the tip. Taken when the actor starts.
     storage: Option<state::Unverified<TContext>>,
 
+    /// The network identity that authenticated the finalized tip at startup.
+    trusted_identity: NetworkIdentity,
+
     /// The channel over which the actor will receive messages.
     mailbox: mpsc::UnboundedReceiver<super::Message>,
 
@@ -175,7 +178,7 @@ where
             identity: *state.output.public().public(),
         });
 
-        crate::startup::verify_finalized_tip(
+        let trusted_identity = crate::startup::verify_finalized_tip(
             &mut *context,
             &config.network_identity,
             persisted_identity.as_ref(),
@@ -191,6 +194,7 @@ where
             config,
             context,
             storage: Some(storage),
+            trusted_identity,
             mailbox,
             metrics,
             pending_finalized_blocks: FuturesOrdered::new(),
@@ -1403,12 +1407,18 @@ where
             outcome from last boundary height"
         );
 
-        let onchain_outcome = read_outcome_from_boundary(
+        let boundary_header = get_header(
             &self.config.execution_node,
             &self.config.marshal,
             latest_boundary,
         )
-        .await?;
+        .await
+        .wrap_err_with(|| {
+            format!("failed to read latest boundary header at height `{latest_boundary}`")
+        })?;
+        let onchain_outcome =
+            OnchainDkgOutcome::read(&mut boundary_header.extra_data().as_ref())
+                .wrap_err("the boundary block did not contain the on-chain DKG outcome")?;
 
         // The boundary header is not checked against the finalized floor's
         // certificate, so an outcome for a later epoch could otherwise persist
@@ -1428,6 +1438,37 @@ where
             "boundary outcome at height `{latest_boundary}` is for epoch `{}`, expected epoch `{expected_epoch}`",
             onchain_outcome.epoch,
         );
+
+        let tip = self.config.finalized_tip.as_ref();
+        let tip_epoch = tip.map_or(Epoch::zero(), |(_, certificate)| {
+            certificate.proposal.round.epoch()
+        });
+        if onchain_outcome.epoch() > tip_epoch
+            && onchain_outcome.epoch > self.trusted_identity.from_epoch
+        {
+            // The boundary is the tip, which startup verified against the
+            // trusted identity, but a full DKG in the tip's epoch may give the
+            // next epoch a new key: authenticate the header itself instead.
+            let (_, certificate) = tip.ok_or_eyre("an outcome after epoch zero needs a tip")?;
+            ensure!(
+                Digest(boundary_header.hash_slow()) == certificate.proposal.payload,
+                "boundary header at height `{latest_boundary}` does not match the finalized tip certificate",
+            );
+        } else {
+            // Every epoch from the trusted identity's first epoch up to the
+            // authenticated tip carries its key: a full DKG in between would
+            // have changed the key that signed the tip.
+            ensure!(
+                onchain_outcome.epoch < self.trusted_identity.from_epoch
+                    || *onchain_outcome.network_identity() == self.trusted_identity.identity,
+                "boundary outcome at height `{latest_boundary}` for epoch `{}` has network identity \
+                `{}`, which differs from the trusted network identity `{}` from epoch `{}`",
+                onchain_outcome.epoch,
+                onchain_outcome.network_identity(),
+                self.trusted_identity.identity,
+                self.trusted_identity.from_epoch,
+            );
+        }
 
         // The configured initial share takes precedence over the candidate
         // salvaged from a stale state. Either is only usable if it matches

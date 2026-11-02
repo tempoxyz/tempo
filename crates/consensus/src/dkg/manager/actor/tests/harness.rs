@@ -176,7 +176,9 @@ impl HarnessBuilder {
         } else {
             // Most actor tests exercise recovery and ceremonies. Model a newer
             // binary bootstrapping from historical data; startup verification
-            // tests supply their own identity and certificate explicitly.
+            // tests supply their own identity and certificate explicitly. The
+            // identity starts after any epoch healing can read from a boundary,
+            // whose outcomes carry other keys.
             let tip_epoch = self
                 .epoch_strategy
                 .containing(self.last_finalized_height)
@@ -185,6 +187,7 @@ impl HarnessBuilder {
             let identity_epoch = initial_state
                 .as_ref()
                 .map_or(tip_epoch, |state| state.epoch.max(tip_epoch))
+                .next()
                 .next();
             let fixture = dkg_fixture(&mut self.context, identity_epoch);
             let tip = (!self.last_finalized_height.is_zero()).then(|| {
