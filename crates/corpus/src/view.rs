@@ -2,7 +2,7 @@
 
 use crate::{
     code,
-    types::{Change, Chunk, Delta, Info, InfoChange},
+    types::{Change, Chunk, Delta, InfoChange},
 };
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, U256};
 use evm2::{
@@ -46,24 +46,6 @@ fn analyzed(hash: B256) -> Result<Bytecode, Missing> {
     let code = Bytecode::new_raw_checked(bytes).map_err(|err| Missing(err.to_string()))?;
     ANALYZED.lock().insert(hash, code.clone());
     Ok(code)
-}
-
-fn account_info(nonce: u64, balance: U256, code_hash: B256) -> AccountInfo {
-    AccountInfo {
-        nonce,
-        balance,
-        code_hash,
-        ..Default::default()
-    }
-}
-
-fn from_info(info: &Info) -> AccountInfo {
-    let account = info.account();
-    account_info(
-        account.nonce,
-        account.balance,
-        account.bytecode_hash.unwrap_or(KECCAK256_EMPTY),
-    )
 }
 
 fn version<T>(versions: &[(u64, T)], at: u64) -> Result<&T, Missing> {
@@ -110,7 +92,9 @@ impl View {
             .accounts
             .get(&address.into_array())
             .ok_or_else(|| Missing(format!("uncaptured account {address}")))?;
-        Ok(version(versions, self.at)?.as_ref().map(from_info))
+        Ok(version(versions, self.at)?
+            .as_ref()
+            .map(|info| info.account().into()))
     }
 
     fn storage(&self, address: &Address, key: &U256) -> Result<U256, Missing> {
@@ -148,15 +132,11 @@ impl View {
                 } else {
                     self.account(&address)?.unwrap_or_default()
                 };
-                if let Some(nonce) = info.nonce {
-                    account.nonce = nonce;
-                }
-                if let Some(balance) = info.balance {
-                    account.balance = U256::from_be_bytes(balance);
-                }
-                if let Some(hash) = info.code_hash {
-                    account.code_hash = hash.map(B256::from).unwrap_or(KECCAK256_EMPTY);
-                }
+                account.nonce = info.nonce.unwrap_or(account.nonce);
+                account.balance = info.balance.map_or(account.balance, U256::from_be_bytes);
+                account.code_hash = info.code_hash.map_or(account.code_hash, |hash| {
+                    hash.map_or(KECCAK256_EMPTY, B256::from)
+                });
                 if let Some(bytes) = &change.code {
                     code::insert_code(&account.code_hash.0, bytes)?;
                     self.overlay.code.insert(account.code_hash);
@@ -220,34 +200,31 @@ pub struct Keys {
 
 /// Records every key the executor requests from the archive database.
 #[derive(Debug)]
-pub struct Recording<D> {
+pub struct Recording<'a, D> {
     pub inner: D,
-    pub keys: Arc<Mutex<Keys>>,
+    pub keys: &'a mut Keys,
 }
 
-impl<D: Database> Database for Recording<D> {
+impl<D: Database> Database for Recording<'_, D> {
     type Error = D::Error;
 
     fn get_account(&mut self, address: &Address) -> Result<Option<AccountInfo>, Self::Error> {
-        self.keys.lock().accounts.insert(*address);
+        self.keys.accounts.insert(*address);
         self.inner.get_account(address)
     }
 
     fn get_code_by_hash(&mut self, code_hash: &B256) -> Result<Bytecode, Self::Error> {
-        self.keys.lock().code.insert(*code_hash);
+        self.keys.code.insert(*code_hash);
         self.inner.get_code_by_hash(code_hash)
     }
 
     fn get_storage(&mut self, address: &Address, key: &Word) -> Result<Word, Self::Error> {
-        self.keys.lock().storage.insert((*address, *key));
+        self.keys.storage.insert((*address, *key));
         self.inner.get_storage(address, key)
     }
 
     fn get_block_hash(&mut self, number: &Word) -> Result<B256, Self::Error> {
-        self.keys
-            .lock()
-            .hashes
-            .insert(number.saturating_to::<u64>());
+        self.keys.hashes.insert(number.saturating_to::<u64>());
         self.inner.get_block_hash(number)
     }
 }
@@ -259,31 +236,31 @@ pub fn change_from_update(
     mut code: impl FnMut(B256) -> eyre::Result<Bytes>,
 ) -> eyre::Result<Change> {
     let created = update.created || update.wiped;
-    let deleted = match &update.current {
-        None => true,
-        Some(current) => !created && current.is_empty(),
-    };
-    if deleted {
+    let Some(current) = update
+        .current
+        .as_ref()
+        .filter(|current| created || !current.is_empty())
+    else {
         return Ok(Change {
             info: None,
             created: false,
             storage: BTreeMap::new(),
             code: None,
         });
-    }
-    let current = update.current.as_ref().expect("not deleted");
-    let base = if created {
-        AccountInfo::default()
-    } else {
-        update.original.clone().unwrap_or_default()
     };
-    let hash = |h: B256| (h != KECCAK256_EMPTY).then_some(h.0);
+    let empty = AccountInfo::default();
+    let base = update
+        .original
+        .as_ref()
+        .filter(|_| !created)
+        .unwrap_or(&empty);
     let code_changed = current.code_hash != base.code_hash;
+    let has_code = current.code_hash != KECCAK256_EMPTY;
     Ok(Change {
         info: Some(InfoChange {
             nonce: (current.nonce != base.nonce).then_some(current.nonce),
             balance: (current.balance != base.balance).then_some(current.balance.to_be_bytes()),
-            code_hash: code_changed.then_some(hash(current.code_hash)),
+            code_hash: code_changed.then_some(has_code.then_some(current.code_hash.0)),
         }),
         created,
         storage: update
@@ -291,10 +268,8 @@ pub fn change_from_update(
             .iter()
             .map(|(key, slot)| (key.to_be_bytes(), slot.present_value.to_be_bytes()))
             .collect(),
-        code: if code_changed && current.code_hash != KECCAK256_EMPTY {
-            Some(code(current.code_hash)?.to_vec())
-        } else {
-            None
-        },
+        code: (code_changed && has_code)
+            .then(|| code(current.code_hash).map(|bytes| bytes.to_vec()))
+            .transpose()?,
     })
 }

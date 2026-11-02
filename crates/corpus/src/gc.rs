@@ -31,9 +31,8 @@ pub async fn gc(store: &Store) -> eyre::Result<()> {
         .checkpoint
         .as_deref()
         .ok_or_eyre("corpus has no published checkpoint")?;
-    let data = store.path.clone().join("data");
     let before = usage(store).await?;
-    let admin = Admin::builder(data, store.objects.clone()).build();
+    let admin = Admin::builder(store.data(), store.objects.clone()).build();
     let checkpoints = admin.list_checkpoints(None).await?;
     eyre::ensure!(
         checkpoints.iter().any(|c| c.id.to_string() == pinned),
@@ -76,10 +75,7 @@ pub async fn gc(store: &Store) -> eyre::Result<()> {
             "Collected corpus garbage"
         );
     }
-    let current = store
-        .objects
-        .head(&store.path.clone().join("catalog.json"))
-        .await?;
+    let current = store.objects.head(&store.catalog_path()).await?;
     eyre::ensure!(
         current.e_tag == version.e_tag,
         "corpus catalog changed during gc; another writer published"
@@ -90,7 +86,7 @@ pub async fn gc(store: &Store) -> eyre::Result<()> {
 
 /// Object count and bytes under each top-level directory of the corpus data.
 async fn usage(store: &Store) -> eyre::Result<BTreeMap<String, (u64, u64)>> {
-    let data = store.path.clone().join("data");
+    let data = store.data();
     let mut usage = BTreeMap::<String, (u64, u64)>::new();
     let mut objects = store.objects.list(Some(&data));
     while let Some(object) = objects.try_next().await? {
@@ -109,24 +105,14 @@ async fn usage(store: &Store) -> eyre::Result<BTreeMap<String, (u64, u64)>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{CONTEXT_KEY, CURSOR_KEY, tests::catalog};
-    use object_store::{memory::InMemory, path::Path};
-    use slatedb::Db;
-    use std::sync::Arc;
+    use crate::store::tests::{catalog, in_memory, open_db};
 
     #[tokio::test]
     async fn keeps_only_the_published_checkpoint_of_a_complete_corpus() -> eyre::Result<()> {
-        let store = Store {
-            objects: Arc::new(InMemory::new()),
-            path: Path::from("gc"),
-        };
+        let store = in_memory("gc");
         let mut catalog = catalog(1, 1, 0);
         catalog.seal()?;
-        let db = Db::open(store.path.clone().join("data"), store.objects.clone()).await?;
-        db.put(CONTEXT_KEY, serde_json::to_vec(&catalog.context)?)
-            .await?;
-        db.put(CURSOR_KEY, serde_json::to_vec(&catalog.cursor)?)
-            .await?;
+        let db = open_db(&store, &catalog).await?;
         store.checkpoint(&db).await?;
         catalog.checkpoint = Some(store.checkpoint(&db).await?);
         db.close().await?;
@@ -139,7 +125,7 @@ mod tests {
         catalog.complete = true;
         store.publish(&catalog, Some(version)).await?;
         gc(&store).await?;
-        let checkpoints = Admin::builder(store.path.clone().join("data"), store.objects.clone())
+        let checkpoints = Admin::builder(store.data(), store.objects.clone())
             .build()
             .list_checkpoints(None)
             .await?;

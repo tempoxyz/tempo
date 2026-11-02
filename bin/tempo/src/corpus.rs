@@ -40,6 +40,13 @@ fn components(chain: Arc<TempoChainSpec>) -> (TempoEvmConfig, TempoConsensus) {
     )
 }
 
+/// `workers`, defaulting to the available parallelism; at least one.
+fn workers(workers: Option<usize>) -> usize {
+    workers
+        .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
+        .max(1)
+}
+
 /// Capture a pinned exclusive-end range from an archive datadir.
 #[derive(Debug, Parser)]
 pub struct FillCommand {
@@ -76,12 +83,11 @@ impl FillCommand {
             from: self.from,
             to: self.to,
             verify_existing: self.verify_existing,
-            workers: self.workers,
+            workers: workers(self.workers),
         };
         let cancellation = CancellationToken::new();
         let _guard = cancellation.drop_guard();
         let handle = tokio::runtime::Handle::current();
-        let token = cancellation.clone();
         tokio::task::spawn_blocking(move || {
             fill::fill(
                 provider_factory,
@@ -89,7 +95,7 @@ impl FillCommand {
                 &config,
                 &consensus,
                 args,
-                &token,
+                &cancellation,
                 handle,
             )
         })
@@ -135,11 +141,10 @@ impl ReplayCommand {
             .ok_or_else(|| eyre::eyre!("no corpus catalog at {}", self.corpus))?;
         eyre::ensure!(catalog.complete, "corpus is not complete");
         let context = &catalog.context;
-        let chain = self.chain.clone();
         eyre::ensure!(
-            context.chain_id == chain.chain_id()
-                && context.genesis == chain.genesis_hash().to_string()
-                && context.forks == chain.display_hardforks().to_string(),
+            context.chain_id == self.chain.chain_id()
+                && context.genesis == self.chain.genesis_hash().to_string()
+                && context.forks == self.chain.display_hardforks().to_string(),
             "corpus chain/fork context mismatch"
         );
         let from = self.from.unwrap_or(context.start);
@@ -156,14 +161,10 @@ impl ReplayCommand {
                 "corpus block range mismatch"
             );
         }
-        let workers = self
-            .workers
-            .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
-            .max(1);
-        let (config, consensus) = components(chain);
+        let workers = workers(self.workers);
+        let (config, consensus) = components(self.chain);
         let cancellation = CancellationToken::new();
         let _guard = cancellation.drop_guard();
-        let token = cancellation.clone();
         tokio::task::spawn_blocking(move || {
             replay::run(
                 store,
@@ -173,7 +174,7 @@ impl ReplayCommand {
                 consensus,
                 workers,
                 standalone,
-                token,
+                cancellation,
             )
         })
         .await?

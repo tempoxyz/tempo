@@ -5,10 +5,14 @@ use crate::{
     types::{Block as BlockInput, Case, Delta, Outcome, Phases, Transaction},
     view::{View, change_from_update},
 };
-use alloy_consensus::{BlockHeader, transaction::TxHashRef};
+use alloy_consensus::{
+    BlockHeader,
+    transaction::{Recovered, TxHashRef},
+};
 use alloy_eip7928::bal::Bal;
 use alloy_primitives::{Address, B256, Bytes, U256};
 use evm2::evm::Database;
+use eyre::OptionExt;
 use parking_lot::Mutex;
 use reth_consensus::FullConsensus;
 use reth_evm::{
@@ -23,7 +27,7 @@ use std::{
     sync::Arc,
 };
 use tempo_evm::{TempoBlockExecutor, TempoEvmConfig};
-use tempo_primitives::{Block, TempoPrimitives};
+use tempo_primitives::{Block, TempoPrimitives, TempoTxEnvelope};
 
 /// A block's execution records and resulting state.
 #[derive(Debug)]
@@ -86,9 +90,30 @@ fn contracts(bundle: &BundleState) -> HashMap<B256, Bytes> {
         .collect()
 }
 
-fn outcome(result: &tempo_evm::TempoTxResult) -> Outcome {
-    let r = result.result();
-    Outcome {
+fn executor<'a, DB: Database + 'a>(
+    config: &'a TempoEvmConfig,
+    db: DB,
+    block: &'a RecoveredBlock<Block>,
+) -> eyre::Result<TempoBlockExecutor<'a>> {
+    let env = config.evm_env(block.header())?;
+    let evm = ConfigureEvm::evm_with_env(config, db, env);
+    let ctx = config.context_for_block(block.sealed_block())?;
+    Ok(config.block_executor_factory().create_executor(evm, ctx))
+}
+
+/// Executes and commits `tx`, recording it with `before` and an empty delta: the caller fills
+/// the delta from the state updates once created code is known.
+fn transact(
+    executor: &mut TempoBlockExecutor<'_>,
+    tx: Recovered<&TempoTxEnvelope>,
+    ordinal: u64,
+    index: usize,
+    before: Vec<u8>,
+) -> eyre::Result<Transaction> {
+    let hash = tx.tx_hash().0;
+    let output = executor.execute_transaction_without_commit(tx)?;
+    let r = output.result();
+    let outcome = Outcome {
         status: u8::from(!r.status),
         reason: format!("{:?}", r.stop),
         created: r.created_address.map(|a| a.into_array()),
@@ -100,18 +125,19 @@ fn outcome(result: &tempo_evm::TempoTxResult) -> Outcome {
         ],
         charged_gas: r.tx_gas_used(),
         output: Some(r.output.to_vec()),
-    }
-}
-
-fn executor<'a, DB: Database + 'a>(
-    config: &'a TempoEvmConfig,
-    db: DB,
-    block: &'a RecoveredBlock<Block>,
-) -> eyre::Result<TempoBlockExecutor<'a>> {
-    let env = config.evm_env(block.header())?;
-    let evm = ConfigureEvm::evm_with_env(config, db, env);
-    let ctx = config.context_for_block(block.sealed_block())?;
-    Ok(config.block_executor_factory().create_executor(evm, ctx))
+    };
+    executor.commit_transaction(output)?;
+    let receipt = executor.receipts().last().ok_or_eyre("missing receipt")?;
+    Ok(Transaction {
+        ordinal,
+        index: index as u64,
+        hash,
+        before,
+        after: encode_boundary(executor.transaction_counters()),
+        outcome,
+        receipt: alloy_rlp::encode(receipt),
+        delta: Delta::default(),
+    })
 }
 
 /// Executes a block once, recording each transaction's boundary, outcome, receipt and
@@ -138,18 +164,9 @@ where
     let pre = drain(&updates);
     let mut records = Vec::new();
     for (index, tx) in block.transactions_recovered().enumerate() {
-        let before = encode_boundary(executor.transaction_counters()).to_vec();
-        let output = executor.execute_transaction_without_commit(tx)?;
-        let outcome = outcome(&output);
-        executor.commit_transaction(output)?;
-        let after = encode_boundary(executor.transaction_counters()).to_vec();
-        let receipt = alloy_rlp::encode(
-            executor
-                .receipts()
-                .last()
-                .ok_or_else(|| eyre::eyre!("missing receipt"))?,
-        );
-        records.push((index, before, after, outcome, receipt, drain(&updates)));
+        let before = encode_boundary(executor.transaction_counters());
+        let record = transact(&mut executor, tx, first_tx + index as u64, index, before)?;
+        records.push((record, drain(&updates)));
     }
     let (output, bal) = executor.finish_with_block_access_list()?;
     let post = drain(&updates);
@@ -160,17 +177,9 @@ where
     };
     let transactions = records
         .into_iter()
-        .map(|(index, before, after, outcome, receipt, updates)| {
-            Ok(Transaction {
-                ordinal: first_tx + index as u64,
-                index: index as u64,
-                hash: block.body().transactions[index].tx_hash().0,
-                before,
-                after,
-                outcome,
-                receipt,
-                delta: delta(updates, &contracts)?,
-            })
+        .map(|(mut record, updates)| {
+            record.delta = delta(updates, &contracts)?;
+            Ok(record)
         })
         .collect::<eyre::Result<Vec<_>>>()?;
     if let Some((cases, expected_phases)) = expected {
@@ -213,75 +222,19 @@ pub fn run_standalone(
     before: &[u8],
 ) -> eyre::Result<Transaction> {
     let mut executor = executor(config, view.clone(), block)?;
-    let counters =
-        decode_boundary(before).ok_or_else(|| eyre::eyre!("invalid transaction boundary"))?;
     eyre::ensure!(
-        executor.restore_transaction_counters(counters),
-        "invalid transaction boundary section"
+        decode_boundary(before).is_some_and(|c| executor.restore_transaction_counters(c)),
+        "invalid transaction boundary"
     );
     let updates = hooked(&mut executor)?;
     let tx = block
         .transactions_recovered()
         .nth(index)
-        .ok_or_else(|| eyre::eyre!("transaction index out of range"))?;
-    let output = executor.execute_transaction_without_commit(tx)?;
-    let outcome = outcome(&output);
-    executor.commit_transaction(output)?;
-    let after = encode_boundary(executor.transaction_counters()).to_vec();
-    let receipt = alloy_rlp::encode(
-        executor
-            .receipts()
-            .last()
-            .ok_or_else(|| eyre::eyre!("missing receipt"))?,
-    );
+        .ok_or_eyre("transaction index out of range")?;
+    let mut record = transact(&mut executor, tx, ordinal, index, before.to_vec())?;
     let state = executor.into_state();
-    let delta = delta(drain(&updates), &contracts(&state))?;
-    Ok(Transaction {
-        ordinal,
-        index: index as u64,
-        hash: block.body().transactions[index].tx_hash().0,
-        before: before.to_vec(),
-        after,
-        outcome,
-        receipt,
-        delta,
-    })
-}
-
-/// Runs every transaction of a block standalone in one pass, carrying the state forward:
-/// the state before each one is the pre phase plus every earlier transaction's checked delta.
-/// `check` compares each standalone record against the block-execution record.
-pub fn standalone_all(
-    config: &TempoEvmConfig,
-    block: &RecoveredBlock<Block>,
-    mut view: View,
-    phases: &Phases,
-    expected: &[Transaction],
-    mut check: impl FnMut(usize, &Transaction) -> eyre::Result<()>,
-) -> eyre::Result<()> {
-    view.apply(&phases.pre)?;
-    for (index, record) in expected.iter().enumerate() {
-        let actual = run_standalone(config, block, &view, record.ordinal, index, &record.before)?;
-        check(index, &actual)?;
-        view.apply(&record.delta)?;
-    }
-    Ok(())
-}
-
-/// Applies the block's pre phase and the stored deltas of transactions `0..index` to `view`,
-/// leaving it at the state before transaction `index`, without executing anything.
-pub fn restore_before(
-    view: &mut View,
-    phases: &Phases,
-    cases: &[Case],
-    index: usize,
-) -> eyre::Result<()> {
-    eyre::ensure!(index <= cases.len(), "transaction index out of range");
-    view.apply(&phases.pre)?;
-    for case in &cases[..index] {
-        view.apply(&case.delta)?;
-    }
-    Ok(())
+    record.delta = delta(drain(&updates), &contracts(&state))?;
+    Ok(record)
 }
 
 /// Runs the block's transactions standalone from their stored records alone: the state
@@ -345,10 +298,7 @@ pub fn verify_changesets(
     changeset: &crate::types::ChangeSet,
     number: u64,
 ) -> eyre::Result<()> {
-    let reverts = bundle
-        .reverts
-        .last()
-        .ok_or_else(|| eyre::eyre!("missing block reverts"))?;
+    let reverts = bundle.reverts.last().ok_or_eyre("missing block reverts")?;
     let mut accounts: HashMap<Address, Option<Account>> = changeset
         .accounts
         .iter()
@@ -362,30 +312,26 @@ pub fn verify_changesets(
             .insert(B256::from(*key), U256::from_be_bytes(*value));
     }
     for (address, revert) in reverts {
-        match &revert.account {
-            AccountInfoRevert::DoNothing => eyre::ensure!(
-                !accounts.contains_key(address),
-                "block {number}: account {address} in changeset but revert is DoNothing"
+        // `None` when the revert leaves the account alone, else the account it restores.
+        let reverted = match &revert.account {
+            AccountInfoRevert::DoNothing => None,
+            AccountInfoRevert::DeleteIt => Some(None),
+            AccountInfoRevert::RevertTo(info) => Some(Some(Account::from(info))),
+        };
+        match (reverted, accounts.remove(address)) {
+            (None, None) => {}
+            (None, Some(_)) => {
+                eyre::bail!(
+                    "block {number}: account {address} in changeset but revert is DoNothing"
+                )
+            }
+            (Some(_), None) => {
+                eyre::bail!("block {number}: account {address} reverted but not in changeset")
+            }
+            (Some(revert), Some(changeset)) => eyre::ensure!(
+                revert == changeset,
+                "block {number}: account {address} mismatch: revert={revert:?} changeset={changeset:?}"
             ),
-            AccountInfoRevert::DeleteIt => {
-                let info = accounts.remove(address).ok_or_else(|| {
-                    eyre::eyre!("block {number}: account {address} deleted but not in changeset")
-                })?;
-                eyre::ensure!(
-                    info.is_none(),
-                    "block {number}: account {address} deleted but changeset has {info:?}"
-                );
-            }
-            AccountInfoRevert::RevertTo(info) => {
-                let changeset = accounts.remove(address).ok_or_else(|| {
-                    eyre::eyre!("block {number}: account {address} reverted but not in changeset")
-                })?;
-                let revert = Some(Account::from(info));
-                eyre::ensure!(
-                    revert == changeset,
-                    "block {number}: account {address} mismatch: revert={revert:?} changeset={changeset:?}"
-                );
-            }
         }
         let mut slots = storage.remove(address);
         for (key, slot) in &revert.storage {
@@ -430,11 +376,12 @@ pub fn verify_changesets(
 const BOUNDARY_LEN: usize = 1 + 6 * 8;
 
 /// Encodes [`TempoBlockExecutor::transaction_counters`] for storage.
-fn encode_boundary(counters: [u64; 7]) -> [u8; BOUNDARY_LEN] {
-    let mut bytes = [0; BOUNDARY_LEN];
-    bytes[0] = counters[0] as u8;
-    for (i, value) in counters[1..].iter().enumerate() {
-        bytes[1 + i * 8..9 + i * 8].copy_from_slice(&value.to_be_bytes());
+fn encode_boundary([section, counters @ ..]: [u64; 7]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(BOUNDARY_LEN);
+    // Section tags are 0..=4.
+    bytes.push(section as u8);
+    for value in counters {
+        bytes.extend(value.to_be_bytes());
     }
     bytes
 }
@@ -444,9 +391,9 @@ fn decode_boundary(bytes: &[u8]) -> Option<[u64; 7]> {
     if bytes.len() != BOUNDARY_LEN {
         return None;
     }
-    let mut counters = [u64::from(bytes[0]), 0, 0, 0, 0, 0, 0];
-    for (i, value) in counters[1..].iter_mut().enumerate() {
-        *value = u64::from_be_bytes(bytes[1 + i * 8..9 + i * 8].try_into().ok()?);
+    let mut counters = [u64::from(bytes[0]); 7];
+    for (value, word) in counters[1..].iter_mut().zip(bytes[1..].as_chunks().0) {
+        *value = u64::from_be_bytes(*word);
     }
     Some(counters)
 }
@@ -464,16 +411,12 @@ mod tests {
         }
     }
 
-    fn storage_only_changeset() -> ChangeSet {
+    #[test]
+    fn changesets_check_storage_only_changes() {
         let mut changeset = ChangeSet::default();
         changeset
             .storage
             .insert(([1; 20], [2; 32]), U256::from(3).to_be_bytes());
-        changeset
-    }
-
-    #[test]
-    fn changesets_match_storage_only_revert() {
         let revert = AccountRevert {
             storage: [(
                 U256::from_be_bytes([2; 32]),
@@ -485,15 +428,12 @@ mod tests {
         };
         verify_changesets(
             &bundle(vec![(Address::repeat_byte(1), revert)]),
-            &storage_only_changeset(),
+            &changeset,
             7,
         )
         .unwrap();
-    }
-
-    #[test]
-    fn changesets_reject_storage_of_untouched_address() {
-        let err = verify_changesets(&bundle(vec![]), &storage_only_changeset(), 7).unwrap_err();
+        // An address re-execution never touched has no revert to match its slots.
+        let err = verify_changesets(&bundle(vec![]), &changeset, 7).unwrap_err();
         assert!(err.to_string().contains("but no revert"), "{err}");
     }
 

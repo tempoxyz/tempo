@@ -2,14 +2,13 @@
 
 use crate::{
     code,
-    execute::{Executed, execute_block, standalone_all, verify_changesets},
+    execute::{Executed, execute_block, run_standalone, verify_changesets},
     types::{Block as BlockInput, Case, ChangeSet, Chunk, Info},
     view::{Keys, Recording, View},
 };
 use alloy_consensus::BlockHeader;
 use alloy_primitives::{KECCAK256_EMPTY, U256};
 use evm2::evm::Database;
-use parking_lot::Mutex;
 use reth_consensus::FullConsensus;
 use reth_primitives_traits::{Account, RecoveredBlock};
 use reth_storage_api::{ChangeSetReader, StorageChangeSetReader};
@@ -35,12 +34,6 @@ impl Captured {
     }
 }
 
-fn info(account: Option<evm2::evm::AccountInfo>) -> eyre::Result<Option<Info>> {
-    account
-        .map(|a| Info::capture(&Account::from(&a)))
-        .transpose()
-}
-
 /// Captures `block` from the archive.
 ///
 /// Executes it through a recording database over the parent state to learn exactly what it
@@ -64,13 +57,13 @@ where
 {
     let number = block.number();
     eyre::ensure!(number > 0, "genesis is context, not a captured block");
-    let keys = Arc::new(Mutex::new(Keys::default()));
-    let executed = execute_block(
+    let mut keys = Keys::default();
+    let mut executed = execute_block(
         config,
         consensus,
         Recording {
             inner: db_at(number - 1)?,
-            keys: keys.clone(),
+            keys: &mut keys,
         },
         block,
         first_tx,
@@ -79,14 +72,11 @@ where
 
     let accounts = provider.account_block_changeset(number)?;
     let storage = provider.storage_changeset(number)?;
-    {
-        let mut keys = keys.lock();
-        keys.accounts.extend(accounts.iter().map(|a| a.address));
-        for (address, slot) in &storage {
-            keys.accounts.insert(address.address());
-            keys.storage
-                .insert((address.address(), U256::from_be_bytes(slot.key.0)));
-        }
+    keys.accounts.extend(accounts.iter().map(|a| a.address));
+    for (address, slot) in &storage {
+        keys.accounts.insert(address.address());
+        keys.storage
+            .insert((address.address(), U256::from_be_bytes(slot.key.0)));
     }
     let changeset = ChangeSet {
         accounts: accounts
@@ -138,7 +128,6 @@ where
         }
     }
 
-    let keys = keys.lock();
     let mut initial = db_at(number - 1)?;
     let mut chunk = Chunk {
         start: number,
@@ -149,17 +138,20 @@ where
         storage: BTreeMap::new(),
         code: Default::default(),
         hashes: BTreeMap::new(),
-        phases: Some(Default::default()),
+        phases: Some(std::mem::take(&mut executed.phases)),
     };
-    let mut code_hashes = keys.code.clone();
+    let mut code_hashes = keys.code;
     for address in &keys.accounts {
         let account = initial.get_account(address)?;
         if let Some(account) = &account {
             code_hashes.insert(account.code_hash);
         }
+        let info = account
+            .map(|a| Info::capture(&Account::from(&a)))
+            .transpose()?;
         chunk
             .accounts
-            .insert(address.into_array(), vec![(number - 1, info(account)?)]);
+            .insert(address.into_array(), vec![(number - 1, info)]);
     }
     for (address, key) in &keys.storage {
         chunk.storage.insert(
@@ -167,10 +159,8 @@ where
             vec![(number - 1, initial.get_storage(address, key)?.to_be_bytes())],
         );
     }
+    code_hashes.remove(&KECCAK256_EMPTY);
     for hash in code_hashes {
-        if hash == KECCAK256_EMPTY {
-            continue;
-        }
         if !code::has_code(&hash.0) {
             code::insert_code(&hash.0, &initial.get_code_by_hash(&hash)?.original_bytes())?;
         }
@@ -181,64 +171,54 @@ where
             .hashes
             .insert(*at, initial.get_block_hash(&U256::from(*at))?.0);
     }
-    drop(keys);
-    let (changed_accounts, changed_storage) = chunk.mark(&changeset)?;
-    chunk.blocks[0].changed_accounts = changed_accounts;
-    chunk.blocks[0].changed_storage = changed_storage;
+    (
+        chunk.blocks[0].changed_accounts,
+        chunk.blocks[0].changed_storage,
+    ) = chunk.mark(&changeset)?;
     eyre::ensure!(
         chunk.changeset()? == changeset,
         "changeset bitmap round trip mismatch"
     );
-    let Executed {
-        transactions,
-        phases,
-        bundle,
-        gas,
-    } = executed;
-    chunk.phases = Some(phases);
     chunk.validate()?;
-    let chunk = Arc::new(chunk);
+    let captured = Captured {
+        chunk: Arc::new(chunk),
+        executed,
+    };
 
     // The stored record alone reproduces every output.
-    let cases = transactions
-        .iter()
-        .map(|t| t.stored())
-        .collect::<eyre::Result<Vec<_>>>()?;
-    let phases = chunk.phases.as_ref().expect("set above");
+    let cases = captured.cases()?;
+    let transactions = &captured.executed.transactions;
+    let phases = captured.chunk.phases.as_ref().expect("set above");
     let replayed = execute_block(
         config,
         consensus,
-        View::new(chunk.clone()),
+        View::new(captured.chunk.clone()),
         block,
         first_tx,
         Some((&cases, phases)),
     )?;
     eyre::ensure!(
-        replayed.transactions == transactions,
+        replayed.transactions == *transactions,
         "replay differs from capture"
     );
-    standalone_all(
-        config,
-        block,
-        View::new(chunk.clone()),
-        phases,
-        &transactions,
-        |index, actual| {
-            eyre::ensure!(
-                *actual == transactions[index],
-                "standalone transaction {} differs from block execution",
-                transactions[index].ordinal
-            );
-            Ok(())
-        },
-    )?;
-    Ok(Captured {
-        chunk,
-        executed: Executed {
-            transactions,
-            phases: Default::default(),
-            bundle,
-            gas,
-        },
-    })
+    // Every transaction also replays standalone, each from the state the earlier ones leave.
+    let mut view = View::new(captured.chunk.clone());
+    view.apply(&phases.pre)?;
+    for (index, expected) in transactions.iter().enumerate() {
+        let actual = run_standalone(
+            config,
+            block,
+            &view,
+            expected.ordinal,
+            index,
+            &expected.before,
+        )?;
+        eyre::ensure!(
+            actual == *expected,
+            "standalone transaction {} differs from block execution",
+            expected.ordinal
+        );
+        view.apply(&expected.delta)?;
+    }
+    Ok(captured)
 }

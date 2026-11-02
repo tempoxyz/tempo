@@ -4,6 +4,7 @@ use crate::{
     capture, code, replay,
     store::{self, CONTEXT_KEY, CaseRecord, Catalog, Context, MAX_RECORD_BYTES, Record, Store},
 };
+use eyre::OptionExt;
 use reth_chainspec::{ChainSpecProvider, EthChainSpec};
 use reth_evm::database::StateProviderDatabase;
 use reth_provider::{
@@ -17,7 +18,7 @@ use slatedb::{
     config::{CompressionCodec, Settings},
 };
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     panic::AssertUnwindSafe,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
     time::Duration,
@@ -36,13 +37,13 @@ pub struct FillArgs {
     pub to: u64,
     /// Re-read and fully replay published records instead of checking metadata only.
     pub verify_existing: bool,
-    /// Capture worker threads; defaults to the available parallelism.
-    pub workers: Option<usize>,
+    /// Capture worker threads.
+    pub workers: usize,
 }
 
-/// Ensures a pinned exclusive-end range has a durable, verified corpus in \`store\`.
+/// Ensures a pinned exclusive-end range has a durable, verified corpus in `store`.
 ///
-/// Blocking: run it on a blocking thread. \`handle\` drives the object-store I/O.
+/// Blocking: run it on a blocking thread. `handle` drives the object-store I/O.
 pub fn fill<N>(
     provider_factory: ProviderFactory<N>,
     store: Store,
@@ -57,9 +58,12 @@ where
 {
     eyre::ensure!(args.from > 0, "from must be positive");
     let chain = provider_factory.chain_spec();
-    let expected = provider_factory
-        .database_provider_ro()?
-        .disable_long_read_transaction_safety();
+    let read_only = || -> eyre::Result<_> {
+        Ok(provider_factory
+            .database_provider_ro()?
+            .disable_long_read_transaction_safety())
+    };
+    let expected = read_only()?;
     let best = expected.best_block_number()?;
     let end = args.to.min(best);
     if args.to > best {
@@ -78,14 +82,12 @@ where
         canonical_hash(0)? == chain.genesis_hash(),
         "source genesis does not match selected chain"
     );
-    let first_tx = expected
-        .block_body_indices(args.from)?
-        .ok_or_else(|| eyre::eyre!("missing first block indices"))?
-        .first_tx_num();
-    let end_tx = expected
-        .block_body_indices(end)?
-        .ok_or_else(|| eyre::eyre!("missing exclusive-end block indices"))?
-        .first_tx_num();
+    let first_tx = |number| -> eyre::Result<u64> {
+        Ok(expected
+            .block_body_indices(number)?
+            .ok_or_else(|| eyre::eyre!("missing block indices at {number}"))?
+            .first_tx_num())
+    };
     let context = Context {
         chain_id: chain.chain_id(),
         genesis: chain.genesis_hash().to_string(),
@@ -94,11 +96,10 @@ where
         end,
         parent: canonical_hash(args.from - 1)?.to_string(),
         tip: canonical_hash(end - 1)?.to_string(),
-        first_tx,
-        end_tx,
+        first_tx: first_tx(args.from)?,
+        end_tx: first_tx(end)?,
     };
-    let existing = handle.block_on(store.catalog())?;
-    let (mut catalog, prior) = match existing {
+    let (mut catalog, prior) = match handle.block_on(store.catalog())? {
         Some((catalog, version)) => {
             eyre::ensure!(
                 catalog.context == context,
@@ -131,7 +132,7 @@ where
                     |record, bytes, cases| {
                         eyre::ensure!(!cancellation.is_cancelled(), "capture cancelled");
                         let chunk = store::decode(&bytes, record)?;
-                        replay::verify(config, consensus, &chunk, &cases, record).map(drop)
+                        replay::verify(config, consensus, &chunk, &cases, record)
                     },
                 ))
             })
@@ -152,12 +153,12 @@ where
     catalog.generation = catalog
         .generation
         .checked_add(1)
-        .ok_or_else(|| eyre::eyre!("publication generation overflow"))?;
+        .ok_or_eyre("publication generation overflow")?;
     // Claim before writer open: SlateDB fences database writes, while this
     // CAS token independently fences external catalog publication.
     let mut version = handle.block_on(store.publish(&catalog, prior))?;
     let db = handle.block_on(
-        Db::builder(store.path.clone().join("data"), store.objects.clone())
+        Db::builder(store.data(), store.objects.clone())
             .with_settings(Settings {
                 object_store_max_retries: store::SLATEDB_RETRIES,
                 compression_codec: Some(CompressionCodec::Zstd),
@@ -188,13 +189,10 @@ where
         // results strictly in block order, keeping pages, checkpoints and fencing as
         // before.
         let produce = |start: u64| -> eyre::Result<Produced> {
-            let stop = start + 1;
-            let expected = provider_factory
-                .database_provider_ro()?
-                .disable_long_read_transaction_safety();
+            let expected = read_only()?;
             let indices = expected
                 .block_body_indices(start)?
-                .ok_or_else(|| eyre::eyre!("missing canonical body indices"))?;
+                .ok_or_eyre("missing canonical body indices")?;
             let first_tx = indices.first_tx_num();
             let block = provider_factory
                 .recovered_block(start.into(), TransactionVariant::NoHash)?
@@ -204,9 +202,7 @@ where
                 consensus,
                 &expected,
                 |at| {
-                    let provider = provider_factory
-                        .database_provider_ro()?
-                        .disable_long_read_transaction_safety();
+                    let provider = read_only()?;
                     let hash = provider
                         .block_hash(at)?
                         .ok_or_else(|| eyre::eyre!("missing historical canonical block {at}"))?;
@@ -224,17 +220,16 @@ where
                 indices.tx_count() == transactions,
                 "canonical transaction count mismatch"
             );
-            let gas = captured.executed.gas;
-            let chunk = captured.chunk.clone();
+            let chunk = &captured.chunk;
             let case_bytes = captured
                 .cases()?
                 .iter()
-                .map(|case| wincode::serialize(case).map_err(Into::into))
-                .collect::<eyre::Result<Vec<_>>>()?;
+                .map(wincode::serialize)
+                .collect::<Result<Vec<_>, _>>()?;
             let bytes = wincode::serialize(chunk.as_ref())?;
             let total_bytes = case_bytes.iter().try_fold(bytes.len(), |sum, b| {
                 sum.checked_add(b.len())
-                    .ok_or_else(|| eyre::eyre!("serialized size overflow"))
+                    .ok_or_eyre("serialized size overflow")
             })?;
             eyre::ensure!(
                 total_bytes <= MAX_RECORD_BYTES,
@@ -242,14 +237,14 @@ where
             );
             let record = Record {
                 start,
-                end: stop,
+                end: start + 1,
                 parent: chunk.parent,
                 tip: chunk.blocks.last().expect("nonempty capture").hash,
                 bytes: total_bytes,
                 block_bytes: bytes.len(),
                 digest: blake3::hash(&bytes).to_hex().to_string(),
                 transactions,
-                gas,
+                gas: captured.executed.gas,
                 first_tx,
                 cases: case_bytes
                     .iter()
@@ -272,7 +267,7 @@ where
                 .map(|hash| {
                     code::code_bytes(hash)
                         .map(|code| (*hash, code.0))
-                        .ok_or_else(|| eyre::eyre!("captured code missing from cache"))
+                        .ok_or_eyre("captured code missing from cache")
                 })
                 .collect::<eyre::Result<Vec<_>>>()?;
             Ok(Produced {
@@ -283,10 +278,7 @@ where
                 code,
             })
         };
-        let workers = args
-            .workers
-            .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
-            .max(1);
+        let workers = args.workers;
         // Bounds results held for in-order publication; deep enough that workers
         // keep capturing while the writer seals and verifies a publication.
         let window = (workers as u64 * 8).max(2 * PAGE_RECORDS_PER_PUBLISH as u64);
@@ -302,9 +294,9 @@ where
         );
         std::thread::scope(|scope| -> eyre::Result<()> {
             let (sender, receiver) = crossbeam_channel::unbounded::<eyre::Result<Produced>>();
+            let (next, written, failed, produce) = (&next, &written, &failed, &produce);
             for _ in 0..workers {
                 let sender = sender.clone();
-                let (next, written, failed, produce) = (&next, &written, &failed, &produce);
                 scope.spawn(move || {
                     loop {
                         let number = next.fetch_add(1, Ordering::Relaxed);
@@ -337,7 +329,7 @@ where
                 });
             }
             drop(sender);
-            let result = (|| -> eyre::Result<()> {
+            (|| -> eyre::Result<()> {
                 let mut pending = BTreeMap::new();
                 let mut metadata_bytes = 0;
                 // A superseded writer can only have written blocks of the page it
@@ -349,27 +341,26 @@ where
                 let mut batch_bytes = 0usize;
                 // Code is shared across blocks: write each hash once per run, after
                 // checking whether an earlier run already stored it.
-                let mut written_code = std::collections::HashSet::new();
-                let mut start = begin;
-                while start < end {
-                    eyre::ensure!(!cancellation.is_cancelled(), "capture cancelled");
-                    let Some(Produced {
+                let mut written_code = HashSet::new();
+                for start in begin..end {
+                    let Produced {
                         record,
                         bytes,
                         metadata,
                         case_bytes,
                         code,
-                    }) = pending.remove(&start)
-                    else {
+                    } = loop {
+                        eyre::ensure!(!cancellation.is_cancelled(), "capture cancelled");
+                        if let Some(produced) = pending.remove(&start) {
+                            break produced;
+                        }
                         let produced = receiver
                             .recv()
                             .map_err(|_| eyre::eyre!("corpus capture workers stopped"))??;
                         pending.insert(produced.record.start, produced);
-                        continue;
                     };
                     let stop = record.end;
-                    let (transactions, gas, first_tx) =
-                        (record.transactions, record.gas, record.first_tx);
+                    let (transactions, gas) = (record.transactions, record.gas);
                     metadata_bytes += metadata.len();
                     for (hash, value) in &code {
                         if !written_code.insert(*hash) {
@@ -395,7 +386,7 @@ where
                         case_bytes
                             .iter()
                             .enumerate()
-                            .map(|(i, b)| (store::transaction_key(first_tx + i as u64), b)),
+                            .map(|(i, b)| (store::transaction_key(record.first_tx + i as u64), b)),
                     ) {
                         let stored = if start < recheck_end {
                             handle.block_on(db.get(key))?
@@ -425,11 +416,8 @@ where
                         batch_bytes = 0;
                     }
                     written.store(stop, Ordering::Release);
-                    // Publication frequency is runtime I/O batching, not part of the
-                    // schema. Every batch above is a complete
-                    // block; no partial block is published.
+                    // Every batch above is a complete block; no partial block is published.
                     if !seal {
-                        start = stop;
                         continue;
                     }
                     let page_cursor = catalog.cursor.clone();
@@ -440,10 +428,11 @@ where
                     )?;
                     let checkpoint = handle.block_on(store.checkpoint(&db))?;
                     // Check the current canonical pin, not merely the earlier RO snapshot.
-                    let current = provider_factory.database_provider_ro()?;
                     eyre::ensure!(
-                        current.block_hash(end - 1)?.map(|h| h.to_string()).as_ref()
-                            == Some(&catalog.context.tip),
+                        provider_factory
+                            .database_provider_ro()?
+                            .block_hash(end - 1)?
+                            .is_some_and(|hash| hash.to_string() == catalog.context.tip),
                         "canonical pin changed during capture"
                     );
                     let superseded = catalog.checkpoint.replace(checkpoint);
@@ -471,21 +460,15 @@ where
                         complete = catalog.complete,
                         "Published verified corpus blocks and transactions"
                     );
-                    start = stop;
                 }
                 Ok(())
-            })();
-            if result.is_err() {
-                failed.store(true, Ordering::Relaxed);
-            }
-            result
-        })?;
-        Ok(())
+            })()
+            .inspect_err(|_| failed.store(true, Ordering::Relaxed))
+        })
     })();
     let closed = handle.block_on(db.close());
     result?;
-    closed?;
-    Ok(())
+    Ok(closed?)
 }
 
 /// Blocks per checkpoint and catalog publication. Publication frequency is runtime I/O
