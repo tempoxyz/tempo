@@ -128,13 +128,19 @@ impl NetworkTracker {
     }
 
     /// Expires feedback and takes one bounded step toward p75, or the minimum
-    /// with no samples. Two consecutive samples above p75 raise the target to
-    /// the smaller of those two, so a single outlier cannot force a fast rise.
+    /// with fewer than four samples, where p75 would select the maximum. Two
+    /// consecutive samples raise the target to at least the smaller of those
+    /// two, so a single outlier cannot force a rise in a sparse window.
     pub(super) fn reserve_for_proposal(&mut self, now: Instant) -> Duration {
         self.prune(now);
         let target = sample_percentile(&self.samples, RESERVE_PERCENTILE).map_or(
             self.minimum_reservation,
             |percentile| {
+                let percentile = if self.samples.len() < 4 {
+                    self.minimum_reservation
+                } else {
+                    percentile
+                };
                 let mut newest = self.samples.iter().rev().map(|(_, value)| *value);
                 let observed = match (newest.next(), newest.next()) {
                     (Some(last), Some(previous)) => percentile.max(last.min(previous)),
