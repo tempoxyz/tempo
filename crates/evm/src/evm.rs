@@ -552,7 +552,7 @@ mod runtime_tests {
             amount
         );
 
-        // A deposit address for a zone that does not exist is an invalid recipient.
+        // A deposit address for a zone that does not exist reverts with ZoneUnregistered.
         let unregistered = tempo_contracts::zones::ZoneDepositAddress {
             zone_id: created.zoneId + 1,
             version: 1,
@@ -575,6 +575,13 @@ mod runtime_tests {
             .unwrap()
             .commit();
         assert!(!result.status);
+        assert_eq!(
+            result.output.as_ref(),
+            ITIP20::ZoneUnregistered {
+                zoneId: created.zoneId + 1
+            }
+            .abi_encode()
+        );
         assert_eq!(balance(&mut evm, alice), amount);
 
         // Mints to deposit addresses revert.

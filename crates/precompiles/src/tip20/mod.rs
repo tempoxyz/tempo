@@ -1642,12 +1642,11 @@ impl Recipient {
         if StorageCtx.spec().is_t15()
             && let Some(deposit) = ZoneDepositAddress::decode(&addr)
         {
-            let factory = ZoneFactory::new();
-            if deposit.version == 0
-                || deposit.zone_id == 0
-                || deposit.zone_id >= factory.next_zone_id()?
-            {
-                return Err(TIP20Error::invalid_recipient().into());
+            if deposit.version == 0 {
+                return Err(TIP20Error::unsupported_address_version(deposit.version).into());
+            }
+            if deposit.zone_id == 0 || deposit.zone_id >= ZoneFactory::new().next_zone_id()? {
+                return Err(TIP20Error::zone_unregistered(deposit.zone_id).into());
             }
             return Ok(Self {
                 target: portal_address(deposit.zone_id),
