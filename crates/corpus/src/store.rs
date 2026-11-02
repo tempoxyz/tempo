@@ -53,17 +53,20 @@ const RETIRED_CHECKPOINT_LIFETIME: Duration = Duration::from_secs(60 * 60);
 pub const CONTEXT_KEY: &[u8] = b"reth-corpus-context";
 pub const CURSOR_KEY: &[u8] = b"reth-corpus-cursor";
 
+/// What every block of a corpus is pinned to. The corpus ends at its published [Cursor], so
+/// fills append blocks without changing the context, except for `forks`, which an extending
+/// fill replaces with its own schedule once it agrees up to the published tip.
+///
+/// Older corpora also stored their pinned `end`, `tip` and `end_tx` here; deserializing ignores
+/// them, and the first extending fill rewrites the stored context without them.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Context {
     pub chain_id: u64,
     pub genesis: String,
     pub forks: String,
     pub start: u64,
-    pub end: u64,
     pub parent: String,
-    pub tip: String,
     pub first_tx: u64,
-    pub end_tx: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -97,6 +100,8 @@ pub struct Catalog {
     /// Only the unpublished bounded page lives in memory, never in root JSON.
     #[serde(skip)]
     pub records: Vec<Record>,
+    /// Whether the last fill published every block up to its pinned end. A fill clears it
+    /// before opening its writer, so `false` means a fill is running or was interrupted.
     pub complete: bool,
     /// Changed by conditional PUT before opening a writer. A superseded writer
     /// never rereads/retries its publication token after a failed CAS.
@@ -106,15 +111,9 @@ pub struct Catalog {
 impl Catalog {
     pub fn validate(&self) -> eyre::Result<()> {
         let c = &self.context;
+        eyre::ensure!(c.start > 0, "unsupported corpus context/range");
         eyre::ensure!(
-            c.start > 0 && c.end > c.start && c.end_tx >= c.first_tx,
-            "unsupported corpus context/range"
-        );
-        eyre::ensure!(
-            self.cursor.next >= c.start
-                && self.cursor.next <= c.end
-                && self.cursor.tx >= c.first_tx
-                && self.cursor.tx <= c.end_tx,
+            self.cursor.next >= c.start && self.cursor.tx >= c.first_tx,
             "invalid published cursor"
         );
         if self.cursor.next == c.start {
@@ -124,17 +123,6 @@ impl Catalog {
         for record in &self.records {
             cursor.advance(record)?;
         }
-        eyre::ensure!(
-            cursor.next <= c.end && cursor.tx <= c.end_tx,
-            "extra records/ordinals"
-        );
-        eyre::ensure!(
-            !self.complete
-                || (cursor.next == c.end
-                    && cursor.tx == c.end_tx
-                    && cursor.parent == c.tip.parse::<B256>()?.0),
-            "incomplete corpus publication"
-        );
         eyre::ensure!(
             (self.cursor.next == c.start && self.records.is_empty()) || self.checkpoint.is_some(),
             "missing pinned checkpoint"
@@ -680,10 +668,10 @@ pub fn forks_agree(stored: &str, current: &str, timestamp: u64) -> bool {
     active(stored) == active(current)
 }
 
-/// Timestamp of the corpus' last block, read from its published record.
-pub async fn tip_timestamp(reader: &DbReader, context: &Context) -> eyre::Result<u64> {
-    let number = context
-        .end
+/// Timestamp of the last block before `cursor`, read from its published record.
+pub async fn tip_timestamp(reader: &DbReader, cursor: &Cursor) -> eyre::Result<u64> {
+    let number = cursor
+        .next
         .checked_sub(1)
         .ok_or_eyre("empty corpus range")?;
     let record = metadata(reader, number).await?;
@@ -853,17 +841,31 @@ pub mod tests {
                 genesis: B256::ZERO.to_string(),
                 forks: "test".to_owned(),
                 start,
-                end: start + count as u64,
                 parent: B256::ZERO.to_string(),
-                tip: B256::from([count as u8; 32]).to_string(),
                 first_tx: 0,
-                end_tx: count as u64 * transactions,
             },
             records,
             checkpoint: Some("00000000-0000-0000-0000-000000000000".to_owned()),
             complete: true,
             generation: 1,
         }
+    }
+
+    #[test]
+    fn legacy_context_with_pinned_end_still_reads() -> eyre::Result<()> {
+        let mut catalog = catalog(1, 2, 1);
+        catalog.seal()?;
+        let mut legacy = serde_json::to_value(&catalog)?;
+        let context = legacy["context"]
+            .as_object_mut()
+            .ok_or_eyre("context is an object")?;
+        context.insert("end".to_owned(), 3.into());
+        context.insert("tip".to_owned(), B256::ZERO.to_string().into());
+        context.insert("end_tx".to_owned(), 2.into());
+        let decoded: Catalog = serde_json::from_value(legacy)?;
+        decoded.validate()?;
+        assert_eq!(decoded.context, catalog.context);
+        Ok(())
     }
 
     proptest! {
@@ -878,7 +880,8 @@ pub mod tests {
             prop_assert!(roundtrip.validate().is_ok());
             prop_assert!(roundtrip.records.is_empty());
             let mut missing = expected.clone();
-            missing.records.remove(count/2);
+            // Not the last record: a shorter prefix is a valid corpus.
+            missing.records.remove((count - 1) / 2);
             prop_assert!(missing.validate().is_err());
             let mut extra = expected.clone();
             extra.records.push(extra.records.last().unwrap().clone());
