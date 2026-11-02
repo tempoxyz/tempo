@@ -3060,7 +3060,7 @@ async fn test_transfer_allowlist_restricts_both_parties() -> eyre::Result<()> {
     Ok(())
 }
 
-/// An RPC-only node mirrors the sequencers' allowlist even without the admin: it accepts transfers
+/// An RPC-only node mirrors the leader's allowlist even without the admin: it accepts transfers
 /// between listed accounts, drops queued transfers once their recipient is removed, and rejects
 /// new ones on submission instead of forwarding them.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

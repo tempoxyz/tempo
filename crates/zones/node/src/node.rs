@@ -7,7 +7,7 @@ use crate::{
     DepositAllowlist, DepositAllowlistAdmin, ZoneConsensus, ZoneEngine,
     deposit_allowlist::{
         AllowlistMirror, AllowlistRelay, DepositAllowlistApiServer as _, apply_relayed_requests,
-        mirror_sequencers, validate_transfer_calls,
+        mirror_leader, validate_transfer_calls,
     },
     follower::PeerTipRegistry,
     replication::{BACKFILL_SERVE_QUEUE_CAPACITY, serve_backfill_requests},
@@ -851,8 +851,9 @@ where
                     apply_relayed_requests(local_allowlist, ports.requests),
                 );
             } else {
-                task_executor.spawn_task(mirror_sequencers(
+                task_executor.spawn_task(mirror_leader(
                     ports.client.clone(),
+                    runtime.schedule.clone(),
                     self.allowlist_mirror.clone(),
                     pool.clone(),
                 ));
