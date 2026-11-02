@@ -356,10 +356,6 @@ async fn configure_sequencing(
             "this node is `rpc_only` in the manifest, so --sequencer-key-file must not be provided: the shared key is never used here and is also the zone ECIES private key for encrypted deposits"
         ));
     }
-    eyre::ensure!(
-        args.shadow_prover_pcrs.is_none() || (rpc_only && !should_sequence_blocks),
-        "--shadow-prover.pcrs requires an rpc_only follower; it is not a settlement policy"
-    );
     let policy = args
         .prover_attestation_policy
         .as_deref()
@@ -380,10 +376,7 @@ async fn configure_sequencing(
             rpc_only,
             "--sequencer.enable-prover requires a sequencer or an rpc_only P2P follower"
         );
-        Some(ZoneProverConfig::Shadow {
-            prover_addresses,
-            proof_verifier: args.shadow_prover_pcrs.clone(),
-        })
+        Some(ZoneProverConfig::Shadow { prover_addresses })
     };
 
     eyre::ensure!(
@@ -728,16 +721,6 @@ pub struct ZoneArgs {
     )]
     pub prover_attestation_policy: Option<PathBuf>,
 
-    /// Verify shadow Nitro proofs locally against independently approved PCR0, PCR1 and PCR2.
-    /// Works before T13; applies only to RPC followers and never enables settlement enforcement.
-    #[arg(
-        long = "shadow-prover.pcrs",
-        env = "SHADOW_PROVER_PCRS",
-        value_name = "PCR0,PCR1,PCR2",
-        requires = "prover_addresses"
-    )]
-    pub shadow_prover_pcrs: Option<zone_prover::ShadowProofVerifier>,
-
     /// Bounce deposits whose L1 sender is not on the allowlist persisted at
     /// `<datadir>/deposit-allowlist.json`. Until the admin first writes the list, the sequencer
     /// credits every deposit. Requires `--deposits.allowlist.admin`.
@@ -950,44 +933,6 @@ mod tests {
                 expected
             );
         }
-    }
-
-    #[test]
-    fn shadow_verification_requires_remote_proving_and_complete_measurements() {
-        let common = ["tempo-zone", "--l1.rpc-url", "ws://localhost:8546"];
-        let pcr = "11".repeat(48);
-        let pcrs = format!("{pcr},{pcr},{pcr}");
-        assert!(
-            ZoneArgsParser::try_parse_from(
-                common
-                    .into_iter()
-                    .chain(["--shadow-prover.pcrs", pcrs.as_str(),])
-            )
-            .is_err()
-        );
-        let args = ZoneArgsParser::try_parse_from(common.into_iter().chain([
-            "--sequencer.enable-prover",
-            "--sequencer.prover-attestation-policy",
-            "policy.json",
-            "--sequencer.prover-address",
-            "T13=localhost:5000",
-            "--shadow-prover.pcrs",
-            pcrs.as_str(),
-        ]))
-        .unwrap();
-        assert!(args.zone.shadow_prover_pcrs.is_some());
-        assert!(
-            ZoneArgsParser::try_parse_from(common.into_iter().chain([
-                "--sequencer.enable-prover",
-                "--sequencer.prover-attestation-policy",
-                "policy.json",
-                "--sequencer.prover-address",
-                "T13=localhost:5000",
-                "--shadow-prover.pcrs",
-                "00,00,00",
-            ]))
-            .is_err()
-        );
     }
 
     #[test]

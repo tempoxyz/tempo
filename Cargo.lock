@@ -17779,7 +17779,6 @@ dependencies = [
  "tempo-chainspec",
  "tempo-contracts",
  "tempo-nitro-attestation",
- "tempo-precompiles",
  "tempo-primitives",
  "thiserror 2.0.21",
  "tokio",
