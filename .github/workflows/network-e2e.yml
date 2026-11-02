@@ -14,6 +14,9 @@ concurrency:
 
 jobs:
   detect:
+    # Fork pull_request runs get a read-only token and no secrets, so they can't post statuses or publish
+    # images; a maintainer imports fork revisions into a branch here instead.
+    if: github.event_name == 'merge_group' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -115,7 +118,7 @@ jobs:
     name: Dispatch network tests
     needs: [detect, build]
     # A superseded run (cancel-in-progress) is not a dispatch failure; the newer run owns the status.
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && needs.detect.result != 'skipped' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
