@@ -329,31 +329,30 @@ impl ValidatorConfigV2 {
         Ok((parsed_ingress, parsed_egress))
     }
 
-    /// Parses `ingress` as an `<ip>:<port>` pair.
+    /// Parses `ingress` as an `<ip>:<port>` pair and returns the hash of the
+    /// ingress' binary representation.
     ///
-    /// From T14, an IPv4-mapped IPv6 address is returned as its IPv4 form, so both spellings of
-    /// an endpoint share one key in `active_ingress_ips`.
-    fn parse_ingress(&self, ingress: &str) -> Result<std::net::SocketAddr> {
-        let mut addr = ingress
+    /// For V4 addresses, that's `keccak256(octets(ip) || big_endian(port))`.
+    ///
+    /// For V6 addresses, that's `keccak256(octets(ip) || big_endian(scope_id) || big_endian(port))`.
+    ///
+    /// From T14, an IPv4-mapped IPv6 address is hashed as its IPv4 form.
+    fn ingress_key(&self, ingress: &str) -> Result<B256> {
+        let mut ingress = ingress
             .parse::<std::net::SocketAddr>()
             .map_err(IpWithPortParseError::from)
             .map_err(|err| {
                 ValidatorConfigV2Error::not_ip_port(ingress.to_string(), err.to_string())
             })?;
         if self.storage.spec().is_t14() {
-            addr.set_ip(addr.ip().to_canonical());
+            ingress.set_ip(ingress.ip().to_canonical());
         }
-        Ok(addr)
+        Ok(Self::hash_ingress(ingress))
     }
 
-    /// Returns the key of `ingress` in `active_ingress_ips`.
-    ///
-    /// For V4 addresses, that's `keccak256(octets(ip) || big_endian(port))`.
-    ///
-    /// For V6 addresses, that's `keccak256(octets(ip) || big_endian(scope_id) || big_endian(port))`.
-    fn ingress_key(addr: std::net::SocketAddr) -> B256 {
+    fn hash_ingress(ingress: std::net::SocketAddr) -> B256 {
         let mut hasher = Keccak256::new();
-        match addr {
+        match ingress {
             std::net::SocketAddr::V4(v4) => {
                 hasher.update(v4.ip().octets());
                 hasher.update(v4.port().to_be_bytes());
@@ -367,44 +366,41 @@ impl ValidatorConfigV2 {
         hasher.finalize()
     }
 
+    /// From T14, returns the pre-T14 key an IPv4-mapped spelling of an IPv4 `ingress` was
+    /// stored under.
+    fn legacy_mapped_ingress_key(&self, ingress: &str) -> Result<Option<B256>> {
+        if !self.storage.spec().is_t14() {
+            return Ok(None);
+        }
+        Ok(match ingress.parse::<std::net::SocketAddr>() {
+            Ok(std::net::SocketAddr::V4(v4)) => Some(Self::hash_ingress(
+                std::net::SocketAddrV6::new(v4.ip().to_ipv6_mapped(), v4.port(), 0, 0).into(),
+            )),
+            Ok(addr @ std::net::SocketAddr::V6(v6)) if v6.ip().to_ipv4_mapped().is_some() => {
+                Some(Self::hash_ingress(addr))
+            }
+            _ => None,
+        })
+    }
+
     /// Returns the key of `ingress`, and whether an active validator already uses it.
     fn ingress_in_use(&self, ingress: &str) -> Result<(B256, bool)> {
-        let addr = self.parse_ingress(ingress)?;
-        let key = Self::ingress_key(addr);
+        let key = self.ingress_key(ingress)?;
         let mut in_use = self.active_ingress_ips[key].read()?;
-        // An IPv4-mapped ingress added before T14 is keyed by its IPv6 form.
-        if !in_use
-            && self.storage.spec().is_t14()
-            && let std::net::SocketAddr::V4(v4) = addr
-        {
-            let mapped = std::net::SocketAddrV6::new(v4.ip().to_ipv6_mapped(), v4.port(), 0, 0);
-            in_use = self.active_ingress_ips[Self::ingress_key(mapped.into())].read()?;
+        if !in_use && let Some(legacy) = self.legacy_mapped_ingress_key(ingress)? {
+            in_use = self.active_ingress_ips[legacy].read()?;
         }
         Ok((key, in_use))
     }
 
     /// Frees the stored `ingress` of an active validator.
     fn release_ingress(&mut self, ingress: &str) -> Result<()> {
-        let key = Self::ingress_key(self.parse_ingress(ingress)?);
+        let key = self.ingress_key(ingress)?;
         self.active_ingress_ips[key].delete()?;
         if let Some(legacy) = self.legacy_mapped_ingress_key(ingress)? {
             self.active_ingress_ips[legacy].delete()?;
         }
         Ok(())
-    }
-
-    /// From T14, returns the pre-T14 key of a stored IPv4-mapped `ingress`, which was keyed by
-    /// its IPv6 form.
-    fn legacy_mapped_ingress_key(&self, ingress: &str) -> Result<Option<B256>> {
-        if !self.storage.spec().is_t14() {
-            return Ok(None);
-        }
-        Ok(match ingress.parse::<std::net::SocketAddr>() {
-            Ok(addr @ std::net::SocketAddr::V6(v6)) if v6.ip().to_ipv4_mapped().is_some() => {
-                Some(Self::ingress_key(addr))
-            }
-            _ => None,
-        })
     }
 
     fn require_unique_ingress(&self, ingress: &str) -> Result<B256> {
@@ -418,25 +414,18 @@ impl ValidatorConfigV2 {
     }
 
     fn update_ingress_ip_tracking(&mut self, old_ingress: &str, new_ingress: &str) -> Result<()> {
-        let old_ingress_hash = Self::ingress_key(self.parse_ingress(old_ingress)?);
-        let new_ingress_hash = Self::ingress_key(self.parse_ingress(new_ingress)?);
+        let old_ingress_hash = self.ingress_key(old_ingress)?;
+        let new_ingress_hash = self.ingress_key(new_ingress)?;
 
-        if old_ingress_hash == new_ingress_hash {
-            // Same endpoint: only move an IPv4-mapped entry added before T14 onto its T14 key.
-            if let Some(legacy) = self.legacy_mapped_ingress_key(old_ingress)? {
-                self.active_ingress_ips[legacy].delete()?;
-                self.active_ingress_ips[new_ingress_hash].write(true)?;
+        if old_ingress_hash != new_ingress_hash {
+            if self.ingress_in_use(new_ingress)?.1 {
+                Err(ValidatorConfigV2Error::ingress_already_exists(
+                    new_ingress.to_string(),
+                ))?
             }
-            return Ok(());
+            self.release_ingress(old_ingress)?;
+            self.active_ingress_ips[new_ingress_hash].write(true)?;
         }
-
-        if self.ingress_in_use(new_ingress)?.1 {
-            Err(ValidatorConfigV2Error::ingress_already_exists(
-                new_ingress.to_string(),
-            ))?
-        }
-        self.release_ingress(old_ingress)?;
-        self.active_ingress_ips[new_ingress_hash].write(true)?;
 
         Ok(())
     }
