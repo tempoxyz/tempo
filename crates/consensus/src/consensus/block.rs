@@ -266,6 +266,7 @@ pub(crate) struct Error(#[from] ConsensusError);
 mod tests {
     use alloy_consensus::{BlockBody, EMPTY_ROOT_HASH};
     use alloy_primitives::{B256, bytes, keccak256};
+    use alloy_rlp::encode;
     use commonware_codec::Encode;
     use reth_node_core::primitives::SealedBlock;
     use tempo_primitives::{Block as TempoBlock, TempoHeader};
@@ -338,8 +339,7 @@ mod tests {
         });
         let expected = Block::try_from_execution_block(execution_block.clone())
             .expect("test block should be valid");
-        let mut block_bytes = Vec::new();
-        alloy_rlp::Encodable::encode(&execution_block, &mut block_bytes);
+        let block_bytes = encode(&execution_block);
 
         let decoded = Block::read_cfg(&mut block_bytes.as_ref(), &()).unwrap();
         assert_eq!(decoded, expected);
@@ -370,8 +370,7 @@ mod tests {
                 ..Default::default()
             },
         });
-        let mut encoded = Vec::new();
-        alloy_rlp::Encodable::encode(&execution_block, &mut encoded);
+        let encoded = encode(&execution_block);
 
         let err = Block::read_cfg(&mut encoded.as_slice(), &()).unwrap_err();
 

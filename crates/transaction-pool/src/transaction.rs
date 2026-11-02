@@ -1231,8 +1231,7 @@ mod tests {
         tx.key_authorization
             .take_if(|auth| auth.signature.is_configurable_account());
         let (envelope, sender) = signed_aa_envelope(tx);
-        let mut raw = Vec::with_capacity(envelope.encode_2718_len());
-        envelope.encode_2718(&mut raw);
+        let raw = envelope.encoded_2718();
         let encoded_length = raw.len();
         let pooled = <TempoPooledTransaction as PoolTransaction>::recover_raw_transaction(&raw)
             .expect("raw transaction recovery failed");
