@@ -631,6 +631,96 @@ fn startup_rejects_boundary_outcome_for_another_epoch() {
     });
 }
 
+/// Starts from a fresh store whose floor at height 19 ends epoch 1, trusting
+/// `trusted` from epoch 2, with `outcome` as the boundary's DKG outcome.
+async fn start_healing_with_trusted_identity(
+    context: &commonware_runtime::deterministic::Context,
+    partition_prefix: &str,
+    trusted: &State,
+    outcome: &State,
+) -> Harness {
+    let mut harness = Harness::builder(context.child("test"), partition_prefix)
+        .epoch_length(10)
+        .identity(PrivateKey::from_seed(u64::MAX))
+        .finalized_floor(Height::new(19))
+        .startup(
+            NetworkIdentity {
+                from_epoch: 2,
+                identity: *trusted.output.public().public(),
+            },
+            // The tip in epoch 1 predates the trusted identity, so startup
+            // accepts it as a historical bootstrap.
+            Some((
+                Height::new(19),
+                make_certificate(
+                    Digest(header(Height::new(19)).hash_slow()),
+                    Epoch::new(1),
+                    1,
+                    &dkg_fixture(&mut context.child("tip"), Epoch::new(1)).schemes,
+                ),
+            )),
+        )
+        .build()
+        .await;
+    harness
+        .execution
+        .add_header(outcome_header(Height::new(19), outcome));
+    harness.start().await;
+    harness
+}
+
+#[test]
+fn startup_rejects_boundary_outcome_with_another_identity_than_trusted() {
+    Runner::default().start(|mut context| async move {
+        let (trusted, _, _) = dkg_state(&mut context, Epoch::new(2), 4, false);
+        let (forged, _, _) = dkg_state(&mut context, Epoch::new(2), 4, false);
+        let mut harness = start_healing_with_trusted_identity(
+            &context,
+            "startup_rejects_outcome_identity",
+            &trusted,
+            &forged,
+        )
+        .await;
+        harness.wait_for_exit().await;
+
+        assert!(harness.epoch_manager.events().is_empty());
+        let storage = state::builder()
+            .partition_prefix("startup_rejects_outcome_identity")
+            .init_unverified(context.child("reopened"))
+            .await
+            .unwrap();
+        assert!(
+            storage.state().is_none(),
+            "the outcome must not be persisted"
+        );
+    });
+}
+
+#[test]
+fn startup_heals_from_boundary_outcome_with_the_trusted_identity() {
+    Runner::default().start(|mut context| async move {
+        let (trusted, _, _) = dkg_state(&mut context, Epoch::new(2), 4, false);
+        let harness = start_healing_with_trusted_identity(
+            &context,
+            "startup_heals_with_trusted_identity",
+            &trusted,
+            &trusted,
+        )
+        .await;
+
+        assert!(!harness.has_dealer_log(trusted.epoch).await);
+        assert_eq!(
+            harness.epoch_manager.events(),
+            vec![EpochEvent::Enter {
+                epoch: trusted.epoch,
+                public: trusted.output.public().clone(),
+                share: None,
+                participants: trusted.dealers().clone(),
+            }]
+        );
+    });
+}
+
 #[test]
 fn startup_recovers_v0_share_without_t12() {
     assert_startup_recovers_revealed_share(None);

@@ -135,6 +135,9 @@ pub(crate) struct Actor<
     /// Opened during initialization, before authenticating the tip. Taken when the actor starts.
     storage: Option<state::Unverified<TContext>>,
 
+    /// The network identity that authenticated the finalized tip at startup.
+    trusted_identity: NetworkIdentity,
+
     /// The channel over which the actor will receive messages.
     mailbox: mpsc::UnboundedReceiver<super::Message>,
 
@@ -175,7 +178,7 @@ where
             identity: *state.output.public().public(),
         });
 
-        crate::startup::verify_finalized_tip(
+        let trusted_identity = crate::startup::verify_finalized_tip(
             &mut *context,
             &config.network_identity,
             persisted_identity.as_ref(),
@@ -191,6 +194,7 @@ where
             config,
             context,
             storage: Some(storage),
+            trusted_identity,
             mailbox,
             metrics,
             pending_finalized_blocks: FuturesOrdered::new(),
@@ -1427,6 +1431,20 @@ where
             onchain_outcome.epoch() == expected_epoch,
             "boundary outcome at height `{latest_boundary}` is for epoch `{}`, expected epoch `{expected_epoch}`",
             onchain_outcome.epoch,
+        );
+
+        // Every epoch from the trusted identity's first epoch up to the
+        // authenticated tip carries its key: a full DKG in between would have
+        // changed the key that signed the tip.
+        ensure!(
+            onchain_outcome.epoch < self.trusted_identity.from_epoch
+                || *onchain_outcome.network_identity() == self.trusted_identity.identity,
+            "boundary outcome at height `{latest_boundary}` for epoch `{}` has network identity \
+            `{}`, which differs from the trusted network identity `{}` from epoch `{}`",
+            onchain_outcome.epoch,
+            onchain_outcome.network_identity(),
+            self.trusted_identity.identity,
+            self.trusted_identity.from_epoch,
         );
 
         // The configured initial share takes precedence over the candidate
