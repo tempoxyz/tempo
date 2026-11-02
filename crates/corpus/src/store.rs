@@ -9,7 +9,7 @@ use alloy_primitives::B256;
 use async_trait::async_trait;
 use aws_credential_types::provider::{ProvideCredentials, SharedCredentialsProvider};
 use bytes::Bytes;
-use eyre::OptionExt;
+use eyre::{OptionExt, WrapErr};
 use futures::TryStreamExt;
 use object_store::{
     ClientConfigKey, CredentialProvider, ObjectStore, ObjectStoreExt, PutMode, RetryConfig,
@@ -53,6 +53,10 @@ const RETIRED_CHECKPOINT_LIFETIME: Duration = Duration::from_secs(60 * 60);
 /// Lifetime of a replay's lease checkpoint. [Store::renew_lease] extends it every third of
 /// it, so a lease a crashed replay leaves behind expires on its own.
 const LEASE_LIFETIME: Duration = Duration::from_secs(10 * 60);
+/// Bounds each lease operation: SlateDB's `Admin` retries object-store failures without limit
+/// and has no setting for [SLATEDB_RETRIES]. Well under a third of [LEASE_LIFETIME], so a renewal
+/// that times out still fails before the lease expires.
+const LEASE_OPERATION_TIMEOUT: Duration = Duration::from_secs(60);
 pub const CONTEXT_KEY: &[u8] = b"reth-corpus-context";
 pub const CURSOR_KEY: &[u8] = b"reth-corpus-cursor";
 
@@ -400,16 +404,18 @@ impl Store {
             .as_ref()
             .ok_or_eyre("corpus has no published checkpoint")?
             .parse()?;
-        Ok(Admin::builder(self.data(), self.objects.clone())
-            .build()
-            .create_detached_checkpoint(&CheckpointOptions {
+        let admin = Admin::builder(self.data(), self.objects.clone()).build();
+        let created = tokio::time::timeout(
+            LEASE_OPERATION_TIMEOUT,
+            admin.create_detached_checkpoint(&CheckpointOptions {
                 lifetime: Some(LEASE_LIFETIME),
                 source: Some(published),
                 name: None,
-            })
-            .await?
-            .id
-            .to_string())
+            }),
+        )
+        .await
+        .wrap_err("creating the replay lease timed out")??;
+        Ok(created.id.to_string())
     }
 
     /// Extends `lease` every third of `LEASE_LIFETIME`; returns only on failure.
@@ -418,16 +424,24 @@ impl Store {
         let id = lease.parse()?;
         loop {
             tokio::time::sleep(LEASE_LIFETIME / 3).await;
-            admin.refresh_checkpoint(id, Some(LEASE_LIFETIME)).await?;
+            tokio::time::timeout(
+                LEASE_OPERATION_TIMEOUT,
+                admin.refresh_checkpoint(id, Some(LEASE_LIFETIME)),
+            )
+            .await
+            .wrap_err("renewing the replay lease timed out")??;
         }
     }
 
     /// Deletes a lease from [Self::lease].
     pub async fn release_lease(&self, lease: &str) -> eyre::Result<()> {
-        Admin::builder(self.data(), self.objects.clone())
-            .build()
-            .delete_checkpoint(lease.parse()?)
-            .await?;
+        let admin = Admin::builder(self.data(), self.objects.clone()).build();
+        tokio::time::timeout(
+            LEASE_OPERATION_TIMEOUT,
+            admin.delete_checkpoint(lease.parse()?),
+        )
+        .await
+        .wrap_err("releasing the replay lease timed out")??;
         Ok(())
     }
 
