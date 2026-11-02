@@ -90,7 +90,7 @@ pub(crate) fn check(
     failures: &mut Vec<InvariantFailure>,
     report: &mut Report,
 ) {
-    let missed = db.pre.take_miss();
+    let missed = db.pre.missed();
     if let Some(effects) = &effects {
         view_cache.advance(effects.net);
     }
@@ -205,5 +205,5 @@ pub(crate) fn check(
         scope: scope.clone(),
     }));
     report.merge(step);
-    db.pre.restore_miss(missed);
+    db.pre.restore_missed(missed);
 }

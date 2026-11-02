@@ -3,6 +3,7 @@
 use std::{
     cell::RefCell,
     fmt::{self, Display},
+    rc::Rc,
 };
 
 use alloy_primitives::{Address, B256, Bytes, U256, map::HashMap};
@@ -14,12 +15,14 @@ use invariants_core::Views;
 use reth_evm::{ConfigureEvm as _, Database};
 use tempo_evm::{TempoEvm, TempoEvmConfig, TempoEvmEnv};
 
-use crate::state::{MissingPreState, Net, PreStateDb, Reader};
+use crate::state::{Net, PreStateDb, Reader};
 
 /// Read-only calls against the state an EVM reads, noting reads the seeded pre-state misses, and
 /// answered from `view_cache` when the same call was made on the same state before.
 pub(super) struct EvmViews<'a> {
     evm: TempoEvm<'a>,
+    /// What the call being made has read.
+    reads: Rc<RefCell<Vec<Read>>>,
     pre_state: &'a PreStateDb,
     view_cache: &'a ViewCache,
     /// Whether the state is the one before the step.
@@ -35,8 +38,14 @@ impl<'a> EvmViews<'a> {
         view_cache: &'a ViewCache,
         before: bool,
     ) -> Self {
+        let reads = Rc::default();
+        let db = Recorder {
+            db,
+            reads: Rc::clone(&reads),
+        };
         Self {
             evm: evm_config.evm_with_env(db, env),
+            reads,
             pre_state,
             view_cache,
             before,
@@ -50,60 +59,41 @@ impl<'a> EvmViews<'a> {
             return output;
         }
         let (target, input) = call;
-        self.pre_state.take_miss();
-        let tx = SystemTx::new(*target, input.clone()).with_caller(Address::ZERO);
-        // What it read: every account it loaded, and each slot it loaded with its account.
-        // `None` when it could not run, so its reads are unknown.
-        let (output, mut reads) = match self.evm.system_call(tx) {
-            Err(err) => (Err(err.to_string()), None),
-            Ok(executed) => {
-                let reads = executed
-                    .account_changes()
-                    .flat_map(|account| {
-                        let slots = account.storage.slots.keys().map(|slot| Some(*slot));
-                        [None]
-                            .into_iter()
-                            .chain(slots)
-                            .map(move |slot| (account.address, slot))
-                    })
-                    .collect::<Vec<_>>();
-                let result = executed.result();
-                let output = if result.is_success() {
-                    Ok(Some(result.output.clone()).filter(|o| !o.is_empty()))
-                } else {
-                    Err(format!("{result:?}"))
-                };
-                (output, Some(reads))
-            }
-        };
-        let output = match self.pre_state.take_miss() {
-            None => output.map_err(|reason| ViewFailed {
+        // The EVM caches what it loads, so a call reaches the database for every key it reads
+        // only on an empty cache.
+        let cache = &mut self.evm.overlay_db_mut().cache;
+        cache.accounts.clear();
+        cache.storage.clear();
+        self.pre_state.restore_missed(false);
+        let result = self
+            .evm
+            .system_call(SystemTx::new(*target, input.clone()).with_caller(Address::ZERO));
+        let output = if self.pre_state.missed() {
+            Ok(None)
+        } else {
+            let failed = |reason| ViewFailed {
                 selector: input
                     .get(..4)
                     .map(Bytes::copy_from_slice)
                     .unwrap_or_default(),
                 target: *target,
                 reason,
-            }),
-            Some(missing) => {
-                let missed = match missing {
-                    MissingPreState::Account(address) => (address, None),
-                    MissingPreState::Storage(address, slot) => (address, Some(slot)),
-                    MissingPreState::Code(_) | MissingPreState::BlockHash(_) => return Ok(None),
-                };
-                if let Some(reads) = &mut reads {
-                    reads.extend([(missed.0, None), missed]);
+            };
+            match result {
+                Err(err) => Err(failed(err.to_string())),
+                Ok(executed) if !executed.result().is_success() => {
+                    Err(failed(format!("{:?}", executed.result())))
                 }
-                Ok(None)
+                Ok(executed) => {
+                    Ok(Some(executed.result().output.clone()).filter(|o| !o.is_empty()))
+                }
             }
         };
-        if let Some(mut reads) = reads {
-            reads.push((*target, None));
-            reads.sort_unstable();
-            reads.dedup();
-            self.view_cache
-                .insert(call, self.before, output.clone(), reads);
-        }
+        let mut reads = self.reads.take();
+        reads.sort_unstable();
+        reads.dedup();
+        self.view_cache
+            .insert(call, self.before, output.clone(), reads);
         output
     }
 }
@@ -161,13 +151,7 @@ impl ViewCache {
         output.cloned()
     }
 
-    fn insert(
-        &self,
-        call: &Call,
-        before: bool,
-        output: Output,
-        reads: Vec<(Address, Option<U256>)>,
-    ) {
+    fn insert(&self, call: &Call, before: bool, output: Output, reads: Vec<Read>) {
         let calls = &mut *self.0.borrow_mut();
         if before {
             calls.before.insert(call.clone(), output);
@@ -185,6 +169,9 @@ type Call = (Address, Bytes);
 
 type Output = Result<Option<Bytes>, ViewFailed>;
 
+/// A storage slot or, as `None`, an account, that a view call read.
+type Read = (Address, Option<U256>);
+
 #[derive(Default)]
 struct Calls {
     /// The transaction step being checked, counted from the block's first.
@@ -194,7 +181,41 @@ struct Calls {
     /// Outputs that hold only before it: read before it, or read earlier and undone by it.
     before: HashMap<Call, Output>,
     /// The calls that read each slot or account, including some undone since.
-    readers: HashMap<(Address, Option<U256>), Vec<Call>>,
+    readers: HashMap<Read, Vec<Call>>,
+}
+
+/// A database that notes every account and slot read through it.
+struct Recorder<D> {
+    db: D,
+    reads: Rc<RefCell<Vec<Read>>>,
+}
+
+impl<D: Database> Database for Recorder<D> {
+    type Error = D::Error;
+
+    fn is_fatal(error: &Self::Error) -> bool {
+        D::is_fatal(error)
+    }
+
+    fn get_account(&mut self, address: &Address) -> Result<Option<AccountInfo>, Self::Error> {
+        self.reads.borrow_mut().push((*address, None));
+        self.db.get_account(address)
+    }
+
+    fn get_code_by_hash(&mut self, code_hash: &B256) -> Result<Bytecode, Self::Error> {
+        self.db.get_code_by_hash(code_hash)
+    }
+
+    fn get_storage(&mut self, address: &Address, key: &U256) -> Result<U256, Self::Error> {
+        self.reads
+            .borrow_mut()
+            .extend([(*address, None), (*address, Some(*key))]);
+        self.db.get_storage(address, key)
+    }
+
+    fn get_block_hash(&mut self, number: &U256) -> Result<B256, Self::Error> {
+        self.db.get_block_hash(number)
+    }
 }
 
 /// The state before a step: what `reader` reads, with the step's `net` changes undone.

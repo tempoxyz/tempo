@@ -87,23 +87,17 @@ impl Db {
 #[derive(Debug)]
 pub(crate) struct PreStateDb {
     exact: bool,
-    /// The first key read since the last [`Self::take_miss`] that the pre-state lacks.
-    missed: Cell<Option<MissingPreState>>,
+    missed: Cell<bool>,
 }
 
 impl PreStateDb {
     /// Whether a read missed an exact pre-state.
     pub(crate) fn missed(&self) -> bool {
-        self.missed.get().is_some()
+        self.missed.get()
     }
 
-    /// The first key missed since the last call, clearing it.
-    pub(crate) fn take_miss(&self) -> Option<MissingPreState> {
-        self.missed.take()
-    }
-
-    /// Sets the miss, e.g. back to one taken before reads that are not part of execution.
-    pub(crate) fn restore_miss(&self, missed: Option<MissingPreState>) {
+    /// Sets the miss flag, e.g. back to a value saved before reads that are not part of execution.
+    pub(crate) fn restore_missed(&self, missed: bool) {
         self.missed.set(missed);
     }
 
@@ -111,7 +105,7 @@ impl PreStateDb {
         if !self.exact {
             return Ok(());
         }
-        self.missed.set(self.missed.get().or(Some(missing)));
+        self.missed.set(true);
         Err(missing)
     }
 
@@ -138,7 +132,7 @@ impl PreStateDb {
 }
 
 /// A read of a key an exact pre-state does not hold.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 pub(crate) enum MissingPreState {
     Account(Address),
     Storage(Address, U256),
@@ -295,7 +289,7 @@ pub(crate) fn seed(pre_state: &PreState) -> Result<Db, ErrorClass> {
         cache: RefCell::new(cache),
         pre: PreStateDb {
             exact,
-            missed: Cell::new(None),
+            missed: Cell::new(false),
         },
     })
 }
