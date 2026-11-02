@@ -4,11 +4,8 @@ use std::{collections::HashSet, sync::Arc};
 
 use alloy::{
     primitives::{Address, B256, Bytes, TxKind},
-    providers::{Provider, ProviderBuilder, ext::DebugApi},
-    rpc::types::{
-        Filter, TransactionRequest,
-        trace::geth::{CallConfig, CallFrame, GethDebugTracingOptions},
-    },
+    providers::{Provider, ProviderBuilder},
+    rpc::types::{Filter, TransactionRequest},
     sol_types::{SolCall, SolEvent},
 };
 use alloy_consensus::BlockHeader;
@@ -18,14 +15,13 @@ use tempo_alloy::{TempoNetwork, provider::TempoProviderExt, rpc::ForkSchedule};
 use tempo_chainspec::{TempoChainSpec, TempoHardfork};
 use tempo_contracts::{
     precompiles::{
-        IZoneFactory, IZoneVerifier, NITRO_VERIFIER_CONFIG_V1, ZONE_FACTORY_ADDRESS,
-        ZONE_VERIFIER_ADDRESS,
+        IZoneFactory, NITRO_VERIFIER_CONFIG_V1, ZONE_FACTORY_ADDRESS, ZONE_VERIFIER_ADDRESS,
     },
     zones::{BatchSubmitted, submitBatchCall},
 };
 use tempo_nitro_attestation::parse_attestation;
 use tempo_precompiles::zone_factory::portal_address;
-use tempo_primitives::{TempoAddressExt, TempoTxEnvelope};
+use tempo_primitives::TempoAddressExt;
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct GetVerifierPcrs {
@@ -33,8 +29,7 @@ pub(crate) struct GetVerifierPcrs {
     #[arg(long, short, value_parser = tempo_chainspec::spec::chain_value_parser)]
     chain: Arc<TempoChainSpec>,
 
-    /// RPC endpoint supporting tempo_forkSchedule and eth_getLogs. debug_traceTransaction is only
-    /// needed for batches submitted through a wrapper contract.
+    /// RPC endpoint supporting tempo_forkSchedule, eth_getLogs and historical transactions.
     #[arg(long)]
     rpc_url: Option<String>,
 
@@ -177,22 +172,10 @@ impl GetVerifierPcrs {
                     transaction.block_hash == Some(block_hash),
                     "batch log and transaction disagree on block hash; retry after reorg"
                 );
-                let found = match direct_batch_pcrs(transaction.inner.inner(), portal)? {
-                    DirectBatch::Found(found) => Some(found),
-                    DirectBatch::NotNitro => None,
-                    // Submitted through a wrapper contract: only a trace shows the inner call.
-                    DirectBatch::Absent => {
-                        let trace = provider
-                            .debug_trace_transaction_call(
-                                hash,
-                                GethDebugTracingOptions::call_tracer(CallConfig::default()),
-                            )
-                            .await
-                            .wrap_err("batch was submitted through a contract; RPC must support debug_traceTransaction with callTracer and retain history for it")?;
-                        batch_pcrs(&trace, portal)?
-                    }
-                };
-                if let Some((zone_id, pcrs)) = found {
+                // The sequencer submits batches directly, so the proof is in the calldata.
+                if let Some((zone_id, pcrs)) =
+                    direct_batch_pcrs(transaction.inner.inner().calls(), portal)?
+                {
                     let block = provider
                         .get_block_by_number(number.into())
                         .await?
@@ -294,84 +277,28 @@ fn hardfork_at(schedule: &ForkSchedule, timestamp: u64) -> &str {
         .map_or("Genesis", |entry| entry.name.as_str())
 }
 
-enum DirectBatch {
-    /// A direct Nitro `submitBatch` call to the portal.
-    Found((u32, [Bytes; 3])),
-    /// Direct `submitBatch` calls to the portal, none with the Nitro verifier config.
-    NotNitro,
-    /// No direct `submitBatch` call to the portal.
-    Absent,
-}
-
 /// Read PCRs from a direct `submitBatch` call in the transaction's own calls.
 ///
 /// The portal emits `BatchSubmitted` only after its verifier accepted the proof, and factory
 /// portals always use [`ZONE_VERIFIER_ADDRESS`], so an emitted log proves acceptance without a
 /// trace. Tempo AA calls are atomic, so every call of a transaction with the log succeeded.
-fn direct_batch_pcrs(envelope: &TempoTxEnvelope, portal: Address) -> eyre::Result<DirectBatch> {
+fn direct_batch_pcrs<'a>(
+    calls: impl IntoIterator<Item = (TxKind, &'a Bytes)>,
+    portal: Address,
+) -> eyre::Result<Option<(u32, [Bytes; 3])>> {
     let zone_id = portal
         .zone_portal_id()
         .and_then(|zone_id| u32::try_from(zone_id).ok())
         .ok_or_eyre("batch log emitter is not a canonical Zone portal")?;
-    let mut direct = DirectBatch::Absent;
-    for (to, input) in envelope.calls() {
+    for (to, input) in calls {
         if to != TxKind::Call(portal) {
             continue;
         }
         let Ok(call) = submitBatchCall::abi_decode(input) else {
             continue;
         };
-        if call.verifierConfig.as_ref() != NITRO_VERIFIER_CONFIG_V1 {
-            direct = DirectBatch::NotNitro;
-            continue;
-        }
-        return Ok(DirectBatch::Found((
-            zone_id,
-            attestation_pcrs(&call.proof)?,
-        )));
-    }
-    Ok(direct)
-}
-
-/// Ignore failed ancestors, including reverted calls caught by a multicall or AA transaction.
-fn batch_pcrs(frame: &CallFrame, portal: Address) -> eyre::Result<Option<(u32, [Bytes; 3])>> {
-    if frame.error.is_some() {
-        return Ok(None);
-    }
-    if frame.to == Some(portal)
-        && frame.typ == "CALL"
-        && submitBatchCall::abi_decode(&frame.input).is_ok()
-        && let Some(pcrs) = verifier_pcrs(frame, portal)?
-    {
-        return Ok(Some(pcrs));
-    }
-    for child in &frame.calls {
-        if let Some(pcrs) = batch_pcrs(child, portal)? {
-            return Ok(Some(pcrs));
-        }
-    }
-    Ok(None)
-}
-
-fn verifier_pcrs(frame: &CallFrame, portal: Address) -> eyre::Result<Option<(u32, [Bytes; 3])>> {
-    if frame.error.is_some() {
-        return Ok(None);
-    }
-    if frame.to == Some(ZONE_VERIFIER_ADDRESS)
-        && frame.from == portal
-        && matches!(frame.typ.as_str(), "CALL" | "STATICCALL")
-        && let Ok(call) = IZoneVerifier::verifyCall::abi_decode(&frame.input)
-        && portal_address(call.zoneId) == portal
-        && call.verifierConfig.as_ref() == NITRO_VERIFIER_CONFIG_V1
-        && let Some(output) = &frame.output
-        && IZoneVerifier::verifyCall::abi_decode_returns_validate(output)
-            .is_ok_and(|accepted| accepted)
-    {
-        return Ok(Some((call.zoneId, attestation_pcrs(&call.proof)?)));
-    }
-    for child in &frame.calls {
-        if let Some(pcrs) = verifier_pcrs(child, portal)? {
-            return Ok(Some(pcrs));
+        if call.verifierConfig.as_ref() == NITRO_VERIFIER_CONFIG_V1 {
+            return Ok(Some((zone_id, attestation_pcrs(&call.proof)?)));
         }
     }
     Ok(None)
@@ -408,7 +335,7 @@ mod tests {
         zones::{BlockTransition, DepositQueueTransition, TokenEnablementTransition},
     };
 
-    fn batch() -> (Address, CallFrame, [Bytes; 3]) {
+    fn batch() -> (Address, submitBatchCall, [Bytes; 3]) {
         let encoded: String =
             include_str!("../../crates/nitro-attestation/testdata/aws_attestation_2026_01_03.b64")
                 .split_whitespace()
@@ -419,14 +346,9 @@ mod tests {
         let parsed = parse_attestation(&proof).unwrap();
         let expected =
             std::array::from_fn(|index| Bytes::copy_from_slice(&parsed.pcrs[index].value));
-        let portal = portal_address(1);
-        let call = IZoneVerifier::verifyCall {
-            zoneId: 1,
+        let submission = submitBatchCall {
             tempoBlockNumber: 0,
-            anchorBlockNumber: 0,
-            anchorBlockHash: B256::ZERO,
-            expectedWithdrawalBatchIndex: 0,
-            nextZoneHeight: U256::ZERO,
+            recentTempoBlockNumber: 0,
             blockTransition: BlockTransition {
                 prevBlockHash: B256::ZERO,
                 nextBlockHash: B256::ZERO,
@@ -444,95 +366,43 @@ mod tests {
             withdrawalQueueHash: B256::ZERO,
             verifierConfig: Bytes::copy_from_slice(NITRO_VERIFIER_CONFIG_V1),
             proof: proof.into(),
-        };
-        let submission = submitBatchCall {
-            tempoBlockNumber: 0,
-            recentTempoBlockNumber: 0,
-            blockTransition: call.blockTransition.clone(),
-            depositQueueTransition: call.depositQueueTransition.clone(),
-            tokenEnablementTransition: call.tokenEnablementTransition.clone(),
-            withdrawalQueueHash: B256::ZERO,
-            verifierConfig: call.verifierConfig.clone(),
-            proof: call.proof.clone(),
             nextZoneHeight: U256::ZERO,
             signatures: Vec::new(),
         };
-        let trace = CallFrame {
-            to: Some(portal),
-            typ: "CALL".to_owned(),
-            input: submission.abi_encode().into(),
-            calls: vec![CallFrame {
-                from: portal,
-                to: Some(ZONE_VERIFIER_ADDRESS),
-                typ: "STATICCALL".to_owned(),
-                input: call.abi_encode().into(),
-                output: Some(IZoneVerifier::verifyCall::abi_encode_returns(&true).into()),
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-        (portal, trace, expected)
+        (portal_address(1), submission, expected)
     }
 
     #[test]
-    fn extracts_accepted_pcrs_in_nested_batch() {
-        let (portal, trace, expected) = batch();
-        let wrapper = CallFrame {
-            calls: vec![trace],
-            ..Default::default()
-        };
-        assert_eq!(batch_pcrs(&wrapper, portal).unwrap(), Some((1, expected)));
+    fn extracts_pcrs_from_direct_call_among_others() {
+        let (portal, submission, expected) = batch();
+        let unrelated = Bytes::from_static(&[1, 2, 3, 4]);
+        let input = Bytes::from(submission.abi_encode());
+        let calls = [
+            (TxKind::Call(Address::ZERO), &input),
+            (TxKind::Call(portal), &unrelated),
+            (TxKind::Call(portal), &input),
+        ];
+        assert_eq!(
+            direct_batch_pcrs(calls, portal).unwrap(),
+            Some((1, expected))
+        );
     }
 
     #[test]
-    fn skips_fallback_failed_and_unrelated_calls() {
-        let (portal, trace, _) = batch();
-        for variant in 0..8 {
-            let mut trace = trace.clone();
-            match variant {
-                0 => trace.error = Some("reverted ancestor".to_owned()),
-                1 => trace.calls[0].error = Some("verifier reverted".to_owned()),
-                2 => trace.calls[0].to = Some(Address::ZERO),
-                3 => trace.calls[0].from = Address::ZERO,
-                4 => {
-                    trace.calls[0].output =
-                        Some(IZoneVerifier::verifyCall::abi_encode_returns(&false).into())
-                }
-                5 => trace.input = Bytes::new(),
-                6 => trace.calls[0].typ = "DELEGATECALL".to_owned(),
-                7 => {
-                    let mut call =
-                        IZoneVerifier::verifyCall::abi_decode(&trace.calls[0].input).unwrap();
-                    call.verifierConfig = Bytes::copy_from_slice(NO_PROOF_FALLBACK_VERIFIER);
-                    call.proof = Bytes::new();
-                    trace.calls[0].input = call.abi_encode().into();
-                }
-                _ => unreachable!(),
-            }
-            assert_eq!(
-                batch_pcrs(&trace, portal).unwrap(),
-                None,
-                "variant {variant}"
-            );
+    fn skips_non_nitro_and_unrelated_calls() {
+        let (portal, mut submission, _) = batch();
+        let input = Bytes::from(submission.abi_encode());
+        submission.verifierConfig = Bytes::copy_from_slice(NO_PROOF_FALLBACK_VERIFIER);
+        submission.proof = Bytes::new();
+        let no_proof = Bytes::from(submission.abi_encode());
+        for calls in [
+            vec![(TxKind::Call(portal), &no_proof)],
+            vec![(TxKind::Call(portal_address(2)), &input)],
+            vec![(TxKind::Create, &input)],
+            vec![],
+        ] {
+            assert_eq!(direct_batch_pcrs(calls, portal).unwrap(), None);
         }
-        let failed_wrapper = CallFrame {
-            error: Some("reverted wrapper".to_owned()),
-            calls: vec![trace],
-            ..Default::default()
-        };
-        assert_eq!(batch_pcrs(&failed_wrapper, portal).unwrap(), None);
-    }
-
-    #[test]
-    fn skips_reverted_sibling_and_finds_successful_batch() {
-        let (portal, trace, expected) = batch();
-        let mut failed = trace.clone();
-        failed.error = Some("caught revert".to_owned());
-        let wrapper = CallFrame {
-            calls: vec![failed, trace],
-            ..Default::default()
-        };
-        assert_eq!(batch_pcrs(&wrapper, portal).unwrap(), Some((1, expected)));
     }
 
     #[test]
@@ -551,12 +421,13 @@ mod tests {
 
     #[test]
     fn rejects_malformed_accepted_attestation() {
-        let (portal, mut trace, _) = batch();
-        let mut call = IZoneVerifier::verifyCall::abi_decode(&trace.calls[0].input).unwrap();
-        call.proof = Bytes::from_static(&[0xff]);
-        trace.calls[0].input = call.abi_encode().into();
+        let (portal, mut submission, _) = batch();
+        submission.proof = Bytes::from_static(&[0xff]);
+        let input = Bytes::from(submission.abi_encode());
         assert_eq!(
-            batch_pcrs(&trace, portal).unwrap_err().to_string(),
+            direct_batch_pcrs([(TxKind::Call(portal), &input)], portal)
+                .unwrap_err()
+                .to_string(),
             "accepted Nitro call contains an invalid attestation"
         );
     }
