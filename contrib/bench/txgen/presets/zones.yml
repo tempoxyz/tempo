@@ -50,9 +50,10 @@ templates:
   zone_deposit:
     type: tempo
     from: {pool: users, select: {index: 0}}
-    # ~160K used; the limit covers state gas charged before refunds. The general lane admits a
-    # transaction only while used gas plus its limit fits, so oversized limits strand capacity.
-    gas_limit: 1000000
+    # ~160K used warm; a portal's first deposit creates its cursor slots and peaks near 2M before
+    # refunds (a revert would leave it cold). The general lane admits a transaction only while
+    # used gas plus its limit fits, so oversized limits strand capacity.
+    gas_limit: 2500000
     fee_token: "0x20c0000000000000000000000000000000000000"
     calls:
       - to: {var: setup.portal.address}
@@ -74,7 +75,7 @@ templates:
   zone_withdraw:
     type: tempo
     from: {pool: users, select: {index: 0}}
-    gas_limit: 1000000 # ~160K used; see zone_deposit
+    gas_limit: 2500000 # ~160K used warm; see zone_deposit
     fee_token: "0x20c0000000000000000000000000000000000000"
     calls:
       - to: {var: setup.settlement.address}
