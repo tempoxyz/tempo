@@ -253,7 +253,7 @@ pub struct Outputs {
     pub after: [u8; 16],
 }
 
-fn digest(bytes: &[u8]) -> [u8; 16] {
+pub(crate) fn digest(bytes: &[u8]) -> [u8; 16] {
     xxhash_rust::xxh3::xxh3_128(bytes).to_le_bytes()
 }
 

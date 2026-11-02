@@ -31,7 +31,7 @@ use tempo_fuzz_types::{
     TempoBlock, TempoBlockchainInput, TempoExecutionOutcome, TempoHarnessInput,
     TempoHarnessOutcome, TxOutcome,
 };
-use tempo_primitives::Block;
+use tempo_primitives::{Block, TempoReceipt};
 use tokio::runtime::Runtime;
 use tracing::info;
 
@@ -162,6 +162,23 @@ fn divergence(
             "receipts",
             format!("(success, gas) per tx\nexpected {expected:?}\nactual   {actual:?}"),
         )));
+    }
+    // The stored receipt digest covers its type, status, cumulative gas and logs.
+    let block: Block = alloy_rlp::decode_exact(&chunk.blocks[0].rlp)?;
+    let receipts = block.body.transactions.iter().zip(&outcome.receipts);
+    for (index, ((tx, receipt), case)) in receipts.zip(cases).enumerate() {
+        let actual = TempoReceipt {
+            tx_type: tx.tx_type(),
+            success: matches!(receipt.outcome, TxOutcome::Success),
+            cumulative_gas_used: receipt.cumulative_gas_used,
+            logs: receipt.logs.clone(),
+        };
+        if crate::types::digest(&alloy_rlp::encode(&actual)) != case.outputs.receipt {
+            return Ok(Some((
+                "receipt",
+                format!("tx {index}: receipt differs\n{actual:#?}"),
+            )));
+        }
     }
     let changeset = chunk.changeset()?;
     let diff = &outcome.state_diff.total;
@@ -348,6 +365,12 @@ pub fn export(
     workers: usize,
 ) -> eyre::Result<Summary> {
     let chain_spec = chain_spec_input(chain)?;
+    // A reused directory could keep a seed from a run that classified the block differently.
+    eyre::ensure!(
+        fs::read_dir(out).map_or(true, |mut dir| dir.next().is_none()),
+        "seed output dir {} is not empty",
+        out.display()
+    );
     for dir in ["divergent", "invariants"] {
         fs::create_dir_all(out.join(dir))?;
     }
@@ -409,7 +432,7 @@ impl Summary {
                 .into_iter()
                 .for_each(|key| *self.findings.entry(key).or_default() += 1),
         }
-        if self.blocks % 10_000 == 0 {
+        if self.blocks.is_multiple_of(10_000) {
             info!(
                 blocks = self.blocks,
                 seeds = self.seeds,
