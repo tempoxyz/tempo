@@ -26,6 +26,8 @@ use tracy_client as _;
 use opentelemetry_otlp as _;
 
 pub mod cli;
+#[cfg(feature = "corpus")]
+pub mod corpus;
 mod defaults;
 mod follow;
 mod overrides;
@@ -80,8 +82,8 @@ pub use tempo_node::{
     TempoPooledTransaction, TransactionOrigin,
 };
 use tempo_node::{
-    ShadowReplayer, TempoFullNode,
-    rpc::consensus::{TempoConsensusApiServer, TempoConsensusRpc},
+    EstimatorConfig, ShadowReplayer, TempoFullNode,
+    rpc::consensus::{SubscriptionLimits, TempoConsensusApiServer, TempoConsensusRpc},
     telemetry::{
         HardwareMetricsConfig, PrometheusMetricsConfig, install_hardware_metrics,
         install_prometheus_metrics,
@@ -510,6 +512,10 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             };
 
         let faucet_args = args.faucet_args.clone();
+        let consensus_subscription_limits = SubscriptionLimits {
+            max_subscriptions: args.consensus_max_subscriptions,
+            max_subscriptions_per_connection: args.consensus_max_subscriptions_per_connection,
+        };
         let validator_key = args
             .consensus
             .public_key()
@@ -569,7 +575,13 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                 None => node,
             }
         });
-        let estimator = tempo_node.payload_builder_builder().resolve_estimator();
+        let estimator = tempo_node
+            .payload_builder_builder()
+            .resolve_estimator(EstimatorConfig::new(
+                args.consensus.target_block_time.into_duration(),
+                args.consensus.network_budget.into_duration(),
+            ))
+            .wrap_err("invalid --consensus.network-budget or --consensus.target-block-time")?;
         // Share the overridden settings with both the payload builder and consensus.
         let tempo_node = tempo_node.with_estimator(estimator.clone());
         let executed_state = tempo_node.executed_state();
@@ -605,9 +617,38 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                     }
 
                     if has_consensus_engine {
-                        let consensus_rpc = TempoConsensusRpc::new(cl_feed_state);
-                        ctx.modules.merge_configured(consensus_rpc.into_rpc())
-                            .wrap_err("failed to register consensus rpc module")?;
+                        let module_config = ctx.modules.module_config();
+                        let mut missing = Vec::new();
+                        if cli::selection_lacks_consensus(module_config.http()) {
+                            missing.push("--http.api");
+                        }
+                        if cli::selection_lacks_consensus(module_config.ws()) {
+                            missing.push("--ws.api");
+                        }
+                        if !missing.is_empty() {
+                            warn!(
+                                flags = %missing.join(", "),
+                                "the consensus RPC module (consensus_*) is served on transports \
+                                 whose module selection does not list it; this implicit activation \
+                                 is deprecated and will be removed in a future release, add \
+                                 `consensus` to the listed flags to keep serving it",
+                            );
+                        }
+
+                        // Registered on HTTP, WS and IPC regardless of selection until the
+                        // deprecation above is completed.
+                        // Connection IDs are only unique within one server, so the handler with
+                        // the per-connection cap serves HTTP and WS only. They share one server
+                        // when they share a port, and HTTP never runs subscriptions otherwise.
+                        // IPC is a separate server and local, so it only gets the global cap.
+                        let consensus_rpc = TempoConsensusRpc::new(cl_feed_state, consensus_subscription_limits);
+                        let without_connection_cap = consensus_rpc.without_connection_cap();
+                        ctx.modules.merge_http(consensus_rpc.clone().into_rpc())
+                            .wrap_err("failed to register consensus rpc module on http")?;
+                        ctx.modules.merge_ws(consensus_rpc.into_rpc())
+                            .wrap_err("failed to register consensus rpc module on ws")?;
+                        ctx.modules.merge_ipc(without_connection_cap.into_rpc())
+                            .wrap_err("failed to register consensus rpc module on ipc")?;
                     }
 
                     Ok(())
@@ -1012,6 +1053,45 @@ mod tests {
 
         assert!(!node_cmd.ext.is_following_uncertified());
         assert!(node_cmd.ext.has_consensus_engine(false));
+    }
+
+    #[test]
+    fn consensus_subscription_limit_args() {
+        init_defaults_once();
+
+        let ext = |args: &[&str]| {
+            let Commands::Node(node_cmd) = TempoCli::try_parse_from(args).unwrap().command else {
+                panic!("expected node command");
+            };
+            node_cmd.ext
+        };
+
+        let defaults = ext(&["tempo", "node", "--dev"]);
+        assert_eq!(defaults.consensus_max_subscriptions.get(), 256);
+        assert_eq!(defaults.consensus_max_subscriptions_per_connection.get(), 4);
+
+        let custom = ext(&[
+            "tempo",
+            "node",
+            "--dev",
+            "--rpc.consensus-max-subscriptions",
+            "1024",
+            "--rpc.consensus-max-subscriptions-per-connection",
+            "8",
+        ]);
+        assert_eq!(custom.consensus_max_subscriptions.get(), 1024);
+        assert_eq!(custom.consensus_max_subscriptions_per_connection.get(), 8);
+
+        assert!(
+            TempoCli::try_parse_from([
+                "tempo",
+                "node",
+                "--dev",
+                "--rpc.consensus-max-subscriptions",
+                "0"
+            ])
+            .is_err()
+        );
     }
 
     #[test]

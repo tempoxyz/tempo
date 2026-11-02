@@ -252,8 +252,8 @@ where
 mod tests {
     use super::*;
     use alloy_consensus::{
-        Header, Signed, TxLegacy, constants::EMPTY_ROOT_HASH, proofs::calculate_transaction_root,
-        transaction::TxHashRef,
+        Header, SignableTransaction, TxLegacy, constants::EMPTY_ROOT_HASH,
+        proofs::calculate_transaction_root, transaction::TxHashRef,
     };
     use alloy_genesis::Genesis;
     use alloy_primitives::{Address, B256, Signature, TxKind, U256};
@@ -395,7 +395,7 @@ mod tests {
             input: Default::default(),
         };
         let signature = Signature::new(U256::ZERO, U256::ZERO, false);
-        TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, signature))
+        TempoTxEnvelope::Legacy(tx.into_signed(signature))
     }
 
     fn create_tx(chain_id: u64) -> TempoTxEnvelope {
@@ -408,7 +408,7 @@ mod tests {
             value: U256::from(100),
             input: Default::default(),
         };
-        TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, Signature::test_signature()))
+        TempoTxEnvelope::Legacy(tx.into_signed(Signature::test_signature()))
     }
 
     #[test]
@@ -979,7 +979,7 @@ mod tests {
             input: Default::default(),
         };
         let signature = Signature::new(U256::ZERO, U256::ZERO, false);
-        let invalid_system_tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, signature));
+        let invalid_system_tx = TempoTxEnvelope::Legacy(tx.into_signed(signature));
         let tx_hash = *invalid_system_tx.tx_hash();
 
         let header = TestHeaderBuilder::default()

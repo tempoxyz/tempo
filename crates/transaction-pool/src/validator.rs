@@ -930,7 +930,7 @@ impl<T> ConfigureTempoPoolEvm for T where
 mod tests {
     use super::*;
     use crate::{test_utils::TxBuilder, transaction::TempoPoolTransactionError};
-    use alloy_consensus::{Header, Signed, Transaction, TxLegacy};
+    use alloy_consensus::{Header, SignableTransaction, Transaction, TxLegacy};
     use alloy_primitives::{Address, B256, Bytes, TxKind, U256, address, uint};
     use alloy_signer::Signature;
     use evm2::{
@@ -1456,7 +1456,7 @@ mod tests {
             value: U256::ZERO,
             input: Default::default(),
         };
-        let envelope = TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, TEMPO_SYSTEM_TX_SIGNATURE));
+        let envelope = TempoTxEnvelope::Legacy(tx.into_signed(TEMPO_SYSTEM_TX_SIGNATURE));
         let transaction = TempoPooledTransaction::new(
             reth_primitives_traits::Recovered::new_unchecked(envelope, Address::ZERO),
         );

@@ -185,7 +185,7 @@ pub fn configurable_account(cx: _) -> Result {
 mod tests {
     use super::*;
     use crate::{TempoBlockEnv, TempoEvmExt, TempoTxEnv, build_tempo_evm};
-    use alloy_consensus::{Signed, TxLegacy, transaction::Recovered};
+    use alloy_consensus::{SignableTransaction, TxLegacy, transaction::Recovered};
     use alloy_primitives::{Bytes, Signature, TxKind};
     use evm2::{
         ExecutionError,
@@ -247,7 +247,7 @@ mod tests {
             TempoEvmExt::default(),
         );
         let tx = TempoTxEnv::from(Recovered::new_unchecked(
-            TempoTxEnvelope::Legacy(Signed::new_unhashed(
+            TempoTxEnvelope::Legacy(
                 TxLegacy {
                     chain_id: Some(1),
                     nonce: 0,
@@ -255,9 +255,9 @@ mod tests {
                     gas_limit: 1_000_000,
                     to: TxKind::Call(contract),
                     ..TxLegacy::default()
-                },
-                Signature::test_signature(),
-            )),
+                }
+                .into_signed(Signature::test_signature()),
+            ),
             caller,
         ));
 

@@ -2660,7 +2660,7 @@ fn test_tip1060_preserve_churn_attack() -> eyre::Result<()> {
     let balance = evm
         .overlay_db_mut()
         .get_storage(&STORAGE_CREDITS_ADDRESS, &StorageCredits::slot(contract))?
-        .as_limbs()[0];
+        .wrapping_to::<u64>();
     let slots = evm
         .overlay_db()
         .cache
@@ -3012,7 +3012,8 @@ fn test_tip1060_exhausted_direct_budget_stays_direct() -> eyre::Result<()> {
             .get_storage(&contract, &U256::from(slot))
             .unwrap()
     };
-    let mut delta = |slots: (u8, u8)| word(slots.0).as_limbs()[0] - word(slots.1).as_limbs()[0];
+    let mut delta =
+        |slots: (u8, u8)| word(slots.0).wrapping_to::<u64>() - word(slots.1).wrapping_to::<u64>();
 
     assert!(
         delta(EXHAUSTED_GAS) > STORAGE_CREDIT_VALUE

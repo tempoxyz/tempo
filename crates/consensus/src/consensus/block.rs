@@ -338,8 +338,7 @@ mod tests {
         });
         let expected = Block::try_from_execution_block(execution_block.clone())
             .expect("test block should be valid");
-        let mut block_bytes = Vec::new();
-        alloy_rlp::Encodable::encode(&execution_block, &mut block_bytes);
+        let block_bytes = alloy_rlp::encode(&execution_block);
 
         let decoded = Block::read_cfg(&mut block_bytes.as_ref(), &()).unwrap();
         assert_eq!(decoded, expected);
@@ -370,8 +369,7 @@ mod tests {
                 ..Default::default()
             },
         });
-        let mut encoded = Vec::new();
-        alloy_rlp::Encodable::encode(&execution_block, &mut encoded);
+        let encoded = alloy_rlp::encode(&execution_block);
 
         let err = Block::read_cfg(&mut encoded.as_slice(), &()).unwrap_err();
 

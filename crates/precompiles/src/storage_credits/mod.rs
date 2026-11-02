@@ -196,7 +196,7 @@ impl StorageCredits {
     /// Returns the storage credit balance/state key for `account`.
     #[inline]
     pub fn slot(account: Address) -> U256 {
-        U256::from_be_bytes(account.into_word().0)
+        account.into_word().into()
     }
 
     /// Returns a full-slot handler for the account's storage-credit balance/state.

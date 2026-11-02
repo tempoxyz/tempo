@@ -104,7 +104,7 @@ impl BlockAssembler<TempoEvmConfig> for TempoBlockAssembler {
 mod tests {
     use super::*;
     use crate::TempoEvmEnv;
-    use alloy_consensus::{Signed, TxLegacy};
+    use alloy_consensus::{SignableTransaction, TxLegacy};
     use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
     use evm2::env::BlockEnvExt;
     use reth_chainspec::EthChainSpec;
@@ -129,7 +129,7 @@ mod tests {
             value: U256::ZERO,
             input: Bytes::new(),
         };
-        TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, Signature::test_signature()))
+        TempoTxEnvelope::Legacy(tx.into_signed(Signature::test_signature()))
     }
 
     fn create_test_receipt(gas_used: u64) -> TempoReceipt {
