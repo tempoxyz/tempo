@@ -4,7 +4,7 @@ use alloy_primitives::{Address, U256};
 use invariants_core::{check, ensure};
 
 use super::{Books, Burn, MIN_LIQUIDITY, Mint, PoolState, RebalanceSwap, Unminted};
-use crate::{Check, Checked, Replay, Step, StepChecked, Tx, Verdict, or_text};
+use crate::{Check, Checked, Replay, Severity, Step, StepChecked, Tx, Verdict, or_text};
 
 /// The fee manager's views answer. Counted by runners that read the model, not judged by a check here.
 pub const VIEW: &str = "TEMPO-FEE-VIEW";
@@ -21,6 +21,8 @@ pub const CHECKS: &[Check<Books>] = &[
     // collected in it.
     check! {
         id: FEE_CUSTODY,
+        doc: "For every token, the fee manager's TIP-20 balance is at least that token's reserves across its FeeAMM pools (user side and validator side) plus the `collectedFees` it owes validators in that token.",
+        severity: Severity::Critical,
         over: |books: &Books| books.holdings.keys(),
         judge: |b, token| {
             let held = b.holdings[*token];
@@ -39,6 +41,8 @@ pub const CHECKS: &[Check<Books>] = &[
     // LP supply.
     check! {
         id: POOL_SHAPE,
+        doc: "A fee AMM pool is either uninitialized (no LP supply, reserves or LP balances) or has at least the locked minimum LP supply.",
+        severity: Severity::High,
         over: |books: &Books| &books.pools,
         judge: |_, p| {
             if p.total_supply.is_zero() {
@@ -61,6 +65,8 @@ pub const CHECKS: &[Check<Books>] = &[
     // An initialized pool's LP holders hold at most its LP supply less the locked minimum.
     check! {
         id: LP_SUPPLY,
+        doc: "An initialized fee AMM pool's LP holders hold at most its LP supply less the locked minimum.",
+        severity: Severity::High,
         over: |books: &Books| &books.pools,
         judge: |_, p| {
             if p.total_supply < MIN_LIQUIDITY {
@@ -85,6 +91,8 @@ pub const STEP_CHECKS: &[Check<Step<Books, Option<Tx>>>] = &[
     // come in than it comes to owe, such as a plain transfer or mint to it.
     check! {
         id: CUSTODY_STEP,
+        doc: "Across any transaction, the fee manager's balance of a token never falls by more than its pool reserves plus collected fees in that token fall.",
+        severity: Severity::Critical,
         over: |step: &Step<Books, Option<Tx>>| step.post.holdings.keys(),
         judge: |s, token| {
             let token = **token;
@@ -112,6 +120,8 @@ pub const STEP_CHECKS: &[Check<Step<Books, Option<Tx>>>] = &[
     // mint.
     check! {
         id: MINT_SUPPLY,
+        doc: "A mint grows a fee AMM pool's LP supply by exactly the minted liquidity, plus the locked minimum on the pool's first mint.",
+        severity: Severity::High,
         over: |step: &Step<Books, Option<Tx>>| &step.post.pools,
         judge: |s, pool| {
             let want = match minted(s, pool)? {
@@ -129,6 +139,8 @@ pub const STEP_CHECKS: &[Check<Step<Books, Option<Tx>>>] = &[
     // The recipient's LP balance grows by exactly the liquidity minted to it.
     check! {
         id: MINT_BALANCE,
+        doc: "A mint grows its recipient's LP balance by exactly the liquidity minted to it.",
+        severity: Severity::High,
         over: |step: &Step<Books, Option<Tx>>| &step.post.pools,
         judge: |s, pool| {
             let want = match minted(s, pool)? {
@@ -141,6 +153,8 @@ pub const STEP_CHECKS: &[Check<Step<Books, Option<Tx>>>] = &[
     // The validator reserve grows by exactly the validator tokens deposited.
     check! {
         id: MINT_RESERVE,
+        doc: "A mint grows a fee AMM pool's validator reserve by exactly the validator tokens deposited.",
+        severity: Severity::High,
         over: |step: &Step<Books, Option<Tx>>| &step.post.pools,
         judge: |s, pool| {
             let want = match minted(s, pool)? {

@@ -6523,7 +6523,7 @@ checksum = "4275b20e6057cd7733fd8df8a5a31701e4fe44497dad0f3fa0e1c4fb971506be"
 [[package]]
 name = "invariants-core"
 version = "0.1.0"
-source = "git+https://github.com/tempoxyz/invariants-core?rev=163dca0#163dca0399af62578daceac02d8dd41aa656adc9"
+source = "git+https://github.com/tempoxyz/invariants-core?rev=63096f9#63096f902cf82f29330139052e8f7dff2ebeb841"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
@@ -14249,6 +14249,7 @@ dependencies = [
  "alloy-sol-types",
  "invariants-core",
  "tempo-contracts",
+ "tempo-hardfork",
 ]
 
 [[package]]

@@ -4,7 +4,7 @@ use alloy_primitives::{Address, B256};
 use invariants_core::{check, ensure};
 
 use super::{AccountUpgraded, Commitments, ConfigurableAccountConfigUpdated};
-use crate::{Check, Step, StepChecked, Tx};
+use crate::{Check, Severity, Step, StepChecked, Tx};
 
 /// The configurable account precompile's views answer. Counted by runners that read the model, not judged by a check here.
 pub const VIEW: &str = "TEMPO-ACCOUNT-VIEW";
@@ -17,6 +17,10 @@ pub const STEP_CHECKS: &[Check<Step<Commitments, Option<Tx>>>] = &[
     // Once an account has a configuration, nothing clears it (TIP-1108).
     check! {
         id: COMMITMENT_KEPT,
+        doc: "Once an account has a configuration commitment, nothing clears it.",
+        tip: "TIP-1108",
+        severity: Severity::High,
+        since: "T14",
         over: |step: &Step<Commitments, Option<Tx>>| step.post.of.keys(),
         judge: |s, account| {
             let (pre, post) = commitments(s, account)?;
@@ -31,6 +35,10 @@ pub const STEP_CHECKS: &[Check<Step<Commitments, Option<Tx>>>] = &[
     // (TIP-1109, TIP-1113).
     check! {
         id: COMMITMENT_BY_SELF,
+        doc: "Only an account's own transaction changes its configuration commitment.",
+        tip: "TIP-1109",
+        severity: Severity::Critical,
+        since: "T14",
         over: |step: &Step<Commitments, Option<Tx>>| step.post.of.keys(),
         judge: |s, account| {
             let (pre, post) = commitments(s, account)?;
@@ -49,6 +57,10 @@ pub const STEP_CHECKS: &[Check<Step<Commitments, Option<Tx>>>] = &[
     // `ConfigurableAccountConfigUpdated`, for the account.
     check! {
         id: COMMITMENT_EVENT,
+        doc: "A changed configuration commitment is announced by an `AccountUpgraded` or `ConfigurableAccountConfigUpdated` event for the account.",
+        tip: "TIP-1109",
+        severity: Severity::Medium,
+        since: "T14",
         over: |step: &Step<Commitments, Option<Tx>>| step.post.of.keys(),
         judge: |s, account| {
             let (pre, post) = commitments(s, account)?;

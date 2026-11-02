@@ -62,4 +62,16 @@ Name residual risks and excluded threats. A meta TIP owns shared actors and atta
 
 # Invariants
 
-State checkable properties that must always hold and the critical cases the test suite must cover.
+State the properties that must always hold, each as one bullet that says what checks it, then the critical cases the test suite must cover. The spec lint (`cargo test -p tempo-invariants --test specs`) reads this section, so each invariant is a top-level bullet in exactly this shape:
+
+```markdown
+- `TEMPO-ACCOUNT-COMMITMENT-KEPT`: Once an account has a configuration commitment, nothing clears it.
+  - Since: T14
+  - Checked by: check
+```
+
+1. The ID is `TEMPO-<AREA>-<NAME>` in uppercase letters, digits and single hyphens, and unique across all TIPs and zone specs.
+2. The statement is one sentence on one line, ending with a period.
+3. `Since:` is optional: the fork the invariant holds from, as `TempoHardfork` names it (`T14`).
+4. `Checked by:` names what checks it: `check`, a check in `tempo_invariants::all()` with this ID whose doc is the statement word for word and whose `since` is the `Since:`; a Rust test as `` `crates/<crate>/src/<file>.rs::<fn>` ``; a Foundry test or invariant as `` `<path>.sol:<function>` ``; or `none` while nothing checks it yet. Prefer `check`: the fuzz harness and other runners execute it.
+5. An invariant takes no other sub-bullets. Paragraphs and numbered lists, such as the cases tests must cover, go after the bullets.
