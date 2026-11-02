@@ -3,7 +3,7 @@ use crate::gas::{SECP256K1_VERIFY_GAS, keccak_gas};
 use alloc::vec::Vec;
 use alloy_consensus::crypto::RecoveryError;
 use alloy_eips::eip7623::{STANDARD_TOKEN_COST, tokens_in_calldata};
-use alloy_primitives::{Address, B256, Bytes, Keccak256, b256, keccak256};
+use alloy_primitives::{Address, B256, Keccak256, keccak256};
 use alloy_rlp::{BufMut, Decodable, Encodable, Error as RlpError};
 
 #[cfg(not(feature = "std"))]
@@ -36,13 +36,6 @@ pub const CONFIGURABLE_ACCOUNT_DOMAIN: &[u8] = b"tempo:configurable-account:acco
 
 /// Domain prefix for the salt of an account migrated in place (TIP-1113).
 pub const CONFIGURABLE_ACCOUNT_UPGRADE_DOMAIN: &[u8] = b"tempo:configurable-account:upgrade";
-
-/// Shared protocol-installed code for registered configurable accounts.
-pub const CONFIGURABLE_ACCOUNT_CODE: Bytes = Bytes::from_static(&[0xef]);
-
-/// Keccak-256 of [`CONFIGURABLE_ACCOUNT_CODE`], compared without loading code bytes.
-pub const CONFIGURABLE_ACCOUNT_CODE_HASH: B256 =
-    b256!("309b8896ee4c1ff7ec1966155373dee42663b6b40c3fedc70ba501684848d2a3");
 
 /// Domain prefix for configurable account configuration commitments.
 pub const CONFIGURABLE_ACCOUNT_CONFIG_DOMAIN: &[u8] = b"tempo:configurable-account:config";

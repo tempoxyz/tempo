@@ -19,9 +19,7 @@ use tempo_primitives::transaction::{
     configurable_account::CONFIGURABLE_ACCOUNT_UPGRADE_DOMAIN,
 };
 
-pub use tempo_primitives::transaction::configurable_account::{
-    CONFIGURABLE_ACCOUNT_CODE, CONFIGURABLE_ACCOUNT_CODE_HASH,
-};
+pub use tempo_primitives::account::{CONFIGURABLE_ACCOUNT_CODE, CONFIGURABLE_ACCOUNT_CODE_HASH};
 
 /// Configurable account precompile.
 ///
