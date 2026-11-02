@@ -52,7 +52,7 @@ struct Ready {
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     store: Store,
-    catalog: Catalog,
+    mut catalog: Catalog,
     mut range: Range<u64>,
     config: TempoEvmConfig,
     consensus: TempoConsensus,
@@ -65,6 +65,12 @@ pub fn run(
         .worker_threads(env_usize("RETH_CORPUS_IO_THREADS").unwrap_or((workers * 3 / 4).max(4)))
         .enable_all()
         .build()?;
+    // Read the published snapshot through a lease of our own: a fill extending the corpus
+    // retires the published checkpoint with a fixed grace lifetime a long replay can outlast.
+    // A replay that fails before releasing it leaves it to expire.
+    let lease = runtime.block_on(store.lease(&catalog))?;
+    catalog.checkpoint = Some(lease.clone());
+    let renewal = runtime.spawn(store.clone().renew_lease(lease.clone()));
     let reader = Arc::new(runtime.block_on(store.reader(&catalog))?);
     let tip_timestamp = runtime.block_on(store::tip_timestamp(&reader, &catalog.cursor))?;
     eyre::ensure!(
@@ -256,8 +262,17 @@ pub fn run(
         Ok(())
     });
     let closed = runtime.block_on(reader.close());
+    let renewed = if renewal.is_finished() {
+        runtime.block_on(renewal)?
+    } else {
+        renewal.abort();
+        Ok(())
+    };
+    let released = runtime.block_on(store.release_lease(&lease));
     result?;
-    Ok(closed?)
+    closed?;
+    renewed?;
+    released
 }
 
 /// Fetching owns serialized reservations until ownership moves to a worker.

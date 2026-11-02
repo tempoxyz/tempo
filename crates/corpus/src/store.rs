@@ -50,6 +50,9 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 pub const SLATEDB_RETRIES: Option<u32> = Some(3);
 /// How long a replaced checkpoint stays readable after a newer one is published.
 const RETIRED_CHECKPOINT_LIFETIME: Duration = Duration::from_secs(60 * 60);
+/// Lifetime of a replay's lease checkpoint. [Store::renew_lease] extends it every third of
+/// it, so a lease a crashed replay leaves behind expires on its own.
+const LEASE_LIFETIME: Duration = Duration::from_secs(10 * 60);
 pub const CONTEXT_KEY: &[u8] = b"reth-corpus-context";
 pub const CURSOR_KEY: &[u8] = b"reth-corpus-cursor";
 
@@ -384,6 +387,46 @@ impl Store {
         Admin::builder(self.data(), self.objects.clone())
             .build()
             .refresh_checkpoint(id.parse()?, Some(RETIRED_CHECKPOINT_LIFETIME))
+            .await?;
+        Ok(())
+    }
+
+    /// Creates a checkpoint of the catalog's published one that only the caller holds, so a
+    /// fill retiring the published checkpoint cannot expire the snapshot a long replay reads.
+    /// Expires after [LEASE_LIFETIME] unless renewed with [Self::renew_lease].
+    pub async fn lease(&self, catalog: &Catalog) -> eyre::Result<String> {
+        let published = catalog
+            .checkpoint
+            .as_ref()
+            .ok_or_eyre("corpus has no published checkpoint")?
+            .parse()?;
+        Ok(Admin::builder(self.data(), self.objects.clone())
+            .build()
+            .create_detached_checkpoint(&CheckpointOptions {
+                lifetime: Some(LEASE_LIFETIME),
+                source: Some(published),
+                name: None,
+            })
+            .await?
+            .id
+            .to_string())
+    }
+
+    /// Extends `lease` every third of [LEASE_LIFETIME]; returns only on failure.
+    pub async fn renew_lease(self, lease: String) -> eyre::Result<()> {
+        let admin = Admin::builder(self.data(), self.objects.clone()).build();
+        let id = lease.parse()?;
+        loop {
+            tokio::time::sleep(LEASE_LIFETIME / 3).await;
+            admin.refresh_checkpoint(id, Some(LEASE_LIFETIME)).await?;
+        }
+    }
+
+    /// Deletes a lease from [Self::lease].
+    pub async fn release_lease(&self, lease: &str) -> eyre::Result<()> {
+        Admin::builder(self.data(), self.objects.clone())
+            .build()
+            .delete_checkpoint(lease.parse()?)
             .await?;
         Ok(())
     }
