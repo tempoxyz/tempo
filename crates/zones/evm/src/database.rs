@@ -25,8 +25,8 @@ use zone_precompiles::{
 pub struct L1OverlayDB<DB, L1> {
     inner: DB,
     l1: L1State<L1>,
-    /// Whether TIP-20 pause flags are read from L1 rather than Zone storage.
-    mirror_tip20_pause: bool,
+    /// Tempo hardfork the adapter executes at. From T15, TIP-20 pause flags are read from L1.
+    spec: TempoHardfork,
 }
 
 impl<DB, L1> L1OverlayDB<DB, L1> {
@@ -35,7 +35,7 @@ impl<DB, L1> L1OverlayDB<DB, L1> {
         Self {
             inner,
             l1: L1State::new(l1, portal_address),
-            mirror_tip20_pause: spec.is_t15(),
+            spec,
         }
     }
 
@@ -168,7 +168,7 @@ impl<DB: DynDatabase, L1: L1StorageReader> DynDatabase for L1OverlayDB<DB, L1> {
 
     fn get_storage(&mut self, address: &Address, slot: &U256) -> Result<U256, DatabaseError> {
         if *address != TIP403_REGISTRY_ADDRESS
-            && !(self.mirror_tip20_pause && is_tip20_pause_slot(address, slot))
+            && !(self.spec.is_t15() && is_tip20_pause_slot(address, slot))
         {
             return self.inner.get_storage(address, slot);
         }

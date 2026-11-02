@@ -303,20 +303,19 @@ impl<'a> TempoBlockExecutor<'a> {
         }
 
         self.deploy_precompile_at_boundary(factory.address, factory.storage.as_slice())?;
-        self.install_zone_runtimes_at_boundary([portal, verifier, messenger])?;
+        self.install_zone_runtimes([portal, verifier, messenger])?;
         Ok(())
     }
 
-    /// Exercises the shared runtime upgrade path at T13.
-    fn upgrade_zone_runtimes_at_boundary(&mut self) -> Result<(), BlockExecutionError> {
-        let [_, portal, verifier, messenger] = t13_zone_factory_state(INITIAL_FACTORY_OWNER);
-        self.install_zone_runtimes_at_boundary([portal, verifier, messenger])
-    }
-
-    /// Installs the T15 shared runtimes, which add the zone transfer opt-in to the portal.
-    fn upgrade_zone_runtimes_at_t15_boundary(&mut self) -> Result<(), BlockExecutionError> {
-        let [_, portal, verifier, messenger] = t15_zone_factory_state(INITIAL_FACTORY_OWNER);
-        self.install_zone_runtimes_at_boundary([portal, verifier, messenger])
+    /// Installs the shared Zone runtime set for `fork`, as returned by
+    /// [`Self::zone_runtime_fork_at`]. T15 adds the zone transfer opt-in to the portal.
+    fn upgrade_zone_runtimes(&mut self, fork: TempoHardfork) -> Result<(), BlockExecutionError> {
+        let [_, portal, verifier, messenger] = if fork.is_t15() {
+            t15_zone_factory_state(INITIAL_FACTORY_OWNER)
+        } else {
+            t13_zone_factory_state(INITIAL_FACTORY_OWNER)
+        };
+        self.install_zone_runtimes([portal, verifier, messenger])
     }
 
     /// Returns the fork whose shared Zone runtimes are live at `timestamp`, or `None` before T13.
@@ -335,7 +334,7 @@ impl<'a> TempoBlockExecutor<'a> {
     }
 
     /// Installs shared Zone runtimes without modifying their existing storage.
-    fn install_zone_runtimes_at_boundary(
+    fn install_zone_runtimes(
         &mut self,
         runtimes: [InitialZoneFactoryAccount; 3],
     ) -> Result<(), BlockExecutionError> {
@@ -717,12 +716,10 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         // runtime set is installed, so T13 runtimes are never reinstalled over T15 ones.
         let runtime_fork =
             self.zone_runtime_fork_at(self.evm().block().timestamp.saturating_to::<u64>());
-        if runtime_fork != self.zone_runtime_fork_at(self.chain_spec.genesis().timestamp) {
-            match runtime_fork {
-                Some(TempoHardfork::T15) => self.upgrade_zone_runtimes_at_t15_boundary()?,
-                Some(TempoHardfork::T13) => self.upgrade_zone_runtimes_at_boundary()?,
-                _ => {}
-            }
+        if let Some(fork) = runtime_fork
+            && runtime_fork != self.zone_runtime_fork_at(self.chain_spec.genesis().timestamp)
+        {
+            self.upgrade_zone_runtimes(fork)?;
         }
 
         Ok(())
@@ -2904,8 +2901,8 @@ mod tests {
 
         executor.deploy_zone_factory_at_boundary().unwrap();
         executor.deploy_zone_factory_at_boundary().unwrap();
-        executor.upgrade_zone_runtimes_at_boundary().unwrap();
-        executor.upgrade_zone_runtimes_at_boundary().unwrap();
+        executor.upgrade_zone_runtimes(TempoHardfork::T13).unwrap();
+        executor.upgrade_zone_runtimes(TempoHardfork::T13).unwrap();
 
         let factory = executor
             .evm()
