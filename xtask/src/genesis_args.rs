@@ -582,12 +582,14 @@ fn insert_zone_state_at_genesis(
 ) {
     if hardforks.active_at_genesis(TempoHardfork::T10) {
         println!("Initializing ZoneFactory and shared runtimes");
-        let accounts = if !hardforks.active_at_genesis(TempoHardfork::T13) {
-            initial_zone_factory_state(INITIAL_FACTORY_OWNER)
-        } else if hardforks.active_at_genesis(TempoHardfork::T15) {
+        // Follow the fork execution selects at genesis: a chain with T15 at genesis skips every
+        // runtime upgrade, so it needs the T15 runtimes even if a T13 flag is set later.
+        let accounts = if hardforks.active_at_genesis(TempoHardfork::T15) {
             t15_zone_factory_state(INITIAL_FACTORY_OWNER)
-        } else {
+        } else if hardforks.active_at_genesis(TempoHardfork::T13) {
             t13_zone_factory_state(INITIAL_FACTORY_OWNER)
+        } else {
+            initial_zone_factory_state(INITIAL_FACTORY_OWNER)
         };
         for account in accounts {
             genesis_alloc.insert(
@@ -1031,6 +1033,7 @@ mod tests {
     fn t10_genesis_installs_factory_and_canonical_shared_runtimes() {
         let mut alloc = BTreeMap::new();
         let hardforks = TempoHardforkArgs {
+            hardfork: Some(TempoHardfork::T12),
             t13_time: Some(1),
             ..Default::default()
         };
@@ -1078,6 +1081,20 @@ mod tests {
         ] {
             assert_eq!(alloc[&destination].code.as_ref(), Some(&expected));
         }
+    }
+
+    #[test]
+    fn t15_at_genesis_installs_t15_portal_even_with_delayed_t13() {
+        let mut alloc = BTreeMap::new();
+        let hardforks = TempoHardforkArgs {
+            t13_time: Some(1),
+            ..Default::default()
+        };
+        insert_zone_state_at_genesis(&hardforks, &mut alloc);
+        assert_eq!(
+            alloc[&ZONE_PORTAL_IMPL_ADDRESS].code.as_ref(),
+            Some(&T15_ZONE_PORTAL_RUNTIME)
+        );
     }
 
     #[derive(Parser)]
