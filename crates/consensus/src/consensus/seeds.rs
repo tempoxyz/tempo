@@ -199,7 +199,7 @@ mod tests {
     #[test]
     fn cancelled_waiters_are_dropped() {
         let cache = SeedCache::default();
-        drop(cache.wait(round(1)).now_or_never());
+        assert!(cache.wait(round(1)).now_or_never().is_none());
         let mut live = std::pin::pin!(cache.wait(round(2)));
         assert!(live.as_mut().now_or_never().is_none());
 
