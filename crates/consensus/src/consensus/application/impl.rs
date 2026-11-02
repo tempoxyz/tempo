@@ -164,15 +164,16 @@ impl Inner {
         // earlier instant would charge the preparation above twice, here and in the
         // previous proposer's network sample.
         let window_opened = Instant::now();
-        let window_opened_millis = runtime.current().epoch_millis();
+        let mut epoch_millis = runtime.current().epoch_millis();
 
         // Use current timestamp but make sure that if parent's timestamp is in the future, we account for that.
-        let mut epoch_millis = window_opened_millis;
         if epoch_millis <= parent.timestamp_millis() {
             self.metrics.parent_ahead_of_local_time.metric().inc();
             epoch_millis = parent.timestamp_millis() + 1
         };
 
+        // Match the stamped header so a lagging local clock does not inflate network samples.
+        let window_opened_millis = epoch_millis;
         let (timestamp, timestamp_millis_part) = (epoch_millis / 1000, epoch_millis % 1000);
 
         let consensus_context = Some(TempoConsensusContext {
