@@ -8,7 +8,11 @@ use reth_cli_util::cancellation::CancellationToken;
 use reth_ethereum::tasks::Runtime;
 use std::{path::PathBuf, sync::Arc};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
-use tempo_corpus::{fill, fuzz, gc, replay, store::Store};
+use tempo_corpus::{
+    fuzz, gc,
+    replay::{self, fill},
+    store::Store,
+};
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_node::node::TempoNode;
 

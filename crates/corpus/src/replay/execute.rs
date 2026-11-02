@@ -2,8 +2,8 @@
 
 use crate::{
     code,
+    replay::view::{View, change_from_update},
     types::{Block as BlockInput, Case, Delta, Outcome, Phases, Transaction},
-    view::{View, change_from_update},
 };
 use alloy_consensus::{
     BlockHeader,

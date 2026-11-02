@@ -1,10 +1,17 @@
 //! Bounded in-process checkpoint reads feeding native execution workers.
 
+pub mod capture;
+pub mod execute;
+pub mod fill;
+pub mod view;
+
 use crate::{
-    execute::{decode_block, execute_block, standalone_cases, verify_changesets},
+    replay::{
+        execute::{decode_block, execute_block, standalone_cases, verify_changesets},
+        view::View,
+    },
     store::{self, Catalog, MAX_RECORD_BYTES, Record, Store},
     types::{Case, Chunk, Phases},
-    view::View,
 };
 use alloy_primitives::B256;
 use bytes::Bytes;

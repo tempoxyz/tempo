@@ -18,8 +18,8 @@ workspace = true
 
 [features]
 default = ["replay"]
-# Capture, replay, migration and gc, with the EVM and database crates they need. Reading blocks as
-# fuzz inputs (`fuzz`) needs none of them.
+# Capture and replay (the `replay` module), with the EVM and database crates they need. The
+# format, store, gc and reading blocks as fuzz inputs (`fuzz`) need none of them.
 replay = [
   "dep:alloy-eip7928",
   "dep:reth-execution-types",
@@ -33,7 +33,6 @@ replay = [
   "dep:evm2",
   "dep:tempo-evm",
   "dep:schnellru",
-  "dep:tracing",
 ]
 
 [dependencies]
@@ -73,7 +72,7 @@ serde.workspace = true
 serde_json.workspace = true
 slatedb = { version = "=0.17.0", default-features = false, features = ["aws", "moka", "zstd"] }
 tokio.workspace = true
-tracing = { workspace = true, optional = true }
+tracing.workspace = true
 url.workspace = true
 wincode = { version = "0.6", features = ["derive"] }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }

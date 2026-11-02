@@ -1,19 +1,13 @@
 //! Historical execution corpus for Tempo: capture a finite archive range once into an
 //! object store, then replay it without the source database, or read its blocks as fuzz inputs.
+//!
+//! The corpus format, its store and reading blocks as fuzz inputs need no EVM; capturing and
+//! replaying, which execute blocks, are in [`replay`] behind the default `replay` feature.
 
-#[cfg(feature = "replay")]
-pub mod capture;
 pub mod code;
-#[cfg(feature = "replay")]
-pub mod execute;
-#[cfg(feature = "replay")]
-pub mod fill;
 pub mod fuzz;
-#[cfg(feature = "replay")]
 pub mod gc;
 #[cfg(feature = "replay")]
 pub mod replay;
 pub mod store;
 pub mod types;
-#[cfg(feature = "replay")]
-pub mod view;
