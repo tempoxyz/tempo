@@ -4,6 +4,7 @@ use crate::{
     code,
     types::{Case, Chunk},
 };
+use alloy_consensus::BlockHeader;
 use alloy_primitives::B256;
 use async_trait::async_trait;
 use aws_credential_types::provider::{ProvideCredentials, SharedCredentialsProvider};
@@ -25,6 +26,7 @@ use slatedb::{
     },
 };
 use std::{sync::Arc, time::Duration};
+use tempo_primitives::Block;
 use url::Url;
 
 /// Maximum serialized size of one block record (block plus its transactions) or one
@@ -640,6 +642,50 @@ impl Cursor {
     }
 }
 
+/// Whether two [`display_hardforks`] listings activate the same forks at the same times, up to
+/// and including `timestamp`. Forks activating later cannot affect a corpus whose last block is
+/// at `timestamp`, so a binary that schedules a later fork still reads and resumes the corpus.
+///
+/// [`display_hardforks`]: reth_chainspec::EthChainSpec::display_hardforks
+pub fn forks_agree(stored: &str, current: &str, timestamp: u64) -> bool {
+    let active = |listing: &str| {
+        let mut forks = listing
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("- "))
+            .filter_map(|fork| {
+                // A fork line without a timestamp activation is always compared.
+                let Some((name, at)) = fork
+                    .rsplit_once('@')
+                    .and_then(|(name, at)| Some((name.trim(), at.trim().parse::<u64>().ok()?)))
+                else {
+                    return Some((fork.trim().to_owned(), 0));
+                };
+                (at <= timestamp).then(|| (name.to_owned(), at))
+            })
+            .collect::<Vec<_>>();
+        forks.sort();
+        forks
+    };
+    active(stored) == active(current)
+}
+
+/// Timestamp of the corpus' last block, read from its published record.
+pub async fn tip_timestamp(reader: &DbReader, context: &Context) -> eyre::Result<u64> {
+    let number = context
+        .end
+        .checked_sub(1)
+        .ok_or_eyre("empty corpus range")?;
+    let record = metadata(reader, number).await?;
+    let bytes = reader
+        .get(key(number))
+        .await?
+        .ok_or_else(|| eyre::eyre!("missing block record at {number}"))?;
+    let chunk = decode(&bytes, &record)?;
+    let block = chunk.blocks.last().ok_or_eyre("empty block record")?;
+    let block: Block = alloy_rlp::decode_exact(&block.rlp)?;
+    Ok(block.header.timestamp())
+}
+
 pub async fn metadata(reader: &DbReader, block: u64) -> eyre::Result<Record> {
     let bytes = reader
         .get(metadata_key(block))
@@ -716,6 +762,27 @@ pub mod tests {
             objects: Arc::new(InMemory::new()),
             path: Path::from(path),
         }
+    }
+
+    #[test]
+    fn forks_agree_ignores_forks_after_tip() {
+        let stored = "Post-merge hard forks (timestamp based):
+- Genesis @0
+- T0 @0
+- T1 @100";
+        // A newly scheduled fork after the tip does not matter.
+        let scheduled = format!(
+            "{stored}
+- T2 @300"
+        );
+        assert!(forks_agree(stored, &scheduled, 200));
+        // It does once the corpus reaches it.
+        assert!(!forks_agree(stored, &scheduled, 300));
+        // A moved activation inside the range does.
+        let moved = stored.replace("T1 @100", "T1 @150");
+        assert!(!forks_agree(stored, &moved, 200));
+        // Moving a fork that activates after the tip does not.
+        assert!(forks_agree(stored, &moved, 99));
     }
 
     /// Opens the corpus database and writes the catalog's context and cursor.

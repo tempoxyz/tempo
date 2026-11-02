@@ -143,9 +143,8 @@ impl ReplayCommand {
         let context = &catalog.context;
         eyre::ensure!(
             context.chain_id == self.chain.chain_id()
-                && context.genesis == self.chain.genesis_hash().to_string()
-                && context.forks == self.chain.display_hardforks().to_string(),
-            "corpus chain/fork context mismatch"
+                && context.genesis == self.chain.genesis_hash().to_string(),
+            "corpus chain context mismatch"
         );
         let from = self.from.unwrap_or(context.start);
         let end = self.to.unwrap_or(context.end).min(context.end);

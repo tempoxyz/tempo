@@ -4,6 +4,7 @@ use crate::{
     capture, code, replay,
     store::{self, CONTEXT_KEY, CaseRecord, Catalog, Context, MAX_RECORD_BYTES, Record, Store},
 };
+use alloy_consensus::BlockHeader;
 use eyre::OptionExt;
 use reth_chainspec::{ChainSpecProvider, EthChainSpec};
 use reth_evm::database::StateProviderDatabase;
@@ -12,7 +13,7 @@ use reth_provider::{
     TransactionVariant,
     providers::{BlockchainProvider, ProviderNodeTypes},
 };
-use reth_storage_api::{BlockBodyIndicesProvider, DBProvider, StateProvider};
+use reth_storage_api::{BlockBodyIndicesProvider, DBProvider, HeaderProvider, StateProvider};
 use slatedb::{
     Db, WriteBatch,
     config::{CompressionCodec, Settings},
@@ -99,10 +100,22 @@ where
         first_tx: first_tx(args.from)?,
         end_tx: first_tx(end)?,
     };
+    let tip_timestamp = expected
+        .header_by_number(end - 1)?
+        .ok_or_else(|| eyre::eyre!("missing header at {}", end - 1))?
+        .timestamp();
+    // Each worker opens its own transaction; holding this one through the capture would
+    // keep the archive from reusing pages for the whole fill.
+    drop(expected);
     let (mut catalog, prior) = match handle.block_on(store.catalog())? {
         Some((catalog, version)) => {
             eyre::ensure!(
-                catalog.context == context,
+                catalog.context
+                    == Context {
+                        forks: catalog.context.forks.clone(),
+                        ..context.clone()
+                    }
+                    && store::forks_agree(&catalog.context.forks, &context.forks, tip_timestamp),
                 "corpus context conflicts with requested chain/range"
             );
             (catalog, Some(version))
