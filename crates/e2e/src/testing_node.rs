@@ -39,7 +39,10 @@ use tempo_consensus::{
     feed::FeedStateHandle,
 };
 use tempo_evm::TempoEvmConfig;
-use tempo_node::node::TempoNode;
+use tempo_node::{
+    Estimator, EstimatorConfig, NetworkReservation, estimator::DEFAULT_NETWORK_BUDGET,
+    node::TempoNode,
+};
 use tracing::{debug, instrument};
 
 /// Gossiped certificates verified per second. Matches the production default.
@@ -91,9 +94,8 @@ where
     /// Feed state shared by the consensus and execution layers.
     pub feed_state: FeedStateHandle,
     /// Proposal budget estimator shared by this node's builder and consensus
-    /// engine whenever they start. Built once from the constructor's
-    /// proposal return budget with a pinned network reservation, so tests
-    /// stay deterministic.
+    /// engine whenever they start. Uses a fixed network reservation and the constructor's
+    /// proposal return allowance, reduced when preparation exceeds the reservation.
     pub estimator: tempo_node::Estimator,
     /// Verification mode used whenever the consensus engine starts.
     pub verification_mode: VerificationMode,
@@ -107,6 +109,10 @@ where
     /// Create a new TestingNode without spawning execution or starting consensus.
     ///
     /// Call `start()` to start both consensus and execution.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `proposal_return_budget` is zero.
     // FIXME: replace this by a `Config` to make this more digestible.
     #[expect(clippy::too_many_arguments, reason = "quickly threw this together")]
     pub fn new(
@@ -125,14 +131,14 @@ where
     ) -> Self {
         let public_key = private_key.public_key();
         let partition_prefix = uid.clone();
-        // Fixed network reservation: tests pin the return budget instead of
-        // learning it from the simulated network.
-        let estimator_config =
-            tempo_node::EstimatorConfig::fixed(proposal_return_budget, Duration::from_millis(50));
-        estimator_config
-            .validate()
-            .expect("a fixed reservation with a positive proposal return budget is valid");
-        let estimator = tempo_node::Estimator::new(estimator_config);
+        // Pin the network reservation; long preparation can still shorten an allowance.
+        let network_budget = DEFAULT_NETWORK_BUDGET;
+        let estimator = Estimator::new(EstimatorConfig {
+            target_block_time: proposal_return_budget.saturating_add(network_budget),
+            network_budget,
+            network_reservation_policy: NetworkReservation::Fixed,
+            ..EstimatorConfig::default()
+        });
         execution_config.estimator = Some(estimator.clone());
         let execution_node_datadir = execution_runtime
             .nodes_dir()
