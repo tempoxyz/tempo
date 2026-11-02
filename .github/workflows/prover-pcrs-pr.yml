@@ -18,7 +18,7 @@ on:
         required: true
         type: string
       hardfork:
-        description: Hardfork to key the PCRs to (for example, T14). Defaults to the fork after the newest one in pcrs.json
+        description: Hardfork to key the PCRs to (for example, T14), which must not have PCRs yet. Defaults to the fork after the newest one in pcrs.json
         required: false
         type: string
 
@@ -131,6 +131,12 @@ jobs:
           fi
           if ! grep -qx -- "$fork" <<< "$forks"; then
             echo "::error::'$fork' is not a TempoHardfork variant"
+            exit 1
+          fi
+          # Replacing an approved fork's PCRs would reject its running prover and
+          # change what verifies already-final blocks, so only a new fork is added.
+          if jq -e --arg fork "$fork" 'has($fork)' "$pcrs" >/dev/null; then
+            echo "::error::pcrs.json already approves PCRs for $fork; replacing them needs a reviewed manual change"
             exit 1
           fi
 
