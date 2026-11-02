@@ -655,7 +655,7 @@ mod tests {
             encoded_transactions.encode_block_with_transactions(&block, &mut encoded_from_cache)
         );
 
-        let expected = alloy_rlp::encode(&block);
+        let expected = encode(&block);
 
         assert_eq!(encoded_from_cache, expected);
     }
