@@ -462,8 +462,10 @@ mod tests {
 
     #[test]
     fn config_rejects_reservations_that_leave_no_proposal_window() {
-        let mut config = Config::default();
-        config.network_budget = config.target_block_time;
+        let config = Config {
+            network_budget: Config::default().target_block_time,
+            ..Config::default()
+        };
         assert_eq!(
             config.validate(),
             Err(ConfigError::NetworkBudget {
@@ -471,8 +473,10 @@ mod tests {
                 target_block_time: config.target_block_time,
             })
         );
-        let mut config = Config::default();
-        config.network_budget_max = Duration::ZERO;
+        let config = Config {
+            network_budget_max: Duration::ZERO,
+            ..Config::default()
+        };
         assert_eq!(
             config.validate(),
             Err(ConfigError::NetworkBudgetMaxBelowFloor {
@@ -480,8 +484,10 @@ mod tests {
                 network_budget_max: Duration::ZERO,
             })
         );
-        let mut config = Config::default();
-        config.network_budget_max = config.target_block_time;
+        let config = Config {
+            network_budget_max: Config::default().target_block_time,
+            ..Config::default()
+        };
         assert_eq!(
             config.validate(),
             Err(ConfigError::NetworkBudgetMax {
