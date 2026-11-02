@@ -188,11 +188,19 @@ jobs:
           git commit -am "$title"
           gh auth setup-git
 
-          # An existing branch with the same pcrs.json is a successful retry.
+          # An existing branch is a successful retry only if it is one commit on
+          # main that changes nothing but pcrs.json, to the same content.
           if git ls-remote --exit-code --heads origin "refs/heads/$branch" >/dev/null; then
-            git fetch --no-tags origin "+refs/heads/$branch:refs/remotes/origin/$branch"
-            if ! git diff --quiet "refs/remotes/origin/$branch" HEAD -- crates/precompiles/src/zone_verifier/pcrs.json; then
-              echo "::error::Branch $branch already exists with a different pcrs.json"
+            existing="refs/remotes/origin/$branch"
+            git fetch --no-tags --depth=2 origin "+refs/heads/$branch:$existing"
+            read -r -a ancestry <<< "$(git rev-list --parents -n 1 "$existing")"
+            parent="${ancestry[1]:-}"
+            git fetch --no-tags origin main
+            if [[ "${#ancestry[@]}" -ne 2 ]] ||
+               ! git merge-base --is-ancestor "$parent" FETCH_HEAD ||
+               [[ "$(git diff --no-renames --name-only "$parent" "$existing")" != crates/precompiles/src/zone_verifier/pcrs.json ]] ||
+               ! git diff --quiet "$existing" HEAD -- crates/precompiles/src/zone_verifier/pcrs.json; then
+              echo "::error::Branch $branch already exists and is not this pcrs.json change alone on main"
               exit 1
             fi
           else
