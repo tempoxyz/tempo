@@ -1245,7 +1245,7 @@ impl TIP20Token {
         amount: U256,
         memo: B256,
     ) -> Result<Option<Recipient>> {
-        let to = Recipient::resolve(to)?;
+        let to = Recipient::resolve_transfer(to)?;
         self.check_not_paused()?;
         to.validate()?;
         self.ensure_transfer_authorized(from, to.target)?;
@@ -1286,11 +1286,9 @@ impl TIP20Token {
         memo: B256,
         recipient_role: AuthRole,
     ) -> Result<Option<(U256, Recipient)>> {
+        // TIP-1094: rejects zone deposit addresses, since a failed zone deposit refunds its
+        // sender and a mint has none.
         let to = Recipient::resolve(to)?;
-        // TIP-1094: a failed zone deposit refunds its sender, and a mint has none.
-        if to.zone_deposit_address().is_some() {
-            return Err(TIP20Error::invalid_recipient().into());
-        }
         self.check_role(msg_sender, ISSUER_ROLE)?;
         let total_supply = self.total_supply()?;
 
@@ -1634,11 +1632,33 @@ impl Recipient {
     /// If `addr` is a virtual address its registered master is looked up and stored in `target`,
     /// with the original virtual address preserved in `virtual_addr`.
     ///
-    /// From T15, a [TIP-1094] zone deposit address resolves to its zone's portal, which the
-    /// transfer credits, with the deposit address kept in `virtual_addr`.
+    /// From T15, a [TIP-1094] zone deposit address is an invalid recipient: only the user transfer
+    /// entrypoints route to a portal, through [`Self::resolve_transfer`], because every other
+    /// payout (mints, channel reserve payouts, guard claims) would credit the portal without
+    /// queueing a deposit.
     ///
     /// [TIP-1094]: <https://github.com/tempoxyz/tempo/pull/7746>
     pub(crate) fn resolve(addr: Address) -> Result<Self> {
+        if StorageCtx.spec().is_t15() && ZoneDepositAddress::is_reserved(&addr) {
+            return Err(TIP20Error::invalid_recipient().into());
+        }
+        let effective = AddressRegistry::new().resolve_recipient(addr)?;
+        Ok(if effective == addr {
+            Self::direct(addr)
+        } else {
+            Self {
+                target: effective,
+                virtual_addr: Some(addr),
+            }
+        })
+    }
+
+    /// Like [`Self::resolve`], but from T15 resolves a [TIP-1094] zone deposit address to its
+    /// zone's portal, with the deposit address kept in `virtual_addr`. The caller must queue the
+    /// deposit on the portal after crediting it.
+    ///
+    /// [TIP-1094]: <https://github.com/tempoxyz/tempo/pull/7746>
+    fn resolve_transfer(addr: Address) -> Result<Self> {
         if StorageCtx.spec().is_t15()
             && let Some(deposit) = ZoneDepositAddress::decode(&addr)
         {
@@ -1653,15 +1673,7 @@ impl Recipient {
                 virtual_addr: Some(addr),
             });
         }
-        let effective = AddressRegistry::new().resolve_recipient(addr)?;
-        Ok(if effective == addr {
-            Self::direct(addr)
-        } else {
-            Self {
-                target: effective,
-                virtual_addr: Some(addr),
-            }
-        })
+        Self::resolve(addr)
     }
 
     /// Returns the zone deposit address when this recipient routes to a zone portal.
@@ -1711,6 +1723,45 @@ mod recipient_tests {
     };
     use alloy::primitives::{Address, U256};
     use tempo_chainspec::hardfork::TempoHardfork;
+
+    #[test]
+    fn zone_deposit_addresses_resolve_only_for_transfers() -> eyre::Result<()> {
+        let deposit = |version| {
+            tempo_contracts::zones::ZoneDepositAddress {
+                zone_id: 1,
+                version,
+                ciphertext: [1, 2, 3, 4, 5, 6].into(),
+            }
+            .encode()
+        };
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            // Mints, channel reserve payouts and guard claims resolve through `resolve`.
+            assert_eq!(
+                Recipient::resolve(deposit(1)),
+                Err(TIP20Error::invalid_recipient().into())
+            );
+            assert_eq!(
+                Recipient::resolve_transfer(deposit(0)),
+                Err(TIP20Error::unsupported_address_version(0).into())
+            );
+            assert_eq!(
+                Recipient::resolve_transfer(deposit(1)),
+                Err(TIP20Error::zone_unregistered(1).into())
+            );
+            Ok(())
+        })?;
+
+        // Before T15 the format carries no meaning.
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            assert_eq!(
+                Recipient::resolve(deposit(1))?,
+                Recipient::direct(deposit(1))
+            );
+            Ok(())
+        })
+    }
 
     #[test]
     fn test_resolve() -> eyre::Result<()> {
