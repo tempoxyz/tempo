@@ -6,7 +6,7 @@
 //! bounce-back path. Users keep the same address on L1 and the Zone, so the leader also leaves out
 //! Zone TIP-20 transfers unless both parties are listed (see [`TransferAllowlist`]). The checks
 //! run only where blocks are built, so they need no hardfork. RPC-only nodes keep an
-//! [`AllowlistMirror`] of the sequencers' list so they can reject such transfers on submission
+//! [`AllowlistMirror`] of the leader's list so they can reject such transfers on submission
 //! instead of forwarding them.
 //!
 //! A sequencer with no persisted list is uninitialized and credits every deposit until its first
@@ -47,7 +47,7 @@ use zone_l1::{FAILED_DECRYPTION, abi::DecryptionData};
 use zone_payload::{TransferAllowlist, unlisted_transfer_error};
 
 mod relay;
-pub(crate) use relay::{AllowlistRelay, apply_relayed_requests, mirror_sequencers};
+pub(crate) use relay::{AllowlistRelay, apply_relayed_requests, mirror_leader};
 
 /// File name of the persisted allowlist inside the node data directory.
 pub(crate) const DEPOSIT_ALLOWLIST_FILE_NAME: &str = "deposit-allowlist.json";
@@ -491,24 +491,26 @@ impl DepositAllowlist {
 
 impl TransferAllowlist for DepositAllowlist {
     fn allows_all(&self, addresses: &[Address]) -> bool {
-        self.inner.state.read().as_ref().is_none_or(|state| {
-            addresses
-                .iter()
-                .all(|address| state.addresses.contains(address))
-        })
+        allows_all(
+            self.inner
+                .state
+                .read()
+                .as_ref()
+                .map(|state| &state.addresses),
+            addresses,
+        )
     }
 
-    fn is_written(&self) -> bool {
-        self.inner.state.read().is_some()
+    fn is_enabled(&self) -> bool {
+        true
     }
 }
 
-/// Copy of the sequencers' allowlist that an RPC-only node keeps to reject transfers on
-/// submission, refreshed by the relay's `mirror_sequencers` task.
+/// Copy of the leader's allowlist that an RPC-only node keeps to reject transfers on submission,
+/// refreshed by the relay's `mirror_leader` task.
 ///
-/// It admits every transfer until the first fetch finds a written list, and again once the
-/// sequencers no longer hold one; the sequencers still enforce their own lists. Cloning shares the
-/// same copy.
+/// It admits every transfer until the leader reports a written list, and again once it no longer
+/// holds one; the leader still enforces its own list. Cloning shares the same copy.
 #[derive(Debug, Clone, Default)]
 pub struct AllowlistMirror {
     inner: Arc<MirrorInner>,
@@ -516,38 +518,43 @@ pub struct AllowlistMirror {
 
 #[derive(Debug, Default)]
 struct MirrorInner {
-    /// Newest written list fetched from the sequencers, `None` while none is known.
-    snapshot: RwLock<Option<DepositAllowlistSnapshot>>,
+    /// The leader's list, `None` while the leader runs without the allowlist or none is known.
+    list: RwLock<Option<MirroredList>>,
     /// Wakes the refresh task early, after this node relays a write.
     refresh: Notify,
 }
 
+#[derive(Debug)]
+struct MirroredList {
+    status: DepositAllowlistStatus,
+    /// Empty while `status` is uninitialized.
+    addresses: BTreeSet<Address>,
+}
+
 impl AllowlistMirror {
-    /// The version of the copy, `None` while it holds no written list.
+    /// The version of the copy, `None` while the leader runs without the allowlist or none is
+    /// known.
     pub(crate) fn status(&self) -> Option<DepositAllowlistStatus> {
-        self.inner
-            .snapshot
-            .read()
-            .as_ref()
-            .map(|snapshot| snapshot.status)
+        self.inner.list.read().as_ref().map(|list| list.status)
     }
 
-    /// Install `snapshot`, a written list, returning whether its version differs from the
-    /// current copy.
-    pub(crate) fn replace(&self, mut snapshot: DepositAllowlistSnapshot) -> bool {
-        // Lookups binary-search the addresses; sequencers send them sorted, but they arrive over
-        // P2P.
-        snapshot.addresses.sort_unstable();
-        snapshot.addresses.dedup();
-        let mut current = self.inner.snapshot.write();
-        let changed = current.as_ref().map(|current| current.status) != Some(snapshot.status);
-        *current = Some(snapshot);
+    /// Install the leader's `snapshot`, returning whether its version differs from the current
+    /// copy.
+    pub(crate) fn replace(&self, snapshot: DepositAllowlistSnapshot) -> bool {
+        let list = MirroredList {
+            status: snapshot.status,
+            addresses: snapshot.addresses.into_iter().collect(),
+        };
+        let mut current = self.inner.list.write();
+        let changed = current.as_ref().map(|current| current.status) != Some(list.status);
+        *current = Some(list);
         changed
     }
 
-    /// Drop the copy so every transfer is admitted again, returning whether it held one.
+    /// Drop the copy once the leader runs without the allowlist, so every transfer is admitted
+    /// again. Returns whether it held one.
     pub(crate) fn clear(&self) -> bool {
-        self.inner.snapshot.write().take().is_some()
+        self.inner.list.write().take().is_some()
     }
 
     /// Ask the refresh task to check the sequencers now instead of at its next interval.
@@ -563,39 +570,23 @@ impl AllowlistMirror {
 
 impl TransferAllowlist for AllowlistMirror {
     fn allows_all(&self, addresses: &[Address]) -> bool {
-        self.inner.snapshot.read().as_ref().is_none_or(|snapshot| {
-            addresses
-                .iter()
-                .all(|address| snapshot.addresses.binary_search(address).is_ok())
-        })
+        let list = self.inner.list.read();
+        allows_all(
+            list.as_ref()
+                .filter(|list| list.status.initialized)
+                .map(|list| &list.addresses),
+            addresses,
+        )
     }
 
-    fn is_written(&self) -> bool {
-        self.inner.snapshot.read().is_some()
+    fn is_enabled(&self) -> bool {
+        self.inner.list.read().is_some()
     }
 }
 
-/// Reject a transaction whose calls transfer TIP-20 funds, or request a withdrawal with a Zone
-/// fallback recipient, between accounts `allowlist` does not both allow, that calls
-/// `transferFrom` from an unlisted account, or that calls Multicall3 once the list is written.
-///
-/// This decodes the transaction's own calls so a node rejects them on submission instead of
-/// holding and forwarding transactions the leader would drop. The leader's builder still checks
-/// executed events, which also covers list changes after admission. Unlike the builder, this does
-/// not exempt transfers to the block's fee recipient, which an RPC-only node does not know; being
-/// stricter here is safe.
-///
-/// The `transferFrom` caller must be listed because the calldata names both parties without
-/// tying them to the caller or an allowance: otherwise any funded account could learn whether an
-/// address is listed from whether `transferFrom(address, address, 0)` is admitted. The builder
-/// checks only the accounts funds move between, so this check is not repeated there.
-///
-/// Multicall3 is the only Zone contract that relays calls (contract creation is disabled), and
-/// its calldata does not show which calls it makes. TIP-20 transfers it relays always revert, but
-/// it can still withdraw its own balance through an outbox allowance granted before T15, naming
-/// any fallback recipient. Admitting it would let such a withdrawal that the builder leaves out
-/// be forwarded and executed again every few seconds without paying fees. Rejecting it loses only
-/// calls that do not move funds, which an AA batch can make directly.
+/// Reject on submission a transaction whose calls move TIP-20 funds or name a withdrawal fallback
+/// recipient outside `allowlist`, call `transferFrom` from an unlisted account, or call Multicall3
+/// while the allowlist is enabled.
 pub(crate) fn validate_transfer_calls(
     allowlist: &dyn TransferAllowlist,
     tx: &TempoPooledTransaction,
@@ -605,8 +596,10 @@ pub(crate) fn validate_transfer_calls(
         let TxKind::Call(target) = kind else {
             return true;
         };
+        // Its calldata hides the fallback recipient of a withdrawal it makes with a pre-T15
+        // outbox allowance, which the leader would leave out and this node keep forwarding.
         if target == MULTICALL3_ADDRESS {
-            return !allowlist.is_written();
+            return !allowlist.is_enabled();
         }
         if target.is_tip20() {
             return match ITIP20::ITIP20Calls::abi_decode(input) {
@@ -615,6 +608,7 @@ pub(crate) fn validate_transfer_calls(
                     to,
                     ..
                 })) => allowlist.allows_transfer(sender, to),
+                // A listed caller is required, so `transferFrom(a, b, 0)` cannot probe the list.
                 Ok(ITIP20::ITIP20Calls::transferFrom(ITIP20::transferFromCall {
                     from,
                     to,
@@ -661,6 +655,11 @@ where
         pool.remove_transactions(unlisted);
     }
     count
+}
+
+/// Whether `list` holds every one of `addresses`. An unwritten list (`None`) allows everyone.
+fn allows_all(list: Option<&BTreeSet<Address>>, addresses: &[Address]) -> bool {
+    list.is_none_or(|list| addresses.iter().all(|address| list.contains(address)))
 }
 
 fn apply_set(list: &mut BTreeSet<Address>, addresses: &[Address], allowed: bool) {
@@ -1155,10 +1154,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let allowlist = load(dir.path().join(DEPOSIT_ALLOWLIST_FILE_NAME));
         assert!(allowlist.allows_all(&[BOB]));
-        assert!(!allowlist.is_written());
 
         allowlist.replace(vec![ALICE]).unwrap();
-        assert!(allowlist.is_written());
         assert!(allowlist.allows_all(&[ALICE]));
         assert!(!allowlist.allows_all(&[BOB]));
 
@@ -1226,18 +1223,22 @@ mod tests {
         let mirror = AllowlistMirror::default();
         assert_eq!(mirror.status(), None);
         assert!(mirror.allows_all(&[CAROL]));
-        assert!(!mirror.is_written());
+        assert!(!mirror.is_enabled());
         assert!(!mirror.clear());
 
+        // The leader runs the allowlist but has not written it.
         let dir = tempfile::tempdir().unwrap();
         let allowlist = load(dir.path().join(DEPOSIT_ALLOWLIST_FILE_NAME));
+        assert!(mirror.replace(allowlist.snapshot()));
+        assert!(mirror.is_enabled());
+        assert!(mirror.allows_all(&[CAROL]));
+
         allowlist.replace(vec![ALICE, BOB]).unwrap();
         let mut snapshot = allowlist.snapshot();
         // Lookups do not rely on the sequencer sending addresses in order.
         snapshot.addresses.reverse();
         assert!(mirror.replace(snapshot.clone()));
         assert_eq!(mirror.status(), Some(allowlist.status()));
-        assert!(mirror.is_written());
         assert!(mirror.allows_all(&[ALICE]));
         assert!(mirror.allows_all(&[BOB]));
         assert!(!mirror.allows_all(&[CAROL]));
@@ -1245,7 +1246,7 @@ mod tests {
 
         assert!(mirror.clear());
         assert_eq!(mirror.status(), None);
-        assert!(!mirror.is_written());
+        assert!(!mirror.is_enabled());
         assert!(mirror.allows_all(&[CAROL]));
     }
 
@@ -1381,7 +1382,7 @@ mod tests {
     }
 
     #[test]
-    fn submission_rejects_multicall3_once_the_list_is_written() {
+    fn submission_rejects_multicall3_while_the_allowlist_is_enabled() {
         let multicall = call(MULTICALL3_ADDRESS, Bytes::new());
         // Multicall3 calls as itself, so it is rejected even for a listed sender.
         assert!(!admits_calls(ALICE, vec![multicall.clone()]));
@@ -1390,8 +1391,6 @@ mod tests {
             vec![token_transfer(BOB), multicall.clone()]
         ));
 
-        let dir = tempfile::tempdir().unwrap();
-        let allowlist = load(dir.path().join(DEPOSIT_ALLOWLIST_FILE_NAME));
         let transaction = TempoTransaction {
             calls: vec![multicall],
             ..Default::default()
@@ -1402,7 +1401,16 @@ mod tests {
                 .into(),
             ALICE,
         );
-        assert!(validate_transfer_calls(&allowlist, &transaction).is_ok());
+        // Also before the first write.
+        let dir = tempfile::tempdir().unwrap();
+        let allowlist = load(dir.path().join(DEPOSIT_ALLOWLIST_FILE_NAME));
+        assert!(validate_transfer_calls(&allowlist, &transaction).is_err());
+
+        // An RPC-only node admits it only while the leader runs without the allowlist.
+        let mirror = AllowlistMirror::default();
+        assert!(validate_transfer_calls(&mirror, &transaction).is_ok());
+        mirror.replace(allowlist.snapshot());
+        assert!(validate_transfer_calls(&mirror, &transaction).is_err());
     }
 
     #[tokio::test]

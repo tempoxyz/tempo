@@ -27,9 +27,9 @@ pub trait TransferAllowlist: fmt::Debug + Send + Sync + 'static {
     /// one. An allowlist that has never been written allows every address.
     fn allows_all(&self, addresses: &[Address]) -> bool;
 
-    /// Whether the list has been written and so restricts transfers. Until then it allows every
-    /// address.
-    fn is_written(&self) -> bool;
+    /// Whether the allowlist is in force, so submission rejects Multicall3 calls. It still allows
+    /// every address until its list is written.
+    fn is_enabled(&self) -> bool;
 
     /// Whether a TIP-20 transfer from `from` to `to` is allowed.
     ///
@@ -129,7 +129,7 @@ mod tests {
             addresses.iter().all(|address| self.0.contains(address))
         }
 
-        fn is_written(&self) -> bool {
+        fn is_enabled(&self) -> bool {
             true
         }
     }
@@ -149,7 +149,7 @@ mod tests {
             addresses.iter().all(|address| *address == listed)
         }
 
-        fn is_written(&self) -> bool {
+        fn is_enabled(&self) -> bool {
             true
         }
     }

@@ -7,13 +7,13 @@
 //! the change on its next block. [`zone_p2p::AllowlistClient`] owns delivery: request IDs,
 //! resends, the timeout, and answering resent requests without handling them twice.
 //!
-//! [`mirror_sequencers`] keeps every RPC-only node's [`AllowlistMirror`] in step with the
-//! sequencers, with or without the admin, so the node rejects transfers between unlisted accounts
-//! on submission instead of forwarding them. Reads need no signature.
+//! [`mirror_leader`] keeps every RPC-only node's [`AllowlistMirror`] in step with the leader's
+//! list, with or without the admin, so the node rejects transfers between unlisted accounts on
+//! submission instead of forwarding them. Reads need no signature.
 
 use std::{sync::Arc, time::Duration};
 
-use alloy_primitives::{Address, B256, Bytes};
+use alloy_primitives::{Address, Bytes};
 use jsonrpsee::{
     core::RpcResult,
     types::{
@@ -30,7 +30,9 @@ use tokio::{
     time::MissedTickBehavior,
 };
 use tracing::{Instrument, debug, info, warn};
-use zone_p2p::{AllowlistClient, AllowlistRequest, AllowlistResponses, P2pPeerId};
+use zone_p2p::{
+    AllowlistClient, AllowlistRequest, AllowlistResponses, LeadershipSchedule, P2pPeerId,
+};
 
 use super::{
     AllowlistMirror, DepositAllowlist, DepositAllowlistAdmin, DepositAllowlistApiServer,
@@ -42,10 +44,11 @@ use super::{
 /// writes from being relayed.
 const MAX_CONCURRENT_READS: usize = 4;
 
-/// How often an RPC-only node checks whether the sequencers' allowlist changed. Writes this node
+/// How often an RPC-only node checks whether the leader's allowlist changed. Writes this node
 /// relays refresh its copy immediately; writes relayed through another node show up here within
-/// this interval.
-const MIRROR_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+/// this interval. A round waits for every sequencer, so one that does not answer stretches it to
+/// the relay timeout.
+const MIRROR_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 
 /// An allowlist request relayed to every sequencer.
 #[derive(Debug, Serialize, Deserialize)]
@@ -70,15 +73,67 @@ enum Response {
 
 type RelayResult = RpcResult<Vec<(P2pPeerId, Response)>>;
 
-/// The sequencers' answers to one relayed request.
-struct Answers {
-    /// Responses of the sequencers that accepted the request.
-    responses: Vec<(P2pPeerId, Response)>,
-    /// Whether every sequencer answered, with a response or by reporting that it runs without the
-    /// allowlist.
-    complete: bool,
-    /// Names the sequencers that rejected the request or did not answer, if any did.
-    error: Option<ErrorObjectOwned>,
+/// Why a sequencer gave no response to a relayed request.
+#[derive(Debug)]
+enum Failure {
+    /// The sequencer rejected the request.
+    Rejected(DepositAllowlistError),
+    /// The sequencer's answer did not decode.
+    Malformed(serde_json::Error),
+    /// The sequencer did not answer before the relay timeout.
+    Unanswered,
+}
+
+/// Each sequencer's outcome for one relayed request.
+struct Answers(Vec<(P2pPeerId, Result<Response, Failure>)>);
+
+impl Answers {
+    /// Every sequencer's response, or an error naming the sequencers that rejected the request or
+    /// did not answer.
+    fn into_responses(self) -> RelayResult {
+        let mut responses = Vec::with_capacity(self.0.len());
+        let mut errors = Vec::new();
+        let mut unanswered = Vec::new();
+        // Invalid params only when every sequencer that failed rejected the request itself.
+        let mut code = INVALID_PARAMS_CODE;
+        for (peer, outcome) in self.0 {
+            match outcome {
+                Ok(response) => responses.push((peer, response)),
+                Err(Failure::Rejected(error)) => {
+                    if error.code() != INVALID_PARAMS_CODE {
+                        code = INTERNAL_ERROR_CODE;
+                    }
+                    errors.push(format!("{peer}: {error}"));
+                }
+                Err(Failure::Malformed(err)) => {
+                    code = INTERNAL_ERROR_CODE;
+                    errors.push(format!("{peer}: malformed answer: {err}"));
+                }
+                Err(Failure::Unanswered) => {
+                    code = INTERNAL_ERROR_CODE;
+                    unanswered.push(peer.to_string());
+                }
+            }
+        }
+        if !unanswered.is_empty() {
+            errors.push(format!(
+                "no acknowledgement from sequencers {}",
+                unanswered.join(", ")
+            ));
+        }
+        if errors.is_empty() {
+            Ok(responses)
+        } else {
+            Err(ErrorObjectOwned::owned(code, errors.join("; "), None::<()>))
+        }
+    }
+
+    /// The outcome of `peer`, `None` if the request did not go to it.
+    fn outcome_of(self, peer: &P2pPeerId) -> Option<Result<Response, Failure>> {
+        self.0
+            .into_iter()
+            .find_map(|(answered, outcome)| (answered == *peer).then_some(outcome))
+    }
 }
 
 /// `zoneAdmin` API on an RPC-only node, relaying requests to every sequencer.
@@ -116,11 +171,7 @@ impl AllowlistRelay {
     /// Send `request` to every sequencer and return each one's response, or an error naming the
     /// sequencers that rejected it or did not answer.
     async fn relay(&self, request: &Request) -> RelayResult {
-        let answers = answers(&self.client, request).await?;
-        match answers.error {
-            None => Ok(answers.responses),
-            Some(error) => Err(error),
-        }
+        answers(&self.client, request).await?.into_responses()
     }
 
     /// Relay `request` in a free `lane` slot, failing fast with `Busy` when there is none. The
@@ -323,53 +374,28 @@ async fn answers(client: &AllowlistClient, request: &Request) -> RpcResult<Answe
         .request(payload)
         .await
         .map_err(|err| relay_error(err.to_string()))?;
-    let mut responses = Vec::with_capacity(answers.len());
-    let mut complete = unanswered.is_empty();
-    let mut errors = Vec::new();
-    // Invalid params only when every sequencer that failed rejected the request itself.
-    let mut code = INVALID_PARAMS_CODE;
-    for (peer, answer) in answers {
-        match serde_json::from_slice::<Answer>(&answer) {
-            Ok(Ok(response)) => responses.push((peer, response)),
-            Ok(Err(error)) => {
-                complete &= matches!(error, DepositAllowlistError::Disabled);
-                if error.code() != INVALID_PARAMS_CODE {
-                    code = INTERNAL_ERROR_CODE;
-                }
-                errors.push(format!("{peer}: {error}"));
-            }
-            Err(err) => {
-                complete = false;
-                code = INTERNAL_ERROR_CODE;
-                errors.push(format!("{peer}: malformed answer: {err}"));
-            }
-        }
-    }
-    if !unanswered.is_empty() {
-        let unanswered = unanswered
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>();
-        code = INTERNAL_ERROR_CODE;
-        errors.push(format!(
-            "no acknowledgement from sequencers {}",
-            unanswered.join(", ")
-        ));
-    }
-    let error =
-        (!errors.is_empty()).then(|| ErrorObjectOwned::owned(code, errors.join("; "), None::<()>));
-    Ok(Answers {
-        responses,
-        complete,
-        error,
-    })
+    let answered = answers.into_iter().map(|(peer, answer)| {
+        let outcome = match serde_json::from_slice::<Answer>(&answer) {
+            Ok(answer) => answer.map_err(Failure::Rejected),
+            Err(err) => Err(Failure::Malformed(err)),
+        };
+        (peer, outcome)
+    });
+    let unanswered = unanswered
+        .into_iter()
+        .map(|peer| (peer, Err(Failure::Unanswered)));
+    Ok(Answers(answered.chain(unanswered).collect()))
 }
 
-/// Keep `mirror` in step with the sequencers' lists, reading them through `client`, and remove
-/// pooled transactions the new copy rejects. Runs on every RPC-only node until the
-/// node shuts down.
-pub(crate) async fn mirror_sequencers<P>(client: AllowlistClient, mirror: AllowlistMirror, pool: P)
-where
+/// Keep `mirror` in step with the list of the leader `leadership` names, reading it through
+/// `client`, and remove pooled transactions the new copy rejects. Runs on every RPC-only node
+/// until the node shuts down.
+pub(crate) async fn mirror_leader<P>(
+    client: AllowlistClient,
+    leadership: LeadershipSchedule,
+    mirror: AllowlistMirror,
+    pool: P,
+) where
     P: TransactionPool<Transaction = TempoPooledTransaction>,
 {
     let mut interval = tokio::time::interval(MIRROR_REFRESH_INTERVAL);
@@ -379,7 +405,7 @@ where
             _ = interval.tick() => {}
             () = mirror.refresh_requested() => {}
         }
-        match refresh_mirror(&client, &mirror).await {
+        match refresh_mirror(&client, &leadership, &mirror).await {
             Ok(false) => {}
             Ok(true) => {
                 let evicted = evict_unlisted_transfers(&pool, &mirror);
@@ -399,61 +425,44 @@ where
     }
 }
 
-/// Bring `mirror` in line with the newest written list held by the sequencers that answer.
-/// Returns whether the copy changed.
-///
-/// A newer list is taken from any sequencer, so one offline sequencer does not leave this node
-/// behind. The copy moves back, to an older list or to none when no sequencer holds a written
-/// list (for example after `--deposits.allowlist` is turned off), only when every sequencer
-/// answered, so a lagging sequencer that alone answers cannot roll it back. Lists are ordered by
-/// nonce, then by hash, so sequencers whose lists diverged under one nonce do not make the copy
-/// switch between them from round to round.
-async fn refresh_mirror(client: &AllowlistClient, mirror: &AllowlistMirror) -> RpcResult<bool> {
-    let statuses = answers(client, &Request::Status).await?;
-    if let Some(error) = &statuses.error {
-        debug!(target: "zone::allowlist", %error, "Some sequencers did not report their allowlist status");
-    }
-    let follow_back = statuses.complete;
-    // An uninitialized list admits everyone, like a sequencer without the allowlist.
-    let Some(newest) = statuses
-        .responses
-        .into_iter()
-        .filter_map(|(_, response)| match response {
-            Response::Status(status) if status.initialized => Some(status),
-            _ => None,
-        })
-        .max_by_key(list_order)
-    else {
-        return Ok(follow_back && mirror.clear());
+/// Copy the list of the leader `leadership` routes transactions to, the only sequencer that
+/// enforces it, into `mirror`. Returns whether the copy changed. The copy is kept while the
+/// leader is unknown or does not answer.
+async fn refresh_mirror(
+    client: &AllowlistClient,
+    leadership: &LeadershipSchedule,
+    mirror: &AllowlistMirror,
+) -> RpcResult<bool> {
+    let Some(leader) = leadership.next_anchor_record().map(|record| record.leader) else {
+        return Ok(false);
     };
-    let fetch = mirror.status().is_none_or(|current| {
-        current != newest && (follow_back || list_order(&newest) > list_order(&current))
-    });
-    if !fetch {
+    let status = match answers(client, &Request::Status).await?.outcome_of(&leader) {
+        Some(Ok(Response::Status(status))) => status,
+        Some(Err(Failure::Rejected(DepositAllowlistError::Disabled))) => return Ok(mirror.clear()),
+        outcome => {
+            debug!(target: "zone::allowlist", %leader, ?outcome, "Leader did not report its allowlist status");
+            return Ok(false);
+        }
+    };
+    if mirror.status() == Some(status) {
         return Ok(false);
     }
-    let snapshots = answers(client, &Request::Get).await?;
-    if let Some(error) = &snapshots.error {
-        debug!(target: "zone::allowlist", %error, "Some sequencers did not return their allowlist");
-    }
-    // The sequencers that answer this round may lag behind those that reported `newest`, or
-    // apply a write since; the next round settles either case.
-    let Some(snapshot) = snapshots
-        .responses
-        .into_iter()
-        .find_map(|(_, response)| match response {
-            Response::Snapshot(snapshot) if snapshot.status == newest => Some(snapshot),
-            _ => None,
-        })
-    else {
-        return Ok(false);
+    // An uninitialized list holds no addresses to fetch.
+    let snapshot = if status.initialized {
+        match answers(client, &Request::Get).await?.outcome_of(&leader) {
+            Some(Ok(Response::Snapshot(snapshot))) => snapshot,
+            outcome => {
+                debug!(target: "zone::allowlist", %leader, ?outcome, "Leader did not return its allowlist");
+                return Ok(false);
+            }
+        }
+    } else {
+        DepositAllowlistSnapshot {
+            status,
+            addresses: Vec::new(),
+        }
     };
     Ok(mirror.replace(snapshot))
-}
-
-/// Orders written lists by nonce, then by hash, so every RPC-only node picks the same one.
-fn list_order(status: &DepositAllowlistStatus) -> (u64, B256) {
-    (status.nonce, status.list_hash)
 }
 
 fn relay_error(message: String) -> ErrorObjectOwned {
@@ -479,6 +488,8 @@ mod tests {
 
     struct RelayFixture {
         relay: AllowlistRelay,
+        /// The RPC-only node's leadership schedule, naming `node-0` as leader.
+        leadership: LeadershipSchedule,
         peers: Vec<P2pHandleParts>,
         _dir: tempfile::TempDir,
     }
@@ -509,6 +520,7 @@ mod tests {
             }
             std::fs::write(&manifest_path, manifest).unwrap();
             drop(listeners);
+            let mut leadership = None;
             let peers = keys
                 .into_iter()
                 .enumerate()
@@ -531,6 +543,9 @@ mod tests {
                         .leadership()
                         .publish(config.manifest().bootstrap_leadership())
                         .unwrap();
+                    if index == 3 {
+                        leadership = Some(config.leadership());
+                    }
                     spawn_p2p(config, P2pNetworkId::new(1, Address::repeat_byte(1)))
                         .unwrap()
                         .into_parts()
@@ -547,14 +562,19 @@ mod tests {
             );
             Self {
                 relay,
+                leadership: leadership.unwrap(),
                 peers,
                 _dir: dir,
             }
         }
 
         fn refresh_mirror(&self) -> tokio::task::JoinHandle<RpcResult<bool>> {
-            let (client, mirror) = (self.relay.client.clone(), self.relay.mirror.clone());
-            tokio::spawn(async move { refresh_mirror(&client, &mirror).await })
+            let (client, leadership, mirror) = (
+                self.relay.client.clone(),
+                self.leadership.clone(),
+                self.relay.mirror.clone(),
+            );
+            tokio::spawn(async move { refresh_mirror(&client, &leadership, &mirror).await })
         }
 
         async fn receive(&mut self) -> Vec<AllowlistRequest> {
@@ -788,10 +808,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mirror_takes_the_newest_list_from_the_sequencers_that_answer() {
+    async fn mirror_copies_the_leaders_list() {
         let mut fixture = RelayFixture::new();
         let (old, new) = (Address::repeat_byte(1), Address::repeat_byte(2));
 
+        // Only the leader's list is copied, even when another sequencer holds a newer one.
         let refresh = fixture.refresh_mirror();
         fixture
             .answer([
@@ -804,123 +825,91 @@ mod tests {
             .answer([ok(listed(1, old)), ok(listed(2, new)), malformed()])
             .await;
         assert!(changed(refresh).await);
-        assert_eq!(fixture.relay.mirror.status(), Some(status(2)));
-        assert!(fixture.relay.mirror.allows_all(&[new]));
-        assert!(!fixture.relay.mirror.allows_all(&[old]));
+        assert_eq!(fixture.relay.mirror.status(), Some(status(1)));
+        assert!(fixture.relay.mirror.allows_all(&[old]));
+        assert!(!fixture.relay.mirror.allows_all(&[new]));
 
-        // An unchanged version is not fetched again. While a sequencer does not answer, neither
-        // an older list nor the lack of one moves the copy back.
+        // An unchanged version is not fetched again, and a leader that does not answer properly
+        // leaves the copy as it is.
         for answers in [
-            [
-                ok(Response::Status(status(1))),
-                ok(Response::Status(status(2))),
-                disabled(),
-            ],
-            [ok(Response::Status(status(1))), malformed(), malformed()],
-            [disabled(), uninitialized(), malformed()],
+            [ok(Response::Status(status(1))), disabled(), uninitialized()],
+            [malformed(), ok(Response::Status(status(3))), disabled()],
         ] {
             let refresh = fixture.refresh_mirror();
             fixture.answer(answers).await;
             assert!(!changed(refresh).await);
-            assert_eq!(fixture.relay.mirror.status(), Some(status(2)));
+            assert_eq!(fixture.relay.mirror.status(), Some(status(1)));
         }
-    }
-
-    #[tokio::test]
-    async fn mirror_follows_the_sequencers_back_once_every_one_answers() {
-        let mut fixture = RelayFixture::new();
-        let (old, new) = (Address::repeat_byte(1), Address::repeat_byte(2));
-        assert!(fixture.relay.mirror.replace(DepositAllowlistSnapshot {
-            status: status(2),
-            addresses: vec![new],
-        }));
-
-        // Every sequencer holds an older list, e.g. after the admin rebuilt them.
         let refresh = fixture.refresh_mirror();
         fixture
-            .answer([
-                ok(Response::Status(status(1))),
-                ok(Response::Status(status(1))),
-                disabled(),
-            ])
+            .answer([ok(Response::Status(status(3))), disabled(), disabled()])
             .await;
-        fixture
-            .answer([ok(listed(1, old)), ok(listed(1, old)), disabled()])
-            .await;
-        assert!(changed(refresh).await);
+        fixture.answer([malformed(), disabled(), disabled()]).await;
+        assert!(!changed(refresh).await);
         assert_eq!(fixture.relay.mirror.status(), Some(status(1)));
 
-        // Every sequencer runs without the allowlist or has not written it.
+        // The copy moves back with the leader, e.g. after the admin rebuilt its list.
         let refresh = fixture.refresh_mirror();
         fixture
-            .answer([disabled(), disabled(), uninitialized()])
+            .answer([ok(Response::Status(status(0))), disabled(), disabled()])
+            .await;
+        fixture
+            .answer([ok(listed(0, new)), disabled(), disabled()])
+            .await;
+        assert!(changed(refresh).await);
+        assert_eq!(fixture.relay.mirror.status(), Some(status(0)));
+        assert!(fixture.relay.mirror.allows_all(&[new]));
+
+        // An uninitialized list is installed without a fetch and admits everyone.
+        let refresh = fixture.refresh_mirror();
+        fixture
+            .answer([uninitialized(), ok(Response::Status(status(3))), disabled()])
+            .await;
+        assert!(changed(refresh).await);
+        assert!(fixture.relay.mirror.is_enabled());
+        assert!(fixture.relay.mirror.allows_all(&[old, new]));
+
+        // A leader without the allowlist clears the copy.
+        let refresh = fixture.refresh_mirror();
+        fixture
+            .answer([disabled(), ok(Response::Status(status(3))), disabled()])
             .await;
         assert!(changed(refresh).await);
         assert_eq!(fixture.relay.mirror.status(), None);
-        assert!(fixture.relay.mirror.allows_all(&[new]));
+        assert!(!fixture.relay.mirror.is_enabled());
     }
 
     #[tokio::test]
-    async fn mirror_settles_on_one_of_two_lists_that_share_a_nonce() {
+    async fn mirror_follows_a_new_leader() {
         let mut fixture = RelayFixture::new();
-        let diverged = |byte, address| DepositAllowlistSnapshot {
-            status: DepositAllowlistStatus {
-                list_hash: B256::repeat_byte(byte),
-                ..status(2)
-            },
-            addresses: vec![address],
-        };
-        let lower = diverged(0x10, Address::repeat_byte(1));
-        let higher = diverged(0x20, Address::repeat_byte(2));
+        let (old, new) = (Address::repeat_byte(1), Address::repeat_byte(2));
+        assert!(fixture.relay.mirror.replace(DepositAllowlistSnapshot {
+            status: status(1),
+            addresses: vec![old],
+        }));
+        fixture
+            .leadership
+            .publish(zone_p2p::LeadershipState::new(
+                1,
+                PrivateKey::from_seed(32).public_key(),
+                10,
+            ))
+            .unwrap();
 
-        // The list with the greater hash wins, whichever sequencer answers first.
         let refresh = fixture.refresh_mirror();
         fixture
             .answer([
-                ok(Response::Status(higher.status)),
-                ok(Response::Status(lower.status)),
+                ok(Response::Status(status(1))),
+                ok(Response::Status(status(2))),
                 disabled(),
             ])
             .await;
         fixture
-            .answer([
-                ok(Response::Snapshot(lower.clone())),
-                ok(Response::Snapshot(higher.clone())),
-                disabled(),
-            ])
+            .answer([ok(listed(1, old)), ok(listed(2, new)), disabled()])
             .await;
         assert!(changed(refresh).await);
-        assert_eq!(fixture.relay.mirror.status(), Some(higher.status));
-
-        // Later rounds keep it instead of switching to the other list.
-        let refresh = fixture.refresh_mirror();
-        fixture
-            .answer([
-                ok(Response::Status(higher.status)),
-                ok(Response::Status(lower.status)),
-                disabled(),
-            ])
-            .await;
-        assert!(!changed(refresh).await);
-
-        // A fetched list is installed only if it is the one the status round chose.
-        let refresh = fixture.refresh_mirror();
-        fixture
-            .answer([
-                ok(Response::Status(status(3))),
-                ok(Response::Status(higher.status)),
-                disabled(),
-            ])
-            .await;
-        fixture
-            .answer([
-                malformed(),
-                ok(Response::Snapshot(higher.clone())),
-                disabled(),
-            ])
-            .await;
-        assert!(!changed(refresh).await);
-        assert_eq!(fixture.relay.mirror.status(), Some(higher.status));
+        assert_eq!(fixture.relay.mirror.status(), Some(status(2)));
+        assert!(fixture.relay.mirror.allows_all(&[new]));
     }
 
     fn full_list() -> Vec<Address> {

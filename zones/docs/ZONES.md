@@ -355,22 +355,22 @@ Submission also rejects a `transferFrom` from an unlisted caller, whatever parti
 an unlisted account cannot learn whether an address is listed from whether its transaction is
 accepted.
 
-Once the list is written, submission also rejects any call to Multicall3, the only zone contract
-that relays calls. Zone TIP-20 transfers through it always revert, but it can still withdraw its
+While the allowlist is enabled, submission also rejects any call to Multicall3, the only zone
+contract that relays calls, even before the list is written. Zone TIP-20 transfers through it always revert, but it can still withdraw its
 own balance through an outbox allowance granted before T15. Its calldata does not show that
 withdrawal's fallback recipient, so one the leader leaves out would otherwise be forwarded and
 executed again every few seconds without paying fees. Read-only `eth_call`s through it are
 unaffected, and an AA batch replaces batched writes.
 
-Every RPC follower keeps an in-memory copy of the list so it can reject the same transactions
-on submission, returning `transfer sender or recipient is not allowlisted` instead of forwarding
-them. It needs no flag: reading the list needs no signature. It fetches the newest list any
-sequencer holds (by nonce) at startup, after every write it relays, and within 5 seconds of a
-write relayed through another follower, then drops pooled transactions the new list rejects. It
-holds no file. It moves back to an older list, or drops its copy once no sequencer holds a written
-list (for example after `--deposits.allowlist` is turned off), only when every sequencer answers,
-so a lagging sequencer cannot roll it back. Until it finds a written list it admits every transfer,
-and the sequencers still enforce their own lists.
+Every RPC follower keeps an in-memory copy of the leader's list so it can reject the same
+transactions on submission, returning `transfer sender or recipient is not allowlisted` instead of
+forwarding them. It needs no flag: reading the list needs no signature. It copies the list of the
+leader it forwards transactions to at startup, after every write it relays, and every second
+after that, then drops pooled transactions the new list rejects. It holds no file. The copy
+follows the leader wherever its list goes, including to an older list after a leader change or to
+none once the leader runs without `--deposits.allowlist`, and keeps its last list while the leader
+does not answer. While it holds no written list it admits every transfer, and the leader still
+enforces its own list.
 
 Removing an account from the list does not trap its funds. Transfers to the outbox and to the
 block's fee recipient (the leading sequencer's fee address) are exempt, so it can still pay fees
