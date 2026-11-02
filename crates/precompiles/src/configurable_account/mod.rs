@@ -7,7 +7,7 @@ use crate::{
     error::{Result, TempoPrecompileError},
     storage::{ConfigCommitmentWriteGas, Handler, account_config_commitment},
 };
-use alloy::primitives::{Address, B256, Bytes, KECCAK256_EMPTY, b256};
+use alloy::primitives::{Address, B256, KECCAK256_EMPTY};
 pub use tempo_chainspec::is_valid_native_account as valid_account;
 use tempo_contracts::precompiles::{
     CONFIGURABLE_ACCOUNT_ADDRESS, ConfigurableAccountError, ConfigurableAccountEvent,
@@ -19,12 +19,9 @@ use tempo_primitives::transaction::{
     configurable_account::CONFIGURABLE_ACCOUNT_UPGRADE_DOMAIN,
 };
 
-/// Shared protocol-installed code for registered configurable accounts.
-pub const CONFIGURABLE_ACCOUNT_CODE: Bytes = Bytes::from_static(&[0xef]);
-
-/// Keccak-256 of [`CONFIGURABLE_ACCOUNT_CODE`], compared without loading code bytes.
-pub const CONFIGURABLE_ACCOUNT_CODE_HASH: B256 =
-    b256!("309b8896ee4c1ff7ec1966155373dee42663b6b40c3fedc70ba501684848d2a3");
+pub use tempo_primitives::transaction::configurable_account::{
+    CONFIGURABLE_ACCOUNT_CODE, CONFIGURABLE_ACCOUNT_CODE_HASH,
+};
 
 /// Configurable account precompile.
 ///
