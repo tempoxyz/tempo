@@ -2,4 +2,4 @@
 tempo-primitives: patch
 ---
 
-Built test transactions with `SignableTransaction::into_signed` instead of `Signed::new_unhashed`.
+Built signed transactions with `SignableTransaction::into_signed` instead of `Signed::new_unhashed` (same lazy hashing).
