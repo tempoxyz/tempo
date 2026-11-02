@@ -8,7 +8,8 @@ on:
 permissions: {}
 
 concurrency:
-  group: network-e2e-${{ github.event.pull_request.number || github.ref }}
+  # Keyed by event so this run never cancels main's pull_request_target copy while this change lands.
+  group: network-e2e-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
