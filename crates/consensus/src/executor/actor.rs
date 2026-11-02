@@ -245,9 +245,9 @@ pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal> {
     /// The highest finalized block accepted by the execution layer, with its
     /// consensus round. Initialized from the local finalized state.
     delivered_finalized_tip: (Round, Height, Digest),
-    /// The finalized tip startup selected, whose certificate is authenticated
-    /// before any actor starts. The finalized block delivered at its height
-    /// must be this block.
+    /// The finalized tip marshal reported at startup: the highest height in
+    /// the finalizations archive and the digest finalized there. The
+    /// finalized block delivered at that height must have that digest.
     startup_finalized_tip: (Height, Digest),
     /// The latest finalized tip announced by consensus, which may still
     /// need to be delivered to the execution layer. Never below the finalized
@@ -965,9 +965,9 @@ where
     /// layer already finalized it (a re-delivery) - and the execution layer
     /// durably persisted it. The marshal actor delivers the finalized chain
     /// in order; that order is trusted, not checked, except that the block at
-    /// the startup finalized tip's height must be that tip: marshal reads
-    /// finalized blocks by height, so restored storage could otherwise pair
-    /// the authenticated tip certificate with a different block.
+    /// the startup finalized tip's height must have the tip's digest: marshal
+    /// reads finalized blocks by height, so restored storage could otherwise
+    /// hold a different block at that height.
     #[instrument(
         skip_all,
         fields(
@@ -1009,8 +1009,8 @@ where
         ensure!(
             block.height() != tip_height || block.digest() == tip_digest,
             "finalized block `{}` at height `{tip_height}` is not the startup finalized tip \
-            `{tip_digest}` its certificate finalized; the consensus storage does not hold the \
-            certified chain: delete consensus storage or restore a consistent snapshot",
+            `{tip_digest}`; the consensus storage does not hold the finalized chain: delete \
+            consensus storage or restore a consistent snapshot",
             block.digest(),
         );
 

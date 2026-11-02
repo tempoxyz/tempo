@@ -563,7 +563,7 @@ fn backfill_fails_when_the_block_at_the_startup_tip_is_not_the_tip() {
         let tip = make_block(1, 1, GENESIS);
         let other = make_block(2, 1, GENESIS);
 
-        // Restored storage holds another block at the authenticated tip's height.
+        // Restored storage holds another block at the startup tip's height.
         let marshal = FakeMarshal::new();
         marshal.add_block(other.clone());
 
