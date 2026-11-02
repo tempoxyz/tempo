@@ -170,10 +170,11 @@ fn harness_input(chunk: &Chunk, chain_spec: ChainSpecInput) -> eyre::Result<Temp
     })
 }
 
-/// Writes `blocks` to `path`, one per line, under a header naming `catalog`'s corpus.
-pub fn write_blocks(path: &Path, catalog: &Catalog, blocks: &[u64]) -> eyre::Result<()> {
+/// A block list section naming `catalog`'s corpus and `blocks` of it, one per line. A block list
+/// file holds one section per corpus.
+pub fn block_list(catalog: &Catalog, blocks: &[u64]) -> String {
     let context = &catalog.context;
-    let mut text = format!(
+    let header = format!(
         "# corpus {}..{} tip {} checkpoint {}\n",
         context.start,
         context.end,
@@ -182,24 +183,19 @@ pub fn write_blocks(path: &Path, catalog: &Catalog, blocks: &[u64]) -> eyre::Res
     );
     blocks
         .iter()
-        .for_each(|block| text += &format!("{block}\n"));
-    Ok(fs::write(path, text)?)
+        .fold(header, |text, block| text + &format!("{block}\n"))
 }
 
-/// The blocks a [`write_blocks`] file lists, which must be blocks of `catalog`'s corpus: a
-/// header naming another corpus tip fails.
+/// The blocks of `catalog`'s corpus a block list file lists: those under a section header naming
+/// its tip, and those before any header, which must be in its range.
 pub fn read_blocks(path: &Path, catalog: &Catalog) -> eyre::Result<Vec<u64>> {
     let context = &catalog.context;
     let tip = format!(" tip {} ", context.tip);
-    let mut blocks = Vec::new();
+    let (mut blocks, mut ours) = (Vec::new(), true);
     for line in fs::read_to_string(path)?.lines().map(str::trim) {
         if let Some(header) = line.strip_prefix('#') {
-            eyre::ensure!(
-                !header.contains(" tip ") || header.contains(&tip),
-                "{} lists blocks of another corpus:{header}",
-                path.display()
-            );
-        } else if !line.is_empty() {
+            ours = header.contains(&tip);
+        } else if ours && !line.is_empty() {
             let block: u64 = line.parse()?;
             eyre::ensure!(
                 (context.start..context.end).contains(&block),
