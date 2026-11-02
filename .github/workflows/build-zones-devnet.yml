@@ -1,0 +1,90 @@
+name: Build Zones devnet from PR
+
+# "/build-zones-devnet [hardfork]" on a pull request builds an L1 devnet plus a
+# Zone from the PR head through the tempoxyz/workflows zones-devnet-pr
+# template, which comments the endpoints on the PR. Without a hardfork every
+# fork defined at the PR head is active at genesis.
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+jobs:
+  publish:
+    permissions:
+      id-token: write
+      pull-requests: read
+    runs-on: ubuntu-latest
+    if: >-
+      github.event.issue.pull_request && github.event.comment.author_association == 'MEMBER' && startsWith(github.event.comment.body, '/build-zones-devnet')
+    steps:
+    - name: Secure runner
+      uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+    - name: Get PR details
+      id: pr
+
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GH_REPO: ${{ github.repository }}
+        PR_NUMBER: ${{ github.event.issue.number }}
+      run: |
+        PR_DATA=$(gh api "repos/${GH_REPO}/pulls/${PR_NUMBER}")
+        echo "sha=$(echo "$PR_DATA" | jq -r .head.sha)" >> "$GITHUB_OUTPUT"
+        echo "branch=$(echo "$PR_DATA" | jq -r .head.ref)" >> "$GITHUB_OUTPUT"
+
+    - name: Parse command
+      id: command
+      env:
+        COMMENT_BODY: ${{ github.event.comment.body }}
+      run: |
+        set -euo pipefail
+
+        # "/build-zones-devnet" alone activates every hardfork; "/build-zones-devnet T14" stops at T14.
+        read -r command hardfork _ <<< "$(printf '%s\n' "$COMMENT_BODY" | head -n 1)"
+        if [[ "$command" != "/build-zones-devnet" ]]; then
+          echo "Unrecognized command: $command" >&2
+          exit 1
+        fi
+        hardfork="${hardfork:-latest}"
+        if ! [[ "$hardfork" =~ ^(latest|T[0-9]{1,3})$ ]]; then
+          echo "Hardfork must be 'latest' or a fork name such as T14, got: $hardfork" >&2
+          exit 1
+        fi
+        echo "hardfork=$hardfork" >> "$GITHUB_OUTPUT"
+
+    - name: Publish event
+      env:
+        EVENTS_KEY: ${{ secrets.EVENTS_KEY }}
+        EVENTS_CERT: ${{ secrets.EVENTS_CERT }}
+        RUNNER_TEMP: ${{ runner.temp }}
+        GH_REPO: ${{ github.repository }}
+        PR_NUMBER: ${{ github.event.issue.number }}
+        REQUESTED_BY: ${{ github.event.comment.user.login }}
+        PR_BRANCH: ${{ steps.pr.outputs.branch }}
+        PR_SHA: ${{ steps.pr.outputs.sha }}
+        HARDFORK: ${{ steps.command.outputs.hardfork }}
+      run: |
+        set -euo pipefail
+
+        echo "$EVENTS_KEY" > "${RUNNER_TEMP}/key"
+        echo "$EVENTS_CERT" > "${RUNNER_TEMP}/cert"
+
+        curl -sf -o /dev/null -X POST ${{ secrets.EVENTS_ARGS }} \
+          -H "Content-Type: application/json" \
+          --key "${RUNNER_TEMP}/key" \
+          --cert "${RUNNER_TEMP}/cert" \
+          -d "{
+            \"repository\": \"${GH_REPO}\",
+            \"event\": \"build_zones_devnet\",
+            \"data\": {
+              \"pr_number\": \"${PR_NUMBER}\",
+              \"name\": \"zones-pr-${PR_NUMBER}\",
+              \"branch\": \"${PR_BRANCH}\",
+              \"sha\": \"${PR_SHA}\",
+              \"hardfork\": \"${HARDFORK}\",
+              \"requested_by\": \"${REQUESTED_BY}\"
+            }
+          }"
