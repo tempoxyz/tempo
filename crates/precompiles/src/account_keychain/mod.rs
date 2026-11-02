@@ -1256,13 +1256,13 @@ impl AccountKeychain {
     /// * `current_timestamp` - Current block timestamp for expiry check
     /// * `expected_sig_type` - The signature type from the actual signature (0=Secp256k1, 1=P256,
     ///   2=WebAuthn, 3=ConfigurableAccount). Pass `None` to skip validation (for backward
-    ///   compatibility pre-T1).
+    ///   compatibility pre-T1). See `accepts_signature_type` for the types a key accepts.
     ///
     /// # Errors
     /// - `KeyAlreadyRevoked` — the key has been permanently revoked
     /// - `KeyNotFound` — no key is registered under the given `key_id`
     /// - `KeyExpired` — `current_timestamp` is at or past the key's expiry
-    /// - `SignatureTypeMismatch` — the key's stored type differs from `expected_sig_type`
+    /// - `SignatureTypeMismatch` — the key does not accept `expected_sig_type`
     pub fn validate_keychain_authorization(
         &self,
         account: Address,
@@ -1275,7 +1275,7 @@ impl AccountKeychain {
         // Validate that the signature type matches the key type stored in the keychain
         // Only check if expected_sig_type is provided (T1+ hardfork)
         if let Some(sig_type) = expected_sig_type
-            && key.signature_type as u8 != sig_type
+            && !self.accepts_signature_type(&key, key_id, sig_type)?
         {
             return Err(AccountKeychainError::signature_type_mismatch(
                 key.signature_type as u8,
@@ -1631,6 +1631,33 @@ impl AccountKeychain {
             return Err(AccountKeychainError::invalid_signature_type().into());
         }
         Ok(())
+    }
+
+    /// Returns whether `key`, registered under `key_id`, accepts a signature of `signature_type`
+    /// (0=Secp256k1, 1=P256, 2=WebAuthn, 3=ConfigurableAccount).
+    ///
+    /// A signature must have the key's stored type. From T14, a primitive key also accepts a
+    /// configurable account signature when `key_id` has a nonzero configuration commitment: the
+    /// primitive delegate migrated to configurable ownership and its owner quorum now holds the
+    /// grant. A key stored as `ConfigurableAccount` never accepts a primitive signature.
+    ///
+    /// Reads the commitment of `key_id` as currently stored, and only when the key's stored type is
+    /// primitive and `signature_type` is configurable.
+    fn accepts_signature_type(
+        &self,
+        key: &AuthorizedKey,
+        key_id: Address,
+        signature_type: u8,
+    ) -> Result<bool> {
+        if key.signature_type as u8 == signature_type {
+            return Ok(true);
+        }
+        if key.signature_type == StoredSignatureType::ConfigurableAccount
+            || signature_type != StoredSignatureType::ConfigurableAccount as u8
+        {
+            return Ok(false);
+        }
+        self.storage.is_retired_root(key_id)
     }
 }
 

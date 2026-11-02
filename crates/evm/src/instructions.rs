@@ -2,14 +2,19 @@
 
 use alloy_primitives::{Address, U256};
 use evm2::{
-    EvmFeatures, HostError,
+    AnyError, EvmFeatures, ExecutionError, HostError,
     evm::SLoad,
     interpreter::{Gas, GasTracker, Host, InstrStop, InterpreterState, Result},
+    precompiles::{PrecompileError, PrecompileHalt},
     version::{GasId, GasParams},
 };
 use evm2_macros::instruction;
 use tempo_precompiles::{
-    storage::SstoreTransitionFlags,
+    configurable_account::{CONFIGURABLE_ACCOUNT_CODE, shim},
+    storage::{
+        SstoreTransitionFlags, StorageCtx, account_config_commitment,
+        evm::EvmPrecompileStorageProvider,
+    },
     storage_credits::{StorageCreditsBackend, sstore_storage_credits},
 };
 
@@ -130,6 +135,50 @@ pub fn sstore(cx: _, [key, value]: [Word]) -> Result {
     cx.gas
         .record_refund(cx.state.gas_params().sstore_refund(is_eip2200, &state_load));
     Ok(())
+}
+
+/// Executes the reserved one-byte account marker at T14. Other uses of 0xef stay invalid.
+#[instruction(EvmTypes = TempoEvmTypes, dynamic_gas)]
+pub fn configurable_account(cx: _) -> Result {
+    let spec = cx.state.host().config_spec_id();
+    if !spec.is_t14() || cx.state.message().code.original_bytes() != CONFIGURABLE_ACCOUNT_CODE {
+        return Err(InstrStop::OpcodeNotFound);
+    }
+    let source = cx.state.message().code_address;
+    let registered = cx
+        .state
+        .host()
+        .read_account_info(&source)
+        .map_err(|error| cx.state.fail(error))?
+        .map_or(Ok(false), |info| {
+            account_config_commitment(&info, spec).map(|commitment| !commitment.is_zero())
+        })
+        .map_err(|error| cx.state.fail(ExecutionError::Fatal(AnyError::new(error))))?;
+    if !registered {
+        return Err(InstrStop::OpcodeNotFound);
+    }
+    let account = cx.state.message().destination;
+    let input = cx.state.message().input.clone();
+    let mut storage =
+        EvmPrecompileStorageProvider::new(cx.state.host(), cx.gas.tracker_mut(), spec, true);
+    let (stop, output) = match StorageCtx::enter(&mut storage, || shim::call(account, &input)) {
+        Ok(output) => (InstrStop::Return, output.into_bytes()),
+        Err(PrecompileError::Revert(output)) => (InstrStop::Revert, output),
+        Err(PrecompileError::Halt(PrecompileHalt::OutOfGas)) => {
+            return Err(InstrStop::PrecompileOOG);
+        }
+        Err(PrecompileError::Halt(_)) => return Err(InstrStop::PrecompileError),
+        Err(PrecompileError::Database(error)) => return Err(cx.state.fail(error)),
+        Err(PrecompileError::Fatal(error)) => {
+            return Err(cx.state.fail(ExecutionError::Fatal(error)));
+        }
+    };
+    // Native dispatch returns data without charging EVM memory expansion.
+    cx.state.memory().resize(0, output.len())?;
+    cx.state.memory().set(0, &output);
+    let output_len = u32::try_from(output.len()).map_err(|_| InstrStop::MemoryLimitOOG)?;
+    cx.state.set_output(0..output_len);
+    Err(stop)
 }
 
 #[cfg(test)]

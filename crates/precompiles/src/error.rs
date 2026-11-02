@@ -326,19 +326,9 @@ impl TempoPrecompileError {
             Self::FeeManagerError(e) => e.abi_encode().into(),
             Self::TIPFeeAMMError(e) => e.abi_encode().into(),
             Self::NonceError(e) => e.abi_encode().into(),
-            Self::Panic(kind) => {
-                let panic = Panic {
-                    code: U256::from(kind as u32),
-                };
-
-                panic.abi_encode().into()
-            }
+            Self::Panic(kind) => Panic::from(kind).abi_encode().into(),
             Self::StorageDeltaUnderflow(_) => {
-                let panic = Panic {
-                    code: U256::from(PanicKind::UnderOverflow as u32),
-                };
-
-                panic.abi_encode().into()
+                Panic::from(PanicKind::UnderOverflow).abi_encode().into()
             }
             Self::ValidatorConfigError(e) => e.abi_encode().into(),
             Self::ValidatorConfigV2Error(e) => e.abi_encode().into(),

@@ -605,6 +605,26 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                     }
 
                     if has_consensus_engine {
+                        let module_config = ctx.modules.module_config();
+                        let mut missing = Vec::new();
+                        if cli::selection_lacks_consensus(module_config.http()) {
+                            missing.push("--http.api");
+                        }
+                        if cli::selection_lacks_consensus(module_config.ws()) {
+                            missing.push("--ws.api");
+                        }
+                        if !missing.is_empty() {
+                            warn!(
+                                flags = %missing.join(", "),
+                                "the consensus RPC module (consensus_*) is served on transports \
+                                 whose module selection does not list it; this implicit activation \
+                                 is deprecated and will be removed in a future release, add \
+                                 `consensus` to the listed flags to keep serving it",
+                            );
+                        }
+
+                        // Registered on every transport regardless of selection until the
+                        // deprecation above is completed.
                         let consensus_rpc = TempoConsensusRpc::new(cl_feed_state);
                         ctx.modules.merge_configured(consensus_rpc.into_rpc())
                             .wrap_err("failed to register consensus rpc module")?;
