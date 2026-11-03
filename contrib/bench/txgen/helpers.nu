@@ -745,7 +745,7 @@ def txgen-batch-payout-templates [presets_dir: string, recipients: int, --genera
     if $recipients < 1 { error make {msg: "TXGEN_BATCH_PAYOUT_RECIPIENTS must be positive"} }
     # Nushell's YAML parser keeps the i64 nonce bound exact; a jq round-trip may not.
     open ($presets_dir | path join batch-payout.yml) | get templates | items { |name, template|
-        let payment = ($template.calls | last | get to | str lowercase | str starts-with "0x20c0")
+        let payment = ($template.calls | last | get to | str starts-with --ignore-case "0x20c0")
         let cap = if $general_gas_cap > 0 and not $payment { $general_gas_cap } else { $TXGEN_HELPER_TX_GAS_LIMIT_CAP }
         let gas_fit = ([((($cap - $TXGEN_HELPER_BATCH_PAYOUT_BASE_GAS) // $template.gas_limit)) 1] | math max)
         let call_fit = $TXGEN_HELPER_MAX_AA_CALLS - ($template.calls | length) + 1
