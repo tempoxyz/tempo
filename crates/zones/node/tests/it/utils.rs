@@ -1055,27 +1055,21 @@ impl ZoneTestNode {
         portal_address: Address,
         key: B256,
     ) -> eyre::Result<Self> {
-        let (mut genesis, _) = build_l1_anchored_genesis(l1_http_url, portal_address).await?;
-        // Slots from the native inbox layout: flag at keccak256(abi.encode(1, S)), key next.
-        let namespace = keccak256(b"tempo.zvda.addressKeys");
-        let flag = U256::from_be_bytes(keccak256((U256::from(1), namespace).abi_encode()).0);
-        genesis
-            .alloc
-            .entry(tempo_contracts::zones::ZONE_INBOX_ADDRESS)
-            .or_default()
-            .storage
-            .get_or_insert_default()
-            .extend([
-                (B256::from(flag), B256::from(U256::ONE)),
-                (B256::from(flag + U256::ONE), key),
-            ]);
-
-        Self::launch_with_genesis(
+        let (genesis, _) = build_l1_anchored_genesis(l1_http_url, portal_address).await?;
+        Self::launch_with_genesis_and_withdrawal_batch_interval_and_decryption_keys(
             l1_ws_url.to_string(),
             portal_address,
             next_unique_chain_id(),
             Some(genesis),
             l1_dev_signer(),
+            8,
+            None,
+            true,
+            Vec::new(),
+            None,
+            None,
+            None,
+            Some(key),
         )
         .await
     }
@@ -1131,6 +1125,7 @@ impl ZoneTestNode {
             None,
             None,
             None,
+            None,
         )
         .await
     }
@@ -1157,6 +1152,7 @@ impl ZoneTestNode {
             Vec::new(),
             None,
             Some(deposit_allowlist),
+            None,
             None,
         )
         .await
@@ -1341,6 +1337,7 @@ impl ZoneTestNode {
             None,
             None,
             None,
+            None,
         )
         .await
     }
@@ -1359,6 +1356,7 @@ impl ZoneTestNode {
         prover_config: Option<ZoneProverConfig>,
         deposit_allowlist: Option<zone_node::DepositAllowlist>,
         deposit_allowlist_relay: Option<zone_node::DepositAllowlistAdmin>,
+        virtual_address_key: Option<B256>,
     ) -> eyre::Result<Self> {
         let tasks = Runtime::test();
         let is_local_dummy_l1 = l1_ws_url == DUMMY_L1_URL;
@@ -1415,6 +1413,9 @@ impl ZoneTestNode {
         if portal_address.is_zero() {
             zone_node = zone_node
                 .with_deposit_decryption_keys(std::iter::once(L1Fixture::encryption_key()));
+        }
+        if let Some(key) = virtual_address_key {
+            zone_node = zone_node.with_virtual_address_key(key);
         }
         if is_local_dummy_l1 {
             zone_node = zone_node
@@ -4437,6 +4438,7 @@ async fn start_real_p2p_cluster_inner(
                 prover_config.clone(),
                 deposit_allowlists[index].clone(),
                 None,
+                None,
             )
         },
     ))
@@ -4458,6 +4460,7 @@ async fn start_real_p2p_cluster_inner(
                     None,
                     None,
                     Some(allowlist_admin),
+                    None,
                 )
                 .await?,
             zone_chain_id: allowlist_admin.zone_chain_id,

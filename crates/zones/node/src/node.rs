@@ -279,6 +279,8 @@ pub struct ZoneNode {
     withdrawal_batch_interval_blocks: u64,
     /// Encrypts authenticated-withdrawal sender reveal data during payload construction.
     withdrawal_reveal_encryptor: Option<Arc<dyn WithdrawalRevealEncryptor>>,
+    /// TIP-1094 address key version 1 this node initializes when it builds blocks.
+    virtual_address_key: Option<alloy_primitives::B256>,
     /// Redacted RPC config.
     redacted_rpc_config: ZoneRedactedRpcConfig,
     /// Optional sequencer config. When set, sequencer tasks are spawned.
@@ -333,6 +335,7 @@ impl ZoneNode {
             portal_address,
             withdrawal_batch_interval_blocks: DEFAULT_WITHDRAWAL_BATCH_INTERVAL_BLOCKS,
             withdrawal_reveal_encryptor: None,
+            virtual_address_key: None,
             redacted_rpc_config: ZoneRedactedRpcConfig::default(),
             sequencer_config: None,
             prover_config: None,
@@ -406,6 +409,15 @@ impl ZoneNode {
     /// Enable static Zone P2P networking for this node.
     pub fn with_p2p(mut self, config: P2pConfig) -> Self {
         self.p2p_config = Some(config);
+        self
+    }
+
+    /// Initialize `key` as TIP-1094 address key version 1 once T15 is active.
+    ///
+    /// The key is written to zone state in a block's calldata, so every replica, prover and RPC
+    /// node of the zone is inside its confidentiality boundary.
+    pub fn with_virtual_address_key(mut self, key: alloy_primitives::B256) -> Self {
+        self.virtual_address_key = Some(key);
         self
     }
 
@@ -1781,6 +1793,9 @@ where
         let mut payload_factory = ZonePayloadFactory::new(self.withdrawal_batch_interval_blocks);
         if let Some(encryptor) = self.withdrawal_reveal_encryptor.clone() {
             payload_factory = payload_factory.with_withdrawal_reveal_encryptor(encryptor);
+        }
+        if let Some(key) = self.virtual_address_key {
+            payload_factory = payload_factory.with_virtual_address_key(key);
         }
         ComponentsBuilder::default()
             .node_types::<N>()
