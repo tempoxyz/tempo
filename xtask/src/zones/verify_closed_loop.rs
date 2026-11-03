@@ -357,8 +357,7 @@ async fn read_role_updates<P: Provider<TempoNetwork>>(
 ) -> eyre::Result<BTreeMap<Address, PortalRole>> {
     let updates = ZonePortal::new(portal, provider)
         .RoleUpdated_filter()
-        .from_block(deployment_block)
-        .to_block(snapshot_block)
+        .select(deployment_block..=snapshot_block)
         .chunked()
         .chunk_size(LOG_QUERY_BLOCK_CHUNK)
         .query()
@@ -384,8 +383,7 @@ async fn read_token_enablements<P: Provider<TempoNetwork>>(
 ) -> eyre::Result<BTreeSet<Address>> {
     let events = ZonePortal::new(portal, provider)
         .TokenEnabled_filter()
-        .from_block(deployment_block)
-        .to_block(snapshot_block)
+        .select(deployment_block..=snapshot_block)
         .chunked()
         .chunk_size(LOG_QUERY_BLOCK_CHUNK)
         .query()

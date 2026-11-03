@@ -246,6 +246,16 @@ pub(crate) enum Error {
     Provider(#[from] reth_provider::ProviderError),
 }
 
+/// Where [`Hybrid::header_by_height`] reads a header from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HeaderSource {
+    /// The prunable archive of recently finalized blocks.
+    Prunable,
+    /// The execution layer, which only serves heights at or below its
+    /// finalized watermark.
+    Execution,
+}
+
 /// Backing prunable archive type.
 // TODO: Look into whether to take TwoCap or another translator. TwoCap is used
 // by commonware itself, but higher caps can reduce the likelihood of collisions.
@@ -338,6 +348,26 @@ where
             }
             Identifier::Key(digest) => {
                 Ok(self.execution_block_provider.header_by_hash(digest.0)?)
+            }
+        }
+    }
+
+    /// Reads the header at `height` from `source` alone, without falling back
+    /// to the other one. `None` when that source holds no block there.
+    pub(crate) async fn header_by_height(
+        &self,
+        height: u64,
+        source: HeaderSource,
+    ) -> Result<Option<TempoHeader>, Error> {
+        match source {
+            HeaderSource::Prunable => Ok(archive::Archive::get(
+                &self.prunable,
+                Identifier::Index(height),
+            )
+            .await?
+            .map(|block| block.block().header().clone())),
+            HeaderSource::Execution => {
+                Ok(self.execution_block_provider.header_by_height(height)?)
             }
         }
     }

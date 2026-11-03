@@ -2500,7 +2500,7 @@ fn writable_bigint(value: U256) -> String {
 }
 
 fn writable_b256(value: B256) -> String {
-    writable_bigint(U256::from_be_bytes(value.0))
+    writable_bigint(value.into())
 }
 
 fn writable_signature(

@@ -1419,8 +1419,7 @@ mod tests {
         let field_bytes = fields.concat();
         let mut cases = Vec::new();
         for parity in [false, true] {
-            let signature =
-                Signature::new(U256::from_be_bytes(r.0), U256::from_be_bytes(s.0), parity);
+            let signature = Signature::new(r.into(), s.into(), parity);
             let mut expected = field_bytes[..64].to_vec();
             expected.push(27 + u8::from(parity));
             cases.push((PrimitiveSignature::Secp256k1(signature), expected));
@@ -2537,8 +2536,7 @@ mod tests {
                 false,
             ),
         ] {
-            let mut buf = Vec::new();
-            alloy_rlp::Encodable::encode(&sig, &mut buf);
+            let buf = alloy_rlp::encode(&sig);
             let decoded = TempoSignature::decode(&mut buf.as_slice()).unwrap();
             assert_eq!(sig, decoded);
             assert_eq!(decoded.is_legacy_keychain(), expect_legacy);

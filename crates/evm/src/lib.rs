@@ -29,7 +29,7 @@ pub use action_replay::{
     StorageActionReplayState,
 };
 pub use assemble::TempoBlockAssembler;
-pub use block::{TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult};
+pub use block::{ExecutorState, TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult};
 pub use common::{TempoStateAccess, TempoTx};
 pub use context::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
 pub use error::TempoEvmError;
@@ -360,7 +360,7 @@ impl ConfigureEvm for TempoEvmConfig {
 mod tests {
     use super::*;
     use crate::test_utils::test_chainspec;
-    use alloy_consensus::{BlockHeader, Signed, TxLegacy};
+    use alloy_consensus::{BlockHeader, SignableTransaction, TxLegacy};
     use alloy_primitives::{Address, B256, Bytes, TxKind};
     use alloy_rlp::{Encodable, bytes::BytesMut};
     use reth_evm::{ConfigureEvm, NextBlockEnvAttributes};
@@ -556,18 +556,18 @@ mod tests {
         metadata.encode(&mut input);
         input.extend_from_slice(&U256::from(block_number).to_be_bytes::<32>());
 
-        let system_tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(
+        let system_tx = TempoTxEnvelope::Legacy(
             TxLegacy {
                 chain_id: Some(chainspec.chain_id()),
                 nonce: 0,
                 gas_price: 0,
                 gas_limit: 0,
-                to: TxKind::Call(alloy_primitives::Address::ZERO),
+                to: TxKind::Call(Address::ZERO),
                 value: U256::ZERO,
                 input: input.freeze().into(),
-            },
-            TEMPO_SYSTEM_TX_SIGNATURE,
-        ));
+            }
+            .into_signed(TEMPO_SYSTEM_TX_SIGNATURE),
+        );
 
         let header = TempoHeader {
             inner: alloy_consensus::Header {

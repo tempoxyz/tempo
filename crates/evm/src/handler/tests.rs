@@ -5,7 +5,7 @@ use crate::{
     FeeTokenResolver, ProtocolFeeContext, ProtocolFeeManager, ResolvedFeeToken, TempoBlockEnv,
     TempoEvmExt, TempoEvmTx, TempoFeeManager, TempoStateAccess, tempo_tx_registry,
 };
-use alloy_consensus::transaction::Recovered;
+use alloy_consensus::{SignableTransaction, transaction::Recovered};
 use alloy_primitives::{B256, Bytes, Signature};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
@@ -85,7 +85,7 @@ fn intrinsic_with_amsterdam(
     ))
 }
 
-use alloy_consensus::{Signed, TxLegacy};
+use alloy_consensus::TxLegacy;
 use evm2::evm::AccountInfo;
 use std::sync::Arc;
 use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, TIP20Error, TIPFeeAMMError};
@@ -101,16 +101,16 @@ use tempo_primitives::{
 
 fn legacy_env(to: TxKind, input: Bytes) -> TempoTxEnv {
     Recovered::new_unchecked(
-        TempoTxEnvelope::Legacy(Signed::new_unhashed(
+        TempoTxEnvelope::Legacy(
             TxLegacy {
                 chain_id: Some(1),
                 gas_limit: 21_000,
                 to,
                 input,
                 ..Default::default()
-            },
-            Signature::test_signature(),
-        )),
+            }
+            .into_signed(Signature::test_signature()),
+        ),
         SIGNER,
     )
     .into()
@@ -593,7 +593,7 @@ fn test_get_fee_token() {
         &mut evm,
         TIP_FEE_MANAGER_ADDRESS,
         validator_slot,
-        U256::from_be_bytes(validator_fee_token.into_word().0),
+        validator_fee_token.into_word().into(),
     );
 
     {
@@ -1060,16 +1060,16 @@ fn test_aa_gas_floor_gas_prague() {
 fn test_zero_value_transfer() {
     let mut evm = test_evm(TempoHardfork::Genesis);
     let env: TempoTxEnv = Recovered::new_unchecked(
-        TempoTxEnvelope::Legacy(Signed::new_unhashed(
+        TempoTxEnvelope::Legacy(
             TxLegacy {
                 chain_id: Some(1),
                 gas_limit: 21_000,
                 to: TxKind::Call(Address::random()),
                 value: U256::from(1000),
                 ..Default::default()
-            },
-            Signature::test_signature(),
-        )),
+            }
+            .into_signed(Signature::test_signature()),
+        ),
         SIGNER,
     )
     .into();
@@ -2439,10 +2439,8 @@ proptest! {
             ..Default::default()
         };
         let transaction = TempoEvmTx::from(Recovered::new_unchecked(
-            tempo_primitives::TempoTxEnvelope::Legacy(alloy_consensus::Signed::new_unhashed(
-                transaction,
-                Signature::test_signature(),
-        )),
+            tempo_primitives::TempoTxEnvelope::Legacy(transaction
+                .into_signed(Signature::test_signature())),
             SIGNER,
         ));
         prop_assert_eq!(
@@ -3921,16 +3919,16 @@ fn test_state_gas_standard_create_tx_populates_initial_state_gas() {
         TempoEvmExt::default(),
     );
     let env: TempoTxEnv = Recovered::new_unchecked(
-        TempoTxEnvelope::Legacy(Signed::new_unhashed(
+        TempoTxEnvelope::Legacy(
             TxLegacy {
                 chain_id: Some(1),
                 gas_limit: 10_000_000,
                 to: TxKind::Create,
                 input: Bytes::from(vec![0x60, 0x00, 0x60, 0x00, 0xf3]),
                 ..Default::default()
-            },
-            Signature::test_signature(),
-        )),
+            }
+            .into_signed(Signature::test_signature()),
+        ),
         SIGNER,
     )
     .into();
@@ -3952,7 +3950,7 @@ fn test_state_gas_standard_create_tx_populates_initial_state_gas() {
 fn test_state_gas_standard_call_tx_zero_initial_state_gas() {
     let mut evm = test_evm_with_amsterdam(TempoHardfork::T4, true);
     let env: TempoTxEnv = Recovered::new_unchecked(
-        TempoTxEnvelope::Legacy(Signed::new_unhashed(
+        TempoTxEnvelope::Legacy(
             TxLegacy {
                 chain_id: Some(1),
                 nonce: 1,
@@ -3960,9 +3958,9 @@ fn test_state_gas_standard_call_tx_zero_initial_state_gas() {
                 to: TxKind::Call(Address::random()),
                 input: Bytes::from(vec![1, 2, 3]),
                 ..Default::default()
-            },
-            Signature::test_signature(),
-        )),
+            }
+            .into_signed(Signature::test_signature()),
+        ),
         SIGNER,
     )
     .into();
@@ -4380,15 +4378,15 @@ fn test_standard_tx_nonce_zero_intrinsic_gas() {
         for gas_limit in [required - 1, required] {
             let mut evm = test_evm(spec);
             let env: TempoTxEnv = Recovered::new_unchecked(
-                TempoTxEnvelope::Legacy(Signed::new_unhashed(
+                TempoTxEnvelope::Legacy(
                     TxLegacy {
                         chain_id: Some(1),
                         gas_limit,
                         to: TxKind::Call(Address::repeat_byte(0xaa)),
                         ..Default::default()
-                    },
-                    Signature::test_signature(),
-                )),
+                    }
+                    .into_signed(Signature::test_signature()),
+                ),
                 SIGNER,
             )
             .into();

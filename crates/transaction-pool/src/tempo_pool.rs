@@ -756,27 +756,27 @@ where
         origin: TransactionOrigin,
         transaction: Self::Transaction,
     ) -> PoolResult<TransactionEvents> {
-        let tx = self
-            .protocol_pool
-            .validator()
-            .validate_transaction(origin, transaction)
-            .await;
-        // Subscribe before inserting so the initial `Pending`/`Queued` event is not missed, like
-        // `PoolInner::add_transaction_and_subscribe` does for the protocol pool.
-        let is_aa_2d = matches!(
-            &tx,
-            TransactionValidationOutcome::Valid { transaction, .. }
-                if transaction.transaction().is_aa_2d()
-        );
-        if !is_aa_2d {
-            return self
-                .protocol_pool
-                .inner()
-                .add_transaction_and_subscribe(origin, tx);
+        // Subscribe before inserting so the initial `Pending`/`Queued` event of a 2D nonce
+        // transaction is not missed.
+        let tx_hash = *transaction.hash();
+        let aa_2d_events = transaction
+            .is_aa_2d()
+            .then(|| self.aa_2d_events.write().subscribe(tx_hash));
+        let res = match self.add_transaction(origin, transaction).await {
+            Ok(res) => res,
+            Err(err) => {
+                if aa_2d_events.is_some() {
+                    // `invalid` is a final event, so it also drops the listener installed above.
+                    self.aa_2d_events.write().invalid(&tx_hash);
+                }
+                return Err(err);
+            }
+        };
+        if let Some(events) = aa_2d_events {
+            return Ok(events);
         }
-        let events = self.aa_2d_events.write().subscribe(tx.tx_hash());
-        self.add_validated_transaction(origin, tx)?;
-        Ok(events)
+        self.transaction_event_listener(res.hash)
+            .ok_or_else(|| PoolError::new(res.hash, PoolErrorKind::DiscardedOnInsert))
     }
 
     async fn add_transaction(
@@ -2164,19 +2164,6 @@ mod tests {
             next_ready_event(&mut queued_events),
             Some(TransactionEvent::Pending)
         );
-
-        // Protocol nonce transactions keep going through the protocol pool's listeners.
-        let protocol = crate::test_utils::TxBuilder::aa(sender)
-            .fee_token(PATH_USD_ADDRESS)
-            .build();
-        let mut protocol_events = pool
-            .add_transaction_and_subscribe(TransactionOrigin::Local, protocol.clone())
-            .await
-            .expect("protocol nonce transaction should be admitted with a subscription");
-        assert_eq!(
-            next_ready_event(&mut protocol_events),
-            Some(TransactionEvent::Pending)
-        );
     }
 
     fn sponsored_keychain_transaction(
@@ -2650,16 +2637,7 @@ mod tests {
         let pool = TempoTransactionPool::new(protocol_pool, AA2dPool::new(Default::default()));
 
         for pooled in [&matching, &untouched] {
-            let validated = TransactionValidationOutcome::Valid {
-                balance: *pooled.cost(),
-                state_nonce: pooled.nonce(),
-                bytecode_hash: None,
-                transaction: ValidTransaction::new(pooled.clone(), None),
-                propagate: true,
-                authorities: None,
-            };
-            pool.add_validated_transaction(TransactionOrigin::External, validated)
-                .expect("transaction should be admitted");
+            add_validated(&pool, pooled.clone());
         }
 
         let mut updates = crate::maintain::TempoPoolUpdates::new();
@@ -2741,16 +2719,7 @@ mod tests {
         let pool = TempoTransactionPool::new(protocol_pool, AA2dPool::new(Default::default()));
 
         for pooled in [&matching, &untouched] {
-            let validated = TransactionValidationOutcome::Valid {
-                balance: *pooled.cost(),
-                state_nonce: pooled.nonce(),
-                bytecode_hash: None,
-                transaction: ValidTransaction::new(pooled.clone(), None),
-                propagate: true,
-                authorities: None,
-            };
-            pool.add_validated_transaction(TransactionOrigin::External, validated)
-                .expect("transaction should be admitted");
+            add_validated(&pool, pooled.clone());
         }
 
         let mut updates = crate::maintain::TempoPoolUpdates::new();
@@ -2828,16 +2797,7 @@ mod tests {
         let pool = TempoTransactionPool::new(protocol_pool, AA2dPool::new(Default::default()));
 
         for pooled in [&matching, &untouched] {
-            let validated = TransactionValidationOutcome::Valid {
-                balance: *pooled.cost(),
-                state_nonce: pooled.nonce(),
-                bytecode_hash: None,
-                transaction: ValidTransaction::new(pooled.clone(), None),
-                propagate: true,
-                authorities: None,
-            };
-            pool.add_validated_transaction(TransactionOrigin::External, validated)
-                .expect("transaction should be admitted");
+            add_validated(&pool, pooled.clone());
         }
 
         let mut updates = crate::maintain::TempoPoolUpdates::new();

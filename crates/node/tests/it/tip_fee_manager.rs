@@ -34,7 +34,7 @@ async fn test_tip1115_estimate_and_pay_with_ousd_fallback() -> eyre::Result<()> 
         ))?;
         // Give OUSD the existing test token's funded accounts and roles.
         let mut ousd = genesis["alloc"][format!("{PATH_USD_ADDRESS:#x}")].clone();
-        ousd["storage"][format!("{:#066x}", U256::from(slots::QUOTE_TOKEN))] =
+        ousd["storage"][format!("{:#066x}", slots::QUOTE_TOKEN)] =
             format!("{:#066x}", U256::from_be_slice(PATH_USD_ADDRESS.as_slice())).into();
         genesis["alloc"][format!("{OUSD_ADDRESS:#x}")] = ousd;
         let setup = TestNodeBuilder::new()
