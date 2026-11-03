@@ -384,10 +384,7 @@ fn validate_root_keys(
 ) -> HandlerResult<u64> {
     let caller = envelope.caller();
     let mut extra_gas = 0;
-    let mut check = |host: &mut Evm<'_, TempoEvmTypes>,
-                     account: Address,
-                     role: RootKeyRole|
-     -> HandlerResult<()> {
+    for_each_root_key(envelope, |account, role| {
         let loaded = load_account(host, account, spec)?;
         if account != caller && !accounts.contains(&account) {
             extra_gas += account_access_gas(&host.version().gas_params, loaded.was_cold);
@@ -398,14 +395,23 @@ fn validate_root_keys(
         } else {
             Err(TempoInvalidTransaction::RootKeyRetired { account, role }.into())
         }
-    };
+    })?;
+    Ok(extra_gas)
+}
+
+/// Calls `check` with each bare primitive authority of `envelope` that must carry no commitment,
+/// in the order sender, key authorization signer, fee payer, access key.
+pub(crate) fn for_each_root_key(
+    envelope: &TempoTxEnv,
+    mut check: impl FnMut(Address, RootKeyRole) -> HandlerResult<()>,
+) -> HandlerResult<()> {
     // RPC simulation supplies a placeholder sender signature.
     let simulation = matches!(envelope.execution_context(), ExecutionContext::Simulation);
     if !simulation && envelope.signed_by_primitive_root() {
-        check(host, caller, RootKeyRole::Sender)?;
+        check(envelope.caller(), RootKeyRole::Sender)?;
     }
     let Some(aa) = envelope.as_aa() else {
-        return Ok(extra_gas);
+        return Ok(());
     };
     if let Some(auth) = &aa.tx().key_authorization
         && !auth.signature.is_configurable_account()
@@ -413,21 +419,21 @@ fn validate_root_keys(
         let signer = auth
             .recover_signer()
             .map_err(|_| TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed)?;
-        check(host, signer, RootKeyRole::KeyAuthorizationSigner)?;
+        check(signer, RootKeyRole::KeyAuthorizationSigner)?;
     }
     if aa.tx().fee_payer_signature.is_some() {
         let fee_payer = envelope
             .fee_payer()
             .map_err(|_| TempoInvalidTransaction::InvalidFeePayerSignature)?;
-        check(host, fee_payer, RootKeyRole::FeePayer)?;
+        check(fee_payer, RootKeyRole::FeePayer)?;
     }
     if let Some(keychain) = aa.signature().as_keychain()
         && !keychain.signature.is_configurable_account()
         && let Some(key_id) = access_key_id(aa, envelope.execution_context())?
     {
-        check(host, key_id, RootKeyRole::AccessKey)?;
+        check(key_id, RootKeyRole::AccessKey)?;
     }
-    Ok(extra_gas)
+    Ok(())
 }
 
 /// The inline grant's code check runs with intrinsic-only metering. Charge its account load

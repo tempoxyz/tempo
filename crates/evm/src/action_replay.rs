@@ -1,4 +1,7 @@
-use crate::{TempoBlockExecutor, TempoEvmTypes, TempoTxResult};
+use crate::{
+    TempoBlockExecutor, TempoEvmTypes, TempoInvalidTransaction, TempoTxResult,
+    handler::configurable_account::for_each_root_key,
+};
 use alloy_consensus::transaction::TxHashRef;
 use alloy_primitives::{
     Address, B256, U256,
@@ -15,7 +18,7 @@ use reth_evm::{
 use tempo_precompiles::{
     NONCE_PRECOMPILE_ADDRESS,
     nonce::NonceManager,
-    storage::StorageAction,
+    storage::{StorageAction, account_config_commitment},
     tip_fee_manager::amm::{Pool, compute_amount_out},
 };
 
@@ -47,6 +50,25 @@ impl TempoBlockExecutor<'_> {
         let is_system_tx = self
             .validate_tx_pre_execution(original)
             .map_err(BlockExecutionError::from)?;
+
+        // Replays run against parent state and storage actions do not cover account extensions,
+        // so recheck that a same-block migration did not retire any primitive root key.
+        let spec = self.evm().config_spec_id();
+        if spec.is_t14() {
+            let db = self.inner.evm_mut().overlay_db_mut();
+            for_each_root_key(tx_env.inner(), |account, role| {
+                let retired = db
+                    .get_account(&account)?
+                    .map(|info| account_config_commitment(&info, spec))
+                    .transpose()?
+                    .is_some_and(|commitment| !commitment.is_zero());
+                if retired {
+                    return Err(TempoInvalidTransaction::RootKeyRetired { account, role }.into());
+                }
+                Ok(())
+            })
+            .map_err(|_| StorageActionReplayError::ActionConflict)?;
+        }
 
         let state = self
             .replay_actions(actions.drain(..), expiring_nonce)
