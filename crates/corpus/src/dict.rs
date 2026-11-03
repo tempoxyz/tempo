@@ -523,7 +523,13 @@ fn sample(
             sample.coverage.unknown_selector += 1;
             continue;
         };
-        let Ok(args) = function.abi_decode_input(&input[4..]) else {
+        // Only canonical calldata: alloy-dyn-abi decodes leniently, so aliased offsets could
+        // otherwise expand a small input into a huge record.
+        let Some(args) = function.abi_decode_input(&input[4..]).ok().filter(|args| {
+            function
+                .abi_encode_input(args)
+                .is_ok_and(|encoded| encoded == **input)
+        }) else {
             sample.coverage.undecodable += 1;
             continue;
         };
@@ -561,7 +567,7 @@ struct Coverage {
     decoded: u64,
     /// Calls whose selector no ABI of the target has.
     unknown_selector: u64,
-    /// Calls with a known selector whose calldata doesn't decode.
+    /// Calls with a known selector whose calldata doesn't decode, or not canonically.
     undecodable: u64,
     /// Calls with less than 4 bytes of calldata.
     no_selector: u64,
@@ -776,10 +782,11 @@ impl<K: Hash + Eq + Ord, E> Top<K, E> {
         self.total += count;
         self.counts.entry(value).or_insert_with(|| (0, payload())).0 += count;
         if self.counts.len() > 4 * TRACKED {
-            let mut counts: Vec<_> = self.counts.values().map(|(count, _)| *count).collect();
-            let (_, floor, _) = counts.select_nth_unstable_by(TRACKED, |a, b| b.cmp(a));
-            let floor = *floor;
-            self.counts.retain(|_, (count, _)| *count > floor);
+            // Keep exactly the TRACKED most frequent, ties by value, so ties never empty it.
+            let mut entries: Vec<_> = self.counts.drain().collect();
+            entries.select_nth_unstable_by(TRACKED, |a, b| b.1.0.cmp(&a.1.0).then(a.0.cmp(&b.0)));
+            entries.truncate(TRACKED);
+            self.counts = entries.into_iter().collect();
         }
     }
 
@@ -901,6 +908,22 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(signed.render(U256::MAX), "-1");
+    }
+
+    #[test]
+    fn pruning_keeps_the_most_frequent_despite_ties() {
+        let mut top = Top::default();
+        for value in 0..=TRACKED as u64 {
+            top.add_count(value, 2);
+        }
+        for value in 0..3 * TRACKED as u64 {
+            top.add(u64::MAX - value);
+        }
+        assert_eq!(top.counts.len(), TRACKED);
+        assert_eq!(
+            top.top(1).next().map(|(value, count, _)| (*value, count)),
+            Some((0, 2))
+        );
     }
 
     #[test]
