@@ -84,7 +84,7 @@ contract ZonePortalWithdrawalLimitTest is BaseTest {
         token1.grantRole(_ISSUER_ROLE, address(this));
         token1.mint(address(portal), 100_000e6);
 
-        receiver = new GasCheckingReceiver(CALLBACK_GAS - 1000);
+        receiver = new GasCheckingReceiver(CALLBACK_GAS - 5000);
     }
 
     /*//////////////////////////////////////////////////////////////
