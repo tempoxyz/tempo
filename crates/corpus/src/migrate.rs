@@ -14,7 +14,6 @@ use crate::{
 };
 use alloy_primitives::B256;
 use eyre::OptionExt;
-use futures::{StreamExt, TryStreamExt};
 use serde::Deserialize;
 use slatedb::{
     Db, DbReader, DbReaderMode, WriteBatch,
@@ -172,25 +171,31 @@ async fn run(
             "migrated block coverage mismatch"
         );
         // Code is shared across blocks: copy each hash the range reads once, unchanged.
-        let code = futures::stream::iter(&totals.code)
-            .map(|hash| async move {
-                let key = store::code_key(hash);
-                let value = reader
-                    .get(key)
-                    .await?
-                    .ok_or_else(|| eyre::eyre!("missing source code {}", B256::from(*hash)))?;
-                eyre::Ok((key, value))
-            })
-            .buffer_unordered(64)
-            .try_fold(0u64, |copied, (key, value)| {
-                let db = &db;
-                async move {
-                    let bytes = value.len() as u64;
-                    db.put(key, value).await?;
-                    eyre::Ok(copied + bytes)
+        let hashes: Vec<_> = totals.code.iter().copied().collect();
+        let mut copies = JoinSet::new();
+        for part in hashes.chunks(hashes.len().div_ceil(workers).max(1)) {
+            let (reader, db, part) = (reader.clone(), db.clone(), part.to_vec());
+            copies.spawn(async move {
+                let (mut batch, mut copied) = (WriteBatch::new(), 0u64);
+                for hash in part {
+                    let key = store::code_key(&hash);
+                    let value = reader
+                        .get(key)
+                        .await?
+                        .ok_or_else(|| eyre::eyre!("missing source code {}", B256::from(hash)))?;
+                    copied += value.len() as u64;
+                    batch.put(key, value);
                 }
-            })
-            .await?;
+                if !batch.is_empty() {
+                    db.write(batch).await?;
+                }
+                eyre::Ok(copied)
+            });
+        }
+        let mut code = 0;
+        while let Some(result) = copies.join_next().await {
+            code += result??;
+        }
         db.put(CONTEXT_KEY, serde_json::to_vec(&catalog.context)?)
             .await?;
         db.put(CURSOR_KEY, serde_json::to_vec(&last)?).await?;

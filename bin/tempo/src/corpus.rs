@@ -227,13 +227,11 @@ pub struct MigrateCommand {
 impl MigrateCommand {
     async fn execute(self) -> eyre::Result<()> {
         // The endpoint applies to whichever side is in S3, so either may be a local corpus.
-        let endpoint = |url: &str| {
-            self.s3_endpoint
-                .as_deref()
-                .filter(|_| url.starts_with("s3://"))
-        };
-        let source = Store::open(&self.from, endpoint(&self.from)).await?;
-        let dest = Store::open(&self.to, endpoint(&self.to)).await?;
+        let endpoint = self.s3_endpoint.as_deref();
+        let source_endpoint = endpoint.filter(|_| self.from.starts_with("s3://"));
+        let dest_endpoint = endpoint.filter(|_| self.to.starts_with("s3://"));
+        let source = Store::open(&self.from, source_endpoint).await?;
+        let dest = Store::open(&self.to, dest_endpoint).await?;
         let range = self.start.zip(self.end).map(|(start, end)| start..end);
         migrate::migrate(source, dest, range, workers(self.workers)).await
     }
