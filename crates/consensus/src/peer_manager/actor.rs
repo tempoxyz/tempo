@@ -53,7 +53,7 @@ where
     epoch_strategy: FixedEpocher,
     latest_observed_finalized_tip: (Height, Digest),
     public_key: PublicKey,
-    max_peers_per_set: NonZeroUsize,
+    max_peers: NonZeroUsize,
     mailbox: mpsc::UnboundedReceiver<MessageWithCause>,
 
     peers: Gauge,
@@ -77,7 +77,7 @@ where
             epoch_strategy,
             finalized_tip,
             public_key,
-            max_peers_per_set,
+            max_peers,
         }: super::Config<TPeerManager, TExecutionNode>,
         mailbox: mpsc::UnboundedReceiver<MessageWithCause>,
     ) -> eyre::Result<Self> {
@@ -94,7 +94,7 @@ where
             epoch_strategy,
             latest_observed_finalized_tip: finalized_tip,
             public_key,
-            max_peers_per_set,
+            max_peers,
             mailbox,
             peers,
             last_tracked_peer_set: None,
@@ -254,7 +254,7 @@ where
     }
 
     fn track_or_overwrite(&mut self, height: u64, peers: Peers) {
-        let peers = peers.bounded(&self.public_key, self.max_peers_per_set);
+        let peers = peers.bounded(&self.public_key, self.max_peers);
         if let Some(tracked) = &self.last_tracked_peer_set {
             match peers.what_has_changed_compared_to(&tracked.peers) {
                 WhatHasChanged::Nothing => {}
@@ -342,7 +342,7 @@ impl Peers {
         }
         warn!(
             peers = size,
-            max_peers_per_set = max.get(),
+            max_peers = max.get(),
             "peer set exceeds --consensus.max-peers-per-set; tracking a truncated set",
         );
         self
@@ -802,7 +802,7 @@ mod tests {
                             Digest(B256::repeat_byte(0xFF)),
                         ),
                         public_key: peer(1).public_key,
-                        max_peers_per_set: commonware_utils::NZUsize!(128),
+                        max_peers: commonware_utils::NZUsize!(128),
                     },
                 )
                 .unwrap();
@@ -838,7 +838,7 @@ mod tests {
                     epoch_strategy: FixedEpocher::new(commonware_utils::NZU64!(10)),
                     finalized_tip: (Height::new(100), Digest(B256::ZERO)),
                     public_key: peer(1).public_key,
-                    max_peers_per_set: commonware_utils::NZUsize!(128),
+                    max_peers: commonware_utils::NZUsize!(128),
                 },
             );
             let error = result
@@ -862,7 +862,7 @@ mod tests {
                     epoch_strategy: FixedEpocher::new(commonware_utils::NZU64!(10)),
                     finalized_tip: (Height::new(100), Digest(B256::ZERO)),
                     public_key: peer(1).public_key,
-                    max_peers_per_set: commonware_utils::NZUsize!(128),
+                    max_peers: commonware_utils::NZUsize!(128),
                 },
             )
             .unwrap();
