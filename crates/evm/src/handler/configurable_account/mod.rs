@@ -20,7 +20,7 @@ use tempo_precompiles::{
         valid_account_code,
     },
     error::TempoPrecompileError,
-    storage::{StorageCtx, account_config_commitment},
+    storage::{StorageAction, StorageCtx, account_config_commitment},
 };
 use tempo_primitives::transaction::{
     ConfigurableAccountSignature, ConfigurableAccountStateError, KeychainSignature, SignatureType,
@@ -260,10 +260,12 @@ fn load_account(
     address: Address,
     spec: TempoHardfork,
 ) -> HandlerResult<LoadedAccount> {
+    let actions = host.ext().actions.clone();
     let mut account = host.state_mut().account(&address)?;
     let was_cold = account.warm();
     let info = account.get();
     let commitment = info.map_or(Ok(B256::ZERO), |info| account_config_commitment(info, spec))?;
+    actions.record(StorageAction::ConfigCommitment(address, commitment));
     Ok(LoadedAccount {
         was_cold,
         invalid_code: !valid_account_code(account.code_hash(), commitment),
@@ -384,7 +386,10 @@ fn validate_root_keys(
 ) -> HandlerResult<u64> {
     let caller = envelope.caller();
     let mut extra_gas = 0;
-    for_each_root_key(envelope, |account, role| {
+    let mut check = |host: &mut Evm<'_, TempoEvmTypes>,
+                     account: Address,
+                     role: RootKeyRole|
+     -> HandlerResult<()> {
         let loaded = load_account(host, account, spec)?;
         if account != caller && !accounts.contains(&account) {
             extra_gas += account_access_gas(&host.version().gas_params, loaded.was_cold);
@@ -395,23 +400,14 @@ fn validate_root_keys(
         } else {
             Err(TempoInvalidTransaction::RootKeyRetired { account, role }.into())
         }
-    })?;
-    Ok(extra_gas)
-}
-
-/// Calls `check` with each bare primitive authority of `envelope` that must carry no commitment,
-/// in the order sender, key authorization signer, fee payer, access key.
-pub(crate) fn for_each_root_key(
-    envelope: &TempoTxEnv,
-    mut check: impl FnMut(Address, RootKeyRole) -> HandlerResult<()>,
-) -> HandlerResult<()> {
+    };
     // RPC simulation supplies a placeholder sender signature.
     let simulation = matches!(envelope.execution_context(), ExecutionContext::Simulation);
     if !simulation && envelope.signed_by_primitive_root() {
-        check(envelope.caller(), RootKeyRole::Sender)?;
+        check(host, caller, RootKeyRole::Sender)?;
     }
     let Some(aa) = envelope.as_aa() else {
-        return Ok(());
+        return Ok(extra_gas);
     };
     if let Some(auth) = &aa.tx().key_authorization
         && !auth.signature.is_configurable_account()
@@ -419,21 +415,21 @@ pub(crate) fn for_each_root_key(
         let signer = auth
             .recover_signer()
             .map_err(|_| TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed)?;
-        check(signer, RootKeyRole::KeyAuthorizationSigner)?;
+        check(host, signer, RootKeyRole::KeyAuthorizationSigner)?;
     }
     if aa.tx().fee_payer_signature.is_some() {
         let fee_payer = envelope
             .fee_payer()
             .map_err(|_| TempoInvalidTransaction::InvalidFeePayerSignature)?;
-        check(fee_payer, RootKeyRole::FeePayer)?;
+        check(host, fee_payer, RootKeyRole::FeePayer)?;
     }
     if let Some(keychain) = aa.signature().as_keychain()
         && !keychain.signature.is_configurable_account()
         && let Some(key_id) = access_key_id(aa, envelope.execution_context())?
     {
-        check(key_id, RootKeyRole::AccessKey)?;
+        check(host, key_id, RootKeyRole::AccessKey)?;
     }
-    Ok(())
+    Ok(extra_gas)
 }
 
 /// The inline grant's code check runs with intrinsic-only metering. Charge its account load

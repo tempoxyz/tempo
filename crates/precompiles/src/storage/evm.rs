@@ -663,7 +663,11 @@ where
     #[inline]
     fn config_commitment(&mut self, address: Address) -> Result<B256, TempoPrecompileError> {
         let spec = self.spec;
-        self.with_loaded_account(address, |info| account_config_commitment(info, spec))?
+        let commitment =
+            self.with_loaded_account(address, |info| account_config_commitment(info, spec))??;
+        self.actions
+            .record(StorageAction::ConfigCommitment(address, commitment));
+        Ok(commitment)
     }
 
     fn set_config_commitment(

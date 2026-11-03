@@ -1,7 +1,4 @@
-use crate::{
-    TempoBlockExecutor, TempoEvmTypes, TempoInvalidTransaction, TempoTxResult,
-    handler::configurable_account::for_each_root_key,
-};
+use crate::{TempoBlockExecutor, TempoEvmTypes, TempoTxResult};
 use alloy_consensus::transaction::TxHashRef;
 use alloy_primitives::{
     Address, B256, U256,
@@ -9,7 +6,7 @@ use alloy_primitives::{
 };
 use evm2::{
     TxResult,
-    evm::{CacheDB, DynDatabase, PendingState, registry::HandlerError},
+    evm::{CacheDB, DynDatabase, PendingState},
 };
 use reth_evm::{
     BlockExecutionError, BlockExecutor, ExecutorTx, InternalBlockExecutionError, RecoveredTx,
@@ -50,31 +47,6 @@ impl TempoBlockExecutor<'_> {
         let is_system_tx = self
             .validate_tx_pre_execution(original)
             .map_err(BlockExecutionError::from)?;
-
-        // Replays run against parent state and storage actions do not cover account extensions,
-        // so recheck that a same-block migration did not retire any primitive root key.
-        let spec = self.evm().config_spec_id();
-        if spec.is_t14() {
-            for_each_root_key(tx_env.inner(), |account, role| {
-                if self
-                    .inner
-                    .evm_mut()
-                    .overlay_db_mut()
-                    .get_account(&account)?
-                    .map(|info| account_config_commitment(&info, spec))
-                    .transpose()?
-                    .is_some_and(|commitment| !commitment.is_zero())
-                {
-                    return Err(TempoInvalidTransaction::RootKeyRetired { account, role }.into());
-                }
-                Ok(())
-            })
-            .map_err(|error| match error {
-                HandlerError::Database(error) => map_database_error(error),
-                HandlerError::Fatal(error) => BlockExecutionError::other(error),
-                _ => StorageActionReplayError::ActionConflict.into(),
-            })?;
-        }
 
         let state = self
             .replay_actions(actions.drain(..), expiring_nonce)
@@ -125,6 +97,7 @@ impl TempoBlockExecutor<'_> {
             self.apply_expiring_nonce_replay(expiring_nonce, block_timestamp)?;
         }
 
+        let spec = self.evm().config_spec_id();
         let db = self.inner.evm_mut().overlay_db_mut();
         for action in actions {
             // Expiring nonces are handled above
@@ -205,6 +178,18 @@ impl TempoBlockExecutor<'_> {
                     )?;
                     let pool = Pool::decode_from_slot(pool_slot);
                     if pool.has_enough_reserve_validator_token(amount_out) != has_enough_liquidity {
+                        return Err(StorageActionReplayError::ActionConflict.into());
+                    }
+                }
+                StorageAction::ConfigCommitment(address, commitment) => {
+                    let current = db
+                        .get_account(&address)
+                        .map_err(map_database_error)?
+                        .map_or(Ok(B256::ZERO), |info| {
+                            account_config_commitment(&info, spec)
+                        })
+                        .map_err(BlockExecutionError::other)?;
+                    if current != commitment {
                         return Err(StorageActionReplayError::ActionConflict.into());
                     }
                 }
@@ -653,9 +638,10 @@ mod tests {
     }
 
     #[test]
-    fn replay_rechecks_root_key_retired_in_block() {
+    fn config_commitment_replays_only_when_unchanged() {
         let chainspec = test_chainspec();
         let sender = Address::repeat_byte(0x11);
+        let current = B256::repeat_byte(0x77);
         let tx = TempoTxEnvelope::Legacy(
             TxLegacy {
                 chain_id: Some(1),
@@ -666,38 +652,12 @@ mod tests {
             }
             .into_signed(Signature::test_signature()),
         );
-        struct Case {
-            spec: TempoHardfork,
-            commitment: B256,
-            conflict: bool,
-        }
-        let retired = B256::repeat_byte(0x77);
-        for Case {
-            spec,
-            commitment,
-            conflict,
-        } in [
-            Case {
-                spec: TempoHardfork::T14,
-                commitment: retired,
-                conflict: true,
-            },
-            Case {
-                spec: TempoHardfork::T14,
-                commitment: B256::ZERO,
-                conflict: false,
-            },
-            Case {
-                spec: TempoHardfork::T13,
-                commitment: retired,
-                conflict: false,
-            },
-        ] {
+        for recorded in [B256::ZERO, current] {
             let mut executor = TestExecutorBuilder::default()
-                .with_spec(spec)
+                .with_spec(TempoHardfork::T14)
                 .build(InMemoryDB::default(), &chainspec);
             let info = AccountInfo {
-                extension: encode_config_commitment(commitment).into(),
+                extension: encode_config_commitment(current).into(),
                 ..Default::default()
             };
             executor
@@ -709,7 +669,7 @@ mod tests {
                     status: true,
                     ..Default::default()
                 },
-                actions: Vec::new(),
+                actions: vec![StorageAction::ConfigCommitment(sender, recorded)],
                 expiring_nonce: None,
             };
             let result = executor.execute_transaction_with_actions(
@@ -723,8 +683,8 @@ mod tests {
                 .and_then(StorageActionReplayError::from_block_execution_error);
             assert_eq!(
                 reason == Some(StorageActionReplayError::ActionConflict),
-                conflict,
-                "{spec:?} {commitment}: {result:?}"
+                recorded != current,
+                "{recorded}: {result:?}"
             );
         }
     }
