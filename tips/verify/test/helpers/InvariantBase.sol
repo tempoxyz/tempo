@@ -59,10 +59,11 @@ abstract contract InvariantBase is TempoTest, ActorManager, GhostState {
         // Setup AMM liquidity for fee swaps
         _setupAmmLiquidity();
 
-        // From T13, legacy txs without a user token pay fees in pathUSD, so fund it too.
+        // From T13, txs without an inferable fee token pay fees in pathUSD, so fund every sender.
         vm.startPrank(admin);
         for (uint256 i = 0; i < actors.length; i++) {
             pathUSD.mint(actors[i], 100_000_000e6);
+            pathUSD.mint(actorP256Addresses[i], 100_000_000e6);
         }
         vm.stopPrank();
     }
