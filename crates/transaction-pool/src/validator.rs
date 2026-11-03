@@ -2,11 +2,12 @@ use crate::{
     AddressFilter,
     amm::AmmLiquidityCache,
     state_cache::{StateCache, StateCacheDb},
-    transaction::{TempoPoolTransactionError, TempoPooledTransaction},
+    tempo_pool::get_sender_policy_ids,
+    transaction::{FeeTokenState, TempoPoolTransactionError, TempoPooledTransaction},
 };
 
 use alloy_consensus::{Transaction, transaction::Recovered};
-use alloy_primitives::{Address, B256, U256};
+use alloy_primitives::{Address, B256, U256, map::AddressMap};
 use evm2::{EvmFeatures, evm::DynDatabase, registry::HandlerError};
 use parking_lot::RwLock;
 use reth_chainspec::{ChainSpecProvider, EthChainSpec};
@@ -42,6 +43,7 @@ use tempo_precompiles::{
     configurable_account::CONFIGURABLE_ACCOUNT_CODE_HASH,
     nonce::{INonce, NonceManager},
     storage::StorageActions,
+    tip20::TIP20Token,
 };
 use tempo_primitives::{
     Block, TempoHeader, TempoPrimitives,
@@ -555,6 +557,28 @@ where
 
         // Cache the resolved fee token from EVM validation for pool maintenance.
         transaction.set_resolved_fee_token(fee_token);
+
+        // Cache the fee token state that pending-transaction checks match events against.
+        let quote_token = match evm.overlay_db_mut().with_read_only_storage_ctx(
+            spec,
+            StorageActions::disabled(),
+            || TIP20Token::from_address(fee_token.address())?.quote_token(),
+        ) {
+            Ok(quote_token) => quote_token,
+            Err(err) => {
+                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+            }
+        };
+        transaction.set_fee_token_state(FeeTokenState {
+            sender_policy_ids: get_sender_policy_ids(
+                evm.overlay_db_mut(),
+                fee_token.address(),
+                spec,
+                &mut AddressMap::default(),
+            )
+            .unwrap_or_default(),
+            quote_token,
+        });
 
         // Pool-only key-expiry propagation buffer: reject keychain txs whose key
         // expires too soon (within AA_VALID_BEFORE_MIN_SECS of tip timestamp).
@@ -2209,6 +2233,33 @@ mod tests {
             }
             _ => panic!("Expected Invalid outcome with Evm error, got: {outcome:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn caches_fee_token_state_at_admission() {
+        let transaction = TxBuilder::aa(Address::random())
+            .max_fee(u128::from(TEMPO_T7_BASE_FEE_FLOOR))
+            .max_priority_fee(0)
+            .build();
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let validator = setup_validator(&transaction, current_time);
+
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+        let TransactionValidationOutcome::Valid { transaction, .. } = outcome else {
+            panic!("expected a valid transaction, got {outcome:?}");
+        };
+        assert_eq!(
+            transaction.transaction().fee_token_state(),
+            Some(&FeeTokenState {
+                sender_policy_ids: vec![1],
+                quote_token: Address::ZERO,
+            })
+        );
     }
 
     #[tokio::test]

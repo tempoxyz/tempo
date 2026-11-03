@@ -3,8 +3,9 @@
 //! Pool maintenance feeds [`Invalidations`] a committed chain segment and checks the whole
 //! pool; the payload builder's [`StateAwareBestTransactions`](crate::StateAwareBestTransactions)
 //! feeds it each transaction it executes and checks every candidate. Both ask
-//! [`Invalidations::verdict`]: they differ only in how they read state
-//! ([`InvalidationState`]) and in what they do with the answer.
+//! [`Invalidations::verdict`], which reads no state: it combines what the changes wrote with
+//! what validation cached on each transaction. The callers differ only in how they check fee AMM
+//! liquidity and in what they do with the answer.
 
 use crate::{
     TempoPoolUpdates,
@@ -21,8 +22,14 @@ use reth_provider::Chain;
 use reth_transaction_pool::PoolTransaction;
 use tempo_evm::TempoEvmTypes;
 use tempo_precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, TIP_FEE_MANAGER_ADDRESS, account_keychain::AccountKeychain,
-    tip_fee_manager::amm::Pool, tip20::is_tip20_prefix,
+    ACCOUNT_KEYCHAIN_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    account_keychain::AccountKeychain,
+    storage::StorageKey,
+    tip_fee_manager::{
+        TipFeeManager,
+        amm::{Pool, compute_amount_out},
+    },
+    tip20::is_tip20_prefix,
 };
 use tempo_primitives::TempoPrimitives;
 
@@ -80,14 +87,6 @@ impl Invalidations {
         }
     }
 
-    /// Returns whether [`Self::verdict`] may read state through [`InvalidationState`].
-    pub(crate) fn may_read_state(&self) -> bool {
-        !self.events.policy_restrictions.is_empty()
-            || !self.events.spending_limit_changes.is_empty()
-            || !self.events.spending_limit_spends.is_empty()
-            || self.fee_liquidity_may_have_decreased()
-    }
-
     /// Returns whether a fee AMM reserve decreased or a validator changed its fee token.
     pub(crate) fn fee_liquidity_may_have_decreased(&self) -> bool {
         !self.decreased_reserves.is_empty() || !self.events.validator_token_changes.is_empty()
@@ -95,8 +94,9 @@ impl Invalidations {
 
     /// Returns `subject`'s remaining spending limit if the changes wrote it.
     ///
-    /// Within a block this is exact: spends and limit updates write the remaining amount of the
-    /// current period. Across blocks a period may roll over, so maintenance reads state instead.
+    /// Spends and limit updates write the remaining amount of the current period. A period that
+    /// rolls over before the next block is not accounted for: admission would reject the
+    /// transaction at this state too.
     pub(crate) fn written_spending_limit(&self, subject: &KeychainSubject) -> Option<U256> {
         let slot = AccountKeychain::new().spending_limits
             [AccountKeychain::spending_limit_key(subject.account, subject.key_id)]
@@ -106,22 +106,58 @@ impl Invalidations {
         self.keychain_writes.get(&slot).copied()
     }
 
-    /// Returns the fee AMM pool at `slot` if the changes decreased its validator-token reserve.
-    pub(crate) fn decreased_pool(&self, slot: U256) -> Option<Pool> {
-        self.decreased_reserves
-            .get(&slot)
-            .map(|&value| Pool::decode_from_slot(value))
+    /// Returns whether the changes drained every fee AMM route that swaps `fee` of `tx`'s fee token
+    /// into `validator_token`.
+    ///
+    /// A route through a pool these changes did not decrease counts as open: execution decides.
+    pub(crate) fn drained_fee_routes(
+        &self,
+        tx: &TempoPooledTransaction,
+        validator_token: Address,
+        fee: U256,
+    ) -> bool {
+        let token = tx.effective_fee_token();
+        if token == validator_token {
+            return false;
+        }
+        let open = |user_token, validator_token, amount_in| {
+            let Ok(amount_out) = compute_amount_out(amount_in) else {
+                return true;
+            };
+            self.decreased_reserves
+                .get(&fee_pool_slot(user_token, validator_token))
+                .is_none_or(|&value| {
+                    Pool::decode_from_slot(value).has_enough_reserve_validator_token(amount_out)
+                })
+        };
+        if open(token, validator_token, fee) {
+            return false;
+        }
+        // TIP-1033 two-hop route through the fee token's quote token.
+        let Some(quote_token) = tx
+            .fee_token_state()
+            .map(|state| state.quote_token)
+            .filter(|&quote| !quote.is_zero() && quote != validator_token)
+        else {
+            return true;
+        };
+        let Ok(hop_amount) = compute_amount_out(fee) else {
+            return false;
+        };
+        !(open(token, quote_token, fee) && open(quote_token, validator_token, hop_amount))
     }
 
     /// Returns whether `tx` may have become unexecutable through these changes.
     ///
     /// `fallback_fee_tokens` lists the tokens execution may fall back to when no transaction field
-    /// or fee-manager rule selects the fee token.
+    /// or fee-manager rule selects the fee token. `has_fee_liquidity` answers whether the fee AMM can
+    /// still swap a fee amount of a token; it is called only when a reserve decreased or a validator
+    /// changed its token.
     pub(crate) fn verdict(
         &self,
         tx: &TempoPooledTransaction,
-        state: &mut impl InvalidationState,
         fallback_fee_tokens: &[Address],
+        mut has_fee_liquidity: impl FnMut(&TempoPooledTransaction, Address, U256) -> bool,
     ) -> Verdict {
         // Recovery fails only for a transaction that validation already rejects.
         let Some(key) = tx.fee_balance_slot() else {
@@ -189,7 +225,9 @@ impl Invalidations {
                 && tx.is_sender_paid_fee()
                 && (subject.matches_spending_limit_update(&events.spending_limit_changes)
                     || subject.matches_spending_limit_update(&events.spending_limit_spends))
-                && state.exceeds_spending_limit(self, subject, fee)
+                && self
+                    .written_spending_limit(subject)
+                    .is_some_and(|remaining| remaining < fee)
             {
                 return Verdict::Invalid(Reason::SpendingLimit);
             }
@@ -205,27 +243,21 @@ impl Invalidations {
             return Verdict::Invalid(Reason::UserToken);
         }
 
-        if !events.policy_restrictions.is_empty() {
-            let fee_payer = tx.fee_payer().unwrap_or_else(|_| tx.sender());
-            if let Some(restricted) = events.policy_restrictions.get(&fee_payer)
-                && state
-                    .sender_policy_ids(fee_token)
-                    .is_some_and(|ids| ids.iter().any(|id| restricted.contains(id)))
-            {
-                return Verdict::Invalid(Reason::PolicyRestricted);
-            }
-            // Pre-T8 fee collection also authorizes the fee manager as recipient.
-            if let Some(restricted) = events.policy_restrictions.get(&TIP_FEE_MANAGER_ADDRESS)
-                && state
-                    .recipient_policy_ids(fee_token)
-                    .is_some_and(|ids| ids.iter().any(|id| restricted.contains(id)))
-            {
-                return Verdict::Invalid(Reason::PolicyRestricted);
-            }
+        if let Some(restricted) = tx
+            .fee_payer()
+            .ok()
+            .and_then(|fee_payer| events.policy_restrictions.get(&fee_payer))
+            && tx.fee_token_state().is_some_and(|state| {
+                state
+                    .sender_policy_ids
+                    .iter()
+                    .any(|id| restricted.contains(id))
+            })
+        {
+            return Verdict::Invalid(Reason::PolicyRestricted);
         }
 
-        if self.fee_liquidity_may_have_decreased() && !state.has_fee_liquidity(self, fee_token, fee)
-        {
+        if self.fee_liquidity_may_have_decreased() && !has_fee_liquidity(tx, fee_token, fee) {
             return Verdict::Invalid(Reason::FeeLiquidity);
         }
 
@@ -341,31 +373,6 @@ impl StateChangeSink for Invalidations {
     }
 }
 
-/// The state reads [`Invalidations::verdict`] needs, which maintenance and the payload builder
-/// answer from different state.
-pub(crate) trait InvalidationState {
-    /// Returns whether `subject`'s remaining spending limit no longer covers `fee`.
-    fn exceeds_spending_limit(
-        &mut self,
-        changes: &Invalidations,
-        subject: &KeychainSubject,
-        fee: U256,
-    ) -> bool;
-
-    /// Returns whether the fee AMM can still swap `fee` of `token` into the validator token.
-    ///
-    /// Called only when a reserve decreased or a validator changed its token.
-    fn has_fee_liquidity(&mut self, changes: &Invalidations, token: Address, fee: U256) -> bool;
-
-    /// Returns the policy IDs that authorize `token`'s fee payer, or `None` when none can
-    /// restrict it.
-    fn sender_policy_ids(&mut self, token: Address) -> Option<Vec<u64>>;
-
-    /// Returns the policy IDs that authorize the fee manager as `token`'s fee recipient (pre-T8),
-    /// or `None` when none can restrict it.
-    fn recipient_policy_ids(&mut self, token: Address) -> Option<Vec<u64>>;
-}
-
 /// Whether a pending transaction may still execute after some state changes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Verdict {
@@ -414,6 +421,14 @@ impl Reason {
             Self::QuoteToken => "fee token quote token changed",
         }
     }
+}
+
+/// Returns the storage slot of the fee AMM pool that swaps `user_token` into `validator_token`.
+fn fee_pool_slot(user_token: Address, validator_token: Address) -> U256 {
+    let fee_manager = TipFeeManager::new();
+    fee_manager
+        .pool_id(user_token, validator_token)
+        .mapping_slot(fee_manager.pools.slot())
 }
 
 /// Returns the account fields that pending transactions depend on: the configuration commitment

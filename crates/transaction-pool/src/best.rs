@@ -1,27 +1,19 @@
 //! An iterator over the best transactions in the tempo pool.
 
 use crate::{
-    invalidation::{InvalidationState, Invalidations, Verdict},
+    invalidation::{Invalidations, Verdict},
     ordering::TempoTipOrdering,
-    tempo_pool::{get_recipient_policy_ids, get_sender_policy_ids},
-    transaction::{KeychainSubject, TempoPoolTransactionError, TempoPooledTransaction},
+    transaction::{TempoPoolTransactionError, TempoPooledTransaction},
     tt_2d_pool::BestAA2dTransactions,
 };
-use alloy_primitives::{Address, U256, map::AddressMap};
-use evm2::evm::DynDatabase;
+use alloy_primitives::Address;
 use reth_evm::BlockTransactionResult;
 use reth_transaction_pool::{
     BestTransactions, Priority, TransactionOrdering, ValidPoolTransaction,
     error::InvalidPoolTransactionError,
 };
 use std::sync::Arc;
-use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_evm::{TempoEvmTypes, TempoStateAccess};
-use tempo_precompiles::{
-    error::Result as TempoPrecompileResult,
-    storage::{StorageActions, StorageKey},
-    tip_fee_manager::{TipFeeManager, amm::compute_amount_out},
-};
+use tempo_evm::TempoEvmTypes;
 
 pub type BestTransaction = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
 type BestTransactionWithPriority = (BestTransaction, Priority<u64>);
@@ -154,20 +146,8 @@ pub struct StateAwareBestTransactions<I> {
     changes: Invalidations,
     /// Ordered fallback fee tokens active for the block being built.
     fallback_fee_tokens: &'static [Address],
-    /// Sender policy IDs read so far, by fee token.
-    policy_cache: AddressMap<Vec<u64>>,
-    /// The block beneficiary's validator token, read once.
+    /// The block beneficiary's validator token, into which the block's fees are swapped.
     validator_token: Option<Address>,
-}
-
-/// The block a [`StateAwareBestTransactions`] fills, for the rare checks that read its state.
-pub struct BlockState<'a> {
-    /// State after the transactions executed so far.
-    pub db: &'a mut dyn DynDatabase,
-    /// Hardfork active for the block.
-    pub spec: TempoHardfork,
-    /// Block beneficiary, whose validator token the block's fees are swapped into.
-    pub beneficiary: Address,
 }
 
 impl<I> StateAwareBestTransactions<I>
@@ -178,14 +158,19 @@ where
     /// Wraps an existing [`BestTransactions`] iterator.
     ///
     /// `fallback_fee_tokens` lists the tokens execution may fall back to when no transaction
-    /// field or fee-manager rule selects the fee token.
-    pub fn new(inner: I, fallback_fee_tokens: &'static [Address]) -> Self {
+    /// field or fee-manager rule selects the fee token. `validator_token` is the block
+    /// beneficiary's validator token, which it cannot change within its own block; without it,
+    /// fee AMM liquidity is left to execution.
+    pub fn new(
+        inner: I,
+        fallback_fee_tokens: &'static [Address],
+        validator_token: Option<Address>,
+    ) -> Self {
         Self {
             inner,
             changes: Invalidations::default(),
             fallback_fee_tokens,
-            policy_cache: AddressMap::default(),
-            validator_token: None,
+            validator_token,
         }
     }
 
@@ -194,30 +179,30 @@ where
     pub fn on_new_result<R: BlockTransactionResult<TempoEvmTypes>>(&mut self, result: &R) {
         self.changes.on_transaction_result(result);
     }
+}
 
-    /// Returns the next transaction that the transactions executed so far did not make
-    /// unexecutable.
-    ///
-    /// Unlike [`Iterator::next`], it also runs the checks that read `block`'s state: TIP-403
-    /// policy IDs of a fee token whose payer a policy restricted, and fee AMM routes whose direct
-    /// pool can no longer pay.
-    pub fn next_with_state(&mut self, block: BlockState<'_>) -> Option<I::Item> {
-        self.next_inner(Some(block))
-    }
+impl<I> Iterator for StateAwareBestTransactions<I>
+where
+    I: BestTransactions,
+    I::Item: StateAwarePoolTransaction,
+{
+    type Item = I::Item;
 
-    fn next_inner(&mut self, mut block: Option<BlockState<'_>>) -> Option<I::Item> {
+    fn next(&mut self) -> Option<Self::Item> {
         loop {
             let tx = self.inner.next()?;
-            let mut state = BuilderInvalidationState {
-                block: block.as_mut(),
-                policy_cache: &mut self.policy_cache,
-                validator_token: &mut self.validator_token,
-            };
-            match self.changes.verdict(
+            let changes = &self.changes;
+            let validator_token = self.validator_token;
+            let verdict = changes.verdict(
                 &tx.best_transaction().transaction,
-                &mut state,
                 self.fallback_fee_tokens,
-            ) {
+                |tx, _, fee| {
+                    validator_token.is_none_or(|validator_token| {
+                        !changes.drained_fee_routes(tx, validator_token, fee)
+                    })
+                },
+            );
+            match verdict {
                 Verdict::Valid => return Some(tx),
                 Verdict::Invalid(reason) | Verdict::Revalidate(reason) => self.inner.mark_invalid(
                     &tx,
@@ -229,20 +214,6 @@ where
                 Verdict::StaleNonce => {}
             }
         }
-    }
-}
-
-impl<I> Iterator for StateAwareBestTransactions<I>
-where
-    I: BestTransactions,
-    I::Item: StateAwarePoolTransaction,
-{
-    type Item = I::Item;
-
-    /// Returns the next transaction, skipping only those the checks that need no state rule
-    /// out. See [`StateAwareBestTransactions::next_with_state`].
-    fn next(&mut self) -> Option<Self::Item> {
-        self.next_inner(None)
     }
 }
 
@@ -275,110 +246,30 @@ impl StateAwarePoolTransaction for BestTransaction {
     }
 }
 
-/// Answers [`Invalidations`]'s reads for the payload builder.
-///
-/// Spending limits and most liquidity checks need no reads: the transactions executed so far
-/// wrote the values. Without a block, the checks that would read state pass.
-struct BuilderInvalidationState<'a, 'b> {
-    block: Option<&'a mut BlockState<'b>>,
-    policy_cache: &'a mut AddressMap<Vec<u64>>,
-    validator_token: &'a mut Option<Address>,
-}
-
-impl InvalidationState for BuilderInvalidationState<'_, '_> {
-    fn exceeds_spending_limit(
-        &mut self,
-        changes: &Invalidations,
-        subject: &KeychainSubject,
-        fee: U256,
-    ) -> bool {
-        changes
-            .written_spending_limit(subject)
-            .is_some_and(|remaining| remaining < fee)
-    }
-
-    fn has_fee_liquidity(&mut self, changes: &Invalidations, token: Address, fee: U256) -> bool {
-        let Some(block) = self.block.as_deref_mut() else {
-            return true;
-        };
-        let spec = block.spec;
-        let beneficiary = block.beneficiary;
-        let validator_token =
-            match *self.validator_token {
-                Some(token) => token,
-                // A block's beneficiary cannot change its validator token within the block.
-                None => match block.db.with_read_only_storage_ctx(
-                    spec,
-                    StorageActions::disabled(),
-                    || TipFeeManager::new().get_validator_token(beneficiary),
-                ) {
-                    Ok(token) => *self.validator_token.insert(token),
-                    Err(_) => return true,
-                },
-            };
-        if token == validator_token {
-            return true;
-        }
-
-        let fee_manager = TipFeeManager::new();
-        let direct = fee_manager
-            .pool_id(token, validator_token)
-            .mapping_slot(fee_manager.pools.slot());
-        // An untouched direct pool still pays as at admission. Two-hop routes whose legs were
-        // drained are left to execution.
-        let Some(pool) = changes.decreased_pool(direct) else {
-            return true;
-        };
-        if compute_amount_out(fee).is_ok_and(|out| pool.has_enough_reserve_validator_token(out)) {
-            return true;
-        }
-        let route = block.db.with_read_only_storage_ctx(
-            spec,
-            StorageActions::disabled(),
-            || -> TempoPrecompileResult<_> {
-                let (route, ..) =
-                    TipFeeManager::new().plan_fee_route(token, validator_token, fee)?;
-                Ok(route)
-            },
-        );
-        // Errors fall through to execution, which reports them.
-        !matches!(route, Ok(None))
-    }
-
-    fn sender_policy_ids(&mut self, token: Address) -> Option<Vec<u64>> {
-        let block = self.block.as_deref_mut()?;
-        get_sender_policy_ids(&mut block.db, token, block.spec, self.policy_cache)
-    }
-
-    fn recipient_policy_ids(&mut self, token: Address) -> Option<Vec<u64>> {
-        let block = self.block.as_deref_mut()?;
-        get_recipient_policy_ids(&mut block.db, token, block.spec)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
         ordering::TempoTipOrdering,
         test_utils::{TxBuilder, wrap_valid_tx},
+        transaction::FeeTokenState,
         tt_2d_pool::AA2dPool,
     };
-    use alloy_primitives::{Address, map::HashMap};
+    use alloy_primitives::{U256, map::HashMap};
     use alloy_signer_local::PrivateKeySigner;
-    use evm2::evm::InMemoryDB;
     use futures::executor::block_on;
     use reth_primitives_traits::transaction::error::InvalidTransactionError;
     use reth_transaction_pool::{
         Pool, PoolConfig, TransactionOrigin, TransactionPool, blobstore::InMemoryBlobStore,
         test_utils::OkValidator,
     };
-    use std::sync::Arc;
     use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
     use tempo_evm::ResolvedFeeToken;
     use tempo_precompiles::{
         ACCOUNT_KEYCHAIN_ADDRESS, DEFAULT_FEE_TOKEN, PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
-        account_keychain::AccountKeychain, tip20,
+        account_keychain::AccountKeychain,
+        storage::StorageKey,
+        tip_fee_manager::{TipFeeManager, amm::Pool as FeePool},
     };
 
     type TestTx = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
@@ -711,6 +602,7 @@ mod tests {
         let mut best = StateAwareBestTransactions::new(
             protocol_best_transactions(vec![tx]),
             fallback_fee_tokens,
+            None,
         );
         for &token in drained {
             best.changes
@@ -751,15 +643,7 @@ mod tests {
     const TEST_SPEC: TempoHardfork = TempoHardfork::T13;
 
     fn state_aware(txs: Vec<TestTx>) -> TestStateAware {
-        StateAwareBestTransactions::new(protocol_best_transactions(txs), &[])
-    }
-
-    fn next_with_db(best: &mut TestStateAware, db: &mut InMemoryDB) -> Option<TestTx> {
-        best.next_with_state(BlockState {
-            db,
-            spec: TEST_SPEC,
-            beneficiary: Address::ZERO,
-        })
+        StateAwareBestTransactions::new(protocol_best_transactions(txs), &[], None)
     }
 
     fn fee_token_tx(fee_token: Address) -> TestTx {
@@ -887,74 +771,81 @@ mod tests {
     }
 
     #[test]
-    fn state_aware_checks_policy_restrictions_against_block_state() {
-        let policy_id = 7;
+    fn state_aware_skips_fee_payers_restricted_by_their_cached_policy() {
         let tx = fee_token_tx(PATH_USD_ADDRESS);
+        tx.transaction.set_fee_token_state(FeeTokenState {
+            sender_policy_ids: vec![7],
+            quote_token: Address::ZERO,
+        });
         let fee_payer = tx.transaction.fee_payer().unwrap();
-        let mut db = InMemoryDB::default();
-        db.insert_account_storage(
-            &PATH_USD_ADDRESS,
-            &tip20::slots::TRANSFER_POLICY_ID,
-            &(U256::from(policy_id) << (tip20::slots::TRANSFER_POLICY_ID_OFFSET * 8)),
-        );
 
-        for (restricted_policy, yields) in [(policy_id, false), (policy_id + 1, true)] {
+        for (restricted_policy, yields) in [(7, false), (8, true)] {
             let mut best = state_aware(vec![tx.clone()]);
             best.changes
                 .events
                 .set_policy_restriction(restricted_policy, fee_payer, true);
-            assert_eq!(next_with_db(&mut best, &mut db).is_some(), yields);
+            assert_eq!(best.next().is_some(), yields);
         }
     }
 
     #[test]
-    fn state_aware_checks_fee_amm_liquidity_after_reserve_decrease() {
+    fn state_aware_skips_only_when_every_written_fee_route_is_drained() {
+        let validator_token = DEFAULT_FEE_TOKEN;
         let user_token = TEST_SPEC
             .fallback_fee_tokens()
             .iter()
             .copied()
-            .find(|&token| token != DEFAULT_FEE_TOKEN)
+            .find(|&token| token != validator_token)
             .unwrap();
-        let best = || {
-            state_aware(vec![
-                fee_token_tx(user_token),
-                fee_token_tx(DEFAULT_FEE_TOKEN),
-            ])
+        let quote_token = Address::random();
+        let pool_slot = |user, validator| {
+            let fee_manager = TipFeeManager::new();
+            fee_manager
+                .pool_id(user, validator)
+                .mapping_slot(fee_manager.pools.slot())
         };
-        // The empty database has no liquidity for any pair.
-        let mut db = InMemoryDB::default();
-        let mut yielded = |best: &mut TestStateAware| {
-            core::iter::from_fn(|| next_with_db(best, &mut db))
-                .map(|tx| tx.transaction.effective_fee_token())
-                .collect::<Vec<_>>()
-        };
-        let fee_manager = TipFeeManager::new();
-        let direct = fee_manager
-            .pool_id(user_token, DEFAULT_FEE_TOKEN)
-            .mapping_slot(fee_manager.pools.slot());
-        let with_reserve = |reserve_validator_token| {
-            let mut best = best();
-            let original = tempo_precompiles::tip_fee_manager::amm::Pool {
-                reserve_user_token: 0,
-                reserve_validator_token: u128::MAX,
-            };
-            let current = tempo_precompiles::tip_fee_manager::amm::Pool {
+        let encode = |reserve_validator_token| {
+            FeePool {
                 reserve_user_token: 0,
                 reserve_validator_token,
-            };
-            best.changes.record_storage(
-                TIP_FEE_MANAGER_ADDRESS,
-                direct,
-                original.encode_to_slot().unwrap(),
-                current.encode_to_slot().unwrap(),
-            );
-            best
+            }
+            .encode_to_slot()
+            .unwrap()
         };
-        // Drained: the empty database offers no two-hop route either.
-        assert_eq!(yielded(&mut with_reserve(0)), vec![DEFAULT_FEE_TOKEN]);
-        // Decreased but still enough for the fee.
-        assert_eq!(yielded(&mut with_reserve(u128::MAX - 1)).len(), 2);
+        let yields = |quote: Address, drained: &[(Address, Address)], reserve| {
+            let tx = fee_token_tx(user_token);
+            tx.transaction.set_fee_token_state(FeeTokenState {
+                sender_policy_ids: Vec::new(),
+                quote_token: quote,
+            });
+            let mut best = StateAwareBestTransactions::new(
+                protocol_best_transactions(vec![tx]),
+                &[],
+                Some(validator_token),
+            );
+            for &(user, validator) in drained {
+                best.changes.record_storage(
+                    TIP_FEE_MANAGER_ADDRESS,
+                    pool_slot(user, validator),
+                    encode(u128::MAX),
+                    encode(reserve),
+                );
+            }
+            best.next().is_some()
+        };
+        let direct = (user_token, validator_token);
+
+        // No two-hop route: the drained direct pool decides.
+        assert!(!yields(Address::ZERO, &[direct], 0));
+        assert!(yields(Address::ZERO, &[direct], u128::MAX - 1));
         // Liquidity is admission's concern until a reserve decreases in the block.
-        assert_eq!(yielded(&mut best()).len(), 2);
+        assert!(yields(Address::ZERO, &[], 0));
+        // An untouched two-hop route stays open for execution to decide.
+        assert!(yields(quote_token, &[direct], 0));
+        assert!(!yields(
+            quote_token,
+            &[direct, (quote_token, validator_token)],
+            0
+        ));
     }
 }

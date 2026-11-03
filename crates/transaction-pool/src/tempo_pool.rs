@@ -5,9 +5,9 @@
 use crate::{
     amm::AmmLiquidityCache,
     best::MergeBestTransactions,
-    invalidation::{InvalidationState, Invalidations, Reason, Verdict},
+    invalidation::{Invalidations, Reason, Verdict},
     ordering::TempoTipOrdering,
-    transaction::{KeychainSubject, TempoPooledTransaction},
+    transaction::TempoPooledTransaction,
     tt_2d_pool::AA2dPool,
     validator::{ConfigureTempoPoolEvm, TempoTransactionValidator},
 };
@@ -19,7 +19,7 @@ use alloy_primitives::{
 use parking_lot::RwLock;
 use reth_chainspec::{ChainSpecProvider, EthChainSpec};
 use reth_eth_wire_types::HandleMempoolData;
-use reth_provider::{ChangedAccount, StateProviderBox, StateProviderFactory};
+use reth_provider::{ChangedAccount, StateProviderFactory};
 use reth_transaction_pool::{
     AddedTransactionOutcome, AllPoolTransactions, BestTransactions, BestTransactionsAttributes,
     BlockInfo, CanonicalStateUpdate, GetPooledTransactionLimit, NewBlobSidecar, Pool, PoolResult,
@@ -35,8 +35,6 @@ use std::{sync::Arc, time::Instant};
 use tempo_chainspec::hardfork::{TempoHardfork, TempoHardforks};
 use tempo_evm::{TempoEvmConfig, TempoStateAccess};
 use tempo_precompiles::{
-    account_keychain::AccountKeychain,
-    error::Result as TempoPrecompileResult,
     storage::{Handler, StorageActions},
     tip20::TIP20Token,
     tip403_registry::{REJECT_ALL_POLICY_ID, TIP403Registry},
@@ -144,9 +142,7 @@ where
         transactions: impl IntoIterator<Item = &'a Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
         expiry_cutoff: Option<u64>,
     ) -> InvalidatedTransactions {
-        let validator = self.protocol_pool.validator().validator();
-        let tip_timestamp = validator.inner.fork_tracker().tip_timestamp();
-        let spec = validator.active_hardfork();
+        let spec = self.protocol_pool.validator().validator().active_hardfork();
 
         // Re-check liquidity for all pooled txs when an active validator changes token or a
         // reserve decreased. Leverages the per-tx `has_enough_liquidity` check, which passes if
@@ -166,17 +162,21 @@ where
                 amm_cache.track_tokens(&active_new_tokens)
             };
 
-        let mut state = PoolInvalidationState {
-            provider: invalidations
-                .may_read_state()
-                .then(|| self.client().latest().ok())
-                .flatten(),
-            spec,
-            timestamp: tip_timestamp,
-            policy_cache: AddressMap::default(),
-            amm_cache,
-            check_liquidity: has_active_validator_token_changes
-                || invalidations.fee_liquidity_may_have_decreased(),
+        // The cache follows reserves through the state diff; it reads state only for pairs it
+        // has not seen, such as a new validator token's.
+        let check_liquidity =
+            has_active_validator_token_changes || invalidations.fee_liquidity_may_have_decreased();
+        let provider = check_liquidity
+            .then(|| self.client().latest().ok())
+            .flatten();
+        let mut has_fee_liquidity = |_: &TempoPooledTransaction, token, fee| {
+            let Some(provider) = provider.as_ref() else {
+                return true;
+            };
+            // Errors leave the transaction to execution.
+            amm_cache
+                .has_enough_liquidity(token, fee, provider)
+                .unwrap_or(true)
         };
 
         let mut evict = Vec::new();
@@ -189,7 +189,11 @@ where
                 continue;
             }
             // Reth's canonical update already handles protocol nonces.
-            match invalidations.verdict(&tx.transaction, &mut state, spec.fallback_fee_tokens()) {
+            match invalidations.verdict(
+                &tx.transaction,
+                spec.fallback_fee_tokens(),
+                &mut has_fee_liquidity,
+            ) {
                 Verdict::Valid | Verdict::StaleNonce => {}
                 Verdict::Invalid(reason) => {
                     trace!(target: "txpool", tx = %tx.hash(), reason = reason.as_str(), "Evicting invalidated transaction");
@@ -1012,92 +1016,6 @@ pub struct InvalidatedTransactions {
     pub(crate) revalidate: Vec<(Arc<ValidPoolTransaction<TempoPooledTransaction>>, Reason)>,
 }
 
-/// Answers [`Invalidations::verdict`]'s reads for pool maintenance from the latest state.
-struct PoolInvalidationState {
-    /// Latest state, when the verdict may read it.
-    provider: Option<StateProviderBox>,
-    spec: TempoHardfork,
-    /// Tip timestamp, at which spending-limit periods roll over.
-    timestamp: u64,
-    policy_cache: AddressMap<Vec<u64>>,
-    amm_cache: AmmLiquidityCache,
-    /// Whether an active validator changed its token or a reserve decreased.
-    check_liquidity: bool,
-}
-
-impl InvalidationState for PoolInvalidationState {
-    fn exceeds_spending_limit(
-        &mut self,
-        _changes: &Invalidations,
-        subject: &KeychainSubject,
-        fee: U256,
-    ) -> bool {
-        // Periods may roll over by the next block, so the written amount is not enough.
-        self.provider.as_mut().is_some_and(|provider| {
-            exceeds_spending_limit(provider, subject, fee, self.timestamp, self.spec)
-        })
-    }
-
-    fn has_fee_liquidity(&mut self, _changes: &Invalidations, token: Address, fee: U256) -> bool {
-        if !self.check_liquidity {
-            return true;
-        }
-        let Some(provider) = self.provider.as_ref() else {
-            return true;
-        };
-        // Errors leave the transaction to execution.
-        self.amm_cache
-            .has_enough_liquidity(token, fee, provider)
-            .unwrap_or(true)
-    }
-
-    fn sender_policy_ids(&mut self, token: Address) -> Option<Vec<u64>> {
-        let provider = self.provider.as_mut()?;
-        get_sender_policy_ids(provider, token, self.spec, &mut self.policy_cache)
-    }
-
-    fn recipient_policy_ids(&mut self, token: Address) -> Option<Vec<u64>> {
-        let provider = self.provider.as_mut()?;
-        get_recipient_policy_ids(provider, token, self.spec)
-    }
-}
-
-/// Checks whether a pending keychain tx exceeds its effective remaining spending limit.
-///
-/// Re-reads the current limit from state for the tx's `(account, key_id, fee_token)` combo,
-/// including any T3 periodic-limit rollover at `current_timestamp`. Returns true if the tx's
-/// fee cost exceeds the effective remaining limit, meaning it should be evicted.
-pub(crate) fn exceeds_spending_limit<M>(
-    provider: &mut impl TempoStateAccess<M>,
-    subject: &crate::transaction::KeychainSubject,
-    fee_token_cost: alloy_primitives::U256,
-    current_timestamp: u64,
-    spec: TempoHardfork,
-) -> bool {
-    provider
-        .with_read_only_storage_ctx(
-            spec,
-            StorageActions::disabled(),
-            || -> TempoPrecompileResult<bool> {
-                let keychain = AccountKeychain::new();
-                let key = keychain.keys[subject.account][subject.key_id].read()?;
-                if !key.enforce_limits {
-                    return Ok(false);
-                }
-
-                let remaining = keychain.effective_remaining_limit_with_key(
-                    subject.account,
-                    subject.key_id,
-                    subject.fee_token,
-                    current_timestamp,
-                    &key,
-                )?;
-                Ok(fee_token_cost > remaining)
-            },
-        )
-        .unwrap_or_default()
-}
-
 /// Returns the set of policy IDs that can affect fee_payer authorization for a token.
 ///
 /// For simple policies the set contains just the policy ID. For compound policies
@@ -1140,46 +1058,6 @@ pub(crate) fn get_sender_policy_ids<M>(
     })
 }
 
-/// Returns the set of policy IDs that can affect recipient authorization for a token.
-///
-/// For simple (non-compound) policies, the transfer policy applies symmetrically to both
-/// sender and recipient, so the set contains just the policy ID. For compound policies
-/// (TIP-1015) it contains both the compound root and the recipient sub-policy, since
-/// pre-T8 fee transfer authorization checks the fee manager via `AuthRole::Recipient`.
-/// T8+ fee collection exempts the FeeManager recipient side, so this returns `None`.
-///
-/// Unlike `get_sender_policy_ids` this is uncached — it's only called on the rare path
-/// where the fee manager itself is blacklisted or un-whitelisted.
-pub(crate) fn get_recipient_policy_ids<M>(
-    provider: &mut impl TempoStateAccess<M>,
-    fee_token: Address,
-    spec: TempoHardfork,
-) -> Option<Vec<u64>> {
-    if spec.is_t8() {
-        return None;
-    }
-
-    provider.with_read_only_storage_ctx(spec, StorageActions::disabled(), || {
-        let policy_id = TIP20Token::from_address(fee_token)
-            .and_then(|t| t.transfer_policy_id())
-            .ok()
-            .filter(|&id| id != REJECT_ALL_POLICY_ID)?;
-
-        let mut ids = vec![policy_id];
-
-        let registry = TIP403Registry::new();
-        if let Ok(data) = registry.policy_records[policy_id].base.read()
-            && data.is_compound()
-            && let Ok(compound) = registry.policy_records[policy_id].compound.read()
-            && compound.recipient_policy_id != REJECT_ALL_POLICY_ID
-        {
-            ids.push(compound.recipient_policy_id);
-        }
-
-        Some(ids)
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1188,7 +1066,7 @@ mod tests {
         txs.iter().map(|tx| *tx.hash()).collect()
     }
 
-    use crate::{test_utils::MockProviderStorageExt, transaction::KeychainSubject};
+    use crate::{test_utils::MockProviderStorageExt, transaction::FeeTokenState};
     use alloy_consensus::Header;
     use alloy_primitives::{Signature, U256, address, uint};
     use alloy_signer::SignerSync;
@@ -1221,55 +1099,6 @@ mod tests {
         transaction::{KeyAuthorization, PrimitiveSignature, SignatureType},
     };
 
-    fn provider_with_spending_limit(
-        account: Address,
-        key_id: Address,
-        fee_token: Address,
-        remaining_limit: alloy_primitives::U256,
-    ) -> Box<dyn reth_storage_api::StateProvider> {
-        provider_with_spending_limit_state(
-            account,
-            key_id,
-            fee_token,
-            SpendingLimitState {
-                remaining: remaining_limit,
-                ..Default::default()
-            },
-            TempoHardfork::default(),
-        )
-    }
-
-    fn provider_with_spending_limit_state(
-        account: Address,
-        key_id: Address,
-        fee_token: Address,
-        limit_state: SpendingLimitState,
-        setup_spec: TempoHardfork,
-    ) -> Box<dyn reth_storage_api::StateProvider> {
-        let provider = MockEthProvider::default().with_chain_spec(std::sync::Arc::unwrap_or_clone(
-            tempo_chainspec::spec::MODERATO.clone(),
-        ));
-
-        // Write AuthorizedKey with enforce_limits=true
-        provider
-            .setup_storage(setup_spec, || {
-                let mut keychain = AccountKeychain::new();
-                keychain.keys[account][key_id].write(AuthorizedKey {
-                    signature_type: StoredSignatureType::Secp256k1,
-                    expiry: u64::MAX,
-                    enforce_limits: true,
-                    is_revoked: false,
-                    is_admin: false,
-                })?;
-                let limit_key = AccountKeychain::spending_limit_key(account, key_id);
-                keychain.spending_limits[limit_key][fee_token].write(limit_state)?;
-                Ok::<(), tempo_precompiles::error::TempoPrecompileError>(())
-            })
-            .unwrap();
-
-        provider.latest().unwrap()
-    }
-
     fn set_fee_token_balance(
         provider: &MockEthProvider<TempoPrimitives, TempoChainSpec>,
         fee_token: Address,
@@ -1295,23 +1124,6 @@ mod tests {
                 ),
                 (balance_slot.into(), balance),
             ]),
-        );
-    }
-
-    fn set_transfer_policy(
-        provider: &MockEthProvider<TempoPrimitives, TempoChainSpec>,
-        fee_token: Address,
-        policy_id: u64,
-    ) {
-        let transfer_policy_id_packed =
-            U256::from(policy_id) << (tip20_slots::TRANSFER_POLICY_ID_OFFSET * 8);
-
-        provider.add_account(
-            fee_token,
-            ExtendedAccount::new(0, U256::ZERO).extend_storage([(
-                tip20_slots::TRANSFER_POLICY_ID.into(),
-                transfer_policy_id_packed,
-            )]),
         );
     }
 
@@ -1882,6 +1694,11 @@ mod tests {
 
         assert_eq!(pooled.inner().fee_token(), None);
         pooled.set_resolved_fee_token(ResolvedFeeToken::Selected(resolved_fee_token));
+        // Admission caches the policies governing the resolved fee token.
+        pooled.set_fee_token_state(FeeTokenState {
+            sender_policy_ids: vec![policy_id],
+            quote_token: Address::ZERO,
+        });
 
         let provider = MockEthProvider::<TempoPrimitives>::new()
             .with_chain_spec(std::sync::Arc::unwrap_or_clone(MODERATO.clone()));
@@ -1899,7 +1716,6 @@ mod tests {
                 ..Default::default()
             },
         );
-        set_transfer_policy(&provider, resolved_fee_token, policy_id);
 
         let pool = create_test_pool(provider);
         add_validated(&pool, pooled.clone());
@@ -1921,6 +1737,11 @@ mod tests {
 
         assert_eq!(pooled.inner().fee_token(), None);
         pooled.set_resolved_fee_token(ResolvedFeeToken::Selected(resolved_fee_token));
+        // Admission caches the policies governing the resolved fee token.
+        pooled.set_fee_token_state(FeeTokenState {
+            sender_policy_ids: vec![policy_id],
+            quote_token: Address::ZERO,
+        });
 
         let provider = MockEthProvider::<TempoPrimitives>::new()
             .with_chain_spec(std::sync::Arc::unwrap_or_clone(MODERATO.clone()));
@@ -1938,7 +1759,6 @@ mod tests {
                 ..Default::default()
             },
         );
-        set_transfer_policy(&provider, resolved_fee_token, policy_id);
 
         let pool = create_test_pool(provider);
         add_validated(&pool, pooled.clone());
@@ -2427,292 +2247,5 @@ mod tests {
             !ids.contains(&mint_recipient_sub),
             "mint_recipient must be excluded from sender policy IDs"
         );
-    }
-
-    /// Pre-T8, `get_recipient_policy_ids` returns the compound root and recipient sub-policy.
-    #[test]
-    fn recipient_policy_ids_includes_recipient_sub_policy_pre_t8() {
-        let fee_token = address!("20C0000000000000000000000000000000000001");
-        let compound_policy_id: u64 = 5;
-        let sender_sub: u64 = 3;
-        let recipient_sub: u64 = 4;
-
-        let provider = MockEthProvider::default().with_chain_spec(std::sync::Arc::unwrap_or_clone(
-            tempo_chainspec::spec::MODERATO.clone(),
-        ));
-
-        let transfer_policy_id_packed =
-            U256::from(compound_policy_id) << (tip20_slots::TRANSFER_POLICY_ID_OFFSET * 8);
-        provider.add_account(
-            fee_token,
-            ExtendedAccount::new(0, U256::ZERO).extend_storage([(
-                tip20_slots::TRANSFER_POLICY_ID.into(),
-                transfer_policy_id_packed,
-            )]),
-        );
-
-        provider
-            .setup_storage(TempoHardfork::default(), || {
-                let mut registry = TIP403Registry::new();
-                registry.policy_records[compound_policy_id]
-                    .base
-                    .write(PolicyData {
-                        policy_type: ITIP403Registry::PolicyType::COMPOUND as u8,
-                        admin: Address::ZERO,
-                    })?;
-                registry.policy_records[compound_policy_id]
-                    .compound
-                    .write(CompoundPolicyData {
-                        sender_policy_id: sender_sub,
-                        recipient_policy_id: recipient_sub,
-                        mint_recipient_policy_id: 0,
-                    })
-            })
-            .unwrap();
-
-        let mut state = provider.latest().unwrap();
-        let ids = get_recipient_policy_ids(&mut state, fee_token, TempoHardfork::T7)
-            .expect("should resolve policy IDs");
-
-        assert!(
-            ids.contains(&compound_policy_id),
-            "should contain compound policy ID"
-        );
-        assert!(
-            ids.contains(&recipient_sub),
-            "should contain recipient sub-policy"
-        );
-        assert!(
-            !ids.contains(&sender_sub),
-            "recipient policy IDs should not contain sender sub-policy"
-        );
-    }
-
-    /// For simple (non-compound) policies, pre-T8 `get_recipient_policy_ids` returns just the root.
-    #[test]
-    fn recipient_policy_ids_simple_policy_pre_t8() {
-        let fee_token = address!("20C0000000000000000000000000000000000001");
-        let simple_policy_id: u64 = 7;
-
-        let provider = MockEthProvider::default().with_chain_spec(std::sync::Arc::unwrap_or_clone(
-            tempo_chainspec::spec::MODERATO.clone(),
-        ));
-
-        let transfer_policy_id_packed =
-            U256::from(simple_policy_id) << (tip20_slots::TRANSFER_POLICY_ID_OFFSET * 8);
-        provider.add_account(
-            fee_token,
-            ExtendedAccount::new(0, U256::ZERO).extend_storage([(
-                tip20_slots::TRANSFER_POLICY_ID.into(),
-                transfer_policy_id_packed,
-            )]),
-        );
-
-        provider
-            .setup_storage(TempoHardfork::default(), || {
-                let mut registry = TIP403Registry::new();
-                registry.policy_records[simple_policy_id]
-                    .base
-                    .write(PolicyData {
-                        policy_type: ITIP403Registry::PolicyType::BLACKLIST as u8,
-                        admin: Address::ZERO,
-                    })
-            })
-            .unwrap();
-
-        let mut state = provider.latest().unwrap();
-        let ids = get_recipient_policy_ids(&mut state, fee_token, TempoHardfork::T7)
-            .expect("should resolve policy IDs");
-
-        assert_eq!(ids, vec![simple_policy_id]);
-    }
-
-    #[test]
-    fn recipient_policy_ids_exempt_on_t8() {
-        let fee_token = address!("20C0000000000000000000000000000000000001");
-        let simple_policy_id: u64 = 7;
-
-        let provider = MockEthProvider::default().with_chain_spec(std::sync::Arc::unwrap_or_clone(
-            tempo_chainspec::spec::MODERATO.clone(),
-        ));
-
-        let transfer_policy_id_packed =
-            U256::from(simple_policy_id) << (tip20_slots::TRANSFER_POLICY_ID_OFFSET * 8);
-        provider.add_account(
-            fee_token,
-            ExtendedAccount::new(0, U256::ZERO).extend_storage([(
-                tip20_slots::TRANSFER_POLICY_ID.into(),
-                transfer_policy_id_packed,
-            )]),
-        );
-
-        let mut state = provider.latest().unwrap();
-        assert!(get_recipient_policy_ids(&mut state, fee_token, TempoHardfork::T8).is_none());
-    }
-
-    #[test]
-    fn exceeds_spending_limit_returns_true_when_cost_exceeds_remaining() {
-        let account = Address::random();
-        let key_id = Address::random();
-        let fee_token = Address::random();
-        let subject = KeychainSubject {
-            account,
-            key_id,
-            fee_token,
-        };
-
-        let mut state = provider_with_spending_limit(
-            account,
-            key_id,
-            fee_token,
-            alloy_primitives::U256::from(100),
-        );
-
-        assert!(exceeds_spending_limit(
-            &mut state,
-            &subject,
-            alloy_primitives::U256::from(200),
-            0,
-            TempoHardfork::default(),
-        ));
-    }
-
-    #[test]
-    fn exceeds_spending_limit_returns_false_when_cost_within_limit() {
-        let account = Address::random();
-        let key_id = Address::random();
-        let fee_token = Address::random();
-        let subject = KeychainSubject {
-            account,
-            key_id,
-            fee_token,
-        };
-
-        let mut state = provider_with_spending_limit(
-            account,
-            key_id,
-            fee_token,
-            alloy_primitives::U256::from(500),
-        );
-
-        assert!(!exceeds_spending_limit(
-            &mut state,
-            &subject,
-            alloy_primitives::U256::from(200),
-            0,
-            TempoHardfork::default(),
-        ));
-    }
-
-    #[test]
-    fn exceeds_spending_limit_returns_true_when_no_limit_set() {
-        let account = Address::random();
-        let key_id = Address::random();
-        let fee_token = Address::random();
-        let subject = KeychainSubject {
-            account,
-            key_id,
-            fee_token,
-        };
-
-        // Provider with AuthorizedKey (enforce_limits=true) but no spending limit slot
-        let provider = MockEthProvider::default().with_chain_spec(std::sync::Arc::unwrap_or_clone(
-            tempo_chainspec::spec::MODERATO.clone(),
-        ));
-        provider
-            .setup_storage(TempoHardfork::default(), || {
-                AccountKeychain::new().keys[account][key_id].write(AuthorizedKey {
-                    signature_type: StoredSignatureType::Secp256k1,
-                    expiry: u64::MAX,
-                    enforce_limits: true,
-                    is_revoked: false,
-                    is_admin: false,
-                })
-            })
-            .unwrap();
-
-        assert!(exceeds_spending_limit(
-            &mut provider.latest().unwrap(),
-            &subject,
-            U256::ONE,
-            0,
-            TempoHardfork::default(),
-        ));
-    }
-
-    #[test]
-    fn exceeds_spending_limit_returns_false_when_limits_not_enforced() {
-        let account = Address::random();
-        let key_id = Address::random();
-        let fee_token = Address::random();
-        let subject = KeychainSubject {
-            account,
-            key_id,
-            fee_token,
-        };
-
-        // Provider with AuthorizedKey (enforce_limits=false)
-        let provider = MockEthProvider::default().with_chain_spec(std::sync::Arc::unwrap_or_clone(
-            tempo_chainspec::spec::MODERATO.clone(),
-        ));
-        provider
-            .setup_storage(TempoHardfork::default(), || {
-                AccountKeychain::new().keys[account][key_id].write(AuthorizedKey {
-                    signature_type: StoredSignatureType::Secp256k1,
-                    expiry: u64::MAX,
-                    enforce_limits: false,
-                    is_revoked: false,
-                    is_admin: false,
-                })
-            })
-            .unwrap();
-
-        assert!(!exceeds_spending_limit(
-            &mut provider.latest().unwrap(),
-            &subject,
-            U256::ONE,
-            0,
-            TempoHardfork::default(),
-        ));
-    }
-
-    #[test]
-    fn exceeds_spending_limit_uses_period_reset_after_rollover() {
-        let account = Address::random();
-        let key_id = Address::random();
-        let fee_token = Address::random();
-        let subject = KeychainSubject {
-            account,
-            key_id,
-            fee_token,
-        };
-
-        let mut state = provider_with_spending_limit_state(
-            account,
-            key_id,
-            fee_token,
-            SpendingLimitState {
-                remaining: alloy_primitives::U256::ZERO,
-                max: 100,
-                period: 60,
-                period_end: 10,
-            },
-            TempoHardfork::T3,
-        );
-
-        assert!(!exceeds_spending_limit(
-            &mut state,
-            &subject,
-            alloy_primitives::U256::from(50),
-            10,
-            TempoHardfork::T3,
-        ));
-        assert!(exceeds_spending_limit(
-            &mut state,
-            &subject,
-            alloy_primitives::U256::from(150),
-            10,
-            TempoHardfork::T3,
-        ));
     }
 }
