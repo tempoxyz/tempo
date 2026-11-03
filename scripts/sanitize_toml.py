@@ -7,21 +7,85 @@ from pathlib import Path
 
 # ── Depth-aware line skipping ─────────────────────────────────────────────────
 
+def _skip_basic_string(line, i, closer):
+    """Skip a basic TOML string. Backslash escapes the next character."""
+    escaped = False
+    while i < len(line):
+        if escaped:
+            escaped = False
+            i += 1
+            continue
+        if line[i] == '\\':
+            escaped = True
+            i += 1
+            continue
+        if line.startswith(closer, i):
+            return i + len(closer)
+        i += 1
+    return -1
+
+
+def _skip_literal_string(line, i):
+    """Skip a literal TOML string. Backslash and # are ordinary characters."""
+    if line.startswith("'''", i):
+        end = line.find("'''", i + 3)
+        return -1 if end < 0 else end + 3
+    end = line.find("'", i + 1)
+    return -1 if end < 0 else end + 1
+
+
+def _next_code(line, i):
+    """Advance past one code character or a whole quoted string.
+
+    Returns (next_index, comment). comment is True when i is an unquoted #.
+    next_index is -1 when a string runs to the end of the line.
+    """
+    if line[i] == '#':
+        return i, True
+    if line[i] == "'":
+        nxt = _skip_literal_string(line, i)
+        return nxt, False
+    if line[i] == '"':
+        if line.startswith('"""', i):
+            return _skip_basic_string(line, i + 3, '"""'), False
+        return _skip_basic_string(line, i + 1, '"'), False
+    return i + 1, False
+
+
 def _strip_comment(line):
     """Return line with trailing # comments removed (string-aware)."""
-    in_str = False
-    for i, c in enumerate(line):
-        if c == '"' and (i == 0 or line[i - 1] != '\\'):
-            in_str = not in_str
-        elif c == '#' and not in_str:
+    i = 0
+    while i < len(line):
+        nxt, comment = _next_code(line, i)
+        if comment:
             return line[:i]
+        if nxt < 0:
+            return line
+        i = nxt
     return line
 
 
 def _depth_delta(line):
-    """Return (brace_delta, bracket_delta) for a line, ignoring comments."""
-    s = _strip_comment(line)
-    return (s.count('{') - s.count('}'), s.count('[') - s.count(']'))
+    """Return (brace_delta, bracket_delta) for a line, ignoring comments and strings."""
+    brace = 0
+    bracket = 0
+    i = 0
+    while i < len(line):
+        nxt, comment = _next_code(line, i)
+        if comment or nxt < 0:
+            break
+        if nxt == i + 1:
+            c = line[i]
+            if c == '{':
+                brace += 1
+            elif c == '}':
+                brace -= 1
+            elif c == '[':
+                bracket += 1
+            elif c == ']':
+                bracket -= 1
+        i = nxt
+    return (brace, bracket)
 
 
 def strip_dep_lines(text, should_strip, removed=None):
