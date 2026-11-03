@@ -876,7 +876,7 @@ cast code 0x5A4d000000000000000000000000000000000000 --rpc-url "$ETH_RPC_URL"
 | `--zone.id` | (deprecated) | Optional compatibility check against the zone ID encoded in the genesis chain ID. |
 | `--sequencer` | false | Enable sequencer mode for block production and withdrawal batch submission |
 | `--sequencer-key-file` | (required for sequencing) | Owner-readable file or FIFO containing the sequencer private key |
-| `--sequencer.enable-prover` | false | Require a Nitro-attested SPF proof before settling each batch; sequencers only, requires `--sequencer.prover-address` |
+| `--sequencer.enable-prover` | false | Require a Nitro-attested SPF proof before settling each batch; requires `--sequencer.prover-address`. Ignored with a warning on `rpc_only` followers |
 | `--sequencer.prover-address` | (optional) | Repeatable `HARDFORK=HOST:PORT` assignment selected by the live L1 fork; missing forks stop proving and the readiness gauge flags current/next-72-hour gaps |
 | `--sequencer.prover-attestation-policy` | (optional) | JSON PCR0–2 allowlist shared by all endpoints, overriding the PCRs compiled into the binary for each assigned fork; authenticates the transport and controls evidence freshness without changing L1 verifier policy |
 | `--deposits.allowlist` | false | Bounce deposits from L1 senders missing from `<datadir>/deposit-allowlist.json` while leading; see [Sequencer deposit allowlist](#sequencer-deposit-allowlist) |

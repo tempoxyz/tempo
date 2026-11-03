@@ -310,6 +310,39 @@ fn cli_evm_config(chain_spec: Arc<ZoneChainSpec>, l1_rpc_url: Option<url::Url>) 
     ZoneEvmConfig::new(chain_spec, l1_provider, portal_address)
 }
 
+/// Resolve the provers that gate settlement, or `None` when this node does not prove.
+fn settlement_prover_addresses(
+    args: &ZoneArgs,
+    should_sequence_blocks: bool,
+    rpc_only: bool,
+) -> eyre::Result<Option<ProverAddresses>> {
+    if !args.enable_prover {
+        return Ok(None);
+    }
+    if rpc_only && !should_sequence_blocks {
+        // TODO: remove after rpc_only deployments stop passing --sequencer.enable-prover
+        warn!(
+            target: "reth::cli",
+            "Ignoring --sequencer.enable-prover on an rpc_only follower: shadow proving was removed"
+        );
+        return Ok(None);
+    }
+    eyre::ensure!(
+        should_sequence_blocks,
+        "--sequencer.enable-prover requires a sequencer"
+    );
+    let policy = args
+        .prover_attestation_policy
+        .as_deref()
+        .map(std::fs::read)
+        .transpose()?;
+    Ok(Some(
+        ProverAddresses::new(args.prover_addresses.clone(), policy.as_deref())?.ok_or_eyre(
+            "settlement proving requires --sequencer.prover-address for Nitro attestation",
+        )?,
+    ))
+}
+
 /// Load and attach all sequencer resources to the node.
 async fn configure_sequencing(
     args: &ZoneArgs,
@@ -356,23 +389,7 @@ async fn configure_sequencing(
             "this node is `rpc_only` in the manifest, so --sequencer-key-file must not be provided: the shared key is never used here and is also the zone ECIES private key for encrypted deposits"
         ));
     }
-    let policy = args
-        .prover_attestation_policy
-        .as_deref()
-        .map(std::fs::read)
-        .transpose()?;
-    let prover_addresses = ProverAddresses::new(args.prover_addresses.clone(), policy.as_deref())?;
-    let prover_addresses = if args.enable_prover {
-        eyre::ensure!(
-            should_sequence_blocks,
-            "--sequencer.enable-prover requires a sequencer"
-        );
-        Some(prover_addresses.ok_or_eyre(
-            "settlement proving requires --sequencer.prover-address for Nitro attestation",
-        )?)
-    } else {
-        None
-    };
+    let prover_addresses = settlement_prover_addresses(args, should_sequence_blocks, rpc_only)?;
 
     eyre::ensure!(
         !args.deposit_allowlist || should_sequence_blocks,
@@ -984,6 +1001,36 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+    }
+
+    #[test]
+    fn enable_prover_is_ignored_on_rpc_only_followers_and_rejected_elsewhere() {
+        let args = ZoneArgsParser::try_parse_from([
+            "tempo-zone",
+            "--l1.rpc-url",
+            "ws://localhost:8546",
+            "--sequencer.enable-prover",
+            "--sequencer.prover-address",
+            "T13=prover:5000",
+        ])
+        .unwrap()
+        .zone;
+        assert!(
+            settlement_prover_addresses(&args, false, true)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            settlement_prover_addresses(&args, false, false)
+                .unwrap_err()
+                .to_string(),
+            "--sequencer.enable-prover requires a sequencer"
+        );
+        assert!(
+            settlement_prover_addresses(&args, true, false)
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]
