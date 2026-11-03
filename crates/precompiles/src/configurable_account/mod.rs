@@ -218,12 +218,12 @@ impl ConfigurableAccount {
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Storable)]
 pub enum UpgradeEligibility {
-    /// The transaction carries an authorization list or key authorization.
+    /// The transaction carries an authorization list.
     HasAuthorizations,
-    /// The transaction carries no authorizations, but its outer signature is not a primitive root
-    /// signature.
+    /// The transaction carries no authorization list, but its outer signature is not a primitive
+    /// root signature.
     NotPrimitiveRoot,
-    /// The transaction carries no authorizations and is signed by a primitive root key.
+    /// The transaction carries no authorization list and is signed by a primitive root key.
     PrimitiveRoot,
 }
 
