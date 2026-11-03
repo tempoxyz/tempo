@@ -587,9 +587,10 @@ jobs:
               fi
 
               # External reviews run after this loop posts their commands, so they must not
-              # block the pre-audit CI gate. Tempo Network E2E runs on Argo and can take
-              # longer than CI_TIMEOUT_MINUTES, so it is not waited on either. Failures of
-              # any of these are still handled above.
+              # block the pre-audit CI gate. Failed reviews are still handled above.
+              # Tempo Network E2E runs on Argo and can take longer than CI_TIMEOUT_MINUTES,
+              # so it is not waited on: only a failure reported before the other checks
+              # finish is handled above, and a later E2E failure is left to reviewers.
               PENDING=$(echo "$STATUS" | jq -r '[.[] | select((.state == "PENDING" or .state == "QUEUED" or .state == "IN_PROGRESS") and .name != "Review" and .name != "Cyclops audit run" and .name != "Tempo Network E2E")] | length')
               if [ "$PENDING" = "0" ] 2>/dev/null; then
                 echo "All CI checks passed!"
