@@ -704,7 +704,8 @@ mod tests {
     use reth_evm::{ConfigureEvm, Database as _, DynDatabase};
     use reth_execution_types::{BlockState, BundleSource, TransactionChanges};
     use reth_trie_common::{
-        EMPTY_ROOT_HASH, LeafNode, Nibbles, TrieAccount, TrieNode, root::state_root_unhashed,
+        BranchNode, EMPTY_ROOT_HASH, ExtensionNode, LeafNode, Nibbles, RlpNode, TrieAccount,
+        TrieMask, TrieNode, root::state_root_unhashed,
     };
     use std::sync::Arc;
     use tempo_primitives::TempoHeader;
@@ -1046,6 +1047,92 @@ mod tests {
         assert_eq!(
             database.get_storage(&account, &U256::from(3)).unwrap(),
             U256::from(9)
+        );
+    }
+
+    #[test]
+    fn resolves_tip20_balances_in_inline_storage_leaves() {
+        use tempo_precompiles::{PATH_USD_ADDRESS, storage::StorageKey, tip20::slots};
+
+        // These holder balances have storage keys sharing eight trie nibbles.
+        let first_holder = Address::from_word(B256::from(U256::from(15_951)));
+        let second_holder = Address::from_word(B256::from(U256::from(46_170)));
+        let first_slot = first_holder.mapping_slot(slots::BALANCES);
+        let second_slot = second_holder.mapping_slot(slots::BALANCES);
+        let first_key = keccak256(first_slot.to_be_bytes::<32>());
+        let second_key = keccak256(second_slot.to_be_bytes::<32>());
+        let first_nibbles = Nibbles::unpack(first_key);
+        let second_nibbles = Nibbles::unpack(second_key);
+        let shared = first_nibbles
+            .iter()
+            .zip(second_nibbles.iter())
+            .take_while(|(a, b)| a == b)
+            .count();
+        assert!(shared >= 8);
+        let first_leaf = alloy_rlp::encode(LeafNode::new(
+            first_nibbles.slice(shared + 1..),
+            alloy_rlp::encode(U256::ONE),
+        ));
+        let second_leaf = alloy_rlp::encode(LeafNode::new(
+            second_nibbles.slice(shared + 1..),
+            alloy_rlp::encode(U256::from(2)),
+        ));
+        assert!(first_leaf.len() < 32);
+        assert!(second_leaf.len() < 32);
+
+        let mask =
+            (1 << first_nibbles.get(shared).unwrap()) | (1 << second_nibbles.get(shared).unwrap());
+        let branch = alloy_rlp::encode(BranchNode::new(
+            if first_nibbles.get(shared).unwrap() < second_nibbles.get(shared).unwrap() {
+                vec![
+                    RlpNode::from_rlp(&first_leaf),
+                    RlpNode::from_rlp(&second_leaf),
+                ]
+            } else {
+                vec![
+                    RlpNode::from_rlp(&second_leaf),
+                    RlpNode::from_rlp(&first_leaf),
+                ]
+            },
+            TrieMask::new(mask),
+        ));
+        let storage_node = alloy_rlp::encode(ExtensionNode::new(
+            first_nibbles.slice(..shared),
+            RlpNode::from_rlp(&branch),
+        ));
+        let storage_root = keccak256(&storage_node);
+        let account_node = alloy_rlp::encode(LeafNode::new(
+            Nibbles::unpack(keccak256(PATH_USD_ADDRESS)),
+            alloy_rlp::encode(TrieAccount {
+                storage_root,
+                ..Default::default()
+            }),
+        ));
+        let state_root = keccak256(&account_node);
+        let mut node_pool = vec![Bytes::from(account_node), Bytes::from(storage_node)];
+        if branch.len() >= 32 {
+            node_pool.push(Bytes::from(branch));
+        }
+        // Inline children are carried by their parent, not as separate witness nodes.
+        let mut database = WitnessDatabase::from_zone_state_witness(
+            ZoneStateWitness {
+                node_pool,
+                bytecodes: Vec::new(),
+            },
+            state_root,
+        )
+        .unwrap();
+        assert_eq!(
+            database
+                .get_storage(&PATH_USD_ADDRESS, &first_slot)
+                .unwrap(),
+            U256::ONE
+        );
+        assert_eq!(
+            database
+                .get_storage(&PATH_USD_ADDRESS, &second_slot)
+                .unwrap(),
+            U256::from(2)
         );
     }
 
