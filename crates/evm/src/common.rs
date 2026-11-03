@@ -420,6 +420,10 @@ where
         unreachable!("'block_env' not implemented in read-only context yet")
     }
 
+    fn tx_origin(&self) -> Address {
+        unreachable!("'tx_origin' not implemented in read-only context yet")
+    }
+
     fn tload(&mut self, _: Address, _: U256) -> TempoResult<U256> {
         unreachable!("'tload' not implemented in read-only context yet")
     }

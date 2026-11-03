@@ -30,6 +30,7 @@ pub struct HashMapStorageProvider {
     fail_on_sload: Option<(Address, U256)>,
     chain_id: u64,
     block_env: TempoBlockEnv,
+    tx_origin: Address,
     spec: TempoHardfork,
     amsterdam_eip8037_enabled: bool,
     is_static: bool,
@@ -81,6 +82,7 @@ impl HashMapStorageProvider {
                 ),
                 ..Default::default()
             },
+            tx_origin: Address::ZERO,
             spec,
             amsterdam_eip8037_enabled: false,
             is_static: false,
@@ -118,6 +120,10 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
 
     fn block_env(&self) -> &TempoBlockEnv {
         &self.block_env
+    }
+
+    fn tx_origin(&self) -> Address {
+        self.tx_origin
     }
 
     fn set_code(&mut self, address: Address, code: Bytes) -> Result<(), TempoPrecompileError> {
@@ -423,6 +429,11 @@ impl HashMapStorageProvider {
     /// Overrides the block beneficiary (coinbase).
     pub fn set_beneficiary(&mut self, beneficiary: Address) {
         self.block_env.beneficiary = beneficiary;
+    }
+
+    /// Overrides the transaction origin.
+    pub fn set_tx_origin(&mut self, origin: Address) {
+        self.tx_origin = origin;
     }
 
     /// Overrides the block number.

@@ -30,7 +30,6 @@ pub struct ConfigurableAccount {
     // macro is refactored and has 2 independent layouts (persistent and transient).
     // If new (persistent) storage fields need to be added to the precompile, they must go above
     // the fields below.
-    tx_origin: Address,
     directly_authorized_account: Address,
     upgrade_eligibility: UpgradeEligibility,
 }
@@ -40,11 +39,9 @@ impl ConfigurableAccount {
     /// whether the transaction may migrate its sender.
     pub fn set_authority(
         &mut self,
-        origin: Address,
         directly_authorized: Address,
         upgrade_eligibility: UpgradeEligibility,
     ) -> Result<()> {
-        self.tx_origin.t_write(origin)?;
         self.directly_authorized_account
             .t_write(directly_authorized)?;
         self.upgrade_eligibility.t_write(upgrade_eligibility)
@@ -137,7 +134,7 @@ impl ConfigurableAccount {
         owners: Vec<IConfigurableAccount::ConfigurableAccountOwner>,
     ) -> Result<B256> {
         // Only the transaction's own sender may migrate itself.
-        if self.tx_origin.t_read()? != sender {
+        if self.storage.tx_origin() != sender {
             return Err(ConfigurableAccountError::upgrade_must_be_direct_call().into());
         }
         match self.upgrade_eligibility.t_read()? {

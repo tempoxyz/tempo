@@ -94,6 +94,9 @@ pub trait PrecompileStorageProvider {
     /// Returns the full Tempo block environment.
     fn block_env(&self) -> &TempoBlockEnv;
 
+    /// Returns the transaction origin (`tx.origin`) of the executing transaction.
+    fn tx_origin(&self) -> Address;
+
     /// Sets the bytecode at the given address.
     fn set_code(&mut self, address: Address, code: Bytes) -> Result<()>;
 

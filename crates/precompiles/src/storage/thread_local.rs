@@ -140,6 +140,11 @@ impl StorageCtx {
         Self::with_storage(|s| s.chain_id())
     }
 
+    /// Returns the transaction origin (`tx.origin`) of the executing transaction.
+    pub fn tx_origin(&self) -> Address {
+        Self::with_storage(|s| s.tx_origin())
+    }
+
     /// Returns the current block timestamp.
     pub fn timestamp(&self) -> U256 {
         self.with_block_env(|block_env| block_env.timestamp)
@@ -539,6 +544,11 @@ impl StorageCtx {
     /// NOTE: assumes storage tests always use the `HashMapStorageProvider`
     pub fn set_beneficiary(&mut self, beneficiary: Address) {
         self.as_hashmap().set_beneficiary(beneficiary)
+    }
+
+    /// NOTE: assumes storage tests always use the `HashMapStorageProvider`
+    pub fn set_tx_origin(&mut self, origin: Address) {
+        self.as_hashmap().set_tx_origin(origin)
     }
 
     /// NOTE: assumes storage tests always use the `HashMapStorageProvider`

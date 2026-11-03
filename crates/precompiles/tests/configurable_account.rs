@@ -124,8 +124,9 @@ fn upgrade(
 }
 
 fn seed_authority(origin: Address, directly_authorized: Address, eligibility: UpgradeEligibility) {
+    StorageCtx.set_tx_origin(origin);
     ConfigurableAccount::new()
-        .set_authority(origin, directly_authorized, eligibility)
+        .set_authority(directly_authorized, eligibility)
         .unwrap();
 }
 

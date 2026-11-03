@@ -396,6 +396,10 @@ where
         self.evm.block()
     }
 
+    fn tx_origin(&self) -> Address {
+        self.evm.tx_env().origin
+    }
+
     #[inline]
     fn set_code(&mut self, address: Address, code: Bytes) -> Result<(), TempoPrecompileError> {
         self.ensure_not_static()?;
