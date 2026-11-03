@@ -680,6 +680,21 @@ pub async fn tip_timestamp(reader: &DbReader, context: &Context) -> eyre::Result
     Ok(block.header.timestamp())
 }
 
+/// The cursor before `block`, which must be in `context`'s range or its end.
+pub async fn cursor_at(reader: &DbReader, context: &Context, block: u64) -> eyre::Result<Cursor> {
+    if block == context.start {
+        return Cursor::initial(context);
+    }
+    let previous = metadata(reader, block - 1).await?;
+    let mut cursor = Cursor {
+        next: previous.number,
+        tx: previous.first_tx,
+        parent: previous.parent,
+    };
+    cursor.advance(&previous)?;
+    Ok(cursor)
+}
+
 pub async fn metadata(reader: &DbReader, block: u64) -> eyre::Result<Record> {
     let bytes = reader
         .get(metadata_key(block))

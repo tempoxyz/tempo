@@ -21,6 +21,7 @@ alloy-primitives.workspace = true
 reth-primitives-traits.workspace = true
 reth-execution-types.workspace = true
 evm2.workspace = true
+tempo-contracts.workspace = true
 tempo-evm = { workspace = true, features = ["default"] }
 tempo-primitives = { workspace = true, features = ["default"] }
 reth-evm.workspace = true
@@ -53,6 +54,14 @@ tracing.workspace = true
 url.workspace = true
 wincode = { version = "0.6", features = ["derive"] }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
+arrow-array = { version = "60", optional = true }
+arrow-buffer = { version = "60", optional = true }
+arrow-schema = { version = "60", optional = true }
+parquet = { version = "60", default-features = false, features = ["arrow", "zstd"], optional = true }
+
+[features]
+# Parquet corpus index (`tempo corpus index/select`).
+index = ["dep:arrow-array", "dep:arrow-buffer", "dep:arrow-schema", "dep:parquet"]
 
 [dev-dependencies]
 proptest.workspace = true

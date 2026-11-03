@@ -6,7 +6,10 @@ pub mod code;
 pub mod execute;
 pub mod fill;
 pub mod gc;
+#[cfg(feature = "index")]
+pub mod index;
 pub mod replay;
 pub mod store;
+pub mod targets;
 pub mod types;
 pub mod view;

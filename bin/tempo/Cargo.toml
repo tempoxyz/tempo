@@ -144,6 +144,8 @@ localnet = ["dep:nix"]
 
 # Historical execution corpus commands (`tempo corpus fill/replay`).
 corpus = ["dep:tempo-corpus"]
+# Parquet corpus index commands (`tempo corpus index/select`).
+corpus-index = ["corpus", "tempo-corpus/index"]
 
 asm-keccak = [
 	"alloy/asm-keccak",

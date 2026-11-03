@@ -2,7 +2,7 @@
 
 use crate::{
     execute::{decode_block, execute_block, standalone_cases, verify_changesets},
-    store::{self, Catalog, MAX_RECORD_BYTES, Record, Store},
+    store::{self, Catalog, Context, MAX_RECORD_BYTES, Record, Store},
     types::{Case, Chunk, Phases},
     view::View,
 };
@@ -16,7 +16,9 @@ use reth_cli_util::cancellation::CancellationToken;
 use reth_primitives_traits::RecoveredBlock;
 use slatedb::DbReader;
 use std::{
+    fs,
     ops::Range,
+    path::Path,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -48,7 +50,8 @@ struct Ready {
 }
 
 /// Replays a published corpus range with `workers` execution threads. With `standalone`,
-/// only transactions with ordinals in that range are replayed, each independently.
+/// only transactions with ordinals in that range are replayed, each independently. With `blocks`
+/// (sorted), only those blocks of the range are replayed.
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     store: Store,
@@ -58,6 +61,7 @@ pub fn run(
     consensus: TempoConsensus,
     workers: usize,
     standalone: Option<(u64, u64)>,
+    blocks: Option<&[u64]>,
     cancellation: CancellationToken,
 ) -> eyre::Result<()> {
     eyre::ensure!(workers > 0, "num-tasks must be positive");
@@ -98,10 +102,10 @@ pub fn run(
     let done_transactions = AtomicU64::new(0);
     let done_gas = AtomicU64::new(0);
     let finished = AtomicBool::new(false);
-    let total_blocks = if standalone.is_some() {
-        0
-    } else {
-        range.end - range.start
+    let total_blocks = match (standalone, blocks) {
+        (Some(_), _) => 0,
+        (None, Some(blocks)) => blocks.len() as u64,
+        (None, None) => range.end - range.start,
     };
     let result = std::thread::scope(|scope| -> eyre::Result<()> {
         scope.spawn(|| {
@@ -140,6 +144,7 @@ pub fn run(
                     &catalog,
                     range.clone(),
                     standalone,
+                    blocks,
                     sender,
                     budget.clone(),
                     &cancellation,
@@ -258,6 +263,46 @@ pub fn run(
     let closed = runtime.block_on(reader.close());
     result?;
     Ok(closed?)
+}
+
+/// A block list section naming the corpus of `context` at `checkpoint` and `blocks` of it,
+/// one per line. A block list file holds one section per corpus.
+pub fn block_list(
+    context: &Context,
+    checkpoint: Option<&str>,
+    blocks: impl IntoIterator<Item = u64>,
+) -> String {
+    let header = format!(
+        "# corpus {}..{} tip {} checkpoint {}\n",
+        context.start,
+        context.end,
+        context.tip,
+        checkpoint.unwrap_or("none")
+    );
+    blocks
+        .into_iter()
+        .fold(header, |text, block| text + &format!("{block}\n"))
+}
+
+/// The blocks a block list file lists for `catalog`'s corpus: those under its section header,
+/// and any before the first header, which must be in its range.
+pub fn read_blocks(path: &Path, catalog: &Catalog) -> eyre::Result<Vec<u64>> {
+    let context = &catalog.context;
+    let tip = format!(" tip {} ", context.tip);
+    let (mut blocks, mut ours) = (Vec::new(), true);
+    for line in fs::read_to_string(path)?.lines().map(str::trim) {
+        if let Some(header) = line.strip_prefix('#') {
+            ours = header.contains(&tip);
+        } else if ours && !line.is_empty() {
+            let block: u64 = line.parse()?;
+            eyre::ensure!(
+                (context.start..context.end).contains(&block),
+                "block {block} is outside the corpus"
+            );
+            blocks.push(block);
+        }
+    }
+    Ok(blocks)
 }
 
 /// Fetching owns serialized reservations until ownership moves to a worker.
@@ -403,11 +448,13 @@ async fn transaction_range(
     Ok(bounds[0]..bounds[1] + 1)
 }
 
+#[expect(clippy::too_many_arguments, reason = "the replay pipeline settings")]
 async fn feed_catalog(
     reader: &Arc<DbReader>,
     catalog: &Catalog,
     range: Range<u64>,
     standalone: Option<(u64, u64)>,
+    blocks: Option<&[u64]>,
     sender: Sender<Ready>,
     budget: Arc<Semaphore>,
     cancellation: &CancellationToken,
@@ -417,7 +464,15 @@ async fn feed_catalog(
     let mut tasks = JoinSet::new();
     let (pages, receiver) = mpsc::channel(1);
     let result = tokio::try_join!(
-        read_catalog(reader, catalog, range, standalone, pages, cancellation),
+        read_catalog(
+            reader,
+            catalog,
+            range,
+            standalone,
+            blocks,
+            pages,
+            cancellation
+        ),
         feed_pages(reader, receiver, &mut tasks, sender, budget, cancellation),
     );
     // The sibling future is dropped on error. Abort and join its payload tasks
@@ -431,23 +486,13 @@ async fn read_catalog(
     catalog: &Catalog,
     range: Range<u64>,
     standalone: Option<(u64, u64)>,
+    blocks: Option<&[u64]>,
     pages: mpsc::Sender<Vec<Record>>,
     cancellation: &CancellationToken,
 ) -> eyre::Result<(u64, u64, u64)> {
-    let cursor = if range.start == catalog.context.start {
-        store::Cursor::initial(&catalog.context)?
-    } else {
-        let previous = store::metadata(reader, range.start - 1).await?;
-        let mut cursor = store::Cursor {
-            next: previous.number,
-            tx: previous.first_tx,
-            parent: previous.parent,
-        };
-        cursor.advance(&previous)?;
-        cursor
-    };
+    let cursor = store::cursor_at(reader, &catalog.context, range.start).await?;
     let initial_tx = cursor.tx;
-    let mut totals = (0, 0, 0);
+    let (mut totals, mut covered) = ((0, 0, 0), 0);
     let mut metadata = store::MetadataPages::open(reader, cursor, range.end).await?;
     while metadata.cursor.next < range.end {
         // Reserve before reading: only one queued/in-progress metadata page,
@@ -455,6 +500,11 @@ async fn read_catalog(
         let slot = pages.reserve().await?;
         eyre::ensure!(!cancellation.is_cancelled(), "metadata read cancelled");
         let mut page = metadata.next_page().await?;
+        // Coverage of the skipped blocks is still checked as their metadata is read.
+        covered += page.iter().map(|r| r.transactions).sum::<u64>();
+        if let Some(blocks) = blocks {
+            page.retain(|r| blocks.binary_search(&r.number).is_ok());
+        }
         if let Some((from, to)) = standalone {
             page.retain(|r| {
                 r.transactions > 0 && r.first_tx < to && r.first_tx + r.transactions > from
@@ -481,11 +531,13 @@ async fn read_catalog(
         );
     }
     eyre::ensure!(
-        totals.1 == standalone.map_or(cursor.tx - initial_tx, |(from, to)| to - from),
+        covered == cursor.tx - initial_tx
+            && (blocks.is_some() || totals.1 == standalone.map_or(covered, |(from, to)| to - from)),
         "metadata transaction coverage mismatch"
     );
     eyre::ensure!(
-        standalone.is_some() || totals.0 == range.end - range.start,
+        standalone.is_some()
+            || totals.0 == blocks.map_or(range.end - range.start, |blocks| blocks.len() as u64),
         "metadata block coverage mismatch"
     );
     Ok(totals)
