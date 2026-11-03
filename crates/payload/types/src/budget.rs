@@ -1,3 +1,4 @@
+use crate::samples::percentile_rank;
 use std::{collections::BTreeMap, time::Duration};
 use tracing::debug;
 
@@ -41,17 +42,6 @@ fn remove_count<T: Copy + Ord>(counts: &mut BTreeMap<T, usize>, value: T) {
     if *count == 0 {
         counts.remove(&value);
     }
-}
-
-fn percentile_rank(len: usize, numerator: usize, denominator: usize) -> Option<usize> {
-    debug_assert!(numerator > 0);
-    debug_assert!(denominator > 0);
-    debug_assert!(numerator <= denominator);
-
-    if len == 0 {
-        return None;
-    }
-    Some((len * numerator).div_ceil(denominator))
 }
 
 fn percentile_from_counts<T: Copy + Ord>(

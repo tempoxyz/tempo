@@ -253,7 +253,7 @@ pub fn prove_zone_batch(config: &SpfConfig, witness: BatchWitness) -> Result<Bat
             outbox::slots::WITHDRAWAL_BATCH_INDEX,
         )?;
         // The index occupies the low 64 bits of a packed Solidity slot.
-        (hash, index_slot.as_limbs()[0])
+        (hash, index_slot.wrapping_to::<u64>())
     } else {
         (
             B256::ZERO,

@@ -187,6 +187,7 @@ fn broken_start(
         |address| listed.accounts.contains_key(address),
         &holders,
         None,
+        &invariants::ViewCache::default(),
         &mut failures,
         &mut Report::default(),
     );
@@ -374,6 +375,7 @@ fn execute_txs(
     outputs: &mut BlockOutputs,
 ) -> Result<(), BlockExecutionError> {
     executor.apply_pre_execution_changes()?;
+    let view_cache = invariants::ViewCache::default();
     outputs.changes.pre_block = step(
         evm_config,
         executor,
@@ -381,6 +383,7 @@ fn execute_txs(
         hooked,
         InvariantScope::Block { block_index },
         None,
+        &view_cache,
         updates,
         &mut outputs.invariant_failures,
         &mut outputs.invariant_report,
@@ -442,6 +445,7 @@ fn execute_txs(
             hooked,
             scope,
             Some((tx, &receipt.logs)),
+            &view_cache,
             updates,
             &mut outputs.invariant_failures,
             &mut outputs.invariant_report,
@@ -458,7 +462,8 @@ fn take(hooked: &Updates) -> Vec<StateUpdate> {
 
 /// Ends an execution step: writes its changes to `db`, checks invariants at `scope`, and returns the
 /// step's changes. A transaction's step, given the transaction and its logs as `tx`, is checked only
-/// for the contracts it changed, and also on what it did.
+/// for the contracts it changed, and also on what it did, reading again only the views of
+/// `view_cache` that read what it changed.
 #[allow(clippy::too_many_arguments)]
 fn step(
     evm_config: &TempoEvmConfig,
@@ -467,6 +472,7 @@ fn step(
     hooked: &Updates,
     scope: InvariantScope,
     tx: Option<(Tx, &[Log])>,
+    view_cache: &invariants::ViewCache,
     updates: &mut Vec<StateUpdate>,
     failures: &mut Vec<InvariantFailure>,
     report: &mut Report,
@@ -498,6 +504,7 @@ fn step(
         selected,
         &[],
         effects,
+        view_cache,
         failures,
         report,
     );

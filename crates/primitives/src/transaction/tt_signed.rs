@@ -296,6 +296,8 @@ impl Typed2718 for AASigned {
     }
 }
 
+// Every method forwards to the inner `TempoTransaction`, so a transaction reports
+// the same values whether or not it is signed.
 impl Transaction for AASigned {
     #[inline]
     fn chain_id(&self) -> Option<u64> {
@@ -329,7 +331,7 @@ impl Transaction for AASigned {
 
     #[inline]
     fn max_fee_per_blob_gas(&self) -> Option<u128> {
-        None
+        self.tx.max_fee_per_blob_gas()
     }
 
     #[inline]
@@ -337,63 +339,49 @@ impl Transaction for AASigned {
         self.tx.priority_fee_or_price()
     }
 
+    #[inline]
     fn effective_gas_price(&self, base_fee: Option<u64>) -> u128 {
         self.tx.effective_gas_price(base_fee)
     }
 
     #[inline]
     fn is_dynamic_fee(&self) -> bool {
-        true
+        self.tx.is_dynamic_fee()
     }
 
     #[inline]
     fn kind(&self) -> TxKind {
-        // Return first call's `to` or Create if empty
-        self.tx
-            .calls
-            .first()
-            .map(|c| c.to)
-            .unwrap_or(TxKind::Create)
+        self.tx.kind()
     }
 
     #[inline]
     fn is_create(&self) -> bool {
-        self.kind().is_create()
+        self.tx.is_create()
     }
 
     #[inline]
     fn value(&self) -> U256 {
-        // Return sum of all call values
-        self.tx
-            .calls
-            .iter()
-            .fold(U256::ZERO, |acc, call| acc + call.value)
+        self.tx.value()
     }
 
     #[inline]
     fn input(&self) -> &Bytes {
-        // Return first call's input or empty
-        static EMPTY_BYTES: Bytes = Bytes::new();
-        self.tx
-            .calls
-            .first()
-            .map(|c| &c.input)
-            .unwrap_or(&EMPTY_BYTES)
+        self.tx.input()
     }
 
     #[inline]
     fn access_list(&self) -> Option<&AccessList> {
-        Some(&self.tx.access_list)
+        self.tx.access_list()
     }
 
     #[inline]
     fn blob_versioned_hashes(&self) -> Option<&[B256]> {
-        None
+        self.tx.blob_versioned_hashes()
     }
 
     #[inline]
     fn authorization_list(&self) -> Option<&[SignedAuthorization]> {
-        None
+        self.tx.authorization_list()
     }
 }
 
@@ -703,6 +691,26 @@ pub(crate) mod tests {
         assert_eq!(returned_tx, tx);
         assert_eq!(returned_sig, sig);
         assert_eq!(returned_hash, hash1);
+    }
+
+    #[test]
+    fn test_value_saturates_like_unsigned_tx() {
+        let call = |value| Call {
+            to: TxKind::Call(Address::repeat_byte(0x42)),
+            value,
+            input: Bytes::new(),
+        };
+        let tx = TempoTransaction {
+            calls: vec![call(U256::MAX), call(U256::from(2))],
+            ..make_tx()
+        };
+        let signed = AASigned::new_unhashed(
+            tx.clone(),
+            TempoSignature::from(Signature::test_signature()),
+        );
+
+        assert_eq!(tx.value(), U256::MAX);
+        assert_eq!(signed.value(), tx.value());
     }
 
     #[test]

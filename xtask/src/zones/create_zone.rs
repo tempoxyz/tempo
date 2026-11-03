@@ -328,12 +328,12 @@ impl CreateZone {
                 .migrateTransferPolicyIds(vec![self.initial_token])
                 .send_sync()
                 .await?;
-            if !receipt.status() {
-                return Err(eyre!(
+            receipt.ensure_success().map_err(|_| {
+                eyre!(
                     "transfer policy migration reverted (tx: {:?})",
                     receipt.transaction_hash
-                ));
-            }
+                )
+            })?;
 
             policy = registry
                 .tokenTransferPolicyId(self.initial_token)
@@ -482,12 +482,12 @@ impl CreateZone {
         println!("Status: {}", receipt.status());
         println!("Gas used: {:?}", receipt.gas_used);
 
-        if !receipt.status() {
-            return Err(eyre!(
+        receipt.ensure_success().map_err(|_| {
+            eyre!(
                 "createZone transaction reverted (tx: {:?})",
                 receipt.transaction_hash
-            ));
-        }
+            )
+        })?;
         let creation_block = receipt
             .block_number
             .ok_or_else(|| eyre!("createZone receipt is missing its block number"))?;
