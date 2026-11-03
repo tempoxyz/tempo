@@ -74,7 +74,9 @@ templates:
   dex_swap:
     type: tempo
     from: {pool: users, select: random}
-    gas_limit: 8000000
+    # ~100K used warm, ~350K cold. The general lane admits a transaction only while used gas plus
+    # its limit fits, so an 8M limit never lands beside 2.5M vault and zone transactions.
+    gas_limit: 1000000
     fee_token: "0x20c0000000000000000000000000000000000000"
     expiring_nonce: true
     nonce: { uniform: [0, 18446744073709551615] } # TIP-1106, requires T12+
