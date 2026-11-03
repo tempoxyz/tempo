@@ -4,4 +4,4 @@ tempo-primitives: patch
 tempo-chainspec: patch
 ---
 
-The `tempo-contracts` bindings no longer implement `Serialize` and `Deserialize` unless `tempo-contracts/serde` is enabled. `tempo-alloy`, `tempo-primitives` and `tempo-chainspec` no longer enable it, including through their `serde` features.
+The `tempo-contracts` bindings no longer implement `Serialize` and `Deserialize` unless `tempo-contracts/serde` is enabled. `tempo-alloy`, `tempo-primitives` and `tempo-chainspec` no longer enable it, so a crate that serializes bindings through them must enable `tempo-contracts/serde` itself.
