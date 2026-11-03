@@ -183,7 +183,7 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
         id: "TEMPO-ACCOUNT-UPDATE-QUORUM",
         over: |step: &AccountStep| step.post.of.keys(),
         judge: |s, account| {
-            let updates = updates_of(s, **account);
+            let updates = updates_of(s, **account)?;
             if updates.is_empty() {
                 return None;
             }
@@ -206,7 +206,7 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
         id: "TEMPO-ACCOUNT-UPDATE-VERSION",
         over: |step: &AccountStep| step.post.of.keys(),
         judge: |s, account| {
-            let updates = updates_of(s, **account);
+            let updates = updates_of(s, **account)?;
             let signed = s
                 .tx
                 .as_ref()?
@@ -426,14 +426,16 @@ impl std::fmt::Display for Upgrade {
     }
 }
 
-/// The step's owner-update events for `account`, in order.
-fn updates_of(s: &AccountStep, account: Address) -> Vec<ConfigurableAccountConfigUpdated> {
+/// The step's owner-update events for `account`, in order; `None` when its prior commitment is unknown.
+fn updates_of(s: &AccountStep, account: Address) -> Option<Vec<ConfigurableAccountConfigUpdated>> {
     // Registration's version-0 event, for an account without a commitment, is not an owner update.
-    let unregistered = s.pre.of.get(&account).is_some_and(|c| c.is_zero());
-    s.events::<ConfigurableAccountConfigUpdated>(s.post.precompile)
-        .into_iter()
-        .filter(|e| e.account == account && !(unregistered && e.version == 0))
-        .collect()
+    let unregistered = s.pre.of.get(&account)?.is_zero();
+    Some(
+        s.events::<ConfigurableAccountConfigUpdated>(s.post.precompile)
+            .into_iter()
+            .filter(|e| e.account == account && !(unregistered && e.version == 0))
+            .collect(),
+    )
 }
 
 /// The configurations the step's events wrote for `account`, in order.
