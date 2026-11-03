@@ -1,10 +1,12 @@
 //! Bounded in-process checkpoint reads feeding native execution workers.
 
 use crate::{
-    execute::{decode_block, execute_block, standalone_cases, verify_changesets},
-    store::{self, Catalog, Context, MAX_RECORD_BYTES, Record, Store},
-    types::{Case, Chunk, Phases},
-    view::View,
+    exec::{
+        block::{decode_block, execute_block, standalone_cases, verify_changesets},
+        db::View,
+    },
+    store::{self, Catalog, MAX_RECORD_BYTES, Record, Store},
+    types::{Case, Input, Phases},
 };
 use alloy_primitives::B256;
 use bytes::Bytes;
@@ -16,9 +18,7 @@ use reth_cli_util::cancellation::CancellationToken;
 use reth_primitives_traits::RecoveredBlock;
 use slatedb::DbReader;
 use std::{
-    fs,
     ops::Range,
-    path::Path,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -69,16 +69,7 @@ pub fn run(
         .worker_threads(env_usize("TEMPO_CORPUS_IO_THREADS").unwrap_or((workers * 3 / 4).max(4)))
         .enable_all()
         .build()?;
-    let reader = Arc::new(runtime.block_on(store.reader(&catalog))?);
-    let tip_timestamp = runtime.block_on(store::tip_timestamp(&reader, &catalog.context))?;
-    eyre::ensure!(
-        store::forks_agree(
-            &catalog.context.forks,
-            &config.chain_spec().display_hardforks().to_string(),
-            tip_timestamp,
-        ),
-        "corpus fork schedule mismatch"
-    );
+    let reader = Arc::new(runtime.block_on(open(&store, &catalog, &config))?);
     if let Some((from, to)) = standalone {
         range = runtime.block_on(transaction_range(&reader, &catalog, from, to))?;
     }
@@ -176,18 +167,18 @@ pub fn run(
                             Err(RecvTimeoutError::Disconnected) => break,
                         };
                         ready.space.notify_one();
-                        let chunk = store::decode(&ready.bytes, &ready.record)?;
-                        runtime.block_on(store::resolve_code(reader, &chunk))?;
+                        let input = store::decode(&ready.bytes, &ready.record)?;
+                        runtime.block_on(store::resolve_code(reader, &input))?;
                         let (transactions, gas) = if let Some((from, to)) = standalone {
                             // The stored deltas restore each transaction's prestate, so the
                             // block itself is not executed.
                             let (cases, block, phases) =
-                                decode_record(&chunk, &ready.cases, &ready.record)?;
+                                decode_record(&input, &ready.cases, &ready.record)?;
                             let (mut transactions, mut gas) = (0, 0);
                             standalone_cases(
                                 config,
                                 &block,
-                                View::new(chunk.clone()),
+                                View::new(input.clone()),
                                 phases,
                                 &cases,
                                 |case| {
@@ -201,7 +192,7 @@ pub fn run(
                             )?;
                             (transactions, gas)
                         } else {
-                            verify(config, consensus, &chunk, &ready.cases, &ready.record)?;
+                            verify(config, consensus, &input, &ready.cases, &ready.record)?;
                             (ready.record.transactions, ready.record.gas)
                         };
                         records += 1;
@@ -265,44 +256,19 @@ pub fn run(
     Ok(closed?)
 }
 
-/// A block list section naming the corpus of `context` at `checkpoint` and `blocks` of it,
-/// one per line. A block list file holds one section per corpus.
-pub fn block_list(
-    context: &Context,
-    checkpoint: Option<&str>,
-    blocks: impl IntoIterator<Item = u64>,
-) -> String {
-    let header = format!(
-        "# corpus {}..{} tip {} checkpoint {}\n",
-        context.start,
-        context.end,
-        context.tip,
-        checkpoint.unwrap_or("none")
+/// Opens the corpus and checks it was captured under `config`'s fork schedule.
+async fn open(store: &Store, catalog: &Catalog, config: &TempoEvmConfig) -> eyre::Result<DbReader> {
+    let reader = store.reader(catalog).await?;
+    let tip_timestamp = store::tip_timestamp(&reader, &catalog.context).await?;
+    eyre::ensure!(
+        store::forks_agree(
+            &catalog.context.forks,
+            &config.chain_spec().display_hardforks().to_string(),
+            tip_timestamp,
+        ),
+        "corpus fork schedule mismatch"
     );
-    blocks
-        .into_iter()
-        .fold(header, |text, block| text + &format!("{block}\n"))
-}
-
-/// The blocks a block list file lists for `catalog`'s corpus: those under its section header,
-/// and any before the first header, which must be in its range.
-pub fn read_blocks(path: &Path, catalog: &Catalog) -> eyre::Result<Vec<u64>> {
-    let context = &catalog.context;
-    let tip = format!(" tip {} ", context.tip);
-    let (mut blocks, mut ours) = (Vec::new(), true);
-    for line in fs::read_to_string(path)?.lines().map(str::trim) {
-        if let Some(header) = line.strip_prefix('#') {
-            ours = header.contains(&tip);
-        } else if ours && !line.is_empty() {
-            let block: u64 = line.parse()?;
-            eyre::ensure!(
-                (context.start..context.end).contains(&block),
-                "block {block} is outside the corpus"
-            );
-            blocks.push(block);
-        }
-    }
-    Ok(blocks)
+    Ok(reader)
 }
 
 /// Fetching owns serialized reservations until ownership moves to a worker.
@@ -550,7 +516,7 @@ fn env_usize(name: &str) -> Option<usize> {
 
 /// Decodes a published block, its checked transaction records and its phase expectations.
 fn decode_record<'a>(
-    chunk: &'a Chunk,
+    input: &'a Input,
     cases: &[Bytes],
     record: &Record,
 ) -> eyre::Result<(Vec<Case>, RecoveredBlock<Block>, &'a Phases)> {
@@ -566,8 +532,8 @@ fn decode_record<'a>(
             store::decode_case(bytes, expected, record.first_tx + i as u64)
         })
         .collect::<eyre::Result<_>>()?;
-    let block = decode_block(&chunk.block, chunk.number, B256::from(chunk.parent))?;
-    let phases = chunk
+    let block = decode_block(&input.block, input.number, B256::from(input.parent))?;
+    let phases = input
         .phases
         .as_ref()
         .ok_or_eyre("missing phase expectations")?;
@@ -579,20 +545,20 @@ fn decode_record<'a>(
 pub fn verify(
     config: &TempoEvmConfig,
     consensus: &TempoConsensus,
-    chunk: &Arc<Chunk>,
+    input: &Arc<Input>,
     cases: &[Bytes],
     record: &Record,
 ) -> eyre::Result<()> {
-    let (expected, block, phases) = decode_record(chunk, cases, record)?;
+    let (expected, block, phases) = decode_record(input, cases, record)?;
     let executed = execute_block(
         config,
         consensus,
-        View::new(chunk.clone()),
+        View::new(input.clone()),
         &block,
         record.first_tx,
         Some((&expected, phases)),
     )?;
-    verify_changesets(&executed.bundle, &chunk.changeset()?, chunk.number)?;
+    verify_changesets(&executed.bundle, &input.changeset()?, input.number)?;
     eyre::ensure!(
         executed.transactions.len() as u64 == record.transactions && executed.gas == record.gas,
         "transaction/gas totals mismatch"

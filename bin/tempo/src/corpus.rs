@@ -9,7 +9,8 @@ use reth_ethereum::tasks::Runtime;
 use std::{path::PathBuf, sync::Arc};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
 use tempo_corpus::{
-    fill, gc, replay,
+    exec::{fill, replay},
+    fuzz, gc,
     store::{Catalog, Store},
 };
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
@@ -185,7 +186,7 @@ impl ReplayCommand {
         let mut range = from..end;
         let blocks = match &self.blocks {
             Some(path) => {
-                let mut blocks = replay::read_blocks(path, &catalog)?;
+                let mut blocks = fuzz::read_blocks(path, &catalog)?;
                 blocks.sort_unstable();
                 blocks.dedup();
                 let (Some(first), Some(last)) = (blocks.first(), blocks.last()) else {

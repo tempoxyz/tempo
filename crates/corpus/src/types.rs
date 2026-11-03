@@ -11,7 +11,7 @@ use wincode::{SchemaRead, SchemaWrite};
 /// One block's input: its canonical block, the pre-state it reads and the historical
 /// changesets used to check its state changes. All values originate in the archive DB.
 #[derive(Debug, SchemaRead, SchemaWrite)]
-pub struct Chunk {
+pub struct Input {
     pub number: u64,
     pub parent: [u8; 32],
     pub block: Block,
@@ -32,11 +32,11 @@ pub struct Block {
     pub hash: [u8; 32],
     pub rlp: Vec<u8>,
     pub senders: Vec<[u8; 20]>,
-    /// Historical account changeset as a bitmap over the chunk's account witness (in key
+    /// Historical account changeset as a bitmap over the input's account witness (in key
     /// order): bit `i` marks the `i`-th account as changed by the block. Its pre-value is the
     /// witness value before the block, which capture checked against the archive changeset.
     pub changed_accounts: Vec<u8>,
-    /// Historical storage changeset as a bitmap over the chunk's storage witness (in key
+    /// Historical storage changeset as a bitmap over the input's storage witness (in key
     /// order). Slots wiped by a destroyed account stay in the witness so they can be marked.
     pub changed_storage: Vec<u8>,
 }
@@ -76,8 +76,8 @@ impl Info {
     }
 }
 
-impl Chunk {
-    /// Bitmaps marking `changeset` within this chunk's witness. Every changed key must be in
+impl Input {
+    /// Bitmaps marking `changeset` within this input's witness. Every changed key must be in
     /// the witness with the same pre-value.
     pub fn mark(&self, changeset: &ChangeSet) -> eyre::Result<(Vec<u8>, Vec<u8>)> {
         Ok((

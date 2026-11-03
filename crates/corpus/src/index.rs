@@ -5,8 +5,8 @@
 //! digests only, so logs and per-transaction read sets are not indexed.
 
 use crate::{
-    replay,
-    store::{self, Catalog, Context, Record, Store},
+    fuzz,
+    store::{self, Catalog, Record, Store},
     targets,
 };
 use alloy_consensus::Typed2718;
@@ -41,8 +41,8 @@ const TASK_BLOCKS: u64 = 10_000;
 const ROW_GROUP_BYTES: usize = 128 << 20;
 const INDEX_VERSION_KEY: &str = "tempo.corpus.index.version";
 const REGISTRY_VERSION_KEY: &str = "tempo.corpus.registry.version";
-const CONTEXT_KEY: &str = "tempo.corpus.context";
-const CHECKPOINT_KEY: &str = "tempo.corpus.checkpoint";
+/// The source corpus's catalog (context, checkpoint and cursor), as JSON.
+const CATALOG_KEY: &str = "tempo.corpus.catalog";
 const RANGE_KEY: &str = "tempo.corpus.index.range";
 
 /// Indexes the transactions of `range` of a complete corpus into the Parquet file `out`,
@@ -60,15 +60,10 @@ pub fn index(
         .build()?;
     runtime.block_on(async {
         let reader = Arc::new(store.reader(&catalog).await?);
-        let context = &catalog.context;
         let metadata = [
             (INDEX_VERSION_KEY, VERSION.to_string()),
             (REGISTRY_VERSION_KEY, targets::VERSION.to_string()),
-            (CONTEXT_KEY, serde_json::to_string(context)?),
-            (
-                CHECKPOINT_KEY,
-                catalog.checkpoint.clone().unwrap_or_default(),
-            ),
+            (CATALOG_KEY, serde_json::to_string(&catalog)?),
             (RANGE_KEY, format!("{}..{}", range.start, range.end)),
         ];
         let properties = WriterProperties::builder()
@@ -91,7 +86,7 @@ pub fn index(
         let mut writer = ArrowWriter::try_new(File::create(out)?, schema(), Some(properties))?;
         let mut tasks = futures::stream::iter(range.clone().step_by(TASK_BLOCKS as usize))
             .map(|start| {
-                let (reader, context) = (reader.clone(), context.clone());
+                let (reader, context) = (reader.clone(), catalog.context.clone());
                 let end = (start + TASK_BLOCKS).min(range.end);
                 tokio::spawn(async move {
                     let from = store::cursor_at(&reader, &context, start).await?;
@@ -131,7 +126,7 @@ pub fn select(
     blocks: Range<u64>,
 ) -> eyre::Result<String> {
     let mask = 1u64 << bit;
-    let mut corpora = BTreeMap::<String, (Context, String, BTreeSet<u64>)>::new();
+    let mut corpora = BTreeMap::<String, (Catalog, BTreeSet<u64>)>::new();
     for path in paths {
         let builder = ParquetRecordBatchReaderBuilder::try_new(File::open(path)?)?;
         let metadata: BTreeMap<_, _> = builder
@@ -159,18 +154,16 @@ pub fn select(
             "{} has another index or target registry version",
             path.display()
         );
-        let context: Context = serde_json::from_str(get(CONTEXT_KEY)?)?;
-        let checkpoint = get(CHECKPOINT_KEY)?.to_owned();
+        let catalog: Catalog = serde_json::from_str(get(CATALOG_KEY)?)?;
         let selected = &mut corpora
-            .entry(context.tip.clone())
-            .or_insert_with(|| (context, checkpoint, BTreeSet::new()))
-            .2;
-        let columns = ["block", "calls", "writes"].map(|name| {
-            builder
-                .schema()
-                .index_of(name)
-                .expect("index schema column")
-        });
+            .entry(catalog.context.tip.clone())
+            .or_insert_with(|| (catalog, BTreeSet::new()))
+            .1;
+        let columns = ["block", "calls", "writes"]
+            .map(|name| builder.schema().index_of(name).ok())
+            .into_iter()
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| eyre::eyre!("{} is not a corpus index", path.display()))?;
         let projection = ProjectionMask::roots(builder.parquet_schema(), columns);
         for batch in builder.with_projection(projection).build()? {
             let batch = batch?;
@@ -201,9 +194,7 @@ pub fn select(
     }
     Ok(corpora
         .values()
-        .map(|(context, checkpoint, blocks)| {
-            replay::block_list(context, Some(checkpoint), blocks.iter().copied())
-        })
+        .map(|(catalog, blocks)| fuzz::block_list(catalog, &Vec::from_iter(blocks.iter().copied())))
         .collect())
 }
 
@@ -276,8 +267,8 @@ struct Rows {
 impl Rows {
     /// Adds a row for every transaction of a published block.
     fn push(&mut self, record: &Record, block: &Bytes, cases: &[Bytes]) -> eyre::Result<()> {
-        let chunk = store::decode(block, record)?;
-        let input = &chunk.block;
+        let stored = store::decode(block, record)?;
+        let input = &stored.block;
         let transactions = alloy_rlp::decode_exact::<Block>(&input.rlp)?
             .body
             .transactions;
@@ -286,10 +277,10 @@ impl Rows {
             "block {} transaction count mismatch",
             record.number
         );
-        let reads = chunk
+        let reads = stored
             .accounts
             .keys()
-            .chain(chunk.storage.keys().map(|(address, _)| address))
+            .chain(stored.storage.keys().map(|(address, _)| address))
             .fold(0, |mask, address| mask | targets::mask(&(*address).into()));
         for (i, ((transaction, sender), bytes)) in transactions
             .iter()
@@ -388,7 +379,7 @@ mod tests {
             tests::{catalog, in_memory, open_db},
             transaction_key,
         },
-        types::{self, Case, Change, Chunk, Delta, Outputs},
+        types::{self, Case, Change, Delta, Input, Outputs},
     };
     use alloy_consensus::{BlockBody, SignableTransaction, TxLegacy};
     use alloy_primitives::{B256, Signature, TxKind, U256};
@@ -433,7 +424,7 @@ mod tests {
                     changed_accounts: vec![],
                     changed_storage: vec![],
                 };
-                let chunk = Chunk {
+                let input = Input {
                     number,
                     parent: cursor.parent,
                     block,
@@ -468,11 +459,11 @@ mod tests {
                     wincode::config::serialize(&case, store::WINCODE)
                 });
                 let cases = cases.collect::<Result<Vec<_>, _>>()?;
-                let bytes = wincode::config::serialize(&chunk, store::WINCODE)?;
+                let bytes = wincode::config::serialize(&input, store::WINCODE)?;
                 let record = Record {
                     number,
-                    parent: chunk.parent,
-                    hash: chunk.block.hash,
+                    parent: input.parent,
+                    hash: input.block.hash,
                     bytes: bytes.len() + cases.iter().map(Vec::len).sum::<usize>(),
                     block_bytes: bytes.len(),
                     transactions: cases.len() as u64,
@@ -549,15 +540,11 @@ mod tests {
         ] {
             let bit = targets::bit(name).expect("registered target");
             let selected = select(std::slice::from_ref(&out), bit, writes, range)?;
-            let expected = replay::block_list(
-                &catalog.context,
-                catalog.checkpoint.as_deref(),
-                blocks.iter().copied(),
-            );
+            let expected = fuzz::block_list(&catalog, blocks);
             assert_eq!(selected, expected, "{name} writes={writes}");
             let path = dir.path().join("blocks");
             std::fs::write(&path, selected)?;
-            assert_eq!(replay::read_blocks(&path, &catalog)?, blocks);
+            assert_eq!(fuzz::read_blocks(&path, &catalog)?, blocks);
         }
         Ok(())
     }

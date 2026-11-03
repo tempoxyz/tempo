@@ -2,7 +2,7 @@
 
 use crate::{
     code,
-    types::{Case, Chunk},
+    types::{Case, Input},
 };
 use alloy_consensus::BlockHeader;
 use alloy_primitives::B256;
@@ -435,10 +435,10 @@ pub fn code_key(hash: &[u8; 32]) -> [u8; 33] {
     key
 }
 
-/// Loads every code hash the chunk reads that is not cached yet from the corpus' shared
+/// Loads every code hash the input reads that is not cached yet from the corpus' shared
 /// code entries, verifying each against its hash.
-pub async fn resolve_code(reader: &DbReader, chunk: &Chunk) -> eyre::Result<()> {
-    for hash in chunk.code.iter().filter(|hash| !code::has_code(hash)) {
+pub async fn resolve_code(reader: &DbReader, input: &Input) -> eyre::Result<()> {
+    for hash in input.code.iter().filter(|hash| !code::has_code(hash)) {
         let bytes = reader
             .get(code_key(hash))
             .await?
@@ -449,19 +449,41 @@ pub async fn resolve_code(reader: &DbReader, chunk: &Chunk) -> eyre::Result<()> 
     Ok(())
 }
 
-pub fn decode(bytes: &[u8], record: &Record) -> eyre::Result<Arc<Chunk>> {
+/// The published record of `block` and its decoded input, with its code resolved.
+///
+/// Checks the block alone, not its links to neighbouring blocks. A block runs on its own recorded
+/// pre-state, and a complete corpus had its whole range checked when it was published.
+pub async fn published(reader: &DbReader, block: u64) -> eyre::Result<(Record, Arc<Input>)> {
+    let record = metadata(reader, block).await?;
+    // Seeded from the record itself, so only its own sizes and coverage are checked.
+    Cursor {
+        next: record.number,
+        tx: record.first_tx,
+        parent: record.parent,
+    }
+    .advance(&record)?;
+    let bytes = reader
+        .get(key(block))
+        .await?
+        .ok_or_else(|| eyre::eyre!("missing block record at {block}"))?;
+    let input = decode(&bytes, &record)?;
+    resolve_code(reader, &input).await?;
+    Ok((record, input))
+}
+
+pub fn decode(bytes: &[u8], record: &Record) -> eyre::Result<Arc<Input>> {
     eyre::ensure!(
         bytes.len() == record.block_bytes,
         "corpus record size mismatch"
     );
-    let chunk: Chunk = wincode::config::deserialize_exact(bytes, WINCODE)?;
+    let input: Input = wincode::config::deserialize_exact(bytes, WINCODE)?;
     eyre::ensure!(
-        chunk.number == record.number
-            && chunk.parent == record.parent
-            && chunk.block.hash == record.hash,
+        input.number == record.number
+            && input.parent == record.parent
+            && input.block.hash == record.hash,
         "corpus record/context mismatch"
     );
-    Ok(Arc::new(chunk))
+    Ok(Arc::new(input))
 }
 
 pub fn decode_case(bytes: &[u8], expected: &CaseRecord, ordinal: u64) -> eyre::Result<Case> {
@@ -574,8 +596,8 @@ pub async fn for_each_published(
         for record in &records {
             let (block, cases) = payloads.next(record).await?;
             if resolve {
-                let chunk = decode(&block, record)?;
-                resolve_code(reader, &chunk).await?;
+                let input = decode(&block, record)?;
+                resolve_code(reader, &input).await?;
             }
             f(record, block, cases)?;
         }
