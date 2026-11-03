@@ -1,6 +1,6 @@
 //! Public witness and commitment types for the Zone SPF.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use alloy_primitives::{Address, B256, Bytes, U256};
 use tempo_primitives::TempoHeader;
@@ -179,6 +179,38 @@ pub struct TempoStateWitness {
     pub initial_tempo_header_rlp: Bytes,
     /// Deduplicated RLP-encoded MPT nodes used for Tempo state reads.
     pub node_pool: Vec<Bytes>,
+}
+
+/// Result of a successful [`prove_zone_batch`](crate::prove_zone_batch) call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BatchExecution {
+    /// Public commitments of the batch transition.
+    pub output: BatchOutput,
+    /// Wall-clock time spent in each SPF phase.
+    pub timings: SpfTimings,
+}
+
+/// Wall-clock time spent in each phase of [`prove_zone_batch`](crate::prove_zone_batch).
+///
+/// Phase durations are summed over every block in the batch. Validation and storage reads outside
+/// these phases are covered only by `total`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    serde(rename_all = "camelCase", deny_unknown_fields)
+)]
+pub struct SpfTimings {
+    /// Building the Zone and Tempo witness databases from their trie node pools.
+    pub witness_database: Duration,
+    /// Executing Zone blocks, including witness-backed state reads.
+    pub block_execution: Duration,
+    /// Applying block state changes to the Zone state trie and computing post-state roots.
+    pub state_root: Duration,
+    /// Assembling block headers and committing block state changes to the execution overlay.
+    pub block_assembly: Duration,
+    /// The whole SPF call.
+    pub total: Duration,
 }
 
 /// Commitments returned by a successful Zone batch transition.

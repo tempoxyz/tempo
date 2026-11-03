@@ -465,8 +465,9 @@ async fn validate_candidate<P: ZoneSequencerProvider>(
                 "error": output.as_ref().err().map(|error| format!("{error:#}")),
             })
         );
-        let output = output.context("SPF rejected generated witness")?;
-        (output, None)
+        let execution = output.context("SPF rejected generated witness")?;
+        metrics.record_spf_timings(&execution.timings);
+        (execution.output, None)
     };
     metrics
         .spf_execution_duration_seconds
@@ -793,9 +794,19 @@ async fn verify_remotely(
             request_id,
             output,
             proof_bundle,
+            timings,
         } => {
             validate_response_header(version, Some(&request_id), &expected_id)?;
             validate_proof_bundle(&proof_bundle)?;
+            if let Some(timings) = timings {
+                metrics.record_spf_timings(&timings.spf);
+                metrics
+                    .spf_remote_setup_duration_seconds
+                    .record(timings.setup.as_secs_f64());
+                metrics
+                    .spf_remote_attestation_duration_seconds
+                    .record(timings.attestation.as_secs_f64());
+            }
             Ok((*output, proof_bundle))
         }
         VerifyResponse::Error {
