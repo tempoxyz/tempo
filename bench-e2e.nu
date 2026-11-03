@@ -53,7 +53,8 @@ def merge-e2e-features [...features: string] {
     | str join ","
 }
 
-# EVM2 JIT is on by default. Only binaries built with the `jit` feature contain this
+# EVM2 JIT is on by default for binaries built with the jit feature (CI's
+# bench-e2e.yml adds it; local runs need --features jit). Only binaries built with the `jit` feature contain this
 # log message; others reject `--jit`, so they run on the interpreter instead.
 const E2E_JIT_MARKER = "Started experimental evm2 JIT backend"
 
@@ -61,12 +62,17 @@ def tempo-has-jit [tempo_bin: string] {
     (^grep -aqF $E2E_JIT_MARKER $tempo_bin | complete).exit_code == 0
 }
 
-def e2e-jit-args [tempo_bin: string] {
+# Adds the default --jit to a side's filtered node args. A binary without JIT
+# gets it under removed instead, so the summary shows the sides differ, unless
+# the side opted out with --no-jit.
+def with-e2e-jit [filter: record, tempo_bin: string, side_args: string] {
     if (tempo-has-jit $tempo_bin) {
-        ["--jit"]
+        $filter | update supported ($filter.supported | append "--jit")
+    } else if ("--no-jit" in (parse-cli-args $side_args)) {
+        $filter
     } else {
         print $"($tempo_bin) was built without the jit feature; running it without --jit"
-        []
+        $filter | update removed ($filter.removed | append "--jit")
     }
 }
 
@@ -1756,8 +1762,8 @@ def "main e2e" [
     let regenesis_tempo = if $regenesis_needed {
         if $needs_feature { $feature_tempo } else { $baseline_tempo }
     } else { "" }
-    let baseline_arg_filter = if $needs_baseline { supported-node-arg-filter $baseline_tempo $E2E_LOCAL_RETH_ARGS } else { { supported: [], removed: [] } }
-    let feature_arg_filter = if $needs_feature { supported-node-arg-filter $feature_tempo $E2E_LOCAL_RETH_ARGS } else { { supported: [], removed: [] } }
+    let baseline_arg_filter = if $needs_baseline { with-e2e-jit (supported-node-arg-filter $baseline_tempo $E2E_LOCAL_RETH_ARGS) $baseline_tempo $baseline_args } else { { supported: [], removed: [] } }
+    let feature_arg_filter = if $needs_feature { with-e2e-jit (supported-node-arg-filter $feature_tempo $E2E_LOCAL_RETH_ARGS) $feature_tempo $feature_args } else { { supported: [], removed: [] } }
     let removed_arg_config = $"(format-removed-node-arg-config 'baseline' $baseline_arg_filter.removed)(format-removed-node-arg-config 'feature' $feature_arg_filter.removed)"
     if $removed_arg_config != "" {
         let current_config = ($env | get -o BENCH_CONFIG | default "")
@@ -1827,8 +1833,8 @@ def "main e2e" [
         loud: $loud
         gas_limit: $gas_limit
         general_gas_limit: $general_gas_limit
-        baseline_local_reth_args: (if $needs_baseline { $baseline_arg_filter.supported | append (e2e-jit-args $baseline_tempo) } else { [] })
-        feature_local_reth_args: (if $needs_feature { $feature_arg_filter.supported | append (e2e-jit-args $feature_tempo) } else { [] })
+        baseline_local_reth_args: $baseline_arg_filter.supported
+        feature_local_reth_args: $feature_arg_filter.supported
         regenesis_tempo: $regenesis_tempo
         tracing_otlp: $tracing_otlp
     }
