@@ -10,7 +10,7 @@ use crate::{
         self, CONTEXT_KEY, CURSOR_KEY, CaseRecord, Catalog, Context, Cursor, MAX_RECORD_BYTES,
         Record, Store,
     },
-    types::{Block, Chunk, Info, Phases},
+    types::{Block, Info, Input, Phases},
 };
 use alloy_primitives::B256;
 use eyre::OptionExt;
@@ -329,12 +329,12 @@ async fn segment(
             batch_bytes += case.value.len();
             batch.put(case.key, case.value);
         }
-        let chunk = upgrade(wincode::config::deserialize_exact(
+        let input = upgrade(wincode::config::deserialize_exact(
             &block.value,
             store::WINCODE,
         )?)?;
-        totals.code.extend(&chunk.code);
-        let payload = wincode::config::serialize(&chunk, store::WINCODE)?;
+        totals.code.extend(&input.code);
+        let payload = wincode::config::serialize(&input, store::WINCODE)?;
         let record = Record {
             number,
             parent: legacy.parent,
@@ -357,7 +357,7 @@ async fn segment(
             record.bytes <= MAX_RECORD_BYTES,
             "migrated record too large"
         );
-        // The digest only shows the bytes are unchanged: tie the chunk to its record too.
+        // The digest only shows the bytes are unchanged: tie the input to its record too.
         store::decode(&payload, &record)?;
         migrated.advance(&record)?;
         let record_json = serde_json::to_vec(&record)?;
@@ -411,7 +411,7 @@ async fn cursor_at(reader: &DbReader, source: &Catalog, block: u64) -> eyre::Res
 }
 
 /// A single-block legacy chunk in the current shape: one block, one pre-block value per key.
-fn upgrade(legacy: LegacyChunk) -> eyre::Result<Chunk> {
+fn upgrade(legacy: LegacyChunk) -> eyre::Result<Input> {
     let at = legacy
         .start
         .checked_sub(1)
@@ -420,7 +420,7 @@ fn upgrade(legacy: LegacyChunk) -> eyre::Result<Chunk> {
         legacy.end == legacy.start + 1 && legacy.blocks.len() == 1,
         "legacy record holds more than one block"
     );
-    Ok(Chunk {
+    Ok(Input {
         number: legacy.start,
         parent: legacy.parent,
         block: legacy.blocks.into_iter().next().expect("one block"),

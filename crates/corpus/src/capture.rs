@@ -3,7 +3,7 @@
 use crate::{
     code,
     execute::{Executed, execute_block, run_standalone, verify_changesets},
-    types::{Block as BlockInput, Case, ChangeSet, Chunk, Info},
+    types::{Block as BlockInput, Case, ChangeSet, Info, Input},
     view::{Keys, Recording, View},
 };
 use alloy_consensus::BlockHeader;
@@ -19,7 +19,7 @@ use tempo_primitives::{Block, TempoPrimitives};
 /// A captured block: its stored input and verified per-transaction records.
 #[derive(Debug)]
 pub struct Captured {
-    pub chunk: Arc<Chunk>,
+    pub input: Arc<Input>,
     pub executed: Executed,
 }
 
@@ -103,7 +103,7 @@ where
         "duplicate changeset entries"
     );
     verify_changesets(&executed.bundle, &changeset, number)?;
-    let input = BlockInput {
+    let block_input = BlockInput {
         hash: block.hash().0,
         rlp: alloy_rlp::encode(block.clone_block()),
         senders: block.senders().iter().map(|a| a.into_array()).collect(),
@@ -129,10 +129,10 @@ where
     }
 
     let mut initial = db_at(number - 1)?;
-    let mut chunk = Chunk {
+    let mut input = Input {
         number,
         parent: block.parent_hash().0,
-        block: input,
+        block: block_input,
         accounts: BTreeMap::new(),
         storage: BTreeMap::new(),
         code: Default::default(),
@@ -148,10 +148,10 @@ where
         let info = account
             .map(|a| Info::capture(&Account::from(&a)))
             .transpose()?;
-        chunk.accounts.insert(address.into_array(), info);
+        input.accounts.insert(address.into_array(), info);
     }
     for (address, key) in &keys.storage {
-        chunk.storage.insert(
+        input.storage.insert(
             (address.into_array(), key.to_be_bytes()),
             initial.get_storage(address, key)?.to_be_bytes(),
         );
@@ -161,31 +161,31 @@ where
         if !code::has_code(&hash.0) {
             code::insert_code(&hash.0, &initial.get_code_by_hash(&hash)?.original_bytes())?;
         }
-        chunk.code.insert(hash.0);
+        input.code.insert(hash.0);
     }
     for at in &keys.hashes {
-        chunk
+        input
             .hashes
             .insert(*at, initial.get_block_hash(&U256::from(*at))?.0);
     }
-    (chunk.block.changed_accounts, chunk.block.changed_storage) = chunk.mark(&changeset)?;
+    (input.block.changed_accounts, input.block.changed_storage) = input.mark(&changeset)?;
     eyre::ensure!(
-        chunk.changeset()? == changeset,
+        input.changeset()? == changeset,
         "changeset bitmap round trip mismatch"
     );
     let captured = Captured {
-        chunk: Arc::new(chunk),
+        input: Arc::new(input),
         executed,
     };
 
     // The stored record alone reproduces every output.
     let cases = captured.cases()?;
     let transactions = &captured.executed.transactions;
-    let phases = captured.chunk.phases.as_ref().expect("set above");
+    let phases = captured.input.phases.as_ref().expect("set above");
     let replayed = execute_block(
         config,
         consensus,
-        View::new(captured.chunk.clone()),
+        View::new(captured.input.clone()),
         block,
         first_tx,
         Some((&cases, phases)),
@@ -195,7 +195,7 @@ where
         "replay differs from capture"
     );
     // Every transaction also replays standalone, each from the state the earlier ones leave.
-    let mut view = View::new(captured.chunk.clone());
+    let mut view = View::new(captured.input.clone());
     view.apply(&phases.pre)?;
     for (index, expected) in transactions.iter().enumerate() {
         let actual = run_standalone(
