@@ -70,6 +70,10 @@ pub(crate) struct GenerateZoneGenesis {
     )]
     pub(crate) tempo_portal: Option<Address>,
 
+    /// ZoneFactory that created `--tempo-portal`, used to find its ZoneCreated event.
+    #[arg(long, env = "ZONE_FACTORY", default_value_t = ZONE_FACTORY_ADDRESS)]
+    pub(crate) zone_factory: Address,
+
     /// Tempo L1 RPC URL used to inherit fork activations and optionally derive the anchor.
     #[arg(long, required_unless_present = "hardfork")]
     pub(crate) l1_rpc_url: Option<String>,
@@ -130,7 +134,7 @@ impl GenerateZoneGenesis {
                 const_hex::decode(header_rlp).wrap_err("failed to decode hex string")?
             }
             (None, Some(portal), Some(provider)) => {
-                finalized_pre_creation_anchor(provider, ZONE_FACTORY_ADDRESS, portal, None)
+                finalized_pre_creation_anchor(provider, self.zone_factory, portal, None)
                     .await?
                     .rlp
             }

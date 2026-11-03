@@ -553,6 +553,7 @@ impl CreateZone {
             base_fee_per_gas: self.base_fee_per_gas,
             gas_limit: self.gas_limit,
             tempo_portal: None,
+            zone_factory: self.zone_factory,
             l1_rpc_url: None,
             default_fee_token: self.initial_token,
             tempo_genesis_header_rlp: None,
