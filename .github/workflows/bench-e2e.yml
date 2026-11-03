@@ -620,38 +620,11 @@ jobs:
       - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         continue-on-error: true
 
-      # EVM2 JIT is on by default. `--jit` needs a binary built with the `jit` feature, so build
-      # both sides with it and only the runtime flag differs. A `--no-jit` token in the args of every
-      # side that runs (both for a comparison) turns it off and skips the jit build; this matches
-      # bench-e2e.nu, which also only counts a whole `--no-jit` argument.
-      - name: Enable JIT build support
-        env:
-          BASELINE_ARGS: ${{ inputs.baseline-args }}
-          FEATURE_ARGS: ${{ inputs.feature-args }}
-          SIDE_FEATURES: ${{ inputs.baseline-features }},${{ inputs.feature-features }}
+      # EVM2 JIT is on by default: bench-e2e.nu adds the `jit` feature unless every side that runs
+      # passes `--no-jit`, using its own argument parser. Always provision LLVM so that decision
+      # can never meet a missing toolchain.
+      - name: Install LLVM for JIT builds
         run: |
-          has_no_jit() {
-            local -a args
-            read -ra args <<< "$1"
-            local arg
-            for arg in "${args[@]}"; do
-              [ "$arg" = "--no-jit" ] && return 0
-            done
-            return 1
-          }
-          jit=true
-          case "$BENCH_RUN_SIDE" in
-            feature) has_no_jit "$FEATURE_ARGS" && jit=false ;;
-            baseline) has_no_jit "$BASELINE_ARGS" && jit=false ;;
-            *) has_no_jit "$BASELINE_ARGS" && has_no_jit "$FEATURE_ARGS" && jit=false ;;
-          esac
-          if [ "$jit" = "true" ]; then
-            echo "BENCH_FEATURES=$BENCH_FEATURES,jit" >> "$GITHUB_ENV"
-          # A side feature list can still ask for jit (`jit` or a package's `<pkg>/jit`).
-          elif ! tr -d '[:space:]' <<< "$SIDE_FEATURES" | tr ',' '\n' | grep -Eqx '([^/]+/)?jit'; then
-            echo "EVM2 JIT turned off with --no-jit; skipping the LLVM install."
-            exit 0
-          fi
           .github/scripts/install_llvm.sh
 
       - name: Install Node.js
