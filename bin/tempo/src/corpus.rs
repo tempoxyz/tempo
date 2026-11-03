@@ -31,6 +31,9 @@ pub enum CorpusCommand {
     /// Write the block list of indexed blocks whose transactions call or write a target.
     #[cfg(feature = "corpus-index")]
     Select(SelectCommand),
+    /// Write a target's dictionary of real call values, aggregated from indexes, as JSON.
+    #[cfg(feature = "corpus-index")]
+    Dict(DictCommand),
 }
 
 impl CorpusCommand {
@@ -43,6 +46,8 @@ impl CorpusCommand {
             Self::Index(cmd) => cmd.execute().await,
             #[cfg(feature = "corpus-index")]
             Self::Select(cmd) => cmd.execute(),
+            #[cfg(feature = "corpus-index")]
+            Self::Dict(cmd) => cmd.execute(),
         }
     }
 }
@@ -314,19 +319,48 @@ pub struct SelectCommand {
 #[cfg(feature = "corpus-index")]
 impl SelectCommand {
     fn execute(self) -> eyre::Result<()> {
-        let bit = tempo_corpus::targets::bit(&self.touches).ok_or_else(|| {
-            let names: Vec<_> = tempo_corpus::targets::TARGETS
-                .iter()
-                .map(|target| target.name)
-                .collect();
-            eyre::eyre!(
-                "unknown target {}, expected one of {}",
-                self.touches,
-                names.join(", ")
-            )
-        })?;
+        let bit = target_bit(&self.touches)?;
         let list = tempo_corpus::index::select(&self.index, bit, self.writes, self.from..self.to)?;
         std::fs::write(&self.out, list)?;
         Ok(())
     }
+}
+
+/// Aggregate a target's dictionary from corpus indexes.
+#[cfg(feature = "corpus-index")]
+#[derive(Debug, Parser)]
+pub struct DictCommand {
+    /// Index files written by `tempo corpus index`.
+    #[arg(long, num_args = 1.., required = true)]
+    index: Vec<PathBuf>,
+    /// Target registry name, such as feeamm or dex.
+    #[arg(long)]
+    target: String,
+    /// Destination JSON file.
+    #[arg(long)]
+    out: PathBuf,
+}
+
+#[cfg(feature = "corpus-index")]
+impl DictCommand {
+    fn execute(self) -> eyre::Result<()> {
+        let dict = tempo_corpus::dict::dict(&self.index, target_bit(&self.target)?)?;
+        std::fs::write(&self.out, serde_json::to_vec_pretty(&dict)?)?;
+        Ok(())
+    }
+}
+
+/// The registry bit of the target named `name`.
+#[cfg(feature = "corpus-index")]
+fn target_bit(name: &str) -> eyre::Result<u8> {
+    tempo_corpus::targets::bit(name).ok_or_else(|| {
+        let names: Vec<_> = tempo_corpus::targets::TARGETS
+            .iter()
+            .map(|target| target.name)
+            .collect();
+        eyre::eyre!(
+            "unknown target {name}, expected one of {}",
+            names.join(", ")
+        )
+    })
 }

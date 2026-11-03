@@ -5,6 +5,8 @@
 //! [`exec`] behind the default `exec` feature.
 
 pub mod code;
+#[cfg(feature = "index")]
+pub mod dict;
 #[cfg(feature = "exec")]
 pub mod exec;
 pub mod fuzz;

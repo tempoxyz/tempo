@@ -34,8 +34,15 @@ exec = [
   "dep:tempo-evm",
   "dep:schnellru",
 ]
-# Parquet corpus index (`tempo corpus index/select`).
-index = ["dep:arrow-array", "dep:arrow-buffer", "dep:arrow-schema", "dep:parquet"]
+# Parquet corpus index and its dictionaries (`tempo corpus index/select/dict`).
+index = [
+  "dep:alloy-dyn-abi",
+  "dep:alloy-json-abi",
+  "dep:arrow-array",
+  "dep:arrow-buffer",
+  "dep:arrow-schema",
+  "dep:parquet",
+]
 
 [dependencies]
 alloy-primitives.workspace = true
@@ -57,6 +64,8 @@ alloy-consensus.workspace = true
 alloy-rlp.workspace = true
 alloy-eip7928 = { workspace = true, optional = true }
 alloy-eips.workspace = true
+alloy-dyn-abi = { workspace = true, features = ["std"], optional = true }
+alloy-json-abi = { workspace = true, features = ["std"], optional = true }
 tempo-chainspec = { workspace = true, features = ["reth"] }
 tempo-fuzz-types.workspace = true
 
@@ -84,5 +93,6 @@ arrow-schema = { version = "60", optional = true }
 parquet = { version = "60", default-features = false, features = ["arrow", "zstd"], optional = true }
 
 [dev-dependencies]
+alloy-sol-types.workspace = true
 proptest.workspace = true
 tempfile.workspace = true

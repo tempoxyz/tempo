@@ -9,18 +9,21 @@ use crate::{
     store::{self, Catalog, Record, Store},
     targets,
 };
-use alloy_consensus::Typed2718;
+use alloy_consensus::{Transaction, Typed2718};
 use alloy_primitives::Address;
 use arrow_array::{
-    Array, ArrayRef, FixedSizeBinaryArray, ListArray, RecordBatch, StructArray, UInt8Array,
-    UInt32Array, UInt64Array,
+    Array, ArrayRef, BinaryArray, FixedSizeBinaryArray, ListArray, RecordBatch, StructArray,
+    UInt8Array, UInt32Array, UInt64Array,
 };
 use arrow_buffer::OffsetBuffer;
 use arrow_schema::{DataType, Field, Fields, Schema, SchemaRef};
 use bytes::Bytes;
 use futures::{StreamExt, TryStreamExt};
 use parquet::{
-    arrow::{ArrowWriter, ProjectionMask, arrow_reader::ParquetRecordBatchReaderBuilder},
+    arrow::{
+        ArrowWriter, ProjectionMask,
+        arrow_reader::{ParquetRecordBatchReader, ParquetRecordBatchReaderBuilder},
+    },
     basic::{Compression, ZstdLevel},
     file::{metadata::KeyValue, properties::WriterProperties},
 };
@@ -34,7 +37,7 @@ use std::{
 use tempo_primitives::Block;
 
 /// Version of the index schema, stored in every index footer.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 /// Blocks each read task indexes. Tasks finish in order, so the file stays sorted.
 const TASK_BLOCKS: u64 = 10_000;
 /// Estimated encoded row group size, before compression.
@@ -129,33 +132,7 @@ pub fn select(
     // Keyed by range and tip: corpora of one chain that end at the same block share a tip.
     let mut corpora = BTreeMap::<(u64, u64, String), (Catalog, BTreeSet<u64>)>::new();
     for path in paths {
-        let builder = ParquetRecordBatchReaderBuilder::try_new(File::open(path)?)?;
-        let metadata: BTreeMap<_, _> = builder
-            .metadata()
-            .file_metadata()
-            .key_value_metadata()
-            .into_iter()
-            .flatten()
-            .map(|entry| {
-                (
-                    entry.key.as_str(),
-                    entry.value.as_deref().unwrap_or_default(),
-                )
-            })
-            .collect();
-        let get = |key| {
-            metadata
-                .get(key)
-                .copied()
-                .ok_or_else(|| eyre::eyre!("{} has no {key}", path.display()))
-        };
-        eyre::ensure!(
-            get(INDEX_VERSION_KEY)? == VERSION.to_string()
-                && get(REGISTRY_VERSION_KEY)? == targets::VERSION.to_string(),
-            "{} has another index or target registry version",
-            path.display()
-        );
-        let catalog: Catalog = serde_json::from_str(get(CATALOG_KEY)?)?;
+        let (catalog, _, batches) = read(path, &["block", "calls", "writes"])?;
         let selected = &mut corpora
             .entry((
                 catalog.context.start,
@@ -164,24 +141,12 @@ pub fn select(
             ))
             .or_insert_with(|| (catalog, BTreeSet::new()))
             .1;
-        let columns = ["block", "calls", "writes"]
-            .map(|name| builder.schema().index_of(name).ok())
-            .into_iter()
-            .collect::<Option<Vec<_>>>()
-            .ok_or_else(|| eyre::eyre!("{} is not a corpus index", path.display()))?;
-        let projection = ProjectionMask::roots(builder.parquet_schema(), columns);
-        for batch in builder.with_projection(projection).build()? {
+        for batch in batches {
             let batch = batch?;
             let block = column::<UInt64Array>(&batch, "block")?;
             let calls = column::<ListArray>(&batch, "calls")?;
             let written = column::<UInt64Array>(&batch, "writes")?;
-            let called = calls
-                .values()
-                .as_any()
-                .downcast_ref::<StructArray>()
-                .and_then(|calls| calls.column_by_name("target"))
-                .and_then(|target| target.as_any().downcast_ref::<UInt8Array>())
-                .ok_or_else(|| eyre::eyre!("{} has no call targets", path.display()))?;
+            let called = call_column::<UInt8Array>(calls, "target")?;
             let offsets = calls.value_offsets();
             for row in 0..batch.num_rows() {
                 let number = block.value(row);
@@ -203,7 +168,67 @@ pub fn select(
         .collect())
 }
 
-fn column<'a, T: Array + 'static>(batch: &'a RecordBatch, name: &str) -> eyre::Result<&'a T> {
+/// The source catalog and indexed range of the index file `path`, and its `columns`' batches.
+/// Fails unless the file is an index of this schema and registry version.
+pub(crate) fn read(
+    path: &Path,
+    columns: &[&str],
+) -> eyre::Result<(Catalog, String, ParquetRecordBatchReader)> {
+    let builder = ParquetRecordBatchReaderBuilder::try_new(File::open(path)?)?;
+    let metadata: BTreeMap<_, _> = builder
+        .metadata()
+        .file_metadata()
+        .key_value_metadata()
+        .into_iter()
+        .flatten()
+        .map(|entry| {
+            (
+                entry.key.as_str(),
+                entry.value.as_deref().unwrap_or_default(),
+            )
+        })
+        .collect();
+    let get = |key| {
+        metadata
+            .get(key)
+            .copied()
+            .ok_or_else(|| eyre::eyre!("{} has no {key}", path.display()))
+    };
+    eyre::ensure!(
+        get(INDEX_VERSION_KEY)? == VERSION.to_string()
+            && get(REGISTRY_VERSION_KEY)? == targets::VERSION.to_string(),
+        "{} has another index or target registry version",
+        path.display()
+    );
+    let catalog: Catalog = serde_json::from_str(get(CATALOG_KEY)?)?;
+    let range = get(RANGE_KEY)?.to_owned();
+    let columns = columns
+        .iter()
+        .map(|name| builder.schema().index_of(name).ok())
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| eyre::eyre!("{} is not a corpus index", path.display()))?;
+    let projection = ProjectionMask::roots(builder.parquet_schema(), columns);
+    Ok((catalog, range, builder.with_projection(projection).build()?))
+}
+
+/// The `name` field of every call in `calls`.
+pub(crate) fn call_column<'a, T: Array + 'static>(
+    calls: &'a ListArray,
+    name: &str,
+) -> eyre::Result<&'a T> {
+    calls
+        .values()
+        .as_any()
+        .downcast_ref::<StructArray>()
+        .and_then(|calls| calls.column_by_name(name))
+        .and_then(|column| column.as_any().downcast_ref())
+        .ok_or_else(|| eyre::eyre!("index call column {name} missing or mistyped"))
+}
+
+pub(crate) fn column<'a, T: Array + 'static>(
+    batch: &'a RecordBatch,
+    name: &str,
+) -> eyre::Result<&'a T> {
     batch
         .column_by_name(name)
         .and_then(|column| column.as_any().downcast_ref())
@@ -215,12 +240,13 @@ fn call_fields() -> Fields {
         Field::new("target", DataType::UInt8, true),
         Field::new("selector", DataType::FixedSizeBinary(4), true),
         Field::new("to", DataType::FixedSizeBinary(20), true),
+        Field::new("input", DataType::Binary, true),
     ])
 }
 
 /// One row per transaction. `calls` holds every call of a batched Tempo transaction, each with
-/// its target bit (null when unlabelled) and selector, and a creation as a call with null `to`
-/// and selector. `writes` masks the targets its state delta changes and `block_reads` those its
+/// its target bit (null when unlabelled), selector and, for a labelled target, calldata, and a
+/// creation as a call with null `to` and selector. `writes` masks the targets its state delta changes and `block_reads` those its
 /// block's witness reads. `status` is 0 on success.
 fn schema() -> SchemaRef {
     let address = DataType::FixedSizeBinary(20);
@@ -242,6 +268,7 @@ fn schema() -> SchemaRef {
         Field::new("block_reads", DataType::UInt64, false),
         Field::new("status", DataType::UInt8, false),
         Field::new("charged_gas", DataType::UInt64, false),
+        Field::new("gas_limit", DataType::UInt64, false),
         Field::new("created", address.clone(), true),
         Field::new("fee_token", address, true),
         Field::new("nonce_key", DataType::FixedSizeBinary(32), true),
@@ -260,10 +287,12 @@ struct Rows {
     call_target: Vec<Option<u8>>,
     call_selector: Vec<Option<[u8; 4]>>,
     call_to: Vec<Option<Address>>,
+    call_input: Vec<Option<Bytes>>,
     writes: Vec<u64>,
     block_reads: Vec<u64>,
     status: Vec<u8>,
     charged_gas: Vec<u64>,
+    gas_limit: Vec<u64>,
     created: Vec<Option<[u8; 20]>>,
     fee_token: Vec<Option<Address>>,
     nonce_key: Vec<Option<[u8; 32]>>,
@@ -297,9 +326,10 @@ impl Rows {
             let calls = self.call_to.len();
             for (kind, data) in transaction.calls() {
                 let to = kind.to().copied();
-                self.call_target
-                    .push(to.as_ref().and_then(targets::classify));
+                let target = to.as_ref().and_then(targets::classify);
+                self.call_target.push(target);
                 self.call_selector.push(to.and(data.first_chunk().copied()));
+                self.call_input.push(target.map(|_| data.0.clone()));
                 self.call_to.push(to);
             }
             self.calls.push(self.call_to.len() - calls);
@@ -318,6 +348,7 @@ impl Rows {
             self.block_reads.push(reads);
             self.status.push(case.status);
             self.charged_gas.push(case.charged_gas);
+            self.gas_limit.push(transaction.gas_limit());
             self.created.push(case.created);
             self.fee_token.push(transaction.fee_token());
             self.nonce_key
@@ -333,6 +364,7 @@ impl Rows {
                 Arc::new(UInt8Array::from(self.call_target)),
                 fixed(self.call_selector, 4)?,
                 fixed(self.call_to, 20)?,
+                Arc::new(BinaryArray::from_iter(self.call_input)),
             ],
             None,
         )?;
@@ -358,6 +390,7 @@ impl Rows {
                 Arc::new(UInt64Array::from(self.block_reads)),
                 Arc::new(UInt8Array::from(self.status)),
                 Arc::new(UInt64Array::from(self.charged_gas)),
+                Arc::new(UInt64Array::from(self.gas_limit)),
                 fixed(self.created, 20)?,
                 fixed(self.fee_token, 20)?,
                 fixed(self.nonce_key, 32)?,
@@ -376,7 +409,7 @@ fn fixed<T: AsRef<[u8]>>(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::{
         store::{
@@ -403,7 +436,9 @@ mod tests {
 
     /// Publishes a corpus of the given blocks: each block's transactions with the address each
     /// one writes.
-    fn corpus(blocks: Vec<Vec<(TempoTxEnvelope, Address)>>) -> eyre::Result<(Store, Catalog)> {
+    pub(crate) fn corpus(
+        blocks: Vec<Vec<(TempoTxEnvelope, Address)>>,
+    ) -> eyre::Result<(Store, Catalog)> {
         let store = in_memory("index");
         let mut catalog = catalog(1, 0, 0);
         catalog.context.end = 1 + blocks.len() as u64;

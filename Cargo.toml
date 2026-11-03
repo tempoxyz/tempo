@@ -295,6 +295,7 @@ reth-trie = { git = "https://github.com/paradigmxyz/reth", rev = "966010c9054491
 reth-trie-common = { git = "https://github.com/paradigmxyz/reth", rev = "966010c905449163ef161530a5ee95ac1e0c8487" }
 reth-trie-db = { git = "https://github.com/paradigmxyz/reth", rev = "966010c905449163ef161530a5ee95ac1e0c8487", features = ["account-ext"] }
 
+alloy-dyn-abi = { version = "1.7.3", default-features = false }
 alloy-json-abi = { version = "1.7.3", default-features = false }
 alloy-primitives = { version = "1.7.3", default-features = false }
 alloy-sol-types = { version = "1.7.3", default-features = false }
