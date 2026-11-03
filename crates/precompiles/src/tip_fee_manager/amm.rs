@@ -9,10 +9,6 @@ use alloy::{
     primitives::{Address, B256, U256, keccak256, uint},
     sol_types::SolValue,
 };
-#[cfg(feature = "fuzz")]
-use antithesis_sdk::assert_always;
-#[cfg(feature = "fuzz")]
-use serde_json::json;
 use tempo_precompiles_macros::Storable;
 
 /// Fee multiplier for fee swaps: 0.9970 scaled by 10000 (30 bps fee).
@@ -487,10 +483,10 @@ impl TipFeeManager {
         )?;
         let total_supply = self.get_total_supply(pool_id)?;
         #[cfg(feature = "fuzz")]
-        assert_always!(
+        antithesis_sdk::assert_always!(
             liquidity <= total_supply,
             "Fee AMM LP burn stays within the pool's LP total supply",
-            &json!({
+            &serde_json::json!({
                 "pool_id": pool_id.to_string(),
                 "liquidity": liquidity.to_string(),
                 "total_supply": total_supply.to_string(),

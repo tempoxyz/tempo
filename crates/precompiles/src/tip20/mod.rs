@@ -35,11 +35,7 @@ use alloy::{
     primitives::{Address, B256, U256, uint},
     sol_types::SolValue,
 };
-#[cfg(feature = "fuzz")]
-use antithesis_sdk::assert_always;
 use keccak_const::Keccak256;
-#[cfg(feature = "fuzz")]
-use serde_json::json;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
     DECIMALS as TIP20_DECIMALS, ReceivePolicyGuardError, STABLECOIN_DEX_ADDRESS,
@@ -734,10 +730,10 @@ impl TIP20Token {
 
         let total_supply = self.total_supply()?;
         #[cfg(feature = "fuzz")]
-        assert_always!(
+        antithesis_sdk::assert_always!(
             total_supply >= amount,
             "TIP-20 total supply covers a burn once the burner's balance is debited",
-            &json!({
+            &serde_json::json!({
                 "token": self.address.to_string(),
                 "total_supply": total_supply.to_string(),
                 "amount": amount.to_string(),
@@ -1543,10 +1539,10 @@ impl TIP20Token {
 
         let refund_debit = self.decrement_balance(TIP_FEE_MANAGER_ADDRESS, refund);
         #[cfg(feature = "fuzz")]
-        assert_always!(
+        antithesis_sdk::assert_always!(
             !matches!(refund_debit, Err(TempoPrecompileError::TIP20(_))),
             "Fee manager custody covers the unused fee refund",
-            &json!({
+            &serde_json::json!({
                 "token": self.address.to_string(),
                 "refund": refund.to_string(),
                 "actual_spending": actual_spending.to_string(),

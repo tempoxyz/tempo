@@ -9,8 +9,6 @@ mod prewarming;
 
 use crossbeam_channel::Sender;
 use reth_trie_common::ordered_root::OrderedTrieRootEncodedBuilder;
-#[cfg(feature = "fuzz")]
-use serde_json::json;
 
 use crate::{
     encode::{
@@ -24,8 +22,6 @@ use alloy_consensus::{BlockHeader as _, TxReceipt};
 use alloy_eips::{eip1559::calculate_block_gas_limit, eip2718::Encodable2718};
 use alloy_primitives::{Address, B256, Bloom, U256};
 use alloy_rlp::Encodable;
-#[cfg(feature = "fuzz")]
-use antithesis_sdk::{assert_always, assert_always_less_than_or_equal_to, assert_reachable};
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
     is_better_payload,
@@ -557,9 +553,9 @@ where
             // mark the tx as invalid and continue
             if !is_payment && non_payment_gas_used + max_regular_gas_used > general_gas_limit {
                 #[cfg(feature = "fuzz")]
-                assert_reachable!(
+                antithesis_sdk::assert_reachable!(
                     "Payload builder defers a non-payment transaction at the general gas limit",
-                    &json!({ "general_gas_used": non_payment_gas_used, "general_gas_limit": general_gas_limit })
+                    &serde_json::json!({ "general_gas_used": non_payment_gas_used, "general_gas_limit": general_gas_limit })
                 );
                 best_txs.mark_invalid(
                     &pool_tx,
@@ -650,7 +646,7 @@ where
                             // block before pool maintenance evicted it. Skip it without marking it
                             // invalid.
                             #[cfg(feature = "fuzz")]
-                            assert_reachable!(
+                            antithesis_sdk::assert_reachable!(
                                 "Payload builder skips an expiring nonce transaction already included"
                             );
                             trace!(%error, tx = %tx_debug_repr, "skipping already included expiring nonce transaction");
@@ -659,9 +655,9 @@ where
                             // if the transaction is invalid, we can skip it and all of its
                             // descendants
                             #[cfg(feature = "fuzz")]
-                            assert_reachable!(
+                            antithesis_sdk::assert_reachable!(
                                 "Payload builder evicts a pool transaction that fails execution",
-                                &json!({ "error": error.to_string() })
+                                &serde_json::json!({ "error": error.to_string() })
                             );
                             trace!(%error, tx = %tx_debug_repr, "skipping invalid transaction and its descendants");
                             best_txs.mark_invalid(
@@ -1009,41 +1005,41 @@ where
         {
             let consensus = tempo_evm::consensus::TempoConsensus::new(chain_spec);
             let sealed_block = block.sealed_block();
-            assert_always_less_than_or_equal_to!(
+            antithesis_sdk::assert_always_less_than_or_equal_to!(
                 block.gas_used(),
                 block.gas_limit(),
                 "Payload builder keeps block gas used within the gas limit"
             );
-            assert_always!(
+            antithesis_sdk::assert_always!(
                 execution_result.receipts.len() == total_transactions,
                 "Payload builder produces one receipt per included transaction",
-                &json!({ "receipts": execution_result.receipts.len(), "transactions": total_transactions })
+                &serde_json::json!({ "receipts": execution_result.receipts.len(), "transactions": total_transactions })
             );
             let header = reth_consensus::HeaderValidator::validate_header(
                 &consensus,
                 sealed_block.sealed_header(),
             );
-            assert_always!(
+            antithesis_sdk::assert_always!(
                 header.is_ok(),
                 "Payload builder block header passes consensus header validation",
-                &json!({ "block_number": block.number(), "error": header.err().map(|err| err.to_string()) })
+                &serde_json::json!({ "block_number": block.number(), "error": header.err().map(|err| err.to_string()) })
             );
             let against_parent = reth_consensus::HeaderValidator::validate_header_against_parent(
                 &consensus,
                 sealed_block.sealed_header(),
                 &parent_header,
             );
-            assert_always!(
+            antithesis_sdk::assert_always!(
                 against_parent.is_ok(),
                 "Payload builder block header is a valid child of its parent",
-                &json!({ "block_number": block.number(), "error": against_parent.err().map(|err| err.to_string()) })
+                &serde_json::json!({ "block_number": block.number(), "error": against_parent.err().map(|err| err.to_string()) })
             );
             let pre_execution =
                 reth_consensus::Consensus::validate_block_pre_execution(&consensus, sealed_block);
-            assert_always!(
+            antithesis_sdk::assert_always!(
                 pre_execution.is_ok(),
                 "Payload builder block body passes consensus pre-execution validation",
-                &json!({ "block_number": block.number(), "error": pre_execution.err().map(|err| err.to_string()) })
+                &serde_json::json!({ "block_number": block.number(), "error": pre_execution.err().map(|err| err.to_string()) })
             );
             let post_execution = reth_consensus::FullConsensus::<tempo_primitives::TempoPrimitives>::validate_block_post_execution(
                 &consensus,
@@ -1052,10 +1048,10 @@ where
                 None,
                 None,
             );
-            assert_always!(
+            antithesis_sdk::assert_always!(
                 post_execution.is_ok(),
                 "Payload builder execution outputs pass consensus post-execution validation",
-                &json!({ "block_number": block.number(), "error": post_execution.err().map(|err| err.to_string()) })
+                &serde_json::json!({ "block_number": block.number(), "error": post_execution.err().map(|err| err.to_string()) })
             );
         }
 

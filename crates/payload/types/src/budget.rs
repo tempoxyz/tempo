@@ -1,8 +1,4 @@
 use crate::samples::percentile_rank;
-#[cfg(feature = "fuzz")]
-use antithesis_sdk::assert_unreachable;
-#[cfg(feature = "fuzz")]
-use serde_json::json;
 use std::{collections::BTreeMap, time::Duration};
 use tracing::debug;
 
@@ -63,9 +59,9 @@ fn percentile_from_counts<T: Copy + Ord>(
         }
     }
     #[cfg(feature = "fuzz")]
-    assert_unreachable!(
+    antithesis_sdk::assert_unreachable!(
         "Validation latency percentile rank exceeds its sample counts",
-        &json!({ "len": len, "target": target, "seen": seen })
+        &serde_json::json!({ "len": len, "target": target, "seen": seen })
     );
     debug_assert!(false, "validation latency sample index out of sync");
     None

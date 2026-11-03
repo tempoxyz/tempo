@@ -34,10 +34,6 @@ use crate::{
     tip403_registry::{AuthRole, TIP403Registry, is_policy_lookup_error},
 };
 use alloy::primitives::{Address, B256, U256, map::AddressSet};
-#[cfg(feature = "fuzz")]
-use antithesis_sdk::assert_always;
-#[cfg(feature = "fuzz")]
-use serde_json::json;
 use tempo_precompiles_macros::contract;
 use tempo_primitives::TempoAddressExt;
 
@@ -1164,7 +1160,7 @@ impl StablecoinDEX {
                     .read()?;
                 let new_order = self.orders[new_level.links.head].read_in_book(book_key)?;
                 #[cfg(feature = "fuzz")]
-                assert_always!(
+                antithesis_sdk::assert_always!(
                     new_order.tick() == tick
                         && new_order.is_bid() == order.is_bid()
                         && if order.is_bid() {
@@ -1173,7 +1169,7 @@ impl StablecoinDEX {
                             tick > order.tick()
                         },
                     "DEX swap advances to a worse tick whose head order rests there",
-                    &json!({
+                    &serde_json::json!({
                         "filled_tick": order.tick(),
                         "next_tick": tick,
                         "is_bid": order.is_bid(),
@@ -1205,12 +1201,12 @@ impl StablecoinDEX {
 
             let new_order = self.orders[order.next()].read_in_book(book_key)?;
             #[cfg(feature = "fuzz")]
-            assert_always!(
+            antithesis_sdk::assert_always!(
                 new_order.tick() == order.tick()
                     && new_order.is_bid() == order.is_bid()
                     && new_order.remaining() > 0,
                 "DEX next order in a tick level rests at the same tick and side with liquidity left",
-                &json!({
+                &serde_json::json!({
                     "filled_order_id": order.order_id().to_string(),
                     "tick": order.tick(),
                     "is_bid": order.is_bid(),

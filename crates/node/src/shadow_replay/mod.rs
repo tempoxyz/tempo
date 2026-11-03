@@ -27,8 +27,6 @@ use alloy::{consensus::BlockHeader as _, sol_types::SolEvent as _};
 use alloy_primitives::{Address, B256, U256, keccak256};
 use alloy_rlp::{encode_list, list_length};
 use analysis::Report;
-#[cfg(feature = "fuzz")]
-use antithesis_sdk::assert_unreachable;
 use evm2::evm::{Cache, PendingState, TxResultExt};
 use fees::{FeeWrites, RecordingFeeManager};
 use metrics::{Counter, Gauge, Histogram};
@@ -46,8 +44,6 @@ use reth_provider::{
 };
 use reth_tracing::tracing::{debug, error, info, info_span, warn};
 use reth_trie_common::bundle_state::{AccountStatus, TransitionAccount, TransitionState};
-#[cfg(feature = "fuzz")]
-use serde_json::json;
 use std::{collections::hash_map::Entry, sync::Arc, time::Instant};
 use tempo_chainspec::{
     hardfork::TempoHardfork,
@@ -227,9 +223,9 @@ where
                         Err(err) => err,
                     };
                     #[cfg(feature = "fuzz")]
-                    assert_unreachable!(
+                    antithesis_sdk::assert_unreachable!(
                         "Shadow replay control re-execution diverges from the canonical chain",
-                        &json!({ "block_number": number, "error": err })
+                        &serde_json::json!({ "block_number": number, "error": err })
                     );
                     error!(target: "shadow_replay", %err, "Control re-execution diverged from canonical chain");
                     panic!("shadow replay control failure at block {number}: {err}");

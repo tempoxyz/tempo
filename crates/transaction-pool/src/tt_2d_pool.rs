@@ -7,8 +7,6 @@ use alloy_primitives::{
     Address, B256, TxHash, U256,
     map::{AddressMap, B256Map, HashMap, HashSet, U256Map, hash_map},
 };
-#[cfg(feature = "fuzz")]
-use antithesis_sdk::{assert_always, assert_reachable};
 use reth_primitives_traits::{InMemorySize, transaction::error::InvalidTransactionError};
 use reth_tracing::tracing::trace;
 use reth_transaction_pool::{
@@ -22,8 +20,6 @@ use reth_transaction_pool::{
     },
 };
 use reth_trie_common::bundle_state::BundleAccount;
-#[cfg(feature = "fuzz")]
-use serde_json::json;
 use std::{
     borrow::Borrow,
     collections::{
@@ -309,7 +305,9 @@ impl AA2dPool {
 
                 let replaced = entry.insert(Arc::clone(&tx));
                 #[cfg(feature = "fuzz")]
-                assert_reachable!("AA 2D pool replaces a transaction at the same nonce");
+                antithesis_sdk::assert_reachable!(
+                    "AA 2D pool replaces a transaction at the same nonce"
+                );
                 self.remove_from_subpool(replaced.is_pending(), replaced.inner.size());
                 self.queued_count += 1;
                 Some(replaced)
@@ -1212,7 +1210,7 @@ impl AA2dPool {
                     // Gap detected - mark this and all remaining transactions as non-pending
                     if existing_tx.set_pending(false) {
                         #[cfg(feature = "fuzz")]
-                        assert_reachable!(
+                        antithesis_sdk::assert_reachable!(
                             "AA 2D pool demotes a pending transaction when its on-chain nonce moves back"
                         );
                         newly_queued += 1;
@@ -1293,7 +1291,9 @@ impl AA2dPool {
 
         if !removed.is_empty() {
             #[cfg(feature = "fuzz")]
-            assert_reachable!("AA 2D pool evicts transactions over its subpool limits");
+            antithesis_sdk::assert_reachable!(
+                "AA 2D pool evicts transactions over its subpool limits"
+            );
             self.metrics.inc_removed(removed.len());
         }
 
@@ -1571,11 +1571,11 @@ impl AA2dPool {
         self.update_metrics();
 
         #[cfg(feature = "fuzz")]
-        assert_always!(
+        antithesis_sdk::assert_always!(
             self.by_hash.len() == self.by_id.len() + self.expiring_nonce_txs.len()
                 && self.expiring_nonce_txs.len() == self.expiring_nonce_eviction_order.len(),
             "AA 2D pool indexes agree on its transactions after a state update",
-            &json!({
+            &serde_json::json!({
                 "by_hash": self.by_hash.len(),
                 "by_id": self.by_id.len(),
                 "expiring_nonce": self.expiring_nonce_txs.len(),
@@ -1583,13 +1583,13 @@ impl AA2dPool {
             })
         );
         #[cfg(feature = "fuzz")]
-        assert_always!(
+        antithesis_sdk::assert_always!(
             self.pending_count == self.pending_eviction_order.len() + self.expiring_nonce_txs.len()
                 && self.queued_count == self.queued_eviction_order.len()
                 && self.by_id.len()
                     == self.pending_eviction_order.len() + self.queued_eviction_order.len(),
             "AA 2D pool pending and queued counts match its eviction orders after a state update",
-            &json!({
+            &serde_json::json!({
                 "pending_count": self.pending_count,
                 "queued_count": self.queued_count,
                 "pending_eviction_order": self.pending_eviction_order.len(),

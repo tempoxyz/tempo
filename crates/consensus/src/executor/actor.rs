@@ -84,8 +84,6 @@ use std::{
 };
 
 use alloy_rpc_types_engine::{ForkchoiceState, ForkchoiceUpdated, PayloadId, PayloadStatusEnum};
-#[cfg(feature = "fuzz")]
-use antithesis_sdk::{assert_always, assert_always_greater_than_or_equal_to};
 use commonware_consensus::{
     CertifiableBlock as _, Heightable as _,
     marshal::Update,
@@ -112,8 +110,6 @@ use futures::{
 };
 use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
 use reth_ethereum::rpc::eth::primitives::BlockNumHash;
-#[cfg(feature = "fuzz")]
-use serde_json::json;
 use tempo_node::TempoExecutionData;
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
 use tokio::{select, sync::watch};
@@ -912,10 +908,10 @@ where
         };
         #[cfg(feature = "fuzz")]
         if let Some(Ok(updated)) = &response {
-            assert_always!(
+            antithesis_sdk::assert_always!(
                 !updated.is_invalid(),
                 "Execution layer never rejects a consensus forkchoice update as invalid",
-                &json!({
+                &serde_json::json!({
                     "head_height": target.head.0.get(),
                     "head_digest": target.head.1.to_string(),
                     "finalized_height": target.finalized.0.get(),
@@ -996,10 +992,10 @@ where
             "finalized blocks are delivered in height order",
         );
         #[cfg(feature = "fuzz")]
-        assert_always!(
+        antithesis_sdk::assert_always!(
             !matches!(status, Ok(PayloadStatusEnum::Invalid { .. })),
             "Execution layer never rejects a finalized block as invalid",
-            &json!({
+            &serde_json::json!({
                 "height": block.height().get(),
                 "digest": block.digest().to_string(),
                 "status": format!("{status:?}"),
@@ -1351,18 +1347,18 @@ where
             #[cfg(feature = "fuzz")]
             {
                 let (_, previous_height, previous_digest) = self.network_finalized_tip;
-                let details = json!({
+                let details = serde_json::json!({
                     "round": round.to_string(),
                     "digest": digest.to_string(),
                     "previous_digest": previous_digest.to_string(),
                 });
-                assert_always_greater_than_or_equal_to!(
+                antithesis_sdk::assert_always_greater_than_or_equal_to!(
                     height.get(),
                     previous_height.get(),
                     "Finalized height never decreases as finalized rounds advance",
                     &details
                 );
-                assert_always!(
+                antithesis_sdk::assert_always!(
                     height != previous_height || digest == previous_digest,
                     "Finalized block never conflicts with an earlier finalized block at the same height",
                     &details
