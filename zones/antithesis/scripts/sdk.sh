@@ -1,13 +1,14 @@
 #!/bin/sh
 # Antithesis SDK assertions from shell: JSON lines in $ANTITHESIS_OUTPUT_DIR/sdk.jsonl, or stdout
-# when run outside Antithesis. Source this file.
+# when run outside Antithesis. Source this file. printf, not echo: dash's echo expands the
+# backslash escapes jq writes into JSON strings.
 
 sdk_emit() {
     if [ -n "${ANTITHESIS_OUTPUT_DIR:-}" ]; then
         mkdir -p "$ANTITHESIS_OUTPUT_DIR"
-        echo "$1" >> "$ANTITHESIS_OUTPUT_DIR/sdk.jsonl"
+        printf '%s\n' "$1" >> "$ANTITHESIS_OUTPUT_DIR/sdk.jsonl"
     else
-        echo "$1"
+        printf '%s\n' "$1"
     fi
 }
 
