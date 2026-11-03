@@ -139,7 +139,7 @@ pub const TARGETS: &[Target] = &[
         Match::Address(CURRENT_COMMITTEE_ADDRESS),
         &["tempo_precompiles::current_committee"],
     ),
-    // Includes the portal storage handles it creates, which zone-portal covers on their own.
+    // Includes the portal storage handles it creates.
     target(
         "zone-factory",
         Match::Address(ZONE_FACTORY_ADDRESS),
@@ -150,15 +150,19 @@ pub const TARGETS: &[Target] = &[
         Match::Address(ZONE_VERIFIER_ADDRESS),
         &["tempo_precompiles::zone_verifier"],
     ),
+    // Portal calls run the ERC-1167 proxy and Solidity bytecode, so no Rust code is its own.
     target(
         "zone-portal",
         Match::Prefix(&Address::ZONE_PORTAL_PREFIX),
-        &["tempo_precompiles::zone_factory::portal"],
+        &[],
     ),
     target(
         "configurable-account",
         Match::Address(CONFIGURABLE_ACCOUNT_ADDRESS),
-        &["tempo_precompiles::configurable_account"],
+        &[
+            "tempo_precompiles::configurable_account",
+            "tempo_evm::handler::configurable_account",
+        ],
     ),
 ];
 
