@@ -31,7 +31,7 @@ pub enum CorpusCommand {
     /// Write the block list of indexed blocks whose transactions call or write a target.
     #[cfg(feature = "corpus-index")]
     Select(SelectCommand),
-    /// Write a target's dictionary of real call values, aggregated from indexes, as JSON.
+    /// Write a target's dictionary of real call values, from indexes and their corpus, as JSON.
     #[cfg(feature = "corpus-index")]
     Dict(DictCommand),
 }
@@ -47,7 +47,7 @@ impl CorpusCommand {
             #[cfg(feature = "corpus-index")]
             Self::Select(cmd) => cmd.execute(),
             #[cfg(feature = "corpus-index")]
-            Self::Dict(cmd) => cmd.execute(),
+            Self::Dict(cmd) => cmd.execute().await,
         }
     }
 }
@@ -326,16 +326,25 @@ impl SelectCommand {
     }
 }
 
-/// Aggregate a target's dictionary from corpus indexes.
+/// Aggregate a target's dictionary of real call values from indexes and their corpus.
 #[cfg(feature = "corpus-index")]
 #[derive(Debug, Parser)]
 pub struct DictCommand {
-    /// Index files written by `tempo corpus index`.
+    /// Index files written by `tempo corpus index` over `--corpus`.
     #[arg(long, num_args = 1.., required = true)]
     index: Vec<PathBuf>,
     /// Target registry name, such as feeamm or dex.
     #[arg(long)]
     target: String,
+    /// Source s3://bucket/prefix or file:///directory, whose blocks are decoded.
+    #[arg(long)]
+    corpus: String,
+    /// Optional S3-compatible endpoint. Credentials use the standard AWS chain.
+    #[arg(long)]
+    s3_endpoint: Option<String>,
+    /// Parallel read tasks; defaults to the available parallelism.
+    #[arg(long)]
+    workers: Option<usize>,
     /// Destination JSON file.
     #[arg(long)]
     out: PathBuf,
@@ -343,9 +352,16 @@ pub struct DictCommand {
 
 #[cfg(feature = "corpus-index")]
 impl DictCommand {
-    fn execute(self) -> eyre::Result<()> {
-        let dict = tempo_corpus::dict::dict(&self.index, target_bit(&self.target)?)?;
-        std::fs::write(&self.out, serde_json::to_vec_pretty(&dict)?)?;
+    async fn execute(self) -> eyre::Result<()> {
+        let bit = target_bit(&self.target)?;
+        let (store, catalog) = open(&self.corpus, self.s3_endpoint.as_deref()).await?;
+        let workers = workers(self.workers);
+        let dict = tokio::task::spawn_blocking(move || {
+            tempo_corpus::dict::dict(&self.index, bit, store, &catalog, &self.corpus, workers)
+                .map(|dict| (dict, self.out))
+        })
+        .await??;
+        std::fs::write(&dict.1, serde_json::to_vec_pretty(&dict.0)?)?;
         Ok(())
     }
 }

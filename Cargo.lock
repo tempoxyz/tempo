@@ -14664,6 +14664,7 @@ dependencies = [
  "tempo-contracts",
  "tempo-evm",
  "tempo-fuzz-types",
+ "tempo-precompiles",
  "tempo-primitives",
  "tokio",
  "tracing",

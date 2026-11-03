@@ -42,6 +42,7 @@ index = [
   "dep:arrow-buffer",
   "dep:arrow-schema",
   "dep:parquet",
+  "dep:tempo-precompiles",
 ]
 
 [dependencies]
@@ -52,6 +53,7 @@ evm2 = { workspace = true, optional = true }
 tempo-contracts.workspace = true
 tempo-evm = { workspace = true, features = ["default"], optional = true }
 tempo-primitives = { workspace = true, features = ["default"] }
+tempo-precompiles = { workspace = true, optional = true }
 reth-evm = { workspace = true, optional = true }
 reth-provider = { workspace = true, optional = true }
 reth-chainspec.workspace = true

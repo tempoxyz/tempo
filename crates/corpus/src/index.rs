@@ -9,11 +9,11 @@ use crate::{
     store::{self, Catalog, Record, Store},
     targets,
 };
-use alloy_consensus::{Transaction, Typed2718};
+use alloy_consensus::Typed2718;
 use alloy_primitives::Address;
 use arrow_array::{
-    Array, ArrayRef, BinaryArray, FixedSizeBinaryArray, ListArray, RecordBatch, StructArray,
-    UInt8Array, UInt32Array, UInt64Array,
+    Array, ArrayRef, FixedSizeBinaryArray, ListArray, RecordBatch, StructArray, UInt8Array,
+    UInt32Array, UInt64Array,
 };
 use arrow_buffer::OffsetBuffer;
 use arrow_schema::{DataType, Field, Fields, Schema, SchemaRef};
@@ -37,7 +37,7 @@ use std::{
 use tempo_primitives::Block;
 
 /// Version of the index schema, stored in every index footer.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 1;
 /// Blocks each read task indexes. Tasks finish in order, so the file stays sorted.
 const TASK_BLOCKS: u64 = 10_000;
 /// Estimated encoded row group size, before compression.
@@ -57,12 +57,7 @@ pub fn index(
     out: &Path,
     workers: usize,
 ) -> eyre::Result<usize> {
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(workers)
-        .enable_all()
-        .build()?;
-    runtime.block_on(async {
-        let reader = Arc::new(store.reader(&catalog).await?);
+    let mut writer = {
         let metadata = [
             (INDEX_VERSION_KEY, VERSION.to_string()),
             (REGISTRY_VERSION_KEY, targets::VERSION.to_string()),
@@ -86,36 +81,78 @@ pub fn index(
                 properties.set_column_dictionary_enabled(column.into(), false)
             })
             .build();
-        let mut writer = ArrowWriter::try_new(File::create(out)?, schema(), Some(properties))?;
-        let mut tasks = futures::stream::iter(range.clone().step_by(TASK_BLOCKS as usize))
-            .map(|start| {
-                let (reader, context) = (reader.clone(), catalog.context.clone());
-                let end = (start + TASK_BLOCKS).min(range.end);
+        ArrowWriter::try_new(File::create(out)?, schema(), Some(properties))?
+    };
+    let mut rows = 0;
+    scan(
+        store,
+        &catalog,
+        range,
+        workers,
+        |_| true,
+        |rows: &mut Rows, record, block, cases| rows.push(record, block, cases),
+        |window| {
+            let batch = window.batch()?;
+            rows += batch.num_rows();
+            Ok(writer.write(&batch)?)
+        },
+    )?;
+    writer.close()?;
+    Ok(rows)
+}
+
+/// Runs `visit` on every published record of the `TASK_BLOCKS`-block windows of `range` that
+/// `wanted` keeps, one window per task with `workers` tasks in flight, and hands each window's
+/// `T` to `consume` in block order.
+pub(crate) fn scan<T, V>(
+    store: Store,
+    catalog: &Catalog,
+    range: Range<u64>,
+    workers: usize,
+    wanted: impl Fn(Range<u64>) -> bool,
+    visit: V,
+    mut consume: impl FnMut(T) -> eyre::Result<()>,
+) -> eyre::Result<()>
+where
+    T: Default + Send + 'static,
+    V: Fn(&mut T, &Record, &Bytes, &[Bytes]) -> eyre::Result<()> + Clone + Send + Sync + 'static,
+{
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(workers)
+        .enable_all()
+        .build()?;
+    runtime.block_on(async {
+        let reader = Arc::new(store.reader(catalog).await?);
+        let windows = range
+            .clone()
+            .step_by(TASK_BLOCKS as usize)
+            .map(|start| start..(start + TASK_BLOCKS).min(range.end))
+            .filter(|window| wanted(window.clone()));
+        let mut tasks = futures::stream::iter(windows)
+            .map(|window| {
+                let (reader, context, visit) =
+                    (reader.clone(), catalog.context.clone(), visit.clone());
                 tokio::spawn(async move {
-                    let from = store::cursor_at(&reader, &context, start).await?;
-                    let to = store::cursor_at(&reader, &context, end).await?;
-                    let mut rows = Rows::default();
+                    let from = store::cursor_at(&reader, &context, window.start).await?;
+                    let to = store::cursor_at(&reader, &context, window.end).await?;
+                    let mut value = T::default();
                     store::for_each_published(&reader, from, &to, false, |record, block, cases| {
-                        rows.push(record, &block, &cases)
+                        visit(&mut value, record, &block, &cases)
                     })
                     .await?;
-                    rows.batch()
+                    eyre::Ok(value)
                 })
             })
             .buffered(workers);
-        let mut rows = 0;
-        while let Some(batch) = tasks.try_next().await? {
-            let batch = batch?;
-            rows += batch.num_rows();
-            writer.write(&batch)?;
+        while let Some(value) = tasks.try_next().await? {
+            consume(value?)?;
         }
-        writer.close()?;
         drop(tasks);
         Arc::into_inner(reader)
             .expect("read tasks finished")
             .close()
             .await?;
-        Ok(rows)
+        Ok(())
     })
 }
 
@@ -240,13 +277,12 @@ fn call_fields() -> Fields {
         Field::new("target", DataType::UInt8, true),
         Field::new("selector", DataType::FixedSizeBinary(4), true),
         Field::new("to", DataType::FixedSizeBinary(20), true),
-        Field::new("input", DataType::Binary, true),
     ])
 }
 
 /// One row per transaction. `calls` holds every call of a batched Tempo transaction, each with
-/// its target bit (null when unlabelled), selector and, for a labelled target, calldata, and a
-/// creation as a call with null `to` and selector. `writes` masks the targets its state delta changes and `block_reads` those its
+/// its target bit (null when unlabelled) and selector, and a creation as a call with null `to`
+/// and selector. `writes` masks the targets its state delta changes and `block_reads` those its
 /// block's witness reads. `status` is 0 on success.
 fn schema() -> SchemaRef {
     let address = DataType::FixedSizeBinary(20);
@@ -268,7 +304,6 @@ fn schema() -> SchemaRef {
         Field::new("block_reads", DataType::UInt64, false),
         Field::new("status", DataType::UInt8, false),
         Field::new("charged_gas", DataType::UInt64, false),
-        Field::new("gas_limit", DataType::UInt64, false),
         Field::new("created", address.clone(), true),
         Field::new("fee_token", address, true),
         Field::new("nonce_key", DataType::FixedSizeBinary(32), true),
@@ -287,12 +322,10 @@ struct Rows {
     call_target: Vec<Option<u8>>,
     call_selector: Vec<Option<[u8; 4]>>,
     call_to: Vec<Option<Address>>,
-    call_input: Vec<Option<Bytes>>,
     writes: Vec<u64>,
     block_reads: Vec<u64>,
     status: Vec<u8>,
     charged_gas: Vec<u64>,
-    gas_limit: Vec<u64>,
     created: Vec<Option<[u8; 20]>>,
     fee_token: Vec<Option<Address>>,
     nonce_key: Vec<Option<[u8; 32]>>,
@@ -326,10 +359,9 @@ impl Rows {
             let calls = self.call_to.len();
             for (kind, data) in transaction.calls() {
                 let to = kind.to().copied();
-                let target = to.as_ref().and_then(targets::classify);
-                self.call_target.push(target);
+                self.call_target
+                    .push(to.as_ref().and_then(targets::classify));
                 self.call_selector.push(to.and(data.first_chunk().copied()));
-                self.call_input.push(target.map(|_| data.0.clone()));
                 self.call_to.push(to);
             }
             self.calls.push(self.call_to.len() - calls);
@@ -348,7 +380,6 @@ impl Rows {
             self.block_reads.push(reads);
             self.status.push(case.status);
             self.charged_gas.push(case.charged_gas);
-            self.gas_limit.push(transaction.gas_limit());
             self.created.push(case.created);
             self.fee_token.push(transaction.fee_token());
             self.nonce_key
@@ -364,7 +395,6 @@ impl Rows {
                 Arc::new(UInt8Array::from(self.call_target)),
                 fixed(self.call_selector, 4)?,
                 fixed(self.call_to, 20)?,
-                Arc::new(BinaryArray::from_iter(self.call_input)),
             ],
             None,
         )?;
@@ -390,7 +420,6 @@ impl Rows {
                 Arc::new(UInt64Array::from(self.block_reads)),
                 Arc::new(UInt8Array::from(self.status)),
                 Arc::new(UInt64Array::from(self.charged_gas)),
-                Arc::new(UInt64Array::from(self.gas_limit)),
                 fixed(self.created, 20)?,
                 fixed(self.fee_token, 20)?,
                 fixed(self.nonce_key, 32)?,
