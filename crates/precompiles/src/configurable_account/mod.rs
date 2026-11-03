@@ -141,7 +141,7 @@ impl ConfigurableAccount {
             return Err(ConfigurableAccountError::upgrade_must_be_direct_call().into());
         }
         match self.upgrade_eligibility.t_read()? {
-            UpgradeEligibility::HasAuthorizations => {
+            UpgradeEligibility::HasAuthorizationList => {
                 return Err(ConfigurableAccountError::upgrade_must_be_direct_call().into());
             }
             UpgradeEligibility::NotPrimitiveRoot => {
@@ -219,7 +219,7 @@ impl ConfigurableAccount {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Storable)]
 pub enum UpgradeEligibility {
     /// The transaction carries an authorization list.
-    HasAuthorizations,
+    HasAuthorizationList,
     /// The transaction carries no authorization list, but its outer signature is not a primitive
     /// root signature.
     NotPrimitiveRoot,

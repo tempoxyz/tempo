@@ -118,14 +118,13 @@ impl TempoTxEnv {
     /// precompile checks that the call itself is top-level.
     pub(crate) fn seed_upgrade_authority(&self) -> Result<(), TempoPrecompileError> {
         let aa = self.as_aa();
-        let no_authorizations = match aa {
+        let eligibility = if match aa {
             None => self
                 .as_eip7702()
-                .is_none_or(|tx| tx.authorization_list.is_empty()),
-            Some(aa) => aa.tx().tempo_authorization_list.is_empty(),
-        };
-        let eligibility = if !no_authorizations {
-            UpgradeEligibility::HasAuthorizations
+                .is_some_and(|tx| !tx.authorization_list.is_empty()),
+            Some(aa) => !aa.tx().tempo_authorization_list.is_empty(),
+        } {
+            UpgradeEligibility::HasAuthorizationList
         } else if !self.signed_by_primitive_root() {
             UpgradeEligibility::NotPrimitiveRoot
         } else {
