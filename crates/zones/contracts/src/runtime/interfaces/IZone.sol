@@ -420,6 +420,26 @@ struct TokenConfig {
     bool depositsActive; // admin can pause/unpause deposits; does not affect withdrawals
 }
 
+/// @notice TIP-1150 per-token withdrawal rate limit enforced by the portal.
+/// @dev A token bucket: capacity refills continuously at maxAmount / period per second, up to
+///      maxAmount. maxAmount == 0 means the token has no limit.
+struct WithdrawalLimit {
+    uint128 maxAmount; // bucket size in token units; 0 = unlimited
+    uint64 period; // seconds to refill an empty bucket
+    uint64 updatedAt; // Tempo timestamp at which available was last refilled
+    uint128 available; // capacity left as of updatedAt
+}
+
+/// @notice TIP-1150 per-token FIFO of withdrawals waiting for withdrawal-limit capacity.
+/// @dev Entries between head (inclusive) and tail (exclusive) hold keccak256(abi.encode(withdrawal)).
+///      headPaid is the part of the head entry already delivered.
+struct QueuedWithdrawals {
+    uint64 head;
+    uint64 tail;
+    uint128 headPaid;
+    mapping(uint256 => bytes32) entries;
+}
+
 /// @title IZonePortal
 /// @notice Interface for zone portal on Tempo
 interface IZonePortal {
@@ -453,6 +473,23 @@ interface IZonePortal {
         address token,
         uint128 amount,
         uint64 depositNumber
+    );
+
+    /// @notice Emitted when the limit authority sets or removes a token's withdrawal limit.
+    /// @dev maxAmount == 0 and period == 0 removes the limit.
+    event WithdrawalLimitSet(address indexed token, uint128 maxAmount, uint64 period);
+
+    /// @notice Emitted when a withdrawal waits in its token's queue for withdrawal-limit capacity.
+    event WithdrawalQueued(
+        address indexed token, uint256 indexed queueIndex, bytes32 withdrawalHash, uint128 amount
+    );
+
+    /// @notice Emitted each time processQueuedWithdrawals advances a queued withdrawal.
+    /// @dev paid is the amount delivered to the recipient in this step (0 when the entry bounced
+    ///      back to the zone). remaining is what the entry still waits for; 0 once it leaves the
+    ///      queue.
+    event QueuedWithdrawalPaid(
+        address indexed token, uint256 indexed queueIndex, uint128 paid, uint128 remaining
     );
 
     /// @notice Emitted when the current admin nominates a new admin (two-step transfer).
@@ -588,6 +625,9 @@ interface IZonePortal {
     error InvalidCallbackTarget();
     error CallbackDidNotReturnToZone();
     error AccountNotAllowed(address account);
+    error NotWithdrawalLimitAuthority();
+    error InvalidWithdrawalLimit();
+    error InsufficientCallbackGas();
     /// @notice Emitted when an account's portal role is initialized or updated.
     event RoleUpdated(address indexed account, Role prev, Role next);
 
@@ -914,6 +954,42 @@ interface IZonePortal {
         bytes calldata data
     )
         external;
+
+    /// @notice Deliver queued withdrawals of one token as its withdrawal limit allows.
+    /// @dev Permissionless. Withdrawals must be supplied from the token queue's head in order.
+    ///      Plain withdrawals and deposit bounce-backs are paid in parts as capacity refills;
+    ///      callbacks are delivered whole once they fit. Stops without reverting when capacity runs
+    ///      out, ignoring later entries.
+    /// @return completed Number of entries that left the queue.
+    function processQueuedWithdrawals(
+        address token,
+        Withdrawal[] calldata withdrawals
+    )
+        external
+        returns (uint256 completed);
+
+    /// @notice Set or remove a token's withdrawal limit. Only callable by the ZoneFactory owner.
+    /// @dev Valid configurations are (0, 0), which removes the limit, or a nonzero maxAmount with
+    ///      1 <= period <= MAX_WITHDRAWAL_LIMIT_PERIOD and maxAmount >= period.
+    function setWithdrawalLimit(address token, uint128 maxAmount, uint64 period) external;
+
+    /// @notice A token's withdrawal limit, with available capacity refilled to block.timestamp.
+    function withdrawalLimit(address token)
+        external
+        view
+        returns (uint128 maxAmount, uint64 period, uint128 available);
+
+    /// @notice Position of a token's queue of withdrawals waiting for limit capacity.
+    function queuedWithdrawals(address token)
+        external
+        view
+        returns (uint64 head, uint64 tail, uint128 headPaid);
+
+    /// @notice Hash of the queued withdrawal at a token queue index (zero once it left the queue).
+    function queuedWithdrawalAt(address token, uint256 queueIndex) external view returns (bytes32);
+
+    /// @notice Longest refill period a withdrawal limit may use.
+    function MAX_WITHDRAWAL_LIMIT_PERIOD() external view returns (uint64);
 
     function refunds(address token, address owner) external view returns (uint128);
 
