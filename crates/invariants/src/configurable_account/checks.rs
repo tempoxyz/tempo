@@ -428,10 +428,11 @@ impl std::fmt::Display for Upgrade {
 
 /// The step's owner-update events for `account`, in order.
 fn updates_of(s: &AccountStep, account: Address) -> Vec<ConfigurableAccountConfigUpdated> {
+    // Registration's version-0 event, for an account without a commitment, is not an owner update.
+    let unregistered = s.pre.of.get(&account).is_some_and(|c| c.is_zero());
     s.events::<ConfigurableAccountConfigUpdated>(s.post.precompile)
         .into_iter()
-        // Version 0 is registration's event, not an owner update.
-        .filter(|e| e.account == account && e.version != 0)
+        .filter(|e| e.account == account && !(unregistered && e.version == 0))
         .collect()
 }
 
