@@ -61,6 +61,9 @@ const TXGEN_HELPER_CARD_SETTLEMENT_ACCOUNT = "0x00000000000000000000000000000000
 # within the txpool's 32 calls per Tempo transaction and the 30M transaction gas cap.
 const TXGEN_HELPER_BATCH_PAYOUT_RECIPIENTS = {"batch-payout": 32, "neobank-generic": 32, "neobank-multi": 32, "projected-pipeline": 32}
 const TXGEN_HELPER_BATCH_PAYOUT_BASE_GAS = 500000
+# Mixed presets keep non-payment batches (reward_distribution) within the 2.5M limit of their
+# vault and zone transactions, so they fit a saturated general lane; see txgen-batch-payout-templates.
+const TXGEN_HELPER_GENERAL_BATCH_GAS_CAP = 2500000
 const TXGEN_HELPER_BATCH_TREASURY_SIZE = 16
 # neobank-generic mix templates by module (TXGEN_NEOBANK_MODULES selects modules).
 const TXGEN_HELPER_NEOBANK_MODULES = {
@@ -724,18 +727,27 @@ def txgen-card-settlement-template [template: record, --account: string = $TXGEN
         function: transfer
         args: [$account 1]
     }
-    $template | reject -o sponsor | upsert nonce {uniform: [0 9223372036854775807]} | upsert calls ($template.calls | append $forward)
+    # No explicit nonce: txgen then bumps each expiring transaction's fee for uniqueness, as it does
+    # for the vault withdrawals this shards. An explicit nonce turns the bump off and leaves the
+    # transaction at the lowest tip, so it never wins a place in a saturated general lane.
+    $template | reject -o sponsor | upsert calls ($template.calls | append $forward)
 }
 
 # Repeats each batch-payout template's last call once per recipient, scales its
 # approvals to cover every recipient and sizes gas_limit (a per-recipient budget) to
 # the batch. A template whose batch would pass the call or gas cap gets the most
 # recipients that fit.
-def txgen-batch-payout-templates [presets_dir: string, recipients: int] {
+# --general-gas-cap caps the gas limit of batches whose payout call is not a TIP-20 payment
+# (reward_distribution): in a saturated general lane the builder only admits a transaction whose
+# gas limit fits the lane's remaining headroom, so a 29M reward batch never lands beside 2.5M
+# vault and zone transactions. 0 keeps the transaction gas cap only (the batch-payout preset).
+def txgen-batch-payout-templates [presets_dir: string, recipients: int, --general-gas-cap: int = 0] {
     if $recipients < 1 { error make {msg: "TXGEN_BATCH_PAYOUT_RECIPIENTS must be positive"} }
     # Nushell's YAML parser keeps the i64 nonce bound exact; a jq round-trip may not.
     open ($presets_dir | path join batch-payout.yml) | get templates | items { |name, template|
-        let gas_fit = (($TXGEN_HELPER_TX_GAS_LIMIT_CAP - $TXGEN_HELPER_BATCH_PAYOUT_BASE_GAS) // $template.gas_limit)
+        let payment = ($template.calls | last | get to | str starts-with --ignore-case "0x20c0")
+        let cap = if $general_gas_cap > 0 and not $payment { $general_gas_cap } else { $TXGEN_HELPER_TX_GAS_LIMIT_CAP }
+        let gas_fit = ([((($cap - $TXGEN_HELPER_BATCH_PAYOUT_BASE_GAS) // $template.gas_limit)) 1] | math max)
         let call_fit = $TXGEN_HELPER_MAX_AA_CALLS - ($template.calls | length) + 1
         let count = ([$recipients $gas_fit $call_fit] | math min)
         let payout = ($template.calls | last)
@@ -1321,7 +1333,7 @@ def txgen-prepare-neobank-multi-preset [spec_path: string, count: int, accounts:
         $step | update tx.calls.0.args.1 "2000000000000000000000000"
     })
     let recipients = ($env.TXGEN_BATCH_PAYOUT_RECIPIENTS? | default ($TXGEN_HELPER_BATCH_PAYOUT_RECIPIENTS | get neobank-multi) | into int)
-    let batch = (txgen-batch-payout-templates $presets $recipients)
+    let batch = (txgen-batch-payout-templates $presets $recipients --general-gas-cap $TXGEN_HELPER_GENERAL_BATCH_GAS_CAP)
     let raw = (txgen-raw-template-blocks ($presets | path join public-mix.yml) | merge (txgen-raw-template-blocks $base_path))
     let keychain_lines = (txgen-raw-section-lines ($presets | path join access-key-mix.yml) setup | skip 1)
     if ($keychain_lines | where { |line| $line =~ '^    - ' } | length) != 1 {
@@ -1505,7 +1517,8 @@ def txgen-prepare-public-mix-preset [spec_path: string, count: int, accounts: in
     let batch_recipients = ($TXGEN_HELPER_BATCH_PAYOUT_RECIPIENTS | get -o $preset_name)
     let templates = if $batch_recipients != null {
         let recipients = ($env.TXGEN_BATCH_PAYOUT_RECIPIENTS? | default $batch_recipients | into int)
-        $templates | merge (txgen-batch-payout-templates $presets $recipients)
+        let general_cap = if $preset_name == "batch-payout" { 0 } else { $TXGEN_HELPER_GENERAL_BATCH_GAS_CAP }
+        $templates | merge (txgen-batch-payout-templates $presets $recipients --general-gas-cap $general_cap)
     } else { $templates }
     let templates = ($mix
         | where { |entry| ($entry | get -o template | default "") | str starts-with "card_settlement_" }
