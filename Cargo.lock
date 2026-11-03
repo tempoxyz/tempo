@@ -14878,6 +14878,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tempo-p2p-upgrader"
+version = "1.17.0"
+dependencies = [
+ "commonware-codec",
+ "commonware-cryptography",
+ "commonware-runtime",
+ "commonware-stream",
+ "commonware-utils",
+ "rand_core 0.10.1",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
 name = "tempo-payload-builder"
 version = "1.17.0"
 dependencies = [
