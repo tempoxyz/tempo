@@ -7,6 +7,8 @@ use std::{
 
 use alloy_consensus::BlockHeader;
 use alloy_primitives::Bytes;
+#[cfg(feature = "fuzz")]
+use antithesis_sdk::assert_sometimes;
 use commonware_actor::Feedback;
 use commonware_codec::{Encode as _, ReadExt as _};
 use commonware_consensus::{
@@ -28,6 +30,8 @@ use eyre::{OptionExt as _, WrapErr as _, ensure, eyre};
 use futures::{FutureExt as _, StreamExt as _, channel::oneshot};
 use rand_core::Rng;
 use reth_primitives_traits::BlockBody as _;
+#[cfg(feature = "fuzz")]
+use serde_json::json;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_payload_types::{
     Estimator, ProposalKey, ProposalTiming, TempoPayloadAttributes, ValidationLatencyWorkload,
@@ -275,6 +279,17 @@ impl Inner {
                 "proposal overran its return budget; taking no network sample"
             );
         }
+
+        #[cfg(feature = "fuzz")]
+        assert_sometimes!(
+            round.view().get().saturating_sub(parent_view.get()) > 1,
+            "Proposal builds on a parent from before a nullified view",
+            &json!({
+                "epoch": round.epoch().get(),
+                "view": round.view().get(),
+                "parent_view": parent_view.get(),
+            })
+        );
 
         Ok(proposal)
     }

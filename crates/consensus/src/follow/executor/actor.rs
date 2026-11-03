@@ -17,6 +17,8 @@
 use std::{collections::VecDeque, time::Duration};
 
 use alloy_rpc_types_engine::{ForkchoiceState, ForkchoiceUpdateError};
+#[cfg(feature = "fuzz")]
+use antithesis_sdk::assert_always;
 use commonware_consensus::{
     Heightable as _,
     marshal::Update,
@@ -27,6 +29,8 @@ use commonware_utils::{Acknowledgement as _, acknowledgement::Exact};
 use eyre::{Report, WrapErr as _, ensure, eyre};
 use futures::{FutureExt as _, StreamExt as _, channel::mpsc, future::BoxFuture};
 use reth_engine_primitives::BeaconForkChoiceUpdateError;
+#[cfg(feature = "fuzz")]
+use serde_json::json;
 use tempo_node::TempoExecutionData;
 use tracing::{Level, debug, error, instrument};
 
@@ -322,6 +326,8 @@ async fn submit_new_payload<TContext: Pacer, E: ExecutionEngine + ?Sized>(
     execution_engine: &E,
     block: Block,
 ) -> eyre::Result<()> {
+    #[cfg(feature = "fuzz")]
+    let details = json!({ "height": block.height().get(), "digest": block.digest().to_string() });
     let block = block.into_execution_block();
     let payload_status = execution_engine
         .new_payload(TempoExecutionData { block })
@@ -329,6 +335,12 @@ async fn submit_new_payload<TContext: Pacer, E: ExecutionEngine + ?Sized>(
         .await
         .wrap_err("failed sending finalized payload")?;
 
+    #[cfg(feature = "fuzz")]
+    assert_always!(
+        !payload_status.is_invalid(),
+        "Follow mode execution never rejects a finalized block as invalid",
+        &details
+    );
     ensure!(
         payload_status.is_valid() || payload_status.is_syncing(),
         "payload status of finalized block was neither valid nor syncing: \
@@ -381,6 +393,13 @@ async fn submit_forkchoice_update<
     };
 
     debug!(payload_status = %response.payload_status, "execution layer reported FCU status");
+
+    #[cfg(feature = "fuzz")]
+    assert_always!(
+        !response.is_invalid(),
+        "Follow mode forkchoice never rejects a finalized tip as invalid",
+        &json!({ "digest": tip.digest.to_string(), "status": response.payload_status.to_string() })
+    );
 
     ensure!(
         !response.is_invalid(),

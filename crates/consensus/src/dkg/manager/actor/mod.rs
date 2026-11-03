@@ -1,6 +1,8 @@
 use std::{cmp::Ordering, collections::BTreeMap, num::NonZeroU32, sync::Arc};
 
 use alloy_consensus::{BlockHeader as _, Sealable};
+#[cfg(feature = "fuzz")]
+use antithesis_sdk::{assert_always, assert_reachable};
 use bytes::{Buf, BufMut};
 use commonware_codec::{Decode as _, Encode as _, EncodeSize, Read, ReadExt as _, Write};
 use commonware_consensus::{
@@ -47,6 +49,8 @@ use futures::{
     stream::FuturesOrdered,
 };
 use rand_core::CryptoRng;
+#[cfg(feature = "fuzz")]
+use serde_json::json;
 use tempo_chainspec::{NetworkIdentity, TempoHardforks as _};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_primitives::TempoHeader;
@@ -868,6 +872,12 @@ where
                 self.conclude_ceremony(round, state, player_state.take(), logs)
             };
 
+        #[cfg(feature = "fuzz")]
+        assert_always!(
+            local_output == onchain_outcome.output,
+            "Local DKG ceremony output matches the finalized boundary outcome",
+            &json!({ "epoch": state.epoch.get(), "height": height.get() })
+        );
         if local_output != onchain_outcome.output {
             let am_player = onchain_outcome
                 .next_players
@@ -888,8 +898,18 @@ where
         // if the on-chain output is the same as the input into the loop (which
         // is just state.output), then we know the DKG failed.
         if onchain_outcome.output == state.output {
+            #[cfg(feature = "fuzz")]
+            assert_reachable!(
+                "DKG ceremony failed and the previous epoch's output carried forward",
+                &json!({ "epoch": state.epoch.get(), "is_full_dkg": state.is_full_dkg })
+            );
             self.metrics.failures.metric().inc();
         } else {
+            #[cfg(feature = "fuzz")]
+            assert_reachable!(
+                "DKG ceremony produced a new output at the epoch boundary",
+                &json!({ "epoch": state.epoch.get(), "is_full_dkg": state.is_full_dkg })
+            );
             self.metrics.successes.metric().inc();
         }
 

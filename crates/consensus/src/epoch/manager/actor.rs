@@ -39,6 +39,8 @@
 use std::{collections::BTreeMap, num::NonZeroUsize};
 
 use alloy_consensus::BlockHeader as _;
+#[cfg(feature = "fuzz")]
+use antithesis_sdk::assert_always_greater_than;
 use commonware_consensus::{
     simplex::{self, config::Floor, elector, scheme::bls12381_threshold::vrf::Scheme},
     types::{Epoch, EpochDelta, Epocher as _, Height},
@@ -309,6 +311,12 @@ where
         >,
     ) -> eyre::Result<()> {
         if let Some(latest) = self.active_epochs.last_key_value().map(|(k, _)| *k) {
+            #[cfg(feature = "fuzz")]
+            assert_always_greater_than!(
+                epoch.get(),
+                latest.get(),
+                "Epoch manager only enters an epoch newer than every running one"
+            );
             ensure!(
                 epoch > latest,
                 "requested to start an epoch `{epoch}` older than the latest \

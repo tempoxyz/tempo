@@ -7,6 +7,8 @@ use crate::{
 
 use alloy_consensus::{Transaction, transaction::Recovered};
 use alloy_primitives::{Address, B256, U256};
+#[cfg(feature = "fuzz")]
+use antithesis_sdk::assert_reachable;
 use evm2::{EvmFeatures, evm::DynDatabase, registry::HandlerError};
 use parking_lot::RwLock;
 use reth_chainspec::{ChainSpecProvider, EthChainSpec};
@@ -591,6 +593,10 @@ where
             ) {
                 Ok(true) => {}
                 Ok(false) => {
+                    #[cfg(feature = "fuzz")]
+                    assert_reachable!(
+                        "Pool rejects a transaction for insufficient fee AMM liquidity"
+                    );
                     return TransactionValidationOutcome::Invalid(
                         transaction,
                         InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(

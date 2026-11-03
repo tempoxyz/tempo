@@ -15,6 +15,8 @@ use alloy_primitives::{
     Address, B256, TxHash, U256,
     map::{AddressMap, AddressSet, Entry, HashMap},
 };
+#[cfg(feature = "fuzz")]
+use antithesis_sdk::assert_reachable;
 use parking_lot::RwLock;
 use reth_chainspec::{ChainSpecProvider, EthChainSpec};
 use reth_eth_wire_types::HandleMempoolData;
@@ -255,6 +257,10 @@ where
 
         for tx in transactions {
             if expiry_cutoff.is_some_and(|cutoff| tx.transaction.is_expired_by(cutoff)) {
+                #[cfg(feature = "fuzz")]
+                assert_reachable!(
+                    "Pool maintenance evicts a transaction past its valid_before or key expiry"
+                );
                 to_remove.push(*tx.hash());
                 continue;
             }

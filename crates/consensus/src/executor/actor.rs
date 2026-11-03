@@ -84,6 +84,8 @@ use std::{
 };
 
 use alloy_rpc_types_engine::{ForkchoiceState, ForkchoiceUpdated, PayloadId, PayloadStatusEnum};
+#[cfg(feature = "fuzz")]
+use antithesis_sdk::{assert_always, assert_always_greater_than_or_equal_to};
 use commonware_consensus::{
     CertifiableBlock as _, Heightable as _,
     marshal::Update,
@@ -110,6 +112,8 @@ use futures::{
 };
 use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
 use reth_ethereum::rpc::eth::primitives::BlockNumHash;
+#[cfg(feature = "fuzz")]
+use serde_json::json;
 use tempo_node::TempoExecutionData;
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
 use tokio::{select, sync::watch};
@@ -906,6 +910,19 @@ where
                 target.head.1, target.head.0, target.finalized.1, target.finalized.0,
             )
         };
+        #[cfg(feature = "fuzz")]
+        if let Some(Ok(updated)) = &response {
+            assert_always!(
+                !updated.is_invalid(),
+                "Execution layer never rejects a consensus forkchoice update as invalid",
+                &json!({
+                    "head_height": target.head.0.get(),
+                    "head_digest": target.head.1.to_string(),
+                    "finalized_height": target.finalized.0.get(),
+                    "status": updated.payload_status.to_string(),
+                })
+            );
+        }
         let accepted = match response {
             // No update was submitted because the execution layer is ahead
             // of tracked finality.
@@ -977,6 +994,16 @@ where
         debug_assert!(
             block.height() >= self.delivered_finalized_tip.1,
             "finalized blocks are delivered in height order",
+        );
+        #[cfg(feature = "fuzz")]
+        assert_always!(
+            !matches!(status, Ok(PayloadStatusEnum::Invalid { .. })),
+            "Execution layer never rejects a finalized block as invalid",
+            &json!({
+                "height": block.height().get(),
+                "digest": block.digest().to_string(),
+                "status": format!("{status:?}"),
+            })
         );
         match status {
             Ok(PayloadStatusEnum::Valid) => {}
@@ -1321,6 +1348,26 @@ where
     fn record_finalized_tip(&mut self, round: Round, height: Height, digest: Digest) {
         self.record_convergence_target(round, (round.view(), digest));
         if round > self.network_finalized_tip.0 {
+            #[cfg(feature = "fuzz")]
+            {
+                let (_, previous_height, previous_digest) = self.network_finalized_tip;
+                let details = json!({
+                    "round": round.to_string(),
+                    "digest": digest.to_string(),
+                    "previous_digest": previous_digest.to_string(),
+                });
+                assert_always_greater_than_or_equal_to!(
+                    height.get(),
+                    previous_height.get(),
+                    "Finalized height never decreases as finalized rounds advance",
+                    &details
+                );
+                assert_always!(
+                    height != previous_height || digest == previous_digest,
+                    "Finalized block never conflicts with an earlier finalized block at the same height",
+                    &details
+                );
+            }
             if digest != self.network_finalized_tip.2 {
                 self.pending_head.executed = None;
             }

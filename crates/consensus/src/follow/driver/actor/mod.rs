@@ -1,4 +1,6 @@
 use alloy_consensus::BlockHeader as _;
+#[cfg(feature = "fuzz")]
+use antithesis_sdk::assert_reachable;
 use commonware_consensus::{
     Epochable as _, Heightable as _, marshal,
     simplex::types::Activity,
@@ -8,6 +10,8 @@ use commonware_runtime::{BufferPooler, Clock, ContextCell, Metrics, Spawner, Sto
 use commonware_utils::Acknowledgement as _;
 use eyre::{OptionExt as _, Report, WrapErr as _};
 use rand_core::{CryptoRng, Rng};
+#[cfg(feature = "fuzz")]
+use serde_json::json;
 use tempo_chainspec::NetworkIdentity;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::rpc::consensus::{CertifiedBlock, Event};
@@ -450,6 +454,11 @@ where
                 .epoch_sync_target
                 .is_some_and(|target| self.current_epoch >= target)
             {
+                #[cfg(feature = "fuzz")]
+                assert_reachable!(
+                    "Follower catches up across epochs after its network identity fallback failed",
+                    &json!({ "epoch": self.current_epoch.get() })
+                );
                 self.epoch_sync_target = None;
             } else if self.epoch_sync_target.is_some() {
                 // Advance one boundary at a time. Each processed boundary
