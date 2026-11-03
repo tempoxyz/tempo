@@ -144,7 +144,7 @@ fn get_header_uses_cache_above_execution_finalized_watermark() {
 }
 
 #[test_traced]
-fn headers_by_height_reads_both_cache_and_execution_layer() {
+fn header_by_height_reads_only_the_selected_source() {
     deterministic::Runner::default().start(|context| async move {
         let (mut hybrid, provider) = SetupHybrid::default().build(&context).await;
         let cached = make_block(10, B256::ZERO);
@@ -152,22 +152,27 @@ fn headers_by_height_reads_both_cache_and_execution_layer() {
         hybrid = hybrid.put(cached.clone()).await.expect("put");
         provider.add_block(&execution);
 
+        let read = async |height, source| hybrid.header_by_height(height, source).await.unwrap();
+
         // Above the execution layer's finalized height only the cache answers.
         provider.set_reth_finalized(9);
         assert_eq!(
-            hybrid.headers_by_height(10).await.unwrap(),
-            [Some(cached.block().header().clone()), None],
+            read(10, HeaderSource::Prunable).await,
+            Some(cached.block().header().clone()),
         );
+        assert_eq!(read(10, HeaderSource::Execution).await, None);
 
         provider.set_reth_finalized(10);
         assert_eq!(
-            hybrid.headers_by_height(10).await.unwrap(),
-            [
-                Some(cached.block().header().clone()),
-                Some(execution.block().header().clone()),
-            ],
+            read(10, HeaderSource::Prunable).await,
+            Some(cached.block().header().clone()),
         );
-        assert_eq!(hybrid.headers_by_height(11).await.unwrap(), [None, None]);
+        assert_eq!(
+            read(10, HeaderSource::Execution).await,
+            Some(execution.block().header().clone()),
+        );
+        assert_eq!(read(11, HeaderSource::Prunable).await, None);
+        assert_eq!(read(11, HeaderSource::Execution).await, None);
     });
 }
 
