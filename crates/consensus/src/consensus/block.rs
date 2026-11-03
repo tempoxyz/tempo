@@ -12,7 +12,7 @@ use commonware_consensus::{
     types::{Epoch, Height, Round, View},
 };
 use commonware_cryptography::{
-    Committable, Digestible, Signer as _,
+    Committable, Digested, Digestible, Signer as _,
     ed25519::{PrivateKey, PublicKey},
 };
 use reth_consensus::ConsensusError;
@@ -153,7 +153,10 @@ impl Read for Block {
     // TODO: Figure out what this is for/when to use it. This is () for both alto and summit.
     type Cfg = ();
 
-    fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, commonware_codec::Error> {
+    fn read_cfg(
+        buf: &mut impl commonware_codec::Buf,
+        _cfg: &Self::Cfg,
+    ) -> Result<Self, commonware_codec::Error> {
         // XXX: this does not advance `buf`. Also, it assumes that the rlp
         // header is fully contained in the first chunk of `buf`. As per
         // `bytes::Buf::chunk`'s documentation, the first slice should never be
@@ -205,6 +208,14 @@ impl Digestible for Block {
 
     fn digest(&self) -> Self::Digest {
         self.digest()
+    }
+}
+
+/// The block's digest is its sealed hash, so wrapping it computes nothing.
+impl From<Block> for Digested<Block> {
+    fn from(block: Block) -> Self {
+        let digest = block.digest();
+        Self::precomputed(block, digest)
     }
 }
 
@@ -340,7 +351,8 @@ mod tests {
             .expect("test block should be valid");
         let block_bytes = alloy_rlp::encode(&execution_block);
 
-        let decoded = Block::read_cfg(&mut block_bytes.as_ref(), &()).unwrap();
+        let decoded =
+            Block::read_cfg(&mut commonware_codec::Copying(block_bytes.as_ref()), &()).unwrap();
         assert_eq!(decoded, expected);
         assert_eq!(decoded.encode_size(), block_bytes.len());
 
@@ -371,7 +383,8 @@ mod tests {
         });
         let encoded = alloy_rlp::encode(&execution_block);
 
-        let err = Block::read_cfg(&mut encoded.as_slice(), &()).unwrap_err();
+        let err =
+            Block::read_cfg(&mut commonware_codec::Copying(encoded.as_slice()), &()).unwrap_err();
 
         assert!(
             matches!(
@@ -415,7 +428,8 @@ mod tests {
         alloy_rlp::Encodable::encode(&execution_block, &mut encoded);
         block_access_list.write(&mut encoded);
 
-        let err = Block::read_cfg(&mut encoded.as_ref(), &()).unwrap_err();
+        let err =
+            Block::read_cfg(&mut commonware_codec::Copying(encoded.as_ref()), &()).unwrap_err();
 
         let commonware_codec::Error::Wrapped("validating execution block", error) = err else {
             panic!("unexpected error: {err:?}");

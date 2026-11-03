@@ -1120,9 +1120,11 @@ fn parse_ed25519_public_key(field: &str, encoded: &str) -> Result<PublicKey, Man
             field: field.to_owned(),
             reason: source.to_string(),
         })?;
-    PublicKey::decode(&bytes[..]).map_err(|source| ManifestError::InvalidEd25519PublicKey {
-        field: field.to_owned(),
-        reason: source.to_string(),
+    PublicKey::decode(commonware_codec::Copying(&bytes[..])).map_err(|source| {
+        ManifestError::InvalidEd25519PublicKey {
+            field: field.to_owned(),
+            reason: source.to_string(),
+        }
     })
 }
 

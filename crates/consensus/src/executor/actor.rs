@@ -89,7 +89,7 @@ use commonware_consensus::{
     marshal::Update,
     types::{Height, Round, View},
 };
-use commonware_cryptography::ed25519::PublicKey;
+use commonware_cryptography::{Digestible as _, ed25519::PublicKey};
 use commonware_runtime::{
     Clock, ContextCell, Handle, Metrics as RuntimeMetrics, Spawner, spawn_cell,
 };
@@ -1280,7 +1280,7 @@ where
                     );
                     self.pending_finalizations.push_back(FinalizedBlockRequest {
                         cause,
-                        block,
+                        block: block.inner_shared(),
                         acknowledgment: acknowledgement,
                     });
                 }
@@ -1787,7 +1787,11 @@ async fn fetch_block(
 ) -> Option<Arc<Block>> {
     match look_up_block(execution_node, marshal.clone(), digest).await {
         Some(block) => Some(block),
-        None => marshal.subscribe_by_digest(digest, round).await.ok(),
+        None => marshal
+            .subscribe_by_digest(digest, round)
+            .await
+            .ok()
+            .map(|block| block.inner_shared()),
     }
 }
 
@@ -2153,7 +2157,9 @@ impl AncestryWalk {
         }
         let receiver = marshal.subscribe_by_digest(digest, round);
         self.step = WalkStep::FetchParent {
-            _aborter: fetches.push(async move { (owner, receiver.await.ok()) }),
+            _aborter: fetches.push(async move {
+                (owner, receiver.await.ok().map(|block| block.inner_shared()))
+            }),
         };
     }
 

@@ -885,6 +885,10 @@ mod tests {
                 .await
                 .ok_or_else(|| io::Error::from(io::ErrorKind::BrokenPipe))
         }
+
+        fn capacity(&self) -> std::num::NonZeroUsize {
+            std::num::NonZeroUsize::new(1024).unwrap()
+        }
     }
 
     #[derive(Clone, Debug, Default)]

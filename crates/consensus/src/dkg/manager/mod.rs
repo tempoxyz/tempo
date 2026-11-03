@@ -1,15 +1,16 @@
-use std::{future::Future, num::NonZeroUsize, sync::Arc};
+use std::{future::Future, sync::Arc};
 
 use commonware_consensus::{
     marshal::core::DigestFallback,
     types::{Epoch, FixedEpocher, Height},
 };
 use commonware_cryptography::{
+    Digested,
     bls12381::primitives::{group::Share, sharing::Sharing, variant::MinSig},
     ed25519::{PrivateKey, PublicKey},
 };
 use commonware_p2p::Blocker;
-use commonware_runtime::{BufferPooler, Clock, Metrics, Spawner, Storage};
+use commonware_runtime::{Clock, Metrics, Spawner, Storage};
 use commonware_utils::ordered;
 use eyre::{Report, WrapErr as _};
 use futures::channel::mpsc;
@@ -43,7 +44,7 @@ pub(crate) async fn init<TContext, TExecutionLayer, TMarshal, TBlocker>(
     Mailbox,
 )>
 where
-    TContext: BufferPooler + Clock + CryptoRng + Metrics + Spawner + Storage,
+    TContext: Clock + CryptoRng + Metrics + Spawner + Storage,
     TExecutionLayer: ExecutionLayer,
     TMarshal: Marshal,
     TBlocker: Blocker<PublicKey = PublicKey> + Sync,
@@ -68,8 +69,6 @@ pub(crate) struct Config<TExecutionLayer, TMarshal, TBlocker> {
 
     /// Blocks peers that send invalid DKG dealings.
     pub(crate) blocker: TBlocker,
-
-    pub(crate) mailbox_size: NonZeroUsize,
 
     /// The mailbox to the marshal actor. Used to determine if an epoch
     /// can be started at startup.
@@ -125,7 +124,7 @@ pub(crate) trait Marshal: Clone + Send + Sync + 'static {
         &self,
         digest: Digest,
         fallback: DigestFallback,
-    ) -> oneshot::Receiver<Arc<Block>>;
+    ) -> oneshot::Receiver<Digested<Block>>;
 }
 
 /// Epoch transitions emitted by the DKG manager.
@@ -179,14 +178,19 @@ impl ExecutionLayer for TempoExecutionLayer {
 impl Marshal for crate::alias::marshal::Mailbox {
     fn get_block(&self, height: Height) -> impl Future<Output = Option<Block>> + Send {
         let mailbox = self.clone();
-        async move { mailbox.get_block(height).await }
+        async move {
+            mailbox
+                .get_block(height)
+                .await
+                .map(|block| block.inner().clone())
+        }
     }
 
     fn subscribe_by_digest(
         &self,
         digest: Digest,
         fallback: DigestFallback,
-    ) -> oneshot::Receiver<Arc<Block>> {
+    ) -> oneshot::Receiver<Digested<Block>> {
         Self::subscribe_by_digest(self, digest, fallback)
     }
 }

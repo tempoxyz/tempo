@@ -61,6 +61,8 @@ where
     pub oracle: Oracle<PublicKey, TClock>,
     /// Running consensus handle (None if consensus is stopped)
     pub consensus_handle: Option<Handle<eyre::Result<()>>>,
+    /// Context that started consensus, used to let aborted consensus tasks drop.
+    consensus_parent: Option<Context>,
     /// Path to the execution node's data directory
     pub execution_node_datadir: PathBuf,
     /// Running execution node (None if execution is stopped)
@@ -155,6 +157,7 @@ where
             estimator,
             verification_mode,
             consensus_handle: None,
+            consensus_parent: None,
             execution_node: None,
             execution_node_datadir,
             execution_runtime,
@@ -410,6 +413,7 @@ where
         let consensus_handle = engine.start(votes, certificates, resolver, broadcast, marshal, dkg);
 
         self.consensus_handle = Some(consensus_handle);
+        self.consensus_parent = Some(context.child("consensus_stop"));
         debug!(%self.uid, "started consensus for testing node");
     }
 
@@ -436,6 +440,14 @@ where
 
         // Wait for the consensus handle to actually finish
         let _ = handle.await;
+
+        // Aborting the root only signals its descendants; they drop their
+        // futures (and with them their storage handles) the next time the
+        // executor runs. Storage refuses to reopen a blob that is still open,
+        // so let one executor pass run before anyone reopens the partitions.
+        if let Some(context) = self.consensus_parent.take() {
+            commonware_runtime::Clock::sleep(&context, std::time::Duration::from_millis(1)).await;
+        }
 
         debug!(%self.uid, "stopped consensus for testing node");
     }

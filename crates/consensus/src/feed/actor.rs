@@ -8,7 +8,10 @@ use alloy_primitives::hex;
 use commonware_codec::Encode;
 use commonware_runtime::{ContextCell, Handle, Spawner, spawn_cell};
 use futures::StreamExt;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 use tempo_node::rpc::consensus::CertifiedBlock;
 use tracing::{debug, error, info_span, instrument, warn};
 
@@ -75,7 +78,7 @@ impl<TContext: Spawner> Actor<TContext> {
             epoch: tip.round.epoch().get(),
             view: tip.round.view().get(),
             digest: tip.digest.0,
-            block: block.into_execution_block(),
+            block: Arc::unwrap_or_clone(block.inner_shared()).into_execution_block(),
             certificate: hex::encode(finalization.encode()),
         };
 

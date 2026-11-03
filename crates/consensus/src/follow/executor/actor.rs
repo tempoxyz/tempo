@@ -144,7 +144,7 @@ where
                 Some(message) = self.mailbox.next() => {
                     match message {
                         Message::Update(Update::Block(block, ack)) => {
-                            self.block_queue.push_back(((*block).clone(), ack));
+                            self.block_queue.push_back((block.inner().clone(), ack));
                         }
 
                         // A Tip update has a persisted finalization, so it can

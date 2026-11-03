@@ -36,7 +36,7 @@
 //! persists the next epoch's state and instructs this actor to enter it.
 //! Only that instruction installs the next epoch's scheme and allows hints
 //! for its boundary. This repeats until the node catches up to the network.
-use std::{collections::BTreeMap, num::NonZeroUsize};
+use std::{collections::BTreeMap, num::NonZeroUsize, time::Duration};
 
 use alloy_consensus::BlockHeader as _;
 use commonware_consensus::{
@@ -51,7 +51,7 @@ use commonware_p2p::{
 };
 use commonware_parallel::Sequential;
 use commonware_runtime::{
-    BufferPooler, Clock, ContextCell, Handle, Network, Spawner, Storage, spawn_cell,
+    Clock, ContextCell, Handle, Network, Spawner, Storage, spawn_cell,
     telemetry::metrics::{Counter, Gauge, GaugeExt as _, MetricsExt as _},
 };
 use commonware_utils::{NZUsize, vec::NonEmptyVec};
@@ -73,6 +73,9 @@ use super::ingress::{Content, Message};
 
 const REPLAY_BUFFER: NonZeroUsize = NZUsize!(8 * 1024 * 1024); // 8MB
 const WRITE_BUFFER: NonZeroUsize = NZUsize!(1024 * 1024); // 1MB
+/// Pause before simplex retries an unresolved certificate fetch; matches the
+/// marshal resolver.
+const SIMPLEX_FETCH_RETRY_DELAY: Duration = Duration::from_millis(100);
 
 pub(crate) struct Actor<TContext, TBlocker>
 where
@@ -89,8 +92,7 @@ impl<TContext, TBlocker> Actor<TContext, TBlocker>
 where
     TBlocker: Blocker<PublicKey = PublicKey>,
     // TODO(janis): are all of these bounds necessary?
-    TContext: BufferPooler
-        + Spawner
+    TContext: Spawner
         + commonware_runtime::Metrics
         + Rng
         + CryptoRng
@@ -183,21 +185,16 @@ where
             impl Receiver<PublicKey = PublicKey>,
         ),
     ) {
-        let (mux, mut vote_mux, mut vote_backup) = Muxer::builder(
-            self.context.child("vote_mux"),
-            vote_sender,
-            vote_receiver,
-            self.config.mailbox_size.into(),
-        )
-        .with_backup()
-        .build();
+        let (mux, mut vote_mux, mut vote_backup) =
+            Muxer::builder(self.context.child("vote_mux"), vote_sender, vote_receiver)
+                .with_backup()
+                .build();
         mux.start();
 
         let (mux, mut certificate_mux) = Muxer::builder(
             self.context.child("certificate_mux"),
             certificate_sender,
             certificate_receiver,
-            self.config.mailbox_size.into(),
         )
         .build();
         mux.start();
@@ -206,7 +203,6 @@ where
             self.context.child("resolver_mux"),
             resolver_sender,
             resolver_receiver,
-            self.config.mailbox_size.into(),
         );
         mux.start();
 
@@ -272,7 +268,7 @@ where
             .marshal
             .get_block(height)
             .await
-            .map(|block| block.header().clone())
+            .map(|block| block.inner().header().clone())
             .ok_or_eyre(format!("missing finalized header at height `{height}`"))
     }
 
@@ -295,18 +291,9 @@ where
             share,
             participants,
         }: EpochTransition,
-        vote_mux: &mut MuxHandle<
-            impl Sender<PublicKey = PublicKey>,
-            impl Receiver<PublicKey = PublicKey>,
-        >,
-        certificates_mux: &mut MuxHandle<
-            impl Sender<PublicKey = PublicKey>,
-            impl Receiver<PublicKey = PublicKey>,
-        >,
-        resolver_mux: &mut MuxHandle<
-            impl Sender<PublicKey = PublicKey>,
-            impl Receiver<PublicKey = PublicKey>,
-        >,
+        vote_mux: &mut MuxHandle<impl Sender<PublicKey = PublicKey>>,
+        certificates_mux: &mut MuxHandle<impl Sender<PublicKey = PublicKey>>,
+        resolver_mux: &mut MuxHandle<impl Sender<PublicKey = PublicKey>>,
     ) -> eyre::Result<()> {
         if let Some(latest) = self.active_epochs.last_key_value().map(|(k, _)| *k) {
             ensure!(
@@ -407,7 +394,7 @@ where
                 elector: elector::Random::<commonware_cryptography::Sha256>::new(elector),
                 strategy: Sequential,
 
-                reporter: self.config.marshal.clone(),
+                reporter: application.clone(),
                 partition: format!(
                     "{partition_prefix}_consensus_epoch_{epoch}",
                     partition_prefix = self.config.partition_prefix
@@ -423,7 +410,8 @@ where
                 leader_timeout: self.config.time_to_propose,
                 certification_timeout: self.config.time_to_collect_notarizations,
                 timeout_retry: self.config.time_to_retry_nullify_broadcast,
-                fetch_timeout: self.config.time_for_peer_response,
+                fetch_timeout: commonware_utils::NZDuration!(self.config.time_for_peer_response),
+                fetch_retry_delay: SIMPLEX_FETCH_RETRY_DELAY,
                 view_retention: self.config.views_to_track,
                 skip: simplex::config::SkipPolicy::Enabled {
                     timeout: self.config.inactive_time_before_leader_skip,
