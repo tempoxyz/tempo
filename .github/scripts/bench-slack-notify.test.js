@@ -73,6 +73,12 @@ test('nightly failure posts failed jobs to the workflows channel', async () => {
   const silent = { exports: {} };
   runInNewContext(source, { module: silent, require, process: { env: { SLACK_BENCH_BOT_TOKEN: 'test' } },
     fetch: async () => { calls.push(1); } });
-  await silent.exports.nightlyFailure({ github, context: ctx, core: { info() {}, warning() {} } });
+  await assert.rejects(silent.exports.nightlyFailure({ github, context: ctx, core: { info() {}, warning() {} } }));
   assert.equal(calls.length, 0);
+
+  const rejected = { exports: {} };
+  runInNewContext(source, { module: rejected, require,
+    process: { env: { SLACK_BENCH_BOT_TOKEN: 'test', SLACK_WORKFLOWS_CHANNEL: 'CWORKFLOWS' } },
+    fetch: async () => ({ json: async () => ({ ok: false, error: 'not_in_channel' }) }) });
+  await assert.rejects(rejected.exports.nightlyFailure({ github, context: ctx, core: { info() {}, warning() {} } }), /not_in_channel/);
 });

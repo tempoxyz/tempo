@@ -658,9 +658,9 @@ const FAILED_CONCLUSIONS = new Set(['failure', 'timed_out', 'cancelled']);
 async function nightlyFailure({ github, core, context }) {
   const token = process.env.SLACK_BENCH_BOT_TOKEN;
   const channel = process.env.SLACK_WORKFLOWS_CHANNEL;
+  // Fail the job rather than drop the alert: this is the only signal a nightly failed.
   if (!token || !channel) {
-    core.info('SLACK_BENCH_BOT_TOKEN or SLACK_WORKFLOWS_CHANNEL not set, skipping Slack notification');
-    return;
+    throw new Error('SLACK_BENCH_BOT_TOKEN and SLACK_WORKFLOWS_CHANNEL are required for nightly failure alerts');
   }
   const { owner, repo } = context.repo;
   const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
@@ -679,7 +679,10 @@ async function nightlyFailure({ github, core, context }) {
       text: { type: 'mrkdwn', text: `:red_circle: *<${runUrl}|Nightly ${context.workflow} failed>* on main ${commit}\n${jobLines}` },
     },
   ];
-  await postToSlack(token, channel, blocks, text, core);
+  const posted = await postToSlack(token, channel, blocks, text, core);
+  if (!posted.ok) {
+    throw new Error(`Could not post the nightly failure alert to Slack: ${posted.error || 'unknown error'}`);
+  }
 }
 
 module.exports = {
