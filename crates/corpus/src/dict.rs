@@ -3,7 +3,7 @@
 //!
 //! Calldata is decoded with the `sol!` ABIs of `tempo_contracts`; a selector they don't cover is
 //! counted but not decoded. A numeric field is a set of exact values until it took more than
-//! [`MAX_SET_VALUES`] distinct values, then a distribution over sign-folded log2 bins, as state
+//! 64 distinct values, then a distribution over sign-folded log2 bins, as state
 //! features are in foundry-rs/foundry#18018. Addresses, bytes and whole records keep their most
 //! frequent values.
 
