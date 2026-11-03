@@ -1,4 +1,4 @@
-use crate::{TempoBlockExecutor, TempoEvmTypes, TempoTxResult};
+use crate::{TempoBlockExecutor, TempoEvmTypes, TempoHardfork, TempoTxResult};
 use alloy_consensus::transaction::TxHashRef;
 use alloy_primitives::{
     Address, B256, U256,
@@ -102,7 +102,7 @@ impl TempoBlockExecutor<'_> {
 
         let spec = self.evm().config_spec_id();
         let db = self.inner.evm_mut().overlay_db_mut();
-        // Commitment writes per account, as (commitment before the tx, current commitment).
+        // Config commitments per account, as (before the tx, current).
         let mut commitments = AddressMap::<(B256, B256)>::default();
         for action in actions {
             // Expiring nonces are handled above
@@ -187,22 +187,17 @@ impl TempoBlockExecutor<'_> {
                     }
                 }
                 StorageAction::ConfigCommitment(address, before, after) => {
-                    let current = match commitments.get(&address) {
-                        Some(&(_, current)) => current,
-                        None => db
-                            .get_account(&address)
-                            .map_err(map_database_error)?
-                            .map_or(Ok(B256::ZERO), |info| {
-                                account_config_commitment(&info, spec)
-                            })
-                            .map_err(BlockExecutionError::other)?,
+                    let (_, current) = match commitments.entry(address) {
+                        Entry::Occupied(entry) => entry.into_mut(),
+                        Entry::Vacant(entry) => {
+                            let initial = Self::config_commitment(db, address, spec)?;
+                            entry.insert((initial, initial))
+                        }
                     };
-                    if current != before {
+                    if *current != before {
                         return Err(StorageActionReplayError::ActionConflict.into());
                     }
-                    if after != before {
-                        commitments.entry(address).or_insert((before, after)).1 = after;
-                    }
+                    *current = after;
                 }
             }
         }
@@ -227,6 +222,9 @@ impl TempoBlockExecutor<'_> {
 
         // Mirrors set_config_commitment: the first commitment also installs the marker code.
         for (address, (initial, commitment)) in commitments {
+            if initial == commitment {
+                continue;
+            }
             let original = db.get_account(&address).map_err(map_database_error)?;
             let mut current = original.clone().unwrap_or_default();
             if initial.is_zero() {
@@ -237,6 +235,19 @@ impl TempoBlockExecutor<'_> {
         }
 
         Ok(state)
+    }
+
+    fn config_commitment<DB: DynDatabase>(
+        db: &mut CacheDB<DB>,
+        address: Address,
+        spec: TempoHardfork,
+    ) -> Result<B256, BlockExecutionError> {
+        db.get_account(&address)
+            .map_err(map_database_error)?
+            .map_or(Ok(B256::ZERO), |info| {
+                account_config_commitment(&info, spec)
+            })
+            .map_err(BlockExecutionError::other)
     }
 
     fn apply_expiring_nonce_replay(
