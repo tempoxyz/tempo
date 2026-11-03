@@ -331,21 +331,18 @@ impl Peers {
         if size <= max.get() {
             return self;
         }
-        // The P2P network always counts the local identity, so drop it and keep
-        // `max - 1` remote peers.
-        let without_local = |peers: &ordered::Map<PublicKey, Address>| {
-            ordered::Map::from_iter_dedup(
-                peers
-                    .iter_pairs()
-                    .filter(|(key, _)| *key != local)
-                    .map(|(key, val)| (key.clone(), val.clone())),
-            )
-        };
-        self.primary = without_local(&self.primary);
-        self.secondary = without_local(&self.secondary);
-        let budget = max.get() - 1;
-        self.primary.truncate(budget);
-        self.secondary.truncate(budget - self.primary.len());
+
+        // Try keeping `max` peers. If that cuts the local identity, the P2P
+        // network still counts it, so keep one fewer.
+        for budget in [max.get(), max.get() - 1] {
+            self.primary.truncate(budget);
+            self.secondary.truncate(budget - self.primary.len());
+            let flat = self.to_flat_map();
+            if flat.len() + usize::from(flat.position(local).is_none()) <= max.get() {
+                break;
+            }
+        }
+
         warn!(
             peers = size,
             max_peers = max.get(),
@@ -921,17 +918,11 @@ mod tests {
                 .is_some()
         );
 
-        // The local identity is dropped rather than tracked.
+        // The local identity in the set takes no extra slot.
         let bounded = peers
             .clone()
             .bounded(&peer(1).public_key, commonware_utils::NZUsize!(4));
-        assert_eq!(bounded.len(), 3);
-        assert!(
-            bounded
-                .to_flat_map()
-                .position(&peer(1).public_key)
-                .is_none()
-        );
+        assert_eq!(bounded.len(), 4);
 
         let bounded = peers.bounded(&local, commonware_utils::NZUsize!(2));
         assert_eq!(bounded.primary.len(), 1);
