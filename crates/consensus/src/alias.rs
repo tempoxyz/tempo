@@ -304,14 +304,15 @@ pub(crate) mod marshal {
                 .ok_or_eyre("archive did not contain finalized tip certificate")?
         };
         let height = Height::new(last);
-        // Look the tip up by height so that a different block stored there is
-        // rejected; if none is stored, marshal will eventually fetch the tip from
-        // the network by digest.
-        let header = blocks
-            .get_header(Identifier::Index(last))
+        // Look the tip up by height in both the prunable cache and the execution
+        // layer, so that a different block stored in either is rejected; if none
+        // is stored, marshal will eventually fetch the tip from the network by
+        // digest.
+        let headers = blocks
+            .headers_by_height(last)
             .await
-            .wrap_err("failed reading finalized tip header")?;
-        if let Some(header) = &header {
+            .wrap_err("failed reading finalized tip headers")?;
+        for header in headers.iter().flatten() {
             verify_tip_header(height, certificate.proposal.payload, header)?;
         }
 

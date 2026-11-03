@@ -342,6 +342,20 @@ where
         }
     }
 
+    /// Reads the header at `height` from both the prunable archive and the
+    /// execution layer, which only serves heights at or below its finalized
+    /// watermark. Each is `None` when that source holds no block there.
+    pub(crate) async fn headers_by_height(
+        &self,
+        height: u64,
+    ) -> Result<[Option<TempoHeader>; 2], Error> {
+        let cached = archive::Archive::get(&self.prunable, Identifier::Index(height))
+            .await?
+            .map(|block| block.block().header().clone());
+        let execution = self.execution_block_provider.header_by_height(height)?;
+        Ok([cached, execution])
+    }
+
     /// Drops blocks below the execution layer's finalized watermark.
     ///
     /// The cache is sized relative to the EL's finalized boundary, not to
