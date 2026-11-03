@@ -14,7 +14,7 @@ use std::{
 use crate::{
     epoch::SchemeProvider,
     gossip::Certificate,
-    test_utils::{dkg_fixture, make_certificate},
+    test_utils::{DkgFixture, dkg_fixture, make_certificate},
 };
 use alloy_consensus::{Header, Sealable as _};
 use alloy_primitives::B256;
@@ -73,6 +73,10 @@ pub(super) struct Harness {
     initial_state: Option<State>,
     network_identity: NetworkIdentity,
     finalized_tip: Option<(Height, Certificate)>,
+    /// Signs the default tip certificate over the header the execution layer
+    /// serves at the floor once the actor starts, since tests add headers
+    /// after building the harness.
+    tip_signers: Option<(Epoch, DkgFixture)>,
     storage: Option<state::Storage<Context>>,
     mailbox: Option<Mailbox>,
     handle: Option<Handle<()>>,
@@ -171,39 +175,32 @@ impl HarnessBuilder {
                 .entry(boundary)
                 .or_insert_with(|| outcome_header(boundary, state));
         }
-        let (network_identity, finalized_tip) = if let Some(identity) = self.network_identity {
-            (identity, self.finalized_tip)
-        } else {
-            // Most actor tests exercise recovery and ceremonies. Model a newer
-            // binary bootstrapping from historical data; startup verification
-            // tests supply their own identity and certificate explicitly. The
-            // identity starts after any epoch healing can read from a boundary,
-            // whose outcomes carry other keys.
-            let tip_epoch = self
-                .epoch_strategy
-                .containing(self.last_finalized_height)
-                .unwrap()
-                .epoch();
-            let identity_epoch = initial_state
-                .as_ref()
-                .map_or(tip_epoch, |state| state.epoch.max(tip_epoch))
-                .next()
-                .next();
-            let fixture = dkg_fixture(&mut self.context, identity_epoch);
-            let tip = (!self.last_finalized_height.is_zero()).then(|| {
-                let header = header(self.last_finalized_height);
-                let certificate =
-                    make_certificate(Digest(header.hash_slow()), tip_epoch, 1, &fixture.schemes);
-                (self.last_finalized_height, certificate)
-            });
-            (
-                NetworkIdentity {
-                    from_epoch: identity_epoch.get(),
-                    identity: *fixture.outcome.network_identity(),
-                },
-                tip,
-            )
-        };
+        let (network_identity, finalized_tip, tip_signers) =
+            if let Some(identity) = self.network_identity {
+                (identity, self.finalized_tip, None)
+            } else {
+                // Most actor tests exercise recovery and ceremonies. Model a newer
+                // binary bootstrapping from historical data; startup verification
+                // tests supply their own identity and certificate explicitly.
+                let tip_epoch = self
+                    .epoch_strategy
+                    .containing(self.last_finalized_height)
+                    .unwrap()
+                    .epoch();
+                let identity_epoch = initial_state
+                    .as_ref()
+                    .map_or(tip_epoch, |state| state.epoch.max(tip_epoch))
+                    .next();
+                let fixture = dkg_fixture(&mut self.context, identity_epoch);
+                (
+                    NetworkIdentity {
+                        from_epoch: identity_epoch.get(),
+                        identity: *fixture.outcome.network_identity(),
+                    },
+                    None,
+                    (!self.last_finalized_height.is_zero()).then_some((tip_epoch, fixture)),
+                )
+            };
         let storage = if let Some(state) = initial_state.clone() {
             Some(
                 state::builder()
@@ -227,6 +224,7 @@ impl HarnessBuilder {
             initial_state,
             network_identity,
             finalized_tip,
+            tip_signers,
             storage,
             mailbox: None,
             handle: None,
@@ -280,6 +278,21 @@ impl Harness {
     pub(super) async fn init(&mut self) -> eyre::Result<(TestActor, Mailbox)> {
         assert!(self.handle.is_none(), "DKG actor is already running");
         drop(self.storage.take());
+        if let Some((epoch, fixture)) = &self.tip_signers {
+            let height = self.last_finalized_height;
+            let tip_header = self
+                .execution
+                .headers
+                .lock()
+                .unwrap()
+                .get(&height)
+                .cloned()
+                .unwrap_or_else(|| header(height));
+            self.finalized_tip = Some((
+                height,
+                make_certificate(Digest(tip_header.hash_slow()), *epoch, 1, &fixture.schemes),
+            ));
+        }
         init(
             self.context.child("actor"),
             Config {
