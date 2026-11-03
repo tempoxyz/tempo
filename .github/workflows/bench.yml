@@ -753,6 +753,7 @@ jobs:
       comment-id: ${{ needs.tempo-bench-ack.outputs.comment-id }}
       pr-head-sha: ${{ needs.tempo-bench-ack.outputs.pr-head-sha }}
       pr-head-ref: ${{ needs.tempo-bench-ack.outputs.pr-head-ref }}
+      slack: ${{ needs.tempo-bench-ack.outputs.no-slack == 'true' && 'never' || 'always' }}
     secrets:
       DEREK_UPDATE_RETH_TOKEN: ${{ secrets.DEREK_UPDATE_RETH_TOKEN }}
       TEMPO_TELEMETRY_URL: ${{ secrets.TEMPO_TELEMETRY_URL }}
