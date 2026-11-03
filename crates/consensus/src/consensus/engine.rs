@@ -306,7 +306,6 @@ where
             estimator: self.estimator.clone(),
             epoch_strategy: epoch_strategy.clone(),
         });
-        let finalized_reporter = application.clone();
         let application = application::Factory::new(
             &context,
             application,
@@ -349,7 +348,6 @@ where
 
             resolver_config,
             marshal,
-            finalized_reporter,
 
             epoch_manager_config,
 
@@ -394,9 +392,6 @@ where
     /// Listens to consensus events and syncs blocks from the network to the
     /// local node.
     marshal: crate::alias::marshal::Actor<TContext>,
-
-    /// Receives finalized blocks from marshal.
-    finalized_reporter: application::Inner,
 
     epoch_manager_config: epoch::manager::Config<TContext, TBlocker>,
 
@@ -553,7 +548,7 @@ where
         ));
 
         let marshal = self.marshal.start(
-            Reporters::from((self.finalized_reporter, reporters)),
+            Reporters::from((self.epoch_manager_config.application.clone(), reporters)),
             self.broadcast_mailbox,
             resolver,
         );

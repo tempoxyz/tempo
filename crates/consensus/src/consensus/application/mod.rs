@@ -25,6 +25,7 @@ use commonware_codec::Codec;
 use commonware_consensus::{
     Automaton, CertifiableAutomaton, CertifiableBlock, Handoff, Relay, Reporter,
     marshal::{
+        Update,
         core::Mailbox,
         standard::{Deferred, Inline, Standard},
     },
@@ -49,7 +50,12 @@ use crate::{VerificationMode, consensus::block::Block};
 pub(crate) type TempoFactory<TContext> =
     Factory<TContext, Scheme<PublicKey, MinSig>, Inner, Block, FixedEpocher>;
 
-/// Both verification wrappers, shared by marshal and every epoch's simplex engine.
+/// The application as marshal and every epoch's simplex engine see it.
+///
+/// Simplex gets a verification wrapper per epoch through [`Self::for_timestamp`].
+/// Marshal reports finalized blocks to the factory, which forwards them to the
+/// application itself: the wrappers report from simplex into marshal and take
+/// no part in that direction.
 pub(crate) struct Factory<E, S, A, B, ES>
 where
     E: Rng + Spawner + commonware_runtime::Metrics + Clock,
@@ -58,6 +64,7 @@ where
     B: CertifiableBlock + Codec + Clone,
     ES: Epocher,
 {
+    application: A,
     immediate: Inline<E, S, A, B, ES>,
     deferred: Deferred<E, S, A, B, ES>,
     chainspec: Arc<TempoChainSpec>,
@@ -74,6 +81,7 @@ where
 {
     fn clone(&self) -> Self {
         Self {
+            application: self.application.clone(),
             immediate: self.immediate.clone(),
             deferred: self.deferred.clone(),
             chainspec: self.chainspec.clone(),
@@ -109,6 +117,7 @@ where
         verification_mode: VerificationMode,
     ) -> Self {
         Self {
+            application: inner.clone(),
             immediate: Inline::new(
                 context.child("application"),
                 inner.clone(),
@@ -131,6 +140,21 @@ where
         } else {
             Application::Immediate(self.immediate.clone())
         }
+    }
+}
+
+impl<E, S, A, B, ES> Reporter for Factory<E, S, A, B, ES>
+where
+    E: Rng + Spawner + commonware_runtime::Metrics + Clock,
+    S: CertificateScheme,
+    A: commonware_consensus::Application<E> + Reporter<Activity = Update<B>>,
+    B: CertifiableBlock + Codec + Clone,
+    ES: Epocher,
+{
+    type Activity = Update<B>;
+
+    fn report(&mut self, activity: Self::Activity) -> Feedback {
+        self.application.report(activity)
     }
 }
 
