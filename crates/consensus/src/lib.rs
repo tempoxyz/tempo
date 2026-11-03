@@ -35,14 +35,10 @@ use commonware_cryptography::{
 };
 use commonware_p2p::authenticated::lookup;
 use commonware_runtime::Supervisor as _;
-use commonware_stream::{
-    SakeCups,
-    cups::{self, Cups},
-    sake::{self, Sake},
-};
 use eyre::{OptionExt, WrapErr as _, eyre};
 use tempo_consensus_config::SigningShare;
 use tempo_node::TempoFullNode;
+use tempo_p2p_upgrader::{Accept, MultiVersion, Version};
 use tracing::info;
 
 pub use crate::config::{
@@ -244,22 +240,21 @@ async fn instantiate_network(
     config: &Args,
     signing_key: PrivateKey,
 ) -> eyre::Result<(
-    lookup::Network<commonware_runtime::tokio::Context, SakeCups<PrivateKey, ChaCha20Poly1305>>,
+    lookup::Network<commonware_runtime::tokio::Context, MultiVersion<PrivateKey, ChaCha20Poly1305>>,
     lookup::Oracle<PublicKey>,
 )> {
     // TODO: Find out why `union_unique` should be used. This is the only place
     // where `NAMESPACE` is used at all. We follow alto's example for now.
     let namespace = commonware_utils::union_unique(crate::config::NAMESPACE, b"_P2P");
-    // V0 is the wire protocol of commonware v2026.9.0. Versions are not
-    // negotiated, so every peer must use the same ones.
-    let handshake = Cups::new(
-        Sake {
-            signer: signing_key,
-            synchrony_bound: config.synchrony_bound.into_duration(),
-            max_handshake_age: config.handshake_stale_after.into_duration(),
-            version: sake::Version::V0,
-        },
-        cups::Version::V0,
+    // First step of the move to V1: dial V0, the wire protocol of commonware
+    // v2026.9.0, so older peers still accept us, and accept V1 so peers can
+    // dial it once every validator runs this.
+    let handshake = MultiVersion::new(
+        signing_key,
+        config.synchrony_bound.into_duration(),
+        config.handshake_stale_after.into_duration(),
+        Version::V0,
+        Accept::new(vec![Version::V0, Version::V1]).expect("accepts at least one version"),
     );
     let cfg = lookup::Config {
         handshake,
