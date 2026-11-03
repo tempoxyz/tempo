@@ -727,7 +727,10 @@ def txgen-card-settlement-template [template: record, --account: string = $TXGEN
         function: transfer
         args: [$account 1]
     }
-    $template | reject -o sponsor | upsert nonce {uniform: [0 9223372036854775807]} | upsert calls ($template.calls | append $forward)
+    # No explicit nonce: txgen then bumps each expiring transaction's fee for uniqueness, as it does
+    # for the vault withdrawals this shards. An explicit nonce turns the bump off and leaves the
+    # transaction at the lowest tip, so it never wins a place in a saturated general lane.
+    $template | reject -o sponsor | upsert calls ($template.calls | append $forward)
 }
 
 # Repeats each batch-payout template's last call once per recipient, scales its
@@ -742,7 +745,7 @@ def txgen-batch-payout-templates [presets_dir: string, recipients: int, --genera
     if $recipients < 1 { error make {msg: "TXGEN_BATCH_PAYOUT_RECIPIENTS must be positive"} }
     # Nushell's YAML parser keeps the i64 nonce bound exact; a jq round-trip may not.
     open ($presets_dir | path join batch-payout.yml) | get templates | items { |name, template|
-        let payment = ($template.calls | last | get to | str downcase | str starts-with "0x20c0")
+        let payment = ($template.calls | last | get to | str lowercase | str starts-with "0x20c0")
         let cap = if $general_gas_cap > 0 and not $payment { $general_gas_cap } else { $TXGEN_HELPER_TX_GAS_LIMIT_CAP }
         let gas_fit = ([((($cap - $TXGEN_HELPER_BATCH_PAYOUT_BASE_GAS) // $template.gas_limit)) 1] | math max)
         let call_fit = $TXGEN_HELPER_MAX_AA_CALLS - ($template.calls | length) + 1
