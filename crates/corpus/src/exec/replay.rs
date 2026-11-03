@@ -70,20 +70,11 @@ pub fn run(
     // Read the published snapshot through a lease of our own: a fill extending the corpus
     // retires the published checkpoint with a fixed grace lifetime a long replay can outlast.
     // A replay that fails before releasing it leaves it to expire.
-    let lease = runtime.block_on(store.lease(&catalog))?;
-    catalog.checkpoint = Some(lease.clone());
-    let renewal = runtime.spawn({
-        let (renew, cancellation) = (
-            store.clone().renew_lease(lease.clone()),
-            cancellation.clone(),
-        );
+    let lease = store.lease_published(&runtime, &mut catalog, {
+        let cancellation = cancellation.clone();
         // Stop reading before the lease may expire.
-        async move {
-            let renewed = renew.await;
-            cancellation.cancel();
-            renewed
-        }
-    });
+        move || cancellation.cancel()
+    })?;
     let reader = Arc::new(runtime.block_on(store.reader(&catalog))?);
     let tip_timestamp = runtime.block_on(store::tip_timestamp(&reader, &catalog.cursor))?;
     eyre::ensure!(
@@ -275,18 +266,15 @@ pub fn run(
         Ok(())
     });
     let closed = runtime.block_on(reader.close());
-    let renewed = if renewal.is_finished() {
-        runtime.block_on(renewal)?
-    } else {
-        renewal.abort();
-        Ok(())
-    };
-    let released = runtime.block_on(store.release_lease(&lease));
+    let expiring = lease.expiring();
+    let released = lease.release(&runtime, &store);
+    let finished = result.and(closed.map_err(eyre::Report::from));
     // A failed renewal cancels the replay; report why rather than the cancellation.
-    renewed?;
-    result?;
-    closed?;
-    released
+    if expiring {
+        released.and(finished)
+    } else {
+        finished.and(released)
+    }
 }
 
 /// Opens the corpus and checks it was captured under `config`'s fork schedule.
@@ -308,7 +296,7 @@ async fn open(store: &Store, catalog: &Catalog, config: &TempoEvmConfig) -> eyre
 /// range.
 pub fn run_blocks(
     store: Store,
-    catalog: Catalog,
+    mut catalog: Catalog,
     blocks: &[u64],
     config: TempoEvmConfig,
     consensus: TempoConsensus,
@@ -318,12 +306,18 @@ pub fn run_blocks(
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
+    // A lease of our own, as in [run]; workers stop once it may expire.
+    let lease = store.lease_published(&runtime, &mut catalog, || {})?;
     let reader = runtime.block_on(open(&store, &catalog, &config))?;
     let started = Instant::now();
     let next = AtomicUsize::new(0);
     let replay =
         || -> eyre::Result<()> {
             while let Some(&block) = blocks.get(next.fetch_add(1, Ordering::Relaxed)) {
+                eyre::ensure!(
+                    !lease.expiring(),
+                    "replay lease expires before it can be renewed"
+                );
                 let replayed =
                     runtime.block_on(async {
                         let (record, input) = store::published(&reader, block).await?;
@@ -354,8 +348,15 @@ pub fn run_blocks(
                 .map_err(|_| eyre::eyre!("corpus worker panicked"))?
         })
     });
-    runtime.block_on(reader.close())?;
-    result?;
+    let closed = runtime.block_on(reader.close());
+    let expiring = lease.expiring();
+    let released = lease.release(&runtime, &store);
+    let finished = result.and(closed.map_err(eyre::Report::from));
+    if expiring {
+        released.and(finished)?;
+    } else {
+        finished.and(released)?;
+    }
     info!(
         blocks = blocks.len(),
         workers,

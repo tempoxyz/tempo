@@ -445,6 +445,26 @@ impl Store {
         }
     }
 
+    /// Leases `catalog`'s published checkpoint ([Self::lease]), points `catalog` at the lease and
+    /// renews it on `runtime` in the background. Calls `expiring` once renewal gives up, so the
+    /// caller stops reading through it. Release it with [Lease::release].
+    pub fn lease_published(
+        &self,
+        runtime: &tokio::runtime::Runtime,
+        catalog: &mut Catalog,
+        expiring: impl FnOnce() + Send + 'static,
+    ) -> eyre::Result<Lease> {
+        let id = runtime.block_on(self.lease(catalog))?;
+        catalog.checkpoint = Some(id.clone());
+        let renew = self.clone().renew_lease(id.clone());
+        let renewal = runtime.spawn(async move {
+            let renewed = renew.await;
+            expiring();
+            renewed
+        });
+        Ok(Lease { id, renewal })
+    }
+
     /// Deletes a lease from [Self::lease].
     pub async fn release_lease(&self, lease: &str) -> eyre::Result<()> {
         let admin = Admin::builder(self.data(), self.objects.clone()).build();
@@ -467,6 +487,32 @@ impl Store {
             .await?
             .id
             .to_string())
+    }
+}
+
+/// A reader's lease on a published checkpoint, renewed in the background
+/// ([Store::lease_published]). A lease that is never released expires on its own.
+pub struct Lease {
+    id: String,
+    renewal: tokio::task::JoinHandle<eyre::Result<()>>,
+}
+
+impl Lease {
+    /// Whether renewal gave up, so the lease may expire and reads through it must stop.
+    pub fn expiring(&self) -> bool {
+        self.renewal.is_finished()
+    }
+
+    /// Stops renewing and deletes the lease. Fails with the renewal's error if it gave up.
+    pub fn release(self, runtime: &tokio::runtime::Runtime, store: &Store) -> eyre::Result<()> {
+        let renewed = if self.renewal.is_finished() {
+            runtime.block_on(self.renewal)?
+        } else {
+            self.renewal.abort();
+            Ok(())
+        };
+        let released = runtime.block_on(store.release_lease(&self.id));
+        renewed.and(released)
     }
 }
 
