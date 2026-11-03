@@ -426,11 +426,12 @@ impl std::fmt::Display for Upgrade {
     }
 }
 
-/// The step's `ConfigurableAccountConfigUpdated` events for `account`, in order.
+/// The step's owner-update events for `account`, in order.
 fn updates_of(s: &AccountStep, account: Address) -> Vec<ConfigurableAccountConfigUpdated> {
     s.events::<ConfigurableAccountConfigUpdated>(s.post.precompile)
         .into_iter()
-        .filter(|e| e.account == account)
+        // Version 0 is registration's event, not an owner update.
+        .filter(|e| e.account == account && e.version != 0)
         .collect()
 }
 
