@@ -30,10 +30,10 @@ use reth_transaction_pool::{
     error::{PoolError, PoolErrorKind},
     identifier::TransactionId,
 };
-use revm::database::BundleAccount;
+use reth_trie_common::bundle_state::BundleAccount;
 use std::{sync::Arc, time::Instant};
 use tempo_chainspec::hardfork::{TempoHardfork, TempoHardforks};
-use tempo_evm::TempoEvmConfig;
+use tempo_evm::{TempoEvmConfig, TempoStateAccess};
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     account_keychain::AccountKeychain,
@@ -43,7 +43,6 @@ use tempo_precompiles::{
     tip403_registry::{REJECT_ALL_POLICY_ID, TIP403Registry},
 };
 use tempo_primitives::{Block, TempoHeader};
-use tempo_revm::TempoStateAccess;
 
 /// Transaction pool operations for Tempo nonce lanes.
 pub trait TempoTransactionPoolExt: TransactionPool {
@@ -686,12 +685,7 @@ where
         origin: TransactionOrigin,
         transaction: Self::Transaction,
     ) -> PoolResult<TransactionEvents> {
-        let tx = self
-            .protocol_pool
-            .validator()
-            .validate_transaction(origin, transaction)
-            .await;
-        let res = self.add_validated_transaction(origin, tx)?;
+        let res = self.add_transaction(origin, transaction).await?;
         self.transaction_event_listener(res.hash)
             .ok_or_else(|| PoolError::new(res.hash, PoolErrorKind::DiscardedOnInsert))
     }
@@ -701,12 +695,10 @@ where
         origin: TransactionOrigin,
         transaction: Self::Transaction,
     ) -> PoolResult<AddedTransactionOutcome> {
-        let tx = self
-            .protocol_pool
-            .validator()
-            .validate_transaction(origin, transaction)
-            .await;
-        self.add_validated_transaction(origin, tx)
+        self.add_transactions_with_origins(vec![(origin, transaction)])
+            .await
+            .pop()
+            .expect("one result per transaction")
     }
 
     async fn add_transactions(
@@ -714,25 +706,10 @@ where
         origin: TransactionOrigin,
         transactions: Vec<Self::Transaction>,
     ) -> Vec<PoolResult<AddedTransactionOutcome>> {
-        if transactions.is_empty() {
-            return Vec::new();
-        }
-
-        // Fully delegate to protocol pool for non-2D transactions
-        if !transactions.iter().any(|tx| tx.is_aa_2d()) {
-            return self
-                .protocol_pool
-                .add_transactions(origin, transactions)
-                .await;
-        }
-
-        self.protocol_pool
-            .validator()
-            .validate_transactions_with_origin(origin, transactions)
-            .await
-            .into_iter()
-            .map(|outcome| self.add_validated_transaction(origin, outcome))
-            .collect()
+        self.add_transactions_with_origins(
+            transactions.into_iter().map(|tx| (origin, tx)).collect(),
+        )
+        .await
     }
 
     async fn add_transactions_with_origins(
@@ -1489,7 +1466,7 @@ mod tests {
         spec::{MODERATO, TEMPO_T1_TX_GAS_LIMIT_CAP},
     };
     use tempo_contracts::precompiles::ITIP403Registry;
-    use tempo_evm::TempoEvmConfig;
+    use tempo_evm::{ResolvedFeeToken, TempoEvmConfig};
     use tempo_precompiles::{
         PATH_USD_ADDRESS,
         account_keychain::{
@@ -1502,7 +1479,6 @@ mod tests {
         Block, TempoHeader, TempoPrimitives, TempoTxEnvelope,
         transaction::{KeyAuthorization, PrimitiveSignature, SignatureType},
     };
-    use tempo_revm::ResolvedFeeToken;
 
     fn provider_with_spending_limit(
         account: Address,
@@ -2328,16 +2304,7 @@ mod tests {
         let pool = TempoTransactionPool::new(protocol_pool, AA2dPool::new(Default::default()));
 
         for pooled in [&matching, &untouched] {
-            let validated = TransactionValidationOutcome::Valid {
-                balance: *pooled.cost(),
-                state_nonce: pooled.nonce(),
-                bytecode_hash: None,
-                transaction: ValidTransaction::new(pooled.clone(), None),
-                propagate: true,
-                authorities: None,
-            };
-            pool.add_validated_transaction(TransactionOrigin::External, validated)
-                .expect("transaction should be admitted");
+            add_validated(&pool, pooled.clone());
         }
 
         let mut updates = crate::maintain::TempoPoolUpdates::new();
@@ -2419,16 +2386,7 @@ mod tests {
         let pool = TempoTransactionPool::new(protocol_pool, AA2dPool::new(Default::default()));
 
         for pooled in [&matching, &untouched] {
-            let validated = TransactionValidationOutcome::Valid {
-                balance: *pooled.cost(),
-                state_nonce: pooled.nonce(),
-                bytecode_hash: None,
-                transaction: ValidTransaction::new(pooled.clone(), None),
-                propagate: true,
-                authorities: None,
-            };
-            pool.add_validated_transaction(TransactionOrigin::External, validated)
-                .expect("transaction should be admitted");
+            add_validated(&pool, pooled.clone());
         }
 
         let mut updates = crate::maintain::TempoPoolUpdates::new();
@@ -2506,16 +2464,7 @@ mod tests {
         let pool = TempoTransactionPool::new(protocol_pool, AA2dPool::new(Default::default()));
 
         for pooled in [&matching, &untouched] {
-            let validated = TransactionValidationOutcome::Valid {
-                balance: *pooled.cost(),
-                state_nonce: pooled.nonce(),
-                bytecode_hash: None,
-                transaction: ValidTransaction::new(pooled.clone(), None),
-                propagate: true,
-                authorities: None,
-            };
-            pool.add_validated_transaction(TransactionOrigin::External, validated)
-                .expect("transaction should be admitted");
+            add_validated(&pool, pooled.clone());
         }
 
         let mut updates = crate::maintain::TempoPoolUpdates::new();

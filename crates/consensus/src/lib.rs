@@ -19,6 +19,7 @@ pub mod metrics;
 mod network;
 pub(crate) mod network_identity;
 pub(crate) mod peer_manager;
+pub(crate) mod startup;
 pub mod storage;
 #[cfg(test)]
 pub(crate) mod test_utils;
@@ -54,6 +55,11 @@ const MAINNET_TESTNET_EPOCH_LENGTH_BLOCKS: u64 = 21_600;
 /// the finalized tip should be able to sync from peers.
 pub const MINIMAL_PEER_SYNC_FINALIZED_BLOCKS: u64 = 3 * MAINNET_TESTNET_EPOCH_LENGTH_BLOCKS;
 
+/// Starts consensus using `estimator` as the authority for proposal pacing.
+///
+/// The estimator must be shared with the payload builder. Timing fields in
+/// `config` seed that estimator at the launch boundary; this function does not
+/// apply them again, so an explicit estimator override takes precedence.
 pub async fn run_consensus_stack(
     context: commonware_runtime::tokio::Context,
     config: Args,
@@ -102,12 +108,6 @@ pub async fn run_consensus_stack(
     let broadcaster = network.register(BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT);
     let marshal = network.register(MARSHAL_CHANNEL_IDENT, backfill_quota);
     let dkg = network.register(DKG_CHANNEL_IDENT, DKG_LIMIT);
-    let target_block_time = config.target_block_time.into_duration();
-    // Reserve time for propagation. The remaining application budget starts
-    // after commonware fetches the parent; that fetch time is not deducted.
-    let proposal_return_budget =
-        target_block_time.saturating_sub(config.network_budget.into_duration());
-
     let consensus_engine = crate::consensus::engine::Builder {
         network_identity,
         execution_node: Some(execution_node),
@@ -135,7 +135,6 @@ pub async fn run_consensus_stack(
         time_for_peer_response: config.wait_for_peer_response.into_duration(),
         views_to_track: config.views_to_track,
         inactive_time_before_leader_skip: config.inactive_time_before_leader_skip.into_duration(),
-        proposal_return_budget,
         estimator,
         fcu_heartbeat_interval: config.fcu_heartbeat_interval.into_duration(),
 

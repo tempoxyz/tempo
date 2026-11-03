@@ -2455,7 +2455,6 @@ async fn execute_build(
         };
     }
     if let Some(deferred) = deferred_extra_data {
-        let wait_start = Instant::now();
         let extra_data = select! {
             biased;
 
@@ -2477,12 +2476,6 @@ async fn execute_build(
             }
         };
         attributes = attributes.with_extra_data(extra_data);
-        // The requester measured the budget when it sent the build, but we spent some time here
-        // for waiting for the extra data to be resolved.
-        if let Some(budget) = attributes.payload_build_budget() {
-            attributes =
-                attributes.with_payload_build_budget(budget.saturating_sub(wait_start.elapsed()));
-        }
     }
     BuildOutcome::Forkchoice(
         execute_forkchoice(

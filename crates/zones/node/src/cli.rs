@@ -803,6 +803,7 @@ fn validate_deprecated_zone_id(configured: Option<u32>, derived: u32) -> eyre::R
 mod tests {
     use std::{io::Write as _, process::Command, thread, time::Duration};
 
+    use alloy_primitives::address;
     use clap::Parser as _;
 
     use super::*;
@@ -914,7 +915,6 @@ mod tests {
 
     #[tokio::test]
     async fn cli_evm_derives_portal_from_chain_spec() {
-        use alloy_evm::EvmFactory as _;
         use reth_chainspec::EthChainSpec as _;
         use reth_evm::ConfigureEvm as _;
 
@@ -936,11 +936,18 @@ mod tests {
                 std::sync::Arc::new(zone_chainspec::ZoneChainSpec::from_genesis(genesis).unwrap());
             let config =
                 super::cli_evm_config(spec, Some("http://localhost:8545".parse().unwrap()));
-            let evm = config
-                .evm_factory()
-                .create_evm(revm::database::EmptyDB::default(), Default::default());
+            let evm = config.evm_with_env(
+                evm2::evm::InMemoryDB::default(),
+                tempo_evm::TempoEvmEnv::default(),
+            );
             assert_eq!(
-                evm.ctx().journaled_state.database.l1_state().portal(),
+                evm.database_as::<zone_evm::L1OverlayDB<
+                    evm2::evm::Db<evm2::evm::InMemoryDB>,
+                    zone_l1::state::L1StateProvider,
+                >>()
+                .expect("zone database")
+                .l1_state()
+                .portal(),
                 expected
             );
         }
@@ -1321,9 +1328,7 @@ mod tests {
     #[test]
     fn deposit_allowlist_is_enforced_only_when_enabled() {
         let common = ["tempo-zone", "--l1.rpc-url", "ws://localhost:8546"];
-        let admin: Address = "0x00000000000000000000000000000000000000ad"
-            .parse()
-            .unwrap();
+        let admin = address!("0x00000000000000000000000000000000000000ad");
         let admin_arg = admin.to_string();
         let parse = |extra: &[&str]| {
             ZoneArgsParser::try_parse_from(common.iter().chain(extra))

@@ -40,10 +40,7 @@ RUN printf '%s\n' \
       '[profile.dev.package."*"]' 'debug = 0' \
       > "${CARGO_HOME}/config.toml"
 
-# The fuzz crate's lockfile lags the workspace version of its path dependency after each release, so it is fetched
-# without --locked; cargo then only bumps that entry and keeps registry crates pinned.
-RUN cargo fetch --locked \
-    && cargo fetch --manifest-path crates/nitro-attestation/fuzz/Cargo.toml
+RUN cargo fetch --locked
 
 # Every test binary and example in the workspace (cargo's default test targets, so the commands in threat_model.md
 # rebuild nothing), then the binaries, including tempo-localnet for a dev node. Always --workspace: -p changes

@@ -1303,7 +1303,7 @@ contract ValidatorConfigV2Test is TempoTest {
     }
 
     function test_endpointLength_rejectsOversizedInputs() public {
-        vm.skip(keccak256(bytes(vm.getEvmVersion())) != keccak256("t14"));
+        vm.skip(!_isT14OrLater());
         _initializeV2();
 
         // Leading zeroes make a 256-byte ingress that still parses as a socket address.
@@ -1369,7 +1369,7 @@ contract ValidatorConfigV2Test is TempoTest {
         _initializeV2();
         string memory oversizedIngress =
             string.concat("192.168.1.2:", LibString.repeat("0", 242), "80");
-        if (keccak256(bytes(vm.getEvmVersion())) == keccak256("t14")) {
+        if (_isT14OrLater()) {
             vm.expectRevert(
                 abi.encodeWithSelector(IValidatorConfigV2.InvalidIp.selector, oversizedIngress)
             );

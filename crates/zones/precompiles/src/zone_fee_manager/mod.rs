@@ -88,6 +88,7 @@ impl ZoneFeeManager {
 mod tests {
     use super::*;
     use alloy_sol_types::SolError;
+    use evm2::precompiles::PrecompileError;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{TIP20Error, UnknownFunctionSelector};
     use tempo_precompiles::{
@@ -230,9 +231,11 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut manager = ZoneFeeManager::new();
             let calldata = [0xde, 0xad, 0xbe, 0xef];
-            let output = manager.call(&calldata, Address::random())?;
-            assert!(output.is_revert());
-            let error = UnknownFunctionSelector::abi_decode(&output.bytes)?;
+            let Err(PrecompileError::Revert(output)) = manager.call(&calldata, Address::random())
+            else {
+                panic!("expected revert");
+            };
+            let error = UnknownFunctionSelector::abi_decode(&output)?;
             assert_eq!(error.selector.as_slice(), calldata);
 
             Ok(())
@@ -245,9 +248,10 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut manager = ZoneFeeManager::new();
             for len in 0..4 {
-                let output = manager.call(&[0u8; 3][..len], Address::random())?;
-                assert!(output.is_revert());
-                assert!(output.bytes.is_empty());
+                assert!(matches!(
+                    manager.call(&[0u8; 3][..len], Address::random()),
+                    Err(PrecompileError::Revert(output)) if output.is_empty()
+                ));
             }
             Ok(())
         })

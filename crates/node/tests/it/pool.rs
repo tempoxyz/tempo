@@ -3,12 +3,10 @@ use alloy::{
     signers::{SignerSync, local::PrivateKeySigner},
 };
 use alloy_eips::{Decodable2718, Encodable2718};
-use alloy_primitives::{Address, TxKind, U64, U256, address};
+use alloy_primitives::{Address, TxKind, U64, U256, address, hex};
 use reth_chainspec::EthChainSpec;
 use reth_e2e_test_utils::{node::Finality, wait::assert_holds_for, wallet::test_signer};
-use reth_ethereum::{
-    evm::revm::primitives::hex, pool::TransactionPool, primitives::SignerRecoverable,
-};
+use reth_ethereum::{pool::TransactionPool, primitives::SignerRecoverable};
 use reth_node_builder::BuiltPayload;
 use reth_primitives_traits::transaction::{TxHashRef, error::InvalidTransactionError};
 use reth_transaction_pool::{
@@ -55,7 +53,7 @@ async fn test_fallback_balance_updates_revalidate_only_relevant_crossings() -> e
     genesis["alloc"][format!("{inferred_token:#x}")]["storage"][format!("{slot:#066x}")] =
         format!("{:#066x}", fee * U256::from(4)).into();
     let mut ousd = genesis["alloc"][format!("{DEFAULT_FEE_TOKEN:#x}")].clone();
-    ousd["storage"][format!("{:#066x}", U256::from(slots::QUOTE_TOKEN))] = format!(
+    ousd["storage"][format!("{:#066x}", slots::QUOTE_TOKEN)] = format!(
         "{:#066x}",
         U256::from_be_slice(DEFAULT_FEE_TOKEN.as_slice())
     )
@@ -715,8 +713,7 @@ async fn test_evict_txs_on_transfer_policy_change() -> eyre::Result<()> {
 
     let sig = admin_signer.sign_hash_sync(&policy_tx.signature_hash())?;
     let envelope: TempoTxEnvelope = policy_tx.into_signed(sig.into()).into();
-    let mut encoded = Vec::new();
-    envelope.encode_2718(&mut encoded);
+    let encoded = envelope.encoded_2718();
 
     node2.inject_tx(encoded.into()).await?;
     let policy_payload = node2.build_and_submit_payload().await?;

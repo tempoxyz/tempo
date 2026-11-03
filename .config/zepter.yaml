@@ -25,7 +25,6 @@ workflows:
         "--ignore-missing-propagate=tempo-chainspec/serde:tempo-contracts/serde",
         "--ignore-missing-propagate=tempo-precompiles/serde:tempo-contracts/serde",
         "--ignore-missing-propagate=tempo-primitives/serde:tempo-contracts/serde",
-        "--ignore-missing-propagate=tempo-revm/serde:tempo-contracts/serde",
         # Auxiliary flags:
         "--offline",
         "--locked",

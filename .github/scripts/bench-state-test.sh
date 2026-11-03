@@ -116,10 +116,8 @@ export GITHUB_REF_NAME=main
 export STATE_TEST_ARTIFACTS='[{"artifacts":[]}]'
 [[ -z "$(bash "$scripts/bench-state.sh" owner/repo replay mainnet)" ]]
 unset STATE_TEST_ARTIFACTS
-for conclusion in failure cancelled skipped; do
-  export STATE_TEST_CONCLUSION="$conclusion"
-  [[ -z "$(bash "$scripts/bench-state.sh" owner/repo replay mainnet)" ]]
-done
+export STATE_TEST_CONCLUSION=failure
+[[ "$(bash "$scripts/bench-state.sh" owner/repo replay mainnet)" == "$previous" ]]
 unset STATE_TEST_CONCLUSION
 export STATE_TEST_STATUS=in_progress
 [[ -z "$(bash "$scripts/bench-state.sh" owner/repo replay mainnet)" ]]
@@ -165,6 +163,15 @@ for series in replay e2e zones; do
     echo "PASS: $series $key first run, unchanged/changed commit, force, and API failure"
   done
 done
+
+export STATE_TEST_VALUE="$previous"
+for path in bench-zones-scheduled zones-benchmark; do
+  export STATE_TEST_PATH=".github/workflows/$path.yml"
+  [[ "$(bash "$scripts/bench-state.sh" owner/repo zones prover)" == "$previous" ]]
+  [[ -z "$(bash "$scripts/bench-state.sh" owner/repo e2e default)" ]]
+done
+unset STATE_TEST_PATH
+echo 'PASS: Zones baseline survives workflow rename without accepting L1 state'
 
 # Release comparisons must never read nightly state, whether triggered by a tag
 # or a manual release ref. A tempo/v tag compares against the previous v release. A state API failure must not affect either path.

@@ -463,8 +463,8 @@ mod tests {
                 + 60,
             signature: Bytes::new(),
         };
-        write.signature = Bytes::copy_from_slice(
-            &signer
+        write.signature = Bytes::from(
+            signer
                 .sign_hash_sync(&write.signing_hash(&relay.admin.domain()))
                 .unwrap()
                 .as_bytes(),

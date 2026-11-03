@@ -45,6 +45,8 @@ use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_precompiles::validator_config_v2::{VALIDATOR_NS_ADD, VALIDATOR_NS_ROTATE};
 use tempo_validator_config::ValidatorConfig;
 
+#[cfg(feature = "corpus")]
+use crate::corpus;
 use crate::{init_state, p2p_proxy::P2pProxyArgs, regenesis, shadow_replay};
 
 fn get_env(key: &str) -> eyre::Result<String> {
@@ -83,6 +85,11 @@ pub enum TempoSubcommand {
 
     /// Replay historical canonical blocks under candidate hardfork rules.
     ShadowReplay(Box<shadow_replay::ShadowReplay>),
+
+    /// Historical execution corpus: capture an archive range once, replay it without a DB.
+    #[cfg(feature = "corpus")]
+    #[command(subcommand)]
+    Corpus(corpus::CorpusCommand),
 
     /// Install an extension (e.g., `tempo add wallet`).
     #[command(
@@ -130,6 +137,12 @@ impl ExtendedCommand for TempoSubcommand {
                 runner.run_blocking_until_ctrl_c(
                     cmd.execute::<tempo_node::node::TempoNode>(runtime),
                 )?;
+                Ok(())
+            }
+            #[cfg(feature = "corpus")]
+            Self::Corpus(cmd) => {
+                let runtime = runner.runtime();
+                runner.run_blocking_until_ctrl_c(cmd.execute(runtime))?;
                 Ok(())
             }
             Self::ShadowReplay(cmd) => {
