@@ -123,9 +123,9 @@ impl ZoneMonitorSharedState {
 /// Monitors the Zone L2 chain for new finalized batch boundaries and submits
 /// them to the ZonePortal on L1.
 ///
-/// Up to [`PREPARATION_WINDOW`] batches are prepared concurrently and up to [`SUBMISSION_WINDOW`]
-/// settlements are in flight on L1 at once, always submitted and confirmed in order. A submission
-/// failure rebuilds the monitor and its preparation pipeline from the portal-confirmed checkpoint.
+/// Several batches are prepared concurrently and several settlements are in flight on L1 at once,
+/// always submitted and confirmed in order. A submission failure rebuilds the monitor and its
+/// preparation pipeline from the portal-confirmed checkpoint.
 ///
 /// At startup, a non-zero portal anchor must resolve to a canonical local block. Startup fails
 /// closed if that anchor is unavailable or inconsistent instead of silently replaying from genesis.
