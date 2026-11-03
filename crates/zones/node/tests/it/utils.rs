@@ -66,7 +66,7 @@ use tempo_precompiles::{
         ALLOW_ALL_POLICY_ID, AuthRole, CompoundPolicyData as RawCompoundPolicyData, PolicyData,
         PolicyType, TIP403Registry, tip403_registry_slots,
     },
-    zone_factory::portal,
+    zone_factory::{ZonePortalStorage, portal},
 };
 use tempo_primitives::TempoHeader;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -5307,8 +5307,17 @@ impl L1Fixture {
             .into();
         let enabled_token_config = enabled_deposits_active_token_config();
         let max_tempo_gas_rate = B256::from(U256::from(1_000_000_000_000_000_000_u128));
-        let transfers_enabled =
-            B256::from(U256::ONE << (portal::slots::TRANSFERS_ENABLED_OFFSET * 8));
+        let mut portal_storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut portal_storage, || {
+            ZonePortalStorage::new(portal_address)
+                .transfers_enabled
+                .write(true)
+        })
+        .expect("in-memory portal write succeeds");
+        let transfers_enabled: B256 = portal_storage
+            .sload(portal_address, portal::slots::TRANSFERS_ENABLED)
+            .expect("in-memory portal read succeeds")
+            .into();
         let encryption_key = Self::encryption_key();
         let (encryption_key_x, encryption_key_y_parity) =
             compressed_x_and_parity(encryption_key.public_key().as_affine());
