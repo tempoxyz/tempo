@@ -51,6 +51,11 @@ pub async fn migrate(
         .catalog()
         .await?
         .ok_or_eyre("no source corpus catalog")?;
+    // A running legacy fill retires the checkpoint this reads, so only a finished corpus migrates.
+    eyre::ensure!(
+        catalog.complete,
+        "source corpus is not complete; its writer may still be running"
+    );
     let published = catalog.context.start..catalog.cursor.next;
     let range = range.unwrap_or(published.clone());
     eyre::ensure!(
@@ -176,7 +181,7 @@ async fn run(
         for part in hashes.chunks(hashes.len().div_ceil(workers).max(1)) {
             let (reader, db, part) = (reader.clone(), db.clone(), part.to_vec());
             copies.spawn(async move {
-                let (mut batch, mut copied) = (WriteBatch::new(), 0u64);
+                let (mut batch, mut batch_bytes, mut copied) = (WriteBatch::new(), 0, 0u64);
                 for hash in part {
                     let key = store::code_key(&hash);
                     let value = reader
@@ -184,7 +189,13 @@ async fn run(
                         .await?
                         .ok_or_else(|| eyre::eyre!("missing source code {}", B256::from(hash)))?;
                     copied += value.len() as u64;
+                    batch_bytes += value.len();
                     batch.put(key, value);
+                    if batch_bytes >= MAX_RECORD_BYTES {
+                        db.write(std::mem::replace(&mut batch, WriteBatch::new()))
+                            .await?;
+                        batch_bytes = 0;
+                    }
                 }
                 if !batch.is_empty() {
                     db.write(batch).await?;
@@ -255,12 +266,19 @@ async fn segment(
     let mut blocks = reader
         .scan_with_options(store::key(from)..store::key(to), &options)
         .await?;
-    let mut transactions = reader
-        .scan_with_options(
-            store::transaction_key(cursor.tx)..store::transaction_key(last.tx),
-            &options,
+    // None when the segment has no transactions: an empty scan range is rejected.
+    let mut transactions = if cursor.tx == last.tx {
+        None
+    } else {
+        Some(
+            reader
+                .scan_with_options(
+                    store::transaction_key(cursor.tx)..store::transaction_key(last.tx),
+                    &options,
+                )
+                .await?,
         )
-        .await?;
+    };
     let mut migrated = cursor.clone();
     let mut totals = Totals {
         blocks: to - from,
@@ -290,10 +308,11 @@ async fn segment(
             "legacy block record integrity mismatch at {number}"
         );
         for (i, expected) in legacy.cases.iter().enumerate() {
-            let case = transactions
-                .next()
-                .await?
-                .ok_or_eyre("missing transaction record")?;
+            let case = match transactions.as_mut() {
+                Some(scan) => scan.next().await?,
+                None => None,
+            }
+            .ok_or_eyre("missing transaction record")?;
             eyre::ensure!(
                 case.key.as_ref() == store::transaction_key(legacy.first_tx + i as u64)
                     && case.value.len() == expected.bytes
@@ -331,6 +350,8 @@ async fn segment(
             record.bytes <= MAX_RECORD_BYTES,
             "migrated record too large"
         );
+        // The digest only shows the bytes are unchanged: tie the chunk to its record too.
+        store::decode(&payload, &record)?;
         migrated.advance(&record)?;
         let record_json = serde_json::to_vec(&record)?;
         totals.legacy_bytes += (legacy.bytes + entry.value.len()) as u64;
@@ -349,7 +370,10 @@ async fn segment(
             && migrated == last
             && metadata.next().await?.is_none()
             && blocks.next().await?.is_none()
-            && transactions.next().await?.is_none(),
+            && match transactions.as_mut() {
+                Some(scan) => scan.next().await?.is_none(),
+                None => true,
+            },
         "legacy segment boundary mismatch at {to}"
     );
     if !batch.is_empty() {
@@ -469,6 +493,11 @@ impl LegacyRecord {
             .iter()
             .enumerate()
             .all(|(i, case)| case.index == i as u64 && case.bytes > 0);
+        let bytes = self
+            .cases
+            .iter()
+            .try_fold(self.block_bytes, |sum, case| sum.checked_add(case.bytes));
+        let tx = self.first_tx.checked_add(self.transactions);
         eyre::ensure!(
             self.start == number
                 && number == cursor.next
@@ -478,13 +507,14 @@ impl LegacyRecord {
                 && self.transactions == self.cases.len() as u64
                 && indexed
                 && self.block_bytes > 0
-                && self.cases.iter().map(|c| c.bytes).sum::<usize>() + self.block_bytes
-                    == self.bytes,
+                && self.bytes <= MAX_RECORD_BYTES
+                && bytes == Some(self.bytes)
+                && tx.is_some(),
             "legacy metadata chain/coverage mismatch at {number}"
         );
         *cursor = Cursor {
             next: self.end,
-            tx: self.first_tx + self.transactions,
+            tx: tx.expect("checked above"),
             parent: self.tip,
         };
         Ok(())
