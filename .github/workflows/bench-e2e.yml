@@ -647,7 +647,7 @@ jobs:
           esac
           if [ "$jit" = "true" ]; then
             echo "BENCH_FEATURES=$BENCH_FEATURES,jit" >> "$GITHUB_ENV"
-          elif [[ ",$SIDE_FEATURES," != *",jit,"* ]]; then
+          elif [[ ",$(tr -d '[:space:]' <<< "$SIDE_FEATURES")," != *",jit,"* ]]; then
             echo "EVM2 JIT turned off with --no-jit; skipping the LLVM install."
             exit 0
           fi
