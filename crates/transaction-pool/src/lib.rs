@@ -25,7 +25,7 @@ pub mod ordering;
 pub(crate) mod state_cache;
 pub mod tt_2d_pool;
 
-pub use best::{StateAwareBestTransactions, StateAwarePoolTransaction};
+pub use best::{BlockState, StateAwareBestTransactions, StateAwarePoolTransaction};
 pub use maintain::TempoPoolUpdates;
 
 pub use metrics::{AA2dPoolMetrics, TempoPoolMaintenanceMetrics};

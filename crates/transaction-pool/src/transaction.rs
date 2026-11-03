@@ -779,6 +779,13 @@ pub enum TempoPoolTransactionError {
         min_allowed: u64,
     },
 
+    /// An earlier transaction in the block being built made this one unexecutable.
+    ///
+    /// Thrown by the payload builder, which leaves the transaction out of that block. Pool
+    /// maintenance re-checks it once the block commits.
+    #[error("invalidated by an earlier transaction in the block: {0}")]
+    InvalidatedInBlock(&'static str),
+
     /// A transaction matched a configured address check.
     ///
     /// Thrown during pool admission when an address of the transaction (sender, fee payer, call
@@ -829,6 +836,7 @@ impl PoolTransactionError for TempoPoolTransactionError {
             | Self::AccessKeyExpired { .. }
             | Self::KeyAuthorizationExpired { .. }
             | Self::AddressCheck { .. }
+            | Self::InvalidatedInBlock(_)
             | Self::Keychain(_) => false,
             Self::SubblockNonceKey
             | Self::TooManyAuthorizations { .. }

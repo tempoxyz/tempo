@@ -131,111 +131,110 @@ impl TempoPoolUpdates {
             .flatten()
             .flat_map(|receipt| &receipt.logs)
         {
-            // Fee token pause events and balance changes.
-            //
-            // Checked first because TIP-20 `Transfer` logs dominate block receipts; this avoids
-            // three address comparisons per transfer before reaching the matching branch.
-            if log.address.is_tip20() {
-                match Tip20PoolEvent::decode(log) {
-                    Some(Tip20PoolEvent::PauseStateUpdate(event)) => {
-                        if event.isPaused {
-                            updates.paused_tokens.insert(log.address);
-                        } else {
-                            updates.paused_tokens.remove(&log.address);
-                        }
-                    }
-                    Some(Tip20PoolEvent::TransferPolicyUpdate) => {
-                        updates.transfer_policy_updates.insert(log.address);
-                    }
-                    Some(Tip20PoolEvent::QuoteTokenUpdate) => {
-                        updates.quote_token_updates.insert(log.address);
-                    }
-                    Some(Tip20PoolEvent::Transfer { from }) => {
-                        updates
-                            .fee_balance_changes
-                            .entry(log.address)
-                            .or_default()
-                            .insert(from);
-                    }
-                    None => {}
-                }
-            }
-            // Key revocations and spending limit changes
-            else if log.address == ACCOUNT_KEYCHAIN_ADDRESS {
-                match AccountKeychainPoolEvent::decode(log) {
-                    Some(AccountKeychainPoolEvent::KeyRevoked(event)) => {
-                        updates.revoked_keys.insert(event.account, event.publicKey);
-                        updates
-                            .key_authorization_target_changes
-                            .insert(event.account, event.publicKey);
-                    }
-                    Some(AccountKeychainPoolEvent::KeyAuthorized(event)) => {
-                        updates
-                            .key_authorization_target_changes
-                            .insert(event.account, event.publicKey);
-                    }
-                    Some(AccountKeychainPoolEvent::AdminKeyAuthorized(event)) => {
-                        updates
-                            .key_authorization_target_changes
-                            .insert(event.account, event.publicKey);
-                    }
-                    Some(AccountKeychainPoolEvent::SpendingLimitUpdated(event)) => {
-                        updates.spending_limit_changes.insert(
-                            event.account,
-                            event.publicKey,
-                            Some(event.token),
-                        );
-                    }
-                    Some(AccountKeychainPoolEvent::AccessKeySpend(event)) => {
-                        updates.spending_limit_spends.insert(
-                            event.account,
-                            event.publicKey,
-                            Some(event.token),
-                        );
-                    }
-                    Some(AccountKeychainPoolEvent::KeyAuthorizationWitnessBurned(event)) => {
-                        updates
-                            .key_authorization_witness_burns
-                            .entry(event.account)
-                            .or_default()
-                            .insert(event.witness);
-                    }
-                    None => {}
-                }
-            }
-            // Validator and user token changes
-            else if log.address == TIP_FEE_MANAGER_ADDRESS {
-                match FeeManagerPoolEvent::decode(log) {
-                    Some(FeeManagerPoolEvent::ValidatorTokenSet(event)) => {
-                        updates
-                            .validator_token_changes
-                            .insert(event.validator, event.token);
-                    }
-                    Some(FeeManagerPoolEvent::UserTokenSet(event)) => {
-                        updates.user_token_changes.insert(event.user);
-                    }
-                    None => {}
-                }
-            }
-            // TIP403 blacklist additions and whitelist removals
-            else if log.address == TIP403_REGISTRY_ADDRESS {
-                match Tip403PoolEvent::decode(log) {
-                    Some(Tip403PoolEvent::BlacklistUpdated(event)) if event.restricted => {
-                        updates
-                            .blacklist_additions
-                            .push((event.policyId, event.account));
-                    }
-                    Some(Tip403PoolEvent::WhitelistUpdated(event)) if !event.allowed => {
-                        updates
-                            .whitelist_removals
-                            .push((event.policyId, event.account));
-                    }
-                    Some(_) | None => {}
-                }
-            }
+            updates.apply_log(log);
         }
 
         updates
+    }
+
+    /// Records the invalidation event `log` carries, if any.
+    ///
+    /// The payload builder also uses it for events emitted earlier in the block it builds.
+    pub(crate) fn apply_log(&mut self, log: &Log) {
+        // Fee token pause events and balance changes.
+        //
+        // Checked first because TIP-20 `Transfer` logs dominate block receipts; this avoids
+        // three address comparisons per transfer before reaching the matching branch.
+        if log.address.is_tip20() {
+            match Tip20PoolEvent::decode(log) {
+                Some(Tip20PoolEvent::PauseStateUpdate(event)) => {
+                    if event.isPaused {
+                        self.paused_tokens.insert(log.address);
+                    } else {
+                        self.paused_tokens.remove(&log.address);
+                    }
+                }
+                Some(Tip20PoolEvent::TransferPolicyUpdate) => {
+                    self.transfer_policy_updates.insert(log.address);
+                }
+                Some(Tip20PoolEvent::QuoteTokenUpdate) => {
+                    self.quote_token_updates.insert(log.address);
+                }
+                Some(Tip20PoolEvent::Transfer { from }) => {
+                    self.fee_balance_changes
+                        .entry(log.address)
+                        .or_default()
+                        .insert(from);
+                }
+                None => {}
+            }
+        }
+        // Key revocations and spending limit changes
+        else if log.address == ACCOUNT_KEYCHAIN_ADDRESS {
+            match AccountKeychainPoolEvent::decode(log) {
+                Some(AccountKeychainPoolEvent::KeyRevoked(event)) => {
+                    self.revoked_keys.insert(event.account, event.publicKey);
+                    self.key_authorization_target_changes
+                        .insert(event.account, event.publicKey);
+                }
+                Some(AccountKeychainPoolEvent::KeyAuthorized(event)) => {
+                    self.key_authorization_target_changes
+                        .insert(event.account, event.publicKey);
+                }
+                Some(AccountKeychainPoolEvent::AdminKeyAuthorized(event)) => {
+                    self.key_authorization_target_changes
+                        .insert(event.account, event.publicKey);
+                }
+                Some(AccountKeychainPoolEvent::SpendingLimitUpdated(event)) => {
+                    self.spending_limit_changes.insert(
+                        event.account,
+                        event.publicKey,
+                        Some(event.token),
+                    );
+                }
+                Some(AccountKeychainPoolEvent::AccessKeySpend(event)) => {
+                    self.spending_limit_spends.insert(
+                        event.account,
+                        event.publicKey,
+                        Some(event.token),
+                    );
+                }
+                Some(AccountKeychainPoolEvent::KeyAuthorizationWitnessBurned(event)) => {
+                    self.key_authorization_witness_burns
+                        .entry(event.account)
+                        .or_default()
+                        .insert(event.witness);
+                }
+                None => {}
+            }
+        }
+        // Validator and user token changes
+        else if log.address == TIP_FEE_MANAGER_ADDRESS {
+            match FeeManagerPoolEvent::decode(log) {
+                Some(FeeManagerPoolEvent::ValidatorTokenSet(event)) => {
+                    self.validator_token_changes
+                        .insert(event.validator, event.token);
+                }
+                Some(FeeManagerPoolEvent::UserTokenSet(event)) => {
+                    self.user_token_changes.insert(event.user);
+                }
+                None => {}
+            }
+        }
+        // TIP403 blacklist additions and whitelist removals
+        else if log.address == TIP403_REGISTRY_ADDRESS {
+            match Tip403PoolEvent::decode(log) {
+                Some(Tip403PoolEvent::BlacklistUpdated(event)) if event.restricted => {
+                    self.blacklist_additions
+                        .push((event.policyId, event.account));
+                }
+                Some(Tip403PoolEvent::WhitelistUpdated(event)) if !event.allowed => {
+                    self.whitelist_removals
+                        .push((event.policyId, event.account));
+                }
+                Some(_) | None => {}
+            }
+        }
     }
 
     /// Returns true if there are any invalidation events that require scanning the pool.

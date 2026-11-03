@@ -65,7 +65,7 @@ use tempo_payload_types::{
 };
 use tempo_primitives::{TempoHeader, TempoReceipt, TempoTxEnvelope};
 use tempo_transaction_pool::{
-    StateAwareBestTransactions, TempoTransactionPool, best::BestTransaction,
+    BlockState, StateAwareBestTransactions, TempoTransactionPool, best::BestTransaction,
     transaction::TempoPoolTransactionError,
 };
 use tokio::sync::oneshot;
@@ -87,10 +87,15 @@ enum PayloadTransactions {
 
 impl PayloadTransactions {
     /// Returns the next transaction, if available.
-    fn next(&mut self) -> Option<PrewarmedTransaction> {
+    ///
+    /// `block` is the state after the transactions executed so far, which the
+    /// [`StateAwareBestTransactions`] variants check candidates against.
+    fn next(&mut self, block: BlockState<'_>) -> Option<PrewarmedTransaction> {
         match self {
-            Self::Sequential(txs) => txs.next().map(PrewarmedTransaction::without_replay),
-            Self::Prewarming(txs) => txs.next(),
+            Self::Sequential(txs) => txs
+                .next_with_state(block)
+                .map(PrewarmedTransaction::without_replay),
+            Self::Prewarming(txs) => txs.next_with_state(block),
             Self::Parallel(planner) => planner.next(),
         }
     }
@@ -457,6 +462,7 @@ where
             .pool_fetch_duration_seconds
             .record(pool_fetch_start.elapsed());
 
+        let block_beneficiary = executor.evm().block().beneficiary;
         let execution_start = Instant::now();
         let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
         let mut skipped_oversized_block = false;
@@ -505,7 +511,13 @@ where
                 }
             }
 
-            let Some(mut pool_tx) = best_txs.next() else {
+            let block_state = BlockState {
+                db: executor.evm_mut().overlay_db_mut(),
+                spec: hardfork,
+                timestamp: attributes.timestamp,
+                beneficiary: block_beneficiary,
+            };
+            let Some(mut pool_tx) = best_txs.next(block_state) else {
                 if payload_build_budget.is_some() && cumulative_gas_used < block_gas_limit {
                     std::thread::sleep(Duration::from_millis(1));
                     normal_transaction_fill_idle_elapsed += Duration::from_millis(1);

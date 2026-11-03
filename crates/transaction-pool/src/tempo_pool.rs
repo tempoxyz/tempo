@@ -19,7 +19,6 @@ use parking_lot::RwLock;
 use reth_chainspec::{ChainSpecProvider, EthChainSpec};
 use reth_eth_wire_types::HandleMempoolData;
 use reth_provider::{ChangedAccount, StateProviderFactory};
-use reth_storage_api::StateProvider;
 use reth_transaction_pool::{
     AddedTransactionOutcome, AllPoolTransactions, BestTransactions, BestTransactionsAttributes,
     BlockInfo, CanonicalStateUpdate, GetPooledTransactionLimit, NewBlobSidecar, Pool, PoolResult,
@@ -1326,8 +1325,8 @@ where
 /// Re-reads the current limit from state for the tx's `(account, key_id, fee_token)` combo,
 /// including any T3 periodic-limit rollover at `current_timestamp`. Returns true if the tx's
 /// fee cost exceeds the effective remaining limit, meaning it should be evicted.
-pub(crate) fn exceeds_spending_limit(
-    provider: &mut impl StateProvider,
+pub(crate) fn exceeds_spending_limit<M>(
+    provider: &mut impl TempoStateAccess<M>,
     subject: &crate::transaction::KeychainSubject,
     fee_token_cost: alloy_primitives::U256,
     current_timestamp: u64,
@@ -1364,8 +1363,8 @@ pub(crate) fn exceeds_spending_limit(
 /// fee transfer authorization checks `fee_payer` via `AuthRole::Sender`.
 /// `recipient_policy_id` and `mint_recipient_policy_id` are excluded — they govern
 /// other roles and cannot invalidate a fee_payer's transactions.
-fn get_sender_policy_ids(
-    provider: &mut impl StateProvider,
+pub(crate) fn get_sender_policy_ids<M>(
+    provider: &mut impl TempoStateAccess<M>,
     fee_token: Address,
     spec: TempoHardfork,
     cache: &mut AddressMap<Vec<u64>>,
@@ -1409,8 +1408,8 @@ fn get_sender_policy_ids(
 ///
 /// Unlike `get_sender_policy_ids` this is uncached — it's only called on the rare path
 /// where the fee manager itself is blacklisted or un-whitelisted.
-fn get_recipient_policy_ids(
-    provider: &mut impl StateProvider,
+pub(crate) fn get_recipient_policy_ids<M>(
+    provider: &mut impl TempoStateAccess<M>,
     fee_token: Address,
     spec: TempoHardfork,
 ) -> Option<Vec<u64>> {
