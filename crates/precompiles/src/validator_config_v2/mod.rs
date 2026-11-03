@@ -317,15 +317,15 @@ impl ValidatorConfigV2 {
     ) -> Result<(IpAddrWithPort<'a>, IpAddr<'a>)> {
         let spec = self.storage.spec();
         let parsed_ingress = IpAddrWithPort::parse(ingress, spec).map_err(|err| match err {
-            IpWithPortParseError::TooLong | IpWithPortParseError::Ipv4Mapped => {
-                ValidatorConfigV2Error::invalid_ip(ingress.into())
+            err @ (IpWithPortParseError::TooLong | IpWithPortParseError::Ipv4Mapped) => {
+                ValidatorConfigV2Error::invalid_ip(ingress.into(), err.to_string())
             }
             err => ValidatorConfigV2Error::not_ip_port(ingress.into(), err.to_string()),
         })?;
 
         let parsed_egress = IpAddr::parse(egress, spec).map_err(|err| match err {
-            IpParseError::TooLong | IpParseError::Ipv4Mapped => {
-                ValidatorConfigV2Error::invalid_ip(egress.into())
+            err @ (IpParseError::TooLong | IpParseError::Ipv4Mapped) => {
+                ValidatorConfigV2Error::invalid_ip(egress.into(), err.to_string())
             }
             err => ValidatorConfigV2Error::not_ip(egress.into(), err.to_string()),
         })?;
@@ -2999,7 +2999,11 @@ mod tests {
             );
             assert_eq!(
                 result,
-                Err(ValidatorConfigV2Error::invalid_ip("[::ffff:192.168.1.1]:8000".into()).into())
+                Err(ValidatorConfigV2Error::invalid_ip(
+                    "[::ffff:192.168.1.1]:8000".into(),
+                    IpWithPortParseError::Ipv4Mapped.to_string()
+                )
+                .into())
             );
 
             vc.add_validator(
@@ -3016,7 +3020,11 @@ mod tests {
             );
             assert_eq!(
                 result,
-                Err(ValidatorConfigV2Error::invalid_ip("::ffff:192.168.1.1".into()).into())
+                Err(ValidatorConfigV2Error::invalid_ip(
+                    "::ffff:192.168.1.1".into(),
+                    IpParseError::Ipv4Mapped.to_string()
+                )
+                .into())
             );
 
             Ok(())
