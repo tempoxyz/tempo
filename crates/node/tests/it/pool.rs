@@ -1,6 +1,8 @@
 use alloy::{
     consensus::Transaction,
+    primitives::Bytes,
     signers::{SignerSync, local::PrivateKeySigner},
+    sol_types::SolCall,
 };
 use alloy_eips::{Decodable2718, Encodable2718};
 use alloy_primitives::{Address, TxKind, U64, U256, address, hex};
@@ -14,8 +16,13 @@ use reth_transaction_pool::{
     error::{InvalidPoolTransactionError, PoolError, PoolErrorKind},
 };
 use std::{num::NonZeroU64, time::Duration};
-use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
-use tempo_precompiles::{DEFAULT_FEE_TOKEN, tip_fee_manager::TipFeeManager};
+use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
+use tempo_contracts::precompiles::{ITIP20, ITIPFeeAMM, OUSD_ADDRESS};
+use tempo_precompiles::{
+    DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS,
+    tip_fee_manager::TipFeeManager,
+    tip20::{TIP20Token, slots},
+};
 use tempo_primitives::{
     TempoTransaction, TempoTxEnvelope,
     transaction::{calc_gas_balance_spending, tempo_transaction::Call},
@@ -300,22 +307,14 @@ async fn test_fallback_balance_updates_revalidate_only_relevant_crossings() -> e
 /// chain, even when the new chain leaves the payer's fallback balances untouched.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_fallback_choice_follows_new_chain_after_reorg() -> eyre::Result<()> {
-    use alloy::{primitives::Bytes, sol_types::SolCall};
-    use tempo_contracts::precompiles::{ITIP20, ITIPFeeAMM, OUSD_ADDRESS};
-    use tempo_precompiles::{
-        TIP_FEE_MANAGER_ADDRESS,
-        tip20::{TIP20Token, slots},
-    };
-
     let payer = PrivateKeySigner::random();
     let funder = test_signer(0);
     let price = TEMPO_T1_BASE_FEE as u128;
     let fee = calc_gas_balance_spending(1_000_000, price);
     let slot =
         TIP20Token::from_address_unchecked(DEFAULT_FEE_TOKEN).balances[payer.address()].slot();
-    let mut genesis: serde_json::Value = serde_json::from_str(&crate::utils::make_genesis_at(
-        tempo_chainspec::hardfork::TempoHardfork::T13,
-    ))?;
+    let mut genesis: serde_json::Value =
+        serde_json::from_str(&crate::utils::make_genesis_at(TempoHardfork::T13))?;
     let beneficiary: Address = serde_json::from_value(genesis["coinbase"].clone())?;
     let validator_slot = TipFeeManager::new().validator_tokens[beneficiary].slot();
     genesis["alloc"][format!("{TIP_FEE_MANAGER_ADDRESS:#x}")]["storage"]
