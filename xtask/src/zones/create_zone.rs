@@ -535,8 +535,13 @@ impl CreateZone {
         println!("Sequencer set version: {sequencer_set_version}");
 
         println!("Waiting for creation block {creation_block} to finalize...");
-        let anchor =
-            wait_for_finalized_pre_creation_anchor(&provider, portal, creation_block).await?;
+        let anchor = wait_for_finalized_pre_creation_anchor(
+            &provider,
+            self.zone_factory,
+            portal,
+            creation_block,
+        )
+        .await?;
         println!(
             "Using pre-creation block {} (hash: {}) as genesis anchor",
             anchor.block_number, anchor.hash
