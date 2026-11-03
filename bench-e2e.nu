@@ -53,8 +53,8 @@ def merge-e2e-features [...features: string] {
     | str join ","
 }
 
-# EVM2 JIT is on by default for binaries built with the jit feature (CI's
-# bench-e2e.yml adds it; local runs need --features jit). Only binaries built with the `jit` feature contain this
+# EVM2 JIT is on by default: e2e builds add the jit feature unless every side
+# that runs passes --no-jit. Only binaries built with the `jit` feature contain this
 # log message; others reject `--jit`, so they run on the interpreter instead.
 const E2E_JIT_MARKER = "Started experimental evm2 JIT backend"
 
@@ -1735,7 +1735,12 @@ def "main e2e" [
         git worktree add $feature_wt $feature
     }
 
-    let global_build_features = (merge-e2e-features $DEFAULT_FEATURES $features)
+    # JIT is on by default, so build with it unless every side that runs opts out.
+    let jit_opt_outs = ([[$needs_baseline $baseline_args] [$needs_feature $feature_args]]
+        | where { |s| $s.0 }
+        | each { |s| "--no-jit" in (parse-cli-args $s.1) })
+    let jit_features = if ($jit_opt_outs | all { |o| $o }) { "" } else { "jit" }
+    let global_build_features = (merge-e2e-features $DEFAULT_FEATURES $features $jit_features)
     let baseline_build_features = if $baseline_features != "" { merge-e2e-features $global_build_features $baseline_features } else { $global_build_features }
     let feature_build_features = if $feature_features != "" { merge-e2e-features $global_build_features $feature_features } else { $global_build_features }
     let baseline_tbc = (tracy-build-config $baseline_build_features $tracy)
