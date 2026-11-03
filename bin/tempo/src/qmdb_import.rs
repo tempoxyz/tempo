@@ -12,7 +12,9 @@ use eyre::{OptionExt as _, WrapErr as _, bail};
 use reth_chainspec::EthChainSpec as _;
 use reth_cli_commands::common::{AccessRights, EnvironmentArgs};
 use reth_ethereum::tasks::Runtime;
-use reth_provider::{BlockHashReader as _, BlockNumReader as _, DatabaseProviderFactory as _};
+use reth_provider::{
+    BlockHashReader as _, BlockNumReader as _, DBProvider as _, DatabaseProviderFactory as _,
+};
 use reth_trie_db::DatabaseHashedCursorFactory;
 use tempo_chainspec::spec::TempoChainSpecParser;
 use tempo_node::node::TempoNode;
@@ -40,7 +42,10 @@ impl QmdbImport {
         let provider = environment
             .provider_factory
             .database_provider_ro()
-            .wrap_err("failed opening the database")?;
+            .wrap_err("failed opening the database")?
+            // The import streams the whole hashed state through one read transaction, which
+            // outlives MDBX's long-read timeout on large states. The node is offline here.
+            .disable_long_read_transaction_safety();
         let tip = provider
             .best_block_number()
             .wrap_err("failed reading the persisted tip")?;
