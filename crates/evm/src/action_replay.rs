@@ -9,7 +9,7 @@ use alloy_primitives::{
 };
 use evm2::{
     TxResult,
-    evm::{CacheDB, DynDatabase, PendingState},
+    evm::{CacheDB, DynDatabase, PendingState, registry::HandlerError},
 };
 use reth_evm::{
     BlockExecutionError, BlockExecutor, ExecutorTx, InternalBlockExecutionError, RecoveredTx,
@@ -67,7 +67,11 @@ impl TempoBlockExecutor<'_> {
                 }
                 Ok(())
             })
-            .map_err(|_| StorageActionReplayError::ActionConflict)?;
+            .map_err(|error| match error {
+                HandlerError::Database(error) => map_database_error(error),
+                HandlerError::Fatal(error) => BlockExecutionError::other(error),
+                _ => StorageActionReplayError::ActionConflict.into(),
+            })?;
         }
 
         let state = self
@@ -640,6 +644,65 @@ mod tests {
         db.insert_account_info(&address, AccountInfo::default());
         db.insert_account_storage(&address, &slot, &value);
         executor
+    }
+
+    #[test]
+    fn replay_rechecks_root_key_retired_in_block() {
+        use alloy_consensus::{SignableTransaction, TxLegacy, transaction::Recovered};
+        use alloy_primitives::{Signature, TxKind};
+        use tempo_primitives::{TempoTxEnvelope, account::encode_config_commitment};
+
+        let chainspec = test_chainspec();
+        let sender = Address::repeat_byte(0x11);
+        let tx = TempoTxEnvelope::Legacy(
+            TxLegacy {
+                chain_id: Some(1),
+                gas_price: 1,
+                gas_limit: 21_000,
+                to: TxKind::Call(Address::ZERO),
+                ..Default::default()
+            }
+            .into_signed(Signature::test_signature()),
+        );
+        for (spec, commitment, conflict) in [
+            (TempoHardfork::T14, B256::repeat_byte(0x77), true),
+            (TempoHardfork::T14, B256::ZERO, false),
+            (TempoHardfork::T13, B256::repeat_byte(0x77), false),
+        ] {
+            let mut executor = TestExecutorBuilder::default()
+                .with_spec(spec)
+                .build(InMemoryDB::default(), &chainspec);
+            let info = AccountInfo {
+                extension: encode_config_commitment(commitment).into(),
+                ..Default::default()
+            };
+            executor
+                .evm_mut()
+                .overlay_db_mut()
+                .insert_account_info(&sender, info);
+            let replay = StorageActionReplay {
+                result: TxResult::<TempoEvmTypes> {
+                    status: true,
+                    ..Default::default()
+                },
+                actions: Vec::new(),
+                expiring_nonce: None,
+            };
+            let result = executor.execute_transaction_with_actions(
+                Recovered::new_unchecked(tx.clone(), sender),
+                replay,
+                |_| {},
+            );
+            let reason = result
+                .as_ref()
+                .err()
+                .and_then(StorageActionReplayError::from_block_execution_error);
+            assert_eq!(
+                reason == Some(StorageActionReplayError::ActionConflict),
+                conflict,
+                "{spec:?} {commitment}: {result:?}"
+            );
+        }
     }
 
     #[test]
