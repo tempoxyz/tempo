@@ -8,13 +8,16 @@ ARG RUST_FEATURES="asm-keccak,jemalloc,otlp"
 ARG VERGEN_GIT_SHA
 ARG VERGEN_GIT_SHA_SHORT
 ARG EXTRA_RUSTFLAGS=""
+# Builds with different features get their own cache mounts: sharing=locked lets only one
+# build hold a mount at a time, so a shared id would serialize them.
+ARG CACHE_ID_SUFFIX=""
 
 COPY . .
 
 # Build ALL binaries in one pass - they share compiled artifacts
-RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=cargo-registry-${TARGETARCH} \
-    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked,id=cargo-git-${TARGETARCH} \
-    --mount=type=cache,target=$SCCACHE_DIR,sharing=locked,id=sccache-${TARGETARCH} \
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=cargo-registry-${TARGETARCH}${CACHE_ID_SUFFIX} \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked,id=cargo-git-${TARGETARCH}${CACHE_ID_SUFFIX} \
+    --mount=type=cache,target=$SCCACHE_DIR,sharing=locked,id=sccache-${TARGETARCH}${CACHE_ID_SUFFIX} \
     RUSTFLAGS="-C link-arg=-fuse-ld=mold ${EXTRA_RUSTFLAGS}" \
     cargo build --profile ${RUST_PROFILE} \
         --bin tempo --features "${RUST_FEATURES},localnet" \
@@ -23,9 +26,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=cargo-
 
 # Reuse the regular build artifacts, enabling custom PCRs only for the devnet binary.
 FROM builder AS devnet-builder
-RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=cargo-registry-${TARGETARCH} \
-    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked,id=cargo-git-${TARGETARCH} \
-    --mount=type=cache,target=$SCCACHE_DIR,sharing=locked,id=sccache-${TARGETARCH} \
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=cargo-registry-${TARGETARCH}${CACHE_ID_SUFFIX} \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked,id=cargo-git-${TARGETARCH}${CACHE_ID_SUFFIX} \
+    --mount=type=cache,target=$SCCACHE_DIR,sharing=locked,id=sccache-${TARGETARCH}${CACHE_ID_SUFFIX} \
     RUSTFLAGS="-C link-arg=-fuse-ld=mold ${EXTRA_RUSTFLAGS}" \
     cargo build --profile ${RUST_PROFILE} \
         --bin tempo --features "${RUST_FEATURES},localnet,custom-pcrs"
