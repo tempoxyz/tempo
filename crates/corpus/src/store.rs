@@ -448,13 +448,26 @@ impl Store {
     /// Leases `catalog`'s published checkpoint ([Self::lease]), points `catalog` at the lease and
     /// renews it on `runtime` in the background. Calls `expiring` once renewal gives up, so the
     /// caller stops reading through it. Release it with [Lease::release].
+    ///
+    /// Leasing writes to the corpus. A reader that cannot, such as one with read-only or
+    /// anonymous access, reads the published checkpoint directly instead: a fill extending the
+    /// corpus meanwhile may then retire that checkpoint once its grace lifetime ends.
     pub fn lease_published(
         &self,
         runtime: &tokio::runtime::Runtime,
         catalog: &mut Catalog,
         expiring: impl FnOnce() + Send + 'static,
     ) -> eyre::Result<Lease> {
-        let id = runtime.block_on(self.lease(catalog))?;
+        let id = match runtime.block_on(self.lease(catalog)) {
+            Ok(id) => id,
+            Err(error) => {
+                warn!(
+                    %error,
+                    "Cannot lease the published checkpoint; reading it without a lease"
+                );
+                return Ok(Lease(None));
+            }
+        };
         catalog.checkpoint = Some(id.clone());
         let renew = self.clone().renew_lease(id.clone());
         let renewal = runtime.spawn(async move {
@@ -462,7 +475,7 @@ impl Store {
             expiring();
             renewed
         });
-        Ok(Lease { id, renewal })
+        Ok(Lease(Some((id, renewal))))
     }
 
     /// Deletes a lease from [Self::lease].
@@ -492,26 +505,28 @@ impl Store {
 
 /// A reader's lease on a published checkpoint, renewed in the background
 /// ([Store::lease_published]). A lease that is never released expires on its own.
-pub struct Lease {
-    id: String,
-    renewal: tokio::task::JoinHandle<eyre::Result<()>>,
-}
+pub struct Lease(Option<(String, tokio::task::JoinHandle<eyre::Result<()>>)>);
 
 impl Lease {
     /// Whether renewal gave up, so the lease may expire and reads through it must stop.
     pub fn expiring(&self) -> bool {
-        self.renewal.is_finished()
+        self.0
+            .as_ref()
+            .is_some_and(|(_, renewal)| renewal.is_finished())
     }
 
     /// Stops renewing and deletes the lease. Fails with the renewal's error if it gave up.
     pub fn release(self, runtime: &tokio::runtime::Runtime, store: &Store) -> eyre::Result<()> {
-        let renewed = if self.renewal.is_finished() {
-            runtime.block_on(self.renewal)?
+        let Some((id, renewal)) = self.0 else {
+            return Ok(());
+        };
+        let renewed = if renewal.is_finished() {
+            runtime.block_on(renewal)?
         } else {
-            self.renewal.abort();
+            renewal.abort();
             Ok(())
         };
-        let released = runtime.block_on(store.release_lease(&self.id));
+        let released = runtime.block_on(store.release_lease(&id));
         renewed.and(released)
     }
 }
