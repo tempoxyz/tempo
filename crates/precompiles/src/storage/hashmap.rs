@@ -136,6 +136,14 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         Ok(())
     }
 
+    fn with_warm_caller_info(
+        &mut self,
+        address: Address,
+        f: &mut dyn FnMut(&AccountInfo),
+    ) -> Result<(), TempoPrecompileError> {
+        self.with_account_info(address, f)
+    }
+
     fn sstore(
         &mut self,
         address: Address,

@@ -104,6 +104,16 @@ pub trait PrecompileStorageProvider {
         f: &mut dyn FnMut(&AccountInfo),
     ) -> Result<()>;
 
+    /// Reads the warm transaction caller without a second account-access charge.
+    /// Normal transaction setup has already loaded this caller. Production rejects a cold
+    /// account; this is not a generic cache-only read, and callers must have checked that
+    /// `address` is the transaction origin.
+    fn with_warm_caller_info(
+        &mut self,
+        address: Address,
+        f: &mut dyn FnMut(&AccountInfo),
+    ) -> Result<()>;
+
     /// Performs an SLOAD operation (persistent storage read).
     fn sload(&mut self, address: Address, key: U256) -> Result<U256>;
 

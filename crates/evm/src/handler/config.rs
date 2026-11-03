@@ -1,5 +1,6 @@
 //! EVM2 transaction handler plumbing.
 
+use super::configurable_account;
 use crate::{
     FeePaymentError, ProtocolFeeContext, ProtocolFeeManager, ResolvedFeeToken,
     SYSTEM_CALL_GAS_LIMIT, TempoEvmTx, TempoFeeManager, TempoInvalidTransaction, TempoStateAccess,
@@ -64,6 +65,7 @@ pub const fn tempo_opcode_config<const BASE_SPEC_ID: u32>() -> OpcodeConfig<Temp
     let mut config = OpcodeConfig::base::<TempoConfig<BASE_SPEC_ID>>();
     config.set_instruction::<crate::instructions::millis_timestamp>(0x4f, 0);
     config.set_instruction::<crate::instructions::sstore>(evm2::interpreter::op::SSTORE, 0);
+    config.set_instruction::<crate::instructions::configurable_account>(0xef, 0);
     config
 }
 
@@ -211,7 +213,13 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
             ),
             TempoEvmTx::AA(_) => return Ok(()),
         };
+        // T14 root-key checks: a configurable account's primitive key no longer signs. A
+        // sender-only check charges no gas.
+        let spec = host.config_spec_id();
+        // Non-AA transactions have no configurable roles, so validation charges no state gas.
+        let (validation_gas, _) = configurable_account::validate_state(host, envelope, spec)?;
         let new_accounts = zero_nonce_authorizations.saturating_add(u64::from(nonce == 0));
+        *intrinsic = intrinsic.saturating_add(validation_gas);
         *intrinsic = intrinsic.saturating_add(
             new_accounts.saturating_mul(host.version().gas_params.get(GasId::NewAccountCost)),
         );

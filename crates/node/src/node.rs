@@ -25,7 +25,7 @@ use reth_node_builder::{
     },
     rpc::{
         EngineValidatorAddOn, NoopEngineApiBuilder, PayloadValidatorBuilder, RethRpcAddOns,
-        RpcAddOns, RpcHandle, RpcHooks,
+        RpcAddOns, RpcHandle, RpcHooks, RpcNodeCoreFor,
     },
 };
 use reth_node_core::args::JitArgs;
@@ -48,8 +48,7 @@ use tempo_chainspec::{TempoConsensusSpec, hardfork::TempoHardfork, spec::TempoCh
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_payload_builder::{TempoPayloadBuilder, TempoPayloadBuilderConfig};
 use tempo_payload_types::{
-    Estimator, TempoPayloadAttributes,
-    estimator::{self, BuildTimeMultiplier},
+    ConfigError, Estimator, EstimatorConfig, TempoPayloadAttributes, estimator::BuildTimeMultiplier,
 };
 use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType};
 use tempo_transaction_pool::{
@@ -429,7 +428,7 @@ impl<N> NodeAddOns<NodeAdapter<N>> for TempoAddOns<N>
 where
     N: FullNodeTypes<Types = TempoNode>,
 {
-    type Handle = RpcHandle<NodeAdapter<N>, TempoEthApi<NodeAdapter<N>>>;
+    type Handle = RpcHandle<NodeAdapter<N>, TempoEthApi<RpcNodeCoreFor<NodeAdapter<N>>>>;
 
     async fn launch_add_ons(
         self,
@@ -476,7 +475,7 @@ impl<N> RethRpcAddOns<NodeAdapter<N>> for TempoAddOns<N>
 where
     N: FullNodeTypes<Types = TempoNode>,
 {
-    type EthApi = TempoEthApi<NodeAdapter<N>>;
+    type EthApi = TempoEthApi<RpcNodeCoreFor<NodeAdapter<N>>>;
 
     fn hooks_mut(&mut self) -> &mut RpcHooks<NodeAdapter<N>, Self::EthApi> {
         self.inner.hooks_mut()
@@ -1008,7 +1007,8 @@ pub struct TempoPayloadBuilderBuilder {
     /// Only used when no `estimator` is provided.
     pub build_time_multiplier: BuildTimeMultiplier,
     /// Proposal budget estimator the payload builder paces builds with, or
-    /// `None` for a private one seeded from `build_time_multiplier`.
+    /// `None` for a private one using default timing and `build_time_multiplier`.
+    /// Inject a shared estimator to use consensus timing and feedback.
     pub estimator: Option<Estimator>,
 }
 
@@ -1025,14 +1025,21 @@ impl Default for TempoPayloadBuilderBuilder {
 }
 
 impl TempoPayloadBuilderBuilder {
-    /// Returns [`Self::estimator`], or a new estimator seeded from
-    /// [`Self::build_time_multiplier`] when none is set.
-    pub fn resolve_estimator(&self) -> Estimator {
-        self.estimator.clone().unwrap_or_else(|| {
-            Estimator::new(estimator::Config {
-                build_time_multiplier: self.build_time_multiplier,
-            })
-        })
+    /// Returns [`Self::estimator`] unchanged, or constructs one from `config`
+    /// replacing its multiplier with [`Self::build_time_multiplier`]. Returns an error if that
+    /// configuration is invalid and no estimator override is set.
+    pub fn resolve_estimator(&self, config: EstimatorConfig) -> Result<Estimator, ConfigError> {
+        match &self.estimator {
+            Some(estimator) => Ok(estimator.clone()),
+            None => {
+                let config = EstimatorConfig {
+                    build_time_multiplier: self.build_time_multiplier,
+                    ..config
+                };
+                config.validate()?;
+                Ok(Estimator::new(config))
+            }
+        }
     }
 }
 
@@ -1058,7 +1065,11 @@ where
             _ => None,
         });
 
-        let estimator = self.resolve_estimator();
+        // Standalone payload builds use default timing; consensus launchers inject
+        // a shared estimator before reaching this fallback.
+        let estimator = self
+            .resolve_estimator(EstimatorConfig::default())
+            .expect("default timing and a typed build multiplier form valid estimator inputs");
         Ok(TempoPayloadBuilder::new(
             pool,
             ctx.provider().clone(),

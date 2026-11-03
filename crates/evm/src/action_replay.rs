@@ -259,7 +259,7 @@ impl TempoBlockExecutor<'_> {
             NONCE_PRECOMPILE_ADDRESS,
             ring_slot,
             old_hash,
-            U256::from_be_slice(expiring_nonce.hash.as_slice()),
+            expiring_nonce.hash.into(),
         );
         self.replay_state.record_sstore(
             NONCE_PRECOMPILE_ADDRESS,

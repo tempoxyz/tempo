@@ -4,6 +4,7 @@
 //! which spins up an in-process node with direct pool/block access, plus tests
 //! that require pool introspection or controlled block mining.
 
+use super::types::{FillTestCase, KeyType, NonceMode, TestEnv};
 use crate::utils::{ForkSchedule, SingleNodeSetup, TestNodeBuilder, make_genesis_at};
 use alloy::{
     consensus::{BlockHeader, Transaction},
@@ -14,7 +15,7 @@ use alloy::{
     sol_types::SolCall,
 };
 use alloy_eips::Encodable2718;
-use eyre::WrapErr;
+use eyre::{OptionExt, WrapErr};
 use reth_e2e_test_utils::wallet::test_signer;
 use reth_ethereum::network::{NetworkSyncUpdater, SyncState};
 use reth_node_api::BuiltPayload;
@@ -287,6 +288,70 @@ impl super::types::TestEnv for Localnet {
         assert!(receipt.status(), "Receipt status mismatch for {tx_hash}");
         Ok(serde_json::to_value(receipt)?)
     }
+}
+
+/// From T14 a fee payer signature costs one cold account access, which the node's estimate includes
+/// only for a request marked as sponsored. `TempoGasFiller` estimates a sponsored request without
+/// the marker, so both providers must add that access when they fill: `TempoGasFiller` for a
+/// request that carries the marker, and a provider built with `sponsor` for one that does not.
+/// `SponsorFiller` marks a request only when it fills, after `TempoGasFiller` prepared in the same
+/// round, and a request that carries its chain id, as `ChainIdFiller` sets it from its cache on
+/// every request after a provider's first, is prepared in that first round.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_fill_includes_the_fee_payer_access_at_t14() -> eyre::Result<()> {
+    let mut env = Localnet::new().await?;
+    assert!(env.hardfork().is_t14(), "the devnet schedule starts at T14");
+    let signer = PrivateKeySigner::random();
+    let current_timestamp = env.current_block_timestamp().await?;
+    let test_case = FillTestCase::new(NonceMode::Protocol, KeyType::Secp256k1);
+    let mut marked = sponsored_fill_request(
+        &test_case,
+        signer.address(),
+        current_timestamp,
+        env.hardfork().expiring_nonce_max_expiry_secs(),
+    );
+    marked.set_fee_token(DEFAULT_FEE_TOKEN);
+    let mut marked_with_chain_id = marked.clone();
+    marked_with_chain_id.inner.chain_id = Some(env.chain_id);
+    let unmarked = TempoTransactionRequest {
+        fee_payer_signature: None,
+        ..marked_with_chain_id.clone()
+    };
+
+    let rpc_url = env.setup.node.rpc_url();
+    let sponsor_provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+        .sponsor(rpc_url.as_str())
+        .connect(rpc_url.as_str())
+        .await?;
+    let filled_by_gas_filler = env
+        .setup
+        .node
+        .rpc_provider_for::<TempoNetwork>()
+        .fill(marked.clone())
+        .await?;
+    let filled_by_sponsor_provider = sponsor_provider.fill(unmarked).await?;
+    for (provider, filled, marked) in [
+        ("gas filler", filled_by_gas_filler, &marked),
+        (
+            "sponsor provider",
+            filled_by_sponsor_provider,
+            &marked_with_chain_id,
+        ),
+    ] {
+        let filled = filled
+            .as_builder()
+            .ok_or_eyre("the filler built the transaction")?;
+        assert_eq!(
+            filled.fee_payer_signature, marked.fee_payer_signature,
+            "{provider}"
+        );
+        assert_eq!(
+            filled.inner.gas,
+            Some(estimate_gas(&env.provider, marked).await?),
+            "{provider}"
+        );
+    }
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -964,8 +1029,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     // Also verify pool rejects the transaction
     let signed_tx1 = tx1.into_signed(aa_signature1);
     let envelope1: TempoTxEnvelope = signed_tx1.into();
-    let mut encoded1 = Vec::new();
-    envelope1.encode_2718(&mut encoded1);
+    let encoded1 = envelope1.encoded_2718();
     let inject_result1 = setup.node.inject_tx(encoded1.into()).await;
     assert!(
         inject_result1.is_err(),
@@ -1026,8 +1090,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
 
     let signed_tx2 = tx2.into_signed(aa_signature2);
     let envelope2: TempoTxEnvelope = signed_tx2.into();
-    let mut encoded2 = Vec::new();
-    envelope2.encode_2718(&mut encoded2);
+    let encoded2 = envelope2.encoded_2718();
     let inject_result2 = setup.node.inject_tx(encoded2.into()).await;
     assert!(
         inject_result2.is_err(),
@@ -1088,8 +1151,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
 
     let signed_tx3 = tx3.into_signed(aa_signature3);
     let envelope3: TempoTxEnvelope = signed_tx3.into();
-    let mut encoded3 = Vec::new();
-    envelope3.encode_2718(&mut encoded3);
+    let encoded3 = envelope3.encoded_2718();
     let inject_result3 = setup.node.inject_tx(encoded3.into()).await;
     assert!(
         inject_result3.is_err(),
@@ -1149,8 +1211,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
 
     let signed_tx4 = tx4.into_signed(aa_signature4);
     let envelope4: TempoTxEnvelope = signed_tx4.into();
-    let mut encoded4 = Vec::new();
-    envelope4.encode_2718(&mut encoded4);
+    let encoded4 = envelope4.encoded_2718();
     let inject_result4 = setup.node.inject_tx(encoded4.into()).await;
     assert!(
         inject_result4.is_err(),
@@ -1203,8 +1264,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
 
     let signed_bad_tx = bad_tx.into_signed(bad_tempo_signature);
     let bad_envelope: TempoTxEnvelope = signed_bad_tx.into();
-    let mut encoded_bad = Vec::new();
-    bad_envelope.encode_2718(&mut encoded_bad);
+    let encoded_bad = bad_envelope.encoded_2718();
 
     // Try to inject - should fail
     let inject_result = setup.node.inject_tx(encoded_bad.clone().into()).await;

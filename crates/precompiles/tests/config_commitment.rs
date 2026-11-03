@@ -416,3 +416,28 @@ fn invalid_write_reverts_without_data() {
     };
     assert_eq!(bytes, Bytes::new());
 }
+
+#[test]
+fn evm_warm_caller_info_is_free_and_rejects_cold() {
+    let spec = TempoHardfork::T14;
+    let caller = Address::repeat_byte(0x12);
+    let mut evm = new_evm(spec, false);
+    let mut gas_tracker = GasTracker::new(u64::MAX);
+    let mut provider = EvmPrecompileStorageProvider::new(&mut evm, &mut gas_tracker, spec, false);
+
+    assert!(matches!(
+        provider.with_warm_caller_info(caller, &mut |_| {}),
+        Err(TempoPrecompileError::Fatal(_))
+    ));
+    provider.with_account_info(caller, &mut |_| {}).unwrap();
+    let before = provider.gas_used();
+    let mut read = false;
+    provider
+        .with_warm_caller_info(caller, &mut |info| {
+            assert!(info.extension.is_empty());
+            read = true;
+        })
+        .unwrap();
+    assert!(read);
+    assert_eq!(provider.gas_used(), before);
+}

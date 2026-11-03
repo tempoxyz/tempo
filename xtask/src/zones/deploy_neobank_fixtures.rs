@@ -913,13 +913,13 @@ async fn deploy<P: Provider<TempoNetwork>>(
         .get_receipt()
         .await
         .wrap_err_with(|| format!("failed waiting for {label} deployment receipt"))?;
-    if !receipt.status() {
-        return Err(eyre!(
+    receipt.ensure_success().map_err(|_| {
+        eyre!(
             "{label} reverted after using {} gas (transaction {})",
             receipt.gas_used(),
             receipt.transaction_hash(),
-        ));
-    }
+        )
+    })?;
     let contract = receipt
         .contract_address
         .ok_or_else(|| eyre!("{label} deployment receipt did not contain a contract address"))?;
