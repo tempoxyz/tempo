@@ -53,11 +53,10 @@ pub enum StorageAction {
     /// `amount_out` - Amount of tokens to swap out.
     /// `has_enough_liquidity` - Whether the pool has enough liquidity.
     FeeAmmLiquidityCheck(U256, U256, U256, bool),
-    /// Records an account's configuration commitment as read or written.
+    /// Records an account's configuration commitment before and after; equal for a read.
     ///
-    /// Commitments live in the account extension, not in a storage slot, and replay cannot
-    /// write extensions: it only accepts a commitment the account already has.
-    ConfigCommitment(Address, B256),
+    /// Commitments live in the account extension, not in a storage slot.
+    ConfigCommitment(Address, B256, B256),
 }
 
 impl StorageAction {

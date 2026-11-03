@@ -265,7 +265,9 @@ fn load_account(
     let was_cold = account.warm();
     let info = account.get();
     let commitment = info.map_or(Ok(B256::ZERO), |info| account_config_commitment(info, spec))?;
-    actions.record(StorageAction::ConfigCommitment(address, commitment));
+    actions.record(StorageAction::ConfigCommitment(
+        address, commitment, commitment,
+    ));
     Ok(LoadedAccount {
         was_cold,
         invalid_code: !valid_account_code(account.code_hash(), commitment),

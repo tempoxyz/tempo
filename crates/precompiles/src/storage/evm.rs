@@ -665,8 +665,9 @@ where
         let spec = self.spec;
         let commitment =
             self.with_loaded_account(address, |info| account_config_commitment(info, spec))??;
-        self.actions
-            .record(StorageAction::ConfigCommitment(address, commitment));
+        self.actions.record(StorageAction::ConfigCommitment(
+            address, commitment, commitment,
+        ));
         Ok(commitment)
     }
 
@@ -704,9 +705,9 @@ where
             account.set_code_slow(Bytecode::new_raw(CONFIGURABLE_ACCOUNT_CODE));
         }
         account.set_extension(AccountExtension::from(encode_config_commitment(commitment)));
-        // Replay cannot write extensions, so it only accepts a commitment the account already has.
-        self.actions
-            .record_always(StorageAction::ConfigCommitment(address, commitment));
+        self.actions.record_always(StorageAction::ConfigCommitment(
+            address, previous, commitment,
+        ));
         Ok(())
     }
 }

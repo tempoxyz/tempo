@@ -6,6 +6,7 @@ use alloy_primitives::{
 };
 use evm2::{
     TxResult,
+    bytecode::Bytecode,
     evm::{CacheDB, DynDatabase, PendingState},
 };
 use reth_evm::{
@@ -14,10 +15,12 @@ use reth_evm::{
 };
 use tempo_precompiles::{
     NONCE_PRECOMPILE_ADDRESS,
+    configurable_account::CONFIGURABLE_ACCOUNT_CODE,
     nonce::NonceManager,
     storage::{StorageAction, account_config_commitment},
     tip_fee_manager::amm::{Pool, compute_amount_out},
 };
+use tempo_primitives::account::encode_config_commitment;
 
 impl TempoBlockExecutor<'_> {
     /// Commits a precomputed transaction by replaying recorded storage actions.
@@ -99,6 +102,8 @@ impl TempoBlockExecutor<'_> {
 
         let spec = self.evm().config_spec_id();
         let db = self.inner.evm_mut().overlay_db_mut();
+        // Commitment writes per account, as (commitment before the tx, current commitment).
+        let mut commitments = AddressMap::<(B256, B256)>::default();
         for action in actions {
             // Expiring nonces are handled above
             if is_expiring_nonce && action.address() == NONCE_PRECOMPILE_ADDRESS {
@@ -181,16 +186,22 @@ impl TempoBlockExecutor<'_> {
                         return Err(StorageActionReplayError::ActionConflict.into());
                     }
                 }
-                StorageAction::ConfigCommitment(address, commitment) => {
-                    let current = db
-                        .get_account(&address)
-                        .map_err(map_database_error)?
-                        .map_or(Ok(B256::ZERO), |info| {
-                            account_config_commitment(&info, spec)
-                        })
-                        .map_err(BlockExecutionError::other)?;
-                    if current != commitment {
+                StorageAction::ConfigCommitment(address, before, after) => {
+                    let current = match commitments.get(&address) {
+                        Some(&(_, current)) => current,
+                        None => db
+                            .get_account(&address)
+                            .map_err(map_database_error)?
+                            .map_or(Ok(B256::ZERO), |info| {
+                                account_config_commitment(&info, spec)
+                            })
+                            .map_err(BlockExecutionError::other)?,
+                    };
+                    if current != before {
                         return Err(StorageActionReplayError::ActionConflict.into());
+                    }
+                    if after != before {
+                        commitments.entry(address).or_insert((before, after)).1 = after;
                     }
                 }
             }
@@ -212,6 +223,17 @@ impl TempoBlockExecutor<'_> {
                 }
                 state.insert_storage(*address, *slot, change.original, change.current);
             }
+        }
+
+        // Mirrors set_config_commitment: the first commitment also installs the marker code.
+        for (address, (initial, commitment)) in commitments {
+            let original = db.get_account(&address).map_err(map_database_error)?;
+            let mut current = original.clone().unwrap_or_default();
+            if initial.is_zero() {
+                current = current.with_code(Bytecode::new_raw(CONFIGURABLE_ACCOUNT_CODE));
+            }
+            current.extension = encode_config_commitment(commitment).into();
+            state.insert_account(address, original, Some(current));
         }
 
         Ok(state)
@@ -602,7 +624,7 @@ mod tests {
     use reth_primitives_traits::SignedTransaction;
     use std::sync::Arc;
     use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
-    use tempo_primitives::{TempoTxEnvelope, account::encode_config_commitment};
+    use tempo_primitives::TempoTxEnvelope;
 
     fn empty_evm(database: InMemoryDB) -> TempoEvm<'static> {
         build_tempo_evm(
@@ -669,7 +691,7 @@ mod tests {
                     status: true,
                     ..Default::default()
                 },
-                actions: vec![StorageAction::ConfigCommitment(sender, recorded)],
+                actions: vec![StorageAction::ConfigCommitment(sender, recorded, recorded)],
                 expiring_nonce: None,
             };
             let result = executor.execute_transaction_with_actions(
@@ -687,6 +709,58 @@ mod tests {
                 "{recorded}: {result:?}"
             );
         }
+    }
+
+    #[test]
+    fn config_commitment_write_replays_registration() {
+        let chainspec = test_chainspec();
+        let sender = Address::repeat_byte(0x11);
+        let commitment = B256::repeat_byte(0x77);
+        let tx = TempoTxEnvelope::Legacy(
+            TxLegacy {
+                chain_id: Some(1),
+                gas_price: 1,
+                gas_limit: 21_000,
+                to: TxKind::Call(Address::ZERO),
+                ..Default::default()
+            }
+            .into_signed(Signature::test_signature()),
+        );
+        let mut executor = TestExecutorBuilder::default()
+            .with_spec(TempoHardfork::T14)
+            .build(InMemoryDB::default(), &chainspec);
+        executor
+            .evm_mut()
+            .overlay_db_mut()
+            .insert_account_info(&sender, AccountInfo::default());
+        let replay = StorageActionReplay {
+            result: TxResult::<TempoEvmTypes> {
+                status: true,
+                ..Default::default()
+            },
+            actions: vec![
+                StorageAction::ConfigCommitment(sender, B256::ZERO, commitment),
+                StorageAction::ConfigCommitment(sender, commitment, commitment),
+            ],
+            expiring_nonce: None,
+        };
+        executor
+            .execute_transaction_with_actions(tx.with_signer(sender), replay, |_| {})
+            .unwrap();
+        let info = executor
+            .evm_mut()
+            .overlay_db_mut()
+            .get_account(&sender)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            account_config_commitment(&info, TempoHardfork::T14).unwrap(),
+            commitment
+        );
+        assert_eq!(
+            info.code_hash,
+            Bytecode::new_raw(CONFIGURABLE_ACCOUNT_CODE).hash_slow()
+        );
     }
 
     #[test]
