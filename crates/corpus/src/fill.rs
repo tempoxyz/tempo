@@ -144,8 +144,8 @@ where
                     true,
                     |record, bytes, cases| {
                         eyre::ensure!(!cancellation.is_cancelled(), "capture cancelled");
-                        let chunk = store::decode(&bytes, record)?;
-                        replay::verify(config, consensus, &chunk, &cases, record)
+                        let input = store::decode(&bytes, record)?;
+                        replay::verify(config, consensus, &input, &cases, record)
                     },
                 ))
             })
@@ -233,13 +233,13 @@ where
                 indices.tx_count() == transactions,
                 "canonical transaction count mismatch"
             );
-            let chunk = &captured.chunk;
+            let input = &captured.input;
             let case_bytes = captured
                 .cases()?
                 .iter()
                 .map(|case| wincode::config::serialize(case, store::WINCODE))
                 .collect::<Result<Vec<_>, _>>()?;
-            let bytes = wincode::config::serialize(chunk.as_ref(), store::WINCODE)?;
+            let bytes = wincode::config::serialize(input.as_ref(), store::WINCODE)?;
             let total_bytes = case_bytes.iter().try_fold(bytes.len(), |sum, b| {
                 sum.checked_add(b.len())
                     .ok_or_eyre("serialized size overflow")
@@ -250,8 +250,8 @@ where
             );
             let record = Record {
                 number: start,
-                parent: chunk.parent,
-                hash: chunk.block.hash,
+                parent: input.parent,
+                hash: input.block.hash,
                 bytes: total_bytes,
                 block_bytes: bytes.len(),
                 transactions,
@@ -271,7 +271,7 @@ where
                 metadata.len() <= MAX_RECORD_BYTES,
                 "metadata record too large"
             );
-            let code = chunk
+            let code = input
                 .code
                 .iter()
                 .map(|hash| {

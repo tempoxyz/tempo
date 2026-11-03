@@ -3,7 +3,7 @@
 use crate::{
     execute::{decode_block, execute_block, standalone_cases, verify_changesets},
     store::{self, Catalog, MAX_RECORD_BYTES, Record, Store},
-    types::{Case, Chunk, Phases},
+    types::{Case, Input, Phases},
     view::View,
 };
 use alloy_primitives::B256;
@@ -171,18 +171,18 @@ pub fn run(
                             Err(RecvTimeoutError::Disconnected) => break,
                         };
                         ready.space.notify_one();
-                        let chunk = store::decode(&ready.bytes, &ready.record)?;
-                        runtime.block_on(store::resolve_code(reader, &chunk))?;
+                        let input = store::decode(&ready.bytes, &ready.record)?;
+                        runtime.block_on(store::resolve_code(reader, &input))?;
                         let (transactions, gas) = if let Some((from, to)) = standalone {
                             // The stored deltas restore each transaction's prestate, so the
                             // block itself is not executed.
                             let (cases, block, phases) =
-                                decode_record(&chunk, &ready.cases, &ready.record)?;
+                                decode_record(&input, &ready.cases, &ready.record)?;
                             let (mut transactions, mut gas) = (0, 0);
                             standalone_cases(
                                 config,
                                 &block,
-                                View::new(chunk.clone()),
+                                View::new(input.clone()),
                                 phases,
                                 &cases,
                                 |case| {
@@ -196,7 +196,7 @@ pub fn run(
                             )?;
                             (transactions, gas)
                         } else {
-                            verify(config, consensus, &chunk, &ready.cases, &ready.record)?;
+                            verify(config, consensus, &input, &ready.cases, &ready.record)?;
                             (ready.record.transactions, ready.record.gas)
                         };
                         records += 1;
@@ -498,7 +498,7 @@ fn env_usize(name: &str) -> Option<usize> {
 
 /// Decodes a published block, its checked transaction records and its phase expectations.
 fn decode_record<'a>(
-    chunk: &'a Chunk,
+    input: &'a Input,
     cases: &[Bytes],
     record: &Record,
 ) -> eyre::Result<(Vec<Case>, RecoveredBlock<Block>, &'a Phases)> {
@@ -514,8 +514,8 @@ fn decode_record<'a>(
             store::decode_case(bytes, expected, record.first_tx + i as u64)
         })
         .collect::<eyre::Result<_>>()?;
-    let block = decode_block(&chunk.block, chunk.number, B256::from(chunk.parent))?;
-    let phases = chunk
+    let block = decode_block(&input.block, input.number, B256::from(input.parent))?;
+    let phases = input
         .phases
         .as_ref()
         .ok_or_eyre("missing phase expectations")?;
@@ -527,20 +527,20 @@ fn decode_record<'a>(
 pub fn verify(
     config: &TempoEvmConfig,
     consensus: &TempoConsensus,
-    chunk: &Arc<Chunk>,
+    input: &Arc<Input>,
     cases: &[Bytes],
     record: &Record,
 ) -> eyre::Result<()> {
-    let (expected, block, phases) = decode_record(chunk, cases, record)?;
+    let (expected, block, phases) = decode_record(input, cases, record)?;
     let executed = execute_block(
         config,
         consensus,
-        View::new(chunk.clone()),
+        View::new(input.clone()),
         &block,
         record.first_tx,
         Some((&expected, phases)),
     )?;
-    verify_changesets(&executed.bundle, &chunk.changeset()?, chunk.number)?;
+    verify_changesets(&executed.bundle, &input.changeset()?, input.number)?;
     eyre::ensure!(
         executed.transactions.len() as u64 == record.transactions && executed.gas == record.gas,
         "transaction/gas totals mismatch"

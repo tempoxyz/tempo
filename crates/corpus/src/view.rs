@@ -2,7 +2,7 @@
 
 use crate::{
     code,
-    types::{Change, Chunk, Delta, InfoChange},
+    types::{Change, Delta, InfoChange, Input},
 };
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, U256};
 use evm2::{
@@ -48,7 +48,7 @@ fn analyzed(hash: B256) -> Result<Bytecode, Missing> {
     Ok(code)
 }
 
-/// Changes applied on top of a chunk's pre-state, such as earlier transactions' deltas.
+/// Changes applied on top of an input's pre-state, such as earlier transactions' deltas.
 #[derive(Clone, Debug, Default)]
 pub struct Overlay {
     accounts: HashMap<Address, Option<AccountInfo>>,
@@ -57,18 +57,18 @@ pub struct Overlay {
     code: HashSet<B256>,
 }
 
-/// The canonical state before a chunk's block, plus applied deltas.
+/// The canonical state before an input's block, plus applied deltas.
 #[derive(Clone, Debug)]
 pub struct View {
-    pub chunk: Arc<Chunk>,
+    pub input: Arc<Input>,
     pub overlay: Overlay,
 }
 
 impl View {
-    /// The state before the chunk's block.
-    pub fn new(chunk: Arc<Chunk>) -> Self {
+    /// The state before the input's block.
+    pub fn new(input: Arc<Input>) -> Self {
         Self {
-            chunk,
+            input,
             overlay: Overlay::default(),
         }
     }
@@ -78,7 +78,7 @@ impl View {
             return Ok(account.clone());
         }
         Ok(self
-            .chunk
+            .input
             .accounts
             .get(&address.into_array())
             .ok_or_else(|| Missing(format!("uncaptured account {address}")))?
@@ -93,7 +93,7 @@ impl View {
         if self.overlay.wiped.contains(address) {
             return Ok(U256::ZERO);
         }
-        self.chunk
+        self.input
             .storage
             .get(&(address.into_array(), key.to_be_bytes()))
             .map(|value| U256::from_be_bytes(*value))
@@ -156,7 +156,7 @@ impl Database for View {
         if *code_hash == KECCAK256_EMPTY {
             return Ok(Bytecode::default());
         }
-        if !self.chunk.code.contains(&code_hash.0) && !self.overlay.code.contains(code_hash) {
+        if !self.input.code.contains(&code_hash.0) && !self.overlay.code.contains(code_hash) {
             return Err(Missing(format!("uncaptured code {code_hash}")));
         }
         analyzed(*code_hash)
@@ -168,7 +168,7 @@ impl Database for View {
 
     fn get_block_hash(&mut self, number: &Word) -> Result<B256, Missing> {
         let number = number.saturating_to::<u64>();
-        self.chunk
+        self.input
             .hashes
             .get(&number)
             .copied()
