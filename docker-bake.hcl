@@ -11,7 +11,7 @@ group "default" {
 }
 
 group "nightly" {
-  targets = ["tempo", "tempo-devnet", "tempo-localnet", "tempo-xtask"]
+  targets = ["tempo", "tempo-devnet", "tempo-localnet", "tempo-xtask", "tempo-fuzz"]
 }
 
 target "docker-metadata" {}
@@ -23,7 +23,7 @@ target "chef" {
   platforms = ["linux/amd64", "linux/arm64"]
   args = {
     RUST_PROFILE = "profiling"
-    RUST_FEATURES = "asm-keccak,jemalloc,otlp,corpus"
+    RUST_FEATURES = "asm-keccak,jemalloc,otlp"
   }
 }
 
@@ -36,7 +36,7 @@ target "_common" {
   args = {
     CHEF_IMAGE = "chef"
     RUST_PROFILE = "profiling"
-    RUST_FEATURES = "asm-keccak,jemalloc,otlp,corpus"
+    RUST_FEATURES = "asm-keccak,jemalloc,otlp"
     VERGEN_GIT_SHA = "${VERGEN_GIT_SHA}"
     VERGEN_GIT_SHA_SHORT = "${VERGEN_GIT_SHA_SHORT}"
   }
@@ -61,4 +61,14 @@ target "tempo-localnet" {
 target "tempo-xtask" {
   inherits = ["_common", "docker-metadata"]
   target = "tempo-xtask"
+}
+
+# tempo with the corpus and fuzz features, for corpus replay and fuzzing jobs. Built only
+# with the nightly and pushed as tempo:fuzz, so production images keep their features.
+target "tempo-fuzz" {
+  inherits = ["_common", "docker-metadata"]
+  target = "tempo"
+  args = {
+    RUST_FEATURES = "asm-keccak,jemalloc,otlp,corpus,fuzz"
+  }
 }
