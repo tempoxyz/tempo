@@ -20,7 +20,7 @@ type AccountStep = Step<Commitments, Option<Tx>>;
 /// Checks of a step against its signatures and events.
 pub const STEP_CHECKS: &[Check<AccountStep>] = &[
     // A commitment is never cleared.
-    // <https://github.com/tempoxyz/tempo/blob/74c38cd1d7ae26d9ae28799e036f3887038b0c7d/tips/tip-1107.md#L477>
+    // <https://github.com/tempoxyz/tempo/blob/6a8514bcd6ff790599d3d6de9a0be8a189e4cb36/tips/tip-1107.md#L508>
     check! {
         id: "TEMPO-ACCOUNT-COMMITMENT-KEPT",
         over: |step: &AccountStep| step.post.of.keys(),
@@ -32,8 +32,8 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
             ensure!(!post.is_zero(), "commitment {pre} cleared")
         },
     },
-    // Only the sender's own migration or owner update changes its commitment.
-    // <https://github.com/tempoxyz/tempo/blob/74c38cd1d7ae26d9ae28799e036f3887038b0c7d/tips/tip-1107.md#L477>
+    // Only the sender or an account whose quorum signed changes its commitment.
+    // <https://github.com/tempoxyz/tempo/blob/6a8514bcd6ff790599d3d6de9a0be8a189e4cb36/tips/tip-1107.md#L508>
     check! {
         id: "TEMPO-ACCOUNT-COMMITMENT-BY-SELF",
         over: |step: &AccountStep| step.post.of.keys(),
@@ -43,15 +43,16 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
             if pre == post {
                 return None;
             }
+            let signed = tx.authority.quorums_of(**account).next().is_some();
             ensure!(
-                tx.sender == **account,
-                "commitment {pre} -> {post} in a transaction from {}",
+                tx.sender == **account || signed,
+                "commitment {pre} -> {post} in a transaction from {} it did not sign",
                 tx.sender
             )
         },
     },
-    // A changed commitment is announced.
-    // <https://github.com/tempoxyz/tempo/blob/74c38cd1d7ae26d9ae28799e036f3887038b0c7d/tips/tip-1107.md#L442>
+    // A changed commitment is announced, registration included.
+    // <https://github.com/tempoxyz/tempo/blob/6a8514bcd6ff790599d3d6de9a0be8a189e4cb36/tips/tip-1107.md#L465>
     check! {
         id: "TEMPO-ACCOUNT-COMMITMENT-EVENT",
         over: |step: &AccountStep| step.post.of.keys(),
@@ -76,7 +77,7 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
         },
     },
     // The commitment is the hash of the configuration that wrote it.
-    // <https://github.com/tempoxyz/tempo/blob/74c38cd1d7ae26d9ae28799e036f3887038b0c7d/tips/tip-1107.md#L478>
+    // <https://github.com/tempoxyz/tempo/blob/6a8514bcd6ff790599d3d6de9a0be8a189e4cb36/tips/tip-1107.md#L509-L510>
     check! {
         id: "TEMPO-ACCOUNT-COMMITMENT-HASH",
         over: |step: &AccountStep| step.post.of.keys(),
@@ -97,7 +98,7 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
         },
     },
     // Every carried or announced configuration passes the configuration rules.
-    // <https://github.com/tempoxyz/tempo/blob/74c38cd1d7ae26d9ae28799e036f3887038b0c7d/tips/tip-1107.md#L489>
+    // <https://github.com/tempoxyz/tempo/blob/6a8514bcd6ff790599d3d6de9a0be8a189e4cb36/tips/tip-1107.md#L522>
     check! {
         id: "TEMPO-ACCOUNT-CONFIG-RULES",
         over: |step: &AccountStep| step.post.of.keys(),
@@ -120,43 +121,50 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
             })
         },
     },
-    // Every configurable-account signature names an account with a commitment.
-    // <https://github.com/tempoxyz/tempo/blob/74c38cd1d7ae26d9ae28799e036f3887038b0c7d/tips/tip-1107.md#L475>
+    // Every configurable signer has a commitment afterwards.
+    // <https://github.com/tempoxyz/tempo/blob/6a8514bcd6ff790599d3d6de9a0be8a189e4cb36/tips/tip-1107.md#L505>
     check! {
-        id: "TEMPO-ACCOUNT-SIGNER-COMMITTED",
+        id: "TEMPO-ACCOUNT-SIGNER-REGISTERED",
         over: |step: &AccountStep| quorums(step),
         judge: |s, q| {
-            let pre = s.pre.of.get(&q.account)?;
-            ensure!(!pre.is_zero(), "signs for an account without a commitment")
+            let post = s.post.of.get(&q.account)?;
+            ensure!(!post.is_zero(), "has no commitment after the transaction")
         },
     },
-    // A quorum's configuration hashes to its account's commitment.
-    // <https://github.com/tempoxyz/tempo/blob/74c38cd1d7ae26d9ae28799e036f3887038b0c7d/tips/tip-1107.md#L486>
+    // A quorum matches its account's commitment, or derives its address.
+    // <https://github.com/tempoxyz/tempo/blob/6a8514bcd6ff790599d3d6de9a0be8a189e4cb36/tips/tip-1107.md#L519>
     check! {
         id: "TEMPO-ACCOUNT-QUORUM-COMMITMENT",
         over: |step: &AccountStep| quorums(step),
         judge: |s, q| {
             let pre = *s.pre.of.get(&q.account)?;
-            // An account without a commitment is judged by SIGNER-COMMITTED.
-            if pre.is_zero() {
-                return None;
+            let config = &q.config;
+            if !pre.is_zero() {
+                let hash = spec::commitment(config);
+                return ensure!(
+                    hash == Some(pre),
+                    "carries a configuration hashing to {hash:?}, the commitment is {pre}"
+                );
             }
-            let hash = spec::commitment(&q.config);
+            let derived = spec::derived_address(config);
+            let listed = config.owners.iter().any(|o| o.owner == q.account);
             ensure!(
-                hash == Some(pre),
-                "carries a configuration hashing to {hash:?}, the commitment is {pre}"
+                config.version == 0 && derived == Some(q.account) && !listed,
+                "registers with a version-{} configuration deriving {derived:?}{}",
+                config.version,
+                if listed { " that lists the account as an owner" } else { "" }
             )
         },
     },
     // Approvals are ascending owners that first reach the threshold at the last one.
-    // <https://github.com/tempoxyz/tempo/blob/74c38cd1d7ae26d9ae28799e036f3887038b0c7d/tips/tip-1107.md#L486-L487>
+    // <https://github.com/tempoxyz/tempo/blob/6a8514bcd6ff790599d3d6de9a0be8a189e4cb36/tips/tip-1107.md#L519-L520>
     check! {
         id: "TEMPO-ACCOUNT-QUORUM-WEIGHT",
         over: |step: &AccountStep| quorums(step),
         judge: |_, q| Some(quorum_weight(q).map_or(Verdict::Holds, Verdict::Broken)),
     },
     // 1 to 8 approvals, each at most 2,049 bytes.
-    // <https://github.com/tempoxyz/tempo/blob/74c38cd1d7ae26d9ae28799e036f3887038b0c7d/tips/tip-1107.md#L488>
+    // <https://github.com/tempoxyz/tempo/blob/6a8514bcd6ff790599d3d6de9a0be8a189e4cb36/tips/tip-1107.md#L521>
     check! {
         id: "TEMPO-ACCOUNT-APPROVAL-BOUNDS",
         over: |step: &AccountStep| quorums(step),
@@ -170,7 +178,7 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
         },
     },
     // Owner updates are signed directly by the account's quorum.
-    // <https://github.com/tempoxyz/tempo/blob/74c38cd1d7ae26d9ae28799e036f3887038b0c7d/tips/tip-1107.md#L493>
+    // <https://github.com/tempoxyz/tempo/blob/6a8514bcd6ff790599d3d6de9a0be8a189e4cb36/tips/tip-1107.md#L526>
     check! {
         id: "TEMPO-ACCOUNT-UPDATE-QUORUM",
         over: |step: &AccountStep| step.post.of.keys(),
@@ -193,7 +201,7 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
         },
     },
     // Each owner update keeps the salt and bumps the version by one.
-    // <https://github.com/tempoxyz/tempo/blob/74c38cd1d7ae26d9ae28799e036f3887038b0c7d/tips/tip-1107.md#L494>
+    // <https://github.com/tempoxyz/tempo/blob/6a8514bcd6ff790599d3d6de9a0be8a189e4cb36/tips/tip-1107.md#L527>
     check! {
         id: "TEMPO-ACCOUNT-UPDATE-VERSION",
         over: |step: &AccountStep| step.post.of.keys(),
@@ -222,7 +230,7 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
         },
     },
     // Migration is signed by the sender's own original key.
-    // <https://github.com/tempoxyz/tempo/blob/74c38cd1d7ae26d9ae28799e036f3887038b0c7d/tips/tip-1113.md#L65-L71>
+    // <https://github.com/tempoxyz/tempo/blob/6a8514bcd6ff790599d3d6de9a0be8a189e4cb36/tips/tip-1113.md#L65-L71>
     check! {
         id: "TEMPO-ACCOUNT-UPGRADE-ROOT",
         over: |step: &AccountStep| upgrades(step),
@@ -233,19 +241,16 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
                 account: e.account,
             };
             ensure!(
-                tx.sender == e.account
-                    && tx.authority.keys.contains(&root)
-                    && tx.authority.grant.is_none(),
-                "in a transaction from {} signed by {:?}, {:?}, grant {:?}",
+                tx.sender == e.account && tx.authority.keys.contains(&root),
+                "in a transaction from {} signed by {:?}, {:?}",
                 tx.sender,
                 tx.authority.keys,
-                tx.authority.quorums.iter().map(ToString::to_string).collect::<Vec<_>>(),
-                tx.authority.grant
+                tx.authority.quorums.iter().map(ToString::to_string).collect::<Vec<_>>()
             )
         },
     },
     // Only an account without a commitment migrates.
-    // <https://github.com/tempoxyz/tempo/blob/74c38cd1d7ae26d9ae28799e036f3887038b0c7d/tips/tip-1113.md#L259>
+    // <https://github.com/tempoxyz/tempo/blob/6a8514bcd6ff790599d3d6de9a0be8a189e4cb36/tips/tip-1113.md#L260>
     check! {
         id: "TEMPO-ACCOUNT-UPGRADE-FRESH",
         over: |step: &AccountStep| upgrades(step),
@@ -255,7 +260,7 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
         },
     },
     // Migration stores the version-1 configuration's hash under the upgrade salt.
-    // <https://github.com/tempoxyz/tempo/blob/74c38cd1d7ae26d9ae28799e036f3887038b0c7d/tips/tip-1113.md#L259>
+    // <https://github.com/tempoxyz/tempo/blob/6a8514bcd6ff790599d3d6de9a0be8a189e4cb36/tips/tip-1113.md#L260>
     check! {
         id: "TEMPO-ACCOUNT-UPGRADE-CONFIG",
         over: |step: &AccountStep| upgrades(step),
@@ -280,7 +285,7 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
         },
     },
     // An ordinary signature is never authority for an account with a commitment.
-    // <https://github.com/tempoxyz/tempo/blob/74c38cd1d7ae26d9ae28799e036f3887038b0c7d/tips/tip-1113.md#L263>
+    // <https://github.com/tempoxyz/tempo/blob/6a8514bcd6ff790599d3d6de9a0be8a189e4cb36/tips/tip-1113.md#L264>
     check! {
         id: "TEMPO-ACCOUNT-ROOT-KEY-RETIRED",
         over: |step: &AccountStep| {
@@ -295,7 +300,7 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
         },
     },
     // Before T14, no configurable signatures or key-type-3 grants.
-    // <https://github.com/tempoxyz/tempo/blob/74c38cd1d7ae26d9ae28799e036f3887038b0c7d/tips/tip-1111.md#L176>
+    // <https://github.com/tempoxyz/tempo/blob/6a8514bcd6ff790599d3d6de9a0be8a189e4cb36/tips/tip-1111.md#L177>
     check! {
         id: "TEMPO-ACCOUNT-FORK-GATED",
         over: |step: &AccountStep| {
@@ -320,7 +325,7 @@ impl StepChecked<Option<Tx>> for Commitments {
 /// A transaction's effect on the leaves of the accounts it changed or named.
 pub const LEAF_CHECKS: &[Check<Leaves>] = &[
     // An account with a commitment has the 0xef marker as code.
-    // <https://github.com/tempoxyz/tempo/blob/74c38cd1d7ae26d9ae28799e036f3887038b0c7d/tips/tip-1107.md#L480>
+    // <https://github.com/tempoxyz/tempo/blob/6a8514bcd6ff790599d3d6de9a0be8a189e4cb36/tips/tip-1107.md#L513>
     check! {
         id: "TEMPO-ACCOUNT-MARKER",
         over: |l: &Leaves| l.of.keys(),
@@ -337,8 +342,8 @@ pub const LEAF_CHECKS: &[Check<Leaves>] = &[
             )
         },
     },
-    // Only migration installs the marker.
-    // <https://github.com/tempoxyz/tempo/blob/74c38cd1d7ae26d9ae28799e036f3887038b0c7d/tips/tip-1107.md#L481>
+    // Only registration and migration install the marker.
+    // <https://github.com/tempoxyz/tempo/blob/6a8514bcd6ff790599d3d6de9a0be8a189e4cb36/tips/tip-1107.md#L514>
     check! {
         id: "TEMPO-ACCOUNT-MARKER-INSTALL",
         over: |l: &Leaves| l.of.keys(),
@@ -360,7 +365,7 @@ pub const LEAF_CHECKS: &[Check<Leaves>] = &[
         },
     },
     // A key-type-3 grant names a delegate other than the parent, without other code.
-    // <https://github.com/tempoxyz/tempo/blob/74c38cd1d7ae26d9ae28799e036f3887038b0c7d/tips/tip-1111.md#L175>
+    // <https://github.com/tempoxyz/tempo/blob/6a8514bcd6ff790599d3d6de9a0be8a189e4cb36/tips/tip-1111.md#L176>
     check! {
         id: "TEMPO-ACCOUNT-GRANT-DELEGATE",
         over: |l: &Leaves| {

@@ -18,7 +18,7 @@ pub const CONFIGURABLE_KEY_TYPE: u8 = 3;
 pub use tempo_primitives::account::CONFIGURABLE_ACCOUNT_CODE_HASH as MARKER_CODE_HASH;
 
 /// The first configuration rule `config` breaks, `None` when it passes them all.
-// <https://github.com/tempoxyz/tempo/blob/74c38cd1d7ae26d9ae28799e036f3887038b0c7d/tips/tip-1107.md#L73-L79>
+// <https://github.com/tempoxyz/tempo/blob/6a8514bcd6ff790599d3d6de9a0be8a189e4cb36/tips/tip-1107.md#L74-L80>
 pub fn broken_rule(threshold: u8, owners: &[ConfigurableAccountOwner]) -> Option<&'static str> {
     if owners.is_empty() || owners.len() > MAX_CONFIGURABLE_ACCOUNT_OWNERS {
         return Some("it does not have 1 to 48 owners");
@@ -94,6 +94,14 @@ pub fn from_primitive(config: &primitives::ConfigurableAccountConfig) -> Configu
 /// owners than a byte counts.
 pub fn commitment(config: &ConfigurableAccountConfig) -> Option<B256> {
     primitive(config).commitment_preimage().ok().map(keccak256)
+}
+
+/// The address a version-0 configuration derives, unvalidated.
+pub fn derived_address(config: &ConfigurableAccountConfig) -> Option<Address> {
+    primitive(config)
+        .account_preimage()
+        .ok()
+        .map(|preimage| Address::from_word(keccak256(preimage)))
 }
 
 /// The salt of `account`'s configuration after it migrates.
