@@ -17,7 +17,7 @@ use eyre::OptionExt;
 use serde::Deserialize;
 use slatedb::{
     Db, DbReader, DbReaderMode, WriteBatch,
-    config::{CompressionCodec, DbReaderOptions, ScanOptions, Settings},
+    config::{CompressionCodec, DbReaderOptions, GarbageCollectorOptions, ScanOptions, Settings},
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -143,7 +143,14 @@ async fn run(
         .with_settings(Settings {
             object_store_max_retries: store::SLATEDB_RETRIES,
             compression_codec: Some(CompressionCodec::Zstd),
-            garbage_collector_options: None,
+            // Compaction rewrites the whole corpus several times: reclaim superseded files as it
+            // goes. Nothing reads them, since the only checkpoint is published at the end.
+            garbage_collector_options: Some(GarbageCollectorOptions {
+                // Boundaries fence stalled writers, and need conditional overwrites local stores lack.
+                boundary_files_enabled: false,
+                object_store_max_retries: store::SLATEDB_RETRIES,
+                ..Default::default()
+            }),
             ..Default::default()
         })
         .build()
