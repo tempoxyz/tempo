@@ -132,6 +132,18 @@ const MAX_PENDING_NOTIFICATIONS: usize = 128;
 /// dropped.
 const SEND_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Cap on concurrent `consensus_getFinalization` height lookups across all connections.
+///
+/// Each lookup is two requests on the marshal's mailbox, which also carries consensus work and
+/// keeps every request that overflows it, so the RPC must not decide how much it holds.
+const MAX_CONCURRENT_LOOKUPS: usize = 64;
+
+/// How long a height lookup may wait on the marshal. Matches the default
+/// `--follow.upstream-request-timeout`, after which a follower has given up on the answer anyway.
+/// Dropping the lookup closes its response channel, which makes the marshal discard the request
+/// if it is still queued.
+const LOOKUP_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// Tempo consensus RPC implementation.
 #[derive(Debug, Clone)]
 pub struct TempoConsensusRpc<I> {
@@ -141,6 +153,8 @@ pub struct TempoConsensusRpc<I> {
     /// Live subscriptions per connection and their cap; `None` for transports without the cap
     /// (see [`Self::without_connection_cap`]).
     per_connection: Option<ConnectionCap>,
+    /// One permit per in-flight height lookup, shared by every connection.
+    lookups: Arc<Semaphore>,
 }
 
 /// Live subscriptions per connection, and how many one connection may hold.
@@ -193,6 +207,7 @@ impl<I: ConsensusFeed> TempoConsensusRpc<I> {
                 counts: Default::default(),
                 max: limits.max_subscriptions_per_connection.get(),
             }),
+            lookups: Arc::new(Semaphore::new(MAX_CONCURRENT_LOOKUPS)),
         }
     }
 }
@@ -208,6 +223,7 @@ impl<I: Clone> TempoConsensusRpc<I> {
             consensus_feed: self.consensus_feed.clone(),
             subscriptions: self.subscriptions.clone(),
             per_connection: None,
+            lookups: self.lookups.clone(),
         }
     }
 }
@@ -215,7 +231,21 @@ impl<I: Clone> TempoConsensusRpc<I> {
 #[async_trait::async_trait]
 impl<I: ConsensusFeed> TempoConsensusApiServer for TempoConsensusRpc<I> {
     async fn get_finalization(&self, query: Query) -> RpcResult<CertifiedBlock> {
-        self.consensus_feed.get_finalization(query).await.into()
+        // `Latest` is served from memory, only height lookups reach the marshal.
+        if matches!(query, Query::Latest) {
+            return self.consensus_feed.get_finalization(query).await.into();
+        }
+        let Ok(_permit) = self.lookups.try_acquire() else {
+            return Err(ErrorObject::owned(
+                SERVER_IS_BUSY_CODE,
+                "too many concurrent consensus lookups, try again later",
+                None::<()>,
+            ));
+        };
+        tokio::time::timeout(LOOKUP_TIMEOUT, self.consensus_feed.get_finalization(query))
+            .await
+            .unwrap_or(types::Response::Missing("lookup timed out"))
+            .into()
     }
 
     async fn get_latest(&self) -> RpcResult<ConsensusState> {

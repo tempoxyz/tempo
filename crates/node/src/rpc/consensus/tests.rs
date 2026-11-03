@@ -6,7 +6,14 @@ use jsonrpsee::{
     ws_client::WsClientBuilder,
 };
 use reth_primitives_traits::SealedBlock;
-use std::{num::NonZeroUsize, sync::Arc, time::Duration};
+use std::{
+    num::NonZeroUsize,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 use tempo_primitives::Block;
 use tokio::sync::broadcast;
 
@@ -357,4 +364,127 @@ async fn handler_without_connection_cap_allows_more_per_connection() {
         DEFAULT_MAX_SUBSCRIPTIONS_PER_CONNECTION.get() + 1,
     )
     .await;
+}
+
+/// A feed whose height lookups never finish, modelling a marshal stuck behind a long queue.
+/// `started` counts lookups that reached the feed and `dropped` those whose future was dropped.
+#[derive(Clone, Default)]
+struct StalledFeed {
+    started: Arc<AtomicUsize>,
+    dropped: Arc<AtomicUsize>,
+}
+
+/// Counts a dropped lookup future.
+struct DropCounter(Arc<AtomicUsize>);
+
+impl Drop for DropCounter {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+impl ConsensusFeed for StalledFeed {
+    async fn get_finalization(&self, query: Query) -> types::Response<CertifiedBlock> {
+        if matches!(query, Query::Latest) {
+            return types::Response::NotReady;
+        }
+        let _guard = DropCounter(self.dropped.clone());
+        self.started.fetch_add(1, Ordering::SeqCst);
+        std::future::pending().await
+    }
+
+    async fn get_latest(&self) -> ConsensusState {
+        ConsensusState::default()
+    }
+
+    async fn subscribe(&self) -> Option<broadcast::Receiver<Arc<SharedEvent>>> {
+        None
+    }
+}
+
+async fn wait_for_count(counter: &AtomicUsize, expected: usize) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while counter.load(Ordering::SeqCst) != expected {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "expected {expected}, found {}",
+            counter.load(Ordering::SeqCst)
+        )
+    });
+}
+
+fn expect_rpc_error(err: jsonrpsee::core::server::MethodsError) -> ErrorObject<'static> {
+    let jsonrpsee::core::server::MethodsError::JsonRpc(err) = err else {
+        panic!("expected a JSON-RPC error, got {err:?}");
+    };
+    err
+}
+
+#[tokio::test]
+async fn height_lookups_are_rejected_as_busy_once_limit_is_reached() {
+    let feed = StalledFeed::default();
+    let rpc = TempoConsensusRpc::new(feed.clone(), SubscriptionLimits::default());
+    let module = rpc.clone().into_rpc();
+    // IPC's handler shares the cap with HTTP and WS.
+    let ipc_module = rpc.without_connection_cap().into_rpc();
+
+    let held: Vec<_> = (0..MAX_CONCURRENT_LOOKUPS as u64)
+        .map(|height| {
+            let module = module.clone();
+            tokio::spawn(async move {
+                module
+                    .call::<_, CertifiedBlock>(
+                        "consensus_getFinalization",
+                        (Query::Height(height),),
+                    )
+                    .await
+            })
+        })
+        .collect();
+    wait_for_count(&feed.started, MAX_CONCURRENT_LOOKUPS).await;
+
+    for module in [&module, &ipc_module] {
+        let err = module
+            .call::<_, CertifiedBlock>("consensus_getFinalization", (Query::Height(0),))
+            .await
+            .expect_err("lookup over the cap must be rejected");
+        assert_eq!(expect_rpc_error(err).code(), SERVER_IS_BUSY_CODE);
+    }
+    assert_eq!(feed.started.load(Ordering::SeqCst), MAX_CONCURRENT_LOOKUPS);
+
+    // `Latest` does not reach the marshal and is not capped.
+    let err = module
+        .call::<_, CertifiedBlock>("consensus_getFinalization", (Query::Latest,))
+        .await
+        .expect_err("idle feed has no latest finalization");
+    assert_eq!(expect_rpc_error(err).code(), ErrorCode::NoContent as i32);
+
+    for task in held {
+        task.abort();
+    }
+}
+
+#[tokio::test]
+async fn timed_out_height_lookup_is_dropped_and_releases_its_permit() {
+    let feed = StalledFeed::default();
+    let rpc = TempoConsensusRpc::new(feed.clone(), SubscriptionLimits::default());
+    let module = rpc.clone().into_rpc();
+
+    let err = module
+        .call::<_, CertifiedBlock>("consensus_getFinalization", (Query::Height(1),))
+        .await
+        .expect_err("stalled lookup must time out");
+    let err = expect_rpc_error(err);
+    assert_eq!(err.code(), ErrorCode::ServiceUnavailable as i32);
+    assert_eq!(
+        err.data().map(|data| data.get()),
+        Some(r#""lookup timed out""#)
+    );
+    // Dropping the lookup closes the marshal's response channel, so a queued request is discarded.
+    assert_eq!(feed.dropped.load(Ordering::SeqCst), 1);
+    assert_eq!(rpc.lookups.available_permits(), MAX_CONCURRENT_LOOKUPS);
 }
