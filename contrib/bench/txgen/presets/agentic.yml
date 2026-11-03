@@ -1,0 +1,165 @@
+# Agentic commerce: agents paying services through MPP and delegated access keys.
+# Weights are gas shares, proposed from the agentic pillar's traffic shape rather than
+# any one deployment's traffic.
+#
+#   flow       gas  template                 what it models
+#   Session     25  mpp_session_open         an agent opens a TIP-20 Channel Reserve session with
+#                                            a service (deposit pulled into the native reserve)
+#   Charge      25  mpp_charge               one-off pay-per-request: transferWithMemo to a service,
+#                                            the memo carrying the request id
+#   Agent       40  keychain_agent_spend     agent spend signed by a delegated access key, paying a service
+#   Key         10  access_key_create        an agent gets a new key, authorised inline with a payment
+#
+# Agents are the users pool; services are 16 accounts (mnemonic indices 200000-200015)
+# that only receive, so each service's balance is a hot slot. Setup authorises one
+# access key per agent (keychain_authorize_pool, as access-key-mix), outside the
+# measured window; keys are scoped to TIP-20 transfer with spending limits.
+#
+# An MPP session's vouchers are signed off-chain: however many requests a session
+# serves, its on-chain cost is the open plus one settle or close with the final
+# cumulative voucher. The vouchers themselves cost no gas.
+#
+# Gaps:
+# - Settle and close are not generated. The reserve's settle, close, topUp,
+#   requestClose and withdraw identify a channel by its descriptor, which includes
+#   the opening transaction's unique identifier (expiringNonceHash), so a spec
+#   cannot precompute it. Needed in txgen: https://github.com/tempoxyz/txgen/pull/200
+#   (open, unmerged): saved sequence steps (the signed open as a binding) and an
+#   mpp_settle template that derives the descriptor and signs the EIP-712 voucher;
+#   plus an mpp_close variant on the same machinery (close with captureAmount up to
+#   the final cumulative voucher). This preset then becomes an open -> close sequence.
+# - Channel state accumulates: opens are never closed, so every session leaves its
+#   channel slot behind, unlike live sessions that close and refund storage credits.
+# - Per-agent rate: txgen picks senders at random, so each agent averages
+#   1/accounts of the agent-spend rate rather than a fixed cadence.
+# Requires T12+ (expiring nonces) and funded agents (nonzero state bloat; the helper
+# also funds the pools). Channel deposits use token 1, fees pathUSD.
+chain_id: 1337
+
+gas:
+  max_fee_per_gas: 100000000000
+  max_priority_fee_per_gas: 100000000000
+
+accounts:
+  users:
+    mnemonic: "test test test test test test test test test test test junk"
+    range:
+      - 0
+      - ${TXGEN_ACCOUNTS}
+  services:
+    mnemonic: "test test test test test test test test test test test junk"
+    range:
+      - 200000
+      - 200016
+
+artifacts:
+  ERC20: ../tip20.abi.json
+  TIP20ChannelReserve: ../tip20-channel-reserve.abi.json
+
+setup:
+  steps:
+    - id: authorize_keychain_users
+      keychain_authorize_pool:
+        accounts:
+          pool: users
+        access_keys:
+          mnemonic: "test test test test test test test test test test test junk"
+          range:
+            - ${TXGEN_KEYCHAIN_ACCESS_KEYS_START}
+            - ${TXGEN_KEYCHAIN_ACCESS_KEYS_END}
+        key_type: secp256k1
+        gas_limit: ${TXGEN_KEYCHAIN_AUTHORIZE_SETUP_GAS_LIMIT}
+        fee_token: "0x20c0000000000000000000000000000000000000"
+        limits: ${TXGEN_KEYCHAIN_TIP20_LIMITS}
+        allowed_calls: ${TXGEN_KEYCHAIN_TIP20_ALLOWED_CALLS}
+
+templates:
+  mpp_session_open:
+    type: tempo
+    from: {pool: users, select: random}
+    gas_limit: 1000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    nonce: { uniform: [0, 18446744073709551615] } # TIP-1106, requires T12+
+    valid_for_secs: 25
+    call:
+      to: "0x4d50500000000000000000000000000000000000"
+      abi: TIP20ChannelReserve
+      function: open
+      args:
+        - pool: {pool: services, select: random}
+        - "0x0000000000000000000000000000000000000000"
+        - "0x20c0000000000000000000000000000000000001"
+        - 1
+        - random_bytes: 32
+        - "0x0000000000000000000000000000000000000000"
+  mpp_charge:
+    type: tempo
+    from: {pool: users, select: random}
+    gas_limit: 300000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    nonce: { uniform: [0, 18446744073709551615] } # TIP-1106, requires T12+
+    valid_for_secs: 25
+    call:
+      to: "0x20c0000000000000000000000000000000000000"
+      abi: ERC20
+      function: transferWithMemo
+      args:
+        - pool: {pool: services, select: random}
+        - 1
+        - random_bytes: 32
+  keychain_agent_spend:
+    type: tempo
+    from: {pool: users, select: random}
+    gas_limit: 3000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    nonce: { uniform: [0, 18446744073709551615] } # TIP-1106, requires T12+
+    valid_for_secs: 25
+    auth:
+      mode: keychain
+      access_key:
+        from_setup: authorize_keychain_users
+        pair: same_index
+    call:
+      to: "0x20c0000000000000000000000000000000000000"
+      abi: ERC20
+      function: transfer
+      args:
+        - pool: {pool: services, select: random}
+        - 1
+  access_key_create:
+    type: tempo
+    from: {pool: users, select: random}
+    gas_limit: ${TXGEN_KEY_AUTHORIZATION_GAS_LIMIT}
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    nonce: { uniform: [0, 18446744073709551615] } # TIP-1106, requires T12+
+    valid_for_secs: 25
+    auth:
+      mode: key_authorization
+      access_key:
+        derive: per_tx
+      key_type: secp256k1
+      limits: ${TXGEN_KEYCHAIN_TIP20_LIMITS}
+      allowed_calls: ${TXGEN_KEYCHAIN_TIP20_ALLOWED_CALLS}
+      witness:
+        random_bytes: 32
+    call:
+      to: "0x20c0000000000000000000000000000000000000"
+      abi: ERC20
+      function: transfer
+      args:
+        - pool: {pool: services, select: random}
+        - 1
+
+mix:
+  - template: mpp_session_open
+    weight: 25
+  - template: mpp_charge
+    weight: 25
+  - template: keychain_agent_spend
+    weight: 40
+  - template: access_key_create
+    weight: 10

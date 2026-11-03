@@ -53,7 +53,7 @@ async fn test_fallback_balance_updates_revalidate_only_relevant_crossings() -> e
     genesis["alloc"][format!("{inferred_token:#x}")]["storage"][format!("{slot:#066x}")] =
         format!("{:#066x}", fee * U256::from(4)).into();
     let mut ousd = genesis["alloc"][format!("{DEFAULT_FEE_TOKEN:#x}")].clone();
-    ousd["storage"][format!("{:#066x}", U256::from(slots::QUOTE_TOKEN))] = format!(
+    ousd["storage"][format!("{:#066x}", slots::QUOTE_TOKEN)] = format!(
         "{:#066x}",
         U256::from_be_slice(DEFAULT_FEE_TOKEN.as_slice())
     )
@@ -713,8 +713,7 @@ async fn test_evict_txs_on_transfer_policy_change() -> eyre::Result<()> {
 
     let sig = admin_signer.sign_hash_sync(&policy_tx.signature_hash())?;
     let envelope: TempoTxEnvelope = policy_tx.into_signed(sig.into()).into();
-    let mut encoded = Vec::new();
-    envelope.encode_2718(&mut encoded);
+    let encoded = envelope.encoded_2718();
 
     node2.inject_tx(encoded.into()).await?;
     let policy_payload = node2.build_and_submit_payload().await?;

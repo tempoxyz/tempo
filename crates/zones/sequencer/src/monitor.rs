@@ -1057,7 +1057,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_consensus::{Header as ConsensusHeader, Signed, TxLegacy};
+    use alloy_consensus::{Header as ConsensusHeader, SignableTransaction, TxLegacy};
     use alloy_primitives::{Bytes, Log, Signature, U256};
     use alloy_provider::Provider as _;
     use alloy_rpc_types_eth::Header as RpcHeader;
@@ -1112,10 +1112,8 @@ mod tests {
             lastProcessedDepositNumber: 0,
             lastProcessedEnabledTokenCount: 0,
         };
-        let tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(
-            TxLegacy::default(),
-            Signature::test_signature(),
-        ));
+        let tx =
+            TempoTxEnvelope::Legacy(TxLegacy::default().into_signed(Signature::test_signature()));
         let mut header = TempoHeader::default();
         header.inner.number = number;
         provider.add_block(

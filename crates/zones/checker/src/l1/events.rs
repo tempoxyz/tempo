@@ -473,7 +473,7 @@ mod tests {
             collect(&[receipt(true, B256::ZERO, vec![bad])])
                 .unwrap_err()
                 .to_string()
-                .contains("non-canonical DepositMade")
+                .contains("malformed DepositMade")
         );
     }
 

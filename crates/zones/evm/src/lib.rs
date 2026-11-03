@@ -446,7 +446,7 @@ pub struct TempoStorageRead {
 mod tests {
     use super::*;
 
-    use alloy_consensus::{Sealable as _, Signed, TxLegacy};
+    use alloy_consensus::{Sealable as _, SignableTransaction, TxLegacy};
     use alloy_primitives::{B256, Bytes, U256, address};
     use alloy_sol_types::SolCall;
     use evm2::{
@@ -496,14 +496,14 @@ mod tests {
 
     fn system_tx_env(to: Address, input: Bytes) -> Recovered<TempoTxEnv> {
         let tx = Recovered::new_unchecked(
-            TempoTxEnvelope::Legacy(Signed::new_unhashed(
+            TempoTxEnvelope::Legacy(
                 TxLegacy {
                     to: to.into(),
                     input,
                     ..Default::default()
-                },
-                TEMPO_SYSTEM_TX_SIGNATURE,
-            )),
+                }
+                .into_signed(TEMPO_SYSTEM_TX_SIGNATURE),
+            ),
             TEMPO_SYSTEM_TX_SENDER,
         );
         Recovered::new_unchecked(tx.into(), TEMPO_SYSTEM_TX_SENDER)

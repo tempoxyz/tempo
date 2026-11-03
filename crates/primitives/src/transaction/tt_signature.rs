@@ -10,7 +10,7 @@ use alloc::vec::Vec;
 use alloy_consensus::crypto::RecoveryError;
 use alloy_eips::eip7623::{STANDARD_TOKEN_COST, tokens_in_calldata};
 use alloy_primitives::{Address, B256, Bytes, Signature, U256, keccak256, uint};
-use alloy_rlp::{BufMut, decode_exact};
+use alloy_rlp::{BufMut, Decodable, Encodable, Error as RlpError, Header, decode_exact};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use sha2::{Digest, Sha256};
 
@@ -708,6 +708,18 @@ impl AccountSignature {
     pub const fn is_configurable_account(&self) -> bool {
         matches!(self, Self::ConfigurableAccount(_))
     }
+
+    /// Full gas to verify the approval: [`PrimitiveSignature::verification_gas`] or
+    /// [`ConfigurableAccountSignature::verification_gas`].
+    ///
+    /// This does not subtract the ecrecover baseline already covered by ordinary intrinsic gas.
+    /// Returns `None` if the cost overflows `u64`.
+    pub fn verification_gas(&self) -> Option<u64> {
+        match self {
+            Self::Primitive(signature) => Some(signature.verification_gas()),
+            Self::ConfigurableAccount(signature) => signature.verification_gas(),
+        }
+    }
 }
 
 impl From<Signature> for AccountSignature {
@@ -725,6 +737,32 @@ impl From<PrimitiveSignature> for AccountSignature {
 impl From<ConfigurableAccountSignature> for AccountSignature {
     fn from(signature: ConfigurableAccountSignature) -> Self {
         Self::ConfigurableAccount(signature)
+    }
+}
+
+impl Encodable for AccountSignature {
+    fn encode(&self, out: &mut dyn BufMut) {
+        Header {
+            list: false,
+            payload_length: self.encoded_length(),
+        }
+        .encode(out);
+        self.encode_bytes_into(out);
+    }
+
+    fn length(&self) -> usize {
+        Header {
+            list: false,
+            payload_length: self.encoded_length(),
+        }
+        .length_with_payload()
+    }
+}
+
+impl Decodable for AccountSignature {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let bytes = Header::decode_bytes(buf, false)?;
+        Self::from_bytes(bytes).map_err(|error| RlpError::Custom(error.as_str()))
     }
 }
 
@@ -1381,8 +1419,7 @@ mod tests {
         let field_bytes = fields.concat();
         let mut cases = Vec::new();
         for parity in [false, true] {
-            let signature =
-                Signature::new(U256::from_be_bytes(r.0), U256::from_be_bytes(s.0), parity);
+            let signature = Signature::new(r.into(), s.into(), parity);
             let mut expected = field_bytes[..64].to_vec();
             expected.push(27 + u8::from(parity));
             cases.push((PrimitiveSignature::Secp256k1(signature), expected));
@@ -2499,8 +2536,7 @@ mod tests {
                 false,
             ),
         ] {
-            let mut buf = Vec::new();
-            alloy_rlp::Encodable::encode(&sig, &mut buf);
+            let buf = alloy_rlp::encode(&sig);
             let decoded = TempoSignature::decode(&mut buf.as_slice()).unwrap();
             assert_eq!(sig, decoded);
             assert_eq!(decoded.is_legacy_keychain(), expect_legacy);

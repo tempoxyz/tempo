@@ -2122,7 +2122,7 @@ where
 mod tests {
 
     use super::*;
-    use alloy_consensus::{Signed, TxEip1559};
+    use alloy_consensus::{SignableTransaction, TxEip1559};
     use alloy_primitives::{Bytes, Signature, TxKind, U256};
     use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
     use reth_chainspec::EthChainSpec;
@@ -2279,13 +2279,13 @@ mod tests {
     #[test]
     fn pool_policy_allows_allowlisted_plain_create() {
         let sender = Address::repeat_byte(0x11);
-        let envelope = TempoTxEnvelope::Eip1559(Signed::new_unhashed(
+        let envelope = TempoTxEnvelope::Eip1559(
             TxEip1559 {
                 to: TxKind::Create,
                 ..Default::default()
-            },
-            Signature::test_signature(),
-        ));
+            }
+            .into_signed(Signature::test_signature()),
+        );
         let transaction = pooled_transaction(envelope, sender);
 
         let err = zone_evm::validate_transaction(transaction.tx_env(), &[], TempoHardfork::T7)

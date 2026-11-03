@@ -2,7 +2,7 @@ use std::{cmp::Ordering, collections::BTreeMap, num::NonZeroU32, sync::Arc};
 
 use alloy_consensus::{BlockHeader as _, Sealable};
 use bytes::{Buf, BufMut};
-use commonware_codec::{Encode as _, EncodeSize, Read, ReadExt as _, Write};
+use commonware_codec::{Decode as _, Encode as _, EncodeSize, Read, ReadExt as _, Write};
 use commonware_consensus::{
     CertifiableBlock as _, Heightable as _,
     marshal::{Update, core::DigestFallback},
@@ -330,6 +330,22 @@ where
                 state.seed,
             )
             .wrap_err("unable to instantiate dealer state")?;
+
+        // After a restart past the midpoint, finalize now instead of on the next
+        // finalized block, so proposals before it can carry our log.
+        if let Some(dealer_state) = &mut dealer_state
+            && let Some((height, _)) = storage.get_latest_finalized_block_for_epoch(&round.epoch())
+            && !matches!(
+                self.config
+                    .epoch_strategy
+                    .containing(*height)
+                    .expect("epoch strategy is covering all heights")
+                    .phase(),
+                EpochPhase::Early
+            )
+        {
+            dealer_state.finalize();
+        }
 
         if dealer_state.is_some() {
             self.metrics.how_often_dealer.metric().inc();
@@ -958,13 +974,16 @@ where
         dealer_state: Option<&mut Dealer>,
         player_state: Option<&mut Player>,
         from: PublicKey,
-        mut message: IoBuf,
+        message: IoBuf,
     ) -> eyre::Result<()>
     where
         TStorageContext: BufferPooler + commonware_runtime::Metrics + Clock + Storage,
     {
-        let msg = Message::read_cfg(&mut message, &NZU32!(round.players().len() as u32))
-            .wrap_err("failed reading p2p message")?;
+        let msg = Message::decode_cfg(message, &NZU32!(round.players().len() as u32))
+            .inspect_err(|error| {
+                commonware_p2p::block!(self.config.blocker, from.clone(), %error, "failed decoding DKG message");
+            })
+            .wrap_err("failed decoding p2p message")?;
 
         match msg {
             Message::Dealer(pub_msg, priv_msg) => {
