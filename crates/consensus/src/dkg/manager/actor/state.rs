@@ -360,9 +360,9 @@ where
     /// Notably, this does not persist the dealer logs to disk! On restart, it
     /// is expected that the actor reads the dealer logs from the marshal actor
     /// and forwards them one-by-one to the state cache.
-    pub(super) fn cache_notarized_block(&mut self, round: &Round, block: Block) {
+    pub(super) fn cache_notarized_block(&mut self, round: &Round, block: &Block) {
         let cache = self.cache.entry(round.epoch).or_default();
-        let log = ReducedBlock::from_block_for_round(&block, round);
+        let log = ReducedBlock::from_block_for_round(block, round);
         cache.notarized_blocks.insert(log.digest, log);
     }
 

@@ -139,7 +139,7 @@ pub(crate) trait Marshal: Clone + Send + Sync + 'static {
     fn get_block(
         &self,
         identifier: impl Into<Identifier<Digest>>,
-    ) -> impl Future<Output = Option<Block>> + Send;
+    ) -> impl Future<Output = Option<Digested<Block>>> + Send;
 
     /// Retrieves `(height, digest)` finalization info for `height` from
     /// marshal's local storage.
@@ -291,15 +291,10 @@ impl Marshal for crate::alias::marshal::Mailbox {
     fn get_block(
         &self,
         identifier: impl Into<Identifier<Digest>>,
-    ) -> impl Future<Output = Option<Block>> + Send {
+    ) -> impl Future<Output = Option<Digested<Block>>> + Send {
         let mailbox = self.clone();
         let identifier = identifier.into();
-        async move {
-            mailbox
-                .get_block(identifier)
-                .await
-                .map(|block| block.inner().clone())
-        }
+        async move { mailbox.get_block(identifier).await }
     }
 
     fn get_info(&self, height: Height) -> impl Future<Output = Option<(Height, Digest)>> + Send {

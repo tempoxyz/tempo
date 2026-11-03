@@ -1,3 +1,4 @@
+use commonware_cryptography::Digested;
 use std::{cmp::Ordering, collections::BTreeMap, num::NonZeroU32, sync::Arc};
 
 use alloy_consensus::{BlockHeader as _, Sealable};
@@ -147,7 +148,7 @@ pub(crate) struct Actor<
 
     /// Queue of finalized blocks if marshal is configured to send out multiple
     /// blocks at a time.
-    pending_finalized_blocks: FuturesOrdered<Ready<(Span, Block, Exact)>>,
+    pending_finalized_blocks: FuturesOrdered<Ready<(Span, Digested<Block>, Exact)>>,
 }
 
 impl<TContext, TBlocker, TExecutionLayer, TMarshal>
@@ -412,7 +413,7 @@ where
                             storage,
                             &mut dealer_state,
                             &mut player_state,
-                            block.header().clone(),
+                            block.inner().header().clone(),
                         )
                         .await
                         .wrap_err("failed handling finalized block")?;
@@ -455,7 +456,7 @@ where
                                         "received finalized block",
                                     ));
                                     self.pending_finalized_blocks.push_back(ready((
-                                        msg.cause, block.inner().clone(), ack,
+                                        msg.cause, block, ack,
                                     )));
                                 }
                             }
@@ -537,7 +538,7 @@ where
                             Some(block) => {
                                 if let Some(pending) = outcome_requests.get_mut(&digest) {
                                     pending.fetch = None;
-                                    storage.cache_notarized_block(&round, (*block).clone());
+                                    storage.cache_notarized_block(&round, block.inner());
                                 }
                             }
                             None => {
@@ -1047,7 +1048,7 @@ where
         round: &Round,
         state: &State,
         outcome_requests: &mut BTreeMap<Digest, PendingOutcome>,
-        fetches: &mut AbortablePool<'static, (Digest, Option<Arc<Block>>)>,
+        fetches: &mut AbortablePool<'static, (Digest, Option<Digested<Block>>)>,
         fetch_ctx: &Arc<TContext>,
     ) where
         TStorageContext: commonware_runtime::Metrics + Clock + Storage,
@@ -1063,7 +1064,7 @@ where
                     player_state,
                     round,
                     state,
-                    &pending.parent,
+                    pending.parent.inner(),
                 )
                 .await
             {
@@ -1086,7 +1087,7 @@ where
                         let cause = pending.cause.clone();
                         let digest = *digest;
                         pending.fetch = Some(fetches.push(async move {
-                            let block = receiver.await.ok().map(|block| block.inner_shared()).filter(|block| {
+                            let block = receiver.await.ok().filter(|block| {
                                 timer.observe(context.as_ref());
                                 if block.height() == height && block.digest() == hole {
                                     true
@@ -1672,7 +1673,7 @@ where
     }
 
     if let Some(block) = marshal.get_block(height).await {
-        return Ok(block.header().clone());
+        return Ok(block.inner().header().clone());
     }
 
     bail!("could not find header for finalized block at `{height}`");
@@ -1804,7 +1805,7 @@ impl Metrics {
 /// epoch ends.
 struct PendingOutcome {
     cause: Span,
-    parent: Arc<Block>,
+    parent: Digested<Block>,
     requests: Vec<SubscribeDkgCeremony>,
     fetch: Option<Aborter>,
 }

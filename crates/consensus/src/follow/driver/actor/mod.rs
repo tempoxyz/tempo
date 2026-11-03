@@ -4,6 +4,7 @@ use commonware_consensus::{
     simplex::types::Activity,
     types::{Epoch, Epocher as _, Height, Round},
 };
+use commonware_cryptography::Digested;
 use commonware_runtime::{Clock, ContextCell, Metrics, Spawner, Storage, spawn_cell};
 use commonware_utils::Acknowledgement as _;
 use eyre::{OptionExt as _, Report, WrapErr as _};
@@ -216,7 +217,7 @@ where
             let onchain_outcome = self
                 .verifier
                 .decode_dkg_outcome_and_register_boundary(
-                    boundary_block.header().extra_data().as_ref(),
+                    boundary_block.inner().header().extra_data().as_ref(),
                 )
                 .wrap_err_with(|| {
                     format!(
@@ -298,7 +299,8 @@ where
             Err(error) => return Err(Report::new(error)),
         };
 
-        let consensus_block = Block::from_execution_block_unchecked(certified.block);
+        let consensus_block =
+            Digested::from(Block::from_execution_block_unchecked(certified.block));
 
         let round = finalization.round();
         self.latest_verified_round = self.latest_verified_round.max(round);

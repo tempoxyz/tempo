@@ -91,8 +91,8 @@ pub(super) trait ExecutionProvider: Send + Sync {
 
 /// Marshal operations used by the follower driver.
 pub(super) trait Marshal: Send + Sync {
-    fn get_block(&self, height: Height) -> impl Future<Output = Option<Block>> + Send;
-    fn certified(&self, round: Round, block: Block) -> impl Future<Output = bool> + Send;
+    fn get_block(&self, height: Height) -> impl Future<Output = Option<Digested<Block>>> + Send;
+    fn certified(&self, round: Round, block: Digested<Block>) -> impl Future<Output = bool> + Send;
     fn report(&self, activity: ConsensusActivity) -> impl Future<Output = ()> + Send;
     fn hint_finalized(&self, height: Height) -> impl Future<Output = ()> + Send;
 }
@@ -112,14 +112,9 @@ where
 }
 
 impl Marshal for crate::alias::marshal::Mailbox {
-    fn get_block(&self, height: Height) -> impl Future<Output = Option<Block>> + Send {
+    fn get_block(&self, height: Height) -> impl Future<Output = Option<Digested<Block>>> + Send {
         let mailbox = self.clone();
-        async move {
-            mailbox
-                .get_block(height)
-                .await
-                .map(|block| block.inner().clone())
-        }
+        async move { mailbox.get_block(height).await }
     }
 
     fn hint_finalized(&self, height: Height) -> impl Future<Output = ()> + Send {
@@ -130,14 +125,9 @@ impl Marshal for crate::alias::marshal::Mailbox {
         }
     }
 
-    fn certified(&self, round: Round, block: Block) -> impl Future<Output = bool> + Send {
+    fn certified(&self, round: Round, block: Digested<Block>) -> impl Future<Output = bool> + Send {
         let mailbox = self.clone();
-        async move {
-            let digest = block.digest();
-            mailbox
-                .certified(round, Digested::precomputed(block, digest))
-                .await
-        }
+        async move { mailbox.certified(round, block).await }
     }
 
     fn report(&self, activity: ConsensusActivity) -> impl Future<Output = ()> + Send {

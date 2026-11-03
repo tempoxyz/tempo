@@ -14,6 +14,7 @@
 //! upstream, submit them to Reth as finalized payloads, and rely on Reth's sync machinery plus
 //! marshal gap repair to fill history.
 
+use commonware_cryptography::{Digested, Digestible as _};
 use std::{collections::VecDeque, time::Duration};
 
 use alloy_rpc_types_engine::{ForkchoiceState, ForkchoiceUpdateError};
@@ -51,7 +52,7 @@ pub(crate) struct Actor<TContext, P, E, M = crate::alias::marshal::Mailbox> {
     last_fcu: Target,
     latest_tip: Target,
 
-    block_queue: VecDeque<(Block, Exact)>,
+    block_queue: VecDeque<(Digested<Block>, Exact)>,
     floor_candidate: Option<Height>,
 
     execution_task: OptionFuture<BoxFuture<'static, ExecutionTaskResult>>,
@@ -144,7 +145,7 @@ where
                 Some(message) = self.mailbox.next() => {
                     match message {
                         Message::Update(Update::Block(block, ack)) => {
-                            self.block_queue.push_back((block.inner().clone(), ack));
+                            self.block_queue.push_back((block, ack));
                         }
 
                         // A Tip update has a persisted finalization, so it can
@@ -257,7 +258,7 @@ where
 
 enum ExecutionRequest {
     Forkchoice(Target),
-    Block(Block, Exact),
+    Block(Digested<Block>, Exact),
 }
 
 enum ExecutionTaskResult {
@@ -275,7 +276,7 @@ async fn execute_request<TContext: Pacer, E: ExecutionEngine, P: FinalizedBlockP
     let (tip, ack) = match request {
         ExecutionRequest::Forkchoice(tip) => (tip, None),
         ExecutionRequest::Block(block, ack) => {
-            let tip = Target::from_block(&block);
+            let tip = Target::from_block(block.inner());
             if let Err(error) = submit_new_payload(&context, &execution_engine, block).await {
                 return ExecutionTaskResult::Fatal(error);
             }
@@ -320,9 +321,9 @@ async fn execute_request<TContext: Pacer, E: ExecutionEngine, P: FinalizedBlockP
 async fn submit_new_payload<TContext: Pacer, E: ExecutionEngine + ?Sized>(
     context: &TContext,
     execution_engine: &E,
-    block: Block,
+    block: Digested<Block>,
 ) -> eyre::Result<()> {
-    let block = block.into_execution_block();
+    let block = block.inner().execution_block();
     let payload_status = execution_engine
         .new_payload(TempoExecutionData { block })
         .pace(context, Duration::from_millis(20))

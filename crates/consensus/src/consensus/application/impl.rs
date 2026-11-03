@@ -1,9 +1,6 @@
 //! Tempo's block building and verification.
 
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use alloy_consensus::BlockHeader;
 use alloy_primitives::Bytes;
@@ -112,7 +109,7 @@ impl Inner {
         &self,
         runtime: &TContext,
         context: Context<Digest, PublicKey>,
-        parent: &Arc<Block>,
+        parent: &Digested<Block>,
         propose_start: Instant,
     ) -> eyre::Result<Block> {
         self.executor
@@ -132,7 +129,7 @@ impl Inner {
             //
             // The DKG actor reads no chain state, so it starts on the
             // ceremony output now, while the executor works on the parent.
-            let ceremony = self.dkg_manager.subscribe_dkg_ceremony(Arc::clone(parent));
+            let ceremony = self.dkg_manager.subscribe_dkg_ceremony(parent.clone());
             (
                 Bytes::default(),
                 Some(self.boundary_dkg_outcome(round.epoch(), parent.digest(), ceremony)),
@@ -168,9 +165,9 @@ impl Inner {
         let mut epoch_millis = runtime.current().epoch_millis();
 
         // Use current timestamp but make sure that if parent's timestamp is in the future, we account for that.
-        if epoch_millis <= parent.timestamp_millis() {
+        if epoch_millis <= parent.inner().timestamp_millis() {
             self.metrics.parent_ahead_of_local_time.metric().inc();
-            epoch_millis = parent.timestamp_millis() + 1
+            epoch_millis = parent.inner().timestamp_millis() + 1
         };
 
         // Match the stamped header so a lagging local clock does not inflate network samples.
@@ -305,7 +302,8 @@ impl Inner {
                 let output = ceremony
                     .await
                     .wrap_err("failed getting public dkg ceremony outcome")?;
-                let outcome = parent_state.boundary_outcome(&epoch_strategy, &parent, output)?;
+                let outcome =
+                    parent_state.boundary_outcome(&epoch_strategy, parent.inner(), output)?;
                 ensure!(
                     epoch.next() == outcome.epoch(),
                     "outcome is for epoch `{}`, but we are trying to include the \
@@ -488,10 +486,7 @@ where
     ) -> Option<Digested<Block>> {
         let propose_start = Instant::now();
         let parent = ancestry.next().await?;
-        match self
-            .build(&runtime, context, &parent.inner_shared(), propose_start)
-            .await
-        {
+        match self.build(&runtime, context, &parent, propose_start).await {
             Ok(block) => {
                 let digest = block.digest();
                 info!(proposal.digest = %digest, "constructed proposal");
@@ -546,9 +541,7 @@ where
                 warn!("ancestry ended before yielding the parent; abstaining");
                 return std::future::pending().await;
             };
-            let ceremony = self
-                .dkg_manager
-                .subscribe_dkg_ceremony(parent.inner_shared());
+            let ceremony = self.dkg_manager.subscribe_dkg_ceremony(parent.clone());
             Some((parent, ceremony))
         } else {
             None
@@ -562,11 +555,7 @@ where
             }
         };
 
-        match self
-            .executor
-            .verify_block(context, block.inner().clone())
-            .await
-        {
+        match self.executor.verify_block(context, block.clone()).await {
             Ok(Some(duration)) => {
                 self.estimator.on_block_verified(
                     block.height().get(),

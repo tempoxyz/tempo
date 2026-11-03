@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use commonware_cryptography::Digested;
 
 use alloy_primitives::Bytes;
 use commonware_actor::Feedback;
@@ -60,7 +60,7 @@ impl Mailbox {
     /// down.
     pub(crate) fn subscribe_dkg_ceremony(
         &self,
-        parent: Arc<Block>,
+        parent: Digested<Block>,
     ) -> oneshot::Receiver<Output<MinSig, PublicKey>> {
         let (response, rx) = oneshot::channel();
         // A closed mailbox drops the sender, so the receiver reports cancellation.
@@ -149,7 +149,7 @@ pub(super) struct GetDealerLog {
 }
 
 pub(super) struct SubscribeDkgCeremony {
-    pub(super) parent: Arc<Block>,
+    pub(super) parent: Digested<Block>,
     pub(super) response: oneshot::Sender<Output<MinSig, PublicKey>>,
 }
 

@@ -116,7 +116,7 @@ pub(crate) trait Marshal: Clone + Send + Sync + 'static {
     /// Makes a best-effort attempt to retrieve `height` from local storage.
     ///
     /// This lookup does not fetch the block from the network.
-    fn get_block(&self, height: Height) -> impl Future<Output = Option<Block>> + Send;
+    fn get_block(&self, height: Height) -> impl Future<Output = Option<Digested<Block>>> + Send;
 
     /// Subscribes to a block, optionally fetching it from peers.
     /// Dropping the receiver cancels the subscription.
@@ -176,14 +176,9 @@ impl ExecutionLayer for TempoExecutionLayer {
 }
 
 impl Marshal for crate::alias::marshal::Mailbox {
-    fn get_block(&self, height: Height) -> impl Future<Output = Option<Block>> + Send {
+    fn get_block(&self, height: Height) -> impl Future<Output = Option<Digested<Block>>> + Send {
         let mailbox = self.clone();
-        async move {
-            mailbox
-                .get_block(height)
-                .await
-                .map(|block| block.inner().clone())
-        }
+        async move { mailbox.get_block(height).await }
     }
 
     fn subscribe_by_digest(

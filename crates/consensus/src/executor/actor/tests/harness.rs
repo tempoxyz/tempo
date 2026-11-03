@@ -1064,7 +1064,7 @@ impl Marshal for FakeMarshal {
     fn get_block(
         &self,
         identifier: impl Into<Identifier<Digest>>,
-    ) -> impl Future<Output = Option<Block>> + Send {
+    ) -> impl Future<Output = Option<Digested<Block>>> + Send {
         let block = match identifier.into() {
             Identifier::Height(height) => {
                 self.inner.get_block_log.lock().push(height.get());
@@ -1085,6 +1085,7 @@ impl Marshal for FakeMarshal {
                 .max_by_key(|block| block.height())
                 .cloned(),
         };
+        let block = block.map(Digested::from);
         async move { block }
     }
 
@@ -1293,7 +1294,7 @@ where
         let mailbox = self.mailbox.clone();
         let mut context = block.context();
         context.round = round;
-        async move { mailbox.verify_block(context, block).await }
+        async move { mailbox.verify_block(context, Digested::from(block)).await }
     }
 
     /// Requests a proposal build on top of `parent`, returning the payload

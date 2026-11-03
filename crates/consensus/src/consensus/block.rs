@@ -99,7 +99,13 @@ impl Block {
         }
     }
 
+    /// Returns a shared handle to the wrapped execution block.
+    pub(crate) fn execution_block(&self) -> SealedOrRecoveredBlock<tempo_primitives::Block> {
+        self.execution_block.clone()
+    }
+
     /// Consumes the block and returns the wrapped execution block handle.
+    #[cfg(test)]
     pub(crate) fn into_execution_block(self) -> SealedOrRecoveredBlock<tempo_primitives::Block> {
         self.execution_block
     }

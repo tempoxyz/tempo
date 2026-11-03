@@ -710,9 +710,14 @@ impl StubMarshal {
 }
 
 impl Marshal for StubMarshal {
-    async fn get_block(&self, height: Height) -> Option<Block> {
+    async fn get_block(&self, height: Height) -> Option<Digested<Block>> {
         self.reads.lock().unwrap().push(height);
-        self.blocks.lock().unwrap().get(&height).cloned()
+        self.blocks
+            .lock()
+            .unwrap()
+            .get(&height)
+            .cloned()
+            .map(Digested::from)
     }
 
     fn subscribe_by_digest(
@@ -800,7 +805,7 @@ pub(super) fn header(height: Height) -> TempoHeader {
 /// Returns a block at `height`, proposed in `round`, whose digest differs for
 /// each `tag`. Use it for requests whose parent is not a block that the test
 /// reports.
-pub(super) fn parent_block(round: ConsensusRound, height: Height, tag: u8) -> Arc<Block> {
+pub(super) fn parent_block(round: ConsensusRound, height: Height, tag: u8) -> Digested<Block> {
     let mut header = header(height);
     header.inner.mix_hash = B256::repeat_byte(tag);
     header.consensus_context = Some(TempoConsensusContext {
@@ -811,7 +816,7 @@ pub(super) fn parent_block(round: ConsensusRound, height: Height, tag: u8) -> Ar
             &PrivateKey::from_seed(0).public_key(),
         ),
     });
-    Arc::new(block(header))
+    Digested::from(block(header))
 }
 
 pub(super) fn block(header: TempoHeader) -> Block {
