@@ -449,6 +449,28 @@ pub async fn resolve_code(reader: &DbReader, input: &Input) -> eyre::Result<()> 
     Ok(())
 }
 
+/// The published record of `block` and its decoded input, with its code resolved.
+///
+/// Checks the block alone, not its links to neighbouring blocks. A block runs on its own recorded
+/// pre-state, and a complete corpus had its whole range checked when it was published.
+pub async fn published(reader: &DbReader, block: u64) -> eyre::Result<(Record, Arc<Input>)> {
+    let record = metadata(reader, block).await?;
+    // Seeded from the record itself, so only its own sizes and coverage are checked.
+    Cursor {
+        next: record.number,
+        tx: record.first_tx,
+        parent: record.parent,
+    }
+    .advance(&record)?;
+    let bytes = reader
+        .get(key(block))
+        .await?
+        .ok_or_else(|| eyre::eyre!("missing block record at {block}"))?;
+    let input = decode(&bytes, &record)?;
+    resolve_code(reader, &input).await?;
+    Ok((record, input))
+}
+
 pub fn decode(bytes: &[u8], record: &Record) -> eyre::Result<Arc<Input>> {
     eyre::ensure!(
         bytes.len() == record.block_bytes,

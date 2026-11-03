@@ -16,24 +16,46 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = ["exec"]
+# Capture and replay (the `exec` module), with the EVM and database crates they need. The
+# format, store, gc and reading blocks as fuzz inputs (`fuzz`) need none of them.
+exec = [
+  "dep:alloy-eip7928",
+  "dep:reth-execution-types",
+  "dep:reth-cli-util",
+  "dep:crossbeam-channel",
+  "dep:reth-consensus",
+  "dep:reth-trie-common",
+  "dep:reth-storage-api",
+  "dep:reth-evm",
+  "dep:reth-provider",
+  "dep:evm2",
+  "dep:tempo-evm",
+  "dep:schnellru",
+]
+
 [dependencies]
 alloy-primitives.workspace = true
 reth-primitives-traits.workspace = true
-reth-execution-types.workspace = true
-evm2.workspace = true
-tempo-evm = { workspace = true, features = ["default"] }
+reth-execution-types = { workspace = true, optional = true }
+evm2 = { workspace = true, optional = true }
+tempo-evm = { workspace = true, features = ["default"], optional = true }
 tempo-primitives = { workspace = true, features = ["default"] }
-reth-evm.workspace = true
-reth-provider.workspace = true
+reth-evm = { workspace = true, optional = true }
+reth-provider = { workspace = true, optional = true }
 reth-chainspec.workspace = true
-reth-cli-util.workspace = true
-crossbeam-channel.workspace = true
-reth-consensus.workspace = true
-reth-trie-common.workspace = true
-reth-storage-api = { workspace = true, features = ["db-api"] }
+reth-cli-util = { workspace = true, optional = true }
+crossbeam-channel = { workspace = true, optional = true }
+reth-consensus = { workspace = true, optional = true }
+reth-trie-common = { workspace = true, optional = true }
+reth-storage-api = { workspace = true, features = ["db-api"], optional = true }
 alloy-consensus.workspace = true
 alloy-rlp.workspace = true
-alloy-eip7928.workspace = true
+alloy-eip7928 = { workspace = true, optional = true }
+alloy-eips.workspace = true
+tempo-chainspec = { workspace = true, features = ["reth"] }
+tempo-fuzz-types.workspace = true
 
 async-trait.workspace = true
 bincode.workspace = true
@@ -45,7 +67,7 @@ eyre.workspace = true
 futures.workspace = true
 object_store = { version = "0.14.2", features = ["aws"] }
 parking_lot.workspace = true
-schnellru.workspace = true
+schnellru = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 slatedb = { version = "=0.17.0", default-features = false, features = ["aws", "moka", "zstd"] }

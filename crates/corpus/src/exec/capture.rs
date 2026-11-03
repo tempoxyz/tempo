@@ -2,9 +2,11 @@
 
 use crate::{
     code,
-    execute::{Executed, execute_block, run_standalone, verify_changesets},
+    exec::{
+        block::{Executed, execute_block, run_standalone, verify_changesets},
+        db::{Keys, Recording, View},
+    },
     types::{Block as BlockInput, Case, ChangeSet, Info, Input},
-    view::{Keys, Recording, View},
 };
 use alloy_consensus::BlockHeader;
 use alloy_primitives::{KECCAK256_EMPTY, U256};
