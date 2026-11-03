@@ -1,6 +1,6 @@
 name: "Set up kache"
 description: >-
-  Installs kache and makes it Cargo's rustc wrapper, backed by the shared cache at kache.tempo.xyz.
+  Installs kache and makes it Cargo's rustc wrapper, backed by the shared cache at buildcache.tempo.xyz.
   Pushes to main exchange the job's GitHub OIDC token for write credentials, every other run for
   read-only ones. Without a token or credentials (fork pull requests, or while kache-sts is down) it
   warns and falls back to sccache, which Depot's runners back with their shared cache, as before kache. Run after the Rust toolchain is installed and before the first cargo build, and
@@ -47,8 +47,8 @@ runs:
         KACHE: ${{ steps.install.outputs.bin }}
         EVENT_NAME: ${{ github.event_name }}
         REF: ${{ github.ref }}
-        STS_URL: https://kache-sts.tempo.xyz/v1/credentials
-        S3_ENDPOINT: https://kache.tempo.xyz
+        STS_URL: https://buildcache-sts.tempo.xyz/v1/credentials
+        S3_ENDPOINT: https://buildcache.tempo.xyz
       run: |
         set -uo pipefail
         local_only() {
