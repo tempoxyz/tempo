@@ -1392,7 +1392,7 @@ where
         &mut self,
         share_candidate: ShareState,
     ) -> eyre::Result<State> {
-        let latest_boundary = latest_boundary_at_or_before(
+        let (latest_boundary, outcome_epoch) = latest_boundary_at_or_before(
             &self.config.epoch_strategy,
             self.config.last_finalized_height,
         );
@@ -1403,10 +1403,14 @@ where
             outcome from last boundary height"
         );
 
+        // The boundary header is not checked against the finalized floor's
+        // certificate, so an outcome for a later epoch could otherwise persist
+        // a future identity that startup then trusts over the configured one.
         let onchain_outcome = read_outcome_from_boundary(
             &self.config.execution_node,
             &self.config.marshal,
             latest_boundary,
+            outcome_epoch,
         )
         .await?;
 
@@ -1485,15 +1489,10 @@ where
             &self.config.execution_node,
             &self.config.marshal,
             ceremony_boundary,
+            ceremony_epoch,
         )
         .await
         .wrap_err("failed reading outcome for ceremony boundary")?;
-
-        ensure!(
-            ceremony_outcome.epoch() == ceremony_epoch,
-            "boundary outcome is for epoch `{}`, expected ceremony epoch `{ceremony_epoch}`",
-            ceremony_outcome.epoch,
-        );
 
         // A failed ceremony carries its input output forward. In that case, the current share was
         // produced by an older ceremony, not by the dealer logs from the immediately previous epoch.
@@ -1591,22 +1590,25 @@ where
     }
 }
 
-fn latest_boundary_at_or_before(epoch_strategy: &FixedEpocher, height: Height) -> Height {
+/// Returns the latest boundary block at or below `height` (genesis before
+/// the first boundary) and the epoch of the DKG outcome it carries.
+fn latest_boundary_at_or_before(epoch_strategy: &FixedEpocher, height: Height) -> (Height, Epoch) {
     let epoch_info = epoch_strategy
         .containing(height)
         .expect("epoch strategy is for all heights");
 
     if epoch_info.last() == height {
-        height
+        (height, epoch_info.epoch().next())
     } else {
-        epoch_info
+        let boundary = epoch_info
             .epoch()
             .previous()
             .map_or_else(Height::zero, |previous| {
                 epoch_strategy
                     .last(previous)
                     .expect("epoch strategy is for all epochs")
-            })
+            });
+        (boundary, epoch_info.epoch())
     }
 }
 
@@ -1615,10 +1617,10 @@ fn latest_boundary_at_or_before(epoch_strategy: &FixedEpocher, height: Height) -
 fn latest_boundary_at_or_before_height() {
     let epoch_strategy = FixedEpocher::new(std::num::NonZeroU64::new(10).unwrap());
 
-    for (height, expected) in [(4, 0), (9, 9), (12, 9)] {
+    for (height, boundary, epoch) in [(4, 0, 0), (9, 9, 1), (12, 9, 1), (19, 19, 2)] {
         assert_eq!(
             latest_boundary_at_or_before(&epoch_strategy, Height::new(height)),
-            Height::new(expected),
+            (Height::new(boundary), Epoch::new(epoch)),
             "unexpected boundary for height {height}"
         );
     }
@@ -1628,6 +1630,7 @@ async fn read_outcome_from_boundary<TExecutionLayer, TMarshal>(
     node: &TExecutionLayer,
     marshal: &TMarshal,
     boundary: Height,
+    expected_epoch: Epoch,
 ) -> eyre::Result<OnchainDkgOutcome>
 where
     TExecutionLayer: ExecutionLayer,
@@ -1639,8 +1642,14 @@ where
             format!("failed to read latest boundary header at height `{boundary}`")
         })?;
 
-    OnchainDkgOutcome::read(&mut header.extra_data().as_ref())
-        .wrap_err("the boundary block did not contain the on-chain DKG outcome")
+    let outcome = OnchainDkgOutcome::read(&mut header.extra_data().as_ref())
+        .wrap_err("the boundary block did not contain the on-chain DKG outcome")?;
+    ensure!(
+        outcome.epoch() == expected_epoch,
+        "boundary outcome at height `{boundary}` is for epoch `{}`, expected epoch `{expected_epoch}`",
+        outcome.epoch,
+    );
+    Ok(outcome)
 }
 
 #[instrument(skip_all, fields(%height))]

@@ -2,9 +2,11 @@
 
 use crate::{
     code,
-    execute::{Executed, execute_block, run_standalone, verify_changesets},
-    types::{Block as BlockInput, Case, ChangeSet, Chunk, Info},
-    view::{Keys, Recording, View},
+    exec::{
+        block::{Executed, execute_block, run_standalone, verify_changesets},
+        db::{Keys, Recording, View},
+    },
+    types::{Block as BlockInput, Case, ChangeSet, Info, Input},
 };
 use alloy_consensus::BlockHeader;
 use alloy_primitives::{KECCAK256_EMPTY, U256};
@@ -19,7 +21,7 @@ use tempo_primitives::{Block, TempoPrimitives};
 /// A captured block: its stored input and verified per-transaction records.
 #[derive(Debug)]
 pub struct Captured {
-    pub chunk: Arc<Chunk>,
+    pub input: Arc<Input>,
     pub executed: Executed,
 }
 
@@ -103,7 +105,7 @@ where
         "duplicate changeset entries"
     );
     verify_changesets(&executed.bundle, &changeset, number)?;
-    let input = BlockInput {
+    let block_input = BlockInput {
         hash: block.hash().0,
         rlp: alloy_rlp::encode(block.clone_block()),
         senders: block.senders().iter().map(|a| a.into_array()).collect(),
@@ -129,11 +131,10 @@ where
     }
 
     let mut initial = db_at(number - 1)?;
-    let mut chunk = Chunk {
-        start: number,
-        end: number + 1,
+    let mut input = Input {
+        number,
         parent: block.parent_hash().0,
-        blocks: vec![input],
+        block: block_input,
         accounts: BTreeMap::new(),
         storage: BTreeMap::new(),
         code: Default::default(),
@@ -149,14 +150,12 @@ where
         let info = account
             .map(|a| Info::capture(&Account::from(&a)))
             .transpose()?;
-        chunk
-            .accounts
-            .insert(address.into_array(), vec![(number - 1, info)]);
+        input.accounts.insert(address.into_array(), info);
     }
     for (address, key) in &keys.storage {
-        chunk.storage.insert(
+        input.storage.insert(
             (address.into_array(), key.to_be_bytes()),
-            vec![(number - 1, initial.get_storage(address, key)?.to_be_bytes())],
+            initial.get_storage(address, key)?.to_be_bytes(),
         );
     }
     code_hashes.remove(&KECCAK256_EMPTY);
@@ -164,35 +163,31 @@ where
         if !code::has_code(&hash.0) {
             code::insert_code(&hash.0, &initial.get_code_by_hash(&hash)?.original_bytes())?;
         }
-        chunk.code.insert(hash.0);
+        input.code.insert(hash.0);
     }
     for at in &keys.hashes {
-        chunk
+        input
             .hashes
             .insert(*at, initial.get_block_hash(&U256::from(*at))?.0);
     }
-    (
-        chunk.blocks[0].changed_accounts,
-        chunk.blocks[0].changed_storage,
-    ) = chunk.mark(&changeset)?;
+    (input.block.changed_accounts, input.block.changed_storage) = input.mark(&changeset)?;
     eyre::ensure!(
-        chunk.changeset()? == changeset,
+        input.changeset()? == changeset,
         "changeset bitmap round trip mismatch"
     );
-    chunk.validate()?;
     let captured = Captured {
-        chunk: Arc::new(chunk),
+        input: Arc::new(input),
         executed,
     };
 
     // The stored record alone reproduces every output.
     let cases = captured.cases()?;
     let transactions = &captured.executed.transactions;
-    let phases = captured.chunk.phases.as_ref().expect("set above");
+    let phases = captured.input.phases.as_ref().expect("set above");
     let replayed = execute_block(
         config,
         consensus,
-        View::new(captured.chunk.clone()),
+        View::new(captured.input.clone()),
         block,
         first_tx,
         Some((&cases, phases)),
@@ -202,7 +197,7 @@ where
         "replay differs from capture"
     );
     // Every transaction also replays standalone, each from the state the earlier ones leave.
-    let mut view = View::new(captured.chunk.clone());
+    let mut view = View::new(captured.input.clone());
     view.apply(&phases.pre)?;
     for (index, expected) in transactions.iter().enumerate() {
         let actual = run_standalone(

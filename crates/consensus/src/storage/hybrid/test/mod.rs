@@ -144,6 +144,39 @@ fn get_header_uses_cache_above_execution_finalized_watermark() {
 }
 
 #[test_traced]
+fn header_by_height_reads_only_the_selected_source() {
+    deterministic::Runner::default().start(|context| async move {
+        let (mut hybrid, provider) = SetupHybrid::default().build(&context).await;
+        let cached = make_block(10, B256::ZERO);
+        let execution = make_block(10, B256::with_last_byte(1));
+        hybrid = hybrid.put(cached.clone()).await.expect("put");
+        provider.add_block(&execution);
+
+        let read = async |height, source| hybrid.header_by_height(height, source).await.unwrap();
+
+        // Above the execution layer's finalized height only the cache answers.
+        provider.set_reth_finalized(9);
+        assert_eq!(
+            read(10, HeaderSource::Prunable).await,
+            Some(cached.block().header().clone()),
+        );
+        assert_eq!(read(10, HeaderSource::Execution).await, None);
+
+        provider.set_reth_finalized(10);
+        assert_eq!(
+            read(10, HeaderSource::Prunable).await,
+            Some(cached.block().header().clone()),
+        );
+        assert_eq!(
+            read(10, HeaderSource::Execution).await,
+            Some(execution.block().header().clone()),
+        );
+        assert_eq!(read(11, HeaderSource::Prunable).await, None);
+        assert_eq!(read(11, HeaderSource::Execution).await, None);
+    });
+}
+
+#[test_traced]
 fn get_header_reads_execution_headers_without_bodies() {
     deterministic::Runner::default().start(|context| async move {
         let (hybrid, provider) = SetupHybrid::default().build(&context).await;

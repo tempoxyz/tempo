@@ -108,7 +108,6 @@ async fn test_transfer_to_zone_deposit_address() -> eyre::Result<()> {
 
     // A deposit to an unregistered master refunds the sender on L1 once the batch settles.
     let _sequencer = spawn_sequencer(&l1, &zone, portal_address, l1.dev_signer()).await;
-    let before = l1.balance_of(PATH_USD_ADDRESS, sender.address()).await?;
     let receipt = l1_token
         .transfer(deposit_address(zone_id, [0xff; 4], 0), U256::from(amount))
         .send()
@@ -119,7 +118,9 @@ async fn test_transfer_to_zone_deposit_address() -> eyre::Result<()> {
         receipt.status(),
         "transfer to unregistered deposit address failed"
     );
-    // The refund returns the net amount minus the portal's bounce-back fee.
+    // Measured after the transfer, so the pathUSD the sender paid for gas doesn't count. The
+    // refund returns the net amount minus the portal's bounce-back fee.
+    let before = l1.balance_of(PATH_USD_ADDRESS, sender.address()).await?;
     let bounceback_fee = ZonePortal::new(portal_address, l1.provider())
         .calculateBouncebackFee()
         .call()
@@ -127,7 +128,7 @@ async fn test_transfer_to_zone_deposit_address() -> eyre::Result<()> {
     l1.wait_for_balance(
         PATH_USD_ADDRESS,
         sender.address(),
-        before - U256::from(amount) + U256::from(amount - fee - bounceback_fee),
+        before + U256::from(amount - fee - bounceback_fee),
         Duration::from_secs(60),
     )
     .await?;
