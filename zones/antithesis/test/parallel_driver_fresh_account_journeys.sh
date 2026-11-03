@@ -27,6 +27,7 @@ esac
 export ZONE_RPC_URL
 
 report=$(mktemp)
+trap 'rm -f "$report"' EXIT
 echo "journeys: $COUNT via $ZONE_RPC_URL, accounts $ZONE_JOURNEY_FRESH_START..$ZONE_JOURNEY_FRESH_END"
 # Failed journeys exit nonzero; the report says why.
 txgen-tempo scenario run \
