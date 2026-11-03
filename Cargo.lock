@@ -14487,6 +14487,7 @@ dependencies = [
  "aws-config",
  "aws-credential-types",
  "bincode",
+ "blake3",
  "bytes",
  "crossbeam-channel",
  "evm2",
