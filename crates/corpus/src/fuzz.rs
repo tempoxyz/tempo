@@ -5,7 +5,7 @@
 use crate::{
     code,
     store::{self, Catalog, Store},
-    types::Chunk,
+    types::Input,
 };
 use alloy_eips::Encodable2718;
 use alloy_primitives::{Address, B256, Bytes, U256};
@@ -65,11 +65,11 @@ impl Corpus {
 
     /// `block`'s harness input.
     pub fn input(&self, block: u64) -> eyre::Result<TempoHarnessInput> {
-        let chunk = self
+        let stored = self
             .runtime
             .block_on(store::published(&self.reader, block))?
             .1;
-        let input = harness_input(&chunk, self.chain_spec.clone())?;
+        let input = harness_input(&stored, self.chain_spec.clone())?;
         Ok(TempoHarnessInput::Blockchain(input))
     }
 
@@ -110,13 +110,12 @@ fn chain_spec_input(catalog: &Catalog, tip: u64) -> eyre::Result<ChainSpecInput>
     })
 }
 
-/// `chunk`'s blocks on the exact pre-state they read. Its code must be resolved
+/// `stored`'s block on the exact pre-state it read. Its code must be resolved
 /// ([`store::resolve_code`]).
-fn harness_input(chunk: &Chunk, chain_spec: ChainSpecInput) -> eyre::Result<TempoBlockchainInput> {
+fn harness_input(stored: &Input, chain_spec: ChainSpecInput) -> eyre::Result<TempoBlockchainInput> {
     let mut accounts = BTreeMap::<Address, AccountInput>::new();
-    // `Chunk::validate` ensures every key's first version is the state before the chunk.
-    for (address, versions) in &chunk.accounts {
-        let Some(info) = &versions[0].1 else {
+    for (address, info) in &stored.accounts {
+        let Some(info) = info else {
             accounts.insert(Address::from(*address), AccountInput::default());
             continue;
         };
@@ -136,44 +135,41 @@ fn harness_input(chunk: &Chunk, chain_spec: ChainSpecInput) -> eyre::Result<Temp
             },
         );
     }
-    for ((address, slot), versions) in &chunk.storage {
+    for ((address, slot), value) in &stored.storage {
         accounts
             .entry(Address::from(*address))
             .or_default()
             .storage
-            .insert(
-                U256::from_be_bytes(*slot),
-                U256::from_be_bytes(versions[0].1),
-            );
+            .insert(U256::from_be_bytes(*slot), U256::from_be_bytes(*value));
     }
-    let blocks = chunk
-        .blocks
-        .iter()
-        .map(|input| {
-            let block: Block = alloy_rlp::decode_exact(&input.rlp)?;
-            Ok(TempoBlock {
-                header: BlockHeaderInput::Rlp(alloy_rlp::encode(&block.header).into()),
-                txs: block
-                    .body
-                    .transactions
-                    .iter()
-                    .map(|tx| tx.encoded_2718().into())
-                    .collect(),
-                senders: input.senders.iter().copied().map(Address::from).collect(),
-            })
-        })
-        .collect::<eyre::Result<Vec<_>>>()?;
+    let block: Block = alloy_rlp::decode_exact(&stored.block.rlp)?;
+    let block = TempoBlock {
+        header: BlockHeaderInput::Rlp(alloy_rlp::encode(&block.header).into()),
+        txs: block
+            .body
+            .transactions
+            .iter()
+            .map(|tx| tx.encoded_2718().into())
+            .collect(),
+        senders: stored
+            .block
+            .senders
+            .iter()
+            .copied()
+            .map(Address::from)
+            .collect(),
+    };
     Ok(TempoBlockchainInput {
         chain_spec,
         pre_state: PreState::Exact {
             state: StateInput { accounts },
-            block_hashes: chunk
+            block_hashes: stored
                 .hashes
                 .iter()
                 .map(|(n, hash)| (*n, B256::from(*hash)))
                 .collect(),
         },
-        blocks: NonEmpty::try_from(blocks).map_err(|err| eyre::eyre!(err))?,
+        blocks: NonEmpty::try_from(vec![block]).map_err(|err| eyre::eyre!(err))?,
     })
 }
 
