@@ -171,7 +171,10 @@ impl Invalidations {
             return Verdict::Invalid(Reason::InsolventFeePayer);
         }
 
-        // Expiring and 2D nonces live in the nonce manager, not the account nonce.
+        // Another transaction can raise an account's protocol nonce only through an
+        // authorization list (EIP-7702 or Tempo authorizations). 2D and expiring nonces live in
+        // the nonce manager, which only the sender's own transaction on that lane advances, and
+        // the 2D pool already orders those.
         if !tx.is_aa_2d()
             && self
                 .nonces
