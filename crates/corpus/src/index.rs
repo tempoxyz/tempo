@@ -126,7 +126,8 @@ pub fn select(
     blocks: Range<u64>,
 ) -> eyre::Result<String> {
     let mask = 1u64 << bit;
-    let mut corpora = BTreeMap::<String, (Catalog, BTreeSet<u64>)>::new();
+    // Keyed by range and tip: corpora of one chain that end at the same block share a tip.
+    let mut corpora = BTreeMap::<(u64, u64, String), (Catalog, BTreeSet<u64>)>::new();
     for path in paths {
         let builder = ParquetRecordBatchReaderBuilder::try_new(File::open(path)?)?;
         let metadata: BTreeMap<_, _> = builder
@@ -156,7 +157,11 @@ pub fn select(
         );
         let catalog: Catalog = serde_json::from_str(get(CATALOG_KEY)?)?;
         let selected = &mut corpora
-            .entry(catalog.context.tip.clone())
+            .entry((
+                catalog.context.start,
+                catalog.context.end,
+                catalog.context.tip.clone(),
+            ))
             .or_insert_with(|| (catalog, BTreeSet::new()))
             .1;
         let columns = ["block", "calls", "writes"]
