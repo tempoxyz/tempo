@@ -220,8 +220,7 @@ impl ConfigurableAccount {
 pub enum UpgradeEligibility {
     /// The transaction carries an authorization list.
     HasAuthorizationList,
-    /// The transaction carries no authorization list, but its outer signature is not a primitive
-    /// root signature.
+    /// No authorization list, but the outer signature is not a primitive root signature.
     NotPrimitiveRoot,
     /// The transaction carries no authorization list and is signed by a primitive root key.
     PrimitiveRoot,

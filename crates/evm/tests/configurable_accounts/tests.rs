@@ -788,8 +788,7 @@ fn eoa_migration_error_order() {
     };
     let delegate = Address::repeat_byte(0x74);
 
-    // 1: the call must be top-level, with no authorization list beside it, however the account
-    // signs.
+    // 1: a top-level call with no authorization list, however the account signs.
     expect_revert(
         Fixture::with_parent(false),
         "nested call",
@@ -996,41 +995,19 @@ fn eoa_migration_after_delegation_cleared() {
 
 #[test]
 fn eoa_migration_anywhere_in_batch() {
-    let member = signer(2).address();
     for position in 0..3 {
         let mut f = Fixture::with_parent(false);
-        let config = f.upgraded(1, owner_set(vec![member]));
+        let config = f.upgraded(1, owner_set(vec![signer(2).address()]));
         let mut calls = vec![f.getter(), f.getter()];
         calls.insert(position, Fixture::upgrade(&config));
-        let tx = f.primitive(3, calls);
-        let result = f.run(&tx);
-        assert!(result.status, "position {position}: {result:?}");
-        let commitment = config.commitment().unwrap();
-        let event = IConfigurableAccount::AccountUpgraded {
-            account: f.account,
-            commitment,
-            salt: config.salt,
-            threshold: config.threshold,
-            owners: abi_owners(&config),
-        };
-        assert_eq!(
-            configurable_account_logs(&result),
-            [event.encode_log_data()],
-            "position {position}"
-        );
-        assert_eq!(f.commitment(), commitment, "position {position}");
-        assert_eq!(
-            f.info(f.account).unwrap().code_hash,
-            CONFIGURABLE_ACCOUNT_CODE_HASH,
-            "position {position}"
-        );
+        let result = f.run(&f.primitive(3, calls));
+        assert_upgraded(&mut f, &result, &config);
     }
 }
 
 #[test]
 fn eoa_migration_with_key_authorization() {
-    let member = signer(2).address();
-    let base = Fixture::with_parent(false).upgraded(1, owner_set(vec![member]));
+    let base = Fixture::with_parent(false).upgraded(1, owner_set(vec![signer(2).address()]));
     let zero_threshold = ConfigurableAccountConfig {
         threshold: 0,
         ..base.clone()
@@ -1073,8 +1050,8 @@ fn eoa_migration_failure_keeps_fee_and_nonce() {
     for batch in [false, true] {
         let (label, error) = if batch {
             (
-                "later call reverts",
-                IConfigurableAccount::UnauthorizedConfigurableAccountCaller {}.abi_encode(),
+                "batch",
+                IConfigurableAccount::AccountAlreadyConfigurable {}.abi_encode(),
             )
         } else {
             (
@@ -1088,13 +1065,8 @@ fn eoa_migration_failure_keeps_fee_and_nonce() {
         let config = if batch { &base } else { &zero_threshold };
         let mut calls = vec![Fixture::upgrade(config)];
         if batch {
-            // The root's signature is no owner-quorum approval, so a later rotation reverts and
-            // takes the migration with it.
-            let next = ConfigurableAccountConfig {
-                version: 2,
-                ..base.clone()
-            };
-            calls.push(Fixture::rotation(&base, &next));
+            // A second upgrade reverts and takes the first with it.
+            calls.push(Fixture::upgrade(config));
         }
         let tx = f.sign_primitive(TempoTransaction {
             max_fee_per_gas: 1,

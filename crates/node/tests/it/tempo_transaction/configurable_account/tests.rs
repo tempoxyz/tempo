@@ -574,7 +574,7 @@ async fn eoa_migration_rpc_lifecycle() -> eyre::Result<()> {
             IConfigurableAccount::AccountHasCode {}.abi_encode(),
         );
 
-        // The root signs the upgrade call.
+        // The root signs the sole call.
         let tx = account.transaction(&env, vec![call]);
         let signature = TempoSignature::Primitive(root.sign(tx.signature_hash())?);
         let receipt = account.submit(&mut env, tx, signature, true).await?;
