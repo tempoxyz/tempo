@@ -75,7 +75,7 @@ impl<TContext: Spawner> Actor<TContext> {
             epoch: tip.round.epoch().get(),
             view: tip.round.view().get(),
             digest: tip.digest.0,
-            block: block.into_execution_block(),
+            block: block.inner().clone().into_execution_block(),
             certificate: hex::encode(finalization.encode()),
         };
 

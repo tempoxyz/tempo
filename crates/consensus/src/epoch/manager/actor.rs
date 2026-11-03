@@ -51,7 +51,7 @@ use commonware_p2p::{
 };
 use commonware_parallel::Sequential;
 use commonware_runtime::{
-    BufferPooler, Clock, ContextCell, Handle, Network, Spawner, Storage, spawn_cell,
+    Clock, ContextCell, Handle, Network, Spawner, Storage, spawn_cell,
     telemetry::metrics::{Counter, Gauge, GaugeExt as _, MetricsExt as _},
 };
 use commonware_utils::{NZUsize, vec::NonEmptyVec};
@@ -89,8 +89,7 @@ impl<TContext, TBlocker> Actor<TContext, TBlocker>
 where
     TBlocker: Blocker<PublicKey = PublicKey>,
     // TODO(janis): are all of these bounds necessary?
-    TContext: BufferPooler
-        + Spawner
+    TContext: Spawner
         + commonware_runtime::Metrics
         + Rng
         + CryptoRng
@@ -183,21 +182,16 @@ where
             impl Receiver<PublicKey = PublicKey>,
         ),
     ) {
-        let (mux, mut vote_mux, mut vote_backup) = Muxer::builder(
-            self.context.child("vote_mux"),
-            vote_sender,
-            vote_receiver,
-            self.config.mailbox_size.into(),
-        )
-        .with_backup()
-        .build();
+        let (mux, mut vote_mux, mut vote_backup) =
+            Muxer::builder(self.context.child("vote_mux"), vote_sender, vote_receiver)
+                .with_backup()
+                .build();
         mux.start();
 
         let (mux, mut certificate_mux) = Muxer::builder(
             self.context.child("certificate_mux"),
             certificate_sender,
             certificate_receiver,
-            self.config.mailbox_size.into(),
         )
         .build();
         mux.start();
@@ -206,7 +200,6 @@ where
             self.context.child("resolver_mux"),
             resolver_sender,
             resolver_receiver,
-            self.config.mailbox_size.into(),
         );
         mux.start();
 
@@ -272,7 +265,7 @@ where
             .marshal
             .get_block(height)
             .await
-            .map(|block| block.header().clone())
+            .map(|block| block.inner().header().clone())
             .ok_or_eyre(format!("missing finalized header at height `{height}`"))
     }
 
@@ -295,18 +288,9 @@ where
             share,
             participants,
         }: EpochTransition,
-        vote_mux: &mut MuxHandle<
-            impl Sender<PublicKey = PublicKey>,
-            impl Receiver<PublicKey = PublicKey>,
-        >,
-        certificates_mux: &mut MuxHandle<
-            impl Sender<PublicKey = PublicKey>,
-            impl Receiver<PublicKey = PublicKey>,
-        >,
-        resolver_mux: &mut MuxHandle<
-            impl Sender<PublicKey = PublicKey>,
-            impl Receiver<PublicKey = PublicKey>,
-        >,
+        vote_mux: &mut MuxHandle<impl Sender<PublicKey = PublicKey>>,
+        certificates_mux: &mut MuxHandle<impl Sender<PublicKey = PublicKey>>,
+        resolver_mux: &mut MuxHandle<impl Sender<PublicKey = PublicKey>>,
     ) -> eyre::Result<()> {
         if let Some(latest) = self.active_epochs.last_key_value().map(|(k, _)| *k) {
             ensure!(
@@ -407,7 +391,7 @@ where
                 elector: elector::Random::<commonware_cryptography::Sha256>::new(elector),
                 strategy: Sequential,
 
-                reporter: self.config.marshal.clone(),
+                reporter: application.clone(),
                 partition: format!(
                     "{partition_prefix}_consensus_epoch_{epoch}",
                     partition_prefix = self.config.partition_prefix
@@ -424,6 +408,8 @@ where
                 certification_timeout: self.config.time_to_collect_notarizations,
                 timeout_retry: self.config.time_to_retry_nullify_broadcast,
                 fetch_timeout: self.config.time_for_peer_response,
+                // Retry no sooner than a fetch times out, as before commonware v2026.10.0.
+                fetch_retry_delay: self.config.time_for_peer_response.get(),
                 view_retention: self.config.views_to_track,
                 skip: simplex::config::SkipPolicy::Enabled {
                     timeout: self.config.inactive_time_before_leader_skip,

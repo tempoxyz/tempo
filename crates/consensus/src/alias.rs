@@ -12,11 +12,11 @@ pub(crate) mod marshal {
         simplex::scheme::bls12381_threshold::vrf::Scheme,
         types::{Epoch, Epocher as _, FixedEpocher, Height, Round, ViewDelta},
     };
-    use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
-    use commonware_parallel::Sequential;
-    use commonware_runtime::{
-        BufferPooler, Clock, Metrics, Spawner, Storage, buffer::paged::CacheRef,
+    use commonware_cryptography::{
+        Digested, bls12381::primitives::variant::MinSig, ed25519::PublicKey,
     };
+    use commonware_parallel::Sequential;
+    use commonware_runtime::{Clock, Metrics, Spawner, Storage, buffer::paged::CacheRef};
     use commonware_storage::archive::{Archive as _, Identifier, immutable};
     use commonware_utils::acknowledgement::Exact;
     use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
@@ -85,7 +85,7 @@ pub(crate) mod marshal {
     /// returned by [`init`].
     pub(crate) struct Initialized<TContext>
     where
-        TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Rng + CryptoRng,
+        TContext: Clock + Metrics + Spawner + Storage + Rng + CryptoRng,
     {
         /// The marshal actor, ready to be started.
         pub actor: Actor<TContext>,
@@ -126,8 +126,7 @@ pub(crate) mod marshal {
         config: Config,
     ) -> eyre::Result<Initialized<TContext>>
     where
-        TContext:
-            Clock + Metrics + Spawner + Storage + BufferPooler + Rng + CryptoRng + Send + 'static,
+        TContext: Clock + Metrics + Spawner + Storage + Rng + CryptoRng + Send + 'static,
     {
         let finalizations_by_height = storage::init_finalizations_archive(
             &context,
@@ -213,7 +212,10 @@ pub(crate) mod marshal {
         )
         .await;
 
-        if let Some(marshal_stored_height) = marshal_floor.height() {
+        if let Some(marshal_stored_height) = marshal_floor
+            .processed()
+            .map(|processed| processed.height())
+        {
             ensure!(
                 tip_height >= marshal_stored_height,
                 "finalizations archive is inconsistent with the node's consensus metadata: \
@@ -226,7 +228,8 @@ pub(crate) mod marshal {
 
         let startup_floor_height = finalized_floor.0;
         let last_finalized_height = marshal_floor
-            .height()
+            .processed()
+            .map(|processed| processed.height())
             .map_or(startup_floor_height, |height| {
                 height.max(startup_floor_height)
             });
@@ -260,7 +263,7 @@ pub(crate) mod marshal {
         execution_node: &TempoFullNode,
     ) -> eyre::Result<FinalizationRange>
     where
-        TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + Sync + 'static,
+        TContext: Clock + Metrics + Spawner + Storage + Send + Sync + 'static,
     {
         let (first, last) = match (certificates.first_index(), certificates.last_index()) {
             (None, None) => {
@@ -342,9 +345,9 @@ pub(crate) mod marshal {
         archive: &immutable::Archive<TContext, Digest, Certificate>,
         execution_node: &TempoFullNode,
         finalized_floor: (Height, Digest),
-    ) -> eyre::Result<marshal::Start<Scheme<PublicKey, MinSig>, Digest, Block>>
+    ) -> eyre::Result<marshal::Start<Scheme<PublicKey, MinSig>, Digest, Digested<Block>>>
     where
-        TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
+        TContext: Clock + Metrics + Spawner + Storage + Send + 'static,
     {
         if !finalized_floor.0.is_zero() {
             match archive
@@ -366,7 +369,7 @@ pub(crate) mod marshal {
             .wrap_err("failed querying execution layer for genesis block")?
             .ok_or_eyre("execution layer did not contain the genesis block")?;
         Ok(marshal::Start::Genesis(
-            Block::from_execution_block_unchecked(genesis),
+            Block::from_execution_block_unchecked(genesis).into(),
         ))
     }
 
@@ -382,7 +385,7 @@ pub(crate) mod marshal {
         finalization: &Certificate,
     ) -> eyre::Result<()>
     where
-        TContext: Clock + Metrics + Storage + BufferPooler + CryptoRng + Send + Sync + 'static,
+        TContext: Clock + Metrics + Storage + CryptoRng + Send + Sync + 'static,
     {
         let epoch = finalization.epoch();
         let boundary = boundary_for_epoch(epoch_strategy, epoch)?;
@@ -394,8 +397,9 @@ pub(crate) mod marshal {
                 eyre!("missing boundary header at height `{boundary}` in hybrid store")
             })?;
 
-        let onchain_outcome = OnchainDkgOutcome::read(&mut header.extra_data().as_ref())
-            .wrap_err("failed to read DKG outcome from boundary header")?;
+        let onchain_outcome =
+            OnchainDkgOutcome::read(&mut commonware_codec::Copying(header.extra_data().as_ref()))
+                .wrap_err("failed to read DKG outcome from boundary header")?;
         ensure!(
             onchain_outcome.epoch() == epoch,
             "boundary outcome is for epoch `{}`, expected finalization epoch `{epoch}`",

@@ -140,6 +140,7 @@ where
             }
             Message::Finalized(update) => match *update {
                 Update::Block(block, ack) => {
+                    let block = block.inner();
                     self.observe_finalized_tip((block.height(), block.digest()));
                     let _ = self.refresh_peers();
                     ack.acknowledge();
@@ -208,13 +209,12 @@ where
             read_header_at_height(self.execution_node.as_ref(), highest_finalized)
                 .wrap_err("failed reading highest finalized header")?;
 
-        let onchain_outcome =
-            OnchainDkgOutcome::read(&mut latest_boundary_header.extra_data().as_ref())
-                .wrap_err_with(|| {
-                    format!(
-                        "boundary block at `{latest_boundary}` did not contain a valid DKG outcome"
-                    )
-                })?;
+        let onchain_outcome = OnchainDkgOutcome::read(&mut commonware_codec::Copying(
+            latest_boundary_header.extra_data().as_ref(),
+        ))
+        .wrap_err_with(|| {
+            format!("boundary block at `{latest_boundary}` did not contain a valid DKG outcome")
+        })?;
 
         let peers = PeersBuilder::with_dkg_outcome(&onchain_outcome)
             .resolve_at_hash(

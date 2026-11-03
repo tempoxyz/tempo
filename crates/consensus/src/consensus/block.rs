@@ -4,15 +4,15 @@
 
 use alloy_consensus::BlockHeader as _;
 use alloy_primitives::{B256, Bytes};
-use bytes::{Buf, BufMut};
-use commonware_codec::{EncodeSize, Read, Write};
+use bytes::BufMut;
+use commonware_codec::{Buf, EncodeSize, Read, Write};
 use commonware_consensus::{
     Heightable,
     simplex::types::Context,
     types::{Epoch, Height, Round, View},
 };
 use commonware_cryptography::{
-    Committable, Digestible, Signer as _,
+    Committable, Digested, Digestible, Signer as _,
     ed25519::{PrivateKey, PublicKey},
 };
 use reth_consensus::ConsensusError;
@@ -192,6 +192,14 @@ impl EncodeSize for Block {
     }
 }
 
+/// Pairs a block with its digest, the header hash it already holds, without hashing.
+impl From<Block> for Digested<Block> {
+    fn from(block: Block) -> Self {
+        let digest = block.digest();
+        Self::precomputed(block, digest)
+    }
+}
+
 impl Committable for Block {
     type Commitment = Digest;
 
@@ -340,7 +348,8 @@ mod tests {
             .expect("test block should be valid");
         let block_bytes = alloy_rlp::encode(&execution_block);
 
-        let decoded = Block::read_cfg(&mut block_bytes.as_ref(), &()).unwrap();
+        let decoded =
+            Block::read_cfg(&mut commonware_codec::Copying(block_bytes.as_ref()), &()).unwrap();
         assert_eq!(decoded, expected);
         assert_eq!(decoded.encode_size(), block_bytes.len());
 
@@ -371,7 +380,8 @@ mod tests {
         });
         let encoded = alloy_rlp::encode(&execution_block);
 
-        let err = Block::read_cfg(&mut encoded.as_slice(), &()).unwrap_err();
+        let err =
+            Block::read_cfg(&mut commonware_codec::Copying(encoded.as_slice()), &()).unwrap_err();
 
         assert!(
             matches!(
@@ -415,7 +425,8 @@ mod tests {
         alloy_rlp::Encodable::encode(&execution_block, &mut encoded);
         block_access_list.write(&mut encoded);
 
-        let err = Block::read_cfg(&mut encoded.as_ref(), &()).unwrap_err();
+        let err =
+            Block::read_cfg(&mut commonware_codec::Copying(encoded.as_ref()), &()).unwrap_err();
 
         let commonware_codec::Error::Wrapped("validating execution block", error) = err else {
             panic!("unexpected error: {err:?}");

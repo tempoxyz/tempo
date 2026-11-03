@@ -29,9 +29,17 @@ pub(crate) mod validators;
 use std::sync::Arc;
 
 use commonware_consensus::types::FixedEpocher;
-use commonware_cryptography::ed25519::{PrivateKey, PublicKey};
+use commonware_cryptography::{
+    ChaCha20Poly1305,
+    ed25519::{PrivateKey, PublicKey},
+};
 use commonware_p2p::authenticated::lookup;
 use commonware_runtime::Supervisor as _;
+use commonware_stream::{
+    SakeCups,
+    cups::{self, Cups},
+    sake::{self, Sake},
+};
 use eyre::{OptionExt, WrapErr as _, eyre};
 use tempo_consensus_config::SigningShare;
 use tempo_node::TempoFullNode;
@@ -236,15 +244,26 @@ async fn instantiate_network(
     config: &Args,
     signing_key: PrivateKey,
 ) -> eyre::Result<(
-    lookup::Network<commonware_runtime::tokio::Context, PrivateKey>,
+    lookup::Network<commonware_runtime::tokio::Context, SakeCups<PrivateKey, ChaCha20Poly1305>>,
     lookup::Oracle<PublicKey>,
 )> {
     // TODO: Find out why `union_unique` should be used. This is the only place
     // where `NAMESPACE` is used at all. We follow alto's example for now.
     let namespace = commonware_utils::union_unique(crate::config::NAMESPACE, b"_P2P");
+    // V0 is the wire protocol of commonware v2026.9.0. Versions are not
+    // negotiated, so every peer must use the same ones.
+    let handshake = Cups::new(
+        Sake {
+            signer: signing_key,
+            synchrony_bound: config.synchrony_bound.into_duration(),
+            max_handshake_age: config.handshake_stale_after.into_duration(),
+            version: sake::Version::V0,
+        },
+        cups::Version::V0,
+    );
     let cfg = lookup::Config {
+        handshake,
         namespace,
-        crypto: signing_key,
         listen: config.listen_address,
         max_message_size: config.max_message_size_bytes,
         mailbox_size: config.mailbox_size,
@@ -254,8 +273,6 @@ async fn instantiate_network(
         allow_dns: config.allow_dns,
         tracked_peer_sets: crate::config::PEERSETS_TO_TRACK,
         max_peers_per_set: config.max_peers_per_set,
-        synchrony_bound: config.synchrony_bound.into_duration(),
-        max_handshake_age: config.handshake_stale_after.into_duration(),
         handshake_timeout: config.handshake_timeout.into_duration(),
         dial_timeout: config.dial_timeout.into_duration(),
         max_concurrent_handshakes: config.max_concurrent_handshakes,

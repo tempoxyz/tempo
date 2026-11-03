@@ -451,13 +451,14 @@ impl<'a> TempoBlockExecutor<'a> {
             return Ok(());
         }
 
-        let outcome =
-            tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(&mut self.extra_data.as_ref())
-                .map_err(|err| {
-                    BlockValidationError::msg(format!(
-                        "failed decoding boundary block extra data as DKG outcome: {err}"
-                    ))
-                })?;
+        let outcome = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(
+            &mut commonware_codec::Copying(self.extra_data.as_ref()),
+        )
+        .map_err(|err| {
+            BlockValidationError::msg(format!(
+                "failed decoding boundary block extra data as DKG outcome: {err}"
+            ))
+        })?;
         let epoch = outcome.epoch;
         let public_keys = outcome
             .players()

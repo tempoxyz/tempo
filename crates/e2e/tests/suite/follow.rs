@@ -17,7 +17,7 @@ use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
 use commonware_macros::test_traced;
 use commonware_math::algebra::Random as _;
 use commonware_runtime::{
-    BufferPooler, Clock, Handle, Metrics as RuntimeMetrics, Pacer, Runner as _, Spawner, Storage,
+    Clock, Handle, Metrics as RuntimeMetrics, Pacer, Runner as _, Spawner, Storage,
     deterministic::{self, Context, Runner},
 };
 use futures::{channel::oneshot, future::join_all};
@@ -227,7 +227,7 @@ impl FollowerBuilder {
         upstream: impl FeedStateProvider,
     ) -> Follower
     where
-        TContext: BufferPooler + Clock + CryptoRng + RuntimeMetrics + Pacer + Spawner + Storage,
+        TContext: Clock + CryptoRng + RuntimeMetrics + Pacer + Spawner + Storage,
     {
         use tempo_consensus::follow::upstream::in_process;
         let Self {

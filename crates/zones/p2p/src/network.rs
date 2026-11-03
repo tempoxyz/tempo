@@ -2,11 +2,16 @@ use std::{net::SocketAddr, num::NonZeroUsize, time::Duration};
 
 use alloy_primitives::Address as EthereumAddress;
 use commonware_cryptography::{
-    Signer as _,
+    ChaCha20Poly1305, Signer as _,
     ed25519::{PrivateKey, PublicKey},
 };
 use commonware_p2p::{AddressableTrackedPeers, authenticated::lookup};
 use commonware_runtime::{Quota, Supervisor as _};
+use commonware_stream::{
+    SakeCups,
+    cups::{self, Cups},
+    sake::{self, Sake},
+};
 use commonware_utils::{NZU32, NZUsize, ordered::Map};
 use eyre::WrapErr as _;
 
@@ -69,7 +74,10 @@ impl P2pNetworkId {
     }
 }
 
-pub(crate) type Network = lookup::Network<commonware_runtime::tokio::Context, PrivateKey>;
+/// Authenticates and encrypts Zone P2P connections.
+type Upgrader = SakeCups<PrivateKey, ChaCha20Poly1305>;
+
+pub(crate) type Network = lookup::Network<commonware_runtime::tokio::Context, Upgrader>;
 pub(crate) type Oracle = lookup::Oracle<PublicKey>;
 
 /// Builds the synchronized Commonware configuration for the Zone's small, trusted peer set.
@@ -82,13 +90,26 @@ fn setup_commonware_config(
     listen: SocketAddr,
     max_peers: NonZeroUsize,
     bypass_ip_check: bool,
-) -> lookup::Config<PrivateKey> {
+) -> lookup::Config<Upgrader> {
+    // V0 with commonware v2026.9.0's recommended timing is the wire protocol of earlier releases.
+    // Versions are not negotiated, so every peer must use the same ones.
+    let handshake = Cups::new(
+        Sake {
+            signer: ed25519_private_key,
+            synchrony_bound: Duration::from_secs(5),
+            max_handshake_age: Duration::from_secs(10),
+            version: sake::Version::V0,
+        },
+        cups::Version::V0,
+    );
     let mut config = lookup::Config::recommended(
-        ed25519_private_key,
+        handshake,
         namespace,
         listen,
         max_peers,
         MAX_MESSAGE_SIZE,
+        // Commonware's capacity before the mailbox size became a parameter.
+        NZUsize!(1_000),
     );
 
     // Zone membership is fixed by the manifest and registered at a single peer-set index.

@@ -12,7 +12,8 @@ use commonware_cryptography::{
 };
 use commonware_math::algebra::Random as _;
 use commonware_p2p::utils::StaticProvider;
-use commonware_runtime::{BufferPooler, Clock, Metrics, Spawner};
+use commonware_parallel::Sequential;
+use commonware_runtime::{Clock, Metrics, Spawner};
 use commonware_utils::ordered::Set;
 use rand::SeedableRng as _;
 
@@ -23,7 +24,7 @@ use crate::consensus::block::Block;
 /// In follow mode, there are no consensus peers to broadcast state or
 /// request information from. The FollowResolver is backed by the
 /// execution node and upstream ws connection.
-pub(super) fn null_broadcast<E: Clock + Spawner + Metrics + BufferPooler>(
+pub(super) fn null_broadcast<E: Clock + Spawner + Metrics>(
     context: E,
     mailbox_size: NonZeroUsize,
 ) -> buffered::Mailbox<PublicKey, Block> {
@@ -39,6 +40,7 @@ pub(super) fn null_broadcast<E: Clock + Spawner + Metrics + BufferPooler>(
         priority: false,
         codec_config: (),
         peer_provider: StaticProvider::new(0, Set::default()),
+        strategy: Sequential,
     };
 
     let (_engine, mailbox) = buffered::Engine::new(context, config);

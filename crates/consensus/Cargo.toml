@@ -52,6 +52,7 @@ commonware-parallel.workspace = true
 commonware-resolver.workspace = true
 commonware-runtime = { workspace = true, features = ["external"] }
 commonware-storage.workspace = true
+commonware-stream.workspace = true
 commonware-utils.workspace = true
 
 derive_more = { workspace = true, features = ["eq"] }

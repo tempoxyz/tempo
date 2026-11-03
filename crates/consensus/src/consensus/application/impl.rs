@@ -16,6 +16,7 @@ use commonware_consensus::{
     types::{Epoch, Epocher as _, FixedEpocher, Height},
 };
 use commonware_cryptography::{
+    Digested,
     bls12381::{dkg::feldman_desmedt::Output, primitives::variant::MinSig},
     ed25519::PublicKey,
 };
@@ -371,11 +372,13 @@ impl Inner {
         );
 
         if self.is_boundary(block.height()) {
-            let proposed_outcome =
-                OnchainDkgOutcome::read(&mut block.header().extra_data().as_ref()).wrap_err(
-                    "failed decoding extra data header as DKG ceremony \
+            let proposed_outcome = OnchainDkgOutcome::read(&mut commonware_codec::Copying(
+                block.header().extra_data().as_ref(),
+            ))
+            .wrap_err(
+                "failed decoding extra data header as DKG ceremony \
                     outcome; cannot verify end of epoch block",
-                )?;
+            )?;
             return Ok(Some(proposed_outcome));
         }
 
@@ -482,13 +485,13 @@ where
         (runtime, context): (TContext, Self::Context),
         mut ancestry: impl Ancestry<Block>,
         (): (),
-    ) -> Option<Block> {
+    ) -> Option<Digested<Block>> {
         let propose_start = Instant::now();
-        let parent = ancestry.next().await?;
+        let parent = ancestry.next().await?.inner_shared();
         match self.build(&runtime, context, &parent, propose_start).await {
             Ok(block) => {
                 info!(proposal.digest = %block.digest(), "constructed proposal");
-                Some(block)
+                Some(block.into())
             }
             Err(_logged) => None,
         }
@@ -525,7 +528,7 @@ where
             return std::future::pending().await;
         }
 
-        let Some(block) = ancestry.next().await else {
+        let Some(block) = ancestry.next().await.map(|block| block.inner_shared()) else {
             warn!("ancestry ended before yielding the block to verify; abstaining");
             return std::future::pending().await;
         };
@@ -535,7 +538,7 @@ where
         // state, so it can work on the ceremony output of a boundary block
         // while the header is checked and the block is executed.
         let boundary = if self.is_boundary(block.height()) {
-            let Some(parent) = ancestry.next().await else {
+            let Some(parent) = ancestry.next().await.map(|parent| parent.inner_shared()) else {
                 warn!("ancestry ended before yielding the parent; abstaining");
                 return std::future::pending().await;
             };
@@ -596,6 +599,7 @@ impl Reporter for Inner {
 
     fn report(&mut self, update: Self::Activity) -> Feedback {
         if let Update::Block(block, ack) = update {
+            let block = block.inner();
             // Only finalized children supply canonical sampling observations.
             // Derive the parent's epoch from its height, not the child's epoch.
             if let Some(ctx) = block.header().consensus_context

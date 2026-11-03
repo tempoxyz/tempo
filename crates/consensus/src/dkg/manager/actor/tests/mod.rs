@@ -474,7 +474,7 @@ fn local_share_storage_failures_panic_and_allow_recovery() {
                 harness
                     .mailbox()
                     .clone()
-                    .report(Update::Block(Arc::new(block(header(Height::new(10)))), ack))
+                    .report(Update::Block(block(header(Height::new(10))).into(), ack))
                     .accepted()
             );
             let mut harness = context
@@ -1185,7 +1185,7 @@ fn assert_ceremony_reveal_version(activation: Option<u64>, boundary_timestamp: u
                 let (dealer, log) = signed.clone().check(&info).unwrap();
                 logs.record(dealer, log);
             }
-            let output = observe::<_, _, N3f1, Batch>(&mut context, logs, &Sequential).unwrap();
+            let output = observe::<_, _, N3f1>(&mut context, logs, &Sequential).unwrap();
             (signed, output)
         };
         let (new_logs, new_output) = reference(dkg::Reveal::V1);
@@ -1955,7 +1955,7 @@ fn finalized_logs_of_all_dealers_conclude_the_ceremony_for_every_parent() {
             let (dealer, log) = signed.clone().check(round.info()).unwrap();
             logs.record(dealer, log);
         }
-        let expected = observe::<_, _, N3f1, Batch>(&mut context, logs, &Sequential).unwrap();
+        let expected = observe::<_, _, N3f1>(&mut context, logs, &Sequential).unwrap();
 
         let mut harness = Harness::builder(context.child("test"), "concluded_ceremony")
             .initial_state(state.clone())

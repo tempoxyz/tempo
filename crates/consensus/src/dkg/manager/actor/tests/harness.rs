@@ -26,7 +26,7 @@ use commonware_consensus::{
     types::{Epoch, Epocher as _, FixedEpocher, Height, Round as ConsensusRound},
 };
 use commonware_cryptography::{
-    Signer as _,
+    Digested, Signer as _,
     bls12381::{
         dkg::feldman_desmedt::{self as dkg, Logs, Output, SignedDealerLog},
         primitives::{
@@ -35,7 +35,7 @@ use commonware_cryptography::{
             variant::MinSig,
         },
     },
-    ed25519::{Batch, PrivateKey, PublicKey},
+    ed25519::{PrivateKey, PublicKey},
     transcript::Summary,
 };
 use commonware_math::algebra::Random as _;
@@ -284,7 +284,6 @@ impl Harness {
                 namespace: crate::config::NAMESPACE.to_vec(),
                 me: self.identity.clone(),
                 blocker: self.blocker.clone(),
-                mailbox_size: NonZeroUsize::new(1).unwrap(),
                 marshal: self.marshal.clone(),
                 last_finalized_height: self.last_finalized_height,
                 finalized_tip: self.finalized_tip.clone(),
@@ -325,7 +324,7 @@ impl Harness {
             self.mailbox
                 .as_mut()
                 .expect("DKG actor is not running")
-                .report(Update::Block(Arc::new(block(header)), acknowledgement))
+                .report(Update::Block(block(header).into(), acknowledgement))
                 .accepted()
         );
         waiter
@@ -423,6 +422,10 @@ pub(super) struct InertReceiver;
 impl Receiver for InertReceiver {
     type Error = io::Error;
     type PublicKey = PublicKey;
+
+    fn capacity(&self) -> NonZeroUsize {
+        NonZeroUsize::MIN
+    }
 
     async fn recv(&mut self) -> Result<commonware_p2p::Message<Self::PublicKey>, Self::Error> {
         std::future::pending().await
@@ -543,6 +546,11 @@ impl Receiver for NetworkReceiver {
     type Error = io::Error;
     type PublicKey = PublicKey;
 
+    fn capacity(&self) -> NonZeroUsize {
+        // Muxers allocate this many slots per subchannel up front.
+        NonZeroUsize::new(1024).unwrap()
+    }
+
     async fn recv(&mut self) -> Result<commonware_p2p::Message<Self::PublicKey>, Self::Error> {
         self.receiver
             .next()
@@ -659,7 +667,7 @@ impl ExecutionLayer for StubExecutionProvider {
     }
 }
 
-type BlockSubscribers = BTreeMap<Digest, Vec<oneshot::Sender<Arc<Block>>>>;
+type BlockSubscribers = BTreeMap<Digest, Vec<oneshot::Sender<Digested<Block>>>>;
 
 #[derive(Clone, Default)]
 pub(super) struct StubMarshal {
@@ -676,10 +684,10 @@ impl StubMarshal {
             .lock()
             .unwrap()
             .insert(block.height(), block.clone());
-        let block = Arc::new(block);
-        if let Some(subscribers) = self.pending.lock().unwrap().remove(&block.digest()) {
+        let block = Digested::from(block);
+        if let Some(subscribers) = self.pending.lock().unwrap().remove(&block.inner().digest()) {
             for subscriber in subscribers {
-                self.reads.lock().unwrap().push(block.height());
+                self.reads.lock().unwrap().push(block.inner().height());
                 let _ = subscriber.send(block.clone());
             }
         }
@@ -709,7 +717,7 @@ impl Marshal for StubMarshal {
         &self,
         digest: Digest,
         fallback: DigestFallback,
-    ) -> oneshot::Receiver<Arc<Block>> {
+    ) -> oneshot::Receiver<Digested<Block>> {
         let (sender, receiver) = oneshot::channel();
         self.subscriptions.lock().unwrap().push((digest, fallback));
         if self.closed.load(Ordering::SeqCst) {
@@ -719,7 +727,7 @@ impl Marshal for StubMarshal {
         let blocks = self.blocks.lock().unwrap();
         if let Some(block) = blocks.values().find(|block| block.digest() == digest) {
             self.reads.lock().unwrap().push(block.height());
-            let _ = sender.send(Arc::new(block.clone()));
+            let _ = sender.send(block.clone().into());
         } else {
             self.pending
                 .lock()
@@ -864,7 +872,7 @@ pub(super) struct RevealedRecoveryFixture {
     pub(super) expected_output: Output<MinSig, PublicKey>,
     pub(super) identity: PrivateKey,
     pub(super) recovered_share: Share,
-    signed_logs: Vec<SignedDealerLog<MinSig, PrivateKey>>,
+    signed_logs: Vec<SignedDealerLog<MinSig, PublicKey>>,
     pub(super) recovered_state: State,
 }
 
@@ -880,7 +888,7 @@ pub(super) fn signed_dealer_logs<R: CryptoRng>(
     players: &[PrivateKey],
     mut dealer_rng: impl FnMut(usize) -> R,
     withhold: impl Fn(&PublicKey, &PublicKey) -> bool,
-) -> Vec<SignedDealerLog<MinSig, PrivateKey>> {
+) -> Vec<SignedDealerLog<MinSig, PublicKey>> {
     dealers
         .iter()
         .enumerate()
@@ -947,7 +955,7 @@ pub(super) fn revealed_recovery_fixture(
 
     let player = dkg::Player::new(round.info().clone(), identity.clone()).unwrap();
     let (output, recovered_share) = player
-        .finalize::<N3f1, Batch>(&mut *rng, logs, &Sequential)
+        .finalize::<N3f1>(&mut *rng, logs, &Sequential)
         .unwrap();
 
     let recovered_state = State {

@@ -876,6 +876,11 @@ mod tests {
         type Error = io::Error;
         type PublicKey = PublicKey;
 
+        fn capacity(&self) -> std::num::NonZeroUsize {
+            // Consumers allocate this many slots up front.
+            std::num::NonZeroUsize::new(1024).unwrap()
+        }
+
         async fn recv(&mut self) -> Result<commonware_p2p::Message<Self::PublicKey>, Self::Error> {
             self.receiver
                 .recv()

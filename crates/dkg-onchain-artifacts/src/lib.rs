@@ -2,8 +2,8 @@
 
 use std::num::NonZeroU32;
 
-use bytes::{Buf, BufMut};
-use commonware_codec::{EncodeSize, RangeCfg, Read, ReadExt, Write, varint::UInt};
+use bytes::BufMut;
+use commonware_codec::{Buf, EncodeSize, RangeCfg, Read, ReadExt, Write, varint::UInt};
 #[cfg(feature = "commonware-consensus")]
 use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
@@ -160,7 +160,7 @@ mod tests {
             assert_eq!(&bytes[prefix.len()..], payload);
             assert_eq!(bytes.len(), on_chain.encode_size());
             assert_eq!(
-                OnchainDkgOutcome::read(&mut bytes.as_ref()).unwrap(),
+                OnchainDkgOutcome::read(&mut commonware_codec::Copying(bytes.as_ref())).unwrap(),
                 on_chain
             );
         }
