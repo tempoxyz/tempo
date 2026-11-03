@@ -184,9 +184,16 @@ impl Leaf {
     };
 }
 
+/// One account's leaf before and after a transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LeafChange {
+    pub before: Leaf,
+    pub after: Leaf,
+}
+
 /// Each changed or signing account's leaf before and after a transaction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Leaves {
-    pub of: BTreeMap<Address, (Leaf, Leaf)>,
+    pub of: BTreeMap<Address, LeafChange>,
     pub tx: Tx,
 }

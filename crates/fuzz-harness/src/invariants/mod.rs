@@ -18,13 +18,14 @@ use tempo_primitives::is_tip20_prefix;
 
 use crate::state::{Db, Net};
 
-pub(crate) use configurable_account::authority;
 use reader::Reader;
 pub(crate) use views::ViewCache;
 
 mod configurable_account;
 mod reader;
 mod views;
+
+pub(crate) use configurable_account::authority;
 
 /// How many of the newest DEX orders the books are read over.
 const MAX_ORDERS: u128 = 256;

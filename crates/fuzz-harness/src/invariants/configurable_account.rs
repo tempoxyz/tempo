@@ -8,7 +8,8 @@ use invariants_core::Report;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::CONFIGURABLE_ACCOUNT_ADDRESS;
 use tempo_invariants::configurable_account::{
-    Approval, At, Authority, Commitments, Grant, Key, Leaf, Leaves, Quorum, Role, VIEW, spec,
+    Approval, At, Authority, Commitments, Grant, Key, Leaf, LeafChange, Leaves, Quorum, Role, VIEW,
+    spec,
 };
 use tempo_precompiles::storage::account_config_commitment;
 use tempo_primitives::{
@@ -79,26 +80,6 @@ pub(crate) fn authority(tx: &TempoTxEnvelope, sender: Address, active: bool) -> 
     authority
 }
 
-/// `signature`'s quorum, its approvals recovered over the TIP-1107 digest.
-fn quorum(role: Role, signature: &ConfigurableAccountSignature, inner_digest: B256) -> Quorum {
-    let account = signature.account();
-    let config = signature.config();
-    let digest = spec::approval_digest(inner_digest, account, config.version);
-    Quorum {
-        role,
-        account,
-        config: spec::from_primitive(config),
-        approvals: signature
-            .signatures()
-            .iter()
-            .map(|approval| Approval {
-                owner: approval.recover_signer(&digest).ok(),
-                len: approval.encoded_length(),
-            })
-            .collect(),
-    }
-}
-
 /// Checks the commitments and leaves of the accounts a transaction changed or its signatures name.
 pub(super) fn check(reader: &Reader<'_>, db: &Db, effects: &StepEffects<'_>, report: &mut Report) {
     let mut accounts: Vec<Address> = effects
@@ -121,12 +102,32 @@ pub(super) fn check(reader: &Reader<'_>, db: &Db, effects: &StepEffects<'_>, rep
             .filter_map(|&address| {
                 let before = leaf(account_at(db, Some(effects.net), address)?, effects.spec)?;
                 let after = leaf(account_at(db, None, address)?, effects.spec)?;
-                Some((address, (before, after)))
+                Some((address, LeafChange { before, after }))
             })
             .collect(),
         tx: effects.tx.clone(),
     };
     report.run_any(all(), &leaves);
+}
+
+/// `signature`'s quorum, its approvals recovered over the TIP-1107 digest.
+fn quorum(role: Role, signature: &ConfigurableAccountSignature, inner_digest: B256) -> Quorum {
+    let account = signature.account();
+    let config = signature.config();
+    let digest = spec::approval_digest(inner_digest, account, config.version);
+    Quorum {
+        role,
+        account,
+        config: spec::from_primitive(config),
+        approvals: signature
+            .signatures()
+            .iter()
+            .map(|approval| Approval {
+                owner: approval.recover_signer(&digest).ok(),
+                len: approval.encoded_length(),
+            })
+            .collect(),
+    }
 }
 
 /// The account at `address` after the step, or before it with `net`; `None` if the pre-state lacks it.

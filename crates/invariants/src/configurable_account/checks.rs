@@ -7,15 +7,13 @@ use tempo_primitives::is_tip20_prefix;
 
 use super::{
     AccountUpgraded, Commitments, ConfigurableAccountConfig, ConfigurableAccountConfigUpdated, Key,
-    Leaves, Quorum, Role,
+    LeafChange, Leaves, Quorum, Role,
     spec::{self, CONFIGURABLE_KEY_TYPE, MARKER_CODE_HASH, MAX_APPROVAL_BYTES, MAX_APPROVALS},
 };
 use crate::{Check, Checked, Step, StepChecked, Tx, Verdict};
 
 /// The configurable account precompile's views answer. Counted by runners, not judged here.
 pub const VIEW: &str = "TEMPO-ACCOUNT-VIEW";
-
-type AccountStep = Step<Commitments, Option<Tx>>;
 
 /// Checks of a step against its signatures and events.
 pub const STEP_CHECKS: &[Check<AccountStep>] = &[
@@ -330,7 +328,7 @@ pub const LEAF_CHECKS: &[Check<Leaves>] = &[
         id: "TEMPO-ACCOUNT-MARKER",
         over: |l: &Leaves| l.of.keys(),
         judge: |l, account| {
-            let (_, post) = l.of.get(*account)?;
+            let post = l.of.get(*account)?.after;
             if post.commitment.is_zero() {
                 return None;
             }
@@ -348,7 +346,10 @@ pub const LEAF_CHECKS: &[Check<Leaves>] = &[
         id: "TEMPO-ACCOUNT-MARKER-INSTALL",
         over: |l: &Leaves| l.of.keys(),
         judge: |l, account| {
-            let (pre, post) = l.of.get(*account)?;
+            let LeafChange {
+                before: pre,
+                after: post,
+            } = *l.of.get(*account)?;
             let installed = pre.code_hash != MARKER_CODE_HASH && post.code_hash == MARKER_CODE_HASH;
             if !installed || is_tip20_prefix(**account) {
                 return None;
@@ -375,7 +376,7 @@ pub const LEAF_CHECKS: &[Check<Leaves>] = &[
                 .map(|g| g.key_id)
         },
         judge: |l, delegate| {
-            let (pre, _) = l.of.get(delegate)?;
+            let pre = l.of.get(delegate)?.before;
             ensure!(
                 *delegate != l.tx.sender
                     && (pre.code_hash == KECCAK256_EMPTY || pre.code_hash == MARKER_CODE_HASH),
@@ -386,6 +387,8 @@ pub const LEAF_CHECKS: &[Check<Leaves>] = &[
         },
     },
 ];
+
+type AccountStep = Step<Commitments, Option<Tx>>;
 
 impl Checked for Leaves {
     const CHECKS: &'static [Check<Self>] = LEAF_CHECKS;

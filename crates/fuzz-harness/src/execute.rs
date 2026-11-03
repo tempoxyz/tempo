@@ -246,7 +246,7 @@ pub(crate) fn execute_blocks(
         // A read the pre-state could not answer makes the result meaningless,
         // even when the error was swallowed on its way up.
         let executed = match executed {
-            _ if db.pre.missed() => Err((ErrorClass::IncompletePreState, None)),
+            _ if db.pre.missed() => Err(BlockFailure::rejected(ErrorClass::IncompletePreState)),
             executed => executed,
         };
         match executed {
@@ -267,7 +267,10 @@ pub(crate) fn execute_blocks(
                         .add(counts);
                 }
             }
-            Err((error, partial)) => {
+            Err(BlockFailure {
+                class: error,
+                partial,
+            }) => {
                 // Report what the transactions before the failing one broke.
                 if let Some(partial) = partial {
                     let partial = *partial;
@@ -301,7 +304,20 @@ struct BlockOutputs {
 }
 
 /// Why a block failed, and what its transactions produced before it did.
-type BlockFailure = (ErrorClass, Option<Box<BlockOutputs>>);
+struct BlockFailure {
+    class: ErrorClass,
+    partial: Option<Box<BlockOutputs>>,
+}
+
+impl BlockFailure {
+    /// A failure before any transaction ran.
+    const fn rejected(class: ErrorClass) -> Self {
+        Self {
+            class,
+            partial: None,
+        }
+    }
+}
 
 /// The state updates an executor has emitted since they were last taken.
 type Updates = Arc<Mutex<Vec<StateUpdate>>>;
@@ -316,16 +332,16 @@ fn execute_block(
 ) -> Result<(Vec<StateUpdate>, BlockOutputs), BlockFailure> {
     consensus
         .validate_header(block.sealed_block().sealed_header())
-        .map_err(|_| (ErrorClass::Rejected, None))?;
+        .map_err(|_| BlockFailure::rejected(ErrorClass::Rejected))?;
     consensus
         .validate_block_pre_execution(block.sealed_block())
-        .map_err(|_| (ErrorClass::Rejected, None))?;
+        .map_err(|_| BlockFailure::rejected(ErrorClass::Rejected))?;
     let evm = evm_config
         .evm_for_block(db.reader(), block.header())
-        .map_err(|_| (ErrorClass::Rejected, None))?;
+        .map_err(|_| BlockFailure::rejected(ErrorClass::Rejected))?;
     let ctx = evm_config
         .context_for_block(block.sealed_block())
-        .map_err(|_| (ErrorClass::Rejected, None))?;
+        .map_err(|_| BlockFailure::rejected(ErrorClass::Rejected))?;
     let mut executor = evm_config.create_executor(evm, ctx);
     let hooked = Updates::default();
     let installed = executor.set_state_hook({
@@ -346,10 +362,14 @@ fn execute_block(
         &mut updates,
         &mut outputs,
     )
-    .map_err(|err| (class(&err), Some(Box::new(std::mem::take(&mut outputs)))))?;
-    let output = executor
-        .finish()
-        .map_err(|err| (class(&err), Some(Box::new(std::mem::take(&mut outputs)))))?;
+    .map_err(|err| BlockFailure {
+        class: class(&err),
+        partial: Some(Box::new(std::mem::take(&mut outputs))),
+    })?;
+    let output = executor.finish().map_err(|err| BlockFailure {
+        class: class(&err),
+        partial: Some(Box::new(std::mem::take(&mut outputs))),
+    })?;
     let post_block = take(&hooked);
     let net = Net::of(&post_block);
     let cache = db.cache.borrow();

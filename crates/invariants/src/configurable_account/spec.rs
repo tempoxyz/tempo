@@ -12,10 +12,10 @@ pub use tempo_primitives::transaction::configurable_account::{
 
 use super::IConfigurableAccount::{ConfigurableAccountConfig, ConfigurableAccountOwner};
 
+pub use tempo_primitives::account::CONFIGURABLE_ACCOUNT_CODE_HASH as MARKER_CODE_HASH;
+
 /// The key type of a grant to a configurable delegate (TIP-1111).
 pub const CONFIGURABLE_KEY_TYPE: u8 = 3;
-
-pub use tempo_primitives::account::CONFIGURABLE_ACCOUNT_CODE_HASH as MARKER_CODE_HASH;
 
 /// The first configuration rule `config` breaks, `None` when it passes them all.
 // <https://github.com/tempoxyz/tempo/blob/6a8514bcd6ff790599d3d6de9a0be8a189e4cb36/tips/tip-1107.md#L74-L80>
@@ -56,23 +56,6 @@ pub fn broken_rule(threshold: u8, owners: &[ConfigurableAccountOwner]) -> Option
     None
 }
 
-/// `config` as `tempo_primitives` types it.
-fn primitive(config: &ConfigurableAccountConfig) -> primitives::ConfigurableAccountConfig {
-    primitives::ConfigurableAccountConfig {
-        salt: config.salt,
-        version: config.version,
-        threshold: config.threshold,
-        owners: config
-            .owners
-            .iter()
-            .map(|o| primitives::ConfigurableAccountOwner {
-                owner: o.owner,
-                weight: o.weight,
-            })
-            .collect(),
-    }
-}
-
 /// `config` as the precompile's interface types it.
 pub fn from_primitive(config: &primitives::ConfigurableAccountConfig) -> ConfigurableAccountConfig {
     ConfigurableAccountConfig {
@@ -109,10 +92,25 @@ pub fn upgrade_salt(account: Address) -> B256 {
     keccak256([CONFIGURABLE_ACCOUNT_UPGRADE_DOMAIN, account.as_slice()].concat())
 }
 
+/// `config` as `tempo_primitives` types it.
+fn primitive(config: &ConfigurableAccountConfig) -> primitives::ConfigurableAccountConfig {
+    primitives::ConfigurableAccountConfig {
+        salt: config.salt,
+        version: config.version,
+        threshold: config.threshold,
+        owners: config
+            .owners
+            .iter()
+            .map(|o| primitives::ConfigurableAccountOwner {
+                owner: o.owner,
+                weight: o.weight,
+            })
+            .collect(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use alloy_primitives::address;
-
     use super::*;
 
     fn owner(byte: u8, weight: u8) -> ConfigurableAccountOwner {
@@ -136,7 +134,7 @@ mod tests {
         assert_eq!(broken_rule(8, &nine), None);
         assert!(broken_rule(9, &nine).is_some());
         let zero = ConfigurableAccountOwner {
-            owner: address!("0x0000000000000000000000000000000000000000"),
+            owner: Address::ZERO,
             weight: 1,
         };
         assert!(broken_rule(1, &[zero]).is_some());
