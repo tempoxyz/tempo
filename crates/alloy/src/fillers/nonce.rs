@@ -332,6 +332,14 @@ pub struct TempoNonceFiller {
 }
 
 impl TempoNonceFiller {
+    /// Returns the filler used for transactions with a non-zero `nonce_key`.
+    ///
+    /// Its nonces are cached per `(from, nonce_key)`, so call [`NonceKeyFiller::clear`] after a
+    /// failed send to refetch them from the chain.
+    pub const fn nonce_key_filler(&self) -> &NonceKeyFiller {
+        &self.nonce_key
+    }
+
     /// Returns `true` if the transaction uses a nonce key other than the protocol key.
     fn uses_nonce_key(tx: &TempoTransactionRequest) -> bool {
         tx.nonce_key.is_some_and(|key| !key.is_zero())
@@ -623,6 +631,41 @@ mod tests {
             TxFiller::<TempoNetwork>::prepare(&TempoNonceFiller::default(), &provider, &tx).await?;
 
         assert_eq!(nonce, 0);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_tempo_nonce_filler_clear_refetches_2d_nonce() -> eyre::Result<()> {
+        let asserter = Asserter::new();
+        let provider = ProviderBuilder::<_, _, TempoNetwork>::default()
+            .connect_mocked_client(asserter.clone());
+        let filler = TempoNonceFiller::default();
+        let mut tx = TempoTransactionRequest::default().with_nonce_key(U256::from(42_u64));
+        tx.set_from(Address::repeat_byte(0x33));
+
+        asserter.push_success(&Bytes::from(INonce::getNonceCall::abi_encode_returns(
+            &3_u64,
+        )));
+
+        assert_eq!(
+            TxFiller::<TempoNetwork>::prepare(&filler, &provider, &tx).await?,
+            3
+        );
+        assert_eq!(
+            TxFiller::<TempoNetwork>::prepare(&filler, &provider, &tx).await?,
+            4
+        );
+
+        filler.nonce_key_filler().clear();
+        asserter.push_success(&Bytes::from(INonce::getNonceCall::abi_encode_returns(
+            &3_u64,
+        )));
+
+        assert_eq!(
+            TxFiller::<TempoNetwork>::prepare(&filler, &provider, &tx).await?,
+            3
+        );
 
         Ok(())
     }
