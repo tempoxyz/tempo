@@ -185,12 +185,11 @@ pub fn configurable_account(cx: _) -> Result {
 mod tests {
     use super::*;
     use crate::{TempoBlockEnv, TempoEvmExt, TempoTxEnv, build_tempo_evm};
-    use alloy_consensus::{Signed, TxLegacy, transaction::Recovered};
+    use alloy_consensus::{SignableTransaction, TxLegacy, transaction::Recovered};
     use alloy_primitives::{Bytes, Signature, TxKind};
     use evm2::{
         ExecutionError,
         bytecode::Bytecode,
-        env::TxEnvExt,
         evm::{AccountInfo, InMemoryDB, StateChangeSource, precompile::NoPrecompiles},
         interpreter::MessageExt,
     };
@@ -247,7 +246,7 @@ mod tests {
             TempoEvmExt::default(),
         );
         let tx = TempoTxEnv::from(Recovered::new_unchecked(
-            TempoTxEnvelope::Legacy(Signed::new_unhashed(
+            TempoTxEnvelope::Legacy(
                 TxLegacy {
                     chain_id: Some(1),
                     nonce: 0,
@@ -255,9 +254,9 @@ mod tests {
                     gas_limit: 1_000_000,
                     to: TxKind::Call(contract),
                     ..TxLegacy::default()
-                },
-                Signature::test_signature(),
-            )),
+                }
+                .into_signed(Signature::test_signature()),
+            ),
             caller,
         ));
 
@@ -313,9 +312,7 @@ mod tests {
             code: Bytecode::new_raw(Bytes::from_static(&[0x60, 0x01, 0x60, 0x00, 0x55, 0x00])),
             ..MessageExt::default()
         };
-        let error = evm
-            .execute_message(&TxEnvExt::default(), &mut message)
-            .unwrap_err();
+        let error = evm.execute_message(&mut message).unwrap_err();
         let ExecutionError::Fatal(error) = error else {
             panic!("expected fatal error")
         };

@@ -45,9 +45,8 @@ pub async fn gc(store: &Store) -> eyre::Result<()> {
     // finish; collection keeps the files it references until it expires.
     for checkpoint in checkpoints.iter().filter(|c| {
         c.id.to_string() != pinned
-            && !c
-                .expire_time
-                .is_some_and(|expiry| std::time::SystemTime::from(expiry) > started)
+            && c.expire_time
+                .is_none_or(|expiry| std::time::SystemTime::from(expiry) <= started)
     }) {
         admin.delete_checkpoint(checkpoint.id).await?;
     }

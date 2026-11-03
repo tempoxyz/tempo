@@ -5,6 +5,7 @@
 //! testnet RPC.
 
 use alloy::{
+    consensus::constants::ETH_TO_WEI,
     primitives::{Address, B256, Bytes, U256},
     providers::Provider,
     rpc::types::TransactionRequest,
@@ -957,7 +958,7 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
         TestAction::AdminCall => vec![tempo_alloy::provider::keychain::update_spending_limit(
             Address::random(),
             DEFAULT_FEE_TOKEN,
-            U256::from(20u64) * U256::from(10).pow(U256::from(18)),
+            U256::from(20u64) * U256::from(ETH_TO_WEI),
         )],
     };
 
@@ -2819,8 +2820,7 @@ pub(super) async fn run_create_contract_address_scenario<E: TestEnv>(
     .await?;
     assert!(!deployed_code.is_empty(), "Contract should be deployed");
 
-    let mut expected_code = [0u8; 32];
-    expected_code[31] = 0x2a;
+    let expected_code: [u8; 32] = B256::with_last_byte(0x2a).into();
     assert_eq!(deployed_code.as_ref(), &expected_code);
 
     println!("✓ Create contract address scenario passed");

@@ -602,6 +602,36 @@ fn startup_discards_stale_state_on_startup() {
 }
 
 #[test]
+fn startup_rejects_boundary_outcome_for_another_epoch() {
+    Runner::default().start(|mut context| async move {
+        // Height 19 ends epoch 1, so its outcome must be for epoch 2.
+        let (future_state, _, _) = dkg_state(&mut context, Epoch::new(5), 4, false);
+        let mut harness = Harness::builder(context.child("test"), "startup_rejects_outcome_epoch")
+            .epoch_length(10)
+            .finalized_floor(Height::new(19))
+            .build()
+            .await;
+        harness
+            .execution
+            .add_header(outcome_header(Height::new(19), &future_state));
+
+        harness.start().await;
+        harness.wait_for_exit().await;
+
+        assert!(harness.epoch_manager.events().is_empty());
+        let storage = state::builder()
+            .partition_prefix("startup_rejects_outcome_epoch")
+            .init_unverified(context.child("reopened"))
+            .await
+            .unwrap();
+        assert!(
+            storage.state().is_none(),
+            "the outcome must not be persisted"
+        );
+    });
+}
+
+#[test]
 fn startup_recovers_v0_share_without_t12() {
     assert_startup_recovers_revealed_share(None);
 }

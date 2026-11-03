@@ -597,7 +597,7 @@ fn warm_payment_keccak_slots<'a>(
         if let Some(addr) = payment.to() {
             let slot = addr.mapping_slot(tip403_registry_slots::RECEIVE_POLICIES);
             warmed(slot);
-            warmed(U256::from_be_bytes(keccak256(slot.to_be_bytes::<32>()).0));
+            warmed(keccak256(slot.to_be_bytes::<32>()).into());
         }
 
         // Allowance slots for transferFrom variants: allowances[from][sender]
@@ -1243,8 +1243,7 @@ mod tests {
         tx.key_authorization
             .take_if(|auth| auth.signature.is_configurable_account());
         let (envelope, sender) = signed_aa_envelope(tx);
-        let mut raw = Vec::with_capacity(envelope.encode_2718_len());
-        envelope.encode_2718(&mut raw);
+        let raw = envelope.encoded_2718();
         let encoded_length = raw.len();
         let pooled = <TempoPooledTransaction as PoolTransaction>::recover_raw_transaction(&raw)
             .expect("raw transaction recovery failed");

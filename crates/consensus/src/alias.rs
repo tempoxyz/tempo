@@ -33,7 +33,7 @@ pub(crate) mod marshal {
         consensus::{Digest, block::Block},
         epoch::SchemeProvider,
         gossip::Certificate,
-        storage::{self, Hybrid},
+        storage::{self, Hybrid, hybrid::HeaderSource},
     };
 
     pub(crate) type Actor<TContext> = core::Actor<
@@ -304,12 +304,19 @@ pub(crate) mod marshal {
                 .ok_or_eyre("archive did not contain finalized tip certificate")?
         };
         let height = Height::new(last);
-        let header = blocks
-            .get_header(Identifier::Key(&certificate.proposal.payload))
-            .await
-            .wrap_err("failed reading finalized tip header")?;
-        if let Some(header) = &header {
-            verify_tip_header(height, certificate.proposal.payload, header)?;
+        // Look the tip up by height in both the prunable cache and the execution
+        // layer, so that a different block stored in either is rejected; if none
+        // is stored, marshal will eventually fetch the tip from the network by
+        // digest.
+        for source in [HeaderSource::Prunable, HeaderSource::Execution] {
+            let header = blocks
+                .header_by_height(last, source)
+                .await
+                .wrap_err_with(|| format!("failed reading finalized tip header from {source:?}"))?;
+            if let Some(header) = &header {
+                verify_tip_header(height, certificate.proposal.payload, header)
+                    .wrap_err_with(|| format!("finalized tip header from {source:?}"))?;
+            }
         }
 
         Ok(FinalizationRange {

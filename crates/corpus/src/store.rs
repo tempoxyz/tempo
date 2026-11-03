@@ -2,7 +2,7 @@
 
 use crate::{
     code,
-    types::{Case, Chunk},
+    types::{Case, Input},
 };
 use alloy_consensus::BlockHeader;
 use alloy_primitives::B256;
@@ -58,8 +58,8 @@ const LEASE_LIFETIME: Duration = Duration::from_secs(10 * 60);
 /// and has no setting for [SLATEDB_RETRIES]. Well under a third of [LEASE_LIFETIME], so a renewal
 /// that times out still fails before the lease expires.
 const LEASE_OPERATION_TIMEOUT: Duration = Duration::from_secs(60);
-pub const CONTEXT_KEY: &[u8] = b"reth-corpus-context";
-pub const CURSOR_KEY: &[u8] = b"reth-corpus-cursor";
+pub const CONTEXT_KEY: &[u8] = b"corpus-context";
+pub const CURSOR_KEY: &[u8] = b"corpus-cursor";
 
 /// What every block of a corpus is pinned to. The corpus ends at its published [Cursor], so
 /// fills append blocks without changing the context, except for `forks`, which an extending
@@ -79,14 +79,12 @@ pub struct Context {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Record {
-    pub start: u64,
-    pub end: u64,
+    pub number: u64,
     pub parent: [u8; 32],
-    pub tip: [u8; 32],
+    pub hash: [u8; 32],
     /// Total serialized block and transaction bytes reserved together before fetching.
     pub bytes: usize,
     pub block_bytes: usize,
-    pub digest: String,
     pub transactions: u64,
     pub gas: u64,
     pub first_tx: u64,
@@ -97,7 +95,6 @@ pub struct Record {
 pub struct CaseRecord {
     pub index: u64,
     pub bytes: usize,
-    pub digest: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -498,10 +495,10 @@ pub fn code_key(hash: &[u8; 32]) -> [u8; 33] {
     key
 }
 
-/// Loads every code hash the chunk reads that is not cached yet from the corpus' shared
+/// Loads every code hash the input reads that is not cached yet from the corpus' shared
 /// code entries, verifying each against its hash.
-pub async fn resolve_code(reader: &DbReader, chunk: &Chunk) -> eyre::Result<()> {
-    for hash in chunk.code.iter().filter(|hash| !code::has_code(hash)) {
+pub async fn resolve_code(reader: &DbReader, input: &Input) -> eyre::Result<()> {
+    for hash in input.code.iter().filter(|hash| !code::has_code(hash)) {
         let bytes = reader
             .get(code_key(hash))
             .await?
@@ -512,27 +509,47 @@ pub async fn resolve_code(reader: &DbReader, chunk: &Chunk) -> eyre::Result<()> 
     Ok(())
 }
 
-pub fn decode(bytes: &[u8], record: &Record) -> eyre::Result<Arc<Chunk>> {
+/// The published record of `block` and its decoded input, with its code resolved.
+///
+/// Checks the block alone, not its links to neighbouring blocks. A block runs on its own recorded
+/// pre-state, and a complete corpus had its whole range checked when it was published.
+pub async fn published(reader: &DbReader, block: u64) -> eyre::Result<(Record, Arc<Input>)> {
+    let record = metadata(reader, block).await?;
+    // Seeded from the record itself, so only its own sizes and coverage are checked.
+    Cursor {
+        next: record.number,
+        tx: record.first_tx,
+        parent: record.parent,
+    }
+    .advance(&record)?;
+    let bytes = reader
+        .get(key(block))
+        .await?
+        .ok_or_else(|| eyre::eyre!("missing block record at {block}"))?;
+    let input = decode(&bytes, &record)?;
+    resolve_code(reader, &input).await?;
+    Ok((record, input))
+}
+
+pub fn decode(bytes: &[u8], record: &Record) -> eyre::Result<Arc<Input>> {
     eyre::ensure!(
-        bytes.len() == record.block_bytes && blake3::hash(bytes).to_hex().as_str() == record.digest,
-        "corpus record integrity mismatch"
+        bytes.len() == record.block_bytes,
+        "corpus record size mismatch"
     );
-    let chunk: Chunk = wincode::config::deserialize_exact(bytes, WINCODE)?;
-    chunk.validate()?;
+    let input: Input = wincode::config::deserialize_exact(bytes, WINCODE)?;
     eyre::ensure!(
-        chunk.start == record.start
-            && chunk.end == record.end
-            && chunk.parent == record.parent
-            && chunk.blocks.last().map(|b| b.hash) == Some(record.tip),
+        input.number == record.number
+            && input.parent == record.parent
+            && input.block.hash == record.hash,
         "corpus record/context mismatch"
     );
-    Ok(Arc::new(chunk))
+    Ok(Arc::new(input))
 }
 
 pub fn decode_case(bytes: &[u8], expected: &CaseRecord, ordinal: u64) -> eyre::Result<Case> {
     eyre::ensure!(
-        bytes.len() == expected.bytes && blake3::hash(bytes).to_hex().as_str() == expected.digest,
-        "transaction record integrity mismatch"
+        bytes.len() == expected.bytes,
+        "transaction record size mismatch"
     );
     let case: Case = wincode::config::deserialize_exact(bytes, WINCODE)?;
     eyre::ensure!(
@@ -565,7 +582,7 @@ impl PayloadScan {
             .ok_or_eyre("transaction ordinal overflow")?;
         let options = scan_options();
         let blocks = reader
-            .scan_with_options(key(first.start)..key(last.end), &options)
+            .scan_with_options(key(first.number)..key(last.number + 1), &options)
             .await?;
         let transactions = if first.first_tx == tx_end {
             None
@@ -591,9 +608,9 @@ impl PayloadScan {
             .blocks
             .next()
             .await?
-            .ok_or_else(|| eyre::eyre!("missing block record at {}", record.start))?;
+            .ok_or_else(|| eyre::eyre!("missing block record at {}", record.number))?;
         eyre::ensure!(
-            block.key.as_ref() == key(record.start) && block.value.len() == record.block_bytes,
+            block.key.as_ref() == key(record.number) && block.value.len() == record.block_bytes,
             "block scan gap/order/size mismatch"
         );
         let mut cases = Vec::with_capacity(record.cases.len());
@@ -624,8 +641,7 @@ impl PayloadScan {
 }
 
 /// Runs `f` on the payloads of every published record from `from` up to `to`, reading
-/// metadata in pages and each page's payloads through one [`PayloadScan`], after checking
-/// every transaction payload's digest. Fails unless the metadata ends exactly at `to`.
+/// metadata in pages and each page's payloads through one [`PayloadScan`]. Fails unless the metadata ends exactly at `to`.
 pub async fn for_each_published(
     reader: &DbReader,
     from: Cursor,
@@ -639,15 +655,9 @@ pub async fn for_each_published(
         let mut payloads = PayloadScan::open(reader, &records).await?;
         for record in &records {
             let (block, cases) = payloads.next(record).await?;
-            for (bytes, expected) in cases.iter().zip(&record.cases) {
-                eyre::ensure!(
-                    blake3::hash(bytes).to_hex().as_str() == expected.digest,
-                    "transaction record integrity mismatch"
-                );
-            }
             if resolve {
-                let chunk = decode(&block, record)?;
-                resolve_code(reader, &chunk).await?;
+                let input = decode(&block, record)?;
+                resolve_code(reader, &input).await?;
             }
             f(record, block, cases)?;
         }
@@ -675,10 +685,7 @@ impl Cursor {
     }
 
     pub fn advance(&mut self, record: &Record) -> eyre::Result<()> {
-        eyre::ensure!(
-            record.start == self.next && record.start.checked_add(1) == Some(record.end),
-            "catalog block gap/duplicate"
-        );
+        eyre::ensure!(record.number == self.next, "catalog block gap/duplicate");
         eyre::ensure!(
             record.parent == self.parent && record.bytes > 0 && record.bytes <= MAX_RECORD_BYTES,
             "catalog hash chain or record size mismatch"
@@ -707,8 +714,8 @@ impl Cursor {
             .tx
             .checked_add(record.transactions)
             .ok_or_eyre("ordinal overflow")?;
-        self.next = record.end;
-        self.parent = record.tip;
+        self.next = record.number.checked_add(1).ok_or_eyre("block overflow")?;
+        self.parent = record.hash;
         Ok(())
     }
 }
@@ -751,9 +758,7 @@ pub async fn tip_timestamp(reader: &DbReader, cursor: &Cursor) -> eyre::Result<u
         .get(key(number))
         .await?
         .ok_or_else(|| eyre::eyre!("missing block record at {number}"))?;
-    let chunk = decode(&bytes, &record)?;
-    let block = chunk.blocks.last().ok_or_eyre("empty block record")?;
-    let block: Block = alloy_rlp::decode_exact(&block.rlp)?;
+    let block: Block = alloy_rlp::decode_exact(&decode(&bytes, &record)?.block.rlp)?;
     Ok(block.header.timestamp())
 }
 
@@ -764,10 +769,7 @@ pub async fn metadata(reader: &DbReader, block: u64) -> eyre::Result<Record> {
         .ok_or_else(|| eyre::eyre!("missing block metadata at {block}"))?;
     eyre::ensure!(bytes.len() <= MAX_RECORD_BYTES, "metadata record too large");
     let record: Record = serde_json::from_slice(&bytes)?;
-    eyre::ensure!(
-        record.start == block && block.checked_add(1) == Some(record.end),
-        "metadata key/range mismatch"
-    );
+    eyre::ensure!(record.number == block, "metadata key/range mismatch");
     Ok(record)
 }
 
@@ -883,22 +885,16 @@ pub mod tests {
     pub(crate) fn catalog(start: u64, count: usize, transactions: u64) -> Catalog {
         let records: Vec<_> = (0..count)
             .map(|i| Record {
-                start: start + i as u64,
-                end: start + i as u64 + 1,
+                number: start + i as u64,
                 parent: [i as u8; 32],
-                tip: [(i as u8).wrapping_add(1); 32],
+                hash: [(i as u8).wrapping_add(1); 32],
                 bytes: 1 + transactions as usize,
                 block_bytes: 1,
-                digest: blake3::hash(b"a").to_hex().to_string(),
                 transactions,
                 gas: 0,
                 first_tx: i as u64 * transactions,
                 cases: (0..transactions)
-                    .map(|index| CaseRecord {
-                        index,
-                        bytes: 1,
-                        digest: blake3::hash(b"a").to_hex().to_string(),
-                    })
+                    .map(|index| CaseRecord { index, bytes: 1 })
                     .collect(),
             })
             .collect();
@@ -1053,13 +1049,11 @@ pub mod tests {
                 .collect();
             let block = format!("b{start}");
             let record = Record {
-                start,
-                end: start + 1,
+                number: start,
                 parent: [0; 32],
-                tip: [0; 32],
+                hash: [0; 32],
                 bytes: block.len() + cases.iter().map(String::len).sum::<usize>(),
                 block_bytes: block.len(),
-                digest: String::new(),
                 transactions: count,
                 gas: 0,
                 first_tx: cursor.tx,
@@ -1069,7 +1063,6 @@ pub mod tests {
                     .map(|(case, index)| CaseRecord {
                         index,
                         bytes: case.len(),
-                        digest: blake3::hash(case.as_bytes()).to_hex().to_string(),
                     })
                     .collect(),
             };
@@ -1098,7 +1091,7 @@ pub mod tests {
             let mut seen = Vec::new();
             let result =
                 for_each_published(&reader, from.clone(), to, false, |record, block, cases| {
-                    seen.push((record.start, block, cases));
+                    seen.push((record.number, block, cases));
                     Ok(())
                 })
                 .await;
@@ -1120,16 +1113,9 @@ pub mod tests {
         assert_eq!(error.to_string(), "published metadata boundary mismatch");
         // Each corruption accumulates on the previous ones.
         for (key, value, from, message) in [
-            // Same size, different bytes: only the digest check catches it.
             (
                 transaction_key(1),
-                Some(&b"tX"[..]),
-                first,
-                "transaction record integrity mismatch",
-            ),
-            (
-                transaction_key(1),
-                Some(b"tampered"),
+                Some(&b"tampered"[..]),
                 first,
                 "transaction scan gap/order/size mismatch",
             ),
@@ -1167,7 +1153,7 @@ pub mod tests {
         let version = store.publish(&catalog, None).await?;
         let db = open_db(&store, &catalog).await?;
         for record in &records[..1000] {
-            db.put(metadata_key(record.start), serde_json::to_vec(record)?)
+            db.put(metadata_key(record.number), serde_json::to_vec(record)?)
                 .await?;
             catalog.cursor.advance(record)?;
         }
@@ -1180,7 +1166,7 @@ pub mod tests {
         assert_eq!(resumed.cursor.next, 1017);
         assert!(resumed.records.is_empty());
         for record in &records[1000..] {
-            db.put(metadata_key(record.start), serde_json::to_vec(record)?)
+            db.put(metadata_key(record.number), serde_json::to_vec(record)?)
                 .await?;
             resumed.cursor.advance(record)?;
         }
@@ -1218,8 +1204,8 @@ pub mod tests {
             ),
         ] {
             match corrupt {
-                Some(value) => db.put(metadata_key(record.start), value).await?,
-                None => db.delete(metadata_key(record.start)).await?,
+                Some(value) => db.put(metadata_key(record.number), value).await?,
+                None => db.delete(metadata_key(record.number)).await?,
             };
             resumed.checkpoint = Some(store.checkpoint(&db).await?);
             let reader = store.reader(&resumed).await?;

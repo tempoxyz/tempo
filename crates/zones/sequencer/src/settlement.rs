@@ -530,7 +530,10 @@ impl BatchSubmitter {
                 if anchors_to_current_tip {
                     submission = submission.gas(SUBMIT_BATCH_GAS_LIMIT);
                 }
-                tokio::time::timeout(Duration::from_secs(30), submission.send_sync()).await
+                submission
+                    .send_sync()
+                    .timeout(Duration::from_secs(30))
+                    .await
             }
             SettlementAbi::T13 => {
                 let mut submission = self
@@ -554,7 +557,10 @@ impl BatchSubmitter {
                 if anchors_to_current_tip {
                     submission = submission.gas(SUBMIT_BATCH_GAS_LIMIT);
                 }
-                tokio::time::timeout(Duration::from_secs(30), submission.send_sync()).await
+                submission
+                    .send_sync()
+                    .timeout(Duration::from_secs(30))
+                    .await
             }
         }
         .map_err(|_| eyre::eyre!("submitBatch sync submission timed out after 30 seconds"))?
@@ -1193,8 +1199,7 @@ impl BatchSubmitter {
                     LegacyBatchSubmitted::SIGNATURE_HASH,
                 ])
                 .topic2(index_topics.clone())
-                .from_block(lo)
-                .to_block(hi);
+                .select(lo..=hi);
             let events = self.l1_provider.get_logs(&filter).await?;
 
             for log in events {

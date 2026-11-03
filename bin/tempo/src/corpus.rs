@@ -6,9 +6,13 @@ use reth_cli::chainspec::ChainSpecParser;
 use reth_cli_commands::common::{AccessRights, Environment, EnvironmentArgs};
 use reth_cli_util::cancellation::CancellationToken;
 use reth_ethereum::tasks::Runtime;
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
-use tempo_corpus::{fill, gc, replay, store::Store};
+use tempo_corpus::{
+    exec::{fill, replay},
+    fuzz, gc,
+    store::Store,
+};
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_node::node::TempoNode;
 
@@ -132,6 +136,9 @@ pub struct ReplayCommand {
     /// Execution worker threads; defaults to the available parallelism.
     #[arg(long)]
     workers: Option<usize>,
+    /// Replay only the blocks a block list file names, such as a fuzz corpus minimizer's.
+    #[arg(long, conflicts_with_all = ["from", "to", "tx_from"])]
+    blocks: Option<PathBuf>,
 }
 
 impl ReplayCommand {
@@ -164,6 +171,18 @@ impl ReplayCommand {
         }
         let workers = workers(self.workers);
         let (config, consensus) = components(self.chain);
+        if let Some(path) = &self.blocks {
+            let blocks = fuzz::read_blocks(path, &catalog)?;
+            eyre::ensure!(
+                !blocks.is_empty(),
+                "{} lists no block of the corpus",
+                path.display()
+            );
+            return tokio::task::spawn_blocking(move || {
+                replay::run_blocks(store, catalog, &blocks, config, consensus, workers)
+            })
+            .await?;
+        }
         let cancellation = CancellationToken::new();
         let _guard = cancellation.drop_guard();
         tokio::task::spawn_blocking(move || {
