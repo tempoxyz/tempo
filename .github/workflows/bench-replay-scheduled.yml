@@ -65,8 +65,8 @@ jobs:
       actions: read
       contents: read
     outputs:
-      baseline-ref: ${{ steps.refs.outputs.baseline-ref }}
-      baseline-name: ${{ steps.refs.outputs.baseline-name }}
+      baseline-ref: ${{ steps.guard.outputs.baseline-ref }}
+      baseline-name: ${{ steps.guard.outputs.baseline-name }}
       feature-ref: ${{ steps.refs.outputs.feature-ref }}
       feature-name: ${{ steps.refs.outputs.feature-name }}
       should-skip: ${{ steps.refs.outputs.should-skip }}
@@ -148,6 +148,20 @@ jobs:
           INPUT_FORCE: ${{ inputs.force || 'false' }}
           BENCH_REPLAY_CHAIN: ${{ steps.config.outputs.chain }}
         run: bash .github/scripts/bench-replay-scheduled-refs.sh "$INPUT_FORCE"
+
+      # A baseline that predates a fork the chain has activated rejects its blocks, fails
+      # every night and so never advances; replace it with the feature for one run.
+      - name: Re-baseline if the baseline cannot replay the chain
+        id: guard
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          BASELINE_REF: ${{ steps.refs.outputs.baseline-ref }}
+          BASELINE_NAME: ${{ steps.refs.outputs.baseline-name }}
+          FEATURE_REF: ${{ steps.refs.outputs.feature-ref }}
+          FEATURE_NAME: ${{ steps.refs.outputs.feature-name }}
+          GENESIS: crates/chainspec/src/genesis/${{ steps.config.outputs.chain == 'testnet' && 'moderato' || 'presto' }}.json
+        run: bash .github/scripts/bench-baseline-guard.sh fork-schedule "$GENESIS"
 
       - name: Alert on stale nightly
         if: steps.refs.outputs.is-stale == 'true' && !(github.event_name == 'workflow_dispatch' && inputs.slack == 'never')

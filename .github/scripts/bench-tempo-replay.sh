@@ -321,11 +321,12 @@ run_single() {
       > "$log" 2>&1 &
   fi
   stdbuf -oL tail -f "$log" | sed -u "s/^/[$label] /" &
-  local tail_pid=$!
+  # Global: the EXIT trap runs after this function's locals are gone.
+  BENCH_TAIL_PID=$!
 
   # Ensure node and tail are cleaned up on any exit from run_single
   cleanup_run() {
-    kill "$tail_pid" 2>/dev/null || true
+    kill "${BENCH_TAIL_PID:-}" 2>/dev/null || true
     if [ "${BENCH_SAMPLY:-false}" = "true" ]; then
       sudo pkill -INT -x tempo 2>/dev/null || true
       local samply_wait
