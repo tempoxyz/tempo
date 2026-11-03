@@ -210,7 +210,7 @@ pub struct MigrateCommand {
     /// Destination s3://bucket/prefix or file:///directory; must not exist yet.
     #[arg(long)]
     to: String,
-    /// Optional S3-compatible endpoint for both corpora. Credentials use the standard AWS chain.
+    /// Optional S3-compatible endpoint for the corpora in S3. Credentials use the standard AWS chain.
     #[arg(long)]
     s3_endpoint: Option<String>,
     /// First block to migrate; with --end, migrates only [start, end).
@@ -226,9 +226,14 @@ pub struct MigrateCommand {
 
 impl MigrateCommand {
     async fn execute(self) -> eyre::Result<()> {
-        let endpoint = self.s3_endpoint.as_deref();
-        let source = Store::open(&self.from, endpoint).await?;
-        let dest = Store::open(&self.to, endpoint).await?;
+        // The endpoint applies to whichever side is in S3, so either may be a local corpus.
+        let endpoint = |url: &str| {
+            self.s3_endpoint
+                .as_deref()
+                .filter(|_| url.starts_with("s3://"))
+        };
+        let source = Store::open(&self.from, endpoint(&self.from)).await?;
+        let dest = Store::open(&self.to, endpoint(&self.to)).await?;
         let range = self.start.zip(self.end).map(|(start, end)| start..end);
         migrate::migrate(source, dest, range, workers(self.workers)).await
     }
