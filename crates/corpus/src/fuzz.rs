@@ -24,7 +24,8 @@ use tempo_fuzz_types::{
 use tempo_primitives::Block;
 use tokio::runtime::Runtime;
 
-/// A complete corpus, open at its published checkpoint.
+/// A corpus, open at its published checkpoint. A fill extending it meanwhile does not change
+/// what this reads.
 pub struct Corpus {
     runtime: Runtime,
     reader: DbReader,
@@ -33,8 +34,8 @@ pub struct Corpus {
 }
 
 impl Corpus {
-    /// Opens the complete corpus at `url` (`s3://bucket/prefix` or `file:///directory`), with S3
-    /// reads going to `endpoint` when given.
+    /// Opens the published blocks of the corpus at `url` (`s3://bucket/prefix` or
+    /// `file:///directory`), with S3 reads going to `endpoint` when given.
     pub fn open(url: &str, endpoint: Option<&str>) -> eyre::Result<Self> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -45,7 +46,6 @@ impl Corpus {
                 .catalog()
                 .await?
                 .ok_or_else(|| eyre::eyre!("no corpus catalog at {url}"))?;
-            eyre::ensure!(catalog.complete, "corpus {url} is not complete");
             let reader = store.reader(&catalog).await?;
             let tip = store::tip_timestamp(&reader, &catalog.cursor).await?;
             eyre::Ok((reader, catalog, tip))
