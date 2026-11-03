@@ -249,13 +249,11 @@ where
                 "block and independent transactions exceed 64 MiB record limit"
             );
             let record = Record {
-                start,
-                end: start + 1,
+                number: start,
                 parent: chunk.parent,
-                tip: chunk.blocks.last().expect("nonempty capture").hash,
+                hash: chunk.block.hash,
                 bytes: total_bytes,
                 block_bytes: bytes.len(),
-                digest: blake3::hash(&bytes).to_hex().to_string(),
                 transactions,
                 gas: captured.executed.gas,
                 first_tx,
@@ -265,7 +263,6 @@ where
                     .map(|(index, b)| CaseRecord {
                         index: index as u64,
                         bytes: b.len(),
-                        digest: blake3::hash(b).to_hex().to_string(),
                     })
                     .collect(),
             };
@@ -370,9 +367,9 @@ where
                         let produced = receiver
                             .recv()
                             .map_err(|_| eyre::eyre!("corpus capture workers stopped"))??;
-                        pending.insert(produced.record.start, produced);
+                        pending.insert(produced.record.number, produced);
                     };
-                    let stop = record.end;
+                    let stop = start + 1;
                     let (transactions, gas) = (record.transactions, record.gas);
                     metadata_bytes += metadata.len();
                     for (hash, value) in &code {

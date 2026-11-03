@@ -39,7 +39,6 @@ async-trait.workspace = true
 bincode.workspace = true
 aws-config = "1.8"
 aws-credential-types = "1.2"
-blake3.workspace = true
 bytes.workspace = true
 eyre.workspace = true
 futures.workspace = true

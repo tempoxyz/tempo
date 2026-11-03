@@ -48,13 +48,6 @@ fn analyzed(hash: B256) -> Result<Bytecode, Missing> {
     Ok(code)
 }
 
-fn version<T>(versions: &[(u64, T)], at: u64) -> Result<&T, Missing> {
-    versions
-        .get(versions.partition_point(|(n, _)| *n <= at).wrapping_sub(1))
-        .map(|(_, value)| value)
-        .ok_or_else(|| Missing(format!("missing state version at {at}")))
-}
-
 /// Changes applied on top of a chunk's pre-state, such as earlier transactions' deltas.
 #[derive(Clone, Debug, Default)]
 pub struct Overlay {
@@ -64,21 +57,18 @@ pub struct Overlay {
     code: HashSet<B256>,
 }
 
-/// The canonical state at a block boundary covered by a chunk, plus applied deltas.
+/// The canonical state before a chunk's block, plus applied deltas.
 #[derive(Clone, Debug)]
 pub struct View {
     pub chunk: Arc<Chunk>,
-    pub at: u64,
     pub overlay: Overlay,
 }
 
 impl View {
-    /// The state before the chunk's first block.
+    /// The state before the chunk's block.
     pub fn new(chunk: Arc<Chunk>) -> Self {
-        let at = chunk.start - 1;
         Self {
             chunk,
-            at,
             overlay: Overlay::default(),
         }
     }
@@ -87,12 +77,11 @@ impl View {
         if let Some(account) = self.overlay.accounts.get(address) {
             return Ok(account.clone());
         }
-        let versions = self
+        Ok(self
             .chunk
             .accounts
             .get(&address.into_array())
-            .ok_or_else(|| Missing(format!("uncaptured account {address}")))?;
-        Ok(version(versions, self.at)?
+            .ok_or_else(|| Missing(format!("uncaptured account {address}")))?
             .as_ref()
             .map(|info| info.account().into()))
     }
@@ -104,12 +93,11 @@ impl View {
         if self.overlay.wiped.contains(address) {
             return Ok(U256::ZERO);
         }
-        let versions = self
-            .chunk
+        self.chunk
             .storage
             .get(&(address.into_array(), key.to_be_bytes()))
-            .ok_or_else(|| Missing(format!("uncaptured storage {address} {key}")))?;
-        Ok(U256::from_be_bytes(*version(versions, self.at)?))
+            .map(|value| U256::from_be_bytes(*value))
+            .ok_or_else(|| Missing(format!("uncaptured storage {address} {key}")))
     }
 
     fn wipe(&mut self, address: Address) {

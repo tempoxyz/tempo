@@ -12,13 +12,13 @@ use wincode::{SchemaRead, SchemaWrite};
 /// changesets used to check its state changes. All values originate in the archive DB.
 #[derive(Debug, SchemaRead, SchemaWrite)]
 pub struct Chunk {
-    pub start: u64,
-    pub end: u64,
+    pub number: u64,
     pub parent: [u8; 32],
-    pub blocks: Vec<Block>,
-    pub accounts: BTreeMap<[u8; 20], Vec<(u64, Option<Info>)>>,
-    #[allow(clippy::type_complexity)] // Keep the wire representation explicit.
-    pub storage: BTreeMap<([u8; 20], [u8; 32]), Vec<(u64, [u8; 32])>>,
+    pub block: Block,
+    /// Pre-block value of every account the block reads or changes.
+    pub accounts: BTreeMap<[u8; 20], Option<Info>>,
+    /// Pre-block value of every slot the block reads or changes.
+    pub storage: BTreeMap<([u8; 20], [u8; 32]), [u8; 32]>,
     /// Code hashes the block reads; the bytecode itself is stored once per corpus under
     /// `c` ‖ code hash.
     pub code: BTreeSet<[u8; 32]>,
@@ -88,10 +88,7 @@ impl Chunk {
 
     /// The block's historical changeset, resolved from its bitmaps over the witness.
     pub fn changeset(&self) -> eyre::Result<ChangeSet> {
-        let block = self
-            .blocks
-            .first()
-            .ok_or_else(|| eyre::eyre!("empty chunk"))?;
+        let block = &self.block;
         eyre::ensure!(
             block.changed_accounts.len() == self.accounts.len().div_ceil(8)
                 && block.changed_storage.len() == self.storage.len().div_ceil(8),
@@ -101,37 +98,6 @@ impl Chunk {
             accounts: marked(&self.accounts, &block.changed_accounts),
             storage: marked(&self.storage, &block.changed_storage),
         })
-    }
-
-    pub fn validate(&self) -> eyre::Result<()> {
-        eyre::ensure!(
-            self.start > 0 && self.end > self.start,
-            "invalid corpus range"
-        );
-        eyre::ensure!(
-            self.blocks.len() as u64 == self.end - self.start,
-            "missing/extra corpus blocks"
-        );
-        for versions in self.accounts.values() {
-            self.validate_versions(versions)?;
-        }
-        for versions in self.storage.values() {
-            self.validate_versions(versions)?;
-        }
-        Ok(())
-    }
-
-    fn validate_versions<T>(&self, versions: &[(u64, T)]) -> eyre::Result<()> {
-        eyre::ensure!(
-            versions.first().map(|v| v.0) == Some(self.start - 1),
-            "missing initial state version"
-        );
-        eyre::ensure!(
-            versions.windows(2).all(|v| v[0].0 < v[1].0)
-                && versions.last().is_some_and(|v| v.0 < self.end),
-            "invalid state version ordering"
-        );
-        Ok(())
     }
 }
 
@@ -284,13 +250,13 @@ fn digest(bytes: &[u8]) -> [u8; 16] {
 /// Little-endian bitmap over `witness` in key order, marking the keys in `changed`. Every changed
 /// key must be in the witness with the same pre-value.
 fn mark<K: Ord, V: PartialEq>(
-    witness: &BTreeMap<K, Vec<(u64, V)>>,
+    witness: &BTreeMap<K, V>,
     changed: &BTreeMap<K, V>,
     kind: &str,
 ) -> eyre::Result<Vec<u8>> {
     for (key, value) in changed {
         eyre::ensure!(
-            witness.get(key).and_then(|v| v.first()).map(|(_, v)| v) == Some(value),
+            witness.get(key) == Some(value),
             "{kind} changeset disagrees with witness"
         );
     }
@@ -304,14 +270,11 @@ fn mark<K: Ord, V: PartialEq>(
 }
 
 /// Pre-values of the `witness` entries `bits` marks (see [`mark`]).
-fn marked<K: Ord + Copy, V: Clone>(
-    witness: &BTreeMap<K, Vec<(u64, V)>>,
-    bits: &[u8],
-) -> BTreeMap<K, V> {
+fn marked<K: Ord + Copy, V: Clone>(witness: &BTreeMap<K, V>, bits: &[u8]) -> BTreeMap<K, V> {
     witness
         .iter()
         .enumerate()
         .filter(|(i, _)| bits[i / 8] & (1 << (i % 8)) != 0)
-        .map(|(_, (key, versions))| (*key, versions[0].1.clone()))
+        .map(|(_, (key, value))| (*key, value.clone()))
         .collect()
 }

@@ -130,10 +130,9 @@ where
 
     let mut initial = db_at(number - 1)?;
     let mut chunk = Chunk {
-        start: number,
-        end: number + 1,
+        number,
         parent: block.parent_hash().0,
-        blocks: vec![input],
+        block: input,
         accounts: BTreeMap::new(),
         storage: BTreeMap::new(),
         code: Default::default(),
@@ -149,14 +148,12 @@ where
         let info = account
             .map(|a| Info::capture(&Account::from(&a)))
             .transpose()?;
-        chunk
-            .accounts
-            .insert(address.into_array(), vec![(number - 1, info)]);
+        chunk.accounts.insert(address.into_array(), info);
     }
     for (address, key) in &keys.storage {
         chunk.storage.insert(
             (address.into_array(), key.to_be_bytes()),
-            vec![(number - 1, initial.get_storage(address, key)?.to_be_bytes())],
+            initial.get_storage(address, key)?.to_be_bytes(),
         );
     }
     code_hashes.remove(&KECCAK256_EMPTY);
@@ -171,15 +168,11 @@ where
             .hashes
             .insert(*at, initial.get_block_hash(&U256::from(*at))?.0);
     }
-    (
-        chunk.blocks[0].changed_accounts,
-        chunk.blocks[0].changed_storage,
-    ) = chunk.mark(&changeset)?;
+    (chunk.block.changed_accounts, chunk.block.changed_storage) = chunk.mark(&changeset)?;
     eyre::ensure!(
         chunk.changeset()? == changeset,
         "changeset bitmap round trip mismatch"
     );
-    chunk.validate()?;
     let captured = Captured {
         chunk: Arc::new(chunk),
         executed,
