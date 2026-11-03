@@ -72,6 +72,7 @@ crate::sol! {
         function getOrder(uint128 orderId) external view returns (Order memory);
 
         function getTickLevel(address base, int16 tick, bool isBid) external view returns (uint128 head, uint128 tail, uint128 totalLiquidity);
+        function getTickLiquidity(address base, int16 tick, bool isBid, uint128 startOrderId, uint32 maxOrders) external view returns (uint128 liquidity, uint128 nextOrderId);
         function pairKey(address tokenA, address tokenB) external pure returns (bytes32);
         function nextOrderId() external view returns (uint128);
         function books(bytes32 pairKey) external view returns (Orderbook memory);
