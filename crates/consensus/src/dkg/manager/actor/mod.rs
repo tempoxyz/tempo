@@ -1403,7 +1403,7 @@ where
             outcome from last boundary height"
         );
 
-        let (boundary_header, onchain_outcome) = read_outcome_from_boundary(
+        let onchain_outcome = read_outcome_from_boundary(
             &self.config.execution_node,
             &self.config.marshal,
             latest_boundary,
@@ -1428,19 +1428,6 @@ where
             "boundary outcome at height `{latest_boundary}` is for epoch `{}`, expected epoch `{expected_epoch}`",
             onchain_outcome.epoch,
         );
-
-        // Epochs up to the tip's already have a registered key, which entering
-        // the healed epoch must match. A full DKG in the tip's epoch may re-key
-        // the next one, so an outcome after the tip's epoch comes from the tip
-        // itself: authenticate that header against the tip certificate.
-        if let Some((_, certificate)) = &self.config.finalized_tip
-            && onchain_outcome.epoch() > certificate.proposal.round.epoch()
-        {
-            ensure!(
-                Digest(boundary_header.hash_slow()) == certificate.proposal.payload,
-                "boundary header at height `{latest_boundary}` does not match the finalized tip certificate",
-            );
-        }
 
         // The configured initial share takes precedence over the candidate
         // salvaged from a stale state. Either is only usable if it matches
@@ -1513,7 +1500,7 @@ where
                 .expect("epoch strategy is valid for all epochs")
         });
 
-        let (_, ceremony_outcome) = read_outcome_from_boundary(
+        let ceremony_outcome = read_outcome_from_boundary(
             &self.config.execution_node,
             &self.config.marshal,
             ceremony_boundary,
@@ -1660,7 +1647,7 @@ async fn read_outcome_from_boundary<TExecutionLayer, TMarshal>(
     node: &TExecutionLayer,
     marshal: &TMarshal,
     boundary: Height,
-) -> eyre::Result<(TempoHeader, OnchainDkgOutcome)>
+) -> eyre::Result<OnchainDkgOutcome>
 where
     TExecutionLayer: ExecutionLayer,
     TMarshal: Marshal,
@@ -1671,9 +1658,8 @@ where
             format!("failed to read latest boundary header at height `{boundary}`")
         })?;
 
-    let outcome = OnchainDkgOutcome::read(&mut header.extra_data().as_ref())
-        .wrap_err("the boundary block did not contain the on-chain DKG outcome")?;
-    Ok((header, outcome))
+    OnchainDkgOutcome::read(&mut header.extra_data().as_ref())
+        .wrap_err("the boundary block did not contain the on-chain DKG outcome")
 }
 
 #[instrument(skip_all, fields(%height))]
