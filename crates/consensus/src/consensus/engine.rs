@@ -64,6 +64,8 @@ pub struct Builder<TBlocker, TPeerManager> {
     pub share: Option<Share>,
 
     pub mailbox_size: NonZeroUsize,
+    /// The P2P network's `max_peers_per_set`, which bounds tracked peer sets.
+    pub max_peers_per_set: NonZeroUsize,
     pub deque_size: usize,
     pub max_message_size: u32,
     pub verification_mode: VerificationMode,
@@ -214,6 +216,8 @@ where
                 oracle: self.peer_manager.clone(),
                 epoch_strategy: epoch_strategy.clone(),
                 finalized_tip: (finalized_tip.1, finalized_tip.2),
+                public_key: self.signer.public_key(),
+                max_peers_per_set: self.max_peers_per_set,
             },
         )
         .wrap_err("failed initializing peer manager")?;

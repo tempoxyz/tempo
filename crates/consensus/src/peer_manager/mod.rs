@@ -41,7 +41,7 @@
 //! finalized height it was read at when its membership changes; when only
 //! addresses change, the existing set's addresses are overwritten.
 
-use std::sync::Arc;
+use std::{num::NonZeroUsize, sync::Arc};
 
 use commonware_consensus::types::{FixedEpocher, Height};
 use commonware_cryptography::ed25519::PublicKey;
@@ -73,6 +73,11 @@ pub(crate) struct Config<TOracle, TExecutionNode> {
     /// Execution-layer-derived reads must not advance beyond this tip until
     /// marshal reports a newer finalized tip.
     pub(crate) finalized_tip: (Height, Digest),
+    /// This node's public key, which the P2P network counts toward every peer set.
+    pub(crate) public_key: PublicKey,
+    /// The P2P network's `max_peers_per_set`. Larger peer sets are truncated
+    /// before tracking because the network panics on them.
+    pub(crate) max_peers_per_set: NonZeroUsize,
 }
 
 /// Initializes the actor and registers its first peers from available execution

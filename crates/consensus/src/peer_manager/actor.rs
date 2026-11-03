@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, hash_map::Entry},
+    num::NonZeroUsize,
     pin::Pin,
     sync::Arc,
     time::Duration,
@@ -51,6 +52,8 @@ where
     execution_node: Arc<TExecutionNode>,
     epoch_strategy: FixedEpocher,
     latest_observed_finalized_tip: (Height, Digest),
+    public_key: PublicKey,
+    max_peers_per_set: NonZeroUsize,
     mailbox: mpsc::UnboundedReceiver<MessageWithCause>,
 
     peers: Gauge,
@@ -73,6 +76,8 @@ where
             execution_node,
             epoch_strategy,
             finalized_tip,
+            public_key,
+            max_peers_per_set,
         }: super::Config<TPeerManager, TExecutionNode>,
         mailbox: mpsc::UnboundedReceiver<MessageWithCause>,
     ) -> eyre::Result<Self> {
@@ -88,6 +93,8 @@ where
             execution_node,
             epoch_strategy,
             latest_observed_finalized_tip: finalized_tip,
+            public_key,
+            max_peers_per_set,
             mailbox,
             peers,
             last_tracked_peer_set: None,
@@ -247,6 +254,7 @@ where
     }
 
     fn track_or_overwrite(&mut self, height: u64, peers: Peers) {
+        let peers = peers.bounded(&self.public_key, self.max_peers_per_set);
         if let Some(tracked) = &self.last_tracked_peer_set {
             match peers.what_has_changed_compared_to(&tracked.peers) {
                 WhatHasChanged::Nothing => {}
@@ -313,6 +321,26 @@ impl Peers {
 
     fn len(&self) -> usize {
         self.primary.len().saturating_add(self.secondary.len())
+    }
+
+    /// Truncates the set so that, counted with the local identity as the P2P
+    /// network does, it has at most `max` peers. Primary peers are kept first.
+    fn bounded(mut self, local: &PublicKey, max: NonZeroUsize) -> Self {
+        let flat = self.to_flat_map();
+        let size = flat.len() + usize::from(flat.position(local).is_none());
+        if size <= max.get() {
+            return self;
+        }
+        // Leave a slot for the local identity.
+        let budget = max.get() - 1;
+        self.primary.truncate(budget);
+        self.secondary.truncate(budget - self.primary.len());
+        warn!(
+            peers = size,
+            max_peers_per_set = max.get(),
+            "peer set exceeds --consensus.max-peers-per-set; tracking a truncated set",
+        );
+        self
     }
 
     fn to_flat_map(&self) -> ordered::Map<PublicKey, Address> {
@@ -768,6 +796,8 @@ mod tests {
                             Height::new(consensus_tip),
                             Digest(B256::repeat_byte(0xFF)),
                         ),
+                        public_key: peer(1).public_key,
+                        max_peers_per_set: commonware_utils::NZUsize!(128),
                     },
                 )
                 .unwrap();
@@ -802,6 +832,8 @@ mod tests {
                     oracle: oracle.clone(),
                     epoch_strategy: FixedEpocher::new(commonware_utils::NZU64!(10)),
                     finalized_tip: (Height::new(100), Digest(B256::ZERO)),
+                    public_key: peer(1).public_key,
+                    max_peers_per_set: commonware_utils::NZUsize!(128),
                 },
             );
             let error = result
@@ -824,6 +856,8 @@ mod tests {
                     oracle: oracle.clone(),
                     epoch_strategy: FixedEpocher::new(commonware_utils::NZU64!(10)),
                     finalized_tip: (Height::new(100), Digest(B256::ZERO)),
+                    public_key: peer(1).public_key,
+                    max_peers_per_set: commonware_utils::NZUsize!(128),
                 },
             )
             .unwrap();
@@ -846,6 +880,39 @@ mod tests {
             assert_peer(&tracked[1].1.primary, &peer(2));
             assert_peer(&tracked[1].1.secondary, &peer(1));
         });
+    }
+
+    #[test]
+    fn oversized_peer_sets_are_truncated_keeping_primary_first() {
+        let map = |seeds: &[u8]| {
+            ordered::Map::from_iter_dedup(
+                seeds
+                    .iter()
+                    .map(|seed| (peer(*seed).public_key, peer(*seed).p2p_address)),
+            )
+        };
+        let peers = Peers {
+            primary: map(&[1, 2]),
+            secondary: map(&[3, 4, 5]),
+        };
+        let local = peer(9).public_key;
+
+        let unchanged = peers.clone().bounded(&local, commonware_utils::NZUsize!(6));
+        assert_eq!(unchanged.len(), 5);
+
+        let bounded = peers.clone().bounded(&local, commonware_utils::NZUsize!(4));
+        assert_eq!(bounded.primary.keys(), peers.primary.keys());
+        assert_eq!(bounded.secondary.len(), 1);
+        assert!(
+            peers
+                .secondary
+                .position(bounded.secondary.get(0).unwrap())
+                .is_some()
+        );
+
+        let bounded = peers.bounded(&local, commonware_utils::NZUsize!(2));
+        assert_eq!(bounded.primary.len(), 1);
+        assert!(bounded.secondary.is_empty());
     }
 
     #[test]
