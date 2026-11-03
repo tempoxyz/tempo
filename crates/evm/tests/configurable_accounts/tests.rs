@@ -787,20 +787,6 @@ fn eoa_migration_error_order() {
         ..base.clone()
     };
     let delegate = Address::repeat_byte(0x74);
-    let authorization_list = {
-        let authorization = Authorization {
-            chain_id: U256::ONE,
-            address: Address::ZERO,
-            nonce: 0,
-        };
-        let signature = signer(5)
-            .sign_hash_sync(&authorization.signature_hash())
-            .unwrap();
-        vec![TempoSignedAuthorization::new_unchecked(
-            authorization,
-            signature.into(),
-        )]
-    };
 
     // 1: a top-level call with no authorization list, however the account signs.
     expect_revert(
@@ -832,8 +818,19 @@ fn eoa_migration_error_order() {
         Fixture::with_parent(false),
         "AA authorization list",
         |f| {
+            let authorization = Authorization {
+                chain_id: U256::ONE,
+                address: Address::ZERO,
+                nonce: 0,
+            };
+            let signature = signer(5)
+                .sign_hash_sync(&authorization.signature_hash())
+                .unwrap();
             f.sign_primitive(TempoTransaction {
-                tempo_authorization_list: authorization_list.clone(),
+                tempo_authorization_list: vec![TempoSignedAuthorization::new_unchecked(
+                    authorization,
+                    signature.into(),
+                )],
                 ..aa_tx(3, vec![upgrade.clone()])
             })
             .into()
@@ -849,7 +846,9 @@ fn eoa_migration_error_order() {
             grant_key(f, 3, &key, 0);
             keychain_signed(
                 TempoTransaction {
-                    tempo_authorization_list: authorization_list.clone(),
+                    tempo_authorization_list: vec![
+                        Entry::new(SigKind::Secp256k1, 5, Address::ZERO, 0).sign().1,
+                    ],
                     ..aa_tx(4, vec![upgrade.clone()])
                 },
                 &key,
@@ -1122,14 +1121,14 @@ fn eoa_migration_with_key_authorization() {
 
 #[test]
 fn eoa_migration_failure_keeps_fee_and_nonce() {
-    let mut template = Fixture::with_parent(false);
-    let (account, owner) = (template.account, template.owner.clone());
-    let base = template.upgraded(1, owner_set(vec![signer(2).address()]));
+    let member = signer(2).address();
+    let base = Fixture::with_parent(false).upgraded(1, owner_set(vec![member]));
     let upgrade = Fixture::upgrade(&base);
     let zero_threshold = ConfigurableAccountConfig {
         threshold: 0,
         ..base.clone()
     };
+    let root = signer(1);
     // A later call reverts and takes the migration with it. The root's signature is no
     // owner-quorum approval, and permits see the root retired.
     for (label, calls, error) in [
@@ -1145,28 +1144,26 @@ fn eoa_migration_failure_keeps_fee_and_nonce() {
         ),
         (
             "later rotation",
-            vec![
-                upgrade.clone(),
-                Fixture::rotation(
-                    &base,
-                    &ConfigurableAccountConfig {
-                        version: 2,
-                        ..base.clone()
-                    },
-                ),
-            ],
+            vec![upgrade.clone(), Fixture::rotation(&base, &base)],
             IConfigurableAccount::UnauthorizedConfigurableAccountCaller {}.abi_encode(),
         ),
         (
             "later permit",
             vec![
                 upgrade,
-                permit_signed(&mut template, account, &owner, signer(8).address(), 1_000),
+                permit_signed(
+                    &mut Fixture::with_parent(false),
+                    root.address(),
+                    &root,
+                    member,
+                    1_000,
+                ),
             ],
-            permit_retired(account).abi_encode(),
+            permit_retired(root.address()).abi_encode(),
         ),
     ] {
         let mut f = Fixture::with_parent(false);
+        let account = f.account;
         fund(&mut f, account, 50_000_000);
         let tx = f.sign_primitive(TempoTransaction {
             max_fee_per_gas: 1,
