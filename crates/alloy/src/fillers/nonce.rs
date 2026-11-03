@@ -3,7 +3,7 @@ use alloy_network::{Network, TransactionBuilder};
 use alloy_primitives::{Address, U256};
 use alloy_provider::{
     Provider, SendableTx,
-    fillers::{FillerControlFlow, TxFiller},
+    fillers::{FillerControlFlow, NonceFiller, TxFiller},
 };
 use alloy_transport::{TransportErrorKind, TransportResult};
 use core::num::NonZeroU64;
@@ -319,6 +319,65 @@ impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for N
     }
 }
 
+/// The default nonce filler of [`TempoNetwork`](crate::TempoNetwork).
+///
+/// Transactions without a `nonce_key`, or with the protocol key `0`, get the protocol pending
+/// nonce from Alloy's [`NonceFiller`], as before. Any other `nonce_key` is filled by
+/// [`NonceKeyFiller`], so 2D and expiring nonce transactions are never signed with the protocol
+/// pending nonce.
+#[derive(Clone, Debug, Default)]
+pub struct TempoNonceFiller {
+    protocol: NonceFiller,
+    nonce_key: NonceKeyFiller,
+}
+
+impl TempoNonceFiller {
+    /// Returns `true` if the transaction uses a nonce key other than the protocol key.
+    fn uses_nonce_key(tx: &TempoTransactionRequest) -> bool {
+        tx.nonce_key.is_some_and(|key| !key.is_zero())
+    }
+}
+
+impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for TempoNonceFiller {
+    type Fillable = u64;
+
+    fn status(&self, tx: &N::TransactionRequest) -> FillerControlFlow {
+        if Self::uses_nonce_key(tx) {
+            TxFiller::<N>::status(&self.nonce_key, tx)
+        } else {
+            TxFiller::<N>::status(&self.protocol, tx)
+        }
+    }
+
+    fn fill_sync(&self, _tx: &mut SendableTx<N>) {}
+
+    async fn prepare<P>(
+        &self,
+        provider: &P,
+        tx: &N::TransactionRequest,
+    ) -> TransportResult<Self::Fillable>
+    where
+        P: Provider<N>,
+    {
+        if Self::uses_nonce_key(tx) {
+            TxFiller::<N>::prepare(&self.nonce_key, provider, tx).await
+        } else {
+            TxFiller::<N>::prepare(&self.protocol, provider, tx).await
+        }
+    }
+
+    async fn fill(
+        &self,
+        fillable: Self::Fillable,
+        mut tx: SendableTx<N>,
+    ) -> TransportResult<SendableTx<N>> {
+        if let Some(builder) = tx.as_mut_builder() {
+            builder.set_nonce(fillable);
+        }
+        Ok(tx)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -329,7 +388,7 @@ mod tests {
     use alloy::sol_types::SolCall;
     use alloy_json_rpc::RequestPacket;
     use alloy_network::TransactionBuilder;
-    use alloy_primitives::{Bytes, ruint::aliases::U256};
+    use alloy_primitives::{Bytes, U64, ruint::aliases::U256};
     use alloy_provider::{ProviderBuilder, mock::Asserter};
     use alloy_rpc_client::RpcClient;
     use alloy_transport::mock::MockTransport;
@@ -505,6 +564,65 @@ mod tests {
             .get_transaction_count_with_nonce_key(account, U256::ZERO)
             .await?;
         assert_eq!(nonce, 5);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_tempo_nonce_filler_uses_protocol_nonce_without_nonce_key() -> eyre::Result<()> {
+        for nonce_key in [None, Some(U256::ZERO)] {
+            let asserter = Asserter::new();
+            let provider = ProviderBuilder::<_, _, TempoNetwork>::default()
+                .connect_mocked_client(asserter.clone());
+            let mut tx = TempoTransactionRequest {
+                nonce_key,
+                ..Default::default()
+            };
+            tx.set_from(Address::repeat_byte(0x33));
+
+            asserter.push_success(&U64::from(7_u64));
+
+            let nonce =
+                TxFiller::<TempoNetwork>::prepare(&TempoNonceFiller::default(), &provider, &tx)
+                    .await?;
+
+            assert_eq!(nonce, 7);
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_tempo_nonce_filler_uses_nonce_manager_for_2d_nonce_key() -> eyre::Result<()> {
+        let asserter = Asserter::new();
+        let provider = ProviderBuilder::<_, _, TempoNetwork>::default()
+            .connect_mocked_client(asserter.clone());
+        let mut tx = TempoTransactionRequest::default().with_nonce_key(U256::from(42_u64));
+        tx.set_from(Address::repeat_byte(0x33));
+
+        asserter.push_success(&Bytes::from(INonce::getNonceCall::abi_encode_returns(
+            &3_u64,
+        )));
+
+        let nonce =
+            TxFiller::<TempoNetwork>::prepare(&TempoNonceFiller::default(), &provider, &tx).await?;
+
+        assert_eq!(nonce, 3);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_tempo_nonce_filler_defaults_expiring_nonce_to_zero() -> eyre::Result<()> {
+        let provider =
+            ProviderBuilder::<_, _, TempoNetwork>::default().connect_mocked_client(Asserter::new());
+        let mut tx = TempoTransactionRequest::default().with_nonce_key(TEMPO_EXPIRING_NONCE_KEY);
+        tx.set_from(Address::repeat_byte(0x33));
+
+        let nonce =
+            TxFiller::<TempoNetwork>::prepare(&TempoNonceFiller::default(), &provider, &tx).await?;
+
+        assert_eq!(nonce, 0);
 
         Ok(())
     }

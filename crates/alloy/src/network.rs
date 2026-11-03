@@ -10,14 +10,14 @@ use alloy_network::{
     UnbuiltTransactionError,
 };
 use alloy_primitives::{Address, Bytes, ChainId, TxKind, U256};
-use alloy_provider::fillers::{ChainIdFiller, JoinFill, NonceFiller, RecommendedFillers};
+use alloy_provider::fillers::{ChainIdFiller, JoinFill, RecommendedFillers};
 use alloy_rpc_types_eth::{AccessList, Block, Transaction, TransactionInputKind};
 use alloy_signer_local::PrivateKeySigner;
 use tempo_primitives::{
     TempoHeader, TempoReceipt, TempoTxEnvelope, TempoTxType, transaction::TempoTypedTransaction,
 };
 
-use crate::fillers::TempoGasFiller;
+use crate::fillers::{TempoGasFiller, TempoNonceFiller};
 
 /// Set of recommended fillers.
 ///
@@ -296,7 +296,7 @@ impl TempoTransactionRequest {
 }
 
 impl RecommendedFillers for TempoNetwork {
-    type RecommendedFillers = TempoFillers<NonceFiller>;
+    type RecommendedFillers = TempoFillers<TempoNonceFiller>;
 
     fn recommended_fillers() -> Self::RecommendedFillers {
         Default::default()
