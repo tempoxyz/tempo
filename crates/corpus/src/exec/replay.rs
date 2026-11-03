@@ -1,10 +1,12 @@
 //! Bounded in-process checkpoint reads feeding native execution workers.
 
 use crate::{
-    execute::{decode_block, execute_block, standalone_cases, verify_changesets},
+    exec::{
+        block::{decode_block, execute_block, standalone_cases, verify_changesets},
+        db::View,
+    },
     store::{self, Catalog, MAX_RECORD_BYTES, Record, Store},
     types::{Case, Input, Phases},
-    view::View,
 };
 use alloy_primitives::B256;
 use bytes::Bytes;
@@ -19,7 +21,7 @@ use std::{
     ops::Range,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -65,16 +67,7 @@ pub fn run(
         .worker_threads(env_usize("TEMPO_CORPUS_IO_THREADS").unwrap_or((workers * 3 / 4).max(4)))
         .enable_all()
         .build()?;
-    let reader = Arc::new(runtime.block_on(store.reader(&catalog))?);
-    let tip_timestamp = runtime.block_on(store::tip_timestamp(&reader, &catalog.context))?;
-    eyre::ensure!(
-        store::forks_agree(
-            &catalog.context.forks,
-            &config.chain_spec().display_hardforks().to_string(),
-            tip_timestamp,
-        ),
-        "corpus fork schedule mismatch"
-    );
+    let reader = Arc::new(runtime.block_on(open(&store, &catalog, &config))?);
     if let Some((from, to)) = standalone {
         range = runtime.block_on(transaction_range(&reader, &catalog, from, to))?;
     }
@@ -258,6 +251,82 @@ pub fn run(
     let closed = runtime.block_on(reader.close());
     result?;
     Ok(closed?)
+}
+
+/// Opens the corpus and checks it was captured under `config`'s fork schedule.
+async fn open(store: &Store, catalog: &Catalog, config: &TempoEvmConfig) -> eyre::Result<DbReader> {
+    let reader = store.reader(catalog).await?;
+    let tip_timestamp = store::tip_timestamp(&reader, &catalog.context).await?;
+    eyre::ensure!(
+        store::forks_agree(
+            &catalog.context.forks,
+            &config.chain_spec().display_hardforks().to_string(),
+            tip_timestamp,
+        ),
+        "corpus fork schedule mismatch"
+    );
+    Ok(reader)
+}
+
+/// Replays the listed `blocks` of a published corpus on `workers` threads, as [`run`] does a
+/// range.
+pub fn run_blocks(
+    store: Store,
+    catalog: Catalog,
+    blocks: &[u64],
+    config: TempoEvmConfig,
+    consensus: TempoConsensus,
+    workers: usize,
+) -> eyre::Result<()> {
+    eyre::ensure!(workers > 0, "num-tasks must be positive");
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let reader = runtime.block_on(open(&store, &catalog, &config))?;
+    let started = Instant::now();
+    let next = AtomicUsize::new(0);
+    let replay =
+        || -> eyre::Result<()> {
+            while let Some(&block) = blocks.get(next.fetch_add(1, Ordering::Relaxed)) {
+                let replayed =
+                    runtime.block_on(async {
+                        let (record, input) = store::published(&reader, block).await?;
+                        let mut cases = Vec::with_capacity(record.cases.len());
+                        for ordinal in record.first_tx..record.first_tx + record.transactions {
+                            let key = store::transaction_key(ordinal);
+                            cases.push(reader.get(key).await?.ok_or_else(|| {
+                                eyre::eyre!("missing transaction record {ordinal}")
+                            })?);
+                        }
+                        eyre::Ok((record, input, cases))
+                    });
+                if let Err(error) = replayed.and_then(|(record, input, cases)| {
+                    verify(&config, &consensus, &input, &cases, &record)
+                }) {
+                    // Stop the other workers too.
+                    next.store(blocks.len(), Ordering::Relaxed);
+                    return Err(error.wrap_err(format!("block {block}")));
+                }
+            }
+            Ok(())
+        };
+    let result = std::thread::scope(|scope| {
+        let threads: Vec<_> = (0..workers).map(|_| scope.spawn(replay)).collect();
+        threads.into_iter().try_for_each(|thread| {
+            thread
+                .join()
+                .map_err(|_| eyre::eyre!("corpus worker panicked"))?
+        })
+    });
+    runtime.block_on(reader.close())?;
+    result?;
+    info!(
+        blocks = blocks.len(),
+        workers,
+        seconds = started.elapsed().as_secs_f64(),
+        "Corpus replay verified"
+    );
+    Ok(())
 }
 
 /// Fetching owns serialized reservations until ownership moves to a worker.

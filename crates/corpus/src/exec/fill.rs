@@ -1,7 +1,8 @@
 //! Archive capture and resumable, fenced publication of finite corpora.
 
 use crate::{
-    capture, code, replay,
+    code,
+    exec::{capture, replay},
     store::{self, CONTEXT_KEY, CaseRecord, Catalog, Context, MAX_RECORD_BYTES, Record, Store},
 };
 use alloy_consensus::BlockHeader;

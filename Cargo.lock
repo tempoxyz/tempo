@@ -14481,6 +14481,7 @@ version = "1.17.0"
 dependencies = [
  "alloy-consensus",
  "alloy-eip7928",
+ "alloy-eips",
  "alloy-primitives",
  "alloy-rlp",
  "async-trait",
@@ -14509,7 +14510,9 @@ dependencies = [
  "serde_json",
  "slatedb",
  "tempfile",
+ "tempo-chainspec",
  "tempo-evm",
+ "tempo-fuzz-types",
  "tempo-primitives",
  "tokio",
  "tracing",
