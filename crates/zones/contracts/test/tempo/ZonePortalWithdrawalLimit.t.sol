@@ -363,13 +363,17 @@ contract ZonePortalWithdrawalLimitTest is BaseTest {
         assertEq(receiver.calls(), 0);
 
         vm.warp(block.timestamp + 100);
-        vm.prank(anyone);
+        // Only sequencers deliver callbacks: anyone else stops at the entry and nothing changes.
+        assertEq(_processQueued(address(pathUSD), _one(cb)), 0);
+        assertEq(receiver.calls(), 0);
+        assertEq(_available(address(pathUSD)), 500e6);
+
         vm.expectRevert(IZonePortal.InsufficientCallbackGas.selector);
         portal.processQueuedWithdrawals{ gas: 450_000 }(address(pathUSD), _one(cb));
 
         vm.expectEmit(address(portal));
         emit IZonePortal.QueuedWithdrawalPaid(address(pathUSD), 0, 500e6, 0);
-        assertEq(_processQueued(address(pathUSD), _one(cb)), 1);
+        assertEq(portal.processQueuedWithdrawals(address(pathUSD), _one(cb)), 1);
         assertEq(receiver.calls(), 1);
         assertEq(pathUSD.balanceOf(address(receiver)), 500e6);
         assertEq(_available(address(pathUSD)), 0);
@@ -613,6 +617,32 @@ contract ZonePortalWithdrawalLimitTest is BaseTest {
         uint256 before = pathUSD.balanceOf(bob);
         assertEq(_processQueued(address(pathUSD), _one(w)), 0);
         assertEq(pathUSD.balanceOf(bob), before + MAX);
+    }
+
+    /// @notice Outside callers leave the deposit slots reserved for withdrawal processing to the
+    ///         sequencer, so they cannot block processWithdrawals.
+    function test_processQueuedWithdrawals_keepsSequencerDepositReserve() public {
+        _setLimit(address(pathUSD), MAX, PERIOD);
+        Withdrawal memory w = _plain(address(pathUSD), bob, 2500e6);
+        _withdraw(_one(w));
+        vm.warp(block.timestamp + PERIOD);
+
+        // depositCount and lastProcessedDepositNumber share slot 4: leave 210 deposits unprocessed.
+        uint64 publicMaximum = portal.MAX_UNPROCESSED_DEPOSITS() - 20;
+        uint256 word = uint256(vm.load(address(portal), bytes32(uint256(4))));
+        uint64 processed = uint64(word >> 64);
+        word = (word & ~uint256(type(uint64).max)) | uint256(processed + publicMaximum);
+        vm.store(address(portal), bytes32(uint256(4)), bytes32(word));
+
+        vm.prank(anyone);
+        vm.expectRevert(
+            abi.encodeWithSelector(IZonePortal.DepositBlockCapacityExceeded.selector, publicMaximum)
+        );
+        portal.processQueuedWithdrawals(address(pathUSD), _one(w));
+
+        assertEq(portal.processQueuedWithdrawals(address(pathUSD), _one(w)), 0);
+        (,, uint128 headPaid) = _queue(address(pathUSD));
+        assertEq(headPaid, MAX);
     }
 
     function test_processQueuedWithdrawals_rejectsWrongWithdrawal() public {

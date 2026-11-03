@@ -189,6 +189,22 @@ crate::sol! {
         event MaxTempoGasRateUpdated(uint128 maxTempoGasRate);
         event BouncebackGasUpdated(uint64 bouncebackGas);
 
+        event WithdrawalLimitSet(address indexed token, uint128 maxAmount, uint64 period);
+
+        event WithdrawalQueued(
+            address indexed token,
+            uint256 indexed queueIndex,
+            bytes32 withdrawalHash,
+            uint128 amount
+        );
+
+        event QueuedWithdrawalPaid(
+            address indexed token,
+            uint256 indexed queueIndex,
+            uint128 paid,
+            uint128 remaining
+        );
+
         event AdminTransferStarted(
             address indexed currentAdmin,
             address indexed pendingAdmin

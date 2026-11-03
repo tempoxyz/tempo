@@ -1226,11 +1226,13 @@ contract ZonePortal is IZonePortal {
     /// @dev Each processed withdrawal can append at most one deposit: a callback's return deposit
     ///      or a bounce-back.
     function _requireWithdrawalDepositCapacity(uint256 count) internal view {
+        _requireDepositCapacity(count, MAX_UNPROCESSED_DEPOSITS);
+    }
+
+    function _requireDepositCapacity(uint256 count, uint64 maximum) internal view {
         uint256 unprocessed = depositCount - lastProcessedDepositNumber;
-        if (
-            unprocessed > MAX_UNPROCESSED_DEPOSITS || count > MAX_UNPROCESSED_DEPOSITS - unprocessed
-        ) {
-            revert DepositBlockCapacityExceeded(MAX_UNPROCESSED_DEPOSITS);
+        if (unprocessed > maximum || count > maximum - unprocessed) {
+            revert DepositBlockCapacityExceeded(maximum);
         }
     }
 
@@ -1298,7 +1300,15 @@ contract ZonePortal is IZonePortal {
         nonReentrantWithdrawal
         returns (uint256 completed)
     {
-        _requireWithdrawalDepositCapacity(withdrawals.length);
+        // Sequencers may use the deposit slots reserved for withdrawal processing; anyone else
+        // stays below them so processWithdrawals can always make progress.
+        bool sequencer = isSequencer(msg.sender);
+        _requireDepositCapacity(
+            withdrawals.length,
+            sequencer
+                ? MAX_UNPROCESSED_DEPOSITS
+                : MAX_UNPROCESSED_DEPOSITS - WITHDRAWAL_PROCESSING_DEPOSIT_RESERVE
+        );
         WithdrawalLimit storage limit = _withdrawalLimits[token];
         QueuedWithdrawals storage queue = _queuedWithdrawals[token];
 
@@ -1309,6 +1319,9 @@ contract ZonePortal is IZonePortal {
             if (keccak256(abi.encode(withdrawal)) != queue.entries[head]) {
                 revert WithdrawalQueueLib.InvalidWithdrawalProof();
             }
+            // Only sequencers deliver callbacks, as on the main queue, so no outside caller can
+            // choose the block state (such as a DEX price) a callback runs against.
+            if (!sequencer && withdrawal.fallbackNonce != 0 && withdrawal.gasLimit != 0) break;
             if (!_processQueuedWithdrawal(limit, queue, head, withdrawal)) break;
             delete queue.entries[head];
             queue.head = head + 1;
