@@ -190,15 +190,19 @@ pub fn block_list(catalog: &Catalog, blocks: &[u64]) -> String {
 }
 
 /// The blocks a block list file lists for `catalog`'s corpus: those under its section header, and
-/// any before the first header, which must be in its range.
+/// any before the first header, which must be in its range. Other `#` lines are comments.
 pub fn read_blocks(path: &Path, catalog: &Catalog) -> eyre::Result<Vec<u64>> {
     let context = &catalog.context;
-    let tip = format!(" tip {} ", context.tip);
+    // Range and tip: corpora of one chain that end at the same block share a tip.
+    let ours_header = format!(
+        "# corpus {}..{} tip {} ",
+        context.start, context.end, context.tip
+    );
     let (mut blocks, mut ours) = (Vec::new(), true);
     for line in fs::read_to_string(path)?.lines().map(str::trim) {
-        if let Some(header) = line.strip_prefix('#') {
-            ours = header.contains(&tip);
-        } else if ours && !line.is_empty() {
+        if line.starts_with("# corpus ") {
+            ours = line.starts_with(&ours_header);
+        } else if ours && !line.is_empty() && !line.starts_with('#') {
             let block: u64 = line.parse()?;
             eyre::ensure!(
                 (context.start..context.end).contains(&block),
@@ -208,4 +212,29 @@ pub fn read_blocks(path: &Path, catalog: &Catalog) -> eyre::Result<Vec<u64>> {
         }
     }
     Ok(blocks)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::tests::catalog;
+
+    #[test]
+    fn read_blocks_skips_comments_and_other_sections() -> eyre::Result<()> {
+        let ours = catalog(10, 10, 0);
+        let mut other = catalog(15, 5, 0);
+        // Same tip, other range.
+        other.context.tip = ours.context.tip.clone();
+        let list = format!(
+            "{}# dex hits\n13\n{}16\n",
+            block_list(&ours, &[12]),
+            block_list(&other, &[17]),
+        );
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("blocks");
+        fs::write(&path, list)?;
+        assert_eq!(read_blocks(&path, &ours)?, [12, 13]);
+        assert_eq!(read_blocks(&path, &other)?, [17, 16]);
+        Ok(())
+    }
 }
