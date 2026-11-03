@@ -1376,6 +1376,12 @@ contract ZonePortal is IZonePortal {
         uint128 remaining = amount - paid;
         uint128 pay = maxAmount == 0 || remaining <= available ? remaining : available;
         if (pay == 0 && remaining != 0) return false;
+        // A deposit bounce-back's fee is charged once, on its first part, so that part waits until
+        // it covers the whole fee rather than letting a caller shrink the fee to a tiny part.
+        if (withdrawal.fallbackNonce == 0 && paid == 0 && pay < remaining) {
+            uint128 fee = calculateBouncebackFee();
+            if (pay < fee && fee <= maxAmount) return false;
+        }
         if (maxAmount != 0) limit.available = available - pay;
 
         // The bounce-back fee is charged once, on the first part.

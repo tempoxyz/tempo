@@ -231,6 +231,9 @@ crate::sol! {
         // -- Errors --
 
         error NotSequencer();
+        error NotWithdrawalLimitAuthority();
+        error InvalidWithdrawalLimit();
+        error InsufficientCallbackGas();
         error NotAdmin();
         error NotPauseAuthority();
         error CapabilityAbdicated(Capability capability);
@@ -325,6 +328,20 @@ crate::sol! {
         function MAX_UNPROCESSED_DEPOSITS() external view returns (uint64);
         function MAX_UNPROCESSED_TOKEN_ENABLEMENTS() external view returns (uint64);
         function MAX_WITHDRAWAL_GAS_LIMIT() external view returns (uint64);
+        function MAX_WITHDRAWAL_LIMIT_PERIOD() external view returns (uint64);
+        function setWithdrawalLimit(address token, uint128 maxAmount, uint64 period) external;
+        function withdrawalLimit(address token)
+            external
+            view
+            returns (uint128 maxAmount, uint64 period, uint128 available);
+        function queuedWithdrawals(address token)
+            external
+            view
+            returns (uint64 head, uint64 tail, uint128 headPaid);
+        function queuedWithdrawalAt(address token, uint256 queueIndex) external view returns (bytes32);
+        function processQueuedWithdrawals(address token, Withdrawal[] calldata withdrawals)
+            external
+            returns (uint256 completed);
         function paused() external view returns (bool);
         function pauseExpiry() external view returns (uint64);
         function abdicationEffectiveAt(Capability capability) external view returns (uint64);

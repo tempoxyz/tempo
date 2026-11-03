@@ -499,6 +499,34 @@ contract ZonePortalWithdrawalLimitTest is BaseTest {
         assertEq(_available(address(pathUSD)), 500e6);
     }
 
+    /// @notice A deposit bounce-back's first part waits until it covers the whole fee, so a caller
+    ///         cannot shrink the fee by paying a tiny first part.
+    function test_depositBounceBack_firstPartWaitsForFullFee() public {
+        vm.prank(admin);
+        portal.setBouncebackGas(1_000_000);
+        vm.fee(1e9);
+        uint128 fee = portal.calculateBouncebackFee();
+        assertEq(fee, 1000);
+        _setLimit(address(pathUSD), 10_000, PERIOD); // refills 10 units per second
+
+        Withdrawal memory w = _depositBounceBack(50_000);
+        _withdraw(_two(_plain(address(pathUSD), bob, 9500), w));
+        assertEq(_available(address(pathUSD)), 500);
+
+        uint256 adminBefore = pathUSD.balanceOf(admin);
+        assertEq(_processQueued(address(pathUSD), _one(w)), 0);
+        (,, uint128 headPaid) = _queue(address(pathUSD));
+        assertEq(headPaid, 0);
+        assertEq(pathUSD.balanceOf(admin), adminBefore);
+        assertEq(_available(address(pathUSD)), 500);
+
+        vm.warp(block.timestamp + 50);
+        assertEq(_processQueued(address(pathUSD), _one(w)), 0);
+        (,, headPaid) = _queue(address(pathUSD));
+        assertEq(headPaid, 1000);
+        assertEq(pathUSD.balanceOf(admin), adminBefore + fee);
+    }
+
     function test_depositBounceBack_fitConsumesCapacity() public {
         _setLimit(address(pathUSD), MAX, PERIOD);
         uint256 aliceBefore = pathUSD.balanceOf(alice);
