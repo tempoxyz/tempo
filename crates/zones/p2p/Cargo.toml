@@ -19,7 +19,6 @@ commonware-codec.workspace = true
 commonware-cryptography = { workspace = true, default-features = true }
 commonware-p2p.workspace = true
 commonware-runtime = { workspace = true, features = ["external"] }
-commonware-stream.workspace = true
 commonware-utils.workspace = true
 
 const-hex.workspace = true
@@ -28,6 +27,7 @@ eyre.workspace = true
 metrics.workspace = true
 parking_lot.workspace = true
 serde = { workspace = true, features = ["alloc", "derive"] }
+tempo-p2p-upgrader.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true

@@ -7,13 +7,9 @@ use commonware_cryptography::{
 };
 use commonware_p2p::{AddressableTrackedPeers, authenticated::lookup};
 use commonware_runtime::{Quota, Supervisor as _};
-use commonware_stream::{
-    SakeCups,
-    cups::{self, Cups},
-    sake::{self, Sake},
-};
 use commonware_utils::{NZU32, NZUsize, ordered::Map};
 use eyre::WrapErr as _;
+use tempo_p2p_upgrader::{Accept, MultiVersion, Version};
 
 use crate::ZoneManifest;
 
@@ -75,7 +71,7 @@ impl P2pNetworkId {
 }
 
 /// Authenticates and encrypts Zone P2P connections.
-type Upgrader = SakeCups<PrivateKey, ChaCha20Poly1305>;
+type Upgrader = MultiVersion<PrivateKey, ChaCha20Poly1305>;
 
 pub(crate) type Network = lookup::Network<commonware_runtime::tokio::Context, Upgrader>;
 pub(crate) type Oracle = lookup::Oracle<PublicKey>;
@@ -91,16 +87,15 @@ fn setup_commonware_config(
     max_peers: NonZeroUsize,
     bypass_ip_check: bool,
 ) -> lookup::Config<Upgrader> {
-    // V0 with commonware v2026.9.0's recommended timing is the wire protocol of earlier releases.
-    // Versions are not negotiated, so every peer must use the same ones.
-    let handshake = Cups::new(
-        Sake {
-            signer: ed25519_private_key,
-            synchrony_bound: Duration::from_secs(5),
-            max_handshake_age: Duration::from_secs(10),
-            version: sake::Version::V0,
-        },
-        cups::Version::V0,
+    // First step of the move to V1: dial V0, the wire protocol of earlier releases (with
+    // commonware v2026.9.0's recommended timing), so older peers still accept us, and accept V1 so
+    // peers can dial it once every sequencer runs this.
+    let handshake = MultiVersion::new(
+        ed25519_private_key,
+        Duration::from_secs(5),
+        Duration::from_secs(10),
+        Version::V0,
+        Accept::new(vec![Version::V0, Version::V1]).expect("accepts at least one version"),
     );
     let mut config = lookup::Config::recommended(
         handshake,
