@@ -385,7 +385,7 @@ mod tests {
                     );
                     assert_eq!(value, U256::ONE);
                 }
-                storage.sstore(address, U256::from_be_bytes(slot.0), value)?;
+                storage.sstore(address, slot.into(), value)?;
                 entry += 1;
                 Ok(())
             })?;

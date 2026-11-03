@@ -54,6 +54,8 @@ metrics.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
 serde = { workspace = true, features = ["alloc"] }
+serde_json = { workspace = true, default-features = true, optional = true }
+antithesis_sdk = { workspace = true, optional = true }
 bincode.workspace = true
 bytes.workspace = true
 tempfile.workspace = true
@@ -69,3 +71,6 @@ reth-primitives-traits = { workspace = true, features = ["std", "test-utils"] }
 reth-provider = { workspace = true, features = ["test-utils"] }
 serde_json = { workspace = true, default-features = true }
 tokio = { workspace = true, features = ["macros", "rt"] }
+
+[features]
+fuzz = ["dep:antithesis_sdk", "antithesis_sdk/full", "dep:serde_json"]

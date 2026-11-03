@@ -7,7 +7,7 @@ use crate::{
     error::{Result, TempoPrecompileError},
     storage::{ConfigCommitmentWriteGas, Handler, account_config_commitment},
 };
-use alloy::primitives::{Address, B256, Bytes, KECCAK256_EMPTY, b256};
+use alloy::primitives::{Address, B256, KECCAK256_EMPTY};
 pub use tempo_chainspec::is_valid_native_account as valid_account;
 use tempo_contracts::precompiles::{
     CONFIGURABLE_ACCOUNT_ADDRESS, ConfigurableAccountError, ConfigurableAccountEvent,
@@ -19,12 +19,7 @@ use tempo_primitives::transaction::{
     configurable_account::CONFIGURABLE_ACCOUNT_UPGRADE_DOMAIN,
 };
 
-/// Shared protocol-installed code for registered configurable accounts.
-pub const CONFIGURABLE_ACCOUNT_CODE: Bytes = Bytes::from_static(&[0xef]);
-
-/// Keccak-256 of [`CONFIGURABLE_ACCOUNT_CODE`], compared without loading code bytes.
-pub const CONFIGURABLE_ACCOUNT_CODE_HASH: B256 =
-    b256!("309b8896ee4c1ff7ec1966155373dee42663b6b40c3fedc70ba501684848d2a3");
+pub use tempo_primitives::account::{CONFIGURABLE_ACCOUNT_CODE, CONFIGURABLE_ACCOUNT_CODE_HASH};
 
 /// Configurable account precompile.
 ///
@@ -191,6 +186,25 @@ impl ConfigurableAccount {
         Ok(hash)
     }
 
+    /// Registers `account` at its initial `config` when it has no commitment yet, and emits
+    /// [`registration_event`]. The write and the event are charged in intrinsic gas.
+    pub fn register(
+        &mut self,
+        account: Address,
+        config: &ConfigurableAccountConfig,
+        commitment: B256,
+    ) -> Result<()> {
+        if !self.get_config_commitment(account)?.is_zero() {
+            return Ok(());
+        }
+        self.storage.set_config_commitment(
+            account,
+            commitment,
+            ConfigCommitmentWriteGas::Intrinsic,
+        )?;
+        self.emit_event(registration_event(account, config))
+    }
+
     /// One-time storage initialization.
     pub fn initialize(&mut self) -> Result<()> {
         self.__initialize()
@@ -231,6 +245,27 @@ pub fn config(
             })
             .collect(),
     }
+}
+
+/// The `ConfigurableAccountConfigUpdated` event announcing `account`'s initial `config`.
+pub fn registration_event(
+    account: Address,
+    config: &ConfigurableAccountConfig,
+) -> ConfigurableAccountEvent {
+    ConfigurableAccountEvent::configurable_account_config_updated(
+        account,
+        config.salt,
+        config.version,
+        config.threshold,
+        config
+            .owners
+            .iter()
+            .map(|owner| IConfigurableAccount::ConfigurableAccountOwner {
+                owner: owner.owner,
+                weight: owner.weight,
+            })
+            .collect(),
+    )
 }
 
 /// Whether code matches the account's registration state.

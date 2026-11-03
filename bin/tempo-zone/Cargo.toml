@@ -23,6 +23,9 @@ reth-node-core.workspace = true
 # alloy
 alloy-primitives.workspace = true
 
+# testing
+antithesis_sdk = { workspace = true, optional = true }
+
 # tls
 rustls = { version = "0.23", features = ["aws-lc-rs"] }
 
@@ -32,6 +35,9 @@ path = "src/main.rs"
 
 [features]
 default = ["asm-keccak", "jemalloc", "keccak-cache-global"]
+
+# Report Antithesis SDK assertions. Without it the assertions and their details are compiled out.
+fuzz = ["dep:antithesis_sdk", "antithesis_sdk/full", "zone-node/fuzz"]
 
 asm-keccak = [
 	"alloy-primitives/asm-keccak",

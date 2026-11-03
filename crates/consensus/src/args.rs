@@ -13,6 +13,7 @@ use commonware_cryptography::ed25519::PublicKey;
 use eyre::Context;
 use tempo_chainspec::{TempoChainSpec, TempoHardforks as _};
 use tempo_consensus_config::{SigningKey, SigningKeyPassphrase};
+use tempo_payload_types::estimator::{DEFAULT_NETWORK_BUDGET, DEFAULT_TARGET_BLOCK_TIME};
 
 const DEFAULT_MAX_MESSAGE_SIZE_BYTES: u32 =
     reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE as u32;
@@ -178,10 +179,10 @@ pub struct Args {
 
     /// Target wall-clock time between blocks in healthy network conditions.
     ///
-    /// Local proposal work is paced against this value minus
-    /// `--consensus.network-budget`. Time spent fetching the parent in
-    /// commonware is not deducted from this budget.
-    #[arg(long = "consensus.target-block-time", default_value = "550ms")]
+    /// Local proposal work is paced against this value minus an adaptive network
+    /// reservation. Long preparation can shorten the allowance; required work
+    /// may overrun it. An injected estimator overrides these timing flags.
+    #[arg(long = "consensus.target-block-time", default_value = format!("{}ms", DEFAULT_TARGET_BLOCK_TIME.as_millis()))]
     pub target_block_time: PositiveDuration,
 
     /// Maximum amount of time to wait for the leader's proposal before timing
@@ -221,11 +222,14 @@ pub struct Args {
     )]
     pub inactive_time_before_leader_skip: PositiveDuration,
 
-    /// Time reserved for proposal propagation before the target block boundary.
+    /// Initial and minimum network reservation before the target block boundary.
     ///
-    /// The remaining `target-block-time - network-budget` is the local proposal
-    /// return budget used by consensus and the payload builder.
-    #[arg(long = "consensus.network-budget", default_value = "50ms")]
+    /// Must be smaller than `--consensus.target-block-time`. The reservation
+    /// adapts from finalized successors, capped at this floor plus half the
+    /// initial allowance, at most 300 ms unless the floor is already larger.
+    /// It includes propagation, voting, unprojected validation and preparation.
+    /// An injected estimator overrides this flag and the target block time.
+    #[arg(long = "consensus.network-budget", default_value = format!("{}ms", DEFAULT_NETWORK_BUDGET.as_millis()))]
     pub network_budget: PositiveDuration,
 
     /// Deprecated compatibility flag. Ignored by the elastic proposal budget.
