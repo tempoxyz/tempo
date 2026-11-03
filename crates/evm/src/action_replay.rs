@@ -55,14 +55,16 @@ impl TempoBlockExecutor<'_> {
         // so recheck that a same-block migration did not retire any primitive root key.
         let spec = self.evm().config_spec_id();
         if spec.is_t14() {
-            let db = self.inner.evm_mut().overlay_db_mut();
             for_each_root_key(tx_env.inner(), |account, role| {
-                let retired = db
+                if self
+                    .inner
+                    .evm_mut()
+                    .overlay_db_mut()
                     .get_account(&account)?
                     .map(|info| account_config_commitment(&info, spec))
                     .transpose()?
-                    .is_some_and(|commitment| !commitment.is_zero());
-                if retired {
+                    .is_some_and(|commitment| !commitment.is_zero())
+                {
                     return Err(TempoInvalidTransaction::RootKeyRetired { account, role }.into());
                 }
                 Ok(())
@@ -609,9 +611,13 @@ mod tests {
         TempoBlockEnv, TempoEvm, TempoEvmExt, build_tempo_evm,
         test_utils::{TestExecutorBuilder, test_chainspec},
     };
+    use alloy_consensus::{SignableTransaction, TxLegacy};
+    use alloy_primitives::{Signature, TxKind};
     use evm2::evm::{AccountInfo, InMemoryDB, precompile::NoPrecompiles};
+    use reth_primitives_traits::SignedTransaction;
     use std::sync::Arc;
     use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
+    use tempo_primitives::{TempoTxEnvelope, account::encode_config_commitment};
 
     fn empty_evm(database: InMemoryDB) -> TempoEvm<'static> {
         build_tempo_evm(
@@ -648,10 +654,6 @@ mod tests {
 
     #[test]
     fn replay_rechecks_root_key_retired_in_block() {
-        use alloy_consensus::{SignableTransaction, TxLegacy, transaction::Recovered};
-        use alloy_primitives::{Signature, TxKind};
-        use tempo_primitives::{TempoTxEnvelope, account::encode_config_commitment};
-
         let chainspec = test_chainspec();
         let sender = Address::repeat_byte(0x11);
         let tx = TempoTxEnvelope::Legacy(
@@ -664,10 +666,32 @@ mod tests {
             }
             .into_signed(Signature::test_signature()),
         );
-        for (spec, commitment, conflict) in [
-            (TempoHardfork::T14, B256::repeat_byte(0x77), true),
-            (TempoHardfork::T14, B256::ZERO, false),
-            (TempoHardfork::T13, B256::repeat_byte(0x77), false),
+        struct Case {
+            spec: TempoHardfork,
+            commitment: B256,
+            conflict: bool,
+        }
+        let retired = B256::repeat_byte(0x77);
+        for Case {
+            spec,
+            commitment,
+            conflict,
+        } in [
+            Case {
+                spec: TempoHardfork::T14,
+                commitment: retired,
+                conflict: true,
+            },
+            Case {
+                spec: TempoHardfork::T14,
+                commitment: B256::ZERO,
+                conflict: false,
+            },
+            Case {
+                spec: TempoHardfork::T13,
+                commitment: retired,
+                conflict: false,
+            },
         ] {
             let mut executor = TestExecutorBuilder::default()
                 .with_spec(spec)
@@ -689,7 +713,7 @@ mod tests {
                 expiring_nonce: None,
             };
             let result = executor.execute_transaction_with_actions(
-                Recovered::new_unchecked(tx.clone(), sender),
+                tx.clone().with_signer(sender),
                 replay,
                 |_| {},
             );
