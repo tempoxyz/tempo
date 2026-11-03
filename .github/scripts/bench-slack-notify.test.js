@@ -46,3 +46,33 @@ test('shared routing and replay thread delivery', async () => {
     if (threaded) assert.equal(calls[1].thread_ts, '1.2');
   }
 });
+
+test('nightly failure posts failed jobs to the workflows channel', async () => {
+  const calls = [];
+  const module = { exports: {} };
+  runInNewContext(source, {
+    module, require,
+    process: { env: { SLACK_BENCH_BOT_TOKEN: 'test', SLACK_WORKFLOWS_CHANNEL: 'CWORKFLOWS' } },
+    fetch: async (_, request) => { calls.push(JSON.parse(request.body)); return { json: async () => ({ ok: true }) }; },
+  });
+  const github = { rest: { actions: { listJobsForWorkflowRun: async () => ({ data: { jobs: [
+    { name: 'resolve-refs', conclusion: 'success', html_url: 'https://x/1' },
+    { name: 'bench-zones / bench-zones', conclusion: 'failure', html_url: 'https://x/2' },
+    { name: 'notify-failure', conclusion: null, html_url: 'https://x/3' },
+  ] } }) } } };
+  const ctx = { ...context, workflow: 'zone-benchmarks', sha: 'd8261641ce1b7876d451ac67bc58c8e2f92aa307' };
+  await module.exports.nightlyFailure({ github, context: ctx, core: { info() {}, warning() {} } });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].channel, 'CWORKFLOWS');
+  assert.equal(calls[0].text, 'Nightly zone-benchmarks failed on d8261641');
+  const body = calls[0].blocks[0].text.text;
+  assert.match(body, /bench-zones \/ bench-zones> \(failure\)/);
+  assert.doesNotMatch(body, /resolve-refs|notify-failure/);
+
+  calls.length = 0;
+  const silent = { exports: {} };
+  runInNewContext(source, { module: silent, require, process: { env: { SLACK_BENCH_BOT_TOKEN: 'test' } },
+    fetch: async () => { calls.push(1); } });
+  await silent.exports.nightlyFailure({ github, context: ctx, core: { info() {}, warning() {} } });
+  assert.equal(calls.length, 0);
+});

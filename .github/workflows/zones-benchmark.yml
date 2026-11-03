@@ -119,3 +119,32 @@ jobs:
           retention-days: 90
           if-no-files-found: error
           overwrite: true
+
+  # Scheduled runs have no actor to DM, so post their failures to #eng-tempo-workflows.
+  notify-failure:
+    needs: [resolve-refs, bench-zones, save-state]
+    if: failure() && github.event_name == 'schedule'
+    name: notify-failure
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+          sparse-checkout-cone-mode: true
+
+      - name: Post failure to Slack
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
+          SLACK_WORKFLOWS_CHANNEL: C0A6PD3BQ3F # eng-tempo-workflows
+        with:
+          script: |
+            const notify = require('./.github/scripts/bench-slack-notify.js');
+            await notify.nightlyFailure({ github, core, context });
