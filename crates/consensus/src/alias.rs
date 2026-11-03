@@ -305,7 +305,8 @@ pub(crate) mod marshal {
         };
         let height = Height::new(last);
         // Look the tip up by height so that a different block stored there is
-        // rejected; if none is stored, marshal fetches the tip by digest.
+        // rejected; if none is stored, marshal will eventually fetch the tip from
+        // the network by digest.
         let header = blocks
             .get_header(Identifier::Index(last))
             .await
