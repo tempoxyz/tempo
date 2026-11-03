@@ -5,8 +5,7 @@ use crate::{
     ExecutionContext, TempoAaTx, TempoInvalidTransaction, TempoTx as _, TempoTxEnv,
     transaction_error::{ConfigurableAccountError, RootKeyRole},
 };
-use alloy_consensus::Transaction as _;
-use alloy_primitives::{Address, B256, IntoLogData as _, TxKind};
+use alloy_primitives::{Address, B256, IntoLogData as _};
 use evm2::{
     Evm,
     evm::AccountInfo,
@@ -16,7 +15,6 @@ use evm2::{
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{
-    CONFIGURABLE_ACCOUNT_ADDRESS,
     configurable_account::{
         ConfigurableAccount, UpgradeEligibility, registration_event, valid_account,
         valid_account_code,
@@ -114,28 +112,17 @@ impl TempoAaTx {
 impl TempoTxEnv {
     /// Seeds the transaction authority read by the configurable-account precompile.
     ///
-    /// `upgradeAccount` must be the whole transaction: no other call and no authorization or key
-    /// authorization that could change the account beside it.
+    /// `upgradeAccount` may sit anywhere in a batch, but no authorization list may delegate the
+    /// account beside it. A key authorization is allowed: it applies before execution either way.
     pub(crate) fn seed_upgrade_authority(&self) -> Result<(), TempoPrecompileError> {
         let aa = self.as_aa();
-        let sole_call = match aa {
-            None => {
-                self.kind() == TxKind::Call(CONFIGURABLE_ACCOUNT_ADDRESS)
-                    && self
-                        .as_eip7702()
-                        .is_none_or(|tx| tx.authorization_list.is_empty())
-            }
-            Some(aa) => {
-                let tx = aa.tx();
-                matches!(
-                    tx.calls.as_slice(),
-                    [call] if call.to == TxKind::Call(CONFIGURABLE_ACCOUNT_ADDRESS)
-                ) && tx.tempo_authorization_list.is_empty()
-                    && tx.key_authorization.is_none()
-            }
-        };
-        let eligibility = if !sole_call {
-            UpgradeEligibility::NotSoleCall
+        let eligibility = if match aa {
+            None => self
+                .as_eip7702()
+                .is_some_and(|tx| !tx.authorization_list.is_empty()),
+            Some(aa) => !aa.tx().tempo_authorization_list.is_empty(),
+        } {
+            UpgradeEligibility::HasAuthorizationList
         } else if !self.signed_by_primitive_root() {
             UpgradeEligibility::NotPrimitiveRoot
         } else {
