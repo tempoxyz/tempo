@@ -159,6 +159,19 @@ pub struct TempoNodeArgs {
         hide = true
     )]
     pub qmdb_activation_timestamp: Option<u64>,
+
+    /// Serve current state from QMDB instead of the hashed state tables, with QMDB roots from
+    /// genesis on.
+    ///
+    /// The QMDB state must already hold the database tip's state, imported with
+    /// `tempo qmdb-import`. From then on the node stops maintaining the hashed state tables and
+    /// tries, so the datadir cannot go back to MPT roots.
+    #[arg(
+        long = "qmdb.state-backend",
+        conflicts_with_all = ["qmdb_snapshot_block", "qmdb_activation_timestamp"],
+        hide = true
+    )]
+    pub qmdb_state_backend: bool,
 }
 
 impl Default for TempoNodeArgs {
@@ -177,6 +190,7 @@ impl Default for TempoNodeArgs {
             shadow_replay: None,
             qmdb_snapshot_block: None,
             qmdb_activation_timestamp: None,
+            qmdb_state_backend: false,
         }
     }
 }

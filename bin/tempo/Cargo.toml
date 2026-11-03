@@ -102,6 +102,7 @@ reth-primitives-traits.workspace = true
 reth-provider.workspace = true
 reth-prune-types.workspace = true
 reth-rpc-server-types.workspace = true
+reth-stages-types.workspace = true
 secp256k1.workspace = true
 reth-storage-api.workspace = true
 reth-static-file-types.workspace = true

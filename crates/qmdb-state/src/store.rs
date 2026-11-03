@@ -17,8 +17,14 @@ use commonware_runtime::{
     tokio::{Config as RuntimeConfig, Context, Runner},
 };
 use commonware_storage::{
-    journal::contiguous::fixed::Config as JournalConfig,
-    merkle::{full::Config as MerkleConfig, mmb},
+    journal::{
+        self,
+        contiguous::{
+            Contiguous as _,
+            fixed::{self, Config as JournalConfig},
+        },
+    },
+    merkle::{Location, full::Config as MerkleConfig, mmb},
     qmdb::{
         self,
         any::ordered::fixed::Update,
@@ -26,6 +32,7 @@ use commonware_storage::{
     },
     translator::EightCap,
 };
+use commonware_utils::sequence::FixedBytes;
 use futures::{StreamExt as _, channel::mpsc as async_mpsc};
 use tracing::{debug, error};
 
@@ -39,11 +46,16 @@ const PARTITION_BYTES: usize = 2;
 const PAGE_SIZE: NonZeroU16 = NonZeroU16::new(16_384).expect("non-zero");
 const ITEMS_PER_BLOB: NonZeroU64 = NonZeroU64::new(1 << 23).expect("non-zero");
 const IO_BUFFER: NonZeroUsize = NonZeroUsize::new(2 << 20).expect("non-zero");
+/// Encoded size of a [`Commit`]: number (8) ‖ hash (32) ‖ size (8).
+const COMMIT_LEN: usize = 48;
+const COMMITS_PER_BLOB: NonZeroU64 = NonZeroU64::new(1 << 16).expect("non-zero");
+const COMMITS_WRITE_BUFFER: NonZeroUsize = NonZeroUsize::new(4096).expect("non-zero");
 
 type Db =
     partitioned::Db<Family, Context, Key, Value, Sha256, EightCap, PARTITION_BYTES, CHUNK, Rayon>;
 type Batch =
     Arc<MerkleizedBatch<Family, <Sha256 as Hasher>::Digest, Update<Key, Value>, CHUNK, Rayon>>;
+type Commits = fixed::Journal<Context, FixedBytes<COMMIT_LEN>>;
 type Reply<T> = Box<dyn FnOnce(Result<T, Error>) + Send>;
 
 /// Configuration of a [`Store`].
@@ -109,7 +121,8 @@ impl std::fmt::Debug for QmdbBatch {
 pub struct Status {
     /// Number of the last block applied to disk, `None` before the import.
     pub applied: Option<u64>,
-    /// Hash of the last applied block, `None` until [`Store::set_base`] or a finalization binds it.
+    /// Hash of the last applied block, `None` when the commit journal has no record of it and
+    /// neither [`Store::set_base`], an import nor a finalization bound it since opening.
     pub base: Option<B256>,
     /// Root of the applied state: the state root of block `applied`.
     pub root: B256,
@@ -123,6 +136,9 @@ pub enum Error {
     /// The database failed.
     #[error("qmdb failed")]
     Qmdb(#[from] qmdb::Error<Family>),
+    /// The commit journal failed.
+    #[error("the commit journal failed")]
+    Journal(#[from] journal::Error),
     /// The parent of a block has neither a batch nor is the applied block.
     #[error("parent {parent_hash} of block {number} ({hash}) has no batch")]
     UnknownParent {
@@ -136,6 +152,9 @@ pub enum Error {
     /// No batch exists for a block.
     #[error("block {0} has no batch")]
     UnknownBlock(B256),
+    /// The commit journal holds no record of an applied block to rewind to.
+    #[error("block {0} has no recorded commit")]
+    UnknownCommit(u64),
     /// A batch was built for a block at or below the applied block.
     #[error("block {number} is at or below the applied block {applied}")]
     AlreadyApplied {
@@ -170,6 +189,9 @@ pub struct Store {
 
 impl Store {
     /// Opens or creates the database in [`Config::directory`] and starts its thread.
+    ///
+    /// Binds the applied block's hash from the commit journal when its latest record is the
+    /// applied block, so [`Self::set_base`] is only needed when the journal lacks it.
     pub fn open(config: Config) -> Result<Self, Error> {
         let (commands, receiver) = async_mpsc::unbounded();
         let (opened_tx, opened_rx) = mpsc::channel();
@@ -208,8 +230,8 @@ impl Store {
 
     /// Binds `hash` as the hash of the applied block, so blocks can build on it.
     ///
-    /// Call after opening or importing, with the canonical hash of [`Status::applied`]: the
-    /// metadata on disk holds only the block number.
+    /// Only needed when [`Status::base`] is `None` after opening, with the canonical hash of
+    /// [`Status::applied`]: the commit journal had no record of it.
     pub fn set_base(&self, hash: B256) -> Result<(), Error> {
         self.call(|reply| Command::SetBase { hash, reply })
     }
@@ -269,10 +291,10 @@ impl Store {
         self.call(|reply| Command::Root { hash, reply })
     }
 
-    /// Applies the batches up to block `hash` to disk, commits them, and drops batches that do
-    /// not descend from it.
+    /// Applies the batches up to block `hash` to disk, commits them, records each applied block
+    /// in the commit journal, and drops batches that do not descend from it.
     ///
-    /// Finalizing the applied block again does nothing.
+    /// The records are durable when this returns. Finalizing the applied block again does nothing.
     pub fn finalize(&self, hash: B256) -> Result<(), Error> {
         self.call(|reply| Command::Finalize { hash, reply })
     }
@@ -280,10 +302,33 @@ impl Store {
     /// Applies one chunk of a snapshot import directly to disk.
     ///
     /// `writes` must be sorted and above every key of earlier chunks. The final chunk passes
-    /// `end`, the snapshot block's number, which commits it as the applied block. Fails with
+    /// `end`, the snapshot block's number and hash, which commits it as the applied block, binds
+    /// its hash as [`Status::base`] and records it in the commit journal. Fails with
     /// [`Error::NotEmpty`] once a block is applied.
-    pub fn import_chunk(&self, writes: Vec<Write>, end: Option<u64>) -> Result<(), Error> {
+    pub fn import_chunk(&self, writes: Vec<Write>, end: Option<(u64, B256)>) -> Result<(), Error> {
         self.call(|reply| Command::Import { writes, end, reply })
+    }
+
+    /// Rewinds the applied state to block `number`, an earlier finalized or imported block.
+    ///
+    /// Drops every unapplied batch, binds the block's recorded hash as [`Status::base`] and
+    /// forgets the records above it, durably before returning. Rewinding to the applied block
+    /// does nothing. Fails with [`Error::UnknownCommit`] when the commit journal has no record of
+    /// `number`, such as a block above the applied one.
+    pub fn rewind_to(&self, number: u64) -> Result<(), Error> {
+        self.call(|reply| Command::RewindTo { number, reply })
+    }
+
+    /// Returns the value of `key` in the applied state, ignoring unapplied batches.
+    pub fn get(&self, key: Key) -> Result<Option<Value>, Error> {
+        let mut values = self.get_many(vec![key])?;
+        Ok(values.pop().flatten())
+    }
+
+    /// Returns the values of `keys` in the applied state, in the same order, ignoring unapplied
+    /// batches.
+    pub fn get_many(&self, keys: Vec<Key>) -> Result<Vec<Option<Value>>, Error> {
+        self.call(|reply| Command::Get { keys, reply })
     }
 
     fn call<T: Send + 'static>(
@@ -352,14 +397,24 @@ enum Command {
     },
     Import {
         writes: Vec<Write>,
-        end: Option<u64>,
+        end: Option<(u64, B256)>,
         reply: Reply<()>,
+    },
+    RewindTo {
+        number: u64,
+        reply: Reply<()>,
+    },
+    Get {
+        keys: Vec<Key>,
+        reply: Reply<Vec<Option<Value>>>,
     },
 }
 
 struct Actor {
     /// Always `Some` between commands: applying and committing consume the database.
     db: Option<Db>,
+    /// Applied blocks in ascending order. Always `Some` between commands, like `db`.
+    commits: Option<Commits>,
     applied: Option<u64>,
     base: Option<B256>,
     pending: HashMap<B256, QmdbBatch>,
@@ -382,7 +437,7 @@ impl Actor {
             journal_config: JournalConfig {
                 partition: "state-log".into(),
                 items_per_blob: ITEMS_PER_BLOB,
-                page_cache,
+                page_cache: page_cache.clone(),
                 write_buffer: IO_BUFFER,
                 replay_buffer: IO_BUFFER,
             },
@@ -392,16 +447,46 @@ impl Actor {
             init_buffer: IO_BUFFER,
             init_concurrency: config.threads,
         };
+        let commits_config = JournalConfig {
+            partition: "state-commits".into(),
+            items_per_blob: COMMITS_PER_BLOB,
+            page_cache,
+            write_buffer: COMMITS_WRITE_BUFFER,
+            replay_buffer: IO_BUFFER,
+        };
         let db = Db::init(context.child("qmdb"), db_config).await?;
+        let mut commits = Commits::init(context.child("commits"), commits_config).await?;
         let applied = db
             .get_metadata()
             .await?
             .as_ref()
             .map(layout::decode_block_metadata);
+
+        // A crash between applying blocks to the database and recording them leaves the journal
+        // behind the database; one during a rewind leaves records above it.
+        let size = *db.bounds().end;
+        let mut kept = commits.size();
+        let mut latest = None;
+        while kept > commits.bounds().start {
+            let commit = Commit::decode(&commits.read(kept - 1).await?);
+            if commit.size <= size && applied.is_some_and(|applied| commit.number <= applied) {
+                latest = Some(commit);
+                break;
+            }
+            kept -= 1;
+        }
+        if kept < commits.size() {
+            commits = commits.rewind(kept).await?.commit().await?;
+        }
+        let base = latest
+            .filter(|commit| Some(commit.number) == applied && commit.size == size)
+            .map(|commit| commit.hash);
+
         Ok(Self {
             db: Some(db),
+            commits: Some(commits),
             applied,
-            base: None,
+            base,
             pending: HashMap::new(),
             max_pending: config.max_pending.get(),
         })
@@ -430,12 +515,22 @@ impl Actor {
                 Command::Root { hash, reply } => reply(Ok(self.root(hash))),
                 Command::Finalize { hash, reply } => reply(self.finalize(hash).await),
                 Command::Import { writes, end, reply } => reply(self.import(writes, end).await),
+                Command::RewindTo { number, reply } => reply(self.rewind_to(number).await),
+                Command::Get { keys, reply } => {
+                    let keys: Vec<&Key> = keys.iter().collect();
+                    reply(self.db().get_many(&keys).await.map_err(Error::from));
+                }
             }
         }
         if let Some(db) = self.db.take()
             && let Err(err) = db.sync().await
         {
             error!(%err, "failed syncing QMDB on shutdown");
+        }
+        if let Some(commits) = self.commits.take()
+            && let Err(err) = commits.sync().await
+        {
+            error!(%err, "failed syncing the QMDB commit journal on shutdown");
         }
     }
 
@@ -532,6 +627,23 @@ impl Actor {
         }
         let pending = self.pending.get(&hash).ok_or(Error::UnknownBlock(hash))?;
         let (number, batch) = (pending.number, pending.batch.clone());
+        // Applying the batch applies its unapplied ancestors too: record each of them.
+        let mut applied = Vec::new();
+        let mut next = Some((hash, pending));
+        while let Some((hash, pending)) = next {
+            applied.push(Commit {
+                number: pending.number,
+                hash,
+                size: *pending.batch.bounds().tip.size,
+            });
+            next = if Some(pending.parent_hash) == self.base {
+                None
+            } else {
+                self.pending
+                    .get(&pending.parent_hash)
+                    .map(|parent| (pending.parent_hash, parent))
+            };
+        }
         let db = self.db.take().expect("restored after every command");
         // Applying consumes the database: on failure it is gone and the store must be reopened,
         // so every later command fails until then.
@@ -540,6 +652,7 @@ impl Actor {
         self.db = Some(db);
         self.applied = Some(number);
         self.base = Some(hash);
+        self.record(applied.into_iter().rev()).await?;
 
         let descends = |mut hash: B256, pending: &HashMap<B256, QmdbBatch>| loop {
             if hash == self.base.expect("set above") {
@@ -562,7 +675,7 @@ impl Actor {
         Ok(())
     }
 
-    async fn import(&mut self, writes: Vec<Write>, end: Option<u64>) -> Result<(), Error> {
+    async fn import(&mut self, writes: Vec<Write>, end: Option<(u64, B256)>) -> Result<(), Error> {
         if let Some(applied) = self.applied {
             return Err(Error::NotEmpty(applied));
         }
@@ -571,17 +684,102 @@ impl Actor {
         for write in writes {
             batch = batch.write(write.key, write.value);
         }
-        let batch = batch.merkleize(db, end.map(layout::block_metadata)).await?;
+        let batch = batch
+            .merkleize(db, end.map(|(number, _)| layout::block_metadata(number)))
+            .await?;
         let db = self.db.take().expect("restored after every command");
         let (db, _) = db.apply_batch(batch).await?;
-        let db = if end.is_some() {
-            db.commit().await?.sync().await?
-        } else {
-            db
+        let Some((number, hash)) = end else {
+            self.db = Some(db);
+            return Ok(());
         };
+        let db = db.commit().await?.sync().await?;
+        let size = *db.bounds().end;
         self.db = Some(db);
-        self.applied = end;
+        self.applied = Some(number);
+        self.base = Some(hash);
+        self.record([Commit { number, hash, size }]).await
+    }
+
+    async fn rewind_to(&mut self, number: u64) -> Result<(), Error> {
+        if self.applied == Some(number) {
+            return Ok(());
+        }
+        let (position, commit) = self
+            .find_commit(number)
+            .await?
+            .ok_or(Error::UnknownCommit(number))?;
+        // Batches built on the current state cannot apply to the rewound one.
+        self.pending.clear();
+        let db = self.db.take().expect("restored after every command");
+        // Like applying, a failed rewind consumes the database until the store is reopened.
+        let db = db
+            .rewind(Location::new(commit.size))
+            .await?
+            .commit()
+            .await?;
+        self.db = Some(db);
+        self.applied = Some(commit.number);
+        self.base = Some(commit.hash);
+        let commits = self.commits.take().expect("restored after every command");
+        self.commits = Some(commits.rewind(position + 1).await?.commit().await?);
         Ok(())
+    }
+
+    /// Finds the record of block `number` and its position in the commit journal.
+    async fn find_commit(&self, number: u64) -> Result<Option<(u64, Commit)>, Error> {
+        let commits = self.commits.as_ref().expect("restored after every command");
+        // Records are in ascending block order.
+        let (mut low, mut high) = (commits.bounds().start, commits.size());
+        while low < high {
+            let middle = low + (high - low) / 2;
+            let commit = Commit::decode(&commits.read(middle).await?);
+            match commit.number.cmp(&number) {
+                std::cmp::Ordering::Less => low = middle + 1,
+                std::cmp::Ordering::Greater => high = middle,
+                std::cmp::Ordering::Equal => return Ok(Some((middle, commit))),
+            }
+        }
+        Ok(None)
+    }
+
+    /// Appends `records` to the commit journal and makes them durable.
+    async fn record(&mut self, records: impl IntoIterator<Item = Commit>) -> Result<(), Error> {
+        let mut commits = self.commits.take().expect("restored after every command");
+        for record in records {
+            (commits, _) = commits.append(&record.encode()).await?;
+        }
+        self.commits = Some(commits.commit().await?);
+        Ok(())
+    }
+}
+
+/// The commit journal's record of an applied block.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Commit {
+    number: u64,
+    hash: B256,
+    /// Operations in the database right after the block's commit, its rewind target.
+    size: u64,
+}
+
+impl Commit {
+    fn encode(&self) -> FixedBytes<COMMIT_LEN> {
+        let mut out = [0u8; COMMIT_LEN];
+        out[..8].copy_from_slice(&self.number.to_be_bytes());
+        out[8..40].copy_from_slice(self.hash.as_slice());
+        out[40..].copy_from_slice(&self.size.to_be_bytes());
+        FixedBytes::new(out)
+    }
+
+    fn decode(bytes: &FixedBytes<COMMIT_LEN>) -> Self {
+        let (number, rest) = bytes.split_at(8);
+        let (hash, size) = rest.split_at(32);
+        Self {
+            number: u64::from_be_bytes(number.try_into().expect("8 bytes")),
+            hash: B256::from_slice(hash),
+            size: u64::from_be_bytes(size.try_into().expect("8 bytes")),
+        }
     }
 }
 
@@ -624,10 +822,9 @@ mod tests {
         store
             .import_chunk(
                 vec![write(1, Some(1)), write(2, Some(2)), write(3, Some(3))],
-                Some(0),
+                Some((0, B256::ZERO)),
             )
             .unwrap();
-        store.set_base(B256::ZERO).unwrap();
         store
     }
 
@@ -732,7 +929,7 @@ mod tests {
     }
 
     #[test]
-    fn applied_state_survives_reopening() {
+    fn applied_state_and_base_survive_reopening() {
         let dir = tempfile::tempdir().unwrap();
         let root = {
             let store = imported(dir.path(), 8);
@@ -748,26 +945,228 @@ mod tests {
             root
         };
         let store = Store::open(config(dir.path(), 8)).unwrap();
-        let status = store.status().unwrap();
-        // The unapplied block 2 is gone; block 1 is applied, but its hash must be bound again.
+        // The unapplied block 2 is gone; the commit journal binds block 1's hash again.
         assert_eq!(
-            status,
+            store.status().unwrap(),
             Status {
                 applied: Some(1),
-                base: None,
+                base: Some(B256::repeat_byte(1)),
                 root,
                 pending: 0
             }
         );
-        assert!(matches!(
-            store.build(block(2, 2, 1), vec![]),
-            Err(Error::NoBase)
-        ));
-        store.set_base(B256::repeat_byte(1)).unwrap();
         store
             .build(block(2, 2, 1), vec![write(5, Some(5))])
             .unwrap()
             .root();
+    }
+
+    #[test]
+    fn imported_base_survives_reopening() {
+        let dir = tempfile::tempdir().unwrap();
+        drop(imported(dir.path(), 8));
+        let store = Store::open(config(dir.path(), 8)).unwrap();
+        assert_eq!(store.status().unwrap().base, Some(B256::ZERO));
+        store.build(block(1, 1, 0), vec![]).unwrap();
+    }
+
+    #[test]
+    fn without_a_record_the_base_must_be_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(config(dir.path(), 8)).unwrap();
+        assert!(matches!(
+            store.build(block(1, 1, 0), vec![]),
+            Err(Error::NoBase)
+        ));
+        store.set_base(B256::ZERO).unwrap();
+        assert_eq!(store.status().unwrap().base, Some(B256::ZERO));
+    }
+
+    #[test]
+    fn reopening_repairs_a_journal_out_of_step_with_the_database() {
+        /// Moves the commit journal of `from` into `to`, replacing its own.
+        fn move_journal(from: &std::path::Path, to: &std::path::Path) {
+            for entry in std::fs::read_dir(to).unwrap() {
+                let path = entry.unwrap().path();
+                if path
+                    .file_name()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .starts_with("state-commits")
+                {
+                    std::fs::remove_dir_all(path).unwrap();
+                }
+            }
+            for entry in std::fs::read_dir(from).unwrap() {
+                let path = entry.unwrap().path();
+                let name = path.file_name().unwrap().to_owned();
+                if name.to_str().unwrap().starts_with("state-commits") {
+                    std::fs::rename(&path, to.join(name)).unwrap();
+                }
+            }
+        }
+
+        // Both apply the same block 1; only `two` applies block 2.
+        let (one, two, swap) = (
+            tempfile::tempdir().unwrap(),
+            tempfile::tempdir().unwrap(),
+            tempfile::tempdir().unwrap(),
+        );
+        let root1 = {
+            let store = imported(one.path(), 8);
+            let root1 = store
+                .build(block(1, 1, 0), vec![write(4, Some(4))])
+                .unwrap()
+                .root();
+            store.finalize(B256::repeat_byte(1)).unwrap();
+            root1
+        };
+        {
+            let store = imported(two.path(), 8);
+            store
+                .build(block(1, 1, 0), vec![write(4, Some(4))])
+                .unwrap();
+            store
+                .build(block(2, 2, 1), vec![write(5, Some(5))])
+                .unwrap();
+            store.finalize(B256::repeat_byte(2)).unwrap();
+        }
+        move_journal(two.path(), swap.path());
+        move_journal(one.path(), two.path());
+        move_journal(swap.path(), one.path());
+
+        // A journal behind the database cannot bind the base, but still rewinds.
+        let store = Store::open(config(two.path(), 8)).unwrap();
+        let status = store.status().unwrap();
+        assert_eq!((status.applied, status.base), (Some(2), None));
+        store.rewind_to(1).unwrap();
+        let status = store.status().unwrap();
+        assert_eq!(
+            (status.base, status.root),
+            (Some(B256::repeat_byte(1)), root1)
+        );
+
+        // A journal ahead of the database drops the records above it.
+        let store = Store::open(config(one.path(), 8)).unwrap();
+        assert_eq!(store.status().unwrap().base, Some(B256::repeat_byte(1)));
+        assert!(matches!(store.rewind_to(2), Err(Error::UnknownCommit(2))));
+    }
+
+    #[test]
+    fn rewinds_across_finalized_blocks() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = imported(dir.path(), 8);
+        let genesis_root = store.status().unwrap().root;
+        let root1 = store
+            .build(block(1, 1, 0), vec![write(2, Some(20))])
+            .unwrap()
+            .root();
+        store.finalize(B256::repeat_byte(1)).unwrap();
+        store
+            .build(block(2, 2, 1), vec![write(3, None), write(4, Some(4))])
+            .unwrap()
+            .root();
+        store.finalize(B256::repeat_byte(2)).unwrap();
+        store.build(block(3, 3, 2), vec![]).unwrap().root();
+
+        store.rewind_to(0).unwrap();
+        assert_eq!(
+            store.status().unwrap(),
+            Status {
+                applied: Some(0),
+                base: Some(B256::ZERO),
+                root: genesis_root,
+                pending: 0
+            }
+        );
+        assert_eq!(
+            store
+                .get_many(vec![
+                    write(2, None).key,
+                    write(3, None).key,
+                    write(4, None).key
+                ])
+                .unwrap(),
+            vec![write(2, Some(2)).value, write(3, Some(3)).value, None]
+        );
+        // A different child of block 0 builds and finalizes; rebuilding the old one matches root1.
+        let other = store
+            .build(block(1, 0xc1, 0), vec![write(5, Some(5))])
+            .unwrap()
+            .root();
+        assert_ne!(other, root1);
+        let rebuilt = store
+            .build(block(1, 1, 0), vec![write(2, Some(20))])
+            .unwrap()
+            .root();
+        assert_eq!(rebuilt, root1);
+        store.finalize(B256::repeat_byte(0xc1)).unwrap();
+        assert_eq!(store.status().unwrap().root, other);
+
+        // The rewound records are gone and the new one survives reopening.
+        drop(store);
+        let store = Store::open(config(dir.path(), 8)).unwrap();
+        assert_eq!(store.status().unwrap().base, Some(B256::repeat_byte(0xc1)));
+        assert!(matches!(store.rewind_to(2), Err(Error::UnknownCommit(2))));
+        store.rewind_to(0).unwrap();
+        assert_eq!(store.status().unwrap().root, genesis_root);
+    }
+
+    #[test]
+    fn rewinds_to_a_block_finalized_through_a_descendant() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = imported(dir.path(), 8);
+        let root1 = store
+            .build(block(1, 1, 0), vec![write(4, Some(4))])
+            .unwrap()
+            .root();
+        store
+            .build(block(2, 2, 1), vec![write(5, Some(5))])
+            .unwrap()
+            .root();
+        store.finalize(B256::repeat_byte(2)).unwrap();
+
+        store.rewind_to(1).unwrap();
+        let status = store.status().unwrap();
+        assert_eq!(
+            (status.applied, status.base, status.root),
+            (Some(1), Some(B256::repeat_byte(1)), root1)
+        );
+    }
+
+    #[test]
+    fn rewind_to_an_unrecorded_block_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = imported(dir.path(), 8);
+        store.build(block(1, 1, 0), vec![]).unwrap();
+        assert!(matches!(store.rewind_to(1), Err(Error::UnknownCommit(1))));
+        assert!(matches!(store.rewind_to(7), Err(Error::UnknownCommit(7))));
+        // Rewinding to the applied block keeps the unapplied batches.
+        store.rewind_to(0).unwrap();
+        assert_eq!(store.status().unwrap().pending, 1);
+    }
+
+    #[test]
+    fn get_reads_only_the_applied_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = imported(dir.path(), 8);
+        store
+            .build(block(1, 1, 0), vec![write(1, None), write(4, Some(4))])
+            .unwrap();
+        assert_eq!(
+            store.get(write(1, None).key).unwrap(),
+            write(1, Some(1)).value
+        );
+        assert_eq!(store.get(write(4, None).key).unwrap(), None);
+
+        store.finalize(B256::repeat_byte(1)).unwrap();
+        assert_eq!(
+            store
+                .get_many(vec![write(1, None).key, write(4, None).key])
+                .unwrap(),
+            vec![None, write(4, Some(4)).value]
+        );
     }
 
     #[test]
@@ -830,7 +1229,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = imported(dir.path(), 8);
         assert!(matches!(
-            store.import_chunk(vec![], Some(1)),
+            store.import_chunk(vec![], Some((1, B256::repeat_byte(1)))),
             Err(Error::NotEmpty(0))
         ));
     }

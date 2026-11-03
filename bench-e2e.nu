@@ -357,6 +357,25 @@ def init-e2e-db [tempo_bin: string, genesis: string, datadir: string, bloat: int
     }
 }
 
+# Whether node args run the node with QMDB as its state backend, which needs an imported QMDB.
+def qmdb-state-backend [args: string] {
+    "--qmdb.state-backend" in (parse-cli-args $args)
+}
+
+# Import the persisted state of $datadir into a fresh $datadir/qmdb.
+def qmdb-import [tempo_bin: string, genesis: string, datadir: string] {
+    let qmdb_dir = $"($datadir)/qmdb"
+    if ($qmdb_dir | path exists) { rm -rf $qmdb_dir }
+    print $"Importing state into QMDB at ($qmdb_dir)..."
+    let result = (run-external $tempo_bin "qmdb-import" "--chain" $genesis "--datadir" $datadir | complete)
+    if $result.stdout != "" { print $result.stdout }
+    if $result.stderr != "" { print $result.stderr }
+    if $result.exit_code != 0 {
+        print $"Error: tempo qmdb-import failed for ($datadir) with exit code ($result.exit_code)"
+        exit $result.exit_code
+    }
+}
+
 def bench-save-e2e-meta [datadir: string, meta_dir: string, marker: record, genesis_files: list] {
     mkdir $meta_dir
     for pair in $genesis_files {
@@ -554,7 +573,7 @@ def e2e-regenesis [
             $matches = ($matches | append $"general_gas_limit=($target_general_gas_limit)")
         }
         print $"Skipping tempo regenesis for ($datadir); marker already matches (($matches | str join ', '))"
-        return
+        return false
     }
 
     let target_genesis = $"($datadir)/($BENCH_META_SUBDIR)/regenesis-target.json"
@@ -581,6 +600,7 @@ def e2e-regenesis [
     e2e-synthesize-genesis $"($datadir)/($BENCH_META_SUBDIR)/genesis.json" $"($datadir)/($BENCH_META_SUBDIR)/genesis.json" $target_hardfork $target_gas_limit $target_general_gas_limit
     e2e-update-snapshot-genesis-marker $datadir $target_hardfork $target_gas_limit $target_general_gas_limit
     rm $target_genesis
+    true
 }
 
 def derive-tracing-otlp [tracing_otlp: string] {
@@ -945,6 +965,9 @@ def init-local-e2e-side [
     mkdir $node_dir
 
     init-e2e-db $tempo_bin $generated_genesis $datadir $bloat $bloat_file
+    if ($marker | get -o qmdb_state | default false) {
+        qmdb-import $tempo_bin $generated_genesis $datadir
+    }
     for file in ["signing.key" "signing.share" "enode.key" "enode.identity"] {
         cp $"($generated_node_dir)/($file)" $"($node_dir)/($file)"
     }
@@ -1047,8 +1070,13 @@ def run-local-e2e-phase [run: record, ctx: record] {
         }
     }
     if $hardfork != "" or $ctx.gas_limit != "" or $ctx.general_gas_limit != "" {
-        e2e-regenesis $ctx.regenesis_tempo $genesis $ctx.a.datadir $hardfork $ctx.gas_limit $ctx.general_gas_limit
-        e2e-regenesis $ctx.regenesis_tempo $genesis $ctx.b.datadir $hardfork $ctx.gas_limit $ctx.general_gas_limit
+        for datadir in [$ctx.a.datadir $ctx.b.datadir] {
+            let rewritten = (e2e-regenesis $ctx.regenesis_tempo $genesis $datadir $hardfork $ctx.gas_limit $ctx.general_gas_limit)
+            # Regenesis changes the genesis hash the imported QMDB is bound to.
+            if $rewritten and (qmdb-state-backend $side_args) {
+                qmdb-import $run.tempo $genesis $datadir
+            }
+        }
     }
     for role_info in [
         { role: "a", node_dir: $ctx.a.node_dir }
@@ -1564,10 +1592,13 @@ def "main e2e" [
     bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db
     bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db
 
+    # A snapshot with an imported QMDB also serves runs without --qmdb.state-backend.
+    let qmdb_state = (qmdb-state-backend $feature_args)
     let snapshots_ready = (
         (e2e-snapshots-ready $a_db $b_db)
         and (bloat-matches (read-bench-marker $a_db) $bloat_mib $snapshot_state_hardfork)
         and (bloat-matches (read-bench-marker $b_db) $bloat_mib $snapshot_state_hardfork)
+        and ((not $qmdb_state) or ((read-bench-marker $a_db | get -o qmdb_state | default false) and (read-bench-marker $b_db | get -o qmdb_state | default false)))
     )
     let should_init_snapshots = $force_bloat or (not $snapshots_ready)
     if (not $snapshots_ready) and (not $force_bloat) {
@@ -1628,6 +1659,7 @@ def "main e2e" [
             dkg_in_genesis: true
             topology: "single-runner"
             state_hardfork: $snapshot_state_hardfork
+            qmdb_state: $qmdb_state
         }
         init-local-e2e-side a $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db $a_identity $"($init_dir)/($a_validator)" $generated_genesis $trusted_peers $bloat_mib $bloat_file $tempo_bin ($marker | insert bench_datadir $a_db | insert node_dir $a_identity | insert validator_addr $a_validator)
         init-local-e2e-side b $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db $b_identity $"($init_dir)/($b_validator)" $generated_genesis $trusted_peers $bloat_mib $bloat_file $tempo_bin ($marker | insert bench_datadir $b_db | insert node_dir $b_identity | insert validator_addr $b_validator)

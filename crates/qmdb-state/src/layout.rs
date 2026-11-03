@@ -17,6 +17,7 @@
 
 use alloy_primitives::{B256, KECCAK256_EMPTY, U256, keccak256};
 use commonware_utils::sequence::FixedBytes;
+use reth_primitives_traits::Account;
 
 /// QMDB key of an account or a storage slot.
 pub type Key = FixedBytes<32>;
@@ -105,6 +106,33 @@ impl AccountRecord {
         out[72..].copy_from_slice(self.commitment.as_slice());
         FixedBytes::new(out)
     }
+
+    /// Decodes an account value written by [`Self::encode`].
+    pub fn decode(value: &Value) -> Self {
+        let bytes = value.as_ref();
+        Self {
+            nonce: u64::from_be_bytes(bytes[..8].try_into().expect("8 bytes")),
+            balance: U256::from_be_slice(&bytes[8..40]),
+            code_hash: B256::from_slice(&bytes[40..72]),
+            commitment: B256::from_slice(&bytes[72..]),
+        }
+    }
+
+    /// Returns the account the record commits to: no bytecode hash when the code hash is
+    /// [`KECCAK256_EMPTY`], and the commitment as a TIP-1108 account extension, empty when zero.
+    pub fn into_account(self) -> Account {
+        let extension = if self.commitment.is_zero() {
+            Vec::new()
+        } else {
+            [&[COMMITMENT_FORMAT_TAG][..], self.commitment.as_slice()].concat()
+        };
+        Account {
+            nonce: self.nonce,
+            balance: self.balance,
+            bytecode_hash: (self.code_hash != KECCAK256_EMPTY).then_some(self.code_hash),
+            extension: extension.into(),
+        }
+    }
 }
 
 /// Returns the key of the account at `hashed_address` (`keccak256(address)`).
@@ -129,6 +157,11 @@ pub fn slot_value(value: U256) -> Value {
     let mut out = [0u8; VALUE_LEN];
     out[..32].copy_from_slice(&value.to_be_bytes::<32>());
     FixedBytes::new(out)
+}
+
+/// Decodes a slot value written by [`slot_value`].
+pub fn decode_slot_value(value: &Value) -> U256 {
+    U256::from_be_slice(&value.as_ref()[..32])
 }
 
 /// Encodes the commit metadata of a batch: the number of the block it ends at.
@@ -196,6 +229,52 @@ mod tests {
         let address = B256::repeat_byte(3);
         assert_ne!(account_key(address), slot_key(address, B256::ZERO));
         assert_ne!(slot_key(address, B256::ZERO), slot_key(B256::ZERO, address));
+    }
+
+    #[test]
+    fn account_round_trips_through_its_value() {
+        let commitment = B256::repeat_byte(0x11);
+        let accounts = [
+            Account::default(),
+            Account {
+                nonce: u64::MAX,
+                balance: U256::MAX,
+                bytecode_hash: Some(B256::repeat_byte(2)),
+                extension: [&[COMMITMENT_FORMAT_TAG][..], commitment.as_slice()]
+                    .concat()
+                    .into(),
+            },
+        ];
+        for account in accounts {
+            let record = AccountRecord::new(
+                account.nonce,
+                account.balance,
+                account.bytecode_hash,
+                account.extension.as_ref(),
+            )
+            .unwrap();
+            let decoded = AccountRecord::decode(&record.encode());
+            assert_eq!(decoded, record);
+            assert_eq!(decoded.into_account(), account);
+        }
+    }
+
+    #[test]
+    fn empty_code_hash_decodes_to_no_bytecode() {
+        let record = AccountRecord::new(1, U256::ZERO, Some(KECCAK256_EMPTY), &[]).unwrap();
+        assert_eq!(
+            AccountRecord::decode(&record.encode())
+                .into_account()
+                .bytecode_hash,
+            None
+        );
+    }
+
+    #[test]
+    fn slot_value_round_trips() {
+        for value in [U256::from(1), U256::MAX] {
+            assert_eq!(decode_slot_value(&slot_value(value)), value);
+        }
     }
 
     #[test]

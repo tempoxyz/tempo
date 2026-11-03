@@ -50,8 +50,8 @@ pub enum Error {
     Store(#[from] store::Error),
 }
 
-/// Imports the state that `cursors` read into `store` as the state of block `snapshot`, and
-/// returns the number of keys imported.
+/// Imports the state that `cursors` read into `store` as the state of block `snapshot` with hash
+/// `snapshot_hash`, and returns the number of keys imported.
 ///
 /// `cursors` must read the state at the end of block `snapshot`: on a node past it, the hashed
 /// tables overlaid with the reverts of the later blocks. `sort_dir` holds the temporary files of
@@ -60,6 +60,7 @@ pub fn import(
     cursors: &impl HashedCursorFactory,
     store: &Store,
     snapshot: u64,
+    snapshot_hash: B256,
     sort_dir: Option<PathBuf>,
 ) -> Result<u64, Error> {
     let mut sorted = Collector::<B256, SortValue>::new(SORT_BUFFER_BYTES, sort_dir);
@@ -106,11 +107,14 @@ pub fn import(
         });
         let last = entries.peek().is_none();
         if chunk.len() == CHUNK_KEYS || last {
-            store.import_chunk(std::mem::take(&mut chunk), last.then_some(snapshot))?;
+            store.import_chunk(
+                std::mem::take(&mut chunk),
+                last.then_some((snapshot, snapshot_hash)),
+            )?;
         }
     }
     if total == 0 {
-        store.import_chunk(Vec::new(), Some(snapshot))?;
+        store.import_chunk(Vec::new(), Some((snapshot, snapshot_hash)))?;
     }
     Ok(total)
 }
@@ -213,11 +217,19 @@ mod tests {
                 let store = open(dir.path());
                 // 50 accounts plus `i % 4` slots each: 12 * (0 + 1 + 2 + 3) + 0 + 1.
                 assert_eq!(
-                    import(&cursors, &store, 7, Some(dir.path().join("sort"))).unwrap(),
+                    import(
+                        &cursors,
+                        &store,
+                        7,
+                        B256::repeat_byte(7),
+                        Some(dir.path().join("sort"))
+                    )
+                    .unwrap(),
                     123
                 );
                 let status = store.status().unwrap();
                 assert_eq!(status.applied, Some(7));
+                assert_eq!(status.base, Some(B256::repeat_byte(7)));
                 status.root
             })
             .collect();
@@ -231,7 +243,10 @@ mod tests {
             HashedPostStateCursorFactory::new(NoopHashedCursorFactory::default(), &sorted);
         let dir = tempfile::tempdir().unwrap();
         let store = open(dir.path());
-        assert_eq!(import(&cursors, &store, 3, None).unwrap(), 0);
+        assert_eq!(
+            import(&cursors, &store, 3, B256::repeat_byte(3), None).unwrap(),
+            0
+        );
         assert_eq!(store.status().unwrap().applied, Some(3));
     }
 
@@ -252,7 +267,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = open(dir.path());
         assert!(matches!(
-            import(&cursors, &store, 0, None),
+            import(&cursors, &store, 0, B256::ZERO, None),
             Err(Error::Layout { hashed_address: h, source: layout::Error::InvalidExtension { len: 3, tag: Some(9) } }) if h == hashed_address
         ));
     }

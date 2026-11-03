@@ -12,11 +12,14 @@
 //!
 //! [`QmdbSync`] imports the snapshot block's state once the node has persisted it, and rebuilds and
 //! applies the batches of blocks the node executed or persisted before QMDB was ready.
+//!
+//! [`QmdbStateBackend`] serves the applied QMDB state as reth's current state, so a node launched
+//! with it keeps no hashed state tables or tries at all.
 
 use std::{path::PathBuf, sync::Arc, time::Instant};
 
 use alloy::consensus::BlockHeader as _;
-use alloy_primitives::B256;
+use alloy_primitives::{B256, U256};
 use eyre::{OptionExt as _, WrapErr as _};
 use metrics::{Counter, Gauge, Histogram};
 use reth_chain_state::{ExecutedBlock, ForkChoiceSubscriptions};
@@ -32,18 +35,21 @@ use reth_ethereum::tasks::TaskExecutor;
 use reth_evm::{ConfigureEvm, EvmEnv as _};
 use reth_execution_types::{BlockExecutionOutput, BlockExt};
 use reth_metrics::Metrics;
-use reth_primitives_traits::RecoveredBlock;
+use reth_primitives_traits::{Account, RecoveredBlock};
 use reth_provider::{
     BlockHashReader, BlockIdReader, BlockNumReader, CanonChainTracker, ChangeSetReader, DBProvider,
-    DatabaseProviderFactory, HeaderProvider, ProviderError, ProviderResult, StateReader,
-    StorageChangeSetReader,
+    DatabaseProviderFactory, HeaderProvider, ProviderError, ProviderResult, StateBackend,
+    StateReader, StorageChangeSetReader,
 };
 use reth_tracing::tracing::{debug, info, warn};
 use reth_trie::hashed_cursor::HashedPostStateCursorFactory;
 use reth_trie_common::{HashedPostStateSorted, updates::TrieUpdates};
 use reth_trie_db::{DatabaseHashedCursorFactory, DatabaseHashedPostState as _};
 use tempo_primitives::{Block, TempoPrimitives, TempoReceipt};
-use tempo_qmdb_state::{BlockRef, QmdbBatch, Store, diff, import};
+use tempo_qmdb_state::{
+    BlockRef, QmdbBatch, Store, diff, import,
+    layout::{self, AccountRecord},
+};
 
 /// Chooses each block's state root: the MPT root before the QMDB activation, the QMDB root from it.
 #[derive(Debug)]
@@ -274,20 +280,77 @@ impl PersistenceHook<TempoPrimitives> for QmdbPersistenceHook {
     }
 
     fn on_remove_blocks_above(&self, new_tip: u64) -> ProviderResult<()> {
-        let applied = self.store.status().map_err(ProviderError::other)?.applied;
-        let Some(applied) = applied.filter(|applied| *applied > new_tip) else {
-            return Ok(());
-        };
-        // Commonware 2026.9 cannot reopen QMDB at an earlier commit; 2026.10's `init(max_size)` can.
-        self.metrics.ahead_of_database.set(1.0);
-        if self.activation_timestamp.is_some() {
-            return Err(ProviderError::other(std::io::Error::other(format!(
-                "QMDB applied block {applied} is above the new database tip {new_tip} and cannot be rewound"
-            ))));
+        match rewind_above(&self.store, new_tip) {
+            Ok(()) => {
+                self.metrics.ahead_of_database.set(0.0);
+                Ok(())
+            }
+            Err(err) if self.activation_timestamp.is_some() => Err(ProviderError::other(err)),
+            Err(err) => {
+                self.metrics.ahead_of_database.set(1.0);
+                warn!(target: "qmdb", %err, new_tip, "failed rewinding QMDB to the database tip after an unwind; shadow roots stop until it is rebuilt");
+                Ok(())
+            }
         }
-        warn!(target: "qmdb", applied, new_tip, "QMDB is ahead of the database after an unwind; shadow roots stop until it is rebuilt");
-        Ok(())
     }
+}
+
+/// Serves the applied QMDB state as reth's current state, in place of the hashed state tables.
+///
+/// The persistence hook applies each block's batch before reth commits the block, so the applied
+/// state is never behind a read transaction's frontier, as [`StateBackend`] requires.
+#[derive(Debug)]
+pub struct QmdbStateBackend {
+    store: Arc<Store>,
+}
+
+impl QmdbStateBackend {
+    /// Creates a backend reading the applied state of `store`.
+    pub const fn new(store: Arc<Store>) -> Self {
+        Self { store }
+    }
+}
+
+impl StateBackend for QmdbStateBackend {
+    fn account(&self, hashed_address: B256) -> ProviderResult<Option<Account>> {
+        let value = self
+            .store
+            .get(layout::account_key(hashed_address))
+            .map_err(ProviderError::other)?;
+        Ok(value.map(|value| AccountRecord::decode(&value).into_account()))
+    }
+
+    fn storage(&self, hashed_address: B256, hashed_slot: B256) -> ProviderResult<Option<U256>> {
+        let value = self
+            .store
+            .get(layout::slot_key(hashed_address, hashed_slot))
+            .map_err(ProviderError::other)?;
+        Ok(value.map(|value| layout::decode_slot_value(&value)))
+    }
+}
+
+/// Brings the on-disk QMDB in step with `persisted`, the database's persisted tip, at startup.
+///
+/// Rewinds QMDB when it is ahead, after a crash between applying a batch and the database commit.
+/// With `require_level`, as when QMDB serves the node's state, it also fails unless QMDB then holds
+/// exactly the state of `persisted` with its hash bound.
+pub fn align_with_database(store: &Store, persisted: u64, require_level: bool) -> eyre::Result<()> {
+    rewind_above(store, persisted)
+        .wrap_err_with(|| format!("failed rewinding QMDB to the database tip {persisted}"))?;
+    if !require_level {
+        return Ok(());
+    }
+    let status = store.status()?;
+    eyre::ensure!(
+        status.applied == Some(persisted),
+        "QMDB holds the state of block {:?}, not of the database tip {persisted}; run `tempo qmdb-import` on a datadir that never served state from QMDB",
+        status.applied
+    );
+    eyre::ensure!(
+        status.base.is_some(),
+        "the QMDB commit journal has no record of block {persisted}'s hash"
+    );
+    Ok(())
 }
 
 /// Keeps the on-disk QMDB in step with the node's persisted chain.
@@ -444,6 +507,7 @@ where
             &cursors,
             &self.store,
             self.snapshot,
+            self.canonical_hash(self.snapshot)?,
             Some(self.sort_dir.clone()),
         )
         .wrap_err("failed importing the snapshot state")?;
@@ -464,6 +528,14 @@ where
             .block_hash(number)?
             .ok_or_else(|| eyre::eyre!("no canonical block {number}"))
     }
+}
+
+/// Rewinds `store` to block `tip` if it applied blocks above it.
+fn rewind_above(store: &Store, tip: u64) -> Result<(), tempo_qmdb_state::Error> {
+    if store.status()?.applied.is_some_and(|applied| applied > tip) {
+        store.rewind_to(tip)?;
+    }
+    Ok(())
 }
 
 fn block_ref(block: &RecoveredBlock<Block>) -> BlockRef {
@@ -527,11 +599,11 @@ struct QmdbMetrics {
 mod tests {
     use super::*;
     use alloy::consensus::Header;
-    use alloy_primitives::U256;
+    use alloy_primitives::KECCAK256_EMPTY;
     use reth_primitives_traits::SealedBlock;
     use std::num::NonZeroUsize;
     use tempo_primitives::TempoHeader;
-    use tempo_qmdb_state::{Config, layout};
+    use tempo_qmdb_state::Config;
 
     fn store(dir: &std::path::Path) -> Arc<Store> {
         let store = Store::open(Config {
@@ -547,10 +619,9 @@ mod tests {
                     key: layout::slot_key(B256::repeat_byte(1), B256::ZERO),
                     value: Some(layout::slot_value(U256::from(1))),
                 }],
-                Some(0),
+                Some((0, B256::ZERO)),
             )
             .unwrap();
-        store.set_base(B256::ZERO).unwrap();
         Arc::new(store)
     }
 
@@ -625,5 +696,181 @@ mod tests {
                 .is_err()
         );
         assert_eq!(store.status().unwrap().applied, Some(0));
+    }
+
+    /// Applies block 1 (hash 0x01) writing `writes` on top of the imported block 0.
+    fn finalize_block_one(store: &Store, writes: Vec<layout::Write>) {
+        store
+            .build(
+                BlockRef {
+                    number: 1,
+                    hash: B256::repeat_byte(1),
+                    parent_hash: B256::ZERO,
+                },
+                writes,
+            )
+            .unwrap();
+        store.finalize(B256::repeat_byte(1)).unwrap();
+    }
+
+    #[test]
+    fn backend_serves_the_applied_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(dir.path());
+        let backend = QmdbStateBackend::new(store.clone());
+        let (address, slot) = (B256::repeat_byte(1), B256::ZERO);
+        assert_eq!(backend.storage(address, slot).unwrap(), Some(U256::from(1)));
+        assert_eq!(backend.account(address).unwrap(), None);
+
+        let account = Account {
+            nonce: 3,
+            balance: U256::from(5),
+            bytecode_hash: Some(B256::repeat_byte(9)),
+            extension: [&[0u8][..], B256::repeat_byte(7).as_slice()]
+                .concat()
+                .into(),
+        };
+        let record = AccountRecord::new(
+            account.nonce,
+            account.balance,
+            account.bytecode_hash,
+            account.extension.as_ref(),
+        )
+        .unwrap();
+        let mut writes = vec![
+            layout::Write {
+                key: layout::account_key(address),
+                value: Some(record.encode()),
+            },
+            layout::Write {
+                key: layout::slot_key(address, slot),
+                value: None,
+            },
+        ];
+        writes.sort_by(|a, b| a.key.cmp(&b.key));
+        // Unapplied batches are not current state yet.
+        store
+            .build(
+                BlockRef {
+                    number: 1,
+                    hash: B256::repeat_byte(1),
+                    parent_hash: B256::ZERO,
+                },
+                writes,
+            )
+            .unwrap();
+        assert_eq!(backend.account(address).unwrap(), None);
+
+        store.finalize(B256::repeat_byte(1)).unwrap();
+        assert_eq!(backend.account(address).unwrap(), Some(account));
+        assert_eq!(backend.storage(address, slot).unwrap(), None);
+    }
+
+    #[test]
+    fn backend_decodes_accounts_without_code_or_commitment() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(dir.path());
+        let address = B256::repeat_byte(4);
+        let record = AccountRecord::new(1, U256::ZERO, Some(KECCAK256_EMPTY), &[]).unwrap();
+        finalize_block_one(
+            &store,
+            vec![layout::Write {
+                key: layout::account_key(address),
+                value: Some(record.encode()),
+            }],
+        );
+        assert_eq!(
+            QmdbStateBackend::new(store).account(address).unwrap(),
+            Some(Account {
+                nonce: 1,
+                ..Default::default()
+            })
+        );
+    }
+
+    #[test]
+    fn unwind_rewinds_qmdb_to_the_new_tip() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(dir.path());
+        let root = store.status().unwrap().root;
+        finalize_block_one(&store, vec![]);
+
+        hook(store.clone(), Some(0))
+            .on_remove_blocks_above(1)
+            .unwrap();
+        assert_eq!(store.status().unwrap().applied, Some(1));
+        hook(store.clone(), Some(0))
+            .on_remove_blocks_above(0)
+            .unwrap();
+        let status = store.status().unwrap();
+        assert_eq!(
+            (status.applied, status.base, status.root),
+            (Some(0), Some(B256::ZERO), root)
+        );
+    }
+
+    #[test]
+    fn failed_unwind_only_errors_once_active() {
+        // The commit journal has no record below the imported block, so QMDB cannot rewind there.
+        let dir = tempfile::tempdir().unwrap();
+        let imported_at_five = Store::open(Config {
+            directory: dir.path().to_path_buf(),
+            threads: NonZeroUsize::MIN,
+            page_cache_pages: NonZeroUsize::new(64).unwrap(),
+            max_pending: NonZeroUsize::new(8).unwrap(),
+        })
+        .unwrap();
+        imported_at_five
+            .import_chunk(vec![], Some((5, B256::repeat_byte(5))))
+            .unwrap();
+        let imported_at_five = Arc::new(imported_at_five);
+
+        hook(imported_at_five.clone(), None)
+            .on_remove_blocks_above(3)
+            .unwrap();
+        assert!(matches!(
+            hook(imported_at_five.clone(), Some(0)).on_remove_blocks_above(3),
+            Err(ProviderError::Other(_))
+        ));
+        assert_eq!(imported_at_five.status().unwrap().applied, Some(5));
+    }
+
+    #[test]
+    fn align_rewinds_and_requires_level_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(dir.path());
+        finalize_block_one(&store, vec![]);
+
+        // Ahead of the database: rewound.
+        align_with_database(&store, 0, true).unwrap();
+        assert_eq!(store.status().unwrap().applied, Some(0));
+
+        // Behind the database: only an error when QMDB must serve the state.
+        align_with_database(&store, 3, false).unwrap();
+        let err = align_with_database(&store, 3, true).unwrap_err();
+        assert!(
+            err.to_string()
+                .starts_with("QMDB holds the state of block Some(0), not of the database tip 3"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn align_requires_an_imported_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(Config {
+            directory: dir.path().to_path_buf(),
+            threads: NonZeroUsize::MIN,
+            page_cache_pages: NonZeroUsize::new(64).unwrap(),
+            max_pending: NonZeroUsize::new(8).unwrap(),
+        })
+        .unwrap();
+        align_with_database(&store, 0, false).unwrap();
+        let err = align_with_database(&store, 0, true).unwrap_err();
+        assert!(
+            err.to_string()
+                .starts_with("QMDB holds the state of block None, not of the database tip 0"),
+            "{err}"
+        );
     }
 }
