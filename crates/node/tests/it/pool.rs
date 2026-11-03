@@ -597,7 +597,7 @@ async fn test_evict_tx_on_validator_token_change() -> eyre::Result<()> {
         validator_token_changes: [(user_addr, attacker_token)].into_iter().collect(),
         ..Default::default()
     };
-    pool.evict_invalidated_transactions(&updates);
+    pool.evict_invalidated_transactions(&updates.into());
 
     // Transaction should NOT be evicted because the attacker's token is not in
     // the active validator set.

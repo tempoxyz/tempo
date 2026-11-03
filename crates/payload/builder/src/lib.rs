@@ -63,9 +63,10 @@ use tempo_payload_types::{
     Estimator, TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload,
     estimator::FinishedBuild,
 };
+use tempo_precompiles::{storage::StorageActions, tip_fee_manager::TipFeeManager};
 use tempo_primitives::{TempoHeader, TempoReceipt, TempoTxEnvelope};
 use tempo_transaction_pool::{
-    BlockState, StateAwareBestTransactions, TempoTransactionPool, best::BestTransaction,
+    StateAwareBestTransactions, TempoTransactionPool, best::BestTransaction,
     transaction::TempoPoolTransactionError,
 };
 use tokio::sync::oneshot;
@@ -87,15 +88,10 @@ enum PayloadTransactions {
 
 impl PayloadTransactions {
     /// Returns the next transaction, if available.
-    ///
-    /// `block` is the state after the transactions executed so far, which the
-    /// [`StateAwareBestTransactions`] variants check candidates against.
-    fn next(&mut self, block: BlockState<'_>) -> Option<PrewarmedTransaction> {
+    fn next(&mut self) -> Option<PrewarmedTransaction> {
         match self {
-            Self::Sequential(txs) => txs
-                .next_with_state(block)
-                .map(PrewarmedTransaction::without_replay),
-            Self::Prewarming(txs) => txs.next_with_state(block),
+            Self::Sequential(txs) => txs.next().map(PrewarmedTransaction::without_replay),
+            Self::Prewarming(txs) => txs.next(),
             Self::Parallel(planner) => planner.next(),
         }
     }
@@ -395,6 +391,12 @@ where
         // Resolve the configured fee recipient before moving the database into the EVM. This
         // keeps the read out of EVM2's journal and therefore out of transaction gas accounting.
         maybe_override_fee_recipient(&mut db, &mut evm_env, &attributes);
+        // The beneficiary cannot change its validator token within its own block.
+        let validator_token = db
+            .with_read_only_storage_ctx(hardfork, StorageActions::disabled(), || {
+                TipFeeManager::new().get_validator_token(evm_env.block.beneficiary)
+            })
+            .map_err(PayloadBuilderError::other)?;
 
         let prewarm_evm_env = evm_env.clone();
         let assembly_evm_env = evm_env.clone();
@@ -450,19 +452,20 @@ where
                 PayloadTransactions::Prewarming(StateAwareBestTransactions::new(
                     BestTransactionsPrewarming::new(prewarm_ctx, raw_best_txs),
                     hardfork.fallback_fee_tokens(),
+                    Some(validator_token),
                 ))
             }
         } else {
             PayloadTransactions::Sequential(StateAwareBestTransactions::new(
                 Box::new(raw_best_txs),
                 hardfork.fallback_fee_tokens(),
+                Some(validator_token),
             ))
         };
         self.metrics
             .pool_fetch_duration_seconds
             .record(pool_fetch_start.elapsed());
 
-        let block_beneficiary = executor.evm().block().beneficiary;
         let execution_start = Instant::now();
         let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
         let mut skipped_oversized_block = false;
@@ -511,13 +514,7 @@ where
                 }
             }
 
-            let block_state = BlockState {
-                db: executor.evm_mut().overlay_db_mut(),
-                spec: hardfork,
-                timestamp: attributes.timestamp,
-                beneficiary: block_beneficiary,
-            };
-            let Some(mut pool_tx) = best_txs.next(block_state) else {
+            let Some(mut pool_tx) = best_txs.next() else {
                 if payload_build_budget.is_some() && cumulative_gas_used < block_gas_limit {
                     std::thread::sleep(Duration::from_millis(1));
                     normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
