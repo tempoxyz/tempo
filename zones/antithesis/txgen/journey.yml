@@ -1,0 +1,176 @@
+# One zone journey per instance, for two accounts the zone has never seen:
+#
+# 1. A funded L1 account deposits pathUSD into the portal, encrypted to fresh account A, and the
+#    zone credits it (DepositProcessed).
+# 2. The same for fresh account B, which keeps its balance.
+# 3. A withdraws part of its balance to its own address on L1, and the portal pays it out
+#    (WithdrawalProcessed on L1).
+#
+# Every journey adds two zone accounts and one L1 account: the driver picks a random window of the
+# mnemonic for ZONE_JOURNEY_FRESH_START..END on every run, so state keeps growing instead of
+# cycling a fixed set. Zones disable TIP-20 transfers for now (the zone TIP-20 precompile rejects
+# transfer and transferFrom with Unauthorized); add a transfer step once they are enabled.
+version: 1
+
+fragments:
+  deposit-to:
+    parameters:
+      funder: account_ref
+      funder_address: address
+      recipient: address
+    outputs:
+      processed: log
+    steps:
+      - checkpoint: { chain: zone }
+        save: zone_before
+
+      - invoke:
+          chain: l1
+          action: prepare_encrypted_deposit
+          with:
+            sender: { param: funder_address }
+            recipient: { param: recipient }
+            zoneId: ${ZONE_ID}
+            portalAddress: "${ZONE_PORTAL_ADDRESS}"
+        save: encryption
+
+      - submit:
+          chain: l1
+          template: deposit
+          with:
+            from: { param: funder }
+            # Approves exactly the deposit and deposits it in one transaction, so funders need
+            # no setup and concurrent drivers never race on allowances.
+            calls:
+              - to: "0x20c0000000000000000000000000000000000000"
+                abi: TIP20
+                function: "approve(address,uint256)"
+                args:
+                  - "${ZONE_PORTAL_ADDRESS}"
+                  - ${ZONE_JOURNEY_DEPOSIT_AMOUNT}
+              - to: "${ZONE_PORTAL_ADDRESS}"
+                abi: ZonePortal
+                function: "deposit(address,uint128,uint256,(bytes32,uint8,bytes,bytes12,bytes16),address)"
+                args:
+                  - "0x20c0000000000000000000000000000000000000"
+                  - ${ZONE_JOURNEY_DEPOSIT_AMOUNT}
+                  - { var: encryption.keyIndex }
+                  - { var: encryption.encrypted }
+                  - { param: funder_address }
+        save: deposit
+
+      - wait_log:
+          chain: l1
+          transaction_hash: { var: deposit.tx_hash }
+          address: "${ZONE_PORTAL_ADDRESS}"
+          abi: ZonePortal
+          event: DepositMade
+          where:
+            sender: { param: funder_address }
+        timeout: 2m
+        save: made
+
+      - wait_log:
+          chain: zone
+          from_block: { var: zone_before.block_number }
+          address: "0x1c00000000000000000000000000000000000001"
+          abi: ZoneInbox
+          event: DepositProcessed
+          where:
+            depositHash: { var: made.args.newCurrentDepositQueueHash }
+            to: { param: recipient }
+            amount: { var: made.args.netAmount }
+        save: processed
+
+chains:
+  l1:
+    network: tempo
+    rpc_url: "${L1_RPC_URL}"
+    chain_id: auto
+    workload: ./l1.yml
+  zone:
+    network: tempo
+    rpc_url: "${ZONE_RPC_URL}"
+    chain_id: auto
+    workload: ./zone.yml
+
+scenario:
+  name: zone-fresh-account-journey
+  timeout: 10m
+
+  bindings:
+    funder:
+      account: { pool: funders, select: random }
+    account_a:
+      account: { pool: fresh, select: lease }
+    account_b:
+      account: { pool: fresh, select: lease }
+
+  steps:
+    - use: deposit-to
+      as: deposit_a
+      with:
+        funder: { var: funder.ref }
+        funder_address: { var: funder.address }
+        recipient: { var: account_a.address }
+
+    - use: deposit-to
+      as: deposit_b
+      with:
+        funder: { var: funder.ref }
+        funder_address: { var: funder.address }
+        recipient: { var: account_b.address }
+
+    - checkpoint: { chain: l1 }
+      save: l1_before_withdrawal
+
+    - submit:
+        chain: zone
+        template: withdraw
+        with:
+          from: { var: account_a.ref }
+          # Approves the outbox and requests the withdrawal to the account's own address on L1
+          # (a new L1 account too). gasLimit 0: no callback.
+          calls:
+            - to: "0x20c0000000000000000000000000000000000000"
+              abi: TIP20
+              function: "approve(address,uint256)"
+              args:
+                - "0x1c00000000000000000000000000000000000002"
+                - "115792089237316195423570985008687907853269984665640564039457584007913129639935"
+            - to: "0x1c00000000000000000000000000000000000002"
+              abi: ZoneOutbox
+              function: "requestWithdrawal(address,address,uint128,bytes32,uint64,address,bytes,bytes)"
+              args:
+                - "0x20c0000000000000000000000000000000000000"
+                - { var: account_a.address }
+                - ${ZONE_JOURNEY_WITHDRAWAL_AMOUNT}
+                - "0x0000000000000000000000000000000000000000000000000000000000000000"
+                - 0
+                - { var: account_a.address }
+                - "0x"
+                - "0x"
+        await: receipt
+      save: withdrawal
+
+    - wait_log:
+        chain: zone
+        transaction_hash: { var: withdrawal.tx_hash }
+        address: "0x1c00000000000000000000000000000000000002"
+        abi: ZoneOutbox
+        event: WithdrawalRequested
+        where:
+          sender: { var: account_a.address }
+          to: { var: account_a.address }
+      save: withdrawal_requested
+
+    - wait_log:
+        chain: l1
+        from_block: { var: l1_before_withdrawal.block_number }
+        address: "${ZONE_PORTAL_ADDRESS}"
+        abi: ZonePortal
+        event: WithdrawalProcessed
+        where:
+          to: { var: account_a.address }
+          amount: ${ZONE_JOURNEY_WITHDRAWAL_AMOUNT}
+      save: withdrawal_processed

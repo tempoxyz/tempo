@@ -7,5 +7,7 @@ localnet/
 target/
 **/target/
 zones/contrib/
+# ABIs the txgen journey workloads load.
+!zones/contrib/bench/neobank/abis/
 zones/docs/
 zones/localnet/

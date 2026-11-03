@@ -6,7 +6,8 @@
 # - zone-0..2: the sequencer quorum; zone-0 is the initial leader
 # - zone-rpc: RPC follower outside the quorum that re-proves every settled batch with the
 #   native prover and runs the solvency checker
-# - workload: waits until the zone replicates, then signals that setup is complete
+# - workload: waits until the zone replicates, then signals that setup is complete; the test
+#   commands (test/) run here: txgen journeys for fresh accounts and the portal backing audit
 #
 # Static addresses keep the P2P manifest free of DNS names.
 
@@ -127,6 +128,8 @@ services:
     depends_on:
       provision:
         condition: service_completed_successfully
+    volumes:
+      - shared:/shared:ro
     networks:
       zones:
         ipv4_address: 10.20.0.30

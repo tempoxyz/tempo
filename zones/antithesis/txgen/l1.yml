@@ -1,0 +1,38 @@
+# L1 side of the zone journeys: funded dev accounts deposit into the zone portal for fresh zone
+# accounts. Keys are public test material (dev accounts of the "test ... junk" mnemonic, funded
+# with pathUSD in the L1 genesis).
+chain_id: ${L1_CHAIN_ID}
+
+gas:
+  max_fee_per_gas: 100000000000
+  max_priority_fee_per_gas: 0
+
+accounts:
+  # Dev accounts 10..19: unused by provisioning (0 is the admin, 5..7 are the sequencers).
+  funders:
+    mnemonic: "test test test test test test test test test test test junk"
+    range: [10, 20]
+  # Same derivation as zone.yml, so the binding resolves to the same addresses on both chains.
+  fresh:
+    mnemonic: "test test test test test test test test test test test junk"
+    range: [${ZONE_JOURNEY_FRESH_START}, ${ZONE_JOURNEY_FRESH_END}]
+
+artifacts:
+  TIP20: ../../contrib/bench/neobank/abis/tip20.json
+  ZonePortal: ../../contrib/bench/neobank/abis/neobank-zone-portal.json
+
+setup: { steps: [] }
+
+# Transaction envelopes; journey.yml supplies the sender and the calls, which use its runtime
+# values. Expiring nonces keep the shared funders free of ordered nonce lanes, which faults
+# would otherwise leave ambiguous.
+templates:
+  deposit:
+    type: tempo
+    from: { pool: funders, select: random }
+    gas_limit: 3000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    valid_for_secs: 25
+
+mix: []
