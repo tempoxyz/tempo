@@ -34,7 +34,7 @@ use tempo_contracts::zones::{
 use tempo_primitives::{Block, TempoHeader};
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
-    sync::{mpsc, oneshot},
+    sync::{Mutex, mpsc, oneshot},
 };
 use tracing::{debug, info, warn};
 use zone_chainspec::ZoneChainSpec;
@@ -161,6 +161,10 @@ struct ProverContext<P> {
     config: SettlementProverConfig,
     zone_provider: P,
     l1_provider: DynProvider<TempoNetwork>,
+    /// Held for each remote proof: the enclave serves one connection at a time and a queued
+    /// connection's handshake timeout runs while it waits, so jobs build witnesses concurrently
+    /// but prove remotely one at a time.
+    remote_prover: Mutex<()>,
 }
 
 struct ZoneInputs {
@@ -270,6 +274,7 @@ fn spawn_prover<P: ZoneSequencerProvider>(
         config,
         zone_provider,
         l1_provider,
+        remote_prover: Mutex::new(()),
     };
     let metrics = ProverMetrics::default();
 
@@ -462,6 +467,7 @@ async fn validate_candidate<P: ZoneSequencerProvider>(
             zone_to = job.to,
             "Selected remote prover"
         );
+        let _remote_prover = context.remote_prover.lock().await;
         let (output, bundle) =
             verify_remotely(remote, context.config.zone_id, job, witness, metrics).await?;
         (output, Some(SettlementProof { bundle, hardfork }))
