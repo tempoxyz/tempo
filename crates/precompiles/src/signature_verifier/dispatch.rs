@@ -239,7 +239,7 @@ mod tests {
 
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;
-            keychain.set_tx_origin(account)?;
+            StorageCtx.set_tx_origin(account);
             keychain.authorize_key(
                 account,
                 access_key.address(),
@@ -305,7 +305,7 @@ mod tests {
 
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;
-            keychain.set_tx_origin(account)?;
+            StorageCtx.set_tx_origin(account);
             keychain.authorize_key(
                 account,
                 access_key.address(),
@@ -341,7 +341,7 @@ mod tests {
 
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;
-            keychain.set_tx_origin(account)?;
+            StorageCtx.set_tx_origin(account);
             keychain.authorize_admin_key(
                 account,
                 admin.address(),
@@ -382,7 +382,7 @@ mod tests {
 
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;
-            keychain.set_tx_origin(account)?;
+            StorageCtx.set_tx_origin(account);
             keychain.authorize_admin_key(
                 account,
                 admin.address(),
@@ -411,7 +411,7 @@ mod tests {
 
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;
-            keychain.set_tx_origin(account)?;
+            StorageCtx.set_tx_origin(account);
             keychain.authorize_key(
                 account,
                 access_key.address(),

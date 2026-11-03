@@ -41,11 +41,10 @@ fn restrictions(expiry: u64) -> KeyRestrictions {
     }
 }
 
-/// Runs `calldata` from `PARENT` as both the sender and the transaction origin, in the entered
-/// storage context.
+/// Runs `calldata` from `PARENT` as the sender, in the entered storage context. Callers set
+/// `PARENT` as the transaction origin.
 fn keychain_call_as_parent(calldata: &[u8]) -> PrecompileOutput {
     let mut keychain = AccountKeychain::new();
-    keychain.set_tx_origin(PARENT).unwrap();
     let before = StorageCtx.gas_used();
     let result = keychain.call(calldata, PARENT);
     PrecompileOutput::new(result, StorageCtx.gas_used() - before)
@@ -53,6 +52,7 @@ fn keychain_call_as_parent(calldata: &[u8]) -> PrecompileOutput {
 
 /// Runs `calldata` from `PARENT` as both the sender and the transaction origin.
 fn call_as_parent(storage: &mut HashMapStorageProvider, calldata: &[u8]) -> PrecompileOutput {
+    storage.set_tx_origin(PARENT);
     StorageCtx::enter(storage, || keychain_call_as_parent(calldata))
 }
 
@@ -67,6 +67,7 @@ fn call_as_parent_in_evm(spec: TempoHardfork, calldata: &[u8]) -> PrecompileOutp
         NoPrecompiles::default(),
         TempoEvmExt::default(),
     );
+    evm.tx_env_mut().origin = PARENT;
     StorageCtx::enter_evm(&mut evm, || keychain_call_as_parent(calldata))
 }
 

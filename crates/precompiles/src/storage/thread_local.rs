@@ -141,8 +141,10 @@ impl StorageCtx {
     }
 
     /// Returns the transaction origin (`tx.origin`) of the executing transaction.
-    pub fn tx_origin(&self) -> Address {
-        Self::with_storage(|s| s.tx_origin())
+    ///
+    /// Charges a warm storage read (see [`PrecompileStorageProvider::tx_origin`]).
+    pub fn tx_origin(&self) -> Result<Address> {
+        Self::try_with_storage(|s| s.tx_origin())
     }
 
     /// Returns the current block timestamp.

@@ -144,7 +144,7 @@ fn storage_at(
             admin: true,
         }) = grant
         {
-            keychain.set_tx_origin(account).unwrap();
+            StorageCtx.set_tx_origin(account);
             keychain
                 .authorize_admin_key(account, key_id, stored_type, None)
                 .unwrap();
@@ -153,7 +153,7 @@ fn storage_at(
     storage.set_spec(T14);
     StorageCtx::enter(&mut storage, || {
         let mut keychain = AccountKeychain::new();
-        keychain.set_tx_origin(account).unwrap();
+        StorageCtx.set_tx_origin(account);
         match grant {
             Some(Grant { admin: true, .. }) | None => {}
             Some(Grant {

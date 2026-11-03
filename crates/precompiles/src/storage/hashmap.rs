@@ -122,8 +122,8 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         &self.block_env
     }
 
-    fn tx_origin(&self) -> Address {
-        self.tx_origin
+    fn tx_origin(&mut self) -> Result<Address, TempoPrecompileError> {
+        Ok(self.tx_origin)
     }
 
     fn set_code(&mut self, address: Address, code: Bytes) -> Result<(), TempoPrecompileError> {

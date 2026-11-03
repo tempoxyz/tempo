@@ -1637,6 +1637,7 @@ mod runtime_tests {
             let holder = Address::repeat_byte(0x11);
             let key = PrivateKeySigner::random();
             let mut evm = configured_evm(TempoHardfork::T12, 0, false, InMemoryDB::default());
+            evm.tx_env_mut().origin = holder;
             let token =
                 StorageCtx::enter_evm(&mut evm, || -> tempo_precompiles::error::Result<_> {
                     TIP20Setup::path_usd(holder).with_issuer(holder).apply()?;
@@ -1647,7 +1648,6 @@ mod runtime_tests {
                         .apply()?;
                     let mut keychain = AccountKeychain::new();
                     keychain.initialize()?;
-                    keychain.set_tx_origin(holder)?;
                     keychain.authorize_key(
                         holder,
                         key.address(),

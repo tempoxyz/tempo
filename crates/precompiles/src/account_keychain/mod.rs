@@ -132,9 +132,6 @@ pub struct AccountKeychain {
     // macro is refactored and has 2 independent layouts (persistent and transient).
     // If new (persistent) storage fields need to be added to the precompile, they must go above this one.
     transaction_key: Address,
-    // The transaction origin (tx.origin) - the EOA that signed the transaction.
-    // Used to ensure spending limits only apply when msg_sender == tx_origin.
-    tx_origin: Address,
 }
 
 /// Key-level call scope.
@@ -770,14 +767,6 @@ impl AccountKeychain {
         self.transaction_key.t_write(key_id)
     }
 
-    /// Sets the transaction origin (tx.origin) for the current transaction.
-    ///
-    /// Called by the handler before transaction execution.
-    /// Uses transient storage, so it's automatically cleared after the transaction.
-    pub fn set_tx_origin(&mut self, origin: Address) -> Result<()> {
-        self.tx_origin.t_write(origin)
-    }
-
     /// Persists the authorization-time restrictions for a freshly created key.
     ///
     /// T0-T2 only store raw spending limits. T3 additionally seeds periodic metadata and replaces
@@ -1145,8 +1134,8 @@ impl AccountKeychain {
     /// The T2 check prevents transaction-global root-key status from being reused by
     /// intermediate contracts (confused-deputy self-administration).
     ///
-    /// `tx_origin` is seeded by the handler before validation/execution.
-    /// If origin is not seeded (zero), admin ops are rejected.
+    /// `tx.origin` comes from the transaction environment, which the handler sets before fee
+    /// collection. A zero origin rejects admin ops.
     fn ensure_admin_caller(&self, msg_sender: Address) -> Result<()> {
         let transaction_key = self.transaction_key.t_read()?;
         if !transaction_key.is_zero()
@@ -1156,7 +1145,7 @@ impl AccountKeychain {
         }
 
         if self.storage.spec().is_t2() {
-            let tx_origin = self.tx_origin.t_read()?;
+            let tx_origin = self.storage.tx_origin()?;
             if tx_origin.is_zero() || tx_origin != msg_sender {
                 return Err(AccountKeychainError::unauthorized_caller().into());
             }
@@ -1494,7 +1483,7 @@ impl AccountKeychain {
             return Ok(());
         }
 
-        let tx_origin = self.tx_origin.t_read()?;
+        let tx_origin = self.storage.tx_origin()?;
         if account != tx_origin {
             return Ok(());
         }
@@ -1569,7 +1558,7 @@ impl AccountKeychain {
         }
 
         // Only apply spending limits if the caller is the tx origin.
-        let tx_origin = self.tx_origin.t_read()?;
+        let tx_origin = self.storage.tx_origin()?;
         if account != tx_origin {
             return Ok(());
         }
@@ -1604,7 +1593,7 @@ impl AccountKeychain {
         }
 
         // Only apply spending limits if the caller is the tx origin.
-        let tx_origin = self.tx_origin.t_read()?;
+        let tx_origin = self.storage.tx_origin()?;
         if account != tx_origin {
             return Ok(());
         }
@@ -1830,7 +1819,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;
-            keychain.set_tx_origin(account)?;
+            StorageCtx.set_tx_origin(account);
 
             keychain.authorize_admin_key(account, admin_key, SignatureType::P256, None)?;
 
@@ -1913,7 +1902,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;
-            keychain.set_tx_origin(account)?;
+            StorageCtx.set_tx_origin(account);
 
             keychain.authorize_admin_key(
                 account,
@@ -1954,7 +1943,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;
-            keychain.set_tx_origin(account)?;
+            StorageCtx.set_tx_origin(account);
             keychain.authorize_admin_key(account, admin_key, SignatureType::Secp256k1, None)?;
 
             keychain.set_transaction_key(admin_key)?;
@@ -1987,14 +1976,14 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;
-            keychain.set_tx_origin(account)?;
+            StorageCtx.set_tx_origin(account);
             keychain.authorize_admin_key(account, admin_key, SignatureType::Secp256k1, None)
         })?;
         storage.set_spec(TempoHardfork::T14);
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            keychain.set_tx_origin(account)?;
+            StorageCtx.set_tx_origin(account);
 
             // No new admin keys, through the ABI or inline key authorizations.
             let authorize_admin = IAccountKeychain::authorizeAdminKeyCall {
@@ -2051,7 +2040,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;
-            keychain.set_tx_origin(account)?;
+            StorageCtx.set_tx_origin(account);
             authorize_key(
                 &mut keychain,
                 account,
@@ -2088,7 +2077,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;
-            keychain.set_tx_origin(account)?;
+            StorageCtx.set_tx_origin(account);
             keychain.authorize_admin_key(account, admin_key, SignatureType::Secp256k1, None)?;
 
             assert_invalid_key_id(
@@ -2124,7 +2113,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;
-            keychain.set_tx_origin(account)?;
+            StorageCtx.set_tx_origin(account);
 
             assert_key_not_found(
                 keychain
@@ -2246,7 +2235,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;
-            keychain.set_tx_origin(account)?;
+            StorageCtx.set_tx_origin(account);
             authorize_key(
                 &mut keychain,
                 account,
@@ -2279,7 +2268,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;
-            keychain.set_tx_origin(account)?;
+            StorageCtx.set_tx_origin(account);
 
             authorize_key_with_witness(
                 &mut keychain,
@@ -2321,7 +2310,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;
-            keychain.set_tx_origin(account)?;
+            StorageCtx.set_tx_origin(account);
 
             keychain.burn_key_authorization_witness(
                 account,
@@ -2361,7 +2350,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;
-            keychain.set_tx_origin(account)?;
+            StorageCtx.set_tx_origin(account);
 
             authorize_key(
                 &mut keychain,
@@ -2532,7 +2521,7 @@ mod tests {
 
             // Setup a key for delegated_sender under a direct-root call.
             keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(delegated_sender)?;
+            StorageCtx.set_tx_origin(delegated_sender);
             authorize_key(
                 &mut keychain,
                 delegated_sender,
@@ -2550,7 +2539,7 @@ mod tests {
             )?;
 
             // Simulate a contract-mediated call where tx.origin != msg.sender.
-            keychain.set_tx_origin(tx_origin)?;
+            StorageCtx.set_tx_origin(tx_origin);
 
             let auth_result = authorize_key(
                 &mut keychain,
@@ -2612,7 +2601,7 @@ mod tests {
             // On T2, contract callers are allowed for admin operations only when
             // `msg.sender == tx.origin`.
             keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(contract_sender)?;
+            StorageCtx.set_tx_origin(contract_sender);
 
             authorize_key(
                 &mut keychain,
@@ -2678,7 +2667,7 @@ mod tests {
 
             // Pre-T2, admin operations do not enforce msg.sender == tx.origin.
             keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(other_origin)?;
+            StorageCtx.set_tx_origin(other_origin);
 
             authorize_key(
                 &mut keychain,
@@ -2735,7 +2724,7 @@ mod tests {
 
             // Setup under matching tx.origin first.
             keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
+            StorageCtx.set_tx_origin(account);
             authorize_key(
                 &mut keychain,
                 account,
@@ -2757,7 +2746,7 @@ mod tests {
             )?;
 
             // On T2+, admin ops require `msg.sender == tx.origin`.
-            keychain.set_tx_origin(other_origin)?;
+            StorageCtx.set_tx_origin(other_origin);
             let result = keychain.update_spending_limit(
                 account,
                 updateSpendingLimitCall {
@@ -2790,7 +2779,7 @@ mod tests {
 
             // Bootstrap: seed origin so we can authorize a key for later revoke/update tests.
             keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
+            StorageCtx.set_tx_origin(account);
             authorize_key(
                 &mut keychain,
                 account,
@@ -2813,7 +2802,7 @@ mod tests {
 
             // Clear tx_origin back to zero — simulates an execution path that
             // never called seed_tx_origin.
-            keychain.set_tx_origin(Address::ZERO)?;
+            StorageCtx.set_tx_origin(Address::ZERO);
 
             // authorize_key must reject
             let auth_result = authorize_key(
@@ -2876,7 +2865,7 @@ mod tests {
 
             // Use main key for all operations
             keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
+            StorageCtx.set_tx_origin(account);
 
             // Step 1: Authorize a key with a spending limit
             let auth_call = authorizeKeyCall {
@@ -3153,7 +3142,7 @@ mod tests {
 
             // authorize access key with 100 token spending limit
             keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(eoa)?;
+            StorageCtx.set_tx_origin(eoa);
 
             let auth_call = authorizeKeyCall {
                 keyId: access_key,
@@ -3270,7 +3259,7 @@ mod tests {
 
             // Setup: Alice authorizes an access key with a spending limit of 100 tokens
             keychain.set_transaction_key(Address::ZERO)?; // Use main key for setup
-            keychain.set_tx_origin(eoa_alice)?;
+            StorageCtx.set_tx_origin(eoa_alice);
 
             let auth_call = authorizeKeyCall {
                 keyId: access_key,
@@ -3303,7 +3292,7 @@ mod tests {
 
             // Now simulate a transaction where Alice uses her access key
             keychain.set_transaction_key(access_key)?;
-            keychain.set_tx_origin(eoa_alice)?;
+            StorageCtx.set_tx_origin(eoa_alice);
 
             // Test 1: When msg_sender == tx_origin (Alice directly transfers)
             // Spending limit SHOULD be enforced
@@ -3959,7 +3948,7 @@ mod tests {
             authorize_key(&mut keychain, eoa, auth_call)?;
 
             keychain.set_transaction_key(access_key)?;
-            keychain.set_tx_origin(eoa)?;
+            StorageCtx.set_tx_origin(eoa);
 
             keychain.authorize_transfer(eoa, token, U256::from(60))?;
 
@@ -3994,7 +3983,7 @@ mod tests {
             keychain.initialize()?;
 
             keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(eoa)?;
+            StorageCtx.set_tx_origin(eoa);
 
             let result = keychain.refund_spending_limit(eoa, token, U256::from(50));
             assert!(result.is_ok());
@@ -4034,7 +4023,7 @@ mod tests {
             authorize_key(&mut keychain, eoa, auth_call)?;
 
             keychain.set_transaction_key(access_key)?;
-            keychain.set_tx_origin(eoa)?;
+            StorageCtx.set_tx_origin(eoa);
 
             keychain.authorize_transfer(eoa, token, U256::from(60))?;
 
@@ -4100,7 +4089,7 @@ mod tests {
             authorize_key(&mut keychain, eoa, auth_call)?;
 
             keychain.set_transaction_key(access_key)?;
-            keychain.set_tx_origin(eoa)?;
+            StorageCtx.set_tx_origin(eoa);
             keychain.authorize_transfer(eoa, token, U256::from(60))?;
 
             Ok::<_, eyre::Report>(())
@@ -4110,7 +4099,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
             keychain.set_transaction_key(access_key)?;
-            keychain.set_tx_origin(eoa)?;
+            StorageCtx.set_tx_origin(eoa);
 
             let result = keychain.refund_spending_limit(eoa, token, U256::from(25));
             assert!(result.is_ok());
@@ -4161,7 +4150,7 @@ mod tests {
             authorize_key(&mut keychain, eoa, auth_call)?;
 
             keychain.set_transaction_key(access_key)?;
-            keychain.set_tx_origin(eoa)?;
+            StorageCtx.set_tx_origin(eoa);
             keychain.authorize_transfer(eoa, token, U256::from(60))?;
 
             Ok::<_, TempoPrecompileError>(keychain.keys[eoa][access_key].as_slot().slot())
@@ -4172,7 +4161,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
             keychain.set_transaction_key(access_key)?;
-            keychain.set_tx_origin(eoa)?;
+            StorageCtx.set_tx_origin(eoa);
 
             let err = keychain
                 .refund_spending_limit(eoa, token, U256::from(25))
@@ -4216,7 +4205,7 @@ mod tests {
             authorize_key(&mut keychain, eoa, auth_call)?;
 
             keychain.set_transaction_key(access_key)?;
-            keychain.set_tx_origin(eoa)?;
+            StorageCtx.set_tx_origin(eoa);
 
             keychain.authorize_transfer(eoa, token, U256::from(10))?;
 
@@ -4257,7 +4246,7 @@ mod tests {
             keychain.initialize()?;
 
             keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(eoa)?;
+            StorageCtx.set_tx_origin(eoa);
 
             let auth_call = authorizeKeyCall {
                 keyId: access_key,
@@ -4277,7 +4266,7 @@ mod tests {
             authorize_key(&mut keychain, eoa, auth_call)?;
 
             keychain.set_transaction_key(access_key)?;
-            keychain.set_tx_origin(eoa)?;
+            StorageCtx.set_tx_origin(eoa);
 
             keychain.authorize_transfer(eoa, token, U256::from(60))?;
             keychain.refund_spending_limit(eoa, token, U256::from(30))?;
@@ -4336,7 +4325,7 @@ mod tests {
             })?;
 
             keychain.set_transaction_key(access_key)?;
-            keychain.set_tx_origin(eoa)?;
+            StorageCtx.set_tx_origin(eoa);
             keychain.refund_spending_limit(eoa, token, U256::from(10))?;
 
             let after_refund = keychain.get_remaining_limit(getRemainingLimitCall {
@@ -4365,7 +4354,7 @@ mod tests {
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;
             keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
+            StorageCtx.set_tx_origin(account);
 
             authorize_key(
                 &mut keychain,
@@ -4419,7 +4408,7 @@ mod tests {
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;
             keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
+            StorageCtx.set_tx_origin(account);
 
             let authorize_result = authorize_key(
                 &mut keychain,
@@ -4505,7 +4494,7 @@ mod tests {
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;
             keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
+            StorageCtx.set_tx_origin(account);
 
             let result = authorize_key(
                 &mut keychain,
@@ -4565,7 +4554,7 @@ mod tests {
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;
             keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
+            StorageCtx.set_tx_origin(account);
 
             authorize_key(
                 &mut keychain,
@@ -4611,7 +4600,7 @@ mod tests {
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;
             keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
+            StorageCtx.set_tx_origin(account);
 
             let err = authorize_key(
                 &mut keychain,
@@ -4691,7 +4680,7 @@ mod tests {
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;
             keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
+            StorageCtx.set_tx_origin(account);
 
             authorize_key(
                 &mut keychain,
@@ -4748,7 +4737,7 @@ mod tests {
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;
             keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
+            StorageCtx.set_tx_origin(account);
             TIP20Setup::path_usd(account).apply()?;
 
             authorize_key(
@@ -4799,7 +4788,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
             keychain.set_transaction_key(key_id)?;
-            keychain.set_tx_origin(account)?;
+            StorageCtx.set_tx_origin(account);
 
             keychain.authorize_transfer(account, token, U256::from(10))?;
 
@@ -4826,7 +4815,7 @@ mod tests {
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;
             keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
+            StorageCtx.set_tx_origin(account);
 
             authorize_key(
                 &mut keychain,
@@ -4877,7 +4866,7 @@ mod tests {
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;
             keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
+            StorageCtx.set_tx_origin(account);
 
             authorize_key(
                 &mut keychain,
@@ -4958,7 +4947,7 @@ mod tests {
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;
             keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
+            StorageCtx.set_tx_origin(account);
 
             authorize_key(
                 &mut keychain,
@@ -5009,7 +4998,7 @@ mod tests {
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;
             keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
+            StorageCtx.set_tx_origin(account);
 
             for (key_id, expiry) in [(revoked_key, u64::MAX), (expiring_key, 1_005)] {
                 authorize_key(
@@ -5079,7 +5068,7 @@ mod tests {
                 let mut keychain = AccountKeychain::new();
                 keychain.initialize()?;
                 keychain.set_transaction_key(Address::ZERO)?;
-                keychain.set_tx_origin(account)?;
+                StorageCtx.set_tx_origin(account);
 
                 authorize_key(
                     &mut keychain,
@@ -5158,7 +5147,7 @@ mod tests {
                 let mut keychain = AccountKeychain::new();
                 keychain.initialize()?;
                 keychain.set_transaction_key(Address::ZERO)?;
-                keychain.set_tx_origin(account)?;
+                StorageCtx.set_tx_origin(account);
 
                 authorize_key(
                     &mut keychain,
@@ -5261,7 +5250,7 @@ mod tests {
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;
             keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
+            StorageCtx.set_tx_origin(account);
 
             authorize_key(
                 &mut keychain,
@@ -5307,7 +5296,7 @@ mod tests {
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;
             keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
+            StorageCtx.set_tx_origin(account);
 
             authorize_key(
                 &mut keychain,
@@ -5358,7 +5347,7 @@ mod tests {
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;
             keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
+            StorageCtx.set_tx_origin(account);
 
             authorize_key(
                 &mut keychain,
@@ -5452,7 +5441,7 @@ mod tests {
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;
             keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
+            StorageCtx.set_tx_origin(account);
 
             authorize_key(
                 &mut keychain,
@@ -5520,7 +5509,7 @@ mod tests {
                 let mut keychain = AccountKeychain::new();
                 keychain.initialize()?;
                 keychain.set_transaction_key(Address::ZERO)?;
-                keychain.set_tx_origin(account)?;
+                StorageCtx.set_tx_origin(account);
 
                 authorize_key(
                     &mut keychain,
@@ -5588,7 +5577,7 @@ mod tests {
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;
             keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
+            StorageCtx.set_tx_origin(account);
             TIP20Setup::path_usd(account).apply()?;
 
             authorize_key(
@@ -5670,7 +5659,7 @@ mod tests {
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;
             keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
+            StorageCtx.set_tx_origin(account);
 
             authorize_key(
                 &mut keychain,

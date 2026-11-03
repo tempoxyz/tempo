@@ -396,8 +396,9 @@ where
         self.evm.block()
     }
 
-    fn tx_origin(&self) -> Address {
-        self.evm.tx_env().origin
+    fn tx_origin(&mut self) -> Result<Address, TempoPrecompileError> {
+        self.deduct_gas(self.version.gas_params.get(GasId::WarmStorageReadCost))?;
+        Ok(self.evm.tx_env().origin)
     }
 
     #[inline]

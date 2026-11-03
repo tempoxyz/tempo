@@ -134,7 +134,7 @@ impl ConfigurableAccount {
         owners: Vec<IConfigurableAccount::ConfigurableAccountOwner>,
     ) -> Result<B256> {
         // Only the transaction's own sender may migrate itself.
-        if self.storage.tx_origin() != sender {
+        if self.storage.tx_origin()? != sender {
             return Err(ConfigurableAccountError::upgrade_must_be_direct_call().into());
         }
         match self.upgrade_eligibility.t_read()? {

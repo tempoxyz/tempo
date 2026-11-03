@@ -668,7 +668,7 @@ fn committed_parent_requires_protocol_marker_to_authorize_keys() {
             StorageCtx::enter(&mut storage, || {
                 let mut keychain = AccountKeychain::new();
                 keychain.initialize().unwrap();
-                keychain.set_tx_origin(parent).unwrap();
+                StorageCtx.set_tx_origin(parent);
                 if committed {
                     seed_commitment(parent, B256::repeat_byte(1));
                 }

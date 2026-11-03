@@ -1104,7 +1104,7 @@ fn eoa_migration_gas_schedule() {
     ]);
     let params = tempo_gas_params(TempoHardfork::T14);
     // Pinned totals: (owners, gas_used). Legacy and AA primitive transactions cost the same.
-    let pins = [(1, 275_498), (3, 277_670)];
+    let pins = [(1, 275_598), (3, 277_770)];
     for (count, expected) in pins {
         for kind in [RootTx::Legacy, RootTx::Aa] {
             let mut f = Fixture::with_parent(false);
@@ -1121,23 +1121,31 @@ fn eoa_migration_gas_schedule() {
                     .iter()
                     .map(|b| if *b == 0 { 4 } else { 16 })
                     .sum::<u64>();
-            // The precompile charges, in order: ABI input, the eligibility TLOAD, the account
-            // access for X, the 42-byte salt preimage hash, the commitment preimage hash, the zero
-            // to non-zero commitment write, and LOG3 with the ABI-encoded data (salt, threshold,
-            // owners). The origin comes from the transaction environment at no cost.
+            // The precompile charges, in order: ABI input, the origin read (priced as a TLOAD), the eligibility
+            // TLOAD, the account access for X, the 42-byte salt preimage hash, the commitment
+            // preimage hash, the zero to non-zero commitment write, and LOG3 with the ABI-encoded
+            // data (salt, threshold, owners).
             let input = 30 * (call.input.len() as u64).div_ceil(32);
             let salt = keccak_cost(CONFIGURABLE_ACCOUNT_UPGRADE_DOMAIN.len() + 20).unwrap();
             let commitment =
                 keccak_cost(CONFIGURABLE_ACCOUNT_CONFIG_DOMAIN.len() + 32 + 8 + 2 + count * 21)
                     .unwrap();
             let warm_read = params.get(GasId::WarmStorageReadCost);
+            let origin = warm_read;
             let tload = warm_read;
             let account_access = warm_read;
             let write = params.get(GasId::NewAccountCost);
             let log_data = (4 + count as u64 * 2) * 32;
             let log = 375 + 3 * 375 + 8 * log_data;
-            let components =
-                intrinsic + input + salt + commitment + tload + account_access + write + log;
+            let components = intrinsic
+                + input
+                + origin
+                + salt
+                + commitment
+                + tload
+                + account_access
+                + write
+                + log;
             assert_eq!(
                 components, expected,
                 "{count} owners, {kind:?}: component sum"

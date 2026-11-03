@@ -486,9 +486,9 @@ where
         &self.block_env
     }
 
-    fn tx_origin(&self) -> Address {
+    fn tx_origin(&mut self) -> Result<Address, TempoPrecompileError> {
         // Bootstrap writes state directly, outside any transaction.
-        Address::ZERO
+        Ok(Address::ZERO)
     }
 
     fn set_code(&mut self, _address: Address, _code: Bytes) -> Result<(), TempoPrecompileError> {

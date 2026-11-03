@@ -22,7 +22,6 @@ use tempo_chainspec::{constants::gas::STORAGE_CREDIT_VALUE, hardfork::TempoHardf
 use tempo_contracts::precompiles::TIPFeeAMMError;
 use tempo_precompiles::{
     STORAGE_CREDITS_ADDRESS,
-    account_keychain::AccountKeychain,
     error::TempoPrecompileError,
     storage::{FromWord, StorageActions, StorageCtx},
     storage_credits::{NonCreditableSlots, TransientState},
@@ -322,8 +321,10 @@ impl TempoHandlerHooks {
             calc_gas_balance_spending(envelope.evm_tx().gas_limit(), envelope.max_fee_per_gas());
         let spec = host.config_spec_id();
 
+        // Keychain checks during fee collection and key authorization read the origin before
+        // execution starts; execution later rewrites the environment with the same origin.
+        host.tx_env_mut().origin = envelope.evm_tx().signer();
         StorageCtx::enter_evm_without_tip1060_accounting(host, || {
-            AccountKeychain::new().set_tx_origin(envelope.evm_tx().signer())?;
             if spec.is_t14() {
                 envelope.seed_upgrade_authority()?;
             }

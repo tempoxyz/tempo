@@ -1746,6 +1746,7 @@ fn test_t3_scope_validation_moves_to_execution(gas_limit: u64, expected_stop: In
         input: Bytes::from_static(&CALL_SCOPE_SELECTOR),
     }];
     let mut evm = test_evm(TempoHardfork::T3);
+    evm.tx_env_mut().origin = caller;
 
     StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
         let mut keychain = AccountKeychain::new();
@@ -1754,9 +1755,6 @@ fn test_t3_scope_validation_moves_to_execution(gas_limit: u64, expected_stop: In
         keychain
             .set_transaction_key(Address::ZERO)
             .expect("root key setup succeeds");
-        keychain
-            .set_tx_origin(caller)
-            .expect("tx.origin setup succeeds");
         keychain
             .authorize_key(
                 caller,
@@ -1870,6 +1868,7 @@ fn test_t3_scope_validation_returns_call_not_allowed_revert_data() {
         input: Bytes::from_static(&DENIED_SELECTOR),
     }];
     let mut evm = test_evm(TempoHardfork::T3);
+    evm.tx_env_mut().origin = caller;
 
     StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
         let mut keychain = AccountKeychain::new();
@@ -1878,9 +1877,6 @@ fn test_t3_scope_validation_returns_call_not_allowed_revert_data() {
         keychain
             .set_transaction_key(Address::ZERO)
             .expect("root key setup succeeds");
-        keychain
-            .set_tx_origin(caller)
-            .expect("tx.origin setup succeeds");
         keychain
             .authorize_key(
                 caller,
@@ -2763,12 +2759,12 @@ mod keychain {
         .into();
         let env = env.with_simulation_overrides(B256::ZERO, None, Some(access_key));
         let mut evm = test_evm(spec);
+        evm.tx_env_mut().origin = user;
 
         StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
             let mut kc = AccountKeychain::new();
             kc.initialize().unwrap();
             kc.set_transaction_key(Address::ZERO).unwrap();
-            kc.set_tx_origin(user).unwrap();
             if seed_key {
                 kc.authorize_key(
                     user,

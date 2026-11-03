@@ -2695,7 +2695,7 @@ pub(crate) mod tests {
 
             // Simulate pre-tx: access key deducts max fee from spending limit
             keychain.set_transaction_key(access_key)?;
-            keychain.set_tx_origin(user)?;
+            StorageCtx.set_tx_origin(user);
             keychain.authorize_transfer(user, token_address, max_fee)?;
 
             let remaining_after_deduction =
@@ -2766,7 +2766,7 @@ pub(crate) mod tests {
             )?;
 
             keychain.set_transaction_key(access_key)?;
-            keychain.set_tx_origin(user)?;
+            StorageCtx.set_tx_origin(user);
             keychain.authorize_transfer(user, token_address, max_fee)?;
 
             let remaining_after_deduction =
@@ -3808,7 +3808,7 @@ pub(crate) mod tests {
     ) -> Result<AccountKeychain> {
         let mut keychain = AccountKeychain::new();
         keychain.initialize()?;
-        keychain.set_tx_origin(account)?;
+        StorageCtx.set_tx_origin(account);
         keychain.authorize_key(
             account,
             key,
