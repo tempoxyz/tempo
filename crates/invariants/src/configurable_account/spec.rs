@@ -1,13 +1,17 @@
 //! Configuration rules written from the TIP text; hashes come from `tempo_primitives`.
 
 use alloy_primitives::{Address, B256, keccak256};
-use tempo_primitives::transaction::configurable_account::{
-    self as primitives, CONFIGURABLE_ACCOUNT_UPGRADE_DOMAIN, MAX_CONFIGURABLE_ACCOUNT_OWNERS,
-};
+use tempo_contracts::precompiles::SYSTEM_PRECOMPILES;
 pub use tempo_primitives::transaction::configurable_account::{
     MAX_CONFIGURABLE_ACCOUNT_OWNER_SIGNATURE_BYTES as MAX_APPROVAL_BYTES,
     MAX_CONFIGURABLE_ACCOUNT_SIGNATURES as MAX_APPROVALS,
     configurable_account_digest as approval_digest,
+};
+use tempo_primitives::{
+    TempoAddressExt, is_tip20_prefix,
+    transaction::configurable_account::{
+        self as primitives, CONFIGURABLE_ACCOUNT_UPGRADE_DOMAIN, MAX_CONFIGURABLE_ACCOUNT_OWNERS,
+    },
 };
 
 use super::IConfigurableAccount::{ConfigurableAccountConfig, ConfigurableAccountOwner};
@@ -85,6 +89,29 @@ pub fn derived_address(config: &ConfigurableAccountConfig) -> Option<Address> {
         .account_preimage()
         .ok()
         .map(|preimage| Address::from_word(keccak256(preimage)))
+}
+
+/// The reserved address space `account` lies in, `None` when it is outside them all. A ZonePortal
+/// has code, which MARKER-INSTALL judges.
+// <https://github.com/tempoxyz/tempo/blob/6a8514bcd6ff790599d3d6de9a0be8a189e4cb36/tips/tip-1107.md#L501>
+pub fn reserved(account: Address) -> Option<&'static str> {
+    let bytes = account.as_slice();
+    let low = u16::from_be_bytes([bytes[18], bytes[19]]);
+    if account.is_zero() {
+        Some("the zero address")
+    } else if account.is_virtual() {
+        Some("a virtual address")
+    } else if is_tip20_prefix(account) {
+        Some("a TIP-20 token address")
+    } else if SYSTEM_PRECOMPILES
+        .iter()
+        .any(|(precompile, _)| *precompile == account)
+        || (bytes[..18] == [0; 18] && ((1..=0x11).contains(&low) || low == 0x100))
+    {
+        Some("a precompile")
+    } else {
+        None
+    }
 }
 
 /// The salt of `account`'s configuration after it migrates.

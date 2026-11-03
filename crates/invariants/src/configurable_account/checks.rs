@@ -3,6 +3,10 @@
 use alloy_primitives::{Address, B256, KECCAK256_EMPTY};
 use alloy_sol_types::SolEvent;
 use invariants_core::{check, ensure};
+use tempo_contracts::precompiles::{
+    ACCOUNT_KEYCHAIN_ADDRESS,
+    IAccountKeychain::{AdminKeyAuthorized, KeyAuthorized, KeyRevoked, SpendingLimitUpdated},
+};
 use tempo_primitives::is_tip20_prefix;
 
 use super::{
@@ -30,7 +34,7 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
             ensure!(!post.is_zero(), "commitment {pre} cleared")
         },
     },
-    // Only the sender or an account whose quorum signed changes its commitment.
+    // Only registration, the account's own owner update or its migration changes its commitment.
     // <https://github.com/tempoxyz/tempo/blob/6a8514bcd6ff790599d3d6de9a0be8a189e4cb36/tips/tip-1107.md#L508>
     check! {
         id: "TEMPO-ACCOUNT-COMMITMENT-BY-SELF",
@@ -41,10 +45,15 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
             if pre == post {
                 return None;
             }
-            let signed = tx.authority.quorums_of(**account).next().is_some();
+            let registered = pre.is_zero()
+                && tx
+                    .authority
+                    .quorums_of(**account)
+                    .any(|q| q.config.version == 0);
+            let own = tx.sender == **account && !own_writes(s, **account).is_empty();
             ensure!(
-                tx.sender == **account || signed,
-                "commitment {pre} -> {post} in a transaction from {} it did not sign",
+                registered || own,
+                "commitment {pre} -> {post} in a transaction from {} that neither registers,                  updates nor migrates it",
                 tx.sender
             )
         },
@@ -314,6 +323,68 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
             )
         },
     },
+    // A failed transaction keeps no owner update or migration, only registration.
+    // <https://github.com/tempoxyz/tempo/blob/6a8514bcd6ff790599d3d6de9a0be8a189e4cb36/tips/tip-1107.md#L528>
+    // <https://github.com/tempoxyz/tempo/blob/6a8514bcd6ff790599d3d6de9a0be8a189e4cb36/tips/tip-1113.md#L261>
+    check! {
+        id: "TEMPO-ACCOUNT-FAILED-ROLLBACK",
+        over: |step: &AccountStep| step.post.of.keys(),
+        judge: |s, account| {
+            let tx = s.tx.as_ref()?;
+            if tx.success {
+                return None;
+            }
+            let (pre, post) = commitments(s, account)?;
+            let writes = own_writes(s, **account).len();
+            let registered = pre.is_zero()
+                && tx.authority.quorums_of(**account).any(|q| {
+                    q.config.version == 0 && spec::commitment(&q.config) == Some(post)
+                });
+            ensure!(
+                writes == 0 && (pre == post || registered),
+                "failed, yet commitment {pre} -> {post} with {writes} updates or migrations kept"
+            )
+        },
+    },
+    // A registering account's address is outside the reserved address spaces.
+    // <https://github.com/tempoxyz/tempo/blob/6a8514bcd6ff790599d3d6de9a0be8a189e4cb36/tips/tip-1107.md#L501>
+    check! {
+        id: "TEMPO-ACCOUNT-DERIVED-ADDRESS",
+        over: |step: &AccountStep| {
+            quorums(step)
+                .filter(|q| q.config.version == 0)
+                .filter(|q| step.pre.of.get(&q.account).is_some_and(|c| c.is_zero()))
+        },
+        judge: |_, q| {
+            Some(match spec::reserved(q.account) {
+                None => Verdict::Holds,
+                Some(space) => Verdict::Broken(format!("registers at {space}")),
+            })
+        },
+    },
+    // Grants change only by the parent's own key or quorum, and never as an admin key.
+    // <https://github.com/tempoxyz/tempo/blob/6a8514bcd6ff790599d3d6de9a0be8a189e4cb36/tips/tip-1111.md#L174-L175>
+    check! {
+        id: "TEMPO-ACCOUNT-GRANT-AUTHORITY",
+        over: |step: &AccountStep| grant_changes(step),
+        judge: |s, change| {
+            let tx = s.tx.as_ref()?;
+            if !tx.authority.active || change.account != tx.sender {
+                return None;
+            }
+            if change.kind == GrantKind::Admin {
+                return Some(Verdict::Broken("authorized an admin key".to_string()));
+            }
+            let by_access_key = tx.authority.keys.iter().any(|k| k.role == Role::AccessKey)
+                || tx.authority.quorums.iter().any(|q| q.role == Role::AccessKey);
+            let inline = change.kind == GrantKind::Authorized
+                && tx.authority.grant.is_some_and(|g| g.key_id == change.key);
+            ensure!(
+                !by_access_key || inline,
+                "changed in a transaction an access key signed"
+            )
+        },
+    },
 ];
 
 impl StepChecked<Option<Tx>> for Commitments {
@@ -386,6 +457,23 @@ pub const LEAF_CHECKS: &[Check<Leaves>] = &[
             )
         },
     },
+    // Nothing changes or clears the marker.
+    // <https://github.com/tempoxyz/tempo/blob/6a8514bcd6ff790599d3d6de9a0be8a189e4cb36/tips/tip-1107.md#L514>
+    check! {
+        id: "TEMPO-ACCOUNT-MARKER-KEPT",
+        over: |l: &Leaves| l.of.keys(),
+        judge: |l, account| {
+            let LeafChange { before, after } = *l.of.get(*account)?;
+            if before.code_hash != MARKER_CODE_HASH {
+                return None;
+            }
+            ensure!(
+                after.code_hash == MARKER_CODE_HASH,
+                "marker replaced by code hash {}",
+                after.code_hash
+            )
+        },
+    },
 ];
 
 type AccountStep = Step<Commitments, Option<Tx>>;
@@ -397,6 +485,75 @@ impl Checked for Leaves {
 /// `account`'s commitment before and after the step, when both reads answered.
 fn commitments(s: &AccountStep, account: &Address) -> Option<(B256, B256)> {
     Some((*s.pre.of.get(account)?, *s.post.of.get(account)?))
+}
+
+/// The step's owner updates (version above 0) and migrations of `account`.
+fn own_writes(s: &AccountStep, account: Address) -> Vec<u64> {
+    let precompile = s.post.precompile;
+    let updates = s
+        .events::<ConfigurableAccountConfigUpdated>(precompile)
+        .into_iter()
+        .filter(|e| e.account == account && e.version != 0)
+        .map(|e| e.version);
+    let upgrades = s
+        .events::<AccountUpgraded>(precompile)
+        .into_iter()
+        .filter(|e| e.account == account)
+        .map(|_| 1);
+    updates.chain(upgrades).collect()
+}
+
+/// What a keychain event did to a grant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GrantKind {
+    Authorized,
+    Admin,
+    Revoked,
+    Limit,
+}
+
+/// A grant a keychain event changed.
+struct GrantChange {
+    kind: GrantKind,
+    account: Address,
+    key: Address,
+}
+
+impl std::fmt::Display for GrantChange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{:?} grant of key {} for {}",
+            self.kind, self.key, self.account
+        )
+    }
+}
+
+/// The grants the step's keychain events changed.
+fn grant_changes(step: &AccountStep) -> Vec<GrantChange> {
+    let keychain = ACCOUNT_KEYCHAIN_ADDRESS;
+    let change = |kind, account, key| GrantChange { kind, account, key };
+    let mut changes: Vec<GrantChange> = step
+        .events::<KeyAuthorized>(keychain)
+        .into_iter()
+        .map(|e| change(GrantKind::Authorized, e.account, e.publicKey))
+        .collect();
+    changes.extend(
+        step.events::<AdminKeyAuthorized>(keychain)
+            .into_iter()
+            .map(|e| change(GrantKind::Admin, e.account, e.publicKey)),
+    );
+    changes.extend(
+        step.events::<KeyRevoked>(keychain)
+            .into_iter()
+            .map(|e| change(GrantKind::Revoked, e.account, e.publicKey)),
+    );
+    changes.extend(
+        step.events::<SpendingLimitUpdated>(keychain)
+            .into_iter()
+            .map(|e| change(GrantKind::Limit, e.account, e.publicKey)),
+    );
+    changes
 }
 
 /// The quorums of the step's transaction.
