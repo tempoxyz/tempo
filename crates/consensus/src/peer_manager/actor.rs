@@ -331,10 +331,15 @@ impl Peers {
         if size <= max.get() {
             return self;
         }
-        // Leave a slot for the local identity.
-        let budget = max.get() - 1;
-        self.primary.truncate(budget);
-        self.secondary.truncate(budget - self.primary.len());
+        // Truncation can drop the local identity, which then takes a slot again.
+        for budget in [max.get(), max.get() - 1] {
+            self.primary.truncate(budget);
+            self.secondary.truncate(budget - self.primary.len());
+            let flat = self.to_flat_map();
+            if flat.len() + usize::from(flat.position(local).is_none()) <= max.get() {
+                break;
+            }
+        }
         warn!(
             peers = size,
             max_peers_per_set = max.get(),
@@ -909,6 +914,12 @@ mod tests {
                 .position(bounded.secondary.get(0).unwrap())
                 .is_some()
         );
+
+        // The local identity in the set takes no extra slot.
+        let bounded = peers
+            .clone()
+            .bounded(&peer(1).public_key, commonware_utils::NZUsize!(4));
+        assert_eq!(bounded.len(), 4);
 
         let bounded = peers.bounded(&local, commonware_utils::NZUsize!(2));
         assert_eq!(bounded.primary.len(), 1);
