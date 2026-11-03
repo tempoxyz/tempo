@@ -514,7 +514,6 @@ where
             let block_state = BlockState {
                 db: executor.evm_mut().overlay_db_mut(),
                 spec: hardfork,
-                timestamp: attributes.timestamp,
                 beneficiary: block_beneficiary,
             };
             let Some(mut pool_tx) = best_txs.next(block_state) else {

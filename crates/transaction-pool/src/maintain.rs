@@ -1,12 +1,15 @@
 //! Transaction pool maintenance tasks.
 
 use crate::{
-    RevokedKeys, SpendingLimitUpdates, TempoTransactionPool, metrics::TempoPoolMaintenanceMetrics,
-    transaction::TempoPooledTransaction, validator::ConfigureTempoPoolEvm,
+    RevokedKeys, SpendingLimitUpdates, TempoTransactionPool,
+    invalidation::{Invalidations, Reason},
+    metrics::TempoPoolMaintenanceMetrics,
+    transaction::TempoPooledTransaction,
+    validator::ConfigureTempoPoolEvm,
 };
 use alloy_primitives::{
     Address, B256, Log, TxHash,
-    map::{AddressMap, AddressSet, B256Set},
+    map::{AddressMap, AddressSet, B256Set, HashSet},
 };
 use alloy_sol_types::SolEvent;
 use futures::StreamExt;
@@ -59,10 +62,11 @@ pub struct TempoPoolUpdates {
     /// Uses a set since a user can emit multiple events in the same block; we only need to
     /// process each user once. No cleanup needed as this is ephemeral per-block data.
     pub user_token_changes: AddressSet,
-    /// TIP403 blacklist additions: (policy_id, account).
-    pub blacklist_additions: Vec<(u64, Address)>,
-    /// TIP403 whitelist removals: (policy_id, account).
-    pub whitelist_removals: Vec<(u64, Address)>,
+    /// TIP403 restrictions in effect after these events, by account: the blacklist policies
+    /// that added it and the whitelist policies that removed it.
+    ///
+    /// A later event that lifts a restriction removes it, and repeated events add nothing.
+    pub policy_restrictions: AddressMap<HashSet<u64>>,
     /// Fee tokens paused by this block.
     pub paused_tokens: AddressSet,
     /// Tokens whose transfer policy was changed via `changeTransferPolicyId()`.
@@ -73,11 +77,6 @@ pub struct TempoPoolUpdates {
     /// Pending transactions paying in these tokens need to be re-validated because the new
     /// quote token may invalidate the old route.
     pub quote_token_updates: AddressSet,
-    /// Fee token balance changes keyed by token.
-    ///
-    /// We only track the debited `from` account from TIP20 `Transfer` logs because credits to the
-    /// `to` account cannot make an already-admitted transaction newly invalid.
-    pub fee_balance_changes: AddressMap<AddressSet>,
     /// Spending-limit spends emitted by the account keychain during execution.
     ///
     /// We record the exact `(account, key_id, token)` triples emitted by `AccessKeySpend`
@@ -106,12 +105,10 @@ impl TempoPoolUpdates {
             && self.spending_limit_changes.is_empty()
             && self.validator_token_changes.is_empty()
             && self.user_token_changes.is_empty()
-            && self.blacklist_additions.is_empty()
-            && self.whitelist_removals.is_empty()
+            && self.policy_restrictions.is_empty()
             && self.paused_tokens.is_empty()
             && self.transfer_policy_updates.is_empty()
             && self.quote_token_updates.is_empty()
-            && self.fee_balance_changes.is_empty()
             && self.spending_limit_spends.is_empty()
             && self.key_authorization_witness_burns.is_empty()
     }
@@ -141,10 +138,7 @@ impl TempoPoolUpdates {
     ///
     /// The payload builder also uses it for events emitted earlier in the block it builds.
     pub(crate) fn apply_log(&mut self, log: &Log) {
-        // Fee token pause events and balance changes.
-        //
-        // Checked first because TIP-20 `Transfer` logs dominate block receipts; this avoids
-        // three address comparisons per transfer before reaching the matching branch.
+        // Fee token pause and policy events.
         if log.address.is_tip20() {
             match Tip20PoolEvent::decode(log) {
                 Some(Tip20PoolEvent::PauseStateUpdate(event)) => {
@@ -159,12 +153,6 @@ impl TempoPoolUpdates {
                 }
                 Some(Tip20PoolEvent::QuoteTokenUpdate) => {
                     self.quote_token_updates.insert(log.address);
-                }
-                Some(Tip20PoolEvent::Transfer { from }) => {
-                    self.fee_balance_changes
-                        .entry(log.address)
-                        .or_default()
-                        .insert(from);
                 }
                 None => {}
             }
@@ -224,15 +212,28 @@ impl TempoPoolUpdates {
         // TIP403 blacklist additions and whitelist removals
         else if log.address == TIP403_REGISTRY_ADDRESS {
             match Tip403PoolEvent::decode(log) {
-                Some(Tip403PoolEvent::BlacklistUpdated(event)) if event.restricted => {
-                    self.blacklist_additions
-                        .push((event.policyId, event.account));
+                Some(Tip403PoolEvent::BlacklistUpdated(event)) => {
+                    self.set_policy_restriction(event.policyId, event.account, event.restricted);
                 }
-                Some(Tip403PoolEvent::WhitelistUpdated(event)) if !event.allowed => {
-                    self.whitelist_removals
-                        .push((event.policyId, event.account));
+                Some(Tip403PoolEvent::WhitelistUpdated(event)) => {
+                    self.set_policy_restriction(event.policyId, event.account, !event.allowed);
                 }
-                Some(_) | None => {}
+                None => {}
+            }
+        }
+    }
+
+    /// Records that TIP-403 policy `policy_id` now restricts `account`, or no longer does.
+    pub fn set_policy_restriction(&mut self, policy_id: u64, account: Address, restricted: bool) {
+        if restricted {
+            self.policy_restrictions
+                .entry(account)
+                .or_default()
+                .insert(policy_id);
+        } else if let Some(policies) = self.policy_restrictions.get_mut(&account) {
+            policies.remove(&policy_id);
+            if policies.is_empty() {
+                self.policy_restrictions.remove(&account);
             }
         }
     }
@@ -243,10 +244,8 @@ impl TempoPoolUpdates {
             || !self.key_authorization_target_changes.is_empty()
             || !self.validator_token_changes.is_empty()
             || !self.user_token_changes.is_empty()
-            || !self.blacklist_additions.is_empty()
-            || !self.whitelist_removals.is_empty()
+            || !self.policy_restrictions.is_empty()
             || !self.paused_tokens.is_empty()
-            || !self.fee_balance_changes.is_empty()
             || !self.key_authorization_witness_burns.is_empty()
     }
 
@@ -344,6 +343,10 @@ impl Tip403PoolEvent {
 }
 
 /// Transaction-pool relevant subset of `ITIP20::ITIP20Events`.
+#[expect(
+    clippy::enum_variant_names,
+    reason = "variants are named after the TIP-20 events"
+)]
 enum Tip20PoolEvent {
     /// [`ITIP20::PauseStateUpdate`] log.
     PauseStateUpdate(ITIP20::PauseStateUpdate),
@@ -351,20 +354,12 @@ enum Tip20PoolEvent {
     TransferPolicyUpdate,
     /// [`ITIP20::QuoteTokenUpdate`] log.
     QuoteTokenUpdate,
-    /// [`ITIP20::Transfer`] log; only the debited `from` account is retained.
-    Transfer { from: Address },
 }
 
 impl Tip20PoolEvent {
     /// Decodes only TIP-20 events used by transaction-pool maintenance.
     fn decode(log: &Log) -> Option<Self> {
         match first_topic(log)? {
-            // `Transfer` is by far the most common TIP-20 log, so avoid a full event decode
-            // and read the indexed `from` directly from `topics[1]`. We only need the debited
-            // account for `fee_balance_changes`; `to` and `amount` are unused.
-            ITIP20::Transfer::SIGNATURE_HASH => log.topics().get(1).map(|topic| Self::Transfer {
-                from: Address::from_word(*topic),
-            }),
             ITIP20::PauseStateUpdate::SIGNATURE_HASH => {
                 decode_event(log).map(Self::PauseStateUpdate)
             }
@@ -539,8 +534,8 @@ where
             .amm_cache_update_duration_seconds
             .record(amm_start.elapsed());
 
-        // 3. Collect all block-level invalidation events
-        let updates = TempoPoolUpdates::from_chain(tip);
+        // 3. Collect what the block changed that pending transactions depend on.
+        let invalidations = Invalidations::from_chain(tip);
 
         let mut all_txs: Option<AllPoolTransactions<TempoPooledTransaction>> = None;
         // Reth's canonical-update handling may not have pruned mined transactions yet.
@@ -595,91 +590,39 @@ where
             revalidate_txs.extend(transactions);
         }
 
-        // Revalidate transactions whose authorities' configuration commitment changed,
-        // including eventless first registration (TIP-1112).
-        let changed_commitments: AddressSet = bundle_state
-            .iter()
-            .filter(|(_, account)| {
-                account
-                    .original_info
-                    .as_ref()
-                    .map(|info| info.extension.as_ref())
-                    .unwrap_or_default()
-                    != account
-                        .info
-                        .as_ref()
-                        .map(|info| info.extension.as_ref())
-                        .unwrap_or_default()
-            })
-            .map(|(address, _)| *address)
-            .collect();
-        if !changed_commitments.is_empty() {
-            let hashes: Vec<TxHash> = {
-                let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
+        // 4. Evict expired and invalidated transactions, and take out those the block may have
+        // invalidated for revalidation, in one pool traversal.
+        let invalidation_start = Instant::now();
+        let invalidated = {
+            let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
+            pool.evict_invalidated_transactions_from(
+                &invalidations,
                 all_txs
                     .iter()
-                    .filter(|tx| !removed_this_iteration.contains(tx.hash()))
-                    .filter(|tx| tx.transaction.has_authority_in(&changed_commitments))
-                    .map(|tx| *tx.hash())
-                    .collect()
-            };
-            if !hashes.is_empty() {
-                let transactions = pool.remove_transactions(hashes);
-                for tx in &transactions {
-                    removed_this_iteration.insert(*tx.hash());
-                }
-                revalidate_txs.extend(transactions);
+                    .filter(|tx| !removed_this_iteration.contains(tx.hash())),
+                Some(tip_timestamp.saturating_add(EVICTION_BUFFER_SECS)),
+            )
+        };
+        metrics
+            .transactions_invalidated
+            .increment(invalidated.evicted.len() as u64);
+        for (tx, reason) in invalidated.revalidate {
+            match reason {
+                Reason::TransferPolicy => metrics.transfer_policy_revalidated.increment(1),
+                Reason::QuoteToken => metrics.quote_token_revalidated.increment(1),
+                _ => {}
             }
+            revalidate_txs.push(tx);
         }
+        removed_txs.push(invalidated.evicted);
+        metrics
+            .invalidation_eviction_duration_seconds
+            .record(invalidation_start.elapsed());
+        metrics
+            .expired_eviction_duration_seconds
+            .record(invalidation_start.elapsed());
 
-        // 4. Handle potentially invalidating updates
-        // When a cached value changes of a token (transfer policy, or quote token) changes,
-        // pending transactions using that token may become invalid. We need to remove them
-        // and re-add so they go through full validation against the updated state.
-        for (updated, counter, reason) in [
-            (
-                &updates.transfer_policy_updates,
-                &metrics.transfer_policy_revalidated,
-                "transfer policy update",
-            ),
-            (
-                &updates.quote_token_updates,
-                &metrics.quote_token_revalidated,
-                "quote token update",
-            ),
-        ] {
-            if updated.is_empty() {
-                continue;
-            }
-
-            let hashes: Vec<TxHash> = {
-                let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
-                all_txs
-                    .iter()
-                    .filter(|tx| !removed_this_iteration.contains(tx.hash()))
-                    .filter(|tx| {
-                        tx.transaction
-                            .resolved_fee_token()
-                            .is_some_and(|t| updated.contains(&t))
-                    })
-                    .map(|tx| *tx.hash())
-                    .collect()
-            };
-            if !hashes.is_empty() {
-                let removed_txs = pool.remove_transactions(hashes);
-                let count = removed_txs.len();
-
-                for tx in &removed_txs {
-                    removed_this_iteration.insert(*tx.hash());
-                }
-
-                counter.increment(count as u64);
-
-                debug!(target: "txpool", count, reason, "Queued transactions for revalidation");
-                revalidate_txs.extend(removed_txs);
-            }
-        }
-
+        // 5. Revalidate the transactions whose validity the block may have changed.
         if !revalidate_txs.is_empty() {
             let pool = pool.clone();
             tokio::spawn(async move {
@@ -693,43 +636,6 @@ where
                     "Revalidated transactions");
             });
         }
-
-        // 5. Evict expired and invalidated transactions in one pool traversal.
-        let invalidation_start = Instant::now();
-        debug!(
-            target: "txpool",
-            revoked_keys = updates.revoked_keys.len(),
-            key_authorization_target_changes =
-                updates.key_authorization_target_changes.len(),
-            spending_limit_changes = updates.spending_limit_changes.len(),
-            spending_limit_spends = updates.spending_limit_spends.len(),
-            validator_token_changes = updates.validator_token_changes.len(),
-            user_token_changes = updates.user_token_changes.len(),
-            blacklist_additions = updates.blacklist_additions.len(),
-            whitelist_removals = updates.whitelist_removals.len(),
-            "Processing transaction invalidation events"
-        );
-        let evicted = {
-            let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
-            pool.evict_invalidated_transactions_from(
-                &updates,
-                all_txs
-                    .iter()
-                    .filter(|tx| !removed_this_iteration.contains(tx.hash())),
-                Some(tip_timestamp.saturating_add(EVICTION_BUFFER_SECS)),
-            )
-        };
-        metrics
-            .transactions_invalidated
-            .increment(evicted.len() as u64);
-        removed_txs.push(evicted);
-        metrics
-            .invalidation_eviction_duration_seconds
-            .record(invalidation_start.elapsed());
-
-        metrics
-            .expired_eviction_duration_seconds
-            .record(invalidation_start.elapsed());
 
         // 6. Evict stale pending transactions (must happen after AA pool promotions in step 1)
         // Only runs once per interval (~30 min) to avoid overhead on every block.
@@ -1088,22 +994,6 @@ mod tests {
                 ITIP20::QuoteTokenUpdate,
                 log
             );
-
-            let log = event_log(
-                token,
-                ITIP20::Transfer {
-                    from: Address::random(),
-                    to: Address::random(),
-                    amount: U256::from(42),
-                },
-            );
-            // `Transfer` decoding is specialized to read only the indexed `from` topic, so
-            // compare that against the field a full event decode would produce.
-            let expected = generated_decode::<ITIP20::Transfer>(&log);
-            match Tip20PoolEvent::decode(&log) {
-                Some(Tip20PoolEvent::Transfer { from }) => assert_eq!(from, expected.from),
-                _ => panic!("unexpected decoded event"),
-            }
         }
     }
 
@@ -1301,36 +1191,6 @@ mod tests {
                 Address::random(),
                 Address::random(),
                 Some(Address::random()),
-            );
-            assert!(updates.has_invalidation_events());
-        }
-
-        #[test]
-        fn extracts_fee_balance_changes_from_tip20_transfer_logs() {
-            let fee_token = tempo_precompiles::PATH_USD_ADDRESS;
-            let from = Address::random();
-            let to = Address::random();
-            let amount = U256::from(42_u64);
-            let log_data = ITIP20::Transfer { from, to, amount }.into_log_data();
-            let log =
-                Log::new_unchecked(fee_token, log_data.topics().to_vec(), log_data.data.clone());
-            let receipt = TempoReceipt {
-                tx_type: TempoTxType::Legacy,
-                success: true,
-                cumulative_gas_used: 21_000,
-                logs: vec![log],
-            };
-
-            let block = create_block_with_txs(1, vec![], vec![]);
-            let chain = create_test_chain_with_receipts(vec![block], vec![vec![receipt]]);
-            let updates = TempoPoolUpdates::from_chain(&chain);
-
-            assert!(
-                updates
-                    .fee_balance_changes
-                    .get(&fee_token)
-                    .is_some_and(|accounts| accounts.len() == 1 && accounts.contains(&from)),
-                "TIP20 transfer logs should only mark the debited sender as balance-changed"
             );
             assert!(updates.has_invalidation_events());
         }
