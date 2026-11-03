@@ -4,15 +4,23 @@ use std::sync::{Arc, RwLock};
 
 use alloy_primitives::{Address, B256};
 use eyre::{OptionExt as _, WrapErr as _};
+use reth_engine_tree::{
+    persistence::PersistenceHook,
+    tree::{BasicEngineValidator, state_root_strategy::StateRootStrategy},
+};
+use reth_evm::ConfigureEngineEvm;
 use reth_node_api::{AddOnsContext, FullNodeComponents, PrimitivesTy, TreeConfig};
-use reth_node_builder::rpc::{BasicEngineValidatorBuilder, EngineValidatorBuilder};
+use reth_node_builder::rpc::{
+    BasicEngineValidatorBuilder, EngineValidatorBuilder, PayloadValidatorBuilder,
+};
 use reth_storage_api::{
     AccountReader as _, DatabaseProviderROFactory, StateProvider, StateProviderBox,
 };
 use reth_storage_overlay::{OverlayManager, OverlayStateProviderFactory};
+use tempo_payload_types::TempoExecutionData;
 use tempo_primitives::TempoPrimitives;
 
-use crate::{TempoNode, node::TempoEngineValidatorBuilder};
+use crate::{QmdbStateRootStrategy, TempoNode, node::TempoEngineValidatorBuilder};
 
 /// Reads the post-state of blocks that the engine has executed, including
 /// blocks on forks.
@@ -90,15 +98,20 @@ impl ExecutedState {
 pub struct TempoEngineTreeValidatorBuilder {
     inner: BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>,
     executed_state: ExecutedState,
+    qmdb_strategy: Option<Arc<QmdbStateRootStrategy>>,
 }
 
 impl TempoEngineTreeValidatorBuilder {
     /// Creates a builder that fills `executed_state` when reth launches the
-    /// engine.
-    pub fn new(executed_state: ExecutedState) -> Self {
+    /// engine, and validates state roots with `qmdb_strategy` when it is set.
+    pub fn new(
+        executed_state: ExecutedState,
+        qmdb_strategy: Option<Arc<QmdbStateRootStrategy>>,
+    ) -> Self {
         Self {
             inner: BasicEngineValidatorBuilder::default(),
             executed_state,
+            qmdb_strategy,
         }
     }
 }
@@ -106,12 +119,21 @@ impl TempoEngineTreeValidatorBuilder {
 impl<Node> EngineValidatorBuilder<Node> for TempoEngineTreeValidatorBuilder
 where
     Node: FullNodeComponents<Types = TempoNode>,
-    BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>: EngineValidatorBuilder<Node>,
-{
-    type EngineValidator =
-        <BasicEngineValidatorBuilder<TempoEngineValidatorBuilder> as EngineValidatorBuilder<
+    Node::Evm: ConfigureEngineEvm<TempoExecutionData>,
+    BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>: EngineValidatorBuilder<
             Node,
-        >>::EngineValidator;
+            EngineValidator = BasicEngineValidator<
+                Node::Provider,
+                Node::Evm,
+                <TempoEngineValidatorBuilder as PayloadValidatorBuilder<Node>>::Validator,
+            >,
+        >,
+{
+    type EngineValidator = BasicEngineValidator<
+        Node::Provider,
+        Node::Evm,
+        <TempoEngineValidatorBuilder as PayloadValidatorBuilder<Node>>::Validator,
+    >;
 
     async fn build_tree_validator(
         self,
@@ -120,8 +142,20 @@ where
         overlay_manager: OverlayManager<PrimitivesTy<Node::Types>>,
     ) -> eyre::Result<Self::EngineValidator> {
         self.executed_state.set(overlay_manager.clone());
-        self.inner
+        let validator = self
+            .inner
             .build_tree_validator(ctx, tree_config, overlay_manager)
-            .await
+            .await?;
+        Ok(match self.qmdb_strategy {
+            Some(strategy) => {
+                let hook: Arc<dyn PersistenceHook<TempoPrimitives>> =
+                    Arc::new(strategy.persistence_hook());
+                let strategy: Arc<dyn StateRootStrategy<_, _, _>> = strategy;
+                validator
+                    .with_state_root_strategy(strategy)
+                    .with_persistence_hook(hook)
+            }
+            None => validator,
+        })
     }
 }

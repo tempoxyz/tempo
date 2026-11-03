@@ -1,0 +1,632 @@
+//! QMDB state commitment in the node: computing each block's QMDB root during validation, and
+//! keeping the on-disk QMDB in step with the finalized chain.
+//!
+//! [`QmdbStateRootStrategy`] wraps reth's default state-root strategy. Before the QMDB
+//! activation it validates blocks against their MPT root and builds each block's QMDB batch in the
+//! background (shadow mode), so operators can compare QMDB roots across validators before the
+//! fork. From the activation on, the block's state root is its QMDB root.
+//!
+//! [`QmdbPersistenceHook`] applies each block's batch when reth persists the block, before the MDBX
+//! commit, so the on-disk QMDB never falls behind the database. Validated blocks carry their batch
+//! to it as their reth `StateCommitment`.
+//!
+//! [`QmdbSync`] imports the snapshot block's state once the node has persisted it, and rebuilds and
+//! applies the batches of blocks the node executed or persisted before QMDB was ready.
+
+use std::{path::PathBuf, sync::Arc, time::Instant};
+
+use alloy::consensus::BlockHeader as _;
+use alloy_primitives::B256;
+use eyre::{OptionExt as _, WrapErr as _};
+use metrics::{Counter, Gauge, Histogram};
+use reth_chain_state::{ExecutedBlock, ForkChoiceSubscriptions};
+use reth_engine_tree::{
+    persistence::PersistenceHook,
+    tree::state_root_strategy::{
+        DefaultStateRootStrategy, LazyHashedPostState, PayloadStateRootHandle,
+        PayloadStateRootJobContext, PreparedStateRootJob, StateRootJob, StateRootJobContext,
+        StateRootJobOutcome, StateRootStrategy,
+    },
+};
+use reth_ethereum::tasks::TaskExecutor;
+use reth_evm::{ConfigureEvm, EvmEnv as _};
+use reth_execution_types::BlockExecutionOutput;
+use reth_metrics::Metrics;
+use reth_primitives_traits::RecoveredBlock;
+use reth_provider::{
+    BlockHashReader, BlockIdReader, BlockNumReader, CanonChainTracker, ChangeSetReader, DBProvider,
+    DatabaseProviderFactory, HeaderProvider, ProviderError, ProviderResult, StateReader,
+    StorageChangeSetReader,
+};
+use reth_tracing::tracing::{debug, info, warn};
+use reth_trie::hashed_cursor::HashedPostStateCursorFactory;
+use reth_trie_common::{HashedPostStateSorted, StateCommitment, updates::TrieUpdates};
+use reth_trie_db::{DatabaseHashedCursorFactory, DatabaseHashedPostState as _};
+use tempo_primitives::{Block, TempoPrimitives, TempoReceipt};
+use tempo_qmdb_state::{BlockRef, QmdbBatch, Store, diff, import};
+
+/// Chooses each block's state root: the MPT root before the QMDB activation, the QMDB root from it.
+#[derive(Debug)]
+pub struct QmdbStateRootStrategy {
+    store: Arc<Store>,
+    /// Timestamp of the first block whose state root is its QMDB root; `None` keeps shadow mode.
+    activation_timestamp: Option<u64>,
+    default: DefaultStateRootStrategy,
+    metrics: Arc<QmdbMetrics>,
+}
+
+impl QmdbStateRootStrategy {
+    /// Creates a strategy over `store` that switches to QMDB roots at `activation_timestamp`.
+    pub fn new(store: Arc<Store>, activation_timestamp: Option<u64>) -> Self {
+        Self {
+            store,
+            activation_timestamp,
+            default: DefaultStateRootStrategy::default(),
+            metrics: Arc::new(QmdbMetrics::default()),
+        }
+    }
+
+    fn is_active_at(&self, timestamp: u64) -> bool {
+        self.activation_timestamp
+            .is_some_and(|activation| timestamp >= activation)
+    }
+
+    /// Returns the store the strategy builds batches in.
+    pub fn store(&self) -> Arc<Store> {
+        self.store.clone()
+    }
+
+    /// Returns the timestamp from which state roots are QMDB roots, if configured.
+    pub const fn activation_timestamp(&self) -> Option<u64> {
+        self.activation_timestamp
+    }
+
+    /// Returns the hook that applies batches as reth persists blocks.
+    pub fn persistence_hook(&self) -> QmdbPersistenceHook {
+        QmdbPersistenceHook {
+            store: self.store.clone(),
+            activation_timestamp: self.activation_timestamp,
+            metrics: self.metrics.clone(),
+        }
+    }
+}
+
+impl<P, Evm> StateRootStrategy<TempoPrimitives, P, Evm> for QmdbStateRootStrategy
+where
+    Evm: ConfigureEvm<Primitives = TempoPrimitives>,
+    DefaultStateRootStrategy: StateRootStrategy<TempoPrimitives, P, Evm>,
+{
+    fn prepare(
+        &self,
+        ctx: StateRootJobContext<'_, TempoPrimitives, P, Evm>,
+    ) -> ProviderResult<PreparedStateRootJob<TempoPrimitives>> {
+        let timestamp: u64 = ctx.env().evm_env.block_env().timestamp.saturating_to();
+        if self.is_active_at(timestamp) {
+            let job = ActiveJob {
+                store: self.store.clone(),
+                metrics: self.metrics.clone(),
+            };
+            return Ok(PreparedStateRootJob::new(Box::new(job), None));
+        }
+
+        // Keep the default job's update streams: the MPT root still decides validity.
+        let mut inner = self.default.prepare(ctx)?;
+        let execution_hook = inner.take_execution_hook();
+        let hint_stream = inner.take_hint_stream();
+        let hashed_update_stream = inner.take_hashed_update_stream();
+        let hashed_state_rx = inner.take_hashed_state_rx();
+        let job = ShadowJob {
+            inner,
+            store: self.store.clone(),
+            metrics: self.metrics.clone(),
+        };
+        let mut prepared = PreparedStateRootJob::new(Box::new(job), hashed_state_rx);
+        if let Some(hook) = execution_hook {
+            prepared = prepared.with_execution_hook(hook);
+        }
+        if let Some(stream) = hint_stream {
+            prepared = prepared.with_hint_stream(stream);
+        }
+        if let Some(stream) = hashed_update_stream {
+            prepared = prepared.with_hashed_update_stream(stream);
+        }
+        Ok(prepared)
+    }
+
+    fn prepare_payload_builder(
+        &self,
+        ctx: PayloadStateRootJobContext<'_, TempoPrimitives, P>,
+    ) -> ProviderResult<Option<PayloadStateRootHandle>> {
+        // Once active, the payload builder builds the QMDB batch from its execution output
+        // itself: no sparse-trie task is needed.
+        if self.is_active_at(ctx.timestamp()) {
+            return Ok(None);
+        }
+        self.default.prepare_payload_builder(ctx)
+    }
+}
+
+/// Validates against the MPT root and builds the block's QMDB batch off the critical path.
+struct ShadowJob {
+    inner: PreparedStateRootJob<TempoPrimitives>,
+    store: Arc<Store>,
+    metrics: Arc<QmdbMetrics>,
+}
+
+impl StateRootJob<TempoPrimitives> for ShadowJob {
+    fn name(&self) -> &'static str {
+        "qmdb-shadow"
+    }
+
+    fn finish(
+        &mut self,
+        block: &RecoveredBlock<Block>,
+        output: Arc<BlockExecutionOutput<TempoReceipt>>,
+        hashed_state: &LazyHashedPostState,
+    ) -> ProviderResult<StateRootJobOutcome> {
+        let outcome = self.inner.finish(block, output.clone(), hashed_state)?;
+        let block_ref = block_ref(block);
+        match diff::block_writes(&output.state) {
+            Ok(writes) => {
+                let metrics = self.metrics.clone();
+                let started = Instant::now();
+                let sent = self.store.build_detached(block_ref, writes, move |result| {
+                    record_shadow_build(&metrics, block_ref, started, result)
+                });
+                if let Err(err) = sent {
+                    self.metrics.shadow_failed.increment(1);
+                    warn!(target: "qmdb", %err, number = block_ref.number, "QMDB store is gone");
+                }
+            }
+            Err(err) => {
+                self.metrics.shadow_failed.increment(1);
+                warn!(target: "qmdb", %err, number = block_ref.number, "block has no QMDB batch");
+            }
+        }
+        Ok(outcome)
+    }
+}
+
+/// Returns the block's QMDB root as its state root.
+struct ActiveJob {
+    store: Arc<Store>,
+    metrics: Arc<QmdbMetrics>,
+}
+
+impl StateRootJob<TempoPrimitives> for ActiveJob {
+    fn name(&self) -> &'static str {
+        "qmdb"
+    }
+
+    fn finish(
+        &mut self,
+        block: &RecoveredBlock<Block>,
+        output: Arc<BlockExecutionOutput<TempoReceipt>>,
+        _hashed_state: &LazyHashedPostState,
+    ) -> ProviderResult<StateRootJobOutcome> {
+        let started = Instant::now();
+        let writes = diff::block_writes(&output.state).map_err(ProviderError::other)?;
+        let batch = self
+            .store
+            .build(block_ref(block), writes)
+            .map_err(ProviderError::other)?;
+        self.metrics.build_duration.record(started.elapsed());
+        // The MPT trie tables are no longer maintained from here on. The block carries its batch
+        // to the persistence hook.
+        Ok(
+            StateRootJobOutcome::new(batch.root(), Arc::new(TrieUpdates::default()))
+                .with_state_commitment(Some(StateCommitment::new(batch))),
+        )
+    }
+}
+
+/// Applies QMDB batches as reth persists blocks, before the MDBX commit.
+///
+/// Before the activation a failure only skips the block, which [`QmdbSync`] later replays; from
+/// the activation on it aborts the save, since the database would otherwise run ahead of the
+/// state commitment.
+#[derive(Debug)]
+pub struct QmdbPersistenceHook {
+    store: Arc<Store>,
+    activation_timestamp: Option<u64>,
+    metrics: Arc<QmdbMetrics>,
+}
+
+impl QmdbPersistenceHook {
+    fn apply(&self, block: &ExecutedBlock<TempoPrimitives>) -> Result<(), tempo_qmdb_state::Error> {
+        let hash = block.recovered_block().hash();
+        // Register the exact batch the block was validated or built with, in case the store's
+        // copy was replaced by a rebuild.
+        if let Some(batch) = block
+            .state_commitment()
+            .and_then(|c| c.downcast_ref::<QmdbBatch>())
+        {
+            self.store.register(hash, batch.clone())?;
+        }
+        // Applies every unapplied ancestor too: they are the earlier blocks of this save.
+        self.store.finalize(hash)
+    }
+}
+
+impl PersistenceHook<TempoPrimitives> for QmdbPersistenceHook {
+    fn on_save_state(&self, blocks: &[ExecutedBlock<TempoPrimitives>]) -> ProviderResult<()> {
+        let Some(last) = blocks.last() else {
+            return Ok(());
+        };
+        let started = Instant::now();
+        let number = last.recovered_block().number();
+        match self.apply(last) {
+            Ok(()) => {
+                self.metrics.applied_block.set(number as f64);
+                self.metrics.apply_duration.record(started.elapsed());
+                Ok(())
+            }
+            Err(err)
+                if self
+                    .activation_timestamp
+                    .is_some_and(|activation| last.recovered_block().timestamp() >= activation) =>
+            {
+                Err(ProviderError::other(err))
+            }
+            Err(err) => {
+                self.metrics.persist_skipped.increment(1);
+                debug!(target: "qmdb", %err, number, "skipped applying QMDB batch on persistence");
+                Ok(())
+            }
+        }
+    }
+
+    fn on_remove_blocks_above(&self, new_tip: u64) -> ProviderResult<()> {
+        let applied = self.store.status().map_err(ProviderError::other)?.applied;
+        let Some(applied) = applied.filter(|applied| *applied > new_tip) else {
+            return Ok(());
+        };
+        // Commonware 2026.9 cannot reopen QMDB at an earlier commit; 2026.10's `init(max_size)` can.
+        self.metrics.ahead_of_database.set(1.0);
+        if self.activation_timestamp.is_some() {
+            return Err(ProviderError::other(std::io::Error::other(format!(
+                "QMDB applied block {applied} is above the new database tip {new_tip} and cannot be rewound"
+            ))));
+        }
+        warn!(target: "qmdb", applied, new_tip, "QMDB is ahead of the database after an unwind; shadow roots stop until it is rebuilt");
+        Ok(())
+    }
+}
+
+/// Keeps the on-disk QMDB in step with the node's persisted chain.
+#[derive(Debug)]
+pub struct QmdbSync<P> {
+    provider: P,
+    store: Arc<Store>,
+    /// Block whose state the import migrates. Part of the chain's definition of the QMDB root.
+    snapshot: u64,
+    /// Directory for the import's temporary sort files.
+    sort_dir: PathBuf,
+    metrics: Arc<QmdbMetrics>,
+}
+
+impl<P> QmdbSync<P>
+where
+    P: DatabaseProviderFactory<
+            Provider: DBProvider + ChangeSetReader + StorageChangeSetReader + BlockNumReader,
+        > + StateReader<Receipt = TempoReceipt>
+        + BlockHashReader
+        + BlockNumReader
+        + BlockIdReader
+        + HeaderProvider
+        + CanonChainTracker
+        + ForkChoiceSubscriptions
+        + Send
+        + Sync
+        + 'static,
+{
+    /// Creates the sync task's state.
+    pub fn new(provider: P, store: Arc<Store>, snapshot: u64, sort_dir: PathBuf) -> Self {
+        Self {
+            provider,
+            store,
+            snapshot,
+            sort_dir,
+            metrics: Arc::new(QmdbMetrics::default()),
+        }
+    }
+
+    /// Spawns the task, which runs once now and again on every finalized block.
+    ///
+    /// It only needs to run until QMDB has caught up; afterwards every step is a no-op.
+    ///
+    /// A failed step is reported and retried on the next finalized block.
+    pub fn spawn(self, executor: TaskExecutor) {
+        let mut finalized = self.provider.subscribe_finalized_block().0;
+        executor.spawn_blocking_task(async move {
+            info!(target: "qmdb", snapshot = self.snapshot, "Started QMDB state sync");
+            loop {
+                if let Err(err) = self.step() {
+                    self.metrics.sync_failed.increment(1);
+                    warn!(target: "qmdb", %err, "QMDB sync step failed");
+                }
+                if finalized.changed().await.is_err() {
+                    return;
+                }
+            }
+        });
+    }
+
+    /// Imports the snapshot if needed, builds missing batches of canonical blocks, and applies
+    /// every persisted block the persistence hook could not apply.
+    fn step(&self) -> eyre::Result<()> {
+        let persisted = self
+            .provider
+            .database_provider_ro()
+            .wrap_err("failed opening the database")?
+            .best_block_number()
+            .wrap_err("failed reading the persisted block")?;
+        let mut status = self.store.status()?;
+        let applied = match status.applied {
+            Some(applied) => applied,
+            None if persisted < self.snapshot => {
+                debug!(target: "qmdb", persisted, snapshot = self.snapshot, "waiting for the snapshot block");
+                return Ok(());
+            }
+            None => {
+                self.import_snapshot(persisted)?;
+                self.snapshot
+            }
+        };
+        if status.base.is_none() {
+            let hash = self.canonical_hash(applied)?;
+            self.store.set_base(hash)?;
+            status = self.store.status()?;
+        }
+        self.metrics.applied_block.set(applied as f64);
+
+        // Canonical blocks the engine executed before QMDB was ready have no batch yet.
+        let tip = self
+            .provider
+            .best_block_number()
+            .wrap_err("failed reading the canonical tip")?;
+        for number in applied + 1..=tip {
+            let hash = self.canonical_hash(number)?;
+            if self.store.root(hash)?.is_some() {
+                continue;
+            }
+            let header = self
+                .provider
+                .header_by_number(number)?
+                .ok_or_eyre("canonical block has no header")?;
+            let outcome = self
+                .provider
+                .get_state(number)?
+                .ok_or_eyre("canonical block has no execution outcome")?;
+            let writes = diff::block_writes(&outcome.bundle)
+                .wrap_err_with(|| format!("failed diffing block {number}"))?;
+            let block = BlockRef {
+                number,
+                hash,
+                parent_hash: header.parent_hash(),
+            };
+            let root = self.store.build(block, writes)?.root();
+            self.metrics.replayed_blocks.increment(1);
+            debug!(target: "qmdb", number, %root, "replayed block into QMDB");
+        }
+
+        // Steady state, the persistence hook applies blocks as they persist. This catches up on
+        // blocks persisted before their batch existed.
+        let applied = self.store.status()?.applied.unwrap_or(applied);
+        let target = persisted;
+        if target > applied {
+            let hash = self.canonical_hash(target)?;
+            self.store.finalize(hash)?;
+            self.metrics.applied_block.set(target as f64);
+            status = self.store.status()?;
+            debug!(target: "qmdb", applied = target, root = %status.root, "applied finalized QMDB batches");
+        }
+        self.metrics.pending.set(status.pending as f64);
+        Ok(())
+    }
+
+    /// Imports the state at the end of the snapshot block: the hashed tables at `persisted`,
+    /// overlaid with the reverts of every later block.
+    fn import_snapshot(&self, persisted: u64) -> eyre::Result<()> {
+        let started = Instant::now();
+        let provider = self
+            .provider
+            .database_provider_ro()
+            .wrap_err("failed opening the database")?;
+        let reverts = if persisted > self.snapshot {
+            HashedPostStateSorted::from_reverts(&provider, self.snapshot + 1..=persisted)
+                .wrap_err("failed reading reverts back to the snapshot block")?
+        } else {
+            HashedPostStateSorted::default()
+        };
+        let cursors = HashedPostStateCursorFactory::new(
+            DatabaseHashedCursorFactory::new(provider.tx_ref()),
+            &reverts,
+        );
+        let keys = import::import(
+            &cursors,
+            &self.store,
+            self.snapshot,
+            Some(self.sort_dir.clone()),
+        )
+        .wrap_err("failed importing the snapshot state")?;
+        let root = self.store.status()?.root;
+        info!(
+            target: "qmdb",
+            snapshot = self.snapshot,
+            keys,
+            %root,
+            elapsed = ?started.elapsed(),
+            "imported the snapshot state into QMDB"
+        );
+        Ok(())
+    }
+
+    fn canonical_hash(&self, number: u64) -> eyre::Result<B256> {
+        self.provider
+            .block_hash(number)?
+            .ok_or_else(|| eyre::eyre!("no canonical block {number}"))
+    }
+}
+
+fn block_ref(block: &RecoveredBlock<Block>) -> BlockRef {
+    BlockRef {
+        number: block.number(),
+        hash: block.hash(),
+        parent_hash: block.parent_hash(),
+    }
+}
+
+fn record_shadow_build(
+    metrics: &QmdbMetrics,
+    block: BlockRef,
+    started: Instant,
+    result: Result<B256, tempo_qmdb_state::Error>,
+) {
+    match result {
+        Ok(root) => {
+            metrics.build_duration.record(started.elapsed());
+            debug!(target: "qmdb", number = block.number, hash = %block.hash, %root, "built QMDB root");
+        }
+        // Expected until the sync task has imported the snapshot and caught up.
+        Err(
+            tempo_qmdb_state::Error::NoBase
+            | tempo_qmdb_state::Error::UnknownParent { .. }
+            | tempo_qmdb_state::Error::AlreadyApplied { .. },
+        ) => metrics.shadow_skipped.increment(1),
+        Err(err) => {
+            metrics.shadow_failed.increment(1);
+            warn!(target: "qmdb", %err, number = block.number, "failed building QMDB root");
+        }
+    }
+}
+
+#[derive(Metrics)]
+#[metrics(scope = "qmdb_state")]
+struct QmdbMetrics {
+    /// Time to diff, build and merkleize one block's batch.
+    build_duration: Histogram,
+    /// Shadow builds skipped because QMDB has not caught up with the block's parent.
+    shadow_skipped: Counter,
+    /// Shadow builds that failed.
+    shadow_failed: Counter,
+    /// Blocks replayed from the database by the sync task.
+    replayed_blocks: Counter,
+    /// Sync steps that failed.
+    sync_failed: Counter,
+    /// Last block applied to the on-disk QMDB.
+    applied_block: Gauge,
+    /// Unapplied batches held in memory.
+    pending: Gauge,
+    /// Time to apply and commit batches when reth persists blocks.
+    apply_duration: Histogram,
+    /// Persisted blocks whose batch could not be applied yet.
+    persist_skipped: Counter,
+    /// 1 when the on-disk QMDB is ahead of the database after an unwind.
+    ahead_of_database: Gauge,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::consensus::Header;
+    use alloy_primitives::U256;
+    use reth_primitives_traits::SealedBlock;
+    use std::num::NonZeroUsize;
+    use tempo_primitives::TempoHeader;
+    use tempo_qmdb_state::{Config, layout};
+
+    fn store(dir: &std::path::Path) -> Arc<Store> {
+        let store = Store::open(Config {
+            directory: dir.to_path_buf(),
+            threads: NonZeroUsize::MIN,
+            page_cache_pages: NonZeroUsize::new(64).unwrap(),
+            max_pending: NonZeroUsize::new(8).unwrap(),
+        })
+        .unwrap();
+        store
+            .import_chunk(
+                vec![layout::Write {
+                    key: layout::slot_key(B256::repeat_byte(1), B256::ZERO),
+                    value: Some(layout::slot_value(U256::from(1))),
+                }],
+                Some(0),
+            )
+            .unwrap();
+        store.set_base(B256::ZERO).unwrap();
+        Arc::new(store)
+    }
+
+    fn executed_block(number: u64, timestamp: u64) -> ExecutedBlock<TempoPrimitives> {
+        let header = TempoHeader {
+            inner: Header {
+                number,
+                timestamp,
+                parent_hash: B256::ZERO,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let block = SealedBlock::seal_slow(Block {
+            header,
+            body: Default::default(),
+        });
+        ExecutedBlock {
+            recovered_block: Arc::new(RecoveredBlock::new_sealed(block, vec![])),
+            ..Default::default()
+        }
+    }
+
+    fn hook(store: Arc<Store>, activation_timestamp: Option<u64>) -> QmdbPersistenceHook {
+        QmdbPersistenceHook {
+            store,
+            activation_timestamp,
+            metrics: Arc::new(QmdbMetrics::default()),
+        }
+    }
+
+    #[test]
+    fn applies_the_batch_the_block_carries() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(dir.path());
+        let batch = store
+            .build_unregistered(
+                1,
+                B256::ZERO,
+                vec![layout::Write {
+                    key: layout::slot_key(B256::repeat_byte(1), B256::ZERO),
+                    value: None,
+                }],
+            )
+            .unwrap();
+        let root = batch.root();
+        let block = executed_block(1, 10).with_state_commitment(Some(StateCommitment::new(batch)));
+
+        hook(store.clone(), Some(0))
+            .on_save_state(&[block])
+            .unwrap();
+        let status = store.status().unwrap();
+        assert_eq!(status.applied, Some(1));
+        assert_eq!(status.root, root);
+    }
+
+    #[test]
+    fn missing_batch_only_aborts_the_save_once_active() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(dir.path());
+        let block = executed_block(1, 10);
+
+        hook(store.clone(), None)
+            .on_save_state(std::slice::from_ref(&block))
+            .unwrap();
+        hook(store.clone(), Some(11))
+            .on_save_state(std::slice::from_ref(&block))
+            .unwrap();
+        assert!(
+            hook(store.clone(), Some(10))
+                .on_save_state(&[block])
+                .is_err()
+        );
+        assert_eq!(store.status().unwrap().applied, Some(0));
+    }
+}

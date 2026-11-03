@@ -66,7 +66,7 @@ use reth_cli_runner::CliRunner;
 use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands};
 use reth_network_api::Peers;
 use reth_node_builder::{NodeHandle, WithLaunchContext};
-use std::{sync::Arc, thread};
+use std::{num::NonZeroUsize, sync::Arc, thread};
 use tempo_chainspec::{
     hardfork::TempoHardfork,
     spec::{DEV, TempoChainSpec},
@@ -82,13 +82,14 @@ pub use tempo_node::{
     TempoPooledTransaction, TransactionOrigin,
 };
 use tempo_node::{
-    EstimatorConfig, ShadowReplayer, TempoFullNode,
+    EstimatorConfig, QmdbStateRootStrategy, QmdbSync, ShadowReplayer, TempoFullNode,
     rpc::consensus::{SubscriptionLimits, TempoConsensusApiServer, TempoConsensusRpc},
     telemetry::{
         HardwareMetricsConfig, PrometheusMetricsConfig, install_hardware_metrics,
         install_prometheus_metrics,
     },
 };
+use tempo_qmdb_state::{Config as QmdbConfig, Store};
 use tokio::sync::oneshot;
 use tracing::{debug, info, info_span, warn, warn_span};
 
@@ -568,8 +569,36 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             url => Some(url.to_string()),
         };
 
+        // QMDB state commitment: shadowed until its activation, then the state root.
+        let qmdb = match args.node_args.qmdb_snapshot_block {
+            Some(snapshot) => {
+                let dir = builder.config().datadir().data_dir().join("qmdb");
+                let store = Arc::new(
+                    Store::open(QmdbConfig {
+                        directory: dir.join("db"),
+                        threads: std::thread::available_parallelism()
+                            .unwrap_or(NonZeroUsize::MIN),
+                        page_cache_pages: NonZeroUsize::new(1 << 16).expect("non-zero"),
+                        max_pending: NonZeroUsize::new(1024).expect("non-zero"),
+                    })
+                    .wrap_err("failed opening the QMDB state")?,
+                );
+                Some((store, snapshot, dir.join("import")))
+            }
+            None => None,
+        };
+
         let tempo_node = overrides.apply_tempo_node({
             let node = TempoNode::new(&args.node_args, validator_key);
+            let node = match &qmdb {
+                Some((store, _, _)) => node.with_qmdb_state_root(Arc::new(
+                    QmdbStateRootStrategy::new(
+                        store.clone(),
+                        args.node_args.qmdb_activation_timestamp,
+                    ),
+                )),
+                None => node,
+            };
             match gossip_protocol_handler {
                 Some(protocol_handler) => node.with_finalization_cert_gossip(protocol_handler),
                 None => node,
@@ -656,6 +685,11 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             }))
             .await
             .wrap_err("failed launching execution node")?;
+
+        if let Some((store, snapshot, sort_dir)) = qmdb {
+            QmdbSync::new(node.provider.clone(), store, snapshot, sort_dir)
+                .spawn(node.tasks().clone());
+        }
 
         if let Some(hardfork) = args.node_args.shadow_replay {
             let hardfork = hardfork.unwrap_or_else(|| *TempoHardfork::VARIANTS.last().unwrap());
