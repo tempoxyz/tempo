@@ -8,7 +8,7 @@
 //!
 //! [`QmdbPersistenceHook`] applies each block's batch when reth persists the block, before the MDBX
 //! commit, so the on-disk QMDB never falls behind the database. Validated blocks carry their batch
-//! to it as their reth `StateCommitment`.
+//! to it as their reth `BlockExt`.
 //!
 //! [`QmdbSync`] imports the snapshot block's state once the node has persisted it, and rebuilds and
 //! applies the batches of blocks the node executed or persisted before QMDB was ready.
@@ -30,7 +30,7 @@ use reth_engine_tree::{
 };
 use reth_ethereum::tasks::TaskExecutor;
 use reth_evm::{ConfigureEvm, EvmEnv as _};
-use reth_execution_types::BlockExecutionOutput;
+use reth_execution_types::{BlockExecutionOutput, BlockExt};
 use reth_metrics::Metrics;
 use reth_primitives_traits::RecoveredBlock;
 use reth_provider::{
@@ -40,7 +40,7 @@ use reth_provider::{
 };
 use reth_tracing::tracing::{debug, info, warn};
 use reth_trie::hashed_cursor::HashedPostStateCursorFactory;
-use reth_trie_common::{HashedPostStateSorted, StateCommitment, updates::TrieUpdates};
+use reth_trie_common::{HashedPostStateSorted, updates::TrieUpdates};
 use reth_trie_db::{DatabaseHashedCursorFactory, DatabaseHashedPostState as _};
 use tempo_primitives::{Block, TempoPrimitives, TempoReceipt};
 use tempo_qmdb_state::{BlockRef, QmdbBatch, Store, diff, import};
@@ -215,7 +215,7 @@ impl StateRootJob<TempoPrimitives> for ActiveJob {
         // to the persistence hook.
         Ok(
             StateRootJobOutcome::new(batch.root(), Arc::new(TrieUpdates::default()))
-                .with_state_commitment(Some(StateCommitment::new(batch))),
+                .with_ext(Some(BlockExt::new(batch))),
         )
     }
 }
@@ -237,10 +237,7 @@ impl QmdbPersistenceHook {
         let hash = block.recovered_block().hash();
         // Register the exact batch the block was validated or built with, in case the store's
         // copy was replaced by a rebuild.
-        if let Some(batch) = block
-            .state_commitment()
-            .and_then(|c| c.downcast_ref::<QmdbBatch>())
-        {
+        if let Some(batch) = block.ext().and_then(|c| c.downcast_ref::<QmdbBatch>()) {
             self.store.register(hash, batch.clone())?;
         }
         // Applies every unapplied ancestor too: they are the earlier blocks of this save.
@@ -600,7 +597,7 @@ mod tests {
             )
             .unwrap();
         let root = batch.root();
-        let block = executed_block(1, 10).with_state_commitment(Some(StateCommitment::new(batch)));
+        let block = executed_block(1, 10).with_ext(Some(BlockExt::new(batch)));
 
         hook(store.clone(), Some(0))
             .on_save_state(&[block])

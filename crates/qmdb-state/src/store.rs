@@ -73,7 +73,7 @@ pub struct BlockRef {
 
 /// A block's merkleized QMDB batch, not yet applied to disk.
 ///
-/// Cheap to clone. The engine carries it on the block as its reth `StateCommitment`, so the
+/// Cheap to clone. The engine carries it on the block as its reth `BlockExt`, so the
 /// persistence hook applies exactly the batch the block was validated with.
 #[derive(Clone)]
 pub struct QmdbBatch {

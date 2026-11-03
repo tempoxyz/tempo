@@ -8,9 +8,8 @@ mod metrics;
 mod prewarming;
 
 use crossbeam_channel::Sender;
-use reth_trie_common::{
-    StateCommitment, bundle_state::BundleState, ordered_root::OrderedTrieRootEncodedBuilder,
-};
+use reth_execution_types::BlockExt;
+use reth_trie_common::{bundle_state::BundleState, ordered_root::OrderedTrieRootEncodedBuilder};
 
 use crate::{
     encode::{
@@ -1051,13 +1050,13 @@ where
         self.executor.spawn_drop(execution_block_encoder);
         let eth_payload = EthBuiltPayload::new(block.clone(), total_fees, requests, None);
 
-        let state_commitment = match (&self.qmdb, qmdb_batch) {
+        let ext = match (&self.qmdb, qmdb_batch) {
             (Some(qmdb), Some(batch)) => {
                 // Children of this payload build on its batch once the hash is known.
                 qmdb.store
                     .register(block.hash(), batch.clone())
                     .map_err(PayloadBuilderError::other)?;
-                Some(StateCommitment::new(batch))
+                Some(BlockExt::new(batch))
             }
             (Some(qmdb), None) => {
                 shadow_build_qmdb(qmdb, &block, &execution_output.state);
@@ -1071,7 +1070,7 @@ where
             execution_output: Arc::new(execution_output),
             hashed_state,
             trie_updates,
-            state_commitment,
+            ext,
         };
 
         let payload = TempoBuiltPayload::new(
