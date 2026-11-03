@@ -4,7 +4,7 @@
 #    zone credits it (DepositProcessed).
 # 2. The same for fresh account B, which keeps its balance.
 # 3. A withdraws part of its balance to its own address on L1, and the portal pays it out
-#    (WithdrawalProcessed on L1).
+#    (WithdrawalProcessed with callbackSuccess on L1).
 #
 # Every journey adds two zone accounts and one L1 account: the driver picks a random window of the
 # mnemonic for ZONE_JOURNEY_FRESH_START..END on every run, so state keeps growing instead of
@@ -173,4 +173,7 @@ scenario:
         where:
           to: { var: account_a.address }
           amount: ${ZONE_JOURNEY_WITHDRAWAL_AMOUNT}
+          # A payout that fails on L1 emits the same event with callbackSuccess false and bounces
+          # back to the zone; only a delivered payout completes the journey.
+          callbackSuccess: true
       save: withdrawal_processed

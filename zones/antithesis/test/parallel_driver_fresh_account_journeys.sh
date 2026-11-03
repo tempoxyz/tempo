@@ -57,3 +57,15 @@ unexplained=$(jq -c '[.failures[] | select(.classification | IN(
     "nonce_state_ambiguous", "nonce_recovery_error") | not)]' "$report")
 sdk_assert always true "$([ "$unexplained" = "[]" ] && echo true || echo false)" \
     "$JOURNEY_FAILURES_FROM_FAULTS" "{\"failures\": $unexplained}"
+
+# Journeys only make valid deposits, so the zone must credit each one. A deposit it fails or
+# rejects leaves its journey waiting until it times out, which the assertion above allows.
+inbox=0x1c00000000000000000000000000000000000001
+if failed=$(cast logs --from-block 0 --address "$inbox" --rpc-url http://10.20.0.20:8545 --json \
+        "DepositFailed(bytes32 indexed,address indexed,address,uint128)" 2>/dev/null) &&
+    rejected=$(cast logs --from-block 0 --address "$inbox" --rpc-url http://10.20.0.20:8545 --json \
+        "DepositRejected(bytes32 indexed,address indexed,uint8,address,uint128,address)" 2>/dev/null); then
+    bad=$(printf '%s\n%s\n' "$failed" "$rejected" | jq -cs 'add | map({transactionHash, topics})')
+    sdk_assert always true "$([ "$bad" = "[]" ] && echo true || echo false)" "$DEPOSITS_CREDITED" \
+        "{\"events\": $bad}"
+fi

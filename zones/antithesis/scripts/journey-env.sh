@@ -16,4 +16,5 @@ export ZONE_JOURNEY_WITHDRAWAL_AMOUNT="${ZONE_JOURNEY_WITHDRAWAL_AMOUNT:-1000000
 # Journey and assertion names, shared by the declarations and the driver.
 JOURNEY_COMPLETED="zone journey completes: deposits to two fresh accounts, one withdraws to L1"
 JOURNEY_FAILURES_FROM_FAULTS="zone journeys fail only in ways faults explain (timeouts, RPC errors)"
+DEPOSITS_CREDITED="zone credits every deposit: no DepositFailed or DepositRejected"
 PORTAL_BACKED="portal escrow backs zone supply, pending deposits, withdrawals and refunds"

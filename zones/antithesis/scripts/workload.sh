@@ -17,6 +17,7 @@ echo "workload: zone replicated to height $READY_HEIGHT"
 
 sdk_declare sometimes "$JOURNEY_COMPLETED"
 sdk_declare always "$JOURNEY_FAILURES_FROM_FAULTS"
+sdk_declare always "$DEPOSITS_CREDITED"
 sdk_declare always "$PORTAL_BACKED"
 
 if [ -n "${ANTITHESIS_OUTPUT_DIR:-}" ]; then
