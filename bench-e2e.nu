@@ -53,6 +53,34 @@ def merge-e2e-features [...features: string] {
     | str join ","
 }
 
+# EVM2 JIT is on by default. Only binaries built with the `jit` feature contain this
+# log message; others reject `--jit`, so they run on the interpreter instead.
+const E2E_JIT_MARKER = "Started experimental evm2 JIT backend"
+
+def tempo-has-jit [tempo_bin: string] {
+    (^grep -aqF $E2E_JIT_MARKER $tempo_bin | complete).exit_code == 0
+}
+
+def e2e-jit-args [tempo_bin: string] {
+    if (tempo-has-jit $tempo_bin) {
+        ["--jit"]
+    } else {
+        print $"($tempo_bin) was built without the jit feature; running it without --jit"
+        []
+    }
+}
+
+# Refs from before the `jit` feature existed build without it.
+def worktree-build-features [worktree_dir: string, features: string] {
+    let requested = ($features | split row "," | each { |f| $f | str trim } | where { |f| $f != "" })
+    if not ("jit" in $requested) { return $features }
+    let manifest = $"($worktree_dir)/bin/tempo/Cargo.toml"
+    let has_jit = ($manifest | path exists) and ((open --raw $manifest | lines | where { |l| $l =~ '^jit\s*=' } | length) > 0)
+    if $has_jit { return $features }
+    print $"($worktree_dir) has no jit feature; building it without jit"
+    $requested | where { |f| $f != "jit" } | str join ","
+}
+
 def tempo-node-help [tempo_bin: string] {
     let result = (run-external $tempo_bin "node" "--help" | complete)
     if $result.exit_code != 0 {
@@ -1033,8 +1061,12 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let hardfork = ($run | get -o hardfork | default "")
     let side_args = if $run_type == "baseline" { $ctx.baseline_args } else { $ctx.feature_args }
     let side_env = if $run_type == "baseline" { $ctx.baseline_env } else { $ctx.feature_env }
-    let extra_args = (parse-cli-args $side_args)
-    let local_reth_args = if $run_type == "baseline" { $ctx.baseline_local_reth_args } else { $ctx.feature_local_reth_args }
+    let parsed_args = (parse-cli-args $side_args)
+    # `--no-jit` is a harness flag: it turns the default `--jit` off for this side.
+    let no_jit = ("--no-jit" in $parsed_args)
+    let extra_args = ($parsed_args | where { |a| $a != "--no-jit" })
+    let side_local_reth_args = if $run_type == "baseline" { $ctx.baseline_local_reth_args } else { $ctx.feature_local_reth_args }
+    let local_reth_args = if $no_jit { $side_local_reth_args | where { |a| $a != "--jit" } } else { $side_local_reth_args }
 
     cleanup-local-e2e-processes
     bench-restore-at $ctx.a.state_path $ctx.a.mount $ctx.a.datadir
@@ -1707,10 +1739,10 @@ def "main e2e" [
     # so cargo invocations don't collide.
     mut builds = []
     if $needs_baseline {
-        $builds = ($builds | append { wt: $baseline_wt, ref_name: $baseline, sha: $baseline, label: "baseline", features: $baseline_tbc.features, extra_rustflags: $baseline_tbc.extra_rustflags, bench_features: $baseline_build_features })
+        $builds = ($builds | append { wt: $baseline_wt, ref_name: $baseline, sha: $baseline, label: "baseline", features: (worktree-build-features $baseline_wt $baseline_tbc.features), extra_rustflags: $baseline_tbc.extra_rustflags, bench_features: $baseline_build_features })
     }
     if $needs_feature {
-        $builds = ($builds | append { wt: $feature_wt, ref_name: $feature, sha: $feature, label: "feature", features: $feature_tbc.features, extra_rustflags: $feature_tbc.extra_rustflags, bench_features: $feature_build_features })
+        $builds = ($builds | append { wt: $feature_wt, ref_name: $feature, sha: $feature, label: "feature", features: (worktree-build-features $feature_wt $feature_tbc.features), extra_rustflags: $feature_tbc.extra_rustflags, bench_features: $feature_build_features })
     }
     $builds | par-each { |b|
         if $effective_no_cache {
@@ -1795,8 +1827,8 @@ def "main e2e" [
         loud: $loud
         gas_limit: $gas_limit
         general_gas_limit: $general_gas_limit
-        baseline_local_reth_args: $baseline_arg_filter.supported
-        feature_local_reth_args: $feature_arg_filter.supported
+        baseline_local_reth_args: (if $needs_baseline { $baseline_arg_filter.supported | append (e2e-jit-args $baseline_tempo) } else { [] })
+        feature_local_reth_args: (if $needs_feature { $feature_arg_filter.supported | append (e2e-jit-args $feature_tempo) } else { [] })
         regenesis_tempo: $regenesis_tempo
         tracing_otlp: $tracing_otlp
     }

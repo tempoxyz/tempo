@@ -620,12 +620,13 @@ jobs:
       - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         continue-on-error: true
 
-      # `--jit` needs a binary built with the `jit` feature; build both sides with it so that
-      # only the runtime flag differs.
+      # EVM2 JIT is on by default. `--jit` needs a binary built with the `jit` feature, so build
+      # both sides with it and only the runtime flag differs. `--no-jit` in both sides' args
+      # turns it off and skips the jit build.
       - name: Enable JIT build support
-        if: contains(inputs.baseline-args, '--jit') || contains(inputs.feature-args, '--jit') || contains(inputs.baseline-features, 'jit') || contains(inputs.feature-features, 'jit')
+        if: ${{ !(contains(inputs.baseline-args, '--no-jit') && contains(inputs.feature-args, '--no-jit')) || contains(inputs.baseline-features, 'jit') || contains(inputs.feature-features, 'jit') }}
         env:
-          JIT_ARGS: ${{ contains(inputs.baseline-args, '--jit') || contains(inputs.feature-args, '--jit') }}
+          JIT_ARGS: ${{ !(contains(inputs.baseline-args, '--no-jit') && contains(inputs.feature-args, '--no-jit')) }}
         run: |
           if [ "$JIT_ARGS" = "true" ]; then
             echo "BENCH_FEATURES=$BENCH_FEATURES,jit" >> "$GITHUB_ENV"
