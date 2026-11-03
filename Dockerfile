@@ -4,7 +4,7 @@ FROM ${CHEF_IMAGE} AS builder
 
 ARG TARGETARCH
 ARG RUST_PROFILE=profiling
-ARG RUST_FEATURES="asm-keccak,jemalloc,otlp"
+ARG RUST_FEATURES="asm-keccak,jemalloc,otlp,corpus"
 ARG VERGEN_GIT_SHA
 ARG VERGEN_GIT_SHA_SHORT
 ARG EXTRA_RUSTFLAGS=""
