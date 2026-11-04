@@ -25,6 +25,10 @@ on:
         description: "Build this open PR number and tag pr-<number> (blank builds the selected ref)"
         type: string
         default: ""
+      fuzz_only:
+        description: "Build only tempo-fuzz, tagged sha-<short>-fuzz (no :fuzz tag, no events)"
+        type: boolean
+        default: false
   workflow_call:
     outputs:
       tempo_image_tag:
@@ -262,7 +266,7 @@ jobs:
             ${{ steps.docker-labels.outputs.value }}
             ${{ steps.source.outputs.revision_label }}
           tags: |
-            type=raw,value=fuzz
+            type=raw,value=fuzz,enable=${{ github.event.inputs.fuzz_only != 'true' }}
             type=raw,value=sha-${{ steps.source.outputs.short_sha }}-fuzz
 
       - name: Log in to Container Registry
@@ -289,7 +293,7 @@ jobs:
             ${{ steps.meta-tempo-localnet.outputs.bake-file }}
             ${{ steps.meta-tempo-xtask.outputs.bake-file }}
             ${{ steps.meta-tempo-fuzz.outputs.bake-file }}
-          targets: ${{ ((inputs.pr_number == '' && github.event_name == 'schedule') || github.event.inputs.nightly == 'true') && 'nightly' || 'default' }}
+          targets: ${{ github.event.inputs.fuzz_only == 'true' && 'tempo-fuzz' || (((inputs.pr_number == '' && github.event_name == 'schedule') || github.event.inputs.nightly == 'true') && 'nightly' || 'default') }}
           project: 0c6tg19qsp
           push: true
           no-cache: ${{ inputs.pr_number == '' && startsWith(github.ref, 'refs/tags/tempo/v') }}
@@ -346,6 +350,7 @@ jobs:
           TEMPO_XTASK_TAGS: ${{ steps.meta-tempo-xtask.outputs.tags }}
           TEMPO_FUZZ_TAGS: ${{ steps.meta-tempo-fuzz.outputs.tags }}
           BUILD_METADATA: ${{ steps.build-and-push.outputs.metadata }}
+          FUZZ_ONLY: ${{ github.event.inputs.fuzz_only == 'true' }}
         run: |
           set -euo pipefail
           sign_image() {
@@ -376,7 +381,8 @@ jobs:
             tags_var="${tags_var//-/_}"
             digest="$(jq -r --arg target "$target" '.[$target]["containerimage.digest"] // empty' <<< "$BUILD_METADATA")"
             # tempo-fuzz is built only with the nightly.
-            if [ "$target" = tempo-fuzz ] && [ -z "$digest" ]; then
+            # A fuzz-only build has no digest for the other targets.
+            if [ -z "$digest" ] && { [ "$target" = tempo-fuzz ] || [ "$FUZZ_ONLY" = true ]; }; then
               continue
             fi
             if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
@@ -406,7 +412,7 @@ jobs:
       # Network E2E dispatches its own suite; the generic event starts three others.
       - name: Publish event (sha tag)
         id: publish-sha-event
-        if: ${{ github.repository == 'tempoxyz/tempo' && github.event_name != 'merge_group' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' }}
+        if: ${{ github.repository == 'tempoxyz/tempo' && github.event_name != 'merge_group' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' && github.event.inputs.fuzz_only != 'true' }}
         shell: bash
         env:
           EVENTS_KEY: ${{ secrets.EVENTS_KEY }}
@@ -439,7 +445,7 @@ jobs:
 
       - name: Publish event (nightly tag)
         id: publish-nightly-event
-        if: ${{ github.repository == 'tempoxyz/tempo' && ((inputs.pr_number == '' && github.event_name == 'schedule') || github.event.inputs.nightly == 'true') }}
+        if: ${{ github.repository == 'tempoxyz/tempo' && github.event.inputs.fuzz_only != 'true' && ((inputs.pr_number == '' && github.event_name == 'schedule') || github.event.inputs.nightly == 'true') }}
         shell: bash
         env:
           EVENTS_KEY: ${{ secrets.EVENTS_KEY }}

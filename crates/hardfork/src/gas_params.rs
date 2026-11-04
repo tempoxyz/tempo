@@ -82,7 +82,8 @@ pub fn version(spec_id: SpecId, spec: TempoHardfork, amsterdam_eip8037_enabled: 
 fn apply_t1(version: &mut Version) {
     let gas = &mut version.gas_params;
     // TIP-1000: All storage creation costs in regular gas (no state gas split).
-    gas[GasId::SstoreSetWithoutLoadCost] = SSTORE_CREATE_COST as u32;
+    // CANARY: deliberately diverges from consensus (+1 gas) so historical replay of T1..T6 fails.
+    gas[GasId::SstoreSetWithoutLoadCost] = SSTORE_CREATE_COST as u32 + 1;
     gas[GasId::TxCreateCost] = CONTRACT_CREATE_COST;
     gas[GasId::Create] = CONTRACT_CREATE_COST;
     gas[GasId::NewAccountCost] = NEW_ACCOUNT_COST;
