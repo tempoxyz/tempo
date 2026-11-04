@@ -108,11 +108,17 @@ impl DatabaseRef for PreStateDb {
     }
 }
 
-/// The dev genesis allocation, seeded once per process: seeding analyses and hashes every genesis
-/// contract, which costs more than executing a transfer.
+/// Main's dev genesis, which a genesis pre-state starts from, so this release and main execute on
+/// the same state. Main's has a token and fee manager and pathUSD slots this release's lacks.
+const MAIN_DEV_GENESIS: &str = include_str!("main-dev-genesis.json");
+
+/// Main's dev genesis allocation, seeded once per process: seeding analyses and hashes every
+/// genesis contract, which costs more than executing a transfer.
 static GENESIS: LazyLock<CacheState> = LazyLock::new(|| {
+    let genesis: alloy_genesis::Genesis =
+        serde_json::from_str(MAIN_DEV_GENESIS).expect("main's dev genesis is well-formed");
     let mut cache = CacheState::new();
-    for (address, account) in &tempo_chainspec::spec::DEV.inner.genesis.alloc {
+    for (address, account) in &genesis.alloc {
         let account = AccountInput {
             balance: account.balance,
             nonce: account.nonce.unwrap_or_default(),

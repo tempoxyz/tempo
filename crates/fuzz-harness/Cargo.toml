@@ -19,6 +19,7 @@ path = "src/lib.rs"
 alloy-consensus.workspace = true
 alloy-eips.workspace = true
 alloy-evm.workspace = true
+alloy-genesis.workspace = true
 alloy-primitives.workspace = true
 alloy-rlp.workspace = true
 alloy-sol-types.workspace = true
@@ -30,6 +31,7 @@ reth-consensus.workspace = true
 reth-evm.workspace = true
 reth-trie-common.workspace = true
 revm.workspace = true
+serde_json = { workspace = true, features = ["std"] }
 tempo-fuzz-types.workspace = true
 tempo-invariants.workspace = true
 tempo-chainspec.workspace = true
