@@ -316,7 +316,7 @@ impl SelectCommand {
         let bit = tempo_corpus::targets::bit(&self.touches).ok_or_else(|| {
             let names: Vec<_> = tempo_corpus::targets::TARGETS
                 .iter()
-                .map(|target| target.name)
+                .map(|(name, _)| *name)
                 .collect();
             eyre::eyre!(
                 "unknown target {}, expected one of {}",
