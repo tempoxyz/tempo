@@ -85,8 +85,7 @@ Prefer exact metadata:
    also mirror the same value as `chainId`.
 3. Resolve the ZoneFactory address from `generated/<name>/zone.json`,
    `ZONE_FACTORY`, or the repo default. In this repo, the default lives
-   in `xtask/src/zone_utils.rs` as `MODERATO_ZONE_FACTORY`, and `zones/docs/ZONES.md`
-   mirrors it.
+   in `xtask/src/zone_utils.rs` as `MODERATO_ZONE_FACTORY`.
 4. For this repo, derive missing chain IDs with
    `zone_primitives::constants::zone_chain_id`:
 

@@ -7,8 +7,7 @@
 //!
 //! A sequencer with no persisted list is uninitialized and credits every deposit until its first
 //! write, so enabling the allowlist does not bounce deposits before the admin fills the list.
-//! Each sequencer keeps its own file, which consensus does not replicate; the operator runbook in
-//! `zones/docs/ZONES.md` covers enabling the allowlist and adding or restoring sequencers.
+//! Each sequencer keeps its own file, which consensus does not replicate.
 
 use std::{
     collections::BTreeSet,
