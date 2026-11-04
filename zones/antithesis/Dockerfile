@@ -1,5 +1,5 @@
 # Zone test image: the Tempo L1 node, the zone node built with SDK assertions enabled,
-# the provisioning tools and the scripts docker-compose.yaml runs.
+# the provisioning tools, the scripts docker-compose.yaml runs and the test template.
 #
 # Build from the repository root (requires the crates/zones/contracts/lib submodules):
 #   docker build -f zones/antithesis/Dockerfile -t tempo-zones-antithesis:latest \
@@ -73,6 +73,8 @@ COPY --from=solidity /root/.foundry/bin/cast /usr/local/bin/cast
 COPY --from=solidity /app/crates/zones/contracts/out /app/crates/zones/contracts/out
 COPY --from=l1-genesis /genesis/l1-genesis.json /opt/zones/l1-genesis.json
 COPY zones/antithesis/scripts/ /opt/zones/
+# Antithesis runs the test commands it finds here; see zones/antithesis/README.md.
+COPY --chmod=755 zones/antithesis/test/ /opt/antithesis/test/
 
 ENV RUST_BACKTRACE=full
 WORKDIR /app

@@ -1,6 +1,7 @@
 //! xtask is a Swiss army knife of tools that help with running and testing tempo.
 use crate::{
     admin::Admin,
+    antithesis::Antithesis,
     benchmark_results::BenchmarkResults,
     check_abi::CheckAbi,
     configure_benchmark_fees::ConfigureBenchmarkFees,
@@ -26,6 +27,7 @@ use eyre::Context;
 use tempo_state_bloat::GenerateStateBloat;
 
 mod admin;
+mod antithesis;
 mod benchmark_results;
 mod check_abi;
 mod configure_benchmark_fees;
@@ -58,6 +60,7 @@ async fn main() -> eyre::Result<()> {
     let args = Args::parse();
     match args.action {
         Action::Admin(args) => args.run().await.wrap_err("admin command failed"),
+        Action::Antithesis(args) => args.run().await.wrap_err("Antithesis test command failed"),
         Action::BenchmarkResults(args) => args.run().wrap_err("failed to render benchmark results"),
         Action::CheckAbi(args) => args.run().wrap_err("failed ABI alignment check"),
         Action::ConfigureBenchmarkFees(args) => args
@@ -121,6 +124,7 @@ struct Args {
 #[derive(Debug, clap::Subcommand)]
 enum Action {
     Admin(Admin),
+    Antithesis(Antithesis),
     BenchmarkResults(BenchmarkResults),
     CheckAbi(CheckAbi),
     ConfigureBenchmarkFees(ConfigureBenchmarkFees),
