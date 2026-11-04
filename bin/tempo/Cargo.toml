@@ -36,6 +36,7 @@ tempo-evm.workspace = true
 tempo-faucet.workspace = true
 tempo-telemetry-util.workspace = true
 tempo-state-bloat.workspace = true
+tempo-corpus = { workspace = true, optional = true }
 
 alloy = { workspace = true, default-features = false, features = [
 	"network",
@@ -140,6 +141,9 @@ default = ["asm-keccak", "jemalloc", "otlp", "keccak-cache-global"]
 fuzz = ["tempo-precompiles/fuzz", "reth-db/dst", "reth-trie/dst"]
 
 localnet = ["dep:nix"]
+
+# Historical execution corpus commands (`tempo corpus fill/replay`).
+corpus = ["dep:tempo-corpus"]
 
 asm-keccak = [
 	"alloy/asm-keccak",

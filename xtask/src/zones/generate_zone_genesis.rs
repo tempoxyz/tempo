@@ -14,7 +14,10 @@ use tempo_chainspec::{cli::TempoHardforkArgs, spec::TEMPO_T0_BASE_FEE};
 use tempo_contracts::{
     CREATEX_ADDRESS, SAFE_DEPLOYER_ADDRESS,
     contracts::{CreateX, SafeDeployer},
-    zones::{TEMPO_STATE_ADDRESS, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS, ZonePortal},
+    zones::{
+        TEMPO_STATE_ADDRESS, ZONE_FACTORY_ADDRESS, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS,
+        ZonePortal,
+    },
 };
 use tempo_evm::genesis::{
     GenesisEvm, create_genesis_evm, deploy_arachnid_create2_factory, ethereum_chain_config,
@@ -65,6 +68,10 @@ pub(crate) struct GenerateZoneGenesis {
         conflicts_with = "tempo_genesis_header_rlp"
     )]
     pub(crate) tempo_portal: Option<Address>,
+
+    /// ZoneFactory that created `--tempo-portal`, used to find its ZoneCreated event.
+    #[arg(long, env = "ZONE_FACTORY", default_value_t = ZONE_FACTORY_ADDRESS)]
+    pub(crate) zone_factory: Address,
 
     /// Tempo L1 RPC URL used to inherit fork activations and optionally derive the anchor.
     #[arg(long, required_unless_present = "hardfork")]
@@ -124,7 +131,7 @@ impl GenerateZoneGenesis {
                 const_hex::decode(header_rlp).wrap_err("failed to decode hex string")?
             }
             (None, Some(portal), Some(provider)) => {
-                finalized_pre_creation_anchor(provider, portal, None)
+                finalized_pre_creation_anchor(provider, self.zone_factory, portal, None)
                     .await?
                     .rlp
             }
@@ -323,6 +330,7 @@ pub(crate) struct PreCreationAnchor {
 
 pub(crate) async fn finalized_pre_creation_anchor<P: Provider<TempoNetwork>>(
     provider: &P,
+    factory: Address,
     portal: Address,
     expected_creation_block: Option<u64>,
 ) -> eyre::Result<PreCreationAnchor> {
@@ -366,6 +374,7 @@ pub(crate) async fn finalized_pre_creation_anchor<P: Provider<TempoNetwork>>(
     // portal was deployed in exactly that block.
     let creation_block = find_zone_deployment_block(
         provider,
+        factory,
         zone_id,
         portal,
         expected_creation_block.unwrap_or(0),
@@ -433,6 +442,7 @@ pub(crate) async fn finalized_pre_creation_anchor<P: Provider<TempoNetwork>>(
 
 pub(crate) async fn wait_for_finalized_pre_creation_anchor<P: Provider<TempoNetwork>>(
     provider: &P,
+    factory: Address,
     portal: Address,
     creation_block: u64,
 ) -> eyre::Result<PreCreationAnchor> {
@@ -446,7 +456,8 @@ pub(crate) async fn wait_for_finalized_pre_creation_anchor<P: Provider<TempoNetw
             .wrap_err("failed to fetch finalized Tempo L1 block")?
             .ok_or_else(|| eyre!("Tempo L1 returned no finalized block"))?;
         if finalized.number() >= creation_block {
-            return finalized_pre_creation_anchor(provider, portal, Some(creation_block)).await;
+            return finalized_pre_creation_anchor(provider, factory, portal, Some(creation_block))
+                .await;
         }
         tokio::time::sleep(POLL_INTERVAL).await;
     }

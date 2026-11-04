@@ -320,7 +320,7 @@ pub(crate) mod tests {
                 TempoTxEnvelope::Legacy(
                     TxLegacy {
                         to: ZONE_INBOX_ADDRESS.into(),
-                        input: ADVANCE_TEMPO_SELECTOR.to_vec().into(),
+                        input: (&ADVANCE_TEMPO_SELECTOR).into(),
                         ..Default::default()
                     }
                     .into_signed(TEMPO_SYSTEM_TX_SIGNATURE),

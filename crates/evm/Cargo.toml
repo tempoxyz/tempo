@@ -53,6 +53,7 @@ alloy-genesis = { workspace = true, features = ["std"], optional = true }
 eyre = { workspace = true, optional = true }
 
 derive_more.workspace = true
+serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 

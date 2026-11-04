@@ -47,7 +47,7 @@ sol! {
             ConfigurableAccountOwner[] calldata owners
         ) external;
         /// Migrates `msg.sender` using `threshold` and sorted `owners`, returning the stored hash.
-        /// Only a direct primitive-root transaction with this call as its sole call may invoke it.
+        /// Only a top-level call in a direct primitive-root transaction may invoke it.
         function upgradeAccount(uint8 threshold, ConfigurableAccountOwner[] calldata owners)
             external
             returns (bytes32 commitment);
@@ -62,7 +62,7 @@ sol! {
         error InvalidOwnerOrder();
         error UnauthorizedConfigurableAccountCaller();
         error PrimitiveRootRequired();
-        error UpgradeMustBeOnlyCall();
+        error UpgradeMustBeDirectCall();
         error AccountAlreadyConfigurable();
         error AccountHasCode();
     }

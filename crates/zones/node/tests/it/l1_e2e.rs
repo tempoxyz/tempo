@@ -12,7 +12,7 @@ use crate::utils::{
     start_real_p2p_cluster_with_active_nodes, start_real_p2p_cluster_with_deposit_allowlist,
 };
 use alloy::{
-    primitives::{Address, B256, U256},
+    primitives::{Address, B256, Bytes, U256},
     providers::Provider,
     sol_types::SolCall,
 };
@@ -2647,9 +2647,7 @@ fn sign_set(
         allowed,
         nonce,
         deadline,
-        signature: alloy::primitives::Bytes::copy_from_slice(
-            &signer.sign_hash_sync(&hash)?.as_bytes(),
-        ),
+        signature: Bytes::from(signer.sign_hash_sync(&hash)?.as_bytes()),
     })
 }
 

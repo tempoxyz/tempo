@@ -409,7 +409,7 @@ mod tests {
         ZoneBlockExecutor, ZoneBlockPhase, ZoneTransactionKind,
     };
 
-    use alloy_consensus::{Header, Sealable as _, Signed, TxLegacy};
+    use alloy_consensus::{Header, Sealable as _, SignableTransaction, TxLegacy};
     use alloy_eips::{
         eip2935::{HISTORY_STORAGE_ADDRESS, HISTORY_STORAGE_CODE},
         eip4788::BEACON_ROOTS_ADDRESS,
@@ -464,14 +464,14 @@ mod tests {
     use crate::{ZoneDbError, ZoneEvmConfig};
 
     fn system_tx(to: Address, input: Bytes) -> TempoTxEnvelope {
-        TempoTxEnvelope::Legacy(Signed::new_unhashed(
+        TempoTxEnvelope::Legacy(
             TxLegacy {
                 to: to.into(),
                 input,
                 ..Default::default()
-            },
-            TEMPO_SYSTEM_TX_SIGNATURE,
-        ))
+            }
+            .into_signed(TEMPO_SYSTEM_TX_SIGNATURE),
+        )
     }
 
     fn advance_tempo_tx() -> TempoTxEnvelope {
@@ -517,14 +517,14 @@ mod tests {
     }
 
     fn ordinary_tx(to: Address, input: Bytes) -> TempoTxEnvelope {
-        TempoTxEnvelope::Legacy(Signed::new_unhashed(
+        TempoTxEnvelope::Legacy(
             TxLegacy {
                 to: to.into(),
                 input,
                 ..Default::default()
-            },
-            Signature::test_signature(),
-        ))
+            }
+            .into_signed(Signature::test_signature()),
+        )
     }
 
     fn subblock_tx() -> TempoTxEnvelope {

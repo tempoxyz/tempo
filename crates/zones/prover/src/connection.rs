@@ -237,7 +237,7 @@ mod tests {
         ];
         for count in 0_u32..128 {
             let entries: Vec<Bytes> = (0..count)
-                .map(|entry| Bytes::from(entry.to_be_bytes().to_vec()))
+                .map(|entry| Bytes::from(entry.to_be_bytes()))
                 .collect();
             let definite = minicbor_serde::to_vec(&entries).unwrap();
             let mut indefinite = vec![0x9f];
@@ -290,7 +290,7 @@ mod tests {
     fn value_limit_is_shared_between_pools() {
         const MAXIMUM: usize = 512;
         let entries: Vec<Bytes> = (0_u32..192)
-            .map(|entry| Bytes::from(entry.to_be_bytes().to_vec()))
+            .map(|entry| Bytes::from(entry.to_be_bytes()))
             .collect();
         for ([zone_nodes, bytecodes, tempo_nodes], accepted) in [
             ([entries.clone(), vec![], vec![]], true),
