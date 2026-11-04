@@ -8,6 +8,7 @@ use std::{
 };
 
 use alloy::hex::ToHexExt;
+use alloy_consensus::BlockHeader;
 use alloy_network::EthereumWallet;
 use alloy_primitives::{Address, B256, Bytes};
 use alloy_provider::{Provider, ProviderBuilder};
@@ -1310,8 +1311,6 @@ impl ValidatorInfo {
         let mut in_committee = None;
 
         if !self.no_dkg_information {
-            use alloy_consensus::BlockHeader;
-
             let boundary_height = current_epoch
                 .previous()
                 .map(|epoch| epoch_strategy.last(epoch).expect("valid epoch"))
@@ -1417,8 +1416,6 @@ impl Info {
         self,
         connect: impl AsyncFnOnce(&str) -> eyre::Result<P>,
     ) -> eyre::Result<()> {
-        use alloy_consensus::BlockHeader;
-
         let rpc_url = match (self.rpc_url.as_deref(), self.chain.as_deref()) {
             (Some(rpc_url), _) => rpc_url,
             (None, Some(chain)) => chain

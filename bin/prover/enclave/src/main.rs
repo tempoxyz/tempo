@@ -12,7 +12,8 @@ use std::{
 use alloy_genesis::Genesis;
 use clap::{Args, Parser};
 use tempo_chainspec::TempoChainSpec;
-use tracing::error;
+use tokio::net::TcpListener;
+use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 use zone_chainspec::ZoneChainSpec;
 use zone_primitives::constants::zone_chain_id;
@@ -162,9 +163,6 @@ async fn serve_tcp(
     timeouts: Timeouts,
     tls: AttestedServer,
 ) -> io::Result<()> {
-    use tokio::net::TcpListener;
-    use tracing::info;
-
     let port = u16::try_from(port).map_err(|_| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -263,7 +261,6 @@ async fn handle_connection<T>(
 ) where
     T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    use tracing::{info, warn};
     let stream = match tls.accept(stream).await {
         Ok(stream) => stream,
         Err(error) => {

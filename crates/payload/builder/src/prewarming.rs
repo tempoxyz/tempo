@@ -532,7 +532,11 @@ mod tests {
     };
     use tempo_chainspec::TempoChainSpec;
     use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes};
-    use tempo_precompiles::storage::actions::StorageAction;
+    use tempo_precompiles::{
+        PATH_USD_ADDRESS,
+        storage::{StorageCtx, StorageKey, actions::StorageAction},
+        tip20::{ITIP20, TIP20Token, tip20_slots},
+    };
     use tempo_primitives::{
         TempoHeader, TempoPrimitives, TempoTransaction, TempoTxEnvelope, transaction::Call,
     };
@@ -1057,12 +1061,6 @@ mod tests {
 
     #[test]
     fn parallel_prewarm_records_native_transfer_balance_changes() {
-        use tempo_precompiles::{
-            PATH_USD_ADDRESS,
-            storage::{StorageCtx, StorageKey},
-            tip20::{ITIP20, TIP20Token, tip20_slots},
-        };
-
         let mut context = prewarming_context(TaskExecutor::test(), true);
         context.evm_env.block.basefee = U256::ZERO;
         let mut evm = context.evm_for_ctx().expect("prewarm EVM");

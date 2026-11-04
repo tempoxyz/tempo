@@ -15,12 +15,18 @@ use alloy::{
     sol_types::SolCall,
 };
 use alloy_eips::Encodable2718;
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use eyre::{OptionExt, WrapErr};
+use p256::{
+    ecdsa::{SigningKey, signature::Signer},
+    elliptic_curve::rand_core::OsRng,
+};
 use reth_e2e_test_utils::wallet::test_signer;
 use reth_ethereum::network::{NetworkSyncUpdater, SyncState};
 use reth_node_api::BuiltPayload;
 use reth_primitives_traits::transaction::TxHashRef;
 use reth_transaction_pool::TransactionPool;
+use sha2::{Digest, Sha256};
 use tempo_alloy::{TempoNetwork, provider::TempoProviderBuilderExt, rpc::TempoTransactionReceipt};
 use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
 use tempo_contracts::precompiles::{
@@ -33,6 +39,7 @@ use tempo_contracts::precompiles::{
 use tempo_node::rpc::TempoTransactionRequest;
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS,
+    account_keychain::updateSpendingLimitCall,
     tip20::ITIP20::{self},
 };
 use tempo_primitives::{
@@ -911,13 +918,6 @@ async fn test_aa_2d_nonce_out_of_order_arrival() -> eyre::Result<()> {
 
 #[tokio::test]
 async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
-    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-    use p256::{
-        ecdsa::{SigningKey, signature::Signer},
-        elliptic_curve::rand_core::OsRng,
-    };
-    use sha2::{Digest, Sha256};
-
     reth_tracing::init_test_tracing();
 
     // Setup test node with direct access
@@ -1869,7 +1869,6 @@ async fn test_aa_keychain_revocation_toctou_dos() -> eyre::Result<()> {
         .await?;
 
     // Verify the key is actually revoked by querying the keychain
-    use tempo_contracts::precompiles::account_keychain::IAccountKeychain::IAccountKeychainInstance;
     let keychain = IAccountKeychainInstance::new(ACCOUNT_KEYCHAIN_ADDRESS, &provider);
     let key_info = keychain.getKey(root_addr, access_key_addr).call().await?;
     assert!(key_info.isRevoked, "Key should be marked as revoked");
@@ -2064,8 +2063,6 @@ async fn test_aa_expiring_nonce_replay_protection() -> eyre::Result<()> {
 /// 4. Transactions should be evicted from the mempool
 #[tokio::test]
 async fn test_aa_keychain_spending_limit_toctou_dos() -> eyre::Result<()> {
-    use tempo_precompiles::account_keychain::updateSpendingLimitCall;
-
     reth_tracing::init_test_tracing();
 
     println!("\n=== Testing AA Keychain Spending Limit TOCTOU DoS ===\n");

@@ -10,7 +10,7 @@ use alloy::{
 };
 use eyre::{Context as _, ensure, eyre};
 use serde::Serialize;
-use std::{fs, path::PathBuf};
+use std::{fs, os::unix::fs::PermissionsExt as _, path::PathBuf};
 use tempo_alloy::{
     TempoNetwork,
     primitives::transaction::Call,
@@ -974,8 +974,6 @@ fn artifact_path(artifacts: &std::path::Path, contract: &str) -> PathBuf {
 }
 
 fn read_private_address_file(path: &std::path::Path) -> eyre::Result<Vec<Address>> {
-    use std::os::unix::fs::PermissionsExt as _;
-
     let metadata = fs::symlink_metadata(path).wrap_err_with(|| {
         format!(
             "failed reading allowed-accounts metadata from {}",

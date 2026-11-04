@@ -338,6 +338,7 @@ fn disable(error: impl Into<eyre::Report>) -> L1ReadError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::accounting::{State, effects};
     use alloy_consensus::Header;
     use alloy_eips::NumHash;
     use alloy_primitives::{B256, Log};
@@ -352,8 +353,6 @@ mod tests {
 
     #[tokio::test]
     async fn checkpoint_deferred_range_preserves_order_and_authenticates_its_parent() {
-        use crate::accounting::{State, effects};
-
         let provider = alloy_provider::ProviderBuilder::new_with_network::<TempoNetwork>()
             .connect_mocked_client(alloy_transport::mock::Asserter::new())
             .erased();

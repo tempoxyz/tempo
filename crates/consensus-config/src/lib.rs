@@ -6,6 +6,7 @@
 use std::{
     fmt::Display,
     io::{Read as _, Write as _},
+    os::unix::fs::FileTypeExt as _,
     path::Path,
 };
 
@@ -30,8 +31,6 @@ pub const MAX_SIGNING_KEY_PASSPHRASE_BYTES: u64 = 1024;
 ///
 /// The returned boolean reports whether the opened handle is a FIFO.
 pub fn read_secret<P: AsRef<Path>>(path: P) -> std::io::Result<(SigningKeyPassphrase, bool)> {
-    use std::os::unix::fs::FileTypeExt as _;
-
     let file = std::fs::File::open(path)?;
     let is_fifo = file.metadata()?.file_type().is_fifo();
 

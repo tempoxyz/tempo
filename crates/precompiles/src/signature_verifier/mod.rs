@@ -194,9 +194,10 @@ mod tests {
     use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
+    use p256::{ecdsa::SigningKey, elliptic_curve::rand_core::OsRng};
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_primitives::transaction::tt_signature::{
-        SIGNATURE_TYPE_P256, SIGNATURE_TYPE_WEBAUTHN,
+        SIGNATURE_TYPE_P256, SIGNATURE_TYPE_WEBAUTHN, derive_p256_address, normalize_p256_s,
     };
 
     fn sign_recover(hash: B256, signature: Vec<u8>) -> Result<Address> {
@@ -221,9 +222,6 @@ mod tests {
 
     #[test]
     fn test_verify_p256_valid() -> eyre::Result<()> {
-        use p256::{ecdsa::SigningKey, elliptic_curve::rand_core::OsRng};
-        use tempo_primitives::transaction::tt_signature::{derive_p256_address, normalize_p256_s};
-
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
         StorageCtx::enter(&mut storage, || {
             let signing_key = SigningKey::random(&mut OsRng);

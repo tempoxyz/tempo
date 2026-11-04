@@ -389,12 +389,11 @@ fn submitted_anchor_number(tempo_block_number: u64, recent_tempo_block_number: u
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_primitives::{B256, U256};
+    use tempo_contracts::zones::{BlockTransition, DepositQueueTransition};
 
     #[test]
     fn submission_match_binds_t13_token_cursor() {
-        use alloy_primitives::{B256, U256};
-        use tempo_contracts::zones::{BlockTransition, DepositQueueTransition};
-
         let call = submitBatchCall {
             tempoBlockNumber: 10,
             recentTempoBlockNumber: 0,
