@@ -12,6 +12,8 @@ pub(crate) enum IpParseError {
     Parse(#[from] std::net::AddrParseError),
     #[error("IP address exceeds 255 bytes")]
     TooLong,
+    #[error("IPv4-mapped IPv6 address; use the IPv4 form")]
+    Ipv4Mapped,
 }
 
 /// A parsed IP address.
@@ -23,12 +25,16 @@ pub(crate) struct IpAddr<'a> {
 }
 
 impl<'a> IpAddr<'a> {
-    /// Validates the IP format, enforcing the 255-byte limit from T14 onward.
+    /// Validates the IP format, enforcing the 255-byte limit and rejecting IPv4-mapped IPv6
+    /// addresses from T14 onward.
     pub(crate) fn parse(input: &'a str, spec: TempoHardfork) -> Result<Self, IpParseError> {
         if spec.is_t14() {
             u8::try_from(input.len()).map_err(|_| IpParseError::TooLong)?;
         }
-        ensure_address_is_ip(input)?;
+        let ip = ensure_address_is_ip(input)?;
+        if spec.is_t14() && ip.to_canonical() != ip {
+            return Err(IpParseError::Ipv4Mapped);
+        }
         Ok(Self { input })
     }
 
@@ -48,6 +54,8 @@ pub(crate) enum IpWithPortParseError {
     Parse(#[from] std::net::AddrParseError),
     #[error("IP address exceeds 255 bytes")]
     TooLong,
+    #[error("IPv4-mapped IPv6 address; use the IPv4 form")]
+    Ipv4Mapped,
 }
 
 /// A parsed IP address with a port.
@@ -59,12 +67,16 @@ pub(crate) struct IpAddrWithPort<'a> {
 }
 
 impl<'a> IpAddrWithPort<'a> {
-    /// Validates the IP and port format, enforcing the 255-byte limit from T14 onward.
+    /// Validates the IP and port format, enforcing the 255-byte limit and rejecting IPv4-mapped
+    /// IPv6 addresses from T14 onward.
     pub(crate) fn parse(input: &'a str, spec: TempoHardfork) -> Result<Self, IpWithPortParseError> {
         if spec.is_t14() {
             u8::try_from(input.len()).map_err(|_| IpWithPortParseError::TooLong)?;
         }
-        ensure_address_is_ip_port(input)?;
+        let ip = ensure_address_is_ip_port(input)?.ip();
+        if spec.is_t14() && ip.to_canonical() != ip {
+            return Err(IpWithPortParseError::Ipv4Mapped);
+        }
         Ok(Self { input })
     }
 
@@ -79,13 +91,11 @@ impl<'a> IpAddrWithPort<'a> {
 }
 
 /// Validates that `input` is of the form `<ip>:<port>`.
-pub(crate) fn ensure_address_is_ip_port(input: &str) -> Result<(), IpWithPortParseError> {
-    input.parse::<SocketAddr>()?;
-    Ok(())
+pub(crate) fn ensure_address_is_ip_port(input: &str) -> Result<SocketAddr, IpWithPortParseError> {
+    Ok(input.parse::<SocketAddr>()?)
 }
 
 /// Validates that `input` is a valid IP address.
-pub(crate) fn ensure_address_is_ip(input: &str) -> Result<(), IpParseError> {
-    input.parse::<std::net::IpAddr>()?;
-    Ok(())
+pub(crate) fn ensure_address_is_ip(input: &str) -> Result<std::net::IpAddr, IpParseError> {
+    Ok(input.parse::<std::net::IpAddr>()?)
 }

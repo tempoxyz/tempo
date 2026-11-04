@@ -50,11 +50,11 @@ const REGISTRY_VERSION_KEY: &str = "tempo.corpus.registry.version";
 const CATALOG_KEY: &str = "tempo.corpus.catalog";
 const RANGE_KEY: &str = "tempo.corpus.index.range";
 
-/// Indexes the transactions of `range` of a complete corpus into the Parquet file `out`,
+/// Indexes the transactions of `range` of a published corpus into the Parquet file `out`,
 /// reading with `workers` parallel tasks. Returns the number of rows.
 pub fn index(
     store: Store,
-    catalog: Catalog,
+    mut catalog: Catalog,
     range: Range<u64>,
     out: &Path,
     workers: usize,
@@ -63,7 +63,12 @@ pub fn index(
         .worker_threads(workers)
         .enable_all()
         .build()?;
-    runtime.block_on(async {
+    // The footer names the published checkpoint, not the lease that pins it while we read.
+    let source = serde_json::to_string(&catalog)?;
+    // A lease of our own, as replay takes: a fill extending the corpus may retire the published
+    // checkpoint meanwhile.
+    let lease = store.lease_published(&runtime, &mut catalog, || {})?;
+    let rows = runtime.block_on(async {
         let reader = Arc::new(store.reader(&catalog).await?);
         let properties = WriterProperties::builder()
             .set_compression(Compression::ZSTD(ZstdLevel::try_new(3)?))
@@ -72,7 +77,7 @@ pub fn index(
             .set_key_value_metadata(Some(vec![
                 KeyValue::new(INDEX_VERSION_KEY.into(), VERSION.to_string()),
                 KeyValue::new(REGISTRY_VERSION_KEY.into(), targets::VERSION.to_string()),
-                KeyValue::new(CATALOG_KEY.into(), serde_json::to_string(&catalog)?),
+                KeyValue::new(CATALOG_KEY.into(), source),
                 KeyValue::new(RANGE_KEY.into(), format!("{}..{}", range.start, range.end)),
             ]));
         // Dictionaries for the low-cardinality columns only.
@@ -116,8 +121,12 @@ pub fn index(
             .expect("read tasks finished")
             .close()
             .await?;
-        Ok(rows)
-    })
+        eyre::Ok(rows)
+    });
+    let released = lease.release(&runtime, &store);
+    let rows = rows?;
+    released?;
+    Ok(rows)
 }
 
 /// Splits `window` into the cursors of consecutive block ranges of at most `max_rows`
@@ -154,8 +163,9 @@ pub fn select(
     blocks: Range<u64>,
 ) -> eyre::Result<String> {
     let mask = 1u64 << bit;
-    // Keyed by range and tip: corpora of one chain that end at the same block share a tip.
-    let mut corpora = BTreeMap::<(u64, u64, String), (Catalog, BTreeSet<u64>)>::new();
+    // Keyed by the parent of the first block, which a corpus keeps as it grows at its tip. Of
+    // indexes of one corpus at several tips, the longest's catalog names it.
+    let mut corpora = BTreeMap::<String, (Catalog, BTreeSet<u64>)>::new();
     for path in paths {
         let builder = ParquetRecordBatchReaderBuilder::try_new(File::open(path)?)?;
         let metadata = builder.metadata().file_metadata().key_value_metadata();
@@ -174,14 +184,12 @@ pub fn select(
             path.display()
         );
         let catalog: Catalog = serde_json::from_str(get(CATALOG_KEY)?)?;
-        let selected = &mut corpora
-            .entry((
-                catalog.context.start,
-                catalog.context.end,
-                catalog.context.tip.clone(),
-            ))
-            .or_insert_with(|| (catalog, BTreeSet::new()))
-            .1;
+        let (named, selected) = corpora
+            .entry(catalog.context.parent.clone())
+            .or_insert_with(|| (catalog.clone(), BTreeSet::new()));
+        if catalog.cursor.next > named.cursor.next {
+            *named = catalog;
+        }
         // Only the leaves this selection reads: call targets, not their selectors and addresses.
         let leaf = if writes {
             "writes"
@@ -409,7 +417,7 @@ mod tests {
         types::{self, Case, Change, Delta, Input, Outputs},
     };
     use alloy_consensus::{BlockBody, SignableTransaction, TxLegacy};
-    use alloy_primitives::{B256, Signature, TxKind, U256};
+    use alloy_primitives::{Signature, TxKind, U256};
     use tempo_contracts::precompiles::{
         PATH_USD_ADDRESS, STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     };
@@ -428,7 +436,6 @@ mod tests {
     fn corpus(blocks: Vec<Vec<(TempoTxEnvelope, Address)>>) -> eyre::Result<(Store, Catalog)> {
         let store = in_memory("index");
         let mut catalog = catalog(1, 0, 0);
-        catalog.context.end = 1 + blocks.len() as u64;
         catalog.complete = false;
         let runtime = tokio::runtime::Runtime::new()?;
         runtime.block_on(async {
@@ -512,8 +519,6 @@ mod tests {
                     .await?;
                 cursor.advance(&record)?;
             }
-            catalog.context.end_tx = cursor.tx;
-            catalog.context.tip = B256::from(cursor.parent).to_string();
             catalog.cursor = cursor;
             db.put(store::CONTEXT_KEY, serde_json::to_vec(&catalog.context)?)
                 .await?;
