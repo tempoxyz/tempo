@@ -228,7 +228,7 @@ impl Context {
     }
 
     /// What is still in flight: confirmed deposits the zone has not processed, confirmed
-    /// withdrawals L1 has not paid, and whether every zone node answers with the same tip.
+    /// withdrawals L1 has not paid, and whether every zone node has the highest tip any reports.
     async fn settlement(&self) -> eyre::Result<Settlement> {
         let mut tips = BTreeMap::new();
         for (url, zone) in self.zone_urls.iter().zip(&self.zones) {
@@ -238,32 +238,25 @@ impl Context {
                 .ok_or_else(|| eyre::eyre!("{url} has no latest block"))?;
             tips.insert(url.to_string(), (block.header.number, block.header.hash));
         }
-        let lowest = tips
+        // Every node must reach the highest tip any node reported, and agree on it. That height
+        // is past every block a node has, so also past every workload transaction and every
+        // deposit credit the checks below read from one node.
+        let highest = tips
             .values()
             .map(|(number, _)| *number)
-            .min()
-            .unwrap_or_default();
-        let mut hashes_at_lowest = Vec::new();
-        for zone in &self.zones {
-            let block = zone
-                .get_block_by_number(BlockNumberOrTag::Number(lowest))
-                .await?
-                .ok_or_else(|| eyre::eyre!("zone node lost block {lowest}"))?;
-            hashes_at_lowest.push(block.header.hash);
-        }
-        let records = self.ledger.records()?;
-        let last_zone_block = records
-            .iter()
-            .filter_map(|record| match record {
-                Record::Transfer { zone_block, .. } | Record::Withdrawal { zone_block, .. } => {
-                    Some(*zone_block)
-                }
-                _ => None,
-            })
             .max()
             .unwrap_or_default();
-        let converged =
-            hashes_at_lowest.windows(2).all(|pair| pair[0] == pair[1]) && lowest >= last_zone_block;
+        let mut hashes_at_highest = Vec::new();
+        for zone in &self.zones {
+            hashes_at_highest.push(
+                zone.get_block_by_number(BlockNumberOrTag::Number(highest))
+                    .await?
+                    .map(|block| block.header.hash),
+            );
+        }
+        let converged = hashes_at_highest
+            .windows(2)
+            .all(|pair| pair[0].is_some() && pair[0] == pair[1]);
 
         let zone = &self.zones[0];
         let zone_height = zone.get_block_number().await?;
@@ -280,6 +273,9 @@ impl Context {
         }
         let l1_height = self.l1.get_block_number().await?;
         let mut paid: BTreeMap<(Address, u128), usize> = BTreeMap::new();
+        // A rejected deposit is only settled once L1 refunds it, paid out or parked for claiming.
+        // Keyed by refund recipient and the amount before the bounce-back fee.
+        let mut refunded: BTreeMap<(Address, u128), usize> = BTreeMap::new();
         for log in logs(&self.l1, Filter::new().address(self.portal), l1_height).await? {
             // A failed delivery also emits WithdrawalProcessed, with callbackSuccess false, and
             // bounces the funds back to the zone instead of paying `to`.
@@ -287,9 +283,24 @@ impl Context {
                 && event.callbackSuccess
             {
                 *paid.entry((event.to, event.amount)).or_default() += 1;
+            } else if let Ok(event) = ZonePortal::DepositBounceBack::decode_log(&log.inner) {
+                *refunded
+                    .entry((
+                        event.tempoRefundRecipient,
+                        event.amount + event.bouncebackFee,
+                    ))
+                    .or_default() += 1;
+            } else if let Ok(event) = ZonePortal::DepositBounceBackPending::decode_log(&log.inner) {
+                *refunded
+                    .entry((
+                        event.tempoRefundRecipient,
+                        event.amount + event.bouncebackFee,
+                    ))
+                    .or_default() += 1;
             }
         }
 
+        let records = self.ledger.records()?;
         let mut unsettled_deposits = Vec::new();
         let mut unpaid_withdrawals = Vec::new();
         for record in records {
@@ -300,9 +311,10 @@ impl Context {
                     net_amount,
                     ..
                 } => {
-                    if !take(&mut credited, (sender, to, net_amount))
-                        && !take(&mut bounced, (sender, net_amount))
-                    {
+                    // Drivers name the sender as the deposit's refund recipient.
+                    let refunded_on_l1 = take(&mut bounced, (sender, net_amount))
+                        && take(&mut refunded, (sender, net_amount));
+                    if !take(&mut credited, (sender, to, net_amount)) && !refunded_on_l1 {
                         unsettled_deposits.push(record);
                     }
                 }
