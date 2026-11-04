@@ -25,6 +25,7 @@ use crate::{
     ZoneResult,
     ecies::{AUTHENTICATED_WITHDRAWAL_ENCRYPTED_SIZE, decode_compressed_public_key},
     storage::{L1State, L1StorageReader},
+    ztip20::RELAY_PREDEPLOYS,
 };
 
 /// Maximum callback payload accepted by the Zone Outbox.
@@ -156,6 +157,13 @@ impl ZoneOutbox {
         current_tx_hash: B256,
         call: IZoneOutbox::requestWithdrawalCall,
     ) -> ZoneResult<()> {
+        // The TIP-20 relay ban does not cover the internal `transfer_from` below, which could
+        // otherwise spend an allowance a relay granted the outbox before T15. A fee payer signs,
+        // so it is never a relay.
+        if RELAY_PREDEPLOYS.contains(&caller) && self.storage.spec().is_t15() {
+            return Err(ZoneOutboxError::transfer_failed().into());
+        }
+
         if call.zoneFallbackRecipient.is_zero() {
             return Err(ZoneOutboxError::invalid_fallback_recipient().into());
         }

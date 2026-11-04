@@ -443,8 +443,10 @@ pub(crate) fn gen_collision_check_fn(
     }
 
     let check_fn = quote! {
+        // Never inline: unoptimized builds keep every inlined check's temporaries in the caller's
+        // frame, which for large contracts outgrows a 2 MiB thread stack.
         #[cfg(all(debug_assertions, not(feature = "fuzz")))]
-        #[inline(always)]
+        #[inline(never)]
         #[allow(non_snake_case)]
         fn #check_fn_name() {
             #checks

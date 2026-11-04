@@ -37,7 +37,7 @@ use crate::{
     auth::{self, AuthContext, AuthError},
     server::{
         MAX_BATCH_SIZE, RpcState, append_batch_response, authenticate_token, dispatch_request,
-        serialize_response_with_limit, validate_keychain_key_info,
+        serialize_response_with_limit, simulation_permit_deadline, validate_keychain_key_info,
     },
     subscription::WsSubscriptionStream,
     types::{JsonRpcError, JsonRpcRequest, JsonRpcResponse, to_raw},
@@ -359,13 +359,16 @@ async fn dispatch_ws_request(
     auth: &AuthContext,
     state: &Arc<RpcState>,
     session: &mut WsSession,
+    permit_deadline: tokio::time::Instant,
 ) -> WsDispatchResult {
     match req.method.as_str() {
         "eth_subscribe" => handle_subscribe(req, auth, state, session).await,
         "eth_unsubscribe" => {
             WsDispatchResult::response_only(handle_unsubscribe(req, session).await)
         }
-        _ => WsDispatchResult::response_only(dispatch_request(req, auth, state.api.as_ref()).await),
+        _ => WsDispatchResult::response_only(
+            dispatch_request(req, auth, state, permit_deadline).await,
+        ),
     }
 }
 
@@ -401,10 +404,12 @@ async fn process_ws_text(
                 Vec::new(),
             ),
             Ok(requests) => {
+                let permit_deadline = simulation_permit_deadline();
                 let mut responses = String::from("[");
                 let mut pending_subscriptions = Vec::new();
                 for req in &requests {
-                    let result = dispatch_ws_request(req, auth, state, session).await;
+                    let result =
+                        dispatch_ws_request(req, auth, state, session, permit_deadline).await;
                     pending_subscriptions.extend(result.pending_subscriptions);
                     if let Err(error) =
                         append_batch_response(&mut responses, result.response, max_response_size)
@@ -431,7 +436,14 @@ async fn process_ws_text(
     } else {
         match serde_json::from_str::<JsonRpcRequest>(trimmed) {
             Ok(request) => {
-                let result = dispatch_ws_request(&request, auth, state, session).await;
+                let result = dispatch_ws_request(
+                    &request,
+                    auth,
+                    state,
+                    session,
+                    simulation_permit_deadline(),
+                )
+                .await;
                 (
                     serialize_response_with_limit(result.response, max_response_size),
                     result.pending_subscriptions,

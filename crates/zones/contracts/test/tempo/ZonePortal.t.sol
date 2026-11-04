@@ -2363,6 +2363,43 @@ contract ZonePortalTest is BaseTest {
         vm.stopPrank();
     }
 
+    function test_setTransfersEnabled_defaultsOffAndToggles() public {
+        assertFalse(portal.transfersEnabled());
+
+        vm.expectEmit(false, false, false, true);
+        emit IZonePortal.TransfersEnabledUpdated(true);
+        vm.prank(admin);
+        portal.setTransfersEnabled(true);
+        assertTrue(portal.transfersEnabled());
+
+        vm.expectEmit(false, false, false, true);
+        emit IZonePortal.TransfersEnabledUpdated(false);
+        vm.prank(admin);
+        portal.setTransfersEnabled(false);
+        assertFalse(portal.transfersEnabled());
+    }
+
+    function test_setTransfersEnabled_revertsIfNotAdmin() public {
+        vm.prank(alice);
+        vm.expectRevert(IZonePortal.NotAdmin.selector);
+        portal.setTransfersEnabled(true);
+    }
+
+    function test_setTransfersEnabled_revertsAfterAccessPolicyAbdication() public {
+        vm.prank(admin);
+        portal.abdicate(Capability.AccessPolicy);
+        vm.warp(block.timestamp + 30 days);
+
+        vm.prank(admin);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IZonePortal.CapabilityAbdicated.selector, Capability.AccessPolicy
+            )
+        );
+        portal.setTransfersEnabled(true);
+        assertFalse(portal.transfersEnabled());
+    }
+
     function test_setAllowedAccount_enablesAndDisablesMembership() public {
         address account = makeAddr("managed account");
 

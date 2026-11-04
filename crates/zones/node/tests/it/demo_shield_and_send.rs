@@ -11,13 +11,15 @@ const L1_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 /// 2. Create a zone through the native ZoneFactory.
 /// 3. Start zone node connected to L1.
 /// 4. Alice deposits 1 pathUSD into the zone (shield).
-/// 5. Alice transfers 0.5 pathUSD to Bob within the zone (L2 transfer).
-/// 6. Verify Alice has 0.5 and Bob has 0.5 on L2.
+/// 5. Alice's transfer is rejected until the portal admin opts the zone into transfers.
+/// 6. Alice transfers 0.5 pathUSD to Bob within the zone (L2 transfer).
+/// 7. Verify Alice has 0.5 and Bob has 0.5 on L2.
 ///
 /// ```text
 ///  L1                         Zone L2
 ///   |--- Alice deposits 1 ------>|  ✓ Alice has 1
-///   |                            |
+///   |                            |  ✗ Alice cannot send yet
+///   |--- setTransfersEnabled --->|
 ///   |                            |-- Alice sends 0.5 to Bob
 ///   |                            |  ✓ Alice has 0.5
 ///   |                            |  ✓ Bob has 0.5
@@ -25,7 +27,6 @@ const L1_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 ///
 /// NOTE: Requires `forge build` in `crates/zones/contracts/` for shared runtime artifacts.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "TODO: re-enable once zones allow user transfers"]
 async fn test_shield_and_send() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
@@ -74,6 +75,24 @@ async fn test_shield_and_send() -> eyre::Result<()> {
             .connect_http(zone.http_url().clone());
 
         let zone_token = ITIP20::new(ZONE_TOKEN_ADDRESS, &alice_l2_provider);
+
+        // --- Step 5: Transfers stay disabled until the portal admin opts in ---
+        let disabled = zone_token
+            .transfer(bob_address, U256::from(transfer_amount))
+            .call()
+            .await
+            .expect_err("L2 transfer must revert before the portal opts into transfers");
+        assert_eq!(
+            disabled.as_revert_data().unwrap(),
+            alloy::sol_types::SolError::abi_encode(&tempo_contracts::zones::Unauthorized {}),
+            "L2 transfer must be rejected as unauthorized before the opt-in"
+        );
+        let opt_in_block = l1
+            .set_transfers_enabled_on_portal(portal_address, true)
+            .await?;
+        zone.wait_for_l2_tempo_finalized(opt_in_block, L1_TIMEOUT)
+            .await?;
+
         let receipt = zone_token
             .transfer(bob_address, U256::from(transfer_amount))
             .send()
@@ -83,7 +102,7 @@ async fn test_shield_and_send() -> eyre::Result<()> {
         eyre::ensure!(receipt.status(), "L2 transfer from Alice to Bob failed");
     }
 
-    // --- Step 6: Verify balances ---
+    // --- Step 7: Verify balances ---
     let alice_final = zone.balance_of(ZONE_TOKEN_ADDRESS, alice.address()).await?;
     let bob_final = zone.balance_of(ZONE_TOKEN_ADDRESS, bob_address).await?;
 

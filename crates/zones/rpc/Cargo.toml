@@ -54,4 +54,4 @@ base64 = { workspace = true, default-features = true }
 p256 = { workspace = true, features = ["ecdsa"] }
 sha2 = { workspace = true, default-features = true }
 tokio-tungstenite.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
