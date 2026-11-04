@@ -754,8 +754,8 @@ impl Actor {
         // Applying consumes the databases: on failure they are gone and the store must be
         // reopened, so every later command fails until then.
         let (accounts, slots) = try_join!(
-            apply_db(accounts, accounts_batch, true),
-            apply_db(slots, slots_batch, true),
+            apply_db(accounts, accounts_batch),
+            apply_db(slots, slots_batch),
         )?;
         self.accounts = Some(accounts);
         self.slots = Some(slots);
@@ -810,17 +810,18 @@ impl Actor {
         )?;
         let accounts = self.accounts.take().expect("restored after every command");
         let slots = self.slots.take().expect("restored after every command");
-        let commit = end.is_some();
+        // Committing every chunk flushes the Merkle nodes the chunk added out of memory, which
+        // otherwise stay resident until the import ends: about 64 bytes per imported key.
         let (accounts, slots) = try_join!(
             async {
                 match accounts_batch {
-                    Some(batch) => apply_db(accounts, batch, commit).await,
+                    Some(batch) => apply_db(accounts, batch).await,
                     None => Ok(accounts),
                 }
             },
             async {
                 match slots_batch {
-                    Some(batch) => apply_db(slots, batch, commit).await,
+                    Some(batch) => apply_db(slots, batch).await,
                     None => Ok(slots),
                 }
             },
@@ -927,17 +928,10 @@ async fn merkleize_db<const N: usize>(
         .await?)
 }
 
-/// Applies `batch` to `db`, and commits it when `commit` is set.
-async fn apply_db<const N: usize>(
-    db: Db<N>,
-    batch: Batch<N>,
-    commit: bool,
-) -> Result<Db<N>, Error> {
+/// Applies `batch` to `db` and commits it, which also flushes its Merkle nodes out of memory.
+async fn apply_db<const N: usize>(db: Db<N>, batch: Batch<N>) -> Result<Db<N>, Error> {
     let (db, _) = db.apply_batch(batch).await?;
-    Ok(match commit {
-        true => db.commit().await?,
-        false => db,
-    })
+    Ok(db.commit().await?)
 }
 
 /// Rewinds `db` to `size` operations and commits the rewind.
