@@ -212,6 +212,9 @@ jobs:
         run: cargo nextest run --profile ci --workspace --exclude tempo-nitro-attestation-fuzz --lib --bins --tests -E 'not (package(tempo-e2e) | (package(tempo-node) & binary(it) & test(/test_matrices_(testnet|devnet)/)))' --partition count:${{ matrix.partition }}/2 --no-run
       - name: Run tests
         run: cargo nextest run --profile ci --workspace --exclude tempo-nitro-attestation-fuzz --lib --bins --tests -E 'not (package(tempo-e2e) | (package(tempo-node) & binary(it) & test(/test_matrices_(testnet|devnet)/)))' --partition count:${{ matrix.partition }}/2
+      - name: Run corpus index tests
+        if: matrix.partition == 1
+        run: cargo nextest run --profile ci -p tempo-corpus --features index --lib
 
   e2e:
     name: e2e (${{ matrix.partition }}/4)

@@ -6,7 +6,7 @@
 
 use crate::{
     fuzz,
-    store::{self, Catalog, Record, Store},
+    store::{self, Catalog, Context, Cursor, Record, Store},
     targets,
 };
 use alloy_consensus::Typed2718;
@@ -24,6 +24,7 @@ use parquet::{
     basic::{Compression, ZstdLevel},
     file::{metadata::KeyValue, properties::WriterProperties},
 };
+use slatedb::DbReader;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::File,
@@ -35,8 +36,12 @@ use tempo_primitives::Block;
 
 /// Version of the index schema, stored in every index footer.
 pub const VERSION: u32 = 1;
-/// Blocks each read task indexes. Tasks finish in order, so the file stays sorted.
+/// Blocks each read task indexes at most. Tasks finish in order, so the file stays sorted.
 const TASK_BLOCKS: u64 = 10_000;
+/// Transactions each read task indexes at most, unless one block holds more. A row takes about
+/// 200 bytes before its batch copy, so with `workers` tasks in flight and as many finished
+/// batches queued behind the writer, memory stays independent of block density.
+const TASK_ROWS: u64 = 50_000;
 /// Estimated encoded row group size, before compression.
 const ROW_GROUP_BYTES: usize = 128 << 20;
 const INDEX_VERSION_KEY: &str = "tempo.corpus.index.version";
@@ -87,10 +92,15 @@ pub fn index(
         let mut tasks = futures::stream::iter(range.clone().step_by(TASK_BLOCKS as usize))
             .map(|start| {
                 let (reader, context) = (reader.clone(), catalog.context.clone());
-                let end = (start + TASK_BLOCKS).min(range.end);
+                let window = start..(start + TASK_BLOCKS).min(range.end);
+                async move { plan(&reader, &context, window, TASK_ROWS).await }
+            })
+            .buffered(workers)
+            .map_ok(|tasks| futures::stream::iter(tasks).map(Ok))
+            .try_flatten()
+            .map_ok(|(from, to)| {
+                let reader = reader.clone();
                 tokio::spawn(async move {
-                    let from = store::cursor_at(&reader, &context, start).await?;
-                    let to = store::cursor_at(&reader, &context, end).await?;
                     let mut rows = Rows::default();
                     store::for_each_published(&reader, from, &to, false, |record, block, cases| {
                         rows.push(record, &block, &cases)
@@ -99,10 +109,10 @@ pub fn index(
                     rows.batch()
                 })
             })
-            .buffered(workers);
+            .map_ok(|task| async move { task.await? })
+            .try_buffered(workers);
         let mut rows = 0;
         while let Some(batch) = tasks.try_next().await? {
-            let batch = batch?;
             rows += batch.num_rows();
             writer.write(&batch)?;
         }
@@ -114,6 +124,30 @@ pub fn index(
             .await?;
         Ok(rows)
     })
+}
+
+/// Splits `window` into the cursors of consecutive block ranges of at most `max_rows`
+/// transactions each, or of single blocks, in block order.
+async fn plan(
+    reader: &DbReader,
+    context: &Context,
+    window: Range<u64>,
+    max_rows: u64,
+) -> eyre::Result<Vec<(Cursor, Cursor)>> {
+    let from = store::cursor_at(reader, context, window.start).await?;
+    let to = store::cursor_at(reader, context, window.end).await?;
+    let (mut pending, mut tasks) = (vec![(from, to)], Vec::new());
+    while let Some((from, to)) = pending.pop() {
+        if to.tx - from.tx <= max_rows || to.next - from.next <= 1 {
+            tasks.push((from, to));
+        } else {
+            let middle = store::cursor_at(reader, context, from.next.midpoint(to.next)).await?;
+            // Popped first half first, so tasks stay in block order.
+            pending.push((middle.clone(), to));
+            pending.push((from, middle));
+        }
+    }
+    Ok(tasks)
 }
 
 /// The block list of the blocks with a transaction in `blocks` that calls target `bit`, or with
@@ -504,6 +538,35 @@ mod tests {
             eyre::Ok(())
         })?;
         Ok((store, catalog))
+    }
+
+    #[test]
+    fn plans_tasks_by_transaction_count() -> eyre::Result<()> {
+        let tx = || {
+            TempoTxEnvelope::Legacy(TxLegacy::default().into_signed(Signature::test_signature()))
+        };
+        let (store, catalog) = corpus(vec![
+            vec![(tx(), PATH_USD_ADDRESS), (tx(), PATH_USD_ADDRESS)],
+            vec![(tx(), PATH_USD_ADDRESS)],
+            vec![],
+            vec![(tx(), PATH_USD_ADDRESS)],
+        ])?;
+        tokio::runtime::Runtime::new()?.block_on(async {
+            let reader = store.reader(&catalog).await?;
+            let ranges = async |max_rows| -> eyre::Result<Vec<_>> {
+                Ok(plan(&reader, &catalog.context, 1..5, max_rows)
+                    .await?
+                    .into_iter()
+                    .map(|(from, to)| (from.next..to.next, to.tx - from.tx))
+                    .collect())
+            };
+            assert_eq!(ranges(4).await?, [(1..5, 4)]);
+            assert_eq!(ranges(2).await?, [(1..2, 2), (2..3, 1), (3..5, 1)]);
+            // A block over the bound is still one task.
+            assert_eq!(ranges(1).await?, [(1..2, 2), (2..3, 1), (3..5, 1)]);
+            reader.close().await?;
+            eyre::Ok(())
+        })
     }
 
     #[test]
