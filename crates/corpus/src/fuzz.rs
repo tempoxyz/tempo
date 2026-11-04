@@ -222,25 +222,33 @@ pub fn read_blocks(path: &Path, catalog: &Catalog) -> eyre::Result<Vec<u64>> {
     let context = &catalog.context;
     // A corpus grows at its tip, so a section names it by the parent of its first block, and one
     // that ends where this corpus does must also share its tip: another history can share the
-    // parent. Sections written before that name it by the tip it had then, which matches only an
-    // unextended corpus. Other `#` lines are comments.
+    // parent. A section that shares only the parent may be a longer corpus, so its blocks past
+    // this corpus's end are skipped. Sections written before that name it by the tip it had then,
+    // which matches only an unextended corpus. Other `#` lines are comments.
     let end = format!("..{}", catalog.cursor.next);
     let parent = format!(" parent {} ", context.parent);
     let tip = format!(" tip {} ", B256::from(catalog.cursor.parent));
-    let (mut blocks, mut ours) = (Vec::new(), true);
+    // Whether the current section is ours, and whether it may run past this corpus's end.
+    let (mut blocks, mut ours, mut longer) = (Vec::new(), true, false);
     for line in fs::read_to_string(path)?.lines().map(str::trim) {
         if let Some(header) = line.strip_prefix("# corpus ") {
-            ours = if header.contains(" parent ") {
-                header.contains(&parent)
-                    && (header.contains(&tip)
-                        || !header
-                            .split_once(' ')
-                            .is_some_and(|(range, _)| range.ends_with(&end)))
+            let same_tip = header.contains(&tip);
+            (ours, longer) = if header.contains(" parent ") {
+                let same_end = header
+                    .split_once(' ')
+                    .is_some_and(|(range, _)| range.ends_with(&end));
+                (
+                    header.contains(&parent) && (same_tip || !same_end),
+                    !same_tip,
+                )
             } else {
-                header.contains(&tip)
+                (same_tip, false)
             };
         } else if ours && !line.is_empty() && !line.starts_with('#') {
             let block: u64 = line.parse()?;
+            if longer && block >= catalog.cursor.next {
+                continue;
+            }
             eyre::ensure!(
                 (context.start..catalog.cursor.next).contains(&block),
                 "block {block} is outside the corpus"
@@ -279,6 +287,27 @@ mod tests {
         assert_eq!(read_blocks(&path, &ours)?, [12, 13]);
         assert_eq!(read_blocks(&path, &other)?, [17, 16]);
         assert_eq!(read_blocks(&path, &fork)?, [18]);
+        Ok(())
+    }
+
+    #[test]
+    fn read_blocks_skips_blocks_past_a_shorter_corpus() -> eyre::Result<()> {
+        let mut short = catalog(10, 10, 0);
+        short.cursor.next = 20;
+        // Same start, extended further.
+        let mut long = short.clone();
+        long.cursor.next = 30;
+        long.cursor.parent = [1; 32];
+        let list = format!(
+            "{}{}",
+            block_list(&short, &[12]),
+            block_list(&long, &[14, 25])
+        );
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("blocks");
+        fs::write(&path, list)?;
+        assert_eq!(read_blocks(&path, &short)?, [12, 14]);
+        assert_eq!(read_blocks(&path, &long)?, [12, 14, 25]);
         Ok(())
     }
 }
