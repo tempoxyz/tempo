@@ -738,12 +738,29 @@ jobs:
               # Nothing to fix in the source: the failure may be a flake outside the
               # code (such as a network timeout). Rerun the failed Actions jobs once
               # per head before giving up.
-              FAILED_RUNS=$(gh run list --branch "$PR_BRANCH" --commit "$HEAD_SHA" --status failure --json databaseId --jq '.[].databaseId')
+              # Select runs by failed jobs, not by run conclusion: the poll loop
+              # breaks on the first failed check, so the run holding it may still
+              # have other jobs in progress.
+              FAILED_RUNS=""
+              for run_id in $(gh run list --branch "$PR_BRANCH" --commit "$HEAD_SHA" --json databaseId --jq '.[].databaseId'); do
+                if [ "$(gh run view "$run_id" --json jobs --jq '[.jobs[] | select(.conclusion == "failure")] | length')" != "0" ]; then
+                  FAILED_RUNS="$FAILED_RUNS $run_id"
+                fi
+              done
               if [ "$RERUN_SHA" != "$HEAD_SHA" ] && [ -n "$FAILED_RUNS" ]; then
                 RERUN_SHA="$HEAD_SHA"
                 for run_id in $FAILED_RUNS; do
+                  # gh run rerun --failed refuses runs that are still in progress.
+                  while [ "$(gh run view "$run_id" --json status --jq '.status')" != "completed" ]; do
+                    if [ "$SECONDS" -ge "$CI_FIX_DEADLINE" ]; then
+                      echo "::error::Run $run_id still in progress at the CI fix deadline — giving up"
+                      exit 1
+                    fi
+                    echo "Waiting for run $run_id to finish before rerunning its failed jobs..."
+                    sleep 60
+                  done
                   echo "Amp made no changes — rerunning failed jobs of run $run_id"
-                  gh run rerun "$run_id" --failed || true
+                  gh run rerun "$run_id" --failed || echo "::warning::Could not rerun run $run_id"
                 done
                 # Give the reruns time to replace the failed check results.
                 sleep 120
