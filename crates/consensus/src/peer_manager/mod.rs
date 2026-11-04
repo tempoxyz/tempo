@@ -75,8 +75,8 @@ pub(crate) struct Config<TOracle, TExecutionNode> {
     pub(crate) finalized_tip: (Height, Digest),
     /// This node's public key, which the P2P network counts toward every peer set.
     pub(crate) public_key: PublicKey,
-    /// The P2P network's maximum peer set size. Larger peer sets are truncated
-    /// before tracking because the network panics on them.
+    /// The P2P network's maximum peer set size. The network panics on larger
+    /// peer sets, so the node shuts down instead.
     pub(crate) max_peers: NonZeroUsize,
 }
 

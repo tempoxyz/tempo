@@ -101,9 +101,12 @@ where
 
             peer_update_timer,
         };
-        actor
-            .refresh_peers()
-            .wrap_err("failed registering initial peers from execution state")?;
+        if let Some((height, peers)) = actor
+            .read_peers()
+            .wrap_err("failed registering initial peers from execution state")?
+        {
+            actor.track_or_overwrite(height, peers)?;
+        }
         Ok(actor)
     }
 
@@ -123,7 +126,9 @@ where
                     }
                 }
                 _ = &mut self.peer_update_timer => {
-                    let _ = self.refresh_peers();
+                    if let Err(error) = self.refresh_peers() {
+                        break 'event_loop error;
+                    }
                     self.reset_peer_update_timer();
                 }
             )
@@ -148,13 +153,13 @@ where
             Message::Finalized(update) => match *update {
                 Update::Block(block, ack) => {
                     self.observe_finalized_tip((block.height(), block.digest()));
-                    let _ = self.refresh_peers();
+                    self.refresh_peers()?;
                     ack.acknowledge();
                     self.reset_peer_update_timer();
                 }
                 Update::Tip(_, height, digest) => {
                     self.observe_finalized_tip((height, digest));
-                    let _ = self.refresh_peers();
+                    self.refresh_peers()?;
                     self.reset_peer_update_timer();
                 }
             },
@@ -162,9 +167,20 @@ where
         Ok(())
     }
 
-    /// Reads peers from the latest finalized state allowed by consensus.
-    #[instrument(skip_all, err)]
+    /// Tracks the latest peer set. Failures reading it are logged and skipped;
+    /// returned errors are fatal and shut the node down.
     fn refresh_peers(&mut self) -> eyre::Result<()> {
+        let Ok(Some((height, peers))) = self.read_peers() else {
+            return Ok(());
+        };
+        self.track_or_overwrite(height, peers)?;
+        Ok(())
+    }
+
+    /// Reads peers from the latest finalized state allowed by consensus, or
+    /// `None` if it was already read.
+    #[instrument(skip_all, err)]
+    fn read_peers(&self) -> eyre::Result<Option<(u64, Peers)>> {
         // Peer discovery must work before the executor can backfill to marshal's
         // floor: DKG may need these peers to recover and authenticate the tip
         // before it releases the executor. Use only state already finalized by EL,
@@ -182,7 +198,7 @@ where
             .as_ref()
             .is_some_and(|tracked| tracked.height >= highest_finalized)
         {
-            return Ok(());
+            return Ok(None);
         }
 
         let epoch_info = self
@@ -242,9 +258,7 @@ where
             config contract"
         );
 
-        self.track_or_overwrite(highest_finalized_header.number(), peers);
-
-        Ok(())
+        Ok(Some((highest_finalized_header.number(), peers)))
     }
 
     fn observe_finalized_tip(&mut self, tip: (Height, Digest)) {
@@ -253,8 +267,14 @@ where
         }
     }
 
-    fn track_or_overwrite(&mut self, height: u64, peers: Peers) {
-        let peers = peers.bounded(&self.public_key, self.max_peers);
+    fn track_or_overwrite(&mut self, height: u64, peers: Peers) -> eyre::Result<()> {
+        let flat = peers.to_flat_map();
+        let size = flat.len() + usize::from(flat.position(&self.public_key).is_none());
+        eyre::ensure!(
+            size <= self.max_peers.get(),
+            "peer set of {size} exceeds --consensus.max-peers-per-set {}",
+            self.max_peers,
+        );
         if let Some(tracked) = &self.last_tracked_peer_set {
             match peers.what_has_changed_compared_to(&tracked.peers) {
                 WhatHasChanged::Nothing => {}
@@ -283,6 +303,7 @@ where
             last_tracked_peer_set = ?self.last_tracked_peer_set.as_ref().expect("just set it"),
             "latest tracked peerset",
         );
+        Ok(())
     }
 
     fn reset_peer_update_timer(&mut self) {
@@ -321,34 +342,6 @@ impl Peers {
 
     fn len(&self) -> usize {
         self.primary.len().saturating_add(self.secondary.len())
-    }
-
-    /// Truncates the set so that, counted with the local identity as the P2P
-    /// network does, it has at most `max` peers. Primary peers are kept first.
-    fn bounded(mut self, local: &PublicKey, max: NonZeroUsize) -> Self {
-        let flat = self.to_flat_map();
-        let size = flat.len() + usize::from(flat.position(local).is_none());
-        if size <= max.get() {
-            return self;
-        }
-
-        // Try keeping `max` peers. If that cuts the local identity, the P2P
-        // network still counts it, so keep one fewer.
-        for budget in [max.get(), max.get() - 1] {
-            self.primary.truncate(budget);
-            self.secondary.truncate(budget - self.primary.len());
-            let flat = self.to_flat_map();
-            if flat.len() + usize::from(flat.position(local).is_none()) <= max.get() {
-                break;
-            }
-        }
-
-        warn!(
-            peers = size,
-            max_peers = max.get(),
-            "peer set exceeds --consensus.max-peers-per-set; tracking a truncated set",
-        );
-        self
     }
 
     fn to_flat_map(&self) -> ordered::Map<PublicKey, Address> {
@@ -891,42 +884,25 @@ mod tests {
     }
 
     #[test]
-    fn oversized_peer_sets_are_truncated_keeping_primary_first() {
-        let map = |seeds: &[u8]| {
-            ordered::Map::from_iter_dedup(
-                seeds
-                    .iter()
-                    .map(|seed| (peer(*seed).public_key, peer(*seed).p2p_address)),
-            )
-        };
-        let peers = Peers {
-            primary: map(&[1, 2]),
-            secondary: map(&[3, 4, 5]),
-        };
-        let local = peer(9).public_key;
-
-        let unchanged = peers.clone().bounded(&local, commonware_utils::NZUsize!(6));
-        assert_eq!(unchanged.len(), 5);
-
-        let bounded = peers.clone().bounded(&local, commonware_utils::NZUsize!(4));
-        assert_eq!(bounded.primary.keys(), peers.primary.keys());
-        assert_eq!(bounded.secondary.len(), 1);
-        assert!(
-            peers
-                .secondary
-                .position(bounded.secondary.get(0).unwrap())
-                .is_some()
-        );
-
-        // The local identity in the set takes no extra slot.
-        let bounded = peers
-            .clone()
-            .bounded(&peer(1).public_key, commonware_utils::NZUsize!(4));
-        assert_eq!(bounded.len(), 4);
-
-        let bounded = peers.bounded(&local, commonware_utils::NZUsize!(2));
-        assert_eq!(bounded.primary.len(), 1);
-        assert!(bounded.secondary.is_empty());
+    fn oversized_peer_sets_are_rejected() {
+        // Peer 1 is primary and peer 2 secondary; the local identity counts
+        // unless it is already in the set.
+        for (local, max, fits) in [(9, 3, true), (9, 2, false), (1, 2, true)] {
+            Runner::default().start(|context| async move {
+                let result = crate::peer_manager::init(
+                    context,
+                    crate::peer_manager::Config {
+                        execution_node: Arc::new(bootstrap_execution(7, 1)),
+                        oracle: RecordingOracle::default(),
+                        epoch_strategy: FixedEpocher::new(commonware_utils::NZU64!(10)),
+                        finalized_tip: (Height::new(100), Digest(B256::ZERO)),
+                        public_key: peer(local).public_key,
+                        max_peers: NonZeroUsize::new(max).unwrap(),
+                    },
+                );
+                assert_eq!(result.is_ok(), fits, "local {local}, max {max}");
+            });
+        }
     }
 
     #[test]

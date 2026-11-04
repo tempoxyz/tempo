@@ -342,7 +342,7 @@ pub struct Args {
     pub dial_timeout: PositiveDuration,
 
     /// Maximum number of distinct peers, including the local identity, in a
-    /// single tracked validator set. Larger sets are truncated.
+    /// single tracked validator set. The node shuts down on a larger set.
     ///
     /// Also sizes the P2P channel mailboxes: each holds one quota burst per
     /// allowed peer. The default matches the capacity of the previous fixed
