@@ -3,7 +3,7 @@
 //! Writers keep superseded checkpoints, compacted sorted runs, WAL SSTs and manifests, so a
 //! finished corpus holds far more than its live records.
 
-use crate::store::{SLATEDB_RETRIES, Store};
+use crate::store::{Catalog, SLATEDB_RETRIES, Store};
 use eyre::OptionExt;
 use futures::TryStreamExt;
 use slatedb::{
@@ -36,6 +36,19 @@ pub async fn gc(store: &Store, force: bool) -> eyre::Result<()> {
     );
     catalog.collecting = true;
     let claim = store.publish(&catalog, Some(version)).await?;
+    let collected = collect(store, &catalog).await;
+    // Keep the mark only if the pinned checkpoint no longer opens, so no fill builds on it; any
+    // other failure leaves nothing running, and the next fill or gc may proceed.
+    let opens = async { eyre::Ok(store.reader(&catalog).await?.close().await?) }.await;
+    if opens.is_ok() {
+        catalog.collecting = false;
+        store.publish(&catalog, Some(claim)).await?;
+    }
+    collected.and(opens)
+}
+
+/// Deletes the checkpoints and garbage collects the files described on [gc].
+async fn collect(store: &Store, catalog: &Catalog) -> eyre::Result<()> {
     let pinned = catalog
         .checkpoint
         .as_deref()
@@ -91,9 +104,6 @@ pub async fn gc(store: &Store, force: bool) -> eyre::Result<()> {
             "Collected corpus garbage"
         );
     }
-    store.reader(&catalog).await?.close().await?;
-    catalog.collecting = false;
-    store.publish(&catalog, Some(claim)).await?;
     Ok(())
 }
 
