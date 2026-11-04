@@ -39,8 +39,9 @@ use tempo_primitives::TempoPrimitives;
 pub struct Invalidations {
     /// Invalidation events the changes emitted.
     pub events: TempoPoolUpdates,
-    /// Decreased TIP-20 balance slots: `(token, slot) -> current balance`.
-    pub(crate) decreased_balances: HashMap<(Address, U256), U256>,
+    /// TIP-20 balance slots the changes wrote: `(token, slot) -> (original, current)`, the
+    /// original from before the first write.
+    pub(crate) balances: HashMap<(Address, U256), (U256, U256)>,
     /// Accounts whose configuration commitment changed (TIP-1112).
     pub(crate) changed_commitments: AddressSet,
     /// Current protocol nonce of every account whose nonce changed.
@@ -164,9 +165,27 @@ impl Invalidations {
             return Verdict::Valid;
         };
         let fee = tx.fee_token_cost();
-        if let Some(&balance) = self.decreased_balances.get(&key)
-            && balance < fee
-            && !self.may_use_other_fallback_token(tx, key, fee, fallback_fee_tokens)
+        // Execution pays with the first fallback token whose balance covers the fee, so a
+        // balance crossing the fee at or before the cached token may change the token or leave
+        // none that pays. Only the fee payer's own spending moves its balances.
+        if tx.is_fallback_fee_token() {
+            for &token in fallback_fee_tokens {
+                if self
+                    .balances
+                    .get(&(token, key.1))
+                    .is_some_and(|&(original, current)| (original >= fee) != (current >= fee))
+                {
+                    return Verdict::Revalidate(Reason::FallbackFeeToken);
+                }
+                if token == key.0 {
+                    break;
+                }
+            }
+        }
+        if self
+            .balances
+            .get(&key)
+            .is_some_and(|&(_, balance)| balance < fee)
         {
             return Verdict::Invalid(Reason::InsolventFeePayer);
         }
@@ -236,14 +255,15 @@ impl Invalidations {
             }
         }
 
-        // Only transactions that rely on the stored preference can resolve another token.
+        // Only transactions that rely on the stored preference can resolve another token, and
+        // the new preference may be the token they already pay with.
         if !events.user_token_changes.is_empty()
             && tx.inner().fee_token().is_none()
             && tx
                 .fee_payer()
                 .is_ok_and(|fee_payer| events.user_token_changes.contains(&fee_payer))
         {
-            return Verdict::Invalid(Reason::UserToken);
+            return Verdict::Revalidate(Reason::UserToken);
         }
 
         if let Some(restricted) = tx
@@ -276,27 +296,6 @@ impl Invalidations {
         }
 
         Verdict::Valid
-    }
-
-    /// Returns whether execution may pay the fee with another fallback token.
-    ///
-    /// Untracked balances may have grown, so they count as sufficient.
-    fn may_use_other_fallback_token(
-        &self,
-        tx: &TempoPooledTransaction,
-        (token, slot): (Address, U256),
-        fee: U256,
-        fallback_fee_tokens: &[Address],
-    ) -> bool {
-        tx.is_fallback_fee_token()
-            && fallback_fee_tokens.iter().any(|&candidate| {
-                // TIP-20 balance slots share a layout.
-                candidate != token
-                    && self
-                        .decreased_balances
-                        .get(&(candidate, slot))
-                        .is_none_or(|&balance| balance >= fee)
-            })
     }
 
     fn record_account(
@@ -335,11 +334,10 @@ impl Invalidations {
         } else if address == ACCOUNT_KEYCHAIN_ADDRESS {
             self.keychain_writes.insert(slot, current);
         } else if is_tip20_prefix(address) {
-            if current < original {
-                self.decreased_balances.insert((address, slot), current);
-            } else if let Some(balance) = self.decreased_balances.get_mut(&(address, slot)) {
-                *balance = current;
-            }
+            self.balances
+                .entry((address, slot))
+                .and_modify(|(_, value)| *value = current)
+                .or_insert((original, current));
         }
     }
 }
@@ -368,7 +366,7 @@ impl StateChangeSink for Invalidations {
         value: U256,
     ) -> Result<(), Self::Error> {
         if is_tip20_prefix(address)
-            && let Some(balance) = self.decreased_balances.get_mut(&(address, key))
+            && let Some((_, balance)) = self.balances.get_mut(&(address, key))
         {
             *balance = value;
         }
@@ -402,6 +400,7 @@ pub(crate) enum Reason {
     PolicyRestricted,
     FeeLiquidity,
     Commitment,
+    FallbackFeeToken,
     TransferPolicy,
     QuoteToken,
 }
@@ -420,6 +419,7 @@ impl Reason {
             Self::PolicyRestricted => "fee token policy no longer authorizes the fee transfer",
             Self::FeeLiquidity => "insufficient fee AMM liquidity",
             Self::Commitment => "configuration commitment changed",
+            Self::FallbackFeeToken => "fallback fee token choice may have changed",
             Self::TransferPolicy => "fee token transfer policy changed",
             Self::QuoteToken => "fee token quote token changed",
         }

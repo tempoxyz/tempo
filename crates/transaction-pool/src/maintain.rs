@@ -504,8 +504,6 @@ where
         let tip = &new;
         let bundle_state = tip.execution_outcome().state().state();
         let tip_timestamp = tip.tip().header().timestamp();
-        let spec = pool.client().chain_spec().tempo_hardfork_at(tip_timestamp);
-        let fallback_tokens = spec.fallback_fee_tokens();
 
         // Removed transactions are collected here and dropped at the end of the
         // iteration: deallocating them (input data, signatures, allocator work) is
@@ -541,54 +539,9 @@ where
         // Reth's canonical-update handling may not have pruned mined transactions yet.
         // Exclude them from every snapshot-based maintenance phase so they follow the
         // normal mined path rather than being discarded from the pool.
-        let mut removed_this_iteration: B256Set = tip.transaction_hashes().copied().collect();
+        let removed_this_iteration: B256Set = tip.transaction_hashes().copied().collect();
 
         let mut revalidate_txs = Vec::new();
-
-        // Refresh implicit fee-token choices before eviction checks the cached token.
-        let hashes: Vec<TxHash> = {
-            let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
-            all_txs
-                .iter()
-                .filter(|tx| !removed_this_iteration.contains(tx.hash()))
-                // Fallback balances cannot change a token chosen before the fallback.
-                .filter(|tx| spec.is_t13() && tx.transaction.is_fallback_fee_token())
-                .filter(|tx| {
-                    tx.transaction
-                        .fee_balance_slot()
-                        .is_some_and(|(selected_token, slot)| {
-                            // TIP-20 balance slots share a layout. Include credits and protocol
-                            // fee writes, which may change the choice without Transfer logs.
-                            let fee = tx.transaction.fee_token_cost();
-                            for token in fallback_tokens {
-                                if bundle_state
-                                    .get(token)
-                                    .and_then(|account| account.storage.get(&slot))
-                                    .is_some_and(|value| {
-                                        let had_sufficient_balance = value.original_value() >= fee;
-                                        let has_sufficient_balance = value.present_value >= fee;
-                                        had_sufficient_balance != has_sufficient_balance
-                                    })
-                                {
-                                    return true;
-                                }
-                                if *token == selected_token {
-                                    break;
-                                }
-                            }
-                            false
-                        })
-                })
-                .map(|tx| *tx.hash())
-                .collect()
-        };
-        if !hashes.is_empty() {
-            let transactions = pool.remove_transactions(hashes);
-            for tx in &transactions {
-                removed_this_iteration.insert(*tx.hash());
-            }
-            revalidate_txs.extend(transactions);
-        }
 
         // 4. Evict expired and invalidated transactions, and take out those the block may have
         // invalidated for revalidation, in one pool traversal.

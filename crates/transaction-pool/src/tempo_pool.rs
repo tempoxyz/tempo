@@ -1453,7 +1453,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn evicts_sponsored_implicit_fee_transaction_when_fee_payer_user_token_changes() {
+    async fn revalidates_sponsored_implicit_fee_transaction_when_fee_payer_user_token_changes() {
         let sender = Address::random();
         let (pooled, fee_payer) = sponsored_implicit_fee_transaction(sender);
         assert_eq!(pooled.inner().fee_token(), None);
@@ -1467,8 +1467,17 @@ mod tests {
         let mut updates = crate::maintain::TempoPoolUpdates::new();
         updates.user_token_changes.insert(fee_payer);
 
-        let evicted = pool.evict_invalidated_transactions(&updates.into()).evicted;
-        assert_eq!(tx_hashes(&evicted), vec![*pooled.hash()]);
+        // The new preference may name the token it already pays with: validate it again.
+        let taken = pool.evict_invalidated_transactions(&updates.into());
+        assert!(taken.evicted.is_empty());
+        assert_eq!(
+            taken
+                .revalidate
+                .iter()
+                .map(|(tx, reason)| (*tx.hash(), *reason))
+                .collect::<Vec<_>>(),
+            vec![(*pooled.hash(), Reason::UserToken)]
+        );
         assert!(pool.get(pooled.hash()).is_none());
     }
 
@@ -1496,7 +1505,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn evicts_sender_paid_implicit_fee_transaction_when_sender_user_token_changes() {
+    async fn revalidates_sender_paid_implicit_fee_transaction_when_sender_user_token_changes() {
         let sender = Address::random();
         let pooled = crate::test_utils::TxBuilder::aa(sender).build();
         assert_eq!(pooled.inner().fee_token(), None);
@@ -1509,8 +1518,17 @@ mod tests {
         let mut updates = crate::maintain::TempoPoolUpdates::new();
         updates.user_token_changes.insert(sender);
 
-        let evicted = pool.evict_invalidated_transactions(&updates.into()).evicted;
-        assert_eq!(tx_hashes(&evicted), vec![*pooled.hash()]);
+        // The new preference may name the token it already pays with: validate it again.
+        let taken = pool.evict_invalidated_transactions(&updates.into());
+        assert!(taken.evicted.is_empty());
+        assert_eq!(
+            taken
+                .revalidate
+                .iter()
+                .map(|(tx, reason)| (*tx.hash(), *reason))
+                .collect::<Vec<_>>(),
+            vec![(*pooled.hash(), Reason::UserToken)]
+        );
         assert!(pool.get(pooled.hash()).is_none());
     }
 

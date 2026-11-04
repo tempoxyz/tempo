@@ -590,32 +590,26 @@ mod tests {
         assert!(merged.next().is_none());
     }
 
-    /// Returns whether a transaction survives when `drained` balances drop just below its fee.
-    fn state_aware_yields(
-        tx: TestTx,
-        fallback_fee_tokens: &'static [Address],
-        drained: &[Address],
-    ) -> bool {
+    /// Returns whether a transaction survives when the block moves its fee payer's balances of
+    /// `tokens` from `original` to `current`.
+    fn state_aware_yields(tx: TestTx, written: &[(Address, U256, U256)]) -> bool {
         let (_, slot) = tx.transaction.fee_balance_slot().unwrap();
-        let fee = tx.transaction.fee_token_cost();
-        assert!(!fee.is_zero());
         let mut best = StateAwareBestTransactions::new(
             protocol_best_transactions(vec![tx]),
-            fallback_fee_tokens,
+            TempoHardfork::T13.fallback_fee_tokens(),
             None,
         );
-        for &token in drained {
+        for &(token, original, current) in written {
             best.changes
-                .decreased_balances
-                .insert((token, slot), fee - U256::ONE);
+                .balances
+                .insert((token, slot), (original, current));
         }
         best.next().is_some()
     }
 
     #[test]
-    fn test_state_aware_skips_only_when_no_fallback_token_can_pay() {
-        let t13 = TempoHardfork::T13.fallback_fee_tokens();
-        let &[path_usd, ousd] = t13 else {
+    fn test_state_aware_skips_fallback_payers_whose_token_choice_may_change() {
+        let &[path_usd, ousd] = TempoHardfork::T13.fallback_fee_tokens() else {
             panic!("T13 falls back to pathUSD, then OUSD");
         };
         let tx = |resolved| {
@@ -623,17 +617,44 @@ mod tests {
             tx.transaction.set_resolved_fee_token(resolved);
             tx
         };
-        let fallback = || tx(ResolvedFeeToken::Fallback(path_usd));
-        // An explicit token, stored preference, or TIP-20 inference never falls back.
-        let selected = || tx(ResolvedFeeToken::Selected(path_usd));
+        let fee = tx(ResolvedFeeToken::Fallback(ousd))
+            .transaction
+            .fee_token_cost();
+        assert!(!fee.is_zero());
+        let (enough, short) = (fee, fee - U256::ONE);
 
-        assert!(state_aware_yields(fallback(), t13, &[path_usd]));
-        assert!(!state_aware_yields(fallback(), t13, &[path_usd, ousd]));
-        assert!(!state_aware_yields(selected(), t13, &[path_usd]));
+        // Unaffected, or balances moved without crossing the fee.
+        assert!(state_aware_yields(
+            tx(ResolvedFeeToken::Fallback(ousd)),
+            &[]
+        ));
+        assert!(state_aware_yields(
+            tx(ResolvedFeeToken::Fallback(ousd)),
+            &[(ousd, enough + enough, enough)]
+        ));
+        // The cached token no longer pays: another fallback token might.
         assert!(!state_aware_yields(
-            fallback(),
-            TempoHardfork::T12.fallback_fee_tokens(),
-            &[path_usd]
+            tx(ResolvedFeeToken::Fallback(ousd)),
+            &[(ousd, enough, short)]
+        ));
+        // An earlier fallback token now pays, so execution would switch to it.
+        assert!(!state_aware_yields(
+            tx(ResolvedFeeToken::Fallback(ousd)),
+            &[(path_usd, short, enough)]
+        ));
+        // Tokens after the cached one do not change the choice.
+        assert!(state_aware_yields(
+            tx(ResolvedFeeToken::Fallback(path_usd)),
+            &[(ousd, enough, short)]
+        ));
+        // A selected token never falls back: a drained balance is final.
+        assert!(!state_aware_yields(
+            tx(ResolvedFeeToken::Selected(path_usd)),
+            &[(path_usd, enough, short)]
+        ));
+        assert!(state_aware_yields(
+            tx(ResolvedFeeToken::Selected(path_usd)),
+            &[(ousd, short, enough)]
         ));
     }
 
