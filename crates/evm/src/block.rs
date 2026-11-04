@@ -31,7 +31,7 @@ use tempo_contracts::precompiles::{
     t13_zone_factory_state,
 };
 use tempo_dkg_onchain_artifacts::{OnchainDkgOutcome, OutcomeEncoding};
-use tempo_precompiles::current_committee::CurrentCommittee;
+use tempo_precompiles::{current_committee::CurrentCommittee, error::TempoPrecompileError};
 use tempo_primitives::{SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType};
 use tracing::trace;
 
@@ -516,8 +516,13 @@ impl<'a> TempoBlockExecutor<'a> {
             spec,
             || CurrentCommittee::new().snapshot_dkg_ceremony(epoch),
         );
-        result.map_err(|err| {
-            BlockValidationError::msg(format!("failed snapshotting the DKG ceremony: {err}"))
+        result.map_err(|err| match err {
+            // A node-side read failure says nothing about the block.
+            TempoPrecompileError::Database(error) => map_database_error(error),
+            err => {
+                BlockValidationError::msg(format!("failed snapshotting the DKG ceremony: {err}"))
+                    .into()
+            }
         })?;
 
         // Reads enter the pending state unchanged, so the block access list covers them.
@@ -1110,11 +1115,12 @@ mod tests {
     use commonware_codec::Encode as _;
     use commonware_cryptography::{Signer, ed25519::PrivateKey};
     use evm2::{
+        DatabaseError,
         evm::{
             AccountInfo,
             BUILDER_DEPOSIT_REQUEST_ADDRESS as BUILDER_DEPOSIT_REQUEST_PREDEPLOY_ADDRESS,
-            BUILDER_EXIT_REQUEST_ADDRESS as BUILDER_EXIT_REQUEST_PREDEPLOY_ADDRESS,
-            DynDatabase as _, InMemoryDB,
+            BUILDER_EXIT_REQUEST_ADDRESS as BUILDER_EXIT_REQUEST_PREDEPLOY_ADDRESS, DbResult,
+            DynDatabase, InMemoryDB,
         },
         interpreter::Host as _,
     };
@@ -2469,6 +2475,58 @@ mod tests {
                 .starts_with("failed snapshotting the DKG ceremony: "),
             "{err}"
         );
+    }
+
+    /// Delegates to [`InMemoryDB`] but fails every storage read of [`ValidatorConfigV2`].
+    struct FailingRegistryDb(InMemoryDB);
+
+    impl DynDatabase for FailingRegistryDb {
+        fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
+            self.0.get_account(address)
+        }
+
+        fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<evm2::bytecode::Bytecode> {
+            self.0.get_code_by_hash(code_hash)
+        }
+
+        fn get_storage(&mut self, address: &Address, key: &U256) -> DbResult<U256> {
+            if *address == VALIDATOR_CONFIG_V2_ADDRESS {
+                return Err(DatabaseError::new(
+                    std::io::Error::other("disk failure"),
+                    true,
+                ));
+            }
+            self.0.get_storage(address, key)
+        }
+
+        fn get_block_hash(&mut self, number: &U256) -> DbResult<B256> {
+            self.0.get_block_hash(number)
+        }
+    }
+
+    #[test]
+    fn test_t15_boundary_reports_registry_read_failure_as_database_error() {
+        let chainspec = test_chainspec();
+        let keys = [PrivateKey::from_seed(1)];
+        let mut executor = TestExecutorBuilder::default()
+            .with_block_number(4)
+            .with_epoch_length(5)
+            .with_extra_data(ceremony_in_state_outcome(42).encode().into())
+            .with_spec(TempoHardfork::T15)
+            .build(
+                FailingRegistryDb(validator_registry_db(&keys, 0)),
+                &chainspec,
+            );
+        executor
+            .deploy_precompile_at_boundary(CURRENT_COMMITTEE_ADDRESS, &[])
+            .unwrap();
+
+        let err = executor.apply_current_committee_system_call().unwrap_err();
+        assert!(
+            !matches!(err, BlockExecutionError::Validation(_)),
+            "a database failure must not invalidate the block: {err}"
+        );
+        assert!(err.to_string().contains("disk failure"), "{err}");
     }
 
     #[test]
