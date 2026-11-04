@@ -7,11 +7,13 @@
 
 use alloy::{
     primitives::{Address, B256, Bytes, U256},
-    providers::{DynProvider, PendingTransactionBuilder, Provider, ProviderBuilder},
+    providers::{
+        DynProvider, PendingTransactionBuilder, PendingTransactionError, Provider, ProviderBuilder,
+    },
     rpc::types::{BlockId, Filter, TransactionReceipt},
     signers::local::PrivateKeySigner,
     sol_types::SolEvent as _,
-    transports::http::reqwest,
+    transports::{TransportError, http::reqwest},
 };
 use antithesis_sdk::{
     assert_always, assert_sometimes, assert_sometimes_greater_than, random::get_random,
@@ -128,12 +130,15 @@ impl Antithesis {
             Command::Fanout => ctx.fanout().await,
         };
         // Under faults, or on a node that lags the sequencer, a send can be rejected (nonce too
-        // low) or never confirm. Drivers record only confirmed operations and assert properties
-        // through the SDK, so such an error ends the run without failing the command.
-        if let Err(error) = driver {
-            println!("driver gave up: {error:#}");
+        // low) or never confirm. Drivers record only confirmed operations, so such an RPC error
+        // ends the run without failing the command. Any other error still fails it.
+        match driver {
+            Err(error) if is_rpc_error(&error) => {
+                println!("driver gave up: {error:#}");
+                Ok(())
+            }
+            result => result,
         }
-        Ok(())
     }
 }
 
@@ -780,6 +785,19 @@ enum DepositOutcome {
     Credited,
     /// Rejected and queued as a bounce-back to the refund recipient on L1.
     Bounced,
+}
+
+/// Whether `error` comes from an RPC call or a receipt wait rather than from a driver's own
+/// checks: a transport failure, an error response such as nonce too low, or a receipt timeout.
+fn is_rpc_error(error: &eyre::Report) -> bool {
+    error.chain().any(|cause| {
+        cause.is::<TransportError>()
+            || cause.is::<PendingTransactionError>()
+            || matches!(
+                cause.downcast_ref::<alloy::contract::Error>(),
+                Some(alloy::contract::Error::TransportError(_))
+            )
+    })
 }
 
 /// Polls `check` every [`POLL`] until it returns `true` or `timeout` passes. RPC errors count
