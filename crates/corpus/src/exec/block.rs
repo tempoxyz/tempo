@@ -3,7 +3,7 @@
 use crate::{
     code,
     exec::db::{View, change_from_update},
-    types::{Block as BlockInput, Case, Delta, Outcome, Phases, Transaction},
+    types::{Block as BlockInput, Case, Delta, DeltaView, Outcome, Phases, Transaction},
 };
 use alloy_consensus::{
     BlockHeader,
@@ -265,12 +265,10 @@ fn phase_check(phase: &str, recorded: &Delta, replayed: &Delta) -> eyre::Result<
     if recorded == replayed {
         return Ok(());
     }
-    let mut message = format!("{phase} delta mismatch");
-    for line in recorded.diff(replayed) {
-        message.push_str("\n  ");
-        message.push_str(&line);
-    }
-    Err(eyre::eyre!(message))
+    eyre::bail!(
+        "{phase} delta mismatch (< recorded, > replayed)\n{}",
+        pretty_assertions::Comparison::new(&DeltaView::from(recorded), &DeltaView::from(replayed))
+    )
 }
 
 /// The block a mismatch happened in: its number, hash, timestamp and active hardfork.
@@ -489,12 +487,13 @@ mod tests {
         let message = phase_check("post-execution", &empty, &replayed)
             .unwrap_err()
             .to_string();
-        assert_eq!(
-            message,
-            format!(
-                "post-execution delta mismatch\n  commits: recorded 0, replayed 1\n  commit 0 {}: replayed change, none recorded",
-                Address::from([1; 20])
-            )
+        assert!(
+            message.starts_with("post-execution delta mismatch (< recorded, > replayed)"),
+            "{message}"
+        );
+        assert!(
+            message.contains(&Address::from([1; 20]).to_string()),
+            "{message}"
         );
     }
 }
