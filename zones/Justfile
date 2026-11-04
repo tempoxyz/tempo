@@ -494,6 +494,19 @@ set-gateway-mode enforced:
     cargo zone-xtask set-gateway-mode "${ARGS[@]}"
 
 [group('zone')]
+[doc('Enables or disables zone-internal TIP-20 transfers, which take effect from T15. Pass true to enable or false to disable. Requires L1_RPC_URL, L1_PORTAL_ADDRESS, and ADMIN_KEY.')]
+set-transfers-enabled enabled:
+    #!/bin/bash
+    set -euo pipefail
+    ENABLED="{{enabled}}"
+    case "$ENABLED" in
+        true) ARGS=(--enabled) ;;
+        false) ARGS=() ;;
+        *) echo "Error: enabled must be 'true' or 'false'" >&2; exit 1 ;;
+    esac
+    cargo zone-xtask set-transfers-enabled "${ARGS[@]}"
+
+[group('zone')]
 [doc('Adds or removes an account from closed-loop portal flows. Pass true to add or false to remove. Requires L1_RPC_URL, L1_PORTAL_ADDRESS, and ADMIN_KEY.')]
 set-allowed-account account allowed:
     #!/bin/bash
