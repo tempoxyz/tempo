@@ -1177,8 +1177,15 @@ jobs:
           docker load --input "$RUNNER_TEMP/candidate-images/tempo-zone.tar"
           docker load --input "$RUNNER_TEMP/clean-image/tempo-zone.tar"
           immutable_image=tempo-zone:candidate
-          candidate_image_id="$(docker image inspect "$immutable_image" --format '{{.Id}}')"
-          clean_image_id="$(docker image inspect tempo-zone:clean --format '{{.Id}}')"
+          # Compare config digests: they cover the config and every uncompressed
+          # layer, but not gzip output, which differs between Depot and the
+          # clean runner. docker image inspect .Id is the manifest digest under
+          # the containerd image store (Ubuntu 26.04 runners), so avoid it.
+          config_digest() {
+            jq -r '.[0].Config' | sed -E 's#^(blobs/sha256/)?([0-9a-f]{64})(\.json)?$#sha256:\2#'
+          }
+          candidate_image_id="$(tar -xOf "$RUNNER_TEMP/candidate-images/tempo-zone.tar" manifest.json | config_digest)"
+          clean_image_id="$(tar -xOf "$RUNNER_TEMP/clean-image/tempo-zone.tar" manifest.json | config_digest)"
           [[ "$candidate_image_id" =~ ^sha256:[0-9a-f]{64}$ && "$clean_image_id" =~ ^sha256:[0-9a-f]{64}$ ]] || {
             failure="invalid candidate or clean image ID"
             echo "Invalid image ID" >&2
@@ -1374,7 +1381,9 @@ jobs:
           trap cleanup EXIT
 
           docker pull "$source_image"
-          [[ "$(docker image inspect "$source_image" --format '{{.Id}}')" == "$VERIFIED_IMAGE_ID" ]] || {
+          # Config digest, as production-reproducible-verify records it.
+          promoted_image_id="$(docker save "$source_image" | tar -xOf - manifest.json | jq -r '.[0].Config' | sed -E 's#^(blobs/sha256/)?([0-9a-f]{64})(\.json)?$#sha256:\2#')"
+          [[ "$promoted_image_id" == "$VERIFIED_IMAGE_ID" ]] || {
             echo "Staged tempo-zone image ID changed" >&2
             exit 1
           }
