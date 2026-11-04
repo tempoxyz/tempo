@@ -202,7 +202,17 @@ impl Case {
             delta: DeltaView::from(&actual.delta),
             after: outputs.after.into(),
         };
-        if recorded == replayed {
+        // Decide on the raw records; the views are for display and could hide differences.
+        if actual.ordinal == self.ordinal
+            && actual.index == self.index
+            && actual.hash == self.hash
+            && actual.before == self.before
+            && actual.outcome.status == self.status
+            && actual.outcome.charged_gas == self.charged_gas
+            && actual.outcome.created == self.created
+            && outputs == self.outputs
+            && actual.delta == self.delta
+        {
             return Ok(());
         }
         eyre::bail!(
@@ -246,11 +256,17 @@ pub struct DeltaView(Vec<BTreeMap<Address, ChangeView>>);
 #[derive(Debug, PartialEq, Eq)]
 struct ChangeView {
     created: bool,
+    /// None wipes the account; Some keeps it, changing only the fields that are set.
+    info: Option<InfoView>,
+    storage: BTreeMap<B256, B256>,
+    code: Option<Bytes>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct InfoView {
     nonce: Option<u64>,
     balance: Option<U256>,
     code_hash: Option<Option<B256>>,
-    storage: BTreeMap<B256, B256>,
-    code: Option<Bytes>,
 }
 
 impl From<&Delta> for DeltaView {
@@ -263,14 +279,13 @@ impl From<&Delta> for DeltaView {
                     commit
                         .iter()
                         .map(|(address, change)| {
-                            let info = change.info.as_ref();
                             let view = ChangeView {
                                 created: change.created,
-                                nonce: info.and_then(|i| i.nonce),
-                                balance: info.and_then(|i| i.balance).map(U256::from_be_bytes),
-                                code_hash: info
-                                    .and_then(|i| i.code_hash)
-                                    .map(|h| h.map(B256::from)),
+                                info: change.info.as_ref().map(|info| InfoView {
+                                    nonce: info.nonce,
+                                    balance: info.balance.map(U256::from_be_bytes),
+                                    code_hash: info.code_hash.map(|h| h.map(B256::from)),
+                                }),
                                 storage: change
                                     .storage
                                     .iter()
@@ -422,6 +437,22 @@ mod tests {
             "{message}"
         );
         assert!(message.contains("< recorded, > replayed"), "{message}");
+
+        // A wiped account (info None) and a touched one (info unchanged) must not compare equal.
+        let touched = |info: Option<InfoChange>| {
+            let mut tx = transaction(21_000, 1);
+            for change in tx.delta.0[0].values_mut() {
+                change.info = info.clone();
+            }
+            tx
+        };
+        let unchanged = InfoChange {
+            nonce: None,
+            balance: None,
+            code_hash: None,
+        };
+        let case = touched(Some(unchanged)).stored().unwrap();
+        assert!(case.check(&touched(None)).is_err());
         assert!(
             message.contains("replayed: reason Return, gas [21001, 0, 0, 0], output 0x"),
             "{message}"
