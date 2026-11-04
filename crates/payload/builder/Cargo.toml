@@ -42,6 +42,7 @@ alloy-consensus.workspace = true
 alloy-eips.workspace = true
 alloy-primitives.workspace = true
 alloy-rlp.workspace = true
+tempo-precompiles.workspace = true
 
 metrics.workspace = true
 tracing.workspace = true
@@ -50,7 +51,6 @@ tokio.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
-tempo-precompiles.workspace = true
 
 [features]
 trie-debug = ["reth-engine-tree/trie-debug"]

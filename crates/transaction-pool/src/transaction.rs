@@ -80,6 +80,24 @@ pub struct TempoPooledTransaction {
     /// Stores `(fee_token, balance_slot)` so the payload builder's state-aware iterator
     /// can check if the fee payer's balance was modified without recomputing the keccak.
     fee_balance_slot: OnceLock<Option<(Address, U256)>>,
+    /// Fee token state resolved at validation, which pending-transaction checks use instead of
+    /// reading state.
+    fee_token_state: OnceLock<FeeTokenState>,
+}
+
+/// Fee token state that validation resolved for a pooled transaction.
+///
+/// A change to either value emits an event that sends the transaction back to validation
+/// (`TransferPolicyUpdate`, `QuoteTokenUpdate`), so the cache stays current while it is pooled.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FeeTokenState {
+    /// TIP-403 policies that authorize the fee payer as sender of the fee transfer: the token's
+    /// transfer policy and, for a compound policy, its sender sub-policy. Empty when none can
+    /// restrict it.
+    pub sender_policy_ids: Vec<u64>,
+    /// The fee token's quote token, through which a fee swap may take two hops. Zero when it has
+    /// none.
+    pub quote_token: Address,
 }
 
 impl TempoPooledTransaction {
@@ -136,6 +154,7 @@ impl TempoPooledTransaction {
             key_authorization_signer_subject: OnceLock::new(),
             key_authorization_target_subject: OnceLock::new(),
             fee_balance_slot: OnceLock::new(),
+            fee_token_state: OnceLock::new(),
         }
     }
 
@@ -406,6 +425,16 @@ impl TempoPooledTransaction {
         let _ = self.resolved_fee_token.set(fee_token);
     }
 
+    /// Caches the fee token state validation resolved. Pool maintenance code should not call this.
+    pub fn set_fee_token_state(&self, state: FeeTokenState) {
+        let _ = self.fee_token_state.set(state);
+    }
+
+    /// Returns the fee token state cached at validation, or `None` before validation.
+    pub fn fee_token_state(&self) -> Option<&FeeTokenState> {
+        self.fee_token_state.get()
+    }
+
     /// Clones this transaction while discarding validation-derived caches.
     ///
     /// Revalidation must not reuse cached state such as the resolved fee token and key expiry
@@ -426,6 +455,7 @@ impl TempoPooledTransaction {
             key_expiry: OnceLock::new(),
             resolved_fee_token: OnceLock::new(),
             key_authorization_signer_subject: OnceLock::new(),
+            fee_token_state: OnceLock::new(),
         }
     }
 
@@ -779,6 +809,13 @@ pub enum TempoPoolTransactionError {
         min_allowed: u64,
     },
 
+    /// An earlier transaction in the block being built made this one unexecutable.
+    ///
+    /// Thrown by the payload builder, which leaves the transaction out of that block. Pool
+    /// maintenance re-checks it once the block commits.
+    #[error("invalidated by an earlier transaction in the block: {0}")]
+    InvalidatedInBlock(&'static str),
+
     /// A transaction matched a configured address check.
     ///
     /// Thrown during pool admission when an address of the transaction (sender, fee payer, call
@@ -829,6 +866,7 @@ impl PoolTransactionError for TempoPoolTransactionError {
             | Self::AccessKeyExpired { .. }
             | Self::KeyAuthorizationExpired { .. }
             | Self::AddressCheck { .. }
+            | Self::InvalidatedInBlock(_)
             | Self::Keychain(_) => false,
             Self::SubblockNonceKey
             | Self::TooManyAuthorizations { .. }

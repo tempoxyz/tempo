@@ -63,6 +63,7 @@ use tempo_payload_types::{
     Estimator, TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload,
     estimator::FinishedBuild,
 };
+use tempo_precompiles::{storage::StorageActions, tip_fee_manager::TipFeeManager};
 use tempo_primitives::{TempoHeader, TempoReceipt, TempoTxEnvelope};
 use tempo_transaction_pool::{
     StateAwareBestTransactions, TempoTransactionPool, best::BestTransaction,
@@ -390,6 +391,12 @@ where
         // Resolve the configured fee recipient before moving the database into the EVM. This
         // keeps the read out of EVM2's journal and therefore out of transaction gas accounting.
         maybe_override_fee_recipient(&mut db, &mut evm_env, &attributes);
+        // The beneficiary cannot change its validator token within its own block.
+        let validator_token = db
+            .with_read_only_storage_ctx(hardfork, StorageActions::disabled(), || {
+                TipFeeManager::new().get_validator_token(evm_env.block.beneficiary)
+            })
+            .map_err(PayloadBuilderError::other)?;
 
         let prewarm_evm_env = evm_env.clone();
         let assembly_evm_env = evm_env.clone();
@@ -445,12 +452,14 @@ where
                 PayloadTransactions::Prewarming(StateAwareBestTransactions::new(
                     BestTransactionsPrewarming::new(prewarm_ctx, raw_best_txs),
                     hardfork.fallback_fee_tokens(),
+                    Some(validator_token),
                 ))
             }
         } else {
             PayloadTransactions::Sequential(StateAwareBestTransactions::new(
                 Box::new(raw_best_txs),
                 hardfork.fallback_fee_tokens(),
+                Some(validator_token),
             ))
         };
         self.metrics

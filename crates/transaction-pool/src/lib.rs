@@ -19,6 +19,7 @@ pub use tempo_pool::{TempoTransactionPool, TempoTransactionPoolExt};
 
 pub mod amm;
 pub mod best;
+pub mod invalidation;
 pub mod maintain;
 pub mod metrics;
 pub mod ordering;
@@ -26,7 +27,9 @@ pub(crate) mod state_cache;
 pub mod tt_2d_pool;
 
 pub use best::{StateAwareBestTransactions, StateAwarePoolTransaction};
+pub use invalidation::Invalidations;
 pub use maintain::TempoPoolUpdates;
+pub use tempo_pool::InvalidatedTransactions;
 
 pub use metrics::{AA2dPoolMetrics, TempoPoolMaintenanceMetrics};
 pub use tt_2d_pool::{AA2dPool, AA2dPoolConfig, AASequenceId, DEFAULT_MAX_TXS_PER_SENDER};

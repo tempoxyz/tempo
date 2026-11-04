@@ -1,56 +1,22 @@
 //! An iterator over the best transactions in the tempo pool.
 
 use crate::{
-    ordering::TempoTipOrdering, transaction::TempoPooledTransaction,
+    invalidation::{Invalidations, Verdict},
+    ordering::TempoTipOrdering,
+    transaction::{TempoPoolTransactionError, TempoPooledTransaction},
     tt_2d_pool::BestAA2dTransactions,
 };
-use alloy_primitives::{Address, U256, map::HashMap};
-use evm2::evm::{StateChangeSink, StateChangeSource, StorageChange};
+use alloy_primitives::Address;
 use reth_evm::BlockTransactionResult;
-use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_transaction_pool::{
     BestTransactions, Priority, TransactionOrdering, ValidPoolTransaction,
     error::InvalidPoolTransactionError,
 };
 use std::sync::Arc;
 use tempo_evm::TempoEvmTypes;
-use tempo_precompiles::tip20::is_tip20_prefix;
 
 pub type BestTransaction = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
 type BestTransactionWithPriority = (BestTransaction, Priority<u64>);
-
-struct DecreasedBalancesSink<'a>(&'a mut HashMap<(Address, U256), U256>);
-
-impl StateChangeSink for DecreasedBalancesSink<'_> {
-    type Error = core::convert::Infallible;
-
-    fn storage(&mut self, change: StorageChange) -> Result<(), Self::Error> {
-        if !is_tip20_prefix(change.address) {
-            return Ok(());
-        }
-
-        if change.current < change.original {
-            self.0.insert((change.address, change.key), change.current);
-        } else if let Some(balance) = self.0.get_mut(&(change.address, change.key)) {
-            *balance = change.current;
-        }
-        Ok(())
-    }
-
-    fn storage_read(
-        &mut self,
-        address: Address,
-        key: U256,
-        value: U256,
-    ) -> Result<(), Self::Error> {
-        if is_tip20_prefix(address)
-            && let Some(balance) = self.0.get_mut(&(address, key))
-        {
-            *balance = value;
-        }
-        Ok(())
-    }
-}
 
 /// A best-transaction iterator that merges the protocol pool and the 2D nonces pool,
 /// always yielding the next best item from either iterator.
@@ -168,16 +134,20 @@ impl BestTransactions for MergeBestTransactions {
 }
 
 /// A [`BestTransactions`] wrapper that tracks execution state changes and skips
-/// transactions that would fail due to state mutations from previously
-/// included transactions.
+/// transactions that previously included transactions made unexecutable.
+///
+/// It asks the same [`Invalidations`] pool maintenance asks once the block commits, so that a
+/// single transaction cannot make the builder spend its time budget on many transactions that
+/// fail. It skips transactions that may need revalidation too: they wait for the next block,
+/// after maintenance revalidates them.
 pub struct StateAwareBestTransactions<I> {
     inner: I,
-    /// Tracks decreased TIP20 balance slots: `(token_address, slot) -> new_balance`.
-    /// Updated after each executed transaction. Used to check if a candidate
-    /// transaction's fee payer can still cover its fee cost.
-    decreased_balances: HashMap<(Address, U256), U256>,
+    /// What the transactions executed so far changed.
+    changes: Invalidations,
     /// Ordered fallback fee tokens active for the block being built.
     fallback_fee_tokens: &'static [Address],
+    /// The block beneficiary's validator token, into which the block's fees are swapped.
+    validator_token: Option<Address>,
 }
 
 impl<I> StateAwareBestTransactions<I>
@@ -188,43 +158,26 @@ where
     /// Wraps an existing [`BestTransactions`] iterator.
     ///
     /// `fallback_fee_tokens` lists the tokens execution may fall back to when no transaction
-    /// field or fee-manager rule selects the fee token.
-    pub fn new(inner: I, fallback_fee_tokens: &'static [Address]) -> Self {
+    /// field or fee-manager rule selects the fee token. `validator_token` is the block
+    /// beneficiary's validator token, which it cannot change within its own block; without it,
+    /// fee AMM liquidity is left to execution.
+    pub fn new(
+        inner: I,
+        fallback_fee_tokens: &'static [Address],
+        validator_token: Option<Address>,
+    ) -> Self {
         Self {
             inner,
-            decreased_balances: HashMap::default(),
+            changes: Invalidations::default(),
             fallback_fee_tokens,
+            validator_token,
         }
     }
 
     /// Processes a new transaction execution result and collects any relevant
-    /// state changes that might affect other transactions validity.
+    /// state changes and events that might affect other transactions validity.
     pub fn on_new_result<R: BlockTransactionResult<TempoEvmTypes>>(&mut self, result: &R) {
-        result
-            .result()
-            .pending_state
-            .visit(&mut DecreasedBalancesSink(&mut self.decreased_balances))
-            .unwrap();
-    }
-
-    /// Returns whether execution may pay the fee with another fallback token.
-    ///
-    /// Untracked balances may have grown during the block, so they count as sufficient.
-    fn may_use_other_fallback_token(
-        &self,
-        tx: &BestTransaction,
-        (token, slot): (Address, U256),
-        fee: U256,
-    ) -> bool {
-        tx.transaction.is_fallback_fee_token()
-            && self.fallback_fee_tokens.iter().any(|&candidate| {
-                // TIP-20 balance slots share a layout.
-                candidate != token
-                    && self
-                        .decreased_balances
-                        .get(&(candidate, slot))
-                        .is_none_or(|&balance| balance >= fee)
-            })
+        self.changes.on_transaction_result(result);
     }
 }
 
@@ -238,28 +191,28 @@ where
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             let tx = self.inner.next()?;
-            let best_tx = tx.best_transaction();
-
-            let Some(key) = best_tx.transaction.fee_balance_slot() else {
-                debug_assert!(false, "pool transaction must have cached fee_balance_slot");
-                continue;
-            };
-
-            let fee = best_tx.transaction.fee_token_cost();
-            if let Some(&balance) = self.decreased_balances.get(&key)
-                && balance < fee
-                && !self.may_use_other_fallback_token(best_tx, key, fee)
-            {
-                self.inner.mark_invalid(
+            let changes = &self.changes;
+            let validator_token = self.validator_token;
+            let verdict = changes.verdict(
+                &tx.best_transaction().transaction,
+                self.fallback_fee_tokens,
+                |tx, _, fee| {
+                    validator_token.is_none_or(|validator_token| {
+                        !changes.drained_fee_routes(tx, validator_token, fee)
+                    })
+                },
+            );
+            match verdict {
+                Verdict::Valid => return Some(tx),
+                Verdict::Invalid(reason) | Verdict::Revalidate(reason) => self.inner.mark_invalid(
                     &tx,
-                    InvalidPoolTransactionError::Consensus(
-                        InvalidTransactionError::InsufficientFunds((balance, fee).into()),
+                    InvalidPoolTransactionError::other(
+                        TempoPoolTransactionError::InvalidatedInBlock(reason.as_str()),
                     ),
-                );
-                continue;
+                ),
+                // Leave it out without marking it invalid, so that its descendants stay.
+                Verdict::StaleNonce => {}
             }
-
-            return Some(tx);
         }
     }
 }
@@ -299,18 +252,25 @@ mod tests {
     use crate::{
         ordering::TempoTipOrdering,
         test_utils::{TxBuilder, wrap_valid_tx},
+        transaction::FeeTokenState,
         tt_2d_pool::AA2dPool,
     };
-    use alloy_primitives::Address;
+    use alloy_primitives::{U256, map::HashMap};
+    use alloy_signer_local::PrivateKeySigner;
     use futures::executor::block_on;
     use reth_primitives_traits::transaction::error::InvalidTransactionError;
     use reth_transaction_pool::{
         Pool, PoolConfig, TransactionOrigin, TransactionPool, blobstore::InMemoryBlobStore,
         test_utils::OkValidator,
     };
-    use std::sync::Arc;
     use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
     use tempo_evm::ResolvedFeeToken;
+    use tempo_precompiles::{
+        ACCOUNT_KEYCHAIN_ADDRESS, DEFAULT_FEE_TOKEN, PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+        account_keychain::AccountKeychain,
+        storage::StorageKey,
+        tip_fee_manager::{TipFeeManager, amm::Pool as FeePool},
+    };
 
     type TestTx = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
 
@@ -630,30 +590,26 @@ mod tests {
         assert!(merged.next().is_none());
     }
 
-    /// Returns whether a transaction survives when `drained` balances drop just below its fee.
-    fn state_aware_yields(
-        tx: TestTx,
-        fallback_fee_tokens: &'static [Address],
-        drained: &[Address],
-    ) -> bool {
+    /// Returns whether a transaction survives when the block moves its fee payer's balances of
+    /// `tokens` from `original` to `current`.
+    fn state_aware_yields(tx: TestTx, written: &[(Address, U256, U256)]) -> bool {
         let (_, slot) = tx.transaction.fee_balance_slot().unwrap();
-        let fee = tx.transaction.fee_token_cost();
-        assert!(!fee.is_zero());
         let mut best = StateAwareBestTransactions::new(
             protocol_best_transactions(vec![tx]),
-            fallback_fee_tokens,
+            TempoHardfork::T13.fallback_fee_tokens(),
+            None,
         );
-        for &token in drained {
-            best.decreased_balances
-                .insert((token, slot), fee - U256::ONE);
+        for &(token, original, current) in written {
+            best.changes
+                .balances
+                .insert((token, slot), (original, current));
         }
         best.next().is_some()
     }
 
     #[test]
-    fn test_state_aware_skips_only_when_no_fallback_token_can_pay() {
-        let t13 = TempoHardfork::T13.fallback_fee_tokens();
-        let &[path_usd, ousd] = t13 else {
+    fn test_state_aware_skips_fallback_payers_whose_token_choice_may_change() {
+        let &[path_usd, ousd] = TempoHardfork::T13.fallback_fee_tokens() else {
             panic!("T13 falls back to pathUSD, then OUSD");
         };
         let tx = |resolved| {
@@ -661,17 +617,256 @@ mod tests {
             tx.transaction.set_resolved_fee_token(resolved);
             tx
         };
-        let fallback = || tx(ResolvedFeeToken::Fallback(path_usd));
-        // An explicit token, stored preference, or TIP-20 inference never falls back.
-        let selected = || tx(ResolvedFeeToken::Selected(path_usd));
+        let fee = tx(ResolvedFeeToken::Fallback(ousd))
+            .transaction
+            .fee_token_cost();
+        assert!(!fee.is_zero());
+        let (enough, short) = (fee, fee - U256::ONE);
 
-        assert!(state_aware_yields(fallback(), t13, &[path_usd]));
-        assert!(!state_aware_yields(fallback(), t13, &[path_usd, ousd]));
-        assert!(!state_aware_yields(selected(), t13, &[path_usd]));
+        // Unaffected, or balances moved without crossing the fee.
+        assert!(state_aware_yields(
+            tx(ResolvedFeeToken::Fallback(ousd)),
+            &[]
+        ));
+        assert!(state_aware_yields(
+            tx(ResolvedFeeToken::Fallback(ousd)),
+            &[(ousd, enough + enough, enough)]
+        ));
+        // The cached token no longer pays: another fallback token might.
         assert!(!state_aware_yields(
-            fallback(),
-            TempoHardfork::T12.fallback_fee_tokens(),
-            &[path_usd]
+            tx(ResolvedFeeToken::Fallback(ousd)),
+            &[(ousd, enough, short)]
+        ));
+        // An earlier fallback token now pays, so execution would switch to it.
+        assert!(!state_aware_yields(
+            tx(ResolvedFeeToken::Fallback(ousd)),
+            &[(path_usd, short, enough)]
+        ));
+        // Tokens after the cached one do not change the choice.
+        assert!(state_aware_yields(
+            tx(ResolvedFeeToken::Fallback(path_usd)),
+            &[(ousd, enough, short)]
+        ));
+        // A selected token never falls back: a drained balance is final.
+        assert!(!state_aware_yields(
+            tx(ResolvedFeeToken::Selected(path_usd)),
+            &[(path_usd, enough, short)]
+        ));
+        assert!(state_aware_yields(
+            tx(ResolvedFeeToken::Selected(path_usd)),
+            &[(ousd, short, enough)]
+        ));
+    }
+
+    type TestStateAware =
+        StateAwareBestTransactions<Box<dyn BestTransactions<Item = BestTransaction>>>;
+
+    const TEST_SPEC: TempoHardfork = TempoHardfork::T13;
+
+    fn state_aware(txs: Vec<TestTx>) -> TestStateAware {
+        StateAwareBestTransactions::new(protocol_best_transactions(txs), &[], None)
+    }
+
+    fn fee_token_tx(fee_token: Address) -> TestTx {
+        Arc::new(wrap_valid_tx(
+            TxBuilder::aa(Address::random())
+                .fee_token(fee_token)
+                .max_fee(u128::from(TEMPO_T1_BASE_FEE))
+                .build(),
+            TransactionOrigin::External,
+        ))
+    }
+
+    fn keychain_tx(user: Address, access_key: &PrivateKeySigner) -> TestTx {
+        Arc::new(wrap_valid_tx(
+            TxBuilder::aa(user)
+                .fee_token(PATH_USD_ADDRESS)
+                .max_fee(u128::from(TEMPO_T1_BASE_FEE))
+                .build_keychain(user, access_key),
+            TransactionOrigin::External,
+        ))
+    }
+
+    #[test]
+    fn state_aware_omits_raised_protocol_nonce_but_keeps_descendants() {
+        let sender = Address::random();
+        let mut best = state_aware(vec![
+            protocol_tx_for_sender(sender, 0, 1),
+            protocol_tx_for_sender(sender, 1, 1),
+        ]);
+        best.changes.nonces.insert(sender, 1);
+        assert_eq!(best.next().map(|tx| tx.nonce()), Some(1));
+    }
+
+    #[test]
+    fn state_aware_skips_transactions_of_changed_commitment() {
+        let sender = Address::random();
+        let other = protocol_tx(0, 0);
+        let other_hash = *other.hash();
+        let mut best = state_aware(vec![protocol_tx_for_sender(sender, 0, 1), other]);
+        best.changes.changed_commitments.insert(sender);
+        assert_eq!(
+            best.map(|tx| *tx.hash()).collect::<Vec<_>>(),
+            vec![other_hash]
+        );
+    }
+
+    #[test]
+    fn state_aware_skips_fee_token_paused_or_with_changed_policy() {
+        let records: [fn(&mut crate::TempoPoolUpdates, Address); 3] = [
+            |updates, token| {
+                updates.paused_tokens.insert(token);
+            },
+            |updates, token| {
+                updates.transfer_policy_updates.insert(token);
+            },
+            |updates, token| {
+                updates.quote_token_updates.insert(token);
+            },
+        ];
+        for record in records {
+            for (token, yields) in [(PATH_USD_ADDRESS, false), (Address::random(), true)] {
+                let mut best = state_aware(vec![fee_token_tx(PATH_USD_ADDRESS)]);
+                record(&mut best.changes.events, token);
+                assert_eq!(best.next().is_some(), yields);
+            }
+        }
+    }
+
+    #[test]
+    fn state_aware_skips_implicit_fee_token_after_fee_payer_changes_preference() {
+        let implicit = protocol_tx(0, 0);
+        let fee_payer = implicit.transaction.fee_payer().unwrap();
+        let mut best = state_aware(vec![implicit]);
+        best.changes.events.user_token_changes.insert(fee_payer);
+        assert!(best.next().is_none());
+
+        let explicit = fee_token_tx(PATH_USD_ADDRESS);
+        let fee_payer = explicit.transaction.fee_payer().unwrap();
+        let mut best = state_aware(vec![explicit]);
+        best.changes.events.user_token_changes.insert(fee_payer);
+        assert!(best.next().is_some());
+    }
+
+    #[test]
+    fn state_aware_skips_revoked_access_key() {
+        let user = Address::random();
+        let access_key = PrivateKeySigner::random();
+        let mut best = state_aware(vec![keychain_tx(user, &access_key)]);
+        best.changes
+            .events
+            .revoked_keys
+            .insert(user, access_key.address());
+        assert!(best.next().is_none());
+    }
+
+    #[test]
+    fn state_aware_checks_spending_limit_the_block_wrote() {
+        let user = Address::random();
+        let access_key = PrivateKeySigner::random();
+        let key_id = access_key.address();
+        let tx = keychain_tx(user, &access_key);
+        let fee = tx.transaction.fee_token_cost();
+        let remaining_slot = AccountKeychain::new().spending_limits
+            [AccountKeychain::spending_limit_key(user, key_id)][PATH_USD_ADDRESS]
+            .remaining
+            .slot();
+        let spent_to = |remaining| {
+            let mut best = state_aware(vec![tx.clone()]);
+            best.changes
+                .events
+                .spending_limit_spends
+                .insert(user, key_id, Some(PATH_USD_ADDRESS));
+            best.changes.record_storage(
+                ACCOUNT_KEYCHAIN_ADDRESS,
+                remaining_slot,
+                U256::MAX,
+                remaining,
+            );
+            best
+        };
+
+        // The spend wrote the remaining limit, so no state is read.
+        assert!(spent_to(fee - U256::ONE).next().is_none());
+        assert!(spent_to(fee).next().is_some());
+    }
+
+    #[test]
+    fn state_aware_skips_fee_payers_restricted_by_their_cached_policy() {
+        let tx = fee_token_tx(PATH_USD_ADDRESS);
+        tx.transaction.set_fee_token_state(FeeTokenState {
+            sender_policy_ids: vec![7],
+            quote_token: Address::ZERO,
+        });
+        let fee_payer = tx.transaction.fee_payer().unwrap();
+
+        for (restricted_policy, yields) in [(7, false), (8, true)] {
+            let mut best = state_aware(vec![tx.clone()]);
+            best.changes
+                .events
+                .set_policy_restriction(restricted_policy, fee_payer, true);
+            assert_eq!(best.next().is_some(), yields);
+        }
+    }
+
+    #[test]
+    fn state_aware_skips_only_when_every_written_fee_route_is_drained() {
+        let validator_token = DEFAULT_FEE_TOKEN;
+        let user_token = TEST_SPEC
+            .fallback_fee_tokens()
+            .iter()
+            .copied()
+            .find(|&token| token != validator_token)
+            .unwrap();
+        let quote_token = Address::random();
+        let pool_slot = |user, validator| {
+            let fee_manager = TipFeeManager::new();
+            fee_manager
+                .pool_id(user, validator)
+                .mapping_slot(fee_manager.pools.slot())
+        };
+        let encode = |reserve_validator_token| {
+            FeePool {
+                reserve_user_token: 0,
+                reserve_validator_token,
+            }
+            .encode_to_slot()
+            .unwrap()
+        };
+        let yields = |quote: Address, drained: &[(Address, Address)], reserve| {
+            let tx = fee_token_tx(user_token);
+            tx.transaction.set_fee_token_state(FeeTokenState {
+                sender_policy_ids: Vec::new(),
+                quote_token: quote,
+            });
+            let mut best = StateAwareBestTransactions::new(
+                protocol_best_transactions(vec![tx]),
+                &[],
+                Some(validator_token),
+            );
+            for &(user, validator) in drained {
+                best.changes.record_storage(
+                    TIP_FEE_MANAGER_ADDRESS,
+                    pool_slot(user, validator),
+                    encode(u128::MAX),
+                    encode(reserve),
+                );
+            }
+            best.next().is_some()
+        };
+        let direct = (user_token, validator_token);
+
+        // No two-hop route: the drained direct pool decides.
+        assert!(!yields(Address::ZERO, &[direct], 0));
+        assert!(yields(Address::ZERO, &[direct], u128::MAX - 1));
+        // Liquidity is admission's concern until a reserve decreases in the block.
+        assert!(yields(Address::ZERO, &[], 0));
+        // An untouched two-hop route stays open for execution to decide.
+        assert!(yields(quote_token, &[direct], 0));
+        assert!(!yields(
+            quote_token,
+            &[direct, (quote_token, validator_token)],
+            0
         ));
     }
 }
