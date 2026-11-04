@@ -187,16 +187,21 @@ impl ExecutionEngine for StubExecutionProvider {
     {
         self.inner.forkchoices.lock().push(state);
         let gate = self.inner.forkchoice_gate.lock().take();
-        let response = self.inner.forkchoice_response.lock().take().unwrap_or_else(|| {
-            let status = if self.inner.reject_forkchoices.load(Ordering::SeqCst) {
-                PayloadStatusEnum::Invalid {
-                    validation_error: "rejected by test engine".into(),
-                }
-            } else {
-                PayloadStatusEnum::Valid
-            };
-            Ok(ForkchoiceUpdated::from_status(status))
-        });
+        let response = self
+            .inner
+            .forkchoice_response
+            .lock()
+            .take()
+            .unwrap_or_else(|| {
+                let status = if self.inner.reject_forkchoices.load(Ordering::SeqCst) {
+                    PayloadStatusEnum::Invalid {
+                        validation_error: "rejected by test engine".into(),
+                    }
+                } else {
+                    PayloadStatusEnum::Valid
+                };
+                Ok(ForkchoiceUpdated::from_status(status))
+            });
         async move {
             if let Some(gate) = gate {
                 let _ = gate.await;
