@@ -22,6 +22,7 @@ const E2E_RUNNER_METRICS_URL = "http://127.0.0.1:9100/metrics"
 const E2E_BLOAT_TMP_DIR = "/reth-bench-a/.bench-tmp/e2e-local-init"
 const TRACY_SAMPLING_HZ = 18999
 const E2E_BLOAT_FREE_MARGIN_MIB = 51200
+const E2E_QMDB_SIZE_MULTIPLIER = 4
 # Measured peak import working set is ~4.8x bloat per side (ETL + DB + static files + rocksdb).
 const E2E_BLOAT_IMPORT_WORKING_SET_MULTIPLIER = 5
 const E2E_DEFAULT_BLOAT = 100
@@ -371,9 +372,26 @@ def qmdb-import [tempo_bin: string, genesis: string, datadir: string] {
     if $result.stdout != "" { print $result.stdout }
     if $result.stderr != "" { print $result.stderr }
     if $result.exit_code != 0 {
+        # A partial QMDB can fill the volume; never leave it behind.
+        rm -rf $qmdb_dir
         print $"Error: tempo qmdb-import failed for ($datadir) with exit code ($result.exit_code)"
         exit $result.exit_code
     }
+}
+
+# Import QMDB into a freshly built snapshot datadir once the bloat dump is gone,
+# and only then record it in the marker, so a failed import never looks complete.
+# QMDB takes about 4x the bloat size on disk (1.64B keys at 100 GiB of bloat).
+def qmdb-import-snapshot [tempo_bin: string, genesis: string, datadir: string, bloat_mib: int] {
+    let required = ($bloat_mib * $E2E_QMDB_SIZE_MULTIPLIER) + $E2E_BLOAT_FREE_MARGIN_MIB
+    let available = (df-available-mib $datadir)
+    if $available < $required {
+        print $"Error: not enough free space for QMDB in ($datadir): needs ($required) MiB, has ($available) MiB"
+        exit 1
+    }
+    qmdb-import $tempo_bin $genesis $datadir
+    let marker_path = $"($datadir)/($BENCH_META_SUBDIR)/marker.json"
+    open $marker_path | upsert qmdb_state true | to json | save -f $marker_path
 }
 
 def bench-save-e2e-meta [datadir: string, meta_dir: string, marker: record, genesis_files: list] {
@@ -965,9 +983,6 @@ def init-local-e2e-side [
     mkdir $node_dir
 
     init-e2e-db $tempo_bin $generated_genesis $datadir $bloat $bloat_file
-    if ($marker | get -o qmdb_state | default false) {
-        qmdb-import $tempo_bin $generated_genesis $datadir
-    }
     for file in ["signing.key" "signing.share" "enode.key" "enode.identity"] {
         cp $"($generated_node_dir)/($file)" $"($node_dir)/($file)"
     }
@@ -1659,12 +1674,16 @@ def "main e2e" [
             dkg_in_genesis: true
             topology: "single-runner"
             state_hardfork: $snapshot_state_hardfork
-            qmdb_state: $qmdb_state
+            qmdb_state: false
         }
         init-local-e2e-side a $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db $a_identity $"($init_dir)/($a_validator)" $generated_genesis $trusted_peers $bloat_mib $bloat_file $tempo_bin ($marker | insert bench_datadir $a_db | insert node_dir $a_identity | insert validator_addr $a_validator)
         init-local-e2e-side b $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db $b_identity $"($init_dir)/($b_validator)" $generated_genesis $trusted_peers $bloat_mib $bloat_file $tempo_bin ($marker | insert bench_datadir $b_db | insert node_dir $b_identity | insert validator_addr $b_validator)
         if ($E2E_BLOAT_TMP_DIR | path exists) {
             rm -rf $E2E_BLOAT_TMP_DIR
+        }
+        if $qmdb_state {
+            qmdb-import-snapshot $tempo_bin $generated_genesis $a_db $bloat_mib
+            qmdb-import-snapshot $tempo_bin $generated_genesis $b_db $bloat_mib
         }
         bench-promote-at $E2E_A_STATE_PATH $a_db
         bench-promote-at $E2E_B_STATE_PATH $b_db
