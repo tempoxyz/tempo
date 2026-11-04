@@ -93,6 +93,21 @@ pub(crate) trait TestEnv: Sized {
     /// Return the current block timestamp (may advance blocks to ensure freshness).
     async fn current_block_timestamp(&mut self) -> eyre::Result<u64>;
 
+    /// Wait until the latest block timestamp reaches `target` and return it.
+    ///
+    /// Live networks only advance with wall time, so this polls once a second.
+    async fn wait_for_block_timestamp(&mut self, target: u64) -> eyre::Result<u64> {
+        let mut timestamp = self.current_block_timestamp().await?;
+        for _ in 0..30 {
+            if timestamp >= target {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            timestamp = self.current_block_timestamp().await?;
+        }
+        Ok(timestamp)
+    }
+
     // -----------------------------------------------------------------------
     // Matrix runners (default implementations)
     // -----------------------------------------------------------------------

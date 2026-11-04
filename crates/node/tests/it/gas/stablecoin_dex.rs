@@ -5,6 +5,7 @@ use alloy::{
     providers::{Provider, ProviderBuilder},
     sol_types::SolEvent,
 };
+use evm2::PrecompileError;
 use reth_e2e_test_utils::{receipt::await_successful_receipts, wallet::test_signer};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
@@ -38,10 +39,10 @@ struct DexGasOutcome {
 }
 
 fn under_overflow_revert() -> Bytes {
-    TempoPrecompileError::under_overflow()
-        .into_precompile_result(0, 0)
-        .unwrap()
-        .bytes
+    match TempoPrecompileError::under_overflow().into_precompile_result() {
+        Err(PrecompileError::Revert(bytes)) => bytes,
+        result => panic!("expected precompile revert, got {result:?}"),
+    }
 }
 
 async fn approve<P: Provider + Clone>(
@@ -132,6 +133,7 @@ async fn test_stablecoin_dex_order_gas_snapshots(hardfork: TempoHardfork) -> eyr
             ProviderBuilder::new()
                 .wallet(signer.clone())
                 .connect_http(http_url.clone())
+                .erased()
         })
         .collect::<Vec<_>>();
 
@@ -188,73 +190,83 @@ async fn test_stablecoin_dex_order_gas_snapshots(hardfork: TempoHardfork) -> eyr
         }};
     }
 
+    // Box each recording step to keep the lifecycle test's polling stack frame small.
     macro_rules! record_tx {
-        ($name:literal, $call:expr, $message:literal) => {{
-            let pooled_before = pooled_credits!();
-            let receipt = $call.send_sync().await?;
-            assert!(receipt.status(), $message);
-            let pooled_after = pooled_credits!();
-            gas.insert(
-                $name,
-                DexGasRow {
-                    gas: receipt.gas_used,
-                    storage_credits: "n/a".to_string(),
-                    pooled_storage_credits: format!(
-                        "DEX TIP-1060: {pooled_before} -> {pooled_after}"
-                    ),
-                },
-            );
-            receipt
-        }};
+        ($name:literal, $call:expr, $message:literal) => {
+            Box::pin(async {
+                let pooled_before = pooled_credits!();
+                let receipt = $call.send_sync().await?;
+                assert!(receipt.status(), $message);
+                let pooled_after = pooled_credits!();
+                gas.insert(
+                    $name,
+                    DexGasRow {
+                        gas: receipt.gas_used,
+                        storage_credits: "n/a".to_string(),
+                        pooled_storage_credits: format!(
+                            "DEX TIP-1060: {pooled_before} -> {pooled_after}"
+                        ),
+                    },
+                );
+                Ok::<_, eyre::Report>(receipt)
+            })
+            .await?
+        };
     }
 
     macro_rules! record_tx_with_credits {
-        ($name:literal, $credit_user:expr, $call:expr, $message:literal) => {{
-            let before = credits!($credit_user);
-            let pooled_before = pooled_credits!();
-            let receipt = $call.send_sync().await?;
-            assert!(receipt.status(), $message);
-            let after = credits!($credit_user);
-            let pooled_after = pooled_credits!();
-            gas.insert(
-                $name,
-                DexGasRow {
-                    gas: receipt.gas_used,
-                    storage_credits: format!("user{}: {before} -> {after}", $credit_user),
-                    pooled_storage_credits: format!(
-                        "DEX TIP-1060: {pooled_before} -> {pooled_after}"
-                    ),
-                },
-            );
-            receipt
-        }};
+        ($name:literal, $credit_user:expr, $call:expr, $message:literal) => {
+            Box::pin(async {
+                let before = credits!($credit_user);
+                let pooled_before = pooled_credits!();
+                let receipt = $call.send_sync().await?;
+                assert!(receipt.status(), $message);
+                let after = credits!($credit_user);
+                let pooled_after = pooled_credits!();
+                gas.insert(
+                    $name,
+                    DexGasRow {
+                        gas: receipt.gas_used,
+                        storage_credits: format!("user{}: {before} -> {after}", $credit_user),
+                        pooled_storage_credits: format!(
+                            "DEX TIP-1060: {pooled_before} -> {pooled_after}"
+                        ),
+                    },
+                );
+                Ok::<_, eyre::Report>(receipt)
+            })
+            .await?
+        };
     }
 
     macro_rules! record_tx_with_cross_user_credits {
-        ($name:literal, $credit_user:expr, $owner:expr, $call:expr, $message:literal) => {{
-            let before = credits!($credit_user);
-            let owner_before = credits!($owner);
-            let pooled_before = pooled_credits!();
-            let receipt = $call.send_sync().await?;
-            assert!(receipt.status(), $message);
-            let after = credits!($credit_user);
-            let owner_after = credits!($owner);
-            let pooled_after = pooled_credits!();
-            gas.insert(
-                $name,
-                DexGasRow {
-                    gas: receipt.gas_used,
-                    storage_credits: format!(
-                        "user{}: {before} -> {after}; user{}: {owner_before} -> {owner_after}",
-                        $credit_user, $owner
-                    ),
-                    pooled_storage_credits: format!(
-                        "DEX TIP-1060: {pooled_before} -> {pooled_after}"
-                    ),
-                },
-            );
-            receipt
-        }};
+        ($name:literal, $credit_user:expr, $owner:expr, $call:expr, $message:literal) => {
+            Box::pin(async {
+                let before = credits!($credit_user);
+                let owner_before = credits!($owner);
+                let pooled_before = pooled_credits!();
+                let receipt = $call.send_sync().await?;
+                assert!(receipt.status(), $message);
+                let after = credits!($credit_user);
+                let owner_after = credits!($owner);
+                let pooled_after = pooled_credits!();
+                gas.insert(
+                    $name,
+                    DexGasRow {
+                        gas: receipt.gas_used,
+                        storage_credits: format!(
+                            "user{}: {before} -> {after}; user{}: {owner_before} -> {owner_after}",
+                            $credit_user, $owner
+                        ),
+                        pooled_storage_credits: format!(
+                            "DEX TIP-1060: {pooled_before} -> {pooled_after}"
+                        ),
+                    },
+                );
+                Ok::<_, eyre::Report>(receipt)
+            })
+            .await?
+        };
     }
 
     macro_rules! send_tx {

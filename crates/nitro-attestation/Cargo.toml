@@ -19,7 +19,7 @@ workspace = true
 aws-lc = ["dep:aws-lc-rs"]
 
 [dependencies]
-arrayvec = { version = "=0.7.6", default-features = false, features = ["serde"] }
+arrayvec = { version = "=0.7.8", default-features = false, features = ["serde"] }
 hex-literal = "1"
 minicbor = { version = "=2.3.0", default-features = false, features = ["alloc"] }
 minicbor-serde = { version = "=0.7.1", default-features = false, features = ["alloc"] }

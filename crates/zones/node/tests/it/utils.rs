@@ -10,6 +10,7 @@ use alloy_sol_types::{SolCall, SolEvent, SolValue};
 use commonware_codec::Encode as _;
 use commonware_cryptography::{Signer as _, ed25519::PrivateKey as Ed25519PrivateKey};
 use eyre::WrapErr;
+use futures::future::try_join_all;
 use k256::SecretKey;
 use p256::ecdsa::SigningKey as P256SigningKey;
 use reth_node_api::FullNodeComponents;
@@ -119,6 +120,9 @@ pub(crate) const DEFAULT_POLL: std::time::Duration = std::time::Duration::from_m
 
 /// Gas limit for ordinary TIP-20 calls under the current Tempo fork schedule.
 pub(crate) const TIP20_TX_GAS: u64 = 500_000;
+
+/// Gas limit for `ZonePortal.setSequencerEncryptionKey` sent before the portal exists.
+const SET_ENCRYPTION_KEY_TX_GAS: u64 = 2_000_000;
 
 /// Gas limit for `ZoneOutbox.requestWithdrawal` test transactions.
 ///
@@ -1092,6 +1096,35 @@ impl ZoneTestNode {
             true,
             additional_decryption_keys,
             None,
+            None,
+            None,
+        )
+        .await
+    }
+
+    /// Start a zone node connected to a real L1 whose engine bounces deposits from senders
+    /// missing from `deposit_allowlist`.
+    pub(crate) async fn start_from_l1_with_deposit_allowlist(
+        l1_http_url: &url::Url,
+        l1_ws_url: &url::Url,
+        portal_address: Address,
+        deposit_allowlist: zone_node::DepositAllowlist,
+    ) -> eyre::Result<Self> {
+        let (genesis, _) = build_l1_anchored_genesis(l1_http_url, portal_address).await?;
+
+        Self::launch_with_genesis_and_withdrawal_batch_interval_and_decryption_keys(
+            l1_ws_url.to_string(),
+            portal_address,
+            next_unique_chain_id(),
+            Some(genesis),
+            l1_dev_signer(),
+            8,
+            None,
+            true,
+            Vec::new(),
+            None,
+            Some(deposit_allowlist),
+            None,
         )
         .await
     }
@@ -1273,6 +1306,8 @@ impl ZoneTestNode {
             spawn_engine,
             Vec::new(),
             None,
+            None,
+            None,
         )
         .await
     }
@@ -1289,6 +1324,8 @@ impl ZoneTestNode {
         spawn_engine: bool,
         additional_decryption_keys: Vec<SecretKey>,
         prover_config: Option<ZoneProverConfig>,
+        deposit_allowlist: Option<zone_node::DepositAllowlist>,
+        deposit_allowlist_relay: Option<zone_node::DepositAllowlistAdmin>,
     ) -> eyre::Result<Self> {
         let tasks = Runtime::test();
         let is_local_dummy_l1 = l1_ws_url == DUMMY_L1_URL;
@@ -1369,12 +1406,16 @@ impl ZoneTestNode {
             leadership = Some(schedule);
             let l1_transaction_signer = p2p_config.block_attestation_signer();
             let zone_id = p2p_config.zone_id();
-            // Every multi-sequencer node holds complete sequencer resources; the role
-            // controller decides at runtime whether this node's engine and sequencer
-            // background tasks are active.
-            zone_node = zone_node
-                .with_p2p(p2p_config)
-                .with_sequencer(ZoneSequencerAddOnsConfig {
+            let rpc_only = p2p_config.is_rpc_only();
+            zone_node = zone_node.with_p2p(p2p_config);
+            if let Some(admin) = deposit_allowlist_relay {
+                zone_node = zone_node.with_deposit_allowlist_relay(admin);
+            }
+            // Every quorum member holds complete sequencer resources; the role controller
+            // decides at runtime whether this node's engine and sequencer background tasks are
+            // active. An RPC-only node never sequences, so it holds none.
+            if !rpc_only {
+                zone_node = zone_node.with_sequencer(ZoneSequencerAddOnsConfig {
                     sequencer_signer: sequencer_signer.clone(),
                     l1_transaction_signer,
                     zone_id,
@@ -1382,7 +1423,9 @@ impl ZoneTestNode {
                     batch_anchor_config: Default::default(),
                     withdrawal_poll_interval: Duration::from_secs(5),
                     withdrawal_batch_limits: Default::default(),
+                    deposit_allowlist: deposit_allowlist.clone(),
                 });
+            }
         }
         if let Some(config) = prover_config {
             zone_node = zone_node.with_prover(config);
@@ -1470,7 +1513,8 @@ impl ZoneTestNode {
                 deposit_decryption_keys,
                 portal_address,
                 None,
-            );
+            )
+            .with_deposit_allowlist(deposit_allowlist);
             node_handle
                 .node
                 .task_executor
@@ -1527,7 +1571,7 @@ impl ZoneTestNode {
 /// A Tempo L1 node running in dev mode for integration testing.
 ///
 /// Starts an in-process Tempo node that produces blocks automatically
-/// (500ms block time), providing both HTTP and WebSocket endpoints.
+/// (250ms block time), providing both HTTP and WebSocket endpoints.
 ///
 /// # Usage
 ///
@@ -2011,24 +2055,80 @@ impl L1TestNode {
     /// for gas so admin-only portal calls (e.g. `enableToken`) can be made, and the dev
     /// sequencer's encryption key is registered so the portal can accept deposits immediately.
     ///
+    /// All three transactions are submitted back to back with explicit nonces so they can share
+    /// a block. The portal address is predicted from the factory's next zone ID because the key
+    /// registration's proof of possession commits to it.
+    ///
     /// [`admin_address`]: Self::admin_address
     pub(crate) async fn create_zone(&self, factory_address: Address) -> eyre::Result<Address> {
+        use tempo_contracts::zones::ZoneFactory;
+        use tempo_precompiles::zone_factory::portal_address;
+
+        let provider = self.dev_provider();
+        let portal = portal_address(
+            ZoneFactory::new(factory_address, &provider)
+                .nextZoneId()
+                .call()
+                .await?,
+        );
+        let nonce = provider
+            .get_transaction_count(self.dev_address())
+            .pending()
+            .await?;
+
         let config =
             ZoneCreationConfig::closed(vec![self.admin_address(), self.user_signer().address()]);
-        let portal = self
-            .create_zone_with_admin_sequencer_and_config(
-                factory_address,
-                self.admin_address(),
-                self.dev_address(),
-                config,
+        let create_zone = provider
+            .send_transaction(
+                create_zone_request(
+                    factory_address,
+                    self.admin_address(),
+                    vec![self.dev_address()],
+                    1,
+                    config,
+                )
+                .nonce(nonce),
             )
             .await?;
         // The admin is not pre-funded; give it pathUSD to pay for gas on
         // admin-only portal calls.
-        self.fund_user(self.admin_address(), 10_000_000).await?;
-        let encryption_key = k256::SecretKey::from(self.dev_signer().credential());
-        self.set_sequencer_encryption_key(portal, &encryption_key)
+        let fund_admin = ITIP20::new(PATH_USD_ADDRESS, &provider)
+            .transfer(self.admin_address(), U256::from(10_000_000))
+            .nonce(nonce + 1)
+            .gas(TIP20_TX_GAS)
+            .send()
             .await?;
+        // The dev sequencer registers its own key as the encryption key.
+        let proof = zone_sequencer::prove_encryption_key_possession(portal, &self.dev_signer())?;
+        let register_key = ZonePortal::new(portal, &provider)
+            .setSequencerEncryptionKey(
+                proof.x,
+                proof.y_parity,
+                proof.pop_v,
+                proof.pop_r,
+                proof.pop_s,
+            )
+            .nonce(nonce + 2)
+            // Estimation would run before the portal exists.
+            .gas(SET_ENCRYPTION_KEY_TX_GAS)
+            .send()
+            .await?;
+
+        let created = zone_created_portal(&create_zone.get_receipt().await?)?;
+        eyre::ensure!(
+            created == portal,
+            "createZone deployed {created}, expected {portal}"
+        );
+        eyre::ensure!(
+            fund_admin.get_receipt().await?.status(),
+            "fund_user transfer failed"
+        );
+        let receipt = register_key.get_receipt().await?;
+        eyre::ensure!(
+            receipt.status(),
+            "setSequencerEncryptionKey reverted (tx: {})",
+            receipt.transaction_hash
+        );
         Ok(portal)
     }
 
@@ -2059,39 +2159,19 @@ impl L1TestNode {
         threshold: u8,
         config: ZoneCreationConfig,
     ) -> eyre::Result<Address> {
-        use tempo_contracts::zones::ZoneFactory;
-        use tempo_precompiles::PATH_USD_ADDRESS;
-
-        let l1_provider = self.dev_provider();
-        let create_zone = ZoneFactory::createZoneCall {
-            params: ZoneFactory::CreateZoneParams {
+        let receipt = self
+            .dev_provider()
+            .send_transaction(create_zone_request(
+                factory_address,
                 admin,
-                initialToken: PATH_USD_ADDRESS,
-                accessMode: config.access_mode,
-                gatewayMode: config.gateway_mode,
-                allowedAccounts: config.allowed_accounts,
-                zoneGateways: config.zone_gateways,
                 sequencers,
                 threshold,
-                rpcUrl: String::new(),
-            },
-        };
-        let receipt = l1_provider
-            .send_transaction(
-                TransactionRequest::default()
-                    .to(factory_address)
-                    .input(create_zone.abi_encode().into()),
-            )
+                config,
+            ))
             .await?
             .get_receipt()
             .await?;
-        eyre::ensure!(receipt.status(), "createZone failed");
-
-        let zone_created = receipt
-            .decoded_log::<ZoneFactory::ZoneCreated>()
-            .ok_or_else(|| eyre::eyre!("ZoneCreated event not found"))?;
-
-        Ok(zone_created.portal)
+        zone_created_portal(&receipt)
     }
 
     /// Deploy the SwapAndDepositRouter contract on L1 from the Foundry artifact.
@@ -2488,7 +2568,7 @@ impl L1TestNode {
     /// Mint tokens on L1.
     ///
     /// The dev account must be the admin of the token (set during `createToken`).
-    /// Grants `ISSUER_ROLE` to self first (admin can grant roles), then mints.
+    /// Grants `ISSUER_ROLE` to self first unless already held (admin can grant roles), then mints.
     pub(crate) async fn mint_tip20(
         &self,
         token: Address,
@@ -2500,14 +2580,20 @@ impl L1TestNode {
 
         let provider = self.dev_provider();
 
-        // Admin can grant ISSUER_ROLE to self
-        let receipt = IRolesAuth::new(token, &provider)
-            .grantRole(ISSUER_ROLE, self.dev_address())
-            .send()
+        let roles = IRolesAuth::new(token, &provider);
+        if !roles
+            .hasRole(self.dev_address(), ISSUER_ROLE)
+            .call()
             .await?
-            .get_receipt()
-            .await?;
-        eyre::ensure!(receipt.status(), "grantRole ISSUER failed on L1");
+        {
+            let receipt = roles
+                .grantRole(ISSUER_ROLE, self.dev_address())
+                .send()
+                .await?
+                .get_receipt()
+                .await?;
+            eyre::ensure!(receipt.status(), "grantRole ISSUER failed on L1");
+        }
 
         let receipt = ITIP20::new(token, &provider)
             .mint(to, U256::from(amount))
@@ -2541,29 +2627,6 @@ impl L1TestNode {
         Ok(event.policyId)
     }
 
-    /// Create a new WHITELIST policy on L1. Returns the policy ID.
-    #[allow(dead_code)]
-    pub(crate) async fn create_whitelist_policy(&self) -> eyre::Result<u64> {
-        use tempo_contracts::precompiles::ITIP403Registry;
-        use tempo_precompiles::TIP403_REGISTRY_ADDRESS;
-
-        let provider = self.dev_provider();
-        let registry = ITIP403Registry::new(TIP403_REGISTRY_ADDRESS, &provider);
-        let receipt = registry
-            .createPolicy(self.dev_address(), ITIP403Registry::PolicyType::WHITELIST)
-            .send()
-            .await?
-            .get_receipt()
-            .await?;
-        eyre::ensure!(receipt.status(), "createPolicy (WHITELIST) failed");
-
-        let event = receipt
-            .decoded_log::<ITIP403Registry::PolicyCreated>()
-            .ok_or_else(|| eyre::eyre!("PolicyCreated event not found"))?;
-
-        Ok(event.policyId)
-    }
-
     /// Add an address to a blacklist policy.
     pub(crate) async fn blacklist_address(
         &self,
@@ -2582,28 +2645,6 @@ impl L1TestNode {
             .get_receipt()
             .await?;
         eyre::ensure!(receipt.status(), "modifyPolicyBlacklist failed");
-        Ok(())
-    }
-
-    /// Add an address to a whitelist policy.
-    #[allow(dead_code)]
-    pub(crate) async fn whitelist_address(
-        &self,
-        policy_id: u64,
-        account: Address,
-    ) -> eyre::Result<()> {
-        use tempo_contracts::precompiles::ITIP403Registry;
-        use tempo_precompiles::TIP403_REGISTRY_ADDRESS;
-
-        let provider = self.dev_provider();
-        let registry = ITIP403Registry::new(TIP403_REGISTRY_ADDRESS, &provider);
-        let receipt = registry
-            .modifyPolicyWhitelist(policy_id, account, true)
-            .send()
-            .await?
-            .get_receipt()
-            .await?;
-        eyre::ensure!(receipt.status(), "modifyPolicyWhitelist failed");
         Ok(())
     }
 
@@ -2670,7 +2711,7 @@ impl L1TestNode {
         Ok(registry.isAuthorized(policy_id, user).call().await?)
     }
 
-    /// Start an L1 dev node with the default configuration (500ms block time).
+    /// Start an L1 dev node with the default configuration (250ms block time).
     pub(crate) async fn start() -> eyre::Result<Self> {
         Self::start_with(|_| {}).await
     }
@@ -2689,6 +2730,21 @@ impl L1TestNode {
     /// ```
     pub(crate) async fn start_with(
         f: impl FnOnce(&mut NodeConfig<TempoChainSpec>),
+    ) -> eyre::Result<Self> {
+        Self::launch(f, false).await
+    }
+
+    /// Start an L1 dev node, like [`Self::start_with`], whose RPC refuses every state proof
+    /// (`eth_getProof` and `eth_getMultiProof`), including proofs at the tip.
+    pub(crate) async fn start_without_state_proofs(
+        f: impl FnOnce(&mut NodeConfig<TempoChainSpec>),
+    ) -> eyre::Result<Self> {
+        Self::launch(f, true).await
+    }
+
+    async fn launch(
+        f: impl FnOnce(&mut NodeConfig<TempoChainSpec>),
+        refuse_state_proofs: bool,
     ) -> eyre::Result<Self> {
         let tasks = Runtime::test();
 
@@ -2710,7 +2766,7 @@ impl L1TestNode {
                     .with_ws_api(RpcModuleSelection::All),
             )
             .apply(|mut c| {
-                c.dev.block_time = Some(Duration::from_millis(500));
+                c.dev.block_time = Some(Duration::from_millis(250));
                 c.dev.finality_depth = std::num::NonZeroUsize::MIN;
                 // Witness collection must prove older L1 checkpoints during catch-up.
                 c.rpc.rpc_eth_proof_window = 100_000;
@@ -2722,6 +2778,22 @@ impl L1TestNode {
         let node_handle = NodeBuilder::new(node_config)
             .testing_node(tasks.clone())
             .node(tempo_node::node::TempoNode::default())
+            .extend_rpc_modules(move |ctx| {
+                if refuse_state_proofs {
+                    let mut module = jsonrpsee::RpcModule::new(());
+                    for method in ["eth_getProof", "eth_getMultiProof"] {
+                        module.register_method(method, |_, _, _| {
+                            Err::<(), _>(jsonrpsee::types::ErrorObjectOwned::owned(
+                                -32000,
+                                "state proofs unavailable",
+                                None::<()>,
+                            ))
+                        })?;
+                    }
+                    ctx.modules.replace_configured(module)?;
+                }
+                Ok(())
+            })
             .launch_with_debug_capabilities()
             .await?;
 
@@ -2747,6 +2819,45 @@ impl L1TestNode {
             _tasks: tasks,
         })
     }
+}
+
+/// Builds a `createZone` transaction with pathUSD as the initial token.
+fn create_zone_request(
+    factory_address: Address,
+    admin: Address,
+    sequencers: Vec<Address>,
+    threshold: u8,
+    config: ZoneCreationConfig,
+) -> TransactionRequest {
+    use tempo_contracts::zones::ZoneFactory;
+
+    let create_zone = ZoneFactory::createZoneCall {
+        params: ZoneFactory::CreateZoneParams {
+            admin,
+            initialToken: PATH_USD_ADDRESS,
+            accessMode: config.access_mode,
+            gatewayMode: config.gateway_mode,
+            allowedAccounts: config.allowed_accounts,
+            zoneGateways: config.zone_gateways,
+            sequencers,
+            threshold,
+            rpcUrl: String::new(),
+        },
+    };
+    TransactionRequest::default()
+        .to(factory_address)
+        .input(create_zone.abi_encode().into())
+}
+
+/// Returns the portal from a successful `createZone` receipt's `ZoneCreated` event.
+fn zone_created_portal(receipt: &alloy_rpc_types_eth::TransactionReceipt) -> eyre::Result<Address> {
+    use tempo_contracts::zones::ZoneFactory;
+
+    eyre::ensure!(receipt.status(), "createZone failed");
+    let zone_created = receipt
+        .decoded_log::<ZoneFactory::ZoneCreated>()
+        .ok_or_else(|| eyre::eyre!("ZoneCreated event not found"))?;
+    Ok(zone_created.portal)
 }
 
 /// Patch a controlled post-creation test snapshot with the portal's token commitment.
@@ -3827,6 +3938,8 @@ pub(crate) async fn start_real_p2p_cluster_with_active_nodes(
         None,
         false,
         None,
+        None,
+        false,
     )
     .await?
     .cluster)
@@ -3841,6 +3954,45 @@ pub(crate) async fn start_real_p2p_cluster_with_settlement_proving(
     withdrawal_batch_interval_blocks: u64,
     active_nodes: usize,
 ) -> eyre::Result<RealP2pCluster> {
+    Ok(start_real_p2p_cluster_inner(
+        withdrawal_batch_interval_blocks,
+        active_nodes,
+        L1ProxyMode::Direct,
+        None,
+        false,
+        Some(unreachable_settlement_prover()?),
+        None,
+        false,
+    )
+    .await?
+    .cluster)
+}
+
+/// Start a three-node settlement-proving cluster, before T15, whose L1 serves no state proofs,
+/// so collecting any Zone block's witness fails while the L1 subscriber keeps observing
+/// headers and portal events.
+///
+/// Settlement falls back to the `NoProof` verifier, as in
+/// [`start_real_p2p_cluster_with_settlement_proving`].
+pub(crate) async fn start_real_p2p_cluster_without_l1_proofs(
+    withdrawal_batch_interval_blocks: u64,
+) -> eyre::Result<RealP2pCluster> {
+    Ok(start_real_p2p_cluster_inner(
+        withdrawal_batch_interval_blocks,
+        3,
+        L1ProxyMode::Direct,
+        None,
+        false,
+        Some(unreachable_settlement_prover()?),
+        None,
+        true,
+    )
+    .await?
+    .cluster)
+}
+
+/// Settlement prover routed to an endpoint where nothing listens, so every proof fails fast.
+fn unreachable_settlement_prover() -> eyre::Result<ZoneProverConfig> {
     let unreachable = TempoHardfork::VARIANTS
         .iter()
         .map(|&hardfork| zone_sequencer::HardforkProverAddress {
@@ -3856,16 +4008,7 @@ pub(crate) async fn start_real_p2p_cluster_with_settlement_proving(
     }))?;
     let prover_addresses = zone_sequencer::ProverAddresses::new(unreachable, Some(&policy))?
         .expect("hardforks are non-empty");
-    Ok(start_real_p2p_cluster_inner(
-        withdrawal_batch_interval_blocks,
-        active_nodes,
-        L1ProxyMode::Direct,
-        None,
-        false,
-        Some(ZoneProverConfig::Settlement(prover_addresses)),
-    )
-    .await?
-    .cluster)
+    Ok(ZoneProverConfig::Settlement(prover_addresses))
 }
 
 /// Start the full three-member real-L1 cluster with one shared, controllable L1 proxy. Existing
@@ -3881,6 +4024,8 @@ pub(crate) async fn start_real_p2p_cluster_with_l1_proxy(
         Some(l1_block_time),
         false,
         None,
+        None,
+        false,
     )
     .await?;
     Ok((
@@ -3904,6 +4049,8 @@ pub(crate) async fn start_real_p2p_cluster_with_per_node_l1_proxies(
         Some(l1_block_time),
         false,
         None,
+        None,
+        false,
     )
     .await?;
     let proxies: [TcpChaosProxy; 3] = parts
@@ -3926,6 +4073,8 @@ pub(crate) async fn start_real_p2p_network_chaos_cluster(
         Some(l1_block_time),
         true,
         None,
+        None,
+        false,
     )
     .await?;
     let proxies = parts
@@ -3966,8 +4115,60 @@ struct RealP2pClusterParts {
     cluster: RealP2pCluster,
     l1_proxies: Vec<TcpChaosProxy>,
     p2p_network: Option<P2pChaosNetwork>,
+    allowlist: Option<DepositAllowlistParts>,
 }
 
+struct DepositAllowlistParts {
+    rpc_node: ZoneTestNode,
+    zone_chain_id: u64,
+    datadir: tempfile::TempDir,
+}
+
+/// Signer the deposit allowlist test cluster accepts `zoneAdmin` writes from.
+pub(crate) fn deposit_allowlist_admin() -> PrivateKeySigner {
+    PrivateKeySigner::from_bytes(&B256::repeat_byte(0xad)).expect("valid test admin key")
+}
+
+/// Three-member P2P quorum whose sequencers enforce a deposit allowlist administered by
+/// [`deposit_allowlist_admin`], plus an RPC-only node that relays `zoneAdmin` calls to them.
+pub(crate) struct DepositAllowlistP2pCluster {
+    pub(crate) cluster: RealP2pCluster,
+    pub(crate) rpc_node: ZoneTestNode,
+    /// EIP-712 domain chain ID for admin signatures.
+    pub(crate) zone_chain_id: u64,
+    _datadir: tempfile::TempDir,
+}
+
+/// Start a real-L1 cluster whose sequencers seed their deposit allowlists with `seed`, launching
+/// only `active_nodes` of the three quorum members, plus one RPC-only node.
+pub(crate) async fn start_real_p2p_cluster_with_deposit_allowlist(
+    withdrawal_batch_interval_blocks: u64,
+    active_nodes: usize,
+    seed: &[Address],
+) -> eyre::Result<DepositAllowlistP2pCluster> {
+    let parts = start_real_p2p_cluster_inner(
+        withdrawal_batch_interval_blocks,
+        active_nodes,
+        L1ProxyMode::Direct,
+        None,
+        false,
+        None,
+        Some(seed),
+        false,
+    )
+    .await?;
+    let allowlist = parts
+        .allowlist
+        .expect("allowlist cluster constructor must return its RPC node");
+    Ok(DepositAllowlistP2pCluster {
+        cluster: parts.cluster,
+        rpc_node: allowlist.rpc_node,
+        zone_chain_id: allowlist.zone_chain_id,
+        _datadir: allowlist.datadir,
+    })
+}
+
+#[expect(clippy::too_many_arguments, reason = "test cluster knobs")]
 async fn start_real_p2p_cluster_inner(
     withdrawal_batch_interval_blocks: u64,
     active_nodes: usize,
@@ -3975,17 +4176,29 @@ async fn start_real_p2p_cluster_inner(
     l1_block_time: Option<Duration>,
     proxy_p2p: bool,
     prover_config: Option<ZoneProverConfig>,
+    deposit_allowlist_seed: Option<&[Address]>,
+    l1_proofs_unavailable: bool,
 ) -> eyre::Result<RealP2pClusterParts> {
     eyre::ensure!(
         (2..=3).contains(&active_nodes),
         "real P2P test cluster requires two or three active nodes, got {active_nodes}"
     );
+    eyre::ensure!(
+        !(proxy_p2p && deposit_allowlist_seed.is_some()),
+        "the RPC-only node does not support proxied P2P links"
+    );
 
-    let l1 = match l1_block_time {
-        Some(block_time) => {
-            L1TestNode::start_with(|config| config.dev.block_time = Some(block_time)).await?
+    let configure = |config: &mut NodeConfig<TempoChainSpec>| {
+        if let Some(block_time) = l1_block_time {
+            config.dev.block_time = Some(block_time);
         }
-        None => L1TestNode::start().await?,
+    };
+    // Refuse proofs outright: a proof window of 0 still serves the tip, and a Zone block whose
+    // witness is collected before the next L1 block anchors to the tip.
+    let l1 = if l1_proofs_unavailable {
+        L1TestNode::start_without_state_proofs(configure).await?
+    } else {
+        L1TestNode::start_with(configure).await?
     };
     let direct_url = l1.ws_url().to_string();
     let (l1_proxies, l1_rpc_urls) = match proxy_mode {
@@ -4025,6 +4238,8 @@ async fn start_real_p2p_cluster_inner(
         Ed25519PrivateKey::from_seed(303),
     ];
     let public_keys = identities.each_ref().map(|key| key.public_key());
+    let rpc_identity = Ed25519PrivateKey::from_seed(304);
+    let rpc_address = available_address()?;
     let attestation_keys = [301_u64, 302, 303].map(|key| format!("0x{key:064x}"));
     let attestation_signers = attestation_keys
         .each_ref()
@@ -4058,7 +4273,11 @@ async fn start_real_p2p_cluster_inner(
 
     let portal = ZonePortal::new(portal_address, l1.provider());
     let zone_id = portal.zoneId().call().await?;
-    let (genesis, _) = build_l1_anchored_genesis(l1.http_url(), portal_address).await?;
+    let (mut genesis, _) = build_l1_anchored_genesis(l1.http_url(), portal_address).await?;
+    if l1_proofs_unavailable {
+        // Keep the Zone before T15, where a block may become canonical without its witness.
+        set_tempo_fork(&mut genesis, TempoHardfork::T15, u64::MAX);
+    }
     let chain_id = next_unique_chain_id();
 
     let config_dir = std::env::temp_dir().join(format!(
@@ -4084,6 +4303,12 @@ async fn start_real_p2p_cluster_inner(
                 signer.address(),
             ));
         }
+        if deposit_allowlist_seed.is_some() {
+            manifest.push_str(&format!(
+                "\n[[nodes]]\nname = \"rpc\"\ned25519_public_key = \"{}\"\naddress = \"{rpc_address}\"\nrpc_only = true\n",
+                const_hex::encode_prefixed(rpc_identity.public_key().as_ref()),
+            ));
+        }
         std::fs::write(&manifest_path, manifest)?;
         let key_path = config_dir.join(format!("node-{index}.key"));
         std::fs::write(
@@ -4102,16 +4327,54 @@ async fn start_real_p2p_cluster_inner(
             Some(role),
         )?);
     }
+    // Without proxied links every member reads the same manifest, so the RPC node reuses one.
+    let rpc_config = deposit_allowlist_seed
+        .map(|_| {
+            let key_path = config_dir.join("rpc.key");
+            std::fs::write(
+                &key_path,
+                const_hex::encode_prefixed(rpc_identity.encode().as_ref()),
+            )?;
+            P2pConfig::load(
+                config_dir.join("manifest-0.toml"),
+                &key_path,
+                None::<&std::path::Path>,
+                rpc_address,
+                false,
+                zone_id,
+                None,
+            )
+        })
+        .transpose()?;
     let _ = std::fs::remove_dir_all(&config_dir);
+    let allowlist_datadir = tempfile::tempdir()?;
+    let allowlist_admin = zone_node::DepositAllowlistAdmin {
+        address: deposit_allowlist_admin().address(),
+        zone_chain_id: zone_chain_id(l1.provider().get_chain_id().await?, zone_id)?,
+    };
+    let deposit_allowlists = match deposit_allowlist_seed {
+        Some(seed) => (0..active_nodes)
+            .map(|index| {
+                let allowlist = zone_node::DepositAllowlist::load(
+                    allowlist_datadir
+                        .path()
+                        .join(format!("node-{index}-deposit-allowlist.json")),
+                    allowlist_admin,
+                )?;
+                allowlist.replace(seed.to_vec())?;
+                Ok(Some(allowlist))
+            })
+            .collect::<eyre::Result<Vec<_>>>()?,
+        None => vec![None; active_nodes],
+    };
 
-    let mut nodes = Vec::with_capacity(active_nodes);
-    for (index, config) in configs.into_iter().take(active_nodes).enumerate() {
-        let additional_decryption_keys = if index == 0 {
-            Vec::new()
-        } else {
-            vec![SecretKey::from(attestation_signers[0].credential())]
-        };
-        nodes.push(
+    let nodes = try_join_all(configs.into_iter().take(active_nodes).enumerate().map(
+        |(index, config)| {
+            let additional_decryption_keys = if index == 0 {
+                Vec::new()
+            } else {
+                vec![SecretKey::from(attestation_signers[0].credential())]
+            };
             ZoneTestNode::launch_with_genesis_and_withdrawal_batch_interval_and_decryption_keys(
                 l1_rpc_urls[index].clone(),
                 portal_address,
@@ -4123,10 +4386,36 @@ async fn start_real_p2p_cluster_inner(
                 false,
                 additional_decryption_keys,
                 prover_config.clone(),
+                deposit_allowlists[index].clone(),
+                None,
             )
-            .await?,
-        );
-    }
+        },
+    ))
+    .await?;
+    let allowlist = match rpc_config {
+        Some(config) => Some(DepositAllowlistParts {
+            rpc_node:
+                ZoneTestNode::launch_with_genesis_and_withdrawal_batch_interval_and_decryption_keys(
+                    l1.ws_url().to_string(),
+                    portal_address,
+                    chain_id,
+                    Some(genesis.clone()),
+                    PrivateKeySigner::random(),
+                    withdrawal_batch_interval_blocks,
+                    Some(config),
+                    false,
+                    // The harness always installs a decryption key; match the other followers.
+                    vec![SecretKey::from(attestation_signers[0].credential())],
+                    None,
+                    None,
+                    Some(allowlist_admin),
+                )
+                .await?,
+            zone_chain_id: allowlist_admin.zone_chain_id,
+            datadir: allowlist_datadir,
+        }),
+        None => None,
+    };
 
     Ok(RealP2pClusterParts {
         cluster: RealP2pCluster {
@@ -4137,6 +4426,7 @@ async fn start_real_p2p_cluster_inner(
         },
         l1_proxies,
         p2p_network,
+        allowlist,
     })
 }
 

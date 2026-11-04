@@ -91,7 +91,8 @@ ZONES_BENCH_SPF_RANGE="${ZONES_BENCH_SPF_RANGE:-target/zones-benchmark/spf-range
 ZONES_BENCH_AUTH_TTL_SECS="${ZONES_BENCH_AUTH_TTL_SECS:-600}"
 ZONES_BENCH_AUTH_REFRESH_SECS="${ZONES_BENCH_AUTH_REFRESH_SECS:-60}"
 ZONES_BENCH_STEP_TIMEOUT="${ZONES_BENCH_STEP_TIMEOUT:-10m}"
-ZONES_BENCH_SAMPLE_INSTANCES="${ZONES_BENCH_SAMPLE_INSTANCES:-10}"
+# Trace every journey (up to 1000) so the CI notifier can test per-journey latency.
+ZONES_BENCH_SAMPLE_INSTANCES="${ZONES_BENCH_SAMPLE_INSTANCES:-$(( 10#$ZONES_BENCH_COUNT < 1000 ? 10#$ZONES_BENCH_COUNT : 1000 ))}"
 ZONES_BENCH_RUN_ID="${ZONES_BENCH_RUN_ID:-local}"
 ZONES_BENCH_RECIPIENT_MODE="${ZONES_BENCH_RECIPIENT_MODE:-existing}"
 ZONES_BENCH_NEOBANK_PRESET="${ZONES_BENCH_NEOBANK_PRESET:-full-journey}"
@@ -129,7 +130,7 @@ case "$ZONES_BENCH_NEOBANK_PRESET" in
         expected_base_token="$ZONES_BENCH_DLUSD"
         leases_per_journey=1
         ;;
-    full-journey)
+    full-journey|full-journey-pathusd-fees)
         scenario_file=private-flow-scenario.yml
         base_token_label=dlusd
         expected_base_token="$ZONES_BENCH_DLUSD"
@@ -442,6 +443,11 @@ done
 
 neobank_specs="$bench_dir/neobank"
 scenario_path="$neobank_specs/$scenario_file"
+export ZONES_BENCH_JOURNEY_ZONE_FEE_TOKEN="$ZONES_BENCH_DLUSD"
+if [[ "$ZONES_BENCH_NEOBANK_PRESET" == full-journey-pathusd-fees ]]; then
+    [[ -n "${ZONES_BENCH_ZONE_BLOAT_DUMP:-}" ]] || die "PathUSD-fee workload requires seeded Zone state"
+    export ZONES_BENCH_JOURNEY_ZONE_FEE_TOKEN="$ZONES_BENCH_PATHUSD"
+fi
 bootstrap_scenario="$neobank_specs/bootstrap-scenario.yml"
 portal_approval_scenario="$neobank_specs/l1-portal-approval-scenario.yml"
 zone_approval_scenario="$neobank_specs/zone-outbox-approvals-scenario.yml"
@@ -708,24 +714,62 @@ case "$ZONES_BENCH_NEOBANK_PRESET" in
         ;;
 esac
 
+pathusd_working_set_balance() {
+    local total=0 account balance
+    while IFS= read -r account; do
+        balance="$(cast call "$ZONES_BENCH_PATHUSD" 'balanceOf(address)(uint256)' \
+            "$account" --from "$account" --rpc-url "$ZONE_RPC_URL" | awk '{print $1}')"
+        [[ "$balance" =~ ^[0-9]+$ ]] || die "invalid PathUSD working-set balance"
+        total="$(bigint_eval "$total + $balance")"
+    done < <(jq -r '.[]' "$ZONES_BENCH_OUTPUT/accounts.json")
+    printf '%s\n' "$total"
+}
+if [[ "$ZONES_BENCH_NEOBANK_PRESET" == full-journey-pathusd-fees ]]; then
+    pathusd_before="$(pathusd_working_set_balance)"
+fi
+[[ -z "${ZONES_BENCH_SETTLEMENT_FILE:-}" || -n "${ZONES_BENCH_SETTLEMENT_START_FILE:-}" ]] ||
+    die "ZONES_BENCH_SETTLEMENT_FILE requires ZONES_BENCH_SETTLEMENT_START_FILE"
+metrics_url="${ZONES_BENCH_METRICS_URL:-http://127.0.0.1:9201/metrics}"
+# Optional prover-benchmark snapshot, after setup and before measured traffic.
+snapshot_metrics_before() {
+    [[ -n "${ZONES_BENCH_METRICS_BEFORE_FILE:-}" ]] || return 0
+    mkdir -p "$(dirname -- "$ZONES_BENCH_METRICS_BEFORE_FILE")"
+    curl --fail --silent --show-error "$metrics_url" >"$ZONES_BENCH_METRICS_BEFORE_FILE"
+    [[ -s "$ZONES_BENCH_METRICS_BEFORE_FILE" ]] ||
+        die "Zone metrics were empty before the measured private flow"
+}
+if [[ -n "${ZONES_BENCH_SETTLEMENT_START_FILE:-}" ]]; then
+    # Fix the setup height before waiting; ongoing empty blocks cannot extend it.
+    setup_tip="$(cast block-number --rpc-url "$ZONE_RPC_URL")"
+    [[ "$setup_tip" =~ ^[0-9]+$ ]] || die "could not read setup Zone height"
+    setup_deadline=$((SECONDS + ${ZONES_BENCH_SETUP_SETTLEMENT_TIMEOUT_SECS:-600}))
+    while :; do
+        setup_settled="$(read_l1_uint "$L1_PORTAL_ADDRESS" 'zoneHeight()(uint256)')"
+        (( 10#$setup_settled >= 10#$setup_tip )) && break
+        (( SECONDS < setup_deadline )) || die "setup Zone height did not settle before measurement"
+        sleep 1
+    done
+    mkdir -p "$(dirname -- "$ZONES_BENCH_SETTLEMENT_START_FILE")"
+    # Take the portal index, metrics, and start time together, retrying if a batch lands between
+    # them, so every batch counted by the settlement delta is also in the metric delta.
+    while :; do
+        settlement_start_index="$(read_l1_uint "$L1_PORTAL_ADDRESS" 'withdrawalBatchIndex()(uint64)')"
+        snapshot_metrics_before
+        settlement_started_at="$(date +%s)"
+        [[ "$(read_l1_uint "$L1_PORTAL_ADDRESS" 'withdrawalBatchIndex()(uint64)')" == "$settlement_start_index" ]] && break
+        (( SECONDS < setup_deadline )) || die "portal batches kept landing during the start snapshot"
+    done
+else
+    snapshot_metrics_before
+fi
 private_flow_parent_block="$(cast block-number --rpc-url "$ZONE_RPC_URL")"
 [[ "$private_flow_parent_block" =~ ^[0-9]+$ ]] ||
     die "could not read the Zone head before the measured private flow"
 if [[ -n "${ZONES_BENCH_SETTLEMENT_START_FILE:-}" ]]; then
-    mkdir -p "$(dirname -- "$ZONES_BENCH_SETTLEMENT_START_FILE")"
-    settlement_start_index="$(read_l1_uint "$L1_PORTAL_ADDRESS" 'withdrawalBatchIndex()(uint64)')"
-    jq -n --argjson batch_index "$settlement_start_index" --argjson timestamp "$(date +%s)" \
-        '{batch_index:$batch_index,timestamp:$timestamp}' \
+    jq -n --argjson batch_index "$settlement_start_index" --argjson timestamp "$settlement_started_at" \
+        --argjson setup_tip "$setup_tip" --argjson setup_settled "$setup_settled" \
+        '{batch_index:$batch_index,timestamp:$timestamp,setup_tip:$setup_tip,setup_settled:$setup_settled}' \
         >"$ZONES_BENCH_SETTLEMENT_START_FILE"
-fi
-# Optional prover-benchmark snapshot, after setup and before measured traffic.
-if [[ -n "${ZONES_BENCH_METRICS_BEFORE_FILE:-}" ]]; then
-    mkdir -p "$(dirname -- "$ZONES_BENCH_METRICS_BEFORE_FILE")"
-    curl --fail --silent --show-error \
-        "${ZONES_BENCH_METRICS_URL:-http://127.0.0.1:9201/metrics}" \
-        >"$ZONES_BENCH_METRICS_BEFORE_FILE"
-    [[ -s "$ZONES_BENCH_METRICS_BEFORE_FILE" ]] ||
-        die "Zone metrics were empty before the measured private flow"
 fi
 stage_start private_flow
 scenario_report_args=()
@@ -745,6 +789,39 @@ mkdir -p "$(dirname "$ZONES_BENCH_SPF_RANGE")"
     printf 'ZONES_BENCH_SPF_FROM_BLOCK=%s\n' "$((10#$private_flow_parent_block + 1))"
     printf 'ZONES_BENCH_SPF_TO_BLOCK=%s\n' "$((10#$private_flow_tip_block))"
 } >"$ZONES_BENCH_SPF_RANGE"
+if [[ -n "${ZONES_BENCH_SETTLEMENT_FILE:-}" ]]; then
+    workload_done_at="$(date +%s)"
+    settlement_deadline=$((SECONDS + 600))
+    while :; do
+        # Read both from one L1 block so the index and height describe the same portal state.
+        l1_block="$(cast block-number --rpc-url "$L1_RPC_URL")"
+        end_index="$(read_l1_uint "$L1_PORTAL_ADDRESS" 'withdrawalBatchIndex()(uint64)' --block "$l1_block")"
+        settled_height="$(read_l1_uint "$L1_PORTAL_ADDRESS" 'zoneHeight()(uint256)' --block "$l1_block")"
+        if (( 10#$end_index > 10#$settlement_start_index && 10#$settled_height >= 10#$private_flow_tip_block )); then
+            settled_at="$(date +%s)"
+            curl --fail --silent --show-error "$metrics_url" >"${ZONES_BENCH_METRICS_AFTER_FILE:?}"
+            [[ -s "$ZONES_BENCH_METRICS_AFTER_FILE" ]] || die "empty metrics after settlement"
+            jq -n --argjson before "$settlement_start_index" --argjson after "$end_index" \
+                --argjson started_at "$(jq -er .timestamp "$ZONES_BENCH_SETTLEMENT_START_FILE")" \
+                --argjson workload_done_at "$workload_done_at" --argjson settled_at "$settled_at" \
+                --argjson from "$((10#$private_flow_parent_block + 1))" \
+                --argjson tip "$private_flow_tip_block" --argjson settled "$settled_height" \
+                '{settled_batches:($after-$before),batch_index_before:$before,batch_index_after:$after,workload_from:$from,target_zone_height:$tip,settled_zone_height:$settled,started_at:$started_at,workload_done_at:$workload_done_at,settled_at:$settled_at}' \
+                >"$ZONES_BENCH_SETTLEMENT_FILE"
+            break
+        fi
+        (( SECONDS < settlement_deadline )) || die "measured Zone tip did not settle on L1"
+        sleep 1
+    done
+fi
+if [[ "$ZONES_BENCH_NEOBANK_PRESET" == full-journey-pathusd-fees ]]; then
+    pathusd_after="$(pathusd_working_set_balance)"
+    bigint_true "$pathusd_after < $pathusd_before" || die "measured journey did not spend seeded PathUSD"
+    jq -n --arg before "$pathusd_before" --arg after "$pathusd_after" \
+        --arg token "$ZONES_BENCH_PATHUSD" \
+        '{token:$token,balance_before:$before,balance_after:$after}' \
+        >"$ZONES_BENCH_OUTPUT/seeded-fee-balances.json"
+fi
 
 if [[ "$ZONES_BENCH_NEOBANK_PRESET" == "slippage-bounce" ]]; then
     stage_start slippage_postcondition

@@ -100,5 +100,22 @@
         "indexed": false
       }
     ]
+  },
+  {
+    "type":"event",
+    "name": "BatchFinalized",
+    "anonymous": false,
+    "inputs": [
+      {
+        "name": "withdrawalQueueHash",
+        "type": "bytes32",
+        "indexed": true
+      },
+      {
+        "name": "withdrawalBatchIndex",
+        "type": "uint64",
+        "indexed": false
+      }
+    ]
   }
 ]

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Restore the last successful benchmark commit from an Actions artifact.
-# Usage: bench-state.sh owner/repo replay|e2e state-key
+# Usage: bench-state.sh owner/repo replay|e2e|zones state-key
 # Requires GH_TOKEN with actions:read. State is scoped to GITHUB_REF_NAME (main
 # outside Actions). Missing/expired state bootstraps; API/corruption errors fail.
 set -euo pipefail
@@ -12,8 +12,8 @@ case "$series" in
   replay)
     case "$key" in mainnet|testnet) ;; *) echo "Invalid replay chain: $key" >&2; exit 1 ;; esac
     ;;
-  e2e)
-    [[ "$key" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "Invalid e2e state key: $key" >&2; exit 1; }
+  e2e|zones)
+    [[ "$key" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "Invalid $series state key: $key" >&2; exit 1; }
     key=${key,,}
     ;;
   *) echo "Invalid benchmark series: $series" >&2; exit 1 ;;
@@ -35,9 +35,11 @@ candidates=$(jq -r --arg name "$name" --arg branch "$branch" '
 while IFS=$'\t' read -r artifact_id run_id; do
   [[ -n "$artifact_id" ]] || continue
   run=$(gh api "repos/$repo/actions/runs/$run_id")
-  if ! jq -e --arg branch "$branch" --arg workflow "$workflow" '
-    .path == $workflow and .head_branch == $branch
-    and .status == "completed" and .conclusion == "success"
+  # Save jobs only upload state for a benchmark that passed, so the run's overall
+  # conclusion doesn't matter: another e2e scenario may have failed.
+  if ! jq -e --arg branch "$branch" --arg workflow "$workflow" --arg series "$series" '
+    (.path == $workflow or ($series == "zones" and .path == ".github/workflows/zones-benchmark.yml"))
+    and .head_branch == $branch and .status == "completed"
     and (.event == "schedule" or .event == "workflow_dispatch")
   ' <<< "$run" >/dev/null; then
     continue

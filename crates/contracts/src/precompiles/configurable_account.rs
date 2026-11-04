@@ -1,0 +1,81 @@
+pub use IConfigurableAccount::{
+    IConfigurableAccountErrors as ConfigurableAccountError,
+    IConfigurableAccountEvents as ConfigurableAccountEvent,
+};
+
+sol! {
+    /// Configurable account precompile.
+    #[derive(Debug, PartialEq, Eq)]
+    #[sol(abi)]
+    interface IConfigurableAccount {
+        struct ConfigurableAccountOwner {
+            address owner;
+            uint8 weight;
+        }
+
+        struct ConfigurableAccountConfig {
+            bytes32 salt;
+            uint64 version;
+            uint8 threshold;
+            ConfigurableAccountOwner[] owners;
+        }
+
+        event ConfigurableAccountConfigUpdated(
+            address indexed account,
+            bytes32 salt,
+            uint64 version,
+            uint8 threshold,
+            ConfigurableAccountOwner[] owners
+        );
+
+        event AccountUpgraded(
+            address indexed account,
+            bytes32 indexed commitment,
+            bytes32 salt,
+            uint8 threshold,
+            ConfigurableAccountOwner[] owners
+        );
+
+        function deriveAccount(bytes32 salt, uint8 threshold, ConfigurableAccountOwner[] calldata owners)
+            external
+            pure
+            returns (address account);
+        function getConfigCommitment(address account) external view returns (bytes32 commitment);
+        function updateConfig(
+            ConfigurableAccountConfig calldata current,
+            uint8 threshold,
+            ConfigurableAccountOwner[] calldata owners
+        ) external;
+        /// Migrates `msg.sender` using `threshold` and sorted `owners`, returning the stored hash.
+        /// Only a top-level call in a direct primitive-root transaction may invoke it.
+        function upgradeAccount(uint8 threshold, ConfigurableAccountOwner[] calldata owners)
+            external
+            returns (bytes32 commitment);
+
+        error InvalidAccount();
+        error InvalidConfig();
+        error InvalidThreshold();
+        error InvalidConfigurableAccountOwner();
+        error InvalidWeight();
+        error TooManyOwners();
+        error DuplicateOwner();
+        error InvalidOwnerOrder();
+        error UnauthorizedConfigurableAccountCaller();
+        error PrimitiveRootRequired();
+        error UpgradeMustBeDirectCall();
+        error AccountAlreadyConfigurable();
+        error AccountHasCode();
+    }
+}
+
+sol! {
+    /// Read-only methods executed at every registered configurable account address.
+    interface IConfigurableAccountShim {
+        /// Returns the ERC-1271 magic value for a valid current-owner witness.
+        function isValidSignature(bytes32 hash, bytes calldata signature) external view returns (bytes4);
+
+        /// Accepts ERC-721 safe transfers and safe mints.
+        function onERC721Received(address operator, address from, uint256 tokenId, bytes calldata data)
+            external view returns (bytes4);
+    }
+}

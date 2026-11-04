@@ -19,9 +19,13 @@ use alloy_primitives::{B256, Bytes, keccak256};
 use alloy_provider::{DynProvider, Provider as _};
 use alloy_rpc_types_eth::BlockNumberOrTag;
 use alloy_sol_types::{SolCall as _, SolInterface as _};
+#[cfg(feature = "fuzz")]
+use antithesis_sdk::assert_always;
 use eyre::{Context as _, OptionExt as _, Result, bail, ensure};
 use futures::{StreamExt as _, TryStreamExt as _, stream};
 use reth_primitives_traits::RecoveredBlock;
+#[cfg(feature = "fuzz")]
+use serde_json::json;
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::zones::{
@@ -450,8 +454,18 @@ async fn validate_candidate<P: ZoneSequencerProvider>(
         let spf_config = SpfConfig::new(context.config.chain_spec.clone());
         let output = tokio::task::spawn_blocking(move || prove_zone_batch(&spf_config, witness))
             .await
-            .context("SPF worker panicked")?
-            .context("SPF rejected generated witness")?;
+            .context("SPF worker panicked")?;
+        #[cfg(feature = "fuzz")]
+        assert_always!(
+            output.is_ok(),
+            "Native prover accepts the sequencer witness",
+            &json!({
+                "zone_from": job.from,
+                "zone_to": job.to,
+                "error": output.as_ref().err().map(|error| format!("{error:#}")),
+            })
+        );
+        let output = output.context("SPF rejected generated witness")?;
         (output, None)
     };
     metrics
@@ -459,7 +473,18 @@ async fn validate_candidate<P: ZoneSequencerProvider>(
         .record(started.elapsed().as_secs_f64());
 
     let started = Instant::now();
-    compare_output(&output, batch, batch.prev_block_hash)?;
+    let comparison = compare_output(&output, batch, batch.prev_block_hash);
+    #[cfg(feature = "fuzz")]
+    assert_always!(
+        comparison.is_ok(),
+        "Prover output matches the sequencer batch",
+        &json!({
+            "zone_from": job.from,
+            "zone_to": job.to,
+            "error": comparison.as_ref().err().map(|error| format!("{error:#}")),
+        })
+    );
+    comparison?;
     metrics
         .output_validation_duration_seconds
         .record(started.elapsed().as_secs_f64());

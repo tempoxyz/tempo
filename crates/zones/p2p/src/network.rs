@@ -24,10 +24,20 @@ pub(crate) const TRANSACTION_CHANNEL: u64 = 3;
 pub(crate) const SETTLEMENT_PROPOSAL_CHANNEL: u64 = 4;
 /// Follower-to-leader settlement signature channel.
 pub(crate) const SETTLEMENT_SIGNATURE_CHANNEL: u64 = 5;
+/// Deposit allowlist requests relayed to the quorum, and their responses.
+pub(crate) const ALLOWLIST_CHANNEL: u64 = 6;
 /// Commonware derives receive capacity from this burst size and the retained peer count.
 /// Forwarded transactions are retried from the sender's pool, so a small per-peer burst bounds
 /// memory before the transaction-specific wire limit can run without sacrificing eventual relay.
 pub(crate) const TRANSACTION_BURST: u32 = 4;
+
+/// Maximum deposit allowlist frame accepted from a peer. A receiver blocks a peer that sends a
+/// larger frame.
+pub(crate) const MAX_ALLOWLIST_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
+
+/// Largest allowlist request or response payload that fits in one frame after its header.
+pub const MAX_ALLOWLIST_PAYLOAD_SIZE: usize =
+    MAX_ALLOWLIST_MESSAGE_SIZE - crate::protocol::ALLOWLIST_HEADER_LEN;
 
 /// Maximum raw EIP-2718 transaction frame accepted from another sequencer.
 ///
@@ -201,6 +211,16 @@ pub(crate) fn backfill_response_quota() -> Quota {
 
 pub(crate) fn transaction_quota() -> Quota {
     Quota::per_second(NZU32!(1024)).allow_burst(NZU32!(TRANSACTION_BURST))
+}
+
+/// Allowlist frames a receiver accepts from one peer per second, and in one burst.
+pub(crate) const ALLOWLIST_FRAMES_PER_SECOND: u32 = 16;
+pub(crate) const ALLOWLIST_FRAME_BURST: u32 = 4;
+
+/// Allowlist requests are operator calls that each wait for every quorum member's response.
+pub(crate) fn allowlist_quota() -> Quota {
+    Quota::per_second(NZU32!(ALLOWLIST_FRAMES_PER_SECOND))
+        .allow_burst(NZU32!(ALLOWLIST_FRAME_BURST))
 }
 
 /// ACKs are small fixed-shape EIP-712 statements plus one secp256k1 signature.

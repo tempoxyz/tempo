@@ -42,18 +42,15 @@ impl AttemptError {
     }
 }
 
-/// Decode a known event and reject a non-canonical ABI representation.
+/// Decode a known event, rejecting a malformed or non-canonical ABI representation.
 pub(crate) fn decode_event<E: alloy_sol_types::SolEvent>(
     log: &alloy_primitives::Log,
     name: &str,
     block: u64,
 ) -> eyre::Result<E> {
-    let event = E::decode_log_validate(log)
+    let config = alloy_sol_types::abi::AbiDecoderConfig::new().strict(true);
+    let event = E::decode_log_with_config(log, config)
         .wrap_err_with(|| format!("malformed {name} in block {block}"))?;
-    eyre::ensure!(
-        event.data.encode_log_data() == log.data,
-        "non-canonical {name} encoding in block {block}"
-    );
     Ok(event.data)
 }
 

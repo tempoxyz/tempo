@@ -3,7 +3,6 @@
 mod error;
 
 use alloy_consensus::{BlockHeader, Transaction, transaction::TxHashRef};
-use alloy_evm::block::BlockExecutionResult;
 pub use error::TempoConsensusError;
 use reth_chainspec::EthChainSpec;
 use reth_consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator, ReceiptRootBloom};
@@ -12,6 +11,7 @@ use reth_consensus_common::validation::{
     validate_against_parent_gas_limit, validate_against_parent_hash_number,
 };
 use reth_ethereum_consensus::EthBeaconConsensus;
+use reth_execution_types::BlockExecutionResult;
 use reth_primitives_traits::{RecoveredBlock, SealedBlock, SealedHeader};
 use std::sync::Arc;
 use tempo_chainspec::{
@@ -252,8 +252,8 @@ where
 mod tests {
     use super::*;
     use alloy_consensus::{
-        Header, Signed, TxLegacy, constants::EMPTY_ROOT_HASH, proofs::calculate_transaction_root,
-        transaction::TxHashRef,
+        Header, SignableTransaction, TxLegacy, constants::EMPTY_ROOT_HASH,
+        proofs::calculate_transaction_root, transaction::TxHashRef,
     };
     use alloy_genesis::Genesis;
     use alloy_primitives::{Address, B256, Signature, TxKind, U256};
@@ -395,7 +395,7 @@ mod tests {
             input: Default::default(),
         };
         let signature = Signature::new(U256::ZERO, U256::ZERO, false);
-        TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, signature))
+        TempoTxEnvelope::Legacy(tx.into_signed(signature))
     }
 
     fn create_tx(chain_id: u64) -> TempoTxEnvelope {
@@ -408,7 +408,7 @@ mod tests {
             value: U256::from(100),
             input: Default::default(),
         };
-        TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, Signature::test_signature()))
+        TempoTxEnvelope::Legacy(tx.into_signed(Signature::test_signature()))
     }
 
     #[test]
@@ -979,7 +979,7 @@ mod tests {
             input: Default::default(),
         };
         let signature = Signature::new(U256::ZERO, U256::ZERO, false);
-        let invalid_system_tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, signature));
+        let invalid_system_tx = TempoTxEnvelope::Legacy(tx.into_signed(signature));
         let tx_hash = *invalid_system_tx.tx_hash();
 
         let header = TestHeaderBuilder::default()

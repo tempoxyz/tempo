@@ -1,3 +1,4 @@
+use crate::samples::percentile_rank;
 use std::{collections::BTreeMap, time::Duration};
 use tracing::debug;
 
@@ -41,17 +42,6 @@ fn remove_count<T: Copy + Ord>(counts: &mut BTreeMap<T, usize>, value: T) {
     if *count == 0 {
         counts.remove(&value);
     }
-}
-
-fn percentile_rank(len: usize, numerator: usize, denominator: usize) -> Option<usize> {
-    debug_assert!(numerator > 0);
-    debug_assert!(denominator > 0);
-    debug_assert!(numerator <= denominator);
-
-    if len == 0 {
-        return None;
-    }
-    Some((len * numerator).div_ceil(denominator))
 }
 
 fn percentile_from_counts<T: Copy + Ord>(
@@ -139,7 +129,7 @@ impl ValidationLatencyEstimate {
 /// reserving validator headroom when the builder grows beyond the workloads
 /// that produced the feedback.
 #[derive(Clone, Debug, Default)]
-pub struct ValidationLatencyEstimator {
+pub(crate) struct ValidationLatencyEstimator {
     /// Samples are kept in id order for retention; count maps are keyed by
     /// observed values so estimate snapshots can read percentiles without
     /// sorting.
@@ -190,7 +180,7 @@ impl ValidationLatencyEstimator {
     }
 
     /// Records local time spent validating a block through the execution layer.
-    pub fn observe(
+    pub(crate) fn observe(
         &mut self,
         sample_id: u64,
         workload: ValidationLatencyWorkload,
@@ -218,7 +208,7 @@ impl ValidationLatencyEstimator {
     /// `None` means this node has not yet observed any successful validations.
     /// Callers should fall back to their conservative validator-work estimate in
     /// that case.
-    pub fn estimate(&self) -> Option<ValidationLatencyEstimate> {
+    pub(crate) fn estimate(&self) -> Option<ValidationLatencyEstimate> {
         let sample_count = self.sample_window.len();
         let p90_elapsed = percentile_from_counts(&self.elapsed_counts, sample_count, 9, 10)?;
         Some(ValidationLatencyEstimate {

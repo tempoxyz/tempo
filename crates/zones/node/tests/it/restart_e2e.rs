@@ -417,7 +417,7 @@ async fn test_batch_only_restart_no_withdrawals() -> eyre::Result<()> {
     let _seq2 = spawn_sequencer(&l1, &zone, portal_address, l1.dev_signer()).await;
 
     // Wait for more zone blocks to be produced and batched
-    // The zone produces blocks as L1 blocks arrive (every 500ms in dev mode),
+    // The zone produces blocks as L1 blocks arrive (every 250ms in dev mode),
     // so just waiting a bit should produce new blocks to batch.
     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 

@@ -1,7 +1,7 @@
 [package]
 name = "zone-l1"
 description = "Tempo Zone L1 subscription, deposit queue, and L1 state cache"
-version = "0.3.5"
+version = "0.4.0"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -21,6 +21,8 @@ tempo-contracts = { workspace = true, features = ["std", "serde", "rpc"] }
 tempo-primitives.workspace = true
 
 # reth
+# Only to enable its `account-ext` feature.
+reth-evm.workspace = true
 reth-metrics.workspace = true
 reth-primitives-traits.workspace = true
 reth-provider.workspace = true

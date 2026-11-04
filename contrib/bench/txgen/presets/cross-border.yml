@@ -1,0 +1,179 @@
+# Cross-border: remittance, global payouts and payroll. Weights are gas shares,
+# proposed from the cross-border pillar's traffic shape rather than any one
+# deployment's traffic.
+#
+#   flow        gas  template            what it models
+#   Bridge in    20  bridge_deposit      funds arriving from another chain: a sponsored
+#                                        approve + depositWithId into the bridge fixture
+#   Bridge out   15  bridge_payout       payout leaving to another chain: operator withdrawV2
+#   FX           15  dex_swap            corridor FX conversion on the stablecoin DEX
+#   Payout       20  corridor_payout     one remittance payout with a memo to an existing account
+#   Payroll      20  payroll_batch       one treasury transaction paying 32 existing accounts
+#   New payee    10  payroll_new_batch   one treasury transaction paying 8 fresh addresses
+#
+# Reuses bridge-mix's fixture (bridge contract, 8 operators, payout liquidity) and
+# dex/walls.yml's liquidity. Payroll comes from a 16-account treasury (users[0..16))
+# with expiring nonces; 32 calls is the txpool's limit per Tempo transaction, and fresh
+# payees create a balance slot each (~262K gas), so their batches stay at 8.
+#
+# Gaps:
+# - The bridge is bridge-mix's minimal stand-in: no message passing, attestation or
+#   ERC-4337 deposit bundles.
+# - Payout, FX and bridge-out are independent transactions, not one corridor journey
+#   per customer (txgen mixes templates at random).
+# - Off-ramp and compliance screening happen off-chain.
+# Requires T12+ (expiring nonces) and nonzero state bloat (existing recipients).
+include:
+  - bridge-mix.yml
+  - dex/walls.yml
+
+accounts:
+  # users[0..16): payroll treasury, faucet-funded with the other pools.
+  treasury:
+    mnemonic: "test test test test test test test test test test test junk"
+    range:
+      - 0
+      - 16
+
+address_pools:
+  existing_recipients:
+    fast:
+      seed: "test test test test test test test test test test test junk"
+      range:
+        - ${TXGEN_EXISTING_RECIPIENTS_START}
+        - ${TXGEN_EXISTING_RECIPIENTS_END}
+
+templates:
+  dex_swap:
+    type: tempo
+    from: {pool: users, select: random}
+    gas_limit: 8000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    nonce: { uniform: [0, 9223372036854775807] } # TIP-1106, requires T12+
+    valid_for_secs: 25
+    call:
+      to: "0xdec0000000000000000000000000000000000000"
+      abi: StablecoinDEX
+      function: swapExactAmountIn
+      args:
+        vars:
+          base_token:
+            choice:
+              - "0x20c0000000000000000000000000000000000001"
+              - "0x20c0000000000000000000000000000000000002"
+              - "0x20c0000000000000000000000000000000000003"
+          base_to_quote:
+            choice: [true, false]
+        values:
+          - if:
+              cond: { var: base_to_quote }
+              then: { var: base_token }
+              else: "0x20c0000000000000000000000000000000000000"
+          - if:
+              cond: { var: base_to_quote }
+              then: "0x20c0000000000000000000000000000000000000"
+              else: { var: base_token }
+          # 1-5 tokens per swap, so the 10,000-token walls last ~2,000 swaps per side.
+          - uniform: [1000000, 5000000]
+          - 0
+  corridor_payout:
+    type: tempo
+    from: {pool: users, select: random}
+    gas_limit: 300000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    nonce: { uniform: [0, 9223372036854775807] } # TIP-1106, requires T12+
+    valid_for_secs: 25
+    call:
+      to: "0x20c0000000000000000000000000000000000000"
+      abi: ERC20
+      function: transferWithMemo
+      args:
+        - {address_pool: {pool: existing_recipients, select: random}}
+        - 1
+        - random_bytes: 32
+  payroll_batch:
+    type: tempo
+    from: {pool: treasury, select: random}
+    gas_limit: 1200000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    nonce: { uniform: [0, 9223372036854775807] } # TIP-1106, requires T12+
+    valid_for_secs: 25
+    calls:
+      - &pay_existing
+        to: "0x20c0000000000000000000000000000000000000"
+        abi: ERC20
+        function: transfer
+        args:
+          - {address_pool: {pool: existing_recipients, select: random}}
+          - 1
+      - *pay_existing
+      - *pay_existing
+      - *pay_existing
+      - *pay_existing
+      - *pay_existing
+      - *pay_existing
+      - *pay_existing
+      - *pay_existing
+      - *pay_existing
+      - *pay_existing
+      - *pay_existing
+      - *pay_existing
+      - *pay_existing
+      - *pay_existing
+      - *pay_existing
+      - *pay_existing
+      - *pay_existing
+      - *pay_existing
+      - *pay_existing
+      - *pay_existing
+      - *pay_existing
+      - *pay_existing
+      - *pay_existing
+      - *pay_existing
+      - *pay_existing
+      - *pay_existing
+      - *pay_existing
+      - *pay_existing
+      - *pay_existing
+      - *pay_existing
+      - *pay_existing
+  payroll_new_batch:
+    type: tempo
+    from: {pool: treasury, select: random}
+    gas_limit: 2800000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    nonce: { uniform: [0, 9223372036854775807] } # TIP-1106, requires T12+
+    valid_for_secs: 25
+    calls:
+      - &pay_new
+        to: "0x20c0000000000000000000000000000000000000"
+        abi: ERC20
+        function: transfer
+        args:
+          - random
+          - 1
+      - *pay_new
+      - *pay_new
+      - *pay_new
+      - *pay_new
+      - *pay_new
+      - *pay_new
+      - *pay_new
+
+mix:
+  - template: bridge_deposit
+    weight: 20
+  - template: bridge_payout
+    weight: 15
+  - template: dex_swap
+    weight: 15
+  - template: corridor_payout
+    weight: 20
+  - template: payroll_batch
+    weight: 20
+  - template: payroll_new_batch
+    weight: 10

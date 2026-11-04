@@ -11,7 +11,9 @@ use std::{
 use crate::network_identity::NetworkIdentity;
 use commonware_cryptography::ed25519::PublicKey;
 use eyre::Context;
+use tempo_chainspec::{TempoChainSpec, TempoHardforks as _};
 use tempo_consensus_config::{SigningKey, SigningKeyPassphrase};
+use tempo_payload_types::estimator::{DEFAULT_NETWORK_BUDGET, DEFAULT_TARGET_BLOCK_TIME};
 
 const DEFAULT_MAX_MESSAGE_SIZE_BYTES: u32 =
     reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE as u32;
@@ -31,10 +33,23 @@ const GOSSIP_ROUTE_QUEUE: usize = 256;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum VerificationMode {
     /// Complete application verification before voting to notarize.
-    #[default]
     Immediate,
     /// Defer completion of application verification until voting to finalize.
     Deferred,
+    /// Follow T14 at the previous epoch boundary: deferred at or after activation.
+    #[default]
+    Hardfork,
+}
+
+impl VerificationMode {
+    /// Resolves the policy using the previous epoch boundary timestamp (genesis for epoch zero).
+    pub(crate) fn is_deferred_at(self, chainspec: &TempoChainSpec, timestamp: u64) -> bool {
+        match self {
+            Self::Immediate => false,
+            Self::Deferred => true,
+            Self::Hardfork => chainspec.is_t14_active_at_timestamp(timestamp),
+        }
+    }
 }
 
 impl std::fmt::Display for VerificationMode {
@@ -42,19 +57,21 @@ impl std::fmt::Display for VerificationMode {
         f.write_str(match self {
             Self::Immediate => "immediate",
             Self::Deferred => "deferred",
+            Self::Hardfork => "hardfork",
         })
     }
 }
 
 impl clap::ValueEnum for VerificationMode {
     fn value_variants<'a>() -> &'a [Self] {
-        &[Self::Immediate, Self::Deferred]
+        &[Self::Immediate, Self::Deferred, Self::Hardfork]
     }
 
     fn to_possible_value(&self) -> Option<clap::builder::PossibleValue> {
         Some(clap::builder::PossibleValue::new(match self {
             Self::Immediate => "immediate",
             Self::Deferred => "deferred",
+            Self::Hardfork => "hardfork",
         }))
     }
 }
@@ -125,6 +142,10 @@ pub struct Args {
     pub worker_threads: usize,
 
     /// When to complete application verification of proposed blocks.
+    ///
+    /// Hardfork uses the previous epoch boundary timestamp (genesis for epoch zero):
+    /// immediate before T14, deferred from T14.
+    /// Immediate and deferred override the schedule.
     #[arg(long = "consensus.verification-mode", value_enum, default_value_t)]
     pub verification_mode: VerificationMode,
 
@@ -158,10 +179,10 @@ pub struct Args {
 
     /// Target wall-clock time between blocks in healthy network conditions.
     ///
-    /// Local proposal work is paced against this value minus
-    /// `--consensus.network-budget`. Time spent fetching the parent in
-    /// commonware is not deducted from this budget.
-    #[arg(long = "consensus.target-block-time", default_value = "550ms")]
+    /// Local proposal work is paced against this value minus an adaptive network
+    /// reservation. Long preparation can shorten the allowance; required work
+    /// may overrun it. An injected estimator overrides these timing flags.
+    #[arg(long = "consensus.target-block-time", default_value = format!("{}ms", DEFAULT_TARGET_BLOCK_TIME.as_millis()))]
     pub target_block_time: PositiveDuration,
 
     /// Maximum amount of time to wait for the leader's proposal before timing
@@ -201,11 +222,14 @@ pub struct Args {
     )]
     pub inactive_time_before_leader_skip: PositiveDuration,
 
-    /// Time reserved for proposal propagation before the target block boundary.
+    /// Initial and minimum network reservation before the target block boundary.
     ///
-    /// The remaining `target-block-time - network-budget` is the local proposal
-    /// return budget used by consensus and the payload builder.
-    #[arg(long = "consensus.network-budget", default_value = "50ms")]
+    /// Must be smaller than `--consensus.target-block-time`. The reservation
+    /// adapts from finalized successors, capped at this floor plus half the
+    /// initial allowance, at most 300 ms unless the floor is already larger.
+    /// It includes propagation, voting, unprojected validation and preparation.
+    /// An injected estimator overrides this flag and the target block time.
+    #[arg(long = "consensus.network-budget", default_value = format!("{}ms", DEFAULT_NETWORK_BUDGET.as_millis()))]
     pub network_budget: PositiveDuration,
 
     /// Deprecated compatibility flag. Ignored by the elastic proposal budget.
@@ -615,7 +639,9 @@ mod tests {
     use clap::Parser as _;
     use commonware_codec::Encode as _;
 
-    use super::{Args, PositiveDuration, VerificationMode};
+    use super::*;
+    use reth_ethereum::chainspec::ForkCondition;
+    use tempo_chainspec::TempoHardfork;
 
     const SIGNING_KEY_HEX: &str =
         "0x7848b5d711bc9883996317a3f9c90269d56771005d540a19184939c9e8d0db2a";
@@ -654,30 +680,32 @@ mod tests {
     }
 
     #[test]
-    fn verification_mode_defaults_to_immediate() {
+    fn verification_mode_defaults_to_hardfork() {
         assert_eq!(
             parse(&["--dev"]).consensus.verification_mode,
-            VerificationMode::Immediate,
+            VerificationMode::Hardfork,
         );
     }
 
     #[test]
-    fn verification_mode_parses() {
-        for (value, expected) in [
-            ("immediate", VerificationMode::Immediate),
-            ("deferred", VerificationMode::Deferred),
-        ] {
-            assert_eq!(
-                parse(&["--dev", "--consensus.verification-mode", value])
-                    .consensus
-                    .verification_mode,
-                expected,
-            );
+    fn verification_mode_resolves_t14_and_overrides() {
+        for mut chainspec in [TempoChainSpec::mainnet(), TempoChainSpec::moderato()] {
+            chainspec.inner.hardforks.remove(&TempoHardfork::T14);
+            // An unscheduled fork keeps the original immediate verification policy.
+            assert!(!VerificationMode::Hardfork.is_deferred_at(&chainspec, u64::MAX));
+            chainspec
+                .inner
+                .hardforks
+                .insert(TempoHardfork::T14, ForkCondition::Timestamp(100));
+            for (timestamp, deferred) in [(99, false), (100, true), (101, true)] {
+                assert_eq!(
+                    VerificationMode::Hardfork.is_deferred_at(&chainspec, timestamp),
+                    deferred
+                );
+                assert!(!VerificationMode::Immediate.is_deferred_at(&chainspec, timestamp));
+                assert!(VerificationMode::Deferred.is_deferred_at(&chainspec, timestamp));
+            }
         }
-        assert!(
-            TestCli::try_parse_from(["test", "--dev", "--consensus.verification-mode", "invalid",])
-                .is_err()
-        );
     }
 
     #[test]

@@ -1,7 +1,7 @@
 [package]
 name = "zone-sequencer"
 description = "Tempo Zone sequencer settlement and withdrawal tasks"
-version = "0.3.5"
+version = "0.4.0"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -27,6 +27,7 @@ zone-spf.workspace = true
 
 # reth
 reth-chain-state.workspace = true
+reth-chainspec.workspace = true
 reth-metrics.workspace = true
 reth-primitives-traits.workspace = true
 reth-storage-api.workspace = true
@@ -54,6 +55,7 @@ metrics.workspace = true
 parking_lot.workspace = true
 serde = { workspace = true, features = ["alloc"] }
 serde_json = { workspace = true, default-features = true }
+antithesis_sdk = { workspace = true, optional = true }
 schnellru.workspace = true
 tempfile.workspace = true
 tokio.workspace = true
@@ -68,3 +70,6 @@ serde_json = { workspace = true, default-features = true }
 tokio-tungstenite.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 zone-chainspec = { workspace = true, features = ["test-utils"] }
+
+[features]
+fuzz = ["dep:antithesis_sdk", "antithesis_sdk/full"]

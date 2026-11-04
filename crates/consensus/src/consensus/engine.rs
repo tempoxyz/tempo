@@ -19,7 +19,6 @@ use commonware_runtime::{
     BufferPooler, Clock, ContextCell, Handle, Metrics, Network, Spawner, Storage,
     buffer::paged::CacheRef, spawn_cell,
 };
-use commonware_utils::NZUsize;
 use eyre::{OptionExt as _, WrapErr as _, ensure};
 use rand_core::{CryptoRng, Rng};
 use tempo_node::TempoFullNode;
@@ -41,8 +40,6 @@ use super::block::Block;
 /// To better support peers near tip during network instability, we multiply
 /// the consensus activity timeout by this factor.
 const SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER: u64 = 10;
-// Ensure the marshal delivers blocks sequentially.
-const MAX_PENDING_ACKS: NonZeroUsize = NZUsize!(1);
 
 /// Settings for [`Engine`].
 ///
@@ -82,11 +79,9 @@ pub struct Builder<TBlocker, TPeerManager> {
     /// Leader inactivity window after which a view is skipped early. Must
     /// exceed `time_to_collect_notarizations` and `time_to_retry_nullify_broadcast`.
     pub inactive_time_before_leader_skip: Duration,
-    /// Local proposal return budget after reserving network propagation time.
-    ///
-    /// The leader uses this window for proposal preparation, payload building,
-    /// and pacing after commonware has fetched the parent.
-    pub proposal_return_budget: Duration,
+    /// Proposal pacing with learned network reservations and shared execution feedback.
+    /// Allowances pace returns, not time out required payload work.
+    pub estimator: tempo_payload_types::Estimator,
     pub fcu_heartbeat_interval: Duration,
 
     pub feed_state: crate::feed::FeedStateHandle,
@@ -154,6 +149,25 @@ where
 
         let scheme_provider = SchemeProvider::new();
 
+        // The executor acknowledges finalized blocks only once the execution
+        // layer durably persisted them, which reth does in batches. Reth holds
+        // up to `persistence_backpressure_threshold + memory_block_buffer_target`
+        // unpersisted canonical blocks in memory before it stops processing
+        // engine requests, so marshal may dispatch as many unacknowledged
+        // blocks. Acknowledgements cannot stall with the queue full: reth's
+        // config validation requires this depth to exceed
+        // `persistence_threshold`, which must be crossed for reth to persist
+        // at all, and that in turn to exceed
+        // `memory_block_buffer_target + num_state_masking_blocks`, by which
+        // the durable frontier trails the head after a persistence run.
+        let engine_args = &execution_node.config.engine;
+        let max_pending_acks = engine_args
+            .persistence_backpressure_threshold()
+            .checked_add(engine_args.memory_block_buffer_target())
+            .and_then(|acks| usize::try_from(acks).ok())
+            .and_then(NonZeroUsize::new)
+            .ok_or_eyre("execution layer persistence settings yield no valid marshal ack depth")?;
+
         let alias::marshal::Initialized {
             actor: marshal,
             mailbox: marshal_mailbox,
@@ -171,7 +185,7 @@ where
                     self.views_to_track
                         .saturating_mul(SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER),
                 ),
-                max_pending_acks: MAX_PENDING_ACKS,
+                max_pending_acks,
                 finalized_blocks_retention: self.finalized_blocks_retention,
                 epoch_strategy: epoch_strategy.clone(),
                 scheme_provider: scheme_provider.clone(),
@@ -273,6 +287,7 @@ where
                 marshal: marshal_mailbox.clone(),
                 namespace: crate::config::NAMESPACE.to_vec(),
                 me: self.signer.clone(),
+                blocker: self.blocker.clone(),
                 partition_prefix: format!("{}_dkg_manager", self.partition_prefix),
             },
         )
@@ -288,20 +303,20 @@ where
                 node: execution_node.clone(),
                 executed_state: self.executed_state.clone(),
             },
-            proposal_return_budget: self.proposal_return_budget,
+            estimator: self.estimator.clone(),
             epoch_strategy: epoch_strategy.clone(),
         });
-        let application = application::Marshaled::new(
-            context.child("application"),
+        let application = application::Factory::new(
+            &context,
             application,
             marshal_mailbox.clone(),
             epoch_strategy.clone(),
+            execution_node.chain_spec(),
             self.verification_mode,
         );
 
         let epoch_manager_config = epoch::manager::Config {
             application,
-            verification_mode: self.verification_mode,
             execution_node: execution_node.clone(),
             blocker: self.blocker.clone(),
             page_cache: page_cache_ref,
@@ -369,7 +384,7 @@ where
     broadcast: buffered::Engine<TContext, PublicKey, Block, peer_manager::Mailbox>,
     broadcast_mailbox: buffered::Mailbox<PublicKey, Block>,
 
-    dkg_manager: dkg::manager::Actor<TContext>,
+    dkg_manager: dkg::manager::Actor<TContext, TBlocker>,
     dkg_manager_mailbox: dkg::manager::Mailbox,
 
     /// Responsible for keeping the consensus layer state and execution layer
@@ -551,6 +566,7 @@ where
             self.broadcast_mailbox,
             resolver,
         );
+
         let (epoch_manager, epoch_manager_mailbox) = epoch::manager::init(
             self.context.child("epoch_manager"),
             self.epoch_manager_config,

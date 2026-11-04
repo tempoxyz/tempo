@@ -11,7 +11,10 @@
 //! - Supports both single-slot primitives and multi-slot types (structs, arrays)
 //! - Element at index `i` starts at slot `data_start + i * T::SLOTS`
 
-use alloy::primitives::{Address, U256};
+use alloy::{
+    primitives,
+    primitives::{Address, U256},
+};
 use std::ops::{Index, IndexMut};
 
 use crate::{
@@ -397,7 +400,7 @@ fn load_checked_len<S: StorageOps>(storage: &S, slot: U256) -> Result<usize> {
 /// For Solidity compatibility, dynamic array data is stored at `keccak256(len_slot)`.
 #[inline]
 pub(crate) fn calc_data_slot(len_slot: U256) -> U256 {
-    U256::from_be_bytes(alloy::primitives::keccak256(len_slot.to_be_bytes::<32>()).0)
+    primitives::keccak256(len_slot.to_be_bytes::<32>()).into()
 }
 
 /// Clears storage occupied exclusively by `Vec` elements in the index range `[from, to)`.

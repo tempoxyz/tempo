@@ -7,11 +7,11 @@ variable "VERGEN_GIT_SHA_SHORT" {
 }
 
 group "default" {
-  targets = ["tempo", "tempo-devnet", "tempo-localnet", "tempo-sidecar", "tempo-xtask"]
+  targets = ["tempo", "tempo-devnet", "tempo-localnet", "tempo-xtask"]
 }
 
 group "nightly" {
-  targets = ["tempo", "tempo-devnet", "tempo-localnet", "tempo-sidecar", "tempo-xtask"]
+  targets = ["tempo", "tempo-devnet", "tempo-localnet", "tempo-xtask", "tempo-fuzz"]
 }
 
 target "docker-metadata" {}
@@ -58,12 +58,17 @@ target "tempo-localnet" {
   target = "tempo-localnet"
 }
 
-target "tempo-sidecar" {
-  inherits = ["_common", "docker-metadata"]
-  target = "tempo-sidecar"
-}
-
 target "tempo-xtask" {
   inherits = ["_common", "docker-metadata"]
   target = "tempo-xtask"
+}
+
+# tempo with the corpus and fuzz features, for corpus replay and fuzzing jobs. Built only
+# with the nightly and pushed as tempo:fuzz, so production images keep their features.
+target "tempo-fuzz" {
+  inherits = ["_common", "docker-metadata"]
+  target = "tempo"
+  args = {
+    RUST_FEATURES = "asm-keccak,jemalloc,otlp,corpus,fuzz"
+  }
 }

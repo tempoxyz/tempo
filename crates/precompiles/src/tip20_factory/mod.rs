@@ -24,11 +24,6 @@ use tracing::trace;
 /// Number of reserved addresses (0 to RESERVED_SIZE-1) that cannot be deployed via factory
 const RESERVED_SIZE: u64 = 1024;
 
-/// TIP20 token address prefix (12 bytes): 0x20C000000000000000000000
-const TIP20_PREFIX_BYTES: [u8; 12] = [
-    0x20, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-];
-
 /// Factory contract for deploying new TIP-20 tokens at deterministic addresses.
 ///
 /// Tokens are deployed at `TIP20_PREFIX || keccak256(sender, salt)[..8]`.
@@ -41,20 +36,10 @@ pub struct TIP20Factory {}
 
 /// Computes the deterministic TIP20 address from sender and salt.
 /// Returns the address and the lower bytes used for derivation.
-pub(crate) fn compute_tip20_address(sender: Address, salt: B256) -> (Address, u64) {
+pub fn compute_tip20_address(sender: Address, salt: B256) -> (Address, u64) {
     let hash = keccak256((sender, salt).abi_encode());
-
-    // Take first 8 bytes of hash as lower bytes
-    let mut padded = [0u8; 8];
-    padded.copy_from_slice(&hash[..8]);
-    let lower_bytes = u64::from_be_bytes(padded);
-
-    // Construct the address: TIP20_PREFIX (12 bytes) || hash[..8] (8 bytes)
-    let mut address_bytes = [0u8; 20];
-    address_bytes[..12].copy_from_slice(&TIP20_PREFIX_BYTES);
-    address_bytes[12..].copy_from_slice(&hash[..8]);
-
-    (Address::from(address_bytes), lower_bytes)
+    let id = u64::from_be_bytes(hash[..8].try_into().expect("8 bytes"));
+    (Address::new_tip20(id), id)
 }
 
 // Precompile functions
@@ -239,12 +224,8 @@ impl TIP20Factory {
             }
         }
 
-        // Validate that the address is within the reserved range
-        // Reserved addresses have their last 8 bytes represent a value < RESERVED_SIZE
-        let mut padded = [0u8; 8];
-        padded.copy_from_slice(&address.as_slice()[12..]);
-        let lower_bytes = u64::from_be_bytes(padded);
-        if lower_bytes >= RESERVED_SIZE {
+        // Validate that the address is within the reserved range (TIP-20 ID < RESERVED_SIZE)
+        if address.tip20_id().is_none_or(|id| id >= RESERVED_SIZE) {
             return Err(TempoPrecompileError::TIP20Factory(
                 TIP20FactoryError::address_not_reserved(),
             ));

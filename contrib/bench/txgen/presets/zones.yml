@@ -6,7 +6,9 @@ gas:
 accounts:
   users:
     mnemonic: "test test test test test test test test test test test junk"
-    range: [0, "${TXGEN_ACCOUNTS}"]
+    range:
+      - 0
+      - ${TXGEN_ACCOUNTS}
   deployer:
     mnemonic: "test test test test test test test test test test test junk"
     index: 100001
@@ -23,10 +25,13 @@ setup:
         from: {pool: deployer, select: {index: 0}}
         artifact: SettlementFixture
         gas_limit: 5000000
+    # The helper gives portal i CREATE2 salt i and its own 2D nonce lane (key i + 1), shared
+    # with its funding step, so portals deploy in parallel from one sender.
     - id: portal
       deploy:
-        type: eip1559
+        type: tempo
         from: {pool: deployer, select: {index: 0}}
+        fee_token: "0x20c0000000000000000000000000000000000000"
         artifact: PortalFixture
         gas_limit: 10000000
         constructor_args: [null, "0x20c0000000000000000000000000000000000000", {var: setup.settlement.address}]
@@ -45,7 +50,10 @@ templates:
   zone_deposit:
     type: tempo
     from: {pool: users, select: {index: 0}}
-    gas_limit: 5000000
+    # ~160K used warm; a portal's first deposit creates its cursor slots and peaks near 2M before
+    # refunds (a revert would leave it cold). The general lane admits a transaction only while
+    # used gas plus its limit fits, so oversized limits strand capacity.
+    gas_limit: 2500000
     fee_token: "0x20c0000000000000000000000000000000000000"
     calls:
       - to: {var: setup.portal.address}
@@ -67,7 +75,7 @@ templates:
   zone_withdraw:
     type: tempo
     from: {pool: users, select: {index: 0}}
-    gas_limit: 5000000
+    gas_limit: 2500000 # ~160K used warm; see zone_deposit
     fee_token: "0x20c0000000000000000000000000000000000000"
     calls:
       - to: {var: setup.settlement.address}

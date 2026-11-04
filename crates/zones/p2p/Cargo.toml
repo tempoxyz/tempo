@@ -2,7 +2,7 @@
 name = "zone-p2p"
 description = "Static authenticated P2P networking for Tempo Zones"
 readme = "README.md"
-version = "0.3.5"
+version = "0.4.0"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
