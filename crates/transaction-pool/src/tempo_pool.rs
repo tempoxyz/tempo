@@ -128,7 +128,7 @@ where
 
     /// Takes out the transactions that on-chain changes invalidated or may have invalidated.
     ///
-    /// Runs [`Invalidations::verdict`] on every pooled transaction: those it finds invalid are
+    /// Runs `Invalidations::verdict` on every pooled transaction: those it finds invalid are
     /// evicted, and those it finds in need of revalidation are removed for the caller to validate
     /// and re-add.
     pub fn evict_invalidated_transactions(

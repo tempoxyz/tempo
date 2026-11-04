@@ -3,7 +3,7 @@
 //! Pool maintenance feeds [`Invalidations`] a committed chain segment and checks the whole pool;
 //! the payload builder's [`StateAwareBestTransactions`](crate::StateAwareBestTransactions) feeds
 //! it each transaction it executes, seeded with the blocks maintenance has not processed yet, and
-//! checks every candidate. Both ask [`Invalidations::verdict`], which reads no state: it compares
+//! checks every candidate. Both ask `Invalidations::verdict`, which reads no state: it compares
 //! what the changes wrote with the [`Preconditions`](crate::Preconditions) validation recorded on
 //! each transaction. The callers differ only in how they check fee AMM liquidity, which depends
 //! on the block's validator token, and in what they do with the answer.
