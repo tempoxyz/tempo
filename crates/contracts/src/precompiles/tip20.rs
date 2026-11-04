@@ -182,6 +182,8 @@ crate::sol! {
         error LogoURITooLong();
         error InvalidLogoURI();
         error RootKeyRetired(address account);
+        error UnsupportedAddressVersion(uint8 version);
+        error ZoneUnregistered(uint32 zoneId);
     }
 }
 

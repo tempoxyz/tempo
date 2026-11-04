@@ -35,6 +35,7 @@ pub struct EvmPrecompileStorageProvider<'evm, 'gas, 'db, T: EvmTypes> {
     is_static: bool,
     tip1060_storage_credits_enabled: bool,
     tip1060_storage_credit_minting_enabled: bool,
+    revert_blocked_inbound: bool,
     non_creditable_slots: Option<Rc<RefCell<NonCreditableSlots>>>,
     /// Recorded storage actions.
     actions: StorageActions,
@@ -92,6 +93,7 @@ where
             is_static,
             tip1060_storage_credits_enabled: spec.is_t7(),
             tip1060_storage_credit_minting_enabled: true,
+            revert_blocked_inbound: false,
             non_creditable_slots: None,
             actions: StorageActions::disabled(),
             frame: None,
@@ -751,6 +753,16 @@ where
     #[inline]
     fn set_tip1060_storage_credit_minting(&mut self, enabled: bool) {
         self.tip1060_storage_credit_minting_enabled = enabled;
+    }
+
+    #[inline]
+    fn set_revert_blocked_inbound(&mut self, enabled: bool) {
+        self.revert_blocked_inbound = enabled;
+    }
+
+    #[inline]
+    fn revert_blocked_inbound(&self) -> bool {
+        self.revert_blocked_inbound
     }
 
     #[inline]

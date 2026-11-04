@@ -132,7 +132,7 @@ templates:
   access_key_create:
     type: tempo
     from: {pool: users, select: random}
-    gas_limit: ${TXGEN_KEY_AUTHORIZATION_GAS_LIMIT}
+    gas_limit: 3000000
     fee_token: "0x20c0000000000000000000000000000000000000"
     expiring_nonce: true
     nonce: { uniform: [0, 18446744073709551615] } # TIP-1106, requires T12+
@@ -142,8 +142,10 @@ templates:
       access_key:
         derive: per_tx
       key_type: secp256k1
-      limits: ${TXGEN_KEYCHAIN_TIP20_LIMITS}
-      allowed_calls: ${TXGEN_KEYCHAIN_TIP20_ALLOWED_CALLS}
+      # One limit and one transfer scope on the payment token, as an agent or session
+      # key would have, rather than every bench token (~2.6M gas instead of ~7.9M).
+      limits: [{token: "0x20c0000000000000000000000000000000000000", amount: "1000000000000000000000000000000000000", period: 0}]
+      allowed_calls: [{target: "0x20c0000000000000000000000000000000000000", selectors: [{selector: "0xa9059cbb", recipients: []}]}]
       witness:
         random_bytes: 32
     call:

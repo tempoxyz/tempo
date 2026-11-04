@@ -392,6 +392,11 @@ impl ZonePortalStorage {
         self.token_enablement_cursor_initialized.read()
     }
 
+    /// Solidity `transfersEnabled`.
+    pub fn transfers_enabled(&self, _call: ZonePortal::transfersEnabledCall) -> Result<bool> {
+        self.transfers_enabled.read()
+    }
+
     /// Solidity `tokenEnablementHash`.
     pub fn token_enablement_hash(
         &self,

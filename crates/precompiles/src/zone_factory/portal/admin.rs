@@ -274,6 +274,18 @@ impl ZonePortalStorage {
         ))
     }
 
+    /// Solidity `setTransfersEnabled`.
+    pub fn set_transfers_enabled(
+        &mut self,
+        sender: Address,
+        call: ZonePortal::setTransfersEnabledCall,
+    ) -> Result<()> {
+        self.only_admin(sender)?;
+        self.require_capability_active(ZonePortalCapability::AccessPolicy)?;
+        self.transfers_enabled.write(call.enabled)?;
+        self.emit(ZonePortalEvent::transfers_enabled_updated(call.enabled))
+    }
+
     /// Solidity `setLeader` with `_setLeader`.
     pub fn set_leader(&mut self, sender: Address, call: ZonePortal::setLeaderCall) -> Result<()> {
         self.only_sequencer_or_admin(sender)?;
@@ -986,6 +998,13 @@ mod tests {
                 ),
                 abdicated
             );
+            assert_eq!(
+                portal.set_transfers_enabled(
+                    ADMIN,
+                    ZonePortal::setTransfersEnabledCall { enabled: true }
+                ),
+                abdicated
+            );
             // The pause capability is independent.
             portal.pause(SEQUENCER_A, ZonePortal::pauseCall {})?;
             Ok(())
@@ -1074,6 +1093,31 @@ mod tests {
                 ZonePortalEvent::deposits_paused(PATH_USD_ADDRESS).into_log_data(),
                 ZonePortalEvent::deposits_resumed(PATH_USD_ADDRESS).into_log_data(),
             ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn set_transfers_enabled_is_admin_only() -> eyre::Result<()> {
+        let (storage, portal) = with_portal(|portal| {
+            assert!(!portal.transfers_enabled(ZonePortal::transfersEnabledCall {})?);
+            assert_eq!(
+                portal.set_transfers_enabled(
+                    SEQUENCER_A,
+                    ZonePortal::setTransfersEnabledCall { enabled: true }
+                ),
+                Err(ZonePortalError::not_admin().into())
+            );
+            portal.set_transfers_enabled(
+                ADMIN,
+                ZonePortal::setTransfersEnabledCall { enabled: true },
+            )?;
+            assert!(portal.transfers_enabled(ZonePortal::transfersEnabledCall {})?);
+            Ok(())
+        })?;
+        assert_eq!(
+            events_after_creation(&storage, portal),
+            [ZonePortalEvent::transfers_enabled_updated(true).into_log_data()]
         );
         Ok(())
     }

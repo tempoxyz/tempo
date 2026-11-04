@@ -273,6 +273,12 @@ impl StorageCtx {
         Self::with_storage(|s| s.set_tip1060_storage_credit_minting(enabled))
     }
 
+    /// Returns whether receive-policy blocks revert instead of diverting the funds. See
+    /// [`PrecompileStorageProvider::set_revert_blocked_inbound`].
+    pub fn revert_blocked_inbound(&self) -> bool {
+        Self::with_storage(|s| s.revert_blocked_inbound())
+    }
+
     /// Runs a nested call from the running precompile. See [`PrecompileStorageProvider::call`].
     ///
     /// The provider stays borrowed while the child runs. A child that re-enters a Tempo

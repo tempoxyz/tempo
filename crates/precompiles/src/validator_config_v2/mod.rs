@@ -317,12 +317,16 @@ impl ValidatorConfigV2 {
     ) -> Result<(IpAddrWithPort<'a>, IpAddr<'a>)> {
         let spec = self.storage.spec();
         let parsed_ingress = IpAddrWithPort::parse(ingress, spec).map_err(|err| match err {
-            IpWithPortParseError::TooLong => ValidatorConfigV2Error::invalid_ip(ingress.into()),
+            err @ (IpWithPortParseError::TooLong | IpWithPortParseError::Ipv4Mapped) => {
+                ValidatorConfigV2Error::invalid_ip(ingress.into(), err.to_string())
+            }
             err => ValidatorConfigV2Error::not_ip_port(ingress.into(), err.to_string()),
         })?;
 
         let parsed_egress = IpAddr::parse(egress, spec).map_err(|err| match err {
-            IpParseError::TooLong => ValidatorConfigV2Error::invalid_ip(egress.into()),
+            err @ (IpParseError::TooLong | IpParseError::Ipv4Mapped) => {
+                ValidatorConfigV2Error::invalid_ip(egress.into(), err.to_string())
+            }
             err => ValidatorConfigV2Error::not_ip(egress.into(), err.to_string()),
         })?;
 
@@ -512,7 +516,7 @@ impl ValidatorConfigV2 {
     /// - `InvalidValidatorAddress` — `validatorAddress` is zero
     /// - `AddressAlreadyHasValidator` — the address belongs to an active validator
     /// - `NotIp` / `NotIpPort` — endpoints are malformed
-    /// - `InvalidIp` — an endpoint exceeds 255 bytes (T14+)
+    /// - `InvalidIp` — an endpoint exceeds 255 bytes or is IPv4-mapped IPv6 (T14+)
     /// - `IngressAlreadyExists` — the new ingress is already in use
     /// - `InvalidSignature` — signature verification fails
     pub fn add_validator(
@@ -684,7 +688,7 @@ impl ValidatorConfigV2 {
     /// - `NotInitialized` / `Unauthorized` — auth failure
     /// - `InvalidPublicKey` / `PublicKeyAlreadyExists` — the new key is invalid
     /// - `NotIp` / `NotIpPort` / `IngressAlreadyExists` — endpoint validation failure
-    /// - `InvalidIp` — an endpoint exceeds 255 bytes (T14+)
+    /// - `InvalidIp` — an endpoint exceeds 255 bytes or is IPv4-mapped IPv6 (T14+)
     /// - `InvalidSignature` — signature verification fails
     pub fn rotate_validator(
         &mut self,
@@ -789,7 +793,7 @@ impl ValidatorConfigV2 {
     /// - `ValidatorNotFound` / `ValidatorAlreadyDeleted` — `idx` is invalid
     /// - `Unauthorized` — `sender` is neither the owner nor the validator
     /// - `NotIp` / `NotIpPort` — the new endpoints are malformed
-    /// - `InvalidIp` — an endpoint exceeds 255 bytes (T14+)
+    /// - `InvalidIp` — an endpoint exceeds 255 bytes or is IPv4-mapped IPv6 (T14+)
     /// - `IngressAlreadyExists` — the new ingress is already in use.
     pub fn set_ip_addresses(
         &mut self,
@@ -1045,6 +1049,7 @@ mod tests {
     use alloy_primitives::FixedBytes;
     use commonware_codec::Encode;
     use commonware_cryptography::{Signer, ed25519::PrivateKey};
+    use tempo_chainspec::hardfork::TempoHardfork;
 
     /// Generate a test Ed25519 key pair and create a valid signature
     fn make_test_keypair_and_signature(
@@ -2973,6 +2978,73 @@ mod tests {
             assert_eq!(v.validatorAddress, validator);
             assert_eq!(v.ingress, "[::1]:8000");
             assert_eq!(v.egress, "::1");
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_ipv4_mapped_endpoints_rejected_from_t14() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
+        let owner = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut vc = ValidatorConfigV2::new();
+            vc.initialize(owner)?;
+            vc.storage.set_block_number(200);
+
+            let v1 = Address::random();
+            let result = vc.add_validator(
+                owner,
+                make_valid_add_call(v1, "[::ffff:192.168.1.1]:8000", "192.168.1.1", v1),
+            );
+            assert_eq!(
+                result,
+                Err(ValidatorConfigV2Error::invalid_ip(
+                    "[::ffff:192.168.1.1]:8000".into(),
+                    IpWithPortParseError::Ipv4Mapped.to_string()
+                )
+                .into())
+            );
+
+            vc.add_validator(
+                owner,
+                make_valid_add_call(v1, "192.168.1.1:8000", "192.168.1.1", v1),
+            )?;
+            let result = vc.set_ip_addresses(
+                owner,
+                IValidatorConfigV2::setIpAddressesCall {
+                    idx: 0,
+                    ingress: "192.168.1.1:8000".to_string(),
+                    egress: "::ffff:192.168.1.1".to_string(),
+                },
+            );
+            assert_eq!(
+                result,
+                Err(ValidatorConfigV2Error::invalid_ip(
+                    "::ffff:192.168.1.1".into(),
+                    IpParseError::Ipv4Mapped.to_string()
+                )
+                .into())
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_ipv4_mapped_endpoints_accepted_before_t14() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
+        let owner = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut vc = ValidatorConfigV2::new();
+            vc.initialize(owner)?;
+            vc.storage.set_block_number(200);
+
+            let v1 = Address::random();
+            vc.add_validator(
+                owner,
+                make_valid_add_call(v1, "[::ffff:192.168.1.1]:8000", "::ffff:192.168.1.1", v1),
+            )?;
 
             Ok(())
         })

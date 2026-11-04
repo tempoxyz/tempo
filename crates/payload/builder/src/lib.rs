@@ -770,35 +770,36 @@ where
                     "skipping payload state-root computation"
                 );
                 None
-            } else if let Some(mut handle) = state_root_handle {
-                let state_root_wait_start = Instant::now();
-                let _span = debug_span!(target: "payload_builder", "await_state_root").entered();
-                match handle.state_root() {
-                    Ok(outcome) => {
-                        let elapsed = state_root_wait_start.elapsed();
-                        self.metrics
-                            .sparse_trie_state_root_wait_duration_seconds
-                            .record(elapsed);
-                        debug!(
-                            target: "payload_builder",
-                            id = %payload_id,
-                            state_root = ?outcome.state_root,
-                            "received state root from sparse trie"
-                        );
-                        Some((outcome, elapsed))
-                    }
-                    Err(err) => {
-                        warn!(
-                            target: "payload_builder",
-                            id = %payload_id,
-                            %err,
-                            "sparse trie failed, falling back to sync state root"
-                        );
-                        None
-                    }
-                }
             } else {
-                None
+                state_root_handle.and_then(|mut handle| {
+                    let state_root_wait_start = Instant::now();
+                    let _span =
+                        debug_span!(target: "payload_builder", "await_state_root").entered();
+                    match handle.state_root() {
+                        Ok(outcome) => {
+                            let elapsed = state_root_wait_start.elapsed();
+                            self.metrics
+                                .sparse_trie_state_root_wait_duration_seconds
+                                .record(elapsed);
+                            debug!(
+                                target: "payload_builder",
+                                id = %payload_id,
+                                state_root = ?outcome.state_root,
+                                "received state root from sparse trie"
+                            );
+                            Some((outcome, elapsed))
+                        }
+                        Err(err) => {
+                            warn!(
+                                target: "payload_builder",
+                                id = %payload_id,
+                                %err,
+                                "sparse trie failed, falling back to sync state root"
+                            );
+                            None
+                        }
+                    }
+                })
             }
             .unzip();
 

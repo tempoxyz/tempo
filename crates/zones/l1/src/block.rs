@@ -1,4 +1,5 @@
 use super::*;
+use crate::precompiles::ecies;
 use rayon::prelude::*;
 use std::collections::{BTreeMap, btree_map::Entry};
 
@@ -155,8 +156,6 @@ fn prepare_deposit(
     portal_address: Address,
     l1_block_number: u64,
 ) -> (abi::QueuedDeposit, Option<abi::DecryptionData>) {
-    use crate::precompiles::ecies;
-
     let queued = deposit.to_abi_queued_deposit();
     let L1Deposit::Deposit(d) = deposit else {
         return (queued, None);

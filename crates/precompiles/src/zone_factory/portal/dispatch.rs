@@ -108,6 +108,8 @@ impl Precompile for ZonePortalStorage {
                     tokenConfig(call) => view(call, |call| self.token_config(call)),
                     tokenEnablementCursorInitialized(call) => view(call, |call| self.token_enablement_cursor_initialized(call)),
                     tokenEnablementHash(call) => view(call, |call| self.token_enablement_hash(call)),
+                    transfersEnabled(call) => view(call, |call| self.transfers_enabled(call)),
+                    setTransfersEnabled(call) => mutate(call, msg_sender, |sender, call| self.set_transfers_enabled(sender, call)),
                     transferAdmin(call) => mutate(call, msg_sender, |sender, call| self.transfer_admin(sender, call)),
                     verifier(call) => view(call, |call| self.verifier(call)),
                     withdrawalBatchIndex(call) => view(call, |call| self.withdrawal_batch_index(call)),
@@ -131,7 +133,7 @@ impl Precompile for ZonePortalStorage {
     }
 }
 
-/// Whether the T13 Solidity runtime exposes `selector`.
+/// Whether the T15 Solidity runtime exposes `selector`.
 fn is_portal_selector(selector: [u8; 4]) -> bool {
     let retired = [
         ZonePortal::MAX_DEPOSITS_PER_TEMPO_BLOCKCall::SELECTOR,

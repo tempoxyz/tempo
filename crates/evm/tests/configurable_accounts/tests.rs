@@ -775,7 +775,7 @@ fn eoa_migration_commits_configuration() {
 
 #[test]
 fn eoa_migration_error_order() {
-    let only_call = IConfigurableAccount::UpgradeMustBeOnlyCall {}.abi_encode();
+    let direct_call = IConfigurableAccount::UpgradeMustBeDirectCall {}.abi_encode();
     let root_required = IConfigurableAccount::PrimitiveRootRequired {}.abi_encode();
     let has_code = IConfigurableAccount::AccountHasCode {}.abi_encode();
     let invalid_config = IConfigurableAccount::InvalidConfig {}.abi_encode();
@@ -788,19 +788,7 @@ fn eoa_migration_error_order() {
     };
     let delegate = Address::repeat_byte(0x74);
 
-    // 1: the call must be the transaction's only call, however the account signs.
-    expect_revert(
-        Fixture::with_parent(false),
-        "upgrade then call",
-        |f| f.primitive(3, vec![upgrade.clone(), f.getter()]).into(),
-        &only_call,
-    );
-    expect_revert(
-        Fixture::with_parent(false),
-        "call then upgrade",
-        |f| f.primitive(3, vec![f.getter(), upgrade.clone()]).into(),
-        &only_call,
-    );
+    // 1: a top-level call with no authorization list, however the account signs.
     expect_revert(
         Fixture::with_parent(false),
         "nested call",
@@ -809,7 +797,7 @@ fn eoa_migration_error_order() {
             call.input = upgrade.input.clone();
             f.primitive(3, vec![call]).into()
         },
-        &only_call,
+        &direct_call,
     );
     expect_revert(
         Fixture::with_parent(false),
@@ -824,7 +812,7 @@ fn eoa_migration_error_order() {
                 authorizations,
             )
         },
-        &only_call,
+        &direct_call,
     );
     expect_revert(
         Fixture::with_parent(false),
@@ -847,35 +835,8 @@ fn eoa_migration_error_order() {
             })
             .into()
         },
-        &only_call,
+        &direct_call,
     );
-    expect_revert(
-        Fixture::with_parent(false),
-        "key authorization",
-        |f| {
-            let grant =
-                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, signer(6).address());
-            let approval = f.owner.sign_hash_sync(&grant.signature_hash()).unwrap();
-            f.sign_primitive(TempoTransaction {
-                key_authorization: Some(grant.into_signed(PrimitiveSignature::Secp256k1(approval))),
-                ..aa_tx(3, vec![upgrade.clone()])
-            })
-            .into()
-        },
-        &only_call,
-    );
-    // 1 before 2: a batch is rejected before the signer is.
-    expect_revert(
-        Fixture::with_parent(false),
-        "access key batch",
-        |f| {
-            let key = signer(6);
-            grant_key(f, 3, &key, 0);
-            keychain_tx(f, &key, 4, vec![upgrade.clone(), f.getter()]).into()
-        },
-        &only_call,
-    );
-
     // 2: only a primitive root signature may migrate.
     expect_revert(
         Fixture::with_parent(false),
@@ -1033,6 +994,52 @@ fn eoa_migration_after_delegation_cleared() {
 }
 
 #[test]
+fn eoa_migration_anywhere_in_batch() {
+    for position in 0..3 {
+        let mut f = Fixture::with_parent(false);
+        let config = f.upgraded(1, owner_set(vec![signer(2).address()]));
+        let mut calls = vec![f.getter(), f.getter()];
+        calls.insert(position, Fixture::upgrade(&config));
+        let result = f.run(&f.primitive(3, calls));
+        assert_upgraded(&mut f, &result, &config);
+    }
+}
+
+#[test]
+fn eoa_migration_with_key_authorization() {
+    let base = Fixture::with_parent(false).upgraded(1, owner_set(vec![signer(2).address()]));
+    let zero_threshold = ConfigurableAccountConfig {
+        threshold: 0,
+        ..base.clone()
+    };
+    for migrates in [true, false] {
+        let mut f = Fixture::with_parent(false);
+        let key = signer(6);
+        let grant = KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key.address());
+        let approval = f.owner.sign_hash_sync(&grant.signature_hash()).unwrap();
+        let config = if migrates { &base } else { &zero_threshold };
+        let tx = f.sign_primitive(TempoTransaction {
+            key_authorization: Some(grant.into_signed(PrimitiveSignature::Secp256k1(approval))),
+            ..aa_tx(3, vec![Fixture::upgrade(config)])
+        });
+        let result = f.run(&tx);
+        if migrates {
+            assert_upgraded(&mut f, &result, &base);
+        } else {
+            assert_eq!(
+                result.output,
+                IConfigurableAccount::InvalidConfig {}.abi_encode()
+            );
+            assert_eq!(f.commitment(), B256::ZERO);
+        }
+
+        // The grant is applied before execution, so it stays whether or not the account migrated.
+        let result = f.run(&keychain_tx(&f, &key, 4, vec![f.getter()]));
+        assert!(result.status, "migrates {migrates}: {result:?}");
+    }
+}
+
+#[test]
 fn eoa_migration_failure_keeps_fee_and_nonce() {
     let member = signer(2).address();
     let base = Fixture::with_parent(false).upgraded(1, owner_set(vec![member]));
@@ -1044,7 +1051,7 @@ fn eoa_migration_failure_keeps_fee_and_nonce() {
         let (label, error) = if batch {
             (
                 "batch",
-                IConfigurableAccount::UpgradeMustBeOnlyCall {}.abi_encode(),
+                IConfigurableAccount::AccountAlreadyConfigurable {}.abi_encode(),
             )
         } else {
             (
@@ -1058,7 +1065,8 @@ fn eoa_migration_failure_keeps_fee_and_nonce() {
         let config = if batch { &base } else { &zero_threshold };
         let mut calls = vec![Fixture::upgrade(config)];
         if batch {
-            calls.push(f.getter());
+            // A second upgrade reverts and takes the first with it.
+            calls.push(Fixture::upgrade(config));
         }
         let tx = f.sign_primitive(TempoTransaction {
             max_fee_per_gas: 1,

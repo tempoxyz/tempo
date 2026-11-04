@@ -617,8 +617,9 @@ mod tests {
     use alloy_consensus::{SignableTransaction as _, TxLegacy, TxType};
     use alloy_eips::BlockNumHash;
     use alloy_primitives::{Bytes, LogData, Signature, TxKind, U256, address};
-    use alloy_sol_types::SolEvent;
+    use alloy_sol_types::{SolCall, SolEvent};
     use reth_ethereum_primitives::Receipt;
+    use tempo_contracts::zones::{TEMPO_STATE_ADDRESS, TempoState};
 
     fn collect<T, R>(
         transactions: &[T],
@@ -883,9 +884,6 @@ mod tests {
 
     #[test]
     fn checkpoint_only_blocks_require_the_exact_event_and_transaction_shape() {
-        use alloy_sol_types::SolCall;
-        use tempo_contracts::zones::{TEMPO_STATE_ADDRESS, TempoState};
-
         let header = tempo_primitives::TempoHeader {
             inner: alloy_consensus::Header {
                 number: 109,
