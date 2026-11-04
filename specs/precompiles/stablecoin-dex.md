@@ -389,9 +389,9 @@ def order_write(o: Order, book_id: uint32):       # book_id = the owning Orderbo
 
 A fresh id has `s0 == 0`, so nothing is cleared (it decodes as legacy, `old_slots = 6`, but no clearing runs). Upgrades clear: legacy→V2 clears `O+3..O+5`; legacy→V1 clears `O+4, O+5`; V1→V2 clears `O+3`. The record version written depends only on the owning book's `bookId` at the time of the write; the existing record's `bookIndex` is not consulted and no consistency check against `bookKeys` is performed.
 
-> **Open conflict C-DEX-04**: TIP-1087 requires a V0/V1→V2 flip rewrite to assert `bookKeys[bookKeyIdx-1] == bookKey` (and a V2 rewrite to preserve the stored `bookIndex`); the implementation takes `bookIndex` from the owning orderbook's `bookId` with no assertion and no extra read. See [conflicts](../conflicts.md#c-dex-04).
+> **Resolved conflict C-DEX-04**: TIP-1087 requires a V0/V1→V2 flip rewrite to assert `bookKeys[bookKeyIdx-1] == bookKey` (and a V2 rewrite to preserve the stored `bookIndex`); the implementation takes `bookIndex` from the owning orderbook's `bookId` with no assertion and no extra read. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](../conflicts.md#c-dex-04).
 
-> **Open conflict C-DEX-05**: TIP-1062 says a version-1 flip order that flips MUST remain version 1; the implementation rewrites it as version 2 once its book has an index (as TIP-1087 specifies). See [conflicts](../conflicts.md#c-dex-05).
+> **Resolved conflict C-DEX-05**: TIP-1062 says a version-1 flip order that flips MUST remain version 1; the implementation rewrites it as version 2 once its book has an index (as TIP-1087 specifies). Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](../conflicts.md#c-dex-05).
 
 ```python
 def order_delete(id):
@@ -740,7 +740,7 @@ def validate_route(path) -> list[(bytes32, bool)]:
 
 `is_bid == True` for a hop means the taker gives base and receives quote, walking bids from the best (highest) tick down. `is_bid == False` means the taker gives quote and receives base, walking asks from the best (lowest) tick up. The final `tokenOut` is not pause-checked here (its TIP-20 transfer to the taker checks it). TIP-403 policy is enforced only on the taker's input pull and output transfer, not on intermediate tokens, which never leave the DEX.
 
-> **Open conflict C-FORKS-03**: TIP-1036 (T2 meta) dates the StablecoinDEX internal-balance swap pause check at T2; the implementation applies the swap-route check from T3 (as TIP-1038 says) and the internal-balance placement checks from T4. See [conflicts](../conflicts.md#c-forks-03).
+> **Resolved conflict C-FORKS-03**: TIP-1036 (T2 meta) dates the StablecoinDEX internal-balance swap pause check at T2; the implementation applies the swap-route check from T3 (as TIP-1038 says) and the internal-balance placement checks from T4. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](../conflicts.md#c-forks-03).
 
 ### 11.3 Swap entrypoints
 
@@ -945,7 +945,7 @@ A flip never pulls tokens from the maker's wallet; the flipped order gets fresh 
 
 At T5–T7 the flip rewrite stores the full six-slot legacy record (§6.5.2). From T8 it goes through `order_write`, upgrading legacy/V1 records to the book's current layout and clearing the slots the old layout no longer uses; the credits minted by those clears go to the maker immediately (§9.3).
 
-> **Open conflict C-DEX-03**: TIP-1056 requires a flip rewrite to write only the order-record slots whose contents change (under a "TIP-1055" layout that does not exist); at T5–T7 the implementation stores all six legacy slots, including unchanged ones. See [conflicts](../conflicts.md#c-dex-03).
+> **Resolved conflict C-DEX-03**: TIP-1056 requires a flip rewrite to write only the order-record slots whose contents change (under a "TIP-1055" layout that does not exist); at T5–T7 the implementation stores all six legacy slots, including unchanged ones. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](../conflicts.md#c-dex-03).
 
 Reference implementation: crates/precompiles/src/stablecoin_dex/mod.rs (`find_trade_path`, `validate_and_build_route`, `find_path_to_root`, `swap_exact_amount_in`, `swap_exact_amount_out`, `fill_orders_exact_in`, `fill_orders_exact_out`, `settle_fill`, `partial_fill_order`, `fill_order`, `flip_in_place`), crates/precompiles/src/stablecoin_dex/orderbook.rs (`walk_resting_orders`, `step_exact_in`, `step_exact_out`, `taker_output`), crates/precompiles/src/error.rs (`is_system_error`, `selector`).
 

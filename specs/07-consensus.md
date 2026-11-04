@@ -481,7 +481,7 @@ def active_players(vc) -> ordered_set:
 
 `getActiveValidators()` returns, in `active_indices` order, the records that are active at the post-state of `P`: added at a height `< last(E)` and not deactivated. This matches TIP-1017's player selection with `boundary(E) = last(E)`. The resulting set MUST NOT be empty, because the encoding requires at least one next player.
 
-> **Open conflict C-CONS-02**: TIP-1017 says the consensus layer reads ValidatorConfig V1 until ValidatorConfigV2 is initialized, but the implementation always reads ValidatorConfigV2. See [conflicts](conflicts.md#c-cons-02).
+> **Resolved conflict C-CONS-02**: TIP-1017 says the consensus layer reads ValidatorConfig V1 until ValidatorConfigV2 is initialized, but the implementation always reads ValidatorConfigV2. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](conflicts.md#c-cons-02).
 
 The contract-side definition of these reads is in precompiles/validator-config-and-zones.md ("Consumption by consensus"); the two descriptions are the same rule. For every boundary whose parent post-state has ValidatorConfigV2 initialized, the rule above applies. Earlier mainnet boundary outcomes were produced by earlier releases and are accepted through their finalization certificates. No node recomputes historical boundary outcomes.
 

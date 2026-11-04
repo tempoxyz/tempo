@@ -168,7 +168,7 @@ through DELEGATECALL or CALLCODE), the frame MUST revert with return data
 check. The frame consumes no gas (all forwarded gas is returned to the caller). This applies to
 every Tempo precompile at every fork, including ValidatorConfigV2 before T2.
 
-> **Open conflict C-PFW-01**: TIP-1100 (and docs upgrades/t11) require the input charge on *every* Tempo precompile call; the code reverts DELEGATECALL/CALLCODE with no input charge. See [conflicts](../conflicts.md#c-pfw-01).
+> **Resolved conflict C-PFW-01**: TIP-1100 (and docs upgrades/t11) require the input charge on *every* Tempo precompile call; the code reverts DELEGATECALL/CALLCODE with no input charge. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](../conflicts.md#c-pfw-01).
 
 ### 3.2 Static context
 
@@ -417,7 +417,7 @@ member:
 - *Member access* (e.g. through a mapping value handle) uses the member's own location, with the
   §6.2 packed/full rule applied among the struct's members.
 
-> **Open conflict C-PFW-02**: TIP-1046 §8 says T4 removes the SLOAD for "the first packed slot" of a packed-struct store; the code removes it for every packed slot run of the struct. See [conflicts](../conflicts.md#c-pfw-02).
+> **Resolved conflict C-PFW-02**: TIP-1046 §8 says T4 removes the SLOAD for "the first packed slot" of a packed-struct store; the code removes it for every packed slot run of the struct. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](../conflicts.md#c-pfw-02).
 
 ### 6.4 Fixed arrays
 
@@ -613,7 +613,7 @@ def SSTORE(addr, key, new):
 
 A failed `charge` raises OutOfGas and the frame halts (§5).
 
-> **Open conflict C-PFW-03**: TIP-1000 gives 252,100 gas for a cold zero-to-nonzero SSTORE from T1; the code charges 100 + 2,100 + 250,000 = 252,200 (precompile SSTOREs included). See [conflicts](../conflicts.md#c-pfw-03).
+> **Resolved conflict C-PFW-03**: TIP-1000 gives 252,100 gas for a cold zero-to-nonzero SSTORE from T1; the code charges 100 + 2,100 + 250,000 = 252,200 (precompile SSTOREs included). Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](../conflicts.md#c-pfw-03).
 
 ### 7.3 SSTORE refunds
 
@@ -639,7 +639,7 @@ EVM bytecode are unaffected; see [06-transactions-and-fees.md](../06-transaction
 From T4 the value above is added to the transaction's refund counter (and discarded if the frame
 reverts or halts).
 
-> **Open conflict C-PFW-04**: TIP-1000 (invariant 4) requires storage clearing to keep its refund for every SSTORE, including precompile-created state; the code records no refund for native-precompile SSTOREs before T4. See [conflicts](../conflicts.md#c-pfw-04).
+> **Resolved conflict C-PFW-04**: TIP-1000 (invariant 4) requires storage clearing to keep its refund for every SSTORE, including precompile-created state; the code records no refund for native-precompile SSTOREs before T4. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](../conflicts.md#c-pfw-04).
 
 ### 7.4 TIP-1060 storage-credit hook (from T7)
 

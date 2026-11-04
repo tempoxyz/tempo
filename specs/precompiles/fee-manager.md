@@ -258,7 +258,7 @@ Rules that follow from the pseudocode and MUST hold:
 
 > **Open conflict C-FEE-04**: docs state the T8 mint/burn/pre-collection authorization rules unconditionally; code applies them only from T8. See [conflicts](../conflicts.md#c-fee-04).
 
-> **Open conflict C-FEE-06**: TIP-1042 reads both tokens' policy ids before evaluating any authorization; code finishes the userToken checks before reading the validatorToken policy. See [conflicts](../conflicts.md#c-fee-06).
+> **Resolved conflict C-FEE-06**: TIP-1042 reads both tokens' policy ids before evaluating any authorization; code finishes the userToken checks before reading the validatorToken policy. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](../conflicts.md#c-fee-06).
 
 ### 5.2 burn
 
@@ -469,7 +469,7 @@ Semantics:
 
 > **Open conflict C-FEE-01**: spec-fee.mdx says the pre-collection reserves max_fee of liquidity; code reserves floor(maxAmount × 0.997) validator-token units (nested floor on leg 2), and only from T1C. See [conflicts](../conflicts.md#c-fee-01).
 
-> **Open conflict C-FORKS-04**: TIP-1036 lists the reserved-liquidity transient guard (and the fee-refund spending-limit restore) as T2 changes; code activates both at T1C. See [conflicts](../conflicts.md#c-forks-04).
+> **Resolved conflict C-FORKS-04**: TIP-1036 lists the reserved-liquidity transient guard (and the fee-refund spending-limit restore) as T2 changes; code activates both at T1C. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](../conflicts.md#c-forks-04).
 
 ### 7.5 collectFeePostTx
 
@@ -509,7 +509,7 @@ def execute_fee_swap(user_token, validator_token, amount_in) -> uint256:
 
 `tip20_transfer_fee_post_tx` ([tip20.md](tip20.md)), in this order: emits `Transfer(fee_payer, FEE_MANAGER, actual_spending)` at the fee-token address (always, even when `actual_spending == 0`); returns if `refund == 0`; **from T1C** restores `refund` to the access key's spending limit (`AccountKeychain.refund_spending_limit(fee_payer, fee_token, refund)`, [account-keychain.md](account-keychain.md)); updates the payer's reward accounting; debits `refund` from `FEE_MANAGER` and credits it to `fee_payer`. It performs no pause check and no TIP-403 or receive-policy check, so a refund succeeds even if the transaction paused the token or changed its policy.
 
-> **Open conflict C-FORKS-04**: TIP-1036 dates the fee-refund spending-limit restore at T2; code applies it from T1C. See [conflicts](../conflicts.md#c-forks-04).
+> **Resolved conflict C-FORKS-04**: TIP-1036 dates the fee-refund spending-limit restore at T2; code applies it from T1C. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](../conflicts.md#c-forks-04).
 
 Consequences that MUST hold:
 

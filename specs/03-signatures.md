@@ -254,9 +254,9 @@ The other flag bits (0x02, 0x08 BE, 0x10 BS, 0x20) are ignored. Origin, `crossOr
 
 `digest` is the digest this signature signs in its context (section 10): for a sender signature it is the transaction's sender signing hash, inside a Keychain V2 envelope the V2 hash, inside an authorization the authorization digest. It is never the transaction hash `keccak256(0x76 || rlp(signed))`.
 
-> **Open conflict C-SIG-02**: docs and TIP-0001 say the WebAuthn challenge is the Base64URL "tx_hash"; the code compares it with the signing digest. See [conflicts](conflicts.md#c-sig-02).
+> **Resolved conflict C-SIG-02**: docs and TIP-0001 say the WebAuthn challenge is the Base64URL "tx_hash"; the code compares it with the signing digest. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](conflicts.md#c-sig-02).
 
-> **Open conflict C-SIG-03**: TIP-0001 requires the UP flag and allows AT with CBOR parsing; the code accepts UP or UV and rejects AT and ED. See [conflicts](conflicts.md#c-sig-03).
+> **Resolved conflict C-SIG-03**: TIP-0001 requires the UP flag and allows AT with CBOR parsing; the code accepts UP or UV and rejects AT and ED. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](conflicts.md#c-sig-03).
 
 ### 6.3 clientDataJSON acceptance
 
@@ -280,7 +280,7 @@ Example of an accepted `clientDataJSON`, for the digest `0xdeadbeef` followed by
 
 The message hash covers `clientDataJSON` exactly as carried, including any whitespace and ignored members.
 
-> **Open conflict C-SIG-04**: TIP-0001 checks clientDataJSON by substring search; the code parses it as JSON with the rules above. See [conflicts](conflicts.md#c-sig-04).
+> **Resolved conflict C-SIG-04**: TIP-0001 checks clientDataJSON by substring search; the code parses it as JSON with the rules above. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](conflicts.md#c-sig-04).
 
 Reference implementation: crates/primitives/src/transaction/tt_signature.rs (`verify_webauthn_data_internal`, `ClientDataJson`).
 
@@ -585,7 +585,7 @@ def tempo_signature_verification_gas(sig: TempoSignature) -> int:
 
 The WebAuthn data charge covers all of `webauthn_data`, the 37-byte `authenticatorData` included. For example, a 32-byte non-zero rpIdHash, a non-zero flags byte and a zero signCount add `4 × (33 × 4 + 4 × 1) = 544` gas before `clientDataJSON` is counted.
 
-> **Open conflict C-SIG-01**: docs and TIP-0001 charge WebAuthn calldata gas for clientDataJSON only; the code charges all of webauthn_data. See [conflicts](conflicts.md#c-sig-01).
+> **Resolved conflict C-SIG-01**: docs and TIP-0001 charge WebAuthn calldata gas for clientDataJSON only; the code charges all of webauthn_data. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](conflicts.md#c-sig-01).
 
 The configurable-account gas rules are T14-only and do not apply (section 9).
 
