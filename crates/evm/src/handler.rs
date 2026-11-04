@@ -549,8 +549,7 @@ fn validate_key_authorization(
         });
     }
     key_auth
-        .validate_chain_id(chain_id, spec.is_t1c())
-        .map_err(TempoInvalidTransaction::from)?;
+        .validate_chain_id(chain_id, spec.is_t1c())?;
 
     if key_auth.has_witness() && !spec.is_t5() {
         return Err(TempoInvalidTransaction::KeychainValidationFailed {

@@ -1062,10 +1062,9 @@ fn latest_sealed_header<P>(provider: &P) -> eyre::Result<SealedHeader<TempoHeade
 where
     P: BlockNumReader + HeaderProvider<Header = TempoHeader>,
 {
-    let number = provider.best_block_number().map_err(eyre::Report::from)?;
+    let number = provider.best_block_number()?;
     provider
-        .sealed_header(number)
-        .map_err(eyre::Report::from)?
+        .sealed_header(number)?
         .ok_or_else(|| eyre::eyre!("no latest block header"))
 }
 

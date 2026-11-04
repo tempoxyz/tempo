@@ -45,8 +45,7 @@ impl TempoBlockExecutor<'_> {
         }
 
         let is_system_tx = self
-            .validate_tx_pre_execution(original)
-            .map_err(BlockExecutionError::from)?;
+            .validate_tx_pre_execution(original)?;
 
         let state = self
             .replay_actions(actions.drain(..), expiring_nonce)
@@ -66,8 +65,7 @@ impl TempoBlockExecutor<'_> {
             is_system_tx,
             self.is_payment(original),
             block_gas_used,
-        )
-        .map_err(BlockExecutionError::from)?;
+        )?;
 
         let result = TempoTxResult::new_precomputed(
             original,

@@ -196,7 +196,7 @@ async fn fetch_l1_block_at(
         .await
         .map_err(classify_rpc_error)?
         .ok_or_else(|| unavailable(eyre::eyre!("Tempo block {number} is unavailable")))?;
-    let header = validate_rpc_header(block.header()).map_err(L1ReadError::from)?;
+    let header = validate_rpc_header(block.header())?;
     if header.block.number != number {
         return Err(disable(eyre::eyre!(
             "Tempo RPC returned block {} for requested block {number}",
