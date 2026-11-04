@@ -163,9 +163,9 @@ pub fn select(
     blocks: Range<u64>,
 ) -> eyre::Result<String> {
     let mask = 1u64 << bit;
-    // Keyed by the parent of the first block, which a corpus keeps as it grows at its tip. Of
-    // indexes of one corpus at several tips, the longest's catalog names it.
-    let mut corpora = BTreeMap::<String, (Catalog, BTreeSet<u64>)>::new();
+    // Keyed by the parent of the first block and the tip: corpora of one chain may share either,
+    // and only both together name one history.
+    let mut corpora = BTreeMap::<(String, [u8; 32]), (Catalog, BTreeSet<u64>)>::new();
     for path in paths {
         let builder = ParquetRecordBatchReaderBuilder::try_new(File::open(path)?)?;
         let metadata = builder.metadata().file_metadata().key_value_metadata();
@@ -184,12 +184,10 @@ pub fn select(
             path.display()
         );
         let catalog: Catalog = serde_json::from_str(get(CATALOG_KEY)?)?;
-        let (named, selected) = corpora
-            .entry(catalog.context.parent.clone())
-            .or_insert_with(|| (catalog.clone(), BTreeSet::new()));
-        if catalog.cursor.next > named.cursor.next {
-            *named = catalog;
-        }
+        let selected = &mut corpora
+            .entry((catalog.context.parent.clone(), catalog.cursor.parent))
+            .or_insert_with(|| (catalog, BTreeSet::new()))
+            .1;
         // Only the leaves this selection reads: call targets, not their selectors and addresses.
         let leaf = if writes {
             "writes"
