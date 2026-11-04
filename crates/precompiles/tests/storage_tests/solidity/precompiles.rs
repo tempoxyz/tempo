@@ -4,6 +4,8 @@
 //! match their Solidity equivalents, ensuring compatibility with the EVM.
 
 use super::*;
+use serde_json::json;
+use std::fs;
 use tempo_precompiles::test_util::storage_conformance::*;
 use tempo_precompiles_macros::{
     gen_test_fields_layout as layout_fields, gen_test_fields_struct as struct_fields,
@@ -222,9 +224,6 @@ fn test_tip20_layout() {
 #[test]
 #[ignore]
 fn export_all_storage_constants() {
-    use serde_json::json;
-    use std::fs;
-
     let mut all_constants = serde_json::Map::new();
 
     // Helper to convert RustStorageField to JSON

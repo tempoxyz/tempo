@@ -63,6 +63,8 @@ mod tests {
         primitives::{Address, FixedBytes},
         sol_types::{SolCall, SolValue},
     };
+    use commonware_codec::Encode;
+    use commonware_cryptography::{Signer, ed25519::PrivateKey};
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
         IValidatorConfigV2, IValidatorConfigV2::IValidatorConfigV2Calls, ValidatorConfigV2Error,
@@ -134,9 +136,6 @@ mod tests {
 
     #[test]
     fn test_add_validator_dispatch() -> eyre::Result<()> {
-        use commonware_codec::Encode;
-        use commonware_cryptography::{Signer, ed25519::PrivateKey};
-
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
         let owner = Address::random();
         let validator_addr = Address::random();

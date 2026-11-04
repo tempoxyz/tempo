@@ -9,7 +9,7 @@ use alloy::{
 use alloy_eips::BlockNumberOrTag;
 use alloy_rpc_types_eth::TransactionRequest;
 use eyre::WrapErr;
-use futures::TryFutureExt;
+use futures::{FutureExt, TryFutureExt, future::join_all};
 use reth_e2e_test_utils::{receipt::PendingTransactionExt, wallet::test_signer};
 use tempo_chainspec::{
     constants::gas::TEMPO_T7_BASE_FEE_FLOOR, hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE,
@@ -466,8 +466,6 @@ async fn test_payment_lane_ordering() -> eyre::Result<()> {
 
     // Send transactions concurrently from different accounts
     // This avoids nonce ordering constraints and speeds up the test
-    use futures::{FutureExt, future::join_all};
-
     // Create transaction futures - use boxed futures to allow different async blocks
     let mut tx_futures = vec![];
 

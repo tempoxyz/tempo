@@ -679,6 +679,7 @@ fn zone_timestamp_millis(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
     use reth_chainspec::EthChainSpec as _;
     use std::{
         collections::VecDeque,
@@ -687,6 +688,7 @@ mod tests {
     use tempo_chainspec::hardfork::TempoHardfork;
     use tokio::sync::oneshot;
     use zone_chainspec::test_utils::set_tempo_fork;
+    use zone_p2p::LeadershipState;
 
     #[test]
     fn zone_timestamp_uses_l1_timestamp_as_a_lower_bound() {
@@ -729,9 +731,6 @@ mod tests {
 
     #[test]
     fn checkpoint_import_stops_at_each_leadership_boundary() {
-        use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
-        use zone_p2p::LeadershipState;
-
         let outgoing = PrivateKey::from_seed(1).public_key();
         let incoming = PrivateKey::from_seed(2).public_key();
         let schedule = LeadershipSchedule::seeded(LeadershipState::new(1, outgoing.clone(), 0));
@@ -794,8 +793,6 @@ mod tests {
 
     #[test]
     fn uninitialized_leadership_fences_checkpoint_import() {
-        use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
-
         let permit = ProductionPermit::new(
             LeadershipSchedule::uninitialized(),
             PrivateKey::from_seed(1).public_key(),
@@ -1171,10 +1168,6 @@ mod tests {
 
     #[test]
     fn production_permit_is_a_single_schedule_lookup() {
-        use alloy_primitives::B256;
-        use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
-        use zone_p2p::LeadershipState;
-
         let me = PrivateKey::from_seed(1).public_key();
         let other = PrivateKey::from_seed(2).public_key();
         let schedule = LeadershipSchedule::seeded(LeadershipState::new(1, me.clone(), 0));
