@@ -285,14 +285,14 @@ impl Context {
             "amount": amount.to_string(),
             "balance": balance.to_string(),
         });
+        // The fee comes out of the same pathUSD balance, so a funded transfer needs both.
+        let max_fee = u128::from(TIP20_TX_GAS) * gas_price;
+        let funded_revert = !receipt.status()
+            && self
+                .covered_before(&zone, &receipt, sender.address(), amount + max_fee)
+                .await?;
+        assert_always!(!funded_revert, "Funded zone transfer succeeds", &details);
         if !receipt.status() {
-            assert_always!(
-                !self
-                    .covered_before(&zone, &receipt, sender.address(), amount)
-                    .await?,
-                "Funded zone transfer succeeds",
-                &details
-            );
             return Ok(());
         }
         let zone_block = receipt.block_number.ok_or_eyre("receipt has no block")?;
@@ -457,12 +457,23 @@ impl Context {
         // What this command's earlier transfers spent in each block, which a later revert in the
         // same block had to leave room for.
         let mut spent_in_block: BTreeMap<u64, u128> = BTreeMap::new();
+        // The fee comes out of the same pathUSD balance, so a funded transfer needs both.
+        let max_fee = u128::from(TIP20_TX_GAS) * gas_price;
         for (to, tx) in pending {
             let receipt = tx.with_timeout(Some(RECEIPT_TIMEOUT)).get_receipt().await?;
             let zone_block = receipt.block_number.ok_or_eyre("receipt has no block")?;
             let spent = spent_in_block.entry(zone_block).or_default();
+            let funded_revert = !receipt.status()
+                && self
+                    .covered_before(&zone, &receipt, sender.address(), *spent + amount + max_fee)
+                    .await?;
+            assert_always!(
+                !funded_revert,
+                "Funded zone transfer succeeds",
+                &json!({ "tx": receipt.transaction_hash, "from": sender.address(), "to": to })
+            );
             if receipt.status() {
-                *spent += amount;
+                *spent += amount + max_fee;
                 self.ledger.append(&Record::Transfer {
                     zone_tx: receipt.transaction_hash,
                     zone_block,
@@ -470,15 +481,6 @@ impl Context {
                     to,
                     amount,
                 })?;
-            } else {
-                let required = *spent + amount;
-                assert_always!(
-                    !self
-                        .covered_before(&zone, &receipt, sender.address(), required)
-                        .await?,
-                    "Funded zone transfer succeeds",
-                    &json!({ "tx": receipt.transaction_hash, "from": sender.address(), "to": to })
-                );
             }
         }
         let accounts = self.ledger.accounts()?.len();
