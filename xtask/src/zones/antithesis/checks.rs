@@ -31,6 +31,11 @@ const BALANCE_READS: usize = 32;
 impl Context {
     pub(super) async fn check_consistency(&self) -> eyre::Result<()> {
         let (height, hash) = self.settled_block().await?;
+        // Until the first batch settles the portal holds no zone block hash to compare against.
+        if hash.is_zero() {
+            println!("check-consistency: nothing settled yet");
+            return Ok(());
+        }
         let records = self.ledger.records()?;
         let accounts: Vec<Address> = shuffled(self.ledger.accounts()?)
             .into_iter()
