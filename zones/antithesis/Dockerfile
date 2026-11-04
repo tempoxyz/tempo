@@ -73,8 +73,9 @@ COPY --from=solidity /root/.foundry/bin/cast /usr/local/bin/cast
 COPY --from=solidity /app/crates/zones/contracts/out /app/crates/zones/contracts/out
 COPY --from=l1-genesis /genesis/l1-genesis.json /opt/zones/l1-genesis.json
 COPY zones/antithesis/scripts/ /opt/zones/
-# Antithesis runs the test commands it finds here; see zones/antithesis/README.md.
-COPY --chmod=755 zones/antithesis/test/ /opt/antithesis/test/
+# workload.sh installs the test template in /opt/antithesis/test, so only the workload
+# container has one; see zones/antithesis/README.md.
+COPY --chmod=755 zones/antithesis/test/ /opt/zones/antithesis-test/
 
 ENV RUST_BACKTRACE=full
 WORKDIR /app

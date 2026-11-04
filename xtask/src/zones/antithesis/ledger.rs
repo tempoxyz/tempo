@@ -12,7 +12,7 @@ use eyre::WrapErr as _;
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{File, OpenOptions},
-    io::{BufRead as _, BufReader, Write as _},
+    io::{BufRead as _, BufReader, Read as _, Seek as _, SeekFrom, Write as _},
     path::{Path, PathBuf},
 };
 
@@ -134,7 +134,7 @@ impl Ledger {
 
     fn locked_file(&self) -> eyre::Result<File> {
         let path = self.dir.join("ledger.jsonl");
-        let file = OpenOptions::new()
+        let mut file = OpenOptions::new()
             .create(true)
             .append(true)
             .read(true)
@@ -142,6 +142,17 @@ impl Ledger {
             .wrap_err_with(|| format!("failed opening {}", path.display()))?;
         file.lock()
             .wrap_err_with(|| format!("failed locking {}", path.display()))?;
+        // A writer killed mid-append leaves a line without its newline. End it, so the next
+        // record starts its own line instead of merging into the torn one.
+        if file.metadata()?.len() > 0 {
+            let mut last = [0];
+            file.seek(SeekFrom::End(-1))?;
+            file.read_exact(&mut last)?;
+            if last != *b"\n" {
+                file.write_all(b"\n")?;
+            }
+            file.rewind()?;
+        }
         Ok(file)
     }
 }
@@ -204,12 +215,6 @@ mod tests {
             .open(dir.path().join("ledger.jsonl"))
             .unwrap()
             .write_all(b"{\"kind\":\"acc")
-            .unwrap();
-        std::fs::OpenOptions::new()
-            .append(true)
-            .open(dir.path().join("ledger.jsonl"))
-            .unwrap()
-            .write_all(b"\n")
             .unwrap();
         assert_eq!(
             ledger.new_account().unwrap().index,

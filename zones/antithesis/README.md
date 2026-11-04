@@ -21,8 +21,8 @@ docker compose -f zones/antithesis/docker-compose.yaml up
 
 ## Test template
 
-`test/v1/zone_payments` is copied to `/opt/antithesis/test/v1` in the image and runs in the
-`workload` container. Each command is a `tempo-zone-xtask antithesis` subcommand:
+`test/v1/zone_payments` ships in the image outside `/opt/antithesis`; `scripts/workload.sh` installs it at
+`/opt/antithesis/test/v1`, so only the `workload` container offers it. Each command is a `tempo-zone-xtask antithesis` subcommand:
 
 | Command | What it does |
 |---|---|

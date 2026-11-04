@@ -8,7 +8,7 @@
 use alloy::{
     primitives::{Address, B256, Bytes, U256},
     providers::{DynProvider, PendingTransactionBuilder, Provider, ProviderBuilder},
-    rpc::types::{BlockId, Filter},
+    rpc::types::{BlockId, Filter, TransactionReceipt},
     signers::local::PrivateKeySigner,
     sol_types::SolEvent as _,
     transports::http::reqwest,
@@ -18,7 +18,7 @@ use antithesis_sdk::{
 };
 use eyre::{OptionExt as _, WrapErr as _, eyre};
 use serde_json::json;
-use std::{path::PathBuf, time::Duration};
+use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 use tempo_contracts::{
     precompiles::ITIP20,
     zones::{
@@ -259,12 +259,14 @@ impl Context {
     }
 
     async fn transfer(&self) -> eyre::Result<()> {
-        let Some((sender, balance, _lease)) = self.lease_zone_sender().await? else {
+        let node = random_index(self.zones.len());
+        let Some((sender, balance, _lease)) = self.lease_zone_sender(&self.zones[node]).await?
+        else {
             return Ok(());
         };
         let (to, new_recipient) = self.pick_recipient(sender.address())?;
         let amount = random_between(1, balance / 4);
-        let url = self.random_zone_url();
+        let url = &self.zone_urls[node];
         let zone = self.wallet(&sender, url);
         let gas_price = zone.get_gas_price().await?;
         let receipt = ITIP20::new(PATH_USD_ADDRESS, &zone)
@@ -283,10 +285,14 @@ impl Context {
             "amount": amount.to_string(),
             "balance": balance.to_string(),
         });
-        // The sender is leased and only ever spends through this command, so its balance covers
-        // the amount and the fee.
-        assert_always!(receipt.status(), "Funded zone transfer succeeds", &details);
         if !receipt.status() {
+            assert_always!(
+                !self
+                    .covered_before(&zone, &receipt, sender.address(), amount)
+                    .await?,
+                "Funded zone transfer succeeds",
+                &details
+            );
             return Ok(());
         }
         let zone_block = receipt.block_number.ok_or_eyre("receipt has no block")?;
@@ -322,7 +328,9 @@ impl Context {
     }
 
     async fn withdraw(&self) -> eyre::Result<()> {
-        let Some((sender, balance, _lease)) = self.lease_zone_sender().await? else {
+        let node = random_index(self.zones.len());
+        let Some((sender, balance, _lease)) = self.lease_zone_sender(&self.zones[node]).await?
+        else {
             return Ok(());
         };
         // Half of withdrawals pay a new L1 address, growing the L1 trie.
@@ -333,7 +341,7 @@ impl Context {
             self.random_existing_account(None)?
                 .map_or(sender.address(), |account| account.address())
         };
-        let url = self.random_zone_url();
+        let url = &self.zone_urls[node];
         let zone = self.wallet(&sender, url);
         let outbox = IZoneOutbox::new(ZONE_OUTBOX_ADDRESS, &zone);
         let fee = outbox.calculateWithdrawalFee(0).call().await?;
@@ -415,7 +423,9 @@ impl Context {
     }
 
     async fn fanout(&self) -> eyre::Result<()> {
-        let Some((sender, balance, _lease)) = self.lease_zone_sender().await? else {
+        let node = random_index(self.zones.len());
+        let Some((sender, balance, _lease)) = self.lease_zone_sender(&self.zones[node]).await?
+        else {
             return Ok(());
         };
         let count = random_between(5, 20);
@@ -423,7 +433,7 @@ impl Context {
         if amount == 0 {
             return Ok(());
         }
-        let url = self.random_zone_url();
+        let url = &self.zone_urls[node];
         let zone = self.wallet(&sender, url);
         let gas_price = zone.get_gas_price().await?;
         let mut nonce = zone
@@ -444,21 +454,31 @@ impl Context {
             nonce += 1;
             pending.push((to, tx));
         }
+        // What this command's earlier transfers spent in each block, which a later revert in the
+        // same block had to leave room for.
+        let mut spent_in_block: BTreeMap<u64, u128> = BTreeMap::new();
         for (to, tx) in pending {
             let receipt = tx.with_timeout(Some(RECEIPT_TIMEOUT)).get_receipt().await?;
-            assert_always!(
-                receipt.status(),
-                "Funded zone transfer succeeds",
-                &json!({ "tx": receipt.transaction_hash, "from": sender.address(), "to": to })
-            );
+            let zone_block = receipt.block_number.ok_or_eyre("receipt has no block")?;
+            let spent = spent_in_block.entry(zone_block).or_default();
             if receipt.status() {
+                *spent += amount;
                 self.ledger.append(&Record::Transfer {
                     zone_tx: receipt.transaction_hash,
-                    zone_block: receipt.block_number.ok_or_eyre("receipt has no block")?,
+                    zone_block,
                     from: sender.address(),
                     to,
                     amount,
                 })?;
+            } else {
+                let required = *spent + amount;
+                assert_always!(
+                    !self
+                        .covered_before(&zone, &receipt, sender.address(), required)
+                        .await?,
+                    "Funded zone transfer succeeds",
+                    &json!({ "tx": receipt.transaction_hash, "from": sender.address(), "to": to })
+                );
             }
         }
         let accounts = self.ledger.accounts()?.len();
@@ -644,10 +664,14 @@ impl Context {
         Ok(None)
     }
 
-    /// Leases a random workload account whose zone balance can pay for a send. Returns `None`
-    /// when no candidate is free and funded.
-    async fn lease_zone_sender(&self) -> eyre::Result<Option<(Account, u128, Lease)>> {
-        let zone = self.random_zone();
+    /// Leases a random workload account whose balance on `zone` can pay for a send. Returns
+    /// `None` when no candidate is free and funded. The balance only sizes the send: `zone` may
+    /// lag behind the account's last spends, so callers send to the same node and judge a revert
+    /// with [`Self::covered_before`].
+    async fn lease_zone_sender(
+        &self,
+        zone: &DynProvider,
+    ) -> eyre::Result<Option<(Account, u128, Lease)>> {
         for account in shuffled(self.ledger.accounts()?)
             .into_iter()
             .take(SENDER_CANDIDATES)
@@ -667,6 +691,28 @@ impl Context {
         }
         println!("no free funded zone sender");
         Ok(None)
+    }
+
+    /// Whether `sender` held at least `required` on `zone` just before the block that mined the
+    /// reverted `receipt`, so the revert cannot be blamed on a stale balance read.
+    async fn covered_before(
+        &self,
+        zone: &DynProvider,
+        receipt: &TransactionReceipt,
+        sender: Address,
+        required: u128,
+    ) -> eyre::Result<bool> {
+        let block = receipt.block_number.ok_or_eyre("receipt has no block")?;
+        let parent = block
+            .checked_sub(1)
+            .ok_or_eyre("transaction mined in genesis")?;
+        let balance = ITIP20::new(PATH_USD_ADDRESS, zone)
+            .balanceOf(sender)
+            .from(sender)
+            .block(BlockId::number(parent))
+            .call()
+            .await?;
+        Ok(balance >= U256::from(required))
     }
 
     /// Picks a recipient other than `sender`: a new account half of the time, otherwise an
@@ -689,10 +735,6 @@ impl Context {
             .filter(|account| Some(account.address()) != except)
             .collect();
         Ok(random_choice(accounts))
-    }
-
-    fn random_zone_url(&self) -> &reqwest::Url {
-        &self.zone_urls[random_index(self.zone_urls.len())]
     }
 
     fn random_zone(&self) -> &DynProvider {
