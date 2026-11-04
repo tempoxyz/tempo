@@ -44,8 +44,7 @@ impl TempoBlockExecutor<'_> {
             return Err(StorageActionReplayError::TransactionExecutionFailed.into());
         }
 
-        let is_system_tx = self
-            .validate_tx_pre_execution(original)?;
+        let is_system_tx = self.validate_tx_pre_execution(original)?;
 
         let state = self
             .replay_actions(actions.drain(..), expiring_nonce)
