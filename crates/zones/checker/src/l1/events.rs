@@ -230,6 +230,17 @@ fn decode_portal_event(log: &Log, block: u64) -> eyre::Result<Option<L1PortalEve
         ZonePortal::SequencerSetUpdated::SIGNATURE_HASH => {
             ignored!(ZonePortal::SequencerSetUpdated, "SequencerSetUpdated")
         }
+        // TIP-1150: limits and token queues move no funds. Payouts from a token queue emit
+        // WithdrawalProcessed, DepositBounceBack or WithdrawalBounceBack like main-queue payouts.
+        ZonePortal::WithdrawalLimitSet::SIGNATURE_HASH => {
+            ignored!(ZonePortal::WithdrawalLimitSet, "WithdrawalLimitSet")
+        }
+        ZonePortal::WithdrawalQueued::SIGNATURE_HASH => {
+            ignored!(ZonePortal::WithdrawalQueued, "WithdrawalQueued")
+        }
+        ZonePortal::QueuedWithdrawalPaid::SIGNATURE_HASH => {
+            ignored!(ZonePortal::QueuedWithdrawalPaid, "QueuedWithdrawalPaid")
+        }
         _ => {
             eyre::bail!("unsupported Portal event {topic} in block {block}");
         }
