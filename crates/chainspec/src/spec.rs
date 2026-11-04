@@ -20,6 +20,7 @@ use reth_chainspec::{
 use reth_network_peers::NodeRecord;
 #[cfg(feature = "std")]
 use std::sync::LazyLock;
+use tempo_dkg_onchain_artifacts::OutcomeEncoding;
 use tempo_hardfork::TempoHardfork;
 use tempo_primitives::TempoHeader;
 
@@ -221,14 +222,32 @@ impl TempoChainSpec {
 
         // TODO(hamdi): Dev networks are allowed to have a non-dkg outcome in extra data. Update such
         // that we always require a valid dkg outcome, thus network identity for all networks
-        let network_identity =
-            NetworkIdentity::from_extra_data(inner.genesis_header().inner.extra_data.as_ref()).ok();
-
         Self {
             inner,
             info,
-            network_identity,
+            network_identity: None,
             default_follow_url: None,
+        }
+        .with_genesis_network_identity()
+    }
+
+    /// Sets the network identity from the DKG outcome in the genesis header, if it has one.
+    fn with_genesis_network_identity(mut self) -> Self {
+        let genesis = self.inner.genesis_header();
+        self.network_identity = NetworkIdentity::from_extra_data(
+            genesis.inner.extra_data.as_ref(),
+            self.dkg_outcome_encoding_at(genesis.inner.timestamp),
+        )
+        .ok();
+        self
+    }
+
+    /// Returns how the DKG outcome of a boundary block with `timestamp` is encoded.
+    pub fn dkg_outcome_encoding_at(&self, timestamp: u64) -> OutcomeEncoding {
+        if self.tempo_hardfork_at(timestamp).stores_dkg_ceremony() {
+            OutcomeEncoding::CeremonyInState
+        } else {
+            OutcomeEncoding::Legacy
         }
     }
 
@@ -267,15 +286,13 @@ impl From<ChainSpec> for TempoChainSpec {
             inner,
         });
 
-        let network_identity =
-            NetworkIdentity::from_extra_data(inner.genesis_header().inner.extra_data.as_ref()).ok();
-
         Self {
             inner,
             info: TempoGenesisInfo::default(),
-            network_identity,
+            network_identity: None,
             default_follow_url: None,
         }
+        .with_genesis_network_identity()
     }
 }
 

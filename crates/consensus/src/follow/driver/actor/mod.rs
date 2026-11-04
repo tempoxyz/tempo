@@ -91,10 +91,14 @@ where
             )
         })?;
 
-    let verifier = FinalizationVerifier::new(network_identity, config.epoch_strategy.clone())
-        .with_scheme_provider(config.scheme_provider.clone());
+    let verifier = FinalizationVerifier::new(
+        network_identity,
+        config.epoch_strategy.clone(),
+        config.chain_spec.clone(),
+    )
+    .with_scheme_provider(config.scheme_provider.clone());
     let outcome = verifier
-        .decode_dkg_outcome_and_register_boundary(boundary_header.extra_data().as_ref())
+        .decode_dkg_outcome_and_register_boundary(&boundary_header)
         .wrap_err_with(|| {
             format!(
                 "the last boundary (`{startup_execution_boundary}`) block header did not contain a DKG outcome"
@@ -215,9 +219,7 @@ where
 
             let onchain_outcome = self
                 .verifier
-                .decode_dkg_outcome_and_register_boundary(
-                    boundary_block.header().extra_data().as_ref(),
-                )
+                .decode_dkg_outcome_and_register_boundary(boundary_block.header())
                 .wrap_err_with(|| {
                     format!(
                         "the boundary block at height `{last_consensus_boundary}` \
@@ -420,7 +422,7 @@ where
         if epoch_info.last() == block.height() {
             let onchain_outcome = self
                 .verifier
-                .decode_dkg_outcome_and_register_boundary(block.header().extra_data().as_ref())
+                .decode_dkg_outcome_and_register_boundary(block.header())
                 .expect("boundary blocks must contain DKG outcomes");
 
             // Prevent an outcome from advancing the persisted trust anchor to an arbitrary epoch.

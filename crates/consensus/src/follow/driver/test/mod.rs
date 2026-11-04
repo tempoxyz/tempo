@@ -11,7 +11,7 @@ use commonware_cryptography::certificate::Provider as _;
 use commonware_macros::test_traced;
 use commonware_runtime::{Clock as _, Runner as _, Supervisor as _, deterministic};
 use commonware_utils::{Acknowledgement as _, acknowledgement::Exact};
-use tempo_chainspec::NetworkIdentity;
+use tempo_chainspec::{NetworkIdentity, spec::MODERATO};
 use tempo_node::rpc::consensus::Event;
 
 use super::{Config, try_init};
@@ -73,6 +73,7 @@ fn startup_uses_previous_execution_boundary() {
                 partition_prefix: "test".into(),
                 marshal: StubMarshal::default(),
                 epoch_strategy: strategy,
+                chain_spec: MODERATO.clone(),
             },
         )
         .await;
@@ -111,6 +112,7 @@ fn startup_rejects_an_unobserved_snapshot_identity_before_loading_boundaries() {
                 partition_prefix: "test".into(),
                 marshal: StubMarshal::default(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                chain_spec: MODERATO.clone(),
             },
         )
         .await
@@ -150,6 +152,7 @@ fn startup_propagates_finalized_block_read_failure() {
                 partition_prefix: "test".into(),
                 marshal: StubMarshal::default(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                chain_spec: MODERATO.clone(),
             },
         )
         .await;
@@ -179,6 +182,7 @@ fn startup_requires_execution_boundary_header() {
                 partition_prefix: "test".into(),
                 marshal: StubMarshal::default(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                chain_spec: MODERATO.clone(),
             },
         )
         .await;
@@ -212,6 +216,7 @@ fn valid_finalization_is_certified_and_reported() {
                 partition_prefix: "test".into(),
                 marshal: marshal.clone(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                chain_spec: MODERATO.clone(),
             },
         )
         .await
@@ -270,6 +275,7 @@ fn network_identity_verifies_finalization_when_epoch_scheme_is_missing() {
                 partition_prefix: "test".into(),
                 marshal: marshal.clone(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                chain_spec: MODERATO.clone(),
             },
         )
         .await
@@ -331,6 +337,7 @@ fn gossiped_certificate_is_admitted_and_reported_only_to_marshal() {
                 partition_prefix: "test".into(),
                 marshal: marshal.clone(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                chain_spec: MODERATO.clone(),
             },
         )
         .await
@@ -415,6 +422,7 @@ async fn start_rig(context: &mut deterministic::Context) -> Rig {
             partition_prefix: "test".into(),
             marshal: marshal.clone(),
             epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+            chain_spec: MODERATO.clone(),
         },
     )
     .await
@@ -658,6 +666,7 @@ fn observed_boundary_is_durable_before_acknowledgement() {
                 partition_prefix: "test".into(),
                 marshal: StubMarshal::default(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                chain_spec: MODERATO.clone(),
             },
         )
         .await
@@ -754,6 +763,7 @@ fn historical_boundaries_do_not_replace_a_newer_configured_anchor_for_the_same_k
                 partition_prefix: "test".into(),
                 marshal: StubMarshal::default(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                chain_spec: MODERATO.clone(),
             },
         )
         .await
@@ -816,6 +826,7 @@ fn startup_does_not_persist_a_boundary_above_its_authenticated_tip() {
                     partition_prefix: "test".into(),
                     marshal: StubMarshal::default(),
                     epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                    chain_spec: MODERATO.clone(),
                 },
             )
             .await
@@ -858,6 +869,7 @@ fn startup_leaves_boundaries_above_the_marshal_floor_for_block_updates() {
                 partition_prefix: "test".into(),
                 marshal: marshal.clone(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                chain_spec: MODERATO.clone(),
             },
         )
         .await
@@ -943,6 +955,7 @@ fn startup_recovery_does_not_regress_the_persisted_identity_during_backfill() {
                 partition_prefix: "test".into(),
                 marshal: marshal.clone(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                chain_spec: MODERATO.clone(),
             },
         )
         .await
@@ -1006,6 +1019,7 @@ fn startup_does_not_observe_a_boundary_only_read_from_execution() {
                 partition_prefix: "test".into(),
                 marshal: StubMarshal::default(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                chain_spec: MODERATO.clone(),
             },
         )
         .await
@@ -1049,6 +1063,7 @@ fn unverifiable_gossiped_certificate_is_not_blamed_on_the_sender() {
                 partition_prefix: "test".into(),
                 marshal: marshal.clone(),
                 epoch_strategy: strategy,
+                chain_spec: MODERATO.clone(),
             },
         )
         .await
@@ -1119,6 +1134,7 @@ fn missing_scheme_catches_up_through_each_boundary() {
                 partition_prefix: "test".into(),
                 marshal: marshal.clone(),
                 epoch_strategy: strategy,
+                chain_spec: MODERATO.clone(),
             },
         )
         .await
@@ -1200,6 +1216,7 @@ fn upstream_finalization_failing_registered_scheme_is_dropped_without_hint() {
                 partition_prefix: "test".into(),
                 marshal: marshal.clone(),
                 epoch_strategy: strategy,
+                chain_spec: MODERATO.clone(),
             },
         )
         .await
@@ -1266,6 +1283,7 @@ fn finalization_failing_the_identity_fallback_hints_current_epoch_boundary() {
                 partition_prefix: "test".into(),
                 marshal: marshal.clone(),
                 epoch_strategy: strategy,
+                chain_spec: MODERATO.clone(),
             },
         )
         .await
@@ -1316,6 +1334,7 @@ fn mismatched_finalization_digest_is_dropped_without_stopping_driver() {
                 partition_prefix: "test".into(),
                 marshal: marshal.clone(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                chain_spec: MODERATO.clone(),
             },
         )
         .await
@@ -1382,6 +1401,7 @@ fn scheme_before_network_identity_epoch_is_required() {
                 partition_prefix: "test".into(),
                 marshal: marshal.clone(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                chain_spec: MODERATO.clone(),
             },
         )
         .await
@@ -1437,6 +1457,7 @@ fn gossiped_certificate_without_a_usable_identity_needs_scheme() {
                 partition_prefix: "test".into(),
                 marshal: marshal.clone(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                chain_spec: MODERATO.clone(),
             },
         )
         .await
@@ -1503,6 +1524,7 @@ fn boundary_update_registers_scheme_before_acknowledging() {
                 partition_prefix: "test".into(),
                 marshal: StubMarshal::default(),
                 epoch_strategy: strategy,
+                chain_spec: MODERATO.clone(),
             },
         )
         .await
@@ -1545,6 +1567,7 @@ fn non_boundary_update_is_acknowledged_without_registering_a_scheme() {
                 partition_prefix: "test".into(),
                 marshal: StubMarshal::default(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                chain_spec: MODERATO.clone(),
             },
         )
         .await
@@ -1610,6 +1633,7 @@ fn startup_installs_missing_consensus_epoch_scheme_from_marshal() {
                 partition_prefix: "test".into(),
                 marshal: marshal.clone(),
                 epoch_strategy: strategy,
+                chain_spec: MODERATO.clone(),
             },
         )
         .await
@@ -1657,6 +1681,7 @@ fn non_finalized_events_are_ignored() {
                 partition_prefix: "test".into(),
                 marshal: marshal.clone(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                chain_spec: MODERATO.clone(),
             },
         )
         .await

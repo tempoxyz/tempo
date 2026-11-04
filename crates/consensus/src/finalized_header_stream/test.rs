@@ -5,7 +5,7 @@ use commonware_consensus::types::Epoch;
 use futures::StreamExt as _;
 use rand::{SeedableRng as _, rngs::StdRng};
 use tempo_alloy::{TempoNetwork, rpc::TempoHeaderResponse};
-use tempo_chainspec::NetworkIdentity;
+use tempo_chainspec::{NetworkIdentity, spec::MODERATO};
 
 use super::{Config, Error, FinalizedHeaderStream};
 use crate::{
@@ -64,7 +64,7 @@ async fn expands_a_sparse_tip_certificate() {
     push_reverse_chunk_headers(&asserter, &[block_1.clone(), block_2.clone()], 1);
     push_headers(&asserter, [&block_1, &block_2]);
 
-    let mut config = Config::new(genesis.digest().0, None, EPOCH_LENGTH);
+    let mut config = Config::new(genesis.digest().0, None, EPOCH_LENGTH, MODERATO.clone());
     config.chunk_size = 1;
     let mut stream = FinalizedHeaderStream::init(mock_provider(asserter.clone()), config)
         .await
@@ -116,7 +116,7 @@ async fn bridges_a_full_dkg_boundary() {
     push_header(&asserter, tip);
 
     let genesis = &blocks[0];
-    let mut config = Config::new(genesis.digest().0, None, EPOCH_LENGTH);
+    let mut config = Config::new(genesis.digest().0, None, EPOCH_LENGTH, MODERATO.clone());
     config.chunk_size = 3;
     let mut stream = FinalizedHeaderStream::init(mock_provider(asserter.clone()), config)
         .await
@@ -164,7 +164,12 @@ async fn uses_authoritative_identity_for_initial_backfill() {
         from_epoch: authoritative.outcome.epoch,
         identity: *authoritative.outcome.network_identity(),
     };
-    let mut config = Config::new(genesis.digest().0, Some(network_identity), EPOCH_LENGTH);
+    let mut config = Config::new(
+        genesis.digest().0,
+        Some(network_identity),
+        EPOCH_LENGTH,
+        MODERATO.clone(),
+    );
     config.chunk_size = 4;
     let mut stream = FinalizedHeaderStream::init(mock_provider(asserter.clone()), config)
         .await
@@ -219,7 +224,12 @@ async fn falls_back_to_identity_anchored_by_start() {
     };
     let mut stream = FinalizedHeaderStream::init(
         mock_provider(asserter.clone()),
-        Config::new(start.digest().0, Some(stale_identity), EPOCH_LENGTH),
+        Config::new(
+            start.digest().0,
+            Some(stale_identity),
+            EPOCH_LENGTH,
+            MODERATO.clone(),
+        ),
     )
     .await
     .expect("stream should initialize");
@@ -256,7 +266,12 @@ async fn applies_transition_from_start_boundary() {
     };
     let mut stream = FinalizedHeaderStream::init(
         mock_provider(asserter.clone()),
-        Config::new(start.digest().0, Some(network_identity), EPOCH_LENGTH),
+        Config::new(
+            start.digest().0,
+            Some(network_identity),
+            EPOCH_LENGTH,
+            MODERATO.clone(),
+        ),
     )
     .await
     .expect("stream should initialize from the trusted boundary");
@@ -288,7 +303,12 @@ async fn does_not_resolve_start_identity_when_caught_up() {
     };
     FinalizedHeaderStream::init(
         mock_provider(asserter.clone()),
-        Config::new(start.digest().0, Some(network_identity), EPOCH_LENGTH),
+        Config::new(
+            start.digest().0,
+            Some(network_identity),
+            EPOCH_LENGTH,
+            MODERATO.clone(),
+        ),
     )
     .await
     .expect("caught-up stream should initialize without fetching start ancestry");
@@ -312,7 +332,12 @@ async fn rejects_mismatched_start_header() {
     };
     let error = FinalizedHeaderStream::init(
         mock_provider(asserter.clone()),
-        Config::new(B256::ZERO, Some(network_identity), EPOCH_LENGTH),
+        Config::new(
+            B256::ZERO,
+            Some(network_identity),
+            EPOCH_LENGTH,
+            MODERATO.clone(),
+        ),
     )
     .await
     .err()

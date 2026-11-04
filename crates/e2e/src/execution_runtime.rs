@@ -43,7 +43,7 @@ use reth_rpc_builder::RpcModuleSelection;
 use tempfile::TempDir;
 use tempo_chainspec::{TempoChainSpec, TempoHardfork};
 use tempo_consensus::feed::FeedStateHandle;
-use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
+use tempo_dkg_onchain_artifacts::{OnchainDkgOutcome, OutcomeEncoding};
 use tempo_evm::genesis::{create_genesis_evm, genesis_evm_env, with_genesis_storage};
 use tempo_node::{
     TempoFullNode,
@@ -52,6 +52,8 @@ use tempo_node::{
 };
 use tempo_precompiles::{
     VALIDATOR_CONFIG_V2_ADDRESS,
+    current_committee::{CURRENT_COMMITTEE_ADDRESS, CurrentCommittee, ICurrentCommittee, slots},
+    storage::{Handler as _, LayoutCtx, Slot},
     validator_config_v2::{
         IValidatorConfigV2, VALIDATOR_NS_ADD, VALIDATOR_NS_ROTATE, ValidatorConfigV2,
     },
@@ -70,6 +72,7 @@ pub const TEST_MNEMONIC: &str = "test test test test test test test test test te
 pub struct Builder {
     t12_time: Option<u64>,
     t14_time: Option<u64>,
+    t15_time: Option<u64>,
     epoch_length: Option<u64>,
     initial_dkg_outcome: Option<OnchainDkgOutcome>,
     validators: Option<ordered::Map<PublicKey, ConsensusNodeConfig>>,
@@ -80,6 +83,7 @@ impl Builder {
         Self {
             t12_time: None,
             t14_time: None,
+            t15_time: None,
             epoch_length: None,
             initial_dkg_outcome: None,
             validators: None,
@@ -116,10 +120,16 @@ impl Builder {
         Self { t14_time, ..self }
     }
 
+    /// Overrides T15 (TIP-1123) activation; `None` preserves the fixture schedule.
+    pub fn with_t15_time(self, t15_time: Option<u64>) -> Self {
+        Self { t15_time, ..self }
+    }
+
     pub fn launch(self) -> eyre::Result<ExecutionRuntime> {
         let Self {
             t12_time,
             t14_time,
+            t15_time,
             epoch_length,
             initial_dkg_outcome,
             validators,
@@ -130,8 +140,12 @@ impl Builder {
             initial_dkg_outcome.ok_or_eyre("must specify initial DKG outcome")?;
         let validators = validators.ok_or_eyre("must specify validators")?;
 
+        let initial_ceremony = initial_dkg_outcome
+            .next_ceremony
+            .clone()
+            .ok_or_eyre("initial DKG outcome must carry its ceremony")?;
         assert_eq!(
-            initial_dkg_outcome.next_players(),
+            &initial_ceremony.players,
             &ordered::Set::from_iter_dedup(
                 validators
                     .iter_pairs()
@@ -172,6 +186,22 @@ impl Builder {
                 .unwrap();
         }
 
+        if let Some(t15_time) = t15_time {
+            genesis
+                .config
+                .extra_fields
+                .insert_value("t15Time".to_string(), t15_time)
+                .unwrap();
+        }
+
+        let encoding = TempoChainSpec::from_genesis(genesis.clone())
+            .dkg_outcome_encoding_at(genesis.timestamp);
+        let initial_dkg_outcome = OnchainDkgOutcome {
+            next_ceremony: initial_dkg_outcome
+                .next_ceremony
+                .filter(|_| encoding == OutcomeEncoding::Legacy),
+            ..initial_dkg_outcome
+        };
         genesis.extra_data = initial_dkg_outcome.encode().into();
 
         // Just remove whatever is already written into chainspec.
@@ -218,6 +248,34 @@ impl Builder {
                         )
                         .unwrap();
                 }
+            }
+
+            // TIP-1123 active at genesis: store the committee and ceremony of epoch 0.
+            if encoding == OutcomeEncoding::CeremonyInState {
+                let keys = |keys: &ordered::Set<PublicKey>| {
+                    keys.iter()
+                        .map(|key| B256::from_slice(key.as_ref()))
+                        .collect::<Vec<_>>()
+                };
+                CurrentCommittee::new()
+                    .set_committee_members(
+                        Address::ZERO,
+                        ICurrentCommittee::setCommitteeMembersCall {
+                            epoch: initial_dkg_outcome.epoch,
+                            publicKeys: keys(initial_dkg_outcome.players()),
+                        },
+                    )
+                    .unwrap();
+                Slot::<Vec<B256>>::new(slots::DKG_PLAYERS, CURRENT_COMMITTEE_ADDRESS)
+                    .write(keys(&initial_ceremony.players))
+                    .unwrap();
+                Slot::<bool>::new_with_ctx(
+                    slots::IS_FULL_DKG,
+                    LayoutCtx::packed(slots::IS_FULL_DKG_OFFSET),
+                    CURRENT_COMMITTEE_ADDRESS,
+                )
+                .write(initial_ceremony.is_full_dkg)
+                .unwrap();
             }
         });
 

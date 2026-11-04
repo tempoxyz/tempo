@@ -5,9 +5,10 @@ use alloy_sol_types::SolCall;
 use core::marker::PhantomData;
 use evm2::{
     DatabaseError, Evm,
-    evm::{AccountInfo, Database, DynDatabase, StateCheckpoint},
+    evm::{AccountInfo, Database, DynDatabase, State, StateCheckpoint},
     registry::{HandlerError, HandlerResult},
 };
+use std::collections::BTreeMap;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{
     error::{Result as TempoResult, TempoPrecompileError},
@@ -107,9 +108,29 @@ pub trait TempoStateAccess<M = ()> {
         Self: Sized,
     {
         StorageCtx::enter(
-            &mut ReadOnlyStorageProvider::new(self, spec).with_actions(actions),
+            &mut StateStorageProvider::new(self, spec).with_actions(actions),
             f,
         )
+    }
+
+    /// Runs `f` with storage that keeps its writes in an overlay instead of writing them to the
+    /// state, and returns them with the result of `f`.
+    ///
+    /// Reads in `f` see its own earlier writes. Like
+    /// [`with_read_only_storage_ctx`](Self::with_read_only_storage_ctx), it charges no gas and
+    /// runs no TIP-1060 accounting; the caller commits the writes.
+    fn with_overlay_storage_ctx<R>(
+        &mut self,
+        spec: TempoHardfork,
+        f: impl FnOnce() -> R,
+    ) -> (R, BTreeMap<(Address, U256), U256>)
+    where
+        Self: Sized,
+    {
+        let mut provider = StateStorageProvider::new(self, spec);
+        provider.writes = Some(BTreeMap::new());
+        let result = StorageCtx::enter(&mut provider, f);
+        (result, provider.writes.unwrap_or_default())
     }
 
     /// Checks if the given TIP20 token has USD currency.
@@ -294,6 +315,19 @@ impl TempoStateAccess<((),)> for Evm<'_, TempoEvmTypes> {
     }
 }
 
+/// Reads see the current values of the block state, including the open transaction's, but load
+/// nothing into it, so they leave no stale entries behind for later state commits.
+impl TempoStateAccess<((), (), (), ())> for State<'_> {
+    fn basic(&mut self, address: Address) -> Result<AccountInfo, DatabaseError> {
+        self.account_info_untracked(&address)
+            .map(Option::unwrap_or_default)
+    }
+
+    fn sload(&mut self, address: Address, key: U256) -> Result<U256, DatabaseError> {
+        self.storage_slot_untracked(&address, &key)
+    }
+}
+
 impl TempoStateAccess<((), ())> for &mut dyn DynDatabase {
     fn basic(&mut self, address: Address) -> Result<AccountInfo, DatabaseError> {
         self.get_account(&address).map(Option::unwrap_or_default)
@@ -319,20 +353,23 @@ impl<T: reth_storage_api::StateProvider> TempoStateAccess<((), (), ())> for T {
     }
 }
 
-/// Read-only storage provider that wraps a `TempoStateAccess`.
+/// Storage provider that wraps a `TempoStateAccess`.
 ///
-/// Implements `PrecompileStorageProvider` by delegating read operations to the backend
-/// and returning errors for write operations.
+/// Implements `PrecompileStorageProvider` by delegating read operations to the backend. Without
+/// a write overlay it is read-only and rejects storage writes; with one, it keeps storage writes
+/// in the overlay and reads them back.
 ///
 /// The marker generic `M` selects which `TempoStateAccess<M>` impl to use for the backend.
-struct ReadOnlyStorageProvider<'a, S, M = ()> {
+struct StateStorageProvider<'a, S, M = ()> {
     state: &'a mut S,
     spec: TempoHardfork,
     actions: Option<StorageActions>,
+    /// Storage writes, keyed by address and slot. `None` for a read-only provider.
+    writes: Option<BTreeMap<(Address, U256), U256>>,
     _marker: PhantomData<M>,
 }
 
-impl<'a, S, M> ReadOnlyStorageProvider<'a, S, M>
+impl<'a, S, M> StateStorageProvider<'a, S, M>
 where
     S: TempoStateAccess<M>,
 {
@@ -342,6 +379,7 @@ where
             state,
             spec,
             actions: None,
+            writes: None,
             _marker: PhantomData,
         }
     }
@@ -352,7 +390,7 @@ where
     }
 }
 
-impl<S, M> PrecompileStorageProvider for ReadOnlyStorageProvider<'_, S, M>
+impl<S, M> PrecompileStorageProvider for StateStorageProvider<'_, S, M>
 where
     S: TempoStateAccess<M>,
 {
@@ -378,10 +416,17 @@ where
 
     fn is_static(&self) -> bool {
         // read-only operations should always be static
-        true
+        self.writes.is_none()
     }
 
     fn sload(&mut self, address: Address, key: U256) -> TempoResult<U256> {
+        if let Some(&value) = self
+            .writes
+            .as_ref()
+            .and_then(|writes| writes.get(&(address, key)))
+        {
+            return Ok(value);
+        }
         let _ = self.state.basic(address)?;
         let value = self.state.sload(address, key)?;
 
@@ -444,9 +489,13 @@ where
         unreachable!("'reservoir' not implemented in read-only context yet")
     }
 
-    // Write operations are not supported in read-only context
-    fn sstore(&mut self, _: Address, _: U256, _: U256) -> TempoResult<()> {
-        unreachable!("'sstore' not supported in read-only context")
+    // Write operations other than overlay storage writes are not supported
+    fn sstore(&mut self, address: Address, key: U256, value: U256) -> TempoResult<()> {
+        let Some(writes) = &mut self.writes else {
+            unreachable!("'sstore' not supported in read-only context")
+        };
+        writes.insert((address, key), value);
+        Ok(())
     }
 
     fn set_code(&mut self, _: Address, _: Bytes) -> TempoResult<()> {

@@ -2,12 +2,25 @@
 
 use std::time::Duration;
 
-use commonware_codec::ReadExt as _;
+use alloy_primitives::B256;
+use commonware_codec::DecodeExt as _;
 use commonware_consensus::types::{Epoch, Epocher as _, FixedEpocher, Height};
+use commonware_cryptography::ed25519::PublicKey;
 use commonware_runtime::{Clock as _, deterministic::Context};
-use commonware_utils::NZU64;
-use reth_ethereum::provider::BlockReader as _;
-use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
+use commonware_utils::{NZU64, TryFromIterator as _, ordered};
+use reth_ethereum::{
+    evm::primitives::{ConfigureEvm as _, database::StateProviderDatabase},
+    provider::{
+        BlockReader as _, ChainSpecProvider as _, HeaderProvider as _, StateProvider,
+        StateProviderFactory as _,
+    },
+};
+use tempo_dkg_onchain_artifacts::{DkgCeremony, OnchainDkgOutcome};
+use tempo_precompiles::{
+    current_committee::{CurrentCommittee, ICurrentCommittee},
+    error::TempoPrecompileError,
+    storage::StorageCtx,
+};
 
 use crate::{TestingNode, metrics::wait_for_metrics};
 
@@ -39,7 +52,85 @@ pub(crate) fn read_outcome_from_validator(
         return None;
     }
 
-    Some(OnchainDkgOutcome::read(&mut extra_data.as_ref()).expect("valid DKG outcome"))
+    let encoding = provider
+        .chain_spec()
+        .dkg_outcome_encoding_at(block.header.inner.timestamp);
+    Some(OnchainDkgOutcome::decode_extra_data(extra_data, encoding).expect("valid DKG outcome"))
+}
+
+/// Reads `getDkgCeremony()` of the `CurrentCommittee` precompile in the state after block
+/// `block_num`.
+pub(crate) fn read_stored_dkg_ceremony(
+    validator: &TestingNode<Context>,
+    block_num: Height,
+) -> Result<ICurrentCommittee::getDkgCeremonyReturn, TempoPrecompileError> {
+    let node = validator.execution();
+    let header = node
+        .provider
+        .header_by_number(block_num.get())
+        .unwrap()
+        .expect("block exists");
+    let state = node
+        .provider
+        .history_by_block_number(block_num.get())
+        .unwrap();
+    let mut evm = node
+        .evm_config
+        .evm_for_block(
+            StateProviderDatabase::new(StateProvider::into_evm_state_provider(state)),
+            &header,
+        )
+        .unwrap();
+    StorageCtx::enter_evm(&mut evm, || CurrentCommittee::new().get_dkg_ceremony())
+}
+
+/// Reads the DKG ceremony running during the epoch of the outcome in boundary block `block_num`:
+/// from the legacy outcome before TIP-1123, and from the `CurrentCommittee` precompile in the
+/// boundary's state after.
+pub(crate) fn read_ceremony_from_validator(
+    validator: &TestingNode<Context>,
+    block_num: Height,
+) -> DkgCeremony {
+    let outcome =
+        read_outcome_from_validator(validator, block_num).expect("boundary has a DKG outcome");
+    if let Some(ceremony) = outcome.next_ceremony {
+        return ceremony;
+    }
+    let stored = read_stored_dkg_ceremony(validator, block_num).expect("ceremony is stored");
+    assert_eq!(stored.epoch, outcome.epoch);
+    assert_eq!(stored.dealers, public_keys(outcome.players()));
+    DkgCeremony {
+        players: ordered::Set::try_from_iter(
+            stored
+                .players
+                .iter()
+                .map(|key| PublicKey::decode(key.as_slice()).expect("valid player key")),
+        )
+        .expect("stored players are distinct"),
+        is_full_dkg: stored.isFullDkg,
+    }
+}
+
+/// Returns `keys` as the `bytes32` keys the `CurrentCommittee` precompile stores.
+pub(crate) fn public_keys(keys: &ordered::Set<PublicKey>) -> Vec<B256> {
+    keys.iter()
+        .map(|key| B256::from_slice(key.as_ref()))
+        .collect()
+}
+
+/// Waits for the DKG outcome in the last block of `epoch` and returns the ceremony running during
+/// the outcome's epoch, see [`read_ceremony_from_validator`].
+pub(crate) async fn wait_for_ceremony(
+    context: &Context,
+    validators: &[TestingNode<Context>],
+    epoch: u64,
+    epoch_length: u64,
+) -> DkgCeremony {
+    wait_for_outcome(context, validators, epoch, epoch_length).await;
+    let height = FixedEpocher::new(NZU64!(epoch_length))
+        .last(Epoch::new(epoch))
+        .expect("valid epoch");
+    read_ceremony_from_validator(&validators[0], height)
 }
 
 /// Waits for and reads the DKG outcome from the last block of the given epoch.
@@ -63,7 +154,7 @@ pub(crate) async fn wait_for_outcome(
                 epoch,
                 %height,
                 outcome_epoch = %outcome.epoch,
-                is_next_full_dkg = outcome.is_next_full_dkg,
+                encoding = ?outcome.encoding(),
                 "Read DKG outcome"
             );
             return outcome;

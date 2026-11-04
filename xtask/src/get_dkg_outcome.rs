@@ -5,13 +5,16 @@ use std::sync::Arc;
 use alloy::{
     primitives::{B256, Bytes},
     providers::{Provider, ProviderBuilder},
+    rpc::types::TransactionRequest,
+    sol_types::SolCall as _,
 };
-use commonware_codec::{Encode as _, ReadExt as _};
+use commonware_codec::Encode as _;
 use commonware_consensus::types::{Epoch, Epocher as _, FixedEpocher, Height};
 use commonware_cryptography::ed25519::PublicKey;
 use eyre::{Context as _, OptionExt as _, ensure, eyre};
 use serde::Serialize;
 use tempo_chainspec::spec::TempoChainSpec;
+use tempo_contracts::precompiles::{CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 
 #[derive(Debug, clap::Args)]
@@ -41,9 +44,10 @@ struct DkgOutcomeInfo {
     dealers: Vec<String>,
     /// Players that received a share from this DKG ceremony (ed25519 public keys)
     players: Vec<String>,
-    /// Players for the next DKG ceremony (ed25519 public keys)
+    /// Players of the DKG ceremony running during `epoch` (ed25519 public keys). Read from the
+    /// outcome before TIP-1123, and from the `CurrentCommittee` precompile at this block after.
     next_players: Vec<String>,
-    /// Whether the next DKG should be a full ceremony (new polynomial)
+    /// Whether the DKG ceremony running during `epoch` is a full ceremony (new polynomial)
     is_next_full_dkg: bool,
     /// The network identity (group public key)
     network_identity: Bytes,
@@ -129,8 +133,43 @@ impl GetDkgOutcome {
             block_number
         );
 
-        let outcome = OnchainDkgOutcome::read(&mut extra_data.as_ref())
-            .wrap_err("failed to parse DKG outcome from extra_data")?;
+        let outcome = OnchainDkgOutcome::decode_extra_data(
+            extra_data.as_ref(),
+            chain.dkg_outcome_encoding_at(block.header.timestamp),
+        )
+        .wrap_err("failed to parse DKG outcome from extra_data")?;
+
+        let (next_players, is_next_full_dkg) = if let Some(ceremony) = &outcome.next_ceremony {
+            (
+                ceremony.players.iter().map(pubkey_to_hex).collect(),
+                ceremony.is_full_dkg,
+            )
+        } else {
+            let request = TransactionRequest::default()
+                .to(CURRENT_COMMITTEE_ADDRESS)
+                .input(ICurrentCommittee::getDkgCeremonyCall {}.abi_encode().into());
+            let output = provider
+                .call(request)
+                .block(block_number.into())
+                .await
+                .wrap_err("failed reading CurrentCommittee.getDkgCeremony")?;
+            let ceremony = ICurrentCommittee::getDkgCeremonyCall::abi_decode_returns(&output)
+                .wrap_err("failed decoding CurrentCommittee.getDkgCeremony")?;
+            ensure!(
+                ceremony.epoch == outcome.epoch,
+                "CurrentCommittee at block {block_number} stores the DKG ceremony of epoch {}, expected {}",
+                ceremony.epoch,
+                outcome.epoch,
+            );
+            (
+                ceremony
+                    .players
+                    .iter()
+                    .map(const_hex::encode_prefixed)
+                    .collect(),
+                ceremony.isFullDkg,
+            )
+        };
 
         let sharing = outcome.sharing();
         let info = DkgOutcomeInfo {
@@ -139,8 +178,8 @@ impl GetDkgOutcome {
             block_hash,
             dealers: outcome.dealers().iter().map(pubkey_to_hex).collect(),
             players: outcome.players().iter().map(pubkey_to_hex).collect(),
-            next_players: outcome.next_players().iter().map(pubkey_to_hex).collect(),
-            is_next_full_dkg: outcome.is_next_full_dkg,
+            next_players,
+            is_next_full_dkg,
             network_identity: sharing.public().encode().into(),
             threshold: sharing.required(),
             total_participants: sharing.total().get(),

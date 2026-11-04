@@ -43,7 +43,7 @@ use tempo_contracts::{
         t13_zone_factory_state,
     },
 };
-use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
+use tempo_dkg_onchain_artifacts::{DkgCeremony, OnchainDkgOutcome, OutcomeEncoding};
 use tempo_evm::genesis::{
     GenesisEvm, create_genesis_evm, deploy_arachnid_create2_factory, deploy_permit2,
     ethereum_chain_config, genesis_account, genesis_evm_env, predeployed_contract,
@@ -54,11 +54,13 @@ use tempo_precompiles::{
     account_keychain::AccountKeychain,
     address_registry::AddressRegistry,
     configurable_account::ConfigurableAccount,
+    current_committee::{CURRENT_COMMITTEE_ADDRESS, CurrentCommittee, ICurrentCommittee, slots},
+    error::TempoPrecompileError,
     nonce::NonceManager,
     receive_policy_guard::ReceivePolicyGuard,
     signature_verifier::SignatureVerifier,
     stablecoin_dex::StablecoinDEX,
-    storage::ContractStorage,
+    storage::{ContractStorage, Handler as _, LayoutCtx, Slot},
     tip_fee_manager::{IFeeManager, TipFeeManager},
     tip20::{ISSUER_ROLE, ITIP20, TIP20Token},
     tip20_factory::TIP20Factory,
@@ -175,15 +177,23 @@ pub(crate) struct ConsensusConfig {
     pub(crate) validators: Vec<Validator>,
 }
 impl ConsensusConfig {
-    pub(crate) fn to_genesis_dkg_outcome(&self) -> OnchainDkgOutcome {
+    /// Returns the genesis DKG outcome in `encoding`. Only the legacy encoding carries the
+    /// ceremony of [`Self::genesis_dkg_ceremony`].
+    pub(crate) fn to_genesis_dkg_outcome(&self, encoding: OutcomeEncoding) -> OnchainDkgOutcome {
         OnchainDkgOutcome {
             epoch: 0,
             output: self.output.clone(),
-            next_players: ordered::Set::try_from_iter(
-                self.validators.iter().map(Validator::public_key),
-            )
-            .unwrap(),
-            is_next_full_dkg: false,
+            next_ceremony: (encoding == OutcomeEncoding::Legacy)
+                .then(|| self.genesis_dkg_ceremony()),
+        }
+    }
+
+    /// Returns the DKG ceremony running during epoch 0: a reshare among all validators.
+    pub(crate) fn genesis_dkg_ceremony(&self) -> DkgCeremony {
+        DkgCeremony {
+            players: ordered::Set::try_from_iter(self.validators.iter().map(Validator::public_key))
+                .unwrap(),
+            is_full_dkg: false,
         }
     }
 }
@@ -398,6 +408,31 @@ impl GenesisArgs {
             self.chain_id,
         )?;
 
+        let genesis_hardfork = TempoHardfork::VARIANTS
+            .iter()
+            .copied()
+            .rfind(|&fork| self.hardforks.active_at_genesis(fork))
+            .expect("the Genesis hardfork is always active at genesis");
+        let dkg_outcome_encoding = if genesis_hardfork.stores_dkg_ceremony() {
+            OutcomeEncoding::CeremonyInState
+        } else {
+            OutcomeEncoding::Legacy
+        };
+        if let Some(consensus_config) = &consensus_config
+            && dkg_outcome_encoding == OutcomeEncoding::CeremonyInState
+        {
+            println!(
+                "Initializing current committee and DKG ceremony (TIP-1123 active at genesis)"
+            );
+            with_genesis_storage(&mut evm, || {
+                store_dkg_ceremony(
+                    &consensus_config.to_genesis_dkg_outcome(dkg_outcome_encoding),
+                    &consensus_config.genesis_dkg_ceremony(),
+                )
+            })
+            .wrap_err("failed to initialize the current committee")?;
+        }
+
         println!("Initializing fee manager");
         let default_user_fee_token = deployment_gas_token
             .or(alpha_token_address)
@@ -536,7 +571,10 @@ impl GenesisArgs {
             if self.no_dkg_in_genesis {
                 println!("no-initial-dkg-in-genesis passed; not writing to header extra_data");
             } else {
-                extra_data = consensus_config.to_genesis_dkg_outcome().encode().into();
+                extra_data = consensus_config
+                    .to_genesis_dkg_outcome(dkg_outcome_encoding)
+                    .encode()
+                    .into();
             }
         }
 
@@ -867,6 +905,39 @@ fn initialize_validator_config_v2(
     })
 }
 
+/// Writes all four `CurrentCommittee` slots for the epoch of `outcome`, as an activated TIP-1123
+/// boundary block would: its committee (`outcome`'s players) and the players and mode of
+/// `ceremony`. Must run inside a [`tempo_precompiles::storage::StorageCtx`].
+///
+/// Genesis and shadow forks cannot use `CurrentCommittee::snapshot_dkg_ceremony`: it derives the
+/// mode from the network identity rotation epoch of [`ValidatorConfigV2`], which is `0` while
+/// unset and would turn an epoch-0 reshare into a full DKG.
+pub(crate) fn store_dkg_ceremony(
+    outcome: &OnchainDkgOutcome,
+    ceremony: &DkgCeremony,
+) -> Result<(), TempoPrecompileError> {
+    let keys = |keys: &ordered::Set<PublicKey>| {
+        keys.iter()
+            .map(|key| B256::from_slice(key.as_ref()))
+            .collect::<Vec<_>>()
+    };
+    CurrentCommittee::new().set_committee_members(
+        Address::ZERO,
+        ICurrentCommittee::setCommitteeMembersCall {
+            epoch: outcome.epoch,
+            publicKeys: keys(outcome.players()),
+        },
+    )?;
+    Slot::<Vec<B256>>::new(slots::DKG_PLAYERS, CURRENT_COMMITTEE_ADDRESS)
+        .write(keys(&ceremony.players))?;
+    Slot::<bool>::new_with_ctx(
+        slots::IS_FULL_DKG,
+        LayoutCtx::packed(slots::IS_FULL_DKG_OFFSET),
+        CURRENT_COMMITTEE_ADDRESS,
+    )
+    .write(ceremony.is_full_dkg)
+}
+
 /// Generates the consensus configs of the validators.
 fn generate_consensus_config(
     validators: &[SocketAddr],
@@ -950,6 +1021,7 @@ mod tests {
             ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
         },
     };
+    use tempo_precompiles::storage::StorageCtx;
 
     #[derive(Debug, clap::Parser)]
     struct Cli {
@@ -1017,6 +1089,85 @@ mod tests {
                 .alloc
                 .contains_key(&tempo_precompiles::CONFIGURABLE_ACCOUNT_ADDRESS)
         );
+    }
+
+    /// Generates a genesis with a DKG outcome for 3 validators.
+    async fn generate_with_dkg(args: &str) -> (Genesis, ConsensusConfig) {
+        let base =
+            "xtask --accounts 4 --seed 1 --validators 127.0.0.1:8000,127.0.0.1:8001,127.0.0.1:8002";
+        let (genesis, consensus_config) =
+            Cli::try_parse_from(format!("{base} {args}").split_whitespace())
+                .unwrap()
+                .genesis
+                .generate_genesis()
+                .await
+                .unwrap();
+        (genesis, consensus_config.unwrap())
+    }
+
+    fn current_committee_storage(genesis: &Genesis) -> Option<&BTreeMap<B256, B256>> {
+        genesis
+            .alloc
+            .get(&CURRENT_COMMITTEE_ADDRESS)
+            .and_then(|account| account.storage.as_ref())
+    }
+
+    #[tokio::test]
+    async fn tip1123_genesis_stores_the_dkg_ceremony_of_epoch_0() {
+        let (genesis, consensus_config) = generate_with_dkg("").await;
+
+        let outcome = OnchainDkgOutcome::decode_extra_data(
+            &genesis.extra_data,
+            OutcomeEncoding::CeremonyInState,
+        )
+        .unwrap();
+        assert_eq!(
+            outcome,
+            consensus_config.to_genesis_dkg_outcome(OutcomeEncoding::CeremonyInState)
+        );
+
+        let mut storage = tempo_precompiles::storage::hashmap::HashMapStorageProvider::new(1);
+        let stored = StorageCtx::enter(&mut storage, || {
+            for (slot, value) in current_committee_storage(&genesis).unwrap() {
+                Slot::<U256>::new((*slot).into(), CURRENT_COMMITTEE_ADDRESS)
+                    .write((*value).into())
+                    .unwrap();
+            }
+            CurrentCommittee::new().get_dkg_ceremony().unwrap()
+        });
+        let keys = consensus_config
+            .validators
+            .iter()
+            .map(|validator| B256::from_slice(validator.public_key().as_ref()))
+            .sorted()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            stored,
+            ICurrentCommittee::getDkgCeremonyReturn {
+                epoch: 0,
+                dealers: keys.clone(),
+                players: keys,
+                isFullDkg: false,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn pre_tip1123_genesis_keeps_the_legacy_outcome() {
+        let (genesis, consensus_config) = generate_with_dkg("--hardfork T14").await;
+
+        let outcome =
+            OnchainDkgOutcome::decode_extra_data(&genesis.extra_data, OutcomeEncoding::Legacy)
+                .unwrap();
+        assert_eq!(
+            outcome.next_ceremony,
+            Some(consensus_config.genesis_dkg_ceremony())
+        );
+        assert_eq!(
+            outcome,
+            consensus_config.to_genesis_dkg_outcome(OutcomeEncoding::Legacy)
+        );
+        assert!(current_committee_storage(&genesis).is_none());
     }
 
     #[test]

@@ -8,6 +8,7 @@ use std::{
     collections::VecDeque,
     num::NonZeroU64,
     pin::Pin,
+    sync::Arc,
     task::{Context, Poll},
     time::Duration,
 };
@@ -17,13 +18,13 @@ use alloy_primitives::B256;
 use alloy_provider::Provider;
 use alloy_rpc_types_eth::{BlockNumHash, BlockNumberOrTag};
 use alloy_transport::TransportError;
-use commonware_codec::ReadExt as _;
 use commonware_consensus::types::{Epoch, Epocher as _, FixedEpocher, Height};
 use futures::{Stream, StreamExt as _, TryStreamExt as _, stream};
 use rand::rngs::StdRng;
 use reth_primitives_traits::SealedHeader;
 use tempo_alloy::TempoNetwork;
-use tempo_chainspec::NetworkIdentity;
+use tempo_chainspec::{NetworkIdentity, TempoChainSpec};
+use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::rpc::consensus::{CertifiedBlock, Query};
 use tempo_primitives::TempoHeader;
 use tracing::{instrument, warn};
@@ -46,6 +47,8 @@ pub struct Config {
     pub network_identity: Option<NetworkIdentity>,
     /// Fixed consensus epoch length.
     pub epoch_length: NonZeroU64,
+    /// Chain specification that selects how each boundary block's DKG outcome is encoded.
+    pub chain_spec: Arc<TempoChainSpec>,
     /// Maximum concurrent header requests within a chunk.
     pub fetch_concurrency: usize,
     /// Number of headers authenticated and buffered at a time.
@@ -60,11 +63,13 @@ impl Config {
         start_after: B256,
         network_identity: Option<NetworkIdentity>,
         epoch_length: NonZeroU64,
+        chain_spec: Arc<TempoChainSpec>,
     ) -> Self {
         Self {
             start_after,
             network_identity,
             epoch_length,
+            chain_spec,
             fetch_concurrency: DEFAULT_FETCH_CONCURRENCY,
             chunk_size: DEFAULT_CHUNK_SIZE,
             poll_interval: DEFAULT_POLL_INTERVAL,
@@ -144,14 +149,20 @@ where
             .expect("failed to get epoch containing start block");
 
         let verifier = if let Some(identity) = &config.network_identity {
-            let mut verifier = FinalizationVerifier::new(identity.clone(), epoch_strategy.clone());
+            let mut verifier = FinalizationVerifier::new(
+                identity.clone(),
+                epoch_strategy.clone(),
+                config.chain_spec.clone(),
+            );
 
             // If the start block is one or more epoch transitions ahead of the initial identity,
             // check if it could make sense to fetch the identity by reading latest processed boundary block.
             if start_block_epoch.epoch().get() >= identity.from_epoch {
                 if start_block_epoch.last().get() == start_after.number {
                     // Always fetch identity from start block if it's the last block in its epoch.
-                    verifier = verifier_from_start(&rpc, &epoch_strategy, start_after).await?;
+                    verifier =
+                        verifier_from_start(&rpc, &epoch_strategy, &config.chain_spec, start_after)
+                            .await?;
                 } else {
                     let latest_finalization = rpc.finalization(Query::Latest).await?;
 
@@ -162,7 +173,13 @@ where
                             .decode_and_verify(&mut rng, &latest_finalization)
                             .is_err_and(|error| error.is_signature_mismatch())
                     {
-                        verifier = verifier_from_start(&rpc, &epoch_strategy, start_after).await?;
+                        verifier = verifier_from_start(
+                            &rpc,
+                            &epoch_strategy,
+                            &config.chain_spec,
+                            start_after,
+                        )
+                        .await?;
                     }
                 }
             }
@@ -170,7 +187,7 @@ where
             verifier
         } else {
             // If we don't have an initial identity, our only option is to fetch identity from the start block.
-            verifier_from_start(&rpc, &epoch_strategy, start_after).await?
+            verifier_from_start(&rpc, &epoch_strategy, &config.chain_spec, start_after).await?
         };
 
         if let Some(configured) = &config.network_identity {
@@ -265,7 +282,7 @@ where
             }
             let onchain_outcome = self
                 .verifier
-                .decode_dkg_outcome_and_register_boundary(header.extra_data().as_ref())
+                .decode_dkg_outcome_and_register_boundary(header.header())
                 .map_err(|error| Error::MalformedBoundary {
                     height: header.number(),
                     reason: error.to_string(),
@@ -381,6 +398,7 @@ where
 async fn verifier_from_start<P>(
     rpc: &Rpc<P>,
     strategy: &FixedEpocher,
+    chain_spec: &Arc<TempoChainSpec>,
     start: BlockNumHash,
 ) -> Result<FinalizationVerifier, Error>
 where
@@ -391,8 +409,9 @@ where
     let boundary_header = headers
         .first()
         .expect("a non-empty inclusive range always returns a header");
-    let outcome = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(
-        &mut boundary_header.extra_data().as_ref(),
+    let outcome = OnchainDkgOutcome::decode_extra_data(
+        boundary_header.extra_data(),
+        chain_spec.dkg_outcome_encoding_at(boundary_header.timestamp()),
     )
     .map_err(|error| Error::MalformedBoundary {
         height: boundary_header.number(),
@@ -405,6 +424,7 @@ where
             identity: *outcome.network_identity(),
         },
         strategy.clone(),
+        chain_spec.clone(),
     ))
 }
 

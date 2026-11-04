@@ -1,9 +1,13 @@
-use alloy_consensus::{BlockHeader as _, Header};
+use alloy_consensus::Header;
 use commonware_consensus::types::{Epoch, FixedEpocher};
 use commonware_macros::test_traced;
 use commonware_runtime::{Runner as _, deterministic};
 use reth_node_core::primitives::SealedBlock;
-use tempo_chainspec::NetworkIdentity;
+use tempo_chainspec::{
+    NetworkIdentity,
+    spec::{DEV, MODERATO},
+};
+use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_primitives::{Block as TempoBlock, BlockBody, TempoHeader};
 
 use super::{Error, FinalizationVerifier};
@@ -22,6 +26,7 @@ fn tracks_boundary_identity() {
                 identity: *current.outcome.network_identity(),
             },
             FixedEpocher::new(EPOCH_LENGTH),
+            MODERATO.clone(),
         );
 
         let boundary = make_block(EPOCH_LENGTH.get() - 1, Some(&next.outcome));
@@ -32,7 +37,7 @@ fn tracks_boundary_identity() {
             .expect("current identity should verify the boundary");
 
         verifier
-            .decode_dkg_outcome_and_register_boundary(boundary.header().extra_data().as_ref())
+            .decode_dkg_outcome_and_register_boundary(boundary.header())
             .expect("boundary should install the next identity");
 
         let block = make_block(EPOCH_LENGTH.get(), None);
@@ -41,6 +46,65 @@ fn tracks_boundary_identity() {
         verifier
             .decode_and_verify(&mut context, &certified)
             .expect("installed identity should verify the next epoch");
+    });
+}
+
+#[test_traced]
+fn decodes_boundary_outcome_with_encoding_of_its_timestamp() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let current = dkg_fixture(&mut context, Epoch::zero());
+        let next = dkg_fixture(&mut context, Epoch::new(1));
+        let identity = NetworkIdentity {
+            from_epoch: 0,
+            identity: *current.outcome.network_identity(),
+        };
+        let legacy = make_block(EPOCH_LENGTH.get() - 1, Some(&next.outcome));
+        let ceremony_in_state = make_block(
+            EPOCH_LENGTH.get() - 1,
+            Some(&OnchainDkgOutcome {
+                next_ceremony: None,
+                ..next.outcome.clone()
+            }),
+        );
+
+        // The dev chain stores the DKG ceremony in state from genesis, so its boundary carries
+        // only the epoch and output, and the legacy trailing ceremony is rejected.
+        let verifier = FinalizationVerifier::new(
+            identity.clone(),
+            FixedEpocher::new(EPOCH_LENGTH),
+            DEV.clone(),
+        );
+        let outcome = verifier
+            .decode_dkg_outcome_and_register_boundary(ceremony_in_state.header())
+            .expect("the boundary should decode with the new encoding");
+        assert_eq!(outcome.next_ceremony, None);
+        assert_eq!(outcome.output, next.outcome.output);
+        assert!(matches!(
+            verifier.decode_dkg_outcome_and_register_boundary(legacy.header()),
+            Err(commonware_codec::Error::ExtraData(_))
+        ));
+
+        let block = make_block(EPOCH_LENGTH.get(), None);
+        let finalization = make_finalization(&block, Epoch::new(1), &next.schemes);
+        let certified = make_certified_block(block, &finalization);
+        verifier
+            .decode_and_verify(&mut context, &certified)
+            .expect("installed identity should verify the next epoch");
+
+        // Before the fork the boundary still carries the ceremony.
+        let verifier =
+            FinalizationVerifier::new(identity, FixedEpocher::new(EPOCH_LENGTH), MODERATO.clone());
+        assert_eq!(
+            verifier
+                .decode_dkg_outcome_and_register_boundary(legacy.header())
+                .expect("the boundary should decode with the legacy encoding"),
+            next.outcome,
+        );
+        assert!(
+            verifier
+                .decode_dkg_outcome_and_register_boundary(ceremony_in_state.header())
+                .is_err()
+        );
     });
 }
 
@@ -54,6 +118,7 @@ fn rejects_epoch_mismatching_block_height() {
                 identity: *fixture.outcome.network_identity(),
             },
             FixedEpocher::new(EPOCH_LENGTH),
+            MODERATO.clone(),
         );
 
         let block = make_block(EPOCH_LENGTH.get(), None);
@@ -80,6 +145,7 @@ fn rejects_block_body_that_does_not_match_header() {
                 identity: *fixture.outcome.network_identity(),
             },
             FixedEpocher::new(EPOCH_LENGTH),
+            MODERATO.clone(),
         );
 
         let block = make_block(1, None);

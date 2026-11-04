@@ -25,7 +25,7 @@ use commonware_math::algebra::Random as _;
 use commonware_parallel::Sequential;
 use commonware_utils::{N3f1, TryFromIterator as _, ordered};
 use rand_core::CryptoRng;
-use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
+use tempo_dkg_onchain_artifacts::{DkgCeremony, OnchainDkgOutcome};
 
 use crate::consensus::Digest;
 
@@ -64,9 +64,11 @@ pub(crate) fn dkg_fixture(rng: &mut impl CryptoRng, epoch: Epoch) -> DkgFixture 
 
     let outcome = OnchainDkgOutcome {
         epoch: epoch.get(),
-        next_players: output.players().clone(),
+        next_ceremony: Some(DkgCeremony {
+            players: output.players().clone(),
+            is_full_dkg: false,
+        }),
         output,
-        is_next_full_dkg: false,
     };
 
     DkgFixture { outcome, schemes }

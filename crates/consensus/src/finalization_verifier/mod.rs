@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use alloy_consensus::BlockHeader as _;
-use commonware_codec::{DecodeExt as _, ReadExt as _};
+use commonware_codec::DecodeExt as _;
 use commonware_consensus::{
     Epochable as _,
     simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Finalization},
@@ -15,10 +15,11 @@ use commonware_cryptography::{
 use commonware_parallel::Sequential;
 use rand_core::CryptoRng;
 use reth_consensus::ConsensusError;
-use tempo_chainspec::NetworkIdentity;
+use tempo_chainspec::{NetworkIdentity, TempoChainSpec};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_evm::consensus::validate_body_against_header;
 use tempo_node::rpc::consensus::CertifiedBlock;
+use tempo_primitives::TempoHeader;
 
 use crate::{config::NAMESPACE, consensus::Digest, epoch::SchemeProvider};
 
@@ -36,11 +37,18 @@ pub(crate) struct FinalizationVerifier {
     network_identity: NetworkIdentity,
     network_scheme: Arc<Scheme<PublicKey, MinSig>>,
     epoch_strategy: FixedEpocher,
+    chain_spec: Arc<TempoChainSpec>,
 }
 
 impl FinalizationVerifier {
     /// Create a verifier anchored at the supplied network identity.
-    pub(crate) fn new(network_identity: NetworkIdentity, epoch_strategy: FixedEpocher) -> Self {
+    ///
+    /// `chain_spec` selects how each boundary block's DKG outcome is encoded.
+    pub(crate) fn new(
+        network_identity: NetworkIdentity,
+        epoch_strategy: FixedEpocher,
+        chain_spec: Arc<TempoChainSpec>,
+    ) -> Self {
         let network_scheme = Arc::new(Scheme::certificate_verifier(
             NAMESPACE,
             network_identity.identity,
@@ -50,6 +58,7 @@ impl FinalizationVerifier {
             network_identity,
             network_scheme,
             epoch_strategy,
+            chain_spec,
         }
     }
 
@@ -67,13 +76,17 @@ impl FinalizationVerifier {
 
     /// Install the identity encoded in a finalized epoch-boundary block.
     ///
-    /// The caller is responsible for ensuring `extra_data` came from a boundary block on a chain
-    /// authenticated by a previously verified finalization.
+    /// The caller is responsible for ensuring `header` is a boundary block on a chain
+    /// authenticated by a previously verified finalization. The header's timestamp selects the
+    /// encoding of its outcome.
     pub(crate) fn decode_dkg_outcome_and_register_boundary(
         &self,
-        mut extra_data: &[u8],
+        header: &TempoHeader,
     ) -> Result<OnchainDkgOutcome, commonware_codec::Error> {
-        let outcome = OnchainDkgOutcome::read(&mut extra_data)?;
+        let outcome = OnchainDkgOutcome::decode_extra_data(
+            header.extra_data(),
+            self.chain_spec.dkg_outcome_encoding_at(header.timestamp()),
+        )?;
         self.scheme_provider.register(
             outcome.epoch(),
             Scheme::certificate_verifier(NAMESPACE, *outcome.network_identity()),

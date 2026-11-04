@@ -11,7 +11,7 @@ use reth_ethereum::storage::BlockNumReader as _;
 use std::time::Duration;
 use tracing::info;
 
-use super::common::{wait_for_outcome, wait_for_validators_to_reach_epoch};
+use super::common::{wait_for_ceremony, wait_for_outcome, wait_for_validators_to_reach_epoch};
 use crate::{Setup, connect_execution_peers, connect_execution_to_peers, setup_validators};
 
 /// Tests that a late-joining validator can sync and participate after a full DKG ceremony.
@@ -74,8 +74,10 @@ fn fast_sync_after_full_dkg(update_network_identity: bool) {
             let outcome_before =
                 wait_for_outcome(&context, &validators, full_dkg_epoch - 1, epoch_length).await;
             assert!(
-                outcome_before.is_next_full_dkg,
-                "outcome.is_next_full_dkg should be `true`"
+                wait_for_ceremony(&context, &validators, full_dkg_epoch - 1, epoch_length)
+                    .await
+                    .is_full_dkg,
+                "the boundary should schedule a full DKG"
             );
 
             // The late validator has not started yet.

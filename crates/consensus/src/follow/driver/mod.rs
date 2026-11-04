@@ -7,7 +7,10 @@
 //! addresses the executor itself, so no forkchoice can name a block that has
 //! not been persisted alongside its certificate.
 
-use std::{future::Future, sync::LazyLock};
+use std::{
+    future::Future,
+    sync::{Arc, LazyLock},
+};
 
 use commonware_consensus::{
     simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Activity},
@@ -27,7 +30,7 @@ use reth_provider::{
     BlockIdReader, HeaderProvider,
     providers::{BlockchainProvider, ProviderNodeTypes},
 };
-use tempo_chainspec::NetworkIdentity;
+use tempo_chainspec::{NetworkIdentity, TempoChainSpec};
 use tempo_primitives::TempoHeader;
 
 use crate::{
@@ -66,6 +69,9 @@ pub(super) struct Config<P, M> {
     pub(super) marshal: M,
 
     pub(super) epoch_strategy: FixedEpocher,
+
+    /// Selects how each boundary block's DKG outcome is encoded.
+    pub(super) chain_spec: Arc<TempoChainSpec>,
 }
 
 /// A driver and its mailbox.

@@ -7,7 +7,6 @@ use std::{
 
 use alloy_consensus::{BlockHeader as _, Sealable as _};
 use alloy_primitives::B256;
-use commonware_codec::ReadExt as _;
 use commonware_consensus::{
     Heightable as _,
     marshal::Update,
@@ -20,7 +19,7 @@ use commonware_runtime::{
     telemetry::metrics::{Gauge, MetricsExt as _},
 };
 use commonware_utils::{Acknowledgement, ordered};
-use eyre::{OptionExt as _, WrapErr as _};
+use eyre::{OptionExt as _, WrapErr as _, ensure};
 use futures::{StreamExt as _, channel::mpsc};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_precompiles::validator_config_v2::ValidatorConfigV2;
@@ -30,7 +29,9 @@ use tracing::{Span, debug, error, info_span, instrument, warn};
 use crate::{
     consensus::Digest,
     utils::public_key_to_b256,
-    validators::{DecodedValidatorV2, ExecutionNode, read_validator_config_at_block_hash},
+    validators::{
+        DecodedValidatorV2, ExecutionNode, read_dkg_ceremony, read_validator_config_at_block_hash,
+    },
 };
 
 /// The interval on which peer sets are refreshed during normal operation.
@@ -208,15 +209,42 @@ where
             read_header_at_height(self.execution_node.as_ref(), highest_finalized)
                 .wrap_err("failed reading highest finalized header")?;
 
-        let onchain_outcome =
-            OnchainDkgOutcome::read(&mut latest_boundary_header.extra_data().as_ref())
-                .wrap_err_with(|| {
-                    format!(
-                        "boundary block at `{latest_boundary}` did not contain a valid DKG outcome"
-                    )
-                })?;
+        let onchain_outcome = OnchainDkgOutcome::decode_extra_data(
+            latest_boundary_header.extra_data(),
+            self.execution_node
+                .dkg_outcome_encoding_at(latest_boundary_header.timestamp()),
+        )
+        .wrap_err_with(|| {
+            format!("boundary block at `{latest_boundary}` did not contain a valid DKG outcome")
+        })?;
 
-        let peers = PeersBuilder::with_dkg_outcome(&onchain_outcome)
+        let builder = match &onchain_outcome.next_ceremony {
+            Some(ceremony) => {
+                PeersBuilder::new(onchain_outcome.players().clone(), &ceremony.players)
+            }
+            // From TIP-1123 the boundary block stored the ceremony of the epoch it
+            // starts in the CurrentCommittee precompile, so every state since has it.
+            None => {
+                let (_, _, stored) = read_validator_config_at_block_hash(
+                    self.execution_node.as_ref(),
+                    highest_finalized_header.hash_slow(),
+                    read_dkg_ceremony,
+                )
+                .wrap_err("failed reading DKG ceremony from execution layer")?;
+                let stored = stored.ok_or_eyre(
+                    "boundary block uses the TIP-1123 encoding, but no DKG ceremony is stored",
+                )?;
+                ensure!(
+                    stored.epoch == onchain_outcome.epoch,
+                    "stored DKG ceremony is for epoch `{}`, but the boundary block at `{latest_boundary}` starts epoch `{}`",
+                    stored.epoch,
+                    onchain_outcome.epoch,
+                );
+                PeersBuilder::new(stored.dealers, &stored.ceremony.players)
+            }
+        };
+
+        let peers = builder
             .resolve_at_hash(
                 self.execution_node.as_ref(),
                 highest_finalized_header.hash_slow(),
@@ -231,7 +259,8 @@ where
             ?peers.primary,
             ?peers.secondary,
             "read active peers from DKG outcome in latest available \
-            boundary header and resolved p2p addresses against validator \
+            boundary header (or the DKG ceremony stored at the highest \
+            finalized block) and resolved p2p addresses against validator \
             config contract"
         );
 
@@ -340,11 +369,11 @@ struct PeersBuilder {
 }
 
 impl PeersBuilder {
-    fn with_dkg_outcome(outcome: &OnchainDkgOutcome) -> Self {
-        let primary = outcome.players().clone();
+    /// Makes `committee` primary and the `ceremony_players` outside it secondary.
+    fn new(committee: ordered::Set<PublicKey>, ceremony_players: &ordered::Set<PublicKey>) -> Self {
+        let primary = committee;
         let secondary = ordered::Set::from_iter_dedup(
-            outcome
-                .next_players()
+            ceremony_players
                 .iter()
                 // Performs a binary search since `primary` is a sorted vec
                 // under the hood - so performance of this is fine.
@@ -485,8 +514,14 @@ mod tests {
         EvmStateProviderBox, StateProvider as _,
         test_utils::{ExtendedAccount, MockEthProvider},
     };
+    use tempo_chainspec::{
+        TempoChainSpec,
+        spec::{DEV, MODERATO},
+    };
+    use tempo_dkg_onchain_artifacts::{DkgCeremony, OutcomeEncoding};
     use tempo_node::evm::{TempoEvm, TempoEvmConfig};
     use tempo_precompiles::{
+        current_committee::{CurrentCommittee, ICurrentCommittee},
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         validator_config_v2::{IValidatorConfigV2, VALIDATOR_NS_ADD},
     };
@@ -503,6 +538,7 @@ mod tests {
         finalized: Option<u64>,
         headers: HashMap<u64, TempoHeader>,
         header_reads: Mutex<Vec<u64>>,
+        chain_spec: Arc<TempoChainSpec>,
     }
 
     impl ExecutionNode for TestExecutionNode {
@@ -521,7 +557,7 @@ mod tests {
             db: StateProviderDatabase<EvmStateProviderBox>,
             header: &TempoHeader,
         ) -> eyre::Result<TempoEvm<'static>> {
-            TempoEvmConfig::moderato()
+            TempoEvmConfig::new(self.chain_spec.clone())
                 .evm_for_block(db, header)
                 .map_err(eyre::Report::new)
         }
@@ -535,6 +571,10 @@ mod tests {
         fn header_by_number(&self, height: u64) -> eyre::Result<Option<TempoHeader>> {
             self.header_reads.lock().unwrap().push(height);
             Ok(self.headers.get(&height).cloned())
+        }
+
+        fn dkg_outcome_encoding_at(&self, timestamp: u64) -> OutcomeEncoding {
+            self.chain_spec.dkg_outcome_encoding_at(timestamp)
         }
     }
 
@@ -651,7 +691,17 @@ mod tests {
     fn execution_with_validators(
         validators: &[ValidatorFixture],
     ) -> eyre::Result<TestExecutionNode> {
+        execution_with_state(MODERATO.clone(), validators, |_, _| Ok(()))
+    }
+
+    /// Adds `validators`, then runs `setup` with the config and its owner.
+    fn execution_with_state(
+        chain_spec: Arc<TempoChainSpec>,
+        validators: &[ValidatorFixture],
+        setup: impl FnOnce(&mut ValidatorConfigV2, AlloyAddress) -> eyre::Result<()>,
+    ) -> eyre::Result<TestExecutionNode> {
         let mut storage = HashMapStorageProvider::new(1);
+        storage.set_block_number(1);
         let owner = AlloyAddress::repeat_byte(0xAA);
 
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
@@ -660,7 +710,7 @@ mod tests {
             for validator in validators {
                 config.add_validator(owner, validator.add_validator_call())?;
             }
-            Ok(())
+            setup(&mut config, owner)
         })?;
 
         let mut storage_by_account = HashMap::<AlloyAddress, Vec<(B256, U256)>>::new();
@@ -686,6 +736,7 @@ mod tests {
             finalized: Some(header.number()),
             headers: HashMap::from([(header.number(), header)]),
             header_reads: Mutex::default(),
+            chain_spec,
         })
     }
 
@@ -703,9 +754,19 @@ mod tests {
         Ok(OnchainDkgOutcome {
             epoch: 0,
             output,
-            next_players: ordered::Set::try_from_iter(next_players)?,
-            is_next_full_dkg: false,
+            next_ceremony: Some(DkgCeremony {
+                players: ordered::Set::try_from_iter(next_players)?,
+                is_full_dkg: false,
+            }),
         })
+    }
+
+    fn keys(
+        validators: impl IntoIterator<Item = ValidatorFixture>,
+    ) -> eyre::Result<ordered::Set<PublicKey>> {
+        Ok(ordered::Set::try_from_iter(
+            validators.into_iter().map(|validator| validator.public_key),
+        )?)
     }
 
     fn assert_peer(map: &ordered::Map<PublicKey, Address>, validator: &ValidatorFixture) {
@@ -720,14 +781,23 @@ mod tests {
     }
 
     fn bootstrap_execution(height: u64, primary: u8) -> TestExecutionNode {
-        let mut execution = execution_with_validators(&[peer(1), peer(2)]).unwrap();
+        let execution = execution_with_validators(&[peer(1), peer(2)]).unwrap();
+        let outcome = dkg_outcome([peer(primary).public_key], [peer(primary).public_key]).unwrap();
+        with_boundary(execution, height, outcome)
+    }
+
+    /// Makes `height` the finalized tip of `execution`, with `outcome` (its epoch set to the
+    /// one its boundary starts) in the latest boundary header at or below it.
+    fn with_boundary(
+        mut execution: TestExecutionNode,
+        height: u64,
+        mut outcome: OnchainDkgOutcome,
+    ) -> TestExecutionNode {
         let boundary = if height % 10 == 9 {
             height
         } else {
             (height / 10 * 10).saturating_sub(1)
         };
-        let mut outcome =
-            dkg_outcome([peer(primary).public_key], [peer(primary).public_key]).unwrap();
         outcome.epoch = (boundary + 1) / 10;
         let mut boundary_header = execution_header(boundary);
         boundary_header.inner.extra_data = outcome.encode().into();
@@ -851,12 +921,8 @@ mod tests {
     #[test]
     fn resolve_at_hash_has_no_secondaries_when_players_are_next_players() -> eyre::Result<()> {
         let execution = execution_with_validators(&[peer(1), peer(2)])?;
-        let outcome = dkg_outcome(
-            [peer(1).public_key, peer(2).public_key],
-            [peer(1).public_key, peer(2).public_key],
-        )?;
-        let peers =
-            PeersBuilder::with_dkg_outcome(&outcome).resolve_at_hash(&execution, execution.hash)?;
+        let peers = PeersBuilder::new(keys([peer(1), peer(2)])?, &keys([peer(1), peer(2)])?)
+            .resolve_at_hash(&execution, execution.hash)?;
 
         assert_eq!(peers.primary.len(), 2);
         assert_eq!(peers.secondary.len(), 0);
@@ -869,12 +935,8 @@ mod tests {
     #[test]
     fn resolve_at_hash_keeps_dropped_player_primary() -> eyre::Result<()> {
         let execution = execution_with_validators(&[peer(1), peer(2)])?;
-        let outcome = dkg_outcome(
-            [peer(1).public_key, peer(2).public_key],
-            [peer(1).public_key],
-        )?;
-        let peers =
-            PeersBuilder::with_dkg_outcome(&outcome).resolve_at_hash(&execution, execution.hash)?;
+        let peers = PeersBuilder::new(keys([peer(1), peer(2)])?, &keys([peer(1)])?)
+            .resolve_at_hash(&execution, execution.hash)?;
 
         assert_eq!(peers.primary.len(), 2);
         assert_eq!(peers.secondary.len(), 0);
@@ -887,12 +949,8 @@ mod tests {
     #[test]
     fn resolve_at_hash_adds_next_player_as_secondary() -> eyre::Result<()> {
         let execution = execution_with_validators(&[peer(1), peer(2)])?;
-        let outcome = dkg_outcome(
-            [peer(1).public_key],
-            [peer(1).public_key, peer(2).public_key],
-        )?;
-        let peers =
-            PeersBuilder::with_dkg_outcome(&outcome).resolve_at_hash(&execution, execution.hash)?;
+        let peers = PeersBuilder::new(keys([peer(1)])?, &keys([peer(1), peer(2)])?)
+            .resolve_at_hash(&execution, execution.hash)?;
 
         assert_eq!(peers.primary.len(), 1);
         assert_eq!(peers.secondary.len(), 1);
@@ -906,9 +964,8 @@ mod tests {
     #[test]
     fn resolve_at_hash_adds_active_non_dkg_validator_as_secondary() -> eyre::Result<()> {
         let execution = execution_with_validators(&[peer(1), peer(2)])?;
-        let outcome = dkg_outcome([peer(1).public_key], [peer(1).public_key])?;
-        let peers =
-            PeersBuilder::with_dkg_outcome(&outcome).resolve_at_hash(&execution, execution.hash)?;
+        let peers = PeersBuilder::new(keys([peer(1)])?, &keys([peer(1)])?)
+            .resolve_at_hash(&execution, execution.hash)?;
 
         assert_eq!(peers.primary.len(), 1);
         assert_eq!(peers.secondary.len(), 1);
@@ -917,5 +974,120 @@ mod tests {
         assert_peer(&peers.secondary, &peer(2));
 
         Ok(())
+    }
+
+    /// The state after the TIP-1123 boundary block at height 9, which stored the ceremony of
+    /// `stored_epoch` (dealt by peer 1, played by the active peers 1 to 3), after which peer 3
+    /// was deactivated.
+    fn execution_with_stored_ceremony(stored_epoch: u64) -> eyre::Result<TestExecutionNode> {
+        execution_with_state(
+            DEV.clone(),
+            &[peer(1), peer(2), peer(3)],
+            |config, owner| {
+                let mut committee = CurrentCommittee::new();
+                committee.set_committee_members(
+                    AlloyAddress::ZERO,
+                    ICurrentCommittee::setCommitteeMembersCall {
+                        epoch: stored_epoch,
+                        publicKeys: vec![public_key_to_b256(&peer(1).public_key)],
+                    },
+                )?;
+                committee.snapshot_dkg_ceremony(stored_epoch)?;
+                config.deactivate_validator(
+                    owner,
+                    IValidatorConfigV2::deactivateValidatorCall { idx: 2 },
+                )?;
+                Ok(())
+            },
+        )
+    }
+
+    fn ceremony_in_state_outcome(
+        players: impl IntoIterator<Item = PublicKey>,
+    ) -> OnchainDkgOutcome {
+        OnchainDkgOutcome {
+            next_ceremony: None,
+            ..dkg_outcome(players, []).unwrap()
+        }
+    }
+
+    fn init_peer_manager(
+        context: commonware_runtime::deterministic::Context,
+        execution: TestExecutionNode,
+        oracle: RecordingOracle,
+    ) -> eyre::Result<()> {
+        crate::peer_manager::init(
+            context,
+            crate::peer_manager::Config {
+                execution_node: Arc::new(execution),
+                oracle,
+                epoch_strategy: FixedEpocher::new(commonware_utils::NZU64!(10)),
+                finalized_tip: (Height::new(100), Digest(B256::ZERO)),
+            },
+        )
+        .map(drop)
+    }
+
+    #[test]
+    fn peers_come_from_stored_ceremony_after_tip_1123_boundary() {
+        Runner::default().start(|context| async move {
+            let execution = with_boundary(
+                execution_with_stored_ceremony(1).unwrap(),
+                12,
+                ceremony_in_state_outcome([peer(1).public_key]),
+            );
+            let oracle = RecordingOracle::default();
+            init_peer_manager(context, execution, oracle.clone()).unwrap();
+
+            let tracked = oracle.tracked.lock().unwrap();
+            assert_eq!(tracked.len(), 1);
+            let peers = &tracked[0].1;
+            assert_eq!(peers.primary.len(), 1);
+            assert_peer(&peers.primary, &peer(1));
+            // Peer 3 is no longer active, but still plays the ongoing ceremony.
+            assert_eq!(peers.secondary.len(), 2);
+            assert_peer(&peers.secondary, &peer(2));
+            assert_peer(&peers.secondary, &peer(3));
+        });
+    }
+
+    #[test]
+    fn tip_1123_boundary_rejects_ceremony_stored_for_another_epoch() {
+        Runner::default().start(|context| async move {
+            let execution = with_boundary(
+                execution_with_stored_ceremony(2).unwrap(),
+                12,
+                ceremony_in_state_outcome([peer(1).public_key]),
+            );
+            let oracle = RecordingOracle::default();
+            let error = init_peer_manager(context, execution, oracle.clone()).unwrap_err();
+            assert!(
+                format!("{error:#}").contains(
+                    "stored DKG ceremony is for epoch `2`, but the boundary block at `9` starts epoch `1`"
+                ),
+                "{error:#}",
+            );
+            assert!(oracle.tracked.lock().unwrap().is_empty());
+        });
+    }
+
+    #[test]
+    fn tip_1123_boundary_requires_stored_ceremony() {
+        Runner::default().start(|context| async move {
+            let execution = with_boundary(
+                execution_with_state(DEV.clone(), &[peer(1), peer(2)], |_, _| Ok(())).unwrap(),
+                12,
+                ceremony_in_state_outcome([peer(1).public_key]),
+            );
+            let oracle = RecordingOracle::default();
+            let error = init_peer_manager(context, execution, oracle.clone()).unwrap_err();
+            assert!(
+                format!("{error:#}").contains(
+                    "boundary block uses the TIP-1123 encoding, but no DKG ceremony is stored"
+                ),
+                "{error:#}",
+            );
+            assert!(oracle.tracked.lock().unwrap().is_empty());
+        });
     }
 }

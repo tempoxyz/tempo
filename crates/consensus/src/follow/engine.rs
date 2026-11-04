@@ -209,6 +209,7 @@ impl<TUpstream> Config<TUpstream> {
                 partition_prefix: format!("{}_driver", self.partition_prefix),
                 marshal: marshal_mailbox.clone(),
                 epoch_strategy: epoch_strategy.clone(),
+                chain_spec: self.execution_node.chain_spec(),
             },
         )
         .await

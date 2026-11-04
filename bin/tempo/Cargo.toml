@@ -125,6 +125,7 @@ nix = { version = "0.30.1", features = ["signal"], optional = true }
 
 [dev-dependencies]
 jsonrpsee.workspace = true
+tempo-dkg-onchain-artifacts = { workspace = true, features = ["test-utils"] }
 
 [[bin]]
 name = "tempo"
