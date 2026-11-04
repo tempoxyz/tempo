@@ -312,9 +312,10 @@ impl Context {
                     ..
                 } => {
                     // Drivers name the sender as the deposit's refund recipient.
-                    let refunded_on_l1 = take(&mut bounced, (sender, net_amount))
-                        && take(&mut refunded, (sender, net_amount));
-                    if !take(&mut credited, (sender, to, net_amount)) && !refunded_on_l1 {
+                    let settled = take(&mut credited, (sender, to, net_amount))
+                        || (take(&mut bounced, (sender, net_amount))
+                            && take(&mut refunded, (sender, net_amount)));
+                    if !settled {
                         unsettled_deposits.push(record);
                     }
                 }
