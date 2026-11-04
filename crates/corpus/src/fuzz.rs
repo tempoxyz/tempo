@@ -4,7 +4,7 @@
 
 use crate::{
     code,
-    store::{self, Catalog, Lease, Record, Store},
+    store::{self, Catalog, Lease, Store},
     types::Input,
 };
 use alloy_eips::Encodable2718;
@@ -110,19 +110,38 @@ impl Corpus {
             .map(|block| Ok((block, self.input(block)?)))
     }
 
-    /// Each of `blocks` with its stored input size and harness input, in block order, read in
-    /// windows of up to `window` blocks on the corpus's runtime while the caller works on the window
-    /// before. A dense window is read as replay reads, with one metadata and one block scan over its
-    /// range, and a sparse one with a point read per block. Iteration stops after the first error.
-    pub fn windows(&self, mut blocks: Vec<u64>, window: usize) -> Windows<'_> {
-        blocks.sort_unstable();
-        blocks.dedup();
-        let window = window.max(1);
+    /// Each of `blocks`, which must be sorted and unique, with its stored input size and harness
+    /// input, in windows of up to `window` blocks ([`store::payloads`]), each read and decoded on the
+    /// corpus's runtime while the caller works on the one before. Iteration stops after the first
+    /// error.
+    pub fn windows(&self, blocks: Vec<u64>, window: usize) -> Windows<'_> {
         let (sender, receiver) = mpsc::channel(1);
         let (reader, chain_spec) = (self.reader.clone(), self.chain_spec.clone());
         let task = self.runtime.spawn(async move {
-            for blocks in blocks.chunks(window) {
-                let read = read_window(&reader, blocks, &chain_spec).await;
+            for blocks in blocks.chunks(window.max(1)) {
+                let read = async {
+                    // Each block decodes in its own task, so a window decodes on every worker.
+                    stream::iter(store::payloads(&reader, blocks).await?)
+                        .map(|(record, bytes)| {
+                            let (reader, chain_spec) = (reader.clone(), chain_spec.clone());
+                            tokio::spawn(async move {
+                                let stored = store::decode(&bytes, &record)?;
+                                store::resolve_code(&reader, &stored).await?;
+                                eyre::Ok(BlockInput {
+                                    block: record.number,
+                                    size: record.block_bytes,
+                                    input: TempoHarnessInput::Blockchain(harness_input(
+                                        &stored, chain_spec,
+                                    )?),
+                                })
+                            })
+                        })
+                        .buffered(32)
+                        .map(|joined| joined.unwrap_or_else(|error| Err(error.into())))
+                        .try_collect()
+                        .await
+                }
+                .await;
                 let failed = read.is_err();
                 if sender.send(read).await.is_err() || failed {
                     break;
@@ -167,73 +186,6 @@ impl Drop for Windows<'_> {
     fn drop(&mut self) {
         self.task.abort();
     }
-}
-
-/// Blocks of a window decoded, or read with point reads, at once.
-const WINDOW_TASKS: usize = 32;
-
-/// A window spanning fewer corpus blocks than this many per block it selects is scanned whole.
-const DENSE_SPAN: u64 = 4;
-
-/// `blocks`' inputs, sorted and unique, read as [Corpus::windows] describes.
-async fn read_window(
-    reader: &Arc<DbReader>,
-    blocks: &[u64],
-    chain_spec: &ChainSpecInput,
-) -> eyre::Result<Vec<BlockInput>> {
-    let (Some(&first), Some(&last)) = (blocks.first(), blocks.last()) else {
-        return Ok(Vec::new());
-    };
-    // Each block decodes in its own task, so a window decodes on every worker.
-    let (reader, chain_spec) = (reader.clone(), chain_spec.clone());
-    if last - first < DENSE_SPAN * blocks.len() as u64 {
-        stream::iter(store::scan_blocks(&reader, blocks).await?)
-            .map(move |(record, bytes)| {
-                let (reader, chain_spec) = (reader.clone(), chain_spec.clone());
-                tokio::spawn(async move {
-                    let stored = store::decode(&bytes, &record)?;
-                    store::resolve_code(&reader, &stored).await?;
-                    block_input(&record, &stored, chain_spec)
-                })
-            })
-            .buffered(WINDOW_TASKS)
-            .map(joined)
-            .try_collect()
-            .await
-    } else {
-        stream::iter(blocks.to_vec())
-            .map(move |block| {
-                let (reader, chain_spec) = (reader.clone(), chain_spec.clone());
-                tokio::spawn(async move {
-                    let (record, stored) = store::published(&reader, block).await?;
-                    block_input(&record, &stored, chain_spec)
-                })
-            })
-            .buffered(WINDOW_TASKS)
-            .map(joined)
-            .try_collect()
-            .await
-    }
-}
-
-/// A window task's input, or why it failed or did not finish.
-fn joined(
-    joined: Result<eyre::Result<BlockInput>, tokio::task::JoinError>,
-) -> eyre::Result<BlockInput> {
-    joined.unwrap_or_else(|error| Err(error.into()))
-}
-
-/// `record`'s block with its harness input. Its code must be resolved ([`store::resolve_code`]).
-fn block_input(
-    record: &Record,
-    stored: &Input,
-    chain_spec: ChainSpecInput,
-) -> eyre::Result<BlockInput> {
-    Ok(BlockInput {
-        block: record.number,
-        size: record.block_bytes,
-        input: TempoHarnessInput::Blockchain(harness_input(stored, chain_spec)?),
-    })
 }
 
 impl Drop for Corpus {

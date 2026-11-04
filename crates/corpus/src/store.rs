@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use aws_credential_types::provider::{ProvideCredentials, SharedCredentialsProvider};
 use bytes::Bytes;
 use eyre::{OptionExt, WrapErr};
-use futures::TryStreamExt;
+use futures::{StreamExt, TryStreamExt, stream};
 use object_store::{
     ClientConfigKey, CredentialProvider, ObjectStore, ObjectStoreExt, PutMode, RetryConfig,
     UpdateVersion,
@@ -580,6 +580,14 @@ pub async fn resolve_code(reader: &DbReader, input: &Input) -> eyre::Result<()> 
 /// Checks the block alone, not its links to neighbouring blocks. A block runs on its own recorded
 /// pre-state, and a complete corpus had its whole range checked when it was published.
 pub async fn published(reader: &DbReader, block: u64) -> eyre::Result<(Record, Arc<Input>)> {
+    let (record, bytes) = published_payload(reader, block).await?;
+    let input = decode(&bytes, &record)?;
+    resolve_code(reader, &input).await?;
+    Ok((record, input))
+}
+
+/// The published record of `block` and its undecoded block payload, checked as [published] checks.
+async fn published_payload(reader: &DbReader, block: u64) -> eyre::Result<(Record, Bytes)> {
     let record = metadata(reader, block).await?;
     // Seeded from the record itself, so only its own sizes and coverage are checked.
     Cursor {
@@ -592,9 +600,7 @@ pub async fn published(reader: &DbReader, block: u64) -> eyre::Result<(Record, A
         .get(key(block))
         .await?
         .ok_or_else(|| eyre::eyre!("missing block record at {block}"))?;
-    let input = decode(&bytes, &record)?;
-    resolve_code(reader, &input).await?;
-    Ok((record, input))
+    Ok((record, bytes))
 }
 
 pub fn decode(bytes: &[u8], record: &Record) -> eyre::Result<Arc<Input>> {
@@ -839,13 +845,22 @@ pub async fn metadata(reader: &DbReader, block: u64) -> eyre::Result<Record> {
     Ok(record)
 }
 
-/// The published records and block payloads of `blocks`, which must be sorted and unique, read with
-/// one metadata scan and one block scan over their range, as replay reads. Blocks in the range but
-/// not in `blocks` are read and skipped.
-pub async fn scan_blocks(reader: &DbReader, blocks: &[u64]) -> eyre::Result<Vec<(Record, Bytes)>> {
+/// The published records and undecoded block payloads of `blocks`, which must be sorted and unique.
+/// Dense blocks are read as replay reads, with one metadata scan and one block scan over their range,
+/// skipping the blocks in it not listed. Sparse ones are read with concurrent point reads.
+pub async fn payloads(reader: &DbReader, blocks: &[u64]) -> eyre::Result<Vec<(Record, Bytes)>> {
     let (Some(&first), Some(&last)) = (blocks.first(), blocks.last()) else {
         return Ok(Vec::new());
     };
+    // A range spanning at least this many blocks per listed block is read with point reads.
+    const SPARSE_SPAN: u64 = 4;
+    if last - first >= SPARSE_SPAN * blocks.len() as u64 {
+        return stream::iter(blocks.iter().copied())
+            .map(|block| published_payload(reader, block))
+            .buffered(32)
+            .try_collect()
+            .await;
+    }
     let record = metadata(reader, first).await?;
     // Seeded from the first record itself, as [published] checks a lone block.
     let cursor = Cursor {
@@ -858,7 +873,7 @@ pub async fn scan_blocks(reader: &DbReader, blocks: &[u64]) -> eyre::Result<Vec<
         .scan_with_options(key(first)..key(last + 1), &scan_options())
         .await?;
     let mut wanted = blocks.iter().peekable();
-    let mut stored = Vec::with_capacity(blocks.len());
+    let mut payloads = Vec::with_capacity(blocks.len());
     while pages.cursor.next <= last {
         for record in pages.next_page().await? {
             let block = scan
@@ -870,7 +885,7 @@ pub async fn scan_blocks(reader: &DbReader, blocks: &[u64]) -> eyre::Result<Vec<
                 "block scan gap/order/size mismatch"
             );
             if wanted.next_if_eq(&&record.number).is_some() {
-                stored.push((record, block.value));
+                payloads.push((record, block.value));
             }
         }
     }
@@ -878,7 +893,7 @@ pub async fn scan_blocks(reader: &DbReader, blocks: &[u64]) -> eyre::Result<Vec<
         wanted.peek().is_none(),
         "block list is not sorted and unique"
     );
-    Ok(stored)
+    Ok(payloads)
 }
 
 /// One metadata scan over a whole range, read in bounded pages. Reopening a scan
