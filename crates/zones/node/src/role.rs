@@ -1058,7 +1058,7 @@ where
     })
 }
 
-fn latest_sealed_header<P>(provider: &P) -> eyre::Result<SealedHeader<TempoHeader>>
+pub(crate) fn latest_sealed_header<P>(provider: &P) -> eyre::Result<SealedHeader<TempoHeader>>
 where
     P: BlockNumReader + HeaderProvider<Header = TempoHeader>,
 {
