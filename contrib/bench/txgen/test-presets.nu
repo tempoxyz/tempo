@@ -140,6 +140,7 @@ assert equal ($neobank_cards | length) 18
 assert equal ($neobank.mix | get template | where { |name| $name | str starts-with "vault_withdraw_" } | length) 40
 assert equal ($neobank.templates.card_settlement_0.calls | last | get args | first) $TXGEN_HELPER_CARD_SETTLEMENT_ACCOUNT
 assert equal ($neobank.templates.vault_withdraw_0.calls | length) (($neobank.templates.card_settlement_0.calls | length) - 1)
+assert ($neobank.templates.reward_distribution.gas_limit <= $TXGEN_HELPER_GENERAL_BATCH_GAS_CAP)
 let neobank_weights = (txgen-workload-metadata-args neobank-generic $neobank_path | last | str replace "workload_mix_weights=" "" | from json)
 assert equal ($neobank_weights | columns | sort) [access_key_create access_key_rotate account_first_receive card_refund card_settlement card_spend cash_out dex_swap keychain_agent_spend keychain_merchant_pull payroll_existing payroll_new public_transfer public_transfer_memo reward_distribution vault_deposit vault_withdraw zone_deposit zone_withdraw]
 assert equal ($neobank_weights.cash_out * 3) ($neobank_weights.account_first_receive * 10)
@@ -183,6 +184,11 @@ let multi_dir = (mktemp -d)
 let multi_path = (txgen-prepare-public-mix-preset $multi_spec.spec_path 1000 40 6 1337 --out-dir $multi_dir)
 assert equal ($multi_path | path basename) "neobank-multi.yml"
 let multi = (open $multi_path)
+let reward_names = ($multi.templates | columns | where { |name| $name | str ends-with "/reward_distribution" })
+assert ($reward_names | is-not-empty)
+for name in $reward_names {
+    assert (($multi.templates | get $name).gas_limit <= $TXGEN_HELPER_GENERAL_BATCH_GAS_CAP)
+}
 let copies_path = ($multi_dir | path join neobank-multi-templates.yml)
 let copies = (^uv run --no-project --with yq==3.4.3 yq -c '.templates | to_entries | map({name: .key, pool: .value.from.pool, setup: .value.auth.access_key.from_setup, text: (.value | tojson)})' $copies_path | from json)
 assert ((open --raw $copies_path) =~ 'nonce: \{ uniform: \[0, 18446744073709551615\] \}')
