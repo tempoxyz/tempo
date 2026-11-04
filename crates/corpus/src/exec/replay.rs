@@ -38,6 +38,9 @@ use tracing::info;
 /// ~16 maximum-size batches or two maximum-size records. Not an RSS cap: decoded
 /// state, SlateDB scan/cache buffers and SDK allocations are excluded.
 const REPLAY_BUDGET: usize = 2 * MAX_RECORD_BYTES;
+/// Unselected blocks a payload batch reads through to the next selected one: opening a scan
+/// costs far more than reading a run of small skipped blocks.
+const MAX_SKIPPED_RUN: usize = 1024;
 
 struct Ready {
     record: Record,
@@ -274,14 +277,16 @@ async fn open(store: &Store, catalog: &Catalog, config: &TempoEvmConfig) -> eyre
 /// Fetching owns serialized reservations until ownership moves to a worker.
 async fn feed_pages(
     reader: &Arc<DbReader>,
-    mut pages: mpsc::Receiver<Vec<Record>>,
+    mut pages: mpsc::Receiver<Vec<(Record, bool)>>,
     tasks: &mut JoinSet<eyre::Result<()>>,
     sender: Sender<Ready>,
     budget: Arc<Semaphore>,
     cancellation: &CancellationToken,
 ) -> eyre::Result<()> {
     let space = Arc::new(Notify::new());
-    let mut records = Vec::<Record>::new().into_iter().peekable();
+    // Each record with whether to replay it; unselected ones are read only to keep scans
+    // contiguous.
+    let mut records = Vec::<(Record, bool)>::new().into_iter().peekable();
     let mut closed = false;
     let fetch_tasks = env_usize("TEMPO_CORPUS_FETCH_TASKS").unwrap_or(64);
     // Reserve whole read batches before opening scans, then transfer exact byte
@@ -292,17 +297,27 @@ async fn feed_pages(
     loop {
         eyre::ensure!(!cancellation.is_cancelled(), "corpus replay cancelled");
         while tasks.len() < fetch_tasks {
-            let Some(record) = records.next() else { break };
-            let (mut end, mut bytes) = (record.number + 1, record.bytes);
-            let mut batch = vec![record];
+            while records.next_if(|(_, selected)| !selected).is_some() {}
+            let Some(first) = records.next() else { break };
+            let (mut end, mut bytes, mut skipped) = (first.0.number + 1, first.0.bytes, 0);
+            let (mut batch, mut kept) = (vec![first], (1, bytes));
             // Batches never span pages, so an unfiltered page under the byte limit is one
             // scan task; read parallelism comes from pages in flight under the byte budget.
-            while let Some(next) =
-                records.next_if(|next| next.number == end && bytes + next.bytes <= batch_limit)
-            {
-                (end, bytes) = (next.number + 1, bytes + next.bytes);
+            while let Some(next) = records.next_if(|(next, selected)| {
+                next.number == end
+                    && bytes + next.bytes <= batch_limit
+                    && (*selected || skipped < MAX_SKIPPED_RUN)
+            }) {
+                (end, bytes) = (next.0.number + 1, bytes + next.0.bytes);
+                skipped = if next.1 { 0 } else { skipped + 1 };
                 batch.push(next);
+                if batch.last().is_some_and(|(_, selected)| *selected) {
+                    kept = (batch.len(), bytes);
+                }
             }
+            // Never read the unselected tail.
+            batch.truncate(kept.0);
+            bytes = kept.1;
             // A batch over the limit is a single record; one over the whole budget would wait
             // for permits that never exist.
             eyre::ensure!(
@@ -319,10 +334,15 @@ async fn feed_pages(
                 let mut reservation = budget.acquire_many_owned(permits).await?;
                 let budget_wait = waiting.elapsed();
                 let mut queue_wait = Duration::ZERO;
-                let mut payloads = store::PayloadScan::open(&reader, &batch).await?;
-                for record in batch {
+                let mut payloads =
+                    store::PayloadScan::open(&reader, &batch[0].0, &batch[batch.len() - 1].0)
+                        .await?;
+                for (record, selected) in batch {
                     let (block, cases) = payloads.next(&record).await?;
                     let permit = reservation.split(record.bytes).expect("batch sum reserved");
+                    if !selected {
+                        continue;
+                    }
                     let mut ready = Ready {
                         record,
                         bytes: block,
@@ -453,7 +473,7 @@ async fn read_catalog(
     range: Range<u64>,
     standalone: Option<(u64, u64)>,
     blocks: Option<&[u64]>,
-    pages: mpsc::Sender<Vec<Record>>,
+    pages: mpsc::Sender<Vec<(Record, bool)>>,
     cancellation: &CancellationToken,
 ) -> eyre::Result<(u64, u64, u64)> {
     let cursor = store::cursor_at(reader, &catalog.context, range.start).await?;
@@ -468,15 +488,19 @@ async fn read_catalog(
         let mut page = metadata.next_page().await?;
         // Coverage of the skipped blocks is still checked as their metadata is read.
         covered += page.iter().map(|r| r.transactions).sum::<u64>();
-        if let Some(blocks) = blocks {
-            page.retain(|r| blocks.binary_search(&r.number).is_ok());
-        }
         if let Some((from, to)) = standalone {
             page.retain(|r| {
                 r.transactions > 0 && r.first_tx < to && r.first_tx + r.transactions > from
             });
         }
-        for record in &page {
+        let page: Vec<_> = page
+            .into_iter()
+            .map(|r| {
+                let selected = blocks.is_none_or(|blocks| blocks.binary_search(&r.number).is_ok());
+                (r, selected)
+            })
+            .collect();
+        for (record, _) in page.iter().filter(|(_, selected)| *selected) {
             totals.0 += 1;
             totals.1 += standalone.map_or(record.transactions, |(from, to)| {
                 to.min(record.first_tx + record.transactions) - from.max(record.first_tx)
