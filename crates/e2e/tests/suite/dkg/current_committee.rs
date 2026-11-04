@@ -155,10 +155,11 @@ fn boundaries_store_the_next_dkg_ceremony_from_genesis() {
 fn first_activated_boundary_stores_the_next_dkg_ceremony() {
     let _ = tempo_eyre::install();
     const EPOCH_LENGTH: u64 = 20;
-    // Activates T15 in the middle of the run, so that at least one legacy boundary precedes the
-    // first TIP-1123 boundary, and the epoch after it runs the ceremony read from state.
+    // Activates T15 after genesis, so that at least one legacy boundary precedes the first
+    // TIP-1123 boundary. Which boundary is first depends on how fast blocks are produced, so the
+    // test walks boundaries until it finds it, up to MAX_EPOCH.
     const ACTIVATION: u64 = 6;
-    const LAST_EPOCH: u64 = 3;
+    const MAX_EPOCH: u64 = 8;
 
     let how_many_signers = 4;
     let setup = Setup::new(crate::VERIFICATION_MODE)
@@ -174,13 +175,6 @@ fn first_activated_boundary_stores_the_next_dkg_ceremony() {
         connect_execution_peers(&validators).await;
 
         let epocher = FixedEpocher::new(NZU64!(EPOCH_LENGTH));
-        let target_height = epocher.first(Epoch::new(LAST_EPOCH + 1)).unwrap();
-        wait_for_metrics(&context, |metrics| {
-            metrics.assert_no_dkg_failures();
-            metrics.consensus_at_height(target_height.get()) == validators.len()
-        })
-        .await;
-
         let validator = &validators[0];
         let provider = validator.execution_provider();
         let timestamp = |height: Height| {
@@ -202,8 +196,21 @@ fn first_activated_boundary_stores_the_next_dkg_ceremony() {
 
         let players = sorted_keys(&validators);
         let mut transition = None;
-        for epoch in 0..=LAST_EPOCH {
+        for epoch in 0..=MAX_EPOCH {
             let boundary = epocher.last(Epoch::new(epoch)).unwrap();
+            // Waits until the epoch after the boundary started, so its ceremony is running.
+            let target_height = epocher.first(Epoch::new(epoch + 1)).unwrap();
+            wait_for_metrics(&context, |metrics| {
+                metrics.assert_no_dkg_failures();
+                metrics.consensus_at_height(target_height.get()) == validators.len()
+            })
+            .await;
+
+            // The ceremony read from state at the first activated boundary ran through its epoch.
+            if transition.is_some_and(|transition| transition < boundary) {
+                break;
+            }
+
             let outcome = read_outcome_from_validator(validator, boundary).unwrap();
             assert_eq!(outcome.epoch, epoch + 1);
             let stored = read_stored_dkg_ceremony(validator, boundary);
@@ -240,10 +247,8 @@ fn first_activated_boundary_stores_the_next_dkg_ceremony() {
             );
         }
 
-        // The first activated boundary follows a legacy one, and the ceremony it stored ran to
-        // the next boundary without DKG failures.
-        let transition = transition.expect("T15 activates before the last boundary");
+        // The first activated boundary follows a legacy one.
+        let transition = transition.expect("T15 activates by the boundary of MAX_EPOCH");
         assert!(transition > epocher.last(Epoch::zero()).unwrap());
-        assert!(transition < epocher.last(Epoch::new(LAST_EPOCH)).unwrap());
     });
 }
