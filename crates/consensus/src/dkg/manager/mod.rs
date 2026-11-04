@@ -14,6 +14,7 @@ use commonware_utils::ordered;
 use eyre::{Report, WrapErr as _};
 use futures::channel::mpsc;
 use rand_core::CryptoRng;
+use reth_provider::HeaderProvider as _;
 use tempo_chainspec::{NetworkIdentity, TempoChainSpec};
 use tempo_node::TempoFullNode;
 use tempo_primitives::TempoHeader;
@@ -157,8 +158,6 @@ impl ExecutionLayer for TempoExecutionLayer {
     }
 
     fn finalized_header(&self, height: Height) -> eyre::Result<Option<TempoHeader>> {
-        use reth_provider::HeaderProvider as _;
-
         let finalized = self
             .node
             .provider

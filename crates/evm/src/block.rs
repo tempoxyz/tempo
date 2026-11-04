@@ -2819,8 +2819,6 @@ mod tests {
 
     #[test]
     fn test_deploy_precompile_at_boundary_preserves_existing_original_info() {
-        use std::sync::{Arc, Mutex};
-
         let chainspec = test_chainspec();
         let mut db = InMemoryDB::default();
         let addr = Address::with_last_byte(0xfe);

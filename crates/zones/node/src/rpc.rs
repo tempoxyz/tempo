@@ -1602,6 +1602,7 @@ mod tests {
     use super::*;
     use alloy_provider::ProviderBuilder;
     use reth_provider::test_utils::MockEthProvider;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use tempo_alloy::rpc::ForkSchedule;
     use tempo_chainspec::{hardfork::TempoHardfork, spec::DEV};
     use zone_chainspec::{ZoneChainSpec, test_utils::set_tempo_fork};
@@ -1628,9 +1629,6 @@ mod tests {
 
     #[tokio::test]
     async fn tempo_witness_collects_checkpoint_proofs_and_propagates_errors() -> eyre::Result<()> {
-        use alloy_provider::ProviderBuilder;
-        use std::sync::atomic::{AtomicBool, Ordering};
-
         let header = TempoHeader::default();
         let initial = alloy_eips::NumHash {
             number: 0,

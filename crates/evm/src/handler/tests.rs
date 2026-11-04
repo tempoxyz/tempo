@@ -9,12 +9,14 @@ use alloy_consensus::{SignableTransaction, transaction::Recovered};
 use alloy_primitives::{B256, Bytes, Signature};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
+use alloy_sol_types::SolInterface;
 use evm2::{
     DatabaseError, ExecutionConfig, SpecId,
     bytecode::Bytecode,
     evm::{DynDatabase, InMemoryDB, precompile::NoPrecompiles},
 };
 use proptest::prelude::*;
+use tempo_contracts::precompiles::{AccountKeychainError, IFeeManager};
 use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, test_util::TIP20Setup};
 use tempo_primitives::{
     AASigned, TempoSignature, TempoTransaction,
@@ -337,8 +339,6 @@ fn test_paused_fee_token_rejected() {
 
 #[test]
 fn test_collect_fee_pre_tx_insufficient_liquidity_reports_pair_from_handler() -> eyre::Result<()> {
-    use tempo_contracts::precompiles::IFeeManager;
-
     let admin = Address::random();
     let fee_payer = Address::random();
     let validator = Address::random();
@@ -663,9 +663,6 @@ fn tempo_gas_params(spec: TempoHardfork) -> GasParams {
 
 #[test]
 fn test_aa_gas_single_call_vs_normal_tx() {
-    use alloy_primitives::{Bytes, TxKind};
-    use tempo_primitives::transaction::{Call, TempoSignature};
-
     // Test that AA tx with secp256k1 and single call matches normal tx + per-call overhead
     let calldata = Bytes::from(vec![1, 2, 3, 4, 5]); // 5 non-zero bytes
     let to = Address::random();
@@ -712,9 +709,6 @@ fn test_aa_gas_single_call_vs_normal_tx() {
 
 #[test]
 fn test_aa_gas_multiple_calls_overhead() {
-    use alloy_primitives::{Bytes, TxKind};
-    use tempo_primitives::transaction::{Call, TempoSignature};
-
     let calldata = Bytes::from(vec![1, 2, 3]); // 3 non-zero bytes
 
     let calls = vec![
@@ -772,11 +766,6 @@ fn test_aa_gas_multiple_calls_overhead() {
 
 #[test]
 fn test_aa_gas_p256_signature() {
-    use alloy_primitives::{B256, Bytes, TxKind};
-    use tempo_primitives::transaction::{
-        Call, TempoSignature, tt_signature::P256SignatureWithPreHash,
-    };
-
     let spec = SpecId::CANCUN;
     let calldata = Bytes::from(vec![1, 2]);
 
@@ -827,9 +816,6 @@ fn test_aa_gas_p256_signature() {
 
 #[test]
 fn test_aa_gas_create_call() {
-    use alloy_primitives::{Bytes, TxKind};
-    use tempo_primitives::transaction::{Call, TempoSignature};
-
     let spec = SpecId::CANCUN; // Post-Shanghai
     let initcode = Bytes::from(vec![0x60, 0x80]); // 2 bytes
 
@@ -875,9 +861,6 @@ fn test_aa_gas_create_call() {
 
 #[test]
 fn test_aa_gas_value_transfer() {
-    use alloy_primitives::{Bytes, TxKind};
-    use tempo_primitives::transaction::Call;
-
     let calldata = Bytes::from(vec![1]);
 
     let call = Call {
@@ -910,9 +893,6 @@ fn test_aa_gas_value_transfer() {
 
 #[test]
 fn test_aa_gas_access_list() {
-    use alloy_primitives::{Bytes, TxKind};
-    use tempo_primitives::transaction::{Call, TempoSignature};
-
     let spec = SpecId::CANCUN;
     let calldata = Bytes::from(vec![]);
 
@@ -959,9 +939,6 @@ fn test_aa_gas_access_list() {
 
 #[test]
 fn test_key_authorization_rlp_encoding() {
-    use alloy_primitives::{Address, U256};
-    use tempo_primitives::transaction::{KeyAuthorization, SignatureType, TokenLimit};
-
     // Create test data
     let chain_id = 1u64;
     let key_type = SignatureType::Secp256k1;
@@ -1007,9 +984,6 @@ fn test_key_authorization_rlp_encoding() {
 
 #[test]
 fn test_aa_gas_floor_gas_prague() {
-    use alloy_primitives::{Bytes, TxKind};
-    use tempo_primitives::transaction::{Call, TempoSignature};
-
     let spec = SpecId::PRAGUE;
     let calldata = Bytes::from(vec![1, 2, 3, 4, 5]); // 5 non-zero bytes
 
@@ -1085,10 +1059,6 @@ fn test_zero_value_transfer() {
 
 #[test]
 fn test_key_authorization_gas_with_limits() {
-    use tempo_primitives::transaction::{
-        KeyAuthorization, SignatureType, SignedKeyAuthorization, TokenLimit,
-    };
-
     // Helper to create key auth with N limits
     let create_key_auth = |num_limits: usize| -> SignedKeyAuthorization {
         let mut auth =
@@ -1847,8 +1817,6 @@ fn test_t3_scope_validation_moves_to_execution(gas_limit: u64, expected_stop: In
 #[test]
 fn test_t3_scope_validation_returns_call_not_allowed_revert_data() {
     use alloy_consensus::Transaction;
-    use alloy_sol_types::SolInterface;
-    use tempo_contracts::precompiles::AccountKeychainError;
 
     const ALLOWED_SELECTOR: [u8; 4] = [0xde, 0xad, 0xbe, 0xef];
     const DENIED_SELECTOR: [u8; 4] = [0xca, 0xfe, 0xba, 0xbe];
@@ -2681,7 +2649,11 @@ fn test_t1_existing_2d_nonce_key_charges_5k_gas() {
 
 mod keychain {
     use super::*;
+    use alloy_sol_types::SolCall;
     use evm2::Inspector;
+    use tempo_precompiles::account_keychain::{
+        getKeyCall, getTransactionKeyCall, isKeyAuthorizationWitnessBurnedCall,
+    };
 
     #[derive(Default)]
     struct LogInspector(Vec<Address>);
@@ -2951,8 +2923,6 @@ mod keychain {
 
     #[test]
     fn test_t5_key_authorization_witness_is_not_burned_in_state() {
-        use tempo_precompiles::account_keychain::isKeyAuthorizationWitnessBurnedCall;
-
         let (signer, user) = generate_keypair();
         let key = Address::random();
         let witness = B256::repeat_byte(0x54);
@@ -3362,8 +3332,6 @@ mod keychain {
 
     #[test]
     fn test_t6_admin_access_key_non_admin_authorization_rejects_account_replay() {
-        use tempo_precompiles::account_keychain::getKeyCall;
-
         let (admin_signer, admin_key) = generate_keypair();
         let alice = Address::random();
         let bob = Address::random();
@@ -3432,8 +3400,6 @@ mod keychain {
 
     #[test]
     fn test_t6_admin_delegation_does_not_apply_child_fee_limit() {
-        use tempo_precompiles::account_keychain::getKeyCall;
-
         let (admin_signer, admin_key) = generate_keypair();
         let user = Address::random();
         let child_key = Address::random();
@@ -3530,9 +3496,6 @@ mod keychain {
 
     #[test]
     fn test_t6_admin_delegation_preserves_admin_transaction_key() {
-        use alloy_sol_types::SolCall;
-        use tempo_precompiles::account_keychain::getTransactionKeyCall;
-
         let (admin_signer, admin_key) = generate_keypair();
         let user = Address::random();
         let child_key = Address::random();

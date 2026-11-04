@@ -816,6 +816,7 @@ mod tests {
 
     use alloy_primitives::address;
     use clap::Parser as _;
+    use reth_evm::ConfigureEvm as _;
 
     use super::*;
     use zone_sequencer::MAX_WITHDRAWAL_BATCH_GAS;
@@ -828,8 +829,6 @@ mod tests {
 
     #[test]
     fn re_execute_parses_without_portal_address() {
-        use reth_chainspec::EthChainSpec as _;
-
         let parent = tempo_chainspec::spec::MODERATO.clone();
         let mut genesis = parent.genesis().clone();
         genesis.config.chain_id =
@@ -926,9 +925,6 @@ mod tests {
 
     #[tokio::test]
     async fn cli_evm_derives_portal_from_chain_spec() {
-        use reth_chainspec::EthChainSpec as _;
-        use reth_evm::ConfigureEvm as _;
-
         let parent = tempo_chainspec::spec::MODERATO.clone();
         for (zone_id, expected) in [
             (

@@ -13,16 +13,22 @@ use alloy::{
 };
 use alloy_eips::{Decodable2718, Encodable2718};
 use alloy_primitives::TxKind;
+use p256::ecdsa::signature::hazmat::PrehashSigner;
 use reth_primitives_traits::transaction::TxHashRef;
+use sha2::{Digest, Sha256};
+use tempo_alloy::provider::keychain::{KeyRestrictions, authorize_key, authorize_key_legacy};
 use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
 use tempo_node::rpc::TempoTransactionRequest;
 use tempo_primitives::{
     SignatureType, TempoTransaction, TempoTxEnvelope,
     transaction::{
         FEE_PAYER_SIGNATURE_MARKER, KeyAuthorization, SignedKeyAuthorization,
-        TEMPO_EXPIRING_NONCE_KEY, TokenLimit,
+        TEMPO_EXPIRING_NONCE_KEY, TempoSignedAuthorization, TokenLimit,
         tempo_transaction::Call,
-        tt_signature::{PrimitiveSignature, TempoSignature},
+        tt_signature::{
+            KeychainSignature, P256SignatureWithPreHash, PrimitiveSignature, TempoSignature,
+            normalize_p256_s,
+        },
     },
 };
 
@@ -976,10 +982,6 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
             // Sign with root key directly (handled below)
         }
         KeySetup::ZeroPubKey => {
-            use tempo_alloy::provider::keychain::{
-                KeyRestrictions, authorize_key, authorize_key_legacy,
-            };
-
             let restrictions = KeyRestrictions::default().with_no_spending();
             let call = if env.hardfork().is_t3() {
                 authorize_key(Address::ZERO, SignatureType::P256, restrictions)
@@ -1154,10 +1156,6 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
                 }
                 _ => {
                     // P256 / WebAuthn path (existing logic)
-                    use tempo_primitives::transaction::tt_signature::{
-                        P256SignatureWithPreHash, normalize_p256_s,
-                    };
-
                     let (another_key, pub_x_3, pub_y_3, addr_3) = generate_p256_access_key();
                     let (wrong_signer_key, wrong_pub_x, wrong_pub_y, _) =
                         generate_p256_access_key();
@@ -1166,8 +1164,6 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
                         KeyAuthorization::unrestricted(chain_id, SignatureType::P256, addr_3)
                             .signature_hash();
 
-                    use p256::ecdsa::signature::hazmat::PrehashSigner;
-                    use sha2::{Digest, Sha256};
                     let wrong_sig_hash =
                         B256::from_slice(Sha256::digest(auth_message_hash).as_ref());
                     let wrong_signature: p256::ecdsa::Signature =
@@ -2037,8 +2033,6 @@ pub(super) async fn run_fee_payer_cosign_scenario<E: TestEnv>(env: &mut E) -> ey
 
 /// EIP-7702 authorization list with 3 key types.
 pub(super) async fn run_authorization_list_scenario<E: TestEnv>(env: &mut E) -> eyre::Result<()> {
-    use tempo_primitives::transaction::TempoSignedAuthorization;
-
     println!("\n=== Authorization list scenario ===\n");
 
     let chain_id = env.chain_id();
@@ -2141,10 +2135,6 @@ pub(super) async fn run_authorization_list_scenario<E: TestEnv>(env: &mut E) -> 
 pub(super) async fn run_keychain_auth_list_skipped_scenario<E: TestEnv>(
     env: &mut E,
 ) -> eyre::Result<()> {
-    use tempo_primitives::transaction::{
-        TempoSignedAuthorization, tt_signature::KeychainSignature,
-    };
-
     println!("\n=== Keychain auth list skipped scenario ===\n");
 
     let chain_id = env.chain_id();

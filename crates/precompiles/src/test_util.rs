@@ -25,15 +25,15 @@ use crate::{
 #[cfg(test)]
 use alloy::primitives::Bytes;
 use alloy::{
-    primitives::{Address, B256, U256, address, fixed_bytes, hex_literal::hex},
-    sol_types::SolError,
+    primitives::{Address, B256, Log, U256, address, fixed_bytes, hex_literal::hex},
+    sol_types::{SolError, SolEvent},
 };
 use evm2::PrecompileError;
 #[cfg(test)]
 use evm2::precompiles::PrecompileResult;
 #[cfg(any(test, feature = "test-utils"))]
 use tempo_contracts::precompiles::TIP20Error;
-use tempo_contracts::precompiles::{TIP20_FACTORY_ADDRESS, UnknownFunctionSelector};
+use tempo_contracts::precompiles::{ITIP20Factory, TIP20_FACTORY_ADDRESS, UnknownFunctionSelector};
 use tempo_primitives::{MasterId, TempoAddressExt};
 
 /// Returns the revert payload or panics with the unexpected EVM2 result.
@@ -402,9 +402,6 @@ fn is_initialized(address: Address) -> Result<bool> {
 /// Looks up the admin of a TIP-20 token by scanning `TokenCreated` events from the factory.
 #[cfg(any(test, feature = "test-utils"))]
 fn get_tip20_admin(token: Address) -> Option<Address> {
-    use alloy::{primitives::Log, sol_types::SolEvent};
-    use tempo_contracts::precompiles::ITIP20Factory;
-
     let events = StorageCtx.get_events(TIP20_FACTORY_ADDRESS);
     for log_data in events {
         let log = Log::new_unchecked(

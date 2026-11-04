@@ -578,8 +578,6 @@ fn is_tip20_pause_update(address: Address, topic0: Option<&B256>) -> bool {
 }
 
 fn portal_event_cache_invalidation_address(topic0: Option<&B256>) -> Option<Address> {
-    use tempo_contracts::precompiles::TIP403_REGISTRY_ADDRESS;
-
     (topic0 == Some(&TokenEnabled::SIGNATURE_HASH)).then_some(TIP403_REGISTRY_ADDRESS)
 }
 

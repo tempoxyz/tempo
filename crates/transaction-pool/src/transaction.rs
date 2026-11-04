@@ -1557,8 +1557,6 @@ mod tests {
 
     #[test]
     fn test_validate_blob_returns_not_blob_transaction() {
-        use alloy_eips::eip7594::BlobTransactionSidecarVariant;
-
         let tx = TxBuilder::eip1559(Address::random())
             .gas_limit(21000)
             .build_eip1559();

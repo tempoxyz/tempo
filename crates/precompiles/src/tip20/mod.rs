@@ -4405,8 +4405,6 @@ pub(crate) mod tests {
 
     #[test]
     fn test_is_transfer_authorized() -> eyre::Result<()> {
-        use tempo_chainspec::hardfork::TempoHardfork;
-
         let admin = Address::random();
         let sender = Address::random();
         let recipient = Address::random();

@@ -2,6 +2,7 @@
 
 use std::{
     env, fs, io,
+    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
 };
 
@@ -84,8 +85,6 @@ pub(super) fn check_dir_writable(dir: &Path) -> Result<(), InstallerError> {
 
 /// Sets the file mode to `0o755` (owner rwx, group/other rx).
 pub(super) fn set_executable_permissions(file: &fs::File) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
     let mut perms = file.metadata()?.permissions();
     perms.set_mode(0o755);
     file.set_permissions(perms)?;
@@ -170,7 +169,6 @@ mod tests {
 
     #[test]
     fn set_executable_permissions_sets_mode() {
-        use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::NamedTempFile::new().unwrap();
         set_executable_permissions(tmp.as_file()).unwrap();
         let perms = tmp.as_file().metadata().unwrap().permissions();
@@ -183,10 +181,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let bin_path = dir.path().join("test-tempo-binary");
         fs::write(&bin_path, "fake binary").unwrap();
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&bin_path, fs::Permissions::from_mode(0o755)).unwrap();
-        }
+        fs::set_permissions(&bin_path, fs::Permissions::from_mode(0o755)).unwrap();
 
         let original = std::env::var_os("PATH");
         let new_path = format!(

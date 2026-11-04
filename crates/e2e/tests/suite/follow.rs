@@ -24,7 +24,10 @@ use futures::{channel::oneshot, future::join_all};
 use jsonrpsee::{core::client::ClientT as _, http_client::HttpClientBuilder, rpc_params};
 use rand_core::CryptoRng;
 use reth_ethereum::provider::BlockIdReader as _;
-use tempo_consensus::{feed::FeedStateHandle, follow};
+use tempo_consensus::{
+    feed::FeedStateHandle,
+    follow::{self, upstream::in_process},
+};
 use tempo_node::rpc::consensus::{ConsensusFeed as _, Event, Query, types::Response};
 
 static EPOCH_LENGTH: u64 = 10;
@@ -229,7 +232,6 @@ impl FollowerBuilder {
     where
         TContext: BufferPooler + Clock + CryptoRng + RuntimeMetrics + Pacer + Spawner + Storage,
     {
-        use tempo_consensus::follow::upstream::in_process;
         let Self {
             name,
             partition_prefix,
