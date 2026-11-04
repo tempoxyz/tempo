@@ -23,7 +23,8 @@ use tempo_fuzz_types::{
     TempoBlockchainInput, TempoHarnessInput,
 };
 use tempo_primitives::Block;
-use tokio::{runtime::Runtime, sync::mpsc, task::JoinHandle};
+use tokio::{runtime::Runtime, sync::mpsc};
+use tokio_util::task::AbortOnDropHandle;
 use tracing::warn;
 
 /// Worker threads of a corpus's runtime: they renew its lease and decode the blocks it reads ahead.
@@ -110,13 +111,15 @@ impl Corpus {
             .map(|block| Ok((block, self.input(block)?)))
     }
 
-    /// Each of `blocks`, which must be sorted and unique, with its stored input size and harness
+    /// Each of `blocks`, in block order and once each, with its stored input size and harness
     /// input, in windows of up to `window` blocks, each read and decoded on the corpus's runtime
     /// while the caller works on the one before. Iteration stops after the first error.
-    pub fn windows(&self, blocks: Vec<u64>, window: usize) -> Windows<'_> {
+    pub fn windows(&self, mut blocks: Vec<u64>, window: usize) -> Windows<'_> {
+        blocks.sort_unstable();
+        blocks.dedup();
         let (sender, receiver) = mpsc::channel(1);
         let (reader, chain_spec) = (self.reader.clone(), self.chain_spec.clone());
-        let task = self.runtime.spawn(async move {
+        let task = AbortOnDropHandle::new(self.runtime.spawn(async move {
             for blocks in blocks.chunks(window.max(1)) {
                 let read = async {
                     let (Some(&first), Some(&last)) = (blocks.first(), blocks.last()) else {
@@ -138,7 +141,8 @@ impl Corpus {
                     stream::iter(payloads)
                         .map(|(block, payload)| {
                             let (reader, chain_spec) = (reader.clone(), chain_spec.clone());
-                            tokio::spawn(async move {
+                            // Aborted when dropped, so a dropped or failed window stops its reads.
+                            AbortOnDropHandle::new(tokio::spawn(async move {
                                 let (record, bytes) = match payload {
                                     Some(payload) => payload,
                                     None => store::published_payload(&reader, block).await?,
@@ -152,7 +156,7 @@ impl Corpus {
                                         &stored, chain_spec,
                                     )?),
                                 })
-                            })
+                            }))
                         })
                         .buffered(32)
                         .map(|joined| joined.unwrap_or_else(|error| Err(error.into())))
@@ -165,11 +169,11 @@ impl Corpus {
                     break;
                 }
             }
-        });
+        }));
         Windows {
             corpus: self,
-            receiver,
-            task,
+            receiver: Some(receiver),
+            _task: task,
         }
     }
 }
@@ -185,27 +189,25 @@ pub struct BlockInput {
     pub input: TempoHarnessInput,
 }
 
-/// Windows of a [Corpus]'s blocks, from [Corpus::windows]. Dropping it stops the read still running.
+/// Windows of a [Corpus]'s blocks, from [Corpus::windows]. Dropping it stops the reads still running.
 pub struct Windows<'a> {
     corpus: &'a Corpus,
-    receiver: mpsc::Receiver<eyre::Result<Vec<BlockInput>>>,
-    task: JoinHandle<()>,
+    /// `None` once an error was returned.
+    receiver: Option<mpsc::Receiver<eyre::Result<Vec<BlockInput>>>>,
+    _task: AbortOnDropHandle<()>,
 }
 
 impl Iterator for Windows<'_> {
     type Item = eyre::Result<Vec<BlockInput>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if let Err(error) = self.corpus.ensure_leased() {
-            return Some(Err(error));
+        let window = self.receiver.as_mut()?.blocking_recv()?;
+        // Checked after the read, so a window read while the lease was expiring is not returned.
+        let window = self.corpus.ensure_leased().and(window);
+        if window.is_err() {
+            self.receiver = None;
         }
-        self.receiver.blocking_recv()
-    }
-}
-
-impl Drop for Windows<'_> {
-    fn drop(&mut self) {
-        self.task.abort();
+        Some(window)
     }
 }
 

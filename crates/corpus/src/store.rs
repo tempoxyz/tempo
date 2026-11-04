@@ -859,9 +859,10 @@ pub async fn scan_blocks(reader: &DbReader, blocks: &[u64]) -> eyre::Result<Vec<
         tx: record.first_tx,
         parent: record.parent,
     };
-    let mut pages = MetadataPages::open(reader, cursor, last + 1).await?;
+    let end = last.checked_add(1).ok_or_eyre("block range overflow")?;
+    let mut pages = MetadataPages::open(reader, cursor, end).await?;
     let mut scan = reader
-        .scan_with_options(key(first)..key(last + 1), &scan_options())
+        .scan_with_options(key(first)..key(end), &scan_options())
         .await?;
     let mut wanted = blocks.iter().peekable();
     let mut payloads = Vec::with_capacity(blocks.len());
