@@ -12,6 +12,11 @@ on:
       - 'rust-toolchain.toml'
       - '.cargo/**'
       - 'crates/**'
+      # The fuzzer and corpus crates are never linked into these images.
+      - '!crates/corpus/**'
+      - '!crates/fuzz-harness/**'
+      - '!crates/fuzz-types/**'
+      - '!crates/nitro-attestation/fuzz/**'
       - 'bin/**'
       - 'xtask/**'
       - 'zones/docker/**'
@@ -30,6 +35,11 @@ on:
       # Integration tests do not change the packaged binaries.
       - '!crates/node/tests/**'
       - '!crates/zones/node/tests/**'
+      # The fuzzer and corpus crates are never linked into these images.
+      - '!crates/corpus/**'
+      - '!crates/fuzz-harness/**'
+      - '!crates/fuzz-types/**'
+      - '!crates/nitro-attestation/fuzz/**'
       - 'bin/**'
       - 'xtask/**'
       - 'zones/docker/**'
@@ -149,6 +159,11 @@ jobs:
               - 'crates/**'
               - '!crates/node/tests/**'
               - '!crates/zones/node/tests/**'
+              # The fuzzer and corpus crates are never linked into these images.
+              - '!crates/corpus/**'
+              - '!crates/fuzz-harness/**'
+              - '!crates/fuzz-types/**'
+              - '!crates/nitro-attestation/fuzz/**'
               - 'bin/**'
               - 'xtask/**'
               - 'zones/docker/**'
