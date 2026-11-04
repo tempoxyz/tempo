@@ -83,9 +83,9 @@ services:
     hostname: provision
     init: true
     entrypoint: ["/opt/zones/provision.sh"]
+    # provision.sh waits for the L1 RPC itself, with no time limit.
     depends_on:
-      l1:
-        condition: service_healthy
+      - l1
     volumes:
       - shared:/shared
     networks:
