@@ -45,8 +45,8 @@ impl Corpus {
     /// Opens the published blocks of the corpus at `url` (`s3://bucket/prefix` or
     /// `file:///directory`), with S3 reads going to `endpoint` when given.
     pub fn open(url: &str, endpoint: Option<&str>) -> eyre::Result<Self> {
-        // The workers renew the lease while the caller is not reading, and decode the windows
-        // blocks ([Self::windows]).
+        // The workers renew the lease while the caller is not reading, and decode the windows it
+        // reads ahead ([Self::windows]).
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(WORKERS)
             .enable_all()
