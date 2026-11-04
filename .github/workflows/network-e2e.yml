@@ -77,6 +77,7 @@ jobs:
               - '!crates/corpus/**'
               - '!crates/fuzz-harness/**'
               - '!crates/fuzz-types/**'
+              - '!crates/invariants/**'
               - '!crates/nitro-attestation/fuzz/**'
       - name: Detect Reth revision changes
         id: reth
