@@ -212,6 +212,49 @@ fn startup_takes_the_ceremony_from_the_boundary_post_state() {
 }
 
 #[test]
+fn startup_takes_the_ceremony_from_the_finalized_floor_state() {
+    Runner::default().start(|mut context| async move {
+        let (mut current_state, _, _) = dkg_state(&mut context, Epoch::new(2), 4, false);
+        current_state.players = other_players();
+        current_state.is_full_dkg = true;
+        let mut harness = Harness::builder(context.child("test"), "ceremony_in_state_floor")
+            .epoch_length(10)
+            .identity(PrivateKey::from_seed(u64::MAX))
+            .finalized_floor(Height::new(25))
+            .build()
+            .await;
+        harness.execution.set_t15_activation(Some(0));
+        // Only the floor's state is available, as on a node that pruned the
+        // state of the boundary block.
+        let (boundary, stored) = ceremony_in_state_header(Height::new(19), 0, &current_state);
+        harness.execution.add_header(boundary);
+        for height in 20..=25 {
+            harness.execution.add_header(header(Height::new(height)));
+        }
+        harness
+            .execution
+            .set_dkg_ceremony(header(Height::new(25)).hash_slow(), Some(stored));
+
+        harness.start().await;
+        assert!(!harness.has_dealer_log(current_state.epoch).await);
+
+        assert_eq!(
+            harness.epoch_manager.events(),
+            vec![EpochEvent::Enter {
+                epoch: current_state.epoch,
+                public: current_state.output.public().clone(),
+                share: None,
+                participants: current_state.dealers().clone(),
+            }]
+        );
+        harness.stop().await;
+        let current = harness.storage().current();
+        assert_eq!(current.players(), &other_players());
+        assert!(current.is_full_dkg);
+    });
+}
+
+#[test]
 fn startup_rejects_a_missing_or_mismatched_stored_ceremony() {
     for (case, corrupt) in corrupted_ceremonies() {
         Runner::default().start(|mut context| async move {

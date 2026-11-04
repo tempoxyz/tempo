@@ -1401,31 +1401,32 @@ where
     }
 
     /// Returns the players and mode of the ceremony running during the epoch
-    /// of `outcome`, which the boundary block `boundary` carries.
+    /// of `outcome`, which a boundary block carries.
     ///
     /// A legacy outcome carries the ceremony itself. For a TIP-1123 outcome,
     /// this reads the ceremony from the `CurrentCommittee` precompile in the
-    /// post-state of the boundary block. The ceremony must be stored for the
-    /// outcome's epoch.
-    #[instrument(skip_all, fields(%boundary, outcome.epoch = outcome.epoch), err)]
+    /// post-state of `state_block`: the boundary block, or any later finalized
+    /// block of the outcome's epoch, since only the next boundary overwrites
+    /// it. The ceremony must be stored for the outcome's epoch.
+    #[instrument(skip_all, fields(%state_block, outcome.epoch = outcome.epoch), err)]
     async fn next_ceremony(
         &self,
-        boundary: Digest,
+        state_block: Digest,
         outcome: &OnchainDkgOutcome,
     ) -> eyre::Result<DkgCeremony> {
         if let Some(ceremony) = &outcome.next_ceremony {
             return Ok(ceremony.clone());
         }
         let stored = self
-            .wait_for_stored_ceremony(boundary.0)
+            .wait_for_stored_ceremony(state_block.0)
             .await?
             .ok_or_eyre(
-                "the post-state of a TIP-1123 boundary block holds no DKG ceremony; \
+                "the state after a TIP-1123 boundary block holds no DKG ceremony; \
                 the boundary block must have written it",
             )?;
         ensure!(
             stored.epoch == outcome.epoch,
-            "the DKG ceremony stored in the post-state of the boundary block is for \
+            "the DKG ceremony stored in the state after the boundary block is for \
             epoch `{}`, but the boundary block's outcome is for epoch `{}`",
             stored.epoch,
             outcome.epoch,
@@ -1500,8 +1501,25 @@ where
             outcome_epoch,
         )
         .await?;
+        // Read the ceremony at the finalized floor rather than at the boundary:
+        // a node that keeps little history may have pruned the boundary's
+        // state, but has the state of its latest finalized block.
+        let ceremony_state_block = if onchain_outcome.next_ceremony.is_some()
+            || self.config.last_finalized_height == latest_boundary
+        {
+            boundary_digest
+        } else {
+            let floor = get_header(
+                &self.config.execution_node,
+                &self.config.marshal,
+                self.config.last_finalized_height,
+            )
+            .await
+            .wrap_err("failed reading the header of the finalized floor")?;
+            Digest(floor.hash_slow())
+        };
         let next_ceremony = self
-            .next_ceremony(boundary_digest, &onchain_outcome)
+            .next_ceremony(ceremony_state_block, &onchain_outcome)
             .await
             .wrap_err("failed determining the DKG ceremony of the current epoch")?;
 
