@@ -101,12 +101,14 @@ where
 
             peer_update_timer,
         };
+
         if let Some((height, peers)) = actor
             .read_peers()
             .wrap_err("failed registering initial peers from execution state")?
         {
             actor.track_or_overwrite(height, peers)?;
         }
+
         Ok(actor)
     }
 
@@ -173,7 +175,9 @@ where
         let Ok(Some((height, peers))) = self.read_peers() else {
             return Ok(());
         };
+
         self.track_or_overwrite(height, peers)?;
+
         Ok(())
     }
 
@@ -270,11 +274,13 @@ where
     fn track_or_overwrite(&mut self, height: u64, peers: Peers) -> eyre::Result<()> {
         let flat = peers.to_flat_map();
         let size = flat.len() + usize::from(flat.position(&self.public_key).is_none());
+
         eyre::ensure!(
             size <= self.max_peers.get(),
             "peer set of {size} exceeds --consensus.max-peers-per-set {}",
             self.max_peers,
         );
+
         if let Some(tracked) = &self.last_tracked_peer_set {
             match peers.what_has_changed_compared_to(&tracked.peers) {
                 WhatHasChanged::Nothing => {}
@@ -303,6 +309,7 @@ where
             last_tracked_peer_set = ?self.last_tracked_peer_set.as_ref().expect("just set it"),
             "latest tracked peerset",
         );
+
         Ok(())
     }
 
