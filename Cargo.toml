@@ -132,6 +132,16 @@ inherits = "profiling"
 debug-assertions = true
 overflow-checks = true
 
+# Antithesis coverage-instrumented build. Build with
+# `cargo build --profile antithesis --features antithesis --config .cargo/antithesis.toml`,
+# which adds the sancov rustflags. LTO would rewrite the instrumented code in ways
+# Antithesis cannot symbolize, and one codegen unit avoids the local ThinLTO pass.
+# See https://antithesis.com/docs/reference/sdk/rust/instrumentation/.
+[profile.antithesis]
+inherits = "fuzz"
+lto = false
+codegen-units = 1
+
 [profile.bench]
 inherits = "maxperf"
 debug = "line-tables-only"
@@ -339,6 +349,7 @@ commonware-runtime = "2026.9.0"
 commonware-storage = "2026.9.0"
 commonware-utils = "2026.9.0"
 
+antithesis-instrumentation = "0.1.1"
 antithesis_sdk = { version = "0.3.0", default-features = false }
 arbitrary = { version = "1.4", features = ["derive"] }
 async-trait = "0.1"

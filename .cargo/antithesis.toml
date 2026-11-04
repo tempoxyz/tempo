@@ -1,0 +1,18 @@
+# Antithesis coverage instrumentation flags, for the `antithesis` profile:
+#   cargo build --profile antithesis --bin tempo --features antithesis \
+#     --config .cargo/antithesis.toml
+# Setting the target keeps the flags off build scripts and proc macros; binaries land in
+# target/x86_64-unknown-linux-gnu/antithesis/.
+# See https://antithesis.com/docs/reference/sdk/rust/instrumentation/.
+[build]
+target = "x86_64-unknown-linux-gnu"
+
+[target.x86_64-unknown-linux-gnu]
+rustflags = [
+    "-Ccodegen-units=1",
+    "-Cpasses=sancov-module",
+    "-Cllvm-args=-sanitizer-coverage-level=3",
+    "-Cllvm-args=-sanitizer-coverage-trace-pc-guard",
+    "-Cllvm-args=-sanitizer-coverage-pc-table",
+    "-Clink-args=-Wl,--build-id",
+]

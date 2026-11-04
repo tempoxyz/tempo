@@ -25,6 +25,11 @@ use tracy_client as _;
 #[cfg(feature = "otlp")]
 use opentelemetry_otlp as _;
 
+// antithesis-instrumentation is an optional dependency activated by the `antithesis` feature.
+// It is not used directly but must be referenced so the linker keeps its coverage runtime.
+#[cfg(feature = "antithesis")]
+use antithesis_instrumentation as _;
+
 pub mod cli;
 #[cfg(feature = "corpus")]
 pub mod corpus;

@@ -37,6 +37,7 @@ tempo-faucet.workspace = true
 tempo-telemetry-util.workspace = true
 tempo-state-bloat.workspace = true
 tempo-corpus = { workspace = true, optional = true }
+antithesis-instrumentation = { workspace = true, optional = true }
 
 alloy = { workspace = true, default-features = false, features = [
 	"network",
@@ -139,6 +140,10 @@ required-features = ["localnet"]
 default = ["asm-keccak", "jemalloc", "otlp", "keccak-cache-global"]
 
 fuzz = ["tempo-precompiles/fuzz", "reth-db/dst", "reth-trie/dst"]
+
+# Links the Antithesis coverage runtime. Use with the `antithesis` profile and
+# `--config .cargo/antithesis.toml`, which instrument the code.
+antithesis = ["fuzz", "dep:antithesis-instrumentation"]
 
 localnet = ["dep:nix"]
 

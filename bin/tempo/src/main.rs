@@ -14,6 +14,10 @@ static ALLOC: reth_cli_util::allocator::Allocator = reth_cli_util::allocator::ne
 #[unsafe(export_name = "_rjem_malloc_conf")]
 static MALLOC_CONF: &[u8] = b"prof:true,prof_active:true,lg_prof_sample:19\0";
 
+// Keeps the Antithesis coverage runtime linked in.
+#[cfg(feature = "antithesis")]
+use antithesis_instrumentation as _;
+
 fn main() -> eyre::Result<()> {
     tempo::tempo_main()
 }
