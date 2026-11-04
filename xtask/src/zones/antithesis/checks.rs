@@ -265,15 +265,14 @@ impl Context {
 
         let zone = &self.zones[0];
         let zone_height = zone.get_block_number().await?;
-        let mut credited: BTreeMap<(Address, Address, u128), usize> = BTreeMap::new();
-        let mut bounced: BTreeMap<(Address, u128), usize> = BTreeMap::new();
+        // Inbox outcomes by deposit queue hash, which identifies one deposit.
+        let mut credited: BTreeMap<B256, (Address, Address, u128)> = BTreeMap::new();
+        let mut bounced: BTreeMap<B256, (Address, u128)> = BTreeMap::new();
         for log in logs(zone, Filter::new().address(ZONE_INBOX_ADDRESS), zone_height).await? {
             if let Ok(event) = IZoneInbox::DepositProcessed::decode_log(&log.inner) {
-                *credited
-                    .entry((event.sender, event.to, event.amount))
-                    .or_default() += 1;
+                credited.insert(event.depositHash, (event.sender, event.to, event.amount));
             } else if let Ok(event) = IZoneInbox::DepositFailed::decode_log(&log.inner) {
-                *bounced.entry((event.sender, event.amount)).or_default() += 1;
+                bounced.insert(event.depositHash, (event.sender, event.amount));
             }
         }
         let l1_height = self.l1.get_block_number().await?;
@@ -323,14 +322,16 @@ impl Context {
         for record in records {
             match record {
                 Record::Deposit {
+                    queue_hash,
                     sender,
                     to,
                     net_amount,
                     ..
                 } => {
-                    // Drivers name the sender as the deposit's refund recipient.
-                    let settled = take(&mut credited, (sender, to, net_amount))
-                        || (take(&mut bounced, (sender, net_amount))
+                    // Drivers name the sender as the deposit's refund recipient. L1 refunds
+                    // carry no deposit identity, so they are matched by recipient and amount.
+                    let settled = credited.get(&queue_hash) == Some(&(sender, to, net_amount))
+                        || (bounced.get(&queue_hash) == Some(&(sender, net_amount))
                             && take(&mut refunded, (sender, net_amount)));
                     if !settled {
                         unsettled_deposits.push(record);

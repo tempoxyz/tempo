@@ -188,10 +188,12 @@ impl Context {
             pending.push((deposit, from_block));
         }
         for (deposit, from_block) in pending {
+            let outcome = self
+                .wait_deposit_outcome(zone, &deposit, from_block)
+                .await?;
             eyre::ensure!(
-                self.wait_deposit_credited(zone, &deposit, from_block)
-                    .await?,
-                "seed deposit {deposit:?} was not credited within {BRIDGE_WAIT:?}"
+                outcome == Some(DepositOutcome::Credited),
+                "seed deposit {deposit:?} was not credited within {BRIDGE_WAIT:?}: {outcome:?}"
             );
         }
         println!("seed: funded {SEED_ACCOUNTS} zone accounts");
@@ -240,9 +242,10 @@ impl Context {
             println!("deposit: reverted");
             return Ok(());
         };
-        let credited = self
-            .wait_deposit_credited(zone, &deposit, from_block)
+        let outcome = self
+            .wait_deposit_outcome(zone, &deposit, from_block)
             .await?;
+        let credited = outcome == Some(DepositOutcome::Credited);
         assert_sometimes!(
             credited,
             "Deposit is credited on the zone",
@@ -258,7 +261,7 @@ impl Context {
             "Deposit from a new L1 account is credited",
             &json!({ "deposit": deposit })
         );
-        println!("deposit: {deposit:?} credited={credited}");
+        println!("deposit: {deposit:?} {outcome:?}");
         Ok(())
     }
 
@@ -560,6 +563,7 @@ impl Context {
             .ok_or_eyre("deposit receipt has no DepositMade log")?;
         let record = Record::Deposit {
             l1_tx: receipt.transaction_hash,
+            queue_hash: made.newCurrentDepositQueueHash,
             sender: sender.address(),
             to,
             net_amount: made.netAmount,
@@ -594,46 +598,44 @@ impl Context {
         Ok(())
     }
 
-    /// Polls `zone` from `from_block` until `deposit` is credited or bounced back. Returns
-    /// `false` if neither happens within [`BRIDGE_WAIT`].
-    async fn wait_deposit_credited(
+    /// Polls `zone` from `from_block` until the inbox credits or bounces `deposit`, matched by
+    /// its queue hash. Returns `None` if neither happens within [`BRIDGE_WAIT`].
+    async fn wait_deposit_outcome(
         &self,
         zone: &DynProvider,
         deposit: &Record,
         from_block: u64,
-    ) -> eyre::Result<bool> {
-        let Record::Deposit {
-            sender,
-            to,
-            net_amount,
-            ..
-        } = *deposit
-        else {
+    ) -> eyre::Result<Option<DepositOutcome>> {
+        let Record::Deposit { queue_hash, .. } = *deposit else {
             eyre::bail!("not a deposit: {deposit:?}");
         };
-        let processed = Filter::new()
+        let filter = Filter::new()
             .address(ZONE_INBOX_ADDRESS)
-            .event_signature(IZoneInbox::DepositProcessed::SIGNATURE_HASH)
-            .topic2(sender.into_word())
-            .topic3(to.into_word())
+            .event_signature(vec![
+                IZoneInbox::DepositProcessed::SIGNATURE_HASH,
+                IZoneInbox::DepositFailed::SIGNATURE_HASH,
+            ])
+            .topic1(queue_hash)
             .from_block(from_block);
-        let failed = Filter::new()
-            .address(ZONE_INBOX_ADDRESS)
-            .event_signature(IZoneInbox::DepositFailed::SIGNATURE_HASH)
-            .topic2(sender.into_word())
-            .from_block(from_block);
+        let mut outcome = None;
         poll_until(BRIDGE_WAIT, async || {
-            let credited = zone.get_logs(&processed).await?.iter().any(|log| {
-                IZoneInbox::DepositProcessed::decode_log(&log.inner)
-                    .is_ok_and(|event| event.amount == net_amount)
-            });
-            let bounced = zone.get_logs(&failed).await?.iter().any(|log| {
-                IZoneInbox::DepositFailed::decode_log(&log.inner)
-                    .is_ok_and(|event| event.amount == net_amount)
-            });
-            Ok(credited || bounced)
+            outcome = zone
+                .get_logs(&filter)
+                .await?
+                .iter()
+                .find_map(|log| match log.topic0() {
+                    Some(&IZoneInbox::DepositProcessed::SIGNATURE_HASH) => {
+                        Some(DepositOutcome::Credited)
+                    }
+                    Some(&IZoneInbox::DepositFailed::SIGNATURE_HASH) => {
+                        Some(DepositOutcome::Bounced)
+                    }
+                    _ => None,
+                });
+            Ok(outcome.is_some())
         })
-        .await
+        .await?;
+        Ok(outcome)
     }
 
     /// Polls L1 from `from_block` until the portal pays `amount` to `to`. Returns `false` if
@@ -762,6 +764,15 @@ fn wallet_provider(
         .wallet(signer)
         .connect_reqwest(http.clone(), url.clone())
         .erased()
+}
+
+/// How the zone inbox settled a deposit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DepositOutcome {
+    /// Minted to the recipient.
+    Credited,
+    /// Rejected and queued as a bounce-back to the refund recipient on L1.
+    Bounced,
 }
 
 /// Polls `check` every [`POLL`] until it returns `true` or `timeout` passes. RPC errors count

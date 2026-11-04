@@ -31,6 +31,9 @@ pub(super) enum Record {
     /// An L1 deposit succeeded; the zone must credit `net_amount` to `to` or bounce it back.
     Deposit {
         l1_tx: B256,
+        /// The portal's deposit queue hash after this deposit, which the zone inbox emits as
+        /// `depositHash` when it credits or bounces it.
+        queue_hash: B256,
         sender: Address,
         to: Address,
         net_amount: u128,
