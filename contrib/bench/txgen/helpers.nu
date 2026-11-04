@@ -1298,11 +1298,25 @@ def txgen-after-vault [steps: list<any>, vault_setup: list<any>] {
     }
 }
 
+# A deployment-shapes file passed inline in TXGEN_NEOBANK_SHAPES_GZ_B64 (gzip, then base64), such as
+# one compiled outside this repository and sent through bench-env, written to output_dir. Null when
+# unset.
+def txgen-neobank-inline-shapes [output_dir: string] {
+    let encoded = ($env.TXGEN_NEOBANK_SHAPES_GZ_B64? | default "" | str trim)
+    if $encoded == "" { return null }
+    mkdir $output_dir
+    let path = ($output_dir | path join neobank-inline-shapes.yml)
+    let result = ($encoded | decode base64 | ^gzip -dc | complete)
+    if $result.exit_code != 0 { error make {msg: $"TXGEN_NEOBANK_SHAPES_GZ_B64 is not gzip, then base64: ($result.stderr | str trim)"} }
+    $result.stdout | save --force $path
+    $path
+}
+
 def txgen-prepare-neobank-multi-preset [spec_path: string, count: int, accounts: int, zones: int, chain_id: int, output_dir: string] {
     let presets = ($spec_path | path dirname)
-    # A relative TXGEN_NEOBANK_INSTANCES path resolves from the working directory, then the repository root.
+    # Inline shapes win; a relative TXGEN_NEOBANK_INSTANCES path resolves from the working directory, then the repository root.
     let preset_name = ($spec_path | path basename | str replace --regex '\.yml$' '')
-    let config = ($env.TXGEN_NEOBANK_INSTANCES? | default ($presets | path join ($TXGEN_HELPER_NEOBANK_MULTI_PRESETS | get $preset_name)))
+    let config = (txgen-neobank-inline-shapes $output_dir | default ($env.TXGEN_NEOBANK_INSTANCES? | default ($presets | path join ($TXGEN_HELPER_NEOBANK_MULTI_PRESETS | get $preset_name))))
     let config = if ($config | path exists) { $config } else { [ (txgen-repo-root) $config ] | path join }
     if not ($config | path exists) { error make {msg: $"neobank instances file not found: ($config)"} }
     let instances = (txgen-neobank-instances $config --presets-dir $presets)
