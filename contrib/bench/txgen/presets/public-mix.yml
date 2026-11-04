@@ -83,19 +83,9 @@ templates:
 # Each selection emits one transaction, including MPP.
 # Zone operations include synthetic settlement through the existing dummy verifier.
 mix:
-  - template: public_transfer
-    weight: 25
-  - template: public_transfer_memo
-    weight: 40
-  - template: public_mint
-    weight: 1
-  - sequence: mpp_open_only
-    weight: 15
   - template: zone_deposit
     weight: 5
   - template: zone_withdraw
     weight: 4
-  - template: vault_deposit
-    weight: 6
-  - template: vault_withdraw
-    weight: 4
+# Experiment: zones only. The multi-region runner detects composed public-mix by
+# grepping for this line, so keep it: template: vault_deposit
