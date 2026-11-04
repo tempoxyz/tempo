@@ -8,7 +8,7 @@ use evm2::{
     evm::{AccountInfo, Database, DynDatabase, State, StateCheckpoint},
     registry::{HandlerError, HandlerResult},
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{
     error::{Result as TempoResult, TempoPrecompileError},
@@ -118,19 +118,20 @@ pub trait TempoStateAccess<M = ()> {
     ///
     /// Reads in `f` see its own earlier writes. Like
     /// [`with_read_only_storage_ctx`](Self::with_read_only_storage_ctx), it charges no gas and
-    /// runs no TIP-1060 accounting; the caller commits the writes.
+    /// runs no TIP-1060 accounting; the caller commits the writes, and records the reads for
+    /// the block access list.
     fn with_overlay_storage_ctx<R>(
         &mut self,
         spec: TempoHardfork,
         f: impl FnOnce() -> R,
-    ) -> (R, BTreeMap<(Address, U256), U256>)
+    ) -> (R, OverlayAccesses)
     where
         Self: Sized,
     {
         let mut provider = StateStorageProvider::new(self, spec);
-        provider.writes = Some(BTreeMap::new());
+        provider.overlay = Some(OverlayAccesses::default());
         let result = StorageCtx::enter(&mut provider, f);
-        (result, provider.writes.unwrap_or_default())
+        (result, provider.overlay.unwrap_or_default())
     }
 
     /// Checks if the given TIP20 token has USD currency.
@@ -353,6 +354,17 @@ impl<T: reth_storage_api::StateProvider> TempoStateAccess<((), (), ())> for T {
     }
 }
 
+/// The state accesses of [`TempoStateAccess::with_overlay_storage_ctx`].
+#[derive(Debug, Default)]
+pub struct OverlayAccesses {
+    /// Accounts read from the state.
+    pub accounts: BTreeSet<Address>,
+    /// Storage slots read from the state, with the values read.
+    pub reads: BTreeMap<(Address, U256), U256>,
+    /// Storage writes, keyed by address and slot.
+    pub writes: BTreeMap<(Address, U256), U256>,
+}
+
 /// Storage provider that wraps a `TempoStateAccess`.
 ///
 /// Implements `PrecompileStorageProvider` by delegating read operations to the backend. Without
@@ -364,8 +376,8 @@ struct StateStorageProvider<'a, S, M = ()> {
     state: &'a mut S,
     spec: TempoHardfork,
     actions: Option<StorageActions>,
-    /// Storage writes, keyed by address and slot. `None` for a read-only provider.
-    writes: Option<BTreeMap<(Address, U256), U256>>,
+    /// Write overlay and recorded accesses. `None` for a read-only provider.
+    overlay: Option<OverlayAccesses>,
     _marker: PhantomData<M>,
 }
 
@@ -379,7 +391,7 @@ where
             state,
             spec,
             actions: None,
-            writes: None,
+            overlay: None,
             _marker: PhantomData,
         }
     }
@@ -416,19 +428,23 @@ where
 
     fn is_static(&self) -> bool {
         // read-only operations should always be static
-        self.writes.is_none()
+        self.overlay.is_none()
     }
 
     fn sload(&mut self, address: Address, key: U256) -> TempoResult<U256> {
         if let Some(&value) = self
-            .writes
+            .overlay
             .as_ref()
-            .and_then(|writes| writes.get(&(address, key)))
+            .and_then(|overlay| overlay.writes.get(&(address, key)))
         {
             return Ok(value);
         }
         let _ = self.state.basic(address)?;
         let value = self.state.sload(address, key)?;
+        if let Some(overlay) = &mut self.overlay {
+            overlay.accounts.insert(address);
+            overlay.reads.entry((address, key)).or_insert(value);
+        }
 
         if let Some(actions) = &self.actions {
             actions.record(StorageAction::Sload(address, key, value));
@@ -443,6 +459,9 @@ where
         f: &mut dyn FnMut(&AccountInfo),
     ) -> TempoResult<()> {
         let info = self.state.basic(address)?;
+        if let Some(overlay) = &mut self.overlay {
+            overlay.accounts.insert(address);
+        }
         f(&info);
         Ok(())
     }
@@ -491,10 +510,10 @@ where
 
     // Write operations other than overlay storage writes are not supported
     fn sstore(&mut self, address: Address, key: U256, value: U256) -> TempoResult<()> {
-        let Some(writes) = &mut self.writes else {
+        let Some(overlay) = &mut self.overlay else {
             unreachable!("'sstore' not supported in read-only context")
         };
-        writes.insert((address, key), value);
+        overlay.writes.insert((address, key), value);
         Ok(())
     }
 

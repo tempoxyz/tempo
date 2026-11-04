@@ -511,7 +511,7 @@ impl<'a> TempoBlockExecutor<'a> {
         let spec = self.evm().config_spec_id();
         // Untracked reads: the writes are committed below, which must not find stale slots that
         // the reads loaded into the EVM's state.
-        let (result, writes) = crate::TempoStateAccess::with_overlay_storage_ctx(
+        let (result, accesses) = crate::TempoStateAccess::with_overlay_storage_ctx(
             self.evm_mut().state_mut(),
             spec,
             || CurrentCommittee::new().snapshot_dkg_ceremony(epoch),
@@ -520,8 +520,10 @@ impl<'a> TempoBlockExecutor<'a> {
             BlockValidationError::msg(format!("failed snapshotting the DKG ceremony: {err}"))
         })?;
 
+        // Reads enter the pending state unchanged, so the block access list covers them.
         let mut state = PendingState::default();
-        for ((address, slot), value) in writes {
+        let written = accesses.writes.keys().map(|(address, _)| *address);
+        for address in accesses.accounts.iter().copied().chain(written) {
             if state.account_info(&address).is_none() {
                 let info = self
                     .evm_mut()
@@ -530,11 +532,21 @@ impl<'a> TempoBlockExecutor<'a> {
                     .map_err(map_database_error)?;
                 state.insert_account(address, info.clone(), info);
             }
-            let original = self
-                .evm_mut()
-                .state_mut()
-                .storage_slot_untracked(&address, &slot)
-                .map_err(map_database_error)?;
+        }
+        for (&(address, slot), &value) in &accesses.reads {
+            if !accesses.writes.contains_key(&(address, slot)) {
+                state.insert_storage(address, slot, value, value);
+            }
+        }
+        for ((address, slot), value) in accesses.writes {
+            let original = match accesses.reads.get(&(address, slot)) {
+                Some(&original) => original,
+                None => self
+                    .evm_mut()
+                    .state_mut()
+                    .storage_slot_untracked(&address, &slot)
+                    .map_err(map_database_error)?,
+            };
             state.insert_storage(address, slot, original, value);
         }
         self.inner.commit_pending_state(&state);
@@ -2507,8 +2519,15 @@ mod tests {
         executor.enable_block_access_list_builder();
 
         let (_, block_access_list) = executor.finish_with_block_access_list().unwrap();
+        let block_access_list = block_access_list.unwrap();
+        // The snapshot's registry reads are covered, so the block replays from its access list.
+        let registry = block_access_list
+            .iter()
+            .find(|account| account.address == VALIDATOR_CONFIG_V2_ADDRESS)
+            .expect("registry account must be present in the block access list");
+        assert!(!registry.storage_reads.is_empty());
+        assert!(registry.storage_changes.is_empty());
         let committee_changes = block_access_list
-            .unwrap()
             .into_iter()
             .find(|account| account.address == CURRENT_COMMITTEE_ADDRESS)
             .expect("committee account must be present in the block access list");
