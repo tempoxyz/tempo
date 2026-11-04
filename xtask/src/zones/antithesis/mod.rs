@@ -27,6 +27,7 @@ use tempo_contracts::{
     },
 };
 use tempo_precompiles::PATH_USD_ADDRESS;
+use tempo_primitives::transaction::calc_gas_balance_spending;
 use zone_precompiles::ecies::encrypt_deposit;
 
 use ledger::{Account, Lease, Ledger, Record};
@@ -286,7 +287,7 @@ impl Context {
             "balance": balance.to_string(),
         });
         // The fee comes out of the same pathUSD balance, so a funded transfer needs both.
-        let max_fee = u128::from(TIP20_TX_GAS) * gas_price;
+        let max_fee: u128 = calc_gas_balance_spending(TIP20_TX_GAS, gas_price).try_into()?;
         let funded_revert = !receipt.status()
             && self
                 .covered_before(&zone, &receipt, sender.address(), amount + max_fee)
@@ -458,7 +459,7 @@ impl Context {
         // same block had to leave room for.
         let mut spent_in_block: BTreeMap<u64, u128> = BTreeMap::new();
         // The fee comes out of the same pathUSD balance, so a funded transfer needs both.
-        let max_fee = u128::from(TIP20_TX_GAS) * gas_price;
+        let max_fee: u128 = calc_gas_balance_spending(TIP20_TX_GAS, gas_price).try_into()?;
         for (to, tx) in pending {
             let receipt = tx.with_timeout(Some(RECEIPT_TIMEOUT)).get_receipt().await?;
             let zone_block = receipt.block_number.ok_or_eyre("receipt has no block")?;
