@@ -220,9 +220,11 @@ pub fn block_list<'a>(catalog: &Catalog, blocks: impl IntoIterator<Item = &'a u6
 /// any before the first header, which must be in its range. Other `#` lines are comments.
 pub fn read_blocks(path: &Path, catalog: &Catalog) -> eyre::Result<Vec<u64>> {
     let context = &catalog.context;
-    // A corpus grows at its tip, so a section names it by the parent of its first block. Sections
-    // written before that name it by the tip it had then, which matches only an unextended corpus.
-    // Other `#` lines are comments.
+    // A corpus grows at its tip, so a section names it by the parent of its first block, and one
+    // that ends where this corpus does must also share its tip: another history can share the
+    // parent. Sections written before that name it by the tip it had then, which matches only an
+    // unextended corpus. Other `#` lines are comments.
+    let end = format!("..{}", catalog.cursor.next);
     let parent = format!(" parent {} ", context.parent);
     let tip = format!(" tip {} ", B256::from(catalog.cursor.parent));
     let (mut blocks, mut ours) = (Vec::new(), true);
@@ -230,6 +232,10 @@ pub fn read_blocks(path: &Path, catalog: &Catalog) -> eyre::Result<Vec<u64>> {
         if let Some(header) = line.strip_prefix("# corpus ") {
             ours = if header.contains(" parent ") {
                 header.contains(&parent)
+                    && (header.contains(&tip)
+                        || !header
+                            .split_once(' ')
+                            .is_some_and(|(range, _)| range.ends_with(&end)))
             } else {
                 header.contains(&tip)
             };
@@ -258,16 +264,21 @@ mod tests {
         other.cursor.next = 20;
         // Same tip, another start parent.
         other.context.parent = B256::repeat_byte(1).to_string();
+        // Same start parent and end, another tip.
+        let mut fork = ours.clone();
+        fork.cursor.parent = [1; 32];
         let list = format!(
-            "{}# dex hits\n13\n{}16\n",
+            "{}# dex hits\n13\n{}16\n{}",
             block_list(&ours, &[12]),
             block_list(&other, &[17]),
+            block_list(&fork, &[18]),
         );
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("blocks");
         fs::write(&path, list)?;
         assert_eq!(read_blocks(&path, &ours)?, [12, 13]);
         assert_eq!(read_blocks(&path, &other)?, [17, 16]);
+        assert_eq!(read_blocks(&path, &fork)?, [18]);
         Ok(())
     }
 }
