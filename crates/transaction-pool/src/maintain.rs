@@ -492,23 +492,26 @@ where
 
     // Process all maintenance operations on new block commit or reorg.
     while let Some(event) = chain_events.next().await {
-        let new = match event {
-            CanonStateNotification::Reorg { old: _, new } => {
+        let (new, orphaned) = match event {
+            CanonStateNotification::Reorg { old, new } => {
                 // Repopulate AMM liquidity cache from the new canonical chain
                 // to invalidate stale entries from orphaned blocks.
                 if let Err(err) = amm_cache.repopulate(pool.client()) {
                     error!(target: "txpool", ?err, "AMM liquidity cache repopulate after reorg failed");
                 }
 
-                new
+                (new, Some(old))
             }
-            CanonStateNotification::Commit { new } => new,
+            CanonStateNotification::Commit { new } => (new, None),
         };
 
         let block_update_start = Instant::now();
 
         let tip = &new;
         let bundle_state = tip.execution_outcome().state().state();
+        let orphaned_state = orphaned
+            .as_ref()
+            .map(|old| old.execution_outcome().state().state());
         let tip_timestamp = tip.tip().header().timestamp();
         let spec = pool.client().chain_spec().tempo_hardfork_at(tip_timestamp);
         let fallback_tokens = spec.fallback_fee_tokens();
@@ -567,6 +570,15 @@ where
                             // fee writes, which may change the choice without Transfer logs.
                             let fee = tx.transaction.fee_token_cost();
                             for token in fallback_tokens {
+                                // The cached choice may come from the orphaned chain, which the
+                                // new segment's diff against the fork point cannot show.
+                                if orphaned_state.is_some_and(|state| {
+                                    state
+                                        .get(token)
+                                        .is_some_and(|account| account.storage.contains_key(&slot))
+                                }) {
+                                    return true;
+                                }
                                 if bundle_state
                                     .get(token)
                                     .and_then(|account| account.storage.get(&slot))
