@@ -167,7 +167,7 @@ impl GetDkgOutcome {
                     .iter()
                     .map(const_hex::encode_prefixed)
                     .collect(),
-                ceremony.isFullDkg,
+                ceremony.isRotatingNetworkIdentity,
             )
         };
 

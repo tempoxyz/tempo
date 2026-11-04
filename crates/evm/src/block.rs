@@ -2430,7 +2430,7 @@ mod tests {
                         .map(|key| B256::from_slice(key.as_ref()))
                         .collect(),
                     players: expected_players.clone(),
-                    isFullDkg: is_full_dkg,
+                    isRotatingNetworkIdentity: is_full_dkg,
                 },
                 "rotation scheduled for epoch {rotation_epoch}",
             );
@@ -2595,7 +2595,7 @@ mod tests {
             .flat_map(|slot| &slot.changes)
             .collect::<Vec<_>>();
 
-        // epoch, committee length and 3 keys, players length and 2 keys; isFullDkg stays zero.
+        // epoch, committee length and 3 keys, players length and 2 keys; isRotatingNetworkIdentity stays zero.
         assert_eq!(changes.len(), 8);
         assert!(
             changes

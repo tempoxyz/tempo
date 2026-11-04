@@ -107,7 +107,7 @@ pub(crate) fn read_ceremony_from_validator(
                 .map(|key| PublicKey::decode(key.as_slice()).expect("valid player key")),
         )
         .expect("stored players are distinct"),
-        is_full_dkg: stored.isFullDkg,
+        is_full_dkg: stored.isRotatingNetworkIdentity,
     }
 }
 

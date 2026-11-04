@@ -23,6 +23,6 @@ crate::sol! {
         function getDkgCeremony()
             external
             view
-            returns (uint64 epoch, bytes32[] memory dealers, bytes32[] memory players, bool isFullDkg);
+            returns (uint64 epoch, bytes32[] memory dealers, bytes32[] memory players, bool isRotatingNetworkIdentity);
     }
 }

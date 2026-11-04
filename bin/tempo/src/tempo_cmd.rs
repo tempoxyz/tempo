@@ -1656,7 +1656,7 @@ async fn read_dkg_roles<P: Provider<TempoNetwork>>(
         dealers: decode_keys(stored.dealers, "dealers")?,
         ceremony: DkgCeremony {
             players: decode_keys(stored.players, "players")?,
-            is_full_dkg: stored.isFullDkg,
+            is_full_dkg: stored.isRotatingNetworkIdentity,
         },
     })
 }
@@ -2350,7 +2350,7 @@ mod tests {
             epoch,
             dealers: keys_to_b256(outcome.players()),
             players: keys_to_b256(&players),
-            isFullDkg: true,
+            isRotatingNetworkIdentity: true,
         };
 
         let roles = read_dkg_roles_with(&tempo_chainspec::spec::DEV, &outcome, Some(stored(1)))

@@ -128,7 +128,7 @@ fn boundaries_store_the_next_dkg_ceremony_from_genesis() {
             epoch: 0,
             dealers: public_keys(genesis_outcome.players()),
             players: players.clone(),
-            isFullDkg: false,
+            isRotatingNetworkIdentity: false,
         };
         assert_eq!(
             read_stored_dkg_ceremony(validator, Height::zero()).unwrap(),
@@ -145,7 +145,7 @@ fn boundaries_store_the_next_dkg_ceremony_from_genesis() {
                 epoch: 1,
                 dealers: public_keys(outcome.players()),
                 players,
-                isFullDkg: false,
+                isRotatingNetworkIdentity: false,
             }
         );
     });
@@ -242,7 +242,7 @@ fn first_activated_boundary_stores_the_next_dkg_ceremony() {
                     epoch: epoch + 1,
                     dealers: public_keys(outcome.players()),
                     players: players.clone(),
-                    isFullDkg: false,
+                    isRotatingNetworkIdentity: false,
                 }
             );
         }

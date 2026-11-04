@@ -25,8 +25,9 @@ pub struct CurrentCommittee {
     /// Players of the ceremony running during `epoch`, strictly ascending. Empty until the first
     /// TIP-1123 boundary block.
     dkg_players: Vec<B256>,
-    /// Whether the ceremony running during `epoch` is a full DKG instead of a reshare.
-    is_full_dkg: bool,
+    /// Whether the ceremony running during `epoch` is a full DKG that rotates the network
+    /// identity, instead of a reshare.
+    is_rotating_network_identity: bool,
 }
 
 impl CurrentCommittee {
@@ -50,7 +51,7 @@ impl CurrentCommittee {
             epoch: self.epoch.read()?,
             dealers: self.ids.read()?,
             players,
-            isFullDkg: self.is_full_dkg.read()?,
+            isRotatingNetworkIdentity: self.is_rotating_network_identity.read()?,
         })
     }
 
@@ -108,7 +109,8 @@ impl CurrentCommittee {
                 pair[0]
             )));
         }
-        let is_full_dkg = config.get_next_network_identity_rotation_epoch()? == epoch;
+        let is_rotating_network_identity =
+            config.get_next_network_identity_rotation_epoch()? == epoch;
 
         // System writes are free and must not mint or consume TIP-1060 storage credits.
         self.storage.set_tip1060_storage_credits(false);
@@ -118,7 +120,8 @@ impl CurrentCommittee {
                 .map(|key| B256::from_slice(key.as_ref()))
                 .collect(),
         )?;
-        self.is_full_dkg.write(is_full_dkg)?;
+        self.is_rotating_network_identity
+            .write(is_rotating_network_identity)?;
         Ok(())
     }
 }
@@ -186,8 +189,8 @@ mod tests {
         assert_eq!(slots::EPOCH, U256::from(0));
         assert_eq!(slots::IDS, U256::from(1));
         assert_eq!(slots::DKG_PLAYERS, U256::from(2));
-        assert_eq!(slots::IS_FULL_DKG, U256::from(3));
-        assert_eq!(slots::IS_FULL_DKG_OFFSET, 0);
+        assert_eq!(slots::IS_ROTATING_NETWORK_IDENTITY, U256::from(3));
+        assert_eq!(slots::IS_ROTATING_NETWORK_IDENTITY_OFFSET, 0);
     }
 
     #[test]
@@ -239,13 +242,13 @@ mod tests {
                     epoch: 7,
                     dealers,
                     players: sorted(keys),
-                    isFullDkg: true,
+                    isRotatingNetworkIdentity: true,
                 }
             );
 
             // A rotation scheduled for any other epoch selects a reshare.
             committee.snapshot_dkg_ceremony(8)?;
-            assert!(!committee.get_dkg_ceremony()?.isFullDkg);
+            assert!(!committee.get_dkg_ceremony()?.isRotatingNetworkIdentity);
             Ok(())
         })
     }

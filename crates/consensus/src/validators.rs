@@ -160,7 +160,7 @@ pub(crate) fn read_dkg_ceremony(
         dealers: decode_keys(stored.dealers, "dealers")?,
         ceremony: DkgCeremony {
             players: decode_keys(stored.players, "players")?,
-            is_full_dkg: stored.isFullDkg,
+            is_full_dkg: stored.isRotatingNetworkIdentity,
         },
     }))
 }

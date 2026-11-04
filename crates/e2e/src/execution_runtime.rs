@@ -270,8 +270,8 @@ impl Builder {
                     .write(keys(&initial_ceremony.players))
                     .unwrap();
                 Slot::<bool>::new_with_ctx(
-                    slots::IS_FULL_DKG,
-                    LayoutCtx::packed(slots::IS_FULL_DKG_OFFSET),
+                    slots::IS_ROTATING_NETWORK_IDENTITY,
+                    LayoutCtx::packed(slots::IS_ROTATING_NETWORK_IDENTITY_OFFSET),
                     CURRENT_COMMITTEE_ADDRESS,
                 )
                 .write(initial_ceremony.is_full_dkg)

@@ -941,7 +941,7 @@ where
         stored.epoch == outcome.epoch
             && stored.dealers == keys(outcome.players())
             && stored.players == keys(&ceremony.players)
-            && stored.isFullDkg == ceremony.is_full_dkg,
+            && stored.isRotatingNetworkIdentity == ceremony.is_full_dkg,
         "patched CurrentCommittee does not hold the shadow DKG ceremony: {stored:?}",
     );
     Ok(())

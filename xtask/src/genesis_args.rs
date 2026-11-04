@@ -931,8 +931,8 @@ pub(crate) fn store_dkg_ceremony(
     Slot::<Vec<B256>>::new(slots::DKG_PLAYERS, CURRENT_COMMITTEE_ADDRESS)
         .write(keys(&ceremony.players))?;
     Slot::<bool>::new_with_ctx(
-        slots::IS_FULL_DKG,
-        LayoutCtx::packed(slots::IS_FULL_DKG_OFFSET),
+        slots::IS_ROTATING_NETWORK_IDENTITY,
+        LayoutCtx::packed(slots::IS_ROTATING_NETWORK_IDENTITY_OFFSET),
         CURRENT_COMMITTEE_ADDRESS,
     )
     .write(ceremony.is_full_dkg)
@@ -1147,7 +1147,7 @@ mod tests {
                 epoch: 0,
                 dealers: keys.clone(),
                 players: keys,
-                isFullDkg: false,
+                isRotatingNetworkIdentity: false,
             }
         );
     }
