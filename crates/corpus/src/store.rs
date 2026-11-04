@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use aws_credential_types::provider::{ProvideCredentials, SharedCredentialsProvider};
 use bytes::Bytes;
 use eyre::{OptionExt, WrapErr};
-use futures::{StreamExt, TryStreamExt, stream};
+use futures::TryStreamExt;
 use object_store::{
     ClientConfigKey, CredentialProvider, ObjectStore, ObjectStoreExt, PutMode, RetryConfig,
     UpdateVersion,
@@ -587,7 +587,7 @@ pub async fn published(reader: &DbReader, block: u64) -> eyre::Result<(Record, A
 }
 
 /// The published record of `block` and its undecoded block payload, checked as [published] checks.
-async fn published_payload(reader: &DbReader, block: u64) -> eyre::Result<(Record, Bytes)> {
+pub async fn published_payload(reader: &DbReader, block: u64) -> eyre::Result<(Record, Bytes)> {
     let record = metadata(reader, block).await?;
     // Seeded from the record itself, so only its own sizes and coverage are checked.
     Cursor {
@@ -845,22 +845,13 @@ pub async fn metadata(reader: &DbReader, block: u64) -> eyre::Result<Record> {
     Ok(record)
 }
 
-/// The published records and undecoded block payloads of `blocks`, which must be sorted and unique.
-/// Dense blocks are read as replay reads, with one metadata scan and one block scan over their range,
-/// skipping the blocks in it not listed. Sparse ones are read with concurrent point reads.
-pub async fn payloads(reader: &DbReader, blocks: &[u64]) -> eyre::Result<Vec<(Record, Bytes)>> {
+/// The published records and undecoded block payloads of `blocks`, which must be sorted and unique,
+/// read as replay reads, with one metadata scan and one block scan over their range. Blocks in the
+/// range but not listed are read and skipped.
+pub async fn scan_blocks(reader: &DbReader, blocks: &[u64]) -> eyre::Result<Vec<(Record, Bytes)>> {
     let (Some(&first), Some(&last)) = (blocks.first(), blocks.last()) else {
         return Ok(Vec::new());
     };
-    // A range spanning at least this many blocks per listed block is read with point reads.
-    const SPARSE_SPAN: u64 = 4;
-    if last - first >= SPARSE_SPAN * blocks.len() as u64 {
-        return stream::iter(blocks.iter().copied())
-            .map(|block| published_payload(reader, block))
-            .buffered(32)
-            .try_collect()
-            .await;
-    }
     let record = metadata(reader, first).await?;
     // Seeded from the first record itself, as [published] checks a lone block.
     let cursor = Cursor {

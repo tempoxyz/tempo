@@ -111,24 +111,42 @@ impl Corpus {
     }
 
     /// Each of `blocks`, which must be sorted and unique, with its stored input size and harness
-    /// input, in windows of up to `window` blocks ([`store::payloads`]), each read and decoded on the
-    /// corpus's runtime while the caller works on the one before. Iteration stops after the first
-    /// error.
+    /// input, in windows of up to `window` blocks, each read and decoded on the corpus's runtime
+    /// while the caller works on the one before. Iteration stops after the first error.
     pub fn windows(&self, blocks: Vec<u64>, window: usize) -> Windows<'_> {
         let (sender, receiver) = mpsc::channel(1);
         let (reader, chain_spec) = (self.reader.clone(), self.chain_spec.clone());
         let task = self.runtime.spawn(async move {
             for blocks in blocks.chunks(window.max(1)) {
                 let read = async {
+                    let (Some(&first), Some(&last)) = (blocks.first(), blocks.last()) else {
+                        return Ok(Vec::new());
+                    };
+                    // A dense window is scanned whole. A sparse one is read with a point read per
+                    // block, inside its task, since a point read decompresses SST blocks too.
+                    let payloads: Vec<(u64, Option<_>)> =
+                        if last - first < SPARSE_SPAN * blocks.len() as u64 {
+                            store::scan_blocks(&reader, blocks)
+                                .await?
+                                .into_iter()
+                                .map(|payload| (payload.0.number, Some(payload)))
+                                .collect()
+                        } else {
+                            blocks.iter().map(|&block| (block, None)).collect()
+                        };
                     // Each block decodes in its own task, so a window decodes on every worker.
-                    stream::iter(store::payloads(&reader, blocks).await?)
-                        .map(|(record, bytes)| {
+                    stream::iter(payloads)
+                        .map(|(block, payload)| {
                             let (reader, chain_spec) = (reader.clone(), chain_spec.clone());
                             tokio::spawn(async move {
+                                let (record, bytes) = match payload {
+                                    Some(payload) => payload,
+                                    None => store::published_payload(&reader, block).await?,
+                                };
                                 let stored = store::decode(&bytes, &record)?;
                                 store::resolve_code(&reader, &stored).await?;
                                 eyre::Ok(BlockInput {
-                                    block: record.number,
+                                    block,
                                     size: record.block_bytes,
                                     input: TempoHarnessInput::Blockchain(harness_input(
                                         &stored, chain_spec,
@@ -155,6 +173,9 @@ impl Corpus {
         }
     }
 }
+
+/// A window spanning at least this many corpus blocks per block it lists is read with point reads.
+const SPARSE_SPAN: u64 = 4;
 
 /// A corpus block read by [Corpus::windows].
 pub struct BlockInput {
