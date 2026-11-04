@@ -1,9 +1,10 @@
 //! Builds the QMDB state of the snapshot block from the hashed state tables.
 //!
 //! Every node must produce the same operation history, so the import is fully determined by the
-//! state at the snapshot block: all keys in ascending order, applied in chunks of exactly
-//! [`CHUNK_KEYS`] keys (the last one shorter), with only the last chunk carrying the snapshot's
-//! block number as metadata.
+//! state at the snapshot block. Each database takes its keys in ascending order, in chunks of
+//! exactly [`CHUNK_KEYS`] keys (the last one shorter): first every account chunk, then every slot
+//! chunk. The last slot chunk, empty when there are no slots, commits both databases with the
+//! snapshot's block number as metadata.
 
 use std::path::PathBuf;
 
@@ -17,7 +18,7 @@ use tracing::info;
 
 use crate::{
     Store,
-    layout::{self, AccountRecord, Key, VALUE_LEN, Value, Write},
+    layout::{self, AccountRecord, AccountValue, Key, SLOT_LEN, SlotValue, Write, Writes},
     store,
 };
 
@@ -63,7 +64,11 @@ pub fn import(
     snapshot_hash: B256,
     sort_dir: Option<PathBuf>,
 ) -> Result<u64, Error> {
-    let mut sorted = Collector::<B256, SortValue>::new(SORT_BUFFER_BYTES, sort_dir);
+    // Account keys are the hashed addresses, so the cursor yields them in key order. Slot keys
+    // hash the address and slot together and need sorting.
+    let mut slots = Collector::<B256, SortValue>::new(SORT_BUFFER_BYTES, sort_dir);
+    let mut chunk = Vec::with_capacity(CHUNK_KEYS);
+    let mut account_keys = 0u64;
     let mut accounts = cursors.hashed_account_cursor()?;
     let mut entry = accounts.seek(B256::ZERO)?;
     while let Some((hashed_address, account)) = entry {
@@ -71,15 +76,25 @@ pub fn import(
             hashed_address,
             source,
         })?;
-        sorted.insert(
-            key_to_b256(layout::account_key(hashed_address)),
-            SortValue(value),
-        )?;
+        chunk.push(Write {
+            key: layout::account_key(hashed_address),
+            value: Some(value),
+        });
+        account_keys += 1;
+        if chunk.len() == CHUNK_KEYS {
+            store.import_chunk(
+                Writes {
+                    accounts: std::mem::take(&mut chunk),
+                    slots: Vec::new(),
+                },
+                None,
+            )?;
+        }
 
         let mut storage = cursors.hashed_storage_cursor(hashed_address)?;
         let mut slot = storage.seek(B256::ZERO)?;
         while let Some((hashed_slot, value)) = slot {
-            sorted.insert(
+            slots.insert(
                 key_to_b256(layout::slot_key(hashed_address, hashed_slot)),
                 SortValue(layout::slot_value(value)),
             )?;
@@ -87,11 +102,26 @@ pub fn import(
         }
         entry = accounts.next()?;
     }
+    if !chunk.is_empty() {
+        store.import_chunk(
+            Writes {
+                accounts: chunk,
+                slots: Vec::new(),
+            },
+            None,
+        )?;
+    }
 
-    let total = sorted.len() as u64;
-    info!(keys = total, snapshot, "importing state into QMDB");
-    let mut chunk = Vec::with_capacity(CHUNK_KEYS.min(sorted.len()));
-    let mut entries = sorted.iter()?.peekable();
+    let slot_keys = slots.len() as u64;
+    info!(
+        accounts = account_keys,
+        slots = slot_keys,
+        snapshot,
+        "importing slots into QMDB"
+    );
+    let end = (snapshot, snapshot_hash);
+    let mut chunk = Vec::with_capacity(CHUNK_KEYS.min(slots.len()));
+    let mut entries = slots.iter()?.peekable();
     while let Some(entry) = entries.next() {
         let (key, value) = entry?;
         chunk.push(Write {
@@ -108,18 +138,21 @@ pub fn import(
         let last = entries.peek().is_none();
         if chunk.len() == CHUNK_KEYS || last {
             store.import_chunk(
-                std::mem::take(&mut chunk),
-                last.then_some((snapshot, snapshot_hash)),
+                Writes {
+                    accounts: Vec::new(),
+                    slots: std::mem::take(&mut chunk),
+                },
+                last.then_some(end),
             )?;
         }
     }
-    if total == 0 {
-        store.import_chunk(Vec::new(), Some((snapshot, snapshot_hash)))?;
+    if slot_keys == 0 {
+        store.import_chunk(Writes::default(), Some(end))?;
     }
-    Ok(total)
+    Ok(account_keys + slot_keys)
 }
 
-fn account_value(account: &Account) -> Result<Value, layout::Error> {
+fn account_value(account: &Account) -> Result<AccountValue, layout::Error> {
     AccountRecord::new(
         account.nonce,
         account.balance,
@@ -133,9 +166,9 @@ fn key_to_b256(key: Key) -> B256 {
     B256::from_slice(key.as_ref())
 }
 
-/// A [`Value`] stored raw in the sort's temporary files.
+/// A [`SlotValue`] stored raw in the sort's temporary files.
 #[derive(Debug)]
-struct SortValue(Value);
+struct SortValue(SlotValue);
 
 impl Compress for SortValue {
     type Compressed = Vec<u8>;
@@ -147,9 +180,9 @@ impl Compress for SortValue {
 
 impl Decompress for SortValue {
     fn decompress(value: &[u8]) -> Result<Self, DecompressError> {
-        let bytes = <[u8; VALUE_LEN]>::try_from(value)
+        let bytes = <[u8; SLOT_LEN]>::try_from(value)
             .map_err(|_| DecompressError::new(SortValueLength(value.len())))?;
-        Ok(Self(Value::new(bytes)))
+        Ok(Self(SlotValue::new(bytes)))
     }
 }
 
@@ -162,7 +195,7 @@ impl serde::Serialize for SortValue {
 
 /// A sort file held a value of the wrong length.
 #[derive(Debug, thiserror::Error)]
-#[error("sorted value of {0} bytes, expected {VALUE_LEN}")]
+#[error("sorted value of {0} bytes, expected {SLOT_LEN}")]
 struct SortValueLength(usize);
 
 #[cfg(test)]

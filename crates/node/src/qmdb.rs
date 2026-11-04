@@ -315,7 +315,7 @@ impl StateBackend for QmdbStateBackend {
     fn account(&self, hashed_address: B256) -> ProviderResult<Option<Account>> {
         let value = self
             .store
-            .get(layout::account_key(hashed_address))
+            .get_account(layout::account_key(hashed_address))
             .map_err(ProviderError::other)?;
         Ok(value.map(|value| AccountRecord::decode(&value).into_account()))
     }
@@ -323,7 +323,7 @@ impl StateBackend for QmdbStateBackend {
     fn storage(&self, hashed_address: B256, hashed_slot: B256) -> ProviderResult<Option<U256>> {
         let value = self
             .store
-            .get(layout::slot_key(hashed_address, hashed_slot))
+            .get_slot(layout::slot_key(hashed_address, hashed_slot))
             .map_err(ProviderError::other)?;
         Ok(value.map(|value| layout::decode_slot_value(&value)))
     }
@@ -615,10 +615,13 @@ mod tests {
         .unwrap();
         store
             .import_chunk(
-                vec![layout::Write {
-                    key: layout::slot_key(B256::repeat_byte(1), B256::ZERO),
-                    value: Some(layout::slot_value(U256::from(1))),
-                }],
+                layout::Writes {
+                    accounts: vec![],
+                    slots: vec![layout::Write {
+                        key: layout::slot_key(B256::repeat_byte(1), B256::ZERO),
+                        value: Some(layout::slot_value(U256::from(1))),
+                    }],
+                },
                 Some((0, B256::ZERO)),
             )
             .unwrap();
@@ -661,10 +664,13 @@ mod tests {
             .build_unregistered(
                 1,
                 B256::ZERO,
-                vec![layout::Write {
-                    key: layout::slot_key(B256::repeat_byte(1), B256::ZERO),
-                    value: None,
-                }],
+                layout::Writes {
+                    accounts: vec![],
+                    slots: vec![layout::Write {
+                        key: layout::slot_key(B256::repeat_byte(1), B256::ZERO),
+                        value: None,
+                    }],
+                },
             )
             .unwrap();
         let root = batch.root();
@@ -699,7 +705,7 @@ mod tests {
     }
 
     /// Applies block 1 (hash 0x01) writing `writes` on top of the imported block 0.
-    fn finalize_block_one(store: &Store, writes: Vec<layout::Write>) {
+    fn finalize_block_one(store: &Store, writes: layout::Writes) {
         store
             .build(
                 BlockRef {
@@ -737,17 +743,16 @@ mod tests {
             account.extension.as_ref(),
         )
         .unwrap();
-        let mut writes = vec![
-            layout::Write {
+        let writes = layout::Writes {
+            accounts: vec![layout::Write {
                 key: layout::account_key(address),
                 value: Some(record.encode()),
-            },
-            layout::Write {
+            }],
+            slots: vec![layout::Write {
                 key: layout::slot_key(address, slot),
                 value: None,
-            },
-        ];
-        writes.sort_by(|a, b| a.key.cmp(&b.key));
+            }],
+        };
         // Unapplied batches are not current state yet.
         store
             .build(
@@ -774,10 +779,13 @@ mod tests {
         let record = AccountRecord::new(1, U256::ZERO, Some(KECCAK256_EMPTY), &[]).unwrap();
         finalize_block_one(
             &store,
-            vec![layout::Write {
-                key: layout::account_key(address),
-                value: Some(record.encode()),
-            }],
+            layout::Writes {
+                accounts: vec![layout::Write {
+                    key: layout::account_key(address),
+                    value: Some(record.encode()),
+                }],
+                slots: vec![],
+            },
         );
         assert_eq!(
             QmdbStateBackend::new(store).account(address).unwrap(),
@@ -793,7 +801,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = store(dir.path());
         let root = store.status().unwrap().root;
-        finalize_block_one(&store, vec![]);
+        finalize_block_one(&store, layout::Writes::default());
 
         hook(store.clone(), Some(0))
             .on_remove_blocks_above(1)
@@ -821,7 +829,7 @@ mod tests {
         })
         .unwrap();
         imported_at_five
-            .import_chunk(vec![], Some((5, B256::repeat_byte(5))))
+            .import_chunk(layout::Writes::default(), Some((5, B256::repeat_byte(5))))
             .unwrap();
         let imported_at_five = Arc::new(imported_at_five);
 
@@ -839,7 +847,7 @@ mod tests {
     fn align_rewinds_and_requires_level_state() {
         let dir = tempfile::tempdir().unwrap();
         let store = store(dir.path());
-        finalize_block_one(&store, vec![]);
+        finalize_block_one(&store, layout::Writes::default());
 
         // Ahead of the database: rewound.
         align_with_database(&store, 0, true).unwrap();

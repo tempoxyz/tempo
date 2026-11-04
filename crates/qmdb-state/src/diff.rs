@@ -3,10 +3,10 @@
 use alloy_primitives::{U256, keccak256};
 use reth_trie_common::bundle_state::BundleState;
 
-use crate::layout::{self, AccountRecord, Write};
+use crate::layout::{self, AccountRecord, Write, Writes};
 
-/// Returns the batch for one block: a write for every key whose value the block changed, sorted
-/// by key.
+/// Returns the batch for one block: a write for every key whose value the block changed, each
+/// database's writes sorted by key.
 ///
 /// `bundle` must cover exactly one block, so each original value is the value before the block.
 /// Reth reports every slot a block touched; slots whose value did not change are left out, since
@@ -15,8 +15,8 @@ use crate::layout::{self, AccountRecord, Write};
 /// A destroyed account's earlier slots need no deletes. EIP-6780 lets `SELFDESTRUCT` destroy only
 /// an account created in the same transaction, and EIP-7610 forbids creating an account whose
 /// storage is not empty, so a destroyed account had no slots before the block.
-pub fn block_writes(bundle: &BundleState) -> Result<Vec<Write>, layout::Error> {
-    let mut writes = Vec::new();
+pub fn block_writes(bundle: &BundleState) -> Result<Writes, layout::Error> {
+    let mut writes = Writes::default();
     for (address, account) in &bundle.state {
         let hashed_address = keccak256(address);
         if account.info != account.original_info {
@@ -33,7 +33,7 @@ pub fn block_writes(bundle: &BundleState) -> Result<Vec<Write>, layout::Error> {
                     .map(|record| record.encode())
                 })
                 .transpose()?;
-            writes.push(Write {
+            writes.accounts.push(Write {
                 key: layout::account_key(hashed_address),
                 value,
             });
@@ -52,13 +52,14 @@ pub fn block_writes(bundle: &BundleState) -> Result<Vec<Write>, layout::Error> {
             let value =
                 (!entry.present_value.is_zero()).then(|| layout::slot_value(entry.present_value));
             let hashed_slot = keccak256(slot.to_be_bytes::<32>());
-            writes.push(Write {
+            writes.slots.push(Write {
                 key: layout::slot_key(hashed_address, hashed_slot),
                 value,
             });
         }
     }
-    writes.sort_unstable_by(|a, b| a.key.cmp(&b.key));
+    writes.accounts.sort_unstable_by(|a, b| a.key.cmp(&b.key));
+    writes.slots.sort_unstable_by(|a, b| a.key.cmp(&b.key));
     Ok(writes)
 }
 
@@ -103,10 +104,13 @@ mod tests {
         let hashed = keccak256(address);
         assert_eq!(
             writes,
-            vec![Write {
-                key: layout::slot_key(hashed, keccak256(U256::from(2).to_be_bytes::<32>())),
-                value: Some(layout::slot_value(U256::from(6))),
-            }]
+            Writes {
+                accounts: vec![],
+                slots: vec![Write {
+                    key: layout::slot_key(hashed, keccak256(U256::from(2).to_be_bytes::<32>())),
+                    value: Some(layout::slot_value(U256::from(6))),
+                }],
+            }
         );
     }
 
@@ -121,9 +125,9 @@ mod tests {
             AccountStatus::Changed,
         );
         let writes = block_writes(&bundle(address, account)).unwrap();
-        assert_eq!(writes.len(), 2);
-        assert!(writes.iter().all(|write| write.value.is_none()));
-        assert!(writes.windows(2).all(|pair| pair[0].key < pair[1].key));
+        assert_eq!((writes.accounts.len(), writes.slots.len()), (1, 1));
+        assert!(writes.accounts[0].value.is_none());
+        assert!(writes.slots[0].value.is_none());
     }
 
     #[test]
@@ -140,21 +144,20 @@ mod tests {
         );
         let writes = block_writes(&bundle(address, account)).unwrap();
         let hashed = keccak256(address);
-        let mut expected = vec![
-            Write {
+        let expected = Writes {
+            accounts: vec![Write {
                 key: layout::account_key(hashed),
                 value: Some(
                     AccountRecord::new(1, U256::ZERO, Some(info(1).code_hash), &[])
                         .unwrap()
                         .encode(),
                 ),
-            },
-            Write {
+            }],
+            slots: vec![Write {
                 key: layout::slot_key(hashed, keccak256(U256::from(1).to_be_bytes::<32>())),
                 value: Some(layout::slot_value(U256::from(4))),
-            },
-        ];
-        expected.sort_unstable_by(|a, b| a.key.cmp(&b.key));
+            }],
+        };
         assert_eq!(writes, expected);
     }
 }

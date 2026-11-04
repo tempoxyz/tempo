@@ -1,4 +1,4 @@
-//! The QMDB database, its unapplied per-block batches, and the thread that runs them.
+//! The two QMDB databases, their unapplied per-block batches, and the thread that runs them.
 
 use std::{
     collections::HashMap,
@@ -33,10 +33,10 @@ use commonware_storage::{
     translator::EightCap,
 };
 use commonware_utils::sequence::FixedBytes;
-use futures::{StreamExt as _, channel::mpsc as async_mpsc};
-use tracing::{debug, error};
+use futures::{StreamExt as _, channel::mpsc as async_mpsc, try_join};
+use tracing::{debug, error, warn};
 
-use crate::layout::{self, Key, Value, Write};
+use crate::layout::{self, ACCOUNT_LEN, AccountValue, Key, SLOT_LEN, SlotValue, Write, Writes};
 
 type Family = mmb::Family;
 /// Bitmap chunk size in bytes of the `current` layer.
@@ -46,15 +46,25 @@ const PARTITION_BYTES: usize = 2;
 const PAGE_SIZE: NonZeroU16 = NonZeroU16::new(16_384).expect("non-zero");
 const ITEMS_PER_BLOB: NonZeroU64 = NonZeroU64::new(1 << 23).expect("non-zero");
 const IO_BUFFER: NonZeroUsize = NonZeroUsize::new(2 << 20).expect("non-zero");
-/// Encoded size of a [`Commit`]: number (8) ‖ hash (32) ‖ size (8).
-const COMMIT_LEN: usize = 48;
+/// Encoded size of a [`Commit`]: number (8) ‖ hash (32) ‖ accounts size (8) ‖ slots size (8).
+const COMMIT_LEN: usize = 56;
 const COMMITS_PER_BLOB: NonZeroU64 = NonZeroU64::new(1 << 16).expect("non-zero");
 const COMMITS_WRITE_BUFFER: NonZeroUsize = NonZeroUsize::new(4096).expect("non-zero");
 
-type Db =
-    partitioned::Db<Family, Context, Key, Value, Sha256, EightCap, PARTITION_BYTES, CHUNK, Rayon>;
-type Batch =
-    Arc<MerkleizedBatch<Family, <Sha256 as Hasher>::Digest, Update<Key, Value>, CHUNK, Rayon>>;
+type Db<const N: usize> = partitioned::Db<
+    Family,
+    Context,
+    Key,
+    FixedBytes<N>,
+    Sha256,
+    EightCap,
+    PARTITION_BYTES,
+    CHUNK,
+    Rayon,
+>;
+type Batch<const N: usize> = Arc<
+    MerkleizedBatch<Family, <Sha256 as Hasher>::Digest, Update<Key, FixedBytes<N>>, CHUNK, Rayon>,
+>;
 type Commits = fixed::Journal<Context, FixedBytes<COMMIT_LEN>>;
 type Reply<T> = Box<dyn FnOnce(Result<T, Error>) + Send>;
 
@@ -63,9 +73,9 @@ type Reply<T> = Box<dyn FnOnce(Result<T, Error>) + Send>;
 pub struct Config {
     /// Directory holding the database files.
     pub directory: PathBuf,
-    /// Threads that merkleize batches and rebuild the index on open.
+    /// Threads that merkleize batches and rebuild the indexes on open.
     pub threads: NonZeroUsize,
-    /// Pages of the database's own page cache, each 16 KiB.
+    /// Pages of each database's own page cache, each 16 KiB.
     pub page_cache_pages: NonZeroUsize,
     /// Most unapplied batches kept in memory. Building another fails with
     /// [`Error::TooManyPending`] until finalization applies some.
@@ -83,15 +93,16 @@ pub struct BlockRef {
     pub parent_hash: B256,
 }
 
-/// A block's merkleized QMDB batch, not yet applied to disk.
+/// A block's merkleized QMDB batches, one per database, not yet applied to disk.
 ///
 /// Cheap to clone. The engine carries it on the block as its reth `BlockExt`, so the
-/// persistence hook applies exactly the batch the block was validated with.
+/// persistence hook applies exactly the batches the block was validated with.
 #[derive(Clone)]
 pub struct QmdbBatch {
     number: u64,
     parent_hash: B256,
-    batch: Batch,
+    accounts: Batch<ACCOUNT_LEN>,
+    slots: Batch<SLOT_LEN>,
 }
 
 impl QmdbBatch {
@@ -102,7 +113,10 @@ impl QmdbBatch {
 
     /// State root of the block.
     pub fn root(&self) -> B256 {
-        digest_to_b256(self.batch.root())
+        layout::state_root(
+            digest_to_b256(self.accounts.root()),
+            digest_to_b256(self.slots.root()),
+        )
     }
 }
 
@@ -133,7 +147,7 @@ pub struct Status {
 /// Error of a [`Store`] operation.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// The database failed.
+    /// A database failed.
     #[error("qmdb failed")]
     Qmdb(#[from] qmdb::Error<Family>),
     /// The commit journal failed.
@@ -172,6 +186,15 @@ pub enum Error {
     /// A block was built before the applied block's hash was bound.
     #[error("the applied block's hash is not bound; call set_base first")]
     NoBase,
+    /// The two databases end at different blocks and the commit journal has no block both can
+    /// rewind to, such as after a crash during the import.
+    #[error("the accounts database is at block {accounts:?} and the slots database at {slots:?}")]
+    OutOfStep {
+        /// Block the accounts database ends at.
+        accounts: Option<u64>,
+        /// Block the slots database ends at.
+        slots: Option<u64>,
+    },
     /// The store thread stopped, so the operation did not run.
     #[error("the store thread stopped")]
     Stopped,
@@ -188,10 +211,12 @@ pub struct Store {
 }
 
 impl Store {
-    /// Opens or creates the database in [`Config::directory`] and starts its thread.
+    /// Opens or creates the databases in [`Config::directory`] and starts their thread.
     ///
     /// Binds the applied block's hash from the commit journal when its latest record is the
-    /// applied block, so [`Self::set_base`] is only needed when the journal lacks it.
+    /// applied block, so [`Self::set_base`] is only needed when the journal lacks it. A crash
+    /// between committing the two databases leaves them at different blocks: opening rewinds both
+    /// to the latest recorded block.
     pub fn open(config: Config) -> Result<Self, Error> {
         let (commands, receiver) = async_mpsc::unbounded();
         let (opened_tx, opened_rx) = mpsc::channel();
@@ -239,8 +264,9 @@ impl Store {
     /// Builds the batch of `block` from its sorted `writes`, registers it under the block's hash,
     /// and returns it.
     ///
-    /// Blocks until the batch is merkleized. Building a block again replaces its batch.
-    pub fn build(&self, block: BlockRef, writes: Vec<Write>) -> Result<QmdbBatch, Error> {
+    /// Blocks until both databases' batches are merkleized, which runs in parallel. Building a
+    /// block again replaces its batch.
+    pub fn build(&self, block: BlockRef, writes: Writes) -> Result<QmdbBatch, Error> {
         self.call(|reply| Command::Build {
             block,
             writes,
@@ -256,7 +282,7 @@ impl Store {
         &self,
         number: u64,
         parent_hash: B256,
-        writes: Vec<Write>,
+        writes: Writes,
     ) -> Result<QmdbBatch, Error> {
         self.call(|reply| Command::BuildUnregistered {
             number,
@@ -276,7 +302,7 @@ impl Store {
     pub fn build_detached(
         &self,
         block: BlockRef,
-        writes: Vec<Write>,
+        writes: Writes,
         on_done: impl FnOnce(Result<B256, Error>) + Send + 'static,
     ) -> Result<(), Error> {
         self.send(Command::Build {
@@ -301,11 +327,11 @@ impl Store {
 
     /// Applies one chunk of a snapshot import directly to disk.
     ///
-    /// `writes` must be sorted and above every key of earlier chunks. The final chunk passes
-    /// `end`, the snapshot block's number and hash, which commits it as the applied block, binds
-    /// its hash as [`Status::base`] and records it in the commit journal. Fails with
-    /// [`Error::NotEmpty`] once a block is applied.
-    pub fn import_chunk(&self, writes: Vec<Write>, end: Option<(u64, B256)>) -> Result<(), Error> {
+    /// Each database's writes must be sorted and above every key of its earlier chunks. The final
+    /// chunk passes `end`, the snapshot block's number and hash, which commits both databases at
+    /// that block, binds its hash as [`Status::base`] and records it in the commit journal.
+    /// Fails with [`Error::NotEmpty`] once a block is applied.
+    pub fn import_chunk(&self, writes: Writes, end: Option<(u64, B256)>) -> Result<(), Error> {
         self.call(|reply| Command::Import { writes, end, reply })
     }
 
@@ -319,16 +345,26 @@ impl Store {
         self.call(|reply| Command::RewindTo { number, reply })
     }
 
-    /// Returns the value of `key` in the applied state, ignoring unapplied batches.
-    pub fn get(&self, key: Key) -> Result<Option<Value>, Error> {
-        let mut values = self.get_many(vec![key])?;
-        Ok(values.pop().flatten())
+    /// Returns the value of account `key` in the applied state, ignoring unapplied batches.
+    pub fn get_account(&self, key: Key) -> Result<Option<AccountValue>, Error> {
+        Ok(self.get_accounts(vec![key])?.pop().flatten())
     }
 
-    /// Returns the values of `keys` in the applied state, in the same order, ignoring unapplied
-    /// batches.
-    pub fn get_many(&self, keys: Vec<Key>) -> Result<Vec<Option<Value>>, Error> {
-        self.call(|reply| Command::Get { keys, reply })
+    /// Returns the values of account `keys` in the applied state, in the same order, ignoring
+    /// unapplied batches.
+    pub fn get_accounts(&self, keys: Vec<Key>) -> Result<Vec<Option<AccountValue>>, Error> {
+        self.call(|reply| Command::GetAccounts { keys, reply })
+    }
+
+    /// Returns the value of slot `key` in the applied state, ignoring unapplied batches.
+    pub fn get_slot(&self, key: Key) -> Result<Option<SlotValue>, Error> {
+        Ok(self.get_slots(vec![key])?.pop().flatten())
+    }
+
+    /// Returns the values of slot `keys` in the applied state, in the same order, ignoring
+    /// unapplied batches.
+    pub fn get_slots(&self, keys: Vec<Key>) -> Result<Vec<Option<SlotValue>>, Error> {
+        self.call(|reply| Command::GetSlots { keys, reply })
     }
 
     fn call<T: Send + 'static>(
@@ -373,13 +409,13 @@ enum Command {
     },
     Build {
         block: BlockRef,
-        writes: Vec<Write>,
+        writes: Writes,
         reply: Reply<QmdbBatch>,
     },
     BuildUnregistered {
         number: u64,
         parent_hash: B256,
-        writes: Vec<Write>,
+        writes: Writes,
         reply: Reply<QmdbBatch>,
     },
     Register {
@@ -396,7 +432,7 @@ enum Command {
         reply: Reply<()>,
     },
     Import {
-        writes: Vec<Write>,
+        writes: Writes,
         end: Option<(u64, B256)>,
         reply: Reply<()>,
     },
@@ -404,16 +440,22 @@ enum Command {
         number: u64,
         reply: Reply<()>,
     },
-    Get {
+    GetAccounts {
         keys: Vec<Key>,
-        reply: Reply<Vec<Option<Value>>>,
+        reply: Reply<Vec<Option<AccountValue>>>,
+    },
+    GetSlots {
+        keys: Vec<Key>,
+        reply: Reply<Vec<Option<SlotValue>>>,
     },
 }
 
 struct Actor {
-    /// Always `Some` between commands: applying and committing consume the database.
-    db: Option<Db>,
-    /// Applied blocks in ascending order. Always `Some` between commands, like `db`.
+    /// Always `Some` between commands: applying and committing consume the databases.
+    accounts: Option<Db<ACCOUNT_LEN>>,
+    /// Always `Some` between commands, like `accounts`.
+    slots: Option<Db<SLOT_LEN>>,
+    /// Applied blocks in ascending order. Always `Some` between commands, like `accounts`.
     commits: Option<Commits>,
     applied: Option<u64>,
     base: Option<B256>,
@@ -424,10 +466,10 @@ struct Actor {
 impl Actor {
     async fn init(context: Context, config: &Config) -> Result<Self, Error> {
         let page_cache = CacheRef::from_pooler(&context, PAGE_SIZE, config.page_cache_pages);
-        let db_config = FixedConfig {
+        let db_config = |name: &str| FixedConfig {
             merkle_config: MerkleConfig {
-                journal_partition: "state-merkle-journal".into(),
-                metadata_partition: "state-merkle-metadata".into(),
+                journal_partition: format!("{name}-merkle-journal"),
+                metadata_partition: format!("{name}-merkle-metadata"),
                 items_per_blob: ITEMS_PER_BLOB,
                 write_buffer: IO_BUFFER,
                 replay_buffer: IO_BUFFER,
@@ -435,13 +477,13 @@ impl Actor {
                 page_cache: page_cache.clone(),
             },
             journal_config: JournalConfig {
-                partition: "state-log".into(),
+                partition: format!("{name}-log"),
                 items_per_blob: ITEMS_PER_BLOB,
                 page_cache: page_cache.clone(),
                 write_buffer: IO_BUFFER,
                 replay_buffer: IO_BUFFER,
             },
-            grafted_metadata_partition: "state-grafted-metadata".into(),
+            grafted_metadata_partition: format!("{name}-grafted-metadata"),
             translator: EightCap,
             init_cache_size: None,
             init_buffer: IO_BUFFER,
@@ -450,26 +492,30 @@ impl Actor {
         let commits_config = JournalConfig {
             partition: "state-commits".into(),
             items_per_blob: COMMITS_PER_BLOB,
-            page_cache,
+            page_cache: page_cache.clone(),
             write_buffer: COMMITS_WRITE_BUFFER,
             replay_buffer: IO_BUFFER,
         };
-        let db = Db::init(context.child("qmdb"), db_config).await?;
+        let (mut accounts, mut slots) = try_join!(
+            Db::<ACCOUNT_LEN>::init(context.child("accounts"), db_config("accounts")),
+            Db::<SLOT_LEN>::init(context.child("slots"), db_config("slots")),
+        )?;
         let mut commits = Commits::init(context.child("commits"), commits_config).await?;
-        let applied = db
-            .get_metadata()
-            .await?
-            .as_ref()
-            .map(layout::decode_block_metadata);
+        let accounts_applied = applied_block(&accounts).await?;
+        let slots_applied = applied_block(&slots).await?;
+        let applied = accounts_applied.min(slots_applied);
 
-        // A crash between applying blocks to the database and recording them leaves the journal
-        // behind the database; one during a rewind leaves records above it.
-        let size = *db.bounds().end;
+        // A crash between applying blocks to the databases and recording them leaves the journal
+        // behind them; one during a rewind leaves records above them.
+        let sizes = (*accounts.bounds().end, *slots.bounds().end);
         let mut kept = commits.size();
         let mut latest = None;
         while kept > commits.bounds().start {
             let commit = Commit::decode(&commits.read(kept - 1).await?);
-            if commit.size <= size && applied.is_some_and(|applied| commit.number <= applied) {
+            if commit.accounts_size <= sizes.0
+                && commit.slots_size <= sizes.1
+                && applied.is_some_and(|applied| commit.number <= applied)
+            {
                 latest = Some(commit);
                 break;
             }
@@ -478,12 +524,39 @@ impl Actor {
         if kept < commits.size() {
             commits = commits.rewind(kept).await?.commit().await?;
         }
+
+        // A crash between committing the two databases leaves one a block ahead.
+        let mut applied = applied;
+        if accounts_applied != slots_applied {
+            let Some(commit) = latest else {
+                return Err(Error::OutOfStep {
+                    accounts: accounts_applied,
+                    slots: slots_applied,
+                });
+            };
+            warn!(
+                accounts = ?accounts_applied,
+                slots = ?slots_applied,
+                to = commit.number,
+                "QMDB databases are out of step, rewinding both to the latest recorded block"
+            );
+            (accounts, slots) = try_join!(
+                rewind_db(accounts, commit.accounts_size),
+                rewind_db(slots, commit.slots_size),
+            )?;
+            applied = Some(commit.number);
+        }
+
+        let sizes = (*accounts.bounds().end, *slots.bounds().end);
         let base = latest
-            .filter(|commit| Some(commit.number) == applied && commit.size == size)
+            .filter(|commit| {
+                Some(commit.number) == applied && (commit.accounts_size, commit.slots_size) == sizes
+            })
             .map(|commit| commit.hash);
 
         Ok(Self {
-            db: Some(db),
+            accounts: Some(accounts),
+            slots: Some(slots),
             commits: Some(commits),
             applied,
             base,
@@ -516,16 +589,25 @@ impl Actor {
                 Command::Finalize { hash, reply } => reply(self.finalize(hash).await),
                 Command::Import { writes, end, reply } => reply(self.import(writes, end).await),
                 Command::RewindTo { number, reply } => reply(self.rewind_to(number).await),
-                Command::Get { keys, reply } => {
+                Command::GetAccounts { keys, reply } => {
                     let keys: Vec<&Key> = keys.iter().collect();
-                    reply(self.db().get_many(&keys).await.map_err(Error::from));
+                    reply(self.accounts().get_many(&keys).await.map_err(Error::from));
+                }
+                Command::GetSlots { keys, reply } => {
+                    let keys: Vec<&Key> = keys.iter().collect();
+                    reply(self.slots().get_many(&keys).await.map_err(Error::from));
                 }
             }
         }
-        if let Some(db) = self.db.take()
+        if let Some(db) = self.accounts.take()
             && let Err(err) = db.sync().await
         {
-            error!(%err, "failed syncing QMDB on shutdown");
+            error!(%err, "failed syncing the QMDB accounts on shutdown");
+        }
+        if let Some(db) = self.slots.take()
+            && let Err(err) = db.sync().await
+        {
+            error!(%err, "failed syncing the QMDB slots on shutdown");
         }
         if let Some(commits) = self.commits.take()
             && let Err(err) = commits.sync().await
@@ -534,29 +616,40 @@ impl Actor {
         }
     }
 
-    fn db(&self) -> &Db {
-        self.db.as_ref().expect("restored after every command")
+    fn accounts(&self) -> &Db<ACCOUNT_LEN> {
+        self.accounts
+            .as_ref()
+            .expect("restored after every command")
+    }
+
+    fn slots(&self) -> &Db<SLOT_LEN> {
+        self.slots.as_ref().expect("restored after every command")
+    }
+
+    fn applied_root(&self) -> B256 {
+        layout::state_root(
+            digest_to_b256(self.accounts().root()),
+            digest_to_b256(self.slots().root()),
+        )
     }
 
     fn status(&self) -> Status {
         Status {
             applied: self.applied,
             base: self.base,
-            root: digest_to_b256(self.db().root()),
+            root: self.applied_root(),
             pending: self.pending.len(),
         }
     }
 
     fn root(&self, hash: B256) -> Option<B256> {
         if self.base == Some(hash) {
-            return Some(digest_to_b256(self.db().root()));
+            return Some(self.applied_root());
         }
-        self.pending
-            .get(&hash)
-            .map(|pending| digest_to_b256(pending.batch.root()))
+        self.pending.get(&hash).map(QmdbBatch::root)
     }
 
-    async fn build(&mut self, block: BlockRef, writes: Vec<Write>) -> Result<QmdbBatch, Error> {
+    async fn build(&mut self, block: BlockRef, writes: Writes) -> Result<QmdbBatch, Error> {
         let batch = self
             .merkleize(block.number, block.parent_hash, writes)
             .await
@@ -576,12 +669,12 @@ impl Actor {
         Ok(batch)
     }
 
-    /// Merkleizes block `number`'s `writes` on its parent's batch, or on the applied state.
+    /// Merkleizes block `number`'s `writes` on its parent's batches, or on the applied state.
     async fn merkleize(
         &self,
         number: u64,
         parent_hash: B256,
-        writes: Vec<Write>,
+        writes: Writes,
     ) -> Result<QmdbBatch, Error> {
         let base = self.base.ok_or(Error::NoBase)?;
         if let Some(applied) = self.applied
@@ -589,27 +682,34 @@ impl Actor {
         {
             return Err(Error::AlreadyApplied { number, applied });
         }
-        let db = self.db();
-        let mut batch = if parent_hash == base {
-            db.new_batch()
+        let parent = if parent_hash == base {
+            None
         } else {
-            let parent = self.pending.get(&parent_hash).ok_or(Error::UnknownParent {
+            Some(self.pending.get(&parent_hash).ok_or(Error::UnknownParent {
                 number,
                 hash: B256::ZERO,
                 parent_hash,
-            })?;
-            parent.batch.new_batch::<Sha256>()
+            })?)
         };
-        for write in writes {
-            batch = batch.write(write.key, write.value);
-        }
-        let batch = batch
-            .merkleize(db, Some(layout::block_metadata(number)))
-            .await?;
+        let (accounts, slots) = try_join!(
+            merkleize_db(
+                self.accounts(),
+                parent.map(|parent| &parent.accounts),
+                writes.accounts,
+                Some(number),
+            ),
+            merkleize_db(
+                self.slots(),
+                parent.map(|parent| &parent.slots),
+                writes.slots,
+                Some(number),
+            ),
+        )?;
         Ok(QmdbBatch {
             number,
             parent_hash,
-            batch,
+            accounts,
+            slots,
         })
     }
 
@@ -626,15 +726,20 @@ impl Actor {
             return Ok(());
         }
         let pending = self.pending.get(&hash).ok_or(Error::UnknownBlock(hash))?;
-        let (number, batch) = (pending.number, pending.batch.clone());
-        // Applying the batch applies its unapplied ancestors too: record each of them.
+        let (number, accounts_batch, slots_batch) = (
+            pending.number,
+            pending.accounts.clone(),
+            pending.slots.clone(),
+        );
+        // Applying a batch applies its unapplied ancestors too: record each of them.
         let mut applied = Vec::new();
         let mut next = Some((hash, pending));
         while let Some((hash, pending)) = next {
             applied.push(Commit {
                 number: pending.number,
                 hash,
-                size: *pending.batch.bounds().tip.size,
+                accounts_size: *pending.accounts.bounds().tip.size,
+                slots_size: *pending.slots.bounds().tip.size,
             });
             next = if Some(pending.parent_hash) == self.base {
                 None
@@ -644,12 +749,16 @@ impl Actor {
                     .map(|parent| (pending.parent_hash, parent))
             };
         }
-        let db = self.db.take().expect("restored after every command");
-        // Applying consumes the database: on failure it is gone and the store must be reopened,
-        // so every later command fails until then.
-        let (db, _) = db.apply_batch(batch).await?;
-        let db = db.commit().await?;
-        self.db = Some(db);
+        let accounts = self.accounts.take().expect("restored after every command");
+        let slots = self.slots.take().expect("restored after every command");
+        // Applying consumes the databases: on failure they are gone and the store must be
+        // reopened, so every later command fails until then.
+        let (accounts, slots) = try_join!(
+            apply_db(accounts, accounts_batch, true),
+            apply_db(slots, slots_batch, true),
+        )?;
+        self.accounts = Some(accounts);
+        self.slots = Some(slots);
         self.applied = Some(number);
         self.base = Some(hash);
         self.record(applied.into_iter().rev()).await?;
@@ -675,30 +784,64 @@ impl Actor {
         Ok(())
     }
 
-    async fn import(&mut self, writes: Vec<Write>, end: Option<(u64, B256)>) -> Result<(), Error> {
+    async fn import(&mut self, writes: Writes, end: Option<(u64, B256)>) -> Result<(), Error> {
         if let Some(applied) = self.applied {
             return Err(Error::NotEmpty(applied));
         }
-        let db = self.db();
-        let mut batch = db.new_batch();
-        for write in writes {
-            batch = batch.write(write.key, write.value);
-        }
-        let batch = batch
-            .merkleize(db, end.map(|(number, _)| layout::block_metadata(number)))
-            .await?;
-        let db = self.db.take().expect("restored after every command");
-        let (db, _) = db.apply_batch(batch).await?;
+        let number = end.map(|(number, _)| number);
+        // A database without writes in a chunk only takes the final, committing batch.
+        let (accounts_batch, slots_batch) = try_join!(
+            async {
+                match writes.accounts.is_empty() && end.is_none() {
+                    true => Ok(None),
+                    false => merkleize_db(self.accounts(), None, writes.accounts, number)
+                        .await
+                        .map(Some),
+                }
+            },
+            async {
+                match writes.slots.is_empty() && end.is_none() {
+                    true => Ok(None),
+                    false => merkleize_db(self.slots(), None, writes.slots, number)
+                        .await
+                        .map(Some),
+                }
+            },
+        )?;
+        let accounts = self.accounts.take().expect("restored after every command");
+        let slots = self.slots.take().expect("restored after every command");
+        let commit = end.is_some();
+        let (accounts, slots) = try_join!(
+            async {
+                match accounts_batch {
+                    Some(batch) => apply_db(accounts, batch, commit).await,
+                    None => Ok(accounts),
+                }
+            },
+            async {
+                match slots_batch {
+                    Some(batch) => apply_db(slots, batch, commit).await,
+                    None => Ok(slots),
+                }
+            },
+        )?;
         let Some((number, hash)) = end else {
-            self.db = Some(db);
+            self.accounts = Some(accounts);
+            self.slots = Some(slots);
             return Ok(());
         };
-        let db = db.commit().await?.sync().await?;
-        let size = *db.bounds().end;
-        self.db = Some(db);
+        let (accounts, slots) = try_join!(accounts.sync(), slots.sync())?;
+        let commit = Commit {
+            number,
+            hash,
+            accounts_size: *accounts.bounds().end,
+            slots_size: *slots.bounds().end,
+        };
+        self.accounts = Some(accounts);
+        self.slots = Some(slots);
         self.applied = Some(number);
         self.base = Some(hash);
-        self.record([Commit { number, hash, size }]).await
+        self.record([commit]).await
     }
 
     async fn rewind_to(&mut self, number: u64) -> Result<(), Error> {
@@ -711,14 +854,15 @@ impl Actor {
             .ok_or(Error::UnknownCommit(number))?;
         // Batches built on the current state cannot apply to the rewound one.
         self.pending.clear();
-        let db = self.db.take().expect("restored after every command");
-        // Like applying, a failed rewind consumes the database until the store is reopened.
-        let db = db
-            .rewind(Location::new(commit.size))
-            .await?
-            .commit()
-            .await?;
-        self.db = Some(db);
+        let accounts = self.accounts.take().expect("restored after every command");
+        let slots = self.slots.take().expect("restored after every command");
+        // Like applying, a failed rewind consumes the databases until the store is reopened.
+        let (accounts, slots) = try_join!(
+            rewind_db(accounts, commit.accounts_size),
+            rewind_db(slots, commit.slots_size),
+        )?;
+        self.accounts = Some(accounts);
+        self.slots = Some(slots);
         self.applied = Some(commit.number);
         self.base = Some(commit.hash);
         let commits = self.commits.take().expect("restored after every command");
@@ -754,13 +898,62 @@ impl Actor {
     }
 }
 
+/// Returns the block a database's last commit ended at, `None` before the import.
+async fn applied_block<const N: usize>(db: &Db<N>) -> Result<Option<u64>, Error> {
+    Ok(db
+        .get_metadata()
+        .await?
+        .as_ref()
+        .map(layout::decode_block_metadata))
+}
+
+/// Merkleizes `writes` on `parent`, or on the database's applied state, committing to block
+/// `number` as metadata when given.
+async fn merkleize_db<const N: usize>(
+    db: &Db<N>,
+    parent: Option<&Batch<N>>,
+    writes: Vec<Write<FixedBytes<N>>>,
+    number: Option<u64>,
+) -> Result<Batch<N>, Error> {
+    let mut batch = match parent {
+        Some(parent) => parent.new_batch::<Sha256>(),
+        None => db.new_batch(),
+    };
+    for write in writes {
+        batch = batch.write(write.key, write.value);
+    }
+    Ok(batch
+        .merkleize(db, number.map(layout::block_metadata::<N>))
+        .await?)
+}
+
+/// Applies `batch` to `db`, and commits it when `commit` is set.
+async fn apply_db<const N: usize>(
+    db: Db<N>,
+    batch: Batch<N>,
+    commit: bool,
+) -> Result<Db<N>, Error> {
+    let (db, _) = db.apply_batch(batch).await?;
+    Ok(match commit {
+        true => db.commit().await?,
+        false => db,
+    })
+}
+
+/// Rewinds `db` to `size` operations and commits the rewind.
+async fn rewind_db<const N: usize>(db: Db<N>, size: u64) -> Result<Db<N>, Error> {
+    Ok(db.rewind(Location::new(size)).await?.commit().await?)
+}
+
 /// The commit journal's record of an applied block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Commit {
     number: u64,
     hash: B256,
-    /// Operations in the database right after the block's commit, its rewind target.
-    size: u64,
+    /// Operations in the accounts database right after the block's commit, its rewind target.
+    accounts_size: u64,
+    /// Operations in the slots database right after the block's commit, its rewind target.
+    slots_size: u64,
 }
 
 impl Commit {
@@ -768,17 +961,20 @@ impl Commit {
         let mut out = [0u8; COMMIT_LEN];
         out[..8].copy_from_slice(&self.number.to_be_bytes());
         out[8..40].copy_from_slice(self.hash.as_slice());
-        out[40..].copy_from_slice(&self.size.to_be_bytes());
+        out[40..48].copy_from_slice(&self.accounts_size.to_be_bytes());
+        out[48..].copy_from_slice(&self.slots_size.to_be_bytes());
         FixedBytes::new(out)
     }
 
     fn decode(bytes: &FixedBytes<COMMIT_LEN>) -> Self {
-        let (number, rest) = bytes.split_at(8);
-        let (hash, size) = rest.split_at(32);
+        let word = |range: std::ops::Range<usize>| {
+            u64::from_be_bytes(bytes[range].try_into().expect("8 bytes"))
+        };
         Self {
-            number: u64::from_be_bytes(number.try_into().expect("8 bytes")),
-            hash: B256::from_slice(hash),
-            size: u64::from_be_bytes(size.try_into().expect("8 bytes")),
+            number: word(0..8),
+            hash: B256::from_slice(&bytes[8..40]),
+            accounts_size: word(40..48),
+            slots_size: word(48..56),
         }
     }
 }
@@ -801,10 +997,19 @@ mod tests {
         }
     }
 
-    fn write(key: u8, value: Option<u64>) -> Write {
+    fn write(key: u8, value: Option<u64>) -> Write<SlotValue> {
         Write {
             key: Key::new([key; 32]),
             value: value.map(|value| layout::slot_value(U256::from(value))),
+        }
+    }
+
+    impl From<Vec<Write<SlotValue>>> for Writes {
+        fn from(slots: Vec<Write<SlotValue>>) -> Self {
+            Self {
+                accounts: Vec::new(),
+                slots,
+            }
         }
     }
 
@@ -821,7 +1026,7 @@ mod tests {
         let store = Store::open(config(directory, max_pending)).unwrap();
         store
             .import_chunk(
-                vec![write(1, Some(1)), write(2, Some(2)), write(3, Some(3))],
+                vec![write(1, Some(1)), write(2, Some(2)), write(3, Some(3))].into(),
                 Some((0, B256::ZERO)),
             )
             .unwrap();
@@ -835,11 +1040,11 @@ mod tests {
         let genesis_root = store.status().unwrap().root;
 
         let root1 = store
-            .build(block(1, 1, 0), vec![write(2, Some(20))])
+            .build(block(1, 1, 0), vec![write(2, Some(20))].into())
             .unwrap()
             .root();
         let root2 = store
-            .build(block(2, 2, 1), vec![write(3, None)])
+            .build(block(2, 2, 1), vec![write(3, None)].into())
             .unwrap()
             .root();
         assert_ne!(root1, genesis_root);
@@ -861,16 +1066,19 @@ mod tests {
         let roots = |dir: &std::path::Path| {
             let store = imported(dir, 8);
             let a = store
-                .build(block(1, 1, 0), vec![write(4, Some(4))])
+                .build(block(1, 1, 0), vec![write(4, Some(4))].into())
                 .unwrap()
                 .root();
             let b = store
-                .build(block(2, 2, 1), vec![write(1, None), write(5, Some(5))])
+                .build(
+                    block(2, 2, 1),
+                    vec![write(1, None), write(5, Some(5))].into(),
+                )
                 .unwrap()
                 .root();
             store.finalize(B256::repeat_byte(1)).unwrap();
             let c = store
-                .build(block(3, 3, 2), vec![write(2, Some(7))])
+                .build(block(3, 3, 2), vec![write(2, Some(7))].into())
                 .unwrap()
                 .root();
             (a, b, c)
@@ -884,11 +1092,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = imported(dir.path(), 8);
         let at_one = store
-            .build(block(1, 1, 0), vec![write(4, Some(4))])
+            .build(block(1, 1, 0), vec![write(4, Some(4))].into())
             .unwrap()
             .root();
         let at_two = store
-            .build(block(2, 9, 0), vec![write(4, Some(4))])
+            .build(block(2, 9, 0), vec![write(4, Some(4))].into())
             .unwrap()
             .root();
         assert_ne!(at_one, at_two);
@@ -899,19 +1107,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = imported(dir.path(), 8);
         store
-            .build(block(1, 1, 0), vec![write(4, Some(4))])
+            .build(block(1, 1, 0), vec![write(4, Some(4))].into())
             .unwrap()
             .root();
         store
-            .build(block(1, 0xa1, 0), vec![write(4, Some(5))])
+            .build(block(1, 0xa1, 0), vec![write(4, Some(5))].into())
             .unwrap()
             .root();
         store
-            .build(block(2, 0xa2, 0xa1), vec![write(4, Some(6))])
+            .build(block(2, 0xa2, 0xa1), vec![write(4, Some(6))].into())
             .unwrap()
             .root();
         let root2 = store
-            .build(block(2, 2, 1), vec![write(5, Some(5))])
+            .build(block(2, 2, 1), vec![write(5, Some(5))].into())
             .unwrap()
             .root();
 
@@ -920,7 +1128,7 @@ mod tests {
         assert_eq!(store.root(B256::repeat_byte(0xa2)).unwrap(), None);
         assert_eq!(store.root(B256::repeat_byte(2)).unwrap(), Some(root2));
         assert!(matches!(
-            store.build(block(3, 0xa3, 0xa2), vec![]),
+            store.build(block(3, 0xa3, 0xa2), Writes::default()),
             Err(Error::UnknownParent { number: 3, .. })
         ));
         // The surviving child still extends the applied state.
@@ -934,11 +1142,11 @@ mod tests {
         let root = {
             let store = imported(dir.path(), 8);
             let root = store
-                .build(block(1, 1, 0), vec![write(4, Some(4))])
+                .build(block(1, 1, 0), vec![write(4, Some(4))].into())
                 .unwrap()
                 .root();
             store
-                .build(block(2, 2, 1), vec![write(5, Some(5))])
+                .build(block(2, 2, 1), vec![write(5, Some(5))].into())
                 .unwrap()
                 .root();
             store.finalize(B256::repeat_byte(1)).unwrap();
@@ -956,7 +1164,7 @@ mod tests {
             }
         );
         store
-            .build(block(2, 2, 1), vec![write(5, Some(5))])
+            .build(block(2, 2, 1), vec![write(5, Some(5))].into())
             .unwrap()
             .root();
     }
@@ -967,7 +1175,7 @@ mod tests {
         drop(imported(dir.path(), 8));
         let store = Store::open(config(dir.path(), 8)).unwrap();
         assert_eq!(store.status().unwrap().base, Some(B256::ZERO));
-        store.build(block(1, 1, 0), vec![]).unwrap();
+        store.build(block(1, 1, 0), Writes::default()).unwrap();
     }
 
     #[test]
@@ -975,7 +1183,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(config(dir.path(), 8)).unwrap();
         assert!(matches!(
-            store.build(block(1, 1, 0), vec![]),
+            store.build(block(1, 1, 0), Writes::default()),
             Err(Error::NoBase)
         ));
         store.set_base(B256::ZERO).unwrap();
@@ -1016,7 +1224,7 @@ mod tests {
         let root1 = {
             let store = imported(one.path(), 8);
             let root1 = store
-                .build(block(1, 1, 0), vec![write(4, Some(4))])
+                .build(block(1, 1, 0), vec![write(4, Some(4))].into())
                 .unwrap()
                 .root();
             store.finalize(B256::repeat_byte(1)).unwrap();
@@ -1025,10 +1233,10 @@ mod tests {
         {
             let store = imported(two.path(), 8);
             store
-                .build(block(1, 1, 0), vec![write(4, Some(4))])
+                .build(block(1, 1, 0), vec![write(4, Some(4))].into())
                 .unwrap();
             store
-                .build(block(2, 2, 1), vec![write(5, Some(5))])
+                .build(block(2, 2, 1), vec![write(5, Some(5))].into())
                 .unwrap();
             store.finalize(B256::repeat_byte(2)).unwrap();
         }
@@ -1059,16 +1267,22 @@ mod tests {
         let store = imported(dir.path(), 8);
         let genesis_root = store.status().unwrap().root;
         let root1 = store
-            .build(block(1, 1, 0), vec![write(2, Some(20))])
+            .build(block(1, 1, 0), vec![write(2, Some(20))].into())
             .unwrap()
             .root();
         store.finalize(B256::repeat_byte(1)).unwrap();
         store
-            .build(block(2, 2, 1), vec![write(3, None), write(4, Some(4))])
+            .build(
+                block(2, 2, 1),
+                vec![write(3, None), write(4, Some(4))].into(),
+            )
             .unwrap()
             .root();
         store.finalize(B256::repeat_byte(2)).unwrap();
-        store.build(block(3, 3, 2), vec![]).unwrap().root();
+        store
+            .build(block(3, 3, 2), Writes::default())
+            .unwrap()
+            .root();
 
         store.rewind_to(0).unwrap();
         assert_eq!(
@@ -1082,7 +1296,7 @@ mod tests {
         );
         assert_eq!(
             store
-                .get_many(vec![
+                .get_slots(vec![
                     write(2, None).key,
                     write(3, None).key,
                     write(4, None).key
@@ -1092,12 +1306,12 @@ mod tests {
         );
         // A different child of block 0 builds and finalizes; rebuilding the old one matches root1.
         let other = store
-            .build(block(1, 0xc1, 0), vec![write(5, Some(5))])
+            .build(block(1, 0xc1, 0), vec![write(5, Some(5))].into())
             .unwrap()
             .root();
         assert_ne!(other, root1);
         let rebuilt = store
-            .build(block(1, 1, 0), vec![write(2, Some(20))])
+            .build(block(1, 1, 0), vec![write(2, Some(20))].into())
             .unwrap()
             .root();
         assert_eq!(rebuilt, root1);
@@ -1118,11 +1332,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = imported(dir.path(), 8);
         let root1 = store
-            .build(block(1, 1, 0), vec![write(4, Some(4))])
+            .build(block(1, 1, 0), vec![write(4, Some(4))].into())
             .unwrap()
             .root();
         store
-            .build(block(2, 2, 1), vec![write(5, Some(5))])
+            .build(block(2, 2, 1), vec![write(5, Some(5))].into())
             .unwrap()
             .root();
         store.finalize(B256::repeat_byte(2)).unwrap();
@@ -1139,7 +1353,7 @@ mod tests {
     fn rewind_to_an_unrecorded_block_fails() {
         let dir = tempfile::tempdir().unwrap();
         let store = imported(dir.path(), 8);
-        store.build(block(1, 1, 0), vec![]).unwrap();
+        store.build(block(1, 1, 0), Writes::default()).unwrap();
         assert!(matches!(store.rewind_to(1), Err(Error::UnknownCommit(1))));
         assert!(matches!(store.rewind_to(7), Err(Error::UnknownCommit(7))));
         // Rewinding to the applied block keeps the unapplied batches.
@@ -1152,18 +1366,21 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = imported(dir.path(), 8);
         store
-            .build(block(1, 1, 0), vec![write(1, None), write(4, Some(4))])
+            .build(
+                block(1, 1, 0),
+                vec![write(1, None), write(4, Some(4))].into(),
+            )
             .unwrap();
         assert_eq!(
-            store.get(write(1, None).key).unwrap(),
+            store.get_slot(write(1, None).key).unwrap(),
             write(1, Some(1)).value
         );
-        assert_eq!(store.get(write(4, None).key).unwrap(), None);
+        assert_eq!(store.get_slot(write(4, None).key).unwrap(), None);
 
         store.finalize(B256::repeat_byte(1)).unwrap();
         assert_eq!(
             store
-                .get_many(vec![write(1, None).key, write(4, None).key])
+                .get_slots(vec![write(1, None).key, write(4, None).key])
                 .unwrap(),
             vec![None, write(4, Some(4)).value]
         );
@@ -1174,7 +1391,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = imported(dir.path(), 8);
         assert!(matches!(
-            store.build(block(0, 1, 0), vec![]),
+            store.build(block(0, 1, 0), Writes::default()),
             Err(Error::AlreadyApplied {
                 number: 0,
                 applied: 0
@@ -1186,15 +1403,21 @@ mod tests {
     fn bounds_unapplied_batches() {
         let dir = tempfile::tempdir().unwrap();
         let store = imported(dir.path(), 2);
-        store.build(block(1, 1, 0), vec![]).unwrap().root();
-        store.build(block(2, 2, 1), vec![]).unwrap().root();
+        store
+            .build(block(1, 1, 0), Writes::default())
+            .unwrap()
+            .root();
+        store
+            .build(block(2, 2, 1), Writes::default())
+            .unwrap()
+            .root();
         // Rebuilding a held block replaces it instead of counting against the bound.
         store
-            .build(block(2, 2, 1), vec![write(4, Some(4))])
+            .build(block(2, 2, 1), vec![write(4, Some(4))].into())
             .unwrap()
             .root();
         assert!(matches!(
-            store.build(block(3, 3, 2), vec![]),
+            store.build(block(3, 3, 2), Writes::default()),
             Err(Error::TooManyPending(2))
         ));
     }
@@ -1204,21 +1427,21 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = imported(dir.path(), 8);
         let batch = store
-            .build_unregistered(1, B256::ZERO, vec![write(4, Some(4))])
+            .build_unregistered(1, B256::ZERO, vec![write(4, Some(4))].into())
             .unwrap();
         // Same writes on the same parent give the same root as a registered build.
         let registered = store
-            .build(block(1, 1, 0), vec![write(4, Some(4))])
+            .build(block(1, 1, 0), vec![write(4, Some(4))].into())
             .unwrap();
         assert_eq!(batch.root(), registered.root());
         assert!(matches!(
-            store.build(block(2, 2, 0xb1), vec![]),
+            store.build(block(2, 2, 0xb1), Writes::default()),
             Err(Error::UnknownParent { number: 2, .. })
         ));
 
         store.register(B256::repeat_byte(0xb1), batch).unwrap();
         let child = store
-            .build(block(2, 2, 0xb1), vec![write(5, Some(5))])
+            .build(block(2, 2, 0xb1), vec![write(5, Some(5))].into())
             .unwrap();
         store.finalize(B256::repeat_byte(2)).unwrap();
         assert_eq!(store.status().unwrap().root, child.root());
@@ -1229,7 +1452,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = imported(dir.path(), 8);
         assert!(matches!(
-            store.import_chunk(vec![], Some((1, B256::repeat_byte(1)))),
+            store.import_chunk(Writes::default(), Some((1, B256::repeat_byte(1)))),
             Err(Error::NotEmpty(0))
         ));
     }
@@ -1240,14 +1463,105 @@ mod tests {
         let store = imported(dir.path(), 8);
         let (tx, rx) = mpsc::channel();
         store
-            .build_detached(block(1, 1, 0), vec![write(4, Some(4))], move |root| {
-                tx.send(root.map_err(|err| err.to_string())).unwrap();
-            })
+            .build_detached(
+                block(1, 1, 0),
+                vec![write(4, Some(4))].into(),
+                move |root| {
+                    tx.send(root.map_err(|err| err.to_string())).unwrap();
+                },
+            )
             .unwrap();
         let root = rx
             .recv_timeout(std::time::Duration::from_secs(30))
             .unwrap()
             .unwrap();
         assert_eq!(store.root(B256::repeat_byte(1)).unwrap(), Some(root));
+    }
+
+    #[test]
+    fn writes_reach_their_own_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = imported(dir.path(), 8);
+        let account = layout::AccountRecord::new(5, U256::ZERO, None, &[])
+            .unwrap()
+            .encode();
+        let writes = Writes {
+            accounts: vec![Write {
+                key: Key::new([1; 32]),
+                value: Some(account.clone()),
+            }],
+            slots: vec![write(4, Some(4))],
+        };
+        let root = store.build(block(1, 1, 0), writes).unwrap().root();
+        store.finalize(B256::repeat_byte(1)).unwrap();
+        assert_eq!(store.status().unwrap().root, root);
+        // The same key holds independent values in the two databases.
+        assert_eq!(store.get_account(Key::new([1; 32])).unwrap(), Some(account));
+        assert_eq!(
+            store.get_slot(Key::new([1; 32])).unwrap(),
+            write(1, Some(1)).value
+        );
+        assert_eq!(store.get_account(Key::new([4; 32])).unwrap(), None);
+        assert_eq!(
+            store.get_slot(Key::new([4; 32])).unwrap(),
+            write(4, Some(4)).value
+        );
+    }
+
+    #[test]
+    fn reopening_rewinds_databases_left_out_of_step() {
+        // Both apply the same block 1; only `two` applies block 2.
+        let (one, two) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let root1 = {
+            let store = imported(one.path(), 8);
+            let root1 = store
+                .build(block(1, 1, 0), vec![write(4, Some(4))].into())
+                .unwrap()
+                .root();
+            store.finalize(B256::repeat_byte(1)).unwrap();
+            root1
+        };
+        {
+            let store = imported(two.path(), 8);
+            store
+                .build(block(1, 1, 0), vec![write(4, Some(4))].into())
+                .unwrap();
+            store
+                .build(block(2, 2, 1), vec![write(5, Some(5))].into())
+                .unwrap();
+            store.finalize(B256::repeat_byte(2)).unwrap();
+        }
+        // `one` takes `two`'s slots, as if it crashed after committing only them for block 2.
+        for entry in std::fs::read_dir(one.path()).unwrap() {
+            let path = entry.unwrap().path();
+            if path
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("slots-")
+            {
+                std::fs::remove_dir_all(path).unwrap();
+            }
+        }
+        for entry in std::fs::read_dir(two.path()).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_owned();
+            if name.to_str().unwrap().starts_with("slots-") {
+                std::fs::rename(&path, one.path().join(name)).unwrap();
+            }
+        }
+
+        let store = Store::open(config(one.path(), 8)).unwrap();
+        assert_eq!(
+            store.status().unwrap(),
+            Status {
+                applied: Some(1),
+                base: Some(B256::repeat_byte(1)),
+                root: root1,
+                pending: 0
+            }
+        );
+        assert_eq!(store.get_slot(Key::new([5; 32])).unwrap(), None);
     }
 }
