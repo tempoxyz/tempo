@@ -1,12 +1,11 @@
 // Additional regression coverage introduced with the EVM2 migration.
 use super::*;
-use tempo_precompiles::{
-    storage::{PrecompileStorageProvider, evm::EvmPrecompileStorageProvider},
-    tip20::slots as tip20_slots,
-};
+use tempo_precompiles::storage::{PrecompileStorageProvider, evm::EvmPrecompileStorageProvider};
 
 #[test]
 fn test_resolve_fee_context_warms_balance_without_fee_collection() {
+    use tempo_precompiles::tip20::slots as tip20_slots;
+
     for (spec, disable_fee, gas_price) in [
         (TempoHardfork::T1, false, 0),
         (TempoHardfork::T7, false, 0),
