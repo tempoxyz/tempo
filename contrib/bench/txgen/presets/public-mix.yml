@@ -95,3 +95,5 @@ mix:
     weight: 5
   - template: zone_withdraw
     weight: 4
+# Experiment: vaults removed from the mix. The multi-region runner detects composed
+# public-mix by grepping for this line, so keep it: template: vault_deposit
