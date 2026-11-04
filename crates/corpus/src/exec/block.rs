@@ -409,7 +409,7 @@ fn boundary() -> impl bincode::Options {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::ChangeSet;
+    use crate::types::{Change, ChangeSet};
     use reth_trie_common::bundle_state::{AccountRevert, Reverts};
 
     fn bundle(reverts: Vec<(Address, AccountRevert)>) -> BundleState {
@@ -472,6 +472,29 @@ mod tests {
             err.to_string()
                 .contains("expected a block section id from 0 to 4"),
             "{err}"
+        );
+    }
+
+    #[test]
+    fn phase_check_diffs_mismatched_phases() {
+        let empty = Delta::default();
+        assert!(phase_check("pre-execution", &empty, &empty).is_ok());
+        let change = Change {
+            info: None,
+            created: true,
+            storage: BTreeMap::new(),
+            code: None,
+        };
+        let replayed = Delta(vec![BTreeMap::from([([1; 20], change)])]);
+        let message = phase_check("post-execution", &empty, &replayed)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            message,
+            format!(
+                "post-execution delta mismatch\n  commits: recorded 0, replayed 1\n  commit 0 {}: replayed change, none recorded",
+                Address::from([1; 20])
+            )
         );
     }
 }
