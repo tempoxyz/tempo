@@ -906,10 +906,10 @@ def createZone(sender, p: CreateZoneParams) -> (uint32, address):
     portal = portal_address(zoneId)
     name, symbol, currency = TIP20(p.initialToken).name, .symbol, .currency   # storage reads
     if max(len(name), len(symbol), len(currency)) > 31: revert TokenMetadataTooLong()   # UTF-8 byte length
-    teh = keccak256(abi.encode(bytes32(0), p.initialToken, name, symbol, currency))
+    enablement_hash = keccak256(abi.encode(bytes32(0), p.initialToken, name, symbol, currency))
     if zoneId == 2**32 - 1: revert Panic(0x11)
     nextZoneId = zoneId + 1
-    initialize_portal(portal, zoneId, p, teh)          # §4.6
+    initialize_portal(portal, zoneId, p, enablement_hash)          # §4.6
     zones[zoneId] = ZoneInfo(zoneId, portal, p.accessMode, p.gatewayMode, p.admin,
                              p.sequencers, p.threshold, ZONE_VERIFIER_ADDRESS, p.rpcUrl)
     emit_logs_in_order(portal, zoneId, p)              # §4.4.5
@@ -1000,7 +1000,7 @@ Every portal proxy executes the shared implementation by `DELEGATECALL`, so its 
 > **Resolved conflict C-VAL-08**: TIP-1091 (step 5) and its reference `ZoneFactory.sol` say the factory calls the portal's factory-only initializer; the code writes portal storage and emits the portal's logs natively without any call frame (different gas, no inner call). Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](../conflicts.md#c-val-08).
 
 ```python
-def initialize_portal(portal, zoneId, p, teh):
+def initialize_portal(portal, zoneId, p, enablement_hash):
     S = storage_of(portal)
     if S[16].initialized: revert AlreadyInitialized()                       # 1
     set_code(portal, ZONE_PORTAL_PROXY_RUNTIME)                              # 2 unconditional, overwrites any code
@@ -1022,7 +1022,7 @@ def initialize_portal(portal, zoneId, p, teh):
     S.leaderActivationTempoBlock = block.number                              # 18 slot 24
     S.tokenEnableCountBlock = block.number                                   # 19 slot 24
     S.tokensEnabledInCurrentBlock = 1                                        # 20 slot 25
-    S.tokenEnablementHash = teh                                              # 21 slot 26
+    S.tokenEnablementHash = enablement_hash                                              # 21 slot 26
     if T13_active: S.tokenEnablementCursorInitialized = True                 # 22 slot 28 (from T13)
     for g in p.zoneGateways:    S.role[g] = 3   # CallbackGateway            # 23
     for a in p.allowedAccounts: S.role[a] = 2   # Account                    # 24

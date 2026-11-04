@@ -4,7 +4,7 @@ Each entry is a place where Tempo's docs or TIPs disagree with the implementatio
 
 Groups:
 
-- **A. Affects block validity, gas or state (67).** Mainnet blocks were produced by the implementation, so a spec that follows the doc would reject or mis-execute real blocks. The only open question is how to fix the TIP or doc.
+- **A. Affects block validity, gas or state (67).** Mainnet blocks were produced by the implementation, so a spec that follows the doc would reject real blocks or execute them incorrectly. The only open question is how to fix the TIP or doc.
 - **B. Doc-only (18).** The doc is stale, incomplete or out of scope, and block validity is not affected.
 - **C. Needs a decision (1).**
 
