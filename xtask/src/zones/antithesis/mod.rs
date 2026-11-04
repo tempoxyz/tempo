@@ -117,16 +117,23 @@ impl Antithesis {
     pub(crate) async fn run(self) -> eyre::Result<()> {
         antithesis_sdk::antithesis_init();
         let ctx = Context::init(&self).await?;
-        match self.command {
-            Command::Seed => ctx.seed().await,
+        let driver = match self.command {
+            Command::Seed => return ctx.seed().await,
+            Command::CheckConsistency => return ctx.check_consistency().await,
+            Command::CheckSettled => return ctx.check_settled().await,
+            Command::CheckLedger => return ctx.check_ledger().await,
             Command::Deposit => ctx.deposit().await,
             Command::Transfer => ctx.transfer().await,
             Command::Withdraw => ctx.withdraw().await,
             Command::Fanout => ctx.fanout().await,
-            Command::CheckConsistency => ctx.check_consistency().await,
-            Command::CheckSettled => ctx.check_settled().await,
-            Command::CheckLedger => ctx.check_ledger().await,
+        };
+        // Under faults, or on a node that lags the sequencer, a send can be rejected (nonce too
+        // low) or never confirm. Drivers record only confirmed operations and assert properties
+        // through the SDK, so such an error ends the run without failing the command.
+        if let Err(error) = driver {
+            println!("driver gave up: {error:#}");
         }
+        Ok(())
     }
 }
 
