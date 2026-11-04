@@ -34,10 +34,7 @@ use reth_transaction_pool::{
     PoolTransaction as _, TransactionPool, error::InvalidPoolTransactionError,
 };
 use serde::{Deserialize, Serialize};
-use tempo_contracts::{
-    MULTICALL3_ADDRESS,
-    zones::{IZoneOutbox, ZONE_OUTBOX_ADDRESS},
-};
+use tempo_contracts::zones::{IZoneOutbox, ZONE_OUTBOX_ADDRESS};
 use tempo_precompiles::tip20::ITIP20;
 use tempo_primitives::TempoAddressExt as _;
 use tempo_transaction_pool::transaction::TempoPooledTransaction;
@@ -500,10 +497,6 @@ impl TransferAllowlist for DepositAllowlist {
             addresses,
         )
     }
-
-    fn is_enabled(&self) -> bool {
-        true
-    }
 }
 
 /// Copy of the leader's allowlist that an RPC-only node keeps to reject transfers on submission,
@@ -578,15 +571,10 @@ impl TransferAllowlist for AllowlistMirror {
             addresses,
         )
     }
-
-    fn is_enabled(&self) -> bool {
-        self.inner.list.read().is_some()
-    }
 }
 
 /// Reject on submission a transaction whose calls move TIP-20 funds or name a withdrawal fallback
-/// recipient outside `allowlist`, call `transferFrom` from an unlisted account, or call Multicall3
-/// while the allowlist is enabled.
+/// recipient outside `allowlist`, or call `transferFrom` from an unlisted account.
 pub(crate) fn validate_transfer_calls(
     allowlist: &dyn TransferAllowlist,
     tx: &TempoPooledTransaction,
@@ -596,11 +584,6 @@ pub(crate) fn validate_transfer_calls(
         let TxKind::Call(target) = kind else {
             return true;
         };
-        // Its calldata hides the fallback recipient of a withdrawal it makes with a pre-T15
-        // outbox allowance, which the leader would leave out and this node keep forwarding.
-        if target == MULTICALL3_ADDRESS {
-            return !allowlist.is_enabled();
-        }
         if target.is_tip20() {
             return match ITIP20::ITIP20Calls::abi_decode(input) {
                 Ok(ITIP20::ITIP20Calls::transfer(ITIP20::transferCall { to, .. }))
@@ -1223,14 +1206,13 @@ mod tests {
         let mirror = AllowlistMirror::default();
         assert_eq!(mirror.status(), None);
         assert!(mirror.allows_all(&[CAROL]));
-        assert!(!mirror.is_enabled());
         assert!(!mirror.clear());
 
         // The leader runs the allowlist but has not written it.
         let dir = tempfile::tempdir().unwrap();
         let allowlist = load(dir.path().join(DEPOSIT_ALLOWLIST_FILE_NAME));
         assert!(mirror.replace(allowlist.snapshot()));
-        assert!(mirror.is_enabled());
+        assert!(mirror.status().is_some());
         assert!(mirror.allows_all(&[CAROL]));
 
         allowlist.replace(vec![ALICE, BOB]).unwrap();
@@ -1246,7 +1228,6 @@ mod tests {
 
         assert!(mirror.clear());
         assert_eq!(mirror.status(), None);
-        assert!(!mirror.is_enabled());
         assert!(mirror.allows_all(&[CAROL]));
     }
 
@@ -1379,38 +1360,6 @@ mod tests {
         assert!(!admits_calls(CAROL, vec![request_withdrawal(ALICE)]));
         assert!(!admits_calls(ALICE, vec![request_withdrawal(CAROL)]));
         assert!(admits_calls(ALICE, vec![request_withdrawal(BOB)]));
-    }
-
-    #[test]
-    fn submission_rejects_multicall3_while_the_allowlist_is_enabled() {
-        let multicall = call(MULTICALL3_ADDRESS, Bytes::new());
-        // Multicall3 calls as itself, so it is rejected even for a listed sender.
-        assert!(!admits_calls(ALICE, vec![multicall.clone()]));
-        assert!(!admits_calls(
-            ALICE,
-            vec![token_transfer(BOB), multicall.clone()]
-        ));
-
-        let transaction = TempoTransaction {
-            calls: vec![multicall],
-            ..Default::default()
-        };
-        let transaction = pooled_transaction(
-            transaction
-                .into_signed(Signature::test_signature().into())
-                .into(),
-            ALICE,
-        );
-        // Also before the first write.
-        let dir = tempfile::tempdir().unwrap();
-        let allowlist = load(dir.path().join(DEPOSIT_ALLOWLIST_FILE_NAME));
-        assert!(validate_transfer_calls(&allowlist, &transaction).is_err());
-
-        // An RPC-only node admits it only while the leader runs without the allowlist.
-        let mirror = AllowlistMirror::default();
-        assert!(validate_transfer_calls(&mirror, &transaction).is_ok());
-        mirror.replace(allowlist.snapshot());
-        assert!(validate_transfer_calls(&mirror, &transaction).is_err());
     }
 
     #[tokio::test]

@@ -355,13 +355,6 @@ Submission also rejects a `transferFrom` from an unlisted caller, whatever parti
 an unlisted account cannot learn whether an address is listed from whether its transaction is
 accepted.
 
-While the allowlist is enabled, submission also rejects any call to Multicall3, the only zone
-contract that relays calls, even before the list is written. Zone TIP-20 transfers through it always revert, but it can still withdraw its
-own balance through an outbox allowance granted before T15. Its calldata does not show that
-withdrawal's fallback recipient, so one the leader leaves out would otherwise be forwarded and
-executed again every few seconds without paying fees. Read-only `eth_call`s through it are
-unaffected, and an AA batch replaces batched writes.
-
 Every RPC follower keeps an in-memory copy of the leader's list so it can reject the same
 transactions on submission, returning `transfer sender or recipient is not allowlisted` instead of
 forwarding them. It needs no flag: reading the list needs no signature. It copies the list of the

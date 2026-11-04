@@ -866,7 +866,7 @@ mod tests {
             .answer([uninitialized(), ok(Response::Status(status(3))), disabled()])
             .await;
         assert!(changed(refresh).await);
-        assert!(fixture.relay.mirror.is_enabled());
+        assert!(fixture.relay.mirror.status().is_some());
         assert!(fixture.relay.mirror.allows_all(&[old, new]));
 
         // A leader without the allowlist clears the copy.
@@ -876,7 +876,6 @@ mod tests {
             .await;
         assert!(changed(refresh).await);
         assert_eq!(fixture.relay.mirror.status(), None);
-        assert!(!fixture.relay.mirror.is_enabled());
     }
 
     #[tokio::test]
