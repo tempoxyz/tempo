@@ -47,7 +47,10 @@ use reth_trie::{HashedPostState, HashedStorage, hashed_cursor::zero_destroyed_ac
 use reth_trie_common::bundle_state::{AccountStatus, BundleAccount};
 use reth_trie_db::DatabaseHashedCursorFactory;
 use tempo_chainspec::spec::TempoChainSpecParser;
-use tempo_contracts::precompiles::VALIDATOR_CONFIG_V2_ADDRESS;
+use tempo_contracts::precompiles::{
+    VALIDATOR_CONFIG_V2_ADDRESS, ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS,
+    ZONE_VERIFIER_ADDRESS,
+};
 use tracing::{info, warn};
 
 /// Patch a block-0 database to use a new genesis header.
@@ -200,6 +203,13 @@ fn sync_accounts(sync_validator_config_v2: bool, sync_genesis_account: &[Address
     let mut accounts = sync_genesis_account.to_vec();
     if sync_validator_config_v2 {
         accounts.push(VALIDATOR_CONFIG_V2_ADDRESS);
+        // Benchmark-only: restored state snapshots predate this branch's Zone runtimes, so
+        // replace them from the new genesis as well.
+        accounts.extend([
+            ZONE_PORTAL_IMPL_ADDRESS,
+            ZONE_MESSENGER_ADDRESS,
+            ZONE_VERIFIER_ADDRESS,
+        ]);
     }
     accounts.sort_unstable();
     accounts.dedup();
