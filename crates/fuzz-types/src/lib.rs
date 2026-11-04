@@ -132,6 +132,7 @@ impl Default for BlockContextInput {
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub struct ChainSpecInput {
     pub chain_id: u64,
+    #[serde(deserialize_with = "known_hardforks")]
     pub hardforks: BTreeMap<TempoHardfork, u64>,
 }
 
@@ -438,4 +439,77 @@ pub enum InstrStop {
     CreateInitCodeSizeLimit,
     FatalExternalError,
     InvalidImmediateEncoding,
+}
+
+/// Deserializes a hardfork schedule, leaving out the hardforks this release does not know. Main
+/// knows later hardforks, and the inputs runners generate for it schedule them all; they activate
+/// after the ones this release runs, so leaving them out does not change what it executes.
+fn known_hardforks<'de, D>(deserializer: D) -> Result<BTreeMap<TempoHardfork, u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let schedule = BTreeMap::<AnyHardfork, u64>::deserialize(deserializer)?;
+    Ok(schedule
+        .into_iter()
+        .filter_map(|(fork, activation)| Some((fork.0?, activation)))
+        .collect())
+}
+
+/// A hardfork by its variant index or name, `None` if this release does not know it.
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+struct AnyHardfork(Option<TempoHardfork>);
+
+impl<'de> Deserialize<'de> for AnyHardfork {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::{EnumAccess, VariantAccess, Visitor};
+
+        struct Index(Option<TempoHardfork>);
+
+        impl<'de> Deserialize<'de> for Index {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                struct IndexVisitor;
+                impl Visitor<'_> for IndexVisitor {
+                    type Value = Index;
+                    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                        f.write_str("a hardfork variant index or name")
+                    }
+                    fn visit_u64<E: serde::de::Error>(self, index: u64) -> Result<Index, E> {
+                        Ok(Index(
+                            u8::try_from(index)
+                                .ok()
+                                .and_then(TempoHardfork::from_variant_index),
+                        ))
+                    }
+                    fn visit_str<E: serde::de::Error>(self, name: &str) -> Result<Index, E> {
+                        Ok(Index(
+                            TempoHardfork::VARIANTS
+                                .iter()
+                                .copied()
+                                .find(|fork| fork.name() == name),
+                        ))
+                    }
+                }
+                deserializer.deserialize_identifier(IndexVisitor)
+            }
+        }
+
+        struct HardforkVisitor;
+        impl<'de> Visitor<'de> for HardforkVisitor {
+            type Value = AnyHardfork;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a hardfork")
+            }
+            fn visit_enum<A: EnumAccess<'de>>(self, data: A) -> Result<AnyHardfork, A::Error> {
+                let (Index(fork), variant) = data.variant::<Index>()?;
+                variant.unit_variant()?;
+                Ok(AnyHardfork(fork))
+            }
+        }
+        // Main's names, so a self-describing format accepts any of them.
+        const NAMES: &[&str] = &[
+            "Genesis", "T0", "T1", "T1A", "T1B", "T1C", "T2", "T3", "T4", "T5", "T6", "T7", "T8",
+            "T9", "T10", "T11", "T12", "T13", "T14", "T15",
+        ];
+        deserializer.deserialize_enum("TempoHardfork", NAMES, HardforkVisitor)
+    }
 }
