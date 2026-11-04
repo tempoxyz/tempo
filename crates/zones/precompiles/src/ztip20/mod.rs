@@ -4,8 +4,8 @@
 //! from T15 zone precompiles run with a storage context that makes inbounds blocked by a TIP-1028
 //! receive policy revert instead of diverting funds to `ReceivePolicyGuard`. Before forwarding a
 //! call to Tempo, `TIP20Rules` applies only zone-specific checks: privacy-gated reads, fixed gas
-//! for selected selectors, blocked system/admin entry points, a ban on Permit2 and Multicall3
-//! moving funds or approving spenders, and, for zone-internal transfers, the portal admin's opt-in.
+//! for selected selectors, blocked system/admin entry points, and, for zone-internal transfers, the
+//! portal admin's opt-in.
 //!
 //! Accepted calldata and callers are forwarded unchanged to Tempo. Ordinary token state remains
 //! Zone-local while the EVM context's database adapter exposes selected policy values and, from
@@ -14,7 +14,7 @@
 use alloy_primitives::Address;
 use alloy_sol_types::{SolCall, SolError, SolInterface};
 pub use tempo_contracts::zones::InsufficientBalance;
-use tempo_contracts::{MULTICALL3_ADDRESS, PERMIT2_ADDRESS, zones::Unauthorized};
+use tempo_contracts::zones::Unauthorized;
 use tempo_precompiles::{
     dispatch::abi_decoder_config_for_spec,
     error::Result,
@@ -34,11 +34,6 @@ use crate::{
 /// has previously received tokens. This intentionally replaces upstream variable gas pricing.
 pub const TIP20_FIXED_TRANSFER_GAS: u64 = 100_000;
 
-/// Predeploys that relay arbitrary callers. Contract creation is disabled, so the set is fixed.
-///
-/// Permit2's allowance and nonce getters are public, and Multicall3 lets any caller act as itself.
-pub(crate) const RELAY_PREDEPLOYS: [Address; 2] = [PERMIT2_ADDRESS, MULTICALL3_ADDRESS];
-
 pub(crate) const TIP20_FIXED_GAS_SELECTORS: &[[u8; 4]] = &[
     ITIP20::transferCall::SELECTOR,
     ITIP20::transferFromCall::SELECTOR,
@@ -56,26 +51,17 @@ pub(crate) struct TIP20Rules<P> {
 }
 
 impl<P: L1StorageReader> TIP20Rules<P> {
-    /// Admits a transfer-family call by `caller` that moves `from`'s funds to `to`.
+    /// Admits a transfer-family call.
     ///
     /// Transfers require T15 and the portal admin's opt-in. Upstream then reverts, rather than
-    /// diverts, a transfer that `to`'s receive policy blocks (see `execute_precompile`).
-    fn admit_transfer(&self, caller: Address, from: Address, to: Address) -> Result<CallCheck> {
-        let unauthorized = || Ok(CallCheck::Revert(Unauthorized {}.abi_encode().into()));
-        if !StorageCtx::default().spec().is_t15() {
-            // Before T15, private asset movement is limited to the protocol-managed inbox and
-            // outbox paths.
-            return unauthorized();
-        }
-        // Relays may neither spend allowances granted to them nor have their own funds moved,
-        // including through allowances they granted before T15. Nor may they receive funds,
-        // which could then never leave.
-        if [caller, from, to]
-            .iter()
-            .any(|account| RELAY_PREDEPLOYS.contains(account))
+    /// diverts, a transfer that the recipient's receive policy blocks (see `execute_precompile`).
+    fn admit_transfer(&self) -> Result<CallCheck> {
+        // Before T15, private asset movement is limited to the protocol-managed inbox and outbox
+        // paths.
+        if !StorageCtx::default().spec().is_t15()
             || !self.l1.read_portal(|portal| &portal.transfers_enabled)?
         {
-            return unauthorized();
+            return Ok(CallCheck::Revert(Unauthorized {}.abi_encode().into()));
         }
         Ok(CallCheck::Continue)
     }
@@ -102,26 +88,11 @@ impl<P: L1StorageReader> CallRules for TIP20Rules<P> {
                 ITIP20::ITIP20Calls::nonces(call) => {
                     check_caller(caller, &[call.owner])
                 }
-                ITIP20::ITIP20Calls::transfer(ITIP20::transferCall { to, .. })
-                | ITIP20::ITIP20Calls::transferWithMemo(ITIP20::transferWithMemoCall {
-                    to, ..
-                }) => self
-                    .admit_transfer(caller, caller, to)
-                    .unwrap_or_else(CallCheck::Error),
-                ITIP20::ITIP20Calls::transferFrom(ITIP20::transferFromCall { from, to, .. })
-                | ITIP20::ITIP20Calls::transferFromWithMemo(ITIP20::transferFromWithMemoCall {
-                    from,
-                    to,
-                    ..
-                }) => self
-                    .admit_transfer(caller, from, to)
-                    .unwrap_or_else(CallCheck::Error),
-                // Anyone can make a relay approve a spender for the relay's own balance.
-                ITIP20::ITIP20Calls::approve(_)
-                    if RELAY_PREDEPLOYS.contains(&caller)
-                        && StorageCtx::default().spec().is_t15() =>
-                {
-                    CallCheck::Revert(Unauthorized {}.abi_encode().into())
+                ITIP20::ITIP20Calls::transferFrom(_)
+                | ITIP20::ITIP20Calls::transfer(_)
+                | ITIP20::ITIP20Calls::transferWithMemo(_)
+                | ITIP20::ITIP20Calls::transferFromWithMemo(_) => {
+                    self.admit_transfer().unwrap_or_else(CallCheck::Error)
                 }
                 // Inbox/outbox call TIP20 internally; public mint/burn entry points stay disabled.
                 ITIP20::ITIP20Calls::mint(_)
@@ -545,138 +516,6 @@ mod tests {
                 harness.allowance(harness.alice, harness.spender)?,
                 U256::from(300_000u64 - spent),
                 "{spec:?} opted_in={opted_in}"
-            );
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn relay_predeploys_cannot_move_or_approve_funds() -> eyre::Result<()> {
-        let relay_balance = U256::from(5_000u64);
-        for relay in RELAY_PREDEPLOYS {
-            let mut harness = PrecompileHarness::new_at(TempoHardfork::T15)?;
-            harness.set_transfers_enabled(true)?;
-            let (alice, bob, spender) = (harness.alice, harness.bob, harness.spender);
-            let approve = harness.call(
-                alice,
-                ITIP20::approveCall {
-                    spender: relay,
-                    amount: U256::MAX,
-                }
-                .abi_encode()
-                .into(),
-                TIP20_FIXED_TRANSFER_GAS,
-                false,
-            )?;
-            assert!(approve.is_success(), "{relay}");
-            // A balance the relay received and an allowance it granted before T15, when deposits
-            // could credit it and relays could still approve.
-            {
-                let token = harness.token;
-                let mut storage = test_storage_provider(&mut harness.ctx, u64::MAX, false);
-                StorageCtx::enter(&mut storage, || {
-                    let mut token = TIP20Token::from_address(token)?;
-                    token.transfer(
-                        alice,
-                        ITIP20::transferCall {
-                            to: relay,
-                            amount: relay_balance,
-                        },
-                    )?;
-                    token.approve(
-                        relay,
-                        ITIP20::approveCall {
-                            spender,
-                            amount: U256::MAX,
-                        },
-                    )
-                })?;
-            }
-
-            // Every transfer-family call from the relay, spending Alice's allowance or the relay's
-            // own balance, a new approval by the relay, the spender using the relay's allowance,
-            // and every transfer-family call to the relay.
-            let mut calls: Vec<(Address, Bytes)> = harness
-                .transfer_calls(bob)
-                .into_iter()
-                .map(|(_, calldata)| (relay, calldata))
-                .chain(harness.transfer_calls(relay))
-                .collect();
-            calls.push((
-                relay,
-                ITIP20::approveCall {
-                    spender: bob,
-                    amount: U256::MAX,
-                }
-                .abi_encode()
-                .into(),
-            ));
-            calls.push((
-                spender,
-                ITIP20::transferFromCall {
-                    from: relay,
-                    to: bob,
-                    amount: U256::ONE,
-                }
-                .abi_encode()
-                .into(),
-            ));
-            calls.push((
-                spender,
-                ITIP20::transferFromWithMemoCall {
-                    from: relay,
-                    to: bob,
-                    amount: U256::ONE,
-                    memo: B256::ZERO,
-                }
-                .abi_encode()
-                .into(),
-            ));
-            for (caller, calldata) in calls {
-                let result = harness.call(caller, calldata, TIP20_FIXED_TRANSFER_GAS, false)?;
-                assert!(result.is_revert(), "{relay}");
-                assert_eq!(
-                    result.bytes,
-                    Bytes::from(Unauthorized {}.abi_encode()),
-                    "{relay}"
-                );
-                assert_eq!(result.gas_used, TIP20_FIXED_TRANSFER_GAS, "{relay}");
-            }
-
-            assert_eq!(harness.balance_of(bob)?, U256::ZERO, "{relay}");
-            assert_eq!(harness.balance_of(relay)?, relay_balance, "{relay}");
-            assert_eq!(
-                harness.balance_of(alice)?,
-                U256::from(1_000_000u64) - relay_balance,
-                "{relay}"
-            );
-            assert_eq!(harness.allowance(alice, relay)?, U256::MAX, "{relay}");
-            assert_eq!(harness.allowance(relay, spender)?, U256::MAX, "{relay}");
-            assert_eq!(harness.allowance(relay, bob)?, U256::ZERO, "{relay}");
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn relay_approvals_are_allowed_before_t15() -> eyre::Result<()> {
-        for relay in RELAY_PREDEPLOYS {
-            let mut harness = PrecompileHarness::new_at(TempoHardfork::T14)?;
-            let approve = harness.call(
-                relay,
-                ITIP20::approveCall {
-                    spender: harness.bob,
-                    amount: U256::from(7u64),
-                }
-                .abi_encode()
-                .into(),
-                TIP20_FIXED_TRANSFER_GAS,
-                false,
-            )?;
-            assert!(approve.is_success(), "{relay}");
-            assert_eq!(
-                harness.allowance(relay, harness.bob)?,
-                U256::from(7u64),
-                "{relay}"
             );
         }
         Ok(())
