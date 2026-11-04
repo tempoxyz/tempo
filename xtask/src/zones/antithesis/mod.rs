@@ -49,6 +49,9 @@ const NEW_DEPOSITOR_FEE_BUDGET: u128 = 10 * USD;
 const MIN_SENDER_BALANCE: u128 = USD;
 /// Gas limit for zone TIP-20 calls. Fixed so a failing call is mined and shows as reverted.
 const TIP20_TX_GAS: u64 = 500_000;
+/// Gas limit for `ZonePortal.deposit`. Fixed so a deposit the portal's caps reject is mined
+/// and shows as reverted, instead of failing gas estimation.
+const DEPOSIT_TX_GAS: u64 = 2_000_000;
 /// Gas limit for `ZoneOutbox.requestWithdrawal`.
 const WITHDRAWAL_TX_GAS: u64 = 10_000_000;
 /// Bound on each RPC request, so a paused or partitioned node fails the call instead of hanging.
@@ -543,6 +546,7 @@ impl Context {
                 payload,
                 sender.address(),
             )
+            .gas(DEPOSIT_TX_GAS)
             .send()
             .await?
             .with_timeout(Some(RECEIPT_TIMEOUT))
