@@ -348,7 +348,7 @@ jobs:
           TOOLCHAIN_REPOSITORY: ghcr.io/tempoxyz/tempo-zone-eif-toolchain
         run: |
           set -euo pipefail
-          # Hash the toolchain recipes, hardening inputs, and resolved Bake dependency graph.
+          # Hash the toolchain recipes, kernel hardening inputs, and resolved Bake dependency graph.
           # Unrelated build targets cannot create duplicate toolchain tags.
           docker buildx bake -f zones/docker/docker-bake.hcl --print \
             tempo-zone-prover-eif-builder | jq -cS . > "$RUNNER_TEMP/eif-toolchain-recipe.json"
