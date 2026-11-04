@@ -107,7 +107,7 @@ pub struct TempoNodeArgs {
     pub builder_state_provider_metrics: bool,
 
     /// Disable prewarming for the payload builder.
-    #[arg(long = "builder.disable-prewarming", default_value_t = false)]
+    #[arg(long = "builder.disable-prewarming", default_value_t = true)]
     pub builder_disable_prewarming: bool,
 
     /// No-op legacy flag for payload builder prewarming.
@@ -153,7 +153,7 @@ impl Default for TempoNodeArgs {
             max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
             txpool_filter: None,
             builder_state_provider_metrics: false,
-            builder_disable_prewarming: false,
+            builder_disable_prewarming: true,
             builder_enable_prewarming: true,
             builder_parallel: false,
             engine_disable_execution_cache_sharing_with_builder: false,
