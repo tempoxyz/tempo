@@ -365,7 +365,7 @@ jobs:
       id-token: write
     name: bench-e2e
     runs-on: [self-hosted, Linux, X64, bare-metal-dual-schelk]
-    timeout-minutes: 300
+    timeout-minutes: 480
     env:
       BENCH_PR: ${{ inputs.pr }}
       BENCH_ACTOR: ${{ inputs.actor || github.actor }}

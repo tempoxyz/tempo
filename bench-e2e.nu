@@ -1607,13 +1607,13 @@ def "main e2e" [
     bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db
     bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db
 
-    # A snapshot with an imported QMDB also serves runs without --qmdb.state-backend.
+    # A snapshot with an imported QMDB also serves runs without --qmdb.state-backend. A snapshot
+    # whose MDBX state is current but lacks QMDB only needs the import, not a rebuild.
     let qmdb_state = (qmdb-state-backend $feature_args)
     let snapshots_ready = (
         (e2e-snapshots-ready $a_db $b_db)
         and (bloat-matches (read-bench-marker $a_db) $bloat_mib $snapshot_state_hardfork)
         and (bloat-matches (read-bench-marker $b_db) $bloat_mib $snapshot_state_hardfork)
-        and ((not $qmdb_state) or ((read-bench-marker $a_db | get -o qmdb_state | default false) and (read-bench-marker $b_db | get -o qmdb_state | default false)))
     )
     let should_init_snapshots = $force_bloat or (not $snapshots_ready)
     if (not $snapshots_ready) and (not $force_bloat) {
@@ -1681,14 +1681,33 @@ def "main e2e" [
         if ($E2E_BLOAT_TMP_DIR | path exists) {
             rm -rf $E2E_BLOAT_TMP_DIR
         }
-        if $qmdb_state {
-            qmdb-import-snapshot $tempo_bin $generated_genesis $a_db $bloat_mib
-            qmdb-import-snapshot $tempo_bin $generated_genesis $b_db $bloat_mib
-        }
+        # Promote the MDBX snapshot before importing QMDB, so a failed or timed-out import
+        # keeps the hours of MDBX initialization.
         bench-promote-at $E2E_A_STATE_PATH $a_db
         bench-promote-at $E2E_B_STATE_PATH $b_db
         bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db
         bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db
+    }
+
+    let qmdb_sides = if $qmdb_state {
+        [
+            { state_path: $E2E_A_STATE_PATH, mount: $E2E_A_MOUNT, datadir: $a_db }
+            { state_path: $E2E_B_STATE_PATH, mount: $E2E_B_MOUNT, datadir: $b_db }
+        ] | where { |side| not (read-bench-marker $side.datadir | get -o qmdb_state | default false) }
+    } else { [] }
+    if ($qmdb_sides | is-not-empty) {
+        let snapshot_features = (merge-e2e-features $DEFAULT_FEATURES $features)
+        build-tempo --no-default-features=$no_default_features ["tempo"] $profile $snapshot_features
+        let tempo_bin = if $profile == "dev" { "./target/debug/tempo" } else { $"./target/($profile)/tempo" }
+        for side in $qmdb_sides { mark-schelk-dirty-at $side.state_path }
+        # The sides sit on separate volumes and each import's index fits in half the memory.
+        $qmdb_sides | par-each { |side|
+            qmdb-import-snapshot $tempo_bin $"($side.datadir)/($BENCH_META_SUBDIR)/genesis.json" $side.datadir $bloat_mib
+        } | ignore
+        for side in $qmdb_sides {
+            bench-promote-at $side.state_path $side.datadir
+            bench-restore-at $side.state_path $side.mount $side.datadir
+        }
     }
 
     if $init_only {
