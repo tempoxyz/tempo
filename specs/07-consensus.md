@@ -481,7 +481,7 @@ def active_players(vc) -> ordered_set:
 
 `getActiveValidators()` returns, in `active_indices` order, the records that are active at the post-state of `P`: added at a height `< last(E)` and not deactivated. This matches TIP-1017's player selection with `boundary(E) = last(E)`. The resulting set MUST NOT be empty, because the encoding requires at least one next player.
 
-> **Resolved conflict C-CONS-02**: TIP-1017 says the consensus layer reads ValidatorConfig V1 until ValidatorConfigV2 is initialized, but the implementation always reads ValidatorConfigV2. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](conflicts.md#c-cons-02).
+> **Resolved conflict C-CONS-02**: TIP-1017 says the consensus layer reads ValidatorConfig V1 until ValidatorConfigV2 is initialized, but the implementation always reads ValidatorConfigV2. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](conflicts.md#c-cons-02).
 
 The contract-side definition of these reads is in precompiles/validator-config-and-zones.md ("Consumption by consensus"); the two descriptions are the same rule. For every boundary whose parent post-state has ValidatorConfigV2 initialized, the rule above applies. Earlier mainnet boundary outcomes were produced by earlier releases and are accepted through their finalization certificates. No node recomputes historical boundary outcomes.
 
@@ -503,7 +503,7 @@ When Simplex asks the leader `ℓ` (this node) to propose in round `(E, v)` with
 
 Pacing is local policy and not normative. The reference implementation targets 550 ms between header timestamps, keeps a network reservation of at least 50 ms, and holds the finished proposal until its time budget runs out.
 
-> **Open conflict C-CONS-03**: the docs say blocks come about every 600 ms from a 500 ms builder loop, but the implementation uses an adaptive estimator targeting 550 ms with a 50 ms network budget. See [conflicts](conflicts.md#c-cons-03).
+> **Resolved conflict C-CONS-03**: the docs say blocks come about every 600 ms from a 500 ms builder loop, but the implementation uses an adaptive estimator targeting 550 ms with a 50 ms network budget. Decided: this spec follows the implementation, and the docs are fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098). See [conflicts](conflicts.md#c-cons-03).
 
 Reference implementation: crates/consensus/src/consensus/application/impl.rs (build, boundary_dkg_outcome), crates/payload/types/src/attrs.rs (TempoPayloadAttributes::new), crates/payload/builder/src/lib.rs (maybe_override_fee_recipient), crates/payload/types/src/estimator/config.rs, commonware consensus/src/marshal/standard/inline.rs (propose).
 
@@ -561,7 +561,7 @@ No other fork from T0 to T13 changes consensus-layer behaviour.
 
 The normative version is the one pinned in §2.
 
-> **Open conflict C-CONS-04**: the consensus docs page links commonware-consensus 0.0.65, but the implementation and this chapter use commonware 2026.9.0. See [conflicts](conflicts.md#c-cons-04).
+> **Resolved conflict C-CONS-04**: the consensus docs page links commonware-consensus 0.0.65, but the implementation and this chapter use commonware 2026.9.0. Decided: this spec follows the implementation, and the docs are fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098). See [conflicts](conflicts.md#c-cons-04).
 
 ## 17. Open items
 

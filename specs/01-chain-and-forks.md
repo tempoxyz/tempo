@@ -290,7 +290,7 @@ Mainnet: 1770908400 (together with T1A). Scope: TIP-1000 state-creation pricing,
 | T1-10 | From T1, precompile calldata shorter than a 4-byte selector reverts with empty data; before, it halts with 'Invalid input: missing function selector'. | [precompiles/00-framework.md](precompiles/00-framework.md) | none |
 | T1-11 | From T1, ValidatorConfig `changeValidatorStatusByIndex` is dispatched; before, the selector is unknown and the call reverts `UnknownFunctionSelector(bytes4)`. | [precompiles/validator-config-and-zones.md](precompiles/validator-config-and-zones.md) | none |
 
-> **Open conflict C-FORKS-01**: docs guide/node/network-upgrades.mdx says T1B adds keychain precompile gas metering; the code meters the key-authorization precompile call only at T1 and T1A and makes it unmetered (intrinsic gas only) from T1B. See [conflicts](conflicts.md#c-forks-01).
+> **Resolved conflict C-FORKS-01**: docs guide/node/network-upgrades.mdx says T1B adds keychain precompile gas metering; the code meters the key-authorization precompile call only at T1 and T1A and makes it unmetered (intrinsic gas only) from T1B. Decided: this spec follows the implementation, and the docs are fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098). See [conflicts](conflicts.md#c-forks-01).
 
 Reference implementation: crates/chainspec/src/spec.rs, crates/evm/src/handler.rs, crates/evm/src/handler/config.rs, crates/hardfork/src/gas_params.rs, crates/hardfork/src/lib.rs, crates/precompiles/src/dispatch.rs.
 
@@ -303,7 +303,7 @@ Mainnet: 1770908400 (together with T1). No TIP.
 | T1A-1 | From T1A the per-transaction gas limit cap is 30,000,000 (TEMPO_T1_TX_GAS_LIMIT_CAP); before, MAX_TX_GAS_LIMIT_OSAKA (2^24 = 16,777,216). | [05-block-execution.md](05-block-execution.md) | [TIP-1010](../tips/tip-1010.md) |
 | T1A-2 | From T1A, a system error (OOG, DB error, panic) raised while re-placing a filled flip order propagates and reverts the swap; before, every flip failure including system errors was swallowed. | [precompiles/stablecoin-dex.md](precompiles/stablecoin-dex.md) | none |
 
-> **Resolved conflict C-FORKS-02**: TIP-1010 (protocolVersion T1) puts the 30,000,000 per-transaction gas cap at T1; the code applies it from T1A, with the EIP-7825 16,777,216 cap before. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](conflicts.md#c-forks-02).
+> **Resolved conflict C-FORKS-02**: TIP-1010 (protocolVersion T1) puts the 30,000,000 per-transaction gas cap at T1; the code applies it from T1A, with the EIP-7825 16,777,216 cap before. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](conflicts.md#c-forks-02).
 
 Reference implementation: crates/evm/src/lib.rs, crates/hardfork/src/lib.rs, crates/precompiles/src/stablecoin_dex/mod.rs.
 
@@ -335,7 +335,7 @@ Mainnet: 1773327600. No TIP. Keychain V2 signatures, Osaka precompile set, remov
 | T1C-7 | From T1C, collect_fee_pre_tx reserves the direct-route amount_out in transient pending_fee_swap_reservation, and rebalance_swap/burn revert InsufficientLiquidity if they would leave reserve_validator_token below the reservation; before, no reservation or check. | [precompiles/fee-manager.md](precompiles/fee-manager.md) | [TIP-1036](../tips/tip-1036.md) (listed under T2, see C-FORKS-04) |
 | T1C-8 | From T1C, place_flip writes next_order_id = order_id+1 directly (one SLOAD fewer, gas-only change); before, it called increment_next_order_id, re-reading the counter. | [precompiles/stablecoin-dex.md](precompiles/stablecoin-dex.md) | none |
 
-> **Resolved conflict C-FORKS-04**: TIP-1036 (T2 meta TIP) lists the FeeAMM reserved-liquidity check (§12) and the fee-refund spending-limit restore (§10) as T2 changes; the code gates both at T1C. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](conflicts.md#c-forks-04).
+> **Resolved conflict C-FORKS-04**: TIP-1036 (T2 meta TIP) lists the FeeAMM reserved-liquidity check (§12) and the fee-refund spending-limit restore (§10) as T2 changes; the code gates both at T1C. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](conflicts.md#c-forks-04).
 
 Reference implementation: crates/evm/src/handler.rs, crates/evm/src/handler/config.rs, crates/evm/src/instructions.rs, crates/hardfork/src/lib.rs, crates/precompiles/src/lib.rs, crates/precompiles/src/stablecoin_dex/mod.rs, crates/precompiles/src/storage/thread_local.rs, crates/precompiles/src/tip20/mod.rs, crates/precompiles/src/tip_fee_manager/amm.rs, crates/precompiles/src/tip_fee_manager/mod.rs.
 
@@ -393,7 +393,7 @@ Mainnet: 1777298400. Scope: [TIP-1011](../tips/tip-1011.md), [TIP-1020](../tips/
 | T3-21 | From T3, fee-refund restoration of an access-key limit is clamped to max when max != 0; before, remaining is increased with saturating add and no clamp. | [precompiles/account-keychain.md](precompiles/account-keychain.md) | [TIP-1038](../tips/tip-1038.md) |
 | T3-22 | From T3, AccountKeychain `authorizeKey` (TIP-1011 overload), `setAllowedCalls`, `removeAllowedCalls`, `getRemainingLimitWithPeriod` and `getAllowedCalls` are dispatched, and `getRemainingLimit` becomes an unknown selector; before, the reverse. | [precompiles/account-keychain.md](precompiles/account-keychain.md) | [TIP-1011](../tips/tip-1011.md) |
 
-> **Resolved conflict C-FORKS-03**: TIP-1036 §3 says the StablecoinDEX internal-balance swap pause check is gated at T2; the code gates it at T3 (matching TIP-1038 §4), and the placement and internal-debit pause checks at T4. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](conflicts.md#c-forks-03).
+> **Resolved conflict C-FORKS-03**: TIP-1036 §3 says the StablecoinDEX internal-balance swap pause check is gated at T2; the code gates it at T3 (matching TIP-1038 §4), and the placement and internal-debit pause checks at T4. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](conflicts.md#c-forks-03).
 
 Reference implementation: crates/contracts/src/precompiles/mod.rs, crates/evm/src/block.rs, crates/evm/src/handler.rs, crates/precompiles/src/account_keychain/dispatch.rs, crates/precompiles/src/account_keychain/mod.rs, crates/precompiles/src/address_registry/mod.rs, crates/precompiles/src/stablecoin_dex/mod.rs, crates/precompiles/src/tip20/mod.rs, crates/precompiles/src/tip20/rewards.rs, crates/precompiles/src/tip403_registry/mod.rs, crates/precompiles/src/tip_fee_manager/mod.rs.
 

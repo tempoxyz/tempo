@@ -63,7 +63,7 @@ Where this chapter lists checks in order, the order is normative only where an e
 | `EXPIRING_NONCE_MAX_EXPIRY_SECS` | before T11: `30`; from T11: `300` |
 | `EXPIRING_NONCE_SET_CAPACITY` | before T11: `300_000`; from T11: `3_000_000` |
 
-> **Resolved conflict C-TXF-03**: TIP-1010 calls the previous transaction gas cap 16,000,000 and dates the 30M cap to T1; the code uses EIP-7825's 16,777,216 before T1A and 30,000,000 from T1A. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](conflicts.md#c-txf-03).
+> **Resolved conflict C-TXF-03**: TIP-1010 calls the previous transaction gas cap 16,000,000 and dates the 30M cap to T1; the code uses EIP-7825's 16,777,216 before T1A and 30,000,000 from T1A. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](conflicts.md#c-txf-03).
 
 ### 1.5 Transaction-level gas parameters
 
@@ -121,7 +121,7 @@ def tempo_t1_extra_intrinsic(tx) -> int:
 
 `floor_gas = FLOOR_BASE + FLOOR_COST_PER_TOKEN * tokens(tx.data)` (EIP-7623).
 
-> **Resolved conflict C-TXF-02**: TIP-1000 also charges +250,000 for each EIP-7702 authorization that moves an account from no delegation to delegation; the code charges no such amount (for type 4 and for 0x76 authorizations alike). Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](conflicts.md#c-txf-02).
+> **Resolved conflict C-TXF-02**: TIP-1000 also charges +250,000 for each EIP-7702 authorization that moves an account from no delegation to delegation; the code charges no such amount (for type 4 and for 0x76 authorizations alike). Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](conflicts.md#c-txf-02).
 
 ### 3.2 Processing order
 
@@ -287,7 +287,7 @@ def intrinsic_gas(tx, fork, sender_account) -> (int, int):
 
 Before T0 (Moderato only): `nonce_gas` is added after the `gas_limit >= g` check, and if `g > gas_limit` as a result the batch executes with `2**64 - 1` gas and settlement still uses `gas_limit`; the CREATE-with-2D-nonce term is always included in the check.
 
-> **Resolved conflict C-TXF-01**: the transaction spec prices WebAuthn as 26,000 plus calldata gas of `clientDataJSON`; the code charges `5_000 + 4 * tokens(webauthn_data)` on top of the base, where `webauthn_data = authenticatorData || clientDataJSON`. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](conflicts.md#c-txf-01).
+> **Resolved conflict C-TXF-01**: the transaction spec prices WebAuthn as 26,000 plus calldata gas of `clientDataJSON`; the code charges `5_000 + 4 * tokens(webauthn_data)` on top of the base, where `webauthn_data = authenticatorData || clientDataJSON`. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](conflicts.md#c-txf-01).
 
 #### 4.6.1 Key-authorization gas
 
@@ -334,7 +334,7 @@ def call_scope_extra_gas(ka) -> int:                    # from T4
 
 Before T1B the key-authorization precompile write is not covered by this amount alone: at T1 and T1A it is additionally metered (§4.10.2); before T1 it is free.
 
-> **Resolved conflict C-TXF-04**: TIP-1011 gives the scope slot count `1 + 3S + 3K + C + 2W` and frames the rounded overhead as optional and scope-only; from T4 the code uses `1 + 2S + 1 + 2K + P + C + 2W` and always adds the 5,000 base, also when `allowed_calls` is absent. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](conflicts.md#c-txf-04).
+> **Resolved conflict C-TXF-04**: TIP-1011 gives the scope slot count `1 + 3S + 3K + C + 2W` and frames the rounded overhead as optional and scope-only; from T4 the code uses `1 + 2S + 1 + 2K + P + C + 2W` and always adds the 5,000 base, also when `allowed_calls` is absent. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](conflicts.md#c-txf-04).
 
 #### 4.6.2 Nonce gas
 
@@ -353,7 +353,7 @@ def nonce_gas(tx, fork) -> int:
 
 Because a new 2D key always has `nonce == 0`, the new-key amounts apply only before T1; from T1 a new key pays 250,000.
 
-> **Resolved conflict C-TXF-08**: TIP-1000 charges the 250,000 account-creation gas to Tempo transactions "with any `nonce_key` and `nonce == 0`"; the code charges an expiring-nonce transaction (`nonce_key == uint256.max`) only `EXPIRING_NONCE_GAS`. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](conflicts.md#c-txf-08).
+> **Resolved conflict C-TXF-08**: TIP-1000 charges the 250,000 account-creation gas to Tempo transactions "with any `nonce_key` and `nonce == 0`"; the code charges an expiring-nonce transaction (`nonce_key == uint256.max`) only `EXPIRING_NONCE_GAS`. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](conflicts.md#c-txf-08).
 
 Reference implementation: crates/evm/src/handler.rs (intrinsic_gas, nonce_intrinsic_gas, calculate_key_authorization_gas, call_scope_storage_slots, call_scope_extra_gas, prepare_aa), crates/evm/src/signature_gas.rs, crates/primitives/src/transaction/tt_signature.rs (verification_gas), crates/primitives/src/gas.rs.
 
@@ -431,9 +431,9 @@ def expiring_nonce_check_and_mark(tx, fork):
 
 At T11 the window grows from 30 to 300 seconds and the capacity from 300,000 to 3,000,000; the stored pointer and ring entries carry over unchanged, so the pointer continues from its pre-T11 value and wraps at the new capacity. At T12 the nonce-zero requirement is removed; since `nonce` is part of `encode_for_signing` and of the transaction hash, distinct nonces give distinct replay keys.
 
-> **Resolved conflict C-TXF-05**: TIP-1009 keys replay protection on the transaction hash (invariant E1: "a transaction hash can never be executed twice"); from T1B the code keys it on `keccak256(encode_for_signing || sender)`, and TIP-1009 was not amended. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](conflicts.md#c-txf-05).
+> **Resolved conflict C-TXF-05**: TIP-1009 keys replay protection on the transaction hash (invariant E1: "a transaction hash can never be executed twice"); from T1B the code keys it on `keccak256(encode_for_signing || sender)`, and TIP-1009 was not amended. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](conflicts.md#c-txf-05).
 
-> **Resolved conflict C-TXF-06**: TIP-1106 is marked `status: Draft` with `protocolVersion: TBD`, but the code activates it at T12. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](conflicts.md#c-txf-06).
+> **Resolved conflict C-TXF-06**: TIP-1106 is marked `status: Draft` with `protocolVersion: TBD`, but the code activates it at T12. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](conflicts.md#c-txf-06).
 
 Reference implementation: crates/evm/src/handler.rs (apply_nonce), crates/precompiles/src/nonce/mod.rs (increment_nonce, check_and_mark_expiring_nonce), crates/hardfork/src/lib.rs.
 
@@ -732,7 +732,7 @@ def settle_fee(fee, gas_used, price):
 
 `FeeManager.collect_fee_post_tx` ([precompiles/fee-manager.md](precompiles/fee-manager.md), [precompiles/tip20.md](precompiles/tip20.md)) first emits, at the fee token, `Transfer(from=fee.payer, to=FEE_MANAGER, amount=actual)`; then, if `refund_amount > 0`, from T1C restores the access-key limit by `refund_amount` (§8) and moves `refund_amount` from `FEE_MANAGER` back to `fee.payer` (allowed even if the token is paused; no log); then converts `actual` to the validator token through the fee AMM at 0.9970 per hop (rounded down) and adds it to the beneficiary's collected fees. These steps run regardless of the batch outcome. A failure here makes the transaction invalid.
 
-> **Open conflict C-TXF-07**: the fee specification gives the refund as `(gas_limit - gas_used) * gas_price`; the code refunds `ceil(gas_limit*price/10^12) - ceil(gas_used*price/10^12)`, which can differ by one base unit. See [conflicts](conflicts.md#c-txf-07).
+> **Resolved conflict C-TXF-07**: the fee specification gives the refund as `(gas_limit - gas_used) * gas_price`; the code refunds `ceil(gas_limit*price/10^12) - ceil(gas_used*price/10^12)`, which can differ by one base unit. Decided: this spec follows the implementation, and the docs are fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098). See [conflicts](conflicts.md#c-txf-07).
 
 Reference implementation: crates/evm/src/handler/config.rs (collect_fee, settle_transaction, settle_storage_credit_refunds), crates/primitives/src/transaction/mod.rs (calc_gas_balance_spending), crates/precompiles/src/tip_fee_manager/mod.rs, crates/precompiles/src/tip20/mod.rs (transfer_fee_pre_tx, transfer_fee_post_tx), evm2 crates/evm2/src/ethereum/mod.rs (finalize_gas), crates/evm2/src/interpreter/host.rs (final_refund).
 

@@ -247,7 +247,7 @@ def expected_general_gas_limit(F, gas_limit, shared_gas_limit):
 
 For example, mainnet block 1 (pre-T1, `gas_limit = 500,000,000`) has `shared_gas_limit = 50,000,000` and `general_gas_limit = 225,000,000`.
 
-> **Resolved conflict C-ENC-04**: TIP-1010 fixes the shared gas limit at 50,000,000 (`gas_limit / 10`) with no end date, while code requires `shared_gas_limit == 0` from T4. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](conflicts.md#c-enc-04).
+> **Resolved conflict C-ENC-04**: TIP-1010 fixes the shared gas limit at 50,000,000 (`gas_limit / 10`) with no end date, while code requires `shared_gas_limit == 0` from T4. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](conflicts.md#c-enc-04).
 
 Reference implementation: crates/evm/src/consensus/mod.rs (`TempoConsensus::validate_header`), crates/hardfork/src/lib.rs (`shared_gas_limit`, `general_gas_limit`), crates/chainspec/src/spec.rs (`general_gas_limit_at`), reth `EthBeaconConsensus::validate_header` and `validate_4844_header_standalone` (paradigmxyz/reth@966010c).
 
@@ -354,7 +354,7 @@ Block = rlp([
 
 Ordering of user transactions and lane rules are in [05-block-execution.md](05-block-execution.md).
 
-> **Open conflict C-ENC-02**: docs blockspace/overview.mdx lists "start-of-block system transaction(s)" as the first section of every block body, but code defines no start-of-block system transaction in any fork (only the pre-T4 end-of-block transaction of §6). See [conflicts](conflicts.md#c-enc-02).
+> **Resolved conflict C-ENC-02**: docs blockspace/overview.mdx lists "start-of-block system transaction(s)" as the first section of every block body, but code defines no start-of-block system transaction in any fork (only the pre-T4 end-of-block transaction of §6). Decided: this spec follows the implementation, and the docs are fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098). See [conflicts](conflicts.md#c-enc-02).
 
 Reference implementation: crates/primitives/src/lib.rs (`Block`, `BlockBody`), crates/evm/src/consensus/mod.rs (`validate_block_pre_execution`), crates/evm/src/block.rs (`apply_pre_execution_changes`), reth `post_merge_hardfork_fields` and `validate_body_against_header`.
 
@@ -608,7 +608,7 @@ SelectorRule = rlp([selector, recipients])       # bytes4 (exactly 4 bytes), lis
 - `TokenLimit.period` absent means `period = 0` (a one-time limit). The canonical one-time encoding is the two-item form `[token, limit]`. The three-item form with `period` encoded as `0x80` is decode-invalid, because `0x80` in the last position is decoded as a `NonZeroU64` and zero is rejected.
 - `CallScope.selector_rules` and `SelectorRule.recipients` are always present. The empty list `0xc0` means "any selector" and "any recipient" respectively.
 
-> **Resolved conflict C-ENC-05**: TIP-1011 says `expiry`/`limits` None encode as `0x80` and that a final `0x80` for `allowed_calls` and the three-item `TokenLimit` with `period = 0` MUST be accepted; the code's canonical decoder rejects any `0x80` that ends the list. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](conflicts.md#c-enc-05).
+> **Resolved conflict C-ENC-05**: TIP-1011 says `expiry`/`limits` None encode as `0x80` and that a final `0x80` for `allowed_calls` and the three-item `TokenLimit` with `period = 0` MUST be accepted; the code's canonical decoder rejects any `0x80` that ends the list. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](conflicts.md#c-enc-05).
 
 ### 5.3 SignedKeyAuthorization
 
@@ -621,7 +621,7 @@ SignedKeyAuthorization = rlp([
 
 This is a two-item list: the authorization is a **nested** list, not spliced field by field into the outer list. In the 0x76 decoder ([§4.3.1](#431-decoding)), it is recognised by its first byte being `>= 0xc0`. The signature is an "account signature": a primitive signature (65-byte secp256k1, `0x01` P256 or `0x02` WebAuthn), or a `0x05` configurable-account signature. A Keychain envelope (`0x03`/`0x04`) in this position is decode-invalid. Validity of `0x05` here is defined in [03-signatures.md](03-signatures.md) (never valid at T13 or earlier).
 
-> **Resolved conflict C-ENC-01**: docs spec-tempo-transaction.mdx and TIP-0001 define the signed form as the flat list `rlp([chain_id, key_type, key_id, expiry?, …, signature])`; code encodes and decodes the nested two-item list `rlp([rlp(KeyAuthorization), signature])`. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](conflicts.md#c-enc-01).
+> **Resolved conflict C-ENC-01**: docs spec-tempo-transaction.mdx and TIP-0001 define the signed form as the flat list `rlp([chain_id, key_type, key_id, expiry?, …, signature])`; code encodes and decodes the nested two-item list `rlp([rlp(KeyAuthorization), signature])`. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](conflicts.md#c-enc-01).
 
 ### 5.4 Digest
 
@@ -653,7 +653,7 @@ So in practice, the encoding of a valid key authorization is:
 - **T5 ≤ fork < T6:** adds `witness?`.
 - **From T6:** adds `is_admin?` and `account?`.
 
-> **Resolved conflict C-ENC-06**: docs spec-tempo-transaction.mdx say the key-authorization `chain_id` MUST equal the executing chain and "zero is not a wildcard", and TIP-0001 says "0 = valid on any chain", neither with a fork qualifier. Code treats 0 as a wildcard before T1C and requires an exact match from T1C. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](conflicts.md#c-enc-06).
+> **Resolved conflict C-ENC-06**: docs spec-tempo-transaction.mdx say the key-authorization `chain_id` MUST equal the executing chain and "zero is not a wildcard", and TIP-0001 says "0 = valid on any chain", neither with a fork qualifier. Code treats 0 as a wildcard before T1C and requires an exact match from T1C. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](conflicts.md#c-enc-06).
 
 ### 5.6 Test vector
 
@@ -732,7 +732,7 @@ The contents of `validator`, `fee_recipient` and `signature` are not checked.
 
 Check order before execution: (1) every system transaction anywhere in the block MUST be well-formed; (2) before T4, the last transaction MUST be a system transaction, and from T4 the expected count is 0; (3) before T4, the last transaction's `to` MUST be `0x0`; (4) the Ethereum body checks of [§3.2](#32-body-validity). During execution, each system transaction's input is checked (§6.2) and its position and uniqueness enforced. Execution of the system transaction (a call from `0x0` that consumes no block gas, with a successful receipt) is defined in [05-block-execution.md](05-block-execution.md). Its receipt is encoded as a legacy receipt ([§7.1](#71-receipts)).
 
-> **Resolved conflict C-ENC-03**: TIP-1046 §9 says T4 "allows blocks to omit" the empty subblocks-metadata transaction, implying an empty one stays acceptable; code rejects every system transaction from T4. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](conflicts.md#c-enc-03).
+> **Resolved conflict C-ENC-03**: TIP-1046 §9 says T4 "allows blocks to omit" the empty subblocks-metadata transaction, implying an empty one stays acceptable; code rejects every system transaction from T4. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](conflicts.md#c-enc-03).
 
 ### 6.4 Test vector
 

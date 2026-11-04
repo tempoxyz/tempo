@@ -66,7 +66,7 @@ flowchart TB
 
 A validator's consensus identity is its ed25519 key pair (commonware `commonware_cryptography::ed25519::{PrivateKey, PublicKey}`; 32-byte public key). The public key MUST equal the `publicKey` (bytes32) of the validator's ValidatorConfigV2 entry (precompiles/validator-config-and-zones.md). The same key authenticates the p2p handshake, is the participant identifier in Simplex and the DKG (players and dealers are ordered sets of these keys), and signs DKG dealer logs (07-consensus.md). Simplex votes and certificates are *not* signed with ed25519; they carry BLS12-381 threshold partials or recovered signatures (07-consensus.md).
 
-> **Resolved conflict C-P2P-01**: TIP-1017 says the ed25519 key is used for signing all consensus p2p messages; the code uses it only for transport authentication and DKG artifacts, while votes and certificates carry BLS threshold signatures. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](conflicts.md#c-p2p-01).
+> **Resolved conflict C-P2P-01**: TIP-1017 says the ed25519 key is used for signing all consensus p2p messages; the code uses it only for transport authentication and DKG artifacts, while votes and certificates carry BLS threshold signatures. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](conflicts.md#c-p2p-01).
 
 ### 2.2 Transport and handshake
 
@@ -598,7 +598,7 @@ A follower executes every block in its EL; it does not trust the upstream's stat
 
 The reference feed emits only `"finalized"` events and always returns `notarized: null` from `consensus_getLatest`; a follower MUST NOT depend on notarized or nullified events.
 
-> **Open conflict C-P2P-02**: docs protocol/rpc/index.mdx says `consensus_subscribe` emits notarized, finalized and nullified events and `consensus_getLatest` returns the latest notarized block; the code emits only finalized events and always returns `notarized: null`. See [conflicts](conflicts.md#c-p2p-02).
+> **Resolved conflict C-P2P-02**: docs protocol/rpc/index.mdx says `consensus_subscribe` emits notarized, finalized and nullified events and `consensus_getLatest` returns the latest notarized block; the code emits only finalized events and always returns `notarized: null`. Decided: this spec follows the implementation, and the docs are fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098). See [conflicts](conflicts.md#c-p2p-02).
 
 **`tempo/1` peers** (optional, on by default): frames verified per 4.3.5 and 7.4.
 
@@ -826,8 +826,8 @@ Reference implementation: crates/consensus-config/src/lib.rs, crates/consensus/s
 
 ## 12. Open conflicts
 
-> **Resolved conflict C-P2P-01**: TIP-1017 says each validator's ed25519 key is "used for signing all consensus p2p messages"; the code signs Simplex votes and certificates with BLS12-381 threshold signatures and uses ed25519 only to authenticate the transport and to sign DKG artifacts. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](conflicts.md#c-p2p-01).
+> **Resolved conflict C-P2P-01**: TIP-1017 says each validator's ed25519 key is "used for signing all consensus p2p messages"; the code signs Simplex votes and certificates with BLS12-381 threshold signatures and uses ed25519 only to authenticate the transport and to sign DKG artifacts. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](conflicts.md#c-p2p-01).
 
-> **Open conflict C-P2P-02**: docs protocol/rpc/index.mdx says `consensus_subscribe` emits notarized, finalized and nullified events and `consensus_getLatest` returns the latest notarized block; the code emits only finalized events and always returns `notarized: null`. See [conflicts](conflicts.md#c-p2p-02).
+> **Resolved conflict C-P2P-02**: docs protocol/rpc/index.mdx says `consensus_subscribe` emits notarized, finalized and nullified events and `consensus_getLatest` returns the latest notarized block; the code emits only finalized events and always returns `notarized: null`. Decided: this spec follows the implementation, and the docs are fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098). See [conflicts](conflicts.md#c-p2p-02).
 
 Section 2.1 states the code's behaviour for C-P2P-01 and section 7.2 for C-P2P-02. Neither affects block validity.

@@ -1,6 +1,6 @@
 # Open conflicts
 
-Each entry is a place where Tempo's docs or TIPs disagree with the implementation at commit `37dc7833023927f49fd0aa81ae84dbd43790f70c`. Each chapter marks the conflict inline with an **Open conflict** marker. The chapters describe what the implementation does until a decision is recorded here. Every TIP conflict except C-FORKS-05 is decided: the spec follows the implementation, and [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939) amends the TIPs. The rest are open: C-FORKS-05 and the conflicts that touch only docs.tempo.xyz pages (tempoxyz/docs).
+Each entry is a place where Tempo's docs or TIPs disagree with the implementation at commit `37dc7833023927f49fd0aa81ae84dbd43790f70c`. Each chapter marks the conflict inline with an **Open conflict** marker. The chapters describe what the implementation does until a decision is recorded here. Every TIP conflict except C-FORKS-05 is decided: the spec follows the implementation, and one PR per TIP (tempoxyz/tempo#8940 to #8974) amends them. The conflicts that touch only docs.tempo.xyz pages are fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098). Only C-FORKS-05 is open.
 
 Groups:
 
@@ -28,7 +28,7 @@ docs guide/node/network-upgrades.mdx says T1B adds keychain precompile gas meter
 
 - Where: [01-chain-and-forks.md:293](01-chain-and-forks.md#L293)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: _open_
+- Decision: follow the implementation; docs fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098).
 
 ### C-FORKS-02 (also C-TXF-03, C-EXEC-03)
 <a id="c-forks-02"></a><a id="c-txf-03"></a><a id="c-exec-03"></a>
@@ -37,7 +37,7 @@ TIP-1010 (protocolVersion T1) puts the 30,000,000 per-transaction gas cap at T1;
 
 - Where: [01-chain-and-forks.md:306](01-chain-and-forks.md#L306), [06-transactions-and-fees.md:66](06-transactions-and-fees.md#L66), [05-block-execution.md:209](05-block-execution.md#L209)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-FORKS-04
 <a id="c-forks-04"></a>
@@ -46,7 +46,7 @@ TIP-1036 (T2 meta TIP) lists the FeeAMM reserved-liquidity check (§12) and the 
 
 - Where: [01-chain-and-forks.md:338](01-chain-and-forks.md#L338), [precompiles/fee-manager.md:472](precompiles/fee-manager.md#L472), [precompiles/fee-manager.md:512](precompiles/fee-manager.md#L512), [precompiles/tip20.md:1006](precompiles/tip20.md#L1006)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-FORKS-03
 <a id="c-forks-03"></a>
@@ -55,7 +55,7 @@ TIP-1036 §3 says the StablecoinDEX internal-balance swap pause check is gated a
 
 - Where: [01-chain-and-forks.md:396](01-chain-and-forks.md#L396), [precompiles/stablecoin-dex.md:743](precompiles/stablecoin-dex.md#L743)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-ENC-04
 <a id="c-enc-04"></a>
@@ -64,7 +64,7 @@ TIP-1010 fixes the shared gas limit at 50,000,000 (`gas_limit / 10`) with no end
 
 - Where: [02-encoding.md:250](02-encoding.md#L250)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-ENC-05
 <a id="c-enc-05"></a>
@@ -73,7 +73,7 @@ TIP-1011 says `expiry`/`limits` None encode as `0x80` and that a final `0x80` fo
 
 - Where: [02-encoding.md:611](02-encoding.md#L611)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-ENC-01
 <a id="c-enc-01"></a>
@@ -82,7 +82,7 @@ docs spec-tempo-transaction.mdx and TIP-0001 define the signed form as the flat 
 
 - Where: [02-encoding.md:624](02-encoding.md#L624)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-ENC-06
 <a id="c-enc-06"></a>
@@ -91,7 +91,7 @@ docs spec-tempo-transaction.mdx say the key-authorization `chain_id` MUST equal 
 
 - Where: [02-encoding.md:656](02-encoding.md#L656)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-ENC-03
 <a id="c-enc-03"></a>
@@ -100,7 +100,7 @@ TIP-1046 §9 says T4 "allows blocks to omit" the empty subblocks-metadata transa
 
 - Where: [02-encoding.md:735](02-encoding.md#L735)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-SIG-02
 <a id="c-sig-02"></a>
@@ -109,7 +109,7 @@ docs and TIP-0001 say the WebAuthn challenge is the Base64URL "tx_hash"; the cod
 
 - Where: [03-signatures.md:257](03-signatures.md#L257)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-SIG-03
 <a id="c-sig-03"></a>
@@ -118,7 +118,7 @@ TIP-0001 requires the UP flag and allows AT with CBOR parsing; the code accepts 
 
 - Where: [03-signatures.md:259](03-signatures.md#L259)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-SIG-04
 <a id="c-sig-04"></a>
@@ -127,7 +127,7 @@ TIP-0001 checks clientDataJSON by substring search; the code parses it as JSON w
 
 - Where: [03-signatures.md:283](03-signatures.md#L283)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-SIG-01 (also C-TXF-01)
 <a id="c-sig-01"></a><a id="c-txf-01"></a>
@@ -136,7 +136,7 @@ docs and TIP-0001 charge WebAuthn calldata gas for clientDataJSON only; the code
 
 - Where: [03-signatures.md:588](03-signatures.md#L588), [06-transactions-and-fees.md:290](06-transactions-and-fees.md#L290)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-EXEC-05 (also C-PFW-03)
 <a id="c-exec-05"></a><a id="c-pfw-03"></a>
@@ -145,7 +145,7 @@ TIP-1000 states a cold zero-to-nonzero SSTORE costs 252,100 gas at T1; the code 
 
 - Where: [05-block-execution.md:166](05-block-execution.md#L166), [precompiles/00-framework.md:616](precompiles/00-framework.md#L616)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-EXEC-06
 <a id="c-exec-06"></a>
@@ -154,7 +154,7 @@ TIP-1060 states the T7 clean-creation residual is 5,000 gas in total (4,900 dyna
 
 - Where: [05-block-execution.md:168](05-block-execution.md#L168)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-EXEC-04
 <a id="c-exec-04"></a>
@@ -163,7 +163,7 @@ TIP-1000 says the nonzero→zero SSTORE clearing refund stays 15,000 gas; the co
 
 - Where: [05-block-execution.md:196](05-block-execution.md#L196)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-EXEC-02
 <a id="c-exec-02"></a>
@@ -172,7 +172,7 @@ TIP-1010 (and the fee specification's parameter table) give the block gas limit 
 
 - Where: [05-block-execution.md:298](05-block-execution.md#L298)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-EXEC-07
 <a id="c-exec-07"></a>
@@ -181,7 +181,7 @@ TIP-1045 requires static-only payment calldata to satisfy the ABI encoding const
 
 - Where: [05-block-execution.md:663](05-block-execution.md#L663)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-EXEC-01
 <a id="c-exec-01"></a>
@@ -190,7 +190,7 @@ TIP-1010 (invariant 5) and the payment-lane specification state that a block is 
 
 - Where: [05-block-execution.md:716](05-block-execution.md#L716)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-EXEC-08 (also C-VAL-06)
 <a id="c-exec-08"></a><a id="c-val-06"></a>
@@ -199,7 +199,7 @@ TIP-1070 requires the committee update to be called "from the system address" fo
 
 - Where: [05-block-execution.md:798](05-block-execution.md#L798), [precompiles/validator-config-and-zones.md:726](precompiles/validator-config-and-zones.md#L726)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-TXF-02
 <a id="c-txf-02"></a>
@@ -208,7 +208,7 @@ TIP-1000 also charges +250,000 for each EIP-7702 authorization that moves an acc
 
 - Where: [06-transactions-and-fees.md:124](06-transactions-and-fees.md#L124)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-TXF-04
 <a id="c-txf-04"></a>
@@ -217,7 +217,7 @@ TIP-1011 gives the scope slot count `1 + 3S + 3K + C + 2W` and frames the rounde
 
 - Where: [06-transactions-and-fees.md:337](06-transactions-and-fees.md#L337)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-TXF-08
 <a id="c-txf-08"></a>
@@ -226,7 +226,7 @@ TIP-1000 charges the 250,000 account-creation gas to Tempo transactions "with an
 
 - Where: [06-transactions-and-fees.md:356](06-transactions-and-fees.md#L356)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-TXF-05 (also C-KEY-08)
 <a id="c-txf-05"></a><a id="c-key-08"></a>
@@ -235,7 +235,7 @@ TIP-1009 keys replay protection on the transaction hash (invariant E1: "a transa
 
 - Where: [06-transactions-and-fees.md:434](06-transactions-and-fees.md#L434), [precompiles/account-keychain.md:1192](precompiles/account-keychain.md#L1192)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-TXF-07
 <a id="c-txf-07"></a>
@@ -244,7 +244,7 @@ the fee specification gives the refund as `(gas_limit - gas_used) * gas_price`; 
 
 - Where: [06-transactions-and-fees.md:735](06-transactions-and-fees.md#L735)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: _open_
+- Decision: follow the implementation; docs fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098).
 
 ### C-CONS-02 (also C-VAL-05)
 <a id="c-cons-02"></a><a id="c-val-05"></a>
@@ -253,7 +253,7 @@ TIP-1017 says the consensus layer reads ValidatorConfig V1 until ValidatorConfig
 
 - Where: [07-consensus.md:484](07-consensus.md#L484), [precompiles/validator-config-and-zones.md:659](precompiles/validator-config-and-zones.md#L659)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-PFW-01
 <a id="c-pfw-01"></a>
@@ -262,7 +262,7 @@ TIP-1100 (and docs upgrades/t11) require the input charge on *every* Tempo preco
 
 - Where: [precompiles/00-framework.md:171](precompiles/00-framework.md#L171)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-PFW-02
 <a id="c-pfw-02"></a>
@@ -271,7 +271,7 @@ TIP-1046 §8 says T4 removes the SLOAD for "the first packed slot" of a packed-s
 
 - Where: [precompiles/00-framework.md:420](precompiles/00-framework.md#L420)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-PFW-04
 <a id="c-pfw-04"></a>
@@ -280,7 +280,7 @@ TIP-1000 (invariant 4) requires storage clearing to keep its refund for every SS
 
 - Where: [precompiles/00-framework.md:642](precompiles/00-framework.md#L642)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-KEY-04
 <a id="c-key-04"></a>
@@ -289,7 +289,7 @@ TIP-1011 stores periodic-limit metadata in a separate `spending_limit_period_sta
 
 - Where: [precompiles/account-keychain.md:302](precompiles/account-keychain.md#L302)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-KEY-06
 <a id="c-key-06"></a>
@@ -298,7 +298,7 @@ TIP-1011 specifies a flat 7-argument `authorizeKey` (selector `0x203e2736`) and 
 
 - Where: [precompiles/account-keychain.md:350](precompiles/account-keychain.md#L350)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-KEY-02
 <a id="c-key-02"></a>
@@ -307,7 +307,7 @@ AccountKeychain.mdx says an unsupported `signatureType` reverts with `InvalidSig
 
 - Where: [precompiles/account-keychain.md:413](precompiles/account-keychain.md#L413)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: _open_
+- Decision: follow the implementation; docs fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098).
 
 ### C-KEY-03
 <a id="c-key-03"></a>
@@ -316,7 +316,7 @@ AccountKeychain.mdx says recipient-constrained selector rules are validated befo
 
 - Where: [precompiles/account-keychain.md:557](precompiles/account-keychain.md#L557)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: _open_
+- Decision: follow the implementation; docs fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098).
 
 ### C-KEY-07
 <a id="c-key-07"></a>
@@ -325,7 +325,7 @@ TIP-1053 says access keys MUST NOT burn witnesses; from T6 the code lets an admi
 
 - Where: [precompiles/account-keychain.md:590](precompiles/account-keychain.md#L590)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-KEY-05
 <a id="c-key-05"></a>
@@ -334,7 +334,7 @@ TIP-1011 says `removeAllowedCalls` only disables the target scope and that prior
 
 - Where: [precompiles/account-keychain.md:767](precompiles/account-keychain.md#L767)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-KEY-09
 <a id="c-key-09"></a>
@@ -343,7 +343,7 @@ TIP-1009 stores `ptr + 1` unbounded and indexes with `ptr % CAPACITY`; the code 
 
 - Where: [precompiles/account-keychain.md:1190](precompiles/account-keychain.md#L1190)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-KEY-11
 <a id="c-key-11"></a>
@@ -352,7 +352,7 @@ TIP-1060 describes the balance as `mapping(address => uint256 packed_state)`; th
 
 - Where: [precompiles/account-keychain.md:1345](precompiles/account-keychain.md#L1345)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-KEY-12
 <a id="c-key-12"></a>
@@ -361,7 +361,7 @@ TIP-1060 describes the transient state as a mapping of a struct `{uint64 budget;
 
 - Where: [precompiles/account-keychain.md:1361](precompiles/account-keychain.md#L1361)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-FEE-06
 <a id="c-fee-06"></a>
@@ -370,7 +370,7 @@ TIP-1042 reads both tokens' policy ids before evaluating any authorization; code
 
 - Where: [precompiles/fee-manager.md:261](precompiles/fee-manager.md#L261)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-FEE-07
 <a id="c-fee-07"></a>
@@ -379,7 +379,7 @@ docs say the payout-side checks apply to each nonzero payout; code performs both
 
 - Where: [precompiles/fee-manager.md:304](precompiles/fee-manager.md#L304)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: _open_
+- Decision: follow the implementation; docs fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098).
 
 ### C-FEE-03
 <a id="c-fee-03"></a>
@@ -388,7 +388,7 @@ the Fee AMM doc says pre-collection checks liquidity before collecting; code col
 
 - Where: [precompiles/fee-manager.md:414](precompiles/fee-manager.md#L414)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: _open_
+- Decision: follow the implementation; docs fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098).
 
 ### C-FEE-01
 <a id="c-fee-01"></a>
@@ -397,7 +397,7 @@ spec-fee.mdx says the pre-collection reserves max_fee of liquidity; code reserve
 
 - Where: [precompiles/fee-manager.md:470](precompiles/fee-manager.md#L470)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: _open_
+- Decision: follow the implementation; docs fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098).
 
 ### C-DEX-01
 <a id="c-dex-01"></a>
@@ -406,7 +406,7 @@ docs exchange/spec.mdx says `pairKey` is order-independent; the implementation h
 
 - Where: [precompiles/stablecoin-dex.md:180](precompiles/stablecoin-dex.md#L180)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: _open_
+- Decision: follow the implementation; docs fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098).
 
 ### C-DEX-04
 <a id="c-dex-04"></a>
@@ -415,7 +415,7 @@ TIP-1087 requires a V0/V1→V2 flip rewrite to assert `bookKeys[bookKeyIdx-1] ==
 
 - Where: [precompiles/stablecoin-dex.md:392](precompiles/stablecoin-dex.md#L392)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-DEX-05
 <a id="c-dex-05"></a>
@@ -424,7 +424,7 @@ TIP-1062 says a version-1 flip order that flips MUST remain version 1; the imple
 
 - Where: [precompiles/stablecoin-dex.md:394](precompiles/stablecoin-dex.md#L394)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-DEX-03
 <a id="c-dex-03"></a>
@@ -433,7 +433,7 @@ TIP-1056 requires a flip rewrite to write only the order-record slots whose cont
 
 - Where: [precompiles/stablecoin-dex.md:948](precompiles/stablecoin-dex.md#L948)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-T20-06
 <a id="c-t20-06"></a>
@@ -442,7 +442,7 @@ TIP-1004 orders the nonce increment before signature validation; the step order 
 
 - Where: [precompiles/tip20.md:609](precompiles/tip20.md#L609)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-T20-05
 <a id="c-t20-05"></a>
@@ -451,7 +451,7 @@ the TIP-20 docs and TIP-1035 describe `system_transfer_from(from, to, amount)`; 
 
 - Where: [precompiles/tip20.md:978](precompiles/tip20.md#L978)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-T20-09
 <a id="c-t20-09"></a>
@@ -460,7 +460,7 @@ TIP-1034 requires an interface identical to its reference file and on-chain stor
 
 - Where: [precompiles/tip20.md:1251](precompiles/tip20.md#L1251)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-T20-08
 <a id="c-t20-08"></a>
@@ -469,7 +469,7 @@ TIP-1034 declares bits 224..255 of the packed state reserved and always zero; fr
 
 - Where: [precompiles/tip20.md:1286](precompiles/tip20.md#L1286)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-T20-10
 <a id="c-t20-10"></a>
@@ -478,7 +478,7 @@ TIP-1095 says its behaviour activates for channels opened at or after T12; the c
 
 - Where: [precompiles/tip20.md:1499](precompiles/tip20.md#L1499)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-T403-01
 <a id="c-t403-01"></a>
@@ -487,7 +487,7 @@ TIP-1028 specifies two mappings (`addressReceiveConfig`, `addressRecoveryAuthori
 
 - Where: [precompiles/tip403.md:176](precompiles/tip403.md#L176)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-T403-04
 <a id="c-t403-04"></a>
@@ -496,7 +496,7 @@ the docs state that policy 0 rejects every address and TIP-1015 that unknown ids
 
 - Where: [precompiles/tip403.md:262](precompiles/tip403.md#L262)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-T403-09
 <a id="c-t403-09"></a>
@@ -505,7 +505,7 @@ TIP-1015's pseudo-code and cost claim ("1 keccak + 2 SLOADs") do not match the s
 
 - Where: [precompiles/tip403.md:264](precompiles/tip403.md#L264)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-T403-06
 <a id="c-t403-06"></a>
@@ -514,7 +514,7 @@ the docs list `PolicyCreated` and `PolicyAdminUpdated` before the membership eve
 
 - Where: [precompiles/tip403.md:373](precompiles/tip403.md#L373)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: _open_
+- Decision: follow the implementation; docs fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098).
 
 ### C-T403-10
 <a id="c-t403-10"></a>
@@ -523,7 +523,7 @@ the docs say "precompile" recovery addresses must be rejected; the code's set ex
 
 - Where: [precompiles/tip403.md:483](precompiles/tip403.md#L483)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: _open_
+- Decision: follow the implementation; docs fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098).
 
 ### C-T403-02
 <a id="c-t403-02"></a>
@@ -532,7 +532,7 @@ TIP-1028 declares `uint64 public nonce = 1` (initialized to 1).
 
 - Where: [precompiles/tip403.md:612](precompiles/tip403.md#L612)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-T403-07
 <a id="c-t403-07"></a>
@@ -541,7 +541,7 @@ TIP-1028 says a reroute to an unresolvable virtual `to` reverts `InvalidClaimAdd
 
 - Where: [precompiles/tip403.md:747](precompiles/tip403.md#L747)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-T403-08
 <a id="c-t403-08"></a>
@@ -550,7 +550,7 @@ TIP-1028 says the release emits `Transfer(GUARD, to)` followed by `ReceiptClaime
 
 - Where: [precompiles/tip403.md:749](precompiles/tip403.md#L749)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-T403-03
 <a id="c-t403-03"></a>
@@ -559,7 +559,7 @@ TIP-1022 gives the slot as `keccak256(abi.encode(masterId, REGISTRY_SLOT))`, whi
 
 - Where: [precompiles/tip403.md:825](precompiles/tip403.md#L825)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-VAL-01
 <a id="c-val-01"></a>
@@ -568,7 +568,7 @@ TIP-1017 orders the `Validator` struct `…, egress, index, addedAtHeight, deact
 
 - Where: [precompiles/validator-config-and-zones.md:278](precompiles/validator-config-and-zones.md#L278)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-VAL-02
 <a id="c-val-02"></a>
@@ -577,7 +577,7 @@ TIP-1017 names the rotation-epoch functions `getNextFullDkgCeremony()` / `setNex
 
 - Where: [precompiles/validator-config-and-zones.md:280](precompiles/validator-config-and-zones.md#L280)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-VAL-03
 <a id="c-val-03"></a>
@@ -586,7 +586,7 @@ TIP-1017 says `initializeIfMigrated` "can be called immediately when the V1 vali
 
 - Where: [precompiles/validator-config-and-zones.md:625](precompiles/validator-config-and-zones.md#L625)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-VAL-04
 <a id="c-val-04"></a>
@@ -595,7 +595,7 @@ TIP-1017 says an invalid V1 entry is always "marked as processed … so global c
 
 - Where: [precompiles/validator-config-and-zones.md:627](precompiles/validator-config-and-zones.md#L627)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-VAL-07
 <a id="c-val-07"></a>
@@ -604,7 +604,7 @@ TIP-1091 (and its reference ZoneFactory.sol) reject only addresses that appear i
 
 - Where: [precompiles/validator-config-and-zones.md:940](precompiles/validator-config-and-zones.md#L940)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-VAL-09
 <a id="c-val-09"></a>
@@ -613,7 +613,7 @@ the TIP-1091 reference `ZoneFactory.sol` checks `NotOwner` before anything else 
 
 - Where: [precompiles/validator-config-and-zones.md:942](precompiles/validator-config-and-zones.md#L942)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-VAL-08
 <a id="c-val-08"></a>
@@ -622,7 +622,7 @@ TIP-1091 (step 5) and its reference `ZoneFactory.sol` say the factory calls the 
 
 - Where: [precompiles/validator-config-and-zones.md:1000](precompiles/validator-config-and-zones.md#L1000)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ## B. Doc-only
 
@@ -633,7 +633,7 @@ docs blockspace/overview.mdx lists "start-of-block system transaction(s)" as the
 
 - Where: [02-encoding.md:357](02-encoding.md#L357)
 - Recommendation: Follow the implementation; fix the doc. No effect on block validity.
-- Decision: _open_
+- Decision: follow the implementation; docs fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098).
 
 ### C-TXF-06
 <a id="c-txf-06"></a>
@@ -642,7 +642,7 @@ TIP-1106 is marked `status: Draft` with `protocolVersion: TBD`, but the code act
 
 - Where: [06-transactions-and-fees.md:436](06-transactions-and-fees.md#L436)
 - Recommendation: Follow the implementation; fix the doc. No effect on block validity.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-CONS-03
 <a id="c-cons-03"></a>
@@ -651,7 +651,7 @@ the docs say blocks come about every 600 ms from a 500 ms builder loop, but the 
 
 - Where: [07-consensus.md:506](07-consensus.md#L506)
 - Recommendation: Follow the implementation; fix the doc. No effect on block validity.
-- Decision: _open_
+- Decision: follow the implementation; docs fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098).
 
 ### C-CONS-04
 <a id="c-cons-04"></a>
@@ -660,7 +660,7 @@ the consensus docs page links commonware-consensus 0.0.65, but the implementatio
 
 - Where: [07-consensus.md:564](07-consensus.md#L564)
 - Recommendation: Follow the implementation; fix the doc. No effect on block validity.
-- Decision: _open_
+- Decision: follow the implementation; docs fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098).
 
 ### C-P2P-01
 <a id="c-p2p-01"></a>
@@ -669,7 +669,7 @@ TIP-1017 says the ed25519 key is used for signing all consensus p2p messages; th
 
 - Where: [08-p2p-and-sync.md:69](08-p2p-and-sync.md#L69), [08-p2p-and-sync.md:829](08-p2p-and-sync.md#L829)
 - Recommendation: Follow the implementation; fix the doc. No effect on block validity.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
 ### C-P2P-02
 <a id="c-p2p-02"></a>
@@ -678,7 +678,7 @@ docs protocol/rpc/index.mdx says `consensus_subscribe` emits notarized, finalize
 
 - Where: [08-p2p-and-sync.md:601](08-p2p-and-sync.md#L601), [08-p2p-and-sync.md:831](08-p2p-and-sync.md#L831)
 - Recommendation: Follow the implementation; fix the doc. No effect on block validity.
-- Decision: _open_
+- Decision: follow the implementation; docs fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098).
 
 ### C-KEY-01
 <a id="c-key-01"></a>
@@ -687,7 +687,7 @@ AccountKeychain.mdx puts `transactionKey` in transient slot 0; the code uses tra
 
 - Where: [precompiles/account-keychain.md:219](precompiles/account-keychain.md#L219)
 - Recommendation: Follow the implementation; fix the doc. No effect on block validity.
-- Decision: _open_
+- Decision: follow the implementation; docs fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098).
 
 ### C-KEY-10
 <a id="c-key-10"></a>
@@ -696,7 +696,7 @@ spec-tempo-transaction.mdx gives the 2D nonce storage key as `keccak256(abi.enco
 
 - Where: [precompiles/account-keychain.md:1111](precompiles/account-keychain.md#L1111)
 - Recommendation: Follow the implementation; fix the doc. No effect on block validity.
-- Decision: _open_
+- Decision: follow the implementation; docs fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098).
 
 ### C-FEE-05
 <a id="c-fee-05"></a>
@@ -705,7 +705,7 @@ docs state the unchanged-token no-op unconditionally; code applies it only from 
 
 - Where: [precompiles/fee-manager.md:196](precompiles/fee-manager.md#L196)
 - Recommendation: Follow the implementation; fix the doc. No effect on block validity.
-- Decision: _open_
+- Decision: follow the implementation; docs fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098).
 
 ### C-FEE-04
 <a id="c-fee-04"></a>
@@ -714,7 +714,7 @@ docs state the T8 mint/burn/pre-collection authorization rules unconditionally; 
 
 - Where: [precompiles/fee-manager.md:259](precompiles/fee-manager.md#L259), [precompiles/fee-manager.md:410](precompiles/fee-manager.md#L410)
 - Recommendation: Follow the implementation; fix the doc. No effect on block validity.
-- Decision: _open_
+- Decision: follow the implementation; docs fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098).
 
 ### C-DEX-06
 <a id="c-dex-06"></a>
@@ -723,7 +723,7 @@ docs exchange/spec.mdx states T2/T4/T5/T12 behaviour (tick spacing in `tickToPri
 
 - Where: [precompiles/stablecoin-dex.md:44](precompiles/stablecoin-dex.md#L44)
 - Recommendation: Follow the implementation; fix the doc. No effect on block validity.
-- Decision: _open_
+- Decision: follow the implementation; docs fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098).
 
 ### C-T20-01
 <a id="c-t20-01"></a>
@@ -732,7 +732,7 @@ the TIP-20 docs' factory section writes TIP20_PREFIX as a 13-byte value.
 
 - Where: [precompiles/tip20.md:69](precompiles/tip20.md#L69)
 - Recommendation: Follow the implementation; fix the doc. No effect on block validity.
-- Decision: _open_
+- Decision: follow the implementation; docs fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098).
 
 ### C-T20-04
 <a id="c-t20-04"></a>
@@ -741,7 +741,7 @@ the TIP-20 docs present an interface without the reward functions and events tha
 
 - Where: [precompiles/tip20.md:283](precompiles/tip20.md#L283)
 - Recommendation: Follow the implementation; fix the doc. No effect on block validity.
-- Decision: _open_
+- Decision: follow the implementation; docs fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098).
 
 ### C-T20-03
 <a id="c-t20-03"></a>
@@ -750,7 +750,7 @@ the TIP-20 docs' factory interface omits `AddressNotReserved` and `TokenAlreadyE
 
 - Where: [precompiles/tip20.md:1079](precompiles/tip20.md#L1079)
 - Recommendation: Follow the implementation; fix the doc. No effect on block validity.
-- Decision: _open_
+- Decision: follow the implementation; docs fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098).
 
 ### C-T20-02
 <a id="c-t20-02"></a>
@@ -759,7 +759,7 @@ the docs' `AddressReserved` comment says "lowerBytes < 1000"; the reserved range
 
 - Where: [precompiles/tip20.md:1097](precompiles/tip20.md#L1097)
 - Recommendation: Follow the implementation; fix the doc. No effect on block validity.
-- Decision: _open_
+- Decision: follow the implementation; docs fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098).
 
 ### C-T403-05
 <a id="c-t403-05"></a>
@@ -768,7 +768,7 @@ docs say an unknown policy id reverts with `PolicyNotFound`, without the T2 boun
 
 - Where: [precompiles/tip403.md:327](precompiles/tip403.md#L327)
 - Recommendation: Follow the implementation; fix the doc. No effect on block validity.
-- Decision: _open_
+- Decision: follow the implementation; docs fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098).
 
 ### C-T403-11
 <a id="c-t403-11"></a>
@@ -777,7 +777,7 @@ the docs describe token creation as registering a TIP-403 binding without saying
 
 - Where: [precompiles/tip403.md:529](precompiles/tip403.md#L529)
 - Recommendation: Follow the implementation; fix the doc. No effect on block validity.
-- Decision: _open_
+- Decision: follow the implementation; docs fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098).
 
 ### C-VAL-10
 <a id="c-val-10"></a>
@@ -786,4 +786,4 @@ TIP-1098 leaves PCR0–2 as placeholders and says the production verifier "has n
 
 - Where: [precompiles/validator-config-and-zones.md:1174](precompiles/validator-config-and-zones.md#L1174)
 - Recommendation: Follow the implementation; fix the doc. No effect on block validity.
-- Decision: follow the implementation; TIP amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939).
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).

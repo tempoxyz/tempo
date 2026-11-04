@@ -275,9 +275,9 @@ interface IValidatorConfigV2 {
 }
 ```
 
-> **Resolved conflict C-VAL-01**: TIP-1017 orders the `Validator` struct `…, egress, index, addedAtHeight, deactivatedAtHeight, feeRecipient`; the code returns `…, egress, feeRecipient, index, addedAtHeight, deactivatedAtHeight`. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](../conflicts.md#c-val-01).
+> **Resolved conflict C-VAL-01**: TIP-1017 orders the `Validator` struct `…, egress, index, addedAtHeight, deactivatedAtHeight, feeRecipient`; the code returns `…, egress, feeRecipient, index, addedAtHeight, deactivatedAtHeight`. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-val-01).
 
-> **Resolved conflict C-VAL-02**: TIP-1017 names the rotation-epoch functions `getNextFullDkgCeremony()` / `setNextFullDkgCeremony(uint64)` (selectors `0x281a69ec` / `0xc3576d46`); the code exposes only `getNextNetworkIdentityRotationEpoch()` / `setNetworkIdentityRotationEpoch(uint64)`, so the TIP selectors revert `UnknownFunctionSelector` on V2. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](../conflicts.md#c-val-02).
+> **Resolved conflict C-VAL-02**: TIP-1017 names the rotation-epoch functions `getNextFullDkgCeremony()` / `setNextFullDkgCeremony(uint64)` (selectors `0x281a69ec` / `0xc3576d46`); the code exposes only `getNextNetworkIdentityRotationEpoch()` / `setNetworkIdentityRotationEpoch(uint64)`, so the TIP selectors revert `UnknownFunctionSelector` on V2. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-val-02).
 
 Events (emitted at the V2 address; `indexed` fields are topics in declaration order after topic0):
 
@@ -622,9 +622,9 @@ def initializeIfMigrated(sender):
 
 `canonical_ip_text` is the Rust 1.96 `Display` form of the parsed IP: dotted decimal for IPv4; for IPv6 the RFC 5952 form (lowercase hex, longest run of two or more zero groups compressed, IPv4-mapped addresses as `::ffff:a.b.c.d`). The ingress string is copied verbatim; only egress is canonicalised (and loses its port). Inactive V1 records are migrated as born-deactivated entries (`deactivatedAtHeight = addedAtHeight = block.number`, no `activeIndices` entry, no ingress reservation). V1 is read through its storage directly (no call frame, no input charge).
 
-> **Resolved conflict C-VAL-03**: TIP-1017 says `initializeIfMigrated` "can be called immediately when the V1 validator count is zero"; the code reverts `EmptyV1ValidatorSet()` (or `MigrationNotComplete()`) when V1 is empty. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](../conflicts.md#c-val-03).
+> **Resolved conflict C-VAL-03**: TIP-1017 says `initializeIfMigrated` "can be called immediately when the V1 validator count is zero"; the code reverts `EmptyV1ValidatorSet()` (or `MigrationNotComplete()`) when V1 is empty. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-val-03).
 
-> **Resolved conflict C-VAL-04**: TIP-1017 says an invalid V1 entry is always "marked as processed … so global completion is not blocked"; the code reverts `AddressAlreadyHasValidator()` when the V1 address belongs to an active V2 record and reverts `NotIpPort` when the V1 inbound address does not parse, leaving that index unprocessed. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](../conflicts.md#c-val-04).
+> **Resolved conflict C-VAL-04**: TIP-1017 says an invalid V1 entry is always "marked as processed … so global completion is not blocked"; the code reverts `AddressAlreadyHasValidator()` when the V1 address belongs to an active V2 record and reverts `NotIpPort` when the V1 inbound address does not parse, leaving that index unprocessed. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-val-04).
 
 ### 2.8 Gas
 
@@ -656,7 +656,7 @@ The T12 change to DKG reveal handling (07-consensus.md) does not change these re
 
 The same decoded entries (with `to_p2p_address`: ingress socket, egress IP with port 0) also feed the peer set; 08-p2p-and-sync.md specifies that use.
 
-> **Resolved conflict C-VAL-05**: TIP-1017 says the consensus layer reads V1 while `v2.isInitialized()` is false and V2 afterwards; the code always reads V2 (no V1 fallback and no `isInitialized` check). Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](../conflicts.md#c-val-05).
+> **Resolved conflict C-VAL-05**: TIP-1017 says the consensus layer reads V1 while `v2.isInitialized()` is false and V2 afterwards; the code always reads V2 (no V1 fallback and no `isInitialized` check). Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-val-05).
 
 The `feeRecipient` field is not consumed by block validity at or below T13 (its use as the required beneficiary starts at T14, out of scope).
 
@@ -723,7 +723,7 @@ Rules:
 - Ordering within block finalisation: (1) the T4 incentive-gas check, (2) selection of the post-execution EIP-7928 block-access-list index, (3) this call, (4) before T13, the inherited Ethereum post-block processing; from T13 nothing further (TIP-1119).
 - Transactions in the boundary block observe the previous record; the new record is visible from the next block.
 
-> **Resolved conflict C-VAL-06**: TIP-1070 requires the call to come "from the system address" (by EIP-4788 convention `0xfffffffffffffffffffffffffffffffffffffffe`); the code (and TIP-1119's table) uses caller `address(0)`, and the precompile reverts `Unauthorized()` for any other caller. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](../conflicts.md#c-val-06).
+> **Resolved conflict C-VAL-06**: TIP-1070 requires the call to come "from the system address" (by EIP-4788 convention `0xfffffffffffffffffffffffffffffffffffffffe`); the code (and TIP-1119's table) uses caller `address(0)`, and the precompile reverts `Unauthorized()` for any other caller. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-val-06).
 
 ## 4. Zones (TIP-1091, TIP-1096, TIP-1098)
 
@@ -937,9 +937,9 @@ def validate_sequencer_set(seqs, threshold):
 
 From T11 a sequencer repeated within `sequencers` is reported as `InvalidClosedLoopConfig()` (the global duplicate test runs first); before T11 it is reported as `InvalidSequencerSet()`. From T11, two zero-address entries anywhere in the three lists are duplicates.
 
-> **Resolved conflict C-VAL-07**: TIP-1091 (and its reference ZoneFactory.sol) reject only addresses that appear in both `allowedAccounts` and `zoneGateways` before T11; the code also rejects, before T11, any sequencer that appears in `allowedAccounts` or `zoneGateways`. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](../conflicts.md#c-val-07).
+> **Resolved conflict C-VAL-07**: TIP-1091 (and its reference ZoneFactory.sol) reject only addresses that appear in both `allowedAccounts` and `zoneGateways` before T11; the code also rejects, before T11, any sequencer that appears in `allowedAccounts` or `zoneGateways`. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-val-07).
 
-> **Resolved conflict C-VAL-09**: the TIP-1091 reference `ZoneFactory.sol` checks `NotOwner` before anything else (and says the owner is set "by the T9 activation"); the code deducts 15,000,000 gas before the owner check, so failing calls also consume it or halt out of gas, and the owner is installed at T10. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](../conflicts.md#c-val-09).
+> **Resolved conflict C-VAL-09**: the TIP-1091 reference `ZoneFactory.sol` checks `NotOwner` before anything else (and says the owner is set "by the T9 activation"); the code deducts 15,000,000 gas before the owner check, so failing calls also consume it or halt out of gas, and the owner is installed at T10. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-val-09).
 
 Gas of a `createZone` call is exactly: the input charge; 15,000,000; the framework cost of every account read (`initialToken` code hash), storage read and write performed in §4.4.4 and §4.6 in the listed order (TIP-20 metadata strings, TIP-403 binding, factory slot 0, portal and `zones` records); from T11, `20 * (len(allowedAccounts)+len(zoneGateways)+len(sequencers))`; the code-installation charge of §4.6 step 2; and the cost of the logs of §4.4.5.
 
@@ -997,7 +997,7 @@ Every portal proxy executes the shared implementation by `DELEGATECALL`, so its 
 
 `createZone` initialises the portal **natively**: it writes the portal account's code and storage directly and never executes EVM code at the portal or the implementation.
 
-> **Resolved conflict C-VAL-08**: TIP-1091 (step 5) and its reference `ZoneFactory.sol` say the factory calls the portal's factory-only initializer; the code writes portal storage and emits the portal's logs natively without any call frame (different gas, no inner call). Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](../conflicts.md#c-val-08).
+> **Resolved conflict C-VAL-08**: TIP-1091 (step 5) and its reference `ZoneFactory.sol` say the factory calls the portal's factory-only initializer; the code writes portal storage and emits the portal's logs natively without any call frame (different gas, no inner call). Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-val-08).
 
 ```python
 def initialize_portal(portal, zoneId, p, enablement_hash):
@@ -1171,7 +1171,7 @@ From T13 the approved measurements are (48-byte SHA-384 values; provenance: prov
 
 Other PCR indices may be present and are ignored. The tuple is a fork constant (no runtime configuration; mainnet and Moderato never accept overrides).
 
-> **Resolved conflict C-VAL-10**: TIP-1098 leaves PCR0–2 as placeholders and says the production verifier "has no approved tuple and MUST return false", and docs zones/proving.mdx says the measurements are unset so Nitro proofs are rejected; the code approves the tuple above from T13. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](../conflicts.md#c-val-10).
+> **Resolved conflict C-VAL-10**: TIP-1098 leaves PCR0–2 as placeholders and says the production verifier "has no approved tuple and MUST return false", and docs zones/proving.mdx says the measurements are unset so Nitro proofs are rejected; the code approves the tuple above from T13. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-val-10).
 
 #### 4.8.6 Batch commitment
 

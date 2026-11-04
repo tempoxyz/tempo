@@ -66,7 +66,7 @@ tip20_id(a) = be_uint64(a[12:20])   if is_tip20_prefix(a)
 
 Every address with the prefix routes to the TIP-20 precompile, whether or not a token was created there ([00-framework.md](00-framework.md)). Token ids `0..1023` are **reserved**: the factory cannot create them (§10); they exist only if placed in the genesis allocation.
 
-> **Open conflict C-T20-01**: the TIP-20 docs' factory section writes TIP20_PREFIX as a 13-byte value. See [conflicts](../conflicts.md#c-t20-01).
+> **Resolved conflict C-T20-01**: the TIP-20 docs' factory section writes TIP20_PREFIX as a 13-byte value. Decided: this spec follows the implementation, and the docs are fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098). See [conflicts](../conflicts.md#c-t20-01).
 
 | Constant | Value |
 |---|---|
@@ -280,7 +280,7 @@ All events are emitted by the token address, with standard Solidity log encoding
 
 Errors raised by native callees bubble up unchanged, including `VirtualAddressUnregistered()` (`0xda56842c`, AddressRegistry), `AddressReserved()` (`0x98387502`, ReceivePolicyGuard), the AccountKeychain spending-limit errors ([account-keychain.md](account-keychain.md)) and TIP-403 errors ([tip403.md](tip403.md)).
 
-> **Open conflict C-T20-04**: the TIP-20 docs present an interface without the reward functions and events that the code dispatches at every fork. See [conflicts](../conflicts.md#c-t20-04).
+> **Resolved conflict C-T20-04**: the TIP-20 docs present an interface without the reward functions and events that the code dispatches at every fork. Decided: this spec follows the implementation, and the docs are fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098). See [conflicts](../conflicts.md#c-t20-04).
 
 ## 5. Storage layout
 
@@ -606,7 +606,7 @@ def permit(owner, spender, value, deadline, v, r, s):
 
 `permit` ignores `msg_sender`, is allowed while paused, performs no TIP-403 or spending-limit check, and accepts only `v ∈ {27, 28}` (no normalization of 0/1). `chain_id` is the chain's configured chain id. The domain separator is recomputed on every call from the stored name and the chain id.
 
-> **Resolved conflict C-T20-06**: TIP-1004 orders the nonce increment before signature validation; the step order above (validation first) is what produced mainnet gas. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](../conflicts.md#c-t20-06).
+> **Resolved conflict C-T20-06**: TIP-1004 orders the nonce increment before signature validation; the step order above (validation first) is what produced mainnet gas. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-t20-06).
 
 ### 7.5 mint and mintWithMemo
 
@@ -975,7 +975,7 @@ def system_transfer_from(caller, frm, amount) -> bool:
 
 Before T5 the caller is not checked (the fee manager was its only caller). Callers pull only from their own `msg.sender`; this is the callers' obligation, not checked here.
 
-> **Resolved conflict C-T20-05**: the TIP-20 docs and TIP-1035 describe `system_transfer_from(from, to, amount)`; the hook takes no recipient and always credits the calling precompile. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](../conflicts.md#c-t20-05).
+> **Resolved conflict C-T20-05**: the TIP-20 docs and TIP-1035 describe `system_transfer_from(from, to, amount)`; the hook takes no recipient and always credits the calling precompile. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-t20-05).
 
 ### 9.2 Fee hooks
 
@@ -1003,7 +1003,7 @@ def transfer_fee_post_tx(to, refund, actual_spending):
 
 Neither hook checks TIP-403, resolves virtual addresses, applies receive policies, or changes `totalSupply`. `transfer_fee_post_tx` does not check the pause flag.
 
-> **Resolved conflict C-FORKS-04**: TIP-1036 attributes the spending-limit refund in `transfer_fee_post_tx` to T2; it is active from T1C. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](../conflicts.md#c-forks-04).
+> **Resolved conflict C-FORKS-04**: TIP-1036 attributes the spending-limit refund in `transfer_fee_post_tx` to T2; it is active from T1C. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-forks-04).
 
 ### 9.3 channel_reserve_transfer (from T12)
 
@@ -1076,7 +1076,7 @@ Errors: `AddressReserved()` `0x98387502`, `AddressNotReserved()` `0xa3503be9`, `
 
 The factory performs the §3.1 input-cost charge and dispatch but no initialization check.
 
-> **Open conflict C-T20-03**: the TIP-20 docs' factory interface omits `AddressNotReserved` and `TokenAlreadyExists`. See [conflicts](../conflicts.md#c-t20-03).
+> **Resolved conflict C-T20-03**: the TIP-20 docs' factory interface omits `AddressNotReserved` and `TokenAlreadyExists`. Decided: this spec follows the implementation, and the docs are fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098). See [conflicts](../conflicts.md#c-t20-03).
 
 ### 10.2 Address derivation
 
@@ -1094,7 +1094,7 @@ def get_token_address(sender, salt) -> address:   # view
 
 `getTokenAddress` costs only the input charge.
 
-> **Open conflict C-T20-02**: the docs' `AddressReserved` comment says "lowerBytes < 1000"; the reserved range is ids `< 1024`. See [conflicts](../conflicts.md#c-t20-02).
+> **Resolved conflict C-T20-02**: the docs' `AddressReserved` comment says "lowerBytes < 1000"; the reserved range is ids `< 1024`. Decided: this spec follows the implementation, and the docs are fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098). See [conflicts](../conflicts.md#c-t20-02).
 
 ### 10.3 createToken
 
@@ -1248,7 +1248,7 @@ Errors:
 
 `RootKeyRetired` is raised only from T14. TIP-20 errors (for example `InvalidToken()` `0xc1ab6dc1` for a non-prefixed token, `PolicyForbids()`, `ContractPaused()`, `InsufficientBalance`) and AddressRegistry, AccountKeychain and ReceivePolicyGuard errors bubble up unchanged.
 
-> **Resolved conflict C-T20-09**: TIP-1034 requires an interface identical to its reference file and on-chain storage of only `ChannelState`; from T7 the code adds the `storageCredits` view and the per-payer credit mapping (§11.3, §11.9). Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](../conflicts.md#c-t20-09).
+> **Resolved conflict C-T20-09**: TIP-1034 requires an interface identical to its reference file and on-chain storage of only `ChannelState`; from T7 the code adds the `storageCredits` view and the per-payer credit mapping (§11.3, §11.9). Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-t20-09).
 
 ### 11.3 Storage layout
 
@@ -1283,7 +1283,7 @@ def receive_policy_sender(state, payer) -> address:
     return payer if state.usesLogicalReceivePolicySender else TIP20_CHANNEL_RESERVE_ADDRESS
 ```
 
-> **Resolved conflict C-T20-08**: TIP-1034 declares bits 224..255 of the packed state reserved and always zero; from T12 byte 28 holds the logical-receive-policy-sender flag. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](../conflicts.md#c-t20-08).
+> **Resolved conflict C-T20-08**: TIP-1034 declares bits 224..255 of the packed state reserved and always zero; from T12 byte 28 holds the logical-receive-policy-sender flag. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-t20-08).
 
 ### 11.4 Channel id, open context hash and voucher digest
 
@@ -1496,7 +1496,7 @@ From T12, for **every** channel regardless of when it was opened:
 
 Only the receive-policy sender used for the payee preflight in `topUp` and for captures depends on the per-channel flag (§11.3): the payer for channels opened from T12, the reserve for older channels. `open` always preflights with the payer.
 
-> **Resolved conflict C-T20-10**: TIP-1095 says its behaviour activates for channels opened at or after T12; the code applies the T12 authorization and delivery path to all channels from T12 and keeps only the receive-policy sender per channel. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](../conflicts.md#c-t20-10).
+> **Resolved conflict C-T20-10**: TIP-1095 says its behaviour activates for channels opened at or after T12; the code applies the T12 authorization and delivery path to all channels from T12 and keeps only the receive-policy sender per channel. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-t20-10).
 
 ### 11.9 Channel storage credits (from T7)
 

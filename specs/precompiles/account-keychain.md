@@ -216,7 +216,7 @@ transaction):
 Both transient values are written only by the protocol (§1.9). Their word is the address as a
 160-bit integer.
 
-> **Open conflict C-KEY-01**: AccountKeychain.mdx puts `transactionKey` in transient slot 0; the code uses transient slot 4 (and slot 5 for `tx_origin`). See [conflicts](../conflicts.md#c-key-01).
+> **Resolved conflict C-KEY-01**: AccountKeychain.mdx puts `transactionKey` in transient slot 0; the code uses transient slot 4 (and slot 5 for `tx_origin`). Decided: this spec follows the implementation, and the docs are fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098). See [conflicts](../conflicts.md#c-key-01).
 
 `accountKey` is the account-key row hash:
 
@@ -299,7 +299,7 @@ set allows every selector (and selector-less calldata) on that target. A selecto
 an empty `recipients` set allows every recipient. Child rows exist only for members of the parent
 set.
 
-> **Resolved conflict C-KEY-04**: TIP-1011 stores periodic-limit metadata in a separate `spending_limit_period_state` mapping; the code extends the `spending_limits` row (`s1`). Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](../conflicts.md#c-key-04).
+> **Resolved conflict C-KEY-04**: TIP-1011 stores periodic-limit metadata in a separate `spending_limit_period_state` mapping; the code extends the `spending_limits` row (`s1`). Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-key-04).
 
 #### Witnesses (from T5)
 
@@ -347,7 +347,7 @@ calls as the framework specifies.
 | `isAdminKey(address account, address keyId) returns (bool)` | `0x9009a18d` | T6+ | view |
 | `getTransactionKey() returns (address)` | `0xb07fbc1a` | always | view |
 
-> **Resolved conflict C-KEY-06**: TIP-1011 specifies a flat 7-argument `authorizeKey` (selector `0x203e2736`) and a `getRemainingLimit` that returns `(uint256, uint64)`; the code uses the `KeyRestrictions` tuple form (`0x980a6025`), removes `getRemainingLimit` at T3 and adds `getRemainingLimitWithPeriod`. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](../conflicts.md#c-key-06).
+> **Resolved conflict C-KEY-06**: TIP-1011 specifies a flat 7-argument `authorizeKey` (selector `0x203e2736`) and a `getRemainingLimit` that returns `(uint256, uint64)`; the code uses the `KeyRestrictions` tuple form (`0x980a6025`), removes `getRemainingLimit` at T3 and adds `getRemainingLimitWithPeriod`. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-key-06).
 
 Events (topic0 = keccak256 of the signature; indexed parameters are topics 1..3 in order; the rest
 is the ABI-encoded data):
@@ -410,7 +410,7 @@ For every call into the AccountKeychain:
    witness = None)`. From T3, after successful decoding, it MUST revert with
    `LegacyAuthorizeKeySelectorChanged(0x980a6025)` and do nothing else.
 
-> **Open conflict C-KEY-02**: AccountKeychain.mdx says an unsupported `signatureType` reverts with `InvalidSignatureType`; from T11 the code reverts with empty data for 3 and for values of 4 or more. See [conflicts](../conflicts.md#c-key-02).
+> **Resolved conflict C-KEY-02**: AccountKeychain.mdx says an unsupported `signatureType` reverts with `InvalidSignatureType`; from T11 the code reverts with empty data for 3 and for values of 4 or more. Decided: this spec follows the implementation, and the docs are fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098). See [conflicts](../conflicts.md#c-key-02).
 
 ### 1.5 Common procedures
 
@@ -554,7 +554,7 @@ Notes:
 - An admin key (`is_admin`) writes only the key word: no limit rows and no scope tree (so its
   `is_scoped` slot stays 0).
 
-> **Open conflict C-KEY-03**: AccountKeychain.mdx says recipient-constrained selector rules are validated before any state is written; the code writes the key word (and the scope-tree reset) before validating scopes, and before T4 validates each scope while inserting it. See [conflicts](../conflicts.md#c-key-03).
+> **Resolved conflict C-KEY-03**: AccountKeychain.mdx says recipient-constrained selector rules are validated before any state is written; the code writes the key word (and the scope-tree reset) before validating scopes, and before T4 validates each scope while inserting it. Decided: this spec follows the implementation, and the docs are fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098). See [conflicts](../conflicts.md#c-key-03).
 
 #### 1.6.2 authorizeKey (T3 `0x980a6025`, T5 `0xe3c154d2`)
 
@@ -587,7 +587,7 @@ LOG([KeyAuthorizationWitnessBurned, msg.sender, witness], b"")
 
 From T6 an admin access key passes `ensure_admin_caller` and may therefore burn witnesses.
 
-> **Resolved conflict C-KEY-07**: TIP-1053 says access keys MUST NOT burn witnesses; from T6 the code lets an admin access key burn them (as do the docs). Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](../conflicts.md#c-key-07).
+> **Resolved conflict C-KEY-07**: TIP-1053 says access keys MUST NOT burn witnesses; from T6 the code lets an admin access key burn them (as do the docs). Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-key-07).
 
 #### 1.6.5 revokeKey (`0x5ae7ab32`)
 
@@ -764,7 +764,7 @@ remove_target_scope(account_key(msg.sender, keyId), target)
 Removing an absent target is a no-op. Removing the last target leaves the key scoped with no targets
 (deny-all). No event is emitted.
 
-> **Resolved conflict C-KEY-05**: TIP-1011 says `removeAllowedCalls` only disables the target scope and that prior selector rows may remain in state; the code removes the target from the set and deletes every selector and recipient row under it. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](../conflicts.md#c-key-05).
+> **Resolved conflict C-KEY-05**: TIP-1011 says `removeAllowedCalls` only disables the target scope and that prior selector rows may remain in state; the code removes the target from the set and deletes every selector and recipient row under it. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-key-05).
 
 Reference implementation: crates/precompiles/src/account_keychain/mod.rs (authorize_key_internal, authorize_admin_key, burn_key_authorization_witness, revoke_key, update_spending_limit, set_allowed_calls, remove_allowed_calls, replace_allowed_calls, upsert_target_scope, validate_*), crates/precompiles/src/lib.rs (has_duplicates_metered, dedup_cost).
 
@@ -1108,7 +1108,7 @@ PTR_SLOT = 3
 All values are stored as full words (`uint64`/`uint32` right-aligned). The ring pointer is always in
 `[0, EXPIRING_NONCE_SET_CAPACITY)` for the capacity in force when it was written.
 
-> **Open conflict C-KEY-10**: spec-tempo-transaction.mdx gives the 2D nonce storage key as `keccak256(abi.encode(account_address, nonce_key))`; the code uses the nested mapping at slot 0 above. See [conflicts](../conflicts.md#c-key-10).
+> **Resolved conflict C-KEY-10**: spec-tempo-transaction.mdx gives the 2D nonce storage key as `keccak256(abi.encode(account_address, nonce_key))`; the code uses the nested mapping at slot 0 above. Decided: this spec follows the implementation, and the docs are fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098). See [conflicts](../conflicts.md#c-key-10).
 
 ### 2.3 ABI
 
@@ -1187,9 +1187,9 @@ def check_and_mark_expiring_nonce(replay_hash, valid_before):
 
 The pointer slot holds the wrapped index, never a running counter.
 
-> **Resolved conflict C-KEY-09**: TIP-1009 stores `ptr + 1` unbounded and indexes with `ptr % CAPACITY`; the code stores the wrapped pointer (as TIP-1093 states). Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](../conflicts.md#c-key-09).
+> **Resolved conflict C-KEY-09**: TIP-1009 stores `ptr + 1` unbounded and indexes with `ptr % CAPACITY`; the code stores the wrapped pointer (as TIP-1093 states). Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-key-09).
 
-> **Resolved conflict C-KEY-08**: TIP-1009 keys replay protection on the transaction hash; from T1B the code keys it on `keccak256(encode_for_signing || sender)`. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](../conflicts.md#c-key-08).
+> **Resolved conflict C-KEY-08**: TIP-1009 keys replay protection on the transaction hash; from T1B the code keys it on `keccak256(encode_for_signing || sender)`. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-key-08).
 
 **Capacity change at T11.** The T11 activation performs no state migration. The pointer value
 written by the last pre-T11 expiring transaction (some `p < 300,000`) is used as is; from T11 the
@@ -1342,7 +1342,7 @@ def credit_slot(A: Address) -> int:
 Its value is the balance as an unsigned integer `< 2^64` (bits 64..255 are zero). A stored word of
 `2^64` or more is a fatal state inconsistency. A missing slot means balance 0.
 
-> **Resolved conflict C-KEY-11**: TIP-1060 describes the balance as `mapping(address => uint256 packed_state)`; the code stores it at slot `uint256(bytes32(account))` with no mapping hash. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](../conflicts.md#c-key-11).
+> **Resolved conflict C-KEY-11**: TIP-1060 describes the balance as `mapping(address => uint256 packed_state)`; the code stores it at slot `uint256(bytes32(account))` with no mapping hash. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-key-11).
 
 ### 4.3 Transient state
 
@@ -1358,7 +1358,7 @@ For each account `A`, the StorageCredits account's *transient* storage at slot `
 It follows EIP-1153 semantics: journaled with call frames (reverted with the frame that wrote it) and
 cleared at the end of the transaction. A mode byte above 2 is a fatal inconsistency (unreachable).
 
-> **Resolved conflict C-KEY-12**: TIP-1060 describes the transient state as a mapping of a struct `{uint64 budget; uint8 mode; uint64 pending_refunds}`; the code uses the direct slot and the bit layout above. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](../conflicts.md#c-key-12).
+> **Resolved conflict C-KEY-12**: TIP-1060 describes the transient state as a mapping of a struct `{uint64 budget; uint8 mode; uint64 pending_refunds}`; the code uses the direct slot and the bit layout above. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-key-12).
 
 ### 4.4 The SSTORE hook
 

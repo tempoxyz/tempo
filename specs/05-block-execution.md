@@ -163,9 +163,9 @@ If any charge exceeds the remaining gas the frame halts exceptionally (all its g
 | T1 – T6 | 250,100 | 252,200 |
 | T7 + | 5,100 (+ hook, §1.6.2 step 5) | 7,200 (+ hook) |
 
-> **Resolved conflict C-EXEC-05**: TIP-1000 states a cold zero-to-nonzero SSTORE costs 252,100 gas at T1; the code charges 252,200 (100 static + 250,000 + 2,100 cold). Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](conflicts.md#c-exec-05).
+> **Resolved conflict C-EXEC-05**: TIP-1000 states a cold zero-to-nonzero SSTORE costs 252,100 gas at T1; the code charges 252,200 (100 static + 250,000 + 2,100 cold). Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](conflicts.md#c-exec-05).
 
-> **Resolved conflict C-EXEC-06**: TIP-1060 states the T7 clean-creation residual is 5,000 gas in total (4,900 dynamic + 100 warm) and the 0→Y→0 restore refund is 4,900; the code charges 100 + 5,000 dynamic and refunds 5,000. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](conflicts.md#c-exec-06).
+> **Resolved conflict C-EXEC-06**: TIP-1060 states the T7 clean-creation residual is 5,000 gas in total (4,900 dynamic + 100 warm) and the 0→Y→0 restore refund is 4,900; the code charges 100 + 5,000 dynamic and refunds 5,000. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](conflicts.md#c-exec-06).
 
 #### 1.6.3 `0xEF`
 
@@ -193,7 +193,7 @@ Tempo uses the Osaka gas schedule with the overrides below. Parameters not liste
 
 The T1 values implement TIP-1000; the T7 values implement TIP-1060. How the transaction-level intrinsic gas uses `TxCreateCost`, `NewAccountCost` and `TxEip7702PerEmptyAccountCost` is specified in [06-transactions-and-fees.md](06-transactions-and-fees.md). The EIP-8037 state-gas parameters are not used (§1.10).
 
-> **Resolved conflict C-EXEC-04**: TIP-1000 says the nonzero→zero SSTORE clearing refund stays 15,000 gas; the code uses 4,800 (EIP-3529) at T0–T6 and 0 from T7. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](conflicts.md#c-exec-04).
+> **Resolved conflict C-EXEC-04**: TIP-1000 says the nonzero→zero SSTORE clearing refund stays 15,000 gas; the code uses 4,800 (EIP-3529) at T0–T6 and 0 from T7. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](conflicts.md#c-exec-04).
 
 Reference implementation: crates/hardfork/src/gas_params.rs (`configure_version`, `apply_t1`, `apply_t7`, `test_gas_params_per_hardfork`).
 
@@ -206,7 +206,7 @@ The per-transaction gas limit cap of EIP-7825 is:
 
 A non-system transaction whose `gas_limit` exceeds the cap is invalid. The cap applies to every non-system transaction type, including `0x76`. It does not apply to system transactions or system calls. (On mainnet T1A activates together with T1, so the 16,777,216 cap applies to T0 blocks only.)
 
-> **Resolved conflict C-EXEC-03**: TIP-1010 describes the previous transaction gas cap as 16,000,000; the code uses EIP-7825's 16,777,216 before T1A. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](conflicts.md#c-exec-03).
+> **Resolved conflict C-EXEC-03**: TIP-1010 describes the previous transaction gas cap as 16,000,000; the code uses EIP-7825's 16,777,216 before T1A. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](conflicts.md#c-exec-03).
 
 Reference implementation: crates/hardfork/src/lib.rs (`tx_gas_limit_cap`), crates/evm/src/lib.rs (`resolved_env`).
 
@@ -295,7 +295,7 @@ For every non-genesis header `h` with parent `p`:
 4. `h.base_fee_per_gas == next_block_base_fee(p, h.timestamp)` (§2.4).
 5. EIP-4844/EIP-7918 (Osaka): `h.excess_blob_gas == next_block_excess_blob_gas_osaka(p.excess_blob_gas, p.blob_gas_used, p.base_fee_per_gas)` with the Osaka blob parameters. Because no blob transactions exist, `blob_gas_used` is always 0 (§2.5) and this value is always 0.
 
-> **Resolved conflict C-EXEC-02**: TIP-1010 (and the fee specification's parameter table) give the block gas limit as a fixed 500,000,000; the code enforces only the Ethereum ±1/1024 per-block bound above. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](conflicts.md#c-exec-02).
+> **Resolved conflict C-EXEC-02**: TIP-1010 (and the fee specification's parameter table) give the block gas limit as a fixed 500,000,000; the code enforces only the Ethereum ±1/1024 per-block bound above. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](conflicts.md#c-exec-02).
 
 ### 2.3 Gas-limit partition
 
@@ -660,7 +660,7 @@ Allow-list (`D` = `(address,address,address,address,bytes32,address,bytes32)`, t
 | `CHANNEL_DYNAMIC_ENTRIES` | `settle(D,uint96,bytes signature)` | `0x97fb5104` | dynamic |
 | | `close(D,uint96,uint96,bytes signature)` | `0x73b57f74` | dynamic |
 
-> **Resolved conflict C-EXEC-07**: TIP-1045 requires static-only payment calldata to satisfy the ABI encoding constraints of its signature and classifies malformed encodings as general; the code checks only the selector and exact length (e.g. an `address` word with non-zero high bytes still classifies as a payment). Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](conflicts.md#c-exec-07).
+> **Resolved conflict C-EXEC-07**: TIP-1045 requires static-only payment calldata to satisfy the ABI encoding constraints of its signature and classifies malformed encodings as general; the code checks only the selector and exact length (e.g. an `address` word with non-zero high bytes still classifies as a payment). Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](conflicts.md#c-exec-07).
 
 > **TODO**: `abi_decode_strict` above describes the validating decoder of `alloy-sol-types` (`abi_decode_validate`) used by the reference implementation for the two dynamic entries; its exact acceptance rules for edge cases (non-canonical offsets, padding of the `bytes` tail) should be cross-checked against that library before relying on this description for adversarial inputs.
 
@@ -713,7 +713,7 @@ Rules that follow:
 - From T4, `shared_gas_limit = 0`; a block in which any transaction entered `GasIncentive` (`incentive_gas_used > 0` at the end of the transaction loop) is invalid (§6.1). Equivalently, from T4 every non-payment transaction must fit the remaining general budget and every transaction must fit the remaining non-shared budget.
 - No regular transaction may follow the system transaction, and at most one system transaction may appear.
 
-> **Resolved conflict C-EXEC-01**: TIP-1010 (invariant 5) and the payment-lane specification state that a block is invalid when non-payment gas exceeds `general_gas_limit` (or proposer-lane gas exceeds the non-shared limit, or subblock gas exceeds `shared_gas_limit`), and the payment-lane specification bounds post-lane inclusion by the shared budget; before T4 the code instead moves the overflowing transaction and all later ones into an unbounded `GasIncentive` section and accepts the block. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](conflicts.md#c-exec-01).
+> **Resolved conflict C-EXEC-01**: TIP-1010 (invariant 5) and the payment-lane specification state that a block is invalid when non-payment gas exceeds `general_gas_limit` (or proposer-lane gas exceeds the non-shared limit, or subblock gas exceeds `shared_gas_limit`), and the payment-lane specification bounds post-lane inclusion by the shared budget; before T4 the code instead moves the overflowing transaction and all later ones into an unbounded `GasIncentive` section and accepts the block. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](conflicts.md#c-exec-01).
 
 Reference implementation: crates/evm/src/block.rs (`BlockSection`, `next_section`, `record_committed_tx`, `finish_with_block_access_list`).
 
@@ -795,7 +795,7 @@ The CurrentCommittee precompile accepts `setCommitteeMembers` only from `msg.sen
 
 The call runs after §6.1 and, before T13, before the Ethereum post-block calls of §6.3.
 
-> **Resolved conflict C-EXEC-08**: TIP-1070 requires the committee update to be called "from the system address" following the EIP-4788 convention (conventionally `0xff…fe`); the code (and TIP-1119) call it from `0x0000…0000`, and the precompile rejects any other caller. Decided: this spec follows the implementation, and the TIP is amended in [tempoxyz/tempo#8939](https://github.com/tempoxyz/tempo/pull/8939). See [conflicts](conflicts.md#c-exec-08).
+> **Resolved conflict C-EXEC-08**: TIP-1070 requires the committee update to be called "from the system address" following the EIP-4788 convention (conventionally `0xff…fe`); the code (and TIP-1119) call it from `0x0000…0000`, and the precompile rejects any other caller. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](conflicts.md#c-exec-08).
 
 Reference implementation: crates/evm/src/block.rs (`apply_current_committee_system_call`), crates/precompiles/src/current_committee/mod.rs.
 
