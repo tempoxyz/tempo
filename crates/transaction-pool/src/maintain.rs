@@ -554,9 +554,9 @@ where
         // normal mined path rather than being discarded from the pool.
         let mut removed_this_iteration: B256Set = tip.transaction_hashes().copied().collect();
 
-        // TIP-1124 changes transaction validity at T13. Recheck every subpool, including
+        // TIP-1124 changes transaction validity at T15. Recheck every subpool, including
         // queued and 2D nonce transactions admitted before activation.
-        let new_tip1124_active = spec.is_t13();
+        let new_tip1124_active = spec.is_t15();
         if new_tip1124_active && !tip1124_active {
             let snapshot = all_txs.get_or_insert_with(|| pool.all_transactions());
             let hashes: Vec<_> = snapshot
@@ -787,7 +787,7 @@ where
 
 /// Check the changed floor without rerunning state-dependent admission checks.
 fn covers_tip1124_calldata_floor(tx: &TempoPooledTransaction) -> bool {
-    let version = gas_params::version(evm2::SpecId::OSAKA, TempoHardfork::T13, false);
+    let version = gas_params::version(evm2::SpecId::OSAKA, TempoHardfork::T15, false);
     let params = &version.gas_params;
     let mut floor_tokens = 0u64;
     if let Some(aa) = tx.inner().as_aa() {

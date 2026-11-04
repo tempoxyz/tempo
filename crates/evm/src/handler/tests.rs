@@ -89,7 +89,7 @@ fn intrinsic_with_amsterdam(
 
 #[test]
 fn tip1124_floor_prices_all_aa_calldata_once() {
-    for spec in [TempoHardfork::T12, TempoHardfork::T13] {
+    for spec in [TempoHardfork::T14, TempoHardfork::T15] {
         for byte in [0, 1] {
             let input = Bytes::from(vec![byte; 1_000]);
             let calls = [400..1_000, 0..400]
@@ -110,7 +110,7 @@ fn tip1124_floor_prices_all_aa_calldata_once() {
             .unwrap();
             let expected = 21_000
                 + 1_000
-                    * if spec.is_t13() {
+                    * if spec.is_t15() {
                         64
                     } else if byte == 0 {
                         10
