@@ -54,7 +54,7 @@ struct Ready {
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     store: Store,
-    catalog: Catalog,
+    mut catalog: Catalog,
     mut range: Range<u64>,
     config: TempoEvmConfig,
     consensus: TempoConsensus,
@@ -67,7 +67,24 @@ pub fn run(
         .worker_threads(env_usize("TEMPO_CORPUS_IO_THREADS").unwrap_or((workers * 3 / 4).max(4)))
         .enable_all()
         .build()?;
-    let reader = Arc::new(runtime.block_on(open(&store, &catalog, &config))?);
+    // Read the published snapshot through a lease of our own: a fill extending the corpus
+    // retires the published checkpoint with a fixed grace lifetime a long replay can outlast.
+    // A replay that fails before releasing it leaves it to expire.
+    let lease = store.lease_published(&runtime, &mut catalog, {
+        let cancellation = cancellation.clone();
+        // Stop reading before the lease may expire.
+        move || cancellation.cancel()
+    })?;
+    let reader = Arc::new(runtime.block_on(store.reader(&catalog))?);
+    let tip_timestamp = runtime.block_on(store::tip_timestamp(&reader, &catalog.cursor))?;
+    eyre::ensure!(
+        store::forks_agree(
+            &catalog.context.forks,
+            &config.chain_spec().display_hardforks().to_string(),
+            tip_timestamp,
+        ),
+        "corpus fork schedule mismatch"
+    );
     if let Some((from, to)) = standalone {
         range = runtime.block_on(transaction_range(&reader, &catalog, from, to))?;
     }
@@ -249,14 +266,21 @@ pub fn run(
         Ok(())
     });
     let closed = runtime.block_on(reader.close());
-    result?;
-    Ok(closed?)
+    let expiring = lease.expiring();
+    let released = lease.release(&runtime, &store);
+    let finished = result.and(closed.map_err(eyre::Report::from));
+    // A failed renewal cancels the replay; report why rather than the cancellation.
+    if expiring {
+        released.and(finished)
+    } else {
+        finished.and(released)
+    }
 }
 
 /// Opens the corpus and checks it was captured under `config`'s fork schedule.
 async fn open(store: &Store, catalog: &Catalog, config: &TempoEvmConfig) -> eyre::Result<DbReader> {
     let reader = store.reader(catalog).await?;
-    let tip_timestamp = store::tip_timestamp(&reader, &catalog.context).await?;
+    let tip_timestamp = store::tip_timestamp(&reader, &catalog.cursor).await?;
     eyre::ensure!(
         store::forks_agree(
             &catalog.context.forks,
@@ -272,7 +296,7 @@ async fn open(store: &Store, catalog: &Catalog, config: &TempoEvmConfig) -> eyre
 /// range.
 pub fn run_blocks(
     store: Store,
-    catalog: Catalog,
+    mut catalog: Catalog,
     blocks: &[u64],
     config: TempoEvmConfig,
     consensus: TempoConsensus,
@@ -282,12 +306,18 @@ pub fn run_blocks(
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
+    // A lease of our own, as in [run]; workers stop once it may expire.
+    let lease = store.lease_published(&runtime, &mut catalog, || {})?;
     let reader = runtime.block_on(open(&store, &catalog, &config))?;
     let started = Instant::now();
     let next = AtomicUsize::new(0);
     let replay =
         || -> eyre::Result<()> {
             while let Some(&block) = blocks.get(next.fetch_add(1, Ordering::Relaxed)) {
+                eyre::ensure!(
+                    !lease.expiring(),
+                    "replay lease expires before it can be renewed"
+                );
                 let replayed =
                     runtime.block_on(async {
                         let (record, input) = store::published(&reader, block).await?;
@@ -318,8 +348,15 @@ pub fn run_blocks(
                 .map_err(|_| eyre::eyre!("corpus worker panicked"))?
         })
     });
-    runtime.block_on(reader.close())?;
-    result?;
+    let closed = runtime.block_on(reader.close());
+    let expiring = lease.expiring();
+    let released = lease.release(&runtime, &store);
+    let finished = result.and(closed.map_err(eyre::Report::from));
+    if expiring {
+        released.and(finished)?;
+    } else {
+        finished.and(released)?;
+    }
     info!(
         blocks = blocks.len(),
         workers,
@@ -445,7 +482,7 @@ async fn transaction_range(
 ) -> eyre::Result<Range<u64>> {
     let mut bounds = [0; 2];
     for (bound, ordinal) in bounds.iter_mut().zip([from, to - 1]) {
-        let (mut low, mut high) = (catalog.context.start, catalog.context.end);
+        let (mut low, mut high) = (catalog.context.start, catalog.cursor.next);
         // Metadata of the final `high`: the first block whose ordinals end after `ordinal`.
         let mut found = None;
         while low < high {
@@ -540,7 +577,7 @@ async fn read_catalog(
         slot.send(page);
     }
     let cursor = metadata.cursor;
-    if range.end == catalog.context.end {
+    if range.end == catalog.cursor.next {
         eyre::ensure!(cursor == catalog.cursor, "final metadata boundary mismatch");
     } else {
         let next = store::metadata(reader, range.end).await?;

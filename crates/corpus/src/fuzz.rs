@@ -4,7 +4,7 @@
 
 use crate::{
     code,
-    store::{self, Catalog, Store},
+    store::{self, Catalog, Lease, Store},
     types::Input,
 };
 use alloy_eips::Encodable2718;
@@ -23,36 +23,48 @@ use tempo_fuzz_types::{
 };
 use tempo_primitives::Block;
 use tokio::runtime::Runtime;
+use tracing::warn;
 
-/// A complete corpus, open at its published checkpoint.
+/// A corpus, open at its published checkpoint. A fill extending it meanwhile does not change
+/// what this reads.
 pub struct Corpus {
     runtime: Runtime,
+    store: Store,
+    /// Keeps the snapshot readable while a fill extends the corpus; taken when dropped.
+    lease: Option<Lease>,
     reader: DbReader,
     catalog: Catalog,
     chain_spec: ChainSpecInput,
 }
 
 impl Corpus {
-    /// Opens the complete corpus at `url` (`s3://bucket/prefix` or `file:///directory`), with S3
-    /// reads going to `endpoint` when given.
+    /// Opens the published blocks of the corpus at `url` (`s3://bucket/prefix` or
+    /// `file:///directory`), with S3 reads going to `endpoint` when given.
     pub fn open(url: &str, endpoint: Option<&str>) -> eyre::Result<Self> {
-        let runtime = tokio::runtime::Builder::new_current_thread()
+        // One worker renews the lease while the caller is not reading.
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
             .enable_all()
             .build()?;
-        let (reader, catalog, tip) = runtime.block_on(async {
+        let (store, mut catalog) = runtime.block_on(async {
             let store = Store::open(url, endpoint).await?;
             let (catalog, _) = store
                 .catalog()
                 .await?
                 .ok_or_else(|| eyre::eyre!("no corpus catalog at {url}"))?;
-            eyre::ensure!(catalog.complete, "corpus {url} is not complete");
+            eyre::Ok((store, catalog))
+        })?;
+        let lease = store.lease_published(&runtime, &mut catalog, || {})?;
+        let (reader, tip) = runtime.block_on(async {
             let reader = store.reader(&catalog).await?;
-            let tip = store::tip_timestamp(&reader, &catalog.context).await?;
-            eyre::Ok((reader, catalog, tip))
+            let tip = store::tip_timestamp(&reader, &catalog.cursor).await?;
+            eyre::Ok((reader, tip))
         })?;
         let chain_spec = chain_spec_input(&catalog, tip)?;
         Ok(Self {
             runtime,
+            store,
+            lease: Some(lease),
             reader,
             catalog,
             chain_spec,
@@ -65,6 +77,10 @@ impl Corpus {
 
     /// `block`'s harness input.
     pub fn input(&self, block: u64) -> eyre::Result<TempoHarnessInput> {
+        eyre::ensure!(
+            !self.lease.as_ref().is_some_and(Lease::expiring),
+            "corpus lease expires before it can be renewed"
+        );
         let stored = self
             .runtime
             .block_on(store::published(&self.reader, block))?
@@ -81,6 +97,16 @@ impl Corpus {
         blocks
             .into_iter()
             .map(|block| Ok((block, self.input(block)?)))
+    }
+}
+
+impl Drop for Corpus {
+    fn drop(&mut self) {
+        if let Some(lease) = self.lease.take()
+            && let Err(error) = lease.release(&self.runtime, &self.store)
+        {
+            warn!(%error, "Releasing the corpus lease failed; it expires on its own");
+        }
     }
 }
 
@@ -178,10 +204,11 @@ fn harness_input(stored: &Input, chain_spec: ChainSpecInput) -> eyre::Result<Tem
 pub fn block_list(catalog: &Catalog, blocks: &[u64]) -> String {
     let context = &catalog.context;
     let header = format!(
-        "# corpus {}..{} tip {} checkpoint {}\n",
+        "# corpus {}..{} parent {} tip {} checkpoint {}\n",
         context.start,
-        context.end,
-        context.tip,
+        catalog.cursor.next,
+        context.parent,
+        B256::from(catalog.cursor.parent),
         catalog.checkpoint.as_deref().unwrap_or("none")
     );
     blocks
@@ -193,15 +220,22 @@ pub fn block_list(catalog: &Catalog, blocks: &[u64]) -> String {
 /// any before the first header, which must be in its range.
 pub fn read_blocks(path: &Path, catalog: &Catalog) -> eyre::Result<Vec<u64>> {
     let context = &catalog.context;
-    let tip = format!(" tip {} ", context.tip);
+    // A corpus grows at its tip, so a section names it by the parent of its first block. Sections
+    // written before that name it by the tip it had then, which matches only an unextended corpus.
+    let parent = format!(" parent {} ", context.parent);
+    let tip = format!(" tip {} ", B256::from(catalog.cursor.parent));
     let (mut blocks, mut ours) = (Vec::new(), true);
     for line in fs::read_to_string(path)?.lines().map(str::trim) {
         if let Some(header) = line.strip_prefix('#') {
-            ours = header.contains(&tip);
+            ours = if header.contains(" parent ") {
+                header.contains(&parent)
+            } else {
+                header.contains(&tip)
+            };
         } else if ours && !line.is_empty() {
             let block: u64 = line.parse()?;
             eyre::ensure!(
-                (context.start..context.end).contains(&block),
+                (context.start..catalog.cursor.next).contains(&block),
                 "block {block} is outside the corpus"
             );
             blocks.push(block);
