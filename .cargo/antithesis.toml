@@ -3,6 +3,10 @@
 #     --config .cargo/antithesis.toml
 # Setting the target keeps the flags off build scripts and proc macros; binaries land in
 # target/x86_64-unknown-linux-gnu/antithesis/.
+# Cargo ignores these rustflags when RUSTFLAGS or CARGO_ENCODED_RUSTFLAGS is set (as the repo
+# Dockerfiles do), producing an uninstrumented binary without any error. Unset them, or pass
+# these flags through RUSTFLAGS instead. Check the result with
+# `readelf -S <binary> | grep __sancov_guards`.
 # See https://antithesis.com/docs/reference/sdk/rust/instrumentation/.
 [build]
 target = "x86_64-unknown-linux-gnu"
