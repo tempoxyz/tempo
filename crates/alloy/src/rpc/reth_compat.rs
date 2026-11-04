@@ -764,8 +764,6 @@ mod tests {
 
     #[test]
     fn test_aa_roundtrip_via_tx_env() {
-        use alloy_primitives::U256;
-
         let calls = vec![
             Call {
                 to: Address::repeat_byte(0x11).into(),

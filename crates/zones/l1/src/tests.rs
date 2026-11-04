@@ -5,6 +5,7 @@ use alloy_primitives::{Bloom, Bytes, address};
 use alloy_rpc_types_eth::{Header as RpcHeader, TransactionReceipt};
 use alloy_sol_types::SolEvent;
 use alloy_transport::mock::Asserter;
+use k256::{AffinePoint, ProjectivePoint, Scalar};
 use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
 use serde::Deserialize;
 use std::{collections::HashSet, time::Duration};
@@ -1124,8 +1125,6 @@ fn test_withdrawal_bounce_back_and_deposit_hash_chain() {
 
 #[tokio::test]
 async fn test_prepare_decrypted_deposit_defers_policy_to_upstream_mint() {
-    use k256::{AffinePoint, ProjectivePoint, Scalar};
-
     let token = address!("0x0000000000000000000000000000000000001000");
     let sender = address!("0x0000000000000000000000000000000000001234");
     let recipient = address!("0x000000000000000000000000000000000000BEEF");

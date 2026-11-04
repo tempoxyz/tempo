@@ -12,7 +12,7 @@ use commonware_cryptography::{
         dkg::{self, feldman_desmedt::Output},
         primitives::{sharing::Mode, variant::MinSig},
     },
-    ed25519::PublicKey,
+    ed25519::{PrivateKey, PublicKey},
 };
 use commonware_math::algebra::Random as _;
 use commonware_utils::{N3f1, TryFromIterator as _, ordered};
@@ -875,8 +875,6 @@ fn generate_consensus_config(
     seed: Option<u64>,
     no_dkg_in_genesis: bool,
 ) -> Option<ConsensusConfig> {
-    use commonware_cryptography::ed25519::PrivateKey;
-
     match (validators.is_empty(), no_dkg_in_genesis) {
         (_, true) => {
             println!(
@@ -962,7 +960,6 @@ mod tests {
     }
 
     fn parse(args: &str) -> Result<GenesisArgs, clap::Error> {
-        use clap::Parser as _;
         let base = "xtask --accounts 2 --no-dkg-in-genesis --seed 1";
         Cli::try_parse_from(format!("{base} {args}").split_whitespace()).map(|cli| cli.genesis)
     }

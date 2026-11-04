@@ -5151,8 +5151,6 @@ mod tests {
 
     #[test]
     fn test_blacklisted_user_cannot_use_internal_balance() -> eyre::Result<()> {
-        use crate::tip403_registry::{ITIP403Registry, TIP403Registry};
-
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();

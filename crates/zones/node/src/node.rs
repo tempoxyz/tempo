@@ -65,7 +65,7 @@ use std::{
     sync::{Arc, OnceLock},
     time::Duration,
 };
-use tempo_alloy::TempoNetwork;
+use tempo_alloy::{TempoNetwork, provider::ext::TempoProviderBuilderExt as _};
 use tempo_contracts::zones::{
     LegacyTempoAdvanced, TempoAdvanced, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS,
     ZonePortal::{self},
@@ -1351,7 +1351,6 @@ where
         let peer_tips = PeerTipRegistry::default();
         let relayer = match individual_signer {
             Some(signer) => {
-                use tempo_alloy::provider::ext::TempoProviderBuilderExt as _;
                 let provider = alloy_provider::ProviderBuilder::new_with_network::<TempoNetwork>()
                     .with_nonce_key_filler()
                     .wallet(signer)
