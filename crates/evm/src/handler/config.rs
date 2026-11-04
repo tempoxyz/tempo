@@ -24,9 +24,9 @@ use tempo_precompiles::{
     STORAGE_CREDITS_ADDRESS,
     account_keychain::AccountKeychain,
     error::TempoPrecompileError,
-    storage::{FromWord, StorageActions, StorageCtx},
+    storage::{FromWord, StorageAction, StorageActions, StorageCtx},
     storage_credits::{NonCreditableSlots, TransientState},
-    tip20::TIP20Error,
+    tip20::{TIP20Error, TIP20Token},
     tip20_channel_reserve::TIP20ChannelReserve,
 };
 use tempo_primitives::{TempoAddressExt, transaction::calc_gas_balance_spending};
@@ -354,6 +354,17 @@ impl TempoHandlerHooks {
         }
         let balance =
             host.get_token_balance(fee_token, fee_payer, spec, StorageActions::disabled())?;
+        // Record the affordability check itself, not the balance: replays and pending-transaction
+        // checks then follow the condition rather than the exact value.
+        host.ext()
+            .actions
+            .record(StorageAction::FeeTokenBalanceCheck(
+                fee_token,
+                TIP20Token::from_address_unchecked(fee_token).balances[fee_payer].slot(),
+                balance,
+                max_fee,
+                balance >= max_fee,
+            ));
         if balance < max_fee {
             return Err(TempoInvalidTransaction::from(
                 FeePaymentError::InsufficientFeeTokenBalance {

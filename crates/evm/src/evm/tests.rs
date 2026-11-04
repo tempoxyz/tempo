@@ -5032,16 +5032,19 @@ fn test_fee_fallback_records_affordability_instead_of_exact_balances() -> eyre::
                 _ => None,
             })
             .collect();
+        let check = |index: usize, sufficient| {
+            (
+                tokens[index],
+                TIP20Token::from_address_unchecked(tokens[index]).balances[payer].slot(),
+                U256::from(balances[index]),
+                U256::from(1_000_000),
+                sufficient,
+            )
+        };
+        // Fallback resolution checks each candidate, then the handler checks the selected token.
         let expected: Vec<_> = (0..=selected)
-            .map(|index| {
-                (
-                    tokens[index],
-                    TIP20Token::from_address_unchecked(tokens[index]).balances[payer].slot(),
-                    U256::from(balances[index]),
-                    U256::from(1_000_000),
-                    index == selected,
-                )
-            })
+            .map(|index| check(index, index == selected))
+            .chain([check(selected, true)])
             .collect();
         assert_eq!(checks, expected);
         assert!(!recorded.iter().any(|action| matches!(action,

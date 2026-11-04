@@ -42,8 +42,8 @@ use reth_payload_builder::{EthBuiltPayload, PayloadBuilderError};
 use reth_payload_primitives::BuiltPayloadExecutedBlock;
 use reth_primitives_traits::{RecoveredBlock, transaction::error::InvalidTransactionError};
 use reth_storage_api::{
-    EvmStateProvider, HashedPostStateProvider, StateProvider as _, StateProviderFactory,
-    StateRootProvider,
+    EvmStateProvider, HashedPostStateProvider, StateProvider as _, StateProviderBox,
+    StateProviderFactory, StateRootProvider,
 };
 use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
@@ -66,7 +66,8 @@ use tempo_payload_types::{
 use tempo_precompiles::{storage::StorageActions, tip_fee_manager::TipFeeManager};
 use tempo_primitives::{TempoHeader, TempoReceipt, TempoTxEnvelope};
 use tempo_transaction_pool::{
-    StateAwareBestTransactions, TempoTransactionPool, best::BestTransaction,
+    Invalidations, StateAwareBestTransactions, TempoTransactionPool,
+    best::{BestTransaction, FeeRouteCheck, ParentStorage},
     transaction::TempoPoolTransactionError,
 };
 use tokio::sync::oneshot;
@@ -78,6 +79,19 @@ use tracing::{Level, Span, debug, debug_span, info, instrument, trace, warn};
 /// this margin together with known transaction, withdrawal, and extra-data lengths for Osaka size
 /// checks and pacing estimates.
 const NON_TRANSACTION_SIZE_ESTIMATE: usize = 2048;
+
+/// Reads the parent state for the payload builder's fee AMM route checks.
+struct ParentState(Option<StateProviderBox>);
+
+impl ParentStorage for ParentState {
+    fn storage(&mut self, address: Address, slot: U256) -> Option<U256> {
+        self.0
+            .as_ref()?
+            .storage(address, slot.into())
+            .ok()
+            .map(Option::unwrap_or_default)
+    }
+}
 
 /// Source of transactions for payload building.
 enum PayloadTransactions {
@@ -429,6 +443,21 @@ where
         }
 
         let pool_fetch_start = Instant::now();
+        // Read before the snapshot: maintenance marks a block processed only after it takes out
+        // what the block invalidated.
+        let mut parent_changes = Invalidations::default();
+        for changes in self.pool.recent_blocks().unmaintained(parent_header.hash()) {
+            parent_changes.extend(&changes);
+        }
+        let fee_route = || {
+            FeeRouteCheck::new(
+                validator_token,
+                hardfork,
+                Box::new(ParentState(
+                    self.provider.state_by_block_hash(parent_header.hash()).ok(),
+                )),
+            )
+        };
         let raw_best_txs = best_txs(BestTransactionsAttributes::new(
             executor.evm().block().basefee.to(),
             Some(executor.evm().block().blob_basefee.to()),
@@ -451,15 +480,17 @@ where
             } else {
                 PayloadTransactions::Prewarming(StateAwareBestTransactions::new(
                     BestTransactionsPrewarming::new(prewarm_ctx, raw_best_txs),
-                    hardfork.fallback_fee_tokens(),
-                    Some(validator_token),
+                    attributes.timestamp,
+                    Some(fee_route()),
+                    parent_changes,
                 ))
             }
         } else {
             PayloadTransactions::Sequential(StateAwareBestTransactions::new(
                 Box::new(raw_best_txs),
-                hardfork.fallback_fee_tokens(),
-                Some(validator_token),
+                attributes.timestamp,
+                Some(fee_route()),
+                parent_changes,
             ))
         };
         self.metrics

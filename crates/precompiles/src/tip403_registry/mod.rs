@@ -936,9 +936,15 @@ impl TIP403Registry {
 
         // Verify that the policy id exists (spec: +T2).
         // Skip the counter read (extra SLOAD) when policy data is non-default.
+        // The counter only grows, so an existing policy keeps existing: replays and
+        // pending-transaction checks need not track the read.
         if self.storage.spec().is_t2()
             && data.is_default()
-            && policy_id >= self.policy_id_counter()?
+            && policy_id
+                >= self
+                    .storage
+                    .actions()
+                    .unrecorded(|| self.policy_id_counter())?
         {
             return Err(TIP403RegistryError::policy_not_found().into());
         }

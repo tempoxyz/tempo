@@ -9,7 +9,7 @@ pub mod validator;
 mod address_filter;
 pub use address_filter::AddressFilter;
 
-pub use transaction::{KeychainSubject, RevokedKeys, SpendingLimitUpdates};
+pub use transaction::KeychainSubject;
 
 // Tempo pool module with 2D nonce support
 pub mod tempo_pool;
@@ -23,12 +23,14 @@ pub mod invalidation;
 pub mod maintain;
 pub mod metrics;
 pub mod ordering;
+pub mod preconditions;
 pub(crate) mod state_cache;
 pub mod tt_2d_pool;
 
 pub use best::{StateAwareBestTransactions, StateAwarePoolTransaction};
-pub use invalidation::Invalidations;
+pub use invalidation::{Invalidations, RecentBlocks};
 pub use maintain::TempoPoolUpdates;
+pub use preconditions::Preconditions;
 pub use tempo_pool::InvalidatedTransactions;
 
 pub use metrics::{AA2dPoolMetrics, TempoPoolMaintenanceMetrics};
