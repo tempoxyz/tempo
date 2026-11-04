@@ -1058,13 +1058,14 @@ where
     })
 }
 
-pub(crate) fn latest_sealed_header<P>(provider: &P) -> eyre::Result<SealedHeader<TempoHeader>>
+fn latest_sealed_header<P>(provider: &P) -> eyre::Result<SealedHeader<TempoHeader>>
 where
     P: BlockNumReader + HeaderProvider<Header = TempoHeader>,
 {
-    let number = provider.best_block_number()?;
+    let number = provider.best_block_number().map_err(eyre::Report::from)?;
     provider
-        .sealed_header(number)?
+        .sealed_header(number)
+        .map_err(eyre::Report::from)?
         .ok_or_else(|| eyre::eyre!("no latest block header"))
 }
 

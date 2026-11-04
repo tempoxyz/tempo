@@ -1033,7 +1033,9 @@ where
             );
         } else if let Some(config) = self.sequencer_config.take() {
             let sequencer_addr = config.sequencer_signer.address();
-            let last_header = crate::role::latest_sealed_header(&provider)?;
+            let last_header = provider
+                .sealed_header(provider.best_block_number()?)?
+                .ok_or_else(|| eyre::eyre!("no latest block header"))?;
             let engine = ZoneEngine::new(
                 provider.chain_spec(),
                 engine_handle,
