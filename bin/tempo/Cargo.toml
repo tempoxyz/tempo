@@ -37,7 +37,6 @@ tempo-faucet.workspace = true
 tempo-telemetry-util.workspace = true
 tempo-state-bloat.workspace = true
 tempo-corpus = { workspace = true, optional = true }
-antithesis-instrumentation = { workspace = true, optional = true }
 
 alloy = { workspace = true, default-features = false, features = [
 	"network",
@@ -123,6 +122,10 @@ tracy-client = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.30.1", features = ["signal"], optional = true }
+
+# The Antithesis coverage runtime only builds on Linux.
+[target.'cfg(target_os = "linux")'.dependencies]
+antithesis-instrumentation = { workspace = true, optional = true }
 
 [dev-dependencies]
 jsonrpsee.workspace = true
