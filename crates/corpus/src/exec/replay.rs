@@ -12,6 +12,7 @@ use alloy_primitives::B256;
 use bytes::Bytes;
 use crossbeam_channel::{RecvTimeoutError, Sender, TrySendError};
 use eyre::OptionExt;
+use futures::{StreamExt, TryStreamExt};
 use parking_lot::Mutex;
 use reth_chainspec::EthChainSpec;
 use reth_cli_util::cancellation::CancellationToken;
@@ -41,6 +42,8 @@ const REPLAY_BUDGET: usize = 2 * MAX_RECORD_BYTES;
 /// Unselected blocks a payload batch reads through to the next selected one: opening a scan
 /// costs far more than reading a run of small skipped blocks.
 const MAX_SKIPPED_RUN: usize = 1024;
+/// Block-list metadata spans read concurrently: each opens its own scan.
+const METADATA_SPANS: usize = 16;
 
 struct Ready {
     record: Record,
@@ -476,12 +479,64 @@ async fn read_catalog(
     pages: mpsc::Sender<Vec<(Record, bool)>>,
     cancellation: &CancellationToken,
 ) -> eyre::Result<(u64, u64, u64)> {
-    let cursor = store::cursor_at(reader, &catalog.context, range.start).await?;
+    // A block list reads only the metadata around its blocks: each block carries its own
+    // witness and expectations, so the stretches between them need no coverage check.
+    let spans = blocks.map_or_else(|| vec![range.clone()], spans);
+    let totals = futures::stream::iter(spans)
+        .map(|span| {
+            read_span(
+                reader,
+                catalog,
+                span,
+                standalone,
+                blocks,
+                &pages,
+                cancellation,
+            )
+        })
+        .buffer_unordered(METADATA_SPANS)
+        .try_fold((0, 0, 0), |a, b| async move {
+            Ok((a.0 + b.0, a.1 + b.1, a.2 + b.2))
+        })
+        .await?;
+    eyre::ensure!(
+        standalone.is_some()
+            || totals.0 == blocks.map_or(range.end - range.start, |blocks| blocks.len() as u64),
+        "metadata block coverage mismatch"
+    );
+    Ok(totals)
+}
+
+/// The block ranges whose metadata a replay of the sorted `blocks` reads: runs of them with
+/// gaps of at most `MAX_SKIPPED_RUN` blocks.
+fn spans(blocks: &[u64]) -> Vec<Range<u64>> {
+    let mut spans = Vec::<Range<u64>>::new();
+    for &block in blocks {
+        match spans.last_mut() {
+            Some(span) if block - span.end <= MAX_SKIPPED_RUN as u64 => span.end = block + 1,
+            _ => spans.push(block..block + 1),
+        }
+    }
+    spans
+}
+
+/// Sends the metadata of `span` in pages, each record marked with whether to replay it, and
+/// checks it covers the span exactly. Returns the selected blocks, transactions and gas.
+async fn read_span(
+    reader: &DbReader,
+    catalog: &Catalog,
+    span: Range<u64>,
+    standalone: Option<(u64, u64)>,
+    blocks: Option<&[u64]>,
+    pages: &mpsc::Sender<Vec<(Record, bool)>>,
+    cancellation: &CancellationToken,
+) -> eyre::Result<(u64, u64, u64)> {
+    let cursor = store::cursor_at(reader, &catalog.context, span.start).await?;
     let initial_tx = cursor.tx;
     let (mut totals, mut covered) = ((0, 0, 0), 0);
-    let mut metadata = store::MetadataPages::open(reader, cursor, range.end).await?;
-    while metadata.cursor.next < range.end {
-        // Reserve before reading: only one queued/in-progress metadata page,
+    let mut metadata = store::MetadataPages::open(reader, cursor, span.end).await?;
+    while metadata.cursor.next < span.end {
+        // Reserve before reading: at most one queued metadata page per span in flight,
         // in addition to the current page and descriptors owned by bounded tasks.
         let slot = pages.reserve().await?;
         eyre::ensure!(!cancellation.is_cancelled(), "metadata read cancelled");
@@ -511,10 +566,10 @@ async fn read_catalog(
         slot.send(page);
     }
     let cursor = metadata.cursor;
-    if range.end == catalog.context.end {
+    if span.end == catalog.context.end {
         eyre::ensure!(cursor == catalog.cursor, "final metadata boundary mismatch");
     } else {
-        let next = store::metadata(reader, range.end).await?;
+        let next = store::metadata(reader, span.end).await?;
         eyre::ensure!(
             cursor.parent == next.parent && cursor.tx == next.first_tx,
             "metadata boundary mismatch"
@@ -524,11 +579,6 @@ async fn read_catalog(
         covered == cursor.tx - initial_tx
             && (blocks.is_some() || totals.1 == standalone.map_or(covered, |(from, to)| to - from)),
         "metadata transaction coverage mismatch"
-    );
-    eyre::ensure!(
-        standalone.is_some()
-            || totals.0 == blocks.map_or(range.end - range.start, |blocks| blocks.len() as u64),
-        "metadata block coverage mismatch"
     );
     Ok(totals)
 }
@@ -588,4 +638,22 @@ pub fn verify(
         "transaction/gas totals mismatch"
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spans_merge_blocks_across_short_gaps() {
+        let far = 2 + MAX_SKIPPED_RUN as u64;
+        assert_eq!(spans(&[]), []);
+        assert_eq!(
+            spans(&[1, 2, far, far + 1 + MAX_SKIPPED_RUN as u64 + 1]),
+            [
+                1..far + 1,
+                far + MAX_SKIPPED_RUN as u64 + 2..far + MAX_SKIPPED_RUN as u64 + 3
+            ]
+        );
+    }
 }
