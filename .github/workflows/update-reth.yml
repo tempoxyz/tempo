@@ -218,6 +218,16 @@ jobs:
             exit 1
           fi
           set_pin paradigmxyz/reth-core "$RETH_CORE_REV"
+          # Only move evm2 forward: Tempo often pins a newer evm2 than reth main,
+          # and downgrading it breaks the build (such as the patched Forge).
+          CURRENT_EVM2_REV=$(grep -m1 'github.com/alloy-rs/evm2", rev = ' Cargo.toml | sed 's/.*rev = "\([^"]*\)".*/\1/' || true)
+          if [ -n "$CURRENT_EVM2_REV" ] && [ "$CURRENT_EVM2_REV" != "$EVM2_REV" ]; then
+            EVM2_CMP=$(gh api "repos/alloy-rs/evm2/compare/${CURRENT_EVM2_REV}...${EVM2_REV}" --jq '.status')
+            if [ "$EVM2_CMP" = "behind" ]; then
+              echo "Keeping evm2 at ${CURRENT_EVM2_REV}: reth pins an older rev (${EVM2_REV})"
+              EVM2_REV="$CURRENT_EVM2_REV"
+            fi
+          fi
           set_pin alloy-rs/evm2 "$EVM2_REV"
           set_pin DaniPopes/evm2 "$EVM2_REV"
 
