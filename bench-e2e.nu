@@ -22,7 +22,7 @@ const E2E_RUNNER_METRICS_URL = "http://127.0.0.1:9100/metrics"
 const E2E_BLOAT_TMP_DIR = "/reth-bench-a/.bench-tmp/e2e-local-init"
 const TRACY_SAMPLING_HZ = 18999
 const E2E_BLOAT_FREE_MARGIN_MIB = 51200
-const E2E_QMDB_SIZE_MULTIPLIER = 4
+const E2E_QMDB_SIZE_MULTIPLIER = 3
 # Measured peak import working set is ~4.8x bloat per side (ETL + DB + static files + rocksdb).
 const E2E_BLOAT_IMPORT_WORKING_SET_MULTIPLIER = 5
 const E2E_DEFAULT_BLOAT = 100
@@ -381,7 +381,7 @@ def qmdb-import [tempo_bin: string, genesis: string, datadir: string] {
 
 # Import QMDB into a freshly built snapshot datadir once the bloat dump is gone,
 # and only then record it in the marker, so a failed import never looks complete.
-# QMDB takes about 4x the bloat size on disk (1.64B keys at 100 GiB of bloat).
+# QMDB takes about 2.6x the bloat size on disk (1.64B keys at 100 GiB of bloat), with margin.
 def qmdb-import-snapshot [tempo_bin: string, genesis: string, datadir: string, bloat_mib: int] {
     let required = ($bloat_mib * $E2E_QMDB_SIZE_MULTIPLIER) + $E2E_BLOAT_FREE_MARGIN_MIB
     let available = (df-available-mib $datadir)
