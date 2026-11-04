@@ -137,6 +137,7 @@ async fn spf_batch_execute() -> eyre::Result<()> {
                 finalize_withdrawal_batch_count: None,
                 finalize_withdrawal_batch_encrypted_senders: vec![],
                 transactions: vec![first_raw_transaction],
+                virtual_address_key: None,
             },
             ZoneBlock {
                 number: second_built_block.header.number(),
@@ -153,6 +154,7 @@ async fn spf_batch_execute() -> eyre::Result<()> {
                 finalize_withdrawal_batch_count: Some(U256::ZERO),
                 finalize_withdrawal_batch_encrypted_senders: vec![],
                 transactions: vec![second_raw_transaction],
+                virtual_address_key: None,
             },
         ],
         parent_header,
@@ -307,6 +309,7 @@ impl BuiltTransactionBlock {
                 finalize_withdrawal_batch_count: Some(U256::ZERO),
                 finalize_withdrawal_batch_encrypted_senders: vec![],
                 transactions: vec![self.raw_user_transaction.clone()],
+                virtual_address_key: None,
             }],
             zone_state_witness,
             tempo_state_witness: TempoStateWitness {

@@ -387,7 +387,9 @@ impl ZoneEngine {
                     .flat_map(|block| &block.events.deposits)
                     .filter_map(|deposit| match deposit {
                         L1Deposit::Deposit(deposit) => Some(deposit.sender),
-                        L1Deposit::WithdrawalBounceBack(_) => None,
+                        // The sequencer-side allowlist cannot reject virtual deposits; zones that
+                        // rely on it must leave virtual deposits disabled (TIP-1094).
+                        L1Deposit::WithdrawalBounceBack(_) | L1Deposit::ZoneVirtual(_) => None,
                     })
                     .collect::<Vec<_>>()
             });

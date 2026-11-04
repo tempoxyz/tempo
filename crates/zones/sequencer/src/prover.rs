@@ -46,8 +46,8 @@ use zone_prover::{
 };
 use zone_rpc::ZoneDebugApi;
 use zone_spf::{
-    BatchOutput, BatchWitness, PublicInputs, SpfConfig, TempoImport, TempoStateWitness, ZoneBlock,
-    ZoneStateWitness, prove_zone_batch,
+    BatchOutput, BatchWitness, PublicInputs, SpfConfig, TempoImport, TempoStateWitness,
+    VirtualAddressKeyInit, ZoneBlock, ZoneStateWitness, prove_zone_batch,
 };
 
 use crate::{
@@ -927,6 +927,7 @@ fn extract_zone_block(block: &RecoveredBlock<Block>) -> Result<ZoneBlock> {
     let mut tempo_import = None;
     let mut finalize_count = None;
     let mut finalize_encrypted_senders = Vec::new();
+    let mut virtual_address_key = None;
     let mut transactions = Vec::new();
 
     for transaction in &block.body().transactions {
@@ -936,6 +937,32 @@ fn extract_zone_block(block: &RecoveredBlock<Block>) -> Result<ZoneBlock> {
         }
 
         match transaction.to() {
+            Some(to)
+                if to == ZONE_INBOX_ADDRESS
+                    && transaction
+                        .input()
+                        .starts_with(&ZoneInbox::initializeVirtualAddressKeyCall::SELECTOR) =>
+            {
+                // The executor already enforces its position: directly after advanceTempo, at
+                // most once per block.
+                ensure!(
+                    virtual_address_key.is_none(),
+                    "Zone block {} contains multiple initializeVirtualAddressKey calls",
+                    header.number()
+                );
+                let call =
+                    ZoneInbox::initializeVirtualAddressKeyCall::abi_decode(transaction.input())
+                        .wrap_err_with(|| {
+                            format!(
+                                "decode initializeVirtualAddressKey in Zone block {}",
+                                header.number()
+                            )
+                        })?;
+                virtual_address_key = Some(VirtualAddressKeyInit {
+                    version: call.version,
+                    key: call.key,
+                });
+            }
             Some(to) if to == ZONE_INBOX_ADDRESS => {
                 ensure!(
                     tempo_import.is_none(),
@@ -1022,6 +1049,7 @@ fn extract_zone_block(block: &RecoveredBlock<Block>) -> Result<ZoneBlock> {
         finalize_withdrawal_batch_count: finalize_count,
         finalize_withdrawal_batch_encrypted_senders: finalize_encrypted_senders,
         transactions,
+        virtual_address_key,
     })
 }
 
@@ -1606,6 +1634,7 @@ mod tests {
                 .then_some(alloy_primitives::U256::ZERO),
             finalize_withdrawal_batch_encrypted_senders: Vec::new(),
             transactions: Vec::new(),
+            virtual_address_key: None,
         }
     }
 

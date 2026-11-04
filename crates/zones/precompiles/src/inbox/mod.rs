@@ -18,12 +18,12 @@ mod tests;
 
 use alloc::vec::Vec;
 
-use alloy_primitives::{Address, B256, U256};
+use alloy_primitives::{Address, B256, FixedBytes, U256, keccak256};
 use alloy_sol_types::{SolCall, SolValue, abi::AbiDecoderConfig};
 use tempo_contracts::zones::{
     DecryptionData, Deposit, DepositType, EnabledToken, IZoneInbox, IZoneOutbox,
-    LegacyTempoAdvanced, QueuedDeposit, TempoAdvanced, WithdrawalBounceBackDeposit, ZoneInboxError,
-    ZoneInboxEvent,
+    LegacyTempoAdvanced, QueuedDeposit, TempoAdvanced, VirtualDeposit, VirtualDepositFailureReason,
+    WithdrawalBounceBackDeposit, ZoneDepositAddress, ZoneInboxError, ZoneInboxEvent,
 };
 use tempo_precompiles::{
     PATH_USD_ADDRESS,
@@ -36,8 +36,9 @@ use tempo_precompiles_macros::contract;
 use zone_primitives::constants::{ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS};
 
 use crate::{
-    ZonePrecompileError, ZoneResult, aes_gcm, chaum_pedersen,
+    ZonePrecompileError, ZoneResult, address_registry, aes_gcm, chaum_pedersen,
     ecies::{ENCRYPTED_PAYLOAD_PLAINTEXT_SIZE, hkdf_info, hkdf_sha256},
+    ff1,
     outbox::ZoneOutbox,
     storage::{L1State, L1StorageReader},
     tempo_state::TempoState,
@@ -82,7 +83,7 @@ impl ZoneInbox {
 
         let deposit_count = u64::try_from(call.deposits.len())
             .map_err(|_| TempoPrecompileError::under_overflow())?;
-        let deposits = decode_deposits(call.deposits)?;
+        let deposits = decode_deposits(call.deposits, StorageCtx.spec().is_t15())?;
 
         let mut tempo_state = TempoState::new();
 
@@ -147,6 +148,7 @@ impl ZoneInbox {
         let mut current_hash = self.processed_deposit_queue_hash.read()?;
         let mut decryptions = call.decryptions.into_iter();
         let mut outbox = ZoneOutbox::new();
+        let zone_id = address_registry::zone_id(portal);
 
         for queued in deposits {
             current_hash = queued.hash_with_tail(current_hash)?;
@@ -168,6 +170,9 @@ impl ZoneInbox {
                         decryption,
                         key,
                     )
+                }
+                DecodedQueuedDeposit::ZoneVirtual(deposit) => {
+                    self.process_virtual_deposit(&mut outbox, zone_id, current_hash, deposit)
                 }
             }?;
         }
@@ -302,6 +307,160 @@ impl ZoneInbox {
         Ok(())
     }
 
+    /// TIP-1094: decrypt the deposit address, look up its master ID and mint to the registered
+    /// recipient, or refund `originator` on Tempo. No sequencer input reaches this path.
+    fn process_virtual_deposit(
+        &mut self,
+        outbox: &mut ZoneOutbox,
+        zone_id: u32,
+        current_hash: B256,
+        deposit: VirtualDeposit,
+    ) -> ZoneResult<()> {
+        let resolved = match self.resolve_virtual_deposit(zone_id, deposit.destination)? {
+            Ok(resolved) => resolved,
+            Err((reason, to)) => {
+                return self.fail_virtual_deposit(outbox, current_hash, deposit, to, reason);
+            }
+        };
+
+        let memo = deposit.hasMemo.then_some(deposit.memo);
+        if !self.try_mint_with_memo(deposit.token, resolved.recipient, deposit.amount, memo)? {
+            return self.fail_virtual_deposit(
+                outbox,
+                current_hash,
+                deposit,
+                resolved.recipient,
+                VirtualDepositFailureReason::MintFailed,
+            );
+        }
+
+        self.emit_event(ZoneInboxEvent::virtual_deposit_processed(
+            current_hash,
+            deposit.originator,
+            resolved.recipient,
+            deposit.token,
+            deposit.amount,
+            resolved.version,
+            resolved.master_id,
+            resolved.user_tag,
+            deposit.memo,
+        ))?;
+        Ok(())
+    }
+
+    /// Resolves a deposit address to its registered recipient. A recipient failure returns the
+    /// committed failure reason with the recipient if one was found; system failures (gas,
+    /// missing witnesses) propagate as errors and never become a refund.
+    fn resolve_virtual_deposit(
+        &mut self,
+        zone_id: u32,
+        destination: Address,
+    ) -> ZoneResult<Result<ResolvedVirtualDeposit, (VirtualDepositFailureReason, Address)>> {
+        let Some(address) = ZoneDepositAddress::decode(&destination)
+            .filter(|address| address.version != 0 && address.zone_id == zone_id)
+        else {
+            return Ok(Err((
+                VirtualDepositFailureReason::InvalidAddress,
+                Address::ZERO,
+            )));
+        };
+        let Some(key) = self.virtual_address_key(address.version)? else {
+            return Ok(Err((
+                VirtualDepositFailureReason::KeyUnconfigured,
+                Address::ZERO,
+            )));
+        };
+
+        ff1::charge_gas()?;
+        let plaintext = ff1::decrypt(&key.0, address.version, zone_id, address.ciphertext.0);
+        let master_id = FixedBytes::<4>::from_slice(&plaintext[..4]);
+        let user_tag = FixedBytes::<2>::from_slice(&plaintext[4..]);
+
+        let recipient = address_registry::recipient_of(master_id)?;
+        if recipient.is_zero() {
+            return Ok(Err((
+                VirtualDepositFailureReason::UnregisteredMaster,
+                Address::ZERO,
+            )));
+        }
+        if !address_registry::is_valid_recipient(&recipient) {
+            return Ok(Err((
+                VirtualDepositFailureReason::InvalidMaster,
+                Address::ZERO,
+            )));
+        }
+        Ok(Ok(ResolvedVirtualDeposit {
+            recipient,
+            version: address.version,
+            master_id,
+            user_tag,
+        }))
+    }
+
+    fn fail_virtual_deposit(
+        &mut self,
+        outbox: &mut ZoneOutbox,
+        current_hash: B256,
+        deposit: VirtualDeposit,
+        to: Address,
+        reason: VirtualDepositFailureReason,
+    ) -> ZoneResult<()> {
+        outbox.enqueue_deposit_bounce_back(
+            ZONE_INBOX_ADDRESS,
+            IZoneOutbox::enqueueDepositBounceBackCall {
+                token: deposit.token,
+                amount: deposit.amount,
+                tempoRefundRecipient: deposit.originator,
+            },
+        )?;
+        self.emit_event(ZoneInboxEvent::virtual_deposit_failed(
+            current_hash,
+            deposit.originator,
+            to,
+            deposit.token,
+            deposit.amount,
+            reason,
+        ))?;
+        Ok(())
+    }
+
+    /// TIP-1094 key initialization: versions start at 1, run in order and are set exactly once.
+    ///
+    /// TODO(tip-1094): the block validator and prover must also bind this call to the block
+    /// witness, allow at most one per block, and require it right after `advanceTempo`.
+    fn initialize_virtual_address_key(
+        &mut self,
+        caller: Address,
+        version: u8,
+        key: B256,
+    ) -> ZoneResult<()> {
+        if !caller.is_zero() {
+            return Err(ZoneInboxError::only_sequencer().into());
+        }
+        let in_order = match version {
+            0 => false,
+            1 => true,
+            _ => self.virtual_address_key(version - 1)?.is_some(),
+        };
+        if !in_order || self.virtual_address_key(version)?.is_some() {
+            return Err(ZoneInboxError::invalid_address_key_version(version).into());
+        }
+        let (flag_slot, key_slot) = address_key_slots(version)?;
+        Slot::<U256>::new(flag_slot, self.address).write(U256::ONE)?;
+        Slot::<B256>::new(key_slot, self.address).write(key)?;
+        self.emit_event(ZoneInboxEvent::virtual_address_key_initialized(version))?;
+        Ok(())
+    }
+
+    /// The committed key for `version`, or `None` when that version is not initialized.
+    fn virtual_address_key(&self, version: u8) -> tempo_precompiles::Result<Option<B256>> {
+        let (flag_slot, key_slot) = address_key_slots(version)?;
+        if Slot::<U256>::new(flag_slot, self.address).read()?.is_zero() {
+            return Ok(None);
+        }
+        Slot::<B256>::new(key_slot, self.address).read().map(Some)
+    }
+
     fn process_withdrawal_bounce_back(
         &mut self,
         outbox: &mut ZoneOutbox,
@@ -327,6 +486,17 @@ impl ZoneInbox {
     /// out-of-gas failures abort the outer Inbox call.
     /// +T13: Bridged assets use TIP-403 `Recipient` authorization rather than `MintRecipient`.
     fn try_mint(&mut self, token: Address, to: Address, amount: u128) -> ZoneResult<bool> {
+        self.try_mint_with_memo(token, to, amount, None)
+    }
+
+    /// [`Self::try_mint`], minting with `mintWithMemo` when a memo is given.
+    fn try_mint_with_memo(
+        &mut self,
+        token: Address,
+        to: Address,
+        amount: u128,
+        memo: Option<B256>,
+    ) -> ZoneResult<bool> {
         let ensure_logic_err = |err: TempoPrecompileError| {
             if err.is_system_error() {
                 Err(err)
@@ -346,20 +516,30 @@ impl ZoneInbox {
         }
 
         let checkpoint = self.storage.checkpoint();
+        let role = if self.storage.spec().is_t13() {
+            AuthRole::recipient()
+        } else {
+            AuthRole::mint_recipient()
+        };
         let success = TIP20Token::from_address(token)
-            .and_then(|mut token| {
-                token.mint_with_role(
+            .and_then(|mut token| match memo {
+                None => token.mint_with_role(
                     ZONE_INBOX_ADDRESS,
                     ITIP20::mintCall {
                         to,
                         amount: U256::from(amount),
                     },
-                    if self.storage.spec().is_t13() {
-                        AuthRole::recipient()
-                    } else {
-                        AuthRole::mint_recipient()
+                    role,
+                ),
+                Some(memo) => token.mint_with_memo_with_role(
+                    ZONE_INBOX_ADDRESS,
+                    ITIP20::mintWithMemoCall {
+                        to,
+                        amount: U256::from(amount),
+                        memo,
                     },
-                )
+                    role,
+                ),
             })
             .map(|_| true)
             .or_else(ensure_logic_err)?;
@@ -416,10 +596,29 @@ impl ZoneInbox {
     }
 }
 
+/// A virtual deposit whose address resolved to a registered recipient.
+struct ResolvedVirtualDeposit {
+    recipient: Address,
+    version: u8,
+    master_id: FixedBytes<4>,
+    user_tag: FixedBytes<2>,
+}
+
+/// TIP-1094 key slots for `version`: the initialized flag at
+/// `keccak256(abi.encode(uint256(v), uint256(S)))` and the key in the next slot.
+fn address_key_slots(version: u8) -> tempo_precompiles::Result<(U256, U256)> {
+    let mut data = [0u8; 64];
+    data[31] = version;
+    data[32..].copy_from_slice(keccak256(b"tempo.zvda.addressKeys").as_slice());
+    let flag: U256 = StorageCtx::default().keccak256(&data)?.into();
+    Ok((flag, flag.wrapping_add(U256::ONE)))
+}
+
 /// A queue entry whose nested ABI payload has been validated before execution begins.
 enum DecodedQueuedDeposit {
     WithdrawalBounceBack(WithdrawalBounceBackDeposit),
     Deposit(Deposit),
+    ZoneVirtual(VirtualDeposit),
 }
 
 impl DecodedQueuedDeposit {
@@ -431,12 +630,18 @@ impl DecodedQueuedDeposit {
             Self::Deposit(deposit) => {
                 (DepositType::Deposit, deposit.clone(), tail).abi_encode_params()
             }
+            Self::ZoneVirtual(deposit) => {
+                (DepositType::ZoneVirtual, deposit.clone(), tail).abi_encode_params()
+            }
         };
         StorageCtx::default().keccak256(&encoded)
     }
 }
 
-fn decode_deposits(deposits: Vec<QueuedDeposit>) -> ZoneResult<Vec<DecodedQueuedDeposit>> {
+fn decode_deposits(
+    deposits: Vec<QueuedDeposit>,
+    virtual_deposits: bool,
+) -> ZoneResult<Vec<DecodedQueuedDeposit>> {
     // Nested deposits must match their canonical L1 event encoding on every hardfork.
     let config = AbiDecoderConfig::new().strict(true);
 
@@ -451,6 +656,10 @@ fn decode_deposits(deposits: Vec<QueuedDeposit>) -> ZoneResult<Vec<DecodedQueued
                 DepositType::Deposit => {
                     Deposit::abi_decode_with_config(&queued.depositData, config)
                         .map(DecodedQueuedDeposit::Deposit)
+                }
+                DepositType::ZoneVirtual if virtual_deposits => {
+                    VirtualDeposit::abi_decode_with_config(&queued.depositData, config)
+                        .map(DecodedQueuedDeposit::ZoneVirtual)
                 }
                 _ => return Err(ZonePrecompileError::MalformedCalldata),
             }

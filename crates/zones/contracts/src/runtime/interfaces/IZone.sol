@@ -96,7 +96,28 @@ struct TokenEnablementTransition {
 /// @dev Used in hash chain: keccak256(abi.encode(depositType, depositData, prevHash))
 enum DepositType {
     WithdrawalBounceBack, // Internal withdrawal bounce-back entry
-    Deposit // User deposit with hidden recipient and memo
+    Deposit, // User deposit with hidden recipient and memo
+    ZoneVirtual // TIP-1094 TIP-20 transfer to a zone deposit address (T15)
+}
+
+/// @notice Private failure reasons recorded for a TIP-1094 virtual deposit
+enum VirtualDepositFailureReason {
+    InvalidAddress,
+    KeyUnconfigured,
+    UnregisteredMaster,
+    InvalidMaster,
+    MintFailed
+}
+
+/// @notice TIP-1094 queue entry for a TIP-20 transfer to a zone deposit address
+/// @dev The zone decrypts `destination` to a registered recipient; a failure refunds `originator`.
+struct VirtualDeposit {
+    address token; // TIP-20 token that was transferred
+    address originator; // Debited Tempo account; refunds go here
+    uint128 amount; // Net of the deposit fee
+    address destination; // The 20-byte zone deposit address
+    bool hasMemo; // True only for memo-bearing transfer entrypoints
+    bytes32 memo; // Zero when hasMemo is false
 }
 
 struct WithdrawalBounceBackDeposit {
@@ -478,6 +499,25 @@ interface IZonePortal {
         uint64 depositNumber
     );
 
+    /// @notice TIP-1094: a TIP-20 transfer to a zone deposit address was queued
+    event VirtualDepositMade(
+        bytes32 indexed newCurrentDepositQueueHash,
+        address indexed originator,
+        address token,
+        address destination,
+        uint128 netAmount,
+        uint128 fee,
+        uint64 depositNumber,
+        bool hasMemo,
+        bytes32 memo
+    );
+
+    /// @notice TIP-1094: the admin enabled or disabled virtual deposits
+    event VirtualDepositsEnabledUpdated(bool enabled);
+
+    /// @notice TIP-1094: the admin raised the minimum accepted address key version
+    event AddressVersionsRetired(uint8 minimumVersion);
+
     event DepositBounceBack(
         address indexed tempoRefundRecipient, address token, uint128 amount, uint128 bouncebackFee
     );
@@ -576,6 +616,10 @@ interface IZonePortal {
     error TokenTransferPolicyNotSet();
     error TokenEnablementCursorNotInitialized();
     error InvalidBouncebackRecipient();
+    error VirtualDepositsDisabled();
+    error AddressVersionRetired(uint8 version);
+    error InvalidVersionRetirement(uint8 minimumVersion);
+    error InvalidVirtualDeposit();
     error InvalidDepositTransition();
     error InvalidTokenEnablementTransition();
     error InvalidSequencerSet();
@@ -641,6 +685,30 @@ interface IZonePortal {
 
     /// @notice Change callback gateway enforcement. Only callable by the admin.
     function setGatewayMode(bool enforced) external;
+
+    /// @notice TIP-1094: queue a transfer a canonical TIP-20 already credited to this portal.
+    /// @dev Called only by TIP-20 transfer routing; `msg.sender` identifies the token.
+    function depositVirtual(
+        address originator,
+        uint128 grossAmount,
+        address destination,
+        bool hasMemo,
+        bytes32 memo
+    )
+        external
+        returns (bytes32 newCurrentDepositQueueHash);
+
+    /// @notice TIP-1094: whether transfers to zone deposit addresses are accepted.
+    function virtualDepositsEnabled() external view returns (bool);
+
+    /// @notice TIP-1094: turn virtual deposits on or off. Only callable by the admin.
+    function setVirtualDepositsEnabled(bool enabled) external;
+
+    /// @notice TIP-1094: lowest address key version still accepted (at least 1).
+    function minimumAddressVersion() external view returns (uint8);
+
+    /// @notice TIP-1094: raise the minimum accepted address key version. Only the admin.
+    function retireAddressVersionsBelow(uint8 minimumVersion) external;
 
     /// @notice Whether an account has a Portal role.
     function hasRole(address account, Role role) external view returns (bool);
@@ -1082,6 +1150,33 @@ interface IZoneInbox {
     /// @notice Emitted when a TIP-20 token is enabled on the zone via advanceTempo
     event TokenEnabled(address indexed token, string name, string symbol, string currency);
 
+    /// @notice TIP-1094: a virtual deposit credited its registered recipient (operator-visible).
+    event VirtualDepositProcessed(
+        bytes32 indexed depositHash,
+        address indexed originator,
+        address indexed to,
+        address token,
+        uint128 amount,
+        uint8 version,
+        bytes4 masterId,
+        bytes2 userTag,
+        bytes32 memo
+    );
+
+    /// @notice TIP-1094: a virtual deposit failed and was queued as a refund to the originator.
+    event VirtualDepositFailed(
+        bytes32 indexed depositHash,
+        address indexed originator,
+        address indexed to,
+        address token,
+        uint128 amount,
+        VirtualDepositFailureReason reason
+    );
+
+    /// @notice TIP-1094: an address key version was initialized. Carries no key material.
+    event VirtualAddressKeyInitialized(uint8 version);
+
+    error InvalidAddressKeyVersion(uint8 version);
     error InvalidTokenEnablementHash();
     error OnlySequencer();
     error InvalidDepositQueueHash();
@@ -1091,6 +1186,9 @@ interface IZoneInbox {
     error NoRefund();
     error InvalidSharedSecretProof();
     error Unauthorized();
+
+    /// @notice TIP-1094: initialize the next address key version. System-only, from T15.
+    function initializeVirtualAddressKey(uint8 version, bytes32 key) external;
 
     /// @notice Get the number of enabled tokens processed by the Zone Inbox
     function processedEnabledTokenCount() external view returns (uint64);

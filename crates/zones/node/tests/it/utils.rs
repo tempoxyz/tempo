@@ -48,7 +48,7 @@ use tempo_contracts::{
         account_keychain::IAccountKeychain::{
             IAccountKeychainInstance, KeyRestrictions, SignatureType as KeyInfoSignatureType,
         },
-        t13_zone_factory_state,
+        t15_zone_factory_state,
     },
     zones::{
         ZONE_OUTBOX_ADDRESS,
@@ -205,7 +205,7 @@ pub(crate) fn forge_bytecode(contract: &str) -> eyre::Result<alloy_primitives::B
 }
 
 fn install_native_zone_factory(genesis: &mut Genesis, owner: Address) -> eyre::Result<()> {
-    for account in t13_zone_factory_state(owner) {
+    for account in t15_zone_factory_state(owner) {
         let storage = account
             .storage
             .map(|(slot, value)| BTreeMap::from([(slot.into(), value.into())]));
@@ -1047,6 +1047,33 @@ impl ZoneTestNode {
         .await
     }
 
+    /// Start a zone node connected to a real L1 whose genesis already holds TIP-1094 address key
+    /// version 1. Stands in for key initialization, which no sequencer emits yet.
+    pub(crate) async fn start_from_l1_with_virtual_address_key(
+        l1_http_url: &url::Url,
+        l1_ws_url: &url::Url,
+        portal_address: Address,
+        key: B256,
+    ) -> eyre::Result<Self> {
+        let (genesis, _) = build_l1_anchored_genesis(l1_http_url, portal_address).await?;
+        Self::launch_with_genesis_and_withdrawal_batch_interval_and_decryption_keys(
+            l1_ws_url.to_string(),
+            portal_address,
+            next_unique_chain_id(),
+            Some(genesis),
+            l1_dev_signer(),
+            8,
+            None,
+            true,
+            Vec::new(),
+            None,
+            None,
+            None,
+            Some(key),
+        )
+        .await
+    }
+
     /// Run the scheduled T12 -> T13 transition against a real L1 and return the proof chain spec.
     pub(crate) async fn start_from_l1_with_t13(
         l1_http_url: &url::Url,
@@ -1098,6 +1125,7 @@ impl ZoneTestNode {
             None,
             None,
             None,
+            None,
         )
         .await
     }
@@ -1124,6 +1152,7 @@ impl ZoneTestNode {
             Vec::new(),
             None,
             Some(deposit_allowlist),
+            None,
             None,
         )
         .await
@@ -1308,6 +1337,7 @@ impl ZoneTestNode {
             None,
             None,
             None,
+            None,
         )
         .await
     }
@@ -1326,6 +1356,7 @@ impl ZoneTestNode {
         prover_config: Option<ZoneProverConfig>,
         deposit_allowlist: Option<zone_node::DepositAllowlist>,
         deposit_allowlist_relay: Option<zone_node::DepositAllowlistAdmin>,
+        virtual_address_key: Option<B256>,
     ) -> eyre::Result<Self> {
         let tasks = Runtime::test();
         let is_local_dummy_l1 = l1_ws_url == DUMMY_L1_URL;
@@ -1382,6 +1413,9 @@ impl ZoneTestNode {
         if portal_address.is_zero() {
             zone_node = zone_node
                 .with_deposit_decryption_keys(std::iter::once(L1Fixture::encryption_key()));
+        }
+        if let Some(key) = virtual_address_key {
+            zone_node = zone_node.with_virtual_address_key(key);
         }
         if is_local_dummy_l1 {
             zone_node = zone_node
@@ -2731,7 +2765,12 @@ impl L1TestNode {
     pub(crate) async fn start_with(
         f: impl FnOnce(&mut NodeConfig<TempoChainSpec>),
     ) -> eyre::Result<Self> {
-        Self::launch(f, false).await
+        Self::launch(f, false, None).await
+    }
+
+    /// Start an L1 dev node with every hardfork through T15 active at genesis.
+    pub(crate) async fn start_at_t15() -> eyre::Result<Self> {
+        Self::launch(|_| {}, false, Some(TempoHardfork::T15)).await
     }
 
     /// Start an L1 dev node, like [`Self::start_with`], whose RPC refuses every state proof
@@ -2739,18 +2778,24 @@ impl L1TestNode {
     pub(crate) async fn start_without_state_proofs(
         f: impl FnOnce(&mut NodeConfig<TempoChainSpec>),
     ) -> eyre::Result<Self> {
-        Self::launch(f, true).await
+        Self::launch(f, true, None).await
     }
 
+    /// Launches the L1 from `test-genesis.json`, which activates T13 at genesis, or every fork
+    /// through `latest_fork` when given.
     async fn launch(
         f: impl FnOnce(&mut NodeConfig<TempoChainSpec>),
         refuse_state_proofs: bool,
+        latest_fork: Option<TempoHardfork>,
     ) -> eyre::Result<Self> {
         let tasks = Runtime::test();
 
         let genesis: serde_json::Value =
             serde_json::from_str(include_str!("../assets/test-genesis.json"))?;
         let mut genesis = serde_json::from_value(genesis)?;
+        if let Some(fork) = latest_fork {
+            set_tempo_fork(&mut genesis, fork, 0);
+        }
         install_native_zone_factory(&mut genesis, l1_dev_signer().address())?;
         let chain_spec = TempoChainSpec::from_genesis(genesis);
 
@@ -3611,6 +3656,11 @@ impl ZoneAccount {
         Ok(())
     }
 
+    /// Wallet-attached provider for the zone.
+    pub(crate) fn l2_provider(&self) -> &alloy_provider::DynProvider {
+        &self.l2_provider
+    }
+
     /// Approve the ZoneOutbox for a token without submitting a withdrawal.
     ///
     /// Reuses a successful max approval for subsequent withdrawals of the same token.
@@ -4388,6 +4438,7 @@ async fn start_real_p2p_cluster_inner(
                 prover_config.clone(),
                 deposit_allowlists[index].clone(),
                 None,
+                None,
             )
         },
     ))
@@ -4409,6 +4460,7 @@ async fn start_real_p2p_cluster_inner(
                     None,
                     None,
                     Some(allowlist_admin),
+                    None,
                 )
                 .await?,
             zone_chain_id: allowlist_admin.zone_chain_id,
@@ -5516,6 +5568,8 @@ impl L1Fixture {
         self.apply_enabled_token_events(&events.enabled_tokens);
         for deposit in &events.deposits {
             match deposit {
+                // The recipient is only known after zone-side decryption.
+                L1Deposit::ZoneVirtual(_) => {}
                 L1Deposit::WithdrawalBounceBack(deposit) => {
                     self.seed_no_receive_policy_at(block_number, deposit.to)
                         .expect("event receive-policy fixture seed must be admitted");

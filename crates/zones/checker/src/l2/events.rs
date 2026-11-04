@@ -472,6 +472,40 @@ fn decode_inbox(log: &Log, block: u64) -> eyre::Result<Option<ReceiptEvent>> {
                 result: DepositResult::Failed,
             })
         }
+        IZoneInbox::VirtualDepositProcessed::SIGNATURE_HASH => {
+            let event = decode_event::<IZoneInbox::VirtualDepositProcessed>(
+                log,
+                "VirtualDepositProcessed",
+                block,
+            )?;
+            ReceiptEvent::Action(L2BridgeAction::Deposit {
+                token: event.token,
+                amount: U256::from(event.amount),
+                result: DepositResult::Processed {
+                    recipient: event.to,
+                },
+            })
+        }
+        IZoneInbox::VirtualDepositFailed::SIGNATURE_HASH => {
+            let event = decode_event::<IZoneInbox::VirtualDepositFailed>(
+                log,
+                "VirtualDepositFailed",
+                block,
+            )?;
+            ReceiptEvent::Action(L2BridgeAction::Deposit {
+                token: event.token,
+                amount: U256::from(event.amount),
+                result: DepositResult::Failed,
+            })
+        }
+        IZoneInbox::VirtualAddressKeyInitialized::SIGNATURE_HASH => {
+            decode_event::<IZoneInbox::VirtualAddressKeyInitialized>(
+                log,
+                "VirtualAddressKeyInitialized",
+                block,
+            )?;
+            return Ok(None);
+        }
         IZoneInbox::WithdrawalBounceBackProcessed::SIGNATURE_HASH => {
             let event = decode_event::<IZoneInbox::WithdrawalBounceBackProcessed>(
                 log,
@@ -1252,6 +1286,61 @@ mod tests {
         });
         let mint = transfer(token, Address::ZERO, recipient, U256::from(10));
 
+        authenticate_mints(vec![mint, outcome]).unwrap();
+    }
+
+    #[test]
+    fn decodes_virtual_deposit_events_as_deposits() {
+        let token = address!("20c0000000000000000000000000000000000000");
+        let recipient = Address::repeat_byte(0xaa);
+        let processed = event_log(
+            ZONE_INBOX_ADDRESS,
+            IZoneInbox::VirtualDepositProcessed {
+                depositHash: B256::repeat_byte(0xd0),
+                originator: Address::repeat_byte(0x11),
+                to: recipient,
+                token,
+                amount: 500,
+                version: 1,
+                masterId: Default::default(),
+                userTag: Default::default(),
+                memo: B256::ZERO,
+            },
+        );
+        let failed = event_log(
+            ZONE_INBOX_ADDRESS,
+            IZoneInbox::VirtualDepositFailed {
+                depositHash: B256::repeat_byte(0xd1),
+                originator: Address::repeat_byte(0x11),
+                to: Address::ZERO,
+                token,
+                amount: 300,
+                reason: IZoneInbox::VirtualDepositFailureReason::UnregisteredMaster,
+            },
+        );
+        let key = event_log(
+            ZONE_INBOX_ADDRESS,
+            IZoneInbox::VirtualAddressKeyInitialized { version: 1 },
+        );
+
+        assert!(matches!(
+            decode_inbox(&processed, 1).unwrap(),
+            Some(ReceiptEvent::Action(L2BridgeAction::Deposit {
+                result: DepositResult::Processed { recipient: r },
+                ..
+            })) if r == recipient
+        ));
+        assert!(matches!(
+            decode_inbox(&failed, 1).unwrap(),
+            Some(ReceiptEvent::Action(L2BridgeAction::Deposit {
+                result: DepositResult::Failed,
+                ..
+            }))
+        ));
+        assert!(decode_inbox(&key, 1).unwrap().is_none());
+
+        let mint = transfer(token, Address::ZERO, recipient, U256::from(500));
+        let outcome = decode_inbox(&processed, 1).unwrap().unwrap();
         authenticate_mints(vec![mint, outcome]).unwrap();
     }
 

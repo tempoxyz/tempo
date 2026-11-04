@@ -29,7 +29,7 @@ use tempo_contracts::precompiles::{
     ICurrentCommittee, INITIAL_FACTORY_OWNER, InitialZoneFactoryAccount,
     RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, STORAGE_CREDITS_ADDRESS,
     TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS, initial_zone_factory_state,
-    t13_zone_factory_state,
+    t13_zone_factory_state, t15_zone_factory_state,
 };
 use tempo_primitives::{SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType};
 use tracing::trace;
@@ -254,6 +254,7 @@ pub struct TempoBlockExecutor<'a> {
     pub(crate) inner: EthBlockExecutor<'a, TempoEvmTypes, TempoReceiptBuilder>,
 
     t13_active_at_genesis: bool,
+    t15_active_at_genesis: bool,
     prague_active: bool,
     section: BlockSection,
     extra_data: Bytes,
@@ -287,6 +288,8 @@ impl<'a> TempoBlockExecutor<'a> {
         Self {
             t13_active_at_genesis: chain_spec
                 .is_t13_active_at_timestamp(chain_spec.genesis().timestamp),
+            t15_active_at_genesis: chain_spec
+                .is_t15_active_at_timestamp(chain_spec.genesis().timestamp),
             prague_active,
             incentive_gas_used: 0,
             block_gas_used: 0,
@@ -403,6 +406,12 @@ impl<'a> TempoBlockExecutor<'a> {
     /// Exercises the shared runtime upgrade path at T13.
     fn upgrade_zone_runtimes_at_boundary(&mut self) -> Result<(), BlockExecutionError> {
         let [_, portal, verifier, messenger] = t13_zone_factory_state(INITIAL_FACTORY_OWNER);
+        self.install_zone_runtimes_at_boundary([portal, verifier, messenger])
+    }
+
+    /// Installs the TIP-1094 portal runtime at T15.
+    fn upgrade_t15_zone_runtimes_at_boundary(&mut self) -> Result<(), BlockExecutionError> {
+        let [_, portal, verifier, messenger] = t15_zone_factory_state(INITIAL_FACTORY_OWNER);
         self.install_zone_runtimes_at_boundary([portal, verifier, messenger])
     }
 
@@ -786,7 +795,13 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         // Chains starting at T13 supply their runtime code in genesis. Preserve those
         // allocations (including locally compiled contracts on test chains). Chains
         // that activate T13 later still follow the normal runtime upgrade path.
-        if self.evm().config_spec_id().is_t13() && !self.t13_active_at_genesis {
+        // T15 replaces the portal runtime the same way; it must take precedence, since the T13
+        // installation would otherwise restore the T13 portal on every block.
+        if self.evm().config_spec_id().is_t15() {
+            if !self.t15_active_at_genesis {
+                self.upgrade_t15_zone_runtimes_at_boundary()?;
+            }
+        } else if self.evm().config_spec_id().is_t13() && !self.t13_active_at_genesis {
             self.upgrade_zone_runtimes_at_boundary()?;
         }
 
@@ -1068,7 +1083,8 @@ mod tests {
         },
         zones::{
             T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
-            ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
+            T15_ZONE_PORTAL_RUNTIME, ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME,
+            ZONE_VERIFIER_RUNTIME,
         },
     };
     use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -2961,6 +2977,55 @@ mod tests {
                 let info = overlay.account_info(&address).unwrap();
                 let installed = &overlay.cache.contracts[&info.code_hash];
                 assert_eq!(installed.original_bytes(), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn zone_portal_runtime_upgrade_activates_at_t15() {
+        for (timestamp, expected_portal) in
+            [(9, T13_ZONE_PORTAL_RUNTIME), (10, T15_ZONE_PORTAL_RUNTIME)]
+        {
+            let mut genesis = DEV.genesis().clone();
+            for (fork, time) in [("t13Time", 0u64), ("t14Time", 0), ("t15Time", 10)] {
+                genesis
+                    .config
+                    .extra_fields
+                    .insert_value(fork.into(), time)
+                    .unwrap();
+            }
+            let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
+            let mut db = InMemoryDB::default();
+            let mut executor = TestExecutorBuilder::default()
+                .with_spec(if timestamp >= 10 {
+                    TempoHardfork::T15
+                } else {
+                    TempoHardfork::T14
+                })
+                .with_parent_beacon_block_root(B256::ZERO)
+                .build(&mut db, &chainspec);
+            let mut block = *executor.evm().block();
+            block.timestamp = U256::from(timestamp);
+            executor.evm_mut().set_block(block);
+            executor.apply_pre_execution_changes().unwrap();
+            // T13 is active at genesis here, so genesis would supply its runtimes; this test
+            // database has none, so install them as such a genesis would.
+            if timestamp < 10 {
+                executor.upgrade_zone_runtimes_at_boundary().unwrap();
+            }
+            // Re-running pre-execution must not restore the T13 portal after T15.
+            executor.apply_pre_execution_changes().unwrap();
+            for (address, expected) in [
+                (ZONE_PORTAL_IMPL_ADDRESS, expected_portal),
+                (ZONE_VERIFIER_ADDRESS, T13_ZONE_VERIFIER_RUNTIME),
+                (ZONE_MESSENGER_ADDRESS, T13_ZONE_MESSENGER_RUNTIME),
+            ] {
+                let overlay = executor.evm().state().overlay_db();
+                let info = overlay.account_info(&address).unwrap();
+                assert_eq!(
+                    overlay.cache.contracts[&info.code_hash].original_bytes(),
+                    expected
+                );
             }
         }
     }

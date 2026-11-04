@@ -150,6 +150,25 @@ pub struct ZoneBlock {
     pub finalize_withdrawal_batch_encrypted_senders: Vec<Bytes>,
     /// Raw signed user transactions in execution order.
     pub transactions: Vec<Bytes>,
+    /// TIP-1094 key initialization executed right after `advanceTempo`, if any. Omitted from
+    /// the serialized input when absent, so inputs without it keep their existing encoding.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub virtual_address_key: Option<VirtualAddressKeyInit>,
+}
+
+/// Inputs of a TIP-1094 `initializeVirtualAddressKey` system transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    serde(rename_all = "camelCase", deny_unknown_fields)
+)]
+pub struct VirtualAddressKeyInit {
+    pub version: u8,
+    pub key: B256,
 }
 
 /// Stateless Zone state input.

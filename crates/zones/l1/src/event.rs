@@ -88,8 +88,9 @@ impl EnabledToken {
 
 impl L1PortalEvents {
     /// Event signature hashes that this container knows how to decode.
-    const SIGNATURE_HASHES: [B256; 7] = [
+    const SIGNATURE_HASHES: [B256; 8] = [
         DepositMade::SIGNATURE_HASH,
+        VirtualDepositMade::SIGNATURE_HASH,
         WithdrawalBounceBack::SIGNATURE_HASH,
         TokenEnabled::SIGNATURE_HASH,
         SequencerEncryptionKeyUpdated::SIGNATURE_HASH,
@@ -176,6 +177,17 @@ impl L1PortalEvents {
                 );
                 self.deposits
                     .push(L1Deposit::Deposit(Deposit::from_event(event)));
+            }
+            ZonePortalEvents::VirtualDepositMade(event) => {
+                info!(
+                    l1_block = block_number,
+                    token = %event.token,
+                    originator = %event.originator,
+                    amount = %event.netAmount,
+                    "🔒 Virtual deposit from L1"
+                );
+                self.deposits
+                    .push(L1Deposit::ZoneVirtual(VirtualDeposit::from_event(event)));
             }
             ZonePortalEvents::WithdrawalBounceBack(event) => {
                 info!(

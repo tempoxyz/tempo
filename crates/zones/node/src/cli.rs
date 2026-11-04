@@ -234,6 +234,9 @@ fn run_node(mut cli: ZoneNodeCli, l1_access: CliL1Access) -> eyre::Result<()> {
         if !additional_decryption_keys.is_empty() {
             node = node.with_deposit_decryption_keys(additional_decryption_keys);
         }
+        if let Some(key) = args.virtual_address_key {
+            node = node.with_virtual_address_key(key);
+        }
 
         let data_dir = builder.config().datadir().data_dir().to_path_buf();
         let zone_chain_id = builder.config().chain.chain_id();
@@ -539,6 +542,17 @@ pub struct ZoneArgs {
         value_name = "PATH"
     )]
     pub deposit_decryption_keys_file: Option<PathBuf>,
+
+    /// TIP-1094 FF1 key (32-byte hex) to initialize as address key version 1 once T15 is
+    /// active. Every sequencer of the zone should set the same key; whichever builds the first
+    /// eligible block initializes it. Keep it secret: it decrypts every version-1 deposit address.
+    #[arg(
+        long = "sequencer.virtual-address-key",
+        env = "ZONE_VIRTUAL_ADDRESS_KEY",
+        value_name = "HEX",
+        hide_env_values = true
+    )]
+    pub virtual_address_key: Option<alloy_primitives::B256>,
 
     /// Path to the static multi-sequencer manifest. Its presence activates
     /// multi-sequencer mode and makes the manifest authoritative for role selection.
