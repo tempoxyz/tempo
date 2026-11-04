@@ -349,13 +349,16 @@ jobs:
         run: |
           set -euo pipefail
           # Hash the toolchain recipes, kernel hardening inputs, and resolved Bake dependency graph.
-          # Unrelated build targets cannot create duplicate toolchain tags.
+          # Unrelated build targets cannot create duplicate toolchain tags. This job builds main's
+          # recipe, so hash only the bootstrap inputs main tracks.
           docker buildx bake -f zones/docker/docker-bake.hcl --print \
             tempo-zone-prover-eif-builder | jq -cS . > "$RUNNER_TEMP/eif-toolchain-recipe.json"
-          recipe_sha=$(cat zones/docker/Dockerfile.prover-eif-builder \
-            zones/docker/Dockerfile.nitro-enclaves-bootstrap zones/docker/nitro/kernel.patch \
-            zones/docker/nitro/zones-hardening-x86_64.config \
-            "$RUNNER_TEMP/eif-toolchain-recipe.json" | sha256sum | cut -d' ' -f1)
+          recipe_sha=$( {
+            cat zones/docker/Dockerfile.prover-eif-builder
+            git ls-files -z -- zones/docker/Dockerfile.nitro-enclaves-bootstrap zones/docker/nitro |
+              xargs -0 -r cat
+            cat "$RUNNER_TEMP/eif-toolchain-recipe.json"
+          } | sha256sum | cut -d' ' -f1)
           image_ref="$TOOLCHAIN_REPOSITORY:inputs-$recipe_sha"
           digest=$(docker buildx imagetools inspect "$image_ref" \
             --format '{{.Manifest.Digest}}' 2>/dev/null || true)
