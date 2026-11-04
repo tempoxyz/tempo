@@ -6147,6 +6147,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "invariants-core"
+version = "0.1.0"
+source = "git+https://github.com/tempoxyz/invariants-core?rev=163dca0#163dca0399af62578daceac02d8dd41aa656adc9"
+dependencies = [
+ "alloy-primitives",
+ "alloy-sol-types",
+ "serde",
+]
+
+[[package]]
 name = "io_tee"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13894,6 +13904,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "tempo-fuzz-harness"
+version = "1.16.1"
+dependencies = [
+ "alloy-consensus",
+ "alloy-eips",
+ "alloy-evm",
+ "alloy-primitives",
+ "alloy-rlp",
+ "alloy-sol-types",
+ "bincode",
+ "invariants-core",
+ "reth-chainspec",
+ "reth-consensus",
+ "reth-evm",
+ "reth-primitives-traits",
+ "reth-trie-common",
+ "revm",
+ "tempo-chainspec",
+ "tempo-contracts",
+ "tempo-evm",
+ "tempo-fuzz-types",
+ "tempo-invariants",
+ "tempo-primitives",
+]
+
+[[package]]
+name = "tempo-fuzz-types"
+version = "1.16.1"
+dependencies = [
+ "alloy-primitives",
+ "invariants-core",
+ "serde",
+ "tempo-hardfork",
+]
+
+[[package]]
 name = "tempo-hardfork"
 version = "1.11.0"
 dependencies = [
@@ -13903,6 +13949,16 @@ dependencies = [
  "paste",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "tempo-invariants"
+version = "1.16.1"
+dependencies = [
+ "alloy-primitives",
+ "alloy-sol-types",
+ "invariants-core",
+ "tempo-contracts",
 ]
 
 [[package]]
