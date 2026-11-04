@@ -5,7 +5,7 @@
 //! line from a killed writer is skipped on read.
 
 use alloy::{
-    primitives::{Address, B256},
+    primitives::{Address, B256, keccak256},
     signers::local::{MnemonicBuilder, PrivateKeySigner, coins_bip39::English},
 };
 use eyre::WrapErr as _;
@@ -19,7 +19,7 @@ use std::{
 /// Mnemonic of the public dev accounts funded in the L1 genesis. Never holds real funds.
 const TEST_MNEMONIC: &str = "test test test test test test test test test test test junk";
 
-/// First derivation index of workload-created accounts, far above the genesis dev accounts.
+/// First index of workload-created accounts, above every funder index.
 const FIRST_WORKLOAD_INDEX: u32 = 1_000;
 
 /// One confirmed workload fact.
@@ -98,7 +98,7 @@ impl Ledger {
         line.push(b'\n');
         file.write_all(&line)
             .wrap_err("failed appending account record")?;
-        Account::at(index)
+        Account::workload(index)
     }
 
     /// Every workload account recorded so far.
@@ -106,7 +106,7 @@ impl Ledger {
         self.records()?
             .into_iter()
             .filter_map(|record| match record {
-                Record::Account { index } => Some(Account::at(index)),
+                Record::Account { index } => Some(Account::workload(index)),
                 _ => None,
             })
             .collect()
@@ -163,17 +163,28 @@ pub(super) struct Lease {
     _file: File,
 }
 
-/// A mnemonic-derived account that signs on both L1 and the zone.
+/// An account that signs on both L1 and the zone: a genesis dev account or a workload account.
 #[derive(Debug, Clone)]
 pub(super) struct Account {
-    /// BIP-44 index under [`TEST_MNEMONIC`].
+    /// BIP-44 index under [`TEST_MNEMONIC`] for a dev account, or the workload account index.
     pub(super) index: u32,
     /// Signer for the account's key.
     pub(super) signer: PrivateKeySigner,
 }
 
 impl Account {
-    /// Derives the account at `index`.
+    /// Derives workload account `index` from a hash of it. Commands rebuild every recorded
+    /// account on each run, and BIP-39 derivation (2048 PBKDF2 rounds each) would make that
+    /// slow once runs reach tens of thousands of accounts.
+    pub(super) fn workload(index: u32) -> eyre::Result<Self> {
+        let mut preimage = b"tempo-zone-antithesis-workload".to_vec();
+        preimage.extend_from_slice(&index.to_be_bytes());
+        let signer = PrivateKeySigner::from_bytes(&keccak256(preimage))
+            .wrap_err_with(|| format!("failed deriving workload account {index}"))?;
+        Ok(Self { index, signer })
+    }
+
+    /// Derives genesis dev account `index` from [`TEST_MNEMONIC`].
     pub(super) fn at(index: u32) -> eyre::Result<Self> {
         let signer = MnemonicBuilder::<English>::default()
             .phrase(TEST_MNEMONIC)
@@ -227,7 +238,7 @@ mod tests {
     fn lease_is_exclusive_until_dropped() {
         let dir = tempfile::tempdir().unwrap();
         let ledger = Ledger::open(dir.path()).unwrap();
-        let account = Account::at(FIRST_WORKLOAD_INDEX).unwrap();
+        let account = Account::workload(FIRST_WORKLOAD_INDEX).unwrap();
         let lease = ledger.try_lease(&account).unwrap();
         assert!(lease.is_some());
         assert!(ledger.try_lease(&account).unwrap().is_none());

@@ -301,6 +301,18 @@ impl Context {
         }
 
         let records = self.ledger.records()?;
+        // Nodes may agree on a common rollback; a confirmed transaction's block is a floor.
+        let last_zone_block = records
+            .iter()
+            .filter_map(|record| match record {
+                Record::Transfer { zone_block, .. } | Record::Withdrawal { zone_block, .. } => {
+                    Some(*zone_block)
+                }
+                _ => None,
+            })
+            .max()
+            .unwrap_or_default();
+        let converged = converged && highest >= last_zone_block;
         let mut unsettled_deposits = Vec::new();
         let mut unpaid_withdrawals = Vec::new();
         for record in records {

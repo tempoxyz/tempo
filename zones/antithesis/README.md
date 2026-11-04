@@ -36,7 +36,7 @@ docker compose -f zones/antithesis/docker-compose.yaml up
 | `finally_ledger` | The same, then every workload account's zone balance equals what the zone's Transfer logs add up to |
 
 Half of all recipients are accounts nobody has used before, so the L1 and zone state tries keep
-growing during a run. Accounts are derived from the public test mnemonic from index 1000 up and
+growing during a run. Account keys are hashes of their index, counting from 1000, and are
 recorded in an append-only ledger in `/state`, which also holds a lock file per account so
 only one command sends from an account at a time. Drivers record a deposit, withdrawal or
 transfer only once its receipt confirms it; the checks compare those records with both chains.
