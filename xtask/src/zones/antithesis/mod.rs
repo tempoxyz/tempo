@@ -648,7 +648,7 @@ impl Context {
         poll_until(BRIDGE_WAIT, async || {
             Ok(self.l1.get_logs(&filter).await?.iter().any(|log| {
                 ZonePortal::WithdrawalProcessed::decode_log(&log.inner)
-                    .is_ok_and(|event| event.amount == amount)
+                    .is_ok_and(|event| event.amount == amount && event.callbackSuccess)
             }))
         })
         .await

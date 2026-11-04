@@ -281,7 +281,11 @@ impl Context {
         let l1_height = self.l1.get_block_number().await?;
         let mut paid: BTreeMap<(Address, u128), usize> = BTreeMap::new();
         for log in logs(&self.l1, Filter::new().address(self.portal), l1_height).await? {
-            if let Ok(event) = ZonePortal::WithdrawalProcessed::decode_log(&log.inner) {
+            // A failed delivery also emits WithdrawalProcessed, with callbackSuccess false, and
+            // bounces the funds back to the zone instead of paying `to`.
+            if let Ok(event) = ZonePortal::WithdrawalProcessed::decode_log(&log.inner)
+                && event.callbackSuccess
+            {
                 *paid.entry((event.to, event.amount)).or_default() += 1;
             }
         }
