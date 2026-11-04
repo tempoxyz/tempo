@@ -9,9 +9,10 @@ use crate::{
 };
 use alloy_eips::Encodable2718;
 use alloy_primitives::{Address, B256, Bytes, U256};
+use futures::{StreamExt, stream};
 use reth_chainspec::{EthChainSpec, ForkCondition};
 use slatedb::DbReader;
-use std::{collections::BTreeMap, fs, path::Path};
+use std::{collections::BTreeMap, fs, path::Path, sync::Arc};
 use tempo_chainspec::{
     TempoChainSpec,
     hardfork::{TempoHardfork, TempoHardforks},
@@ -22,8 +23,11 @@ use tempo_fuzz_types::{
     TempoBlockchainInput, TempoHarnessInput,
 };
 use tempo_primitives::Block;
-use tokio::runtime::Runtime;
+use tokio::{runtime::Runtime, sync::mpsc, task::JoinHandle};
 use tracing::warn;
+
+/// Worker threads of a corpus's runtime: they renew its lease and decode prefetched blocks.
+const WORKERS: usize = 4;
 
 /// A corpus, open at its published checkpoint. A fill extending it meanwhile does not change
 /// what this reads.
@@ -32,7 +36,7 @@ pub struct Corpus {
     store: Store,
     /// Keeps the snapshot readable while a fill extends the corpus; taken when dropped.
     lease: Option<Lease>,
-    reader: DbReader,
+    reader: Arc<DbReader>,
     catalog: Catalog,
     chain_spec: ChainSpecInput,
 }
@@ -41,9 +45,10 @@ impl Corpus {
     /// Opens the published blocks of the corpus at `url` (`s3://bucket/prefix` or
     /// `file:///directory`), with S3 reads going to `endpoint` when given.
     pub fn open(url: &str, endpoint: Option<&str>) -> eyre::Result<Self> {
-        // One worker renews the lease while the caller is not reading.
+        // The workers renew the lease while the caller is not reading, and decode prefetched
+        // blocks ([Self::prefetch]).
         let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(1)
+            .worker_threads(WORKERS)
             .enable_all()
             .build()?;
         let (store, mut catalog) = runtime.block_on(async {
@@ -65,7 +70,7 @@ impl Corpus {
             runtime,
             store,
             lease: Some(lease),
-            reader,
+            reader: Arc::new(reader),
             catalog,
             chain_spec,
         })
@@ -75,12 +80,18 @@ impl Corpus {
         &self.catalog
     }
 
-    /// `block`'s harness input.
-    pub fn input(&self, block: u64) -> eyre::Result<TempoHarnessInput> {
+    /// Fails once the lease may expire, so reads through it must stop.
+    fn ensure_leased(&self) -> eyre::Result<()> {
         eyre::ensure!(
             !self.lease.as_ref().is_some_and(Lease::expiring),
             "corpus lease expires before it can be renewed"
         );
+        Ok(())
+    }
+
+    /// `block`'s harness input.
+    pub fn input(&self, block: u64) -> eyre::Result<TempoHarnessInput> {
+        self.ensure_leased()?;
         let stored = self
             .runtime
             .block_on(store::published(&self.reader, block))?
@@ -97,6 +108,84 @@ impl Corpus {
         blocks
             .into_iter()
             .map(|block| Ok((block, self.input(block)?)))
+    }
+
+    /// The stored size in bytes of each of `blocks`' inputs, in the order given, read from their
+    /// metadata alone, `concurrency` blocks at a time. It orders blocks by size without fetching
+    /// them, such as smallest first for a minimizer.
+    pub fn sizes(&self, blocks: &[u64], concurrency: usize) -> eyre::Result<Vec<usize>> {
+        self.ensure_leased()?;
+        let reader = &*self.reader;
+        self.runtime
+            .block_on(
+                stream::iter(blocks)
+                    .map(|&block| async move {
+                        eyre::Ok(store::metadata(reader, block).await?.block_bytes)
+                    })
+                    .buffered(concurrency.max(1))
+                    .collect::<Vec<_>>(),
+            )
+            .into_iter()
+            .collect()
+    }
+
+    /// Each of `blocks` with its harness input, in the order given, fetched and decoded up to
+    /// `ahead` blocks ahead of the caller on the corpus's runtime, so object store reads overlap
+    /// with each other and with the caller's work. Iteration stops after the first error.
+    pub fn prefetch(&self, blocks: Vec<u64>, ahead: usize) -> Prefetch<'_> {
+        let ahead = ahead.max(1);
+        let (sender, receiver) = mpsc::channel(ahead);
+        let (reader, chain_spec) = (self.reader.clone(), self.chain_spec.clone());
+        let task = self.runtime.spawn(async move {
+            let mut inputs = stream::iter(blocks)
+                .map(|block| {
+                    let (reader, chain_spec) = (reader.clone(), chain_spec.clone());
+                    // Its own task, so blocks decode on every worker.
+                    tokio::spawn(async move {
+                        let stored = store::published(&reader, block).await?.1;
+                        let input = harness_input(&stored, chain_spec)?;
+                        eyre::Ok((block, TempoHarnessInput::Blockchain(input)))
+                    })
+                })
+                .buffered(ahead);
+            while let Some(joined) = inputs.next().await {
+                let item = joined.unwrap_or_else(|error| Err(error.into()));
+                let failed = item.is_err();
+                if sender.send(item).await.is_err() || failed {
+                    break;
+                }
+            }
+        });
+        Prefetch {
+            corpus: self,
+            receiver,
+            task,
+        }
+    }
+}
+
+/// Prefetched harness inputs of a [Corpus], from [Corpus::prefetch]. Dropping it stops the
+/// fetches still running.
+pub struct Prefetch<'a> {
+    corpus: &'a Corpus,
+    receiver: mpsc::Receiver<eyre::Result<(u64, TempoHarnessInput)>>,
+    task: JoinHandle<()>,
+}
+
+impl Iterator for Prefetch<'_> {
+    type Item = eyre::Result<(u64, TempoHarnessInput)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Err(error) = self.corpus.ensure_leased() {
+            return Some(Err(error));
+        }
+        self.receiver.blocking_recv()
+    }
+}
+
+impl Drop for Prefetch<'_> {
+    fn drop(&mut self) {
+        self.task.abort();
     }
 }
 
