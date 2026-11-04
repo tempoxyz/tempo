@@ -759,13 +759,14 @@ jobs:
           zones/scripts/package-prover-eif.sh
           mv "$OUT_DIR/enclave.eif" "$OUT_DIR/tempo-zone-prover.eif"
 
+          # Record the bootstrap artifacts the EIF builder consumed.
           docker run --rm \
             --platform linux/amd64 \
-            --entrypoint /bin/cp \
-            --volume "$PWD/$OUT_DIR:/output" \
+            --workdir /usr/share/nitro_enclaves/blobs \
+            --entrypoint sha384sum \
             "$EIF_BUILDER_IMAGE" \
-            /usr/share/nitro_enclaves/components.sha384 \
-            /output/components.sha384
+            bzImage bzImage.config cmdline nsm.ko init linuxkit \
+            > "$OUT_DIR/components.sha384"
 
       - name: Read tempo-zone-prover PCR measurements
         id: prover_measurements

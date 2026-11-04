@@ -25,9 +25,6 @@ RUN file /usr/share/nitro_enclaves/blobs/bzImage | grep -Fq 'version 6.6.79' \
     && grep -Fqw 'random.trust_cpu=off' /usr/share/nitro_enclaves/blobs/cmdline \
     && grep -Fqw 'random.trust_bootloader=off' /usr/share/nitro_enclaves/blobs/cmdline \
     && ! grep -Fqw 'random.trust_cpu=on' /usr/share/nitro_enclaves/blobs/cmdline \
-    && rm /tmp/aws-nitro-cmdline \
-    && cd /usr/share/nitro_enclaves/blobs \
-    && sha384sum bzImage bzImage.config cmdline nsm.ko init linuxkit \
-        > /usr/share/nitro_enclaves/components.sha384
+    && rm /tmp/aws-nitro-cmdline
 
 ENTRYPOINT ["nitro-cli"]
