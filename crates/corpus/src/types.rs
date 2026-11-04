@@ -480,3 +480,64 @@ fn marked<K: Ord + Copy, V: Clone>(witness: &BTreeMap<K, V>, bits: &[u8]) -> BTr
         .map(|(_, (key, value))| (*key, value.clone()))
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn transaction(charged_gas: u64, slot_value: u8) -> Transaction {
+        let change = Change {
+            info: None,
+            created: false,
+            storage: BTreeMap::from([([1; 32], [slot_value; 32])]),
+            code: None,
+        };
+        Transaction {
+            ordinal: 7,
+            index: 2,
+            hash: [0xab; 32],
+            before: vec![1],
+            after: vec![2],
+            outcome: Outcome {
+                status: 0,
+                reason: "Return".into(),
+                created: None,
+                gas: [charged_gas, 0, 0, 0],
+                charged_gas,
+                output: Some(vec![]),
+            },
+            receipt: vec![3],
+            delta: Delta(vec![BTreeMap::from([([0x11; 20], change)])]),
+        }
+    }
+
+    #[test]
+    fn check_reports_transaction_and_differing_fields() {
+        let case = transaction(21_000, 1).stored().unwrap();
+        assert!(case.check(&transaction(21_000, 1)).is_ok());
+
+        let message = case.check(&transaction(21_001, 2)).unwrap_err().to_string();
+        let hash = B256::from([0xab; 32]);
+        assert!(
+            message.starts_with(&format!(
+                "transaction {hash} (index 2, ordinal 7) outcome, delta mismatch"
+            )),
+            "{message}"
+        );
+        assert!(
+            message.contains("charged gas: recorded 21000, replayed 21001 (+1)"),
+            "{message}"
+        );
+        assert!(message.contains("reason Return"), "{message}");
+        let address = Address::from([0x11; 20]);
+        let slot = B256::from([1; 32]);
+        assert!(
+            message.contains(&format!(
+                "delta commit 0 {address} slot {slot}: recorded Some({}), replayed Some({})",
+                B256::from([1; 32]),
+                B256::from([2; 32])
+            )),
+            "{message}"
+        );
+    }
+}
