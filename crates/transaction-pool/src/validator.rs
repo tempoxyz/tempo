@@ -1,13 +1,13 @@
 use crate::{
     AddressFilter,
     amm::AmmLiquidityCache,
+    preconditions::Preconditions,
     state_cache::{StateCache, StateCacheDb},
-    tempo_pool::get_sender_policy_ids,
-    transaction::{FeeTokenState, TempoPoolTransactionError, TempoPooledTransaction},
+    transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 
 use alloy_consensus::{Transaction, transaction::Recovered};
-use alloy_primitives::{Address, B256, U256, map::AddressMap};
+use alloy_primitives::{Address, B256, U256};
 use evm2::{EvmFeatures, evm::DynDatabase, registry::HandlerError};
 use parking_lot::RwLock;
 use reth_chainspec::{ChainSpecProvider, EthChainSpec};
@@ -43,7 +43,6 @@ use tempo_precompiles::{
     configurable_account::CONFIGURABLE_ACCOUNT_CODE_HASH,
     nonce::{INonce, NonceManager},
     storage::StorageActions,
-    tip20::TIP20Token,
 };
 use tempo_primitives::{
     Block, TempoHeader, TempoPrimitives,
@@ -378,6 +377,8 @@ where
         let mut evm = self.inner.evm_config().evm_with_env(db, evm_env);
         evm.ext_mut().skip_valid_after_check = true;
         evm.ext_mut().skip_liquidity_check = true;
+        // Pending-transaction checks compare later writes with what validation read.
+        evm.ext_mut().actions.enable();
 
         transactions
             .into_iter()
@@ -521,7 +522,9 @@ where
             .cloned()
             .unwrap_or_else(|| transaction.tx_env_slow());
         let tx = Recovered::new_unchecked(tx_env, *transaction.sender_ref());
+        evm.ext().actions.clear();
         let result = evm.validate_tx(&tx);
+        let actions = evm.ext().actions.take().unwrap_or_default();
         transaction.cache_tx_env(tx.into_inner());
         let fee_token = evm.ext_mut().resolved_fee_token.take();
         let key_expiry = evm.ext_mut().key_expiry.take();
@@ -558,27 +561,9 @@ where
         // Cache the resolved fee token from EVM validation for pool maintenance.
         transaction.set_resolved_fee_token(fee_token);
 
-        // Cache the fee token state that pending-transaction checks match events against.
-        let quote_token = match evm.overlay_db_mut().with_read_only_storage_ctx(
-            spec,
-            StorageActions::disabled(),
-            || TIP20Token::from_address(fee_token.address())?.quote_token(),
-        ) {
-            Ok(quote_token) => quote_token,
-            Err(err) => {
-                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
-            }
-        };
-        transaction.set_fee_token_state(FeeTokenState {
-            sender_policy_ids: get_sender_policy_ids(
-                evm.overlay_db_mut(),
-                fee_token.address(),
-                spec,
-                &mut AddressMap::default(),
-            )
-            .unwrap_or_default(),
-            quote_token,
-        });
+        // Record what the pre-execution checks read, which pending-transaction checks compare
+        // later writes with.
+        transaction.set_preconditions(Preconditions::from_actions(&transaction, actions));
 
         // Pool-only key-expiry propagation buffer: reject keychain txs whose key
         // expires too soon (within AA_VALID_BEFORE_MIN_SECS of tip timestamp).
@@ -953,7 +938,9 @@ impl<T> ConfigureTempoPoolEvm for T where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{test_utils::TxBuilder, transaction::TempoPoolTransactionError};
+    use crate::{
+        preconditions::Condition, test_utils::TxBuilder, transaction::TempoPoolTransactionError,
+    };
     use alloy_consensus::{Header, SignableTransaction, Transaction, TxLegacy};
     use alloy_primitives::{Address, B256, Bytes, TxKind, U256, address, uint};
     use alloy_signer::Signature;
@@ -2236,7 +2223,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn caches_fee_token_state_at_admission() {
+    async fn records_preconditions_at_admission() {
         let transaction = TxBuilder::aa(Address::random())
             .max_fee(u128::from(TEMPO_T7_BASE_FEE_FLOOR))
             .max_priority_fee(0)
@@ -2253,13 +2240,28 @@ mod tests {
         let TransactionValidationOutcome::Valid { transaction, .. } = outcome else {
             panic!("expected a valid transaction, got {outcome:?}");
         };
-        assert_eq!(
-            transaction.transaction().fee_token_state(),
-            Some(&FeeTokenState {
-                sender_policy_ids: vec![1],
-                quote_token: Address::ZERO,
-            })
+        let transaction = transaction.transaction();
+        let preconditions = transaction
+            .preconditions()
+            .expect("validation records preconditions");
+        let (fee_token, balance_slot) = transaction.fee_balance_slot().unwrap();
+        // The fee payer's balance keeps only the threshold the fee needs.
+        assert!(preconditions.iter().any(|precondition| {
+            precondition.address == fee_token
+                && precondition.slot == balance_slot
+                && matches!(precondition.condition, Condition::AtLeast(_))
+        }));
+        assert!(
+            preconditions
+                .iter()
+                .all(|precondition| precondition.slot != balance_slot
+                    || !matches!(precondition.condition, Condition::Equals(_)))
         );
+        // The fee token's configuration is read exactly.
+        assert!(preconditions.iter().any(|precondition| {
+            precondition.address == fee_token
+                && matches!(precondition.condition, Condition::Equals(_))
+        }));
     }
 
     #[tokio::test]
@@ -3546,5 +3548,447 @@ mod tests {
             assert_eq!(evm.ext().resolved_fee_token, None);
             assert_eq!(evm.ext().key_expiry, None);
         }
+    }
+
+    /// Records every storage slot the EVM loads from the database below it.
+    struct StorageReadRecorder<DB> {
+        inner: DB,
+        reads: std::rc::Rc<std::cell::RefCell<Vec<(Address, U256)>>>,
+    }
+
+    impl<DB: Database> Database for StorageReadRecorder<DB> {
+        type Error = DB::Error;
+
+        fn is_fatal(error: &Self::Error) -> bool {
+            DB::is_fatal(error)
+        }
+
+        fn get_account(&mut self, address: &Address) -> Result<Option<AccountInfo>, Self::Error> {
+            self.inner.get_account(address)
+        }
+
+        fn get_code_by_hash(&mut self, code_hash: &B256) -> Result<EvmBytecode, Self::Error> {
+            self.inner.get_code_by_hash(code_hash)
+        }
+
+        fn get_storage(&mut self, address: &Address, index: &U256) -> Result<U256, Self::Error> {
+            self.reads.borrow_mut().push((*address, *index));
+            self.inner.get_storage(address, index)
+        }
+
+        fn get_block_hash(&mut self, number: &U256) -> Result<B256, Self::Error> {
+            self.inner.get_block_hash(number)
+        }
+    }
+
+    /// Every protocol slot the handler's pre-execution checks read from storage must appear in
+    /// the storage actions they record, since pending-transaction checks only see later writes to
+    /// recorded slots. Only reads that no later write can turn into a failure may go unrecorded,
+    /// and each is allowlisted below with its reason.
+    #[test]
+    fn recorded_actions_cover_every_protocol_storage_read() {
+        use alloy_signer::SignerSync;
+        use alloy_signer_local::PrivateKeySigner;
+        use std::collections::{BTreeMap, HashSet};
+        use tempo_chainspec::spec::DEV;
+        use tempo_contracts::precompiles::{IFeeManager, ITIP20, OUSD_ADDRESS};
+        use tempo_precompiles::{
+            SYSTEM_PRECOMPILES, TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
+            TIP403_REGISTRY_ADDRESS,
+            account_keychain::{AccountKeychain, KeyRestrictions, SignatureType, TokenLimit},
+            storage::{
+                ContractStorage, Handler, StorageAction, StorageCtx,
+                hashmap::HashMapStorageProvider,
+            },
+            test_util::TIP20Setup,
+            tip_fee_manager::TipFeeManager,
+            tip20::is_tip20_prefix,
+            tip403_registry::{ITIP403Registry, PolicyType, TIP403Registry},
+        };
+        use tempo_primitives::transaction::{
+            KeyAuthorization, KeychainSignature, SignatureType as TxSignatureType, TempoSignature,
+            TokenLimit as TxTokenLimit,
+        };
+
+        const TIP_TIMESTAMP: u64 = 1_800_000_000;
+        const NONCE_KEY: u64 = 5;
+        let chain_id = DEV.chain_id();
+        let spec = DEV.tempo_hardfork_at(TIP_TIMESTAMP);
+        let signer = |byte| PrivateKeySigner::from_bytes(&B256::repeat_byte(byte)).unwrap();
+        // Pays its own fees in pathUSD; root of the keychain access key.
+        let root = signer(0x01);
+        // Pays in AlphaUSD, its stored preference, under a whitelist transfer policy.
+        let preference = signer(0x02);
+        // Holds only the second fallback token, so fee resolution checks both candidates.
+        let fallback = signer(0x03);
+        // Sponsors a sender that holds nothing.
+        let sponsor = signer(0x04);
+        let sponsored = signer(0x05);
+        // Access key of root with a pathUSD spending limit.
+        let access_key = signer(0x06);
+        // Access key root authorizes inline.
+        let inline_key = signer(0x07);
+        let admin = Address::repeat_byte(0xad);
+        let funds = U256::from(1_000_000_000_000u64);
+
+        // Build the parent state with the precompiles themselves.
+        let mut storage = HashMapStorageProvider::new_with_spec(chain_id, spec);
+        let alpha = StorageCtx::enter(&mut storage, || -> tempo_precompiles::Result<Address> {
+            TipFeeManager::new().initialize()?;
+            NonceManager::new().initialize()?;
+            TIP403Registry::new().initialize()?;
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            TIP20Setup::path_usd(admin)
+                .with_issuer(admin)
+                .with_mint(root.address(), funds)
+                .with_mint(sponsor.address(), funds)
+                .apply()?;
+            TIP20Token::from_address(OUSD_ADDRESS)?.initialize(
+                TIP20_FACTORY_ADDRESS,
+                "OpenUSD",
+                "OUSD",
+                "USD",
+                PATH_USD_ADDRESS,
+                admin,
+            )?;
+            TIP20Setup::config(OUSD_ADDRESS)
+                .with_admin(admin)
+                .with_issuer(admin)
+                .with_mint(fallback.address(), funds)
+                .apply()?;
+            let mut alpha = TIP20Setup::create("AlphaUSD", "AUSD", admin)
+                .with_issuer(admin)
+                .with_mint(preference.address(), funds)
+                .apply()?;
+            let mut registry = TIP403Registry::new();
+            let policy = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: PolicyType::WHITELIST,
+                },
+            )?;
+            for account in [preference.address(), TIP_FEE_MANAGER_ADDRESS] {
+                registry.modify_policy_whitelist(
+                    admin,
+                    ITIP403Registry::modifyPolicyWhitelistCall {
+                        policyId: policy,
+                        account,
+                        allowed: true,
+                    },
+                )?;
+            }
+            alpha.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: policy,
+                },
+            )?;
+            TipFeeManager::new().set_user_token(
+                preference.address(),
+                IFeeManager::setUserTokenCall {
+                    token: alpha.address(),
+                },
+            )?;
+            NonceManager::new().nonces[root.address()][U256::from(NONCE_KEY)].write(3)?;
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_tx_origin(root.address())?;
+            keychain.authorize_key(
+                root.address(),
+                access_key.address(),
+                SignatureType::Secp256k1,
+                KeyRestrictions {
+                    expiry: u64::MAX,
+                    enforceLimits: true,
+                    limits: vec![TokenLimit {
+                        token: PATH_USD_ADDRESS,
+                        amount: funds,
+                        period: 0,
+                    }],
+                    allowAnyCalls: true,
+                    allowedCalls: vec![],
+                },
+                None,
+            )?;
+            Ok(alpha.address())
+        })
+        .expect("parent state setup succeeds");
+
+        let mut code = BTreeMap::new();
+        for address in SYSTEM_PRECOMPILES
+            .iter()
+            .map(|(address, _)| *address)
+            .chain([PATH_USD_ADDRESS, OUSD_ADDRESS, alpha])
+        {
+            if let Some(bytecode) = storage
+                .get_account_info(address)
+                .and_then(|info| info.code.as_ref())
+            {
+                code.insert(address, bytecode.original_bytes());
+            }
+        }
+        let mut slots = BTreeMap::<Address, Vec<(B256, U256)>>::new();
+        for (address, slot, value) in storage.into_storage() {
+            slots.entry(address).or_default().push((slot.into(), value));
+        }
+        let provider = MockEthProvider::<TempoPrimitives>::new()
+            .with_chain_spec(Arc::unwrap_or_clone(DEV.clone()));
+        for address in code
+            .keys()
+            .chain(slots.keys())
+            .copied()
+            .collect::<HashSet<_>>()
+        {
+            let mut account = ExtendedAccount::new(0, U256::ZERO);
+            if let Some(bytecode) = code.get(&address) {
+                account = account.with_bytecode(bytecode.clone());
+            }
+            account = account.extend_storage(slots.remove(&address).unwrap_or_default());
+            provider.add_account(address, account);
+        }
+        for signer in [&root, &preference, &fallback, &sponsor, &sponsored] {
+            provider.add_account(signer.address(), ExtendedAccount::new(0, U256::ZERO));
+        }
+        provider.add_block(
+            B256::random(),
+            create_mock_block(TIP_TIMESTAMP).into_block(),
+        );
+        let inner =
+            EthTransactionValidatorBuilder::new(provider.clone(), TempoEvmConfig::new(DEV.clone()))
+                .with_custom_tx_type(TempoTxType::AA as u8)
+                .disable_balance_check()
+                .build(InMemoryBlobStore::default());
+        let validator = TempoTransactionValidator::new(
+            inner,
+            DEFAULT_AA_VALID_AFTER_MAX_SECS,
+            DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
+            AmmLiquidityCache::new(provider).expect("failed to setup AmmLiquidityCache"),
+        );
+        validator.on_new_head_block(&create_mock_block(TIP_TIMESTAMP));
+        assert_eq!(validator.active_hardfork(), spec);
+        let beneficiary = validator.cached_evm_env.read().block.beneficiary;
+
+        let base = TempoTransaction {
+            chain_id,
+            max_priority_fee_per_gas: 1_000_000_000,
+            max_fee_per_gas: 20_000_000_000,
+            gas_limit: 1_000_000,
+            calls: vec![Call {
+                to: TxKind::Call(Address::repeat_byte(0x55)),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            }],
+            ..Default::default()
+        };
+        let pooled = |envelope: TempoTxEnvelope| {
+            TempoPooledTransaction::new(envelope.try_into_recovered().unwrap())
+        };
+        let sign = |signer: &PrivateKeySigner, tx: TempoTransaction| {
+            let signature = signer.sign_hash_sync(&tx.signature_hash()).unwrap();
+            pooled(tx.into_signed(signature.into()).into())
+        };
+        let explicit = TempoTransaction {
+            fee_token: Some(PATH_USD_ADDRESS),
+            ..base.clone()
+        };
+        let sponsored_tx = {
+            let mut tx = TempoTransaction {
+                fee_payer_signature: Some(Signature::new(U256::ZERO, U256::ZERO, false)),
+                ..explicit.clone()
+            };
+            let fee_payer_hash = tx.fee_payer_signature_hash(sponsored.address());
+            tx.fee_payer_signature = Some(sponsor.sign_hash_sync(&fee_payer_hash).unwrap());
+            sign(&sponsored, tx)
+        };
+        let keychain_tx = {
+            let hash = KeychainSignature::signing_hash(explicit.signature_hash(), root.address());
+            let signature = access_key.sign_hash_sync(&hash).unwrap();
+            pooled(
+                explicit
+                    .clone()
+                    .into_signed(TempoSignature::Keychain(KeychainSignature::new(
+                        root.address(),
+                        PrimitiveSignature::Secp256k1(signature),
+                    )))
+                    .into(),
+            )
+        };
+        let inline_authorization = {
+            let authorization = KeyAuthorization::unrestricted(
+                chain_id,
+                TxSignatureType::Secp256k1,
+                inline_key.address(),
+            )
+            .with_expiry(TIP_TIMESTAMP + 1_000_000)
+            .with_limits(vec![TxTokenLimit {
+                token: PATH_USD_ADDRESS,
+                limit: funds,
+                period: 0,
+            }]);
+            let signature = root
+                .sign_hash_sync(&authorization.signature_hash())
+                .unwrap();
+            authorization.into_signed(PrimitiveSignature::Secp256k1(signature))
+        };
+        let eip1559 = {
+            let tx = alloy_consensus::TxEip1559 {
+                chain_id,
+                nonce: 0,
+                gas_limit: 1_000_000,
+                max_fee_per_gas: 20_000_000_000,
+                max_priority_fee_per_gas: 1_000_000_000,
+                to: TxKind::Call(Address::repeat_byte(0x55)),
+                ..Default::default()
+            };
+            let signature = root.sign_hash_sync(&tx.signature_hash()).unwrap();
+            pooled(tx.into_signed(signature).into())
+        };
+
+        let cases = [
+            (
+                "AA with an explicit fee token",
+                sign(&root, explicit.clone()),
+            ),
+            (
+                "AA paying in its stored fee token",
+                sign(&preference, base.clone()),
+            ),
+            ("AA paying in a fallback fee token", sign(&fallback, base)),
+            ("EIP-1559", eip1559),
+            (
+                "AA on a 2D nonce lane",
+                sign(
+                    &root,
+                    TempoTransaction {
+                        nonce_key: U256::from(NONCE_KEY),
+                        nonce: 3,
+                        ..explicit.clone()
+                    },
+                ),
+            ),
+            (
+                "AA with an expiring nonce",
+                sign(
+                    &root,
+                    TempoTransaction {
+                        nonce_key: TEMPO_EXPIRING_NONCE_KEY,
+                        valid_before: core::num::NonZeroU64::new(
+                            TIP_TIMESTAMP + TEST_VALIDITY_WINDOW,
+                        ),
+                        ..explicit.clone()
+                    },
+                ),
+            ),
+            ("AA signed by a spending-limited access key", keychain_tx),
+            ("sponsored AA", sponsored_tx),
+            (
+                "AA with an inline key authorization",
+                sign(
+                    &root,
+                    TempoTransaction {
+                        key_authorization: Some(inline_authorization),
+                        gas_limit: 2_000_000,
+                        ..explicit
+                    },
+                ),
+            ),
+        ];
+
+        // Unrecorded reads no later write can turn into a pre-execution failure.
+        let allowlist = [
+            // The block's own beneficiary cannot change its validator token within its block.
+            (
+                TIP_FEE_MANAGER_ADDRESS,
+                TipFeeManager::new().validator_tokens[beneficiary].slot(),
+            ),
+            // The policy ID counter only grows, so an existing policy keeps existing.
+            (
+                TIP403_REGISTRY_ADDRESS,
+                TIP403Registry::new().policy_id_counter.slot(),
+            ),
+        ];
+        let is_protocol = |address: Address| {
+            is_tip20_prefix(address)
+                || SYSTEM_PRECOMPILES
+                    .iter()
+                    .any(|(precompile, _)| *precompile == address)
+        };
+
+        let mut uncovered = Vec::new();
+        for (name, transaction) in cases {
+            // A fresh EVM per transaction, so every read reaches the database.
+            let (state_provider, _) = validator.latest_state_provider_and_cache().unwrap();
+            let reads = std::rc::Rc::default();
+            let db = StorageReadRecorder {
+                inner: StateProviderDatabase::new(
+                    (&state_provider as &dyn StateProvider).into_evm_state_provider(),
+                ),
+                reads: std::rc::Rc::clone(&reads),
+            };
+            let mut evm_env = validator
+                .cached_evm_env
+                .read()
+                .clone()
+                .with_nonce_check_disabled();
+            evm_env.version.features.remove(EvmFeatures::BASE_FEE_CHECK);
+            let mut evm = ConfigureEvm::evm_with_env(validator.inner.evm_config(), db, evm_env);
+            evm.ext_mut().skip_valid_after_check = true;
+            evm.ext_mut().skip_liquidity_check = true;
+            evm.ext_mut().actions.enable();
+
+            let tx = Recovered::new_unchecked(transaction.tx_env_slow(), transaction.sender());
+            evm.ext().actions.clear();
+            let result = evm.validate_tx(&tx);
+            let actions = evm.ext().actions.take().unwrap_or_default();
+            if let Err(error) = result {
+                panic!("{name}: pre-execution checks failed: {error:?}");
+            }
+            drop(evm);
+
+            // The fee payer's balance must keep covering the maximum fee, which the handler
+            // checks, not only the fee at the admission's base fee.
+            let fee = transaction.fee_token_cost();
+            assert!(
+                actions.iter().any(|action| matches!(
+                    *action,
+                    StorageAction::FeeTokenBalanceCheck(_, _, _, required, true) if required == fee
+                )),
+                "{name}: no affordability check against the maximum fee"
+            );
+
+            let recorded = actions
+                .iter()
+                .map(|action| match *action {
+                    StorageAction::Sload(address, slot, ..)
+                    | StorageAction::FeeTokenBalanceCheck(address, slot, ..)
+                    | StorageAction::Sstore(address, slot, ..)
+                    | StorageAction::Sinc(address, slot, ..)
+                    | StorageAction::Sdec(address, slot, ..) => (address, slot),
+                    StorageAction::FeeAmmSwap(slot, ..)
+                    | StorageAction::FeeAmmLiquidityCheck(slot, ..) => {
+                        (TIP_FEE_MANAGER_ADDRESS, slot)
+                    }
+                })
+                .collect::<HashSet<_>>();
+            let reads = reads.take();
+            assert!(
+                !reads.is_empty(),
+                "{name}: no storage read reached the database"
+            );
+            for (address, slot) in reads.into_iter().collect::<std::collections::BTreeSet<_>>() {
+                if !recorded.contains(&(address, slot)) && !allowlist.contains(&(address, slot)) {
+                    uncovered.push(format!(
+                        "{name}: {address} slot {slot:#x} (protocol: {})",
+                        is_protocol(address)
+                    ));
+                }
+            }
+        }
+        assert!(
+            uncovered.is_empty(),
+            "storage reads missing from the recorded actions:\n{}",
+            uncovered.join("\n")
+        );
     }
 }

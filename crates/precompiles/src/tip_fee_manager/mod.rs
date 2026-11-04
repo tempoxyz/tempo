@@ -163,8 +163,12 @@ impl TipFeeManager {
         beneficiary: Address,
         skip_liquidity_check: bool,
     ) -> Result<Address> {
-        // Get the validator's token preference
-        let validator_token = self.get_validator_token(beneficiary)?;
+        // Get the validator's token preference. The beneficiary cannot change it within its own
+        // block, so replays and pending-transaction checks need not track the read.
+        let validator_token = self
+            .storage
+            .actions()
+            .unrecorded(|| self.get_validator_token(beneficiary))?;
 
         let mut tip20_token = TIP20Token::from_address(user_token)?;
 

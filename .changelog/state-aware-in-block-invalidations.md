@@ -1,6 +1,8 @@
 ---
 tempo-transaction-pool: minor
 tempo-payload-builder: patch
+tempo-evm: patch
+tempo-precompiles: patch
 ---
 
-Added `Invalidations`, which pool maintenance and `StateAwareBestTransactions` share to decide which pending transactions a block, or the transactions executed so far, made invalid or need revalidation. Its checks read no state: they combine what the changes wrote with fee token state validation caches on each transaction (`FeeTokenState`: sender policy IDs and quote token). The payload builder now skips such transactions within the block; `StateAwareBestTransactions::new` takes the block's validator token. `TempoTransactionPool::evict_invalidated_transactions` takes `Invalidations` and returns `InvalidatedTransactions`. `TempoPoolUpdates` replaces `blacklist_additions` and `whitelist_removals` with `policy_restrictions`, which a later lifting event cancels, and drops `fee_balance_changes`: balances come from the state diff. Removed the pre-T8 fee-manager recipient policy check.
+Pending transactions now carry `Preconditions`: the storage conditions their stateful checks depended on, recorded from `StorageActions` during admission validation. `Invalidations`, shared by pool maintenance and `StateAwareBestTransactions`, checks them against the slots a block (or the transactions executed so far) wrote, without reading state, and revalidates or evicts transactions whose conditions broke. The payload builder also skips transactions not executable at the block timestamp, checks the fee AMM route against the block's writes, and seeds parent-block changes that maintenance has not applied yet from `RecentBlocks`. Fee context resolution records a `FeeTokenBalanceCheck` against the max fee. `TempoPoolUpdates` keeps only validator token changes; `FeeTokenState` and the event-based keychain and policy subjects are removed.

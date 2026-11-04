@@ -1,4 +1,7 @@
-use crate::tt_2d_pool::{AA2dTransactionId, AASequenceId};
+use crate::{
+    preconditions::Preconditions,
+    tt_2d_pool::{AA2dTransactionId, AASequenceId},
+};
 use alloy_consensus::{
     BlobTransactionValidationError, Transaction, crypto::RecoveryError, transaction::TxHashRef,
 };
@@ -10,8 +13,7 @@ use alloy_eips::{
     eip7702::SignedAuthorization,
 };
 use alloy_primitives::{
-    Address, B256, Bytes, TxHash, TxKind, U256, bytes, keccak256,
-    map::{AddressMap, AddressSet},
+    Address, B256, Bytes, TxHash, TxKind, U256, bytes, keccak256, map::AddressSet,
 };
 use evm2::registry::HandlerError;
 use reth_evm::execute::WithTxEnv;
@@ -36,7 +38,9 @@ use tempo_precompiles::{
 };
 use tempo_primitives::{
     TempoTxEnvelope,
-    transaction::{InvalidValidAfter, InvalidValidBefore, calc_gas_balance_spending},
+    transaction::{
+        InvalidValidAfter, InvalidValidBefore, SignatureType, calc_gas_balance_spending,
+    },
 };
 use thiserror::Error;
 
@@ -71,33 +75,13 @@ pub struct TempoPooledTransaction {
     /// Used by `keychain_subject()` so pool maintenance matches against the same token
     /// that was validated without requiring state access.
     resolved_fee_token: OnceLock<ResolvedFeeToken>,
-    /// Cached keychain subject for the signer of an inline `KeyAuthorization`.
-    key_authorization_signer_subject: OnceLock<Option<KeychainSubject>>,
-    /// Cached target key of an inline `KeyAuthorization`.
-    key_authorization_target_subject: OnceLock<Option<KeyAuthorizationTargetSubject>>,
     /// Cached TIP20 balance storage slot for the fee payer.
     ///
     /// Stores `(fee_token, balance_slot)` so the payload builder's state-aware iterator
     /// can check if the fee payer's balance was modified without recomputing the keccak.
     fee_balance_slot: OnceLock<Option<(Address, U256)>>,
-    /// Fee token state resolved at validation, which pending-transaction checks use instead of
-    /// reading state.
-    fee_token_state: OnceLock<FeeTokenState>,
-}
-
-/// Fee token state that validation resolved for a pooled transaction.
-///
-/// A change to either value emits an event that sends the transaction back to validation
-/// (`TransferPolicyUpdate`, `QuoteTokenUpdate`), so the cache stays current while it is pooled.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct FeeTokenState {
-    /// TIP-403 policies that authorize the fee payer as sender of the fee transfer: the token's
-    /// transfer policy and, for a compound policy, its sender sub-policy. Empty when none can
-    /// restrict it.
-    pub sender_policy_ids: Vec<u64>,
-    /// The fee token's quote token, through which a fee swap may take two hops. Zero when it has
-    /// none.
-    pub quote_token: Address,
+    /// Slots the pre-execution checks depend on, recorded at validation.
+    preconditions: OnceLock<Preconditions>,
 }
 
 impl TempoPooledTransaction {
@@ -151,10 +135,8 @@ impl TempoPooledTransaction {
             tx_env: OnceLock::new(),
             key_expiry: OnceLock::new(),
             resolved_fee_token: OnceLock::new(),
-            key_authorization_signer_subject: OnceLock::new(),
-            key_authorization_target_subject: OnceLock::new(),
             fee_balance_slot: OnceLock::new(),
-            fee_token_state: OnceLock::new(),
+            preconditions: OnceLock::new(),
         }
     }
 
@@ -247,62 +229,6 @@ impl TempoPooledTransaction {
             account: keychain_sig.user_address,
             key_id,
             fee_token,
-        })
-    }
-
-    /// Extracts the keychain subject for the signer of an inline `KeyAuthorization`.
-    ///
-    /// Used for revocation matching: if the access key that signed an inline authorization is
-    /// revoked while the transaction is still in the pool, the transaction must be revalidated.
-    pub fn key_authorization_signer_subject(&self) -> Option<KeychainSubject> {
-        *self.key_authorization_signer_subject.get_or_init(|| {
-            let aa_tx = self.inner().as_aa()?;
-            let key_authorization = aa_tx.tx().key_authorization.as_ref()?;
-            let key_id = key_authorization.recover_signer().ok()?;
-            let account = key_authorization
-                .authorization
-                .account
-                .unwrap_or(*self.sender_ref());
-            let fee_token = self.effective_fee_token();
-            Some(KeychainSubject {
-                account,
-                key_id,
-                fee_token,
-            })
-        })
-    }
-
-    /// Extracts the target key of an inline `KeyAuthorization`.
-    ///
-    /// Used for matching pending authorizations against key status changes emitted by
-    /// already-included authorizations or revocations.
-    pub fn key_authorization_target_subject(&self) -> Option<KeyAuthorizationTargetSubject> {
-        *self.key_authorization_target_subject.get_or_init(|| {
-            let aa_tx = self.inner().as_aa()?;
-            let key_authorization = aa_tx.tx().key_authorization.as_ref()?;
-            let account = key_authorization
-                .authorization
-                .account
-                .unwrap_or(*self.sender_ref());
-            Some(KeyAuthorizationTargetSubject {
-                account,
-                key_id: key_authorization.authorization.key_id,
-            })
-        })
-    }
-
-    /// Extracts the TIP-1053 key-authorization witness carried by this transaction, if any.
-    pub fn key_authorization_witness_subject(&self) -> Option<KeyAuthorizationWitnessSubject> {
-        let aa_tx = self.inner().as_aa()?;
-        let witness = aa_tx
-            .tx()
-            .key_authorization
-            .as_ref()?
-            .authorization
-            .witness()?;
-        Some(KeyAuthorizationWitnessSubject {
-            account: *self.sender_ref(),
-            witness,
         })
     }
 
@@ -416,6 +342,15 @@ impl TempoPooledTransaction {
             .is_some_and(|expiry| expiry <= cutoff)
     }
 
+    /// Returns whether a block at `timestamp` satisfies the transaction's time bounds and its
+    /// access key's expiry.
+    pub fn is_executable_at(&self, timestamp: u64) -> bool {
+        self.inner()
+            .as_aa()
+            .is_none_or(|tx| tx.tx().is_valid_at(timestamp))
+            && self.key_expiry().is_none_or(|expiry| expiry > timestamp)
+    }
+
     /// Caches the effective fee token determined during transaction validation.
     ///
     /// The validator sets this after EVM validation resolves the token from the
@@ -425,14 +360,14 @@ impl TempoPooledTransaction {
         let _ = self.resolved_fee_token.set(fee_token);
     }
 
-    /// Caches the fee token state validation resolved. Pool maintenance code should not call this.
-    pub fn set_fee_token_state(&self, state: FeeTokenState) {
-        let _ = self.fee_token_state.set(state);
+    /// Caches the preconditions validation recorded. Pool maintenance code should not call this.
+    pub fn set_preconditions(&self, preconditions: Preconditions) {
+        let _ = self.preconditions.set(preconditions);
     }
 
-    /// Returns the fee token state cached at validation, or `None` before validation.
-    pub fn fee_token_state(&self) -> Option<&FeeTokenState> {
-        self.fee_token_state.get()
+    /// Returns the preconditions recorded at validation, or `None` before validation.
+    pub fn preconditions(&self) -> Option<&Preconditions> {
+        self.preconditions.get()
     }
 
     /// Clones this transaction while discarding validation-derived caches.
@@ -449,13 +384,11 @@ impl TempoPooledTransaction {
             nonce_key_slot: self.nonce_key_slot.clone(),
             expiring_nonce_slot: self.expiring_nonce_slot.clone(),
             tx_env: self.tx_env.clone(),
-            key_authorization_target_subject: self.key_authorization_target_subject.clone(),
             // Discard state-dependent caches before revalidation.
             fee_balance_slot: OnceLock::new(),
             key_expiry: OnceLock::new(),
             resolved_fee_token: OnceLock::new(),
-            key_authorization_signer_subject: OnceLock::new(),
-            fee_token_state: OnceLock::new(),
+            preconditions: OnceLock::new(),
         }
     }
 
@@ -466,16 +399,6 @@ impl TempoPooledTransaction {
     /// that needs the token a transaction will actually use to pay fees.
     pub fn resolved_fee_token(&self) -> Option<Address> {
         self.resolved_fee_token.get().map(|token| token.address())
-    }
-
-    /// Returns whether validation took the fee token from the ordered fallback list.
-    ///
-    /// Only such tokens can change when the fee payer's fallback-token balances change. This is
-    /// `false` for transactions that have not completed validation.
-    pub fn is_fallback_fee_token(&self) -> bool {
-        self.resolved_fee_token
-            .get()
-            .is_some_and(|token| token.is_fallback())
     }
 
     /// Returns the effective fee token for pool maintenance and accounting.
@@ -565,8 +488,8 @@ impl TempoPooledTransaction {
     }
 
     /// Whether any account in `accounts` is an authority of this transaction: the sender (unless
-    /// an access key signs for it), the key authorization signer, a separate fee payer or the
-    /// access key.
+    /// an access key signs for it), the key authorization signer, a separate fee payer, the
+    /// access key or a configurable delegate the key authorization grants.
     pub(crate) fn has_authority_in(&self, accounts: &AddressSet) -> bool {
         let Some(tx) = self.inner().as_aa() else {
             return accounts.contains(self.sender_ref());
@@ -583,7 +506,13 @@ impl TempoPooledTransaction {
             .fee_payer_signature
             .and_then(|_| self.fee_payer().ok());
         let access_key = self.keychain_subject().map(|subject| subject.key_id);
-        [sender, grant_signer, fee_payer, access_key]
+        let delegate = tx
+            .tx()
+            .key_authorization
+            .as_ref()
+            .filter(|authorization| authorization.key_type == SignatureType::ConfigurableAccount)
+            .map(|authorization| authorization.key_id);
+        [sender, grant_signer, fee_payer, access_key, delegate]
             .into_iter()
             .flatten()
             .any(|authority| accounts.contains(&authority))
@@ -1093,99 +1022,6 @@ impl EthPoolTransaction for TempoPooledTransaction {
     }
 }
 
-// ========================================
-// Keychain invalidation types
-// ========================================
-
-/// Index of revoked keychain keys, keyed by account for efficient lookup.
-///
-/// Uses account as the primary key with a list of revoked key_ids,
-/// avoiding the need to construct full keys during lookup.
-#[derive(Debug, Clone, Default)]
-pub struct RevokedKeys {
-    /// Map from account to list of revoked key_ids.
-    by_account: AddressMap<Vec<Address>>,
-}
-
-impl RevokedKeys {
-    /// Creates a new empty index.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Inserts a revoked key.
-    pub fn insert(&mut self, account: Address, key_id: Address) {
-        self.by_account.entry(account).or_default().push(key_id);
-    }
-
-    /// Returns true if the index is empty.
-    pub fn is_empty(&self) -> bool {
-        self.by_account.is_empty()
-    }
-
-    /// Returns the total number of revoked keys.
-    pub fn len(&self) -> usize {
-        self.by_account.values().map(Vec::len).sum()
-    }
-
-    /// Returns true if the given (account, key_id) combination is in the index.
-    pub fn contains(&self, account: Address, key_id: Address) -> bool {
-        self.by_account
-            .get(&account)
-            .is_some_and(|key_ids| key_ids.contains(&key_id))
-    }
-}
-
-/// Index of spending limit updates, keyed by account for efficient lookup.
-///
-/// Uses account as the primary key with a list of (key_id, token) pairs,
-/// avoiding the need to construct full keys during lookup.
-#[derive(Debug, Clone, Default)]
-pub struct SpendingLimitUpdates {
-    /// Map from account to list of (key_id, token) pairs that had limit changes.
-    /// `None` token acts as a wildcard matching any fee token for that key_id.
-    by_account: AddressMap<Vec<(Address, Option<Address>)>>,
-}
-
-impl SpendingLimitUpdates {
-    /// Creates a new empty index.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Inserts a spending limit update. `None` token matches any fee token.
-    pub fn insert(&mut self, account: Address, key_id: Address, token: Option<Address>) {
-        self.by_account
-            .entry(account)
-            .or_default()
-            .push((key_id, token));
-    }
-
-    /// Returns true if the index is empty.
-    pub fn is_empty(&self) -> bool {
-        self.by_account.is_empty()
-    }
-
-    /// Returns the total number of spending limit updates.
-    pub fn len(&self) -> usize {
-        self.by_account.values().map(Vec::len).sum()
-    }
-
-    /// Returns true if the given (account, key_id, token) combination is in the index.
-    ///
-    /// A `None` entry matches any token for that key_id. This is used for included
-    /// block txs whose fee token could not be resolved without state access.
-    pub fn contains(&self, account: Address, key_id: Address, token: Address) -> bool {
-        self.by_account
-            .get(&account)
-            .is_some_and(|pairs: &Vec<(Address, Option<Address>)>| {
-                pairs
-                    .iter()
-                    .any(|&(k, t)| k == key_id && t.is_none_or(|t| t == token))
-            })
-    }
-}
-
 /// Keychain identity extracted from a transaction.
 ///
 /// Contains the account (user_address), key_id, and fee_token for matching against
@@ -1198,52 +1034,6 @@ pub struct KeychainSubject {
     pub key_id: Address,
     /// The fee token used by this transaction.
     pub fee_token: Address,
-}
-
-impl KeychainSubject {
-    /// Returns true if this subject matches any of the revoked keys.
-    ///
-    /// Uses account-keyed index for O(1) account lookup, then linear scan over
-    /// the typically small list of key_ids for that account.
-    pub fn matches_revoked(&self, revoked_keys: &RevokedKeys) -> bool {
-        revoked_keys.contains(self.account, self.key_id)
-    }
-
-    /// Returns true if this subject is affected by any of the spending limit updates.
-    ///
-    /// Uses account-keyed index for O(1) account lookup, then linear scan over
-    /// the typically small list of (key_id, token) pairs for that account.
-    pub fn matches_spending_limit_update(
-        &self,
-        spending_limit_updates: &SpendingLimitUpdates,
-    ) -> bool {
-        spending_limit_updates.contains(self.account, self.key_id, self.fee_token)
-    }
-}
-
-/// Key-authorization witness identity extracted from an AA transaction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct KeyAuthorizationWitnessSubject {
-    /// The account whose key-authorization witness is carried or burned.
-    pub account: Address,
-    /// The TIP-1053 witness.
-    pub witness: B256,
-}
-
-/// Target key identity extracted from an inline key authorization.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct KeyAuthorizationTargetSubject {
-    /// The account that owns the target key.
-    pub account: Address,
-    /// The key being authorized.
-    pub key_id: Address,
-}
-
-impl KeyAuthorizationTargetSubject {
-    /// Returns true if this target key is affected by a key status update.
-    pub fn matches_key_update(&self, key_updates: &RevokedKeys) -> bool {
-        key_updates.contains(self.account, self.key_id)
-    }
 }
 
 #[cfg(test)]

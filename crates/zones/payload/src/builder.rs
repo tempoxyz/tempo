@@ -298,8 +298,13 @@ where
             let raw_best_txs = self
                 .pool
                 .best_transactions_with_attributes(BestTransactionsAttributes::new(base_fee, None));
-            // Zones resolve fee tokens without a fallback list.
-            let mut best_txs = StateAwareBestTransactions::new(raw_best_txs, &[], None);
+            // Zone fees are not swapped through the fee AMM.
+            let mut best_txs = StateAwareBestTransactions::new(
+                raw_best_txs,
+                attributes.timestamp(),
+                None,
+                Default::default(),
+            );
             if execute_pool_transactions(
                 |tx, best_txs| {
                     builder
