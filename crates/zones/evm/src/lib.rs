@@ -23,6 +23,7 @@ use crate::{
     precompiles::{L1StorageReader, ZonePrecompiles},
     zone_evm::{zone_execution_config, zone_tx_registry},
 };
+use alloy_consensus::BlockHeader;
 use alloy_primitives::{Address, B256};
 use alloy_provider::{Provider, ProviderBuilder};
 use evm2::evm::DynDatabase;
@@ -31,8 +32,10 @@ use reth_evm::{
     BlockAssembler, BlockAssemblerInput, BlockExecutorFactory, ConfigureEngineEvm, ConfigureEvm,
     EvmEnvFor, ExecutableTxIterator, ExecutionCtxFor,
 };
+use reth_evm_ethereum::EthBlockExecutionCtx;
 use reth_primitives_traits::{SealedBlock, SealedHeader};
 use std::{
+    borrow::Cow,
     collections::HashSet,
     fmt,
     num::NonZeroU32,
@@ -337,10 +340,6 @@ where
     where
         Self: 'a,
     {
-        use alloy_consensus::BlockHeader;
-        use reth_evm_ethereum::EthBlockExecutionCtx;
-        use std::borrow::Cow;
-
         Ok(TempoBlockExecutionCtx {
             inner: EthBlockExecutionCtx {
                 parent_hash: block.header().parent_hash(),

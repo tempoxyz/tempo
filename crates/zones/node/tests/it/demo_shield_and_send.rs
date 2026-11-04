@@ -1,6 +1,6 @@
 use crate::utils::{L1TestNode, ZoneAccount, ZoneTestNode};
 use alloy::{primitives::U256, providers::ProviderBuilder};
-use tempo_contracts::zones::ZONE_TOKEN_ADDRESS;
+use tempo_contracts::{precompiles::ITIP20, zones::ZONE_TOKEN_ADDRESS};
 
 /// Longer timeout for real L1 tests.
 const L1_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
@@ -66,8 +66,6 @@ async fn test_shield_and_send() -> eyre::Result<()> {
     // Alice transfers on L2 using the TIP-20 transfer function
     let transfer_amount: u128 = 500_000; // 0.5 pathUSD
     {
-        use tempo_contracts::precompiles::ITIP20;
-
         let alice_signer = l1.user_signer();
         let alice_l2_provider = ProviderBuilder::new()
             .wallet(alice_signer)

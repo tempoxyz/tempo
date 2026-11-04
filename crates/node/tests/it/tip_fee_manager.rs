@@ -16,8 +16,11 @@ use tempo_alloy::rpc::{TempoTransactionReceipt, TempoTransactionRequest};
 use tempo_contracts::precompiles::{
     IFeeManager, ITIP20, ITIP403Registry,
     ITIPFeeAMM::{self},
+    OUSD_ADDRESS,
 };
-use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS};
+use tempo_precompiles::{
+    PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS, tip20::slots,
+};
 use tempo_primitives::{
     TempoTransaction, TempoTxEnvelope,
     transaction::{calc_gas_balance_spending, tempo_transaction::Call},
@@ -25,9 +28,6 @@ use tempo_primitives::{
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip1115_estimate_and_pay_with_ousd_fallback() -> eyre::Result<()> {
-    use tempo_contracts::precompiles::OUSD_ADDRESS;
-    use tempo_precompiles::tip20::slots;
-
     tokio::time::timeout(std::time::Duration::from_secs(60), async {
         let mut genesis: serde_json::Value = serde_json::from_str(&crate::utils::make_genesis_at(
             tempo_chainspec::hardfork::TempoHardfork::T13,
