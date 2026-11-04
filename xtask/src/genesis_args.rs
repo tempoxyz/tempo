@@ -1153,6 +1153,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn shadowfork_fallback_reads_genesis_outcomes_of_both_encodings() {
+        for hardfork in ["", "--hardfork T14"] {
+            let (genesis, consensus_config) = generate_with_dkg(hardfork).await;
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(
+                dir.path().join("genesis.json"),
+                serde_json::to_string(&genesis).unwrap(),
+            )
+            .unwrap();
+
+            let outcome =
+                crate::bootstrap_shadowfork::read_private_genesis_outcome(dir.path()).unwrap();
+            assert_eq!(outcome.epoch, crate::shadowfork::SHADOW_EPOCH, "{hardfork}");
+            assert_eq!(outcome.output, consensus_config.output, "{hardfork}");
+            assert_eq!(
+                outcome.next_ceremony,
+                Some(consensus_config.genesis_dkg_ceremony()),
+                "{hardfork}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn pre_tip1123_genesis_keeps_the_legacy_outcome() {
         let (genesis, consensus_config) = generate_with_dkg("--hardfork T14").await;
 

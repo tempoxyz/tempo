@@ -642,7 +642,7 @@ where
     }
 }
 
-fn read_private_genesis_outcome(manifest_dir: &Path) -> eyre::Result<OnchainDkgOutcome> {
+pub(crate) fn read_private_genesis_outcome(manifest_dir: &Path) -> eyre::Result<OnchainDkgOutcome> {
     let genesis_path = manifest_dir.join("genesis.json");
     let json = std::fs::read_to_string(&genesis_path)
         .wrap_err_with(|| format!("failed reading `{}`", genesis_path.display()))?;
@@ -652,8 +652,28 @@ fn read_private_genesis_outcome(manifest_dir: &Path) -> eyre::Result<OnchainDkgO
         .get("extraData")
         .and_then(serde_json::Value::as_str)
         .ok_or_eyre("shadow genesis JSON does not contain string field `extraData`")?;
-    let mut outcome = decode_outcome(extra_data)?;
+    let genesis_spec = chain_value_parser(&genesis_path.to_string_lossy())
+        .wrap_err_with(|| format!("failed parsing `{}` as a chainspec", genesis_path.display()))?;
+    let encoding = genesis_spec.dkg_outcome_encoding_at(genesis_spec.inner.genesis.timestamp);
+    let mut outcome = decode_genesis_outcome(extra_data, encoding)?;
     outcome.epoch = SHADOW_EPOCH;
+    Ok(outcome)
+}
+
+/// Decodes a genesis `extraData` written in `encoding`. A TIP-1123 genesis keeps its ceremony in
+/// `CurrentCommittee` storage instead, which is always the epoch-0 reshare among the genesis
+/// players (see `ConsensusConfig::genesis_dkg_ceremony`), so it is restored from the outcome.
+fn decode_genesis_outcome(hex: &str, encoding: OutcomeEncoding) -> eyre::Result<OnchainDkgOutcome> {
+    let bytes = const_hex::decode(hex.trim_start_matches("0x"))
+        .wrap_err("failed decoding shadow genesis extraData hex")?;
+    let mut outcome = OnchainDkgOutcome::decode_extra_data(&bytes, encoding)
+        .wrap_err("failed decoding shadow genesis extraData payload")?;
+    if outcome.next_ceremony.is_none() {
+        outcome.next_ceremony = Some(DkgCeremony {
+            players: outcome.players().clone(),
+            is_full_dkg: false,
+        });
+    }
     Ok(outcome)
 }
 
