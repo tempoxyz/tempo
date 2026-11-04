@@ -130,6 +130,7 @@ asm-keccak = [
 	"tempo-alloy/asm-keccak",
 	"reth-ethereum/asm-keccak",
 	"reth-evm/asm-keccak",
+	"reth-engine-tree/asm-keccak",
 ]
 otlp = [
 	"reth-ethereum/otlp",

@@ -380,6 +380,7 @@ where
             execution_output: Arc::new(execution_output),
             hashed_state: Arc::new(hashed_state),
             trie_updates: Arc::new(trie_updates),
+            ext: None,
         };
 
         let payload = TempoBuiltPayload::new(
