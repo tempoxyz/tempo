@@ -185,7 +185,11 @@ kernel and kernel-memory ASLR, hardened user copies, slab-freelist randomization
 `dmesg` restriction. It disables debugfs, Magic SysRq, kexec, io_uring, the BPF syscall/JIT,
 userfaultfd, user and network namespaces, 32-bit compatibility, `modify_ldt`, `/dev/mem`, and
 `/proc/kcore`. The stateless prover does not use these interfaces; removing them reduces attack
-surface. A full EIF build, boot on real Nitro hardware, and successful prover request are required
+surface. It also panics on oops, so the corruption checks AWS's baseline already builds in
+(`LIST_HARDENED`, `BUG_ON_DATA_CORRUPTION`, `SLAB_FREELIST_HARDENED`) and hardened user copies stop
+the enclave instead of letting it run on, and adds randomized kmalloc caches, scatterlist
+validation, and zeroing on allocation against host-induced corruption over vsock. `init_on_free`,
+`DEBUG_OBJECTS`, and `slub_debug` need performance testing first and are not enabled. A full EIF build, boot on real Nitro hardware, and successful prover request are required
 before merging this compatibility-sensitive change.
 
 TLS keys require trusted randomness. The EIF builder sets
