@@ -210,11 +210,15 @@ pub struct GcCommand {
     /// Optional S3-compatible endpoint. Credentials use the standard AWS chain.
     #[arg(long)]
     s3_endpoint: Option<String>,
+    /// Take over a corpus an interrupted gc left marked as collecting. Only when no gc is
+    /// still running on it.
+    #[arg(long)]
+    force: bool,
 }
 
 impl GcCommand {
     async fn execute(self) -> eyre::Result<()> {
         let store = Store::open(&self.corpus, self.s3_endpoint.as_deref()).await?;
-        gc::gc(&store).await
+        gc::gc(&store, self.force).await
     }
 }

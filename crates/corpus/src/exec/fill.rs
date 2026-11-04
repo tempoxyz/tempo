@@ -183,7 +183,7 @@ where
     }
     eyre::ensure!(
         !catalog.collecting,
-        "corpus gc is collecting this corpus; fill after it finishes, or rerun gc if it was interrupted"
+        "corpus gc is collecting this corpus; fill after it finishes, or rerun gc --force if it was interrupted"
     );
     catalog.complete = false;
     catalog.generation = catalog

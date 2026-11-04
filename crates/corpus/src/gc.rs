@@ -22,12 +22,17 @@ use tracing::info;
 /// deleting anything gc marks the catalog as collecting through a conditional PUT, which a
 /// fill refuses to claim and which fails the claim of a fill that read the catalog earlier,
 /// so collection needs no minimum file age. It clears the mark the same way once the
-/// checkpoint still opens; an interrupted gc leaves it set, and rerunning gc clears it.
-pub async fn gc(store: &Store) -> eyre::Result<()> {
+/// checkpoint still opens. An interrupted gc leaves it set; gc refuses a catalog marked
+/// collecting, since that gc may still be running, unless `force` says it is gone.
+pub async fn gc(store: &Store, force: bool) -> eyre::Result<()> {
     let (mut catalog, version) = store.catalog().await?.ok_or_eyre("no corpus catalog")?;
     eyre::ensure!(
         catalog.complete,
         "corpus is not complete; its writer may still be running"
+    );
+    eyre::ensure!(
+        force || !catalog.collecting,
+        "another gc is collecting this corpus; rerun with --force only if it was interrupted"
     );
     catalog.collecting = true;
     let claim = store.publish(&catalog, Some(version)).await?;
@@ -127,12 +132,12 @@ mod tests {
         catalog.complete = false;
         let version = store.publish(&catalog, None).await?;
         assert_eq!(
-            gc(&store).await.unwrap_err().to_string(),
+            gc(&store, false).await.unwrap_err().to_string(),
             "corpus is not complete; its writer may still be running"
         );
         catalog.complete = true;
         let version = store.publish(&catalog, Some(version)).await?;
-        gc(&store).await?;
+        gc(&store, false).await?;
         let (collected, _) = store.catalog().await?.ok_or_eyre("no corpus catalog")?;
         assert!(!collected.collecting);
         // gc claimed the catalog, so a fill that read it before gc cannot claim it.
@@ -149,6 +154,27 @@ mod tests {
                 .collect::<Vec<_>>(),
             [catalog.checkpoint]
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn refuses_a_collecting_corpus_unless_forced() -> eyre::Result<()> {
+        let store = in_memory("gc-force");
+        let mut catalog = catalog(1, 1, 0);
+        catalog.seal()?;
+        let db = open_db(&store, &catalog).await?;
+        catalog.checkpoint = Some(store.checkpoint(&db).await?);
+        db.close().await?;
+        // Left set by a gc that may still be running, or was interrupted.
+        catalog.collecting = true;
+        store.publish(&catalog, None).await?;
+        assert_eq!(
+            gc(&store, false).await.unwrap_err().to_string(),
+            "another gc is collecting this corpus; rerun with --force only if it was interrupted"
+        );
+        gc(&store, true).await?;
+        let (collected, _) = store.catalog().await?.ok_or_eyre("no corpus catalog")?;
+        assert!(!collected.collecting);
         Ok(())
     }
 }
