@@ -186,7 +186,7 @@ impl<T: EvmTypesHost> TempoPrecompiles<T> {
             SpecId::PRAGUE
         };
         let mut base = BasePrecompiles::base(base_spec);
-        if spec.is_t13() {
+        if spec.is_t15() {
             // TIP-1102 removes the point-evaluation precompile.
             base.as_map_mut().remove(Address::with_last_byte(0x0a));
         }
@@ -278,7 +278,7 @@ where
     ) -> Option<PrecompileResult> {
         // `contains` checks short addresses without hashing, so Tempo calls skip the map lookup.
         if self.base.contains(&message.call_target) {
-            if self.spec.is_t13() {
+            if self.spec.is_t15() {
                 let p256 = Address::from_word(alloy::primitives::U256::from(256).into());
                 if message.call_target == p256 {
                     return Some(tip1102::run_p256(&message.input, gas));
@@ -1068,12 +1068,12 @@ mod tests {
     }
 
     #[test]
-    fn tip1102_removes_point_evaluation_at_t13() {
+    fn tip1102_removes_point_evaluation_at_t15() {
         let address = Address::with_last_byte(0x0a);
-        assert!(test_tempo_precompiles(TempoHardfork::T12).contains(&address));
-        assert!(!test_tempo_precompiles(TempoHardfork::T13).contains(&address));
+        assert!(test_tempo_precompiles(TempoHardfork::T14).contains(&address));
+        assert!(!test_tempo_precompiles(TempoHardfork::T15).contains(&address));
         assert!(
-            test_tempo_precompiles(TempoHardfork::T13).contains(&Address::with_last_byte(0x0b))
+            test_tempo_precompiles(TempoHardfork::T15).contains(&Address::with_last_byte(0x0b))
         );
     }
 

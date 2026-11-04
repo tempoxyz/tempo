@@ -31,11 +31,11 @@ use tempo_primitives::{
 const SIGNER: Address = Address::new([0x11; 20]);
 
 #[test]
-fn tip1102_opcode_prices_activate_at_t13() {
+fn tip1102_opcode_prices_activate_at_t15() {
     use evm2::interpreter::op;
 
-    let before = tempo_execution_config(TempoHardfork::T12, 1);
-    let after = tempo_execution_config(TempoHardfork::T13, 1);
+    let before = tempo_execution_config(TempoHardfork::T14, 1);
+    let after = tempo_execution_config(TempoHardfork::T15, 1);
     for (opcode, old, new) in [
         (op::MOD, 5, 40),
         (op::SMOD, 5, 37),

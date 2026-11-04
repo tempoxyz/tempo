@@ -1,4 +1,4 @@
-//! TIP-1102 prices for Ethereum precompiles, active from T13.
+//! TIP-1102 prices for Ethereum precompiles, active from T15.
 
 use alloy_primitives::{Address, U256};
 use evm2::{

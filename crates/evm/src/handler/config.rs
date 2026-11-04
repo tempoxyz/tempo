@@ -96,7 +96,7 @@ impl EvmConfigSelector<TempoEvmTypes> for TempoConfigSelector {
     type Config<const BASE_SPEC_ID: u32, const CUSTOM_SPEC_ID: u32> = TempoConfig<BASE_SPEC_ID>;
 
     fn execution_config(spec_id: TempoHardfork) -> ExecutionConfig<TempoEvmTypes> {
-        let repriced = spec_id.is_t13();
+        let repriced = spec_id.is_t15();
         let base = SpecId::from(spec_id);
         evm2::spec_to_generic!(base, |SPEC_ID| if repriced {
             ExecutionConfig::for_config::<TempoConfig<SPEC_ID, true>>()
