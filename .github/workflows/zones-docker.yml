@@ -1183,12 +1183,22 @@ jobs:
           # the containerd image store (Ubuntu 26.04 runners), so avoid it.
           # Read them from docker save of the loaded images, not the untrusted
           # archives, so the IDs describe what is tagged and pushed below.
+          # Require exactly one single-platform image manifest: for a
+          # multi-platform index, docker save lists only the host platform in
+          # manifest.json while docker push sends every platform.
           config_digest() {
-            docker save "$1" | tar -xOf - manifest.json |
-              jq -r '.[0].Config' | sed -E 's#^(blobs/sha256/)?([0-9a-f]{64})(\.json)?$#sha256:\2#'
+            local saved
+            saved="$(mktemp -d)"
+            docker save "$1" | tar -xf - -C "$saved" index.json manifest.json
+            jq -e '.manifests | length == 1 and (.[0].mediaType == "application/vnd.oci.image.manifest.v1+json" or .[0].mediaType == "application/vnd.docker.distribution.manifest.v2+json")' "$saved/index.json" >/dev/null || {
+              echo "$1 is not a single image manifest" >&2
+              return 1
+            }
+            jq -r '.[0].Config' "$saved/manifest.json" | sed -E 's#^(blobs/sha256/)?([0-9a-f]{64})(\.json)?$#sha256:\2#'
+            rm -rf "$saved"
           }
-          candidate_image_id="$(config_digest "$immutable_image")"
-          clean_image_id="$(config_digest tempo-zone:clean)"
+          candidate_image_id="$(config_digest "$immutable_image")" || exit 1
+          clean_image_id="$(config_digest tempo-zone:clean)" || exit 1
           [[ "$candidate_image_id" =~ ^sha256:[0-9a-f]{64}$ && "$clean_image_id" =~ ^sha256:[0-9a-f]{64}$ ]] || {
             failure="invalid candidate or clean image ID"
             echo "Invalid image ID" >&2
@@ -1384,8 +1394,21 @@ jobs:
           trap cleanup EXIT
 
           docker pull "$source_image"
-          # Config digest, as production-reproducible-verify records it.
-          promoted_image_id="$(docker save "$source_image" | tar -xOf - manifest.json | jq -r '.[0].Config' | sed -E 's#^(blobs/sha256/)?([0-9a-f]{64})(\.json)?$#sha256:\2#')"
+          # Require exactly one single-platform image manifest: for a
+          # multi-platform index, docker save lists only the host platform in
+          # manifest.json while docker push sends every platform.
+          promoted_config_digest() {
+            local saved
+            saved="$(mktemp -d)"
+            docker save "$1" | tar -xf - -C "$saved" index.json manifest.json
+            jq -e '.manifests | length == 1 and (.[0].mediaType == "application/vnd.oci.image.manifest.v1+json" or .[0].mediaType == "application/vnd.docker.distribution.manifest.v2+json")' "$saved/index.json" >/dev/null || {
+              echo "$1 is not a single image manifest" >&2
+              return 1
+            }
+            jq -r '.[0].Config' "$saved/manifest.json" | sed -E 's#^(blobs/sha256/)?([0-9a-f]{64})(\.json)?$#sha256:\2#'
+            rm -rf "$saved"
+          }
+          promoted_image_id="$(promoted_config_digest "$source_image")" || exit 1
           [[ "$promoted_image_id" == "$VERIFIED_IMAGE_ID" ]] || {
             echo "Staged tempo-zone image ID changed" >&2
             exit 1
