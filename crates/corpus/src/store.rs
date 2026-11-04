@@ -111,6 +111,11 @@ pub struct Catalog {
     /// Changed by conditional PUT before opening a writer. A superseded writer
     /// never rereads/retries its publication token after a failed CAS.
     pub generation: u64,
+    /// Set by `corpus gc` through a conditional PUT before it deletes anything and cleared
+    /// when it finishes. A fill refuses to claim a corpus while it is set, and one that read
+    /// the catalog before gc claimed it fails its own claim's CAS.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub collecting: bool,
 }
 
 impl Catalog {
@@ -977,6 +982,7 @@ pub mod tests {
             checkpoint: Some("00000000-0000-0000-0000-000000000000".to_owned()),
             complete: true,
             generation: 1,
+            collecting: false,
         }
     }
 

@@ -142,6 +142,7 @@ where
                 records: Vec::new(),
                 complete: false,
                 generation: 0,
+                collecting: false,
             },
             None,
         ),
@@ -180,6 +181,10 @@ where
         );
         return Ok(());
     }
+    eyre::ensure!(
+        !catalog.collecting,
+        "corpus gc is collecting this corpus; fill after it finishes, or rerun gc if it was interrupted"
+    );
     catalog.complete = false;
     catalog.generation = catalog
         .generation

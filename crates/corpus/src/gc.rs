@@ -6,7 +6,6 @@
 use crate::store::{SLATEDB_RETRIES, Store};
 use eyre::OptionExt;
 use futures::TryStreamExt;
-use object_store::ObjectStoreExt;
 use slatedb::{
     admin::Admin,
     config::{GarbageCollectorDirectoryOptions, GarbageCollectorOptions},
@@ -19,16 +18,19 @@ use tracing::info;
 /// compactor state nothing references any more, and logs the objects and bytes of each data
 /// directory before and after.
 ///
-/// Fails unless the corpus is complete: a fill clears it before opening its writer, so
-/// collection needs no minimum file age as long as no fill starts meanwhile. Run it after a
-/// fill, not alongside one. Fails as well if the catalog changed meanwhile or its checkpoint
-/// no longer opens.
+/// Fails unless the corpus is complete: a fill clears it before opening its writer. Before
+/// deleting anything gc marks the catalog as collecting through a conditional PUT, which a
+/// fill refuses to claim and which fails the claim of a fill that read the catalog earlier,
+/// so collection needs no minimum file age. It clears the mark the same way once the
+/// checkpoint still opens; an interrupted gc leaves it set, and rerunning gc clears it.
 pub async fn gc(store: &Store) -> eyre::Result<()> {
-    let (catalog, version) = store.catalog().await?.ok_or_eyre("no corpus catalog")?;
+    let (mut catalog, version) = store.catalog().await?.ok_or_eyre("no corpus catalog")?;
     eyre::ensure!(
         catalog.complete,
         "corpus is not complete; its writer may still be running"
     );
+    catalog.collecting = true;
+    let claim = store.publish(&catalog, Some(version)).await?;
     let pinned = catalog
         .checkpoint
         .as_deref()
@@ -84,12 +86,9 @@ pub async fn gc(store: &Store) -> eyre::Result<()> {
             "Collected corpus garbage"
         );
     }
-    let current = store.objects.head(&store.catalog_path()).await?;
-    eyre::ensure!(
-        current.e_tag == version.e_tag,
-        "corpus catalog changed during gc; another writer published"
-    );
     store.reader(&catalog).await?.close().await?;
+    catalog.collecting = false;
+    store.publish(&catalog, Some(claim)).await?;
     Ok(())
 }
 
@@ -132,8 +131,13 @@ mod tests {
             "corpus is not complete; its writer may still be running"
         );
         catalog.complete = true;
-        store.publish(&catalog, Some(version)).await?;
+        let version = store.publish(&catalog, Some(version)).await?;
         gc(&store).await?;
+        let (collected, _) = store.catalog().await?.ok_or_eyre("no corpus catalog")?;
+        assert!(!collected.collecting);
+        // gc claimed the catalog, so a fill that read it before gc cannot claim it.
+        catalog.complete = false;
+        assert!(store.publish(&catalog, Some(version)).await.is_err());
         let checkpoints = Admin::builder(store.data(), store.objects.clone())
             .build()
             .list_checkpoints(None)
