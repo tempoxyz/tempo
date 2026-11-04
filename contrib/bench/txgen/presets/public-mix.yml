@@ -91,10 +91,6 @@ mix:
     weight: 1
   - sequence: mpp_open_only
     weight: 15
-  - template: zone_deposit
-    weight: 5
-  - template: zone_withdraw
-    weight: 4
   - template: vault_deposit
     weight: 6
   - template: vault_withdraw
