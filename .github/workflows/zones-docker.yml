@@ -1181,11 +1181,14 @@ jobs:
           # layer, but not gzip output, which differs between Depot and the
           # clean runner. docker image inspect .Id is the manifest digest under
           # the containerd image store (Ubuntu 26.04 runners), so avoid it.
+          # Read them from docker save of the loaded images, not the untrusted
+          # archives, so the IDs describe what is tagged and pushed below.
           config_digest() {
-            jq -r '.[0].Config' | sed -E 's#^(blobs/sha256/)?([0-9a-f]{64})(\.json)?$#sha256:\2#'
+            docker save "$1" | tar -xOf - manifest.json |
+              jq -r '.[0].Config' | sed -E 's#^(blobs/sha256/)?([0-9a-f]{64})(\.json)?$#sha256:\2#'
           }
-          candidate_image_id="$(tar -xOf "$RUNNER_TEMP/candidate-images/tempo-zone.tar" manifest.json | config_digest)"
-          clean_image_id="$(tar -xOf "$RUNNER_TEMP/clean-image/tempo-zone.tar" manifest.json | config_digest)"
+          candidate_image_id="$(config_digest "$immutable_image")"
+          clean_image_id="$(config_digest tempo-zone:clean)"
           [[ "$candidate_image_id" =~ ^sha256:[0-9a-f]{64}$ && "$clean_image_id" =~ ^sha256:[0-9a-f]{64}$ ]] || {
             failure="invalid candidate or clean image ID"
             echo "Invalid image ID" >&2
