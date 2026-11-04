@@ -9,7 +9,7 @@ use crate::{
 };
 use alloy_eips::Encodable2718;
 use alloy_primitives::{Address, B256, Bytes, U256};
-use futures::{StreamExt, TryStreamExt, stream};
+use futures::{StreamExt, TryStreamExt, future::Either, stream};
 use reth_chainspec::{EthChainSpec, ForkCondition};
 use slatedb::DbReader;
 use std::{collections::BTreeMap, fs, path::Path, sync::Arc};
@@ -127,18 +127,20 @@ impl Corpus {
                     };
                     // A dense window is scanned whole. A sparse one is read with a point read per
                     // block, inside its task, since a point read decompresses SST blocks too.
-                    let payloads: Vec<(u64, Option<_>)> =
-                        if last - first < SPARSE_SPAN * blocks.len() as u64 {
-                            store::scan_blocks(&reader, blocks)
-                                .await?
+                    let payloads = if last - first < SPARSE_SPAN * blocks.len() as u64 {
+                        let scanned = store::scan_blocks(&reader, blocks).await?;
+                        Either::Left(stream::iter(
+                            scanned
                                 .into_iter()
-                                .map(|payload| (payload.0.number, Some(payload)))
-                                .collect()
-                        } else {
-                            blocks.iter().map(|&block| (block, None)).collect()
-                        };
+                                .map(|payload| (payload.0.number, Some(payload))),
+                        ))
+                    } else {
+                        Either::Right(stream::iter(
+                            blocks.iter().copied().map(|block| (block, None)),
+                        ))
+                    };
                     // Each block decodes in its own task, so a window decodes on every worker.
-                    stream::iter(payloads)
+                    payloads
                         .map(|(block, payload)| {
                             let (reader, chain_spec) = (reader.clone(), chain_spec.clone());
                             // Aborted when dropped, so a dropped or failed window stops its reads.
@@ -160,7 +162,10 @@ impl Corpus {
                         })
                         .buffered(32)
                         .map(|joined| joined.unwrap_or_else(|error| Err(error.into())))
-                        .try_collect()
+                        .try_fold(Vec::with_capacity(blocks.len()), |mut inputs, input| {
+                            inputs.push(input);
+                            async { Ok(inputs) }
+                        })
                         .await
                 }
                 .await;

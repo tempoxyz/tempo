@@ -588,7 +588,10 @@ pub async fn published(reader: &DbReader, block: u64) -> eyre::Result<(Record, A
 
 /// The published record of `block` and its undecoded block payload, checked as [published] checks.
 pub async fn published_payload(reader: &DbReader, block: u64) -> eyre::Result<(Record, Bytes)> {
-    let record = metadata(reader, block).await?;
+    // Both keys are known up front, so the two reads wait on the store together.
+    let (record, bytes) = tokio::try_join!(metadata(reader, block), async {
+        Ok(reader.get(key(block)).await?)
+    })?;
     // Seeded from the record itself, so only its own sizes and coverage are checked.
     Cursor {
         next: record.number,
@@ -596,10 +599,7 @@ pub async fn published_payload(reader: &DbReader, block: u64) -> eyre::Result<(R
         parent: record.parent,
     }
     .advance(&record)?;
-    let bytes = reader
-        .get(key(block))
-        .await?
-        .ok_or_else(|| eyre::eyre!("missing block record at {block}"))?;
+    let bytes = bytes.ok_or_else(|| eyre::eyre!("missing block record at {block}"))?;
     Ok((record, bytes))
 }
 
