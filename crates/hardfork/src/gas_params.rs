@@ -65,6 +65,11 @@ pub fn configure_version(
         if spec.is_t7() {
             apply_t7(&mut version);
         }
+        if spec.is_t13() {
+            // TIP-1124 adopts EIP-7976's floor without the other Amsterdam gas changes.
+            version.gas_params[GasId::TxFloorCostPerToken] = 16;
+            version.gas_params[GasId::TxFloorZeroByteMultiplier] = 4;
+        }
     }
 
     if spec.is_t7() {
@@ -150,6 +155,30 @@ fn apply_amsterdam(version: &mut Version) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tip1124_changes_only_calldata_floor_prices() {
+        let before = version(SpecId::OSAKA, TempoHardfork::T12, false);
+        let after = version(SpecId::OSAKA, TempoHardfork::T13, false);
+        let mut expected = before.gas_params;
+        expected[GasId::TxFloorCostPerToken] = 16;
+        expected[GasId::TxFloorZeroByteMultiplier] = 4;
+        assert_eq!(after.gas_params, expected);
+        let (_, before_tokens) = before.gas_params.tx_calldata_tokens(&[0, 1]);
+        let (_, after_tokens) = after.gas_params.tx_calldata_tokens(&[0, 1]);
+        assert_eq!(
+            before
+                .gas_params
+                .tx_floor_cost_with_tokens(before_tokens, 0, 0),
+            21_050
+        );
+        assert_eq!(
+            after
+                .gas_params
+                .tx_floor_cost_with_tokens(after_tokens, 0, 0),
+            21_128
+        );
+    }
 
     #[test]
     fn test_tempo_override_gas_params_match_across_forks() {

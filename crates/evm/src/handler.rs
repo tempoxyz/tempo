@@ -11,8 +11,7 @@ pub use self::config::{
 use self::config::{TempoFeeContext, TempoHandlerHooks};
 use crate::{
     ExecutionContext, FeePaymentError, TempoAaTx, TempoInvalidTransaction, TempoTxEnv,
-    signature_gas::{calldata_tokens, tempo_signature_verification_gas},
-    transaction_error::ConfigurableAccountError,
+    signature_gas::tempo_signature_verification_gas, transaction_error::ConfigurableAccountError,
 };
 use alloy_primitives::{Address, B256, KECCAK256_EMPTY, TxKind, U256};
 use evm2::{
@@ -310,6 +309,7 @@ fn intrinsic_gas(
     let mut regular = params.get(GasId::TxBaseStipend);
     let mut state = 0u64;
     let mut tokens = 0u64;
+    let mut floor_tokens = 0u64;
 
     // 2. Signature verification gas
     regular = regular.saturating_add(tempo_signature_verification_gas(signed.signature()));
@@ -354,7 +354,9 @@ fn intrinsic_gas(
             return Err(TempoInvalidTransaction::ValueTransferNotAllowedInAATx);
         }
         // 4a. Calldata gas using EVM2's token pricing.
-        tokens = tokens.saturating_add(calldata_tokens(&call.input));
+        let (call_tokens, call_floor_tokens) = params.tx_calldata_tokens(&call.input);
+        tokens = tokens.saturating_add(call_tokens);
+        floor_tokens = floor_tokens.saturating_add(call_floor_tokens);
         if call.to.is_create() {
             // 4b. CREATE-specific costs
             // CREATE costs 500,000 gas in TIP-1000 (T1), 32,000 before
@@ -373,7 +375,6 @@ fn intrinsic_gas(
 
     // 6. Floor gas using EVM2 gas parameters
     let floor = if host.feature(EvmFeatures::EIP7623) {
-        let mut floor_tokens = tokens;
         let multiplier = params.get(GasId::TxAccessListFloorByteMultiplier);
         floor_tokens = floor_tokens.saturating_add(
             (accounts.saturating_mul(20) + storage_keys.saturating_mul(32))
