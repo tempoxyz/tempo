@@ -399,11 +399,9 @@ impl GenesisArgs {
         )?;
 
         println!("Initializing fee manager");
-        let default_user_fee_token = if let Some(address) = deployment_gas_token {
-            address
-        } else {
-            alpha_token_address.unwrap_or(PATH_USD_ADDRESS)
-        };
+        let default_user_fee_token = deployment_gas_token
+            .or(alpha_token_address)
+            .unwrap_or(PATH_USD_ADDRESS);
 
         let default_validator_fee_token = if let Some(address) = deployment_gas_token {
             address
