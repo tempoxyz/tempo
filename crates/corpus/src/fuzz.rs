@@ -4,12 +4,12 @@
 
 use crate::{
     code,
-    store::{self, Catalog, Lease, Store},
+    store::{self, Catalog, Lease, Record, Store},
     types::Input,
 };
 use alloy_eips::Encodable2718;
 use alloy_primitives::{Address, B256, Bytes, U256};
-use futures::{StreamExt, stream};
+use futures::{StreamExt, TryStreamExt, stream};
 use reth_chainspec::{EthChainSpec, ForkCondition};
 use slatedb::DbReader;
 use std::{collections::BTreeMap, fs, path::Path, sync::Arc};
@@ -26,7 +26,7 @@ use tempo_primitives::Block;
 use tokio::{runtime::Runtime, sync::mpsc, task::JoinHandle};
 use tracing::warn;
 
-/// Worker threads of a corpus's runtime: they renew its lease and decode prefetched blocks.
+/// Worker threads of a corpus's runtime: they renew its lease and decode the blocks it reads ahead.
 const WORKERS: usize = 4;
 
 /// A corpus, open at its published checkpoint. A fill extending it meanwhile does not change
@@ -45,8 +45,8 @@ impl Corpus {
     /// Opens the published blocks of the corpus at `url` (`s3://bucket/prefix` or
     /// `file:///directory`), with S3 reads going to `endpoint` when given.
     pub fn open(url: &str, endpoint: Option<&str>) -> eyre::Result<Self> {
-        // The workers renew the lease while the caller is not reading, and decode prefetched
-        // blocks ([Self::prefetch]).
+        // The workers renew the lease while the caller is not reading, and decode the windows
+        // blocks ([Self::windows]).
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(WORKERS)
             .enable_all()
@@ -110,53 +110,26 @@ impl Corpus {
             .map(|block| Ok((block, self.input(block)?)))
     }
 
-    /// The stored size in bytes of each of `blocks`' inputs, in the order given, read from their
-    /// metadata alone, `concurrency` blocks at a time. It orders blocks by size without fetching
-    /// them, such as smallest first for a minimizer.
-    pub fn sizes(&self, blocks: &[u64], concurrency: usize) -> eyre::Result<Vec<usize>> {
-        self.ensure_leased()?;
-        let reader = &*self.reader;
-        self.runtime
-            .block_on(
-                stream::iter(blocks)
-                    .map(|&block| async move {
-                        eyre::Ok(store::metadata(reader, block).await?.block_bytes)
-                    })
-                    .buffered(concurrency.max(1))
-                    .collect::<Vec<_>>(),
-            )
-            .into_iter()
-            .collect()
-    }
-
-    /// Each of `blocks` with its harness input, in the order given, fetched and decoded up to
-    /// `ahead` blocks ahead of the caller on the corpus's runtime, so object store reads overlap
-    /// with each other and with the caller's work. Iteration stops after the first error.
-    pub fn prefetch(&self, blocks: Vec<u64>, ahead: usize) -> Prefetch<'_> {
-        let ahead = ahead.max(1);
-        let (sender, receiver) = mpsc::channel(ahead);
+    /// Each of `blocks` with its stored input size and harness input, in block order, read in
+    /// windows of up to `window` blocks on the corpus's runtime while the caller works on the window
+    /// before. A dense window is read as replay reads, with one metadata and one block scan over its
+    /// range, and a sparse one with a point read per block. Iteration stops after the first error.
+    pub fn windows(&self, mut blocks: Vec<u64>, window: usize) -> Windows<'_> {
+        blocks.sort_unstable();
+        blocks.dedup();
+        let window = window.max(1);
+        let (sender, receiver) = mpsc::channel(1);
         let (reader, chain_spec) = (self.reader.clone(), self.chain_spec.clone());
         let task = self.runtime.spawn(async move {
-            let mut inputs = stream::iter(blocks)
-                .map(|block| {
-                    let (reader, chain_spec) = (reader.clone(), chain_spec.clone());
-                    // Its own task, so blocks decode on every worker.
-                    tokio::spawn(async move {
-                        let stored = store::published(&reader, block).await?.1;
-                        let input = harness_input(&stored, chain_spec)?;
-                        eyre::Ok((block, TempoHarnessInput::Blockchain(input)))
-                    })
-                })
-                .buffered(ahead);
-            while let Some(joined) = inputs.next().await {
-                let item = joined.unwrap_or_else(|error| Err(error.into()));
-                let failed = item.is_err();
-                if sender.send(item).await.is_err() || failed {
+            for blocks in blocks.chunks(window) {
+                let read = read_window(&reader, blocks, &chain_spec).await;
+                let failed = read.is_err();
+                if sender.send(read).await.is_err() || failed {
                     break;
                 }
             }
         });
-        Prefetch {
+        Windows {
             corpus: self,
             receiver,
             task,
@@ -164,16 +137,23 @@ impl Corpus {
     }
 }
 
-/// Prefetched harness inputs of a [Corpus], from [Corpus::prefetch]. Dropping it stops the
-/// fetches still running.
-pub struct Prefetch<'a> {
+/// A corpus block read by [Corpus::windows].
+pub struct BlockInput {
+    pub block: u64,
+    /// Its stored input size in bytes.
+    pub size: usize,
+    pub input: TempoHarnessInput,
+}
+
+/// Windows of a [Corpus]'s blocks, from [Corpus::windows]. Dropping it stops the read still running.
+pub struct Windows<'a> {
     corpus: &'a Corpus,
-    receiver: mpsc::Receiver<eyre::Result<(u64, TempoHarnessInput)>>,
+    receiver: mpsc::Receiver<eyre::Result<Vec<BlockInput>>>,
     task: JoinHandle<()>,
 }
 
-impl Iterator for Prefetch<'_> {
-    type Item = eyre::Result<(u64, TempoHarnessInput)>;
+impl Iterator for Windows<'_> {
+    type Item = eyre::Result<Vec<BlockInput>>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if let Err(error) = self.corpus.ensure_leased() {
@@ -183,10 +163,77 @@ impl Iterator for Prefetch<'_> {
     }
 }
 
-impl Drop for Prefetch<'_> {
+impl Drop for Windows<'_> {
     fn drop(&mut self) {
         self.task.abort();
     }
+}
+
+/// Blocks of a window decoded, or read with point reads, at once.
+const WINDOW_TASKS: usize = 32;
+
+/// A window spanning fewer corpus blocks than this many per block it selects is scanned whole.
+const DENSE_SPAN: u64 = 4;
+
+/// `blocks`' inputs, sorted and unique, read as [Corpus::windows] describes.
+async fn read_window(
+    reader: &Arc<DbReader>,
+    blocks: &[u64],
+    chain_spec: &ChainSpecInput,
+) -> eyre::Result<Vec<BlockInput>> {
+    let (Some(&first), Some(&last)) = (blocks.first(), blocks.last()) else {
+        return Ok(Vec::new());
+    };
+    // Each block decodes in its own task, so a window decodes on every worker.
+    let (reader, chain_spec) = (reader.clone(), chain_spec.clone());
+    if last - first < DENSE_SPAN * blocks.len() as u64 {
+        stream::iter(store::scan_blocks(&reader, blocks).await?)
+            .map(move |(record, bytes)| {
+                let (reader, chain_spec) = (reader.clone(), chain_spec.clone());
+                tokio::spawn(async move {
+                    let stored = store::decode(&bytes, &record)?;
+                    store::resolve_code(&reader, &stored).await?;
+                    block_input(&record, &stored, chain_spec)
+                })
+            })
+            .buffered(WINDOW_TASKS)
+            .map(joined)
+            .try_collect()
+            .await
+    } else {
+        stream::iter(blocks.to_vec())
+            .map(move |block| {
+                let (reader, chain_spec) = (reader.clone(), chain_spec.clone());
+                tokio::spawn(async move {
+                    let (record, stored) = store::published(&reader, block).await?;
+                    block_input(&record, &stored, chain_spec)
+                })
+            })
+            .buffered(WINDOW_TASKS)
+            .map(joined)
+            .try_collect()
+            .await
+    }
+}
+
+/// A window task's input, or why it failed or did not finish.
+fn joined(
+    joined: Result<eyre::Result<BlockInput>, tokio::task::JoinError>,
+) -> eyre::Result<BlockInput> {
+    joined.unwrap_or_else(|error| Err(error.into()))
+}
+
+/// `record`'s block with its harness input. Its code must be resolved ([`store::resolve_code`]).
+fn block_input(
+    record: &Record,
+    stored: &Input,
+    chain_spec: ChainSpecInput,
+) -> eyre::Result<BlockInput> {
+    Ok(BlockInput {
+        block: record.number,
+        size: record.block_bytes,
+        input: TempoHarnessInput::Blockchain(harness_input(stored, chain_spec)?),
+    })
 }
 
 impl Drop for Corpus {

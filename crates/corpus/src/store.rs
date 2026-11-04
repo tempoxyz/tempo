@@ -839,6 +839,48 @@ pub async fn metadata(reader: &DbReader, block: u64) -> eyre::Result<Record> {
     Ok(record)
 }
 
+/// The published records and block payloads of `blocks`, which must be sorted and unique, read with
+/// one metadata scan and one block scan over their range, as replay reads. Blocks in the range but
+/// not in `blocks` are read and skipped.
+pub async fn scan_blocks(reader: &DbReader, blocks: &[u64]) -> eyre::Result<Vec<(Record, Bytes)>> {
+    let (Some(&first), Some(&last)) = (blocks.first(), blocks.last()) else {
+        return Ok(Vec::new());
+    };
+    let record = metadata(reader, first).await?;
+    // Seeded from the first record itself, as [published] checks a lone block.
+    let cursor = Cursor {
+        next: first,
+        tx: record.first_tx,
+        parent: record.parent,
+    };
+    let mut pages = MetadataPages::open(reader, cursor, last + 1).await?;
+    let mut scan = reader
+        .scan_with_options(key(first)..key(last + 1), &scan_options())
+        .await?;
+    let mut wanted = blocks.iter().peekable();
+    let mut stored = Vec::with_capacity(blocks.len());
+    while pages.cursor.next <= last {
+        for record in pages.next_page().await? {
+            let block = scan
+                .next()
+                .await?
+                .ok_or_else(|| eyre::eyre!("missing block record at {}", record.number))?;
+            eyre::ensure!(
+                block.key.as_ref() == key(record.number) && block.value.len() == record.block_bytes,
+                "block scan gap/order/size mismatch"
+            );
+            if wanted.next_if_eq(&&record.number).is_some() {
+                stored.push((record, block.value));
+            }
+        }
+    }
+    eyre::ensure!(
+        wanted.peek().is_none(),
+        "block list is not sorted and unique"
+    );
+    Ok(stored)
+}
+
 /// One metadata scan over a whole range, read in bounded pages. Reopening a scan
 /// per page re-seeks the overlapping SSTs and serializes a fetch per page.
 pub struct MetadataPages {
