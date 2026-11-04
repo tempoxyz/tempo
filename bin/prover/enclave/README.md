@@ -188,8 +188,9 @@ userfaultfd, user and network namespaces, 32-bit compatibility, `modify_ldt`, `/
 surface. It also panics on oops, so the corruption checks AWS's baseline already builds in
 (`LIST_HARDENED`, `BUG_ON_DATA_CORRUPTION`, `SLAB_FREELIST_HARDENED`) and hardened user copies stop
 the enclave instead of letting it run on, and adds randomized kmalloc caches, scatterlist
-validation, and zeroing on allocation against host-induced corruption over vsock. A full EIF build, boot on real Nitro hardware, and successful prover request are required
-before merging this compatibility-sensitive change.
+validation, and zeroing on allocation against host-induced corruption over vsock. A full EIF
+build, boot on real Nitro hardware, and successful prover request are required before merging
+this compatibility-sensitive change.
 
 TLS keys require trusted randomness. The EIF builder sets
 `random.trust_bootloader=off random.trust_cpu=off`; startup checks these flags and requires
