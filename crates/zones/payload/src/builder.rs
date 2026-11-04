@@ -268,17 +268,18 @@ where
 
         // Prewarm L1 reads in parallel with canonical `advanceTempo` (the pool bounds concurrency).
         let prewarming = match tempo_import {
-            TempoImport::Full(prepared) => Some(
-                PrewarmingExecutionContext {
+            TempoImport::Full(prepared) => {
+                let context = Arc::new(PrewarmingExecutionContext {
                     provider: self.provider.clone(),
                     evm_config: self.evm_config.clone(),
                     parent_hash: parent_header.hash(),
                     parent_header: (*parent_header).clone(),
                     next_block_env_attributes,
                     chain_id,
-                }
-                .start(&self.task_executor, prepared),
-            ),
+                });
+                let deposits = context.start_deposits(&self.task_executor, prepared);
+                Some((context, deposits))
+            }
             TempoImport::CheckpointOnly(_) => None,
         };
 
@@ -302,13 +303,48 @@ where
                 );
                 err
             })?;
-        drop(prewarming);
+        let prewarming_context = prewarming.map(|(context, deposits)| {
+            // `advanceTempo` has executed, so deposit prewarming that has not started is wasted.
+            drop(deposits);
+            context
+        });
 
         if !checkpoint_only {
+            let pool_tx_size_budget = MAX_RLP_BLOCK_SIZE - BLOCK_SIZE_SAFETY_MARGIN;
+
+            // Pool transactions read L1 at the block `advanceTempo` just imported, so they are
+            // prewarmed against the state it left, up to the block's gas and size limits.
+            let pool_prewarming = prewarming_context.map(|context| {
+                let (mut prewarm_gas, mut prewarm_bytes) = (0u64, 0usize);
+                let transactions = self
+                    .pool
+                    .best_transactions_with_attributes(BestTransactionsAttributes::new(
+                        base_fee, None,
+                    ))
+                    .take_while(|tx| {
+                        let gas = prewarm_gas.checked_add(tx.gas_limit());
+                        let bytes = prewarm_bytes.checked_add(tx.transaction.encoded_length());
+                        match gas.zip(bytes) {
+                            Some((gas, bytes))
+                                if gas <= block_gas_limit && bytes <= pool_tx_size_budget =>
+                            {
+                                (prewarm_gas, prewarm_bytes) = (gas, bytes);
+                                true
+                            }
+                            _ => false,
+                        }
+                    })
+                    .collect();
+                context.start_pool_transactions(
+                    &self.task_executor,
+                    &builder.evm().overlay_db().cache,
+                    transactions,
+                )
+            });
+
             // Execute pool transactions until either all of them fit or their packed RLP bytes reach
             // the size budget
             // The block executor owns gas-capacity accounting.
-            let pool_tx_size_budget = MAX_RLP_BLOCK_SIZE - BLOCK_SIZE_SAFETY_MARGIN;
             let raw_best_txs = self
                 .pool
                 .best_transactions_with_attributes(BestTransactionsAttributes::new(base_fee, None));
@@ -337,6 +373,7 @@ where
                 pool_tx_size_budget,
                 &mut unlisted,
             );
+            drop(pool_prewarming);
             builder.executor_mut().set_inclusion_filter(None);
             if !unlisted.is_empty() {
                 // Otherwise every later build would execute and drop them again.

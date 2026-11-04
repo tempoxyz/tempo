@@ -1129,8 +1129,12 @@ Its response is:
 ```
 
 This is the portal's `encryptionKeyAtBlock` return value without additional wrapping. The key index
-uses JSON-RPC quantity encoding. Key rotation is visible immediately on L1 and does not wait for the
-Zone to process the corresponding Tempo block.
+uses JSON-RPC quantity encoding.
+
+Nodes may share one portal read between callers for up to one second, for both this method and
+`zone_getZoneInfo`, so request load does not reach Tempo L1. Key rotation is therefore visible
+within a second of reaching the L1 head and does not wait for the Zone to process the
+corresponding Tempo block.
 
 There are no state-changing methods via authorization token. Withdrawals require a signed transaction submitted via `eth_sendRawTransaction`.
 
