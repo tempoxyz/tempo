@@ -27,6 +27,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     sync::Arc,
 };
+use tempo_chainspec::TempoHardforks as _;
 use tempo_evm::{ExecutorState, TempoBlockExecutor, TempoEvmConfig};
 use tempo_primitives::{Block, TempoPrimitives, TempoTxEnvelope};
 
@@ -188,17 +189,14 @@ where
             cases.len() == transactions.len(),
             "transaction count mismatch"
         );
-        eyre::ensure!(
-            expected_phases.pre == phases.pre,
-            "pre-execution delta mismatch"
-        );
-        eyre::ensure!(
-            expected_phases.post == phases.post,
-            "post-execution delta mismatch"
-        );
-        for (case, actual) in cases.iter().zip(&transactions) {
-            case.check(actual)?;
-        }
+        let check = || -> eyre::Result<()> {
+            phase_check("pre-execution", &expected_phases.pre, &phases.pre)?;
+            for (case, actual) in cases.iter().zip(&transactions) {
+                case.check(actual)?;
+            }
+            phase_check("post-execution", &expected_phases.post, &phases.post)
+        };
+        check().wrap_err_with(|| block_context(config, block))?;
     }
     let bal_hash = bal.map(|bal| Bal::from(bal).compute_hash_with_buf(&mut Vec::new()));
     consensus.validate_block_post_execution(block, &output.result, None, bal_hash)?;
@@ -254,11 +252,37 @@ pub fn standalone_cases(
     for (index, case) in cases.iter().enumerate() {
         if select(case) {
             let actual = run_standalone(config, block, &view, case.ordinal, index, &case.before)?;
-            case.check(&actual)?;
+            case.check(&actual)
+                .wrap_err_with(|| block_context(config, block))?;
         }
         view.apply(&case.delta)?;
     }
     Ok(())
+}
+
+/// Compares a block's recorded pre- or post-execution system changes with the replayed ones.
+fn phase_check(phase: &str, recorded: &Delta, replayed: &Delta) -> eyre::Result<()> {
+    if recorded == replayed {
+        return Ok(());
+    }
+    let mut message = format!("{phase} delta mismatch");
+    for line in recorded.diff(replayed) {
+        message.push_str("\n  ");
+        message.push_str(&line);
+    }
+    Err(eyre::eyre!(message))
+}
+
+/// The block a mismatch happened in: its number, hash, timestamp and active hardfork.
+fn block_context(config: &TempoEvmConfig, block: &RecoveredBlock<Block>) -> String {
+    let header = block.header();
+    format!(
+        "block {} ({}) at timestamp {}, hardfork {:?}",
+        header.number(),
+        block.hash(),
+        header.timestamp(),
+        config.chain_spec().tempo_hardfork_at(header.timestamp()),
+    )
 }
 
 /// Decodes a stored block and checks it against its recorded hash and parent.

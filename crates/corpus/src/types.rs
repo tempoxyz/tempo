@@ -3,7 +3,7 @@
 //! Every type here is the stored representation; execution lives in other modules.
 
 use crate::store::WINCODE;
-use alloy_primitives::{B256, U256};
+use alloy_primitives::{Address, B256, U256};
 use reth_primitives_traits::Account;
 use std::collections::{BTreeMap, BTreeSet};
 use wincode::{SchemaRead, SchemaWrite};
@@ -171,37 +171,133 @@ pub struct Outputs {
 }
 
 impl Case {
-    /// Compares an executed transaction against this record, field by field.
+    /// Compares an executed transaction against this record, field by field. A mismatch names
+    /// the transaction and lists every field that differs, with the recorded and replayed values
+    /// where the record keeps them in full.
     pub fn check(&self, actual: &Transaction) -> eyre::Result<()> {
         let outputs = actual.outputs()?;
-        let at = self.ordinal;
-        eyre::ensure!(
-            actual.ordinal == self.ordinal
-                && actual.index == self.index
-                && actual.hash == self.hash
-                && actual.before == self.before,
-            "transaction context mismatch at {at}"
+        let mut kinds = Vec::new();
+        let mut lines = Vec::new();
+
+        if actual.ordinal != self.ordinal || actual.index != self.index || actual.hash != self.hash
+        {
+            kinds.push("context");
+            lines.push(format!(
+                "context: recorded index {} ordinal {} hash {}, replayed index {} ordinal {} hash {}",
+                self.index,
+                self.ordinal,
+                B256::from(self.hash),
+                actual.index,
+                actual.ordinal,
+                B256::from(actual.hash),
+            ));
+        }
+        if actual.before != self.before {
+            kinds.push("boundary before");
+            lines.push("boundary before: executor state before the transaction differs".into());
+        }
+
+        let mut outcome = Vec::new();
+        if actual.outcome.status != self.status {
+            outcome.push(format!(
+                "status: recorded {}, replayed {}",
+                status_name(self.status),
+                status_name(actual.outcome.status)
+            ));
+        }
+        if actual.outcome.charged_gas != self.charged_gas {
+            outcome.push(format!(
+                "charged gas: recorded {}, replayed {} ({:+})",
+                self.charged_gas,
+                actual.outcome.charged_gas,
+                i128::from(actual.outcome.charged_gas) - i128::from(self.charged_gas)
+            ));
+        }
+        if actual.outcome.created != self.created {
+            outcome.push(format!(
+                "created: recorded {:?}, replayed {:?}",
+                self.created.map(Address::from),
+                actual.outcome.created.map(Address::from)
+            ));
+        }
+        if outputs.outcome != self.outputs.outcome {
+            if outcome.is_empty() {
+                outcome.push(
+                    "status, charged gas and created address match; the stop reason, gas \
+                     breakdown or output differs (recorded as a digest only)"
+                        .into(),
+                );
+            }
+            let o = &actual.outcome;
+            outcome.push(format!(
+                "replayed: reason {}, gas [spent {}, refunded {}, floor {}, state {}], output {}",
+                o.reason,
+                o.gas[0],
+                o.gas[1],
+                o.gas[2],
+                o.gas[3],
+                o.output.as_deref().map_or_else(|| "none".into(), short_hex),
+            ));
+        }
+        if !outcome.is_empty() {
+            kinds.push("outcome");
+            lines.extend(outcome.into_iter().map(|line| format!("outcome {line}")));
+        }
+
+        if outputs.receipt != self.outputs.receipt {
+            kinds.push("receipt");
+            lines.push("receipt: differs (recorded as a digest only)".into());
+        }
+        if actual.delta != self.delta {
+            kinds.push("delta");
+            lines.extend(
+                self.delta
+                    .diff(&actual.delta)
+                    .into_iter()
+                    .map(|l| format!("delta {l}")),
+            );
+        }
+        if outputs.after != self.outputs.after {
+            kinds.push("boundary after");
+            lines.push("boundary after: executor state after the transaction differs".into());
+        }
+
+        if kinds.is_empty() {
+            return Ok(());
+        }
+        let mut message = format!(
+            "transaction {} (index {}, ordinal {}) {} mismatch",
+            B256::from(self.hash),
+            self.index,
+            self.ordinal,
+            kinds.join(", ")
         );
-        eyre::ensure!(
-            actual.outcome.status == self.status
-                && actual.outcome.charged_gas == self.charged_gas
-                && actual.outcome.created == self.created
-                && outputs.outcome == self.outputs.outcome,
-            "transaction outcome mismatch at {at}"
-        );
-        eyre::ensure!(
-            outputs.receipt == self.outputs.receipt,
-            "transaction receipt mismatch at {at}"
-        );
-        eyre::ensure!(
-            actual.delta == self.delta,
-            "transaction delta mismatch at {at}"
-        );
-        eyre::ensure!(
-            outputs.after == self.outputs.after,
-            "transaction boundary mismatch at {at}"
-        );
-        Ok(())
+        for line in lines {
+            message.push_str("\n  ");
+            message.push_str(&line);
+        }
+        Err(eyre::eyre!(message))
+    }
+}
+
+fn status_name(status: u8) -> &'static str {
+    match status {
+        0 => "success",
+        _ => "failure",
+    }
+}
+
+/// Hex of the bytes, cut to the first 64.
+fn short_hex(bytes: &[u8]) -> String {
+    const MAX: usize = 64;
+    if bytes.len() <= MAX {
+        format!("0x{}", alloy_primitives::hex::encode(bytes))
+    } else {
+        format!(
+            "0x{}… ({} bytes)",
+            alloy_primitives::hex::encode(&bytes[..MAX]),
+            bytes.len()
+        )
     }
 }
 
@@ -209,12 +305,118 @@ impl Case {
 #[derive(Clone, Debug, Default, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct Delta(pub Vec<BTreeMap<[u8; 20], Change>>);
 
+impl Delta {
+    /// Most lines a diff returns before summarizing the rest.
+    const DIFF_LINES: usize = 32;
+
+    /// Human-readable differences from self (recorded) to other (replayed): per commit,
+    /// each account added, missing or changed, down to its info fields, storage slots and code.
+    pub fn diff(&self, other: &Self) -> Vec<String> {
+        let mut lines = Vec::new();
+        if self.0.len() != other.0.len() {
+            lines.push(format!(
+                "commits: recorded {}, replayed {}",
+                self.0.len(),
+                other.0.len()
+            ));
+        }
+        let empty = BTreeMap::new();
+        for commit in 0..self.0.len().max(other.0.len()) {
+            let recorded = self.0.get(commit).unwrap_or(&empty);
+            let replayed = other.0.get(commit).unwrap_or(&empty);
+            let addresses: BTreeSet<_> = recorded.keys().chain(replayed.keys()).collect();
+            for address in addresses {
+                let at = format!("commit {commit} {}", Address::from(*address));
+                match (recorded.get(address), replayed.get(address)) {
+                    (Some(_), None) => lines.push(format!("{at}: recorded change, none replayed")),
+                    (None, Some(_)) => lines.push(format!("{at}: replayed change, none recorded")),
+                    (Some(a), Some(b)) if a != b => a.diff(b, &at, &mut lines),
+                    _ => {}
+                }
+            }
+        }
+        if lines.len() > Self::DIFF_LINES {
+            let rest = lines.len() - Self::DIFF_LINES;
+            lines.truncate(Self::DIFF_LINES);
+            lines.push(format!("… {rest} more differences"));
+        }
+        lines
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct Change {
     pub info: Option<InfoChange>,
     pub created: bool,
     pub storage: BTreeMap<[u8; 32], [u8; 32]>,
     pub code: Option<Vec<u8>>,
+}
+
+impl Change {
+    fn diff(&self, other: &Self, at: &str, lines: &mut Vec<String>) {
+        if self.created != other.created {
+            lines.push(format!(
+                "{at} created: recorded {}, replayed {}",
+                self.created, other.created
+            ));
+        }
+        match (&self.info, &other.info) {
+            (Some(a), Some(b)) => {
+                if a.nonce != b.nonce {
+                    lines.push(format!(
+                        "{at} nonce: recorded {:?}, replayed {:?}",
+                        a.nonce, b.nonce
+                    ));
+                }
+                if a.balance != b.balance {
+                    let balance = |v: Option<[u8; 32]>| v.map(U256::from_be_bytes);
+                    lines.push(format!(
+                        "{at} balance: recorded {:?}, replayed {:?}",
+                        balance(a.balance),
+                        balance(b.balance)
+                    ));
+                }
+                if a.code_hash != b.code_hash {
+                    let hash = |v: Option<Option<[u8; 32]>>| v.map(|h| h.map(B256::from));
+                    lines.push(format!(
+                        "{at} code hash: recorded {:?}, replayed {:?}",
+                        hash(a.code_hash),
+                        hash(b.code_hash)
+                    ));
+                }
+            }
+            (a, b) if a != b => lines.push(format!(
+                "{at} account info: recorded {}, replayed {}",
+                if a.is_some() { "changed" } else { "unchanged" },
+                if b.is_some() { "changed" } else { "unchanged" },
+            )),
+            _ => {}
+        }
+        let slots: BTreeSet<_> = self.storage.keys().chain(other.storage.keys()).collect();
+        for slot in slots {
+            let (a, b) = (self.storage.get(slot), other.storage.get(slot));
+            if a != b {
+                let value = |v: Option<&[u8; 32]>| v.map(|v| B256::from(*v));
+                lines.push(format!(
+                    "{at} slot {}: recorded {:?}, replayed {:?}",
+                    B256::from(*slot),
+                    value(a),
+                    value(b)
+                ));
+            }
+        }
+        if self.code != other.code {
+            let code = |c: &Option<Vec<u8>>| {
+                c.as_ref()
+                    .map_or_else(|| "unchanged".to_string(), |c| format!("{} bytes", c.len()))
+            };
+            lines.push(format!(
+                "{at} code: recorded {}, replayed {}",
+                code(&self.code),
+                code(&other.code)
+            ));
+        }
+    }
 }
 
 /// None preserves a field; Some(zero/None) explicitly resets it.
