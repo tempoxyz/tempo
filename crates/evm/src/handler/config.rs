@@ -51,21 +51,40 @@ impl EvmTypesHost for TempoEvmTypes {
 
 /// Tempo opcode configuration over an inherited Ethereum specification.
 #[derive(Clone, Copy, Debug)]
-pub struct TempoConfig<const BASE_SPEC_ID: u32>(());
+pub struct TempoConfig<const BASE_SPEC_ID: u32, const REPRICED: bool = false>(());
 
-impl<const BASE_SPEC_ID: u32> EvmConfig<TempoEvmTypes> for TempoConfig<BASE_SPEC_ID> {
+impl<const BASE_SPEC_ID: u32, const REPRICED: bool> EvmConfig<TempoEvmTypes>
+    for TempoConfig<BASE_SPEC_ID, REPRICED>
+{
     const BASE_SPEC_ID: SpecId =
         SpecId::try_from_u32(BASE_SPEC_ID).expect("invalid Tempo base spec id");
     const OPCODE_CONFIG: &'static OpcodeConfig<TempoEvmTypes> =
-        &tempo_opcode_config::<BASE_SPEC_ID>();
+        &tempo_opcode_config::<BASE_SPEC_ID, REPRICED>();
 }
 
 /// Returns Tempo's opcode configuration over an inherited Ethereum specification.
-pub const fn tempo_opcode_config<const BASE_SPEC_ID: u32>() -> OpcodeConfig<TempoEvmTypes> {
-    let mut config = OpcodeConfig::base::<TempoConfig<BASE_SPEC_ID>>();
+pub const fn tempo_opcode_config<const BASE_SPEC_ID: u32, const REPRICED: bool>()
+-> OpcodeConfig<TempoEvmTypes> {
+    let mut config = OpcodeConfig::base::<TempoConfig<BASE_SPEC_ID, REPRICED>>();
     config.set_instruction::<crate::instructions::millis_timestamp>(0x4f, 0);
     config.set_instruction::<crate::instructions::sstore>(evm2::interpreter::op::SSTORE, 0);
     config.set_instruction::<crate::instructions::configurable_account>(0xef, 0);
+    if REPRICED {
+        use evm2::interpreter::op;
+        config.set_static_gas(op::MOD, 40);
+        config.set_static_gas(op::SMOD, 37);
+        config.set_static_gas(op::DIV, 24);
+        config.set_static_gas(op::SDIV, 34);
+        config.set_static_gas(op::ADDMOD, 36);
+        config.set_static_gas(op::MULMOD, 65);
+        config.set_static_gas(op::SHL, 9);
+        config.set_static_gas(op::SHR, 9);
+        config.set_static_gas(op::SAR, 10);
+        config.set_static_gas(op::NOT, 3);
+        config.set_static_gas(op::ISZERO, 5);
+        config.set_static_gas(op::KECCAK256, 205);
+        config.set_static_gas(op::SELFBALANCE, 13);
+    }
     config
 }
 
@@ -77,10 +96,13 @@ impl EvmConfigSelector<TempoEvmTypes> for TempoConfigSelector {
     type Config<const BASE_SPEC_ID: u32, const CUSTOM_SPEC_ID: u32> = TempoConfig<BASE_SPEC_ID>;
 
     fn execution_config(spec_id: TempoHardfork) -> ExecutionConfig<TempoEvmTypes> {
-        let spec_id = SpecId::from(spec_id);
-        evm2::spec_to_generic!(spec_id, |SPEC_ID| ExecutionConfig::for_config::<
-            TempoConfig<SPEC_ID>,
-        >())
+        let repriced = spec_id.is_t13();
+        let base = SpecId::from(spec_id);
+        evm2::spec_to_generic!(base, |SPEC_ID| if repriced {
+            ExecutionConfig::for_config::<TempoConfig<SPEC_ID, true>>()
+        } else {
+            ExecutionConfig::for_config::<TempoConfig<SPEC_ID, false>>()
+        })
     }
 }
 

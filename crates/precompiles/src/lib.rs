@@ -21,6 +21,7 @@ pub mod receive_policy_guard;
 pub mod signature_verifier;
 pub mod stablecoin_dex;
 pub mod storage_credits;
+mod tip1102;
 pub mod tip20;
 pub mod tip20_channel_reserve;
 pub mod tip20_factory;
@@ -184,8 +185,13 @@ impl<T: EvmTypesHost> TempoPrecompiles<T> {
         } else {
             SpecId::PRAGUE
         };
+        let mut base = BasePrecompiles::base(base_spec);
+        if spec.is_t13() {
+            // TIP-1102 removes the point-evaluation precompile.
+            base.as_map_mut().remove(Address::with_last_byte(0x0a));
+        }
         Self {
-            base: BasePrecompiles::base(base_spec),
+            base,
             spec,
             actions,
             non_creditable_slots,
@@ -272,6 +278,15 @@ where
     ) -> Option<PrecompileResult> {
         // `contains` checks short addresses without hashing, so Tempo calls skip the map lookup.
         if self.base.contains(&message.call_target) {
+            if self.spec.is_t13() {
+                let p256 = Address::from_word(alloy::primitives::U256::from(256).into());
+                if message.call_target == p256 {
+                    return Some(tip1102::run_p256(&message.input, gas));
+                }
+                if let Some(result) = tip1102::run(message.call_target, &message.input, gas) {
+                    return Some(result);
+                }
+            }
             return self.base.execute(evm, message, gas);
         }
         // Dispatch on the requested callee like evm2's membership check: code stored at a
@@ -1050,6 +1065,16 @@ mod tests {
                 "unexpected native ZoneVerifier activation at {spec:?}"
             );
         }
+    }
+
+    #[test]
+    fn tip1102_removes_point_evaluation_at_t13() {
+        let address = Address::with_last_byte(0x0a);
+        assert!(test_tempo_precompiles(TempoHardfork::T12).contains(&address));
+        assert!(!test_tempo_precompiles(TempoHardfork::T13).contains(&address));
+        assert!(
+            test_tempo_precompiles(TempoHardfork::T13).contains(&Address::with_last_byte(0x0b))
+        );
     }
 
     #[test]

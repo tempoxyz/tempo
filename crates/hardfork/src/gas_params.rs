@@ -65,6 +65,9 @@ pub fn configure_version(
         if spec.is_t7() {
             apply_t7(&mut version);
         }
+        if spec.is_t13() {
+            version.gas_params[GasId::Keccak256PerWord] = 41;
+        }
     }
 
     if spec.is_t7() {
@@ -150,6 +153,14 @@ fn apply_amsterdam(version: &mut Version) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tip1102_reprices_keccak256_at_t13() {
+        let before = version(SpecId::OSAKA, TempoHardfork::T12, false);
+        let after = version(SpecId::OSAKA, TempoHardfork::T13, false);
+        assert_eq!(before.gas_params[GasId::Keccak256PerWord], 6);
+        assert_eq!(after.gas_params[GasId::Keccak256PerWord], 41);
+    }
 
     #[test]
     fn test_tempo_override_gas_params_match_across_forks() {
