@@ -65,22 +65,16 @@ pub fn index(
         .build()?;
     runtime.block_on(async {
         let reader = Arc::new(store.reader(&catalog).await?);
-        let metadata = [
-            (INDEX_VERSION_KEY, VERSION.to_string()),
-            (REGISTRY_VERSION_KEY, targets::VERSION.to_string()),
-            (CATALOG_KEY, serde_json::to_string(&catalog)?),
-            (RANGE_KEY, format!("{}..{}", range.start, range.end)),
-        ];
         let properties = WriterProperties::builder()
             .set_compression(Compression::ZSTD(ZstdLevel::try_new(3)?))
             .set_max_row_group_row_count(None)
             .set_max_row_group_bytes(Some(ROW_GROUP_BYTES))
-            .set_key_value_metadata(Some(
-                metadata
-                    .into_iter()
-                    .map(|(key, value)| KeyValue::new(key.to_owned(), value))
-                    .collect(),
-            ));
+            .set_key_value_metadata(Some(vec![
+                KeyValue::new(INDEX_VERSION_KEY.into(), VERSION.to_string()),
+                KeyValue::new(REGISTRY_VERSION_KEY.into(), targets::VERSION.to_string()),
+                KeyValue::new(CATALOG_KEY.into(), serde_json::to_string(&catalog)?),
+                KeyValue::new(RANGE_KEY.into(), format!("{}..{}", range.start, range.end)),
+            ]));
         // Dictionaries for the low-cardinality columns only.
         let properties = ["block", "tx_index", "charged_gas", "created"]
             .into_iter()
@@ -164,23 +158,13 @@ pub fn select(
     let mut corpora = BTreeMap::<(u64, u64, String), (Catalog, BTreeSet<u64>)>::new();
     for path in paths {
         let builder = ParquetRecordBatchReaderBuilder::try_new(File::open(path)?)?;
-        let metadata: BTreeMap<_, _> = builder
-            .metadata()
-            .file_metadata()
-            .key_value_metadata()
-            .into_iter()
-            .flatten()
-            .map(|entry| {
-                (
-                    entry.key.as_str(),
-                    entry.value.as_deref().unwrap_or_default(),
-                )
-            })
-            .collect();
+        let metadata = builder.metadata().file_metadata().key_value_metadata();
         let get = |key| {
             metadata
-                .get(key)
-                .copied()
+                .into_iter()
+                .flatten()
+                .find(|entry| entry.key == key)
+                .and_then(|entry| entry.value.as_deref())
                 .ok_or_else(|| eyre::eyre!("{} has no {key}", path.display()))
         };
         eyre::ensure!(
@@ -198,42 +182,46 @@ pub fn select(
             ))
             .or_insert_with(|| (catalog, BTreeSet::new()))
             .1;
-        let columns = ["block", "calls", "writes"]
-            .map(|name| builder.schema().index_of(name).ok())
-            .into_iter()
-            .collect::<Option<Vec<_>>>()
-            .ok_or_else(|| eyre::eyre!("{} is not a corpus index", path.display()))?;
-        let projection = ProjectionMask::roots(builder.parquet_schema(), columns);
+        // Only the leaves this selection reads: call targets, not their selectors and addresses.
+        let leaf = if writes {
+            "writes"
+        } else {
+            "calls.list.item.target"
+        };
+        let projection = ProjectionMask::columns(builder.parquet_schema(), ["block", leaf]);
         for batch in builder.with_projection(projection).build()? {
             let batch = batch?;
             let block = column::<UInt64Array>(&batch, "block")?;
-            let calls = column::<ListArray>(&batch, "calls")?;
-            let written = column::<UInt64Array>(&batch, "writes")?;
-            let called = calls
-                .values()
-                .as_any()
-                .downcast_ref::<StructArray>()
-                .and_then(|calls| calls.column_by_name("target"))
-                .and_then(|target| target.as_any().downcast_ref::<UInt8Array>())
-                .ok_or_else(|| eyre::eyre!("{} has no call targets", path.display()))?;
-            let offsets = calls.value_offsets();
-            for row in 0..batch.num_rows() {
-                let number = block.value(row);
-                let touched = if writes {
-                    written.value(row) & mask != 0
-                } else {
-                    (offsets[row] as usize..offsets[row + 1] as usize)
-                        .any(|call| called.is_valid(call) && called.value(call) == bit)
-                };
-                if touched && blocks.contains(&number) {
-                    selected.insert(number);
-                }
+            let rows = (0..batch.num_rows()).filter(|&row| blocks.contains(&block.value(row)));
+            if writes {
+                let written = column::<UInt64Array>(&batch, "writes")?;
+                selected.extend(
+                    rows.filter(|&row| written.value(row) & mask != 0)
+                        .map(|row| block.value(row)),
+                );
+            } else {
+                let calls = column::<ListArray>(&batch, "calls")?;
+                let called = calls
+                    .values()
+                    .as_any()
+                    .downcast_ref::<StructArray>()
+                    .and_then(|calls| calls.column_by_name("target"))
+                    .and_then(|target| target.as_any().downcast_ref::<UInt8Array>())
+                    .ok_or_else(|| eyre::eyre!("{} has no call targets", path.display()))?;
+                let offsets = calls.value_offsets();
+                selected.extend(
+                    rows.filter(|&row| {
+                        (offsets[row] as usize..offsets[row + 1] as usize)
+                            .any(|call| called.is_valid(call) && called.value(call) == bit)
+                    })
+                    .map(|row| block.value(row)),
+                );
             }
         }
     }
     Ok(corpora
         .values()
-        .map(|(catalog, blocks)| fuzz::block_list(catalog, &Vec::from_iter(blocks.iter().copied())))
+        .map(|(catalog, blocks)| fuzz::block_list(catalog, blocks))
         .collect())
 }
 

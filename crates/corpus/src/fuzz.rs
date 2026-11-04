@@ -175,7 +175,7 @@ fn harness_input(stored: &Input, chain_spec: ChainSpecInput) -> eyre::Result<Tem
 
 /// A block list section naming `catalog`'s corpus and `blocks` of it, one per line. A block list
 /// file holds one section per corpus.
-pub fn block_list(catalog: &Catalog, blocks: &[u64]) -> String {
+pub fn block_list<'a>(catalog: &Catalog, blocks: impl IntoIterator<Item = &'a u64>) -> String {
     let context = &catalog.context;
     let header = format!(
         "# corpus {}..{} tip {} checkpoint {}\n",
@@ -185,7 +185,7 @@ pub fn block_list(catalog: &Catalog, blocks: &[u64]) -> String {
         catalog.checkpoint.as_deref().unwrap_or("none")
     );
     blocks
-        .iter()
+        .into_iter()
         .fold(header, |text, block| text + &format!("{block}\n"))
 }
 

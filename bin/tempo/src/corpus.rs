@@ -271,10 +271,9 @@ impl IndexCommand {
             "block range outside the corpus"
         );
         let started = std::time::Instant::now();
-        let workers = workers(self.workers);
         let out = self.out.clone();
         let rows = tokio::task::spawn_blocking(move || {
-            tempo_corpus::index::index(store, catalog, range, &out, workers)
+            tempo_corpus::index::index(store, catalog, range, &out, workers(self.workers))
         })
         .await??;
         tracing::info!(
@@ -326,7 +325,6 @@ impl SelectCommand {
             )
         })?;
         let list = tempo_corpus::index::select(&self.index, bit, self.writes, self.from..self.to)?;
-        std::fs::write(&self.out, list)?;
-        Ok(())
+        Ok(std::fs::write(&self.out, list)?)
     }
 }
