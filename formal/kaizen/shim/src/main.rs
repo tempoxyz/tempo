@@ -555,6 +555,18 @@ async fn main() -> eyre::Result<()> {
         }
         for (cand, _) in prepared {
             let h = cand.height;
+            // A block whose re-execution did not finish (proof RPC unavailable, reveal limit)
+            // has no verdict yet: stall and retry it rather than letting the core read the
+            // missing result as a state-root mismatch. Code 12 stays for computed mismatches.
+            let exec_key = core.has_tip().then(|| (core.tip_state_root(), cand.digest));
+            if !args.trust_execution
+                && let Some(key) = exec_key
+                && !EXECUTED.lock().unwrap().contains_key(&key)
+            {
+                eprintln!("height {h}: re-execution unavailable; retrying");
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                break;
+            }
             let code = core.step(&cand);
             if code != 0 {
                 bail!(
@@ -567,6 +579,12 @@ async fn main() -> eyre::Result<()> {
                     "height {h}: epoch boundary accepted; core registered identity for epoch {e}"
                 );
             }
+            // Keep memory bounded while following forever: drop the consumed execution result
+            // and block hashes the EVM can no longer read (BLOCKHASH sees the last 256).
+            if let Some(key) = exec_key {
+                EXECUTED.lock().unwrap().remove(&key);
+            }
+            hashes.lock().unwrap().retain(|&k, _| k + 256 >= h);
             accepted += 1;
             txs += cand.txs;
             next = h + 1;
