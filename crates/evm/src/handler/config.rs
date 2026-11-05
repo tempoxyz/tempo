@@ -354,7 +354,9 @@ impl TempoHandlerHooks {
         }
         let balance =
             host.get_token_balance(fee_token, fee_payer, spec, StorageActions::disabled())?;
-        if balance < max_fee {
+        // Simulations (`eth_call`, `eth_estimateGas`) disable fee charging and, as under revm,
+        // must not require the fee payer to afford the max fee.
+        if host.feature(EvmFeatures::FEE_CHARGE) && balance < max_fee {
             return Err(TempoInvalidTransaction::from(
                 FeePaymentError::InsufficientFeeTokenBalance {
                     fee: max_fee,
