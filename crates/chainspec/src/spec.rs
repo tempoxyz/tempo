@@ -3,12 +3,11 @@ pub use tempo_hardfork::constants::gas::*;
 use crate::{
     bootnodes::{moderato_nodes, presto_nodes},
     network_identity::NetworkIdentity,
-    recovery::Recovery,
 };
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use alloy_eips::eip7840::BlobParams;
 use alloy_genesis::Genesis;
-use alloy_primitives::{Address, B256, U256};
+use alloy_primitives::{Address, B256, Bytes, U256};
 use core::num::NonZeroU64;
 use once_cell as _;
 #[cfg(not(feature = "std"))]
@@ -91,6 +90,25 @@ impl TempoGenesisInfo {
     pub fn recovery(&self) -> Option<&Recovery> {
         self.recovery.as_ref()
     }
+}
+
+/// Restarts consensus after the epoch containing [`Self::finalized_height`] lost its signing key.
+///
+/// Every node fills the rest of that epoch with the same empty blocks, writes [`Self::outcome`]
+/// into the boundary block that ends it, and starts the next epoch from that outcome. The
+/// boundary carries no finalization certificate; its hash is trusted because it is pinned here.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Recovery {
+    /// Height of the last block finalized before consensus halted.
+    pub finalized_height: u64,
+    /// Hash of the block at [`Self::finalized_height`].
+    pub finalized_hash: B256,
+    /// Hash of the boundary block that ends the halted epoch, as every node must build it.
+    pub boundary_hash: B256,
+    /// Encoded `OnchainDkgOutcome` written into the boundary block's `extra_data`. It is
+    /// the outcome for the epoch after the halted one.
+    pub outcome: Bytes,
 }
 
 /// Tempo chain specification parser.
@@ -613,7 +631,7 @@ mod tests {
         let chainspec = super::TempoChainSpec::from_genesis(genesis);
         assert_eq!(
             chainspec.info.recovery(),
-            Some(&crate::Recovery {
+            Some(&super::Recovery {
                 finalized_height: 13,
                 finalized_hash: B256::repeat_byte(1),
                 boundary_hash: B256::repeat_byte(2),

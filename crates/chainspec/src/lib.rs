@@ -14,15 +14,11 @@ pub mod cli;
 #[cfg(feature = "reth")]
 mod network_identity;
 #[cfg(feature = "reth")]
-mod recovery;
-#[cfg(feature = "reth")]
 pub mod spec;
 #[cfg(feature = "reth")]
 pub use network_identity::NetworkIdentity;
 #[cfg(feature = "reth")]
-pub use recovery::Recovery;
-#[cfg(feature = "reth")]
-pub use spec::{TempoChainSpec, TempoConsensusSpec, TempoHardforks};
+pub use spec::{Recovery, TempoChainSpec, TempoConsensusSpec, TempoHardforks};
 
 #[cfg(feature = "evm")]
 pub use tempo_hardfork::gas_params;
