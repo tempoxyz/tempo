@@ -1336,10 +1336,11 @@ impl ValidatorInfo {
                 ));
             }
 
-            let dkg_outcome = OnchainDkgOutcome::read(&mut extra_data.as_ref())
-                .wrap_err("failed to decode DKG outcome from extra_data")?;
+            let dkg_outcome =
+                OnchainDkgOutcome::read(&mut commonware_codec::Copying(extra_data.as_ref()))
+                    .wrap_err("failed to decode DKG outcome from extra_data")?;
 
-            let key = PublicKey::decode(&mut &pubkey_bytes[..])
+            let key = PublicKey::decode(commonware_codec::Copying(&pubkey_bytes[..]))
                 .wrap_err("failed decoding on-chain ed25519 key")?;
 
             let committee = dkg_outcome.players().position(&key).is_some();
@@ -1487,8 +1488,9 @@ impl Info {
             ));
         }
 
-        let dkg_outcome = OnchainDkgOutcome::read(&mut extra_data.as_ref())
-            .wrap_err("failed to decode DKG outcome from extra_data")?;
+        let dkg_outcome =
+            OnchainDkgOutcome::read(&mut commonware_codec::Copying(extra_data.as_ref()))
+                .wrap_err("failed to decode DKG outcome from extra_data")?;
 
         let next_dkg_result = provider
             .call(
@@ -1559,7 +1561,7 @@ impl Info {
 
         let mut validators: Vec<ValidatorOutput> = Vec::new();
         for (key, validator) in validators_by_public_key {
-            let public_key = match PublicKey::decode(key.as_ref()) {
+            let public_key = match PublicKey::decode(commonware_codec::Copying(key.as_ref())) {
                 Ok(key) => key,
                 Err(e) => {
                     let index = validator.index;

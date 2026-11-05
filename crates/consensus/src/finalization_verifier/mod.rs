@@ -71,9 +71,9 @@ impl FinalizationVerifier {
     /// authenticated by a previously verified finalization.
     pub(crate) fn decode_dkg_outcome_and_register_boundary(
         &self,
-        mut extra_data: &[u8],
+        extra_data: &[u8],
     ) -> Result<OnchainDkgOutcome, commonware_codec::Error> {
-        let outcome = OnchainDkgOutcome::read(&mut extra_data)?;
+        let outcome = OnchainDkgOutcome::read(&mut commonware_codec::Copying(extra_data))?;
         self.scheme_provider.register(
             outcome.epoch(),
             Scheme::certificate_verifier(NAMESPACE, *outcome.network_identity()),
@@ -94,7 +94,7 @@ impl FinalizationVerifier {
         // bytes opaque and decoding them at each consumer.
         let bytes = alloy_primitives::hex::decode(&certified.certificate)
             .map_err(|error| Error::MalformedCertificate(error.into()))?;
-        let finalization = Finalization::<Scheme<PublicKey, MinSig>, Digest>::decode(&*bytes)
+        let finalization = Finalization::<Scheme<PublicKey, MinSig>, Digest>::decode(bytes)
             .map_err(|error| Error::MalformedCertificate(error.into()))?;
 
         if finalization.proposal.payload.0 != certified.block.hash() {

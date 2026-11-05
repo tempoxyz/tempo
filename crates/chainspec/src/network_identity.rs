@@ -45,7 +45,7 @@ impl NetworkIdentity {
     }
 
     pub(crate) fn from_extra_data(extra_data: &[u8]) -> eyre::Result<Self> {
-        let mut extra_data = extra_data;
+        let mut extra_data = commonware_codec::Copying(extra_data);
         let outcome =
             OnchainDkgOutcome::read(&mut extra_data).wrap_err("unable to parse dkg outcome")?;
 
@@ -60,7 +60,8 @@ fn deserialize_identity<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<<MinSig as Variant>::Public, D::Error> {
     let bytes = hex::deserialize::<_, [u8; 96]>(deserializer)?;
-    <MinSig as Variant>::Public::read(&mut bytes.as_ref()).map_err(D::Error::custom)
+    <MinSig as Variant>::Public::read(&mut commonware_codec::Copying(bytes.as_ref()))
+        .map_err(D::Error::custom)
 }
 
 #[cfg(test)]
