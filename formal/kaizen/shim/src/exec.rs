@@ -170,6 +170,14 @@ static HOT: std::sync::LazyLock<Mutex<HashMap<Address, std::collections::BTreeSe
     std::sync::LazyLock::new(Default::default);
 
 impl ProofState {
+    /// A state read failed (fetch, proof verification, code hash, missing ancestor hash): the
+    /// error says nothing about the block, so record that the execution has no verdict.
+    fn fail(&self, e: impl std::fmt::Display) -> ProviderError {
+        self.unavailable
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        rpc_err(e)
+    }
+
     /// Pass a network fetch through, remembering whether it failed.
     fn net<T>(&self, r: eyre::Result<T>) -> eyre::Result<T> {
         if r.is_err() {
@@ -426,12 +434,15 @@ impl ProofState {
 
 impl EvmStateProvider for ProofState {
     fn basic_account(&self, address: &Address) -> ProviderResult<Option<Account>> {
-        Ok(self.account(*address).map_err(rpc_err)?.map(|a| Account {
-            nonce: a.nonce,
-            balance: a.balance,
-            bytecode_hash: Some(a.code_hash),
-            extension: a.extension,
-        }))
+        Ok(self
+            .account(*address)
+            .map_err(|e| self.fail(e))?
+            .map(|a| Account {
+                nonce: a.nonce,
+                balance: a.balance,
+                bytecode_hash: Some(a.code_hash),
+                extension: a.extension,
+            }))
     }
 
     fn block_hash(&self, number: u64) -> ProviderResult<Option<B256>> {
@@ -449,11 +460,11 @@ impl EvmStateProvider for ProofState {
     }
 
     fn bytecode_by_hash(&self, code_hash: &B256) -> ProviderResult<Option<Bytecode>> {
-        Ok(Some(self.code(*code_hash).map_err(rpc_err)?))
+        Ok(Some(self.code(*code_hash).map_err(|e| self.fail(e))?))
     }
 
     fn storage(&self, account: Address, key: B256) -> ProviderResult<Option<U256>> {
-        Ok(Some(self.slot(account, key).map_err(rpc_err)?))
+        Ok(Some(self.slot(account, key).map_err(|e| self.fail(e))?))
     }
 }
 
@@ -534,9 +545,13 @@ fn execute_on(
                     return Err(eyre!("too many unrevealed trie nodes").wrap_err(Inconclusive));
                 }
                 if reveals == 1 {
-                    state.reveal_from_post_state(&output.state)?;
+                    state
+                        .reveal_from_post_state(&output.state)
+                        .map_err(|e| e.wrap_err(Inconclusive))?;
                 } else {
-                    state.reveal(owner, &path)?;
+                    state
+                        .reveal(owner, &path)
+                        .map_err(|e| e.wrap_err(Inconclusive))?;
                 }
             }
             Err((_, e)) => return Err(eyre!("trie error: {e:?}").wrap_err(Inconclusive)),

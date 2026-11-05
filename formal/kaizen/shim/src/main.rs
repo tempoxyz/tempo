@@ -241,9 +241,10 @@ fn prepare(c: RpcCertified, epoch_length: u64) -> eyre::Result<Candidate> {
     })
 }
 
-/// Post-state roots of blocks re-executed by [`exec::execute`], keyed by (pre-state root, digest).
-static EXECUTED: std::sync::LazyLock<Mutex<HashMap<([u8; 32], [u8; 32]), [u8; 32]>>> =
-    std::sync::LazyLock::new(Default::default);
+/// Verdicts of blocks re-executed by [`exec::execute`], keyed by (pre-state root, digest): the
+/// recomputed post-state root, or None when the block itself fails execution.
+type Verdicts = HashMap<([u8; 32], [u8; 32]), Option<[u8; 32]>>;
+static EXECUTED: std::sync::LazyLock<Mutex<Verdicts>> = std::sync::LazyLock::new(Default::default);
 static TRUST_EXECUTION: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The execution oracle the Lean core calls: did re-executing this block on the state with root
@@ -259,7 +260,7 @@ pub(crate) fn verify_execution(pre: &[u8], digest: &[u8], post: &[u8]) -> bool {
         .lock()
         .unwrap()
         .get(&(pre, digest))
-        .is_some_and(|p| p[..] == post[..])
+        .is_some_and(|p| p.is_some_and(|p| p[..] == post[..]))
 }
 
 /// Loads the 256 block hashes before `start` for BLOCKHASH, each checked against its successor's
@@ -547,7 +548,7 @@ async fn main() -> eyre::Result<()> {
                         exec_accounts += o.accounts;
                         exec_slots += o.slots;
                         reveals += o.reveals;
-                        EXECUTED.lock().unwrap().insert((p, d), o.post_root.0);
+                        EXECUTED.lock().unwrap().insert((p, d), Some(o.post_root.0));
                     }
                     // Unavailable: no entry, so the step loop stalls and retries the block.
                     Ok(Err(e)) if e.downcast_ref::<exec::Unavailable>().is_some() => {
@@ -556,11 +557,11 @@ async fn main() -> eyre::Result<()> {
                     Ok(Err(e)) if e.downcast_ref::<exec::Inconclusive>().is_some() => {
                         inconclusive.insert((p, d), format!("{e:#}"));
                     }
-                    // A verdict on the block (invalid transaction, failed post-execution check):
-                    // record a root no header can have, so the core rejects it with code 12.
+                    // Every state read succeeded, so the error is the block's own (invalid
+                    // transaction, failed post-execution check): the core rejects it with code 12.
                     Ok(Err(e)) => {
                         eprintln!("height {h}: re-execution rejects the block: {e:#}");
-                        EXECUTED.lock().unwrap().insert((p, d), [0xff; 32]);
+                        EXECUTED.lock().unwrap().insert((p, d), None);
                     }
                     Err(e) => {
                         inconclusive.insert((p, d), format!("re-execution panicked: {e}"));
