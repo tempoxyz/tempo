@@ -949,11 +949,20 @@ mod tests {
 
     #[test]
     fn mainnet_validator_requires_enough_cpu_cores() {
-        cpu_cores_check(&["tempo", "node", "--chain=mainnet", "--cpu-cores", "5"]).unwrap();
+        let validator = |cores| {
+            cpu_cores_check(&[
+                "tempo",
+                "node",
+                "--chain=mainnet",
+                "--consensus.signing-key",
+                "key",
+                "--cpu-cores",
+                cores,
+            ])
+        };
+        validator("5").unwrap();
 
-        let error = cpu_cores_check(&["tempo", "node", "--chain=mainnet", "--cpu-cores", "4"])
-            .unwrap_err()
-            .to_string();
+        let error = validator("4").unwrap_err().to_string();
         assert!(
             error.starts_with("mainnet validators need at least 5 available CPU cores"),
             "{error}"
@@ -971,7 +980,16 @@ mod tests {
             "4",
         ])
         .unwrap();
-        cpu_cores_check(&["tempo", "node", "--chain=moderato", "--cpu-cores", "4"]).unwrap();
+        cpu_cores_check(&[
+            "tempo",
+            "node",
+            "--chain=moderato",
+            "--consensus.signing-key",
+            "key",
+            "--cpu-cores",
+            "4",
+        ])
+        .unwrap();
     }
 
     fn assert_zone_factory_alloc(chain_spec: &TempoChainSpec, owner: Address) {
