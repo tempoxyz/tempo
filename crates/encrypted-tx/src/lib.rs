@@ -3,9 +3,10 @@
 //! A sender encrypts a transaction body to the network's long-lived BLS12-381 identity (the
 //! constant term of the DKG polynomial, unchanged across reshares) under an identity bound to the
 //! plaintext envelope that carries it. Validators release a partial signature over that identity
-//! only after the block that includes the envelope is finalized, so contents stay hidden until
-//! their position in the chain can no longer change, and envelopes that are never included are
-//! never decrypted.
+//! only once TIP-1162's release condition holds (the including block's anchor is final and its
+//! release view is decided), not as soon as the including block is final, so nothing that runs
+//! before the batch can still be chosen after its contents are known. Envelopes that are never
+//! included are never decrypted. This crate does not enforce the release rule; the caller must.
 //!
 //! The body is sealed with ChaCha20-Poly1305 under a fresh 32-byte key, and only that key is
 //! timelock-encrypted ([`tle`]), so the pairing cost per transaction is constant in body size.
@@ -166,7 +167,9 @@ impl EncryptedBody {
     }
 }
 
-/// Signs every identity of a finalized block with this validator's share.
+/// Signs every identity of an included block with this validator's share. Call it only once
+/// TIP-1162's release condition holds for that block; signing earlier lets the leaders that
+/// follow front-run the batch.
 pub fn key_shares(share: &Share, identities: &[B256], strategy: &impl Strategy) -> Vec<KeyShare> {
     strategy.map_collect_vec(identities, |id| {
         threshold::sign_message::<MinSig>(share, NAMESPACE, id.as_slice())
