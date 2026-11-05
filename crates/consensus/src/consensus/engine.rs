@@ -33,7 +33,7 @@ use crate::{
     peer_manager, storage,
 };
 
-use super::{ProposalBudget, block::Block};
+use super::block::Block;
 
 // A bunch of constants to configure commonwarexyz singletons and copied over form alto.
 
@@ -79,13 +79,8 @@ pub struct Builder<TBlocker, TPeerManager> {
     /// Leader inactivity window after which a view is skipped early. Must
     /// exceed `time_to_collect_notarizations` and `time_to_retry_nullify_broadcast`.
     pub inactive_time_before_leader_skip: Duration,
-    /// Header-stamp pacing allowance after reserving network propagation time.
-    ///
-    /// Preparation precedes this window but reduces its allowance when the planned
-    /// deadline would exceed one target interval after proposal entry. Required
-    /// payload work may overrun the allowance; this is not a build timeout.
-    pub proposal_budget: ProposalBudget,
-    /// Proposal budget estimator that records local validation feedback.
+    /// Proposal pacing with learned network reservations and shared execution feedback.
+    /// Allowances pace returns, not time out required payload work.
     pub estimator: tempo_payload_types::Estimator,
     pub fcu_heartbeat_interval: Duration,
 
@@ -292,6 +287,7 @@ where
                 marshal: marshal_mailbox.clone(),
                 namespace: crate::config::NAMESPACE.to_vec(),
                 me: self.signer.clone(),
+                blocker: self.blocker.clone(),
                 partition_prefix: format!("{}_dkg_manager", self.partition_prefix),
             },
         )
@@ -307,7 +303,6 @@ where
                 node: execution_node.clone(),
                 executed_state: self.executed_state.clone(),
             },
-            proposal_budget: self.proposal_budget,
             estimator: self.estimator.clone(),
             epoch_strategy: epoch_strategy.clone(),
         });
@@ -389,7 +384,7 @@ where
     broadcast: buffered::Engine<TContext, PublicKey, Block, peer_manager::Mailbox>,
     broadcast_mailbox: buffered::Mailbox<PublicKey, Block>,
 
-    dkg_manager: dkg::manager::Actor<TContext>,
+    dkg_manager: dkg::manager::Actor<TContext, TBlocker>,
     dkg_manager_mailbox: dkg::manager::Mailbox,
 
     /// Responsible for keeping the consensus layer state and execution layer
@@ -571,6 +566,7 @@ where
             self.broadcast_mailbox,
             resolver,
         );
+
         let (epoch_manager, epoch_manager_mailbox) = epoch::manager::init(
             self.context.child("epoch_manager"),
             self.epoch_manager_config,

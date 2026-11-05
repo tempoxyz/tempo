@@ -119,6 +119,22 @@ impl StorageCtx {
         result.unwrap()
     }
 
+    /// Reads the already-warm execution caller without charging account access twice.
+    pub(crate) fn with_warm_caller_info<T>(
+        address: Address,
+        mut f: impl FnMut(&AccountInfo) -> Result<T>,
+    ) -> Result<T> {
+        let mut result = None;
+        Self::try_with_storage(|s| {
+            s.with_warm_caller_info(address, &mut |info| result = Some(f(info)))
+        })?;
+        result.ok_or_else(|| {
+            TempoPrecompileError::Fatal(
+                "storage provider did not invoke the account callback".to_string(),
+            )
+        })?
+    }
+
     /// Returns the chain ID.
     pub fn chain_id(&self) -> u64 {
         Self::with_storage(|s| s.chain_id())
@@ -254,6 +270,12 @@ impl StorageCtx {
     /// Enables or disables minting new TIP-1060 storage credits for subsequent storage clears.
     pub fn set_tip1060_storage_credit_minting(&mut self, enabled: bool) {
         Self::with_storage(|s| s.set_tip1060_storage_credit_minting(enabled))
+    }
+
+    /// Returns whether receive-policy blocks revert instead of diverting the funds. See
+    /// [`PrecompileStorageProvider::set_revert_blocked_inbound`].
+    pub fn revert_blocked_inbound(&self) -> bool {
+        Self::with_storage(|s| s.revert_blocked_inbound())
     }
 
     /// Creates a journal checkpoint and returns a RAII guard.

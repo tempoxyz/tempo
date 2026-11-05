@@ -104,6 +104,16 @@ pub trait PrecompileStorageProvider {
         f: &mut dyn FnMut(&AccountInfo),
     ) -> Result<()>;
 
+    /// Reads the warm transaction caller without a second account-access charge.
+    /// Normal transaction setup has already loaded this caller. Production rejects a cold
+    /// account; this is not a generic cache-only read, and callers must have checked that
+    /// `address` is the transaction origin.
+    fn with_warm_caller_info(
+        &mut self,
+        address: Address,
+        f: &mut dyn FnMut(&AccountInfo),
+    ) -> Result<()>;
+
     /// Performs an SLOAD operation (persistent storage read).
     fn sload(&mut self, address: Address, key: U256) -> Result<U256>;
 
@@ -214,6 +224,19 @@ pub trait PrecompileStorageProvider {
     /// refund-mode settlement. Implementations that do not run TIP-1060 accounting may treat this
     /// as a no-op.
     fn set_tip1060_storage_credit_minting(&mut self, _enabled: bool) {}
+
+    /// Makes subsequent TIP-1028 receive-policy blocks revert with `PolicyForbids` instead of
+    /// diverting the funds to `ReceivePolicyGuard`.
+    ///
+    /// Zones enable this, since a recovery authority without a zone key could never claim diverted
+    /// funds. Implementations that never run zone precompiles may treat this as a no-op.
+    fn set_revert_blocked_inbound(&mut self, _enabled: bool) {}
+
+    /// Returns whether receive-policy blocks revert instead of diverting the funds. See
+    /// [`set_revert_blocked_inbound`](Self::set_revert_blocked_inbound).
+    fn revert_blocked_inbound(&self) -> bool {
+        false
+    }
 
     /// Computes keccak256 and charges the appropriate gas.
     ///

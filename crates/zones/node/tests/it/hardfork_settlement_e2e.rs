@@ -13,7 +13,7 @@ use reth_chainspec::EthChainSpec;
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::{hardfork::TempoHardfork, spec::TempoChainSpec};
 use tempo_contracts::{
-    precompiles::ITIP20,
+    precompiles::{ITIP20, IZoneFactory, initial_zone_factory_state},
     zones::{
         IZoneInbox, IZoneOutbox, TEMPO_STATE_ADDRESS, TempoState, ZONE_INBOX_ADDRESS,
         ZONE_OUTBOX_ADDRESS, ZonePortal,
@@ -24,6 +24,7 @@ use tempo_precompiles::{
     storage::{
         Handler, PrecompileStorageProvider, StorageCtx, StorageKey, hashmap::HashMapStorageProvider,
     },
+    zone_factory::{ZoneFactory, ZoneInfoStorageHandler, ZonePortalStorage, slots},
 };
 use tempo_primitives::TempoHeader;
 use zone_chainspec::test_utils::set_tempo_fork;
@@ -344,11 +345,6 @@ async fn test_t13_migrates_and_settles_existing_portal() -> eyre::Result<()> {
 
 /// Predeploy a T12 portal whose mock verifier storage survives the canonical T13 runtime upgrade.
 fn init_migration_portal(genesis: &mut Genesis, activation: u64) -> eyre::Result<Address> {
-    use tempo_contracts::precompiles::{IZoneFactory, initial_zone_factory_state};
-    use tempo_precompiles::zone_factory::{
-        ZoneFactory, ZoneInfoStorageHandler, ZonePortalStorage, slots,
-    };
-
     let signer = signer_at(0);
     let admin = signer_at(2).address();
     let user = signer_at(1).address();

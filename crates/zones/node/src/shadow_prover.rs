@@ -7,7 +7,11 @@ use alloy_primitives::{Address, TxKind};
 use alloy_provider::{DynProvider, Provider as _};
 use alloy_sol_types::SolCall as _;
 use alloy_transport::{RpcError, TransportError, TransportErrorKind};
+#[cfg(feature = "fuzz")]
+use antithesis_sdk::assert_always;
 use eyre::{OptionExt as _, Result, WrapErr as _, ensure};
+#[cfg(feature = "fuzz")]
+use serde_json::json;
 use tempo_alloy::TempoNetwork;
 use tempo_contracts::zones::{
     BatchSubmitted, TokenEnablementTransition, legacySubmitBatchCall, submitBatchCall,
@@ -301,8 +305,19 @@ impl<P: ZoneSequencerProvider> RpcFollowerShadowProver<P> {
             tokio::time::sleep(POLL_INTERVAL).await;
         }
 
+        let local_hash = self.zone_provider.block_hash(to)?;
+        #[cfg(feature = "fuzz")]
+        assert_always!(
+            local_hash == Some(batch.next_block_hash),
+            "Follower canonical block matches the settled batch",
+            &json!({
+                "zone_block": to,
+                "local_hash": local_hash,
+                "settled_hash": batch.next_block_hash,
+            })
+        );
         ensure!(
-            self.zone_provider.block_hash(to)? == Some(batch.next_block_hash),
+            local_hash == Some(batch.next_block_hash),
             "local canonical Zone block {to} does not match finalized submission {}",
             batch.next_block_hash
         );
@@ -374,12 +389,11 @@ fn submitted_anchor_number(tempo_block_number: u64, recent_tempo_block_number: u
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_primitives::{B256, U256};
+    use tempo_contracts::zones::{BlockTransition, DepositQueueTransition};
 
     #[test]
     fn submission_match_binds_t13_token_cursor() {
-        use alloy_primitives::{B256, U256};
-        use tempo_contracts::zones::{BlockTransition, DepositQueueTransition};
-
         let call = submitBatchCall {
             tempoBlockNumber: 10,
             recentTempoBlockNumber: 0,

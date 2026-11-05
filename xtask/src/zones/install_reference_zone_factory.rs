@@ -18,9 +18,9 @@ use tempo_contracts::{
     precompiles::{INITIAL_FACTORY_OWNER, initial_zone_factory_config},
     zones::{
         T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
-        T14_ZONE_PORTAL_RUNTIME, ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS,
-        ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_IMPL_ADDRESS, ZONE_PORTAL_PREFIX, ZONE_PORTAL_RUNTIME,
-        ZONE_VERIFIER_ADDRESS, ZONE_VERIFIER_RUNTIME,
+        T14_ZONE_PORTAL_RUNTIME, T15_ZONE_PORTAL_RUNTIME, ZONE_FACTORY_ADDRESS,
+        ZONE_MESSENGER_ADDRESS, ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_IMPL_ADDRESS,
+        ZONE_PORTAL_PREFIX, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_ADDRESS, ZONE_VERIFIER_RUNTIME,
     },
 };
 
@@ -218,6 +218,7 @@ fn install_native_zone_factory(
                 ZONE_PORTAL_RUNTIME,
                 T13_ZONE_PORTAL_RUNTIME,
                 T14_ZONE_PORTAL_RUNTIME,
+                T15_ZONE_PORTAL_RUNTIME,
             ],
         ),
         (
@@ -236,10 +237,10 @@ fn install_native_zone_factory(
         let expected = GenesisAccount::default()
             .with_nonce(Some(1))
             .with_code(Some(code));
-        let known_tempo_runtimes = tempo_codes
+        let known_tempo_runtimes: Vec<_> = tempo_codes
             .into_iter()
             .map(|code| GenesisAccount::default().with_code(Some(code)))
-            .collect::<Vec<_>>();
+            .collect();
         match genesis.alloc.get(&address) {
             None => {
                 genesis.alloc.insert(address, expected);
@@ -307,6 +308,11 @@ mod tests {
         ]);
         assert_validates_shared_runtimes([
             T14_ZONE_PORTAL_RUNTIME,
+            T13_ZONE_VERIFIER_RUNTIME,
+            T13_ZONE_MESSENGER_RUNTIME,
+        ]);
+        assert_validates_shared_runtimes([
+            T15_ZONE_PORTAL_RUNTIME,
             T13_ZONE_VERIFIER_RUNTIME,
             T13_ZONE_MESSENGER_RUNTIME,
         ]);

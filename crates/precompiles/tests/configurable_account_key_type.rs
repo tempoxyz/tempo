@@ -228,10 +228,11 @@ fn delegate_grants_are_guarded_from_t14() {
             };
             let calls = authorization_calls(delegate, SignatureType::ConfigurableAccount, u64::MAX);
             // Every fork since T3 rejects the legacy `authorizeKey` selector outright.
-            for (entrypoint, calldata) in calls
-                .iter()
-                .filter(|(_, calldata)| !calldata.starts_with(&authorizeKey_0Call::SELECTOR))
-            {
+            // T14 also drops `authorizeAdminKey` (TIP-1137).
+            for (entrypoint, calldata) in calls.iter().filter(|(_, calldata)| {
+                !calldata.starts_with(&authorizeKey_0Call::SELECTOR)
+                    && !(spec.is_t14() && calldata.starts_with(&authorizeAdminKeyCall::SELECTOR))
+            }) {
                 let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
                 match case {
                     DelegateCase::Bytecode => StorageCtx::enter(&mut storage, || {
@@ -325,14 +326,14 @@ fn stored_key_type_is_checked_on_use() {
     }
 }
 
-/// From T6, an admin grant naming the granting account reverts with `InvalidKeyId` and stores
-/// no key, whatever its key type.
+/// From T6 until T14 drops admin keys (TIP-1137), an admin grant naming the granting account
+/// reverts with `InvalidKeyId` and stores no key, whatever its key type.
 #[test]
 fn admin_self_grants_are_rejected() {
     for spec in TempoHardfork::VARIANTS
         .iter()
         .copied()
-        .filter(|spec| spec.is_t6())
+        .filter(|spec| spec.is_t6() && !spec.is_t14())
     {
         for signature_type in [
             SignatureType::Secp256k1,

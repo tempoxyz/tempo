@@ -6,16 +6,21 @@ use alloy_primitives::B256;
 use alloy_rlp::Decodable as _;
 use alloy_rpc_types_engine::ForkchoiceState;
 use alloy_sol_types::SolCall as _;
+#[cfg(feature = "fuzz")]
+use antithesis_sdk::assert_always;
 use eyre::{OptionExt as _, WrapErr as _};
 use reth_node_api::{ConsensusEngineHandle, PayloadTypes as _};
 use reth_primitives_traits::{SealedBlock, SealedHeader};
 use reth_provider::HeaderProvider;
 use reth_storage_api::{BlockReader, StateProviderFactory};
+#[cfg(feature = "fuzz")]
+use serde_json::json;
 use std::{
     collections::{BTreeMap, HashMap},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_evm::consensus::validate_body_against_header;
 use tempo_precompiles::dispatch::abi_decoder_config_for_spec;
 use tempo_primitives::{Block, TempoHeader, TempoTxEnvelope};
 use tokio::sync::mpsc;
@@ -44,6 +49,7 @@ const BACKFILL_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 const BLOCK_INACTIVITY_TIMEOUT: Duration = Duration::from_secs(30);
 const PEER_ANCHOR_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_PENDING_BLOCKS: usize = 128;
+const MAX_PENDING_BYTES: usize = 64 * 1024 * 1024;
 /// Keep track of the backfill exactly. We'll buffer any live blocks received
 /// during backfill.
 struct BackfillProgress {
@@ -109,31 +115,28 @@ struct PendingPeerBlock {
 #[derive(Default)]
 struct PendingBlocks {
     blocks: BTreeMap<u64, PendingPeerBlock>,
+    bytes: usize,
 }
 
 impl PendingBlocks {
     /// Adds a block unless its height is already present. When full, retains blocks closest to
-    /// the local head and returns the height that was dropped.
-    fn insert(&mut self, number: u64, block: PendingPeerBlock) -> Option<u64> {
+    /// the local head and returns all dropped heights, farthest first.
+    fn insert(&mut self, number: u64, block: PendingPeerBlock) -> Vec<u64> {
         if self.blocks.contains_key(&number) {
-            return None;
+            return Vec::new();
         }
-        if self.blocks.len() < MAX_PENDING_BLOCKS {
-            self.blocks.insert(number, block);
-            return None;
+        if block.block.encoded_size > MAX_PENDING_BYTES {
+            return vec![number];
         }
-
-        let Some((&farthest, _)) = self.blocks.last_key_value() else {
-            self.blocks.insert(number, block);
-            return None;
-        };
-        if number < farthest {
-            self.blocks.pop_last();
-            self.blocks.insert(number, block);
-            Some(farthest)
-        } else {
-            Some(number)
+        self.bytes += block.block.encoded_size;
+        self.blocks.insert(number, block);
+        let mut dropped = Vec::new();
+        while self.blocks.len() > MAX_PENDING_BLOCKS || self.bytes > MAX_PENDING_BYTES {
+            let (height, block) = self.blocks.pop_last().expect("pending buffer is nonempty");
+            self.bytes -= block.block.encoded_size;
+            dropped.push(height);
         }
+        dropped
     }
 
     fn first_number(&self) -> Option<u64> {
@@ -141,7 +144,9 @@ impl PendingBlocks {
     }
 
     fn take_next_after(&mut self, head: u64) -> Option<PendingPeerBlock> {
-        self.blocks.remove(&head.saturating_add(1))
+        let block = self.blocks.remove(&head.saturating_add(1))?;
+        self.bytes -= block.block.encoded_size;
+        Some(block)
     }
 
     #[cfg(test)]
@@ -275,12 +280,19 @@ where
                                     continue;
                                 }
                             };
-                            inactivity
-                                .as_mut()
-                                .reset(tokio::time::Instant::now() + BLOCK_INACTIVITY_TIMEOUT);
+                            let previous_head = self.context.provider.best_block_number();
                             if !self.process_follower_block(block, None).await
                             {
                                 return;
+                            }
+                            match (previous_head, self.context.provider.best_block_number()) {
+                                (Ok(previous), Ok(current)) if current > previous => {
+                                    inactivity.as_mut().reset(tokio::time::Instant::now() + BLOCK_INACTIVITY_TIMEOUT);
+                                }
+                                (Err(err), _) | (_, Err(err)) => {
+                                    tracing::error!(target: "zone::p2p", %err, "Failed reading local head for inactivity tracking; leaving deadline unchanged");
+                                }
+                                (Ok(_), Ok(_)) => {}
                             }
                         }
                         BackfillResponse::Completed { peer, tip } => {
@@ -323,12 +335,19 @@ where
                                 }
                             };
                             let live_sender = Some(leader_ed25519_public_key);
-                            inactivity
-                                .as_mut()
-                                .reset(tokio::time::Instant::now() + BLOCK_INACTIVITY_TIMEOUT);
+                            let previous_head = self.context.provider.best_block_number();
                             if !self.process_follower_block(block, live_sender).await
                             {
                                 return;
+                            }
+                            match (previous_head, self.context.provider.best_block_number()) {
+                                (Ok(previous), Ok(current)) if current > previous => {
+                                    inactivity.as_mut().reset(tokio::time::Instant::now() + BLOCK_INACTIVITY_TIMEOUT);
+                                }
+                                (Err(err), _) | (_, Err(err)) => {
+                                    tracing::error!(target: "zone::p2p", %err, "Failed reading local head for inactivity tracking; leaving deadline unchanged");
+                                }
+                                (Ok(_), Ok(_)) => {}
                             }
                         }
                         P2pEvent::TransactionReceived { .. } => {
@@ -466,13 +485,15 @@ where
                 Ok(PeerBlockImportOutcome::Imported) => {}
                 Err(err) => {
                     tracing::error!(target: "zone::p2p", %err, "Rejected duplicate or conflicting peer block");
+                    self.backfill.needed = true;
                 }
             }
             return true;
         }
         self.backfill.observe_block(number, best);
-        if let Some(dropped) = self.pending.insert(number, peer_block) {
-            tracing::warn!(target: "zone::p2p", dropped, pending_limit = MAX_PENDING_BLOCKS, "Dropped far-future peer block because the pending block buffer is full");
+        let dropped = self.pending.insert(number, peer_block);
+        if !dropped.is_empty() {
+            tracing::warn!(target: "zone::p2p", ?dropped, pending_limit = MAX_PENDING_BLOCKS, pending_byte_limit = MAX_PENDING_BYTES, "Dropped far-future peer blocks because the pending block buffer is full");
         }
         if number > best.saturating_add(1) {
             info!(target: "zone::p2p", local_head = best, received = number, "Detected zone block gap; requesting backfill");
@@ -523,7 +544,6 @@ where
         let block_number = block.number();
         let hash = block.hash();
         let best_block = self.context.provider.best_block_number()?;
-        let tempo_import = decode_advance_tempo(&block)?;
 
         // 1. Block number is correct
         if block_number <= best_block {
@@ -535,9 +555,16 @@ where
                     eyre::eyre!("missing local canonical header at height {block_number}")
                 })?;
             if existing.hash() == hash {
+                // Live duplicates cannot advance local state. Ignore them before doing body-root
+                // work; backfill responses still reconcile a raced canonical import below.
+                if peer_block.live_sender.is_some() {
+                    debug!(target: "zone::p2p", block_number, ?hash, "Ignoring duplicate live block");
+                    return Ok(PeerBlockImportOutcome::Imported);
+                }
                 // This path bypasses `new_payload`, so verify the peer-supplied body against the
                 // canonical header before deriving queue mutations from it.
-                block.ensure_transaction_root_valid()?;
+                validate_body_against_header(block.body(), block.header())?;
+                let tempo_import = decode_advance_tempo(&block)?;
                 reconcile_canonical_import(&self.context.deposit_queue, &tempo_import)
                     .wrap_err_with(|| {
                         format!("cannot reconcile duplicate canonical peer block {block_number}")
@@ -571,6 +598,8 @@ where
                 block.parent_hash()
             );
         }
+
+        let tempo_import = decode_advance_tempo(&block)?;
 
         // 3. Require the block to import a non-empty contiguous L1 header range
         // beginning immediately after the local Tempo checkpoint.
@@ -638,6 +667,8 @@ where
             })?;
         }
 
+        validate_body_against_header(block.body(), block.header())?;
+
         // Bind the received witness to this block. Its contents are trusted here; execution
         // still goes through the normal engine, without an additional stateless replay.
         if let Some(proof) = &peer_block.block.witness {
@@ -654,6 +685,12 @@ where
         let timestamp = block.header().timestamp();
         let payload = ZonePayloadTypes::block_to_payload(block, None);
         let status = self.context.engine.new_payload(payload).await?;
+        #[cfg(feature = "fuzz")]
+        assert_always!(
+            !status.is_invalid(),
+            "Follower execution accepts leader blocks",
+            &json!({ "block_number": block_number, "block_hash": hash, "status": status })
+        );
         if !status.is_valid() {
             eyre::bail!("execution engine rejected peer block {block_number} ({hash}): {status:?}");
         }
@@ -688,6 +725,12 @@ where
             .engine
             .fork_choice_updated(forkchoice, None)
             .await?;
+        #[cfg(feature = "fuzz")]
+        assert_always!(
+            !result.is_invalid(),
+            "Follower forkchoice accepts leader blocks",
+            &json!({ "block_number": block_number, "block_hash": hash, "result": result })
+        );
         if !result.is_valid() {
             eyre::bail!(
                 "execution engine rejected forkchoice for block {block_number} ({hash}): {result:?}"
@@ -1052,8 +1095,11 @@ fn validate_block_timestamp(timestamp_millis: u64, now: SystemTime) -> eyre::Res
 mod tests {
     use std::time::Duration;
 
+    use alloy_consensus::{SignableTransaction, TxLegacy};
     use alloy_eips::NumHash;
-    use alloy_primitives::{Address, B256};
+    use alloy_primitives::{Address, B256, Bytes, Signature, U256};
+    use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
+    use tempo_primitives::transaction::envelope::TEMPO_SYSTEM_TX_SIGNATURE;
     use tokio_util::sync;
     use zone_l1::{DepositQueue, EnabledToken, L1BlockDeposits, L1BlockTracker, L1PortalEvents};
     use zone_p2p::{BackfillCommand, LeadershipSchedule, LeadershipState};
@@ -1062,10 +1108,6 @@ mod tests {
 
     #[test]
     fn decodes_advance_tempo_header_from_first_system_tx() {
-        use alloy_consensus::BlockHeader as _;
-        use reth_primitives_traits::{SealedBlock, SealedHeader};
-        use tempo_primitives::{Block, TempoHeader};
-
         let l1_header = TempoHeader {
             inner: alloy_consensus::Header {
                 number: 7,
@@ -1099,14 +1141,6 @@ mod tests {
 
     #[test]
     fn rejects_advance_tempo_sent_to_wrong_contract() {
-        use alloy_consensus::{Signed, TxLegacy};
-        use alloy_primitives::{Address, U256};
-        use alloy_sol_types::SolCall as _;
-        use reth_primitives_traits::SealedBlock;
-        use tempo_primitives::{
-            Block, TempoHeader, TempoTxEnvelope, transaction::envelope::TEMPO_SYSTEM_TX_SIGNATURE,
-        };
-
         let calldata = zone_payload::abi::IZoneInbox::advanceTempoCall {
             header: alloy_rlp::encode(TempoHeader::default()).into(),
             deposits: vec![],
@@ -1126,10 +1160,9 @@ mod tests {
         let block = SealedBlock::seal_slow(Block {
             header: TempoHeader::default(),
             body: alloy_consensus::BlockBody {
-                transactions: vec![TempoTxEnvelope::Legacy(Signed::new_unhashed(
-                    tx,
-                    TEMPO_SYSTEM_TX_SIGNATURE,
-                ))],
+                transactions: vec![TempoTxEnvelope::Legacy(
+                    tx.into_signed(TEMPO_SYSTEM_TX_SIGNATURE),
+                )],
                 ommers: vec![],
                 withdrawals: None,
             },
@@ -1141,9 +1174,6 @@ mod tests {
 
     #[test]
     fn rejects_block_without_advance_tempo() {
-        use reth_primitives_traits::SealedBlock;
-        use tempo_primitives::{Block, TempoHeader};
-
         let block = SealedBlock::seal_slow(Block {
             header: TempoHeader::default(),
             body: alloy_consensus::BlockBody {
@@ -1159,11 +1189,6 @@ mod tests {
 
     #[test]
     fn rejects_non_system_advance_tempo_transaction() {
-        use alloy_consensus::{Signed, TxLegacy};
-        use alloy_primitives::Signature;
-        use reth_primitives_traits::{SealedBlock, SealedHeader};
-        use tempo_primitives::{Block, TempoHeader, TempoTxEnvelope};
-
         let prepared = zone_l1::PreparedL1Block {
             header: SealedHeader::seal_slow(TempoHeader::default()),
             queued_deposits: vec![],
@@ -1179,10 +1204,12 @@ mod tests {
         let block = SealedBlock::seal_slow(Block {
             header: TempoHeader::default(),
             body: alloy_consensus::BlockBody {
-                transactions: vec![TempoTxEnvelope::Legacy(Signed::<TxLegacy>::new_unhashed(
-                    system_tx.tx().clone(),
-                    Signature::test_signature(),
-                ))],
+                transactions: vec![TempoTxEnvelope::Legacy(
+                    system_tx
+                        .tx()
+                        .clone()
+                        .into_signed(Signature::test_signature()),
+                )],
                 ommers: vec![],
                 withdrawals: None,
             },
@@ -1194,13 +1221,6 @@ mod tests {
 
     #[test]
     fn rejects_malformed_advance_tempo_calldata() {
-        use alloy_consensus::{Signed, TxLegacy};
-        use alloy_primitives::{Bytes, U256};
-        use reth_primitives_traits::SealedBlock;
-        use tempo_primitives::{
-            Block, TempoHeader, TempoTxEnvelope, transaction::envelope::TEMPO_SYSTEM_TX_SIGNATURE,
-        };
-
         let tx = TxLegacy {
             to: zone_payload::abi::ZONE_INBOX_ADDRESS.into(),
             value: U256::ZERO,
@@ -1210,10 +1230,9 @@ mod tests {
         let block = SealedBlock::seal_slow(Block {
             header: TempoHeader::default(),
             body: alloy_consensus::BlockBody {
-                transactions: vec![TempoTxEnvelope::Legacy(Signed::new_unhashed(
-                    tx,
-                    TEMPO_SYSTEM_TX_SIGNATURE,
-                ))],
+                transactions: vec![TempoTxEnvelope::Legacy(
+                    tx.into_signed(TEMPO_SYSTEM_TX_SIGNATURE),
+                )],
                 ommers: vec![],
                 withdrawals: None,
             },
@@ -1229,14 +1248,6 @@ mod tests {
 
     #[test]
     fn rejects_malformed_or_trailing_advance_tempo_header_rlp() {
-        use alloy_consensus::{Signed, TxLegacy};
-        use alloy_primitives::{Bytes, U256};
-        use alloy_sol_types::SolCall as _;
-        use reth_primitives_traits::SealedBlock;
-        use tempo_primitives::{
-            Block, TempoHeader, TempoTxEnvelope, transaction::envelope::TEMPO_SYSTEM_TX_SIGNATURE,
-        };
-
         let make_block = |header: Vec<u8>| {
             let calldata = zone_payload::abi::IZoneInbox::advanceTempoCall {
                 header: Bytes::from(header),
@@ -1254,10 +1265,9 @@ mod tests {
             SealedBlock::seal_slow(Block {
                 header: TempoHeader::default(),
                 body: alloy_consensus::BlockBody {
-                    transactions: vec![TempoTxEnvelope::Legacy(Signed::new_unhashed(
-                        tx,
-                        TEMPO_SYSTEM_TX_SIGNATURE,
-                    ))],
+                    transactions: vec![TempoTxEnvelope::Legacy(
+                        tx.into_signed(TEMPO_SYSTEM_TX_SIGNATURE),
+                    )],
                     ommers: vec![],
                     withdrawals: None,
                 },
@@ -1277,9 +1287,6 @@ mod tests {
 
     #[test]
     fn validates_embedded_l1_checkpoint_continuity() {
-        use reth_primitives_traits::SealedHeader;
-        use tempo_primitives::TempoHeader;
-
         let local_hash = B256::repeat_byte(0x42);
         let header = SealedHeader::seal_slow(TempoHeader {
             inner: alloy_consensus::Header {
@@ -1301,8 +1308,6 @@ mod tests {
 
     #[tokio::test]
     async fn revalidates_live_sender_after_anchor_observation() {
-        use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
-
         const ANCHOR_NUMBER: u64 = 10;
         const ZONE_BLOCK_NUMBER: u64 = 7;
 
@@ -1363,8 +1368,6 @@ mod tests {
 
     #[tokio::test]
     async fn peer_anchor_wait_stops_promptly_on_generation_cancellation() {
-        use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
-
         let leader = PrivateKey::from_seed(1).public_key();
         let schedule = LeadershipSchedule::seeded(LeadershipState::new(1, leader, 0));
         let tracker = L1BlockTracker::default();
@@ -1392,8 +1395,6 @@ mod tests {
 
     #[tokio::test]
     async fn peer_anchor_wait_has_one_finite_deadline() {
-        use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
-
         let leader = PrivateKey::from_seed(1).public_key();
         let schedule = LeadershipSchedule::seeded(LeadershipState::new(1, leader, 0));
         let tracker = L1BlockTracker::default();
@@ -1419,8 +1420,6 @@ mod tests {
 
     #[test]
     fn forced_recovery_reassigns_live_sender_for_missing_anchors() {
-        use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
-
         let outgoing = PrivateKey::from_seed(1).public_key();
         let incoming = PrivateKey::from_seed(2).public_key();
         let schedule = LeadershipSchedule::seeded(LeadershipState::new(7, outgoing.clone(), 0));
@@ -1491,9 +1490,6 @@ mod tests {
 
     #[test]
     fn peer_tip_registry_records_latest_tip() {
-        use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
-        use zone_p2p::PeerTip;
-
         let registry = PeerTipRegistry::default();
 
         let peer = PrivateKey::from_seed(1).public_key();
@@ -1517,6 +1513,7 @@ mod tests {
         PendingPeerBlock {
             block: crate::replication::PeerBlock {
                 witness: None,
+                encoded_size: 1,
                 block: Block {
                     header: TempoHeader {
                         inner: alloy_consensus::Header {
@@ -1536,13 +1533,13 @@ mod tests {
     fn pending_block_limit_keeps_blocks_closest_to_local_head() {
         let mut pending = PendingBlocks::default();
         for number in 100..100 + MAX_PENDING_BLOCKS as u64 {
-            assert_eq!(pending.insert(number, pending_block(number)), None);
+            assert!(pending.insert(number, pending_block(number)).is_empty());
         }
         assert_eq!(pending.len(), MAX_PENDING_BLOCKS);
         assert_eq!(pending.first_number(), Some(100));
 
         let farthest = 100 + MAX_PENDING_BLOCKS as u64 - 1;
-        assert_eq!(pending.insert(99, pending_block(99)), Some(farthest));
+        assert_eq!(pending.insert(99, pending_block(99)), vec![farthest]);
         assert_eq!(pending.len(), MAX_PENDING_BLOCKS);
         assert!(pending.contains(99));
         assert!(!pending.contains(farthest));
@@ -1550,7 +1547,7 @@ mod tests {
         let farther = farthest + 1;
         assert_eq!(
             pending.insert(farther, pending_block(farther)),
-            Some(farther)
+            vec![farther]
         );
         assert_eq!(pending.len(), MAX_PENDING_BLOCKS);
         assert!(!pending.contains(farther));
@@ -1561,6 +1558,35 @@ mod tests {
         assert_eq!(next.block.block.header.number(), 99);
         assert_eq!(pending.first_number(), Some(100));
     }
+
+    #[test]
+    fn pending_block_limit_counts_retained_bytes() {
+        let mut pending = PendingBlocks::default();
+        let mut far = pending_block(2);
+        far.block.encoded_size = MAX_PENDING_BYTES;
+        assert!(pending.insert(2, far).is_empty());
+        assert_eq!(pending.insert(1, pending_block(1)), vec![2]);
+        assert_eq!(pending.bytes, 1);
+        pending.take_next_after(0).unwrap();
+        assert_eq!(pending.bytes, 0);
+    }
+
+    #[test]
+    fn pending_byte_limit_reports_every_eviction() {
+        let mut pending = PendingBlocks::default();
+        for number in 2..=4 {
+            let mut block = pending_block(number);
+            block.block.encoded_size = MAX_PENDING_BYTES / 3;
+            assert!(pending.insert(number, block).is_empty());
+        }
+        let mut near = pending_block(1);
+        near.block.encoded_size = MAX_PENDING_BYTES;
+        assert_eq!(pending.insert(1, near), vec![4, 3, 2]);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending.bytes, MAX_PENDING_BYTES);
+        assert!(pending.contains(1));
+    }
+
     #[test]
     fn full_import_validates_deferred_and_current_portal_events() {
         let queue = DepositQueue::new();
@@ -1620,10 +1646,6 @@ mod tests {
     }
     #[test]
     fn checkpoint_live_producer_uses_first_header_leader() {
-        use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
-        use reth_primitives_traits::SealedHeader;
-        use tempo_primitives::TempoHeader;
-
         let outgoing = PrivateKey::from_seed(1).public_key();
         let incoming = PrivateKey::from_seed(2).public_key();
         let schedule = LeadershipSchedule::seeded(LeadershipState::new(1, outgoing.clone(), 0));
@@ -1683,8 +1705,6 @@ mod tests {
 
     #[test]
     fn checkpoint_live_producer_respects_forced_recovery() {
-        use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
-
         let historical = PrivateKey::from_seed(1).public_key();
         let recovery = PrivateKey::from_seed(2).public_key();
         let successor = PrivateKey::from_seed(3).public_key();

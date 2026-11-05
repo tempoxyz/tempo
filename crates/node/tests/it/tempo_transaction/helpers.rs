@@ -15,8 +15,15 @@ use alloy::{
     transports::{RpcError, TransportErrorKind},
 };
 use alloy_primitives::TxKind;
+use alloy_rlp::Encodable as _;
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use core::num::NonZeroU64;
 use eyre::WrapErr;
+use p256::{
+    ecdsa::{SigningKey, signature::hazmat::PrehashSigner},
+    elliptic_curve::rand_core::OsRng,
+};
+use sha2::{Digest, Sha256};
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
 use tempo_node::rpc::TempoTransactionRequest;
@@ -24,8 +31,8 @@ use tempo_precompiles::tip20::ITIP20::{self, transferCall};
 use tempo_primitives::{
     SignatureType, TempoTransaction,
     transaction::{
-        CallScope, KeyAuthorization, SelectorRule, SignedKeyAuthorization,
-        TEMPO_EXPIRING_NONCE_KEY, TokenLimit,
+        CallScope, FEE_PAYER_SIGNATURE_MARKER, KeyAuthorization, SelectorRule,
+        SignedKeyAuthorization, TEMPO_EXPIRING_NONCE_KEY, TokenLimit, calc_gas_balance_spending,
         tempo_transaction::Call,
         tt_signature::{
             KeychainSignature, P256SignatureWithPreHash, PrimitiveSignature, TempoSignature,
@@ -35,6 +42,10 @@ use tempo_primitives::{
 };
 
 use super::types::*;
+
+/// Gas of one cold account access.
+pub(crate) const COLD_ACCOUNT_ACCESS_COST: u64 =
+    evm2::interpreter::gas::COLD_ACCOUNT_ACCESS_COST as u64;
 
 pub(crate) fn nonzero_timestamp(timestamp: u64) -> NonZeroU64 {
     NonZeroU64::new(timestamp).expect("test timestamp must be non-zero")
@@ -340,7 +351,6 @@ pub(crate) fn create_signed_key_authorization(
 pub(super) fn compute_authorization_signature_hash(
     auth: &alloy_eips::eip7702::Authorization,
 ) -> B256 {
-    use alloy_rlp::Encodable as _;
     let mut sig_buf = Vec::new();
     sig_buf.push(tempo_primitives::transaction::tt_authorization::MAGIC);
     auth.encode(&mut sig_buf);
@@ -400,8 +410,6 @@ pub(crate) fn generate_p256_access_key() -> (
     alloy::primitives::B256,
     Address,
 ) {
-    use p256::{ecdsa::SigningKey, elliptic_curve::rand_core::OsRng};
-
     let signing_key = SigningKey::random(&mut OsRng);
     let verifying_key = signing_key.verifying_key();
     let encoded_point = verifying_key.to_encoded_point(false);
@@ -462,7 +470,9 @@ fn create_key_authorization_inner(
     witness: Option<B256>,
 ) -> eyre::Result<SignedKeyAuthorization> {
     // Infer key_type from the access key signature
-    let key_type = access_key_signature.signature_type();
+    let key_type = access_key_signature
+        .primitive_signature_type()
+        .expect("primitive access-key fixture");
 
     let mut key_auth = KeyAuthorization::unrestricted(chain_id, key_type, access_key_addr);
     key_auth.expiry = expiry;
@@ -513,9 +523,6 @@ pub(super) fn sign_p256_primitive(
     pub_key_x: B256,
     pub_key_y: B256,
 ) -> eyre::Result<PrimitiveSignature> {
-    use p256::ecdsa::signature::hazmat::PrehashSigner;
-    use sha2::{Digest, Sha256};
-
     let pre_hashed = Sha256::digest(sig_hash);
     let p256_signature: p256::ecdsa::Signature = signing_key.sign_prehash(&pre_hashed)?;
     let sig_bytes = p256_signature.to_bytes();
@@ -596,9 +603,6 @@ pub(super) fn sign_webauthn_primitive(
     pub_key_y: B256,
     origin: &str,
 ) -> eyre::Result<PrimitiveSignature> {
-    use p256::ecdsa::signature::hazmat::PrehashSigner;
-    use sha2::{Digest, Sha256};
-
     let (authenticator_data, client_data_json) = create_webauthn_data(sig_hash, origin);
 
     let client_data_hash = Sha256::digest(client_data_json.as_bytes());
@@ -654,8 +658,6 @@ pub(super) fn create_transfer_call(token: Address, to: Address, amount: U256) ->
 
 /// Helper to create a TIP20 balanceOf call (useful as a benign call for key authorization txs)
 pub(super) fn create_balance_of_call(account: Address) -> Call {
-    use alloy::sol_types::SolCall;
-
     Call {
         to: DEFAULT_FEE_TOKEN.into(),
         value: U256::ZERO,
@@ -698,8 +700,6 @@ pub(crate) fn create_mock_webauthn_sig(pub_key_x: B256, pub_key_y: B256) -> Temp
 pub(crate) fn create_default_token_limit(
     funded: U256,
 ) -> Vec<tempo_primitives::transaction::TokenLimit> {
-    use tempo_primitives::transaction::TokenLimit;
-
     vec![TokenLimit {
         token: DEFAULT_FEE_TOKEN,
         limit: funded / U256::from(2),
@@ -781,8 +781,6 @@ pub(crate) fn sign_aa_tx_p256(
 
 /// Helper to create WebAuthn authenticator data and client data JSON
 pub(super) fn create_webauthn_data(sig_hash: B256, origin: &str) -> (Vec<u8>, String) {
-    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-
     // Create minimal authenticator data
     let mut authenticator_data = vec![0u8; 37];
     authenticator_data[0..32].copy_from_slice(&[0xAA; 32]); // rpIdHash
@@ -833,6 +831,7 @@ pub(crate) async fn configure_fee_payer_context(
     // Callers fund the fee payer right before this.
     let balance_before =
         settled_balance(provider, token, fee_payer_addr, |bal| !bal.is_zero()).await?;
+    add_fee_payer_access_gas(tx);
     sign_fee_payer(tx, signer_addr, fee_payer_signer)?;
 
     Ok(Some(FeePayerContext {
@@ -916,6 +915,17 @@ pub(crate) async fn assert_batch_recipient_balances(
     Ok(())
 }
 
+/// Raises the gas limit of a transaction that a fee payer is about to sign.
+///
+/// From T14 a fee payer signature costs one cold account access: the sponsor's account is read to
+/// check that its root key is still active. Callers that take their gas limit from the RPC send
+/// [`FEE_PAYER_SIGNATURE_MARKER`] with the request instead
+/// (see [`fill_sponsored_gas_limit`]), so the estimate includes that charge; this is for callers
+/// that set the limit by hand. Before T14 the extra limit only goes unused.
+fn add_fee_payer_access_gas(tx: &mut TempoTransaction) {
+    tx.gas_limit += COLD_ACCOUNT_ACCESS_COST;
+}
+
 pub(crate) fn sign_fee_payer(
     tx: &mut TempoTransaction,
     signer_addr: Address,
@@ -934,8 +944,6 @@ pub(crate) async fn assert_fee_payer_spent(
     fee_payer: FeePayerContext,
     receipt: &serde_json::Value,
 ) -> eyre::Result<()> {
-    use tempo_primitives::transaction::calc_gas_balance_spending;
-
     let gas_used = parse_hex_u64(receipt, "gasUsed")?
         .ok_or_else(|| eyre::eyre!("Receipt missing 'gasUsed'"))?;
     let effective_gas_price = parse_hex_u128(receipt, "effectiveGasPrice")?
@@ -1255,6 +1263,51 @@ pub(crate) async fn fill_transaction_from_case(
     let tx = parse_filled_tx(&filled)?;
 
     Ok((tx, request_context))
+}
+
+/// Fills `request` with `eth_fillTransaction`.
+pub(crate) async fn fill_request(
+    provider: &impl Provider,
+    request: &TempoTransactionRequest,
+) -> eyre::Result<TempoTransaction> {
+    let filled = legacy_compat::raw_request(provider, "eth_fillTransaction", request)
+        .await
+        .map_err(normalize_tempo_rpc_error)?;
+    parse_filled_tx(&filled)
+}
+
+/// The request for `test_case` when a fee payer that has not signed yet sponsors it: it carries
+/// [`FEE_PAYER_SIGNATURE_MARKER`]. Only T14 and later accept the marker.
+pub(crate) fn sponsored_fill_request(
+    test_case: &FillTestCase,
+    signer_addr: Address,
+    current_timestamp: u64,
+    max_expiry_secs: u64,
+) -> TempoTransactionRequest {
+    let mut request = build_fill_request_context(
+        test_case,
+        signer_addr,
+        Address::random(),
+        current_timestamp,
+        max_expiry_secs,
+    )
+    .request;
+    request.set_fee_payer_signature(FEE_PAYER_SIGNATURE_MARKER);
+    request
+}
+
+/// The gas limit `eth_fillTransaction` returns for the sponsored request of `test_case`, which
+/// includes the fee payer's cold account access.
+pub(crate) async fn fill_sponsored_gas_limit(
+    provider: &impl Provider,
+    test_case: &FillTestCase,
+    signer_addr: Address,
+    current_timestamp: u64,
+    max_expiry_secs: u64,
+) -> eyre::Result<u64> {
+    let request =
+        sponsored_fill_request(test_case, signer_addr, current_timestamp, max_expiry_secs);
+    Ok(fill_request(provider, &request).await?.gas_limit)
 }
 
 pub(crate) fn assert_fill_request_expectations(

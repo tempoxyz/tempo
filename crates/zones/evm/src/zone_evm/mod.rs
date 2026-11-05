@@ -15,6 +15,7 @@ use evm2::{
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_evm::{ExecutionContext, TempoEvmTypes, TempoTxEnv, tempo_tx_registry};
+use tempo_precompiles::tip20::{self, is_tip20_prefix};
 use zone_precompiles::{
     L1State, L1StorageReader, TIP403_REGISTRY_ADDRESS, tempo_state::TEMPO_BLOCK_NUMBER_SLOT,
     tx_context,
@@ -41,6 +42,7 @@ pub(crate) fn zone_tx_registry<L1: L1StorageReader>(
             ZoneTxHandler {
                 inner: handler,
                 l1: l1.clone(),
+                spec,
             },
         );
     }
@@ -52,6 +54,7 @@ pub(crate) fn zone_tx_registry<L1: L1StorageReader>(
 struct ZoneTxHandler<L1> {
     inner: AnyTxHandler<TempoEvmTypes, TxResult<TempoEvmTypes>>,
     l1: L1State<L1>,
+    spec: TempoHardfork,
 }
 
 impl<L1: L1StorageReader> ZoneTxHandler<L1> {
@@ -60,7 +63,7 @@ impl<L1: L1StorageReader> ZoneTxHandler<L1> {
         request: &mut TxRequest<'_, '_, TempoEvmTypes, TempoTxEnv>,
     ) -> HandlerResult<ZoneTxContext<L1>> {
         self.l1.reset_transaction_state();
-        crate::validate_transaction(request.envelope, CONTRACT_DEPLOYER_ALLOWLIST)?;
+        crate::validate_transaction(request.envelope, CONTRACT_DEPLOYER_ALLOWLIST, self.spec)?;
 
         // The accepted EVM overlay sits above L1OverlayDB. Snapshot its checkpoint
         // here so mirrored reads cannot fall back to the backing database's old value.
@@ -69,24 +72,25 @@ impl<L1: L1StorageReader> ZoneTxHandler<L1> {
             .state_mut()
             .storage_slot_untracked(&TEMPO_STATE_ADDRESS, &TEMPO_BLOCK_NUMBER_SLOT)?;
 
-        // Mirrored registry values depend on the anchor, but the accepted cache is keyed by slot
-        // only. Keep its entries only while they were loaded at this transaction's anchor.
-        // Anchor-changing transactions switch anchors mid-transaction, and a cache hit skips
-        // `L1OverlayDB`, which would hide the switch: they always start from an empty cache.
+        // Mirrored registry and TIP-20 pause values depend on the anchor, but the accepted cache is
+        // keyed by slot only. Keep its entries only while they were loaded at this transaction's
+        // anchor. Anchor-changing transactions switch anchors mid-transaction, and a cache hit
+        // skips `L1OverlayDB`, which would hide the switch: they always start from an empty cache.
         let changes_anchor = matches!(
             ZoneTransactionKind::classify(request.envelope.evm_tx().is_system_tx(), || {
                 request.envelope.evm_tx().calls()
             }),
             ZoneTransactionKind::AdvanceTempo | ZoneTransactionKind::AdvanceTempoHeaders
         );
-        if self.l1.select_registry_cache_anchor(initial_anchor) || changes_anchor {
-            request
-                .host
-                .state_mut()
-                .overlay_db_mut()
-                .cache
-                .storage
-                .remove(&TIP403_REGISTRY_ADDRESS);
+        if self.l1.select_mirror_cache_anchor(initial_anchor) || changes_anchor {
+            let cache = &mut request.host.state_mut().overlay_db_mut().cache.storage;
+            cache.remove(&TIP403_REGISTRY_ADDRESS);
+            // The Zone never writes pause flags, so dropping them loses no local change.
+            for (address, storage) in cache.iter_mut() {
+                if is_tip20_prefix(*address) {
+                    storage.slots.remove(&tip20::slots::PAUSED);
+                }
+            }
         }
         self.l1.begin_transaction(initial_anchor);
 
@@ -316,7 +320,7 @@ pub(crate) mod tests {
                 TempoTxEnvelope::Legacy(
                     TxLegacy {
                         to: ZONE_INBOX_ADDRESS.into(),
-                        input: ADVANCE_TEMPO_SELECTOR.to_vec().into(),
+                        input: (&ADVANCE_TEMPO_SELECTOR).into(),
                         ..Default::default()
                     }
                     .into_signed(TEMPO_SYSTEM_TX_SIGNATURE),
@@ -379,6 +383,7 @@ pub(crate) mod tests {
             ZoneTxHandler {
                 inner: inner.get_by_type(0).unwrap(),
                 l1: l1.clone(),
+                spec,
             },
         );
         evm.set_execution_config(

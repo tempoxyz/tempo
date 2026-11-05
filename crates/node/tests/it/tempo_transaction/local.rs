@@ -4,7 +4,8 @@
 //! which spins up an in-process node with direct pool/block access, plus tests
 //! that require pool introspection or controlled block mining.
 
-use crate::utils::{ForkSchedule, SingleNodeSetup, TestNodeBuilder};
+use super::types::{FillTestCase, KeyType, NonceMode, TestEnv};
+use crate::utils::{ForkSchedule, SingleNodeSetup, TestNodeBuilder, make_genesis_at};
 use alloy::{
     consensus::{BlockHeader, Transaction},
     network::{EthereumWallet, ReceiptResponse},
@@ -14,12 +15,18 @@ use alloy::{
     sol_types::SolCall,
 };
 use alloy_eips::Encodable2718;
-use eyre::WrapErr;
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use eyre::{OptionExt, WrapErr};
+use p256::{
+    ecdsa::{SigningKey, signature::Signer},
+    elliptic_curve::rand_core::OsRng,
+};
 use reth_e2e_test_utils::wallet::test_signer;
 use reth_ethereum::network::{NetworkSyncUpdater, SyncState};
 use reth_node_api::BuiltPayload;
 use reth_primitives_traits::transaction::TxHashRef;
 use reth_transaction_pool::TransactionPool;
+use sha2::{Digest, Sha256};
 use tempo_alloy::{TempoNetwork, provider::TempoProviderBuilderExt, rpc::TempoTransactionReceipt};
 use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
 use tempo_contracts::precompiles::{
@@ -32,6 +39,7 @@ use tempo_contracts::precompiles::{
 use tempo_node::rpc::TempoTransactionRequest;
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS,
+    account_keychain::updateSpendingLimitCall,
     tip20::ITIP20::{self},
 };
 use tempo_primitives::{
@@ -287,6 +295,70 @@ impl super::types::TestEnv for Localnet {
         assert!(receipt.status(), "Receipt status mismatch for {tx_hash}");
         Ok(serde_json::to_value(receipt)?)
     }
+}
+
+/// From T14 a fee payer signature costs one cold account access, which the node's estimate includes
+/// only for a request marked as sponsored. `TempoGasFiller` estimates a sponsored request without
+/// the marker, so both providers must add that access when they fill: `TempoGasFiller` for a
+/// request that carries the marker, and a provider built with `sponsor` for one that does not.
+/// `SponsorFiller` marks a request only when it fills, after `TempoGasFiller` prepared in the same
+/// round, and a request that carries its chain id, as `ChainIdFiller` sets it from its cache on
+/// every request after a provider's first, is prepared in that first round.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_fill_includes_the_fee_payer_access_at_t14() -> eyre::Result<()> {
+    let mut env = Localnet::new().await?;
+    assert!(env.hardfork().is_t14(), "the devnet schedule starts at T14");
+    let signer = PrivateKeySigner::random();
+    let current_timestamp = env.current_block_timestamp().await?;
+    let test_case = FillTestCase::new(NonceMode::Protocol, KeyType::Secp256k1);
+    let mut marked = sponsored_fill_request(
+        &test_case,
+        signer.address(),
+        current_timestamp,
+        env.hardfork().expiring_nonce_max_expiry_secs(),
+    );
+    marked.set_fee_token(DEFAULT_FEE_TOKEN);
+    let mut marked_with_chain_id = marked.clone();
+    marked_with_chain_id.inner.chain_id = Some(env.chain_id);
+    let unmarked = TempoTransactionRequest {
+        fee_payer_signature: None,
+        ..marked_with_chain_id.clone()
+    };
+
+    let rpc_url = env.setup.node.rpc_url();
+    let sponsor_provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+        .sponsor(rpc_url.as_str())
+        .connect(rpc_url.as_str())
+        .await?;
+    let filled_by_gas_filler = env
+        .setup
+        .node
+        .rpc_provider_for::<TempoNetwork>()
+        .fill(marked.clone())
+        .await?;
+    let filled_by_sponsor_provider = sponsor_provider.fill(unmarked).await?;
+    for (provider, filled, marked) in [
+        ("gas filler", filled_by_gas_filler, &marked),
+        (
+            "sponsor provider",
+            filled_by_sponsor_provider,
+            &marked_with_chain_id,
+        ),
+    ] {
+        let filled = filled
+            .as_builder()
+            .ok_or_eyre("the filler built the transaction")?;
+        assert_eq!(
+            filled.fee_payer_signature, marked.fee_payer_signature,
+            "{provider}"
+        );
+        assert_eq!(
+            filled.inner.gas,
+            Some(estimate_gas(&env.provider, marked).await?),
+            "{provider}"
+        );
+    }
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -846,13 +918,6 @@ async fn test_aa_2d_nonce_out_of_order_arrival() -> eyre::Result<()> {
 
 #[tokio::test]
 async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
-    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-    use p256::{
-        ecdsa::{SigningKey, signature::Signer},
-        elliptic_curve::rand_core::OsRng,
-    };
-    use sha2::{Digest, Sha256};
-
     reth_tracing::init_test_tracing();
 
     // Setup test node with direct access
@@ -964,8 +1029,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     // Also verify pool rejects the transaction
     let signed_tx1 = tx1.into_signed(aa_signature1);
     let envelope1: TempoTxEnvelope = signed_tx1.into();
-    let mut encoded1 = Vec::new();
-    envelope1.encode_2718(&mut encoded1);
+    let encoded1 = envelope1.encoded_2718();
     let inject_result1 = setup.node.inject_tx(encoded1.into()).await;
     assert!(
         inject_result1.is_err(),
@@ -1026,8 +1090,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
 
     let signed_tx2 = tx2.into_signed(aa_signature2);
     let envelope2: TempoTxEnvelope = signed_tx2.into();
-    let mut encoded2 = Vec::new();
-    envelope2.encode_2718(&mut encoded2);
+    let encoded2 = envelope2.encoded_2718();
     let inject_result2 = setup.node.inject_tx(encoded2.into()).await;
     assert!(
         inject_result2.is_err(),
@@ -1088,8 +1151,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
 
     let signed_tx3 = tx3.into_signed(aa_signature3);
     let envelope3: TempoTxEnvelope = signed_tx3.into();
-    let mut encoded3 = Vec::new();
-    envelope3.encode_2718(&mut encoded3);
+    let encoded3 = envelope3.encoded_2718();
     let inject_result3 = setup.node.inject_tx(encoded3.into()).await;
     assert!(
         inject_result3.is_err(),
@@ -1149,8 +1211,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
 
     let signed_tx4 = tx4.into_signed(aa_signature4);
     let envelope4: TempoTxEnvelope = signed_tx4.into();
-    let mut encoded4 = Vec::new();
-    envelope4.encode_2718(&mut encoded4);
+    let encoded4 = envelope4.encoded_2718();
     let inject_result4 = setup.node.inject_tx(encoded4.into()).await;
     assert!(
         inject_result4.is_err(),
@@ -1203,8 +1264,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
 
     let signed_bad_tx = bad_tx.into_signed(bad_tempo_signature);
     let bad_envelope: TempoTxEnvelope = signed_bad_tx.into();
-    let mut encoded_bad = Vec::new();
-    bad_envelope.encode_2718(&mut encoded_bad);
+    let encoded_bad = bad_envelope.encoded_2718();
 
     // Try to inject - should fail
     let inject_result = setup.node.inject_tx(encoded_bad.clone().into()).await;
@@ -1454,7 +1514,11 @@ async fn test_key_authorization_witness_burn_evicts_pending_replay() -> eyre::Re
 async fn test_t6_authorize_admin_key_abi_e2e() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
+    // TIP-1137 removes admin key creation at T14.
+    let mut setup = TestNodeBuilder::new()
+        .with_genesis(make_genesis_at(TempoHardfork::T13))
+        .build_with_node_access()
+        .await?;
     let root_signer = test_signer(0);
     let root_addr = root_signer.address();
     let provider = setup
@@ -1496,7 +1560,11 @@ async fn test_t6_authorize_admin_key_abi_e2e() -> eyre::Result<()> {
 async fn test_t6_inline_admin_key_authorization_e2e() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
+    // TIP-1137 removes admin key creation at T14.
+    let mut setup = TestNodeBuilder::new()
+        .with_genesis(make_genesis_at(TempoHardfork::T13))
+        .build_with_node_access()
+        .await?;
     let root_signer = test_signer(0);
     let root_addr = root_signer.address();
     let provider = setup
@@ -1531,7 +1599,11 @@ async fn test_t6_inline_admin_key_authorization_e2e() -> eyre::Result<()> {
 async fn test_t6_admin_key_authorizes_child_admin_key_e2e() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
+    // TIP-1137 removes admin key creation at T14.
+    let mut setup = TestNodeBuilder::new()
+        .with_genesis(make_genesis_at(TempoHardfork::T13))
+        .build_with_node_access()
+        .await?;
     let root_signer = test_signer(0);
     let root_addr = root_signer.address();
     let provider = setup
@@ -1797,7 +1869,6 @@ async fn test_aa_keychain_revocation_toctou_dos() -> eyre::Result<()> {
         .await?;
 
     // Verify the key is actually revoked by querying the keychain
-    use tempo_contracts::precompiles::account_keychain::IAccountKeychain::IAccountKeychainInstance;
     let keychain = IAccountKeychainInstance::new(ACCOUNT_KEYCHAIN_ADDRESS, &provider);
     let key_info = keychain.getKey(root_addr, access_key_addr).call().await?;
     assert!(key_info.isRevoked, "Key should be marked as revoked");
@@ -1992,8 +2063,6 @@ async fn test_aa_expiring_nonce_replay_protection() -> eyre::Result<()> {
 /// 4. Transactions should be evicted from the mempool
 #[tokio::test]
 async fn test_aa_keychain_spending_limit_toctou_dos() -> eyre::Result<()> {
-    use tempo_precompiles::account_keychain::updateSpendingLimitCall;
-
     reth_tracing::init_test_tracing();
 
     println!("\n=== Testing AA Keychain Spending Limit TOCTOU DoS ===\n");
