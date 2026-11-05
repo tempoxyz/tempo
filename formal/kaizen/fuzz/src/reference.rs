@@ -131,7 +131,7 @@ impl RefState {
         if f.proposal.payload.0.as_slice() != c.digest.as_slice() {
             return Outcome::Code(DIGEST_MISMATCH);
         }
-        // Tempo rejects these with HeightOutOfRange (tempoxyz/tempo#8977; it panicked before).
+        // Heights in the final partial epoch belong to no representable epoch.
         let Some(info) = epocher.containing(Height::new(c.height)) else {
             return Outcome::Code(EPOCH_MISMATCH);
         };

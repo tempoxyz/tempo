@@ -473,6 +473,7 @@ async fn main() -> eyre::Result<()> {
         backfill_hashes(&rpc, start, &hashes, args.concurrency.get()).await?;
     }
     let mut head = start;
+    let mut inconclusive: HashMap<([u8; 32], [u8; 32]), String> = HashMap::new();
     loop {
         if next > head {
             let latest = rpc.latest().await?;
@@ -548,8 +549,22 @@ async fn main() -> eyre::Result<()> {
                         reveals += o.reveals;
                         EXECUTED.lock().unwrap().insert((p, d), o.post_root.0);
                     }
-                    Ok(Err(e)) => eprintln!("height {h}: re-execution failed: {e:#}"),
-                    Err(e) => eprintln!("height {h}: re-execution panicked: {e}"),
+                    // Unavailable: no entry, so the step loop stalls and retries the block.
+                    Ok(Err(e)) if e.downcast_ref::<exec::Unavailable>().is_some() => {
+                        eprintln!("height {h}: {e:#}")
+                    }
+                    Ok(Err(e)) if e.downcast_ref::<exec::Inconclusive>().is_some() => {
+                        inconclusive.insert((p, d), format!("{e:#}"));
+                    }
+                    // A verdict on the block (invalid transaction, failed post-execution check):
+                    // record a root no header can have, so the core rejects it with code 12.
+                    Ok(Err(e)) => {
+                        eprintln!("height {h}: re-execution rejects the block: {e:#}");
+                        EXECUTED.lock().unwrap().insert((p, d), [0xff; 32]);
+                    }
+                    Err(e) => {
+                        inconclusive.insert((p, d), format!("re-execution panicked: {e}"));
+                    }
                 }
             }
         }
@@ -559,6 +574,9 @@ async fn main() -> eyre::Result<()> {
             // has no verdict yet: stall and retry it rather than letting the core read the
             // missing result as a state-root mismatch. Code 12 stays for computed mismatches.
             let exec_key = core.has_tip().then(|| (core.tip_state_root(), cand.digest));
+            if let Some(why) = exec_key.and_then(|k| inconclusive.get(&k)) {
+                bail!("height {h}: cannot decide the block: {why}");
+            }
             if !args.trust_execution
                 && let Some(key) = exec_key
                 && !EXECUTED.lock().unwrap().contains_key(&key)

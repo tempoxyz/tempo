@@ -119,7 +119,31 @@ impl ProofRpc {
 }
 
 /// State at the parent block, read lazily and verified against its state root.
+/// Re-execution could not finish because the proof RPC or ancestor data was unavailable: no
+/// verdict on the block, so the caller retries it.
+#[derive(Debug)]
+pub(crate) struct Unavailable;
+
+impl std::fmt::Display for Unavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("re-execution unavailable")
+    }
+}
+
+/// Re-execution hit a local limit of the partial trie: no verdict on the block, and retrying
+/// would hit it again.
+#[derive(Debug)]
+pub(crate) struct Inconclusive;
+
+impl std::fmt::Display for Inconclusive {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("re-execution inconclusive")
+    }
+}
+
 struct ProofState {
+    /// Set when a proof or code fetch failed or an ancestor hash was missing.
+    unavailable: std::sync::atomic::AtomicBool,
     rpc: ProofRpc,
     parent_number: u64,
     block_number: u64,
@@ -146,6 +170,15 @@ static HOT: std::sync::LazyLock<Mutex<HashMap<Address, std::collections::BTreeSe
     std::sync::LazyLock::new(Default::default);
 
 impl ProofState {
+    /// Pass a network fetch through, remembering whether it failed.
+    fn net<T>(&self, r: eyre::Result<T>) -> eyre::Result<T> {
+        if r.is_err() {
+            self.unavailable
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        r
+    }
+
     /// Fetches proofs for the hot keys concurrently, one eth_getProof per account, and verifies
     /// them into the caches exactly as lazy reads would.
     fn prefetch(&self) {
@@ -240,7 +273,7 @@ impl ProofState {
         if let Some(a) = self.inner.lock().unwrap().accounts.get(&address) {
             return Ok(a.clone());
         }
-        let proof = self.rpc.proof(address, &[], self.parent_number)?;
+        let proof = self.net(self.rpc.proof(address, &[], self.parent_number))?;
         let mut inner = self.inner.lock().unwrap();
         inner
             .store
@@ -270,7 +303,7 @@ impl ProofState {
         if account.storage_root == EMPTY_ROOT_HASH {
             return Ok(U256::ZERO);
         }
-        let proof = self.rpc.proof(address, &[slot], self.parent_number)?;
+        let proof = self.net(self.rpc.proof(address, &[slot], self.parent_number))?;
         let mut inner = self.inner.lock().unwrap();
         inner
             .store
@@ -304,7 +337,7 @@ impl ProofState {
             .code_owner
             .get(&hash)
             .ok_or_eyre("code hash of an unloaded account")?;
-        let raw = self.rpc.code(owner, self.parent_number)?;
+        let raw = self.net(self.rpc.code(owner, self.parent_number))?;
         if keccak256(&raw) != hash {
             bail!("eth_getCode for {owner} does not match its code hash");
         }
@@ -330,7 +363,7 @@ impl ProofState {
                     .map(<[B256]>::to_vec)
                     .chain(deleted.is_empty().then(Vec::new))
                 {
-                    let p = self.rpc.proof(*address, &chunk, self.block_number)?;
+                    let p = self.net(self.rpc.proof(*address, &chunk, self.block_number))?;
                     nodes.extend(p.account_proof);
                     nodes.extend(p.storage_proof.into_iter().flat_map(|s| s.proof));
                 }
@@ -369,16 +402,16 @@ impl ProofState {
             })
             .ok_or_eyre("no key found for prefix")?;
         let proof = match owner {
-            Some(address) => self.rpc.proof(
+            Some(address) => self.net(self.rpc.proof(
                 address,
                 &[B256::from(U256::from(found))],
                 self.parent_number,
-            )?,
-            None => self.rpc.proof(
+            ))?,
+            None => self.net(self.rpc.proof(
                 Address::left_padding_from(&found.to_be_bytes()),
                 &[],
                 self.parent_number,
-            )?,
+            ))?,
         };
         let mut inner = self.inner.lock().unwrap();
         inner
@@ -407,6 +440,8 @@ impl EvmStateProvider for ProofState {
             // BLOCKHASH can reach the 256 previous blocks: answering zero for one we don't know
             // would execute the block differently, so fail instead.
             None if number < self.block_number && number + 256 >= self.block_number => {
+                self.unavailable
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
                 Err(rpc_err(format!("block hash {number} unknown")))
             }
             None => Ok(None),
@@ -440,6 +475,7 @@ pub(crate) fn execute(
     block_hashes: Arc<Mutex<BTreeMap<u64, B256>>>,
 ) -> eyre::Result<Outcome> {
     let state = Arc::new(ProofState {
+        unavailable: Default::default(),
         rpc: rpc.clone(),
         parent_number: header.number() - 1,
         block_number: header.number(),
@@ -447,6 +483,20 @@ pub(crate) fn execute(
         inner: Mutex::new(Inner::default()),
         block_hashes,
     });
+    execute_on(&state, header, body).map_err(|e| {
+        if state.unavailable.load(std::sync::atomic::Ordering::Relaxed) {
+            e.wrap_err(Unavailable)
+        } else {
+            e
+        }
+    })
+}
+
+fn execute_on(
+    state: &Arc<ProofState>,
+    header: &TempoHeader,
+    body: &BlockBody,
+) -> eyre::Result<Outcome> {
     let block = SealedBlock::seal_slow(Block {
         header: header.clone(),
         body: body.clone(),
@@ -464,10 +514,10 @@ pub(crate) fn execute(
 
     let mut reveals = 0;
     loop {
-        match post_root(&state, &output.state) {
+        match post_root(state, &output.state) {
             Ok(root) => {
                 if root != header.state_root() && std::env::var_os("KAIZEN_DIAGNOSE").is_some() {
-                    diagnose(&state, &output.state, header.state_root());
+                    diagnose(state, &output.state, header.state_root());
                 }
                 state.record_hot();
                 let inner = state.inner.lock().unwrap();
@@ -481,7 +531,7 @@ pub(crate) fn execute(
             Err((owner, mpt::Error::Missing(path))) => {
                 reveals += 1;
                 if reveals > 64 {
-                    bail!("too many unrevealed trie nodes");
+                    return Err(eyre!("too many unrevealed trie nodes").wrap_err(Inconclusive));
                 }
                 if reveals == 1 {
                     state.reveal_from_post_state(&output.state)?;
@@ -489,7 +539,7 @@ pub(crate) fn execute(
                     state.reveal(owner, &path)?;
                 }
             }
-            Err((_, e)) => bail!("trie error: {e:?}"),
+            Err((_, e)) => return Err(eyre!("trie error: {e:?}").wrap_err(Inconclusive)),
         }
     }
 }
