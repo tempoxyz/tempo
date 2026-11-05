@@ -4,7 +4,7 @@
 //! accepts it.
 
 use super::analysis::{AccountDelta, Field};
-use crate::shadow_replay::{Boundary, Evidence, ObservedTx, fees::post_fee_slot_change};
+use crate::shadow_replay::{Boundary, Evidence, ObservedTx};
 use alloy::{
     consensus::Transaction as _,
     primitives::{Address, B256, Bytes, U256, keccak256},
@@ -18,6 +18,7 @@ use tempo_contracts::{
         ZONE_VERIFIER_RUNTIME,
     },
 };
+use tempo_evm::fee_hook_slot_change;
 use tempo_precompiles::{storage::StorageAction, tip_fee_manager::amm::compute_amount_out};
 use tempo_primitives::{TempoTxEnvelope, transaction::calc_gas_balance_spending};
 
@@ -106,9 +107,9 @@ const FEE_STATE: Expectation = Expectation {
             return None;
         }
         let (real_before, real_after) =
-            post_fee_slot_change(&real.fee.post_tx_actions, address, slot)?;
+            fee_hook_slot_change(&real.fee.post_tx_actions, address, slot)?;
         let (shadow_before, shadow_after) =
-            post_fee_slot_change(&shadow.fee.post_tx_actions, address, slot)?;
+            fee_hook_slot_change(&shadow.fee.post_tx_actions, address, slot)?;
         // Compare application state at hook entry, not merely the transaction's initial state.
         if real_before != shadow_before {
             return None;

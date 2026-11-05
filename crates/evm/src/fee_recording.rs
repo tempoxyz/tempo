@@ -1,12 +1,12 @@
-//! Tracks storage slots written by protocol fee hooks within each transaction.
+//! Records the storage writes and logs of protocol fee hooks within each transaction.
 //!
 //! Normal fee-manager behavior is preserved. Application writes may touch the same slots,
 //! and fee paths outside these hooks are not tracked.
 
+use crate::{ProtocolFeeContext, ProtocolFeeManager, TempoFeeManager};
 use alloy_primitives::{Address, U256};
 use parking_lot::Mutex;
 use std::{collections::HashSet, ops::Range, sync::Arc};
-use tempo_evm::{ProtocolFeeContext, ProtocolFeeManager, TempoFeeManager};
 use tempo_precompiles::{
     storage::{StorageAction, StorageActions},
     tip_fee_manager::amm::{Pool, compute_amount_out},
@@ -14,20 +14,26 @@ use tempo_precompiles::{
 
 /// Storage slots and log ranges produced by protocol fee hooks during one transaction.
 #[derive(Debug, Default)]
-pub(super) struct FeeWrites {
-    pub(super) slots: HashSet<(Address, U256)>,
-    pub(super) log_ranges: Vec<Range<usize>>,
+pub struct FeeWrites {
+    /// Every slot either hook wrote.
+    pub slots: HashSet<(Address, U256)>,
+    /// Ranges of the transaction's logs that the hooks emitted.
+    pub log_ranges: Vec<Range<usize>>,
     /// Successful pre-fee charge limit, used to validate the post-fee refund.
-    pub(super) pre_tx_max: Option<U256>,
+    pub pre_tx_max: Option<U256>,
+    /// Ordered writes of the successful pre-fee hook.
+    pub pre_tx_actions: Vec<StorageAction>,
     /// Ordered post-fee actions; the first write's old value is the application's final value.
-    pub(super) post_tx_actions: Vec<StorageAction>,
+    pub post_tx_actions: Vec<StorageAction>,
     /// Log index, token, payer, actual charge, and refund of the successful post-fee hook.
-    pub(super) post_tx_transfer: Option<(usize, Address, Address, U256, U256)>,
+    pub post_tx_transfer: Option<(usize, Address, Address, U256, U256)>,
 }
 
 /// Delegates protocol fee collection while recording hook-local storage writes and emitted logs.
+///
+/// Install it as the EVM's fee manager and take its [`FeeWrites`] after each transaction.
 #[derive(Debug, Clone)]
-pub(super) struct RecordingFeeManager(pub(super) Arc<Mutex<FeeWrites>>);
+pub struct RecordingFeeManager(pub Arc<Mutex<FeeWrites>>);
 
 impl RecordingFeeManager {
     /// Runs one fee hook with an isolated recorder and returns its ordered storage writes.
@@ -74,9 +80,9 @@ impl RecordingFeeManager {
     }
 }
 
-/// Derives a slot's entry and exit values from ordered writes within the post-fee hook.
+/// Derives a slot's entry and exit values from one hook's ordered writes.
 /// Rejects discontinuous writes rather than attributing them to fees.
-pub(super) fn post_fee_slot_change(
+pub fn fee_hook_slot_change(
     actions: &[StorageAction],
     address: Address,
     slot: U256,
@@ -129,7 +135,7 @@ impl ProtocolFeeManager for RecordingFeeManager {
         beneficiary: Address,
         skip_liquidity_check: bool,
     ) -> tempo_precompiles::error::Result<Address> {
-        let (result, _) = self.record(ctx, |ctx| {
+        let (result, actions) = self.record(ctx, |ctx| {
             TempoFeeManager::new().collect_fee_pre_tx(
                 ctx,
                 fee_payer,
@@ -140,7 +146,9 @@ impl ProtocolFeeManager for RecordingFeeManager {
             )
         });
         if result.is_ok() {
-            self.0.lock().pre_tx_max = Some(max_amount);
+            let mut writes = self.0.lock();
+            writes.pre_tx_max = Some(max_amount);
+            writes.pre_tx_actions = actions;
         }
         result
     }
@@ -186,7 +194,7 @@ mod tests {
     use tempo_contracts::precompiles::TIP_FEE_MANAGER_ADDRESS;
 
     #[test]
-    fn post_fee_writes_require_continuity() {
+    fn fee_hook_writes_require_continuity() {
         let address = Address::repeat_byte(1);
         let slot = U256::from(2);
         let actions = [
@@ -194,19 +202,19 @@ mod tests {
             StorageAction::Sdec(address, slot, U256::from(15), U256::from(2)),
         ];
         assert_eq!(
-            post_fee_slot_change(&actions, address, slot),
+            fee_hook_slot_change(&actions, address, slot),
             Some((U256::from(10), U256::from(13)))
         );
-        assert_eq!(post_fee_slot_change(&actions, address, U256::from(3)), None);
+        assert_eq!(fee_hook_slot_change(&actions, address, U256::from(3)), None);
         let bad = [
             actions[0],
             StorageAction::Sdec(address, slot, U256::from(14), U256::from(2)),
         ];
-        assert_eq!(post_fee_slot_change(&bad, address, slot), None);
+        assert_eq!(fee_hook_slot_change(&bad, address, slot), None);
     }
 
     #[test]
-    fn post_fee_swap_uses_the_packed_pool_transition() {
+    fn fee_hook_swap_uses_the_packed_pool_transition() {
         let pool = Pool {
             reserve_user_token: 100,
             reserve_validator_token: 200,
@@ -219,7 +227,7 @@ mod tests {
             .apply_swap(amount, compute_amount_out(amount).unwrap())
             .unwrap();
         assert_eq!(
-            post_fee_slot_change(
+            fee_hook_slot_change(
                 &[StorageAction::FeeAmmSwap(slot, old, amount)],
                 TIP_FEE_MANAGER_ADDRESS,
                 slot,

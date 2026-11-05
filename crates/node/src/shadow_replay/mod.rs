@@ -21,14 +21,12 @@
 
 mod analysis;
 mod expectations;
-mod fees;
 
 use alloy::{consensus::BlockHeader as _, sol_types::SolEvent as _};
 use alloy_primitives::{Address, B256, U256, keccak256};
 use alloy_rlp::{encode_list, list_length};
 use analysis::Report;
 use evm2::evm::{Cache, PendingState, TxResultExt};
-use fees::{FeeWrites, RecordingFeeManager};
 use metrics::{Counter, Gauge, Histogram};
 use parking_lot::Mutex;
 use reth_chainspec::ForkCondition;
@@ -50,7 +48,7 @@ use tempo_chainspec::{
     spec::{TempoChainSpec, TempoHardforks as _},
 };
 use tempo_contracts::precompiles::{ITIP20, TIP_FEE_MANAGER_ADDRESS};
-use tempo_evm::{TempoEvmConfig, TempoTxResult};
+use tempo_evm::{FeeWrites, RecordingFeeManager, TempoEvmConfig, TempoTxResult};
 use tempo_primitives::{Block, TempoPrimitives, TempoReceipt};
 use tokio::sync::broadcast::error::RecvError;
 

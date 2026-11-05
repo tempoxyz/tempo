@@ -14625,6 +14625,7 @@ dependencies = [
  "indexmap 2.14.2",
  "insta",
  "p256 0.13.2",
+ "parking_lot",
  "proptest",
  "rand 0.8.8",
  "rayon",

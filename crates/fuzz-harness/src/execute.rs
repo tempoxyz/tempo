@@ -6,7 +6,7 @@ use alloy_consensus::{
     BlockHeader as _, proofs::calculate_transaction_root, transaction::Transaction as _,
 };
 use alloy_eips::Decodable2718 as _;
-use alloy_primitives::{Address, Log};
+use alloy_primitives::{Address, Log, U256};
 use evm2::bytecode::Bytecode;
 use invariants_core::Report;
 use reth_consensus::{Consensus as _, HeaderValidator as _};
@@ -16,13 +16,18 @@ use reth_evm::{
 use reth_execution_types::StateUpdate;
 use reth_primitives_traits::{RecoveredBlock, transaction::signed::SignedTransaction as _};
 use tempo_chainspec::TempoChainSpec;
-use tempo_evm::{TempoBlockExecutor, TempoEvmConfig, TempoEvmEnv, consensus::TempoConsensus};
+use tempo_evm::{
+    FeeWrites, RecordingFeeManager, TempoBlockExecutor, TempoEvmConfig, TempoEvmEnv,
+    consensus::TempoConsensus, fee_hook_slot_change,
+};
 use tempo_fuzz_types::{
-    BlockChanges, BlockHeaderInput, ChainSpecInput, ErrorClass, InvariantFailure, InvariantScope,
-    PreState, ResultGas, StateChanges, TempoBlock, TempoExecutionOutcome, TempoHarnessInput,
-    TempoHarnessOutcome, TempoTransactionInput, TransactionOutcome, TxOutcome, TxReceiptOutput,
+    BlockChanges, BlockHeaderInput, ChainSpecInput, ErrorClass, FeeOutput, FeeSwapOutput,
+    InvariantFailure, InvariantScope, PreState, ResultGas, StateChanges, StorageChangeOutput,
+    TempoBlock, TempoExecutionOutcome, TempoHarnessInput, TempoHarnessOutcome,
+    TempoTransactionInput, TransactionOutcome, TxOutcome, TxReceiptOutput,
 };
 use tempo_invariants::Tx;
+use tempo_precompiles::{storage::StorageAction, tip_fee_manager::amm::compute_amount_out};
 use tempo_primitives::{Block, BlockBody, TempoTxEnvelope};
 
 use crate::{
@@ -287,9 +292,11 @@ fn execute_block(
     consensus
         .validate_block_pre_execution(block.sealed_block())
         .map_err(|_| ErrorClass::Rejected)?;
-    let evm = evm_config
+    let mut evm = evm_config
         .evm_for_block(db.reader(), block.header())
         .map_err(|_| ErrorClass::Rejected)?;
+    let fees = RecordingFeeManager(Arc::default());
+    evm.ext_mut().fee_manager = Arc::new(fees.clone());
     let ctx = evm_config
         .context_for_block(block.sealed_block())
         .map_err(|_| ErrorClass::Rejected)?;
@@ -308,6 +315,7 @@ fn execute_block(
         &mut executor,
         db,
         &hooked,
+        &fees,
         block,
         block_index,
         &mut updates,
@@ -334,6 +342,7 @@ fn execute_txs(
     executor: &mut TempoBlockExecutor<'_>,
     db: &Db,
     hooked: &Updates,
+    fees: &RecordingFeeManager,
     block: &ExecutionBlock,
     block_index: u64,
     updates: &mut Vec<StateUpdate>,
@@ -360,6 +369,7 @@ fn execute_txs(
         let sender = tx.signer();
         let effective_gas_price = tx.effective_gas_price(basefee);
         let result = executor.execute_transaction_without_commit(tx)?;
+        let fee = fee_output(std::mem::take(&mut *fees.0.lock()));
         let execution = result.result();
         let outcome = if execution.status {
             TxOutcome::Success
@@ -390,6 +400,7 @@ fn execute_txs(
             effective_gas_price,
             output,
             logs: receipt.logs.clone(),
+            fee,
         });
         let scope = InvariantScope::Transaction {
             block_index,
@@ -470,6 +481,68 @@ fn step(
     );
     updates.extend(step);
     changes
+}
+
+/// What the fee hooks of one transaction did, from what they recorded in `fees`. `None` when a
+/// hook did not run, or when a hook's writes to a slot do not chain, which a hook that runs without
+/// interruption never does.
+fn fee_output(fees: FeeWrites) -> Option<FeeOutput> {
+    let (_, token, payer, charged, refunded) = fees.post_tx_transfer?;
+    let swaps = fees
+        .pre_tx_actions
+        .iter()
+        .chain(&fees.post_tx_actions)
+        .filter_map(|action| match *action {
+            StorageAction::FeeAmmSwap(pool_slot, _, amount_in) => Some(
+                compute_amount_out(amount_in)
+                    .ok()
+                    .map(|amount_out| FeeSwapOutput {
+                        pool_slot,
+                        amount_in,
+                        amount_out,
+                    }),
+            ),
+            _ => None,
+        })
+        .collect::<Option<_>>()?;
+    Some(FeeOutput {
+        token,
+        payer,
+        max_amount: fees.pre_tx_max?,
+        charged,
+        refunded,
+        pre_tx_writes: hook_writes(&fees.pre_tx_actions)?,
+        post_tx_writes: hook_writes(&fees.post_tx_actions)?,
+        swaps,
+    })
+}
+
+/// Each slot one fee hook wrote, with its values when the hook started and ended, in the order
+/// the hook first wrote them.
+fn hook_writes(actions: &[StorageAction]) -> Option<Vec<StorageChangeOutput>> {
+    let mut slots: Vec<(Address, U256)> = Vec::new();
+    for action in actions {
+        if let StorageAction::Sstore(_, slot, ..)
+        | StorageAction::Sinc(_, slot, ..)
+        | StorageAction::Sdec(_, slot, ..)
+        | StorageAction::FeeAmmSwap(slot, ..) = *action
+            && !slots.contains(&(action.address(), slot))
+        {
+            slots.push((action.address(), slot));
+        }
+    }
+    slots
+        .into_iter()
+        .map(|(address, slot)| {
+            let (before, after) = fee_hook_slot_change(actions, address, slot)?;
+            Some(StorageChangeOutput {
+                address,
+                slot,
+                before,
+                after,
+            })
+        })
+        .collect()
 }
 
 /// A block the node would reject is `Rejected`; anything else went wrong in the executor.

@@ -20,7 +20,9 @@ use tempo_chainspec::{
     constants::moderato::MODERATO_CHAIN_ID,
     hardfork::{TempoHardfork, TempoHardforks},
 };
-use tempo_contracts::precompiles::{CURRENT_COMMITTEE_ADDRESS, ITIP20, PATH_USD_ADDRESS};
+use tempo_contracts::precompiles::{
+    CURRENT_COMMITTEE_ADDRESS, ITIP20, PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_fuzz_types::{
@@ -30,7 +32,10 @@ use tempo_fuzz_types::{
     TempoHarnessCapabilities, TempoHarnessInput, TempoHarnessOutcome, TempoTransactionInput,
     TxOutcome,
 };
-use tempo_precompiles::tip20::slots::{SUPPLY_CAP, TOTAL_SUPPLY};
+use tempo_precompiles::{
+    tip_fee_manager::amm::compute_amount_out,
+    tip20::slots::{SUPPLY_CAP, TOTAL_SUPPLY},
+};
 use tempo_primitives::{TempoHeader, TempoTxEnvelope};
 
 use crate::{
@@ -273,6 +278,95 @@ fn a_transfer_reports_its_receipt_changes_and_state_root() {
 
     assert_eq!(outcome.state_root, Some(trie_root(&outcome.final_state)));
     assert_ne!(outcome.final_state, genesis_state());
+}
+
+#[test]
+fn receipts_report_what_the_fee_hooks_did() {
+    // At a gas price of 10^12 the fee is one pathUSD base unit per gas.
+    let gas_limit = 1_000_000;
+    let tx = TempoTxEnvelope::Legacy(
+        TxLegacy {
+            chain_id: Some(CHAIN_ID),
+            nonce: 0,
+            gas_price: 1_000_000_000_000,
+            gas_limit,
+            to: TxKind::Call(PATH_USD_ADDRESS),
+            value: U256::ZERO,
+            input: ITIP20::transferCall {
+                to: RECIPIENT,
+                amount: U256::from(7),
+            }
+            .abi_encode()
+            .into(),
+        }
+        .into_signed(Signature::test_signature()),
+    );
+    let outcome = run(genesis(), vec![t4_block(vec![tx.encoded_2718().into()])]);
+    assert_eq!(outcome.error, ErrorClass::None);
+    let receipt = &outcome.receipts[0];
+    assert_eq!(receipt.outcome, TxOutcome::Success);
+    let fee = receipt
+        .fee
+        .as_ref()
+        .expect("the fee is paid through the hooks");
+    let charged = U256::from(receipt.gas.tx_gas_used());
+    assert_eq!(fee.payer, SENDER);
+    assert_eq!(fee.max_amount, U256::from(gas_limit));
+    assert_eq!(
+        (fee.charged, fee.refunded),
+        (charged, fee.max_amount - charged)
+    );
+
+    // The pre-transaction hook moves the most the fee can be from the payer to the fee manager.
+    // The post-transaction hook refunds the payer from that balance.
+    let moved = |writes: &[StorageChangeOutput], amount: U256| {
+        let changed = |change: &&StorageChangeOutput, signed: fn(U256, U256) -> U256| {
+            change.address == fee.token && signed(change.before, change.after) == amount
+        };
+        let debited = writes
+            .iter()
+            .find(|change| changed(change, |before, after| before.wrapping_sub(after)))
+            .expect("a balance is debited");
+        let credited = writes
+            .iter()
+            .find(|change| changed(change, |before, after| after.wrapping_sub(before)))
+            .expect("a balance is credited");
+        (debited.slot, credited.slot)
+    };
+    let (payer, fee_manager) = moved(&fee.pre_tx_writes, fee.max_amount);
+    assert_eq!(
+        moved(&fee.post_tx_writes, fee.refunded),
+        (fee_manager, payer)
+    );
+
+    // The sender pays in a token the validator does not take, so the fee is swapped once, and
+    // the validator's collected fees rise by what the swap gave.
+    let [swap] = fee.swaps.as_slice() else {
+        panic!("one swap: {:?}", fee.swaps);
+    };
+    assert_eq!(
+        (swap.amount_in, swap.amount_out),
+        (charged, compute_amount_out(charged).unwrap())
+    );
+    let in_fee_manager = |change: &&StorageChangeOutput| change.address == TIP_FEE_MANAGER_ADDRESS;
+    assert!(
+        fee.post_tx_writes
+            .iter()
+            .filter(in_fee_manager)
+            .any(|change| change.slot == swap.pool_slot)
+    );
+    assert!(
+        fee.post_tx_writes
+            .iter()
+            .filter(in_fee_manager)
+            .any(|change| change.after.checked_sub(change.before) == Some(swap.amount_out))
+    );
+
+    // The transaction's diff debits the payer exactly the fee.
+    let payer_change = storage_at(&outcome.state_diff.blocks[0].txs[0], fee.token)
+        .find(|change| change.slot == payer)
+        .expect("the payer's balance changes");
+    assert_eq!(payer_change.before - payer_change.after, charged);
 }
 
 #[test]
@@ -786,7 +880,7 @@ fn the_c_abi_round_trips_and_rejects_what_does_not_decode() {
     assert_eq!(status, FUZZ_ACCEPT);
     let capabilities: TempoHarnessCapabilities =
         bincode_options().deserialize(&out[..written]).unwrap();
-    assert_eq!(capabilities.schema_version, 4);
+    assert_eq!(capabilities.schema_version, 5);
     assert_eq!(
         capabilities.supported_hardforks.as_slice(),
         TempoHardfork::VARIANTS

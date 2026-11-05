@@ -19,7 +19,7 @@ pub const FUZZ_REJECT: FuzzStatus = 0;
 pub const FUZZ_ACCEPT: FuzzStatus = 1;
 
 /// The version of these types' encoding, reported in [`TempoHarnessCapabilities`].
-pub const TYPED_HARNESS_SCHEMA_VERSION: u32 = 4;
+pub const TYPED_HARNESS_SCHEMA_VERSION: u32 = 5;
 
 /// Why an input, or part of it, did not execute.
 #[repr(u8)]
@@ -393,6 +393,43 @@ pub struct TxReceiptOutput {
     pub effective_gas_price: u128,
     pub output: Bytes,
     pub logs: Vec<Log>,
+    /// What the protocol fee hooks did. `None` when the transaction paid no fee through them.
+    pub fee: Option<FeeOutput>,
+}
+
+/// What a transaction's protocol fee hooks did, taken from the storage actions they recorded, so
+/// a runner can check the fee without decoding slot diffs. The pre-transaction hook charges
+/// `max_amount` to `payer`. The post-transaction hook keeps `charged`, refunds the rest and
+/// credits the validator, swapping through the fee AMM when the validator takes another token.
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub struct FeeOutput {
+    /// The TIP-20 the fee is paid in.
+    pub token: Address,
+    pub payer: Address,
+    /// What the pre-transaction hook charged before execution.
+    pub max_amount: U256,
+    /// What the post-transaction hook kept, the gas-derived fee.
+    pub charged: U256,
+    /// What the post-transaction hook refunded to `payer`.
+    pub refunded: U256,
+    /// Each slot the pre-transaction hook wrote, with its value when the hook started and when it
+    /// ended, in the order the hook first wrote them.
+    pub pre_tx_writes: Vec<StorageChangeOutput>,
+    /// Each slot the post-transaction hook wrote, as in `pre_tx_writes`. A slot's `before` is
+    /// its value after the transaction's call.
+    pub post_tx_writes: Vec<StorageChangeOutput>,
+    /// The fee AMM swaps the hooks made, in order.
+    pub swaps: Vec<FeeSwapOutput>,
+}
+
+/// One fee AMM swap a fee hook made.
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub struct FeeSwapOutput {
+    /// The fee manager's pool slot the swap changed.
+    pub pool_slot: U256,
+    pub amount_in: U256,
+    /// `amount_in` at the fee AMM's fixed price.
+    pub amount_out: U256,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
