@@ -239,9 +239,6 @@ pub async fn run_follow_stack(
         .wrap_err("follow engine task failed")
 }
 
-/// Upgrades validator p2p connections to authenticated, encrypted streams.
-type P2pUpgrader = SakeCups<PrivateKey, ChaCha20Poly1305>;
-
 /// Pins the v2026.9.0 wire protocol (SAKE V0, CUPS V0) so that validators on
 /// either commonware release can talk during a rolling upgrade. Versions are
 /// not negotiated: moving to V1 needs every validator to switch together.
@@ -249,7 +246,7 @@ fn p2p_upgrader(
     signing_key: PrivateKey,
     synchrony_bound: std::time::Duration,
     max_handshake_age: std::time::Duration,
-) -> P2pUpgrader {
+) -> SakeCups<PrivateKey, ChaCha20Poly1305> {
     Cups::new(
         Sake {
             signer: signing_key,
@@ -266,7 +263,7 @@ async fn instantiate_network(
     config: &Args,
     signing_key: PrivateKey,
 ) -> eyre::Result<(
-    lookup::Network<commonware_runtime::tokio::Context, P2pUpgrader>,
+    lookup::Network<commonware_runtime::tokio::Context, SakeCups<PrivateKey, ChaCha20Poly1305>>,
     lookup::Oracle<PublicKey>,
 )> {
     // TODO: Find out why `union_unique` should be used. This is the only place
