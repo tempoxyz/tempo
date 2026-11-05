@@ -35,7 +35,7 @@ use reth_engine_tree::tree::{
 use reth_errors::ConsensusError;
 use reth_evm::{
     BlockExecutionError, BlockExecutor, BlockExecutorFactory, BlockValidationError, ConfigureEvm,
-    Database, NextBlockEnvAttributes, OnStateHook, database::StateProviderDatabase,
+    Database, NextBlockEnvAttributes, OnStateHook, StateUpdate, database::StateProviderDatabase,
     execute::BlockAssemblerInput,
 };
 use reth_payload_builder::{EthBuiltPayload, PayloadBuilderError};
@@ -77,6 +77,49 @@ use tracing::{Level, Span, debug, debug_span, info, instrument, trace, warn};
 /// this margin together with known transaction, withdrawal, and extra-data lengths for Osaka size
 /// checks and pacing estimates.
 const NON_TRANSACTION_SIZE_ESTIMATE: usize = 2048;
+
+/// Number of transaction state updates the builder sends to the state root task at once.
+const STATE_UPDATE_BATCH: usize = 32;
+
+/// Sends the builder's per-transaction state updates to the state root task in bursts.
+///
+/// The sparse trie task computes storage roots and promotes account updates only while no update
+/// is queued. A builder streaming one update per transaction keeps the queue busy for the whole
+/// fill and pushes that work after the transaction cutoff. Bursts leave the task idle between
+/// them, and wake it once per burst instead of once per transaction.
+struct BatchedStateHook<H: OnStateHook> {
+    inner: H,
+    pending: Vec<StateUpdate>,
+}
+
+impl<H: OnStateHook> BatchedStateHook<H> {
+    fn new(inner: H) -> Self {
+        Self {
+            inner,
+            pending: Vec::with_capacity(STATE_UPDATE_BATCH),
+        }
+    }
+
+    fn on_state(&mut self, state: StateUpdate) {
+        self.pending.push(state);
+        if self.pending.len() >= STATE_UPDATE_BATCH {
+            self.flush();
+        }
+    }
+
+    fn flush(&mut self) {
+        for state in self.pending.drain(..) {
+            self.inner.on_state(state);
+        }
+    }
+}
+
+impl<H: OnStateHook> Drop for BatchedStateHook<H> {
+    fn drop(&mut self) {
+        // Send the tail before `inner` drops and finishes the update stream.
+        self.flush();
+    }
+}
 
 /// Source of transactions for payload building.
 enum PayloadTransactions {
@@ -400,7 +443,7 @@ where
         check_cancel!();
 
         if let Some(handle) = state_root_handle.as_mut() {
-            let mut hook = handle.take_state_hook();
+            let mut hook = BatchedStateHook::new(handle.take_state_hook());
             executor.set_state_hook(move |state| hook.on_state(state));
         }
 
@@ -1128,6 +1171,22 @@ pub(crate) struct RootsTaskResult {
 mod tests {
     use super::*;
     use alloy_primitives::Bytes;
+    use std::sync::Mutex;
+
+    #[test]
+    fn batched_state_hook_flushes_bursts_and_tail_on_drop() {
+        let seen = Arc::new(Mutex::new(0));
+        let sink = seen.clone();
+        let mut hook = BatchedStateHook::new(move |_: StateUpdate| *sink.lock().unwrap() += 1);
+
+        for _ in 0..STATE_UPDATE_BATCH + 3 {
+            hook.on_state(StateUpdate::default());
+        }
+        assert_eq!(*seen.lock().unwrap(), STATE_UPDATE_BATCH);
+
+        drop(hook);
+        assert_eq!(*seen.lock().unwrap(), STATE_UPDATE_BATCH + 3);
+    }
 
     #[test]
     fn test_extra_data_flow_in_attributes() {
