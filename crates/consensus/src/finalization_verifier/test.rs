@@ -7,7 +7,7 @@ use tempo_chainspec::{
     NetworkIdentity,
     spec::{DEV, MODERATO},
 };
-use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
+use tempo_dkg_onchain_artifacts::OutcomeEncoding;
 use tempo_primitives::{Block as TempoBlock, BlockBody, TempoHeader};
 
 use super::{Error, FinalizationVerifier};
@@ -61,10 +61,7 @@ fn decodes_boundary_outcome_with_encoding_of_its_timestamp() {
         let legacy = make_block(EPOCH_LENGTH.get() - 1, Some(&next.outcome));
         let ceremony_in_state = make_block(
             EPOCH_LENGTH.get() - 1,
-            Some(&OnchainDkgOutcome {
-                next_ceremony: None,
-                ..next.outcome.clone()
-            }),
+            Some(&crate::test_utils::without_ceremony(&next.outcome)),
         );
 
         // The dev chain stores the DKG ceremony in state from genesis, so its boundary carries
@@ -77,8 +74,8 @@ fn decodes_boundary_outcome_with_encoding_of_its_timestamp() {
         let outcome = verifier
             .decode_dkg_outcome_and_register_boundary(ceremony_in_state.header())
             .expect("the boundary should decode with the new encoding");
-        assert_eq!(outcome.next_ceremony, None);
-        assert_eq!(outcome.output, next.outcome.output);
+        assert_eq!(outcome.encoding(), OutcomeEncoding::CeremonyInState);
+        assert_eq!(outcome.output(), next.outcome.output());
         assert!(matches!(
             verifier.decode_dkg_outcome_and_register_boundary(legacy.header()),
             Err(commonware_codec::Error::ExtraData(_))

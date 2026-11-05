@@ -325,15 +325,15 @@ impl Inner {
                     epoch.next() == outcome.epoch(),
                     "outcome is for epoch `{}`, but we are trying to include the \
                     outcome for epoch `{}`",
-                    outcome.epoch,
+                    outcome.raw_epoch(),
                     epoch.next(),
                 );
                 info!(
-                    %outcome.epoch,
+                    outcome.epoch = %outcome.raw_epoch(),
                     outcome.network_identity = %outcome.network_identity(),
                     outcome.dealers = ?outcome.dealers(),
                     outcome.players = ?outcome.players(),
-                    outcome.next_ceremony = ?outcome.next_ceremony,
+                    outcome.next_ceremony = ?outcome.next_ceremony(),
                     "received DKG outcome; will include in payload builder attributes",
                 );
                 Ok(outcome.encode().into())
@@ -463,14 +463,14 @@ impl Inner {
         if &our_outcome != proposed_outcome {
             // Emit the log here so that it's structured. The error would be annoying to read.
             warn!(
-                our.epoch = %our_outcome.epoch,
+                our.epoch = %our_outcome.raw_epoch(),
                 our.players = ?our_outcome.players(),
                 our.sharing = ?our_outcome.sharing(),
-                our.next_ceremony = ?our_outcome.next_ceremony,
-                proposed.epoch = %proposed_outcome.epoch,
+                our.next_ceremony = ?our_outcome.next_ceremony(),
+                proposed.epoch = %proposed_outcome.raw_epoch(),
                 proposed.players = ?proposed_outcome.players(),
                 proposed.sharing = ?proposed_outcome.sharing(),
-                proposed.next_ceremony = ?proposed_outcome.next_ceremony,
+                proposed.next_ceremony = ?proposed_outcome.next_ceremony(),
                 "our public dkg outcome does not match what's stored \
                 in the block",
             );

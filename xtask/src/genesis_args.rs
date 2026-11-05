@@ -43,7 +43,9 @@ use tempo_contracts::{
         t13_zone_factory_state, t15_zone_factory_state,
     },
 };
-use tempo_dkg_onchain_artifacts::{DkgCeremony, OnchainDkgOutcome, OutcomeEncoding};
+use tempo_dkg_onchain_artifacts::{
+    DkgCeremony, OnchainDkgOutcome, OnchainDkgOutcomeV1, OutcomeEncoding,
+};
 use tempo_evm::genesis::{
     GenesisEvm, create_genesis_evm, deploy_arachnid_create2_factory, deploy_permit2,
     ethereum_chain_config, genesis_account, genesis_evm_env, predeployed_contract,
@@ -177,15 +179,18 @@ pub(crate) struct ConsensusConfig {
     pub(crate) validators: Vec<Validator>,
 }
 impl ConsensusConfig {
-    /// Returns the genesis DKG outcome in `encoding`. Only the legacy encoding carries the
-    /// ceremony of [`Self::genesis_dkg_ceremony`].
-    pub(crate) fn to_genesis_dkg_outcome(&self, encoding: OutcomeEncoding) -> OnchainDkgOutcome {
-        OnchainDkgOutcome {
+    /// Returns the genesis DKG outcome with the ceremony of [`Self::genesis_dkg_ceremony`].
+    pub(crate) fn genesis_dkg_outcome(&self) -> OnchainDkgOutcomeV1 {
+        OnchainDkgOutcomeV1 {
             epoch: 0,
             output: self.output.clone(),
-            next_ceremony: (encoding == OutcomeEncoding::Legacy)
-                .then(|| self.genesis_dkg_ceremony()),
+            next_ceremony: self.genesis_dkg_ceremony(),
         }
+    }
+
+    /// Returns the genesis DKG outcome as a genesis block with `encoding` writes it.
+    pub(crate) fn to_genesis_dkg_outcome(&self, encoding: OutcomeEncoding) -> OnchainDkgOutcome {
+        self.genesis_dkg_outcome().into_encoding(encoding)
     }
 
     /// Returns the DKG ceremony running during epoch 0: a reshare among all validators.
@@ -425,10 +430,7 @@ impl GenesisArgs {
                 "Initializing current committee and DKG ceremony (TIP-1123 active at genesis)"
             );
             with_genesis_storage(&mut evm, || {
-                store_dkg_ceremony(
-                    &consensus_config.to_genesis_dkg_outcome(dkg_outcome_encoding),
-                    &consensus_config.genesis_dkg_ceremony(),
-                )
+                store_dkg_ceremony(&consensus_config.genesis_dkg_outcome())
             })
             .wrap_err("failed to initialize the current committee")?;
         }
@@ -923,9 +925,9 @@ fn initialize_validator_config_v2(
 /// mode from the network identity rotation epoch of [`ValidatorConfigV2`], which is `0` while
 /// unset and would turn an epoch-0 reshare into a full DKG.
 pub(crate) fn store_dkg_ceremony(
-    outcome: &OnchainDkgOutcome,
-    ceremony: &DkgCeremony,
+    outcome: &OnchainDkgOutcomeV1,
 ) -> Result<(), TempoPrecompileError> {
+    let ceremony = &outcome.next_ceremony;
     let keys = |keys: &ordered::Set<PublicKey>| {
         keys.iter()
             .map(|key| B256::from_slice(key.as_ref()))
@@ -935,7 +937,7 @@ pub(crate) fn store_dkg_ceremony(
         Address::ZERO,
         ICurrentCommittee::setCommitteeMembersCall {
             epoch: outcome.epoch,
-            publicKeys: keys(outcome.players()),
+            publicKeys: keys(outcome.output.players()),
         },
     )?;
     Slot::<Vec<B256>>::new(slots::DKG_PLAYERS, CURRENT_COMMITTEE_ADDRESS)
@@ -1203,7 +1205,7 @@ mod tests {
             assert_eq!(outcome.output, consensus_config.output, "{hardfork}");
             assert_eq!(
                 outcome.next_ceremony,
-                Some(consensus_config.genesis_dkg_ceremony()),
+                consensus_config.genesis_dkg_ceremony(),
                 "{hardfork}"
             );
         }
@@ -1217,12 +1219,8 @@ mod tests {
             OnchainDkgOutcome::decode_extra_data(&genesis.extra_data, OutcomeEncoding::Legacy)
                 .unwrap();
         assert_eq!(
-            outcome.next_ceremony,
-            Some(consensus_config.genesis_dkg_ceremony())
-        );
-        assert_eq!(
             outcome,
-            consensus_config.to_genesis_dkg_outcome(OutcomeEncoding::Legacy)
+            OnchainDkgOutcome::V1(consensus_config.genesis_dkg_outcome())
         );
         assert!(current_committee_storage(&genesis).is_none());
     }

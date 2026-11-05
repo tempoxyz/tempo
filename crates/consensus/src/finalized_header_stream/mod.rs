@@ -289,12 +289,12 @@ where
                 })?;
 
             let network_identity = self.verifier.network_identity();
-            if onchain_outcome.epoch >= network_identity.from_epoch
+            if onchain_outcome.raw_epoch() >= network_identity.from_epoch
                 && network_identity.identity != *onchain_outcome.network_identity()
             {
                 warn!(
                     compiled_from_epoch = network_identity.from_epoch,
-                    onchain_epoch = %onchain_outcome.epoch,
+                    onchain_epoch = %onchain_outcome.raw_epoch(),
                     compiled_network_identity = %network_identity.identity,
                     onchain_network_identity = %onchain_outcome.network_identity(),
                     "Network identity differs from the onchain DKG outcome!!! Update the binary with the latest network identity"
@@ -420,7 +420,7 @@ where
 
     Ok(FinalizationVerifier::new(
         NetworkIdentity {
-            from_epoch: outcome.epoch,
+            from_epoch: outcome.raw_epoch(),
             identity: *outcome.network_identity(),
         },
         strategy.clone(),

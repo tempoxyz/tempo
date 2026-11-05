@@ -7,6 +7,7 @@ use std::{
 
 use alloy_consensus::{BlockHeader as _, Sealable as _};
 use alloy_primitives::B256;
+use commonware_codec::ReadExt as _;
 use commonware_consensus::{
     Heightable as _,
     marshal::Update,
@@ -21,7 +22,7 @@ use commonware_runtime::{
 use commonware_utils::{Acknowledgement, ordered};
 use eyre::{OptionExt as _, WrapErr as _, ensure};
 use futures::{StreamExt as _, channel::mpsc};
-use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
+use tempo_dkg_onchain_artifacts::OnchainDkgOutcomeV1;
 use tempo_precompiles::validator_config_v2::ValidatorConfigV2;
 use tempo_primitives::TempoHeader;
 use tracing::{Span, debug, error, info_span, instrument, warn};
@@ -209,39 +210,45 @@ where
             read_header_at_height(self.execution_node.as_ref(), highest_finalized)
                 .wrap_err("failed reading highest finalized header")?;
 
-        let onchain_outcome = OnchainDkgOutcome::decode_extra_data(
-            latest_boundary_header.extra_data(),
-            self.execution_node
-                .dkg_outcome_encoding_at(latest_boundary_header.timestamp()),
-        )
-        .wrap_err_with(|| {
-            format!("boundary block at `{latest_boundary}` did not contain a valid DKG outcome")
-        })?;
-
-        let builder = match &onchain_outcome.next_ceremony {
-            Some(ceremony) => {
-                PeersBuilder::new(onchain_outcome.players().clone(), &ceremony.players)
-            }
-            // From TIP-1123 the boundary block stored the ceremony of the epoch it
-            // starts in the CurrentCommittee precompile, so every state since has it.
-            None => {
-                let (_, _, stored) = read_validator_config_at_block_hash(
-                    self.execution_node.as_ref(),
-                    highest_finalized_header.hash_slow(),
-                    read_dkg_ceremony,
-                )
-                .wrap_err("failed reading DKG ceremony from execution layer")?;
-                let stored = stored.ok_or_eyre(
-                    "boundary block uses the TIP-1123 encoding, but no DKG ceremony is stored",
-                )?;
-                ensure!(
-                    stored.epoch == onchain_outcome.epoch,
-                    "stored DKG ceremony is for epoch `{}`, but the boundary block at `{latest_boundary}` starts epoch `{}`",
-                    stored.epoch,
-                    onchain_outcome.epoch,
-                );
-                PeersBuilder::new(stored.dealers, &stored.ceremony.players)
-            }
+        // From T15 (TIP-1123) the boundary block stored the ceremony of the epoch it starts in
+        // the CurrentCommittee precompile, so every state since has it and the header is not
+        // read. Before, the header carries it. The boundary decides, not the finalized tip: in
+        // the first epoch after activation the latest boundary still predates it.
+        let builder = if self
+            .execution_node
+            .stores_dkg_ceremony_at(latest_boundary_header.timestamp())
+        {
+            let boundary_epoch = if epoch_info.last().get() == highest_finalized {
+                epoch_info.epoch().next()
+            } else {
+                epoch_info.epoch()
+            };
+            let (_, _, stored) = read_validator_config_at_block_hash(
+                self.execution_node.as_ref(),
+                highest_finalized_header.hash_slow(),
+                read_dkg_ceremony,
+            )
+            .wrap_err("failed reading DKG ceremony from execution layer")?;
+            let stored = stored.ok_or_eyre(
+                "the boundary block stores the DKG ceremony in state (T15), but none is stored",
+            )?;
+            ensure!(
+                stored.epoch == boundary_epoch.get(),
+                "stored DKG ceremony is for epoch `{}`, but the boundary block at `{latest_boundary}` starts epoch `{boundary_epoch}`",
+                stored.epoch,
+            );
+            PeersBuilder::new(stored.dealers, &stored.ceremony.players)
+        } else {
+            let outcome = OnchainDkgOutcomeV1::read(
+                &mut latest_boundary_header.extra_data().as_ref(),
+            )
+            .wrap_err_with(|| {
+                format!("boundary block at `{latest_boundary}` did not contain a valid DKG outcome")
+            })?;
+            PeersBuilder::new(
+                outcome.output.players().clone(),
+                &outcome.next_ceremony.players,
+            )
         };
 
         let peers = builder
@@ -518,7 +525,7 @@ mod tests {
         TempoChainSpec,
         spec::{DEV, MODERATO},
     };
-    use tempo_dkg_onchain_artifacts::{DkgCeremony, OutcomeEncoding};
+    use tempo_dkg_onchain_artifacts::{DkgCeremony, OnchainDkgOutcome};
     use tempo_node::evm::{TempoEvm, TempoEvmConfig};
     use tempo_precompiles::{
         current_committee::{CurrentCommittee, ICurrentCommittee},
@@ -573,8 +580,8 @@ mod tests {
             Ok(self.headers.get(&height).cloned())
         }
 
-        fn dkg_outcome_encoding_at(&self, timestamp: u64) -> OutcomeEncoding {
-            self.chain_spec.dkg_outcome_encoding_at(timestamp)
+        fn stores_dkg_ceremony_at(&self, timestamp: u64) -> bool {
+            self.chain_spec.stores_dkg_ceremony_at(timestamp)
         }
     }
 
@@ -751,14 +758,15 @@ mod tests {
             ordered::Set::try_from_iter(players)?,
         )?;
 
-        Ok(OnchainDkgOutcome {
+        Ok(OnchainDkgOutcomeV1 {
             epoch: 0,
             output,
-            next_ceremony: Some(DkgCeremony {
+            next_ceremony: DkgCeremony {
                 players: ordered::Set::try_from_iter(next_players)?,
                 is_full_dkg: false,
-            }),
-        })
+            },
+        }
+        .into())
     }
 
     fn keys(
@@ -791,14 +799,14 @@ mod tests {
     fn with_boundary(
         mut execution: TestExecutionNode,
         height: u64,
-        mut outcome: OnchainDkgOutcome,
+        outcome: OnchainDkgOutcome,
     ) -> TestExecutionNode {
         let boundary = if height % 10 == 9 {
             height
         } else {
             (height / 10 * 10).saturating_sub(1)
         };
-        outcome.epoch = (boundary + 1) / 10;
+        let outcome = crate::test_utils::with_epoch(outcome, (boundary + 1) / 10);
         let mut boundary_header = execution_header(boundary);
         boundary_header.inner.extra_data = outcome.encode().into();
         let tip_header = if boundary == height {
@@ -1005,10 +1013,7 @@ mod tests {
     fn ceremony_in_state_outcome(
         players: impl IntoIterator<Item = PublicKey>,
     ) -> OnchainDkgOutcome {
-        OnchainDkgOutcome {
-            next_ceremony: None,
-            ..dkg_outcome(players, []).unwrap()
-        }
+        crate::test_utils::without_ceremony(&dkg_outcome(players, []).unwrap())
     }
 
     fn init_peer_manager(
@@ -1052,6 +1057,41 @@ mod tests {
     }
 
     #[test]
+    fn tip_1123_boundary_header_is_not_read() {
+        Runner::default().start(|context| async move {
+            let mut execution = with_boundary(
+                execution_with_stored_ceremony(1).unwrap(),
+                12,
+                ceremony_in_state_outcome([peer(1).public_key]),
+            );
+            execution.headers.get_mut(&9).unwrap().inner.extra_data = Default::default();
+            let oracle = RecordingOracle::default();
+            init_peer_manager(context, execution, oracle.clone()).unwrap();
+
+            let tracked = oracle.tracked.lock().unwrap();
+            assert_eq!(tracked.len(), 1);
+            assert_peer(&tracked[0].1.primary, &peer(1));
+        });
+    }
+
+    #[test]
+    fn tip_1123_genesis_starts_epoch_0() {
+        Runner::default().start(|context| async move {
+            let execution = with_boundary(
+                execution_with_stored_ceremony(0).unwrap(),
+                0,
+                ceremony_in_state_outcome([peer(1).public_key]),
+            );
+            let oracle = RecordingOracle::default();
+            init_peer_manager(context, execution, oracle.clone()).unwrap();
+
+            let tracked = oracle.tracked.lock().unwrap();
+            assert_eq!(tracked.len(), 1);
+            assert_peer(&tracked[0].1.primary, &peer(1));
+        });
+    }
+
+    #[test]
     fn tip_1123_boundary_rejects_ceremony_stored_for_another_epoch() {
         Runner::default().start(|context| async move {
             let execution = with_boundary(
@@ -1083,7 +1123,7 @@ mod tests {
             let error = init_peer_manager(context, execution, oracle.clone()).unwrap_err();
             assert!(
                 format!("{error:#}").contains(
-                    "boundary block uses the TIP-1123 encoding, but no DKG ceremony is stored"
+                    "the boundary block stores the DKG ceremony in state (T15), but none is stored"
                 ),
                 "{error:#}",
             );

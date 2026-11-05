@@ -1609,11 +1609,11 @@ async fn read_dkg_roles<P: Provider<TempoNetwork>>(
     )
     .wrap_err("failed to decode DKG outcome from extra_data")?;
 
-    if let Some(ceremony) = dkg_outcome.next_ceremony {
+    if let OnchainDkgOutcome::V1(outcome) = dkg_outcome {
         return Ok(DkgRoles {
             boundary_height,
-            dealers: dkg_outcome.output.players().clone(),
-            ceremony,
+            dealers: outcome.output.players().clone(),
+            ceremony: outcome.next_ceremony,
         });
     }
 
@@ -1755,6 +1755,7 @@ mod tests {
     use reth_rpc_server_types::{RethRpcModule, RpcModuleSelection, RpcModuleValidator};
     use std::sync::Mutex;
     use tempo_chainspec::spec::TempoChainSpecParser;
+    use tempo_dkg_onchain_artifacts::OnchainDkgOutcomeV1;
 
     type TempoCli = Cli<
         TempoChainSpecParser,
@@ -2335,16 +2336,13 @@ mod tests {
             .unwrap();
         assert_eq!(roles.boundary_height, Height::new(9));
         assert_eq!(&roles.dealers, outcome.players());
-        assert_eq!(Some(roles.ceremony), outcome.next_ceremony);
+        assert_eq!(Some(&roles.ceremony), outcome.next_ceremony());
     }
 
     #[tokio::test]
     async fn dkg_roles_come_from_current_committee_after_tip_1123() {
         let legacy = OnchainDkgOutcome::dealt(1, 3);
-        let outcome = OnchainDkgOutcome {
-            next_ceremony: None,
-            ..legacy.clone()
-        };
+        let outcome = OnchainDkgOutcome::V2(OnchainDkgOutcomeV1::dealt(1, 3).without_ceremony());
         let players = OnchainDkgOutcome::dealt(2, 4).players().clone();
         let stored = |epoch| ICurrentCommittee::getDkgCeremonyReturn {
             epoch,

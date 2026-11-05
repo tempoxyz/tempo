@@ -246,7 +246,7 @@ where
             });
 
         // Scheme registration has already rejected conflicting keys within the same epoch.
-        if outcome.epoch >= identity_epoch {
+        if outcome.raw_epoch() >= identity_epoch {
             let identity = NetworkIdentity {
                 from_epoch: outcome.epoch().get(),
                 identity: *outcome.network_identity(),
@@ -433,12 +433,12 @@ where
             );
 
             let configured_identity = &self.config.network_identity;
-            if onchain_outcome.epoch >= configured_identity.from_epoch
+            if onchain_outcome.raw_epoch() >= configured_identity.from_epoch
                 && configured_identity.identity != *onchain_outcome.network_identity()
             {
                 warn!(
                     compiled_from_epoch = configured_identity.from_epoch,
-                    onchain_epoch = %onchain_outcome.epoch,
+                    onchain_epoch = %onchain_outcome.raw_epoch(),
                     compiled_network_identity = %configured_identity.identity,
                     onchain_network_identity = %onchain_outcome.network_identity(),
                     "Network identity differs from the onchain DKG outcome!!! Update the binary with the latest network identity"

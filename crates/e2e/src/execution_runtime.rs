@@ -43,7 +43,7 @@ use reth_rpc_builder::RpcModuleSelection;
 use tempfile::TempDir;
 use tempo_chainspec::{TempoChainSpec, TempoHardfork};
 use tempo_consensus::feed::FeedStateHandle;
-use tempo_dkg_onchain_artifacts::{OnchainDkgOutcome, OutcomeEncoding};
+use tempo_dkg_onchain_artifacts::{OnchainDkgOutcomeV1, OutcomeEncoding};
 use tempo_evm::genesis::{create_genesis_evm, genesis_evm_env, with_genesis_storage};
 use tempo_node::{
     TempoFullNode,
@@ -74,7 +74,7 @@ pub struct Builder {
     t14_time: Option<u64>,
     t15_time: Option<u64>,
     epoch_length: Option<u64>,
-    initial_dkg_outcome: Option<OnchainDkgOutcome>,
+    initial_dkg_outcome: Option<OnchainDkgOutcomeV1>,
     validators: Option<ordered::Map<PublicKey, ConsensusNodeConfig>>,
 }
 
@@ -101,7 +101,7 @@ impl Builder {
         }
     }
 
-    pub fn with_initial_dkg_outcome(self, initial_dkg_outcome: OnchainDkgOutcome) -> Self {
+    pub fn with_initial_dkg_outcome(self, initial_dkg_outcome: OnchainDkgOutcomeV1) -> Self {
         Self {
             initial_dkg_outcome: Some(initial_dkg_outcome),
             ..self
@@ -140,10 +140,7 @@ impl Builder {
             initial_dkg_outcome.ok_or_eyre("must specify initial DKG outcome")?;
         let validators = validators.ok_or_eyre("must specify validators")?;
 
-        let initial_ceremony = initial_dkg_outcome
-            .next_ceremony
-            .clone()
-            .ok_or_eyre("initial DKG outcome must carry its ceremony")?;
+        let initial_ceremony = initial_dkg_outcome.next_ceremony.clone();
         assert_eq!(
             &initial_ceremony.players,
             &ordered::Set::from_iter_dedup(
@@ -196,13 +193,11 @@ impl Builder {
 
         let encoding = TempoChainSpec::from_genesis(genesis.clone())
             .dkg_outcome_encoding_at(genesis.timestamp);
-        let initial_dkg_outcome = OnchainDkgOutcome {
-            next_ceremony: initial_dkg_outcome
-                .next_ceremony
-                .filter(|_| encoding == OutcomeEncoding::Legacy),
-            ..initial_dkg_outcome
-        };
-        genesis.extra_data = initial_dkg_outcome.encode().into();
+        genesis.extra_data = initial_dkg_outcome
+            .clone()
+            .into_encoding(encoding)
+            .encode()
+            .into();
 
         // Just remove whatever is already written into chainspec.
         genesis.alloc.remove(&VALIDATOR_CONFIG_V2_ADDRESS);
@@ -262,7 +257,7 @@ impl Builder {
                         Address::ZERO,
                         ICurrentCommittee::setCommitteeMembersCall {
                             epoch: initial_dkg_outcome.epoch,
-                            publicKeys: keys(initial_dkg_outcome.players()),
+                            publicKeys: keys(initial_dkg_outcome.output.players()),
                         },
                     )
                     .unwrap();

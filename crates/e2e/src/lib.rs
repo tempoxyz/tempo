@@ -42,7 +42,7 @@ pub mod metrics;
 pub use execution_runtime::ExecutionNodeConfig;
 pub mod testing_node;
 pub use execution_runtime::ExecutionRuntime;
-use tempo_dkg_onchain_artifacts::{DkgCeremony, OnchainDkgOutcome};
+use tempo_dkg_onchain_artifacts::{DkgCeremony, OnchainDkgOutcomeV1};
 pub use testing_node::TestingNode;
 
 pub const CONSENSUS_NODE_PREFIX: &str = "consensus";
@@ -56,7 +56,7 @@ fn generate_consensus_node_config(
     verifiers: u32,
     fee_recipient: Address,
 ) -> (
-    OnchainDkgOutcome,
+    OnchainDkgOutcomeV1,
     ordered::Map<PublicKey, ConsensusNodeConfig>,
 ) {
     let signer_keys = repeat_with(|| PrivateKey::random(&mut *rng))
@@ -70,13 +70,13 @@ fn generate_consensus_node_config(
     )
     .unwrap();
 
-    let onchain_dkg_outcome = OnchainDkgOutcome {
+    let onchain_dkg_outcome = OnchainDkgOutcomeV1 {
         epoch: 0,
         output: initial_dkg_outcome,
-        next_ceremony: Some(DkgCeremony {
+        next_ceremony: DkgCeremony {
             players: shares.keys().clone(),
             is_full_dkg: false,
-        }),
+        },
     };
 
     let verifier_keys = repeat_with(|| PrivateKey::random(&mut *rng))
@@ -314,7 +314,7 @@ pub async fn setup_validators(
 
     let network_identity = tempo_chainspec::NetworkIdentity {
         from_epoch: onchain_dkg_outcome.epoch,
-        identity: *onchain_dkg_outcome.network_identity(),
+        identity: *onchain_dkg_outcome.output.public().public(),
     };
 
     let execution_runtime = ExecutionRuntime::builder()

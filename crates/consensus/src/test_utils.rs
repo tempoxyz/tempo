@@ -25,7 +25,9 @@ use commonware_math::algebra::Random as _;
 use commonware_parallel::Sequential;
 use commonware_utils::{N3f1, TryFromIterator as _, ordered};
 use rand_core::CryptoRng;
-use tempo_dkg_onchain_artifacts::{DkgCeremony, OnchainDkgOutcome};
+use tempo_dkg_onchain_artifacts::{
+    DkgCeremony, OnchainDkgOutcome, OnchainDkgOutcomeV1, OnchainDkgOutcomeV2,
+};
 
 use crate::consensus::Digest;
 
@@ -62,16 +64,35 @@ pub(crate) fn dkg_fixture(rng: &mut impl CryptoRng, epoch: Epoch) -> DkgFixture 
         })
         .collect();
 
-    let outcome = OnchainDkgOutcome {
+    let outcome = OnchainDkgOutcomeV1 {
         epoch: epoch.get(),
-        next_ceremony: Some(DkgCeremony {
+        next_ceremony: DkgCeremony {
             players: output.players().clone(),
             is_full_dkg: false,
-        }),
+        },
         output,
-    };
+    }
+    .into();
 
     DkgFixture { outcome, schemes }
+}
+
+/// Returns `outcome` for `epoch` instead.
+pub(crate) fn with_epoch(mut outcome: OnchainDkgOutcome, epoch: u64) -> OnchainDkgOutcome {
+    match &mut outcome {
+        OnchainDkgOutcome::V1(outcome) => outcome.epoch = epoch,
+        OnchainDkgOutcome::V2(outcome) => outcome.epoch = epoch,
+    }
+    outcome
+}
+
+/// Returns `outcome` as a TIP-1123 boundary block writes it, without a ceremony.
+pub(crate) fn without_ceremony(outcome: &OnchainDkgOutcome) -> OnchainDkgOutcome {
+    OnchainDkgOutcomeV2 {
+        epoch: outcome.raw_epoch(),
+        output: outcome.output().clone(),
+    }
+    .into()
 }
 
 /// Builds a finalization certificate over an arbitrary payload.

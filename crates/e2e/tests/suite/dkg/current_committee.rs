@@ -45,7 +45,7 @@ fn current_committee_matches_boundary_dkg_outcome() {
         join_all(validators.iter_mut().map(|v| v.start(&context))).await;
 
         let outcome = wait_for_outcome(&context, &validators, 0, epoch_length).await;
-        wait_for_validators_to_reach_epoch(&context, outcome.epoch, how_many_signers).await;
+        wait_for_validators_to_reach_epoch(&context, outcome.raw_epoch(), how_many_signers).await;
         context.to_metrics().assert_no_dkg_failures();
 
         let provider = validators[0].execution_provider();
@@ -80,7 +80,7 @@ fn current_committee_matches_boundary_dkg_outcome() {
             .map(|key| B256::from_slice(key.as_ref()))
             .collect::<Vec<_>>();
 
-        assert_eq!(epoch, outcome.epoch);
+        assert_eq!(epoch, outcome.raw_epoch());
         assert_eq!(public_keys, expected_public_keys);
     });
 }
@@ -114,7 +114,7 @@ fn boundaries_store_the_next_dkg_ceremony_from_genesis() {
         join_all(validators.iter_mut().map(|v| v.start(&context))).await;
 
         let outcome = wait_for_outcome(&context, &validators, 0, epoch_length).await;
-        wait_for_validators_to_reach_epoch(&context, outcome.epoch, how_many_signers).await;
+        wait_for_validators_to_reach_epoch(&context, outcome.raw_epoch(), how_many_signers).await;
         context.to_metrics().assert_no_dkg_failures();
 
         // The boundary carries only the outcome; its ceremony lives in state.
@@ -212,7 +212,7 @@ fn first_activated_boundary_stores_the_next_dkg_ceremony() {
             }
 
             let outcome = read_outcome_from_validator(validator, boundary).unwrap();
-            assert_eq!(outcome.epoch, epoch + 1);
+            assert_eq!(outcome.raw_epoch(), epoch + 1);
             let stored = read_stored_dkg_ceremony(validator, boundary);
             tracing::info!(
                 epoch,

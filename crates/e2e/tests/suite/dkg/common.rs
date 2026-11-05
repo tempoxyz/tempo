@@ -93,11 +93,11 @@ pub(crate) fn read_ceremony_from_validator(
 ) -> DkgCeremony {
     let outcome =
         read_outcome_from_validator(validator, block_num).expect("boundary has a DKG outcome");
-    if let Some(ceremony) = outcome.next_ceremony {
-        return ceremony;
+    if let OnchainDkgOutcome::V1(outcome) = outcome {
+        return outcome.next_ceremony;
     }
     let stored = read_stored_dkg_ceremony(validator, block_num).expect("ceremony is stored");
-    assert_eq!(stored.epoch, outcome.epoch);
+    assert_eq!(stored.epoch, outcome.raw_epoch());
     assert_eq!(stored.dealers, public_keys(outcome.players()));
     DkgCeremony {
         players: ordered::Set::try_from_iter(
@@ -153,7 +153,7 @@ pub(crate) async fn wait_for_outcome(
             tracing::info!(
                 epoch,
                 %height,
-                outcome_epoch = %outcome.epoch,
+                outcome_epoch = %outcome.raw_epoch(),
                 encoding = ?outcome.encoding(),
                 "Read DKG outcome"
             );

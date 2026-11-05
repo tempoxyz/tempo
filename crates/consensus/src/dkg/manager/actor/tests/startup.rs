@@ -23,7 +23,7 @@ use crate::{
 
 fn identity(fixture: &DkgFixture) -> NetworkIdentity {
     NetworkIdentity {
-        from_epoch: fixture.outcome.epoch,
+        from_epoch: fixture.outcome.raw_epoch(),
         identity: *fixture.outcome.network_identity(),
     }
 }
@@ -32,7 +32,7 @@ fn persisted(fixture: &DkgFixture, rng: &mut impl CryptoRng) -> State {
     State {
         epoch: fixture.outcome.epoch(),
         seed: Summary::random(rng),
-        output: fixture.outcome.output.clone(),
+        output: fixture.outcome.output().clone(),
         share: ShareState::unset_plaintext(),
         players: fixture.outcome.players().clone(),
         is_full_dkg: false,
