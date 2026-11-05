@@ -1,4 +1,4 @@
-//! Proof checks shared by settlement and shadow proving.
+//! On-chain proof checks for settlement proving.
 
 use alloy_contract::CallBuilder;
 use alloy_primitives::U256;

@@ -1507,7 +1507,7 @@ The Nitro verifier MUST validate the COSE signature and certificate chain, enfor
 
 ### Prover Service and Deployment
 
-The settlement prover runs the state transition function inside a Nitro Enclave. The parent node collects the complete `BatchWitness`; the enclave performs no RPC or filesystem reads while handling it. A configured settlement sequencer MUST use a remote attesting prover. In-process execution is available for observational shadow validation but does not produce a settlement proof.
+The settlement prover runs the state transition function inside a Nitro Enclave. The parent node collects the complete `BatchWitness`; the enclave performs no RPC or filesystem reads while handling it. A configured settlement sequencer MUST use a remote attesting prover.
 
 The service accepts one request and returns one response per connection. Each frame is a four-byte big-endian payload length followed by CBOR and is bounded by a configurable limit of 2 GiB by default. The request contains `version`, a caller-selected `requestId`, and `witness`; byte-heavy witness fields use CBOR byte strings rather than human-readable hex. Decoding is schema-driven and rejects unknown, duplicate, or trailing request data. A successful response echoes the version and request ID and contains both `BatchOutput` and `ProofBundle`. The prover accepts only chain specifications configured by its operator; a witness cannot supply its own trusted chain schedule. A production deployment MUST select the canonical per-zone chain specification independently of the witness and derive the portal from its zone ID.
 
