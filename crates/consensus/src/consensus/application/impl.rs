@@ -1,6 +1,10 @@
 //! Tempo's block building and verification.
 
-use std::time::{Duration, Instant};
+use std::{
+    num::NonZeroU64,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use alloy_consensus::BlockHeader;
 use alloy_primitives::Bytes;
@@ -25,9 +29,13 @@ use commonware_utils::{Acknowledgement as _, SystemTimeExt as _};
 use eyre::{OptionExt as _, WrapErr as _, ensure};
 use futures::{FutureExt as _, StreamExt as _, channel::oneshot};
 use rand_core::Rng;
+use reth_evm::database::StateProviderDatabase;
 use reth_primitives_traits::BlockBody as _;
+use reth_provider::StateProviderFactory as _;
+use tempo_chainspec::TempoHardforks as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
-use tempo_evm::BoundaryOutcomeChecks;
+use tempo_evm::{BoundaryOutcomeChecks, TempoStateAccess as _};
+use tempo_node::TempoFullNode;
 use tempo_payload_types::{
     Estimator, ProposalKey, ProposalTiming, TempoPayloadAttributes, ValidationLatencyWorkload,
 };
@@ -60,6 +68,10 @@ pub(in crate::consensus) struct Config<TContext> {
 
     /// Boundary blocks whose DKG outcome execution checked against the parent state.
     pub(in crate::consensus) boundary_outcome_checks: BoundaryOutcomeChecks,
+
+    /// Reads the parent state to check a boundary block again when execution
+    /// recorded no verdict on it.
+    pub(in crate::consensus) execution_node: Arc<TempoFullNode>,
 }
 
 /// Tempo's block builder and verifier, see the module documentation.
@@ -73,6 +85,7 @@ pub(crate) struct Inner {
     executor: crate::executor::Mailbox,
     dkg_manager: crate::dkg::manager::Mailbox,
     boundary_outcome_checks: BoundaryOutcomeChecks,
+    execution_node: Arc<TempoFullNode>,
 
     metrics: Metrics,
 }
@@ -88,6 +101,7 @@ impl Inner {
             executor: config.executor,
             dkg_manager: config.dkg_manager,
             boundary_outcome_checks: config.boundary_outcome_checks,
+            execution_node: config.execution_node,
             metrics: Metrics::init(&config.context),
         }
     }
@@ -284,6 +298,51 @@ impl Inner {
         );
 
         Ok(proposal)
+    }
+
+    /// Checks the DKG outcome of the boundary block `block` against the state
+    /// of its parent, as execution does, and records the verdict. For a block
+    /// on which execution recorded no verdict.
+    ///
+    /// Fails if the parent state cannot be read, such as for a parent that is
+    /// not on the canonical chain.
+    fn recheck_boundary_outcome(
+        &self,
+        block: &Block,
+        proposed: &OnchainDkgOutcome,
+    ) -> eyre::Result<bool> {
+        let header = block.header();
+        let chain_spec = self.execution_node.chain_spec();
+        let state = self
+            .execution_node
+            .provider
+            .state_by_block_hash(header.parent_hash())
+            .wrap_err("failed reading the parent state")?;
+        let block_number = header.number();
+        let config = StateProviderDatabase::new(state)
+            .dkg_ceremony_config(
+                chain_spec.tempo_hardfork_at(header.timestamp()),
+                block_number,
+            )
+            .wrap_err("failed reading ValidatorConfigV2 in the parent state")?;
+        // Before ValidatorConfigV2 was initialized, the players came from
+        // ValidatorConfig V1.
+        let matches = config.is_none_or(|config| {
+            let epoch_length = chain_spec
+                .info
+                .epoch_length()
+                .unwrap_or(NonZeroU64::MIN)
+                .get();
+            config.boundary_outcome(block_number / epoch_length + 1, proposed.output.clone())
+                == *proposed
+        });
+        info!(
+            matches,
+            "checked the boundary block's DKG outcome against the parent state again"
+        );
+        self.boundary_outcome_checks
+            .record(block.digest().0, matches);
+        Ok(matches)
     }
 
     /// Returns whether the block at `height` is the last block of its epoch,
@@ -509,7 +568,9 @@ where
         // Only a boundary block carries a DKG outcome. Every execution of it
         // checks all of it but the ceremony output against the parent state,
         // including one the execution layer ran without being asked to enforce
-        // the check, such as a block it buffered until its parent arrived.
+        // the check, such as a block it buffered until its parent arrived. If
+        // no verdict is recorded, for example because later executions pushed
+        // it out, the check runs again here.
         match proposed_outcome {
             None => true,
             Some(outcome) => {
@@ -522,13 +583,24 @@ where
                         );
                         return false;
                     }
-                    None => {
-                        warn!(
-                            "execution recorded no verdict on the boundary block's DKG \
-                            outcome; abstaining"
-                        );
-                        return std::future::pending().await;
-                    }
+                    None => match self.recheck_boundary_outcome(block.inner(), &outcome) {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            warn!(
+                                "the boundary block's DKG outcome does not match the parent \
+                                state; failing block"
+                            );
+                            return false;
+                        }
+                        Err(error) => {
+                            warn!(
+                                %error,
+                                "execution recorded no verdict on the boundary block's DKG \
+                                outcome, and the parent state could not be read; abstaining"
+                            );
+                            return std::future::pending().await;
+                        }
+                    },
                 }
                 let ceremony =
                     ceremony.expect("`verify_header` decodes an outcome only for a boundary block");
