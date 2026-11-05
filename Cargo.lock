@@ -14713,6 +14713,8 @@ dependencies = [
  "bincode",
  "codspeed-criterion-compat",
  "commonware-codec",
+ "commonware-cryptography",
+ "commonware-utils",
  "evm2",
  "invariants-core",
  "reth-chainspec",
