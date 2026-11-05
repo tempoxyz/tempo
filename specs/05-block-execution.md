@@ -49,27 +49,21 @@ It does **not** specify per-transaction validation and processing (intrinsic gas
 | `STORAGE_CREDIT_VALUE` (TIP-1060) | `245_000` |
 | `EPOCH_LENGTH` (mainnet genesis `config.epochLength`) | `21_600` blocks |
 
-Reference implementation: crates/hardfork/src/constants.rs, crates/evm/src/evm.rs, crates/evm/src/consensus/mod.rs, crates/chainspec/src/genesis/presto.json.
-
 ---
 
 ## 1. EVM base and Tempo modifications
 
 ### 1.1 Ethereum rule set
 
-Every Tempo fork from T0 through T13 executes with the Ethereum **Osaka** rule set (`SpecId::OSAKA`). The mainnet genesis activates every Ethereum fork up to and including Osaka at genesis (`homestead` … `londonBlock = 0`, `mergeNetsplitBlock = 0`, `terminalTotalDifficulty = 0`, `shanghaiTime = cancunTime = pragueTime = osakaTime = 0`; no DAO fork). Therefore every mainnet block is a post-merge, Osaka block, and all EIPs included in the Ethereum hard forks through Osaka apply, except where this chapter modifies them. Amsterdam (and with it EIP-7928 block access lists, EIP-8037 and EIP-8282) is not scheduled and MUST NOT be applied.
+Every Tempo fork from T0 through T13 executes with the Ethereum **Osaka** rule set. The mainnet genesis activates every Ethereum fork up to and including Osaka at genesis (`homestead` … `londonBlock = 0`, `mergeNetsplitBlock = 0`, `terminalTotalDifficulty = 0`, `shanghaiTime = cancunTime = pragueTime = osakaTime = 0`; no DAO fork). Therefore every mainnet block is a post-merge, Osaka block, and all EIPs included in the Ethereum hard forks through Osaka apply, except where this chapter modifies them. Amsterdam (and with it EIP-7928 block access lists, EIP-8037 and EIP-8282) is not scheduled and MUST NOT be applied.
 
 In particular the following inherited rules apply unchanged unless a later section says otherwise: EIP-150, EIP-155, EIP-158/161 (state clearing), EIP-1153, EIP-1559 (effective gas price and the `maxFeePerGas >= baseFee` rule; see §1.4 for burn), EIP-2028, EIP-2200/EIP-2929/EIP-3529 SSTORE metering as parameterised in §1.7, EIP-2930, EIP-3198, EIP-3541, EIP-3651 (warm `COINBASE`), EIP-3855, EIP-3860, EIP-4399 (`PREVRANDAO`), EIP-4844 opcodes (`BLOBHASH`, `BLOBBASEFEE`), EIP-5656, EIP-6780, EIP-7516, EIP-7623 (calldata floor), EIP-7702, EIP-7825 (with Tempo's cap, §1.8), EIP-7934, EIP-7939 (`CLZ`), EIP-170 (24,576-byte code size limit).
-
-Reference implementation: crates/hardfork/src/lib.rs (`From<TempoHardfork> for SpecId`), crates/evm/src/handler/config.rs (`tempo_execution_config`).
 
 ### 1.2 Transaction types
 
 A block MAY contain transactions of types `0x00` (legacy), `0x01` (EIP-2930), `0x02` (EIP-1559), `0x04` (EIP-7702) and `0x76` (Tempo transaction). Type `0x03` (EIP-4844 blob transactions) does not exist on Tempo: such an envelope is not decodable (see [02-encoding.md](02-encoding.md)) and a block containing one is invalid. Consequently every transaction's blob gas is zero and `BLOBHASH` always returns zero.
 
 A legacy transaction whose signature is `(r = 0, s = 0, y_parity = false)` is a **system transaction** (§5.5); it is processed by the system-transaction path and never by the ordinary legacy path.
-
-Reference implementation: crates/primitives/src/transaction/envelope.rs, crates/evm/src/handler/config.rs (`tempo_tx_registry`).
 
 ### 1.3 Precompiles
 
@@ -80,8 +74,6 @@ Reference implementation: crates/primitives/src/transaction/envelope.rs, crates/
 
 **Tempo precompiles.** In addition, the Tempo precompiles (TIP-20 tokens, fee manager, DEX, keychain, nonce manager, validator config, …) are dispatched by address as specified in [precompiles/00-framework.md](precompiles/00-framework.md). For EIP-2929 purposes only the Ethereum precompile addresses of the active set are added to the transaction's initial warm address set; Tempo precompile addresses are not pre-warmed.
 
-Reference implementation: crates/precompiles/src/lib.rs (`TempoPrecompiles::new`, `warm_addresses`).
-
 ### 1.4 No native token
 
 Tempo has no native value-bearing token. The following rules hold at every fork:
@@ -91,8 +83,6 @@ Tempo has no native value-bearing token. The following rules hold at every fork:
 3. The Ethereum native-balance sufficiency check for the up-front gas cost (`balance >= gas_limit * max_fee_per_gas + value`) MUST NOT be performed, and the sender's native balance MUST NOT be topped up or debited for gas. (Because balances are always zero, a saturating debit would be a no-op.)
 4. Inside the EVM, `CALL`/`CALLCODE`/`CREATE`/`CREATE2` with non-zero value follow Ethereum rules unchanged: gas (including the value-transfer and new-account surcharges of §1.7) is charged, and the value transfer then fails for insufficient balance (the sub-call/creation is not executed and the opcode pushes 0). `SELFDESTRUCT` transfers a zero balance.
 5. Fees are paid in TIP-20 tokens by the fee-payment procedure of [06-transactions-and-fees.md](06-transactions-and-fees.md) and [precompiles/fee-manager.md](precompiles/fee-manager.md). Neither the base fee nor the priority fee is burned; the Ethereum native refund of unused gas and the native beneficiary reward MUST NOT be applied.
-
-Reference implementation: crates/evm/src/handler/config.rs (`tempo_execution_config` removes `BALANCE_CHECK` and `BALANCE_TOP_UP`; `validate_no_native_value`; `settle_transaction`), crates/chainspec/src/genesis/presto.json.
 
 ### 1.5 Block environment
 
@@ -112,8 +102,6 @@ The EVM block environment of a block is derived from its header ([02-encoding.md
 | epoch length (used by §6.2) | `EPOCH_LENGTH` from the chain configuration (mainnet 21,600) |
 
 The Tempo-specific header fields `general_gas_limit` and `shared_gas_limit` are inputs to block-section accounting (§5.4).
-
-Reference implementation: crates/evm/src/lib.rs (`evm_env`), crates/primitives/src/block.rs (`TempoBlockExt::timestamp_millis`).
 
 ### 1.6 Opcode overrides
 
@@ -171,8 +159,6 @@ If any charge exceeds the remaining gas the frame halts exceptionally (all its g
 
 `0xEF` is undefined at every fork T0–T13: executing it is an exceptional halt (invalid opcode). (Accounts whose code is the one-byte `MARKER_CODE` installed by §4.5 are Tempo precompile addresses; calls to them are dispatched to the precompile and never execute the byte. EIP-3541 continues to forbid deploying new code that starts with `0xEF`.)
 
-Reference implementation: crates/evm/src/instructions.rs (`millis_timestamp`, `sstore`, `configurable_account`), crates/evm/src/handler/config.rs (`tempo_opcode_config`).
-
 ### 1.7 Gas schedule per fork
 
 Tempo uses the Osaka gas schedule with the overrides below. Parameters not listed (for example `ColdStorageCost` = 2,100, `ColdAccountAdditionalCost` = 2,500, `ColdStorageAdditionalCost` = 2,000, `WarmStorageReadCost` = `SstoreStatic` = 100, `SstoreResetWithoutColdLoadCost` = 2,800, `SstoreResetRefund` = 2,800, calldata token costs, EIP-7623 floor costs, EIP-3860 initcode word cost, memory, copy, log, Keccak, call-stipend and EIP-150 rules, precompile prices) keep their Osaka values at every fork.
@@ -195,8 +181,6 @@ The T1 values implement TIP-1000; the T7 values implement TIP-1060. How the tran
 
 > **Resolved conflict C-EXEC-04**: TIP-1000 says the nonzero→zero SSTORE clearing refund stays 15,000 gas; the code uses 4,800 (EIP-3529) at T0–T6 and 0 from T7. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](conflicts.md#c-exec-04).
 
-Reference implementation: crates/hardfork/src/gas_params.rs (`configure_version`, `apply_t1`, `apply_t7`, `test_gas_params_per_hardfork`).
-
 ### 1.8 Transaction gas limit cap (EIP-7825)
 
 The per-transaction gas limit cap of EIP-7825 is:
@@ -207,8 +191,6 @@ The per-transaction gas limit cap of EIP-7825 is:
 A non-system transaction whose `gas_limit` exceeds the cap is invalid. The cap applies to every non-system transaction type, including `0x76`. It does not apply to system transactions or system calls. (On mainnet T1A activates together with T1, so the 16,777,216 cap applies to T0 blocks only.)
 
 > **Resolved conflict C-EXEC-03**: TIP-1010 describes the previous transaction gas cap as 16,000,000; the code uses EIP-7825's 16,777,216 before T1A. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](conflicts.md#c-exec-03).
-
-Reference implementation: crates/hardfork/src/lib.rs (`tx_gas_limit_cap`), crates/evm/src/lib.rs (`resolved_env`).
 
 ### 1.9 Refund finalization
 
@@ -246,13 +228,9 @@ Consequences: before T7 at most `gas_spent // 5` is refunded; from T7 the refund
 
 `tx_gas_used` is the transaction's gas used for every purpose in this chapter: the receipt's cumulative gas, the header `gas_used`, the per-transaction block-gas check and block-section accounting (§5.4).
 
-Reference implementation: crates/evm/src/handler/config.rs (`settle_transaction`, `settle_storage_credit_refunds`).
-
 ### 1.10 TIP-1016 / EIP-8037 is disabled
 
 The regular/state gas split of TIP-1016 (EIP-8037 "state gas" and reservoir) is not active at any fork T0–T13: no transaction or system call has a state-gas dimension, and the block's gas used is the sum of `tx_gas_used` (§1.9). Implementations MUST NOT apply TIP-1016.
-
-Reference implementation: crates/evm/src/handler/config.rs (`tempo_execution_config` passes `amsterdam_eip8037_enabled = false`).
 
 ---
 
@@ -338,8 +316,6 @@ Arithmetic is exact (at least 128-bit intermediates). `parent.gas_used` is the p
 
 Base fees are denominated in attodollars (10^-18 USD) per gas; conversion to fee-token units is specified in [06-transactions-and-fees.md](06-transactions-and-fees.md).
 
-Reference implementation: crates/chainspec/src/spec.rs (`next_block_base_fee`, `shared_gas_limit_at`, `general_gas_limit_at`), crates/hardfork/src/constants.rs (`tempo_t7_next_block_base_fee`), crates/hardfork/src/lib.rs (`shared_gas_limit`, `general_gas_limit`).
-
 ### 2.5 Body checks before execution
 
 1. `h.transactions_root` equals the root of the body's transaction list; `h.ommers_hash` equals the root of the (empty) ommers list.
@@ -347,8 +323,6 @@ Reference implementation: crates/chainspec/src/spec.rs (`next_block_base_fee`, `
 3. `h.blob_gas_used` equals the total blob gas of the body's transactions, which is always 0.
 4. The RLP encoding of the whole block is at most `MAX_RLP_BLOCK_SIZE` bytes (EIP-7934).
 5. System-transaction structure (before execution): see §5.5.1.
-
-Reference implementation: crates/evm/src/consensus/mod.rs (`TempoConsensus`), reth `EthBeaconConsensus` and `reth_consensus_common::validation` at reth rev `966010c905449163ef161530a5ee95ac1e0c8487`.
 
 ---
 
@@ -381,8 +355,6 @@ def execute_block(B, p, S):
 ```
 
 All state changes made by §4, §5 and §6 are part of the block's post-state and hence of `h.state_root`. System calls (§4.2, §4.3, §6.2, §6.3) produce no receipt, do not consume block gas and do not change `cumulative_gas_used`.
-
-Reference implementation: crates/evm/src/block.rs (`TempoBlockExecutor`).
 
 ---
 
@@ -427,7 +399,7 @@ A **system call** `(caller, target, data, gas)` executes one top-level message c
 - On success the call's state changes are committed. On revert or exceptional halt they are discarded; whether the block is then invalid depends on the call (stated per call).
 - `caller`'s account is not modified by the call itself.
 
-Reference implementation: alloy-rs/evm2 rev `a29a283f6cd4bc65e44f5813de5e9f43553c5fda` `crates/evm2/src/evm/system.rs` (`Evm::system_call`); reth rev `966010c905449163ef161530a5ee95ac1e0c8487` `crates/ethereum/evm/src/execution.rs` (`pre_execution_system_call_state_changes`); crates/evm/src/block.rs (`apply_pre_execution_changes`).
+This corresponds to the system-transaction processing of the Osaka fork of [`ethereum/execution-specs`](https://github.com/ethereum/execution-specs) (`process_unchecked_system_transaction`). Where the two differ, this section governs. In particular, `GASPRICE` is 0 here, while execution-specs uses the block's base fee. The caller and gas limit are given per call (§4.2, §4.3, §5.5.3, §6.2).
 
 ### 4.5 Precompile marker installs
 
@@ -513,9 +485,7 @@ Only code is replaced; storage, nonce and balance of these accounts are kept, an
 
 From T13, `ZONE_VERIFIER_ADDRESS` is also a Tempo precompile address; calls to it are dispatched to the precompile ([precompiles/validator-config-and-zones.md](precompiles/validator-config-and-zones.md)) and the installed code is not executed by such calls.
 
-> Note: the bytecodes themselves are published with the reference implementation (crates/contracts/src/zones.rs: `ZONE_PORTAL_RUNTIME`, `ZONE_VERIFIER_RUNTIME`, `ZONE_MESSENGER_RUNTIME`, `T13_ZONE_PORTAL_RUNTIME`, `T13_ZONE_VERIFIER_RUNTIME`, `T13_ZONE_MESSENGER_RUNTIME`). A conforming implementation MUST install byte strings with exactly the lengths and hashes above.
-
-Reference implementation: crates/evm/src/block.rs (`deploy_precompile_at_boundary`, `deploy_zone_factory_at_boundary`, `install_zone_runtimes`, `upgrade_zone_runtimes`, `zone_runtime_fork`), crates/contracts/src/precompiles/zone_factory.rs, crates/contracts/src/precompiles/mod.rs.
+The exact byte strings of all six runtimes are normative and are reproduced in [precompiles/validator-config-and-zones.md, Appendix A](precompiles/validator-config-and-zones.md#appendix-a-protocol-installed-runtime-bytecode). A conforming implementation MUST install byte strings with exactly the lengths and hashes above.
 
 ---
 
@@ -558,8 +528,6 @@ Notes:
 - The block-gas check uses `cumulative_gas_used`, i.e. the sum of the `tx_gas_used` (after refunds and the EIP-7623 floor) of the preceding transactions, not their gas limits. Since a transaction with `gas_limit` above the cap is invalid anyway (§1.8), the check is equivalent to `tx.gas_limit <= h.gas_limit - cumulative_gas_used` for every valid transaction.
 - The section check (§5.4) is evaluated **after** the transaction has executed, on its `tx_gas_used`.
 
-Reference implementation: crates/evm/src/block.rs (`execute_transaction_without_commit`, `execute_transaction_with_commit_condition`, `commit_transaction`, `validate_tx_pre_execution`); reth `EthBlockExecutor::validate_transaction_gas_limit`.
-
 ### 5.1 Receipts
 
 Every transaction in the block, including the pre-T4 system transaction, produces exactly one receipt with the fields:
@@ -572,8 +540,6 @@ Every transaction in the block, including the pre-T4 system transaction, produce
 | `logs` | the logs of the transaction, in emission order (including logs emitted by protocol steps of transaction processing as specified in [06-transactions-and-fees.md](06-transactions-and-fees.md)) |
 
 Tempo receipts carry no fee or gas-price fields. Their encoding (and the receipt bloom) is specified in [02-encoding.md](02-encoding.md). System calls (§4, §6) produce no receipts.
-
-Reference implementation: crates/evm/src/block.rs (`TempoReceiptBuilder`).
 
 ### 5.2 Gas used per transaction
 
@@ -634,11 +600,44 @@ def is_static_call(e, data):
 def is_dynamic_call(e, data):
     if data[0:4] != e.selector or len(data) > MAX_PAYMENT_CALLDATA_LEN:
         return False
-    args = abi_decode_strict(e.signature, data[4:])   # None if it fails
-    return args is not None and is_valid_tempo_signature_encoding(args.signature)
+    signature = abi_decode_checked(e, data[4:])     # None if it fails
+    return signature is not None and is_valid_tempo_signature_encoding(signature)
 ```
 
-`rlp(tx.key_authorization)` is the RLP encoding of the signed key authorization exactly as it appears in the transaction ([02-encoding.md](02-encoding.md)). `is_valid_tempo_signature_encoding(b)` is true iff `b` parses as a Tempo primitive signature encoding ([03-signatures.md](03-signatures.md)); the signature is not verified. `abi_decode_strict` is Solidity-ABI decoding with validation: every value must be correctly encoded for its type (e.g. the high 12 bytes of an `address` word and the high 20 bytes of a `uint96` word are zero), offsets and lengths must be in range, and re-encoding the decoded values must reproduce `data[4:]` exactly.
+`rlp(tx.key_authorization)` is the RLP encoding of the signed key authorization exactly as it appears in the transaction ([02-encoding.md](02-encoding.md)). `is_valid_tempo_signature_encoding(b)` is true iff `b` parses as a Tempo primitive signature encoding ([03-signatures.md](03-signatures.md)); the signature is not verified. `abi_decode_checked(e, args)` decodes the arguments of a dynamic entry. It checks that each head word is a valid value of its type and that the `bytes` offset and length are in range. Nothing else about the encoding is checked:
+
+```python
+SETTLE_HEAD = [address, address, address, address, bytes32, address, bytes32,   # D
+               uint96]                                                          # then the bytes offset
+CLOSE_HEAD  = [address, address, address, address, bytes32, address, bytes32,   # D
+               uint96, uint96]                                                  # then the bytes offset
+
+def abi_decode_checked(e, args):
+    head = SETTLE_HEAD if e.name == "settle" else CLOSE_HEAD
+    n = len(head) + 1                        # 9 words for settle, 10 for close
+    if len(args) < 32 * n:
+        return None
+    word = lambda k: int.from_bytes(args[32 * k : 32 * k + 32], "big")
+    for k, t in enumerate(head):
+        if t == address and word(k) >= 2**160: return None   # high 12 bytes not zero
+        if t == uint96  and word(k) >= 2**96:  return None   # high 20 bytes not zero
+        # bytes32: every value is valid
+    off = word(n - 1)                        # byte offset of the length word, from the start of args
+    if off + 32 > len(args):
+        return None
+    length = int.from_bytes(args[off : off + 32], "big")
+    if off + 32 + length > len(args):
+        return None
+    return args[off + 32 : off + 32 + length]
+```
+
+Arithmetic in `abi_decode_checked` is on unbounded integers. Because `data` is at most `MAX_PAYMENT_CALLDATA_LEN` bytes, an offset or length word with any of its high 24 bytes set always fails the range checks. The decoder accepts encodings that the canonical encoder of the [Solidity ABI specification](https://docs.soliditylang.org/en/latest/abi-spec.html) never produces:
+
+- The offset need not equal `32 * n` (the canonical position right after the head). It need not be a multiple of 32, and it may point into the head or overlap other data.
+- The `bytes` value need not be zero-padded to a multiple of 32 bytes. The padding bytes may be absent or non-zero.
+- Bytes after the end of the `bytes` value, and bytes between the head and the offset, are ignored. Trailing data after the encoding is accepted.
+
+Such an input is classified by its decoded values alone; re-encoding the result is not compared with `args`.
 
 Allow-list (`D` = `(address,address,address,address,bytes32,address,bytes32)`, the channel descriptor):
 
@@ -662,11 +661,7 @@ Allow-list (`D` = `(address,address,address,address,bytes32,address,bytes32)`, t
 
 > **Resolved conflict C-EXEC-07**: TIP-1045 requires static-only payment calldata to satisfy the ABI encoding constraints of its signature and classifies malformed encodings as general; the code checks only the selector and exact length (e.g. an `address` word with non-zero high bytes still classifies as a payment). Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](conflicts.md#c-exec-07).
 
-> **TODO**: `abi_decode_strict` above describes the validating decoder of `alloy-sol-types` (`abi_decode_validate`) used by the reference implementation for the two dynamic entries; its exact acceptance rules for edge cases (non-canonical offsets, padding of the `bytes` tail) should be cross-checked against that library before relying on this description for adversarial inputs.
-
 The payment classification of the system transaction is irrelevant (§5.4).
-
-Reference implementation: crates/primitives/src/transaction/envelope.rs (`is_payment_v1`, `is_payment_v2`, `is_tip1045_call`), crates/contracts/src/precompiles/tip20.rs (`is_payment`, `is_static_call`), crates/contracts/src/precompiles/tip20_channel_reserve.rs (`is_payment_with_valid_signature`), crates/evm/src/block.rs (`is_payment`).
 
 ### 5.4 Block sections and lane accounting
 
@@ -715,8 +710,6 @@ Rules that follow:
 
 > **Resolved conflict C-EXEC-01**: TIP-1010 (invariant 5) and the payment-lane specification state that a block is invalid when non-payment gas exceeds `general_gas_limit` (or proposer-lane gas exceeds the non-shared limit, or subblock gas exceeds `shared_gas_limit`), and the payment-lane specification bounds post-lane inclusion by the shared budget; before T4 the code instead moves the overflowing transaction and all later ones into an unbounded `GasIncentive` section and accepts the block. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](conflicts.md#c-exec-01).
 
-Reference implementation: crates/evm/src/block.rs (`BlockSection`, `next_section`, `record_committed_tx`, `finish_with_block_access_list`).
-
 ### 5.5 Pre-T4 subblock-metadata system transaction
 
 A **system transaction** is a legacy (type `0x00`) transaction whose signature is exactly `r = 0`, `s = 0`, `y_parity = false`. Its sender is defined to be `0x0000000000000000000000000000000000000000` (no signature recovery is performed). Its encoding, and the encoding of `SubBlockMetadata`, are specified in [02-encoding.md](02-encoding.md).
@@ -760,8 +753,6 @@ The system transaction is not processed by the ordinary legacy-transaction rules
 
 The subblock metadata it carries has no effect on execution state.
 
-Reference implementation: crates/evm/src/consensus/mod.rs (`validate_block_pre_execution`), crates/chainspec/src/spec.rs (`SYSTEM_TX_COUNT`, `SYSTEM_TX_ADDRESSES`), crates/primitives/src/transaction/envelope.rs (`is_system_tx`, `is_valid_system_tx`, `TEMPO_SYSTEM_TX_SIGNATURE`), crates/evm/src/block.rs (`validate_system_tx`), crates/evm/src/handler/config.rs (`prepare_legacy`, `execute_legacy`).
-
 ---
 
 ## 6. Post-block state changes
@@ -797,8 +788,6 @@ The call runs after §6.1 and, before T13, before the Ethereum post-block calls 
 
 > **Resolved conflict C-EXEC-08**: TIP-1070 requires the committee update to be called "from the system address" following the EIP-4788 convention (conventionally `0xff…fe`); the code (and TIP-1119) call it from `0x0000…0000`, and the precompile rejects any other caller. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](conflicts.md#c-exec-08).
 
-Reference implementation: crates/evm/src/block.rs (`apply_current_committee_system_call`), crates/precompiles/src/current_committee/mod.rs.
-
 ### 6.3 Ethereum post-block processing (before T13)
 
 Before T13 the block computes execution requests as Ethereum Prague/Osaka does:
@@ -825,16 +814,12 @@ def ethereum_post_block(receipts):
 ```
 
 - `DEPOSIT_CONTRACT_ADDRESS` is the chain's configured deposit contract: on mainnet `0x0000000000000000000000000000000000000000` (no account can emit logs from that address, so mainnet deposits are always empty). `DEPOSIT_EVENT_TOPIC = keccak256("DepositEvent(bytes,bytes,bytes,bytes,bytes)") = 0x649bbc62d0e31342afea4e5cd82d4049e7e1ee912fc0889aa790803be39038c5`; a matching log that fails to decode makes the block invalid.
-- The EIP-7002 and EIP-7251 calls are made regardless of the targets' code. With no code at the target (the mainnet genesis state has none), the call succeeds with empty output and changes no state. If code exists, a revert or halt invalidates the block, and successful state changes are committed.
+- The EIP-7002 and EIP-7251 calls are made regardless of the targets' code. With no code at the target (the mainnet genesis state has none), the call succeeds with empty output and changes no state. If code exists, a revert or halt invalidates the block, and successful state changes are committed. This deviates from Ethereum: in the Prague and Osaka forks of `ethereum/execution-specs` (`process_checked_system_transaction`), missing code at either address makes the block invalid.
 - The requests hash is computed per EIP-7685: `sha256(concat(sha256(type ‖ data) for (type, data) in requests if len(data) > 0))`. With all request data empty it equals `EMPTY_REQUESTS_HASH`.
-
-Reference implementation: reth rev `966010c905449163ef161530a5ee95ac1e0c8487` `crates/ethereum/evm/src/execution.rs` (`block_requests_from_receipts`, `post_execution_system_call_state_changes`, `post_block_balance_state_changes`), `crates/ethereum/evm/src/executor.rs` (`finish_with_prepared_block_access_list`).
 
 ### 6.4 From T13 (TIP-1119)
 
 From T13 the executor MUST NOT perform the EIP-7002, EIP-7251 (or EIP-8282) calls, MUST NOT parse deposit logs, and the execution-request list is empty, regardless of any code at those targets. Deposit-shaped logs remain ordinary receipt logs.
-
-Reference implementation: crates/evm/src/block.rs (`finish_with_block_access_list`), tips/tip-1119.md.
 
 ---
 
@@ -851,15 +836,13 @@ After §6, the block is valid only if all of the following hold:
 
 No block-access-list hash is computed or checked (Amsterdam is not active; §2.1).
 
-Reference implementation: reth `crates/ethereum/consensus/src/validation.rs` (`validate_block_post_execution_with_bal_hashes`), crates/evm/src/consensus/mod.rs (`validate_block_post_execution`).
-
 ---
 
 ## 8. Rules that are NOT block-validity rules
 
-The following limits are enforced by the reference transaction pool, payload builder or RPC only. A block containing transactions that violate them is still valid if it satisfies this specification; a follower MUST NOT reject blocks for violating them.
+The following limits are transaction-pool, payload-builder or RPC policy only. A block containing transactions that violate them is still valid if it satisfies this specification; a follower MUST NOT reject blocks for violating them.
 
-| Limit (reference value) | Where |
+| Limit (typical value) | Where |
 |---|---|
 | At most 32 calls in a type-`0x76` transaction | pool |
 | At most 128 KiB (131,072 bytes) of input per call | pool |
@@ -872,8 +855,6 @@ The following limits are enforced by the reference transaction pool, payload bui
 | Choice of block gas limit (target), transaction ordering, how payment and non-payment transactions are packed, and stopping non-payment inclusion at `general_gas_limit` | builder policy (consensus rules are §2 and §5.4) |
 | Block-access-list construction (EIP-7928) | performance only; not committed in headers |
 | Parallel execution, storage-action replay and prewarming | performance only; results MUST equal sequential execution |
-
-Reference implementation: crates/transaction-pool/src/validator.rs, crates/payload/builder/src/lib.rs.
 
 ---
 

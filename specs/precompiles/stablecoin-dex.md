@@ -6,8 +6,6 @@ This chapter specifies every rule of the DEX that affects the validity or post-s
 
 Fork predicates ("From T*n*", "Before T*n*", `fork(Tn)`) are defined in [../01-chain-and-forks.md](../01-chain-and-forks.md): `fork(Tn)` is true iff the executing block's `header.timestamp >= ` Tn's activation time.
 
-Reference implementation: crates/precompiles/src/stablecoin_dex/ (mod.rs, orderbook.rs, order/mod.rs, order/storage.rs, dispatch.rs), crates/contracts/src/precompiles/stablecoin_dex.rs.
-
 ## 1. Constants
 
 | Name | Value | Notes |
@@ -144,8 +142,6 @@ For every call, the DEX MUST first charge the framework input cost for the calld
 
 Calls the DEX makes into TIP-20 tokens, the TIP-20 factory, the TIP-403 registry and StorageCredits are native function invocations in the same execution context (not EVM `CALL` frames). Their storage accesses are metered against the same gas, their events are logged in order with the DEX's own, and the DEX is the caller (`msg.sender`) for any TIP-20 transfer it performs.
 
-Reference implementation: crates/precompiles/src/stablecoin_dex/dispatch.rs, crates/precompiles/src/dispatch.rs (`preserve_storage_credits`).
-
 ## 5. Pricing, book keys and rounding
 
 ### 5.1 Ticks and prices
@@ -195,8 +191,6 @@ All amounts are integers in token base units. "Up" is ceiling division, "down" i
 | Taker buying base from an ask, fill `f` | receives `f` base; pays `base_to_quote(f, tick, up)` quote, except a terminating partial fill in an exact-in trade, which consumes all remaining input (§11.4) |
 
 Rounding residues (escrow above what makers are paid, the part of an exact-in input above the maker's credit on a terminating partial fill) stay in the DEX's TIP-20 balances and are credited to nobody.
-
-Reference implementation: crates/precompiles/src/stablecoin_dex/orderbook.rs (`base_to_quote`, `quote_to_base`, `compute_book_key`, `tick_to_price`).
 
 ## 6. Storage layout
 
@@ -412,8 +406,6 @@ def field_clear(id, name):           # same as field_write(id, name, 0)
 
 Neighbour pointer updates MUST use the neighbour's own version: mixed-version linked lists are normal.
 
-Reference implementation: crates/precompiles/src/stablecoin_dex/order/storage.rs, crates/precompiles/src/stablecoin_dex/orderbook.rs (`Orderbook`, `TickLevel`, `TickLevelHandler`), crates/precompiles/tests/storage_tests/solidity/testdata/stablecoin_dex.sol.
-
 ## 7. TIP-20 and TIP-403 operations used
 
 The DEX uses these operations, defined in [tip20.md](tip20.md) and [tip403.md](tip403.md):
@@ -481,8 +473,6 @@ def withdraw(sender, token, amount):
     sub_bal(sender, token, amount)
     tip20(token); tip20_transfer(token, sender, amount)
 ```
-
-Reference implementation: crates/precompiles/src/stablecoin_dex/mod.rs (`decrement_balance_or_transfer_from`, `transfer_from`, `withdraw`).
 
 ## 9. Pairs and order placement
 
@@ -614,8 +604,6 @@ def commit_order_to_book(o, charge_credits):
 
 The new order is appended at the tail of its tick queue (price-time priority: FIFO within a tick). Crossed and locked books are permitted: placement never matches against the opposite side. `charge_credits` is `True` for user placements (`place`, `placeFlip`, and the pre-T5 automatic flip placement, which runs before T7 so no credits exist) and `False` for T5+ in-place flips.
 
-Reference implementation: crates/precompiles/src/stablecoin_dex/mod.rs (`create_pair`, `place`, `place_flip`, `commit_order_to_book`).
-
 ## 10. Maker storage credits (T7+)
 
 ### 10.1 Model (TIP-1064)
@@ -683,8 +671,6 @@ Net effect: each order-record slot the placement creates (0 → non-zero) consum
 ### 10.4 Deferred credits in swaps
 
 Swaps collect credits in a per-call map `deltas: address → uint64` (saturating add per address). A full fill adds the minted count of the filled order's deletion to its maker, and the minted count of clearing the next order's `prev` field to the next order's maker (§11.6). After the output transfer, the swap flushes `deltas` in **ascending address order** (byte-wise on the 20-byte address), calling `credit_dex_storage_slots(user, n)` for each entry. Credits from a T8+ in-place flip rewrite (§9.3) and from cancels (§12.1) are credited immediately, not deferred.
-
-Reference implementation: crates/precompiles/src/stablecoin_dex/mod.rs (`credit_dex_storage_slots`, `write_order_spending_dex_storage_credits`, `delete_order`, `rewrite_order`, `unlink_neighbor_and_credit_maker`), crates/precompiles/src/storage_credits/mod.rs (`track_minted_credits`, `with_budget`, `StorageCreditDeltas`).
 
 ## 11. Swaps
 
@@ -947,8 +933,6 @@ At T5–T7 the flip rewrite stores the full six-slot legacy record (§6.5.2). Fr
 
 > **Resolved conflict C-DEX-03**: TIP-1056 requires a flip rewrite to write only the order-record slots whose contents change (under a "TIP-1055" layout that does not exist); at T5–T7 the implementation stores all six legacy slots, including unchanged ones. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-dex-03).
 
-Reference implementation: crates/precompiles/src/stablecoin_dex/mod.rs (`find_trade_path`, `validate_and_build_route`, `find_path_to_root`, `swap_exact_amount_in`, `swap_exact_amount_out`, `fill_orders_exact_in`, `fill_orders_exact_out`, `settle_fill`, `partial_fill_order`, `fill_order`, `flip_in_place`), crates/precompiles/src/stablecoin_dex/orderbook.rs (`walk_resting_orders`, `step_exact_in`, `step_exact_out`, `taker_output`), crates/precompiles/src/error.rs (`is_system_error`, `selector`).
-
 ## 12. Cancellation
 
 ### 12.1 cancel
@@ -1027,8 +1011,6 @@ def maker_authorized(o) -> bool:
 ```
 
 Before T4 only the sender role on the escrow token is checked. `cancelStaleOrder` does not check `remaining`. A TIP-403 lookup failure (`is_policy_lookup_error`, §7) counts as unauthorized; any other error propagates.
-
-Reference implementation: crates/precompiles/src/stablecoin_dex/mod.rs (`cancel`, `cancel_active_order`, `cancel_stale_order`, `is_maker_authorized`, `is_authorized_for_token`).
 
 ## 13. Quotes
 
@@ -1122,8 +1104,6 @@ def per_tick_out(key, amount_out, is_bid) -> uint128:
 
 All conversions raise `Panic(0x11)` on `OVERFLOW`. Note that after exhausting a level the next tick is searched even when nothing remains.
 
-Reference implementation: crates/precompiles/src/stablecoin_dex/mod.rs (`quote_swap_exact_amount_in`, `quote_swap_exact_amount_out`, `quote_exact_in`, `quote_exact_out`, `quote_per_order`, `next_order_after`, `quote_exact_in_per_tick`, `quote_exact_out_per_tick`).
-
 ## 14. Views, price conversion and book indexes
 
 ```python
@@ -1193,8 +1173,6 @@ def setBookIndex(i):                          # mutate; callable by anyone
 ```
 
 From T8, `createPair` sets `bookId = len(bookKeys) + 1` for new books (§9.1), so only books created before T8 need `setBookIndex`. Once `bookId != 0`, every later order write for that book (placements and flip rewrites) uses V2.
-
-Reference implementation: crates/precompiles/src/stablecoin_dex/mod.rs (`get_order`, `get_price_level`, `tick_to_price`, `price_to_tick`, `book_key_index`, `book_key_for_index`, `set_book_index`), crates/precompiles/src/stablecoin_dex/dispatch.rs.
 
 ## 15. Atomicity and checkpoints
 

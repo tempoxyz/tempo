@@ -13,10 +13,6 @@ fields, per-method algorithm in storage-access order) builds on these rules:
 nonce manager, signature verifier and storage credits) and
 [validator-config-and-zones.md](validator-config-and-zones.md).
 
-Reference implementation: crates/precompiles/src/{lib.rs,dispatch.rs,error.rs,storage/**},
-crates/precompiles-macros/src/**, crates/contracts/src/precompiles/mod.rs,
-crates/primitives/src/address.rs, crates/hardfork/src/gas_params.rs, crates/evm/src/block.rs.
-
 ## 1. Conventions
 
 - *Fork F active* means `header.timestamp >= activation_time(F)` as defined in
@@ -295,7 +291,7 @@ the legacy AccountKeychain `authorizeKey` selector from T3); those are specified
 
 ### 4.5 ABI decoder configuration
 
-Arguments are decoded by the Solidity ABI rules with these per-fork settings:
+Arguments are decoded by the rules of the [Solidity ABI specification](https://docs.soliditylang.org/en/latest/abi-spec.html), with these per-fork settings:
 
 | Setting | Before T11 | T11 | From T12 |
 |---|---|---|---|
@@ -305,18 +301,18 @@ Arguments are decoded by the Solidity ABI rules with these per-fork settings:
 | Trailing bytes after the encoding | accepted | rejected | accepted |
 
 - *Validation off* (before T11): each static value is taken from its 32-byte word by truncation:
-  `bool` = word ≠ 0; `uintN`/`intN` = low N bits; `address` = low 20 bytes; `bytesN` = high N bytes;
+  `bool` = word ≠ 0; `uintN`/`intN` = low N bits; `address` = low 20 bytes; `bytesN` = high N bytes; an enum = the low byte, and a byte with no member becomes the out-of-range value 255, which each chapter handles;
   `string` = the tail bytes decoded as UTF-8 lossily (each invalid sequence replaced by U+FFFD);
   dynamic offsets are followed as given (gaps and overlaps accepted).
 - *Validation on*: a word whose unused bits are not the canonical zero extension (sign extension
-  for `intN`), a `bool` word > 1, or a `string` that is not valid UTF-8 is a decode error.
+  for `intN`), a `bool` word > 1, an enum word not below its member count, or a `string` that is not valid UTF-8 is a decode error.
 - *Strict layout*: every dynamic offset MUST equal the next unused position in its enclosing
   encoding (tails in order, no gaps or overlaps) and every padding byte MUST be zero.
-- The memory limit bounds the decoder's allocations; exceeding it is a decode error.
+- *Trailing bytes rejected* (T11): the encoding's extent MUST equal the argument length. The extent is the largest end position of any head or tail read, so with strict layout it is the end of the last tail. Without strict layout trailing bytes are always accepted.
+- Every offset and length word MUST be below 2^64, and every head, tail and length MUST lie inside the buffer it is read from; otherwise it is a decode error.
+- *Memory limit*: decoding keeps a running total of reserved bytes over the whole call. Each `bytes` or `string` value adds its length. Each dynamic array `T[]` of length `n` adds `n * size(T)`, where `size` is 32 for every 32-byte static type (`bool`, `address`, `uintN`, `intN`, `bytesN`, enums), 16 for `bytes` and `string`, 24 for a dynamic array, `k * size(E)` for `E[k]` and the sum of the component sizes for a tuple. Fixed-size arrays and tuples add nothing themselves. A total above 16,777,216 is a decode error. Before T11 overlapping offsets let one tail count many times, so the limit can reject an input much shorter than 16 MiB.
+- No Tempo precompile ABI nests deep enough for a recursion limit to apply.
 - Every decode error yields an empty revert (step 5).
-
-The reference behaviour is that of alloy-sol-types 1.7.3 `abi_decode_with_config` with
-`AbiDecoderConfig::new().memory_limit(16 MiB).strict(fork >= T11).validate_allow_trailing_bytes(fork >= T12)`.
 
 ## 5. Results and errors
 

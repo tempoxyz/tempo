@@ -167,8 +167,6 @@ def set_write(b, values):           # replace contents; only used with address s
 A stored length or position that exceeds `2^32 - 1` is a fatal storage inconsistency; it cannot
 arise from the rules in this chapter.
 
-Reference implementation: crates/precompiles/src/storage/types/set.rs, crates/precompiles/src/storage/types/vec.rs, crates/precompiles/src/storage/types/mod.rs (mapping_slot, Packable store/delete), crates/precompiles-macros/src/storable.rs (struct store).
-
 ## 1. AccountKeychain
 
 The AccountKeychain stores, per account, a set of *access keys*: secondary signing keys that may
@@ -306,8 +304,6 @@ set.
 `key_authorization_witnesses[account][witness]` is 1 once the account burned `witness` through
 `burnKeyAuthorizationWitness`, and 0 otherwise. Successful authorizations never write it.
 
-Reference implementation: crates/precompiles/src/account_keychain/mod.rs (AccountKeychain, AuthorizedKey, KeyScope, TargetScope, SelectorScope, SpendingLimitState, spending_limit_key).
-
 ### 1.3 ABI
 
 Struct types (canonical tuple types in brackets):
@@ -386,8 +382,6 @@ Errors (selector = first 4 bytes of keccak256 of the signature):
 
 `InvalidKeyAuthorizationWitness` is declared but never raised. `SignatureTypeMismatch(expected,
 actual)` carries the stored type and the signature's type.
-
-Reference implementation: crates/contracts/src/precompiles/account_keychain.rs, crates/precompiles/src/account_keychain/dispatch.rs.
 
 ### 1.4 Dispatch prelude
 
@@ -478,8 +472,6 @@ def t3_cap(amount) -> int:                                        # from T3
     if amount > 2**128 - 1: raise ERR(InvalidSpendingLimit)
     return amount
 ```
-
-Reference implementation: crates/precompiles/src/account_keychain/mod.rs (ensure_admin_caller, is_admin_key, load_active_key).
 
 ### 1.6 Mutators
 
@@ -766,8 +758,6 @@ Removing an absent target is a no-op. Removing the last target leaves the key sc
 
 > **Resolved conflict C-KEY-05**: TIP-1011 says `removeAllowedCalls` only disables the target scope and that prior selector rows may remain in state; the code removes the target from the set and deletes every selector and recipient row under it. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-key-05).
 
-Reference implementation: crates/precompiles/src/account_keychain/mod.rs (authorize_key_internal, authorize_admin_key, burn_key_authorization_witness, revoke_key, update_spending_limit, set_allowed_calls, remove_allowed_calls, replace_allowed_calls, upsert_target_scope, validate_*), crates/precompiles/src/lib.rs (has_duplicates_metered, dedup_cost).
-
 ### 1.7 Views
 
 All views perform only reads and never write.
@@ -959,8 +949,6 @@ except on rows written before T3; `period_end` only moves forward, and after a r
 `remaining = 0` as a result of a spend: this keeps the `s0` slot nonzero so that exhausting a
 periodic limit cannot mint a storage credit (§4) that a later, accounting-free fee pre-collection
 would leave unbacked. (A periodic row whose configured amount is 0 still stores 0.)
-
-Reference implementation: crates/precompiles/src/account_keychain/mod.rs (verify_and_update_spending, refund_spending_limit, authorize_transfer, authorize_approve, effective_limit_state, compute_next_period_end).
 
 ### 1.9 Internal interface used by the transaction handler
 
@@ -1208,8 +1196,6 @@ Canonical execution MUST use only the stored pointer. (The reference client's op
 path may pre-seek the pointer per transaction; it restores it and is disabled for canonical
 execution, so it has no consensus effect.)
 
-Reference implementation: crates/precompiles/src/nonce/mod.rs, crates/precompiles/src/nonce/dispatch.rs, crates/contracts/src/precompiles/nonce.rs, crates/hardfork/src/lib.rs (expiring_nonce_set_capacity, expiring_nonce_max_expiry_secs), crates/evm/src/handler.rs (apply_nonce).
-
 ## 3. SignatureVerifier
 
 The SignatureVerifier (TIP-1020, extended by TIP-1049) verifies Tempo signatures for contracts. It
@@ -1304,8 +1290,6 @@ Through T13 the inner signature's type is not compared with the stored key type,
 `verifyKeychain` returns true for any active access key, admin or not. Storage or out-of-gas errors
 propagate. Gas = input cost + the inner primitive's verification gas + (unless short-circuited) one
 SLOAD of AccountKeychain `key_slot(account, key_id)` (cold or warm per the transaction's access set).
-
-Reference implementation: crates/precompiles/src/signature_verifier/mod.rs, crates/precompiles/src/signature_verifier/dispatch.rs, crates/contracts/src/precompiles/signature_verifier.rs, crates/primitives/src/gas.rs.
 
 ## 4. Storage credits (TIP-1060)
 
@@ -1449,7 +1433,7 @@ Both mutators reject static calls (framework). They write only transient storage
 
 The hook is enabled for every precompile storage context and every `SSTORE` opcode from T7, except as
 listed here. "Storage context" means one invocation of a precompile (one EVM call into it, including
-the Rust-level calls it makes to other precompiles, which share the context) or one protocol
+the internal calls it makes to other precompiles, which share the context) or one protocol
 operation run by the handler or block executor.
 
 #### 4.6.1 Contexts with accounting disabled
@@ -1554,8 +1538,6 @@ def settle_storage_credit_refunds(tx_result):
 
 The result does not depend on iteration order. Where settlement sits relative to the fee refund is
 specified in 06-transactions-and-fees.md.
-
-Reference implementation: crates/precompiles/src/storage_credits/mod.rs, crates/precompiles/src/storage_credits/accounting.rs, crates/precompiles/src/storage_credits/dispatch.rs, crates/precompiles/src/storage/evm.rs (sstore_inner), crates/evm/src/instructions.rs (sstore), crates/evm/src/handler/config.rs (settle_storage_credit_refunds, NonCreditableSlots initialization), crates/precompiles/src/dispatch.rs (preserve_storage_credits), crates/hardfork/src/gas_params.rs, crates/hardfork/src/constants.rs.
 
 ## 5. Fork summary
 

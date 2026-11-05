@@ -51,8 +51,6 @@ Several procedures below are invoked natively by another precompile or by the tr
 
 When a TIP-20 entrypoint calls another precompile natively (TIP403Registry, AddressRegistry, AccountKeychain, ReceivePolicyGuard, StorageCredits) the same rules apply in reverse.
 
-Reference implementation: crates/precompiles/src/storage/evm.rs, crates/precompiles/src/storage/mod.rs, crates/precompiles/src/error.rs.
-
 ## 2. Addresses and constants
 
 ### 2.1 TIP-20 address space
@@ -125,8 +123,6 @@ def resolve_recipient(a) -> address:            # AddressRegistry, native
 
 Before T3 a virtual address is an ordinary address for TIP-20 (it can receive and hold balance). From T3, TIP-20 never credits a virtual address on the paths that resolve recipients (§6.10, §6.11). Paths that do not resolve (`approve`, `permit`, the `from` side of any transfer, `burn*`) treat virtual addresses as ordinary addresses.
 
-Reference implementation: crates/primitives/src/address.rs, crates/contracts/src/precompiles/mod.rs, crates/precompiles/src/tip20/mod.rs (`PROTECTED`, `check_burn_address`, `Recipient`), crates/precompiles/src/address_registry/mod.rs.
-
 ## 3. Precompile entry
 
 ### 3.1 Dispatch
@@ -155,8 +151,6 @@ A prefixed address whose code is empty is an uninitialized token. An external ca
 Internal callers (§1.3, §9) do not perform the initialization check. On an uninitialized token they read all-zero storage: `paused = false`, every balance 0, `currency = ""`, and a policy id of 0 (before T9 from slot 7; from T9 there is no binding, so the legacy slot is read), which the TIP-403 built-in policy 0 rejects for every account. The procedures then proceed or fail exactly as specified for that state (for example `system_transfer_from` reverts `PolicyForbids()`).
 
 `TIP20Factory.isTIP20(a)` is `is_tip20_prefix(a) and ACCOUNT_READ(a).code_hash != KECCAK_EMPTY` (§10.3).
-
-Reference implementation: crates/precompiles/src/tip20/dispatch.rs, crates/precompiles/src/storage/mod.rs (`is_initialized`).
 
 ## 4. ABI
 
@@ -323,8 +317,6 @@ def transfer_policy_id(token) -> uint64:
 ```
 
 From T9, `changeTransferPolicyId` and token creation write the binding in the TIP403Registry (`set_token_transfer_policy`, [tip403.md](tip403.md)) and do not write slot 7. A token created before T9 keeps its legacy slot-7 value until the binding is set (by `changeTransferPolicyId` or by the registry's migration, which also clears the legacy field). For such a token every policy read from T9 costs the registry read plus `SLOAD(7)`.
-
-Reference implementation: crates/precompiles/src/tip20/mod.rs (struct `TIP20Token`, `transfer_policy_id`), crates/precompiles/src/tip20/rewards.rs (`UserRewardInfo`), crates/precompiles/tests/storage_tests/solidity/testdata/tip20.sol and tip20.layout.json, crates/chainspec/src/genesis/presto.json.
 
 ## 6. Common procedures
 
@@ -497,8 +489,6 @@ def validate_mint(msg_sender, to_addr, amount, memo, recipient_role) -> (total_s
 ```
 
 `recipient_role` is the TIP-403 `mintRecipient` role for the public mint entrypoints.
-
-Reference implementation: crates/precompiles/src/tip20/mod.rs (`validate_transfer`, `validate_mint`, `_transfer`, `_mint`, `validate_inbound_or_block`, `is_transfer_authorized`, `Recipient`), crates/precompiles/src/tip20/roles.rs.
 
 ## 7. Entrypoints
 
@@ -824,8 +814,6 @@ For allowed (not diverted) operations, logs from the token in emission order:
 
 Here `to` is the address passed by the caller (the virtual address when virtual) and `master` its resolved master.
 
-Reference implementation: crates/precompiles/src/tip20/mod.rs, crates/precompiles/src/tip20/roles.rs, crates/precompiles/src/tip20/dispatch.rs.
-
 ## 8. Rewards (Genesis to T8)
 
 TIP-20 tokens carry an opt-in reward system. Holders opt in by naming a reward recipient; anyone can distribute tokens pro rata over the opted-in supply. It was deprecated in two steps (TIP-1075): from T7 `distributeReward` and `setRewardRecipient` are successful no-ops; from T8 balance-changing paths stop updating reward state. `claimRewards` remains at every fork. Replaying blocks before T8 requires this section exactly.
@@ -951,8 +939,6 @@ def get_pending_rewards(account) -> uint128:                   # view
 
 `claimRewards` credits the caller directly (no virtual resolution, no receive policy, no spending limit). From T8 only already-settled `rewardBalance` is paid; accrual not yet checkpointed by T8 is never paid.
 
-Reference implementation: crates/precompiles/src/tip20/rewards.rs.
-
 ## 9. Internal hooks (not in the ABI)
 
 These procedures are invoked natively (§1.3). They are not reachable by any selector.
@@ -1054,8 +1040,6 @@ def release_blocked_funds(originator, receiver, to, amount, recovery_mode, recov
 - `ensure_receive_policy_authorized(sender, receiver)`: `fail(PolicyForbids())` if `TIP403Registry.validate_receive_policy(T.address, sender, receiver)` reports a block.
 - `increment_balance` / `decrement_balance` (§6.6), used by the fee manager and DEX where their chapters say so.
 - Currency check for fee tokens: `InvalidToken()` if the address is not prefixed, `InvalidCurrency()` if `STR_READ(4) != "USD"` ([fee-manager.md](fee-manager.md)).
-
-Reference implementation: crates/precompiles/src/tip20/mod.rs (`system_transfer_from`, `transfer_fee_pre_tx`, `transfer_fee_post_tx`, `channel_reserve_transfer`, `release_blocked_funds`, `validate_usd_currency`), crates/precompiles/src/address_registry/mod.rs (`IMPLICIT_APPROVAL_LIST`).
 
 ## 10. TIP20Factory
 
@@ -1169,8 +1153,6 @@ def create_token_reserved_address(address, name, symbol, currency, quote, admin)
 ```
 
 No block-execution path calls it at T13 or earlier. A client MUST take genesis TIP-20 state verbatim from the genesis allocation. Mainnet genesis contains TIP-20 accounts at `0x20C0000000000000000000000000000000000000` (pathUSD: name and symbol `"pathUSD"`, currency `"USD"`, quote token 0, policy 1, supply cap `U128_MAX`) and `0x20c00000000000000000000016c6514b53947fdc`, plus the factory account, each with code `0xEF`.
-
-Reference implementation: crates/precompiles/src/tip20_factory/mod.rs, crates/precompiles/src/tip20_factory/dispatch.rs, crates/contracts/src/precompiles/tip20_factory.rs, crates/precompiles/src/tip20/mod.rs (`initialize`), crates/precompiles/src/tip20/roles.rs (`initialize_roles`, `grant_default_admin`), crates/precompiles-macros/src/layout.rs (`__initialize`), crates/chainspec/src/genesis/presto.json.
 
 ## 11. TIP20ChannelReserve (TIP-1034)
 
@@ -1532,8 +1514,6 @@ def write_state_spending_credit(payer, id, state):
 ```
 
 Before T7, `delete_state_and_credit_payer` is a plain `SSTORE(channelStates[id], 0)` and slot 1 is never touched. The `assert`s are internal invariants of a correct implementation; a mismatch is a node fault, not a revert.
-
-Reference implementation: crates/precompiles/src/tip20_channel_reserve/mod.rs, crates/precompiles/src/tip20_channel_reserve/dispatch.rs, crates/contracts/src/precompiles/tip20_channel_reserve.rs, crates/precompiles/src/storage_credits/mod.rs (`track_minted_credits`, `with_budget`), crates/precompiles/src/dispatch.rs (`preserve_storage_credits`), crates/evm/src/handler/config.rs (`resolve_fee_context`), crates/primitives/src/transaction/mod.rs (`unique_tx_identifier_from_signable`).
 
 ### 11.10 Payment-lane classification
 

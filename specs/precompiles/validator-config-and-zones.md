@@ -13,7 +13,7 @@ This chapter specifies the Tempo system precompiles and protocol-managed account
 | ZoneVerifier | `0x5A56000000000000000000000000000000000000` | EVM stub T10–T12; native precompile from T13 | T10 / T13 |
 | ZonePortal proxies | `0x5AD0000000000000000000` ‖ `uint64(zoneId)` | ERC-1167 proxy written by `createZone` | T10 |
 
-"Fork F active" means `header.timestamp >= activation_time(F)`, as defined in 01-chain-and-forks.md. "From F:" rules apply exactly when F is active; "Before F:" rules apply exactly when it is not. T14 and later forks are out of scope; where the reference implementation already contains T14/T15 code paths this chapter states that they are unreachable at or below T13.
+"Fork F active" means `header.timestamp >= activation_time(F)`, as defined in 01-chain-and-forks.md. "From F:" rules apply exactly when F is active; "Before F:" rules apply exactly when it is not. T14 and later forks are out of scope; where a field, error or rule only matters from T14 or T15, this chapter says that it is unreachable at or below T13.
 
 ## 0. Conventions
 
@@ -43,16 +43,29 @@ Storage layouts follow Solidity's layout rules exactly (precompiles/00-framework
 
 ### 0.3 Endpoint text grammar
 
-Validator endpoints are ASCII strings parsed with the grammar of the Rust standard library (toolchain 1.96) `FromStr` implementations:
+Validator endpoints are byte strings that MUST match one of these grammars exactly (ABNF, RFC 5234). The whole string is consumed, so whitespace, a hostname or any other byte is a parse failure.
 
-- `SocketAddr` ("`<ip>:<port>`"): either `a.b.c.d:port` (IPv4 dotted-quad, each octet 1–3 decimal digits with value ≤ 255 and no leading zero unless the octet is exactly `0`) or `[ipv6]:port` / `[ipv6%scope]:port` (RFC 4291 text form inside brackets, with optional `::` compression and optional trailing dotted-quad; `scope` a decimal `u32`); `port` is a decimal `u16`. No hostnames, no whitespace.
-- `IpAddr` ("`<ip>`"): an IPv4 dotted quad or an unbracketed IPv6 address (no scope id, no port).
+```
+SocketAddr  = IPv4 ":" port / "[" IPv6 [ "%" scope ] "]" ":" port
+IpAddr      = IPv4 / IPv6
+IPv4        = octet "." octet "." octet "." octet
+octet       = "0" / %x31-39 0*2DIGIT          ; value <= 255: 1-3 digits, no leading zero
+port        = 1*DIGIT                         ; value <= 65535, leading zeros allowed
+scope       = 1*DIGIT                         ; value <= 4294967295, leading zeros allowed
+h16         = 1*4HEXDIG                       ; case-insensitive, leading zeros allowed
+```
 
-For any corner case not covered by this summary, acceptance is defined by Rust 1.96 `core::net::SocketAddr::from_str` and `core::net::IpAddr::from_str`.
+An `IPv6` is the text form of RFC 4291 §2.2, made exact as follows:
+
+- Without `::`, it is eight `h16` groups separated by single `:`, or six `h16` groups followed by `:` and an `IPv4` (the IPv4 supplies the last two groups).
+- With `::`, it is `head "::" tail`. `head` and `tail` are each empty or a `:`-separated run of `h16` groups, and `tail` MAY end in an `IPv4` that counts as two groups.
+- `::` appears at most once and stands for at least one zero group, so `head` and `tail` together hold at most seven groups. `1:2:3:4:5:6:7::` and `::2:3:4:5:6:7:8` are valid; `1:2:3:4:5:6:7:8::` is not.
+- An `IPv4` is valid only as the final 32 bits; `head` never contains one.
+- Five or more hex digits in a group, an empty group other than through `::`, and three consecutive `:` are parse failures.
+
+`SocketAddr` yields an IP (IPv4 or IPv6), a port and, for the bracketed form, a scope id (0 when absent). `IpAddr` has no scope id and no port.
 
 ## 1. ValidatorConfig (V1)
-
-Reference implementation: crates/precompiles/src/validator_config/mod.rs, crates/precompiles/src/validator_config/dispatch.rs, crates/contracts/src/precompiles/validator_config.rs, crates/precompiles/src/ip.rs.
 
 V1 is the original validator registry. Its account, owner and initial validators come from the genesis allocation (04-state-and-genesis.md). It stays callable at every fork up to T13 and its state persists; from T2 it is the migration source for ValidatorConfigV2 (§2.7). Consensus at this protocol version does not read V1 (§2.9).
 
@@ -126,7 +139,7 @@ Both `inboundAddress` and `outboundAddress` MUST parse as `SocketAddr` (§0.3). 
 where `detail` is:
 
 - From T2: the 39-byte ASCII string `` input was not of the form `<ip>:<port>` `` (the code span's surrounding spaces are not part of the string).
-- Before T2: the string `Parse(AddrParseError(Socket))` (29 bytes; the Rust `Debug` rendering of the parse error).
+- Before T2: the 29-byte ASCII string `Parse(AddrParseError(Socket))`.
 
 Inbound is validated before outbound. Revert data length affects only callers' gas (`RETURNDATASIZE`, copy and memory costs), never state.
 
@@ -199,8 +212,6 @@ def setNextFullDkgCeremony(sender, epoch):
 Notes (normative): V1 does not enforce public-key uniqueness, does not reject a zero `newValidatorAddress`, never shrinks `validatorsArray`, and `updateValidator` is authorised by the record at `msg.sender` only (the owner has no special right there). "Full-record write" stores every field of the struct in field order, as the framework's struct write defines.
 
 ## 2. ValidatorConfigV2 (TIP-1017)
-
-Reference implementation: crates/precompiles/src/validator_config_v2/mod.rs, crates/precompiles/src/validator_config_v2/dispatch.rs, crates/contracts/src/precompiles/validator_config_v2.rs, crates/precompiles/src/ip.rs, crates/evm/src/block.rs (`deploy_precompile_at_boundary`).
 
 ### 2.1 Activation
 
@@ -357,7 +368,7 @@ def validate_endpoints(ingress, egress):
         revert NotIp(egress, "input was not a valid IP address")
 ```
 
-(From T14 additional length and IPv4-mapped checks apply; out of scope.) Any string accepted by these grammars is at most 255 bytes long, so the `uint8` length prefix of §2.4.4 never overflows at ≤ T13.
+(From T14 additional length and IPv4-mapped checks apply; out of scope.) An accepted `egress` is at most 45 bytes. An accepted `ingress` is at most 64 bytes unless `port` or `scope` has leading zeros, which the grammar allows without limit. At ≤ T13 nothing rejects a longer `ingress` here. If an `ingress` longer than 255 bytes reaches the `uint8(len(ingress))` of §2.4.4, its length does not fit in the prefix: that is an internal invariant violation, and block processing fails ([00-framework.md §5](00-framework.md#5-results-and-errors)). No valid block contains such a call.
 
 #### 2.4.3 Ingress key
 
@@ -620,7 +631,7 @@ def initializeIfMigrated(sender):
     emit Initialized(block.number)
 ```
 
-`canonical_ip_text` is the Rust 1.96 `Display` form of the parsed IP: dotted decimal for IPv4; for IPv6 the RFC 5952 form (lowercase hex, longest run of two or more zero groups compressed, IPv4-mapped addresses as `::ffff:a.b.c.d`). The ingress string is copied verbatim; only egress is canonicalised (and loses its port). Inactive V1 records are migrated as born-deactivated entries (`deactivatedAtHeight = addedAtHeight = block.number`, no `activeIndices` entry, no ingress reservation). V1 is read through its storage directly (no call frame, no input charge).
+`canonical_ip_text` is the canonical text of the parsed IP. For IPv4 it is dotted decimal without leading zeros. For an IPv4-mapped IPv6 address (`::ffff:0:0/96`) it is `::ffff:` followed by the IPv4 dotted decimal. For any other IPv6 address it is the RFC 5952 §4 form: lowercase hex groups without leading zeros, with the longest run of two or more zero groups replaced by `::` (the first run when runs tie). No other IPv6 address uses dotted IPv4 notation. The ingress string is copied verbatim; only egress is canonicalised (and loses its port). Inactive V1 records are migrated as born-deactivated entries (`deactivatedAtHeight = addedAtHeight = block.number`, no `activeIndices` entry, no ingress reservation). V1 is read through its storage directly (no call frame, no input charge).
 
 > **Resolved conflict C-VAL-03**: TIP-1017 says `initializeIfMigrated` "can be called immediately when the V1 validator count is zero"; the code reverts `EmptyV1ValidatorSet()` (or `MigrationNotComplete()`) when V1 is empty. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-val-03).
 
@@ -631,8 +642,6 @@ def initializeIfMigrated(sender):
 Every V2 function costs exactly the input charge plus the framework cost of the storage reads, storage writes and logs listed in §2.4–§2.7, performed in that order. Signature decoding and Ed25519 verification, endpoint parsing and `ingressKey` hashing cost no gas. Pre-T2 calls cost only the input charge.
 
 ### 2.9 Consumption by consensus
-
-Reference implementation: crates/consensus/src/validators.rs, crates/consensus/src/consensus/application/parent_state.rs, crates/consensus/src/peer_manager/actor.rs.
 
 A validator computing or checking the DKG outcome carried by the boundary block of an epoch (07-consensus.md defines the boundary predicate, the `OnchainDkgOutcome` encoding and how proposals are compared) MUST derive two of its fields from ValidatorConfigV2 storage as follows. Let `P` be the parent of the boundary block and `S` the post-state of `P` (that is, the state after executing `P`, which is the pre-state of the boundary block). Reads are direct storage reads under the rules of `P`'s fork; they do not execute transactions or charge gas.
 
@@ -661,8 +670,6 @@ The same decoded entries (with `to_p2p_address`: ingress socket, egress IP with 
 The `feeRecipient` field is not consumed by block validity at or below T13 (its use as the required beneficiary starts at T14, out of scope).
 
 ## 3. CurrentCommittee (TIP-1070)
-
-Reference implementation: crates/precompiles/src/current_committee/mod.rs, crates/precompiles/src/current_committee/dispatch.rs, crates/contracts/src/precompiles/current_committee.rs, crates/evm/src/block.rs (`apply_current_committee_system_call`), crates/evm/src/evm.rs (`SYSTEM_CALL_GAS_LIMIT`), crates/dkg-onchain-artifacts/src/lib.rs.
 
 ### 3.1 Activation
 
@@ -727,8 +734,6 @@ Rules:
 
 ## 4. Zones (TIP-1091, TIP-1096, TIP-1098)
 
-Reference implementation: crates/precompiles/src/zone_factory/{mod.rs,portal.rs,dispatch.rs}, crates/contracts/src/precompiles/zone_factory.rs, crates/contracts/src/zones.rs, crates/contracts/src/zones/zone_portal.rs, crates/evm/src/block.rs (`deploy_zone_factory_at_boundary`, `install_zone_runtimes`, `upgrade_zone_runtimes`, `zone_runtime_fork`), crates/primitives/src/address.rs (`zone_portal_id`).
-
 ### 4.1 Addresses and constants
 
 ```python
@@ -771,7 +776,7 @@ The portal implementation, messenger and (T10–T12) verifier are EVM bytecode i
 | T13 `T13_ZONE_VERIFIER_RUNTIME` | `0x5A56…` | 387 | `0xcf7b19d3c186e4fd235c94907d10bba5c1ce21d6e815676b00aaf298b456de14` |
 | T13 `T13_ZONE_MESSENGER_RUNTIME` | `0x5A4D…` | 1,858 | `0x526c5bb045b6229e5a693d70feee066cc3848b5f91c62949ced54818045214ee` |
 
-(The `0xEF` marker's code hash is `0x309b8896ee4c1ff7ec1966155373dee42663b6b40c3fedc70ba501684848d2a3`.) A later T15 portal runtime exists in the reference implementation and is out of scope.
+(The `0xEF` marker's code hash is `0x309b8896ee4c1ff7ec1966155373dee42663b6b40c3fedc70ba501684848d2a3`.) Portal runtimes of later forks are out of scope.
 
 ### 4.3 Activation-time state changes
 
@@ -1045,8 +1050,6 @@ All portal, messenger and (T10–T12) verifier behaviour is defined by the pinne
 
 ### 4.8 ZoneVerifier
 
-Reference implementation: crates/precompiles/src/zone_verifier/{mod.rs,dispatch.rs,attestation.rs,pcrs.json,pcr.rs}, crates/nitro-attestation/src/{lib.rs,cbor.rs,x509.rs}, crates/contracts/src/precompiles/zone_verifier.rs.
-
 #### 4.8.1 T10–T12: EVM stub
 
 From T10 until T13 the address holds `ZONE_VERIFIER_RUNTIME` (Appendix A) and is not a precompile. Its behaviour, for reference: it accepts only selector `0x7106a43e` = `verify(uint32,uint64,uint64,bytes32,uint64,(bytes32,bytes32),(bytes32,bytes32,uint64,uint64),bytes32,bytes,bytes)` with zero call value, at least 448 bytes of arguments, in-range `uint32`/`uint64` words and well-formed `bytes` offsets and lengths, and then returns `abi.encode(true)`; anything else reverts with empty data. It checks no proof.
@@ -1199,7 +1202,7 @@ def batch_commitment(chain_id, c) -> bytes32:          # EIP-712 hashStruct, no 
 
 ## Appendix A. Protocol-installed runtime bytecode
 
-Each block below is the exact runtime code (hex, wrapped at 128 characters; concatenate the lines, no `0x` prefix). The keccak256 of the decoded bytes MUST equal the listed code hash. Reference: crates/contracts/src/zones.rs at commit 37dc7833023927f49fd0aa81ae84dbd43790f70c.
+Each block below is the exact runtime code (hex, wrapped at 128 characters; concatenate the lines, no `0x` prefix). The keccak256 of the decoded bytes MUST equal the listed code hash.
 
 ### T10 ZONE_PORTAL_RUNTIME (installed at 0x5AD1000000000000000000000000000000000000 at T10)
 

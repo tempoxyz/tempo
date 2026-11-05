@@ -28,12 +28,10 @@ rlp([nonce: uint64, balance: uint256, storage_root: bytes32, code_hash: bytes32]
 
 with integers encoded as minimal big-endian strings (`0` encodes as the empty string `0x80`), `storage_root` the root of the account's storage trie and `code_hash = keccak256(code)` (`0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470` for empty code).
 
-The reference implementation's account type carries an optional fifth RLP item, the *account extension*, which is reserved for T14 configurable-account commitments. It is encoded only when non-empty. At or before T13:
+T14 adds an optional fifth RLP item to the account leaf, the *account extension*, which holds configurable-account commitments and is encoded only when non-empty. At or before T13:
 
 - No state transition can produce a non-empty extension (every write of an account configuration commitment fails before T14; see [precompiles/account-keychain.md](precompiles/account-keychain.md)).
 - A client MUST treat any account leaf with a fifth item as invalid state. Equivalently, every account leaf is exactly the 4-item list above.
-
-Reference implementation: crates/primitives/src/account/mod.rs (`decode_config_commitment` rejects a non-empty payload before T14).
 
 ### 1.3 Code
 
@@ -82,8 +80,6 @@ In addition, the Ethereum built-in precompiles are active:
 
 The precompile set at fork F determines EIP-2929 warm addresses at transaction start, and calls to these addresses run native code. A Tempo precompile is dispatched on the call target regardless of the code stored there. A DELEGATECALL or CALLCODE to a Tempo precompile, that is any frame whose storage address differs from the call target, MUST revert with ABI data `DelegateCallNotAllowed()`, selector `keccak256("DelegateCallNotAllowed()")[0..4]`. The dispatch rules, gas and error conventions are in [precompiles/00-framework.md](precompiles/00-framework.md).
 
-Reference implementation: crates/contracts/src/precompiles/mod.rs (`SYSTEM_PRECOMPILES`), crates/primitives/src/address.rs (`is_precompile`), crates/precompiles/src/lib.rs (`TempoPrecompiles::new`, `execute`).
-
 ### 2.2 State representation of protocol accounts
 
 A Tempo precompile keeps its state in its own account's storage, using the slot layouts given in each precompile chapter. Its account has nonce 0, balance 0 and, once initialized, code `0xEF` (§1.3). The marker makes the account non-empty under EIP-161 and gives `EXTCODESIZE = 1` and `EXTCODEHASH = 0x309b…d2a3`. It is never executed: dispatch is native.
@@ -125,24 +121,31 @@ The mainnet and Moderato genesis allocations contain **no code** at the Ethereum
 | Zone runtimes | `0x5AD1000000000000000000000000000000000000` (portal implementation), `0x5A56000000000000000000000000000000000000` (verifier), `0x5A4D000000000000000000000000000000000000` (messenger) | Protocol-installed EVM bytecode | From T10 ([precompiles/validator-config-and-zones.md](precompiles/validator-config-and-zones.md)) |
 | System transaction sender | `0x0000000000000000000000000000000000000000` | Sender and target of the pre-T4 end-of-block system transaction | Before T4 ([02-encoding.md](02-encoding.md), [05-block-execution.md](05-block-execution.md)) |
 
-Reference implementation: crates/primitives/src/address.rs, crates/contracts/src/precompiles/zone_factory.rs, crates/contracts/src/precompiles/mod.rs.
-
 ## 4. Genesis
 
 ### 4.1 Normative genesis data
 
-The genesis state and header of each network are fully determined by a genesis JSON file in the alloy/geth `Genesis` format. These files are normative data for this specification:
+The genesis state and header of each network are fully determined by a genesis JSON file in the genesis-file format that Ethereum execution clients use for custom networks (format below). These files are normative data for this specification. Each is identified by its size and hashes:
 
-| Network | File (repository path) | Size | SHA-256 of file bytes | Keccak-256 of file bytes |
+| Network | File name | Size | SHA-256 of file bytes | Keccak-256 of file bytes |
 |---|---|---|---|---|
-| Mainnet (4217) | `crates/chainspec/src/genesis/presto.json` | 62,070 bytes | `00571ffc60bd49c51650839deb6379f9218167377b1b9c6e5cdfda968d330046` | `0x5501ea9d465084f486e420aaaf081edc0134f17e3799ea2480e0f16c59d3737b` |
-| Moderato (42431) | `crates/chainspec/src/genesis/moderato.json` | 2,584,301 bytes | `fea8a8699be8582d94dcbb5960c2e163e5d58b904362ba99bd7e0b2cb2a5b160` | `0xad0ec9e17c058cd59545986f4653dfa191f2b6a6e5ebd5c32dbb51cf79686f41` |
+| Mainnet (4217) | [`presto.json`](genesis/presto.json) | 62,070 bytes | `00571ffc60bd49c51650839deb6379f9218167377b1b9c6e5cdfda968d330046` | `0x5501ea9d465084f486e420aaaf081edc0134f17e3799ea2480e0f16c59d3737b` |
+| Moderato (42431) | [`moderato.json`](genesis/moderato.json.gz) (stored gzip-compressed; size and hashes are of the decompressed file) | 2,584,301 bytes | `fea8a8699be8582d94dcbb5960c2e163e5d58b904362ba99bd7e0b2cb2a5b160` | `0xad0ec9e17c058cd59545986f4653dfa191f2b6a6e5ebd5c32dbb51cf79686f41` |
 
-(File hashes are of the files at commit `37dc7833023927f49fd0aa81ae84dbd43790f70c`. Any re-serialization that yields the same parsed content yields the same genesis.)
+(Any re-serialization that yields the same parsed content yields the same genesis.)
 
 A client MUST derive its genesis from this data as described below and MUST check that the resulting genesis hash equals the expected value in §4.7.
 
 The file's top-level keys are `config` (§4.2), `nonce`, `timestamp`, `extraData`, `gasLimit`, `difficulty`, `mixHash`, `coinbase`, `baseFeePerGas` and `alloc`. The mainnet file also has a top-level `craftedWithLove` object (team member names and the message "Time is money"). It MUST be ignored, because it affects neither the genesis header nor the state. Absent numeric header keys (`number`, `gasUsed`, `parentHash`, `blobGasUsed`, `excessBlobGas`) are zero.
+
+The file is a JSON object (RFC 8259). Its values are encoded as follows:
+
+- **Quantities** (`nonce`, `timestamp`, `gasLimit`, `difficulty`, `baseFeePerGas`, and each account's `nonce` and `balance`) are JSON strings holding `0x` followed by the value in hexadecimal without leading zeros, such as `"0x1dcd6500"`. A client SHOULD also accept a JSON number. The top-level `nonce` is a 64-bit value. It becomes the 8-byte big-endian header `nonce`.
+- **Byte strings** (`extraData` and each account's `code`) are `0x`-prefixed hex strings with two digits per byte.
+- **Fixed-size values** are `0x`-prefixed hex strings of exactly their size: 20 bytes for `coinbase` and the `alloc` keys, 32 bytes for `mixHash` and for the keys and values of an account's `storage` object. Hex digits are case-insensitive, so EIP-55 mixed-case addresses are accepted.
+- **`config`** is a JSON object whose values are JSON numbers, booleans or hex address strings, as listed in [01-chain-and-forks.md](01-chain-and-forks.md#genesis-configuration).
+
+A storage value is the 256-bit slot value as a big-endian word. A client MUST reject a file whose values do not parse under these rules.
 
 ### 4.2 Genesis `config`
 
@@ -188,8 +191,6 @@ rlp([general_gas_limit, shared_gas_limit, timestamp_millis_part, rlp_list(inner_
 
 The genesis header is exempt from the per-block header rules of [05-block-execution.md](05-block-execution.md): its `general_gas_limit`, `shared_gas_limit` and base fee are not derived from the fork rules, and it carries no consensus context.
 
-Reference implementation: crates/chainspec/src/spec.rs (`TempoChainSpec::from_genesis`, `map_header`). The inner header comes from reth's `ChainSpec::from_genesis` / `make_genesis_header` (paradigmxyz/reth).
-
 ### 4.4 Genesis state from `alloc`
 
 `alloc` maps 20-byte addresses to accounts with optional `nonce`, `balance`, `code` and `storage` (a map from 32-byte slot to 32-byte value). Missing `nonce`/`balance` are 0, missing `code` is empty and missing `storage` is empty. For each entry, the client MUST create the account with those values, and storage entries whose value is zero MUST be skipped (§1.1). The genesis state root is the state trie root over all entries (§1.1, §1.2).
@@ -228,7 +229,7 @@ Accounts **not** in the mainnet genesis: validator config V2 (`0xCCCC…0001`), 
 
 ### 4.6 Genesis `extraData`
 
-The genesis `extraData` is the `OnchainDkgOutcome` ([07-consensus.md](07-consensus.md) §10.2) for epoch 0, encoded with the codec of [commonware/codec.md](commonware/codec.md) (crate `tempo-dkg-onchain-artifacts`); its embedded `Output` is encoded as in [commonware/dkg.md §11.1](commonware/dkg.md#111-output). It carries the initial validator set and the epoch-0 BLS12-381 (MinSig) threshold public key, the network identity (the constant term of the public polynomial, [commonware/cryptography.md §5.4](commonware/cryptography.md#54-public-polynomial-and-sharing-encoding)). Mainnet's epoch-0 identity is `0xa217bb85…05f5a193` (96 bytes). Its format and use are specified in [07-consensus.md](07-consensus.md). For genesis-hash purposes it is opaque bytes.
+The genesis `extraData` is the `OnchainDkgOutcome` ([07-consensus.md](07-consensus.md) §10.2) for epoch 0, encoded with the codec of [commonware/codec.md](commonware/codec.md); its embedded `Output` is encoded as in [commonware/dkg.md §11.1](commonware/dkg.md#111-output). It carries the initial validator set and the epoch-0 BLS12-381 (MinSig) threshold public key, the network identity (the constant term of the public polynomial, [commonware/cryptography.md §5.4](commonware/cryptography.md#54-public-polynomial-and-sharing-encoding)). Mainnet's epoch-0 identity is `0xa217bb85…05f5a193` (96 bytes). Its format and use are specified in [07-consensus.md](07-consensus.md). For genesis-hash purposes it is opaque bytes.
 
 ### 4.7 Expected genesis values
 
@@ -243,7 +244,7 @@ A client MUST refuse to start if its computed genesis hash differs from the expe
 
 ### 4.8 Genesis generator (informative)
 
-The genesis files were produced by the repository's genesis generator (`cargo x generate-genesis`, xtask/src/generate_genesis.rs and crates/evm/src/genesis.rs). It runs an in-memory EVM at fork T0. Its steps include:
+The genesis files were produced by Tempo's genesis generator. It runs an in-memory EVM at fork T0. Its steps include:
 
 - deploying the Arachnid CREATE2 factory as raw code, and Permit2 through it;
 - installing Multicall3, CreateX and the Safe singleton factory as predeployed code;
@@ -251,5 +252,3 @@ The genesis files were produced by the repository's genesis generator (`cargo x 
 - encoding the epoch-0 DKG outcome into `extraData`.
 
 Clients MUST NOT re-run the generator to obtain genesis. The JSON files are authoritative.
-
-Reference implementation: crates/evm/src/genesis.rs, xtask/src/generate_genesis.rs, crates/primitives/src/reth_compat/header.rs (block-1 test vector).

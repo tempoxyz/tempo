@@ -12,15 +12,16 @@ This folder specifies the Tempo protocol precisely enough to build a Tempo clien
 
 - Ethereum execution layer as of Osaka: [ethereum/execution-specs](https://github.com/ethereum/execution-specs) and the EIPs cited in each chapter. Tempo runs the EVM at the Osaka spec in every fork, so an EIP up to Osaka applies unless a chapter says otherwise.
 - Cryptographic and transport standards used by the consensus chapters: Ed25519 ([RFC 8032](https://www.rfc-editor.org/rfc/rfc8032)) with [ZIP-215](https://zips.z.cash/zip-0215) verification, BLS12-381 ([draft-irtf-cfrg-pairing-friendly-curves](https://datatracker.ietf.org/doc/html/draft-irtf-cfrg-pairing-friendly-curves-11)) with hashing to curves per [RFC 9380](https://www.rfc-editor.org/rfc/rfc9380), X25519 ([RFC 7748](https://www.rfc-editor.org/rfc/rfc7748)), ChaCha20-Poly1305 ([RFC 8439](https://www.rfc-editor.org/rfc/rfc8439)), SHA-256 ([FIPS 180-4](https://csrc.nist.gov/pubs/fips/180-4/upd1/final)) and [BLAKE3](https://github.com/BLAKE3-team/BLAKE3-specs/blob/master/blake3.pdf).
+- Wire and interface standards: the [Solidity ABI specification](https://docs.soliditylang.org/en/latest/abi-spec.html), RLP and the [Ethereum Yellow Paper](https://ethereum.github.io/yellowpaper/paper.pdf), the [devp2p specifications](https://github.com/ethereum/devp2p) (RLPx, discv4, eth/68, eth/69) and the [Engine API](https://github.com/ethereum/execution-apis).
 - Tempo Improvement Proposals in [`tips/`](../tips). Where a chapter and a TIP disagree, the chapter wins.
 
-The Simplex consensus, threshold BLS12-381, the Feldman–Desmedt DKG, the validator network and their codec are specified in the five commonware chapters of this spec (listed under Chapters), which restate the commonware library 2026.9.0 so that no commonware source is needed.
+The Simplex consensus, threshold BLS12-381, the Feldman–Desmedt DKG, the validator network and their codec are specified in the five commonware chapters of this spec (listed under Chapters), which are self-contained.
 
 ## Conventions
 
 - MUST, MUST NOT, SHOULD and MAY are used as in RFC 2119.
 - "From Tn" means the rule applies to a block whose header timestamp is at or after Tn's activation, and "Before Tn" means it applies before that. [01-chain-and-forks.md](01-chain-and-forks.md) defines this precisely.
-- Every "Reference implementation" line points to the Rust implementation in this repository at commit `37dc7833023927f49fd0aa81ae84dbd43790f70c`, so readers can trace the rule. Those lines are informative, not normative.
+- These chapters, the TIPs and the external specifications listed under Normative references are the only sources a client needs. The chapters do not refer to any implementation's code.
 - An **Open conflict** marker shows where Tempo's docs or TIPs disagree with what the implementation does and that disagreement has not been decided yet. [conflicts.md](conflicts.md) lists each one.
 
 ## Chapters

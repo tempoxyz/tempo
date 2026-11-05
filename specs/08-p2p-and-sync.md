@@ -13,22 +13,25 @@ The consensus protocol itself (Simplex, the threshold scheme, certificate format
 
 Nothing in this chapter is fork-gated within T0..T13: every rule below applies to every mainnet block height. (Fork-gated consensus behaviour such as the T12 leader elector lives in 07-consensus.md.) Where a rule depends on the fork schedule it is stated explicitly using the fork predicate of 01-chain-and-forks.md.
 
-## 0. Conventions and pinned dependencies
+## 0. Conventions and external specifications
 
 The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are to be interpreted as in RFC 2119.
 
-External wire formats that this chapter references rather than restates are pinned as follows:
+External wire formats that this chapter references rather than restates are defined by these specifications:
 
-| Dependency | Pin | Used for |
+| Specification | Where | Used for |
 |---|---|---|
-| reth | git rev `966010c905449163ef161530a5ee95ac1e0c8487` | devp2p (discv4, RLPx, `eth` wire), engine API semantics |
-| Ethereum | execution-specs Osaka, devp2p specs (RLPx, `eth`), EIP-2124 | devp2p |
+| devp2p | [ethereum/devp2p](https://github.com/ethereum/devp2p): RLPx (`rlpx.md`), discv4 (`discv4.md`), discv5 (`discv5/`), ENR (EIP-778), the `eth` capability (`caps/eth.md`) | execution-layer networking (section 4) |
+| `eth` versions | `eth/66` EIP-2481, `eth/67` EIP-4938, `eth/68` EIP-5793, `eth/69` EIP-7642, `eth/70` EIP-7975, `eth/71` EIP-8159 | the `eth` message sets a Tempo node advertises (4.1) |
+| Fork identifier | EIP-2124 | `eth` Status (4.1) |
+| Block size limit | EIP-7934 (`MAX_RLP_BLOCK_SIZE = 8,388,608` bytes) | message size limits (2.2, 3.4, 4.1) |
+| Engine API | [ethereum/execution-apis](https://github.com/ethereum/execution-apis), `src/engine/` (Prague and Osaka) | the semantics of `engine_newPayload` and `engine_forkchoiceUpdated` statuses (sections 7 and 8) |
 
 Codec notation ([codec.md §2](commonware/codec.md#2-notation)): `varint(x)` is the unsigned LEB128 encoding of an unsigned integer with the canonical-form rules of [codec.md §3](commonware/codec.md#3-varint); `u8`, `u64be` are fixed-width big-endian integers ([§4](commonware/codec.md#4-fixed-width-integers)); `bytes(x)` is `varint(len(x)) || x` ([§5.4](commonware/codec.md#54-length-prefixed-sequences-and-bytes)); a tuple `(A, B)` encodes as `enc(A) || enc(B)`; an `Option<T>` encodes as a `bool` byte (`0x00`/`0x01`) followed by `T` when present ([§5.2](commonware/codec.md#52-option)).
 
 Terms:
 
-- **CL** / **EL**: the consensus layer and the execution layer of a node. In the reference implementation both run in one process; the EL is reth.
+- **CL** / **EL**: the consensus layer and the execution layer of a node. They MAY run in one process; this chapter describes their interaction as Engine API calls either way.
 - **Validator**: a node running the consensus engine with an ed25519 signing key (`--consensus.signing-key`). It may or may not hold a BLS share in a given epoch (signer vs verifier, 07-consensus.md).
 - **Follower**: a node that does not vote. It obtains finalization certificates and blocks from other nodes, verifies them and drives its EL (`tempo node --follow`).
 - **Marshal**: the component that orders finalized blocks, persists finalizations and blocks, and repairs gaps (5.1); its consensus-facing wrapper is [simplex.md §10](commonware/simplex.md#10-marshal-inline-wrapper).
@@ -74,7 +77,7 @@ Validators MUST implement the authenticated lookup network of [p2p.md §6](commo
 | `namespace` | `union_unique(b"TEMPO", b"_P2P")` = `0x05 \|\| "TEMPO" \|\| "_P2P"` = bytes `05 54 45 4d 50 4f 5f 50 32 50` | normative |
 | stream namespace (derived from `namespace`) | `namespace \|\| b"_STREAM"` | normative ([p2p.md §4.1](commonware/p2p.md#41-roles-identities-and-namespace)) |
 | `crypto` | the validator's ed25519 private key | normative |
-| `max_message_size` | `8_388_608` bytes (reth `MAX_RLP_BLOCK_SIZE`) | normative lower bound: a node MUST accept application payloads up to this size; see 3.5 |
+| `max_message_size` | `8_388_608` bytes (`MAX_RLP_BLOCK_SIZE` of EIP-7934) | normative lower bound: a node MUST accept application payloads up to this size; see 3.4 |
 | `tracked_peer_sets` | 1 | default (see 2.4) |
 | `max_peers_per_set` | 128 (distinct identities including self; registering a larger set is fatal) | default; an implementation MUST support at least the number of identities that 2.4 derives |
 | `synchrony_bound` | 5 s | default |
@@ -110,7 +113,7 @@ Data    := varint(channel) || bytes(payload)
 
 Each peer in a tracked set has an asymmetric address `{ingress, egress}` ([p2p.md §6.5.2](commonware/p2p.md#652-addresses)) built from its ValidatorConfigV2 entry:
 
-- `ingress` = `Ingress::Socket(parse_socket_addr(entry.ingress))` — the address other validators dial. `entry.ingress` is a string `"<ip>:<port>"` (IPv6 as `"[<ip>]:<port>"`) a literal IPv4 or IPv6 socket address (no host names, no IPv6 zone index).
+- `ingress` = the socket address `parse_socket_addr(entry.ingress)` — the address other validators dial. `entry.ingress` is a string `"<ip>:<port>"` (IPv6 as `"[<ip>]:<port>"`) a literal IPv4 or IPv6 socket address (no host names, no IPv6 zone index).
 - `egress` = `(parse_ip_addr(entry.egress), port 0)` — only the IP is used: it is the source address the peer's outbound connections come from.
 
 An entry whose `publicKey` is not a valid ed25519 point encoding ([cryptography.md §3.2](commonware/cryptography.md#32-public-key-decoding)), or whose `ingress` or `egress` fails to parse, is *undecodable* (2.4 says how undecodable entries are handled).
@@ -192,7 +195,11 @@ Consequences that implementers MUST preserve:
 
 > **Note**: ValidatorConfigV2 has no entries before it is populated after T2 (mainnet genesis allocates only the V1 contract at `0xCCCCCCCC00000000000000000000000000000000`). The invariant assertions above therefore fail for heights before ValidatorConfigV2 holds entries for every player of the latest boundary outcome, so a validator cannot start its consensus engine from such a height; see 5.7.
 
-> **TODO**: the lowest mainnet height at which ValidatorConfigV2 held a decodable entry for every player of the latest boundary outcome (the lowest height from which a validator-mode node can start) was not determined from the code; it depends on when the T2 migration populated the contract on mainnet.
+> **Note (informative)**: On mainnet the lowest such height is 13,486,150 (epoch 624).
+> - ValidatorConfigV2 has no code before T2 (block 12,290,227). It has no entries before block 13,485,095.
+> - Throughout epoch 624 the latest boundary outcome is `outcome(624)` in block 13,478,399. At block 13,486,149, four of its 11 players and next players still have no ValidatorConfigV2 entry.
+> - From block 13,486,150, every one of them has a decodable entry.
+> - The contract records `initializedAtHeight = 13,486,706`. A validator-mode node can therefore start its consensus engine only from a height of at least 13,486,150.
 
 ### 2.5 Misbehaviour and blocking
 
@@ -254,7 +261,7 @@ All payloads are encoded with the codec of [codec.md](commonware/codec.md), deco
 
 #### 3.3.2 Channel 1: certificates
 
-`Certificate` (notarization, nullification, finalization) of [simplex.md §3.7](commonware/simplex.md#37-certificates) under the mux prefix. Informative summary (normative layout: 07-consensus.md §7): a finalization's encoding is `Proposal || vrf::Certificate` where `Proposal = varint(epoch) || varint(view) || varint(parent_view) || digest[32]` and `vrf::Certificate = vote_signature[48] || seed_signature[48]` (compressed G1 points), as in the golden frame of 4.3.4.
+`Certificate` (notarization, nullification, finalization) of [simplex.md §3.7](commonware/simplex.md#37-certificates) under the mux prefix. Informative summary (normative layout: 07-consensus.md §7): a finalization's encoding is `Proposal || VrfCertificate` where `Proposal = varint(epoch) || varint(view) || varint(parent_view) || digest[32]` and `VrfCertificate = vote_signature[48] || seed_signature[48]` (compressed G1 points), as in the golden frame of 4.3.4.
 
 #### 3.3.3 Channel 2: simplex resolver
 
@@ -306,7 +313,7 @@ The message types and the envelope are those of [dkg.md §5](commonware/dkg.md#5
 
 ### 3.4 Message size limits
 
-- A node MUST NOT send an application payload (including the mux prefix) larger than its configured `max_message_size` (default 8,388,608 bytes). The reference implementation drops such an outbound message and counts it, instead of passing it to the transport.
+- A node MUST NOT send an application payload (including the mux prefix) larger than its configured `max_message_size` (default 8,388,608 bytes). It drops such an outbound message locally instead of passing it to the transport.
 - Inbound encrypted frames whose payload exceeds the receiver's `max_message_size` plus the 32 bytes of message framing and authentication tag are rejected by the transport ([p2p.md §5.3](commonware/p2p.md#53-encrypted-frames)).
 - A proposed block travels as a single channel-3 message and inside channel-4 responses. Every node MUST accept inbound application payloads of at least 8,388,608 bytes (the block RLP size limit `MAX_RLP_BLOCK_SIZE` of EIP-7934, 05-block-execution.md). With the reference default (`max_message_size = 8,388,608`) a channel-4 response carrying a block whose RLP is within a few hundred bytes of that limit exceeds the limit once the finalization and `Message` framing are added, and is dropped by the responder; such a block can still be obtained from the EL (devp2p) or after a retry from a peer configured with a larger limit. Operators SHOULD NOT lower the default.
 
@@ -314,20 +321,69 @@ The message types and the envelope are those of [dkg.md §5](commonware/dkg.md#5
 
 ### 4.1 Stack
 
-Every Tempo node (validator or follower) runs reth's devp2p stack at the pinned revision:
+Every Tempo node (validator or follower) runs a devp2p stack as defined by the devp2p specifications of section 0. Tempo uses it unchanged, with the choices and limits below.
 
-- **Discovery**: discv4 (reth default). Mainnet and Moderato bootnodes are built into the node's chain configuration.
-- **Transport**: RLPx with the `p2p` hello handshake. The node advertises `eth/66` through `eth/71` (every version reth supports at the pinned revision) and, when enabled, `tempo/1` (4.3).
-- **`eth` Status**: network id and chain id 4217 on mainnet (42431 on Moderato), genesis hash of the Tempo genesis (04-state-and-genesis.md), and the EIP-2124 fork id computed over Tempo's fork schedule as specified in 01-chain-and-forks.md. Peers whose fork id is incompatible are disconnected.
+**Node identity and discovery.**
 
-A conforming node MUST support at least one `eth` version that reth at the pinned revision accepts (`eth/68` or `eth/69` is RECOMMENDED) so that it can exchange transactions and serve and download headers and bodies.
+- A node is identified by a secp256k1 key; its node id is the 64-byte uncompressed public key, written as an `enode://` URL or an ENR (EIP-778).
+- A node MUST implement discv4. Tempo nodes also run discv5 by default, on its own UDP port (default 9200); a node MAY implement it. DNS discovery (EIP-1459) has no Tempo list.
+- Bootnodes are operational configuration, not protocol. Tempo nodes ship a built-in list per chain (informative, below) and by default also fetch hints from `https://peers.tempo.xyz`, which returns a JSON object mapping a decimal chain id to a list of `enode://` URLs.
+
+> Informative: built-in bootnodes at the time of writing. They change with operations; the bootnode endpoint has the current list.
+>
+> Mainnet:
+>
+> - `enode://f314fd4d28a25e3fe8c8f42e794a95fbdeb47afff5bf1f50ba82f6e647f566b1266f8feb15549b2a50092ddd7a8b423a574bea67dec6d400343480e16d90215a@40.160.24.34:30002`
+> - `enode://a3cc3ec05f75b5d71d838a6b4a822044efef67b145ba14fcac3a7798de92806e59b12def3087c9453968e41a8d46439b35510a19014592afdd8962ab27060d67@40.160.24.210:30004`
+> - `enode://34b106ae5eddcaf9943987a9d38bb45dc2a64bbac996f34ddecd863217af567273102b4b7010e7cf516151c3903927a18abb1fafe32bb999d752fca064158e05@40.160.64.50:30006`
+> - `enode://b8c911b351614b71d027fcec98957be800cdc5e290b616d7f034a89c07d2be480fb9f11700cf7fc77073119b7d3d0855f697ebd4118fb34a35bd53ac58503122@148.113.220.159:30008`
+> - `enode://135666c3e82f051e803ae39d401c62329d0bd1b7c868bf9a9154b0aaca0fa9fe3a474b357ef09ff5238d7c6d56be8c3c7533feff277bd839b506e98433418fa5@40.160.22.6:30011`
+> - `enode://055ddd029a90d38ddb07fc248179e717ec25206cdc095ca6bb6dd187c54cb644664197fac75514e385f24e26a50d94190cbe78324a5e8d8d8c564cde8e7a503a@40.160.22.228:30012`
+> - `enode://fcde6d46394dabea840ab0fdc6f16be8352946c4eb91e32bc18a359e51f14e9b66810233ca00106dd8cdb01f44a7e2e080ea055fa0dc5a5797925356e831252a@148.113.213.6:30013`
+> - `enode://048954f10e776c4c31269b97dfbbe52be9dbce48278a02f67cd7a6eec805c1114c25c27e3e9bfabfb8117d134d89190888bb952b73a29f7c8430552a5192ec04@15.204.106.73:30015`
+> - `enode://944d8afe14b222ccf26e328bedc10d1db94d756d836b956d1daa5e681f8b29ae48973528af1362110ce61e4d338d758a7e5bba19a66d289a7d536fba795403a1@15.204.106.68:30017`
+>
+> Moderato:
+>
+> - `enode://daff60c56f91f13f7a01304badbf65a4b0fe71004293a1fa26e31bf9b2083cb7c176b8318219ac2a651dc26c61e094eff70ece6f440b849b8a1881c7766373bb@148.113.217.72:30014`
+> - `enode://1dc8f9d6f7406cd9ea546f7dd8abc84f69fce8a88dc7315372859010e3db9235d74a93347e91732283e7b4dd22f7d3a60c81dee31a8dc6665dc7ed9aff977c20@148.113.193.121:30016`
+> - `enode://c2b3cd1404534510487b96b099541d88072260d5410bcc38195d7f606decf0c0043964f6f9252869534675a80ca9f12af81d5b9c078966e9dfae4487a773cb0b@148.113.225.199:30018`
+> - `enode://53fc9564e37a20aa3f53dc5b3dce124f55df6b8eab45f5b40b13d19f4753255f4b1e240c4b5004bab8f5f8698a7f8c6607d28dc9afa0018fb69526b88411d8ab@148.113.193.123:30020`
+> - `enode://a52bd09170b63d1bc2c394a81a02c8f4e00eb8516e46f858af70b41452a521b12355eabb1ae97fca012af663241d953dd4d1d2b62a97c4a2f6ac1f00a4145981@148.113.215.68:30052`
+> - `enode://8dd0354c46d6b57dc3bda3661d2a9b01592b429b014ddbf557523cbdb4ae9f4e954030d6a54f405d753a7d9a59972fe47308a34100fe8e586849c3398c27ec21@40.160.32.193:30053`
+> - `enode://b497b28c16b9b9f534c95211807b7439687ba9b19f557bc8b7d7c72eacee44599681a6fbcc38737b9622d231906c8dc08aa08cc7d4ea49af282e235395138647@148.113.225.199:30054`
+
+**RLPx session.**
+
+- Transport is RLPx with the `p2p` capability, protocol version 5 (snappy-compressed messages after the Hello).
+- The Hello advertises `eth/66`, `eth/67`, `eth/68`, `eth/69`, `eth/70` and `eth/71`, plus `tempo/1` when enabled (4.3). `snap` is not advertised by default. As the RLPx specification says, the session uses, for each capability name, the highest version both sides advertise.
+- A conforming node MUST support at least one of these `eth` versions so that it can exchange transactions and serve and download headers and bodies. `eth/68` or `eth/69` is RECOMMENDED: every Tempo node accepts both.
+
+**`eth` Status.** The Status message follows the negotiated `eth` version (`eth/66`–`eth/68`: `caps/eth.md`; `eth/69` and later: EIP-7642). Its fields:
+
+- network id = chain id: 4217 on mainnet, 42431 on Moderato;
+- genesis hash of the Tempo genesis (04-state-and-genesis.md);
+- fork id of EIP-2124, computed over Tempo's fork schedule as specified in 01-chain-and-forks.md;
+- `eth/66`–`eth/68` only: total difficulty and best hash. Tempo has no proof of work, so the total difficulty carries no meaning; a receiver MUST NOT use it for peer selection;
+- `eth/69` and later: the served block range `(earliest, latest, latest_hash)`, kept current with `BlockRangeUpdate`.
+
+A Tempo node disconnects a peer with reason `0x02` (breach of protocol) when the peer's Status has a different genesis hash, `eth` version or network id, a fork id that EIP-2124 validation rejects, or (`eth/66`–`eth/68`) a total difficulty longer than 160 bits. It also ends the session when an `eth/69` Status has `earliest > latest` or a zero latest hash.
+
+**Message size limits.** These limits are observable by peers:
+
+- An RLPx message whose snappy-declared decompressed size exceeds 16 MiB (16,777,216 bytes) ends the session.
+- An `eth` message larger than 10 MiB (10,485,760 bytes) ends the session.
+- A block's RLP encoding is at most 8,388,608 bytes (EIP-7934; 05-block-execution.md), so one block body always fits in a `BlockBodies` response.
+- When serving, a node returns at most 1,024 headers, 1,024 bodies or 1,024 receipt lists per response. It stops adding items once the response reaches 2 MiB, so a response MAY hold fewer items than requested.
+
+**Reputation (informative).** Peer scoring is local policy, but its effects are visible to peers. A Tempo node keeps a reputation per peer, starting at 0, and disconnects and refuses a peer whose reputation falls below −51,200. A bad message (for example a malformed or invalid `tempo/1` frame, 4.3.5) costs 16,384, a timeout or a remote disconnect 4,096, and a protocol breach bans at once. Reputation below 0 recovers by 1 per second while connected. So four bad messages in quick succession get a peer disconnected. A banned peer stays refused for 12 hours.
 
 ### 4.2 What devp2p is used for
 
 | Use | Messages | Notes |
 |---|---|---|
 | Transaction propagation | `Transactions`, `NewPooledTransactionHashes`, `GetPooledTransactions`/`PooledTransactions` | Tempo transaction envelopes (06-transactions-and-fees.md). Pool policy never affects block validity. |
-| Serving and downloading history | `GetBlockHeaders`/`BlockHeaders`, `GetBlockBodies`/`BlockBodies` (and receipts) | Used by reth's own sync pipeline when a forkchoice update names a block the EL does not have, and by followers to fetch a block by hash (7.3). |
+| Serving and downloading history | `GetBlockHeaders`/`BlockHeaders`, `GetBlockBodies`/`BlockBodies` (and receipts) | Used by the EL's own sync and by followers to fetch a block by hash (7.3). When a forkchoice update names a head the EL does not have, the EL answers `SYNCING` (Engine API) and downloads the missing chain from devp2p peers: headers by hash, walking parent hashes back to a block it has, then the bodies, which it executes in order. A node MUST serve these requests by hash and by number, including the `reverse` and `skip` fields of `GetBlockHeaders`. |
 | Block propagation | none | `NewBlock`/`NewBlockHashes` are not used (post-merge semantics). Blocks reach the EL only through the engine API from the node's own CL. |
 
 A node MUST NOT treat a block obtained over devp2p as canonical or final because a peer served it. Canonicality comes only from the CL's forkchoice updates, which are driven by verified finalization certificates (sections 7 and 8). Devp2p is an untrusted data source: a block fetched by hash is authenticated by that hash, which a verified certificate or a verified descendant committed to.
@@ -352,7 +408,7 @@ The reference node offers `tempo/1` by default (`--consensus.devp2p.finalization
 
 #### 4.3.2 Frame format
 
-A `NewFinalization` is carried as an RLPx message whose message id is the capability's base offset plus `0x00` and whose data (after snappy decompression, as for every RLPx message) is the raw certificate encoding. Expressed as the id-relative frame that the reference transport handles:
+A `NewFinalization` is carried as an RLPx message whose message id is the capability's base offset plus `0x00` and whose data (after snappy decompression, as for every RLPx message) is the raw certificate encoding. Expressed as an id-relative frame (the message id minus the capability's base offset, followed by the decompressed data):
 
 ```
 frame := 0x00 || enc(Finalization)
@@ -373,7 +429,7 @@ The frame layout is frozen for version 1; an incompatible change MUST use a new 
 - A node keeps one **latest publication**, the frame with the highest round it has published. A tip whose round is lower than the latest publication's is not published. Republishing the same round reuses the cached frame bytes.
 - Per logical peer the node tracks `seen_round`, the highest round it sent to or received from that peer. It MUST NOT offer a frame whose round is ≤ `seen_round`. On a new peer connection the latest publication (if any) is offered immediately.
 - Outbound buffering keeps only the newest frame per logical peer; an unsent older frame is replaced.
-- At most 2 concurrent physical RLPx connections per peer id are attached to the logical peer (a transient duplicate during reth's connection reconciliation); a third is rejected, which closes that RLPx connection.
+- At most 2 concurrent physical RLPx connections per peer id are attached to the logical peer (a transient duplicate can exist while the RLPx layer resolves two simultaneous connections between the same pair of nodes); a third is rejected, which closes that RLPx connection.
 
 #### 4.3.4 Golden frame
 
@@ -403,7 +459,7 @@ A node ingests `tempo/1` frames only in certified follower mode. Validators MUST
 
 Per physical connection, in order:
 
-1. Oversized frame (> 1,024 bytes) → close the connection. Reth's ingress limit (1,024 bytes per frame, at most 64 buffered frames and 64 KiB buffered per connection) applies before decompression.
+1. Oversized frame (> 1,024 bytes, message id included) → close the RLPx session. The check uses the decompressed size that the snappy header declares, before decompressing. The RLPx layer also buffers at most 64 unread `tempo/1` frames and 64 KiB of them per connection; a frame that would exceed either bound closes the RLPx session.
 2. Per-connection admission rate limit: 8 frames/s (`--consensus.devp2p.finalizations.peer-frame-rate`); frames over the rate are dropped silently.
 3. Not ingesting (validator) → drop.
 4. Enqueue to consensus; the shared queue holds 256 frames and drops on overflow (a later certificate also finalizes earlier blocks, so a loss does not block progress).
@@ -411,13 +467,13 @@ Per physical connection, in order:
 In the consensus-side actor, per logical peer:
 
 1. Frame from a peer with no live connection → drop.
-2. Malformed (4.3.2 rules 2–4) → drop and penalize the peer (reth reputation change `BadMessage`).
+2. Malformed (4.3.2 rules 2–4) → drop and penalize the peer with one bad-message reputation penalty (4.1).
 3. `round ≤ seen_round(peer)` → replay, drop. Otherwise set `seen_round(peer) = round`.
 4. `round ≤ latest_verified_round` (the highest round verified locally or stored by marshal) → stale, drop.
 5. Put the certificate in the peer's single **slot**, replacing a slot that is still waiting (keeping its queue position); if the peer's slot is being verified or quarantined, drop the new frame.
-6. Verification is dispatched one certificate at a time, from the slot that has waited longest, at most 32 per second across all peers (`--consensus.devp2p.finalizations.verify-rate`). The verifier is the follower driver (7.4, `process_certificate`). Results:
+6. Verification is dispatched one certificate at a time, from the slot that has waited longest, at most 32 per second across all peers (`--consensus.devp2p.finalizations.verify-rate`). The verifier is the follower driver (7.4). Results:
    - **valid**: raise `latest_verified_round`; clear every slot whose round is ≤ it; the certificate is reported to marshal as a finalization (marshal then fetches its block and, once stored, republishes it per 4.3.3).
-   - **invalid** (verification failed under a scheme learned from an authenticated boundary): clear every slot holding the identical frame bytes (compared by `keccak256(frame)`) and penalize each owning peer.
+   - **invalid** (verification failed under a scheme learned from an authenticated boundary): clear every slot holding the identical frame bytes (compared by `keccak256(frame)`) and give each owning peer one bad-message penalty (4.1).
    - **needs scheme** (no scheme for the epoch yet, or it failed only against the pinned network identity fallback): quarantine the slot until a finalized boundary block installs a scheme for that epoch, then requeue it. The sender is not penalized.
    - **no answer** (verifier unavailable): settle the frame (clear identical slots) without penalty.
 
@@ -736,32 +792,34 @@ In validator mode, on startup the executor first replays finalized blocks from t
 
 ## 6. Consensus snapshots
 
-A snapshot lets a node start from recent state instead of genesis. It consists of an execution-layer snapshot (reth's modular snapshot format and manifest) plus a consensus archive.
+A snapshot lets a node start from recent state instead of genesis. It consists of an execution-layer snapshot, a consensus archive and a manifest that describes both.
+
+The whole snapshot format is implementation-defined: the EL snapshot's contents and encoding, the manifest's encoding, and the consensus archive's container, compression, file names and store layout. A snapshot is only guaranteed to install on the implementation, and storage format version, that produced it. This section specifies the logical contents every snapshot carries and the checks that make restoring one safe.
 
 ### 6.1 Contents
 
-The snapshot manifest (reth `SnapshotManifest` JSON) carries an extension object under the key `"consensus"`:
+The manifest MUST carry this consensus metadata:
 
 | Field | Type | Meaning |
 |---|---|---|
 | `execution_finalized_height` | integer | the EL snapshot source's finalized height |
-| `execution_finalized_digest` | 0x-hex 32 bytes | its block hash |
+| `execution_finalized_digest` | 32 bytes | its block hash |
 | `tip_finalization_height` | integer | the highest height with a finalization in the source |
-| `tip_finalization_digest` | 0x-hex 32 bytes | that finalization's payload |
+| `tip_finalization_digest` | 32 bytes | that finalization's payload |
 | `anchor_finalization_height` | integer | the anchor (6.2) |
-| `anchor_finalization_digest` | 0x-hex 32 bytes | the anchor finalization's payload |
-| `consensus_archive` | reth `SingleArchive` (`file`, `size`, `decompressed_size`, `blake3`, `output_files` with `path`, `size`, `blake3` each) | the consensus archive |
+| `anchor_finalization_digest` | 32 bytes | the anchor finalization's payload |
+| `consensus_archive` | integrity record | the consensus archive's file name, size, decompressed size and hash, and the list of files it extracts to, each with path, size and hash |
 
 The manifest's EL snapshot block MUST be at or above `execution_finalized_height`.
 
-The consensus archive is one file described by `consensus_archive`. It holds two of the logical stores of 9.1, and nothing else:
+The consensus archive holds two of the logical stores of 9.1, and nothing else:
 
 - the **finalization archive**, with every finalization from the anchor height to the tip height that the source holds;
 - the **finalized-block store**'s prunable part, with every block above `execution_finalized_height` that the source holds.
 
 It excludes the DKG state, the follower identity record, Simplex vote journals, the consensus caches and marshal's delivery metadata; a restored node rebuilds them (6.4).
 
-The archive's internal encoding (container, compression, file names and store layout) is implementation-defined. A snapshot is only guaranteed to install on the implementation, and storage format version, that produced it. The reference archive is a zstd-compressed tar of its two store directories. The manifest fields above and the logical contents are the same for every implementation.
+> Informative: Tempo's node writes the manifest as JSON, with the fields above in an object under the key `"consensus"` (digests as `0x`-prefixed hex), hashes files with BLAKE3, and packs the consensus archive as a zstd-compressed tar of its two store directories.
 
 ### 6.2 Anchor selection
 
@@ -787,9 +845,9 @@ So the anchor is the highest finalized height from which a contiguous run of sna
 
 Before replacing any local consensus data the installer MUST:
 
-1. check the archive's blake3 hash against `consensus_archive.blake3`;
+1. check the archive's hash against the one in `consensus_archive`;
 2. extract it into a staging directory without following or creating links outside it;
-3. require that every extracted entry is a regular file or directory, that every file is listed in `output_files` with matching size and blake3 hash, and that every listed file is present;
+3. require that every extracted entry is a regular file or directory, that every file is in the file list of `consensus_archive` with matching size and hash, and that every listed file is present;
 4. require that the extracted files form the two stores of 6.1 in the installer's own storage format, and reject the archive otherwise (for example, the reference installer requires each top-level directory to belong to one of its two stores);
 
 then move the stores into the consensus data directory (default `<datadir>/consensus`), refusing to overwrite existing files unless forced.
@@ -942,11 +1000,13 @@ def on_idle():
 
 def forkchoice(t):
     r = engine_forkchoiceUpdated(head=t.hash, safe=t.hash, finalized=t.hash, attributes=None)
-    if r is error TooDeepReorg and live().supersedes(t):
+    if r is error -38006 and live().supersedes(t):
         return                           # the EL finalized past the target meanwhile
     if r is any other error or r.status == INVALID:
         fatal()
 ```
+
+Error `-38006` is the Engine API's "Too deep reorg" (Paris, `engine_forkchoiceUpdatedV1`): the EL refuses a reorg deeper than it supports. A Tempo EL returns it when the head is a canonical ancestor below the EL's own finalized block, which happens when the EL finalized past a stale target. The follower ignores it only when `live()` already supersedes the target.
 
 So blocks without a round (before TIP-1031) are only delivered with `newPayload`; the EL is moved by the next tip, whose target always has a round. A heartbeat resends a forkchoice to the latest tip every `--consensus.fcu-heartbeat-interval` (default 5 min) of inactivity.
 
@@ -956,7 +1016,7 @@ A follower's `head`, `safe` and `finalized` are always the same finalized block;
 
 ### 7.7 Uncertified follow mode (informative)
 
-`--follow.nocertify` runs reth's debug consensus client against the upstream without certificate verification. Such a node trusts the upstream completely and is not a conforming follower.
+`--follow.nocertify` makes a node follow the upstream without verifying any certificate. The node runs no marshal, no driver and no `tempo/1`. It subscribes to the upstream's new blocks (`eth_subscribe("newHeads")` over WebSocket, polling otherwise), fetches each new block in full, and calls `engine_newPayload` with it. It then calls `engine_forkchoiceUpdated` with `head` = that block, `safe` = the block 32 heights below it and `finalized` = the block 64 heights below it, fetching those hashes with `eth_getBlockByNumber` when it has not seen them (a zero hash when the chain is shorter). Such a node trusts the upstream completely, exposes blocks Tempo has not finalized as `safe` and `finalized`, and is not a conforming follower.
 
 ## 8. Driving the EL (validators)
 
@@ -1032,7 +1092,7 @@ An implementation MUST use the same marshal stores (9.1), in the same format, in
 | `--consensus.signing-key` (plaintext) | `0x`-prefixed (or bare) hex of the encoding of the ed25519 private key (the 32-byte seed, [cryptography.md §3.1](commonware/cryptography.md#31-ed25519-encodings)), surrounding whitespace ignored |
 | `--consensus.signing-key` with `--consensus.secret <path>` | an age (age-encryption.org/v1) scrypt passphrase-encrypted file whose plaintext is the raw 32-byte encoded ed25519 private key; the passphrase is read from `<path>` (a FIFO is preferred) |
 | `--consensus.signing-share` | `0x`-prefixed hex of the share encoding of [cryptography.md §5.2](commonware/cryptography.md#52-share-encoding) (`varint(index) || scalar[32]`) |
-| network identity override | `--consensus.network-identity <0x-hex 96-byte G2>` ([cryptography.md §4.3](commonware/cryptography.md#43-point-encoding-and-decoding)) with `--consensus.network-identity-from-epoch <u64>`; the built-in files `mainnet-network-identity.json` / `testnet-network-identity.json` are `{"from_epoch": u64, "identity": "0x" + 192 hex}` |
+| network identity override | `--consensus.network-identity <0x-hex 96-byte G2>` ([cryptography.md §4.3](commonware/cryptography.md#43-point-encoding-and-decoding)) with `--consensus.network-identity-from-epoch <u64>`; the built-in checkpoints (07-consensus.md §8.3) use the JSON form `{"from_epoch": u64, "identity": "0x" + 192 hex}` |
 
 A configured share is used only if it matches the public polynomial of the latest finalized boundary outcome at the share's index (6.4; [cryptography.md §5.5](commonware/cryptography.md#55-partial-public-keys)).
 

@@ -4,8 +4,6 @@ Status: normative. Applies to Tempo mainnet (chain id 4217) from genesis through
 
 This chapter specifies the FeeManager precompile: its storage, its public ABI (user and validator fee-token preferences, fee distribution, and the Fee AMM liquidity functions), and the two protocol-internal hooks (`collectFeePreTx`, `collectFeePostTx`) that the transaction handler calls to charge every transaction's fee. Where in the transaction pipeline the hooks are called, how the fee token is resolved, and the balance precheck are specified in [06-transactions-and-fees.md](../06-transactions-and-fees.md). Dispatch, input-gas charging, static-call rejection, ABI decoding strictness, revert encoding and the storage slot rules are specified in [00-framework.md](00-framework.md). TIP-20 internals used here (`transfer`, `systemTransferFrom`, `transfer_fee_pre_tx`, `transfer_fee_post_tx`, currency, quote token, pause) are specified in [tip20.md](tip20.md); TIP-403 authorization (`is_authorized_as`) in [tip403.md](tip403.md); access-key spending limits and storage credits (TIP-1060) in [account-keychain.md](account-keychain.md).
 
-Reference implementation: crates/precompiles/src/tip_fee_manager/{mod.rs,amm.rs,dispatch.rs}, crates/contracts/src/precompiles/tip_fee_manager.rs, crates/evm/src/fee_manager.rs, crates/evm/src/handler/config.rs.
-
 ## 1. Address and constants
 
 | Name | Value |
@@ -143,7 +141,7 @@ def get_validator_token(validator: address) -> address:
     t = sload(validatorTokens[validator])
     return PATH_USD if t == 0 else t
 
-def require_tip20_prefix(token):            # TIP20Token::from_address
+def require_tip20_prefix(token):
     if token[0:12] != 0x20C000000000000000000000: raise TIP20.InvalidToken
     # no storage access
 
@@ -360,7 +358,7 @@ There is no access control: anyone may trigger distribution to `validator`. The 
 
 ### 7.1 Invocation contract
 
-The transaction handler ([06-transactions-and-fees.md](../06-transactions-and-fees.md) fixes their position in the pipeline) calls two internal entry points of the FeeManager for every transaction that pays fees. They are Rust-level calls, not EVM messages:
+The transaction handler ([06-transactions-and-fees.md](../06-transactions-and-fees.md) fixes their position in the pipeline) calls two internal entry points of the FeeManager for every transaction that pays fees. They are internal calls, not EVM messages:
 
 - They run with `FEE_MANAGER` as the storage owner, directly against the transaction's state journal, with **no gas metering**: their storage reads, writes, transient accesses and logs are charged to no gas budget and do not count toward the transaction's `gasUsed`. The accounts and slots they touch are warm (EIP-2929) for the rest of the transaction.
 - They run with TIP-1060 storage-credit accounting **disabled**: their SSTOREs neither mint nor consume storage credits nor create pending refunds ([account-keychain.md](account-keychain.md)).
@@ -381,7 +379,7 @@ Call rules:
 
 1. `collectFeePreTx(fee_payer, fee_token, collected, beneficiary)` is called once, before execution, **iff `collected != 0`**. If it fails, every state change it made is rolled back and the transaction is invalid.
 2. `collectFeePostTx(fee_payer, actual_spending, refund, fee_token, beneficiary)` is called once, after execution and gas finalization, whether execution succeeded, reverted or halted, **unless** `actual_spending == 0 and refund == 0` (it is also not called when `collected == 0 and actual_spending != 0`, which cannot occur). Its effects and logs are not undone by an execution revert. If it fails, the transaction is invalid.
-3. Block execution MUST perform the liquidity check and reservation of Section 7.2. (The reference implementation has a `skip_liquidity_check` flag that only its transaction pool sets; block building and validation never set it.)
+3. Block execution MUST perform the liquidity check and reservation of Section 7.2. A transaction pool MAY skip this check when it admits transactions; block building and block validation never skip it.
 
 Because the base fee is never below its floor (`6 × 10^8` from T7, higher before), `collected ≥ 1` for any `gas_limit ≥ 1` in block execution, so the pre hook runs for every fee-paying transaction.
 

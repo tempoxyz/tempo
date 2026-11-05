@@ -136,8 +136,6 @@ Consequences a client MUST reproduce:
 - The decoder does not check curve membership, scalar ranges or WebAuthn contents; those are verification failures (sections 4–6).
 - `KeyAuthorization.signature` is decoded with `decode_account_signature`, so a keychain-wrapped key-authorization signature is a decode error.
 
-Reference implementation: crates/primitives/src/transaction/tt_signature.rs (`PrimitiveSignature::from_bytes`, `AccountSignature::from_bytes`, `TempoSignature::from_bytes`), crates/primitives/src/transaction/tempo_transaction.rs (length constants).
-
 ## 4. secp256k1
 
 ### 4.1 Decoding and accepted `v`
@@ -174,8 +172,6 @@ def secp256k1_recover(r: int, s: int, y_parity: int, digest: bytes32) -> Address
 
 `s == SECP256K1_N_HALF` is accepted. This same function, with the EIP-2 check, is used for every secp256k1 signature in this chapter: Ethereum transaction signatures, the 0x76 sender signature, keychain inner signatures, fee payer signatures, EIP-7702 and Tempo authorizations, and key-authorization signatures.
 
-Reference implementation: crates/primitives/src/transaction/tt_signature.rs (`PrimitiveSignature::recover_signer`); alloy-consensus 2.5.0 `crypto::secp256k1::recover_signer`; alloy-primitives 1.7.3 `Signature::from_raw_array`, `normalize_v`.
-
 ## 5. P256 (secp256r1)
 
 ### 5.1 Verification
@@ -209,8 +205,6 @@ def recover_p256(sig: P256, digest: bytes32) -> Address:
 ```
 
 `pre_hash` exists for signers (such as Web Crypto) that always hash their input with SHA-256: with `pre_hash` set, the signer signs the 32-byte digest as a message and the verifier hashes it once. There is no public-key recovery: the key is carried in the signature and the address is derived from it.
-
-Reference implementation: crates/primitives/src/transaction/tt_signature.rs (`verify_p256_signature_internal`, `derive_p256_address`, `P256N_HALF`).
 
 ## 6. WebAuthn (type 0x02)
 
@@ -282,8 +276,6 @@ The message hash covers `clientDataJSON` exactly as carried, including any white
 
 > **Resolved conflict C-SIG-04**: TIP-0001 checks clientDataJSON by substring search; the code parses it as JSON with the rules above. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](conflicts.md#c-sig-04).
 
-Reference implementation: crates/primitives/src/transaction/tt_signature.rs (`verify_webauthn_data_internal`, `ClientDataJson`).
-
 ## 7. Canonical re-encoding
 
 Decoding is lenient in two places, and the leniency does not survive into any hash. This is the same rule as [02-encoding.md](02-encoding.md#canonical-re-encoding), stated here for signatures:
@@ -300,8 +292,6 @@ Every hash over a transaction or a structure containing a signature MUST be comp
 - the expiring-nonce replay hash ([06-transactions-and-fees.md](06-transactions-and-fees.md)), which is built from the sender signing payload.
 
 So a 0x76 transaction received with an embedded `v = 0` and one received with `v = 27` (all else equal) are the same transaction with the same hash. A block producer SHOULD emit canonical encodings.
-
-Reference implementation: crates/primitives/src/transaction/tt_signature.rs (`encode_bytes_into`), crates/primitives/src/transaction/tt_signed.rs (`compute_hash`, `eip2718_encode`).
 
 ## 8. Keychain signatures (0x03 V1, 0x04 V2)
 
@@ -361,11 +351,9 @@ def validate_keychain_version(sig: TempoSignature, block_timestamp):
         raise InvalidTransaction("V2BeforeActivation")
 ```
 
-Reference implementation: crates/primitives/src/transaction/tt_signature.rs (`KeychainSignature::signing_hash`, `key_id`, `TempoSignature::validate_version`), crates/evm/src/handler.rs (`prepare_aa`, `prepare_keychain`, `access_key_id`).
-
 ## 9. Configurable-account signatures (0x05) at or before T13
 
-Signature type 0x05 (`0x05 || rlp(ConfigurableAccountSignature)`) and key type 3 (`SignatureType::ConfigurableAccount`) belong to T14, which is out of scope. The reference decoder already accepts them, so a T13 client MUST reject them explicitly. At or before T13, a transaction is **invalid** if any of the following holds:
+Signature type 0x05 (`0x05 || rlp(ConfigurableAccountSignature)`) and key type 3 (configurable account) belong to T14, which is out of scope. The decoding rules of this chapter and [02-encoding.md](02-encoding.md) already accept them, so a T13 client MUST reject them explicitly. At or before T13, a transaction is **invalid** if any of the following holds:
 
 1. its `sender_signature` has type byte 0x05 (a payload of length ≠ 65 starting with 0x05);
 2. its `sender_signature` is a Keychain V2 envelope whose inner signature has type byte 0x05 (inside a Keychain V1 envelope this is already a decode error);
@@ -373,7 +361,7 @@ Signature type 0x05 (`0x05 || rlp(ConfigurableAccountSignature)`) and key type 3
 4. its `key_authorization.signature` has type byte 0x05;
 5. its `key_authorization.key_type` is 3 (`ConfigurableAccount`). (Key type values ≥ 4 are a decode error.)
 
-A T13 client therefore does not need the internal layout of `ConfigurableAccountSignature`: whether the RLP after the 0x05 byte decodes or not, and whether its owner quorum verifies or not, the transaction cannot be in a valid block. For error reporting, the reference implementation rejects them at these points (an earlier, unrelated check of the 0x76 pipeline, such as the keychain version check, may reject the transaction first):
+A T13 client therefore does not need the internal layout of `ConfigurableAccountSignature`: whether the RLP after the 0x05 byte decodes or not, and whether its owner quorum verifies or not, the transaction cannot be in a valid block. For error reporting (informative; error names and points are not consensus-relevant), a client may reject them at these points (an earlier, unrelated check of the 0x76 pipeline, such as the keychain version check, may reject the transaction first):
 
 | Case | Where | Error |
 |---|---|---|
@@ -383,8 +371,6 @@ A T13 client therefore does not need the internal layout of `ConfigurableAccount
 | 3 | first validation step of the 0x76 pipeline | `ConfigurableAccount(InvalidSignatureContext)` |
 | 5 | key-authorization validation | `ConfigurableAccount(UnsupportedContext)` |
 | 1, 2 or 4 otherwise | configurable-role validation, before intrinsic gas | `ConfigurableAccount(UnsupportedContext)` |
-
-Reference implementation: crates/evm/src/handler.rs (`prepare_aa`, `validate_key_authorization`), crates/evm/src/handler/configurable_account/mod.rs (`validate_configurable_roles`), crates/primitives/src/transaction/tt_authorization.rs (`recover_authority`).
 
 ## 10. Signing domains
 
@@ -443,8 +429,6 @@ def fee_payer_signing_hash(tx, sender: Address) -> bytes32:
 
 The prefix bytes 0x04, 0x05, 0x76 and 0x78 keep the domains disjoint.
 
-Reference implementation: crates/primitives/src/transaction/tempo_transaction.rs (`encode_for_signing`, `fee_payer_signature_hash`, `rlp_encode_fields`), crates/primitives/src/transaction/key_authorization.rs (`KeyAuthorization::signature_hash`), crates/primitives/src/transaction/tt_authorization.rs (`signature_hash`).
-
 ## 11. Sender and fee payer recovery
 
 ### 11.1 Ethereum transaction types
@@ -494,8 +478,6 @@ def fee_payer(signed_tx, sender: Address) -> Address:
 
 A Legacy transaction whose signature is exactly `r = 0, s = 0, y_parity = 0` is the Tempo system-transaction sentinel: its sender is `0x0000000000000000000000000000000000000000` without any curve operation (and section 4.2 is not applied). Whether such a transaction is allowed, and where, is defined in [05-block-execution.md](05-block-execution.md) (one per block, last, before T4; none from T4). Any other Legacy signature is recovered normally.
 
-Reference implementation: crates/primitives/src/transaction/envelope.rs (`TEMPO_SYSTEM_TX_SIGNATURE`, `recover_signer`), crates/primitives/src/transaction/tt_signed.rs (`recover_sender`), crates/primitives/src/transaction/tempo_transaction.rs (`recover_fee_payer`, `rlp_decode_fields`), crates/evm/src/transaction.rs, crates/evm/src/handler.rs (`prepare_aa`).
-
 ## 12. EIP-7702 authorizations
 
 ### 12.1 In EIP-7702 (0x04) transactions
@@ -542,13 +524,9 @@ def apply_tempo_authorizations(tx, state, chain_id):
 - The authority is warmed only once recovered, so entries skipped earlier warm nothing.
 - Refund accounting per entry is in [06-transactions-and-fees.md](06-transactions-and-fees.md).
 
-Reference implementation: crates/primitives/src/transaction/tt_authorization.rs, crates/evm/src/handler.rs (`apply_one_authorization`, `apply_authorization_list`, `prepare_aa`).
-
 ## 13. Key-authorization signatures
 
 `key_authorization.signature` is an `AccountSignature`: a primitive secp256k1, P256 or WebAuthn signature (keychain envelopes are a decode error; 0x05 is invalid at or before T13, section 9). Its signer is recovered with sections 4–6 over `keccak256(rlp(KeyAuthorization))`; a WebAuthn key-authorization signature uses `base64url_nopad` of that digest as challenge. A recovery failure makes the transaction invalid (`KeyAuthorizationSignatureRecoveryFailed`). Who may sign a key authorization (the root before T6; the root or an admin access key from T6), the `chain_id` rule (0 is a wildcard before T1C, exact match from T1C) and the fork-gated fields are specified in [06-transactions-and-fees.md](06-transactions-and-fees.md).
-
-Reference implementation: crates/primitives/src/transaction/key_authorization.rs (`SignedKeyAuthorization::recover_signer`, `authorizing_account`), crates/evm/src/handler.rs (`validate_key_authorization`).
 
 ## 14. Verification gas
 
@@ -588,8 +566,6 @@ The WebAuthn data charge covers all of `webauthn_data`, the 37-byte `authenticat
 > **Resolved conflict C-SIG-01**: docs and TIP-0001 charge WebAuthn calldata gas for clientDataJSON only; the code charges all of webauthn_data. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](conflicts.md#c-sig-01).
 
 The configurable-account gas rules are T14-only and do not apply (section 9).
-
-Reference implementation: crates/primitives/src/gas.rs, crates/primitives/src/transaction/tt_signature.rs (`verification_gas`, `intrinsic_verification_gas`), crates/evm/src/signature_gas.rs, crates/evm/src/handler.rs (`intrinsic_gas`, `calculate_key_authorization_gas`).
 
 ## 15. Fork summary
 

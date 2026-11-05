@@ -39,8 +39,6 @@ Tempo uses Ethereum RLP (Yellow Paper Appendix B; execution-specs `ethereum_rlp`
 
 Encoders MUST produce canonical RLP.
 
-Reference implementation: alloy-rlp 0.3.16 (`alloy_rlp::Decodable`).
-
 ### 1.3 Optional fields
 
 Tempo structures use four distinct conventions for optional fields. Each structure in this chapter names the one it uses.
@@ -54,7 +52,7 @@ def decode_presence_optional(payload, field_type):
     return payload.decode(field_type)   # 0x80 is NOT a placeholder
 ```
 
-**(B) Canonical trailing optionals with placeholder** ("trailing(canonical)"). Used by `KeyAuthorization` and `TokenLimit`. Optional fields form a suffix. An absent field that is followed by at least one present field is encoded as the placeholder `0x80`. Absent fields after the last present field MUST be omitted. The decoder, for each optional field in order:
+**(B) Canonical trailing optionals with placeholder.** Used by `KeyAuthorization` and `TokenLimit`. Optional fields form a suffix. An absent field that is followed by at least one present field is encoded as the placeholder `0x80`. Absent fields after the last present field MUST be omitted. The decoder, for each optional field in order:
 
 ```python
 def decode_canonical_optional(payload, field_type):
@@ -71,8 +69,6 @@ None of the field types that use (B) can decode from `0x80` (`NonZeroU64` reject
 **(C) Fixed-position optionals.** Used by `valid_before`, `valid_after`, `fee_token` and `fee_payer_signature` of the Tempo transaction. The field is always present in the list; `0x80` means absent. Rules are given per field in [§4.3](#43-tempo-transaction-0x76).
 
 **(D) Type-detected optional.** Used only by `key_authorization` of the Tempo transaction: present iff the next item is an RLP list ([§4.3](#43-tempo-transaction-0x76)).
-
-Reference implementation: alloy-rlp-derive 0.3.16 `#[rlp(trailing(no_gaps))]` (A) and `#[rlp(trailing(canonical))]` (B).
 
 ### 1.4 EIP-2718 typed envelopes
 
@@ -101,8 +97,6 @@ def network_decode_tx(list_payload):
     # typed_decode MUST consume exactly len(s) - 1 bytes
     return tx
 ```
-
-Reference implementation: alloy-eips 2.5.0 `Decodable2718::network_decode`; alloy-tx-macros 2.5.0 `TransactionEnvelope`.
 
 ### 1.5 Constants
 
@@ -206,8 +200,6 @@ Presence by fork:
 
 > **Open conflict C-FORKS-05**: TIP-1031 and t4.mdx gate `consensus_context` presence by fork (absent before T4, required from T4), but code has no fork gate: the execution layer never checks presence by fork, and consensus requires it on every new proposal. See [conflicts](conflicts.md#c-forks-05).
 
-Reference implementation: crates/primitives/src/header.rs (`TempoHeader`, `TempoConsensusContext`), crates/primitives/src/ed25519.rs, crates/consensus/src/consensus/application/impl.rs (`verify_header`), crates/consensus/src/consensus/block.rs (`CertifiableBlock::context`).
-
 ### 2.4 Header hash
 
 ```python
@@ -247,9 +239,9 @@ def expected_general_gas_limit(F, gas_limit, shared_gas_limit):
 
 For example, mainnet block 1 (pre-T1, `gas_limit = 500,000,000`) has `shared_gas_limit = 50,000,000` and `general_gas_limit = 225,000,000`.
 
-> **Resolved conflict C-ENC-04**: TIP-1010 fixes the shared gas limit at 50,000,000 (`gas_limit / 10`) with no end date, while code requires `shared_gas_limit == 0` from T4. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](conflicts.md#c-enc-04).
+Checks 1–5 are the Ethereum Osaka header checks for a proof-of-stake chain (execution-specs `osaka` `validate_header` and `state_transition`, with EIP-4895, EIP-4844, EIP-4788 and EIP-7685 for the presence of fields). Tempo deviates in two places: the `extra_data` limit is 10240 bytes instead of 32, and the gas-limit maximum `2**63 - 1` is an added check. Checks 6–9 are Tempo additions.
 
-Reference implementation: crates/evm/src/consensus/mod.rs (`TempoConsensus::validate_header`), crates/hardfork/src/lib.rs (`shared_gas_limit`, `general_gas_limit`), crates/chainspec/src/spec.rs (`general_gas_limit_at`), reth `EthBeaconConsensus::validate_header` and `validate_4844_header_standalone` (paradigmxyz/reth@966010c).
+> **Resolved conflict C-ENC-04**: TIP-1010 fixes the shared gas limit at 50,000,000 (`gas_limit / 10`) with no end date, while code requires `shared_gas_limit == 0` from T4. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](conflicts.md#c-enc-04).
 
 ### 2.6 Header validity against the parent
 
@@ -261,7 +253,7 @@ For a header `h` with parent `p`:
 4. `h.inner.excess_blob_gas` equals the Osaka (EIP-7918) excess-blob-gas computed from `p`. Under (1)–(3) of [§2.5](#25-standalone-header-validity) this is 0.
 5. `timestamp_millis(h) > timestamp_millis(p)` (strict). The seconds timestamp alone is not compared, so two consecutive blocks may share `inner.timestamp` if `timestamp_millis_part` increases.
 
-Reference implementation: crates/evm/src/consensus/mod.rs (`validate_header_against_parent`), reth `validate_against_parent_gas_limit`, `validate_against_parent_eip1559_base_fee`, `validate_against_parent_4844`.
+Checks 1, 2 and 4 are the Ethereum Osaka parent checks (execution-specs `osaka` `validate_header` and `check_gas_limit`, EIP-4844 and EIP-7918 for the excess blob gas). Tempo deviates in two places: the base fee rule of check 3 replaces the EIP-1559 update, and check 5 replaces Ethereum's `h.timestamp > p.timestamp` with a comparison of millisecond timestamps.
 
 ### 2.7 Base fee
 
@@ -294,8 +286,6 @@ def t7_next_base_fee(base_fee, gas_used):
 ```
 
 Intermediate products are computed in at least 128-bit precision. The first T7 block's parent has base fee `T1_BASE_FEE`, so the clamp yields `T7_CAP` for it. This is not a special case. Unit semantics of the base fee (attodollars) are in [06-transactions-and-fees.md](06-transactions-and-fees.md).
-
-Reference implementation: crates/chainspec/src/spec.rs (`next_block_base_fee`), crates/hardfork/src/constants.rs (`tempo_t7_next_block_base_fee`).
 
 ### 2.8 Test vector: mainnet block 1
 
@@ -352,11 +342,11 @@ Block = rlp([
 5. Block size (EIP-7934, active from genesis because Osaka is): `len(rlp(block)) <= 8388608`, where `rlp(block)` is the canonical re-encoding of the decoded block ([§4.6](#46-canonical-re-encoding)), with typed transactions in wrapped form.
 6. System-transaction placement rules of [§6.3](#63-placement-and-validity).
 
+Checks 1–5 are Ethereum Osaka's block-body checks (execution-specs `osaka` `state_transition`, EIP-4895, EIP-4844, EIP-7934). Tempo deviates in that the withdrawals list MUST be empty in every fork.
+
 Ordering of user transactions and lane rules are in [05-block-execution.md](05-block-execution.md).
 
 > **Resolved conflict C-ENC-02**: docs blockspace/overview.mdx lists "start-of-block system transaction(s)" as the first section of every block body, but code defines no start-of-block system transaction in any fork (only the pre-T4 end-of-block transaction of §6). Decided: this spec follows the implementation, and the docs are fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098). See [conflicts](conflicts.md#c-enc-02).
-
-Reference implementation: crates/primitives/src/lib.rs (`Block`, `BlockBody`), crates/evm/src/consensus/mod.rs (`validate_block_pre_execution`), crates/evm/src/block.rs (`apply_pre_execution_changes`), reth `post_merge_hardfork_fields` and `validate_body_against_header`.
 
 ---
 
@@ -377,8 +367,6 @@ All other type bytes are decode-invalid in every fork, including `0x03` (EIP-484
 The Ethereum types are encoded, signed and hashed exactly as in execution-specs Osaka (Legacy: `keccak256(rlp([nonce, gas_price, gas, to, value, data, v, r, s]))` with EIP-155 `v = 35 + 2·chain_id + y_parity` or `27 + y_parity`; typed: `keccak256(type || rlp([...]))`). Whether a given decodable transaction is valid (chain id, signature low-s, gas caps, value transfer rules) is defined in [06-transactions-and-fees.md](06-transactions-and-fees.md).
 
 One legacy transaction shape is reserved for the protocol: a legacy transaction whose signature is `(r = 0, s = 0, y_parity = 0)` is a **system transaction** ([§6](#6-pre-t4-end-of-block-system-transaction)).
-
-Reference implementation: crates/primitives/src/transaction/envelope.rs (`TempoTxEnvelope`, `TempoTxType`).
 
 ### 4.2 Transaction hash and identifier
 
@@ -423,7 +411,7 @@ Sub-structures:
 - `fee_payer_signature = rlp([y_parity, r, s])`. `y_parity` is a `bool` (`0x80` or `0x01`), `r` and `s` are U256 integers. Exactly three items. The fee-payer signature is always secp256k1. Its recovery and the low-s rule are in [03-signatures.md](03-signatures.md).
 - `TempoSignedAuthorization = rlp([chain_id, address, nonce, signature])`. `chain_id` is a U256, `address` an Address, `nonce` a u64, and `signature` an RLP byte string holding a `TempoSignature` ([03-signatures.md](03-signatures.md)). Exactly four items.
 
-The field the docs call `aa_authorization_list` is `tempo_authorization_list` in the reference implementation.
+Some sources call `aa_authorization_list` `tempo_authorization_list`. The two names denote the same field.
 
 #### 4.3.1 Decoding
 
@@ -473,8 +461,6 @@ The decoder rejects, as decode-invalid in every fork:
 4. both `valid_before` and `valid_after` are present and `valid_before <= valid_after`.
 
 All other 0x76 rules (chain id, nonce modes, time window against the block, fee payer recovery, key-authorization fork gating, keychain version gating, intrinsic gas, the reserved `nonce_key` prefix in [§6.5](#65-reserved-nonce-key-prefix)) are validity rules of the transaction in a block, defined in [06-transactions-and-fees.md](06-transactions-and-fees.md). A transaction that fails one of them still has a well-defined encoding and hash.
-
-Reference implementation: crates/primitives/src/transaction/tempo_transaction.rs (`rlp_decode_fields`, `validate`, `validate_calls`, `Call`), crates/primitives/src/transaction/tt_signed.rs (`AASigned::rlp_decode`), crates/primitives/src/transaction/tt_authorization.rs.
 
 ### 4.4 Signature field
 
@@ -542,8 +528,6 @@ def tempo_tx_hash(tx) -> B256:
 
 The fields are written as in §4.3: `valid_before`/`valid_after` as `0x80` when absent, `fee_token` as `0x80` or 20 bytes, `fee_payer_signature` as `0x80` or `[y_parity, r, s]`, `key_authorization` omitted entirely when absent, and the signature as an RLP string of its canonical bytes.
 
-Reference implementation: crates/primitives/src/transaction/tempo_transaction.rs (`encode_for_signing`, `fee_payer_signature_hash`, `rlp_encode_fields`), crates/primitives/src/transaction/tt_signed.rs (`compute_hash`, `expiring_nonce_hash`), crates/primitives/src/transaction/mod.rs (`unique_tx_identifier_from_signable`).
-
 ### 4.6 Canonical re-encoding
 
 <a id="canonical-re-encoding"></a>
@@ -566,8 +550,6 @@ These rules apply to every primitive signature inside a `0x76` transaction: the 
 Normative rule: a client MUST accept every encoding the decoder accepts, and MUST compute **every** hash, root and length over the canonical re-encoding of the decoded value, never over the received bytes. This covers the transaction hash, the sender signing hash and fee-payer signing hash (which embed `key_authorization`, and so its re-encoded signature), `unique_tx_identifier`, the transactions root ([§7.3](#73-roots)) and the block size ([§3.2](#32-body-validity)). A client that hashes the received bytes computes a different `transactions_root` for a block containing, say, a `v = 0` signature, and rejects a block the network accepts. Encoders MUST emit canonical bytes.
 
 The Ethereum transaction types are not malleable this way: their signatures are RLP integers and the legacy `v` re-encodes from `(y_parity, chain_id)` to the same bytes.
-
-Reference implementation: crates/primitives/src/transaction/tt_signature.rs (`PrimitiveSignature::from_bytes`, `encode_bytes_into`, `split_p256_signature_fields`), alloy-primitives 1.7.3 `Signature::from_raw_array`, `normalize_v`, `as_bytes`.
 
 ---
 
@@ -673,8 +655,6 @@ f8c3                                   # SignedKeyAuthorization list (195-byte p
 
 The inner `f83d…` list (63 bytes) is the digest preimage. The `TokenLimit` item `dd…` holds the token, `limit = 0x0f4240` and `period = 0x015180`; with `period = 0` it would be the two-item list `d9 94…42 830f4240` (25-byte payload).
 
-Reference implementation: crates/primitives/src/transaction/key_authorization.rs (`KeyAuthorization`, `KeyAuthorizationWire`, `KeyAuthorizationWireRef`, `TokenLimitWire`, `CallScope`, `SelectorRule`, `SignedKeyAuthorization`, `validate_chain_id`), crates/evm/src/handler.rs (`validate_key_authorization`).
-
 ---
 
 ## 6. Pre-T4 end-of-block system transaction
@@ -755,8 +735,6 @@ Both roots match the block 1 header in [§2.8](#28-test-vector-mainnet-block-1).
 
 A `0x76` transaction whose `nonce_key` has most-significant byte `0x5b` (`nonce_key >> 248 == 0x5b`) is a "subblock transaction". Such a transaction is invalid in a block in every fork ("subblock transactions are not supported"). The encoding is unaffected.
 
-Reference implementation: crates/primitives/src/transaction/envelope.rs (`TEMPO_SYSTEM_TX_SIGNATURE`, `is_system_tx`, `is_valid_system_tx`, `recover_signer`), crates/primitives/src/subblock.rs, crates/chainspec/src/spec.rs (`SYSTEM_TX_COUNT`, `SYSTEM_TX_ADDRESSES`), crates/evm/src/consensus/mod.rs (`validate_block_pre_execution`), crates/evm/src/block.rs (`validate_system_tx`, `validate_tx_pre_execution`, `next_section`).
-
 ---
 
 ## 7. Receipts, bloom and roots
@@ -796,5 +774,3 @@ withdrawals_root  = ordered_trie_root([rlp(w) for w in block.withdrawals])      
 ```
 
 The trie values are the 2718 encodings (not the RLP-string-wrapped network form). For example a `0x76` transaction contributes `0x76 || rlp(fields)`. After execution, `header.inner.receipts_root`, `header.inner.logs_bloom` and `header.inner.gas_used` MUST equal the values computed from the receipts ([05-block-execution.md](05-block-execution.md)).
-
-Reference implementation: crates/primitives/src/reth_compat/mod.rs (`TempoReceipt = EthereumReceipt<TempoTxType>`), alloy-consensus 2.5.0 `proofs::calculate_transaction_root`, `calculate_receipt_root`, reth `validate_block_post_execution`.

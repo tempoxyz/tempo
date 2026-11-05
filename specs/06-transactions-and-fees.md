@@ -1,16 +1,14 @@
 # 06 — Transactions and fees
 
-This chapter specifies how a single transaction is validated, charged, executed and settled, for every transaction type a Tempo block may contain, from mainnet genesis through T13. It is normative for block validity: a client that follows it computes the same state, receipts and gas as the reference implementation.
+This chapter specifies how a single transaction is validated, charged, executed and settled, for every transaction type a Tempo block may contain, from mainnet genesis through T13. It is normative for block validity: a client that follows it computes the same state, receipts and gas as every other conforming client.
 
 Block-level concerns are out of scope here and live in [05-block-execution.md](05-block-execution.md): the block-section and lane state machine, the pre-T4 subblock-metadata system transaction, pre/post-block system calls, the per-block gas-limit accounting, the block beneficiary, opcode-level gas (SSTORE set/clear costs and refunds, code deposit, CREATE opcode), and the base fee. Transaction encodings, hashes and signing payloads are in [02-encoding.md](02-encoding.md); signature formats, recovery and the fee-payer signing domain are in [03-signatures.md](03-signatures.md). Precompile internals are in the precompile chapters linked where used.
-
-Reference implementation: crates/evm/src/handler.rs, crates/evm/src/handler/config.rs, crates/evm/src/fee_manager.rs, crates/evm/src/common.rs, crates/evm/src/signature_gas.rs, crates/hardfork/src/{lib.rs,constants.rs,gas_params.rs}; the Ethereum transaction handlers are those of the alloy-rs/evm2 crate at commit a29a283f6cd4bc65e44f5813de5e9f43553c5fda (crates/evm2/src/ethereum/*.rs).
 
 ## 1. Conventions
 
 ### 1.1 Fork predicate
 
-"From F:" means the rule applies to a transaction executed in a block whose `header.timestamp >= activation_time(F)`, using the fork predicate defined in [01-chain-and-forks.md](01-chain-and-forks.md). "Before F:" is its negation. Every Tempo fork maps to the Ethereum Osaka rule set (all Ethereum forks through Osaka are active from genesis), so every EIP through Osaka applies unless this chapter overrides it. Ethereum rules are referenced by EIP number and by the Osaka execution-specs.
+"From F:" means the rule applies to a transaction executed in a block whose `header.timestamp >= activation_time(F)`, using the fork predicate defined in [01-chain-and-forks.md](01-chain-and-forks.md). "Before F:" is its negation. Every Tempo fork maps to the Ethereum Osaka rule set (all Ethereum forks through Osaka are active from genesis), so every EIP through Osaka applies unless this chapter overrides it. Ethereum rules are referenced by EIP number and by the Osaka execution-specs; §1.6 lists every Tempo deviation from them.
 
 On mainnet (chain id 4217) T0 is active at genesis and T1A activates together with T1; rules stated as "Before T0" apply only to Moderato (chain id 42431) and are given for completeness only.
 
@@ -86,7 +84,21 @@ These are the transaction-level entries of the gas schedule (the full schedule, 
 
 The EIP-7623 floor counts calldata tokens only (Osaka: access-list bytes add nothing to the floor). Calldata tokens are `tokens(data) = zero_bytes(data) + 4 * nonzero_bytes(data)`.
 
-Reference implementation: crates/hardfork/src/gas_params.rs, crates/hardfork/src/lib.rs (tx_gas_limit_cap, expiring_nonce_*), crates/hardfork/src/constants.rs.
+### 1.6 Ethereum base and Tempo deviations
+
+Transactions of types 0, 1, 2 and 4 are validated and processed as in the Osaka fork of [`ethereum/execution-specs`](https://github.com/ethereum/execution-specs) (`validate_transaction`, `check_transaction` and `process_transaction`), including the EIPs that fork contains. Type `0x76` is specified by this chapter (§4); its calls and contract creations execute as Osaka message calls and creations. Tempo's EVM changes (precompile sets, opcode overrides, the per-fork gas schedule, refund finalization) are in [05-block-execution.md](05-block-execution.md) §1.
+
+Tempo transaction processing deviates from Osaka only as follows:
+
+1. **No blob transactions.** Type 3 does not exist, so blob gas and the blob fee are always 0 (§2).
+2. **No native value.** A non-zero top-level `value` makes the transaction invalid (§2.1 item 1).
+3. **No native gas payment.** The sender balance check, the up-front gas purchase, the refund of unused gas, the priority-fee payment to the beneficiary and the base-fee burn are not performed. The fee is paid in a TIP-20 fee token by the fee payer (§5–§7), and every fee-token failure makes the transaction invalid.
+4. **Intrinsic gas.** The intrinsic-gas parameters change per fork (§1.5), and from T1 a new-account charge is added (§3.1).
+5. **EIP-7702 costs.** From T1 the per-authorization cost is 12,500 and the refund for an existing authority is 0 (§1.5).
+6. **Transaction gas limit cap.** The EIP-7825 cap is 30,000,000 from T1A (§1.4).
+7. **Refunds.** From T7 the refund quotient is 1 and TIP-1060 storage-credit refunds are added. A net-negative refund counter refunds the full cap (§7.3).
+8. **Nonce before fees.** The sender nonce is incremented before fee resolution and fee collection (§3.2).
+9. **Receipt logs.** The fee `Transfer` log is appended after the execution logs (§9).
 
 ## 2. Transaction types
 
@@ -145,8 +157,6 @@ A type-4 transaction with an empty authorization list, or with a CREATE destinat
 
 Fee-related failures (no resolvable or invalid fee token, insufficient fee-token balance, insufficient fee AMM liquidity, paused fee token, TIP-403 sender policy) make the transaction invalid; they never produce a failed receipt.
 
-Reference implementation: crates/evm/src/handler/config.rs (prepare_legacy/eip2930/eip1559/eip7702, adjust_intrinsic_gas, before_execution, validate_no_native_value); evm2 crates/evm2/src/ethereum/{legacy,eip2930,eip1559,eip7702}.rs.
-
 ## 4. Type 0x76 (Tempo transaction)
 
 Field definitions and encodings are in [02-encoding.md](02-encoding.md). The relevant fields are: `chain_id`, `max_priority_fee_per_gas`, `max_fee_per_gas`, `gas_limit`, `calls` (each `{to: Address | Create, value, input}`), `access_list`, `nonce_key` (uint256), `nonce` (uint64), `valid_before` / `valid_after` (optional non-zero uint64 seconds), `fee_token` (optional address), `fee_payer_signature` (optional secp256k1 signature), `key_authorization` (optional signed key authorization) and `aa_authorization_list` (EIP-7702-style authorizations signed with Tempo signatures). `sender` is the address recovered from the transaction signature ([03-signatures.md](03-signatures.md)); for a Keychain signature it is the signature's `user_address` after the inner signature verifies, and `access_key` is the key id the Keychain signature recovers (`None` for a non-Keychain signature).
@@ -195,8 +205,6 @@ In this order; each failure makes the transaction invalid:
 7. Any call has `value != 0`.
 8. Fee payer: `fee_payer_signature` is present and secp256k1 recovery over the fee-payer signing hash fails ([03-signatures.md](03-signatures.md)). From T2: `fee_payer_signature` is present and the recovered fee payer equals `sender` (self-sponsorship).
 
-Reference implementation: crates/evm/src/handler.rs (prepare_aa), crates/primitives/src/transaction/tempo_transaction.rs (validate_calls), crates/primitives/src/transaction/tt_signature.rs (validate_version).
-
 ### 4.3 Key-authorization stateless checks
 
 Let `ka = tx.key_authorization`, `same_tx = (access_key == ka.key_id)` and `signer = authorizing_account(ka)` (secp256k1/P256/WebAuthn recovery over `keccak256(rlp(ka.authorization))`, [03-signatures.md](03-signatures.md)). Each failure is invalid; in this order:
@@ -216,8 +224,6 @@ Let `ka = tx.key_authorization`, `same_tx = (access_key == ka.key_id)` and `sign
     - `signer != sender` and (the transaction signature is not a Keychain signature, or `access_key != signer`, or `ka.signature`'s type differs from the Keychain inner signature's type).
 
 A further stateful check (§4.9) requires, from T6, that a non-root `signer` is an active admin key of `sender`.
-
-Reference implementation: crates/evm/src/handler.rs (validate_key_authorization), crates/primitives/src/transaction/key_authorization.rs (validate_chain_id).
 
 ### 4.4 Fee and gas field checks
 
@@ -355,8 +361,6 @@ Because a new 2D key always has `nonce == 0`, the new-key amounts apply only bef
 
 > **Resolved conflict C-TXF-08**: TIP-1000 charges the 250,000 account-creation gas to Tempo transactions "with any `nonce_key` and `nonce == 0`"; the code charges an expiring-nonce transaction (`nonce_key == uint256.max`) only `EXPIRING_NONCE_GAS`. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](conflicts.md#c-txf-08).
 
-Reference implementation: crates/evm/src/handler.rs (intrinsic_gas, nonce_intrinsic_gas, calculate_key_authorization_gas, call_scope_storage_slots, call_scope_extra_gas, prepare_aa), crates/evm/src/signature_gas.rs, crates/primitives/src/transaction/tt_signature.rs (verification_gas), crates/primitives/src/gas.rs.
-
 ### 4.7 Warming
 
 Before fee resolution, the following are added to the EIP-2929 warm set (no gas charged): `sender`; `header.beneficiary` (EIP-3651); `calls[0].to` if it is a call; the active precompile addresses ([precompiles/00-framework.md](precompiles/00-framework.md)); every access-list address and storage key. Other call targets are warmed immediately before their call executes (§4.12); the intrinsic `2_600` per extra call pays for that.
@@ -435,8 +439,6 @@ At T11 the window grows from 30 to 300 seconds and the capacity from 300,000 to 
 
 > **Resolved conflict C-TXF-06**: TIP-1106 is marked `status: Draft` with `protocolVersion: TBD`, but the code activates it at T12. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](conflicts.md#c-txf-06).
 
-Reference implementation: crates/evm/src/handler.rs (apply_nonce), crates/precompiles/src/nonce/mod.rs (increment_nonce, check_and_mark_expiring_nonce), crates/hardfork/src/lib.rs.
-
 ### 4.9 Keychain preparation
 
 Only when the transaction signature is a Keychain signature (otherwise the transaction key remains the root key, `0x0`, and nothing here applies). Each failure is invalid.
@@ -447,8 +449,6 @@ Only when the transaction signature is a Keychain signature (otherwise the trans
 4. From T6, if `key_authorization` is present and its `signer != sender`: the acting key loaded in step 3 MUST have `key_id == signer`, a stored signature type equal to `ka.signature`'s type, and be an admin key.
 
 Before T1, when no `key_authorization` is present, the signature type is not checked against the stored key type.
-
-Reference implementation: crates/evm/src/handler.rs (prepare_keychain), crates/precompiles/src/account_keychain/mod.rs (validate_keychain_authorization).
 
 ### 4.10 Key authorization
 
@@ -493,8 +493,6 @@ The write runs without gas metering and costs nothing beyond the intrinsic key-a
 #### 4.10.2 T1 and T1A (metered)
 
 The write runs with gas limit `gas_limit - g` (`g` from §4.6, which already includes the pre-T1B heuristic) under `METERED_TABLE`: every gas-schedule entry is 0 except `SSTORE_SET_COST = 250_000` and `WARM_STORAGE_READ_COST = 100`, applied through the precompile storage gas model of [precompiles/00-framework.md](precompiles/00-framework.md). On success its gas is added to `g` (so `execution_gas` shrinks by it). On out-of-gas the authorization is rolled back (including its events), the EIP-7702 authorization list is still applied (§4.11), and the transaction is **failed** without executing the batch: all `gas_limit` is consumed, the refund is 0, and it is settled as in §7.3. In that case a CREATE-first transaction with `nonce_key == 0` does not consume its protocol nonce (§4.8.1 defers that bump to the batch, which does not run).
-
-Reference implementation: crates/evm/src/handler.rs (apply_key_authorization, prepare_aa).
 
 ### 4.11 EIP-7702 authorizations (`aa_authorization_list`)
 
@@ -553,8 +551,6 @@ def execute_batch(tx, create_nonce, fork):
 ```
 
 Each call is a depth-0 frame that receives all remaining gas (no 63/64 retention), with `ORIGIN = CALLER = sender` and `GASPRICE = price`. A call to an account carrying an EIP-7702 delegation runs the delegate's code (Osaka). An exceptional halt consumes all remaining gas (`gas_left = 0`); a revert returns its unused gas. `create_address(sender, n) = keccak256(rlp([sender, n]))[12:]` with `n = create_nonce`, the protocol nonce read in §4.8 before any bump: it equals `tx.nonce` for `nonce_key == 0`, and is the current protocol nonce for 2D and expiring transactions, whose CREATE also increments the protocol nonce (rolled back if the batch fails). The batch is atomic: either all calls' state changes and logs persist, or none do. The call-scope matching rules (and its revert errors, such as `CallNotAllowed`) are in [precompiles/account-keychain.md](precompiles/account-keychain.md).
-
-Reference implementation: crates/evm/src/handler.rs (execute_batch, prevalidate_call_scopes, execute_aa).
 
 ### 4.13 What survives a failed batch
 
@@ -650,11 +646,9 @@ def resolve_fee_token(tx, fee_payer, max_fee):
     invalid()                                        # InsufficientFeeTokenBalance (reports the richest candidate)
 ```
 
-`INFERENCE_SELECTORS(fork)` are the selectors of `transfer(address,uint256)` and `transferWithMemo(address,uint256,bytes32)`, plus, before T7, `distributeReward(uint256)`. Only the 4-byte prefix is checked for inference. `abi_decodes(input, sig)` means non-validating Solidity ABI decoding (alloy-sol-types 1.7.3 `SolCall::abi_decode`): the input MUST begin with the function's 4-byte selector and MUST contain at least the argument words (1 for `setUserToken`, 4 for the swaps); bytes after them are ignored, an `address` is taken from the low 20 bytes of its word and a `uint128` from the low 16 bytes, and the discarded high-order bytes need not be zero.
+`INFERENCE_SELECTORS(fork)` are the selectors of `transfer(address,uint256)` and `transferWithMemo(address,uint256,bytes32)`, plus, before T7, `distributeReward(uint256)`. Only the 4-byte prefix is checked for inference. `abi_decodes(input, sig)` means non-validating decoding of a call with the static argument types of `sig` ([Solidity ABI specification](https://docs.soliditylang.org/en/latest/abi-spec.html)): the input MUST begin with the function's 4-byte selector and MUST contain at least the argument words (1 for `setUserToken`, 4 for the swaps); bytes after them are ignored, an `address` is taken from the low 20 bytes of its word and a `uint128` from the low 16 bytes, and the discarded high-order bytes need not be zero.
 
 Only an insufficient balance advances the T13 fallback; once a fallback token is chosen, §6.1 and §7.2 apply to it and a failure there does not try the next token.
-
-Reference implementation: crates/evm/src/fee_manager.rs (resolve_fee_token), crates/evm/src/common.rs (is_tip20_fee_inference_call, is_valid_fee_token, ensure_tip20_usd), crates/evm/src/handler/config.rs (resolve_fee_context), crates/hardfork/src/lib.rs (fallback_fee_tokens).
 
 ## 7. Fee charging and settlement
 
@@ -734,8 +728,6 @@ def settle_fee(fee, gas_used, price):
 
 > **Resolved conflict C-TXF-07**: the fee specification gives the refund as `(gas_limit - gas_used) * gas_price`; the code refunds `ceil(gas_limit*price/10^12) - ceil(gas_used*price/10^12)`, which can differ by one base unit. Decided: this spec follows the implementation, and the docs are fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098). See [conflicts](conflicts.md#c-txf-07).
 
-Reference implementation: crates/evm/src/handler/config.rs (collect_fee, settle_transaction, settle_storage_credit_refunds), crates/primitives/src/transaction/mod.rs (calc_gas_balance_spending), crates/precompiles/src/tip_fee_manager/mod.rs, crates/precompiles/src/tip20/mod.rs (transfer_fee_pre_tx, transfer_fee_post_tx), evm2 crates/evm2/src/ethereum/mod.rs (finalize_gas), crates/evm2/src/interpreter/host.rs (final_refund).
-
 ## 8. Access-key spending limits on fees
 
 Spending limits bind only `0x76` transactions signed with a Keychain signature, and only the fee paid by the sender itself (the AccountKeychain applies a limit only when the paying account equals `tx.origin = sender`). A sponsored fee never counts against the sender's key.
@@ -765,19 +757,15 @@ A transaction's receipt has exactly four consensus fields ([02-encoding.md](02-e
 
 For types 0, 1, 2 and 4 the logs are the execution's logs (successful execution only) followed by the fee `Transfer` log (row 6). Fee pre-collection, the refund, the fee AMM conversion, expiring-nonce bookkeeping, EIP-7702 delegation and storage-credit settlement emit no logs.
 
-Reference implementation: crates/evm/src/block.rs (TempoReceiptBuilder), crates/precompiles/src/nonce/mod.rs, crates/precompiles/src/account_keychain/mod.rs, crates/precompiles/src/tip20/mod.rs (transfer_fee_post_tx).
-
 ## 10. Consensus rules versus transaction-pool policy
 
-The following limits are enforced only by the reference transaction pool and are **not** block-validity rules; a block containing a transaction that violates them is valid if it satisfies this chapter: at most 32 calls per `0x76` transaction; at most 128 KiB of `input` per call; at most 16 `aa_authorization_list` entries; at most 256 access-list addresses, 256 storage keys per address and 2,048 storage keys in total; at most 256 token limits per key authorization; at most 64 call scopes per key, 64 selector rules per scope and 64 recipients per selector; `valid_after` at most 120 s in the future; `valid_before` at least 3 s in the future; the pool's own fee-AMM liquidity cache and the option of skipping the liquidity and `valid_after` checks during pool admission. Block-level validity always applies the full checks of §4.5 and §7.2.
-
-Reference implementation: crates/transaction-pool/src/validator.rs.
+The following limits are transaction-pool policy only and are **not** block-validity rules; a block containing a transaction that violates them is valid if it satisfies this chapter: at most 32 calls per `0x76` transaction; at most 128 KiB of `input` per call; at most 16 `aa_authorization_list` entries; at most 256 access-list addresses, 256 storage keys per address and 2,048 storage keys in total; at most 256 token limits per key authorization; at most 64 call scopes per key, 64 selector rules per scope and 64 recipients per selector; `valid_after` at most 120 s in the future; `valid_before` at least 3 s in the future; the pool's own fee-AMM liquidity cache and the option of skipping the liquidity and `valid_after` checks during pool admission. Block-level validity always applies the full checks of §4.5 and §7.2.
 
 ## 11. Fork history of the rules in this chapter
 
 | Fork | Changes |
 |---|---|
-| Before T0 (Moderato only) | 2D nonce gas added after the intrinsic check (with the u64::MAX execution-gas fallback); Keychain-signed `aa_authorization_list` entries are processed |
+| Before T0 (Moderato only) | 2D nonce gas added after the intrinsic check (with the `2**64 - 1` execution-gas fallback); Keychain-signed `aa_authorization_list` entries are processed |
 | T0 (mainnet genesis) | 2D nonce gas included in the intrinsic check; Keychain-signed `aa_authorization_list` entries are ignored |
 | T1 | TIP-1000 costs (§1.5; +250,000 for `nonce == 0` and for each zero-nonce authorization; 12,500 per authorization, no authorization refund); expiring nonces (30 s, 300,000, replay key = tx hash, `nonce == 0`); Keychain signature type checked against the stored key type; key authorization additionally metered (§4.10.2) |
 | T1A | `TX_GAS_LIMIT_CAP` 16,777,216 → 30,000,000 (same timestamp as T1 on mainnet) |

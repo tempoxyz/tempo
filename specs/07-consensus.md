@@ -14,7 +14,7 @@ A rule marked *(validator voting rule)* decides whether an honest validator vote
 
 ## 2. Normative dependencies
 
-Tempo's consensus is built from components specified in the commonware chapters of this spec, which restate the commonware library that the implementation uses. A conforming client MUST reproduce their wire formats and algorithms bit for bit.
+Tempo's consensus is built from the components specified in the commonware chapters of this spec. A conforming client MUST reproduce their wire formats and algorithms bit for bit.
 
 | Component | Specified in |
 |---|---|
@@ -43,14 +43,12 @@ Every BLS signature in this chapter is `bls_sign(sk, ns, msg)` of [cryptography.
 | P2P handshake namespace | `union_unique(b"TEMPO", b"_P2P")` | Used only by the transport; see [08-p2p-and-sync.md](08-p2p-and-sync.md) and [p2p.md §4.1](commonware/p2p.md#41-roles-identities-and-namespace) |
 | `L` (epoch length) | 21,600 blocks on mainnet (4217) and on moderato (42431) | Genesis `config.epochLength`; see 01-chain-and-forks.md |
 | Fault model | [`N3f1`](commonware/codec.md#8-fault-model-n3f1) | Simplex quorum and DKG thresholds |
-| `MAX_VALIDATORS` | 65,535 (`u16::MAX`) | Decode bound for player sets in `OnchainDkgOutcome` |
+| `MAX_VALIDATORS` | 65,535 (`2^16 − 1`) | Decode bound for player sets in `OnchainDkgOutcome` |
 | `TEMPO_MAXIMUM_EXTRA_DATA_SIZE` | 10,240 bytes | EL cap on header `extra_data` (05-block-execution.md); every DKG artifact MUST fit |
-| Mainnet network identity checkpoint | `from_epoch = 2042`, identity `0x8627d33753b0d90a8eae75363d6b393ab9204076545b3af6caf831903e4bedde4374f1106551b481fb5ea35e59d51c92165c963881c718216e3e4570a307c08885af55c274f19488f709afe021ca3d9e567138ab097860d9146e895407bea182` | `mainnet-network-identity.json` (§8.4) |
-| Moderato network identity checkpoint | `from_epoch = 1747`, identity `0x967ae1a6d3ddbe5cb0fe5e6fc58e74249787b4a277619b549fed6609d04660540dd2449cd7174def35e40f544e5ad72d15d064191a205ed6e0c49619c68f975108b614d0d51def9a8416a10a07c4193bea0cbbc4252ec1b33f21095a5d7aa590` | `testnet-network-identity.json` |
+| Mainnet network identity checkpoint | `from_epoch = 2042`, identity `0x8627d33753b0d90a8eae75363d6b393ab9204076545b3af6caf831903e4bedde4374f1106551b481fb5ea35e59d51c92165c963881c718216e3e4570a307c08885af55c274f19488f709afe021ca3d9e567138ab097860d9146e895407bea182` | Built-in mainnet checkpoint (§8.3) |
+| Moderato network identity checkpoint | `from_epoch = 1747`, identity `0x967ae1a6d3ddbe5cb0fe5e6fc58e74249787b4a277619b549fed6609d04660540dd2449cd7174def35e40f544e5ad72d15d064191a205ed6e0c49619c68f975108b614d0d51def9a8416a10a07c4193bea0cbbc4252ec1b33f21095a5d7aa590` | Built-in moderato checkpoint (§8.3) |
 
 On both networks the genesis timestamp is 0 and the genesis header `extra_data` is a 716-byte `OnchainDkgOutcome` for epoch 0 (§10.3).
-
-Reference implementation: crates/consensus/src/config.rs, crates/dkg-onchain-artifacts/src/lib.rs, crates/evm/src/consensus/mod.rs, crates/chainspec/src/genesis/presto.json, mainnet-network-identity.json, testnet-network-identity.json.
 
 ## 4. Epochs
 
@@ -92,8 +90,6 @@ The phase of a height within its epoch ([codec.md §10.2](commonware/codec.md#10
 
 Phases drive DKG timing (§9.4). They do not affect block validity.
 
-Reference implementation: crates/consensus/src/consensus/engine.rs (FixedEpocher::new(epoch_length)); crates/consensus/src/dkg/manager/actor/mod.rs (latest_boundary_at_or_before).
-
 ## 5. Simplex instantiation
 
 ### 5.1 Block ↔ proposal mapping
@@ -112,9 +108,7 @@ A validator voting on a proposal MUST require that the context is present and eq
 
 > **Open conflict C-CONS-01**: TIP-1031 requires the context to be absent before T4 and the check to depend on activation, but the implementation has no T4 gate: it always builds and requires a context. See [conflicts](conflicts.md#c-cons-01).
 
-Every mainnet block a validator votes on under T13 rules has its timestamp after T4, so the rule above (present and equal) applies to them. A block whose header has no context maps to a Context that can never match a real round. The reference implementation uses leader = the Ed25519 public key of the seed-0 private key, round `(0, 0)` and parent `(0, 0x00…00)`, so its verification always fails.
-
-Reference implementation: crates/consensus/src/consensus/digest.rs, crates/consensus/src/consensus/block.rs, crates/primitives/src/header.rs.
+Every mainnet block a validator votes on under T13 rules has its timestamp after T4, so the rule above (present and equal) applies to them. A block whose header has no context MUST fail the check: a validator rejects it, whatever placeholder Context it uses internally.
 
 ### 5.2 Signing scheme and signing domains
 
@@ -135,8 +129,6 @@ Each vote carries two threshold partial signatures made with the signer's share:
 `encode(Round)` is `varint(epoch) ‖ varint(view)`. A certificate is valid iff both recovered signatures verify against the epoch's group public key ([cryptography.md §6.5](commonware/cryptography.md#65-verifying-certificates); the two MAY be batch-verified, [§4.6](commonware/cryptography.md#46-batch-verification)). The threshold is the `N3f1` quorum `q = n − f` of the epoch's `n` participants ([codec.md §8](commonware/codec.md#8-fault-model-n3f1)), and so is the number of votes needed for each certificate ([cryptography.md §6.6](commonware/cryptography.md#66-assembling-a-certificate)).
 
 Ed25519 keys sign no Simplex votes. They authenticate p2p connections (08-p2p-and-sync.md), DKG acknowledgements and dealer logs (§9), and ValidatorConfigV2 operations.
-
-Reference implementation: crates/consensus/src/epoch/manager/actor.rs (enter).
 
 ### 5.3 Epoch-scoped instances
 
@@ -167,8 +159,6 @@ Block-to-epoch membership *(validator voting rule)*: a proposal in round `(E, v)
 
 **Certification (Before T14).** The verification mode is *immediate*: the application's verify (§13) completes before the node sends its notarize vote, and certify returns once the block is available locally. (Deferred verification, the default from T14, is out of scope. TIP-1031 lets a validator keep synchronous verification in any case.)
 
-Reference implementation: crates/consensus/src/epoch/manager/actor.rs (enter), crates/consensus/src/args.rs (defaults, validate_simplex_timing, VerificationMode), crates/consensus/src/consensus/application/mod.rs.
-
 ## 6. Leader election
 
 The leader of round `(E, v)` is participant `players[idx]` of epoch `E` (§5.2), where `n = len(players)`:
@@ -195,8 +185,6 @@ Version selection:
 - **From T12** (T12 active at `boundary_timestamp(E)`): version `V1` (TIP-1116 §5).
 
 The version is fixed for the whole epoch. The first epoch of mainnet that uses V1 is the first `E` whose block `last(E−1)` has `timestamp ≥ 1791900000`.
-
-Reference implementation: crates/consensus/src/epoch/manager/actor.rs (elector selection).
 
 ## 7. Certificates and follower verification
 
@@ -234,9 +222,7 @@ def verify_finalization(fin: Finalization, B: Block) -> None:
 
 A valid finalization of `B` finalizes `B` and, through the `parent_hash` chain, every ancestor of `B`. A follower MAY skip certificates for intermediate blocks. It MUST take the ancestors' bodies by following `parent_hash` from `B` down to its last finalized block, checking that each block hashes to the digest its child names. Two valid finalizations for different blocks at the same height cannot exist unless more than `f` participants of the epoch are faulty. A follower that sees them SHOULD stop rather than choose one.
 
-Validators verify finalizations, notarizations and nullifications received over the network with the same keys and namespaces. A validator MAY accept a finalization or notarization for any epoch whose key it holds, including straggler certificates for an epoch it already left (the reference implementation keeps the last two epochs' schemes).
-
-Reference implementation: crates/consensus/src/finalization_verifier/mod.rs, crates/consensus/src/follow/driver/actor/mod.rs (process_event, process_certificate).
+Validators verify finalizations, notarizations and nullifications received over the network with the same keys and namespaces. A validator MAY accept a finalization or notarization for any epoch whose key it holds, including straggler certificates for an epoch it already left. It SHOULD keep the schemes of the last two epochs (§14).
 
 ## 8. Trust chain and network identity
 
@@ -294,8 +280,6 @@ if persisted is not None:
 and then checks its locally stored finalized tip, if any. A tip whose certificate epoch is `≥ trusted.from_epoch` MUST verify against `trusted.identity`, which is then installed for that epoch. A tip from an earlier epoch is accepted as local history without verification. Only genesis (height 0) may have no certificate. Finally `install(trusted.from_epoch, trusted.identity)`.
 
 > Informative: the mainnet checkpoint (`from_epoch = 2042`) means a full DKG ran during epoch 2041. Its identity differs from the genesis identity.
-
-Reference implementation: crates/chainspec/src/network_identity.rs, crates/chainspec/src/spec.rs (with_network_identity), crates/consensus/src/startup.rs (verify_finalized_tip), crates/consensus/src/epoch/scheme_provider.rs (register), crates/consensus/src/follow/driver/actor/mod.rs (observe_boundary_identity, process_update).
 
 ## 9. Distributed key generation
 
@@ -361,11 +345,9 @@ A validator MUST persist, per epoch, the dealings it received and the acks it ga
 
 A validator that lost its share MAY rebuild it from finalized history. If it was a player in epoch `E−1`'s ceremony and that ceremony succeeded (`outcome(E).output != outcome(E−1).output`), it derives its share as in [dkg.md §12](commonware/dkg.md#12-player-share-derivation) from the first valid log of each selected dealer found in blocks `first(E−1)…last(E−1)−1`, together with any shares those logs reveal to it. The rebuilt output MUST equal `outcome(E).output`. A configured initial share is used only if its public share matches `outcome(E).output.public` ([cryptography.md §5.5](commonware/cryptography.md#55-partial-public-keys)).
 
-Reference implementation: crates/consensus/src/dkg/manager/actor/mod.rs (Message, run_dkg_loop, handle_finalized_header, distribute_shares, handle_network_msg, conclude_ceremony, establish_initial_state, maybe_recover_revealed_share), crates/consensus/src/dkg/manager/actor/state.rs (Round::from_state, Dealer, Player).
-
 ## 10. On-chain DKG artifacts
 
-All decoding below is **prefix decoding**: the reference implementation reads the artifact from the start of `extra_data` and ignores any trailing bytes. Proposers MUST encode the artifact exactly, with no trailing bytes. Implementations MUST NOT reject an artifact only because trailing bytes follow it, or they would vote differently from the reference implementation.
+All decoding below is **prefix decoding**: a node reads the artifact from the start of `extra_data` and ignores any trailing bytes. Proposers MUST encode the artifact exactly, with no trailing bytes. Implementations MUST NOT reject an artifact only because trailing bytes follow it, or they would vote differently from other validators.
 
 ### 10.1 `SignedDealerLog` in regular blocks
 
@@ -411,8 +393,6 @@ Every node treats a *finalized* boundary block without a decodable outcome as a 
 ### 10.3 Genesis
 
 The genesis header `extra_data` is an `OnchainDkgOutcome` with `epoch = 0`: epoch 0's committee and identity, the players of the ceremony run during epoch 0, and `is_next_full_dkg`. On mainnet and moderato it is 716 bytes: 4 players, polynomial quorum 3, and 4 next players. The genesis `consensus_context` is absent.
-
-Reference implementation: crates/dkg-onchain-artifacts/src/lib.rs, crates/consensus/src/dkg/manager/actor/state.rs (ReducedBlock::from_block_for_round), crates/consensus/src/dkg/manager/actor/mod.rs (read_dealer_log, handle_verify_dealer_log), crates/evm/src/block.rs (apply_current_committee_system_call).
 
 ## 11. Deterministic boundary outcome
 
@@ -462,7 +442,7 @@ def ceremony_output(E: int, P: Block) -> Output:
 
 Log collection and selection are [dkg.md §9](commonware/dkg.md#9-log-collection-and-selection) and `observe` is [dkg.md §10](commonware/dkg.md#10-computing-the-output). A validator that is a player computes its share as in [dkg.md §12](commonware/dkg.md#12-player-share-derivation) on the same logs. That gives the same output as `observe`. If its local player state cannot produce a share, it continues as an observer and has no share in `E+1`. On failure, the previous output and the previous share (if any) carry forward.
 
-Implementation note: the reference implementation takes logs from finalized blocks first (the earliest finalized log per dealer), then walks the notarized blocks from `P` down to the latest finalized block for dealers that have no finalized log yet. Because the finalized blocks are ancestors of `P`, this equals the rule above.
+Implementation note: an implementation MAY take logs from finalized blocks first (the earliest finalized log per dealer), then walks the notarized blocks from `P` down to the latest finalized block for dealers that have no finalized log yet. Because the finalized blocks are ancestors of `P`, this equals the rule above.
 
 ### 11.2 Active players
 
@@ -485,8 +465,6 @@ def active_players(vc) -> ordered_set:
 
 The contract-side definition of these reads is in precompiles/validator-config-and-zones.md ("Consumption by consensus"); the two descriptions are the same rule. For every boundary whose parent post-state has ValidatorConfigV2 initialized, the rule above applies. Earlier mainnet boundary outcomes were produced by earlier releases and are accepted through their finalization certificates. No node recomputes historical boundary outcomes.
 
-Reference implementation: crates/consensus/src/consensus/application/parent_state.rs, crates/consensus/src/validators.rs (read_active_peers, DecodedValidatorV2), crates/precompiles/src/validator_config_v2/mod.rs (get_active_validators, get_next_network_identity_rotation_epoch), crates/consensus/src/dkg/manager/actor/mod.rs (handle_subscribe_dkg_ceremony, maybe_conclude_ceremony_for_epoch, conclude_ceremony).
-
 ## 12. Validator proposal procedure
 
 When Simplex asks the leader `ℓ` (this node) to propose in round `(E, v)` with parent `(pv, pd)`:
@@ -501,11 +479,9 @@ When Simplex asks the leader `ℓ` (this node) to propose in round `(E, v)` with
 6. Build the block on `P` with payload attributes `timestamp`, `timestamp_millis_part`, `extra_data`, `consensus_context`, `proposer_public_key = ℓ`, `suggested_fee_recipient = 0x00…00`, `prev_randao = 0x00…00`, `withdrawals = []` and `parent_beacon_block_root = 0x00…00`. The builder SHOULD set the beneficiary to the fee recipient that ValidatorConfigV2 records for `proposer_public_key` when that is non-zero. Before T14 the beneficiary is not otherwise validated. Execution-layer validity of these fields is in 05-block-execution.md.
 7. Broadcast the block (08-p2p-and-sync.md) and return its hash as the proposal payload.
 
-Pacing is local policy and not normative. The reference implementation targets 550 ms between header timestamps, keeps a network reservation of at least 50 ms, and holds the finished proposal until its time budget runs out.
+Pacing is local policy and not normative. Tempo's validators target 550 ms between header timestamps, keeps a network reservation of at least 50 ms, and holds the finished proposal until its time budget runs out.
 
 > **Resolved conflict C-CONS-03**: the docs say blocks come about every 600 ms from a 500 ms builder loop, but the implementation uses an adaptive estimator targeting 550 ms with a 50 ms network budget. Decided: this spec follows the implementation, and the docs are fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098). See [conflicts](conflicts.md#c-cons-03).
-
-Reference implementation: crates/consensus/src/consensus/application/impl.rs (build, boundary_dkg_outcome), crates/payload/types/src/attrs.rs (TempoPayloadAttributes::new), crates/payload/builder/src/lib.rs (maybe_override_fee_recipient), crates/payload/types/src/estimator/config.rs.
 
 ## 13. Validator verification procedure
 
@@ -529,8 +505,6 @@ There is no upper bound on how far a timestamp may be ahead of local time. A blo
 
 After finalization (Simplex finalize votes), a validator delivers finalized blocks to its execution layer in height order and acknowledges them only once they are durably persisted (08-p2p-and-sync.md).
 
-Reference implementation: crates/consensus/src/consensus/application/impl.rs (verify, verify_header, verify_boundary_outcome, wait_until_timestamp), crates/consensus/src/executor/actor.rs (module documentation), crates/evm/src/consensus/mod.rs.
-
 ## 14. Epoch transition (validator)
 
 For a validator in epoch `E`:
@@ -541,8 +515,6 @@ For a validator in epoch `E`:
 4. It starts epoch `E+1`'s instance (§5.3) with `floor = hash(last(E))`, participants `outcome(E+1).output.players`, the elector version from `header(last(E)).timestamp`, and its share if it has one. It then starts the ceremony of epoch `E+1` with `info(E+1)`.
 
 A validator that sees votes for an epoch later than its own SHOULD fetch the finalization of its current epoch's boundary block and catch up one epoch at a time (08-p2p-and-sync.md). Simplex's per-epoch vote journal MUST be persisted ([simplex.md §8.13](commonware/simplex.md#813-persistence)), so that a validator never signs two conflicting votes in one round across restarts.
-
-Reference implementation: crates/consensus/src/epoch/manager/actor.rs (enter, exit, handle_msg_for_unregistered_epoch), crates/consensus/src/dkg/manager/actor/mod.rs (handle_finalized_header, enter_epoch, exit_epoch).
 
 ## 15. Fork-dependent consensus behaviour
 
@@ -559,12 +531,44 @@ No other fork from T0 to T13 changes consensus-layer behaviour.
 
 ## 16. Versions of the commonware documentation
 
-The commonware chapters listed in §2 restate the commonware version that the implementation uses.
+The commonware chapters listed in §2 restate commonware version 2026.9.0.
 
 > **Resolved conflict C-CONS-04**: the consensus docs page links version 0.0.65 of commonware's consensus crate, but the implementation and this chapter use commonware 2026.9.0. Decided: this spec follows the implementation, and the docs are fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098). See [conflicts](conflicts.md#c-cons-04).
 
 ## 17. Open items
 
-> **TODO**: The rule earlier releases used to derive `next_players` and `is_next_full_dkg` from ValidatorConfig V1, for mainnet boundaries before ValidatorConfigV2 was initialized, and the height at which mainnet switched, are not in the pinned code. They are not needed to follow or validate T13 (those outcomes are trusted through certificates) and are left unspecified.
+> **Note (historical, informative)**: Mainnet outcomes up to and including `outcome(624)` (block 13,478,399 = `last(623)`) were produced by earlier releases from ValidatorConfig V1 (`0xCCCCCCCC00000000000000000000000000000000`). From `outcome(625)` (block 13,499,999 = `last(624)`) on, §11.2 applies. The switch is per boundary: earlier releases used V2 for the boundary with parent `P` iff `can_use_v2(P)`.
+```python
+def can_use_v2(P):
+    return (is_t2_active(P.timestamp)
+            and ValidatorConfigV2.isInitialized()
+            and ValidatorConfigV2.getInitializedAtHeight() <= P.number)
 
-> **TODO**: The list of mainnet network-identity rotations (epochs whose ceremony was a full DKG) is not recorded in the repository except as the latest checkpoint (epoch 2042). It can be derived by decoding every boundary block (for example with `xtask identity_transitions`). It is informative only.
+def v1_active_players(h):                        # V1 at the post-state of block h
+    by_key = {}
+    for v in ValidatorConfigV1.getValidators():  # contract order
+        pk = ed25519_decode(v.publicKey)
+        inbound = parse_socket_addr(v.inboundAddress)
+        outbound = parse_socket_addr(v.outboundAddress)
+        if pk is None or inbound is None or outbound is None:
+            continue
+        by_key[pk] = v                           # a later duplicate replaces an earlier one
+    return sorted(k for k, v in by_key.items() if v.active)
+
+def boundary_outcome_v1(P):                      # when not can_use_v2(P)
+    E = epoch_of(P.number)
+    prev = 0 if E == 0 else last(E - 1)
+    return OnchainDkgOutcome(
+        epoch = E + 1,
+        output = ceremony_output(E, P),
+        next_players = v1_active_players(prev),  # one epoch behind
+        is_next_full_dkg = (ValidatorConfigV1.getNextFullDkgCeremony() at the post-state of P == E + 1),
+    )
+```
+> On mainnet, T2 activates at block 12,290,227 (timestamp 1,774,965,600). ValidatorConfigV2 records `initializedAtHeight = 13,486,706`. No node recomputes these outcomes: followers and validators accept them through their finalization certificates.
+
+> **Note (informative)**: Through epoch 2201 (block 47,548,251), mainnet's network identity has rotated once.
+> - `outcome(2041)` (block 44,085,599 = `last(2040)`) has `is_next_full_dkg = true`.
+> - The ceremony of epoch 2041 was a full DKG. `outcome(2042)` (block 44,107,199 = `last(2041)`) carries the identity `0x8627d337…a182` of the checkpoint (§3).
+> - Epochs 0 to 2041 use the genesis identity `0xa217bb85001d4dcf8e5c50136f77af88cb2cab1857279b91c6240f41cca95c4f43f6dcab3e0dfb87dafb3ecbeb6251e90a5df2e6c47432482821cd8b84665ee4642589d2d9628a92b03e2bbfb00e006d038cd98def76d2a41b7c228c05f5a193`.
+> - Every other boundary outcome has `is_next_full_dkg = false`. Later rotations can be found by decoding every boundary block's outcome.
