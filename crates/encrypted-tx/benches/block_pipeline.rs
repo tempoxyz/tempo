@@ -13,7 +13,9 @@ use commonware_parallel::{Rayon, Sequential, Strategy};
 use commonware_utils::{N3f1, NZU32, NZUsize};
 use rand::{SeedableRng, rngs::StdRng};
 use std::{env, hint::black_box, time::Instant};
-use tempo_encrypted_tx::{EncryptedBody, Envelope, fast, key_shares, recover_keys, verify_keys};
+use tempo_encrypted_tx::{
+    EncryptedBody, Envelope, Lane, fast, key_shares, recover_keys, verify_keys,
+};
 
 fn env_or<T: std::str::FromStr>(name: &str, default: T) -> T {
     env::var(name)
@@ -68,6 +70,7 @@ fn main() {
                 nonce_key: U256::ZERO,
                 nonce: i as u64,
                 gas_limit: 50_000,
+                lane: Lane::General,
             };
             let body = vec![0xab; 200];
             let (encrypted, id) =
@@ -168,6 +171,7 @@ fn main() {
             nonce_key: U256::ZERO,
             nonce: u64::from(i),
             gas_limit: 50_000,
+            lane: Lane::General,
         };
         EncryptedBody::encrypt(&mut rng, network, &envelope, &[0xab; 200])
             .map(|(b, id)| (id, b))
@@ -183,6 +187,7 @@ fn main() {
             nonce_key: U256::ZERO,
             nonce: 0,
             gas_limit: 50_000,
+            lane: Lane::General,
         };
         black_box(EncryptedBody::encrypt(&mut rng, network, &envelope, &[0xab; 200]).unwrap());
     });

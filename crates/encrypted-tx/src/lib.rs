@@ -66,6 +66,17 @@ pub enum Error {
     },
 }
 
+/// The TIP-1010 lane an encrypted transaction declares, since its calls cannot be classified
+/// before decryption. A payment-lane body that does not qualify executes nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Lane {
+    /// Counts against the payment lane; the decrypted calls must qualify as a payment.
+    Payment = 0,
+    /// Counts against the general (non-payment) gas limit.
+    General = 1,
+}
+
 /// The plaintext fields of an encrypted transaction that the pool validates and the block commits
 /// to before contents are known: who pays, which nonce it consumes and how much gas it may use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -80,6 +91,8 @@ pub struct Envelope {
     pub nonce: u64,
     /// Gas reserved at inclusion and made available to the decrypted calls.
     pub gas_limit: u64,
+    /// Lane the envelope's gas counts in, at inclusion and at execution.
+    pub lane: Lane,
 }
 
 impl Envelope {
@@ -87,13 +100,14 @@ impl Envelope {
     /// Copying a ciphertext into another envelope changes the identity, so its key never opens
     /// the copy.
     pub fn identity(&self, sealed_body_hash: B256) -> B256 {
-        let mut buf = [0u8; 8 + 20 + 32 + 8 + 8 + 32];
+        let mut buf = [0u8; 8 + 20 + 32 + 8 + 8 + 1 + 32];
         buf[..8].copy_from_slice(&self.chain_id.to_be_bytes());
         buf[8..28].copy_from_slice(self.sender.as_slice());
         buf[28..60].copy_from_slice(&self.nonce_key.to_be_bytes::<32>());
         buf[60..68].copy_from_slice(&self.nonce.to_be_bytes());
         buf[68..76].copy_from_slice(&self.gas_limit.to_be_bytes());
-        buf[76..].copy_from_slice(sealed_body_hash.as_slice());
+        buf[76] = self.lane as u8;
+        buf[77..].copy_from_slice(sealed_body_hash.as_slice());
         keccak256(buf)
     }
 }
