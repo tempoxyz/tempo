@@ -666,8 +666,8 @@ where
     }
 
     #[inline]
-    fn evm_kind(&self) -> TempoEvmKind {
-        self.evm.ext().evm_kind()
+    fn kind(&self) -> TempoEvmKind {
+        self.evm.ext().kind()
     }
 
     #[inline]
@@ -723,7 +723,7 @@ pub trait EvmStorageExt {
     fn non_creditable_slots(&self) -> Rc<RefCell<NonCreditableSlots>>;
 
     /// Returns the kind of the EVM, whose rules every storage context over it follows.
-    fn evm_kind(&self) -> TempoEvmKind;
+    fn kind(&self) -> TempoEvmKind;
 }
 
 bitflags! {
@@ -914,7 +914,7 @@ mod tests {
             Rc::new(RefCell::new(NonCreditableSlots::empty()))
         }
 
-        fn evm_kind(&self) -> TempoEvmKind {
+        fn kind(&self) -> TempoEvmKind {
             TempoEvmKind::L1
         }
     }

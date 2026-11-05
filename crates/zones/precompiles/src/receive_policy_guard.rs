@@ -267,7 +267,7 @@ mod tests {
             ctx.block.timestamp = U256::from(BLOCKED_AT);
 
             // Zones revert blocked inbounds, so seed the receipt as Tempo L1 would divert it.
-            ctx.evm().ext_mut().evm_kind = TempoEvmKind::L1;
+            ctx.evm().ext_mut().kind = TempoEvmKind::L1;
             {
                 let mut storage = test_storage_provider(&mut ctx, u64::MAX, false);
                 StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
@@ -293,7 +293,7 @@ mod tests {
                     Ok(())
                 })?;
             }
-            ctx.evm().ext_mut().evm_kind = TempoEvmKind::Zone;
+            ctx.evm().ext_mut().kind = TempoEvmKind::Zone;
 
             let receipt = receipt(RECEIVER, RECEIVER);
             assert_eq!(receipt.version, BLOCKED_RECEIPT_VERSION);

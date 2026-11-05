@@ -1225,7 +1225,7 @@ impl TIP20Token {
         }
 
         // Zone credit L1-escrowed tokens without issuing supply, so (+T13) they are like transfers.
-        let recipient_role = match (self.storage.evm_kind(), self.storage.spec()) {
+        let recipient_role = match (self.storage.kind(), self.storage.spec()) {
             (TempoEvmKind::Zone, spec) if spec.is_t13() => AuthRole::recipient(),
             _ => AuthRole::mint_recipient(),
         };
@@ -1386,7 +1386,7 @@ impl TIP20Token {
         };
         // A zone recovery authority could never claim diverted funds. Ungated: before T15 zone
         // transfers were disabled and the Inbox rejects blocked deposits itself.
-        if matches!(self.storage.evm_kind(), TempoEvmKind::Zone) {
+        if matches!(self.storage.kind(), TempoEvmKind::Zone) {
             return Err(TIP20Error::policy_forbids().into());
         }
 
@@ -1761,7 +1761,7 @@ pub(crate) mod tests {
         let addr = Address::random();
         let amount = U256::random() % U256::from(u128::MAX);
 
-        for (evm_kind, spec, role) in [
+        for (kind, spec, role) in [
             (
                 TempoEvmKind::L1,
                 TempoHardfork::T13,
@@ -1769,8 +1769,7 @@ pub(crate) mod tests {
             ),
             (TempoEvmKind::Zone, TempoHardfork::T13, AuthRole::Recipient),
         ] {
-            let mut storage =
-                HashMapStorageProvider::new_with_spec(1, spec).with_evm_kind(evm_kind);
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec).with_kind(kind);
             let admin = Address::random();
             StorageCtx::enter(&mut storage, || -> Result<()> {
                 let mut token = TIP20Setup::create("Test", "TST", admin)
@@ -2202,7 +2201,7 @@ pub(crate) mod tests {
         #[test]
         fn test_zone_blocked_inbound_reverts_instead_of_guarding() -> eyre::Result<()> {
             let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6)
-                .with_evm_kind(TempoEvmKind::Zone);
+                .with_kind(TempoEvmKind::Zone);
             storage.set_timestamp(U256::from(BLOCKED_AT));
             let admin = Address::random();
             let sender = Address::random();

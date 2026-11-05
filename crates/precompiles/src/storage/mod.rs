@@ -230,7 +230,7 @@ pub trait PrecompileStorageProvider {
     /// Returns the kind of EVM this context executes over, which fixes the protocol rules that
     /// differ between Tempo L1 and its zones. Providers that cannot write state may keep the
     /// [`TempoEvmKind::L1`] default, since those rules only affect state changes.
-    fn evm_kind(&self) -> TempoEvmKind {
+    fn kind(&self) -> TempoEvmKind {
         TempoEvmKind::L1
     }
 

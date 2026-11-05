@@ -95,7 +95,7 @@ pub struct TempoTxResultExt {
 #[derive(Clone, Debug)]
 pub struct TempoEvmExt {
     /// Kind of the EVM, whose rules every storage context over the EVM follows.
-    pub evm_kind: TempoEvmKind,
+    pub kind: TempoEvmKind,
     /// Protocol fee implementation used by transaction hooks.
     pub fee_manager: Arc<dyn ProtocolFeeManager>,
     /// Recorder for protocol storage accesses.
@@ -119,11 +119,11 @@ impl Default for TempoEvmExt {
 }
 
 impl TempoEvmExt {
-    /// Creates the extension state of an EVM of `evm_kind`, whose transaction hooks collect fees
+    /// Creates the extension state of an EVM of `kind`, whose transaction hooks collect fees
     /// through `fee_manager`.
-    pub fn new(evm_kind: TempoEvmKind, fee_manager: impl ProtocolFeeManager + 'static) -> Self {
+    pub fn new(kind: TempoEvmKind, fee_manager: impl ProtocolFeeManager + 'static) -> Self {
         Self {
-            evm_kind,
+            kind,
             fee_manager: Arc::new(fee_manager),
             actions: StorageActions::disabled(),
             non_creditable_slots: Rc::new(RefCell::new(NonCreditableSlots::empty())),
@@ -144,8 +144,8 @@ impl tempo_precompiles::storage::evm::EvmStorageExt for TempoEvmExt {
         self.non_creditable_slots.clone()
     }
 
-    fn evm_kind(&self) -> TempoEvmKind {
-        self.evm_kind
+    fn kind(&self) -> TempoEvmKind {
+        self.kind
     }
 }
 

@@ -63,7 +63,7 @@ pub(crate) fn test_context_with_hardfork(hardfork: TempoHardfork) -> TestContext
             InMemoryDB::default(),
             NoPrecompiles::default(),
             TempoEvmExt {
-                evm_kind: TempoEvmKind::Zone,
+                kind: TempoEvmKind::Zone,
                 ..Default::default()
             },
         ),

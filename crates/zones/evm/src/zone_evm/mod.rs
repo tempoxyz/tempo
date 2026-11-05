@@ -264,7 +264,7 @@ pub(crate) mod tests {
             TempoEvmEnv::default(),
         );
         assert_eq!(
-            StorageCtx::enter_evm(&mut evm, || StorageCtx::default().evm_kind()),
+            StorageCtx::enter_evm(&mut evm, || StorageCtx::default().kind()),
             TempoEvmKind::Zone
         );
     }

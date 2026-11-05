@@ -273,9 +273,9 @@ impl StorageCtx {
     }
 
     /// Returns the kind of EVM this context executes over. See
-    /// [`PrecompileStorageProvider::evm_kind`].
-    pub fn evm_kind(&self) -> TempoEvmKind {
-        Self::with_storage(|s| s.evm_kind())
+    /// [`PrecompileStorageProvider::kind`].
+    pub fn kind(&self) -> TempoEvmKind {
+        Self::with_storage(|s| s.kind())
     }
 
     /// Creates a journal checkpoint and returns a RAII guard.
