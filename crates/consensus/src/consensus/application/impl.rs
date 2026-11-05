@@ -471,7 +471,10 @@ where
         // while the block is registered, so register it as soon as the block
         // is known, before waiting for the parent, and hold the registration
         // until the verdict is read. A block the engine executed before that
-        // has no verdict, and this node abstains on it.
+        // has no verdict, and this node abstains on it. The executor runs a
+        // block outside verification only once it is finalized or named as
+        // the parent of a later round, so a certificate for it exists already
+        // and its vote is not needed.
         let (ceremony, registration) = if self.is_boundary(block.height()) {
             let registration = self.boundary_outcome_checks.register(block.digest().0);
             let Some(parent) = ancestry.next().await else {
