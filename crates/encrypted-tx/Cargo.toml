@@ -1,0 +1,41 @@
+[package]
+name = "tempo-encrypted-tx"
+description = "Threshold-encrypted transaction payloads keyed to Tempo's network BLS identity"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+publish.workspace = true
+
+[dependencies]
+alloy-primitives.workspace = true
+blst.workspace = true
+chacha20poly1305.workspace = true
+commonware-codec.workspace = true
+commonware-cryptography = { workspace = true, features = ["bls12381", "std"] }
+commonware-math.workspace = true
+commonware-parallel.workspace = true
+commonware-utils.workspace = true
+rand_core.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+rand.workspace = true
+
+[[bench]]
+name = "encrypted_tx"
+harness = false
+
+[[bench]]
+name = "block_pipeline"
+harness = false
+
+[lints]
+workspace = true
