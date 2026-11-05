@@ -39,6 +39,7 @@ fn envelope(nonce: u64) -> Envelope {
         nonce_key: U256::from(7),
         nonce,
         gas_limit: 100_000,
+        lane: Lane::General,
     }
 }
 
@@ -63,6 +64,23 @@ fn key_for_another_envelope_does_not_open_body() {
     let (encrypted, _) =
         EncryptedBody::encrypt(&mut rng, network.identity(), &envelope(0), b"secret").unwrap();
     let copied_into = envelope(1).identity(keccak256(&encrypted.sealed));
+
+    let keys = network.keys(&[copied_into]);
+
+    assert!(matches!(encrypted.decrypt(&keys[0]), Err(Error::Decrypt)));
+}
+
+#[test]
+fn key_for_another_lane_does_not_open_body() {
+    let mut rng = StdRng::seed_from_u64(9);
+    let network = Network::new(&mut rng);
+    let (encrypted, _) =
+        EncryptedBody::encrypt(&mut rng, network.identity(), &envelope(0), b"secret").unwrap();
+    let as_payment = Envelope {
+        lane: Lane::Payment,
+        ..envelope(0)
+    };
+    let copied_into = as_payment.identity(keccak256(&encrypted.sealed));
 
     let keys = network.keys(&[copied_into]);
 

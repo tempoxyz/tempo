@@ -10,7 +10,7 @@ use commonware_utils::{N3f1, NZU32, NZUsize};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use rand::{SeedableRng, rngs::StdRng};
 use tempo_encrypted_tx::{
-    EncryptedBody, Envelope, key_shares, recover_keys, verify_key_shares, verify_keys,
+    EncryptedBody, Envelope, Lane, key_shares, recover_keys, verify_key_shares, verify_keys,
 };
 
 const VALIDATORS: u32 = 16;
@@ -23,6 +23,7 @@ fn envelope(nonce: u64) -> Envelope {
         nonce_key: U256::ZERO,
         nonce,
         gas_limit: 100_000,
+        lane: Lane::General,
     }
 }
 
