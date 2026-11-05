@@ -251,6 +251,20 @@ jobs:
             type=raw,value=${{ steps.source.outputs.image_tag }},priority=50,enable=${{ steps.source.outputs.image_tag != '' }}
             type=raw,value=pr-${{ inputs.pr_number }},enable=${{ inputs.pr_number != '' }}
 
+      - name: Docker metadata for tempo-fuzz
+        id: meta-tempo-fuzz
+        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          images: |
+            ${{ env.REGISTRY }}/tempo
+          bake-target: tempo-fuzz
+          labels: |
+            ${{ steps.docker-labels.outputs.value }}
+            ${{ steps.source.outputs.revision_label }}
+          tags: |
+            type=raw,value=fuzz
+            type=raw,value=sha-${{ steps.source.outputs.short_sha }}-fuzz
+
       - name: Log in to Container Registry
         uses: tempoxyz/gh-actions/vendor/docker/login-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
@@ -274,6 +288,7 @@ jobs:
             ${{ steps.meta-tempo-devnet.outputs.bake-file }}
             ${{ steps.meta-tempo-localnet.outputs.bake-file }}
             ${{ steps.meta-tempo-xtask.outputs.bake-file }}
+            ${{ steps.meta-tempo-fuzz.outputs.bake-file }}
           targets: ${{ ((inputs.pr_number == '' && github.event_name == 'schedule') || github.event.inputs.nightly == 'true') && 'nightly' || 'default' }}
           project: 0c6tg19qsp
           push: true
@@ -329,6 +344,7 @@ jobs:
           TEMPO_DEVNET_TAGS: ${{ steps.meta-tempo-devnet.outputs.tags }}
           TEMPO_LOCALNET_TAGS: ${{ steps.meta-tempo-localnet.outputs.tags }}
           TEMPO_XTASK_TAGS: ${{ steps.meta-tempo-xtask.outputs.tags }}
+          TEMPO_FUZZ_TAGS: ${{ steps.meta-tempo-fuzz.outputs.tags }}
           BUILD_METADATA: ${{ steps.build-and-push.outputs.metadata }}
         run: |
           set -euo pipefail
@@ -355,10 +371,14 @@ jobs:
           # cosign signs digests, not tags: every tag of a repository shares one
           # signature, so sign each repository's digest once, all concurrently.
           refs=()
-          for target in tempo tempo-devnet tempo-localnet tempo-xtask; do
+          for target in tempo tempo-devnet tempo-localnet tempo-xtask tempo-fuzz; do
             tags_var="${target^^}_TAGS"
             tags_var="${tags_var//-/_}"
             digest="$(jq -r --arg target "$target" '.[$target]["containerimage.digest"] // empty' <<< "$BUILD_METADATA")"
+            # tempo-fuzz is built only with the nightly.
+            if [ "$target" = tempo-fuzz ] && [ -z "$digest" ]; then
+              continue
+            fi
             if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
               echo "No image digest for $target in build metadata" >&2
               exit 1

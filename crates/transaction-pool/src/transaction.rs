@@ -597,7 +597,7 @@ fn warm_payment_keccak_slots<'a>(
         if let Some(addr) = payment.to() {
             let slot = addr.mapping_slot(tip403_registry_slots::RECEIVE_POLICIES);
             warmed(slot);
-            warmed(U256::from_be_bytes(keccak256(slot.to_be_bytes::<32>()).0));
+            warmed(keccak256(slot.to_be_bytes::<32>()).into());
         }
 
         // Allowance slots for transferFrom variants: allowances[from][sender]
@@ -1557,8 +1557,6 @@ mod tests {
 
     #[test]
     fn test_validate_blob_returns_not_blob_transaction() {
-        use alloy_eips::eip7594::BlobTransactionSidecarVariant;
-
         let tx = TxBuilder::eip1559(Address::random())
             .gas_limit(21000)
             .build_eip1559();

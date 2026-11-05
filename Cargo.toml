@@ -303,9 +303,9 @@ alloy = { version = "2.5.0", default-features = false }
 alloy-consensus = { version = "2.5.0", default-features = false }
 alloy-contract = { version = "2.5.0", default-features = false }
 alloy-eips = { version = "2.5.0", default-features = false }
-evm2 = { git = "https://github.com/alloy-rs/evm2", rev = "f93318f120f6300599b21170d6c7bef81ed63d87", default-features = false }
-evm2-macros = { git = "https://github.com/alloy-rs/evm2", rev = "f93318f120f6300599b21170d6c7bef81ed63d87" }
-evm2-jit = { git = "https://github.com/alloy-rs/evm2", rev = "f93318f120f6300599b21170d6c7bef81ed63d87", default-features = false }
+evm2 = { git = "https://github.com/alloy-rs/evm2", rev = "a29a283f6cd4bc65e44f5813de5e9f43553c5fda", default-features = false }
+evm2-macros = { git = "https://github.com/alloy-rs/evm2", rev = "a29a283f6cd4bc65e44f5813de5e9f43553c5fda" }
+evm2-jit = { git = "https://github.com/alloy-rs/evm2", rev = "a29a283f6cd4bc65e44f5813de5e9f43553c5fda", default-features = false }
 alloy-genesis = { version = "2.5.0", default-features = false }
 alloy-hardforks = "0.4.11"
 alloy-json-rpc = "2.5.0"
@@ -325,19 +325,20 @@ alloy-signer-local = "2.5.0"
 alloy-signer-trezor = "2.5.0"
 alloy-transport = "2.5.0"
 
-commonware-actor = "2026.9.0"
-commonware-broadcast = "2026.9.0"
-commonware-codec = "2026.9.0"
-commonware-consensus = "2026.9.0"
-commonware-cryptography = { version = "2026.9.0", default-features = false }
-commonware-macros = "2026.9.0"
-commonware-math = "2026.9.0"
-commonware-p2p = "2026.9.0"
-commonware-parallel = "2026.9.0"
-commonware-resolver = "2026.9.0"
-commonware-runtime = "2026.9.0"
-commonware-storage = "2026.9.0"
-commonware-utils = "2026.9.0"
+commonware-actor = "2026.10.0"
+commonware-broadcast = "2026.10.0"
+commonware-codec = "2026.10.0"
+commonware-consensus = "2026.10.0"
+commonware-cryptography = { version = "2026.10.0", default-features = false }
+commonware-macros = "2026.10.0"
+commonware-math = "2026.10.0"
+commonware-p2p = "2026.10.0"
+commonware-parallel = "2026.10.0"
+commonware-resolver = "2026.10.0"
+commonware-runtime = "2026.10.0"
+commonware-stream = "2026.10.0"
+commonware-storage = "2026.10.0"
+commonware-utils = "2026.10.0"
 
 antithesis_sdk = { version = "0.3.0", default-features = false }
 arbitrary = { version = "1.4", features = ["derive"] }
@@ -431,11 +432,11 @@ reth-zstd-compressors = { git = "https://github.com/paradigmxyz/reth-core", rev 
 
 # evm2 is patched through its pre-transfer URL, which redirects to alloy-rs/evm2, because Cargo
 # rejects a patch from the same source.
-# [patch."https://github.com/alloy-rs/evm2"]
-# evm2 = { git = "https://github.com/DaniPopes/evm2", rev = "f93318f120f6300599b21170d6c7bef81ed63d87" }
-# evm2-inspectors = { git = "https://github.com/DaniPopes/evm2", rev = "f93318f120f6300599b21170d6c7bef81ed63d87" }
-# evm2-jit = { git = "https://github.com/DaniPopes/evm2", rev = "f93318f120f6300599b21170d6c7bef81ed63d87" }
-# evm2-macros = { git = "https://github.com/DaniPopes/evm2", rev = "f93318f120f6300599b21170d6c7bef81ed63d87" }
+[patch."https://github.com/alloy-rs/evm2"]
+evm2 = { git = "https://github.com/DaniPopes/evm2", rev = "a29a283f6cd4bc65e44f5813de5e9f43553c5fda" }
+evm2-inspectors = { git = "https://github.com/DaniPopes/evm2", rev = "a29a283f6cd4bc65e44f5813de5e9f43553c5fda" }
+evm2-jit = { git = "https://github.com/DaniPopes/evm2", rev = "a29a283f6cd4bc65e44f5813de5e9f43553c5fda" }
+evm2-macros = { git = "https://github.com/DaniPopes/evm2", rev = "a29a283f6cd4bc65e44f5813de5e9f43553c5fda" }
 
 # [patch."https://github.com/paradigmxyz/reth"]
 # reth-basic-payload-builder = { path = "../reth/crates/payload/basic" }

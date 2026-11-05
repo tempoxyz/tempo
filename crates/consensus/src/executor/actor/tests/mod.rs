@@ -3,6 +3,7 @@ use commonware_consensus::{
     simplex::types::Context,
     types::{Height, View},
 };
+use commonware_cryptography::Digestible as _;
 use commonware_runtime::{Runner as _, deterministic};
 use commonware_utils::Acknowledgement as _;
 use futures::{StreamExt as _, executor::block_on};

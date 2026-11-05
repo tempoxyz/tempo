@@ -9,9 +9,7 @@ pub(crate) use ingress::Mailbox;
 
 use commonware_consensus::types::{FixedEpocher, ViewDelta};
 use commonware_p2p::Blocker;
-use commonware_runtime::{
-    BufferPooler, Clock, Metrics, Network, Spawner, Storage, buffer::paged::CacheRef,
-};
+use commonware_runtime::{Clock, Metrics, Network, Spawner, Storage, buffer::paged::CacheRef};
 use rand_core::{CryptoRng, Rng};
 use tempo_node::TempoFullNode;
 
@@ -49,15 +47,8 @@ pub(crate) fn init<TContext, TBlocker>(
 ) -> (Actor<TContext, TBlocker>, Mailbox)
 where
     TBlocker: Blocker<PublicKey = PublicKey>,
-    TContext: BufferPooler
-        + Spawner
-        + Metrics
-        + Rng
-        + CryptoRng
-        + Clock
-        + governor::clock::Clock
-        + Storage
-        + Network,
+    TContext:
+        Spawner + Metrics + Rng + CryptoRng + Clock + governor::clock::Clock + Storage + Network,
 {
     let (tx, rx) = futures::channel::mpsc::unbounded();
     let actor = Actor::new(config, context, rx);

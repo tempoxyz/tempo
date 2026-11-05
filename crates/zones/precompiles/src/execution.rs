@@ -137,6 +137,11 @@ where
         // consume, or schedule TIP-1060 credits whose variable charges are discarded below.
         storage.set_tip1060_storage_credits(false);
     }
+    if env.spec.is_t15() {
+        // A recovery authority without a Zone key could never claim funds diverted to
+        // `ReceivePolicyGuard`, so blocked inbounds revert instead.
+        storage.set_revert_blocked_inbound(true);
+    }
 
     let result = StorageCtx::enter(&mut storage, || match rules.admit(data, caller) {
         CallCheck::Continue => execute(data, caller),
@@ -281,6 +286,29 @@ mod tests {
             Some((calldata.into(), Some([0xde, 0xad, 0xbe, 0xef]), caller))
         );
         assert_eq!(*recorded_execute.borrow(), Some((calldata.into(), caller)));
+    }
+
+    #[test]
+    fn blocked_inbounds_revert_from_t15() {
+        for (spec, expected) in [(TempoHardfork::T14, false), (TempoHardfork::T15, true)] {
+            let observed = Rc::new(Cell::new(None));
+            let execute_observed = observed.clone();
+            let execute = move |_: &[u8], _| {
+                execute_observed.set(Some(StorageCtx::default().revert_blocked_inbound()));
+                Ok(StorageCtx::default().success_output(Bytes::new()))
+            };
+            let (result, _) = call(
+                &mut test_context(),
+                spec,
+                &[],
+                Address::ZERO,
+                u64::MAX,
+                NoCallRules,
+                execute,
+            );
+            result.unwrap();
+            assert_eq!(observed.get(), Some(expected), "{spec:?}");
+        }
     }
 
     #[test]

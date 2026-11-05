@@ -19,6 +19,7 @@ use commonware_consensus::{
     types::{Epoch, Epocher as _, FixedEpocher, Height, Round, View},
 };
 use commonware_cryptography::{
+    Digested, Digestible as _,
     bls12381::{dkg::feldman_desmedt::Output, primitives::variant::MinSig},
     ed25519::PublicKey,
 };
@@ -136,7 +137,7 @@ impl Inner {
         &self,
         runtime: &TContext,
         context: Context<Digest, PublicKey>,
-        parent: &Arc<Block>,
+        parent: &Digested<Block>,
         propose_start: Instant,
     ) -> eyre::Result<Block> {
         self.executor
@@ -156,7 +157,7 @@ impl Inner {
             //
             // The DKG actor reads no chain state, so it starts on the
             // ceremony output now, while the executor works on the parent.
-            let ceremony = self.dkg_manager.subscribe_dkg_ceremony(Arc::clone(parent));
+            let ceremony = self.dkg_manager.subscribe_dkg_ceremony(parent.clone());
             (
                 Bytes::default(),
                 Some(self.boundary_dkg_outcome(round.epoch(), parent.digest(), ceremony)),
@@ -192,9 +193,9 @@ impl Inner {
         let mut epoch_millis = runtime.current().epoch_millis();
 
         // Use current timestamp but make sure that if parent's timestamp is in the future, we account for that.
-        if epoch_millis <= parent.timestamp_millis() {
+        if epoch_millis <= parent.inner().timestamp_millis() {
             self.metrics.parent_ahead_of_local_time.metric().inc();
-            epoch_millis = parent.timestamp_millis() + 1
+            epoch_millis = parent.inner().timestamp_millis() + 1
         };
 
         // Match the stamped header so a lagging local clock does not inflate network samples.
@@ -202,7 +203,7 @@ impl Inner {
         let (timestamp, timestamp_millis_part) = (epoch_millis / 1000, epoch_millis % 1000);
 
         let prev_randao = self
-            .expected_mix_hash(round.epoch(), timestamp, parent, SeedWait::Propose)
+            .expected_mix_hash(round.epoch(), timestamp, parent.inner(), SeedWait::Propose)
             .await;
 
         let consensus_context = Some(TempoConsensusContext {
@@ -306,6 +307,17 @@ impl Inner {
             );
         }
 
+        #[cfg(feature = "fuzz")]
+        antithesis_sdk::assert_sometimes!(
+            round.view().get().saturating_sub(parent_view.get()) > 1,
+            "Proposal builds on a parent from before a nullified view",
+            &serde_json::json!({
+                "epoch": round.epoch().get(),
+                "view": round.view().get(),
+                "parent_view": parent_view.get(),
+            })
+        );
+
         Ok(proposal)
     }
 
@@ -334,7 +346,8 @@ impl Inner {
                 let output = ceremony
                     .await
                     .wrap_err("failed getting public dkg ceremony outcome")?;
-                let outcome = parent_state.boundary_outcome(&epoch_strategy, &parent, output)?;
+                let outcome =
+                    parent_state.boundary_outcome(&epoch_strategy, parent.inner(), output)?;
                 ensure!(
                     epoch.next() == outcome.epoch(),
                     "outcome is for epoch `{}`, but we are trying to include the \
@@ -449,11 +462,13 @@ impl Inner {
         );
 
         if self.is_boundary(block.height()) {
-            let proposed_outcome =
-                OnchainDkgOutcome::read(&mut block.header().extra_data().as_ref()).wrap_err(
-                    "failed decoding extra data header as DKG ceremony \
+            let proposed_outcome = OnchainDkgOutcome::read(&mut commonware_codec::Copying(
+                block.header().extra_data().as_ref(),
+            ))
+            .wrap_err(
+                "failed decoding extra data header as DKG ceremony \
                     outcome; cannot verify end of epoch block",
-                )?;
+            )?;
             return Ok(Some(proposed_outcome));
         }
 
@@ -560,13 +575,14 @@ where
         (runtime, context): (TContext, Self::Context),
         mut ancestry: impl Ancestry<Block>,
         (): (),
-    ) -> Option<Block> {
+    ) -> Option<Digested<Block>> {
         let propose_start = Instant::now();
         let parent = ancestry.next().await?;
         match self.build(&runtime, context, &parent, propose_start).await {
             Ok(block) => {
-                info!(proposal.digest = %block.digest(), "constructed proposal");
-                Some(block)
+                let digest = block.digest();
+                info!(proposal.digest = %digest, "constructed proposal");
+                Some(Digested::precomputed(block, digest))
             }
             Err(_logged) => None,
         }
@@ -619,9 +635,9 @@ where
         // block is executed.
         let ceremony = self
             .is_boundary(block.height())
-            .then(|| self.dkg_manager.subscribe_dkg_ceremony(Arc::clone(&parent)));
+            .then(|| self.dkg_manager.subscribe_dkg_ceremony(parent.clone()));
 
-        let proposed_outcome = match self.verify_header(&block, &context).await {
+        let proposed_outcome = match self.verify_header(block.inner(), &context).await {
             Ok(proposed_outcome) => proposed_outcome,
             Err(reason) => {
                 warn!(%reason, "header could not be verified; failing block");
@@ -632,37 +648,37 @@ where
         if let Some(expected_mix_hash) = self
             .expected_mix_hash(
                 context.round.epoch(),
-                block.header().timestamp(),
-                &parent,
+                block.inner().header().timestamp(),
+                parent.inner(),
                 SeedWait::Verify,
             )
             .await
-            && block.header().mix_hash() != Some(expected_mix_hash)
+            && block.inner().header().mix_hash() != Some(expected_mix_hash)
         {
             self.metrics.prev_randao_mismatch.metric().inc();
             warn!(
                 expected = %expected_mix_hash,
-                got = ?block.header().mix_hash(),
+                got = ?block.inner().header().mix_hash(),
                 proposer = %context.leader,
                 "mix_hash is not the seed of the parent's round; failing block",
             );
             return false;
         }
 
-        match self.executor.verify_block(context, (*block).clone()).await {
+        match self.executor.verify_block(context, block.clone()).await {
             Ok(Some(duration)) => {
                 self.estimator.on_block_verified(
                     block.height().get(),
                     ValidationLatencyWorkload::new(
-                        block.block().gas_used(),
-                        block.block().body().transaction_count(),
+                        block.inner().block().gas_used(),
+                        block.inner().block().body().transaction_count(),
                     ),
                     duration,
                 );
                 // The EL has checked timestamp encoding and parent ordering.
                 // Only the local clock gates voting: in deferred mode this
                 // delays certification, while notarization may happen earlier.
-                wait_until_timestamp(&runtime, block.timestamp_millis()).await;
+                wait_until_timestamp(&runtime, block.inner().timestamp_millis()).await;
             }
             Ok(None) => return false,
             Err(error) => {
@@ -679,7 +695,7 @@ where
             Some(outcome) => {
                 let ceremony =
                     ceremony.expect("`verify_header` decodes an outcome only for a boundary block");
-                self.verify_boundary_outcome(&parent, ceremony, &outcome)
+                self.verify_boundary_outcome(parent.inner(), ceremony, &outcome)
                     .await
                     .is_ok()
             }
@@ -694,7 +710,7 @@ impl Reporter for Inner {
         if let Update::Block(block, ack) = update {
             // Only finalized children supply canonical sampling observations.
             // Derive the parent's epoch from its height, not the child's epoch.
-            if let Some(ctx) = block.header().consensus_context
+            if let Some(ctx) = block.inner().header().consensus_context
                 && let Some(parent_height) = block.height().previous()
             {
                 let parent_epoch = self
@@ -711,7 +727,7 @@ impl Reporter for Inner {
                         epoch: ctx.epoch,
                         view: ctx.view,
                     },
-                    block.timestamp_millis(),
+                    block.inner().timestamp_millis(),
                 ) {
                     self.metrics.network_samples.metric().inc();
                 }

@@ -1,6 +1,6 @@
 use crate::utils::TestNodeBuilder;
 use alloy::{
-    primitives::Bytes,
+    primitives::{B256, Bytes},
     providers::{Provider, ProviderBuilder},
 };
 use reth_e2e_test_utils::wallet::test_signer;
@@ -46,8 +46,7 @@ async fn test_createx() -> eyre::Result<()> {
     // Verify deployed contract has the expected runtime code
     // The init code stores 0x2a at memory[0] and returns 32 bytes
     let deployed_code = provider.get_code_at(deployed_address.into()).await?;
-    let mut expected = [0u8; 32];
-    expected[31] = 0x2a;
+    let expected: [u8; 32] = B256::with_last_byte(0x2a).into();
     assert_eq!(deployed_code.as_ref(), &expected);
 
     // Verify CreateX bytecode was fixed after block execution

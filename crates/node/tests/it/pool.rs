@@ -1,9 +1,11 @@
 use alloy::{
     consensus::Transaction,
+    network::ReceiptResponse,
     signers::{SignerSync, local::PrivateKeySigner},
+    sol_types::SolCall,
 };
 use alloy_eips::{Decodable2718, Encodable2718};
-use alloy_primitives::{Address, TxKind, U64, U256, address, hex};
+use alloy_primitives::{Address, Bytes, TxKind, U64, U256, address, hex};
 use reth_chainspec::EthChainSpec;
 use reth_e2e_test_utils::{node::Finality, wait::assert_holds_for, wallet::test_signer};
 use reth_ethereum::{pool::TransactionPool, primitives::SignerRecoverable};
@@ -13,24 +15,23 @@ use reth_transaction_pool::{
     TransactionOrigin,
     error::{InvalidPoolTransactionError, PoolError, PoolErrorKind},
 };
-use std::{num::NonZeroU64, time::Duration};
+use std::{num::NonZeroU64, sync::Arc, time::Duration};
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
-use tempo_precompiles::{DEFAULT_FEE_TOKEN, tip_fee_manager::TipFeeManager};
+use tempo_contracts::precompiles::{ITIP20, ITIP403Registry, ITIPFeeAMM, OUSD_ADDRESS};
+use tempo_precompiles::{
+    DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    tip_fee_manager::TipFeeManager,
+    tip20::{TIP20Token, slots},
+};
 use tempo_primitives::{
     TempoTransaction, TempoTxEnvelope,
     transaction::{calc_gas_balance_spending, tempo_transaction::Call},
 };
 
+use crate::utils::TestNodeBuilder;
+
 #[tokio::test(flavor = "multi_thread")]
 async fn test_fallback_balance_updates_revalidate_only_relevant_crossings() -> eyre::Result<()> {
-    use alloy::{network::ReceiptResponse, primitives::Bytes, sol_types::SolCall};
-    use std::{sync::Arc, time::Duration};
-    use tempo_contracts::precompiles::{ITIP20, ITIPFeeAMM, OUSD_ADDRESS};
-    use tempo_precompiles::{
-        TIP_FEE_MANAGER_ADDRESS,
-        tip20::{TIP20Token, slots},
-    };
-
     let payer = PrivateKeySigner::random();
     let funder = test_signer(0);
     let price = TEMPO_T1_BASE_FEE as u128;
@@ -53,7 +54,7 @@ async fn test_fallback_balance_updates_revalidate_only_relevant_crossings() -> e
     genesis["alloc"][format!("{inferred_token:#x}")]["storage"][format!("{slot:#066x}")] =
         format!("{:#066x}", fee * U256::from(4)).into();
     let mut ousd = genesis["alloc"][format!("{DEFAULT_FEE_TOKEN:#x}")].clone();
-    ousd["storage"][format!("{:#066x}", U256::from(slots::QUOTE_TOKEN))] = format!(
+    ousd["storage"][format!("{:#066x}", slots::QUOTE_TOKEN)] = format!(
         "{:#066x}",
         U256::from_be_slice(DEFAULT_FEE_TOKEN.as_slice())
     )
@@ -538,9 +539,6 @@ async fn test_2d_nonce_tx_reinjected_after_reorg() -> eyre::Result<()> {
 /// block producers (tracked via the AMM liquidity cache).
 #[tokio::test(flavor = "multi_thread")]
 async fn test_evict_tx_on_validator_token_change() -> eyre::Result<()> {
-    use crate::utils::TestNodeBuilder;
-    use alloy_primitives::address;
-
     reth_tracing::init_test_tracing();
 
     // Setup node with direct access
@@ -628,10 +626,6 @@ async fn test_evict_tx_on_validator_token_change() -> eyre::Result<()> {
 /// 5. The 9 non-whitelisted transactions are evicted; the whitelisted one survives
 #[tokio::test(flavor = "multi_thread")]
 async fn test_evict_txs_on_transfer_policy_change() -> eyre::Result<()> {
-    use alloy::sol_types::SolCall;
-    use tempo_contracts::precompiles::{ITIP20, ITIP403Registry};
-    use tempo_precompiles::{TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS};
-
     reth_tracing::init_test_tracing();
 
     // Two disconnected nodes — no tx propagation

@@ -2,7 +2,7 @@
 
 use crate::{
     code,
-    types::{Change, Chunk, Delta, InfoChange},
+    types::{Change, Delta, InfoChange, Input},
 };
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, U256};
 use evm2::{
@@ -48,14 +48,7 @@ fn analyzed(hash: B256) -> Result<Bytecode, Missing> {
     Ok(code)
 }
 
-fn version<T>(versions: &[(u64, T)], at: u64) -> Result<&T, Missing> {
-    versions
-        .get(versions.partition_point(|(n, _)| *n <= at).wrapping_sub(1))
-        .map(|(_, value)| value)
-        .ok_or_else(|| Missing(format!("missing state version at {at}")))
-}
-
-/// Changes applied on top of a chunk's pre-state, such as earlier transactions' deltas.
+/// Changes applied on top of an input's pre-state, such as earlier transactions' deltas.
 #[derive(Clone, Debug, Default)]
 pub struct Overlay {
     accounts: HashMap<Address, Option<AccountInfo>>,
@@ -64,21 +57,18 @@ pub struct Overlay {
     code: HashSet<B256>,
 }
 
-/// The canonical state at a block boundary covered by a chunk, plus applied deltas.
+/// The canonical state before an input's block, plus applied deltas.
 #[derive(Clone, Debug)]
 pub struct View {
-    pub chunk: Arc<Chunk>,
-    pub at: u64,
+    pub input: Arc<Input>,
     pub overlay: Overlay,
 }
 
 impl View {
-    /// The state before the chunk's first block.
-    pub fn new(chunk: Arc<Chunk>) -> Self {
-        let at = chunk.start - 1;
+    /// The state before the input's block.
+    pub fn new(input: Arc<Input>) -> Self {
         Self {
-            chunk,
-            at,
+            input,
             overlay: Overlay::default(),
         }
     }
@@ -87,12 +77,11 @@ impl View {
         if let Some(account) = self.overlay.accounts.get(address) {
             return Ok(account.clone());
         }
-        let versions = self
-            .chunk
+        Ok(self
+            .input
             .accounts
             .get(&address.into_array())
-            .ok_or_else(|| Missing(format!("uncaptured account {address}")))?;
-        Ok(version(versions, self.at)?
+            .ok_or_else(|| Missing(format!("uncaptured account {address}")))?
             .as_ref()
             .map(|info| info.account().into()))
     }
@@ -104,12 +93,11 @@ impl View {
         if self.overlay.wiped.contains(address) {
             return Ok(U256::ZERO);
         }
-        let versions = self
-            .chunk
+        self.input
             .storage
             .get(&(address.into_array(), key.to_be_bytes()))
-            .ok_or_else(|| Missing(format!("uncaptured storage {address} {key}")))?;
-        Ok(U256::from_be_bytes(*version(versions, self.at)?))
+            .map(|value| U256::from_be_bytes(*value))
+            .ok_or_else(|| Missing(format!("uncaptured storage {address} {key}")))
     }
 
     fn wipe(&mut self, address: Address) {
@@ -168,7 +156,7 @@ impl Database for View {
         if *code_hash == KECCAK256_EMPTY {
             return Ok(Bytecode::default());
         }
-        if !self.chunk.code.contains(&code_hash.0) && !self.overlay.code.contains(code_hash) {
+        if !self.input.code.contains(&code_hash.0) && !self.overlay.code.contains(code_hash) {
             return Err(Missing(format!("uncaptured code {code_hash}")));
         }
         analyzed(*code_hash)
@@ -180,7 +168,7 @@ impl Database for View {
 
     fn get_block_hash(&mut self, number: &Word) -> Result<B256, Missing> {
         let number = number.saturating_to::<u64>();
-        self.chunk
+        self.input
             .hashes
             .get(&number)
             .copied()

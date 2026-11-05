@@ -729,6 +729,16 @@ impl TIP20Token {
         self._transfer(msg_sender, &Recipient::direct(Address::ZERO), amount)?;
 
         let total_supply = self.total_supply()?;
+        #[cfg(feature = "fuzz")]
+        antithesis_sdk::assert_always!(
+            total_supply >= amount,
+            "TIP-20 total supply covers a burn once the burner's balance is debited",
+            &serde_json::json!({
+                "token": self.address.to_string(),
+                "total_supply": total_supply.to_string(),
+                "amount": amount.to_string(),
+            })
+        );
         let new_supply =
             total_supply
                 .checked_sub(amount)
@@ -1372,6 +1382,10 @@ impl TIP20Token {
     /// Validates the receive policy of `to.target`. If blocked, moves the funds into the guard
     /// account and stores a claim receipt; returns `true`. Returns `false` when the inbound is
     /// authorized and the caller should proceed with the normal transfer or mint.
+    ///
+    /// # Errors
+    /// - `PolicyForbids` — the inbound is blocked and the storage context reverts blocked inbounds
+    ///   instead of diverting them (see [`StorageCtx::revert_blocked_inbound`])
     pub(crate) fn validate_inbound_or_block(
         &mut self,
         originator: Address,
@@ -1393,6 +1407,9 @@ impl TIP20Token {
         else {
             return Ok(false);
         };
+        if self.storage.revert_blocked_inbound() {
+            return Err(TIP20Error::policy_forbids().into());
+        }
 
         let guard = Recipient::direct(RECEIVE_POLICY_GUARD_ADDRESS);
         let kind = if let Some(total_supply) = mint_total_supply {
@@ -1527,7 +1544,18 @@ impl TIP20Token {
             )?;
         }
 
-        self.decrement_balance(TIP_FEE_MANAGER_ADDRESS, refund)?;
+        let refund_debit = self.decrement_balance(TIP_FEE_MANAGER_ADDRESS, refund);
+        #[cfg(feature = "fuzz")]
+        antithesis_sdk::assert_always!(
+            !matches!(refund_debit, Err(TempoPrecompileError::TIP20(_))),
+            "Fee manager custody covers the unused fee refund",
+            &serde_json::json!({
+                "token": self.address.to_string(),
+                "refund": refund.to_string(),
+                "actual_spending": actual_spending.to_string(),
+            })
+        );
+        refund_debit?;
         self.increment_balance(to, refund)?;
 
         Ok(())
@@ -1840,7 +1868,8 @@ pub(crate) mod tests {
     mod tip1028_tests {
         use super::*;
         use crate::{
-            receive_policy_guard::BLOCKED_RECEIPT_VERSION, tip403_registry::ALLOW_ALL_POLICY_ID,
+            receive_policy_guard::BLOCKED_RECEIPT_VERSION, storage::PrecompileStorageProvider,
+            tip403_registry::ALLOW_ALL_POLICY_ID,
         };
 
         const BLOCKED_AT: u64 = 1_728_100;
@@ -2190,6 +2219,55 @@ pub(crate) mod tests {
                     ReceivePolicyGuard::new().balance_of(receipt.abi_encode().into())?,
                     U256::ZERO
                 );
+
+                Ok(())
+            })
+        }
+
+        #[test]
+        fn test_revert_blocked_inbound_reverts_instead_of_guarding() -> eyre::Result<()> {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+            storage.set_timestamp(U256::from(BLOCKED_AT));
+            storage.set_revert_blocked_inbound(true);
+            let admin = Address::random();
+            let sender = Address::random();
+            let receiver = Address::random();
+            let amount = U256::from(40u64);
+
+            StorageCtx::enter(&mut storage, || {
+                let mut token = TIP20Setup::create("Test", "TST", admin)
+                    .with_issuer(admin)
+                    .with_mint(sender, amount)
+                    .clear_events()
+                    .apply()?;
+                set_receive_policy(
+                    receiver,
+                    REJECT_ALL_POLICY_ID,
+                    ALLOW_ALL_POLICY_ID,
+                    Address::ZERO,
+                )?;
+
+                let transfer = token.transfer(
+                    sender,
+                    ITIP20::transferCall {
+                        to: receiver,
+                        amount,
+                    },
+                );
+                assert_eq!(transfer, Err(TIP20Error::policy_forbids().into()));
+                let mint = token.mint(
+                    admin,
+                    ITIP20::mintCall {
+                        to: receiver,
+                        amount,
+                    },
+                );
+                assert_eq!(mint, Err(TIP20Error::policy_forbids().into()));
+
+                assert_eq!(token.get_balance(sender)?, amount);
+                assert_eq!(token.get_balance(receiver)?, U256::ZERO);
+                assert_eq!(token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?, U256::ZERO);
+                assert_eq!(token.total_supply()?, amount);
 
                 Ok(())
             })
@@ -4348,8 +4426,6 @@ pub(crate) mod tests {
 
     #[test]
     fn test_is_transfer_authorized() -> eyre::Result<()> {
-        use tempo_chainspec::hardfork::TempoHardfork;
-
         let admin = Address::random();
         let sender = Address::random();
         let recipient = Address::random();

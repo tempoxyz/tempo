@@ -1,10 +1,12 @@
 //! Bounded in-process checkpoint reads feeding native execution workers.
 
 use crate::{
-    execute::{decode_block, execute_block, standalone_cases, verify_changesets},
+    exec::{
+        block::{decode_block, execute_block, standalone_cases, verify_changesets},
+        db::View,
+    },
     store::{self, Catalog, MAX_RECORD_BYTES, Record, Store},
-    types::{Case, Chunk, Phases},
-    view::View,
+    types::{Case, Input, Phases},
 };
 use alloy_primitives::B256;
 use bytes::Bytes;
@@ -19,7 +21,7 @@ use std::{
     ops::Range,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -52,7 +54,7 @@ struct Ready {
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     store: Store,
-    catalog: Catalog,
+    mut catalog: Catalog,
     mut range: Range<u64>,
     config: TempoEvmConfig,
     consensus: TempoConsensus,
@@ -62,11 +64,19 @@ pub fn run(
 ) -> eyre::Result<()> {
     eyre::ensure!(workers > 0, "num-tasks must be positive");
     let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(env_usize("RETH_CORPUS_IO_THREADS").unwrap_or((workers * 3 / 4).max(4)))
+        .worker_threads(env_usize("TEMPO_CORPUS_IO_THREADS").unwrap_or((workers * 3 / 4).max(4)))
         .enable_all()
         .build()?;
+    // Read the published snapshot through a lease of our own: a fill extending the corpus
+    // retires the published checkpoint with a fixed grace lifetime a long replay can outlast.
+    // A replay that fails before releasing it leaves it to expire.
+    let lease = store.lease_published(&runtime, &mut catalog, {
+        let cancellation = cancellation.clone();
+        // Stop reading before the lease may expire.
+        move || cancellation.cancel()
+    })?;
     let reader = Arc::new(runtime.block_on(store.reader(&catalog))?);
-    let tip_timestamp = runtime.block_on(store::tip_timestamp(&reader, &catalog.context))?;
+    let tip_timestamp = runtime.block_on(store::tip_timestamp(&reader, &catalog.cursor))?;
     eyre::ensure!(
         store::forks_agree(
             &catalog.context.forks,
@@ -79,10 +89,10 @@ pub fn run(
         range = runtime.block_on(transaction_range(&reader, &catalog, from, to))?;
     }
     let budget = Arc::new(Semaphore::new(
-        env_usize("RETH_CORPUS_BUDGET_MIB").map_or(REPLAY_BUDGET, |mib| mib << 20),
+        env_usize("TEMPO_CORPUS_BUDGET_MIB").map_or(REPLAY_BUDGET, |mib| mib << 20),
     ));
     let (sender, receiver) =
-        crossbeam_channel::bounded::<Ready>(env_usize("RETH_CORPUS_QUEUE").unwrap_or(64));
+        crossbeam_channel::bounded::<Ready>(env_usize("TEMPO_CORPUS_QUEUE").unwrap_or(64));
     let started = Instant::now();
     // Save the triggering error before cancelling peers. Join order must not
     // replace missing/corrupt state with a secondary cancellation error.
@@ -171,18 +181,18 @@ pub fn run(
                             Err(RecvTimeoutError::Disconnected) => break,
                         };
                         ready.space.notify_one();
-                        let chunk = store::decode(&ready.bytes, &ready.record)?;
-                        runtime.block_on(store::resolve_code(reader, &chunk))?;
+                        let input = store::decode(&ready.bytes, &ready.record)?;
+                        runtime.block_on(store::resolve_code(reader, &input))?;
                         let (transactions, gas) = if let Some((from, to)) = standalone {
                             // The stored deltas restore each transaction's prestate, so the
                             // block itself is not executed.
                             let (cases, block, phases) =
-                                decode_record(&chunk, &ready.cases, &ready.record)?;
+                                decode_record(&input, &ready.cases, &ready.record)?;
                             let (mut transactions, mut gas) = (0, 0);
                             standalone_cases(
                                 config,
                                 &block,
-                                View::new(chunk.clone()),
+                                View::new(input.clone()),
                                 phases,
                                 &cases,
                                 |case| {
@@ -196,7 +206,7 @@ pub fn run(
                             )?;
                             (transactions, gas)
                         } else {
-                            verify(config, consensus, &chunk, &ready.cases, &ready.record)?;
+                            verify(config, consensus, &input, &ready.cases, &ready.record)?;
                             (ready.record.transactions, ready.record.gas)
                         };
                         records += 1;
@@ -206,7 +216,7 @@ pub fn run(
                         // Drop decoded state, serialized Bytes, and its permit
                         // together, before receiving more work.
                     }
-                    tracing::debug!(target: "reth::corpus::feed", receive_us = receive_wait.as_micros() as u64, records, "Worker receive intervals (summed overlap)");
+                    tracing::debug!(target: "tempo::corpus::feed", receive_us = receive_wait.as_micros() as u64, records, "Worker receive intervals (summed overlap)");
                     Ok(())
                 })();
                 if let Err(error) = result {
@@ -256,8 +266,104 @@ pub fn run(
         Ok(())
     });
     let closed = runtime.block_on(reader.close());
-    result?;
-    Ok(closed?)
+    let expiring = lease.expiring();
+    let released = lease.release(&runtime, &store);
+    let finished = result.and(closed.map_err(eyre::Report::from));
+    // A failed renewal cancels the replay; report why rather than the cancellation.
+    if expiring {
+        released.and(finished)
+    } else {
+        finished.and(released)
+    }
+}
+
+/// Opens the corpus and checks it was captured under `config`'s fork schedule.
+async fn open(store: &Store, catalog: &Catalog, config: &TempoEvmConfig) -> eyre::Result<DbReader> {
+    let reader = store.reader(catalog).await?;
+    let tip_timestamp = store::tip_timestamp(&reader, &catalog.cursor).await?;
+    eyre::ensure!(
+        store::forks_agree(
+            &catalog.context.forks,
+            &config.chain_spec().display_hardforks().to_string(),
+            tip_timestamp,
+        ),
+        "corpus fork schedule mismatch"
+    );
+    Ok(reader)
+}
+
+/// Replays the listed `blocks` of a published corpus on `workers` threads, as [`run`] does a
+/// range.
+pub fn run_blocks(
+    store: Store,
+    mut catalog: Catalog,
+    blocks: &[u64],
+    config: TempoEvmConfig,
+    consensus: TempoConsensus,
+    workers: usize,
+) -> eyre::Result<()> {
+    eyre::ensure!(workers > 0, "num-tasks must be positive");
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    // A lease of our own, as in [run]; workers stop once it may expire.
+    let lease = store.lease_published(&runtime, &mut catalog, || {})?;
+    let reader = runtime.block_on(open(&store, &catalog, &config))?;
+    let started = Instant::now();
+    let next = AtomicUsize::new(0);
+    let replay =
+        || -> eyre::Result<()> {
+            while let Some(&block) = blocks.get(next.fetch_add(1, Ordering::Relaxed)) {
+                eyre::ensure!(
+                    !lease.expiring(),
+                    "replay lease expires before it can be renewed"
+                );
+                let replayed =
+                    runtime.block_on(async {
+                        let (record, input) = store::published(&reader, block).await?;
+                        let mut cases = Vec::with_capacity(record.cases.len());
+                        for ordinal in record.first_tx..record.first_tx + record.transactions {
+                            let key = store::transaction_key(ordinal);
+                            cases.push(reader.get(key).await?.ok_or_else(|| {
+                                eyre::eyre!("missing transaction record {ordinal}")
+                            })?);
+                        }
+                        eyre::Ok((record, input, cases))
+                    });
+                if let Err(error) = replayed.and_then(|(record, input, cases)| {
+                    verify(&config, &consensus, &input, &cases, &record)
+                }) {
+                    // Stop the other workers too.
+                    next.store(blocks.len(), Ordering::Relaxed);
+                    return Err(error.wrap_err(format!("block {block}")));
+                }
+            }
+            Ok(())
+        };
+    let result = std::thread::scope(|scope| {
+        let threads: Vec<_> = (0..workers).map(|_| scope.spawn(replay)).collect();
+        threads.into_iter().try_for_each(|thread| {
+            thread
+                .join()
+                .map_err(|_| eyre::eyre!("corpus worker panicked"))?
+        })
+    });
+    let closed = runtime.block_on(reader.close());
+    let expiring = lease.expiring();
+    let released = lease.release(&runtime, &store);
+    let finished = result.and(closed.map_err(eyre::Report::from));
+    if expiring {
+        released.and(finished)?;
+    } else {
+        finished.and(released)?;
+    }
+    info!(
+        blocks = blocks.len(),
+        workers,
+        seconds = started.elapsed().as_secs_f64(),
+        "Corpus replay verified"
+    );
+    Ok(())
 }
 
 /// Fetching owns serialized reservations until ownership moves to a worker.
@@ -272,7 +378,7 @@ async fn feed_pages(
     let space = Arc::new(Notify::new());
     let mut records = Vec::<Record>::new().into_iter().peekable();
     let mut closed = false;
-    let fetch_tasks = env_usize("RETH_CORPUS_FETCH_TASKS").unwrap_or(64);
+    let fetch_tasks = env_usize("TEMPO_CORPUS_FETCH_TASKS").unwrap_or(64);
     // Reserve whole read batches before opening scans, then transfer exact byte
     // permits to individual ready records. No task acquires a second reservation
     // while retaining its first, including when a record fills the entire budget.
@@ -282,21 +388,21 @@ async fn feed_pages(
         eyre::ensure!(!cancellation.is_cancelled(), "corpus replay cancelled");
         while tasks.len() < fetch_tasks {
             let Some(record) = records.next() else { break };
-            let (mut end, mut bytes) = (record.end, record.bytes);
+            let (mut end, mut bytes) = (record.number + 1, record.bytes);
             let mut batch = vec![record];
             // Batches never span pages, so an unfiltered page under the byte limit is one
             // scan task; read parallelism comes from pages in flight under the byte budget.
             while let Some(next) =
-                records.next_if(|next| next.start == end && bytes + next.bytes <= batch_limit)
+                records.next_if(|next| next.number == end && bytes + next.bytes <= batch_limit)
             {
-                (end, bytes) = (next.end, bytes + next.bytes);
+                (end, bytes) = (next.number + 1, bytes + next.bytes);
                 batch.push(next);
             }
             // A batch over the limit is a single record; one over the whole budget would wait
             // for permits that never exist.
             eyre::ensure!(
                 bytes <= total,
-                "corpus record of {bytes} bytes exceeds the {total}-byte replay budget (RETH_CORPUS_BUDGET_MIB)"
+                "corpus record of {bytes} bytes exceeds the {total}-byte replay budget (TEMPO_CORPUS_BUDGET_MIB)"
             );
             let permits = u32::try_from(bytes)?;
             let sender = sender.clone();
@@ -339,7 +445,7 @@ async fn feed_pages(
                 }
                 payloads.finish().await?;
                 tracing::debug!(
-                    target: "reth::corpus::feed",
+                    target: "tempo::corpus::feed",
                     budget_us = budget_wait.as_micros() as u64,
                     queue_us = queue_wait.as_micros() as u64,
                     bytes,
@@ -376,7 +482,7 @@ async fn transaction_range(
 ) -> eyre::Result<Range<u64>> {
     let mut bounds = [0; 2];
     for (bound, ordinal) in bounds.iter_mut().zip([from, to - 1]) {
-        let (mut low, mut high) = (catalog.context.start, catalog.context.end);
+        let (mut low, mut high) = (catalog.context.start, catalog.cursor.next);
         // Metadata of the final `high`: the first block whose ordinals end after `ordinal`.
         let mut found = None;
         while low < high {
@@ -439,7 +545,7 @@ async fn read_catalog(
     } else {
         let previous = store::metadata(reader, range.start - 1).await?;
         let mut cursor = store::Cursor {
-            next: previous.start,
+            next: previous.number,
             tx: previous.first_tx,
             parent: previous.parent,
         };
@@ -471,7 +577,7 @@ async fn read_catalog(
         slot.send(page);
     }
     let cursor = metadata.cursor;
-    if range.end == catalog.context.end {
+    if range.end == catalog.cursor.next {
         eyre::ensure!(cursor == catalog.cursor, "final metadata boundary mismatch");
     } else {
         let next = store::metadata(reader, range.end).await?;
@@ -498,7 +604,7 @@ fn env_usize(name: &str) -> Option<usize> {
 
 /// Decodes a published block, its checked transaction records and its phase expectations.
 fn decode_record<'a>(
-    chunk: &'a Chunk,
+    input: &'a Input,
     cases: &[Bytes],
     record: &Record,
 ) -> eyre::Result<(Vec<Case>, RecoveredBlock<Block>, &'a Phases)> {
@@ -514,8 +620,8 @@ fn decode_record<'a>(
             store::decode_case(bytes, expected, record.first_tx + i as u64)
         })
         .collect::<eyre::Result<_>>()?;
-    let block = decode_block(&chunk.blocks[0], chunk.start, B256::from(chunk.parent))?;
-    let phases = chunk
+    let block = decode_block(&input.block, input.number, B256::from(input.parent))?;
+    let phases = input
         .phases
         .as_ref()
         .ok_or_eyre("missing phase expectations")?;
@@ -527,20 +633,20 @@ fn decode_record<'a>(
 pub fn verify(
     config: &TempoEvmConfig,
     consensus: &TempoConsensus,
-    chunk: &Arc<Chunk>,
+    input: &Arc<Input>,
     cases: &[Bytes],
     record: &Record,
 ) -> eyre::Result<()> {
-    let (expected, block, phases) = decode_record(chunk, cases, record)?;
+    let (expected, block, phases) = decode_record(input, cases, record)?;
     let executed = execute_block(
         config,
         consensus,
-        View::new(chunk.clone()),
+        View::new(input.clone()),
         &block,
         record.first_tx,
         Some((&expected, phases)),
     )?;
-    verify_changesets(&executed.bundle, &chunk.changeset()?, chunk.start)?;
+    verify_changesets(&executed.bundle, &input.changeset()?, input.number)?;
     eyre::ensure!(
         executed.transactions.len() as u64 == record.transactions && executed.gas == record.gas,
         "transaction/gas totals mismatch"

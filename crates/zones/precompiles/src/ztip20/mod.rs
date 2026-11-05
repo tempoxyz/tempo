@@ -1,12 +1,15 @@
 //! Zone pre-execution rules for the upstream Tempo TIP20 precompile.
 //!
-//! `TIP20Token` remains the source of truth for token and TIP403 policy behavior.
-//! Before forwarding a call to Tempo, `TIP20Rules` applies only zone-specific checks:
-//! privacy-gated reads, fixed gas for selected selectors, and blocked system/admin entry points.
+//! `TIP20Token` remains the source of truth for token and TIP403 policy behavior, except that
+//! from T15 zone precompiles run with a storage context that makes inbounds blocked by a TIP-1028
+//! receive policy revert instead of diverting funds to `ReceivePolicyGuard`. Before forwarding a
+//! call to Tempo, `TIP20Rules` applies only zone-specific checks: privacy-gated reads, fixed gas
+//! for selected selectors, blocked system/admin entry points, and, for zone-internal transfers, the
+//! portal admin's opt-in.
 //!
 //! Accepted calldata and callers are forwarded unchanged to Tempo. Ordinary token state remains
-//! Zone-local while the EVM context's database adapter exposes selected policy values from the
-//! finalized Tempo L1 state.
+//! Zone-local while the EVM context's database adapter exposes selected policy values and, from
+//! T15, the token's pause flag from the finalized Tempo L1 state.
 
 use alloy_primitives::Address;
 use alloy_sol_types::{SolCall, SolError, SolInterface};
@@ -14,10 +17,12 @@ pub use tempo_contracts::zones::InsufficientBalance;
 use tempo_contracts::zones::Unauthorized;
 use tempo_precompiles::{
     dispatch::abi_decoder_config_for_spec,
+    error::Result,
     tip20::{IRolesAuth, ITIP20},
 };
 
 use crate::{
+    L1State, L1StorageReader,
     execution::{CallCheck, CallRules},
     privacy::check_caller,
     storage::StorageCtx,
@@ -40,9 +45,29 @@ pub(crate) const TIP20_FIXED_GAS_SELECTORS: &[[u8; 4]] = &[
 
 /// Zone-specific rules applied before forwarding to upstream `TIP20Token`.
 #[derive(Clone)]
-pub(crate) struct TIP20Rules;
+pub(crate) struct TIP20Rules<P> {
+    /// Finalized Tempo state, used to read the portal's transfer opt-in.
+    pub(crate) l1: L1State<P>,
+}
 
-impl CallRules for TIP20Rules {
+impl<P: L1StorageReader> TIP20Rules<P> {
+    /// Admits a transfer-family call.
+    ///
+    /// Transfers require T15 and the portal admin's opt-in. Upstream then reverts, rather than
+    /// diverts, a transfer that the recipient's receive policy blocks (see `execute_precompile`).
+    fn admit_transfer(&self) -> Result<CallCheck> {
+        // Before T15, private asset movement is limited to the protocol-managed inbox and outbox
+        // paths.
+        if !StorageCtx::default().spec().is_t15()
+            || !self.l1.read_portal(|portal| &portal.transfers_enabled)?
+        {
+            return Ok(CallCheck::Revert(Unauthorized {}.abi_encode().into()));
+        }
+        Ok(CallCheck::Continue)
+    }
+}
+
+impl<P: L1StorageReader> CallRules for TIP20Rules<P> {
     fn fixed_gas(&self, selector: Option<[u8; 4]>) -> Option<u64> {
         selector
             .is_some_and(|selector| TIP20_FIXED_GAS_SELECTORS.contains(&selector))
@@ -63,13 +88,11 @@ impl CallRules for TIP20Rules {
                 ITIP20::ITIP20Calls::nonces(call) => {
                     check_caller(caller, &[call.owner])
                 }
-                // Transfers are disabled during the initial permissioned Zone phase.
-                // Private asset movement is limited to the protocol-managed inbox and outbox paths.
                 ITIP20::ITIP20Calls::transferFrom(_)
                 | ITIP20::ITIP20Calls::transfer(_)
                 | ITIP20::ITIP20Calls::transferWithMemo(_)
                 | ITIP20::ITIP20Calls::transferFromWithMemo(_) => {
-                    CallCheck::Revert(Unauthorized {}.abi_encode().into())
+                    self.admit_transfer().unwrap_or_else(CallCheck::Error)
                 }
                 // Inbox/outbox call TIP20 internally; public mint/burn entry points stay disabled.
                 ITIP20::ITIP20Calls::mint(_)
@@ -148,24 +171,26 @@ impl CallRules for TIP20Rules {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::primitives::{Address, B256, Bytes, U256, address};
+    use alloy::primitives::{Address, B256, Bytes, U256, address, fixed_bytes};
     use alloy_sol_types::{SolCall, SolError, SolInterface};
     use evm2::precompiles::PrecompileError;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::{
-        precompiles::{TIP20Error, UnknownFunctionSelector},
+        precompiles::{AddrRegistryError, ITIP403Registry, TIP20Error, UnknownFunctionSelector},
         zones::Unauthorized,
     };
     use tempo_precompiles::{
-        PATH_USD_ADDRESS, Precompile,
+        PATH_USD_ADDRESS, Precompile, RECEIVE_POLICY_GUARD_ADDRESS,
         storage::{Handler, StorageCtx},
         test_util::TIP20Setup,
         tip20::{
-            IRolesAuth, ISSUER_ROLE, ITIP20,
+            self, IRolesAuth, ISSUER_ROLE, ITIP20,
             ITIP20::InsufficientBalance as TIP20InsufficientBalance, TIP20Token,
         },
+        tip403_registry::{ALLOW_ALL_POLICY_ID, REJECT_ALL_POLICY_ID, TIP403Registry},
         zone_factory::ZonePortalStorage as ZonePortal,
     };
+    use tempo_primitives::TempoAddressExt;
     use zone_primitives::constants::{ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS};
 
     use crate::{
@@ -179,30 +204,29 @@ mod tests {
     const TEMPO_BLOCK_NUMBER: u64 = 7;
     const PORTAL_ADDRESS: Address = address!("0x0000000000000000000000000000000000000b01");
 
-    fn rules() -> TIP20Rules {
-        TIP20Rules
+    type Rules = TIP20Rules<MockL1Reader>;
+
+    fn rules() -> Rules {
+        TIP20Rules {
+            l1: L1State::new(MockL1Reader::default(), PORTAL_ADDRESS),
+        }
     }
 
-    fn admit_at(
-        rules: &TIP20Rules,
-        data: &[u8],
-        caller: Address,
-        spec: TempoHardfork,
-    ) -> CallCheck {
+    fn admit_at(rules: &Rules, data: &[u8], caller: Address, spec: TempoHardfork) -> CallCheck {
         let mut ctx = test_context();
         ctx.cfg.spec = spec;
         let mut storage = test_storage_provider(&mut ctx, u64::MAX, true);
         StorageCtx::enter(&mut storage, || rules.admit(data, caller))
     }
 
-    fn assert_allowed(rules: &TIP20Rules, call: impl SolCall, caller: Address) {
+    fn assert_allowed(rules: &Rules, call: impl SolCall, caller: Address) {
         assert!(matches!(
             admit_at(rules, &call.abi_encode(), caller, TempoHardfork::T8),
             CallCheck::Continue
         ));
     }
 
-    fn assert_unauthorized(rules: &TIP20Rules, call: impl SolCall, caller: Address) {
+    fn assert_unauthorized(rules: &Rules, call: impl SolCall, caller: Address) {
         assert!(matches!(
             admit_at(rules, &call.abi_encode(), caller, TempoHardfork::T8),
             CallCheck::Revert(data) if data == Unauthorized {}.abi_encode()
@@ -272,6 +296,7 @@ mod tests {
             })
         }
 
+        /// Calls the token, rolling back a call that does not succeed like an EVM call frame.
         fn call(
             &mut self,
             caller: Address,
@@ -279,7 +304,8 @@ mod tests {
             gas: u64,
             is_static: bool,
         ) -> PrecompileResult {
-            call_precompile(
+            let checkpoint = self.ctx.checkpoint();
+            let result = call_precompile(
                 &mut self.ctx,
                 &mut self.precompile,
                 caller,
@@ -288,7 +314,95 @@ mod tests {
                 is_static,
                 self.token,
                 self.token,
-            )
+            );
+            if !result.as_ref().is_ok_and(|output| output.is_success()) {
+                self.ctx.checkpoint_revert(checkpoint);
+            }
+            result
+        }
+
+        /// Returns each transfer-family call to `to` with its natural caller. Together they move
+        /// 4_321 from Alice, of which 4_300 is spent from the spender's allowance.
+        fn transfer_calls(&self, to: Address) -> [(Address, Bytes); 4] {
+            let memo = B256::repeat_byte(0x33);
+            [
+                (
+                    self.alice,
+                    ITIP20::transferCall {
+                        to,
+                        amount: U256::from(1u64),
+                    }
+                    .abi_encode()
+                    .into(),
+                ),
+                (
+                    self.alice,
+                    ITIP20::transferWithMemoCall {
+                        to,
+                        amount: U256::from(20u64),
+                        memo,
+                    }
+                    .abi_encode()
+                    .into(),
+                ),
+                (
+                    self.spender,
+                    ITIP20::transferFromCall {
+                        from: self.alice,
+                        to,
+                        amount: U256::from(300u64),
+                    }
+                    .abi_encode()
+                    .into(),
+                ),
+                (
+                    self.spender,
+                    ITIP20::transferFromWithMemoCall {
+                        from: self.alice,
+                        to,
+                        amount: U256::from(4_000u64),
+                        memo,
+                    }
+                    .abi_encode()
+                    .into(),
+                ),
+            ]
+        }
+
+        /// Sets `account`'s receive policy to reject every sender, with an L1-only recovery
+        /// authority.
+        fn reject_all_receipts(&mut self, account: Address) -> eyre::Result<()> {
+            let mut storage = test_storage_provider(&mut self.ctx, u64::MAX, false);
+            Ok(StorageCtx::enter(&mut storage, || {
+                TIP403Registry::new().set_receive_policy(
+                    account,
+                    ITIP403Registry::setReceivePolicyCall {
+                        senderPolicyId: REJECT_ALL_POLICY_ID,
+                        tokenFilterId: ALLOW_ALL_POLICY_ID,
+                        recoveryAuthority: Address::repeat_byte(0xee),
+                    },
+                )
+            })?)
+        }
+
+        /// Asserts no transfer-family call moved funds or spent the spender's allowance.
+        fn assert_no_funds_moved(&mut self, to: Address) -> eyre::Result<()> {
+            assert_eq!(self.balance_of(to)?, U256::ZERO);
+            assert_eq!(self.balance_of(RECEIVE_POLICY_GUARD_ADDRESS)?, U256::ZERO);
+            assert_eq!(self.balance_of(self.alice)?, U256::from(1_000_000u64));
+            assert_eq!(
+                self.allowance(self.alice, self.spender)?,
+                U256::from(300_000u64)
+            );
+            Ok(())
+        }
+
+        fn set_transfers_enabled(&self, enabled: bool) -> eyre::Result<()> {
+            Ok(self.l1_reader.with_storage(TEMPO_BLOCK_NUMBER, || {
+                ZonePortal::new(PORTAL_ADDRESS)
+                    .transfers_enabled
+                    .write(enabled)
+            })?)
         }
 
         fn balance_of(&mut self, account: Address) -> eyre::Result<U256> {
@@ -314,7 +428,7 @@ mod tests {
         let spender = Address::repeat_byte(0x22);
         let sequencer = Address::repeat_byte(0x33);
         let outsider = Address::repeat_byte(0x44);
-        let rules = TIP20Rules;
+        let rules = rules();
         let balance = ITIP20::balanceOfCall { account: owner };
         assert_allowed(&rules, balance.clone(), owner);
         assert_unauthorized(&rules, balance.clone(), sequencer);
@@ -357,45 +471,117 @@ mod tests {
     }
 
     #[test]
-    fn all_transfer_calls_are_disallowed() {
-        let rules = rules();
-        let caller = Address::repeat_byte(0x11);
-        let recipient = Address::repeat_byte(0x22);
-        let amount = U256::ONE;
-        let memo = B256::repeat_byte(0x33);
-        let calls = [
-            ITIP20::transferCall {
-                to: recipient,
-                amount,
-            }
-            .abi_encode(),
-            ITIP20::transferFromCall {
-                from: caller,
-                to: recipient,
-                amount,
-            }
-            .abi_encode(),
-            ITIP20::transferWithMemoCall {
-                to: recipient,
-                amount,
-                memo,
-            }
-            .abi_encode(),
-            ITIP20::transferFromWithMemoCall {
-                from: caller,
-                to: recipient,
-                amount,
-                memo,
-            }
-            .abi_encode(),
-        ];
+    fn transfers_require_t15_and_portal_opt_in() -> eyre::Result<()> {
+        for (spec, opted_in, active) in [
+            (TempoHardfork::T13, true, false),
+            (TempoHardfork::T14, false, false),
+            (TempoHardfork::T14, true, false),
+            (TempoHardfork::T15, false, false),
+            (TempoHardfork::T15, true, true),
+        ] {
+            let mut harness = PrecompileHarness::new_at(spec)?;
+            harness.set_transfers_enabled(opted_in)?;
 
-        for call in calls {
-            assert!(matches!(
-                admit_at(&rules, &call, caller, TempoHardfork::T8),
-                CallCheck::Revert(data) if data == Unauthorized {}.abi_encode()
-            ));
+            for (caller, calldata) in harness.transfer_calls(harness.bob) {
+                let result = harness.call(caller, calldata, TIP20_FIXED_TRANSFER_GAS, false)?;
+                assert_eq!(
+                    result.gas_used, TIP20_FIXED_TRANSFER_GAS,
+                    "{spec:?} opted_in={opted_in}"
+                );
+                if active {
+                    assert!(result.is_success(), "{spec:?} opted_in={opted_in}");
+                } else {
+                    assert!(result.is_revert(), "{spec:?} opted_in={opted_in}");
+                    assert_eq!(
+                        result.bytes,
+                        Bytes::from(Unauthorized {}.abi_encode()),
+                        "{spec:?} opted_in={opted_in}"
+                    );
+                }
+            }
+
+            let moved = if active { 4_321u64 } else { 0 };
+            assert_eq!(
+                harness.balance_of(harness.bob)?,
+                U256::from(moved),
+                "{spec:?} opted_in={opted_in}"
+            );
+            assert_eq!(
+                harness.balance_of(harness.alice)?,
+                U256::from(1_000_000u64 - moved),
+                "{spec:?} opted_in={opted_in}"
+            );
+            let spent = if active { 4_300u64 } else { 0 };
+            assert_eq!(
+                harness.allowance(harness.alice, harness.spender)?,
+                U256::from(300_000u64 - spent),
+                "{spec:?} opted_in={opted_in}"
+            );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn receive_policy_blocked_transfers_revert_instead_of_diverting() -> eyre::Result<()> {
+        let mut harness = PrecompileHarness::new_at(TempoHardfork::T15)?;
+        harness.set_transfers_enabled(true)?;
+        harness.reject_all_receipts(harness.bob)?;
+
+        for (caller, calldata) in harness.transfer_calls(harness.bob) {
+            let result = harness.call(caller, calldata, TIP20_FIXED_TRANSFER_GAS, false)?;
+            assert!(result.is_revert());
+            assert_eq!(
+                result.bytes,
+                Bytes::from(TIP20Error::policy_forbids().abi_encode())
+            );
+            assert_eq!(result.gas_used, TIP20_FIXED_TRANSFER_GAS);
+        }
+        harness.assert_no_funds_moved(harness.bob)?;
+        Ok(())
+    }
+
+    #[test]
+    fn paused_tokens_revert_before_the_receive_policy_check() -> eyre::Result<()> {
+        let mut harness = PrecompileHarness::new_at(TempoHardfork::T15)?;
+        harness.set_transfers_enabled(true)?;
+        harness.reject_all_receipts(harness.bob)?;
+        {
+            let mut storage = test_storage_provider(&mut harness.ctx, u64::MAX, false);
+            StorageCtx::enter(&mut storage, || {
+                StorageCtx.sstore(harness.token, tip20::slots::PAUSED, U256::ONE)
+            })?;
+        }
+
+        for (caller, calldata) in harness.transfer_calls(harness.bob) {
+            let result = harness.call(caller, calldata, TIP20_FIXED_TRANSFER_GAS, false)?;
+            assert!(result.is_revert());
+            assert_eq!(
+                result.bytes,
+                Bytes::from(TIP20Error::contract_paused().abi_encode())
+            );
+        }
+        harness.assert_no_funds_moved(harness.bob)?;
+        Ok(())
+    }
+
+    #[test]
+    fn transfers_to_virtual_addresses_revert() -> eyre::Result<()> {
+        let mut harness = PrecompileHarness::new_at(TempoHardfork::T15)?;
+        harness.set_transfers_enabled(true)?;
+        let virtual_recipient =
+            Address::new_virtual(fixed_bytes!("01020304"), fixed_bytes!("010203040506"));
+
+        for (caller, calldata) in harness.transfer_calls(virtual_recipient) {
+            let result = harness.call(caller, calldata, TIP20_FIXED_TRANSFER_GAS, false)?;
+            assert!(result.is_revert());
+            assert_eq!(
+                result.bytes,
+                Bytes::from(AddrRegistryError::virtual_address_unregistered().abi_encode())
+            );
+            assert_eq!(result.gas_used, TIP20_FIXED_TRANSFER_GAS);
+        }
+        harness.assert_no_funds_moved(virtual_recipient)?;
+        Ok(())
     }
 
     #[test]
@@ -714,9 +900,9 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "TODO: re-enable once zones allow user transfers"]
     fn transfer_from_insufficient_balance_does_not_reveal_the_source_balance() -> eyre::Result<()> {
-        let mut harness = PrecompileHarness::new()?;
+        let mut harness = PrecompileHarness::new_at(TempoHardfork::T15)?;
+        harness.set_transfers_enabled(true)?;
         // Craft a successful allowance return whose first four bytes collide with the upstream
         // error selector, exercising the redaction filter's revert-status guard.
         let mut allowance_bytes = [0u8; 32];

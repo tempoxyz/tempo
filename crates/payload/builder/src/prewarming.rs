@@ -532,7 +532,11 @@ mod tests {
     };
     use tempo_chainspec::TempoChainSpec;
     use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes};
-    use tempo_precompiles::storage::actions::StorageAction;
+    use tempo_precompiles::{
+        PATH_USD_ADDRESS,
+        storage::{StorageCtx, StorageKey, actions::StorageAction},
+        tip20::{ITIP20, TIP20Token, tip20_slots},
+    };
     use tempo_primitives::{
         TempoHeader, TempoPrimitives, TempoTransaction, TempoTxEnvelope, transaction::Call,
     };
@@ -1057,12 +1061,6 @@ mod tests {
 
     #[test]
     fn parallel_prewarm_records_native_transfer_balance_changes() {
-        use tempo_precompiles::{
-            PATH_USD_ADDRESS,
-            storage::{StorageCtx, StorageKey},
-            tip20::{ITIP20, TIP20Token, tip20_slots},
-        };
-
         let mut context = prewarming_context(TaskExecutor::test(), true);
         context.evm_env.block.basefee = U256::ZERO;
         let mut evm = context.evm_for_ctx().expect("prewarm EVM");
@@ -1082,7 +1080,7 @@ mod tests {
         // transfer(address,uint256), matching a payment transaction eligible for replay.
         let mut input = vec![0xa9, 0x05, 0x9c, 0xbb];
         input.extend_from_slice(&recipient.into_word().0);
-        input.extend_from_slice(&U256::from(100).to_be_bytes::<32>());
+        input.extend_from_slice(B256::with_last_byte(100).as_slice());
         let tx = TempoTransaction {
             chain_id: 42431,
             fee_token: Some(PATH_USD_ADDRESS),

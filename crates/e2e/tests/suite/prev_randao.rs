@@ -89,7 +89,7 @@ async fn mix_hash_is_seed_of_parent_round() {
 
         let bytes = alloy_primitives::hex::decode(&parent.certificate).unwrap();
         let finalization =
-            Finalization::<Scheme<PublicKey, MinSig>, Digest>::decode(&*bytes).unwrap();
+            Finalization::<Scheme<PublicKey, MinSig>, Digest>::decode(bytes).unwrap();
         let seed = finalization.seed();
         assert_eq!(seed.round.epoch().get(), parent_ctx.epoch);
         assert_eq!(seed.round.view().get(), parent_ctx.view);
