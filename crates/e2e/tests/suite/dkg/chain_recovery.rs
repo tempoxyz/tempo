@@ -56,19 +56,38 @@ fn chain_restarts_after_epoch_lost_its_signing_key() {
         }
 
         // The network's last finalized block is the highest any node finalized.
-        let (finalized_height, recovery_source) = validators
+        let finalized_height = validators
             .iter()
-            .enumerate()
-            .map(|(i, validator)| {
-                let finalized = validator
+            .map(|validator| {
+                validator
                     .execution_provider_offline()
                     .finalized_block_number()
                     .unwrap()
-                    .expect("every node finalized a block before the halt");
-                (finalized, i)
+                    .expect("every node finalized a block before the halt")
             })
             .max()
             .unwrap();
+
+        // Nodes that lagged at the halt sync up to it first: with the shares gone nobody signs,
+        // so the chain stays halted while they catch up.
+        for validator in &mut validators {
+            validator.share = None;
+        }
+        join_all(validators.iter_mut().map(|v| v.start(&context))).await;
+        connect_execution_peers(&validators).await;
+        while !validators.iter().all(|validator| {
+            validator
+                .execution_provider()
+                .finalized_block_number()
+                .unwrap()
+                .is_some_and(|finalized| finalized >= finalized_height)
+        }) {
+            context.sleep(Duration::from_secs(1)).await;
+        }
+        for validator in &mut validators {
+            validator.stop().await;
+        }
+
         let halted_epoch = finalized_height / epoch_length;
         let boundary = (halted_epoch + 1) * epoch_length - 1;
         assert!(
@@ -79,7 +98,7 @@ fn chain_restarts_after_epoch_lost_its_signing_key() {
         let chain_spec = Arc::new(execution_runtime.chain_spec());
         let member = validators[0].public_key();
         let (recovery, share) = tempo_consensus::recovery::prepare(
-            validators[recovery_source].execution_provider_offline(),
+            validators[0].execution_provider_offline(),
             &chain_spec,
             member,
             rand::rngs::StdRng::seed_from_u64(seed),
@@ -98,9 +117,6 @@ fn chain_restarts_after_epoch_lost_its_signing_key() {
         assert_eq!(recovered_spec.genesis_hash(), chain_spec.genesis_hash());
         execution_runtime.set_chain_spec(recovered_spec);
 
-        for validator in &mut validators {
-            validator.share = None;
-        }
         validators[0].share = Some(share);
 
         join_all(validators.iter_mut().map(|v| v.start(&context))).await;
