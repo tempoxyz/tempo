@@ -152,22 +152,15 @@ impl Recovery {
             .ok_or_eyre("execution layer does not have the recovery's finalized header")?;
 
         info!("filling the halted epoch with empty blocks");
-        let factory = node.provider.clone();
-        let evm_config = node.evm_config.clone();
-        let chain_spec = node.chain_spec();
-        let outcome = self.outcome.clone();
-        let blocks = tokio::task::spawn_blocking(move || {
-            build_fill_blocks(
-                factory,
-                &evm_config,
-                &chain_spec,
-                parent,
-                boundary,
-                &outcome,
-            )
-        })
-        .await
-        .wrap_err("fill block build task panicked")??;
+        // Nothing can proceed until the boundary exists, so block on the build.
+        let blocks = build_fill_blocks(
+            node.provider.clone(),
+            &node.evm_config,
+            &node.chain_spec(),
+            parent,
+            boundary,
+            &self.outcome,
+        )?;
         let built = blocks
             .last()
             .expect("a recovery fills at least one block")
