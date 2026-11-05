@@ -103,8 +103,6 @@ impl FinalizationVerifier {
 
         let epoch = finalization.epoch();
         let height = certified.block.number();
-        // The height comes from the unverified block, so it may lie in the final partial epoch
-        // near u64::MAX, which the epoch strategy cannot represent.
         let expected_epoch = self
             .epoch_strategy
             .containing(Height::new(height))
