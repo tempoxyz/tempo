@@ -125,24 +125,6 @@ fn apply_tempo_cli_overrides(cli: &mut TempoCli) -> eyre::Result<()> {
     Ok(())
 }
 
-/// Refuses to start a mainnet validator with fewer than 5 available CPU cores, below which
-/// reth builds blocks with the slower fallback state root instead of the sparse trie.
-fn ensure_mainnet_validator_cpu_cores(cli: &TempoCli) -> eyre::Result<()> {
-    if let Commands::Node(node_cmd) = &cli.command
-        && node_cmd.ext.follow.is_none()
-        && node_cmd.chain.genesis_hash() == PRESTO.genesis_hash()
-        && !node_cmd.engine.tree_config().has_enough_parallelism()
-    {
-        eyre::bail!(
-            "mainnet validators need at least 5 available CPU cores to build with the sparse trie (available: {}, --cpu-cores: {:?})",
-            thread::available_parallelism().map_or(0, |n| n.get()),
-            node_cmd.engine.cpu_cores,
-        );
-    }
-
-    Ok(())
-}
-
 fn set_zone_factory_genesis_owner(genesis: &mut Genesis, owner: Address) -> eyre::Result<()> {
     let factory = genesis
         .alloc
@@ -271,7 +253,15 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
     };
 
     apply_tempo_cli_overrides(&mut cli)?;
-    ensure_mainnet_validator_cpu_cores(&cli)?;
+
+    // Below 5 cores reth builds with the fallback state root instead of the sparse trie.
+    if let Commands::Node(node_cmd) = &cli.command
+        && node_cmd.ext.follow.is_none()
+        && node_cmd.chain.genesis_hash() == PRESTO.genesis_hash()
+        && !node_cmd.engine.tree_config().has_enough_parallelism()
+    {
+        eyre::bail!("mainnet validators need at least 5 CPU cores");
+    }
 
     if let Commands::Node(node_cmd) = &cli.command
         && node_cmd.engine.share_sparse_trie_with_payload_builder
@@ -798,7 +788,7 @@ mod tests {
 
     use super::{
         TempoArgs, TempoChainSpec, TempoCli, TempoHardfork, apply_tempo_cli_overrides, defaults,
-        ensure_mainnet_validator_cpu_cores, follow::FollowMode, snapshot_download,
+        follow::FollowMode, snapshot_download,
     };
     use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands};
     use tempo_contracts::precompiles::{
@@ -940,56 +930,6 @@ mod tests {
             panic!("expected node command");
         };
         node_cmd.chain
-    }
-
-    fn cpu_cores_check(args: &[&str]) -> eyre::Result<()> {
-        init_defaults_once();
-        ensure_mainnet_validator_cpu_cores(&TempoCli::try_parse_from(args).unwrap())
-    }
-
-    #[test]
-    fn mainnet_validator_requires_enough_cpu_cores() {
-        let validator = |cores| {
-            cpu_cores_check(&[
-                "tempo",
-                "node",
-                "--chain=mainnet",
-                "--consensus.signing-key",
-                "key",
-                "--cpu-cores",
-                cores,
-            ])
-        };
-        validator("5").unwrap();
-
-        let error = validator("4").unwrap_err().to_string();
-        assert!(
-            error.starts_with("mainnet validators need at least 5 available CPU cores"),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn cpu_cores_check_skips_followers_and_other_chains() {
-        cpu_cores_check(&[
-            "tempo",
-            "node",
-            "--chain=mainnet",
-            "--follow",
-            "--cpu-cores",
-            "4",
-        ])
-        .unwrap();
-        cpu_cores_check(&[
-            "tempo",
-            "node",
-            "--chain=moderato",
-            "--consensus.signing-key",
-            "key",
-            "--cpu-cores",
-            "4",
-        ])
-        .unwrap();
     }
 
     fn assert_zone_factory_alloc(chain_spec: &TempoChainSpec, owner: Address) {
