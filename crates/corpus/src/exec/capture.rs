@@ -37,7 +37,7 @@ impl Captured {
             .collect()
     }
 
-    /// The stored form of this block, whose first transaction has ordinal \`first_tx\`.
+    /// The stored form of this block, whose first transaction has ordinal `first_tx`.
     pub fn encode(&self, first_tx: u64) -> eyre::Result<Encoded> {
         let input = &self.input;
         let cases = self
@@ -85,7 +85,7 @@ impl Captured {
 pub struct Encoded {
     /// Its metadata record.
     pub record: Record,
-    /// Its encoded [\`Input\`].
+    /// Its encoded [`Input`].
     pub block: Vec<u8>,
     /// Its encoded transaction records, in order.
     pub cases: Vec<Vec<u8>>,
