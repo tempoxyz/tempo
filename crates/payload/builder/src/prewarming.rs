@@ -417,7 +417,6 @@ where
         evm_env: EvmEnvFor<TempoEvmConfig>,
         evm_config: TempoEvmConfig,
         parallel: bool,
-        state_root_hints: Option<StateRootHintStream>,
     ) -> Self {
         Self {
             provider,
@@ -428,9 +427,15 @@ where
             evm_config,
             stop: Arc::new(AtomicBool::new(false)),
             parallel,
-            state_root_hints,
+            state_root_hints: None,
             consumed: Arc::default(),
         }
+    }
+
+    /// Sends the state changed by prewarmed transactions to the payload's state root task.
+    pub(crate) fn with_state_root_hints(mut self, hints: Option<StateRootHintStream>) -> Self {
+        self.state_root_hints = hints;
+        self
     }
 
     pub(crate) fn evm_for_ctx(&self) -> PrewarmEvmState {

@@ -437,8 +437,8 @@ where
             prewarm_evm_env,
             self.evm_config.clone(),
             self.config.enable_parallel,
-            state_root_hints,
-        );
+        )
+        .with_state_root_hints(state_root_hints);
         let mut best_txs = if self.config.enable_prewarming {
             if self.config.enable_parallel {
                 PayloadTransactions::Parallel(BestTransactionsPrewarming::new(
