@@ -17,7 +17,7 @@ use evm2::{
 use std::{
     collections::HashMap,
     net::{IpAddr, SocketAddr},
-    sync::{Arc, Mutex, PoisonError},
+    sync::Arc,
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -43,7 +43,7 @@ use tempo_primitives::{TempoAddressExt, TempoBlockEnv, TempoTxEnvelope};
 /// RPC re-executions, record nothing, so they cannot displace a verdict consensus waits for. Clones
 /// share their contents.
 #[derive(Clone, Debug, Default)]
-pub struct BoundaryOutcomeChecks(Arc<Mutex<HashMap<B256, Registered>>>);
+pub struct BoundaryOutcomeChecks(Arc<parking_lot::Mutex<HashMap<B256, Registered>>>);
 
 #[derive(Debug)]
 struct Registered {
@@ -85,8 +85,8 @@ impl BoundaryOutcomeChecks {
             .and_then(|registered| registered.verdict)
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<B256, Registered>> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    fn lock(&self) -> parking_lot::MutexGuard<'_, HashMap<B256, Registered>> {
+        self.0.lock()
     }
 }
 
@@ -712,7 +712,7 @@ mod tests {
         }
         checks.record(block, true);
         assert_eq!(first.verdict(), Some(true));
-        assert_eq!(checks.0.lock().unwrap().len(), 1);
+        assert_eq!(checks.0.lock().len(), 1);
 
         // The verdict is kept while any registration for the block is held.
         let second = checks.register(block);
@@ -720,7 +720,7 @@ mod tests {
         assert_eq!(second.verdict(), Some(true));
         drop(second);
         assert_eq!(checks.verdict(block), None);
-        assert!(checks.0.lock().unwrap().is_empty());
+        assert!(checks.0.lock().is_empty());
     }
 
     fn legacy_env(caller: Address, to: TxKind, input: Bytes) -> TempoTxEnv {

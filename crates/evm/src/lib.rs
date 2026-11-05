@@ -179,8 +179,12 @@ impl BlockExecutorFactory for TempoEvmConfig {
     where
         Self: 'a,
     {
-        TempoBlockExecutor::new(evm, ctx, self.chain_spec())
-            .with_boundary_outcome_checks(self.boundary_outcome_checks.clone())
+        TempoBlockExecutor::new(
+            evm,
+            ctx,
+            self.chain_spec(),
+            self.boundary_outcome_checks.clone(),
+        )
     }
 
     fn evm_factory(&self) -> &Self::EvmFactory {

@@ -25,8 +25,11 @@ pub struct TempoBlockExecutionCtx<'a> {
 pub struct BoundaryOutcomeCheck {
     /// The hash of the block, under which the verdict is recorded.
     pub block_hash: alloy_primitives::B256,
-    /// Whether a mismatch rejects the block. Only a validator verifying a proposal enforces the
-    /// check; syncing, following and replaying blocks only record the verdict.
+    /// Whether a mismatch rejects the block. The check is a voting rule, not a block validity rule:
+    /// rejecting blocks on it everywhere would change validity without a hardfork and could reject
+    /// historical blocks. So only a validator verifying a proposal enforces it. Other executions
+    /// record the verdict, which matters when the engine runs a proposal consensus registered
+    /// outside that request, such as one it buffered until its parent arrived.
     pub enforce: bool,
 }
 

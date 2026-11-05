@@ -273,10 +273,13 @@ pub struct TempoBlockExecutor<'a> {
 }
 
 impl<'a> TempoBlockExecutor<'a> {
+    /// Creates an executor that records the verdicts of the boundary DKG outcome check in
+    /// `boundary_outcome_checks`.
     pub(crate) fn new(
         evm: TempoEvm<'a>,
         ctx: TempoBlockExecutionCtx<'a>,
         chain_spec: &'a TempoChainSpec,
+        boundary_outcome_checks: BoundaryOutcomeChecks,
     ) -> Self {
         let block_gas_limit = evm.block().gas_limit.saturating_to::<u64>();
         let prague_active =
@@ -299,17 +302,11 @@ impl<'a> TempoBlockExecutor<'a> {
             non_shared_gas_left: block_gas_limit.saturating_sub(ctx.shared_gas_limit),
             extra_data,
             check_boundary_outcome,
-            boundary_outcome_checks: BoundaryOutcomeChecks::default(),
+            boundary_outcome_checks,
             inner,
             section: BlockSection::StartOfBlock,
             replay_state: StorageActionReplayState::default(),
         }
-    }
-
-    /// Records the verdicts of the boundary DKG outcome check into `checks`.
-    pub(crate) fn with_boundary_outcome_checks(mut self, checks: BoundaryOutcomeChecks) -> Self {
-        self.boundary_outcome_checks = checks;
-        self
     }
 
     /// Checks the DKG outcome of a boundary block against the parent state and records the verdict.
@@ -381,8 +378,9 @@ impl<'a> TempoBlockExecutor<'a> {
                 ))));
             }
         };
-        let expected =
-            config.boundary_outcome(block_number / epoch_length + 1, proposed.output.clone());
+        let current_epoch = block_number / epoch_length;
+        let next_epoch = current_epoch + 1;
+        let expected = config.boundary_outcome(next_epoch, proposed.output.clone());
         if proposed != expected {
             return Ok(Err(BlockValidationError::msg(format!(
                 "boundary block DKG outcome does not match the parent state: \
@@ -1659,8 +1657,8 @@ mod tests {
                 builder = builder.with_boundary_outcome_check(block_hash, enforce);
             }
             builder
-                .build(db, &chainspec)
                 .with_boundary_outcome_checks(checks.clone())
+                .build(db, &chainspec)
                 .apply_pre_execution_changes()
                 .map_err(|e| e.to_string())
         };
@@ -1679,8 +1677,8 @@ mod tests {
                 .with_parent_beacon_block_root(B256::ZERO)
                 .with_spec(fork)
                 .with_boundary_outcome_check(block_hash, true)
-                .build(config(rotation_epoch), &chainspec)
                 .with_boundary_outcome_checks(checks.clone())
+                .build(config(rotation_epoch), &chainspec)
                 .apply_pre_execution_changes()
                 .map_err(|e| e.to_string())
         };
@@ -1776,8 +1774,8 @@ mod tests {
                 .with_parent_beacon_block_root(B256::ZERO)
                 .with_spec(TempoHardfork::T15)
                 .with_boundary_outcome_check(block_hash, true)
-                .build(config(None), &chainspec)
                 .with_boundary_outcome_checks(fresh.clone())
+                .build(config(None), &chainspec)
                 .apply_pre_execution_changes()
                 .map_err(|e| e.to_string()),
             Ok(())
@@ -1852,11 +1850,11 @@ mod tests {
                 .with_parent_beacon_block_root(B256::ZERO)
                 .with_spec(TempoHardfork::T15)
                 .with_boundary_outcome_check(block_hash, enforce)
+                .with_boundary_outcome_checks(checks.clone())
                 .build(
                     evm2::evm::Db::new(MissingValidatorConfig(InMemoryDB::default())),
                     &chainspec,
                 )
-                .with_boundary_outcome_checks(checks.clone())
                 .apply_pre_execution_changes()
                 .map_err(|e| e.to_string())
         };

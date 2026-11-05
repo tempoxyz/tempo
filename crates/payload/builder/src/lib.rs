@@ -361,6 +361,8 @@ where
             .filter(|_| block_number.saturating_add(1).is_multiple_of(epoch_length));
         let extra_data = if let Some(output) = ceremony_output {
             let output = output.clone();
+            let current_epoch = block_number / epoch_length;
+            let next_epoch = current_epoch + 1;
             let outcome = db
                 .dkg_ceremony_config(hardfork, block_number)
                 .map_err(PayloadBuilderError::other)?
@@ -370,7 +372,7 @@ where
                             .into(),
                     )
                 })?
-                .boundary_outcome(block_number / epoch_length + 1, output);
+                .boundary_outcome(next_epoch, output);
             Bytes::from(commonware_codec::Encode::encode(&outcome))
         } else {
             attributes.extra_data().clone()

@@ -1,8 +1,8 @@
 use std::{num::NonZeroU64, sync::Arc};
 
 use crate::{
-    BoundaryOutcomeCheck, TempoBlockEnv, TempoBlockExecutionCtx, TempoBlockExecutor, TempoBlockExt,
-    TempoEvmConfig, TempoEvmEnv, block::BlockSection,
+    BoundaryOutcomeCheck, BoundaryOutcomeChecks, TempoBlockEnv, TempoBlockExecutionCtx,
+    TempoBlockExecutor, TempoBlockExt, TempoEvmConfig, TempoEvmEnv, block::BlockSection,
 };
 use alloy_primitives::{B256, Bytes, U256};
 use evm2::{EvmFeatures, SpecId, evm::DynDatabase};
@@ -28,6 +28,7 @@ pub(crate) struct TestExecutorBuilder {
     pub(crate) spec: TempoHardfork,
     pub(crate) extra_data: Bytes,
     pub(crate) check_boundary_outcome: Option<BoundaryOutcomeCheck>,
+    pub(crate) boundary_outcome_checks: BoundaryOutcomeChecks,
     // Test state to seed into the executor after creation
     pub(crate) initial_section: Option<BlockSection>,
 }
@@ -46,6 +47,7 @@ impl Default for TestExecutorBuilder {
             spec: TempoHardfork::default(),
             extra_data: Bytes::new(),
             check_boundary_outcome: None,
+            boundary_outcome_checks: BoundaryOutcomeChecks::default(),
             initial_section: None,
         }
     }
@@ -74,6 +76,12 @@ impl TestExecutorBuilder {
             block_hash,
             enforce,
         });
+        self
+    }
+
+    /// Records the verdicts of the boundary DKG outcome check in `checks`.
+    pub(crate) fn with_boundary_outcome_checks(mut self, checks: BoundaryOutcomeChecks) -> Self {
+        self.boundary_outcome_checks = checks;
         self
     }
 
@@ -160,7 +168,8 @@ impl TestExecutorBuilder {
             check_boundary_outcome: self.check_boundary_outcome,
         };
 
-        let mut executor = TempoBlockExecutor::new(evm, ctx, chainspec);
+        let mut executor =
+            TempoBlockExecutor::new(evm, ctx, chainspec, self.boundary_outcome_checks);
 
         // Apply test-specific initial state
         if let Some(section) = self.initial_section {
