@@ -66,6 +66,7 @@ fn main() {
             let mut rng = StdRng::seed_from_u64(i as u64 + 1);
             let envelope = Envelope {
                 chain_id: 4217,
+                key_id: B256::repeat_byte(0x22),
                 sender: Address::with_last_byte((i % 251) as u8),
                 nonce_key: U256::ZERO,
                 nonce: i as u64,
@@ -167,6 +168,7 @@ fn main() {
         let mut rng = StdRng::seed_from_u64(u64::from(i) + 1);
         let envelope = Envelope {
             chain_id: 4217,
+            key_id: B256::repeat_byte(0x22),
             sender: Address::ZERO,
             nonce_key: U256::ZERO,
             nonce: u64::from(i),
@@ -183,6 +185,7 @@ fn main() {
         let mut rng = StdRng::seed_from_u64(9);
         let envelope = Envelope {
             chain_id: 4217,
+            key_id: B256::repeat_byte(0x22),
             sender: Address::ZERO,
             nonce_key: U256::ZERO,
             nonce: 0,
