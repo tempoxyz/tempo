@@ -20,6 +20,7 @@ members = [
   "crates/consensus-config",
   "crates/validator-config",
   "crates/dkg-onchain-artifacts",
+  "crates/encrypted-tx",
   "crates/eyre",
   "crates/ext",
   "crates/evm",

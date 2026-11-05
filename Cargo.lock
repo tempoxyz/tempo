@@ -14598,6 +14598,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "tempo-encrypted-tx"
+version = "1.17.0"
+dependencies = [
+ "alloy-primitives",
+ "chacha20poly1305 0.10.1",
+ "codspeed-criterion-compat",
+ "commonware-cryptography",
+ "commonware-parallel",
+ "commonware-utils",
+ "rand 0.10.3",
+ "rand_core 0.10.1",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "tempo-evm"
 version = "1.17.0"
 dependencies = [
