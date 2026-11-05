@@ -348,18 +348,19 @@ where
 
         // Consensus passes only the DKG ceremony output for a boundary block, and the builder
         // fills in the rest of the outcome from the parent state. Verifying validators check it.
+        // Attributes without a ceremony output, such as the dev-mode miner's, keep their extra
+        // data as they are.
         let block_number = parent_header.number() + 1;
         let epoch_length = chain_spec
             .info
             .epoch_length()
             .unwrap_or(NonZeroU64::MIN)
             .get();
-        let extra_data = if block_number.saturating_add(1).is_multiple_of(epoch_length) {
-            let output = attributes.dkg_ceremony_output().cloned().ok_or_else(|| {
-                PayloadBuilderError::Other(
-                    "the attributes of a boundary block carry no DKG ceremony output".into(),
-                )
-            })?;
+        let ceremony_output = attributes
+            .dkg_ceremony_output()
+            .filter(|_| block_number.saturating_add(1).is_multiple_of(epoch_length));
+        let extra_data = if let Some(output) = ceremony_output {
+            let output = output.clone();
             let outcome = db
                 .dkg_ceremony_config(hardfork, block_number)
                 .map_err(PayloadBuilderError::other)?
