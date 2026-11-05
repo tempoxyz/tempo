@@ -15,7 +15,7 @@ use std::{
 use alloy_genesis::{Genesis, GenesisAccount};
 use alloy_primitives::{Address, B256, U256, keccak256};
 use clap::Parser;
-use eyre::{ensure, eyre};
+use eyre::{WrapErr as _, ensure, eyre};
 use reth_chainspec::EthChainSpec;
 use reth_cli_commands::common::{CliNodeTypes, EnvironmentArgs};
 use reth_codecs::Compact;
@@ -48,7 +48,10 @@ use reth_trie_common::bundle_state::{AccountStatus, BundleAccount};
 use reth_trie_db::DatabaseHashedCursorFactory;
 use tempo_chainspec::spec::TempoChainSpecParser;
 use tempo_contracts::precompiles::VALIDATOR_CONFIG_V2_ADDRESS;
+use tempo_qmdb_state::{Config, Store};
 use tracing::{info, warn};
+
+use crate::qmdb_import::store_config;
 
 /// Patch a block-0 database to use a new genesis header.
 #[derive(Debug, Parser)]
@@ -99,6 +102,17 @@ where
             .resolve_datadir(self.env.chain.chain());
         fs::create_dir_all(data_dir.static_files())?;
         fs::create_dir_all(data_dir.rocksdb())?;
+
+        // An imported QMDB holds block 0's state under the old genesis hash. Rewriting only the
+        // header keeps that state valid, so its hash is rebound; syncing accounts changes it.
+        let qmdb_dir = data_dir.data_dir().join("qmdb");
+        let qmdb = store_config(&qmdb_dir);
+        let qmdb = qmdb.directory.exists().then_some(qmdb);
+        ensure!(
+            qmdb.is_none() || sync_accounts.is_empty(),
+            "regenesis cannot sync genesis accounts into the QMDB at {}; remove it and run `tempo qmdb-import` afterwards",
+            qmdb_dir.display()
+        );
 
         let db = open_db(data_dir.db(), self.env.db.database_args())?;
         let static_file_provider = StaticFileProviderBuilder::read_write(data_dir.static_files())
@@ -161,7 +175,8 @@ where
                 "Genesis hash already matches"
             );
             if sync_accounts.is_empty() {
-                return Ok(());
+                // A run that stopped between the database commit and the rebind left it behind.
+                return rebind_qmdb(qmdb.as_ref(), new_genesis_hash);
             }
         } else {
             let static_file_provider = provider_rw.static_file_provider();
@@ -178,6 +193,7 @@ where
         }
 
         provider_rw.commit()?;
+        rebind_qmdb(qmdb.as_ref(), new_genesis_hash)?;
 
         info!(
             target: "tempo::cli",
@@ -194,6 +210,17 @@ where
     fn sync_accounts(&self) -> Vec<Address> {
         sync_accounts(self.sync_validator_config_v2, &self.sync_genesis_account)
     }
+}
+
+/// Binds the QMDB's block-0 state to `genesis_hash`, unless it is bound to it already.
+fn rebind_qmdb(qmdb: Option<&Config>, genesis_hash: B256) -> eyre::Result<()> {
+    let Some(config) = qmdb else { return Ok(()) };
+    if Store::rebind_recorded(config, 0, genesis_hash)
+        .wrap_err("failed rebinding the QMDB to the new genesis hash")?
+    {
+        info!(target: "tempo::cli", %genesis_hash, "Rebound QMDB to the new genesis");
+    }
+    Ok(())
 }
 
 fn sync_accounts(sync_validator_config_v2: bool, sync_genesis_account: &[Address]) -> Vec<Address> {

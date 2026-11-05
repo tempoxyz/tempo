@@ -27,6 +27,7 @@ tempo-ext.workspace = true
 tempo-eyre.workspace = true
 tempo-node = { workspace = true, features = ["default"] }
 tempo-node-launcher.workspace = true
+tempo-qmdb-state.workspace = true
 tempo-consensus.workspace = true
 tempo-consensus-config.workspace = true
 tempo-precompiles.workspace = true
@@ -102,6 +103,7 @@ reth-primitives-traits.workspace = true
 reth-provider.workspace = true
 reth-prune-types.workspace = true
 reth-rpc-server-types.workspace = true
+reth-stages-types.workspace = true
 secp256k1.workspace = true
 reth-storage-api.workspace = true
 reth-static-file-types.workspace = true

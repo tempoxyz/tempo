@@ -8,7 +8,8 @@ mod metrics;
 mod prewarming;
 
 use crossbeam_channel::Sender;
-use reth_trie_common::ordered_root::OrderedTrieRootEncodedBuilder;
+use reth_execution_types::BlockExt;
+use reth_trie_common::{bundle_state::BundleState, ordered_root::OrderedTrieRootEncodedBuilder};
 
 use crate::{
     encode::{
@@ -63,7 +64,8 @@ use tempo_payload_types::{
     Estimator, TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload,
     estimator::FinishedBuild,
 };
-use tempo_primitives::{TempoHeader, TempoReceipt, TempoTxEnvelope};
+use tempo_primitives::{Block, TempoHeader, TempoReceipt, TempoTxEnvelope};
+use tempo_qmdb_state::{BlockRef, Store, diff};
 use tempo_transaction_pool::{
     StateAwareBestTransactions, TempoTransactionPool, best::BestTransaction,
     transaction::TempoPoolTransactionError,
@@ -132,6 +134,24 @@ pub struct TempoPayloadBuilder<Provider> {
     /// One [`tempo_payload_types::BuildPlan`] is taken from it per paced build,
     /// and the finished build's replayable work is reported back to it.
     estimator: Estimator,
+    /// QMDB state commitment, when the node maintains one.
+    qmdb: Option<QmdbPayloadConfig>,
+}
+
+/// How the payload builder maintains the QMDB state commitment.
+#[derive(Debug, Clone)]
+pub struct QmdbPayloadConfig {
+    /// Store the builder builds each block's batch in.
+    pub store: Arc<Store>,
+    /// Timestamp of the first block whose state root is its QMDB root; `None` only shadows it.
+    pub activation_timestamp: Option<u64>,
+}
+
+impl QmdbPayloadConfig {
+    fn is_active_at(&self, timestamp: u64) -> bool {
+        self.activation_timestamp
+            .is_some_and(|activation| timestamp >= activation)
+    }
 }
 
 /// Runtime settings for the Tempo payload builder.
@@ -195,7 +215,14 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             metrics: TempoPayloadBuilderMetrics::default(),
             cache_metrics: CachedStateMetrics::zeroed(CachedStateMetricsSource::Builder),
             estimator,
+            qmdb: None,
         }
+    }
+
+    /// Builds QMDB batches for every payload, and uses their roots once `qmdb` activates.
+    pub fn with_qmdb(mut self, qmdb: QmdbPayloadConfig) -> Self {
+        self.qmdb = Some(qmdb);
+        self
     }
 }
 
@@ -817,7 +844,31 @@ where
             }
             .unzip();
 
-        let (state_root, trie_updates) = if self.config.skip_state_root {
+        // Once QMDB is active, the header commits to the QMDB root of the block's net diff.
+        let qmdb_batch = match self
+            .qmdb
+            .as_ref()
+            .filter(|qmdb| qmdb.is_active_at(attributes.timestamp))
+        {
+            Some(qmdb) => {
+                let writes =
+                    diff::block_writes(execution_state).map_err(PayloadBuilderError::other)?;
+                Some(
+                    qmdb.store
+                        .build_unregistered(
+                            parent_header.number() + 1,
+                            parent_header.hash(),
+                            writes,
+                        )
+                        .map_err(PayloadBuilderError::other)?,
+                )
+            }
+            None => None,
+        };
+
+        let (state_root, trie_updates) = if let Some(batch) = &qmdb_batch {
+            (batch.root(), Arc::new(Default::default()))
+        } else if self.config.skip_state_root {
             (parent_header.state_root(), Arc::new(Default::default()))
         } else if let Some(outcome) = state_root_outcome {
             (outcome.state_root, outcome.trie_updates)
@@ -1068,11 +1119,27 @@ where
         self.executor.spawn_drop(execution_block_encoder);
         let eth_payload = EthBuiltPayload::new(block.clone(), total_fees, requests, None);
 
+        let ext = match (&self.qmdb, qmdb_batch) {
+            (Some(qmdb), Some(batch)) => {
+                // Children of this payload build on its batch once the hash is known.
+                qmdb.store
+                    .register(block.hash(), batch.clone())
+                    .map_err(PayloadBuilderError::other)?;
+                Some(BlockExt::new(batch))
+            }
+            (Some(qmdb), None) => {
+                shadow_build_qmdb(qmdb, &block, &execution_output.state);
+                None
+            }
+            (None, _) => None,
+        };
+
         let executed_block = BuiltPayloadExecutedBlock {
             recovered_block: block,
             execution_output: Arc::new(execution_output),
             hashed_state,
             trie_updates,
+            ext,
         };
 
         let payload = TempoBuiltPayload::new(
@@ -1190,6 +1257,31 @@ pub(crate) struct RootsTaskResult {
     /// Since roots task already encodes every transaction for the transaction trie,
     /// we can reuse those bytes for the [`ExecutionBlockEncoder`].
     encoded_block_transactions: EncodedBlockTransactionList,
+}
+
+/// Builds a shadow QMDB batch for a locally built block in the background, so the next blocks
+/// can build on it before the QMDB activation.
+fn shadow_build_qmdb(qmdb: &QmdbPayloadConfig, block: &RecoveredBlock<Block>, state: &BundleState) {
+    let number = block.number();
+    let writes = match diff::block_writes(state) {
+        Ok(writes) => writes,
+        Err(err) => {
+            debug!(target: "payload_builder", %err, number, "built block has no QMDB batch");
+            return;
+        }
+    };
+    let block_ref = BlockRef {
+        number,
+        hash: block.hash(),
+        parent_hash: block.parent_hash(),
+    };
+    if let Err(err) = qmdb.store.build_detached(block_ref, writes, move |result| {
+        if let Err(err) = result {
+            debug!(target: "payload_builder", %err, number, "failed building shadow QMDB batch");
+        }
+    }) {
+        debug!(target: "payload_builder", %err, number, "QMDB store is gone");
+    }
 }
 
 #[cfg(test)]

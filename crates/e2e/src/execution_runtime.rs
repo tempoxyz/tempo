@@ -1009,7 +1009,7 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
         }
         Ok(())
     });
-    let node_handle = tempo_node_launcher::launch(builder)
+    let node_handle = tempo_node_launcher::launch(builder, None)
         .await
         .wrap_err_with(|| {
             format!(

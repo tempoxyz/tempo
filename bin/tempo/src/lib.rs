@@ -32,6 +32,7 @@ mod defaults;
 mod follow;
 mod overrides;
 pub mod p2p_proxy;
+pub mod qmdb_import;
 pub mod regenesis;
 pub mod shadow_replay;
 mod snapshot_download;
@@ -63,9 +64,12 @@ use futures::{
     future::{Either, FusedFuture as _},
 };
 use reth_cli_runner::CliRunner;
+use reth_db_api::{database::Database as _, tables, transaction::DbTx as _};
 use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands};
 use reth_network_api::Peers;
 use reth_node_builder::{NodeHandle, WithLaunchContext};
+use reth_provider::StateBackend;
+use reth_stages_types::StageId;
 use std::{sync::Arc, thread};
 use tempo_chainspec::{
     hardfork::TempoHardfork,
@@ -82,13 +86,15 @@ pub use tempo_node::{
     TempoPooledTransaction, TransactionOrigin,
 };
 use tempo_node::{
-    EstimatorConfig, ShadowReplayer, TempoFullNode,
+    EstimatorConfig, QmdbStateBackend, QmdbStateRootStrategy, QmdbSync, ShadowReplayer,
+    TempoFullNode, align_with_database,
     rpc::consensus::{SubscriptionLimits, TempoConsensusApiServer, TempoConsensusRpc},
     telemetry::{
         HardwareMetricsConfig, PrometheusMetricsConfig, install_hardware_metrics,
         install_prometheus_metrics,
     },
 };
+use tempo_qmdb_state::Store;
 use tokio::sync::oneshot;
 use tracing::{debug, info, info_span, warn, warn_span};
 
@@ -571,8 +577,29 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             url => Some(url.to_string()),
         };
 
+        // QMDB state commitment: shadowed until its activation, then the state root. As the state
+        // backend, it is the node's current state and its state root from genesis on.
+        let qmdb_dir = builder.config().datadir().data_dir().join("qmdb");
+        let state_backend = args.node_args.qmdb_state_backend;
+        let qmdb = (state_backend || args.node_args.qmdb_snapshot_block.is_some())
+            .then(|| Store::open(qmdb_import::store_config(&qmdb_dir)).map(Arc::new))
+            .transpose()
+            .wrap_err("failed opening the QMDB state")?;
+        let qmdb_activation_timestamp = if state_backend {
+            Some(0)
+        } else {
+            args.node_args.qmdb_activation_timestamp
+        };
+
         let tempo_node = overrides.apply_tempo_node({
             let node = TempoNode::new(&args.node_args, validator_key);
+            let node = match &qmdb {
+                Some(store) => node.with_qmdb_state_root(Arc::new(QmdbStateRootStrategy::new(
+                    store.clone(),
+                    qmdb_activation_timestamp,
+                ))),
+                None => node,
+            };
             match gossip_protocol_handler {
                 Some(protocol_handler) => node.with_finalization_cert_gossip(protocol_handler),
                 None => node,
@@ -589,10 +616,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         let tempo_node = tempo_node.with_estimator(estimator.clone());
         let executed_state = tempo_node.executed_state();
 
-        let NodeHandle {
-            node,
-            node_exit_future,
-        } = tempo_node_launcher::launch(builder
+        let builder = builder
             .node(tempo_node)
             .apply(|mut builder: WithLaunchContext<_>| {
                 // Uncertified follower mode: set debug RPC when certification is off
@@ -656,9 +680,41 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
 
                     Ok(())
                 })
-            }))
+            });
+
+        let qmdb_backend = match &qmdb {
+            Some(store) => {
+                let persisted = builder
+                    .db()
+                    .tx()
+                    .and_then(|tx| tx.get::<tables::StageCheckpoints>(StageId::Finish.to_string()))
+                    .wrap_err("failed reading the database tip")?
+                    .map_or(0, |checkpoint| checkpoint.block_number);
+                align_with_database(store, persisted, state_backend)
+                    .wrap_err("QMDB is out of step with the database")?;
+                state_backend.then(|| {
+                    Arc::new(QmdbStateBackend::new(store.clone())) as Arc<dyn StateBackend>
+                })
+            }
+            None => None,
+        };
+
+        let NodeHandle {
+            node,
+            node_exit_future,
+        } = tempo_node_launcher::launch(builder, qmdb_backend)
             .await
             .wrap_err("failed launching execution node")?;
+
+        if let (Some(store), Some(snapshot)) = (qmdb, args.node_args.qmdb_snapshot_block) {
+            QmdbSync::new(
+                node.provider.clone(),
+                store,
+                snapshot,
+                qmdb_import::import_sort_dir(&qmdb_dir),
+            )
+            .spawn(node.tasks().clone());
+        }
 
         if let Some(hardfork) = args.node_args.shadow_replay {
             let hardfork = hardfork.unwrap_or_else(|| *TempoHardfork::VARIANTS.last().unwrap());

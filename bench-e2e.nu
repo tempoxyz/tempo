@@ -22,6 +22,7 @@ const E2E_RUNNER_METRICS_URL = "http://127.0.0.1:9100/metrics"
 const E2E_BLOAT_TMP_DIR = "/reth-bench-a/.bench-tmp/e2e-local-init"
 const TRACY_SAMPLING_HZ = 18999
 const E2E_BLOAT_FREE_MARGIN_MIB = 51200
+const E2E_QMDB_SIZE_MULTIPLIER = 3
 # Measured peak import working set is ~4.8x bloat per side (ETL + DB + static files + rocksdb).
 const E2E_BLOAT_IMPORT_WORKING_SET_MULTIPLIER = 5
 const E2E_DEFAULT_BLOAT = 100
@@ -357,6 +358,42 @@ def init-e2e-db [tempo_bin: string, genesis: string, datadir: string, bloat: int
     }
 }
 
+# Whether node args run the node with QMDB as its state backend, which needs an imported QMDB.
+def qmdb-state-backend [args: string] {
+    "--qmdb.state-backend" in (parse-cli-args $args)
+}
+
+# Import the persisted state of $datadir into a fresh $datadir/qmdb.
+def qmdb-import [tempo_bin: string, genesis: string, datadir: string] {
+    let qmdb_dir = $"($datadir)/qmdb"
+    if ($qmdb_dir | path exists) { rm -rf $qmdb_dir }
+    print $"Importing state into QMDB at ($qmdb_dir)..."
+    let result = (run-external $tempo_bin "qmdb-import" "--chain" $genesis "--datadir" $datadir | complete)
+    if $result.stdout != "" { print $result.stdout }
+    if $result.stderr != "" { print $result.stderr }
+    if $result.exit_code != 0 {
+        # A partial QMDB can fill the volume; never leave it behind.
+        rm -rf $qmdb_dir
+        print $"Error: tempo qmdb-import failed for ($datadir) with exit code ($result.exit_code)"
+        exit $result.exit_code
+    }
+}
+
+# Import QMDB into a freshly built snapshot datadir once the bloat dump is gone,
+# and only then record it in the marker, so a failed import never looks complete.
+# QMDB takes about 2.6x the bloat size on disk (1.64B keys at 100 GiB of bloat), with margin.
+def qmdb-import-snapshot [tempo_bin: string, genesis: string, datadir: string, bloat_mib: int] {
+    let required = ($bloat_mib * $E2E_QMDB_SIZE_MULTIPLIER) + $E2E_BLOAT_FREE_MARGIN_MIB
+    let available = (df-available-mib $datadir)
+    if $available < $required {
+        print $"Error: not enough free space for QMDB in ($datadir): needs ($required) MiB, has ($available) MiB"
+        exit 1
+    }
+    qmdb-import $tempo_bin $genesis $datadir
+    let marker_path = $"($datadir)/($BENCH_META_SUBDIR)/marker.json"
+    open $marker_path | upsert qmdb_state true | to json | save -f $marker_path
+}
+
 def bench-save-e2e-meta [datadir: string, meta_dir: string, marker: record, genesis_files: list] {
     mkdir $meta_dir
     for pair in $genesis_files {
@@ -554,7 +591,7 @@ def e2e-regenesis [
             $matches = ($matches | append $"general_gas_limit=($target_general_gas_limit)")
         }
         print $"Skipping tempo regenesis for ($datadir); marker already matches (($matches | str join ', '))"
-        return
+        return false
     }
 
     let target_genesis = $"($datadir)/($BENCH_META_SUBDIR)/regenesis-target.json"
@@ -581,6 +618,7 @@ def e2e-regenesis [
     e2e-synthesize-genesis $"($datadir)/($BENCH_META_SUBDIR)/genesis.json" $"($datadir)/($BENCH_META_SUBDIR)/genesis.json" $target_hardfork $target_gas_limit $target_general_gas_limit
     e2e-update-snapshot-genesis-marker $datadir $target_hardfork $target_gas_limit $target_general_gas_limit
     rm $target_genesis
+    true
 }
 
 def derive-tracing-otlp [tracing_otlp: string] {
@@ -1047,8 +1085,10 @@ def run-local-e2e-phase [run: record, ctx: record] {
         }
     }
     if $hardfork != "" or $ctx.gas_limit != "" or $ctx.general_gas_limit != "" {
-        e2e-regenesis $ctx.regenesis_tempo $genesis $ctx.a.datadir $hardfork $ctx.gas_limit $ctx.general_gas_limit
-        e2e-regenesis $ctx.regenesis_tempo $genesis $ctx.b.datadir $hardfork $ctx.gas_limit $ctx.general_gas_limit
+        # Regenesis rebinds an imported QMDB to the new genesis hash; the state is unchanged.
+        for datadir in [$ctx.a.datadir $ctx.b.datadir] {
+            e2e-regenesis $ctx.regenesis_tempo $genesis $datadir $hardfork $ctx.gas_limit $ctx.general_gas_limit | ignore
+        }
     }
     for role_info in [
         { role: "a", node_dir: $ctx.a.node_dir }
@@ -1564,6 +1604,9 @@ def "main e2e" [
     bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db
     bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db
 
+    # A snapshot with an imported QMDB also serves runs without --qmdb.state-backend. A snapshot
+    # whose MDBX state is current but lacks QMDB only needs the import, not a rebuild.
+    let qmdb_state = (qmdb-state-backend $feature_args)
     let snapshots_ready = (
         (e2e-snapshots-ready $a_db $b_db)
         and (bloat-matches (read-bench-marker $a_db) $bloat_mib $snapshot_state_hardfork)
@@ -1628,16 +1671,40 @@ def "main e2e" [
             dkg_in_genesis: true
             topology: "single-runner"
             state_hardfork: $snapshot_state_hardfork
+            qmdb_state: false
         }
         init-local-e2e-side a $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db $a_identity $"($init_dir)/($a_validator)" $generated_genesis $trusted_peers $bloat_mib $bloat_file $tempo_bin ($marker | insert bench_datadir $a_db | insert node_dir $a_identity | insert validator_addr $a_validator)
         init-local-e2e-side b $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db $b_identity $"($init_dir)/($b_validator)" $generated_genesis $trusted_peers $bloat_mib $bloat_file $tempo_bin ($marker | insert bench_datadir $b_db | insert node_dir $b_identity | insert validator_addr $b_validator)
         if ($E2E_BLOAT_TMP_DIR | path exists) {
             rm -rf $E2E_BLOAT_TMP_DIR
         }
+        # Promote the MDBX snapshot before importing QMDB, so a failed or timed-out import
+        # keeps the hours of MDBX initialization.
         bench-promote-at $E2E_A_STATE_PATH $a_db
         bench-promote-at $E2E_B_STATE_PATH $b_db
         bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db
         bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db
+    }
+
+    let qmdb_sides = if $qmdb_state {
+        [
+            { state_path: $E2E_A_STATE_PATH, mount: $E2E_A_MOUNT, datadir: $a_db }
+            { state_path: $E2E_B_STATE_PATH, mount: $E2E_B_MOUNT, datadir: $b_db }
+        ] | where { |side| not (read-bench-marker $side.datadir | get -o qmdb_state | default false) }
+    } else { [] }
+    if ($qmdb_sides | is-not-empty) {
+        let snapshot_features = (merge-e2e-features $DEFAULT_FEATURES $features)
+        build-tempo --no-default-features=$no_default_features ["tempo"] $profile $snapshot_features
+        let tempo_bin = if $profile == "dev" { "./target/debug/tempo" } else { $"./target/($profile)/tempo" }
+        for side in $qmdb_sides { mark-schelk-dirty-at $side.state_path }
+        # The sides sit on separate volumes and each import's index fits in half the memory.
+        $qmdb_sides | par-each { |side|
+            qmdb-import-snapshot $tempo_bin $"($side.datadir)/($BENCH_META_SUBDIR)/genesis.json" $side.datadir $bloat_mib
+        } | ignore
+        for side in $qmdb_sides {
+            bench-promote-at $side.state_path $side.datadir
+            bench-restore-at $side.state_path $side.mount $side.datadir
+        }
     }
 
     if $init_only {
