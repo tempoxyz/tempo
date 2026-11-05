@@ -25,8 +25,8 @@ mod expectations;
 use alloy::{consensus::BlockHeader as _, sol_types::SolEvent as _};
 use alloy_primitives::{Address, B256, U256, keccak256};
 use alloy_rlp::{encode_list, list_length};
-use analysis::Report;
-use evm2::evm::{Cache, PendingState, TxResultExt};
+pub use analysis::ReplayReport;
+use evm2::evm::{Cache, Database, PendingState, TxResultExt};
 use metrics::{Counter, Gauge, Histogram};
 use parking_lot::Mutex;
 use reth_chainspec::ForkCondition;
@@ -102,7 +102,7 @@ impl Default for ShadowReplayMetrics {
 }
 
 impl ShadowReplayMetrics {
-    fn record_report(&self, report: &Report, outcome: ReplayOutcome) {
+    fn record_report(&self, report: &ReplayReport, outcome: ReplayOutcome) {
         self.boundaries_compared
             .increment(report.boundaries_evaluated as u64);
         self.boundaries_inconclusive
@@ -134,6 +134,24 @@ pub struct ShadowReplayer<P> {
 impl<P: ChainSpecProvider<ChainSpec = TempoChainSpec>> ShadowReplayer<P> {
     pub fn new(provider: P, shadow_hardfork: TempoHardfork) -> Self {
         let canonical_spec = provider.chain_spec();
+        Self::with_provider(provider, canonical_spec, shadow_hardfork)
+    }
+}
+
+impl ShadowReplayer<()> {
+    /// A replayer without a database, for blocks whose parent state the caller opens with
+    /// [`ShadowReplayer::replay_on`], such as captured corpus blocks.
+    pub fn offline(canonical_spec: Arc<TempoChainSpec>, shadow_hardfork: TempoHardfork) -> Self {
+        Self::with_provider((), canonical_spec, shadow_hardfork)
+    }
+}
+
+impl<P> ShadowReplayer<P> {
+    fn with_provider(
+        provider: P,
+        canonical_spec: Arc<TempoChainSpec>,
+        shadow_hardfork: TempoHardfork,
+    ) -> Self {
         let shadow_spec = Arc::new(shadow_spec(&canonical_spec, shadow_hardfork));
         Self {
             real_config: TempoEvmConfig::new(canonical_spec),
@@ -234,14 +252,36 @@ where
 }
 
 impl<P: StateProviderFactory> ShadowReplayer<P> {
-    /// Replays a canonical block under both rule sets.
-    /// IMPORTANT: An error means the control arm can't be trusted. Callers must treat it as fatal.
+    /// Replays a canonical block under both rule sets, on its parent state from the provider, as
+    /// [`Self::replay_on`] does.
     pub fn replay(
         &self,
         block: &RecoveredBlock<Block>,
         receipts: &[TempoReceipt],
-    ) -> Result<ReplayOutcome, String> {
-        let (real, shadow) = self.execute(block)?;
+    ) -> Result<(ReplayOutcome, ReplayReport), String> {
+        self.replay_on(block, receipts, || {
+            let provider = self
+                .provider
+                .state_by_block_hash(block.parent_hash())
+                .map_err(|e| format!("failed to open parent state {}: {e}", block.parent_hash()))?;
+            Ok(StateProviderDatabase::new(
+                provider.into_evm_state_provider(),
+            ))
+        })
+    }
+}
+
+impl<P: Sync> ShadowReplayer<P> {
+    /// Replays a canonical block under both rule sets. Each arm executes on its own copy of the
+    /// parent state, which `parent_state` opens. Returns the outcome and the differences behind it.
+    /// IMPORTANT: An error means the control arm can't be trusted. Callers must treat it as fatal.
+    pub fn replay_on<DB: Database>(
+        &self,
+        block: &RecoveredBlock<Block>,
+        receipts: &[TempoReceipt],
+        parent_state: impl Fn() -> Result<DB, String> + Sync,
+    ) -> Result<(ReplayOutcome, ReplayReport), String> {
+        let (real, shadow) = self.execute(block, &parent_state)?;
         if let Some(f) = &real.failure {
             return Err(format!(
                 "re-execution failed at {:?}: {}",
@@ -257,12 +297,12 @@ impl<P: StateProviderFactory> ShadowReplayer<P> {
             .chain_spec()
             .tempo_hardfork_at(block.timestamp());
         let rules = expectations::between(canonical, self.shadow_hardfork);
-        let report = Report::analyze(&real, &shadow, &rules, block);
+        let report = ReplayReport::analyze(&real, &shadow, &rules, block);
         let outcome = report.outcome(&shadow);
         self.metrics.record_report(&report, outcome);
         if matches!(outcome, ReplayOutcome::Match | ReplayOutcome::Expected) {
             debug!(target: "shadow_replay", ?outcome, ?report, "Shadow replay compared all boundaries");
-            return Ok(outcome);
+            return Ok((outcome, report));
         }
 
         let failure = shadow.failure.as_ref();
@@ -278,7 +318,7 @@ impl<P: StateProviderFactory> ShadowReplayer<P> {
             shadow_processed_txs = shadow.txs.len(),
             "Shadow replay needs review; differences are not confirmed regressions"
         );
-        Ok(outcome)
+        Ok((outcome, report))
     }
 
     /// Executes each transaction under both rule sets from the same canonical prefix.
@@ -286,16 +326,15 @@ impl<P: StateProviderFactory> ShadowReplayer<P> {
     /// The candidate result is observed but never committed. Committing the control result into
     /// both executors advances the canonical prefix without cascading candidate transaction
     /// effects; candidate pre-block changes are preserved across control commits.
-    fn execute(&self, block: &RecoveredBlock<Block>) -> Result<(Evidence, Evidence), String> {
-        let provider = self
-            .provider
-            .state_by_block_hash(block.parent_hash())
-            .map_err(|e| format!("failed to open parent state {}: {e}", block.parent_hash()))?;
-        let mut db = StateProviderDatabase::new(provider.into_evm_state_provider());
+    fn execute<DB: Database>(
+        &self,
+        block: &RecoveredBlock<Block>,
+        parent_state: &(impl Fn() -> Result<DB, String> + Sync),
+    ) -> Result<(Evidence, Evidence), String> {
         let writes = Arc::new(Mutex::new(FeeWrites::default()));
         let mut evm = self
             .real_config
-            .evm_for_block(&mut db, block.header())
+            .evm_for_block(parent_state()?, block.header())
             .map_err(|e| format!("failed to configure control EVM: {e}"))?;
         evm.ext_mut().fee_manager = Arc::new(RecordingFeeManager(Arc::clone(&writes)));
         let context = self
@@ -322,8 +361,9 @@ impl<P: StateProviderFactory> ShadowReplayer<P> {
         let (results, canonical_results) = std::sync::mpsc::sync_channel(1);
         let canonical_bal = executor.evm().overlay_db().bal_context.clone();
         std::thread::scope(|scope| {
-            let worker =
-                scope.spawn(|| self.execute_shadow(block, canonical_bal, canonical_results));
+            let worker = scope.spawn(|| {
+                self.execute_shadow(block, parent_state, canonical_bal, canonical_results)
+            });
             let mut results = Some(results);
             for (index, tx) in block.transactions_recovered().enumerate() {
                 let result = match executor.execute_transaction_without_commit(tx) {
@@ -361,26 +401,18 @@ impl<P: StateProviderFactory> ShadowReplayer<P> {
         })
     }
 
-    fn execute_shadow(
+    fn execute_shadow<DB: Database>(
         &self,
         block: &RecoveredBlock<Block>,
+        parent_state: &(impl Fn() -> Result<DB, String> + Sync),
         canonical_bal: evm2::evm::BalContext,
         canonical_results: std::sync::mpsc::Receiver<TempoTxResult>,
     ) -> Result<Evidence, String> {
-        let provider = self
-            .provider
-            .state_by_block_hash(block.parent_hash())
-            .map_err(|e| {
-                format!(
-                    "failed to open shadow parent state {}: {e}",
-                    block.parent_hash()
-                )
-            })?;
-        let mut db = StateProviderDatabase::new(provider.into_evm_state_provider());
+        let parent_state = parent_state().map_err(|e| format!("shadow arm: {e}"))?;
         let writes = Arc::new(Mutex::new(FeeWrites::default()));
         let mut evm = self
             .shadow_config
-            .evm_for_block(&mut db, block.header())
+            .evm_for_block(parent_state, block.header())
             .map_err(|e| format!("failed to configure shadow EVM: {e}"))?;
         evm.ext_mut().fee_manager = Arc::new(RecordingFeeManager(Arc::clone(&writes)));
         let context = self

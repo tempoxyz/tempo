@@ -1,20 +1,31 @@
 //! `tempo corpus`: capture an archive range into an object-store corpus and replay it.
 
+use alloy_consensus::BlockHeader as _;
 use clap::{Parser, Subcommand};
 use reth_chainspec::EthChainSpec;
 use reth_cli::chainspec::ChainSpecParser;
 use reth_cli_commands::common::{AccessRights, Environment, EnvironmentArgs};
 use reth_cli_util::cancellation::CancellationToken;
 use reth_ethereum::tasks::Runtime;
-use std::{path::PathBuf, sync::Arc};
-use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
+use std::{
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
+use tempo_chainspec::{
+    hardfork::TempoHardfork,
+    spec::{TempoChainSpec, TempoChainSpecParser, TempoHardforks as _},
+};
 use tempo_corpus::{
-    exec::{fill, replay},
+    exec::{db::View, fill, replay},
     fuzz, gc,
-    store::Store,
+    store::{Catalog, Store},
 };
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
-use tempo_node::node::TempoNode;
+use tempo_node::{ReplayOutcome, ShadowReplayer, node::TempoNode};
+use tracing::{info, warn};
 
 /// Historical execution corpus commands.
 #[derive(Debug, Subcommand)]
@@ -139,6 +150,13 @@ pub struct ReplayCommand {
     /// Replay only the blocks a block list file names, such as a fuzz corpus minimizer's.
     #[arg(long, conflicts_with_all = ["from", "to", "tx_from"])]
     blocks: Option<PathBuf>,
+    /// Also replay each verified block under this candidate hardfork's rules and compare it with
+    /// the canonical execution, as `tempo shadow-replay` does on a database.
+    #[arg(long, value_name = "HARDFORK", conflicts_with = "tx_from")]
+    shadow: Option<TempoHardfork>,
+    /// Exit unsuccessfully on unexplained shadow findings or inconclusive comparisons.
+    #[arg(long, requires = "shadow")]
+    fail_on_findings: bool,
 }
 
 impl ReplayCommand {
@@ -170,16 +188,46 @@ impl ReplayCommand {
             );
         }
         let workers = workers(self.workers);
-        let (config, consensus) = components(self.chain);
-        if let Some(path) = &self.blocks {
-            let blocks = fuzz::read_blocks(path, &catalog)?;
-            eyre::ensure!(
-                !blocks.is_empty(),
-                "{} lists no block of the corpus",
-                path.display()
-            );
+        let blocks = match &self.blocks {
+            Some(path) => {
+                let blocks = fuzz::read_blocks(path, &catalog)?;
+                eyre::ensure!(
+                    !blocks.is_empty(),
+                    "{} lists no block of the corpus",
+                    path.display()
+                );
+                Some(blocks)
+            }
+            None => None,
+        };
+        if let Some(hardfork) = self.shadow {
+            let blocks = blocks.unwrap_or_else(|| (from..end).collect());
+            let fail_on_findings = self.fail_on_findings;
             return tokio::task::spawn_blocking(move || {
-                replay::run_blocks(store, catalog, &blocks, config, consensus, workers)
+                shadow_replay(
+                    store,
+                    catalog,
+                    &blocks,
+                    self.chain,
+                    hardfork,
+                    workers,
+                    fail_on_findings,
+                )
+            })
+            .await?;
+        }
+        let (config, consensus) = components(self.chain);
+        if let Some(blocks) = blocks {
+            return tokio::task::spawn_blocking(move || {
+                replay::run_blocks(
+                    store,
+                    catalog,
+                    &blocks,
+                    config,
+                    consensus,
+                    workers,
+                    |_, _, _| Ok(()),
+                )
             })
             .await?;
         }
@@ -199,6 +247,75 @@ impl ReplayCommand {
         })
         .await?
     }
+}
+
+/// Replays `blocks` of a corpus, then each again under `hardfork`'s rules from the pre-state it
+/// recorded, and compares the two as shadow replay does. A candidate execution that reads state
+/// the canonical one did not fails at that boundary, since the corpus did not capture it.
+fn shadow_replay(
+    store: Store,
+    catalog: Catalog,
+    blocks: &[u64],
+    chain: Arc<TempoChainSpec>,
+    hardfork: TempoHardfork,
+    workers: usize,
+    fail_on_findings: bool,
+) -> eyre::Result<()> {
+    let replayer = ShadowReplayer::offline(chain.clone(), hardfork);
+    let (matched, expected, inconclusive, findings, skipped) = Default::default();
+    let (config, consensus) = components(chain.clone());
+    replay::run_blocks(
+        store,
+        catalog,
+        blocks,
+        config,
+        consensus,
+        workers,
+        |input, block, receipts| {
+            let counter: &AtomicU64 = if chain.tempo_hardfork_at(block.timestamp()) >= hardfork {
+                &skipped
+            } else {
+                match replayer
+                    .replay_on(block, receipts, || Ok(View::new(input.clone())))
+                    .map_err(|err| {
+                        eyre::eyre!("shadow replay failed at block {}: {err}", block.number())
+                    })?
+                    .0
+                {
+                    ReplayOutcome::Match => &matched,
+                    ReplayOutcome::Expected => &expected,
+                    ReplayOutcome::Inconclusive => &inconclusive,
+                    ReplayOutcome::Findings => &findings,
+                }
+            };
+            counter.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        },
+    )?;
+    let [matched, expected, inconclusive, findings, skipped] =
+        [matched, expected, inconclusive, findings, skipped].map(AtomicU64::into_inner);
+    info!(
+        blocks = blocks.len(),
+        %hardfork,
+        matched,
+        expected,
+        inconclusive,
+        findings,
+        skipped,
+        "Corpus shadow replay completed"
+    );
+    if skipped > 0 {
+        warn!(
+            skipped,
+            "Skipped blocks where the candidate hardfork was already canonical"
+        );
+    }
+    if fail_on_findings && (findings > 0 || inconclusive > 0) {
+        eyre::bail!(
+            "corpus shadow replay needs review: {findings} blocks with unexplained differences, {inconclusive} inconclusive blocks"
+        );
+    }
+    Ok(())
 }
 
 /// Shrink a complete corpus to its published checkpoint.

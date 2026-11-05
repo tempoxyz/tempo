@@ -39,7 +39,7 @@ pub mod node;
 pub mod rpc;
 mod shadow_replay;
 pub mod telemetry;
-pub use shadow_replay::{ReplayOutcome, ShadowReplayer};
+pub use shadow_replay::{ReplayOutcome, ReplayReport, ShadowReplayer};
 pub use tempo_evm as evm;
 pub use tempo_evm::consensus;
 pub use tempo_primitives as primitives;

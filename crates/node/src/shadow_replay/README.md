@@ -13,6 +13,13 @@ newly committed blocks. It reports notification gaps rather than backfilling the
 `shadow-replay` command can instead scan an explicit historical block range. Blocks where the
 candidate hardfork is already canonical are skipped.
 
+`tempo corpus replay --shadow HARDFORK` (built with the `corpus` feature) runs the same analysis
+offline over a captured corpus range. Each block is first verified against its corpus record, then
+both arms execute on the pre-state the corpus recorded. The corpus holds only what the canonical
+execution read, so a candidate that reads anything else, such as a precompile account its
+pre-block setup deploys, fails at that boundary with an `uncaptured` error and is reported as a
+finding.
+
 ## Execution model
 
 For each selected canonical block, replay opens the canonical parent state and creates two

@@ -97,6 +97,7 @@ impl ShadowReplay {
 
                 match outcome
                     .map_err(|err| eyre!("shadow replay failed at block {number}: {err}"))?
+                    .0
                 {
                     ReplayOutcome::Match => matched += 1,
                     ReplayOutcome::Expected => expected += 1,

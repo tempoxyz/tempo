@@ -211,7 +211,7 @@ mod tests {
         super::{Block, RecoveredBlock, ReplayOutcome, TransitionState, TxOutcome},
         *,
     };
-    use crate::shadow_replay::analysis::{MAX_SAMPLES, Report};
+    use crate::shadow_replay::analysis::{MAX_SAMPLES, ReplayReport};
     use alloy::primitives::{Address, KECCAK256_EMPTY, Signature};
     use evm2::evm::{AccountInfo, TxResultExt};
     use reth_trie_common::bundle_state::{StorageSlot, TransitionAccount};
@@ -399,7 +399,7 @@ mod tests {
             check: |_, _| panic!("equal values"),
         };
         let real = evidence(&[21_000, 21_000]);
-        let report = Report::analyze(&real, &real, &[&rule], &block(vec![]));
+        let report = ReplayReport::analyze(&real, &real, &[&rule], &block(vec![]));
         assert_eq!(report.outcome(&real), ReplayOutcome::Match);
         assert_eq!(report.boundaries_evaluated, 4);
         assert_eq!(report.boundaries_not_evaluated, 0);
@@ -409,11 +409,11 @@ mod tests {
     fn gas_only_difference_does_not_hide_unverified_fee_state() {
         let real = evidence(&[21_000, 21_000]);
         let mut shadow = evidence(&[21_200, 21_000]);
-        let report = Report::analyze(&real, &shadow, &[], &block(vec![]));
+        let report = ReplayReport::analyze(&real, &shadow, &[], &block(vec![]));
         assert_eq!(report.outcome(&shadow), ReplayOutcome::Match);
 
         write_slot(tx_mut(&mut shadow, 0), 800);
-        let report = Report::analyze(&real, &shadow, &[&FEE_STATE], &block(vec![]));
+        let report = ReplayReport::analyze(&real, &shadow, &[&FEE_STATE], &block(vec![]));
         assert_eq!(report.unexplained, 1);
         assert_eq!(report.outcome(&shadow), ReplayOutcome::Findings);
         let field = report.samples[0].1.field;
@@ -458,7 +458,7 @@ mod tests {
             tx.fee_normalized = Some(normalized);
         }
         let block = block(vec![signed_tx(vec![])]);
-        let report = |shadow: &Evidence| Report::analyze(&real, shadow, &[], &block);
+        let report = |shadow: &Evidence| ReplayReport::analyze(&real, shadow, &[], &block);
         assert_eq!(report(&shadow).outcome(&shadow), ReplayOutcome::Match);
 
         let mut wrong = shadow;
@@ -495,7 +495,7 @@ mod tests {
             [&first, &second, &unreachable],
             [&second, &first, &unreachable],
         ] {
-            let report = Report::analyze(&real, &shadow, &rules, &block(vec![]));
+            let report = ReplayReport::analyze(&real, &shadow, &rules, &block(vec![]));
             assert_eq!(report.unexplained, 0);
             assert_eq!(report.expected, [(rules[0].id, 1)].into());
         }
@@ -508,7 +508,7 @@ mod tests {
         shadow.txs[0] = Err("rejected".into());
         tx_mut(&mut shadow, 1).outcome = TxOutcome::Revert;
 
-        let report = Report::analyze(&real, &shadow, &[], &block(vec![]));
+        let report = ReplayReport::analyze(&real, &shadow, &[], &block(vec![]));
 
         assert_eq!(report.unexplained, 2);
         assert_eq!(report.boundaries_evaluated, 4);
@@ -537,7 +537,7 @@ mod tests {
                 },
             );
         }
-        let report = Report::analyze(&real, &shadow, &[], &block(vec![]));
+        let report = ReplayReport::analyze(&real, &shadow, &[], &block(vec![]));
         assert_eq!(report.unexplained, 1);
         assert_eq!(report.samples[0].1.field.name, "code");
     }
@@ -549,7 +549,7 @@ mod tests {
         for tx in &mut shadow.txs {
             tx.as_mut().unwrap().output_hash = B256::repeat_byte(1);
         }
-        let report = Report::analyze(&real, &shadow, &[], &block(vec![]));
+        let report = ReplayReport::analyze(&real, &shadow, &[], &block(vec![]));
         assert_eq!(report.unexplained, 20);
         assert_eq!(report.samples.len(), MAX_SAMPLES);
         assert_eq!(report.boundaries_evaluated, 22);
@@ -568,7 +568,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let report = Report::analyze(&real, &shadow, &[], &block(vec![]));
+        let report = ReplayReport::analyze(&real, &shadow, &[], &block(vec![]));
         assert_eq!(report.unexplained, 1);
         assert_eq!(report.samples[0].1.field.name, "storage_reset");
     }

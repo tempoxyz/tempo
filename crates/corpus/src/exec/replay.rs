@@ -26,7 +26,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
-use tempo_primitives::Block;
+use tempo_primitives::{Block, TempoReceipt};
 use tokio::{
     sync::{Notify, OwnedSemaphorePermit, Semaphore, mpsc},
     task::JoinSet,
@@ -293,7 +293,7 @@ async fn open(store: &Store, catalog: &Catalog, config: &TempoEvmConfig) -> eyre
 }
 
 /// Replays the listed `blocks` of a published corpus on `workers` threads, as [`run`] does a
-/// range.
+/// range, then passes each verified block, its input and its receipts to `on_block`.
 pub fn run_blocks(
     store: Store,
     mut catalog: Catalog,
@@ -301,6 +301,7 @@ pub fn run_blocks(
     config: TempoEvmConfig,
     consensus: TempoConsensus,
     workers: usize,
+    on_block: impl Fn(&Arc<Input>, &RecoveredBlock<Block>, &[TempoReceipt]) -> eyre::Result<()> + Sync,
 ) -> eyre::Result<()> {
     eyre::ensure!(workers > 0, "num-tasks must be positive");
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -331,7 +332,8 @@ pub fn run_blocks(
                         eyre::Ok((record, input, cases))
                     });
                 if let Err(error) = replayed.and_then(|(record, input, cases)| {
-                    verify(&config, &consensus, &input, &cases, &record)
+                    let (block, receipts) = verify(&config, &consensus, &input, &cases, &record)?;
+                    on_block(&input, &block, &receipts)
                 }) {
                     // Stop the other workers too.
                     next.store(blocks.len(), Ordering::Relaxed);
@@ -630,13 +632,14 @@ fn decode_record<'a>(
 
 /// Verifies one published block: executes it from its record alone and checks every
 /// transaction against its stored record, consensus rules and the historical changesets.
+/// Returns the block and the receipts it reproduced.
 pub fn verify(
     config: &TempoEvmConfig,
     consensus: &TempoConsensus,
     input: &Arc<Input>,
     cases: &[Bytes],
     record: &Record,
-) -> eyre::Result<()> {
+) -> eyre::Result<(RecoveredBlock<Block>, Vec<TempoReceipt>)> {
     let (expected, block, phases) = decode_record(input, cases, record)?;
     let executed = execute_block(
         config,
@@ -651,5 +654,10 @@ pub fn verify(
         executed.transactions.len() as u64 == record.transactions && executed.gas == record.gas,
         "transaction/gas totals mismatch"
     );
-    Ok(())
+    let receipts = executed
+        .transactions
+        .iter()
+        .map(|transaction| alloy_rlp::decode_exact(&transaction.receipt))
+        .collect::<Result<_, _>>()?;
+    Ok((block, receipts))
 }

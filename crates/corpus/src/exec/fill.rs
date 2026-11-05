@@ -3,7 +3,7 @@
 use crate::{
     code,
     exec::{capture, replay},
-    store::{self, CONTEXT_KEY, CaseRecord, Catalog, Context, MAX_RECORD_BYTES, Record, Store},
+    store::{self, CONTEXT_KEY, Catalog, Context, MAX_RECORD_BYTES, Record, Store},
 };
 use alloy_consensus::BlockHeader;
 use eyre::OptionExt;
@@ -163,7 +163,8 @@ where
                     |record, bytes, cases| {
                         eyre::ensure!(!cancellation.is_cancelled(), "capture cancelled");
                         let input = store::decode(&bytes, record)?;
-                        replay::verify(config, consensus, &input, &cases, record)
+                        replay::verify(config, consensus, &input, &cases, record)?;
+                        Ok(())
                     },
                 ))
             })
@@ -268,38 +269,11 @@ where
                 "canonical transaction count mismatch"
             );
             let input = &captured.input;
-            let case_bytes = captured
-                .cases()?
-                .iter()
-                .map(|case| wincode::config::serialize(case, store::WINCODE))
-                .collect::<Result<Vec<_>, _>>()?;
-            let bytes = wincode::config::serialize(input.as_ref(), store::WINCODE)?;
-            let total_bytes = case_bytes.iter().try_fold(bytes.len(), |sum, b| {
-                sum.checked_add(b.len())
-                    .ok_or_eyre("serialized size overflow")
-            })?;
-            eyre::ensure!(
-                total_bytes <= MAX_RECORD_BYTES,
-                "block and independent transactions exceed 64 MiB record limit"
-            );
-            let record = Record {
-                number: start,
-                parent: input.parent,
-                hash: input.block.hash,
-                bytes: total_bytes,
-                block_bytes: bytes.len(),
-                transactions,
-                gas: captured.executed.gas,
-                first_tx,
-                cases: case_bytes
-                    .iter()
-                    .enumerate()
-                    .map(|(index, b)| CaseRecord {
-                        index: index as u64,
-                        bytes: b.len(),
-                    })
-                    .collect(),
-            };
+            let capture::Encoded {
+                record,
+                block: bytes,
+                cases: case_bytes,
+            } = captured.encode(first_tx)?;
             let metadata = serde_json::to_vec(&record)?;
             eyre::ensure!(
                 metadata.len() <= MAX_RECORD_BYTES,
