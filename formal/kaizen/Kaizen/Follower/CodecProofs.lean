@@ -99,8 +99,8 @@ theorem varAux_sound (bs : List UInt8) : ∀ (i acc v : Nat) (rest : List UInt8)
       have hn'pos := hpos (by omega)
       refine ⟨b.toNat % 128 + 128 * n', ?_, ?_, fun _ => by omega, ?_⟩
       · rw [hv, pow_step7]; ring
-      · have hge : ¬ (b.toNat % 128 + 128 * n' < 128) := by omega
-        rw [encodeVarint_ge hge, hbs]
+      · have hcmp : ¬ (b.toNat % 128 + 128 * n' < 128) := by omega
+        rw [encodeVarint_ge hcmp, hbs]
         have e1 : (b.toNat % 128 + 128 * n') % 128 + 128 = b.toNat := by omega
         have e2 : (b.toNat % 128 + 128 * n') / 128 = n' := by omega
         rw [e1, e2, toNat_toUInt8]; rfl

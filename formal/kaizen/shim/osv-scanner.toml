@@ -1,0 +1,42 @@
+# This lockfile is pruned from the root Cargo.lock: every flagged package below is the same
+# version the root lockfile already carries and the scan baselines there. Bump them together.
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0400"
+reason = "Transitive via Tempo workspace crates, same version as root Cargo.lock; upgrade with the root lockfile."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0399"
+reason = "Transitive via Tempo workspace crates, same version as root Cargo.lock; upgrade with the root lockfile."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0398"
+reason = "Transitive via Tempo workspace crates, same version as root Cargo.lock; upgrade with the root lockfile."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0397"
+reason = "Transitive via Tempo workspace crates, same version as root Cargo.lock; upgrade with the root lockfile."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0396"
+reason = "Transitive via Tempo workspace crates, same version as root Cargo.lock; upgrade with the root lockfile."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0395"
+reason = "Transitive via Tempo workspace crates, same version as root Cargo.lock; upgrade with the root lockfile."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0391"
+reason = "Transitive via Tempo workspace crates, same version as root Cargo.lock; upgrade with the root lockfile."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0436"
+reason = "Transitive via Tempo workspace crates, same version as root Cargo.lock; upgrade with the root lockfile."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0388"
+reason = "Transitive via Tempo workspace crates, same version as root Cargo.lock; upgrade with the root lockfile."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0387"
+reason = "Transitive via Tempo workspace crates, same version as root Cargo.lock; upgrade with the root lockfile."
