@@ -904,8 +904,8 @@ cast code 0x5A4d000000000000000000000000000000000000 --rpc-url "$ETH_RPC_URL"
 | `--zone.id` | (deprecated) | Optional compatibility check against the zone ID encoded in the genesis chain ID. |
 | `--sequencer` | false | Enable sequencer mode for block production and withdrawal batch submission |
 | `--sequencer-key-file` | (required for sequencing) | Owner-readable file or FIFO containing the sequencer private key |
-| `--sequencer.enable-prover` | false | Run detached SPF validation; supported by sequencers and `rpc_only` P2P followers |
-| `--sequencer.prover-address` | (optional) | Repeatable `HARDFORK=HOST:PORT` assignment selected by the live L1 fork; missing forks stop proving and the readiness gauge flags current/next-72-hour gaps |
+| `--sequencer.enable-prover` | false | Deprecated and ignored; `--sequencer.prover-address` enables proving |
+| `--sequencer.prover-address` | (optional) | Repeatable `HARDFORK=HOST:PORT` assignment selected by the live L1 fork. Any assignment enables SPF validation (settlement proofs on sequencers, observational validation on `rpc_only` P2P followers); without one, sequencers settle without a proof; missing forks stop proving and the readiness gauge flags current/next-72-hour gaps |
 | `--sequencer.prover-attestation-policy` | (optional) | JSON PCR0–2 allowlist shared by all endpoints, overriding the PCRs compiled into the binary for each assigned fork; authenticates the transport and controls evidence freshness without changing L1 verifier policy |
 | `--shadow-prover.pcrs` | (optional) | Pin PCR0,PCR1,PCR2 (three comma-separated, nonzero 48-byte hex measurements) to authenticate remote Nitro proofs on an RPC follower |
 | `--deposits.allowlist` | false | Bounce deposits from L1 senders missing from `<datadir>/deposit-allowlist.json` while leading; see [Sequencer deposit allowlist](#sequencer-deposit-allowlist) |
@@ -927,7 +927,7 @@ cast code 0x5A4d000000000000000000000000000000000000 --rpc-url "$ETH_RPC_URL"
 | `L1_RPC_URL` | Yes | Certified Tempo follower WebSocket RPC URL (`wss://...`) |
 | `SEQUENCER_KEY` | For short-lived tooling | Sequencer private key for `just create-zone` and xtasks; not accepted by the node |
 | `SEQUENCER_KEY_FILE` | For sequencing | Owner-readable file or FIFO containing the sequencer private key |
-| `SEQUENCER_ENABLE_PROVER` | No | Enable detached SPF validation, including on an `rpc_only` P2P follower |
+| `SEQUENCER_ENABLE_PROVER` | No | Deprecated and ignored; `SEQUENCER_PROVER_ADDRESS` enables proving |
 | `SEQUENCER_PROVER_ADDRESS` | No | Comma-separated `HARDFORK=HOST:PORT` assignments; see the [prover upgrade runbook](../bin/prover/enclave/README.md#upgrading-across-an-l1-hardfork) |
 | `SEQUENCER_PROVER_ATTESTATION_POLICY` | No | JSON PCR0–2 allowlist and evidence-freshness policy path overriding the compiled-in PCRs for the configured endpoints |
 | `SHADOW_PROVER_PCRS` | No | Three comma-separated 48-byte enclave measurements for local shadow verification |

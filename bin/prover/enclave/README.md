@@ -225,7 +225,6 @@ Configure the node with one exact `--sequencer.prover-address` assignment per L1
 For example, after both forks' measurements have been approved in Tempo, a T13/T14 transition uses:
 
 ```sh
---sequencer.enable-prover \
 --sequencer.prover-address T13=prover-t13:5000 \
 --sequencer.prover-address T14=prover-t14:5000
 ```

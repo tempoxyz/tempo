@@ -193,6 +193,9 @@ fn run_node(mut cli: ZoneNodeCli, l1_access: CliL1Access) -> eyre::Result<()> {
         if args.block_interval_ms.is_some() {
             warn!(target: "reth::cli", "--block.interval-ms is deprecated, has no effect, and will be removed in the next release");
         }
+        if args.enable_prover {
+            warn!(target: "reth::cli", "--sequencer.enable-prover is deprecated, has no effect, and will be removed in the next release: proving is enabled by --sequencer.prover-address");
+        }
 
         let zone_id = builder.config().chain.zone_id();
         validate_deprecated_zone_id(args.zone_id, zone_id)?;
@@ -366,24 +369,19 @@ async fn configure_sequencing(
         .map(std::fs::read)
         .transpose()?;
     let prover_addresses = ProverAddresses::new(args.prover_addresses.clone(), policy.as_deref())?;
-    let prover_config = if !args.enable_prover {
-        None
-    } else if should_sequence_blocks {
-        let addresses = prover_addresses.ok_or_else(|| {
-            eyre::eyre!(
-                "settlement proving requires --sequencer.prover-address for Nitro attestation"
-            )
-        })?;
-        Some(ZoneProverConfig::Settlement(addresses))
-    } else {
-        eyre::ensure!(
-            rpc_only,
-            "--sequencer.enable-prover requires a sequencer or an rpc_only P2P follower"
-        );
-        Some(ZoneProverConfig::Shadow {
-            prover_addresses,
-            proof_verifier: args.shadow_prover_pcrs.clone(),
-        })
+    let prover_config = match prover_addresses {
+        None => None,
+        Some(addresses) if should_sequence_blocks => Some(ZoneProverConfig::Settlement(addresses)),
+        Some(addresses) => {
+            eyre::ensure!(
+                rpc_only,
+                "--sequencer.prover-address requires a sequencer or an rpc_only P2P follower"
+            );
+            Some(ZoneProverConfig::Shadow {
+                prover_addresses: Some(addresses),
+                proof_verifier: args.shadow_prover_pcrs.clone(),
+            })
+        }
     };
 
     eyre::ensure!(
@@ -701,20 +699,24 @@ pub struct ZoneArgs {
     )]
     pub checker_mode: zone_checker::CheckerMode,
 
-    /// Require Nitro-attested SPF validation for settlement, or run observational SPF validation
-    /// on an rpc_only follower.
-    ///
-    /// Enables durable witness persistence.
-    #[arg(long = "sequencer.enable-prover", env = "SEQUENCER_ENABLE_PROVER")]
+    /// Deprecated compatibility flag. Ignored: --sequencer.prover-address enables proving.
+    #[arg(
+        long = "sequencer.enable-prover",
+        env = "SEQUENCER_ENABLE_PROVER",
+        help = "Deprecated: no longer has any effect and will be removed in the next release."
+    )]
     pub enable_prover: bool,
 
     /// Route to an immutable prover release for each exact live L1 hardfork. Repeat per hardfork.
+    ///
+    /// Any assignment enables proving: a sequencer then requires a Nitro-attested SPF proof before
+    /// settlement and persists witnesses durably, and an rpc_only follower validates finalized
+    /// submissions observationally. Without one, a sequencer settles without a proof.
     #[arg(
         long = "sequencer.prover-address",
         env = "SEQUENCER_PROVER_ADDRESS",
         value_name = "HARDFORK=HOST:PORT",
-        value_delimiter = ',',
-        requires = "enable_prover"
+        value_delimiter = ','
     )]
     pub prover_addresses: Vec<HardforkProverAddress>,
 
@@ -724,7 +726,7 @@ pub struct ZoneArgs {
         long = "sequencer.prover-attestation-policy",
         env = "SEQUENCER_PROVER_ATTESTATION_POLICY",
         value_name = "PATH",
-        requires_all = ["enable_prover", "prover_addresses"]
+        requires = "prover_addresses"
     )]
     pub prover_attestation_policy: Option<PathBuf>,
 
@@ -963,7 +965,6 @@ mod tests {
             .is_err()
         );
         let args = ZoneArgsParser::try_parse_from(common.into_iter().chain([
-            "--sequencer.enable-prover",
             "--sequencer.prover-attestation-policy",
             "policy.json",
             "--sequencer.prover-address",
@@ -975,7 +976,6 @@ mod tests {
         assert!(args.zone.shadow_prover_pcrs.is_some());
         assert!(
             ZoneArgsParser::try_parse_from(common.into_iter().chain([
-                "--sequencer.enable-prover",
                 "--sequencer.prover-attestation-policy",
                 "policy.json",
                 "--sequencer.prover-address",
@@ -993,7 +993,6 @@ mod tests {
             "tempo-zone",
             "--l1.rpc-url",
             "ws://localhost:8546",
-            "--sequencer.enable-prover",
             "--sequencer.prover-attestation-policy",
             "policy.json",
         ];
@@ -1017,13 +1016,19 @@ mod tests {
             assert_eq!(args.prover_addresses.len(), 3);
             assert!(args.prover_attestation_policy.is_some());
         }
-        let local_prover =
-            ZoneArgsParser::try_parse_from(common[..common.len() - 2].iter().copied())
-                .unwrap()
-                .zone;
-        assert!(local_prover.enable_prover);
-        assert!(local_prover.prover_addresses.is_empty());
-        assert!(local_prover.prover_attestation_policy.is_none());
+        // The policy only applies to remote provers.
+        assert!(ZoneArgsParser::try_parse_from(common).is_err());
+        // The deprecated flag still parses, without enabling proving on its own.
+        let deprecated = ZoneArgsParser::try_parse_from(
+            common[..common.len() - 2]
+                .iter()
+                .copied()
+                .chain(["--sequencer.enable-prover"]),
+        )
+        .unwrap()
+        .zone;
+        assert!(deprecated.enable_prover);
+        assert!(deprecated.prover_addresses.is_empty());
         let compiled_pcrs = ZoneArgsParser::try_parse_from(
             common[..common.len() - 2]
                 .iter()
