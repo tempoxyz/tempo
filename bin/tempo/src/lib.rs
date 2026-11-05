@@ -254,13 +254,16 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
 
     apply_tempo_cli_overrides(&mut cli)?;
 
-    // Below 5 cores reth builds with the fallback state root instead of the sparse trie.
+    // Without enough parallelism reth builds with the fallback state root instead of the sparse trie.
     if let Commands::Node(node_cmd) = &cli.command
         && node_cmd.ext.follow.is_none()
         && node_cmd.chain.genesis_hash() == PRESTO.genesis_hash()
         && !node_cmd.engine.tree_config().has_enough_parallelism()
     {
-        eyre::bail!("mainnet validators need at least 5 CPU cores");
+        eyre::bail!(
+            "mainnet validators need more CPU cores to build with the sparse trie (available: {})",
+            thread::available_parallelism().map_or(0, |n| n.get())
+        );
     }
 
     if let Commands::Node(node_cmd) = &cli.command
