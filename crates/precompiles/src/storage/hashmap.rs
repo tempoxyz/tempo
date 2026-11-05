@@ -8,7 +8,7 @@ use evm2::{
 };
 use std::collections::HashMap;
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_primitives::{TempoBlockEnv, account::encode_config_commitment};
+use tempo_primitives::{TempoBlockEnv, TempoEvmKind, account::encode_config_commitment};
 
 use crate::{
     configurable_account::CONFIGURABLE_ACCOUNT_CODE,
@@ -36,7 +36,7 @@ pub struct HashMapStorageProvider {
     gas_params: GasParams,
     gas_tracker: GasTracker,
     tip1060_storage_credits_enabled: bool,
-    revert_blocked_inbound: bool,
+    evm_kind: TempoEvmKind,
     counter_sload: u64,
     counter_sstore: u64,
     non_creditable_slots: NonCreditableSlots,
@@ -88,7 +88,7 @@ impl HashMapStorageProvider {
             gas_params: tempo_chainspec::gas_params::version(SpecId::OSAKA, spec, false).gas_params,
             gas_tracker: GasTracker::new(u64::MAX),
             tip1060_storage_credits_enabled: spec.is_t7(),
-            revert_blocked_inbound: false,
+            evm_kind: TempoEvmKind::L1,
             counter_sload: 0,
             counter_sstore: 0,
             non_creditable_slots: NonCreditableSlots::empty(),
@@ -101,6 +101,12 @@ impl HashMapStorageProvider {
         self.gas_params =
             tempo_chainspec::gas_params::version(SpecId::OSAKA, spec, false).gas_params;
         self.tip1060_storage_credits_enabled = spec.is_t7();
+        self
+    }
+
+    /// Returns self executing over an EVM of `evm_kind` (builder pattern).
+    pub fn with_evm_kind(mut self, evm_kind: TempoEvmKind) -> Self {
+        self.evm_kind = evm_kind;
         self
     }
 
@@ -296,12 +302,8 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         self.tip1060_storage_credits_enabled = self.spec.is_t7() && enabled;
     }
 
-    fn set_revert_blocked_inbound(&mut self, enabled: bool) {
-        self.revert_blocked_inbound = enabled;
-    }
-
-    fn revert_blocked_inbound(&self) -> bool {
-        self.revert_blocked_inbound
+    fn evm_kind(&self) -> TempoEvmKind {
+        self.evm_kind
     }
 
     fn config_commitment(&mut self, address: Address) -> Result<B256, TempoPrecompileError> {

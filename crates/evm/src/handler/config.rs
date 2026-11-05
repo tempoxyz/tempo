@@ -29,7 +29,7 @@ use tempo_precompiles::{
     tip20::TIP20Error,
     tip20_channel_reserve::TIP20ChannelReserve,
 };
-use tempo_primitives::{TempoAddressExt, transaction::calc_gas_balance_spending};
+use tempo_primitives::{TempoAddressExt, TempoEvmKind, transaction::calc_gas_balance_spending};
 pub use tempo_primitives::{TempoBlockEnv, TempoBlockExt};
 
 /// EVM2 type family used by Tempo execution.
@@ -94,6 +94,8 @@ pub struct TempoTxResultExt {
 /// Tempo-specific state owned by an EVM2 instance.
 #[derive(Clone, Debug)]
 pub struct TempoEvmExt {
+    /// Kind of the EVM, whose rules every storage context over the EVM follows.
+    pub evm_kind: TempoEvmKind,
     /// Protocol fee implementation used by transaction hooks.
     pub fee_manager: Arc<dyn ProtocolFeeManager>,
     /// Recorder for protocol storage accesses.
@@ -112,8 +114,17 @@ pub struct TempoEvmExt {
 
 impl Default for TempoEvmExt {
     fn default() -> Self {
+        Self::new(TempoEvmKind::L1, TempoFeeManager::new())
+    }
+}
+
+impl TempoEvmExt {
+    /// Creates the extension state of an EVM of `evm_kind`, whose transaction hooks collect fees
+    /// through `fee_manager`.
+    pub fn new(evm_kind: TempoEvmKind, fee_manager: impl ProtocolFeeManager + 'static) -> Self {
         Self {
-            fee_manager: Arc::new(TempoFeeManager::new()),
+            evm_kind,
+            fee_manager: Arc::new(fee_manager),
             actions: StorageActions::disabled(),
             non_creditable_slots: Rc::new(RefCell::new(NonCreditableSlots::empty())),
             skip_valid_after_check: false,
@@ -124,14 +135,6 @@ impl Default for TempoEvmExt {
     }
 }
 
-impl TempoEvmExt {
-    /// Replaces the protocol fee implementation used by transaction hooks.
-    pub fn with_fee_manager(mut self, fee_manager: impl ProtocolFeeManager + 'static) -> Self {
-        self.fee_manager = Arc::new(fee_manager);
-        self
-    }
-}
-
 impl tempo_precompiles::storage::evm::EvmStorageExt for TempoEvmExt {
     fn storage_actions(&self) -> StorageActions {
         self.actions.clone()
@@ -139,6 +142,10 @@ impl tempo_precompiles::storage::evm::EvmStorageExt for TempoEvmExt {
 
     fn non_creditable_slots(&self) -> Rc<RefCell<NonCreditableSlots>> {
         self.non_creditable_slots.clone()
+    }
+
+    fn evm_kind(&self) -> TempoEvmKind {
+        self.evm_kind
     }
 }
 

@@ -77,6 +77,7 @@ mod tests {
         test_util::{TIP20Setup, VIRTUAL_MASTER, register_virtual_master},
         tip403_registry::{ALLOW_ALL_POLICY_ID, REJECT_ALL_POLICY_ID, TIP403Registry},
     };
+    use tempo_primitives::TempoEvmKind;
 
     use crate::test_utils::{
         PrecompileOutput, PrecompileResult, TestContext, TestPrecompiles, call_precompile,
@@ -265,6 +266,8 @@ mod tests {
             ctx.cfg.spec = tempo_chainspec::hardfork::TempoHardfork::T8;
             ctx.block.timestamp = U256::from(BLOCKED_AT);
 
+            // Zones revert blocked inbounds, so seed the receipt as Tempo L1 would divert it.
+            ctx.evm().ext_mut().evm_kind = TempoEvmKind::L1;
             {
                 let mut storage = test_storage_provider(&mut ctx, u64::MAX, false);
                 StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
@@ -290,6 +293,7 @@ mod tests {
                     Ok(())
                 })?;
             }
+            ctx.evm().ext_mut().evm_kind = TempoEvmKind::Zone;
 
             let receipt = receipt(RECEIVER, RECEIVER);
             assert_eq!(receipt.version, BLOCKED_RECEIPT_VERSION);

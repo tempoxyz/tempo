@@ -27,7 +27,9 @@ use evm2::{
     version::{GasId, GasParams},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_primitives::{TempoBlockEnv, account::decode_config_commitment, gas::keccak_gas};
+use tempo_primitives::{
+    TempoBlockEnv, TempoEvmKind, account::decode_config_commitment, gas::keccak_gas,
+};
 
 use crate::error::{Result, TempoPrecompileError};
 
@@ -225,17 +227,11 @@ pub trait PrecompileStorageProvider {
     /// as a no-op.
     fn set_tip1060_storage_credit_minting(&mut self, _enabled: bool) {}
 
-    /// Makes subsequent TIP-1028 receive-policy blocks revert with `PolicyForbids` instead of
-    /// diverting the funds to `ReceivePolicyGuard`.
-    ///
-    /// Zones enable this, since a recovery authority without a zone key could never claim diverted
-    /// funds. Implementations that never run zone precompiles may treat this as a no-op.
-    fn set_revert_blocked_inbound(&mut self, _enabled: bool) {}
-
-    /// Returns whether receive-policy blocks revert instead of diverting the funds. See
-    /// [`set_revert_blocked_inbound`](Self::set_revert_blocked_inbound).
-    fn revert_blocked_inbound(&self) -> bool {
-        false
+    /// Returns the kind of EVM this context executes over, which fixes the protocol rules that
+    /// differ between Tempo L1 and its zones. Providers that cannot write state may keep the
+    /// [`TempoEvmKind::L1`] default, since those rules only affect state changes.
+    fn evm_kind(&self) -> TempoEvmKind {
+        TempoEvmKind::L1
     }
 
     /// Computes keccak256 and charges the appropriate gas.

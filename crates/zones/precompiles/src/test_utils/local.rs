@@ -17,7 +17,7 @@ use tempo_precompiles::{
     storage::{actions::StorageActions, evm::EvmPrecompileStorageProvider},
     storage_credits::NonCreditableSlots,
 };
-use tempo_primitives::TempoBlockEnv;
+use tempo_primitives::{TempoBlockEnv, TempoEvmKind};
 
 use crate::{
     ZonePrecompiles,
@@ -62,7 +62,10 @@ pub(crate) fn test_context_with_hardfork(hardfork: TempoHardfork) -> TestContext
             tempo_tx_registry(SpecId::OSAKA),
             InMemoryDB::default(),
             NoPrecompiles::default(),
-            TempoEvmExt::default(),
+            TempoEvmExt {
+                evm_kind: TempoEvmKind::Zone,
+                ..Default::default()
+            },
         ),
         gas: GasTracker::new(u64::MAX),
     }

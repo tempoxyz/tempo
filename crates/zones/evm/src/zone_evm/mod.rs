@@ -167,9 +167,9 @@ pub(crate) mod tests {
     use tempo_evm::{
         ResolvedFeeToken, TempoEvmEnv, TempoEvmTypes, TempoInvalidTransaction, TempoTxEnv,
     };
-    use tempo_precompiles::TIP403_REGISTRY_ADDRESS;
+    use tempo_precompiles::{TIP403_REGISTRY_ADDRESS, storage::StorageCtx};
     use tempo_primitives::{
-        TempoTxEnvelope,
+        TempoEvmKind, TempoTxEnvelope,
         transaction::{
             Authorization, TempoSignature, TempoSignedAuthorization, TempoTransaction,
             envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
@@ -252,6 +252,21 @@ pub(crate) mod tests {
             transaction(Address::ZERO, eip7702),
             transaction(Address::ZERO, tempo),
         ]
+    }
+
+    /// The handler's own storage contexts over a zone EVM follow zone rules too, not only zone
+    /// precompile calls.
+    #[test]
+    fn handler_storage_contexts_follow_zone_rules() {
+        let mut evm = BlockExecutorFactory::evm_with_env(
+            &config(),
+            InMemoryDB::default(),
+            TempoEvmEnv::default(),
+        );
+        assert_eq!(
+            StorageCtx::enter_evm(&mut evm, || StorageCtx::default().evm_kind()),
+            TempoEvmKind::Zone
+        );
     }
 
     #[test]

@@ -12,7 +12,7 @@ use evm2::{
 use scoped_tls::scoped_thread_local;
 use std::cell::RefCell;
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_primitives::{TempoBlockEnv, TempoBlockExt};
+use tempo_primitives::{TempoBlockEnv, TempoBlockExt, TempoEvmKind};
 
 use crate::{
     error::{IntoPrecompileResult, Result, TempoPrecompileError},
@@ -272,10 +272,10 @@ impl StorageCtx {
         Self::with_storage(|s| s.set_tip1060_storage_credit_minting(enabled))
     }
 
-    /// Returns whether receive-policy blocks revert instead of diverting the funds. See
-    /// [`PrecompileStorageProvider::set_revert_blocked_inbound`].
-    pub fn revert_blocked_inbound(&self) -> bool {
-        Self::with_storage(|s| s.revert_blocked_inbound())
+    /// Returns the kind of EVM this context executes over. See
+    /// [`PrecompileStorageProvider::evm_kind`].
+    pub fn evm_kind(&self) -> TempoEvmKind {
+        Self::with_storage(|s| s.evm_kind())
     }
 
     /// Creates a journal checkpoint and returns a RAII guard.
