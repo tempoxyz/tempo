@@ -85,7 +85,6 @@ impl Core {
         unsafe { kzg_tip_height(self.state) }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn has_tip(&self) -> bool {
         unsafe { kzg_has_tip(self.state) != 0 }
     }

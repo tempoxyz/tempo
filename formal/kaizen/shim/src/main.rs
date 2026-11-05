@@ -8,6 +8,7 @@
 
 use std::{
     collections::{BTreeMap, HashMap},
+    num::{NonZeroU64, NonZeroUsize},
     sync::Mutex,
     time::{Duration, Instant},
 };
@@ -56,14 +57,14 @@ struct Args {
     #[arg(long, default_value_t = 0)]
     count: u64,
     /// Concurrent RPC requests.
-    #[arg(long, default_value_t = 16)]
-    concurrency: usize,
+    #[arg(long, default_value = "16")]
+    concurrency: NonZeroUsize,
     /// Network identity JSON ({"from_epoch", "identity"}), defaults to the compiled testnet one.
     #[arg(long)]
     identity: Option<std::path::PathBuf>,
     /// Epoch length in blocks (testnet and mainnet genesis: 21600).
-    #[arg(long, default_value_t = 21600)]
-    epoch_length: u64,
+    #[arg(long, default_value = "21600")]
+    epoch_length: NonZeroU64,
     /// Only check the BLS oracle against the latest finalization, decoded by commonware, and exit.
     #[arg(long)]
     check_oracle: bool,
@@ -74,8 +75,8 @@ struct Args {
     #[arg(long, default_value = "https://rpc.moderato.tempo.xyz")]
     proof_rpc: String,
     /// Concurrent block re-executions.
-    #[arg(long, default_value_t = 8)]
-    exec_concurrency: usize,
+    #[arg(long, default_value = "8")]
+    exec_concurrency: NonZeroUsize,
     /// Do not re-execute blocks: the execution oracle answers true (consensus-only mode).
     #[arg(long)]
     trust_execution: bool,
@@ -118,7 +119,43 @@ struct Rpc {
     retry_forever: bool,
 }
 
+/// Largest response body accepted from the untrusted upstream (a full block is a few MiB).
+const MAX_RESPONSE_BYTES: usize = 64 << 20;
+
+/// Reads a response body, refusing more than [`MAX_RESPONSE_BYTES`] before allocating it.
+async fn read_capped(mut resp: reqwest::Response) -> eyre::Result<Vec<u8>> {
+    if resp
+        .content_length()
+        .is_some_and(|n| n > MAX_RESPONSE_BYTES as u64)
+    {
+        bail!("response body over {MAX_RESPONSE_BYTES} bytes");
+    }
+    let mut out = Vec::new();
+    while let Some(chunk) = resp.chunk().await? {
+        if out.len() + chunk.len() > MAX_RESPONSE_BYTES {
+            bail!("response body over {MAX_RESPONSE_BYTES} bytes");
+        }
+        out.extend_from_slice(&chunk);
+    }
+    Ok(out)
+}
+
 impl Rpc {
+    /// The latest finalization. A restarting upstream answers "not available" until its next
+    /// finalization; in follow mode that is waited out like any other transient error.
+    async fn latest(&self) -> eyre::Result<RpcCertified> {
+        loop {
+            match self.finalization(serde_json::json!("latest")).await? {
+                Some(c) => return Ok(c),
+                None if self.retry_forever => {
+                    eprintln!("upstream has no latest finalization yet; waiting");
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+                None => bail!("no latest finalization"),
+            }
+        }
+    }
+
     async fn finalization(&self, query: serde_json::Value) -> eyre::Result<Option<RpcCertified>> {
         let body = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "consensus_getFinalization", "params": [query]});
         let mut attempt = 0;
@@ -133,10 +170,10 @@ impl Rpc {
                     .send()
                     .await?;
                 let status = resp.status();
-                let bytes = resp.bytes().await?;
                 if !status.is_success() {
                     bail!("HTTP {status}");
                 }
+                let bytes = read_capped(resp).await?;
                 let mut v: serde_json::Value = serde_json::from_slice(&bytes)?;
                 if let Some(err) = v.get("error") {
                     // 204 (NotReady) and 503 (Missing): the upstream does not have it (yet).
@@ -327,13 +364,13 @@ async fn main() -> eyre::Result<()> {
 
     let start = match args.from.as_str() {
         "latest" => {
-            let latest = rpc
-                .finalization(serde_json::json!("latest"))
-                .await?
-                .ok_or_eyre("no latest finalization")?;
+            let latest = rpc.latest().await?;
             latest.block.header.number()
         }
-        s if s.starts_with("epoch:") => s[6..].parse::<u64>()? * args.epoch_length,
+        s if s.starts_with("epoch:") => s[6..]
+            .parse::<u64>()?
+            .checked_mul(args.epoch_length.get())
+            .ok_or_eyre("epoch:N overflows the height")?,
         s => s.parse()?,
     };
 
@@ -341,7 +378,7 @@ async fn main() -> eyre::Result<()> {
         let proof_rpc = exec::ProofRpc::new(args.proof_rpc.clone())?;
         let end = start;
         let hashes = std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new()));
-        backfill_hashes(&rpc, end, &hashes, args.concurrency).await?;
+        backfill_hashes(&rpc, end, &hashes, args.concurrency.get()).await?;
         let mut ok = 0;
         for h in end + 1 - n..=end {
             let parent = rpc
@@ -382,10 +419,7 @@ async fn main() -> eyre::Result<()> {
     }
 
     if args.check_oracle {
-        let latest = rpc
-            .finalization(serde_json::json!("latest"))
-            .await?
-            .ok_or_eyre("no latest finalization")?;
+        let latest = rpc.latest().await?;
         let bytes = alloy_primitives::hex::decode(&latest.certificate)?;
         let f = Finalization::<Scheme<PublicKey, MinSig>, Digest>::decode(bytes.as_slice())
             .map_err(|e| eyre!("{e}"))?;
@@ -404,7 +438,7 @@ async fn main() -> eyre::Result<()> {
         return Ok(());
     }
 
-    let mut core = core::Core::new(args.epoch_length, from_epoch, &key)?;
+    let mut core = core::Core::new(args.epoch_length.get(), from_epoch, &key)?;
     eprintln!(
         "kaizen-follower: verified core ready; network identity from epoch {from_epoch}; syncing from height {start} via {}",
         args.rpc
@@ -426,15 +460,12 @@ async fn main() -> eyre::Result<()> {
     let proof_rpc = exec::ProofRpc::new(args.proof_rpc.clone())?;
     let hashes = std::sync::Arc::new(std::sync::Mutex::new(BTreeMap::new()));
     if !args.trust_execution {
-        backfill_hashes(&rpc, start, &hashes, args.concurrency).await?;
+        backfill_hashes(&rpc, start, &hashes, args.concurrency.get()).await?;
     }
     let mut head = start;
     loop {
         if next > head {
-            let latest = rpc
-                .finalization(serde_json::json!("latest"))
-                .await?
-                .ok_or_eyre("no latest finalization")?;
+            let latest = rpc.latest().await?;
             head = latest.block.header.number();
             if next > head {
                 tokio::time::sleep(Duration::from_millis(300)).await;
@@ -442,7 +473,8 @@ async fn main() -> eyre::Result<()> {
             }
         }
         // Fetch a window of heights concurrently, then feed them to the core strictly in order.
-        let window_len = (args.concurrency as u64 * 4).max(args.exec_concurrency as u64);
+        let window_len =
+            (args.concurrency.get() as u64 * 4).max(args.exec_concurrency.get() as u64);
         let end = head.min(next + window_len - 1);
         let window: Vec<u64> = (next..=end).collect();
         let fetched: BTreeMap<u64, eyre::Result<Option<RpcCertified>>> =
@@ -451,7 +483,7 @@ async fn main() -> eyre::Result<()> {
                     let rpc = &rpc;
                     async move { (h, rpc.finalization(serde_json::json!({"height": h})).await) }
                 })
-                .buffer_unordered(args.concurrency)
+                .buffer_unordered(args.concurrency.get())
                 .collect()
                 .await;
         let mut progressed = false;
@@ -459,7 +491,7 @@ async fn main() -> eyre::Result<()> {
         for (h, res) in fetched {
             let Some(c) = res? else { break };
             let block = (c.block.header.clone(), c.block.body.clone());
-            let cand = prepare(c, args.epoch_length)?;
+            let cand = prepare(c, args.epoch_length.get())?;
             if cand.height != h {
                 bail!("upstream returned height {} for query {h}", cand.height);
             }
@@ -492,7 +524,7 @@ async fn main() -> eyre::Result<()> {
                         (p, d, h, r)
                     }
                 })
-                .buffer_unordered(args.exec_concurrency)
+                .buffer_unordered(args.exec_concurrency.get())
                 .collect()
                 .await;
             for (p, d, h, r) in results {

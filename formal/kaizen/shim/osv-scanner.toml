@@ -64,3 +64,11 @@ reason = "zstd-safe 7.3.0 via commonware-storage (commonware-consensus), same ve
 [[IgnoredVulns]]
 id = "RUSTSEC-2026-0406"
 reason = "zstd-safe 7.3.0 via commonware-storage (commonware-consensus), same version as root Cargo.lock; upgrade with the root lockfile."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0173"
+reason = "proc-macro-error2 is unmaintained; transitive via Tempo workspace crates with no safe upgrade, same version as root Cargo.lock."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2025-0141"
+reason = "bincode is unmaintained; transitive via Tempo workspace crates, same version as root Cargo.lock."

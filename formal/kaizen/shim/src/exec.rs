@@ -74,8 +74,17 @@ impl ProofRpc {
                     .body(body.clone())
                     .send()?;
                 let status = resp.status();
-                let mut v: serde_json::Value = serde_json::from_slice(&resp.bytes()?)
-                    .wrap_err_with(|| format!("HTTP {status}"))?;
+                let mut v: serde_json::Value = serde_json::from_slice(&{
+                    use std::io::Read as _;
+                    let mut body = Vec::new();
+                    resp.take(crate::MAX_RESPONSE_BYTES as u64 + 1)
+                        .read_to_end(&mut body)?;
+                    if body.len() > crate::MAX_RESPONSE_BYTES {
+                        bail!("response body over {} bytes", crate::MAX_RESPONSE_BYTES);
+                    }
+                    body
+                })
+                .wrap_err_with(|| format!("HTTP {status}"))?;
                 if let Some(err) = v.get("error") {
                     bail!("{method}: {err}");
                 }
