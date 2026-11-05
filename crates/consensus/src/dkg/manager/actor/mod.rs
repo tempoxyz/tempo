@@ -160,7 +160,7 @@ where
     TBlocker: Blocker<PublicKey = PublicKey> + Sync,
 {
     pub(super) async fn new(
-        mut config: super::Config<TExecutionLayer, TMarshal, TBlocker>,
+        config: super::Config<TExecutionLayer, TMarshal, TBlocker>,
         context: TContext,
         mailbox: mpsc::UnboundedReceiver<super::ingress::Message>,
     ) -> eyre::Result<Self> {
@@ -190,12 +190,6 @@ where
             config.last_finalized_height,
             &config.scheme_provider,
         )?;
-
-        // The recovery boundary has no certificate, so marshal's floor stays below it until
-        // the next epoch finalizes a block. Seed the DKG state from the boundary's outcome.
-        if let Some(boundary) = config.recovery_boundary {
-            config.last_finalized_height = config.last_finalized_height.max(boundary);
-        }
 
         Ok(Self {
             config,
@@ -580,7 +574,7 @@ where
             let epoch_info = self
                 .config
                 .epoch_strategy
-                .containing(self.config.last_finalized_height.next())
+                .containing(self.config.initial_state_height().next())
                 .expect("epoch strategy is covering all heights");
             if state.epoch < epoch_info.epoch() {
                 warn!(
@@ -612,7 +606,7 @@ where
         TStorageContext: commonware_runtime::Metrics + Clock + Storage,
     {
         let state = storage.current();
-        let target_height = self.config.last_finalized_height;
+        let target_height = self.config.initial_state_height();
         let epoch_info = self
             .config
             .epoch_strategy
@@ -1411,11 +1405,11 @@ where
     ) -> eyre::Result<State> {
         let (latest_boundary, outcome_epoch) = latest_boundary_at_or_before(
             &self.config.epoch_strategy,
-            self.config.last_finalized_height,
+            self.config.initial_state_height(),
         );
         info!(
             %latest_boundary,
-            last_finalized = %self.config.last_finalized_height,
+            last_finalized = %self.config.initial_state_height(),
             "marshal reported finalized floor at startup, reading on-chain DKG \
             outcome from last boundary height"
         );

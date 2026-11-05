@@ -79,7 +79,7 @@ pub(crate) struct Config<TExecutionLayer, TMarshal, TBlocker> {
     pub(crate) last_finalized_height: Height,
 
     /// The recovery boundary that the execution layer finalized ahead of marshal at startup, or
-    /// `None` without a chain recovery. Raises [`Self::last_finalized_height`] to it.
+    /// `None` without a chain recovery. See [`Self::initial_state_height`].
     pub(crate) recovery_boundary: Option<Height>,
 
     /// Archive height and certificate to authenticate during initialization.
@@ -101,6 +101,19 @@ pub(crate) struct Config<TExecutionLayer, TMarshal, TBlocker> {
 
     /// This node's initial share of the bls12381 private key.
     pub(crate) initial_share: Option<Share>,
+}
+
+impl<TExecutionLayer, TMarshal, TBlocker> Config<TExecutionLayer, TMarshal, TBlocker> {
+    /// The finalized height the initial DKG state is seeded from.
+    ///
+    /// This is [`Self::last_finalized_height`], or the recovery boundary when the execution layer
+    /// finalized it without a certificate, so marshal's floor is still below it.
+    pub(crate) fn initial_state_height(&self) -> Height {
+        self.recovery_boundary
+            .map_or(self.last_finalized_height, |boundary| {
+                self.last_finalized_height.max(boundary)
+            })
+    }
 }
 
 /// Execution-layer reads used by the DKG manager.
