@@ -288,9 +288,9 @@ This layout differs from an interleaved key–value encoding. Implementations MU
 
 Example: the map `{2: true, 1: false}` from `u8` to `bool` is `02 01 02 02 00 01`. The input `02 01 02 01 00` is rejected because the value count 1 differs from the key count 2.
 
-### 6.3 Ordered bimap
+### 6.3 Ordered bidirectional map
 
-An ordered bimap is an ordered map whose values are also pairwise distinct. It encodes exactly as an ordered map (§6.2). Its decoder also rejects the value when two keys have equal values. No Tempo wire format in this folder contains a bimap. The type appears only inside implementations.
+An ordered bidirectional map is an ordered map whose values are also pairwise distinct. It encodes exactly as an ordered map (§6.2). Its decoder also rejects the value when two keys have equal values. No Tempo wire format in this folder contains a bidirectional map. The type appears only inside implementations.
 
 ## 7. Byte utilities
 
