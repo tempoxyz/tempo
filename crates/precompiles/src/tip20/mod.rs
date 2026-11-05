@@ -729,6 +729,16 @@ impl TIP20Token {
         self._transfer(msg_sender, &Recipient::direct(Address::ZERO), amount)?;
 
         let total_supply = self.total_supply()?;
+        #[cfg(feature = "fuzz")]
+        antithesis_sdk::assert_always!(
+            total_supply >= amount,
+            "TIP-20 total supply covers a burn once the burner's balance is debited",
+            &serde_json::json!({
+                "token": self.address.to_string(),
+                "total_supply": total_supply.to_string(),
+                "amount": amount.to_string(),
+            })
+        );
         let new_supply =
             total_supply
                 .checked_sub(amount)
@@ -1534,7 +1544,18 @@ impl TIP20Token {
             )?;
         }
 
-        self.decrement_balance(TIP_FEE_MANAGER_ADDRESS, refund)?;
+        let refund_debit = self.decrement_balance(TIP_FEE_MANAGER_ADDRESS, refund);
+        #[cfg(feature = "fuzz")]
+        antithesis_sdk::assert_always!(
+            !matches!(refund_debit, Err(TempoPrecompileError::TIP20(_))),
+            "Fee manager custody covers the unused fee refund",
+            &serde_json::json!({
+                "token": self.address.to_string(),
+                "refund": refund.to_string(),
+                "actual_spending": actual_spending.to_string(),
+            })
+        );
+        refund_debit?;
         self.increment_balance(to, refund)?;
 
         Ok(())
