@@ -13,7 +13,7 @@ use commonware_cryptography::{Hasher, Sha256};
 use commonware_parallel::Rayon;
 use commonware_runtime::{
     Runner as _, Spawner as _, Strategizer as _, Supervisor as _,
-    buffer::paged::CacheRef,
+    buffer::paged::{self, CacheRef},
     tokio::{Config as RuntimeConfig, Context, Runner},
 };
 use commonware_storage::{
@@ -49,7 +49,15 @@ const ACCOUNT_PARTITION_BYTES: usize = 2;
 /// a heap `Vec` per key, about 85 bytes per key against 16 inline, which two-byte partitions do
 /// for every partition past about 33M keys; three-byte ones only past about 8.5B.
 const SLOT_PARTITION_BYTES: usize = 3;
-const PAGE_SIZE: NonZeroU16 = NonZeroU16::new(16_384).expect("non-zero");
+/// 4 KiB physical pages: random reads of single operations and Merkle nodes then cost one OS
+/// page each, and the OS page cache holds four times more of them than with 16 KiB pages.
+const PAGE_SIZE: NonZeroU16 = paged::page_size(4096);
+/// The on-disk format the store writes into [FORMAT_FILE], bumped with every change to it.
+///
+/// 2: 4 KiB pages.
+const FORMAT: u32 = 2;
+/// File in [`Config::directory`] holding the store's [FORMAT].
+const FORMAT_FILE: &str = "FORMAT";
 const ITEMS_PER_BLOB: NonZeroU64 = NonZeroU64::new(1 << 23).expect("non-zero");
 const IO_BUFFER: NonZeroUsize = NonZeroUsize::new(2 << 20).expect("non-zero");
 /// Encoded size of a [`Commit`]: number (8) ‖ hash (32) ‖ accounts size (8) ‖ slots size (8).
@@ -208,6 +216,16 @@ pub enum Error {
     /// The store thread stopped, so the operation did not run.
     #[error("the store thread stopped")]
     Stopped,
+    /// The directory holds a store of another on-disk format, such as one written before the
+    /// format was recorded.
+    #[error("the directory holds QMDB format {found:?}, expected {FORMAT}")]
+    Format {
+        /// Format recorded in the directory, or `None` when it holds files but no format.
+        found: Option<String>,
+    },
+    /// Reading or writing the format file failed.
+    #[error("reading or writing the QMDB format file failed")]
+    FormatIo(#[from] std::io::Error),
 }
 
 /// Handle to the QMDB state, run on its own commonware runtime thread.
@@ -228,6 +246,7 @@ impl Store {
     /// between committing the two databases leaves them at different blocks: opening rewinds both
     /// to the latest recorded block.
     pub fn open(config: Config) -> Result<Self, Error> {
+        check_format(&config.directory, true)?;
         let (commands, receiver) = async_mpsc::unbounded();
         let (opened_tx, opened_rx) = mpsc::channel();
         // State reads run as concurrent tasks, so the runtime gets a worker per configured thread.
@@ -269,6 +288,7 @@ impl Store {
     /// Returns whether the record changed. Fails with [`Error::NotLatestRecord`] when the latest
     /// record is of another block.
     pub fn rebind_recorded(config: &Config, number: u64, hash: B256) -> Result<bool, Error> {
+        check_format(&config.directory, false)?;
         let runtime = RuntimeConfig::new().with_storage_directory(config.directory.clone());
         let page_cache_pages = config.page_cache_pages;
         // Its own thread, like `Self::open`'s, since a runtime cannot start inside the caller's.
@@ -428,6 +448,20 @@ impl Store {
         self.call(|reply| Command::GetSlots { keys, reply })
     }
 
+    /// Reads from disk what building a batch that writes account keys `accounts` and slot keys
+    /// `slots` will read, so that building it finds it cached: each key's operation, the
+    /// predecessors of new keys, and the Merkle nodes their activity-bitmap chunks graft onto.
+    ///
+    /// Reads only the applied state, concurrently with other reads, and returns once the reads
+    /// finish. It changes nothing, so callers may pass keys that end up not being written.
+    pub fn prefetch(&self, accounts: Vec<Key>, slots: Vec<Key>) -> Result<(), Error> {
+        self.call(|reply| Command::Prefetch {
+            accounts,
+            slots,
+            reply,
+        })
+    }
+
     fn call<T: Send + 'static>(
         &self,
         command: impl FnOnce(Reply<T>) -> Command,
@@ -508,6 +542,11 @@ enum Command {
     GetSlots {
         keys: Vec<Key>,
         reply: Reply<Vec<Option<SlotValue>>>,
+    },
+    Prefetch {
+        accounts: Vec<Key>,
+        slots: Vec<Key>,
+        reply: Reply<()>,
     },
 }
 
@@ -653,6 +692,11 @@ impl Actor {
                 Command::GetSlots { keys, reply } => {
                     self.spawn_read(self.slots.clone(), keys, reply)
                 }
+                Command::Prefetch {
+                    accounts,
+                    slots,
+                    reply,
+                } => self.spawn_prefetch(accounts, slots, reply),
             }
         }
         if let Some(db) = self.accounts.write().await.take()
@@ -694,6 +738,22 @@ impl Actor {
             reply(match db.as_ref() {
                 Some(db) => db.read_many(&keys).await,
                 None => Err(Error::Stopped),
+            });
+        });
+    }
+
+    /// Serves a prefetch on its own task, like [`Self::spawn_read`].
+    fn spawn_prefetch(&self, accounts: Vec<Key>, slots: Vec<Key>, reply: Reply<()>) {
+        let (accounts_db, slots_db) = (self.accounts.clone(), self.slots.clone());
+        self.context.child("prefetch").spawn(move |_| async move {
+            let (accounts_db, slots_db) = futures::join!(accounts_db.read(), slots_db.read());
+            reply(match (accounts_db.as_ref(), slots_db.as_ref()) {
+                (Some(accounts_db), Some(slots_db)) => try_join!(
+                    async { Ok::<_, Error>(accounts_db.prefetch(&accounts).await?) },
+                    async { Ok::<_, Error>(slots_db.prefetch(&slots).await?) },
+                )
+                .map(|_| ()),
+                _ => Err(Error::Stopped),
             });
         });
     }
@@ -1057,6 +1117,34 @@ impl<const N: usize, const P: usize> Readable for Db<N, P> {
     }
 }
 
+/// Checks that `directory` holds no store or one of [FORMAT], and records [FORMAT] in a new one
+/// when `create` is set.
+fn check_format(directory: &std::path::Path, create: bool) -> Result<(), Error> {
+    let path = directory.join(FORMAT_FILE);
+    match std::fs::read_to_string(&path) {
+        Ok(found) if found.trim() == FORMAT.to_string() => Ok(()),
+        Ok(found) => Err(Error::Format {
+            found: Some(found.trim().to_owned()),
+        }),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            let holds_files = match std::fs::read_dir(directory) {
+                Ok(mut entries) => entries.next().is_some(),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => false,
+                Err(err) => return Err(err.into()),
+            };
+            if holds_files {
+                return Err(Error::Format { found: None });
+            }
+            if create {
+                std::fs::create_dir_all(directory)?;
+                std::fs::write(&path, format!("{FORMAT}\n"))?;
+            }
+            Ok(())
+        }
+        Err(err) => Err(err.into()),
+    }
+}
+
 /// Returns the configuration of the commit journal.
 fn commits_config(page_cache: CacheRef) -> JournalConfig {
     JournalConfig {
@@ -1190,6 +1278,53 @@ mod tests {
         assert_eq!(status.applied, Some(2));
         assert_eq!(status.root, root2);
         assert_eq!(status.pending, 0);
+    }
+
+    #[test]
+    fn prefetch_changes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = imported(dir.path(), 8);
+        let writes = || vec![write(2, Some(20)), write(4, Some(4))];
+        let expected = {
+            let other = tempfile::tempdir().unwrap();
+            imported(other.path(), 8)
+                .build(block(1, 1, 0), writes().into())
+                .unwrap()
+                .root()
+        };
+        let status = store.status().unwrap();
+
+        // Existing, new and absent keys, in both databases.
+        let keys = vec![Key::new([2; 32]), Key::new([4; 32]), Key::new([9; 32])];
+        store.prefetch(keys.clone(), keys).unwrap();
+
+        assert_eq!(store.status().unwrap(), status);
+        assert_eq!(
+            store.build(block(1, 1, 0), writes().into()).unwrap().root(),
+            expected
+        );
+    }
+
+    #[test]
+    fn open_refuses_other_formats() {
+        let dir = tempfile::tempdir().unwrap();
+        drop(imported(dir.path(), 8));
+        Store::open(config(dir.path(), 8)).unwrap();
+
+        std::fs::write(dir.path().join(FORMAT_FILE), "1").unwrap();
+        assert!(matches!(
+            Store::open(config(dir.path(), 8)),
+            Err(Error::Format { found: Some(found) }) if found == "1"
+        ));
+        std::fs::remove_file(dir.path().join(FORMAT_FILE)).unwrap();
+        assert!(matches!(
+            Store::open(config(dir.path(), 8)),
+            Err(Error::Format { found: None })
+        ));
+        assert!(matches!(
+            Store::rebind_recorded(&config(dir.path(), 8), 0, B256::ZERO),
+            Err(Error::Format { found: None })
+        ));
     }
 
     #[test]

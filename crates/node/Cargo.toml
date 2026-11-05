@@ -30,6 +30,7 @@ tempo-qmdb-state.workspace = true
 thiserror.workspace = true
 
 reth-chainspec.workspace = true
+crossbeam-channel.workspace = true
 reth-errors.workspace = true
 reth-execution-types.workspace = true
 reth-ethereum = { workspace = true, features = ["node", "rpc"] }

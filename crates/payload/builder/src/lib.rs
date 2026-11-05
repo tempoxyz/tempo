@@ -788,6 +788,11 @@ where
             Arc::new(finish_provider.hashed_post_state(execution_state)?)
         };
 
+        // Once QMDB is active its handle only prefetches, so the builder never waits on it.
+        let qmdb_active = self
+            .qmdb
+            .as_ref()
+            .is_some_and(|qmdb| qmdb.is_active_at(attributes.timestamp));
         let (state_root_outcome, sparse_trie_state_root_wait_elapsed) =
             if self.config.skip_state_root {
                 debug!(
@@ -797,7 +802,7 @@ where
                     "skipping payload state-root computation"
                 );
                 None
-            } else if let Some(mut handle) = state_root_handle {
+            } else if let Some(mut handle) = state_root_handle.filter(|_| !qmdb_active) {
                 let state_root_wait_start = Instant::now();
                 let _span = debug_span!(target: "payload_builder", "await_state_root").entered();
                 match handle.state_root() {

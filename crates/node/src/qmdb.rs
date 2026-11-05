@@ -16,7 +16,7 @@
 //! [`QmdbStateBackend`] serves the applied QMDB state as reth's current state, so a node launched
 //! with it keeps no hashed state tables or tries at all.
 
-use std::{path::PathBuf, sync::Arc, time::Instant};
+use std::{collections::HashSet, path::PathBuf, sync::Arc, time::Instant};
 
 use alloy::consensus::BlockHeader as _;
 use alloy_primitives::{B256, U256};
@@ -27,13 +27,14 @@ use reth_engine_tree::{
     persistence::PersistenceHook,
     tree::state_root_strategy::{
         DefaultStateRootStrategy, LazyHashedPostState, PayloadStateRootHandle,
-        PayloadStateRootJobContext, PreparedStateRootJob, StateRootJob, StateRootJobContext,
-        StateRootJobOutcome, StateRootStrategy,
+        PayloadStateRootJobContext, PreparedStateRootJob, StateAccessHint, StateRootHandle,
+        StateRootJob, StateRootJobContext, StateRootJobOutcome, StateRootMessage,
+        StateRootStrategy, StateRootTaskCancelGuard,
     },
 };
 use reth_ethereum::tasks::TaskExecutor;
 use reth_evm::{ConfigureEvm, EvmEnv as _};
-use reth_execution_types::{BlockExecutionOutput, BlockExt};
+use reth_execution_types::{BlockExecutionOutput, BlockExt, state_update_to_hashed_post_state};
 use reth_metrics::Metrics;
 use reth_primitives_traits::{Account, RecoveredBlock};
 use reth_provider::{
@@ -43,7 +44,7 @@ use reth_provider::{
 };
 use reth_tracing::tracing::{debug, info, warn};
 use reth_trie::hashed_cursor::HashedPostStateCursorFactory;
-use reth_trie_common::{HashedPostStateSorted, updates::TrieUpdates};
+use reth_trie_common::{HashedPostState, HashedPostStateSorted, updates::TrieUpdates};
 use reth_trie_db::{DatabaseHashedCursorFactory, DatabaseHashedPostState as _};
 use tempo_primitives::{Block, TempoPrimitives, TempoReceipt};
 use tempo_qmdb_state::{
@@ -112,7 +113,10 @@ where
                 store: self.store.clone(),
                 metrics: self.metrics.clone(),
             };
-            return Ok(PreparedStateRootJob::new(Box::new(job), None));
+            let mut prefetch = spawn_prefetch(self.store.clone(), self.metrics.clone());
+            return Ok(PreparedStateRootJob::new(Box::new(job), None)
+                .with_execution_hook(prefetch.take_execution_hook())
+                .with_hint_stream(prefetch.take_hint_stream()));
         }
 
         // Keep the default job's update streams: the MPT root still decides validity.
@@ -144,9 +148,17 @@ where
         ctx: PayloadStateRootJobContext<'_, TempoPrimitives, P>,
     ) -> ProviderResult<Option<PayloadStateRootHandle>> {
         // Once active, the payload builder builds the QMDB batch from its execution output
-        // itself: no sparse-trie task is needed.
+        // itself. The handle only streams its execution into the prefetch and never yields a
+        // root.
         if self.is_active_at(ctx.timestamp()) {
-            return Ok(None);
+            let mut prefetch = spawn_prefetch(self.store.clone(), self.metrics.clone());
+            let (_, state_root_rx) = std::sync::mpsc::channel();
+            return Ok(Some(PayloadStateRootHandle::new(
+                "qmdb-prefetch",
+                Some(prefetch.take_execution_hook()),
+                state_root_rx,
+                None,
+            )));
         }
         self.default.prepare_payload_builder(ctx)
     }
@@ -222,6 +234,122 @@ impl StateRootJob<TempoPrimitives> for ActiveJob {
         Ok(
             StateRootJobOutcome::new(batch.root(), Arc::new(TrieUpdates::default()))
                 .with_ext(Some(BlockExt::new(batch))),
+        )
+    }
+}
+
+/// Streams a block's execution into [`Store::prefetch`] while it runs, the way reth's sparse-trie
+/// task reveals proofs as transactions execute, so that building the block's batch finds what it
+/// reads cached.
+///
+/// The returned handle's execution hook carries each transaction's state update and its hint
+/// stream the prewarming hints. The task prefetches the keys of everything that arrived while its
+/// previous prefetch ran, and ends when the hook finishes the stream or both are dropped.
+fn spawn_prefetch(store: Arc<Store>, metrics: Arc<QmdbMetrics>) -> StateRootHandle {
+    let (updates_tx, updates_rx) = crossbeam_channel::unbounded();
+    // Nothing waits on a root or a hashed state from this task, so their senders drop here.
+    let (cancel_guard, _) = StateRootTaskCancelGuard::channel();
+    let (_, state_root_rx) = std::sync::mpsc::channel();
+    let (_, hashed_state_rx) = std::sync::mpsc::channel();
+    let handle = StateRootHandle::new(
+        B256::ZERO,
+        updates_tx,
+        cancel_guard,
+        state_root_rx,
+        hashed_state_rx,
+    );
+    let prefetch = move || {
+        let mut keys = PrefetchKeys::default();
+        let mut finished = false;
+        while !finished && let Ok(message) = updates_rx.recv() {
+            for message in std::iter::once(message).chain(updates_rx.try_iter()) {
+                finished |= keys.add(message);
+            }
+            let (accounts, slots) = keys.take();
+            if accounts.is_empty() && slots.is_empty() {
+                continue;
+            }
+            let started = Instant::now();
+            if let Err(err) = store.prefetch(accounts, slots) {
+                debug!(target: "qmdb", %err, "QMDB prefetch failed");
+                return;
+            }
+            metrics.prefetch_duration.record(started.elapsed());
+        }
+    };
+    if let Err(err) = std::thread::Builder::new()
+        .name("qmdb-prefetch".into())
+        .spawn(prefetch)
+    {
+        warn!(target: "qmdb", %err, "failed spawning the QMDB prefetch");
+    }
+    handle
+}
+
+/// Keys of one block that the prefetch has yet to read, and those it already queued.
+#[derive(Default)]
+struct PrefetchKeys {
+    accounts: Vec<layout::Key>,
+    slots: Vec<layout::Key>,
+    seen_accounts: HashSet<layout::Key>,
+    seen_slots: HashSet<layout::Key>,
+}
+
+impl PrefetchKeys {
+    /// Queues the keys `message` names that were not queued before. Returns whether the
+    /// message ends the update stream.
+    fn add(&mut self, message: StateRootMessage) -> bool {
+        match message {
+            StateRootMessage::PrefetchProofs(targets) => {
+                let hint = StateAccessHint::from(targets);
+                for hashed_address in hint.accounts {
+                    self.account(hashed_address);
+                }
+                for (hashed_address, hashed_slots) in hint.storages {
+                    for hashed_slot in hashed_slots {
+                        self.slot(hashed_address, hashed_slot);
+                    }
+                }
+            }
+            StateRootMessage::StateUpdate(update) => {
+                self.hashed(state_update_to_hashed_post_state(&update));
+            }
+            StateRootMessage::HashedStateUpdate(state) => self.hashed(state),
+            StateRootMessage::FinishedStateUpdates => return true,
+        }
+        false
+    }
+
+    fn hashed(&mut self, state: HashedPostState) {
+        for hashed_address in state.accounts.keys() {
+            self.account(*hashed_address);
+        }
+        for (hashed_address, storage) in &state.storages {
+            for hashed_slot in storage.storage.keys() {
+                self.slot(*hashed_address, *hashed_slot);
+            }
+        }
+    }
+
+    fn account(&mut self, hashed_address: B256) {
+        let key = layout::account_key(hashed_address);
+        if self.seen_accounts.insert(key.clone()) {
+            self.accounts.push(key);
+        }
+    }
+
+    fn slot(&mut self, hashed_address: B256, hashed_slot: B256) {
+        let key = layout::slot_key(hashed_address, hashed_slot);
+        if self.seen_slots.insert(key.clone()) {
+            self.slots.push(key);
+        }
+    }
+
+    /// Takes the queued keys, which stay seen.
+    fn take(&mut self) -> (Vec<layout::Key>, Vec<layout::Key>) {
+        (
+            std::mem::take(&mut self.accounts),
+            std::mem::take(&mut self.slots),
         )
     }
 }
@@ -575,6 +703,8 @@ fn record_shadow_build(
 struct QmdbMetrics {
     /// Time to diff, build and merkleize one block's batch.
     build_duration: Histogram,
+    /// Time of one prefetch of keys that a block's execution streamed.
+    prefetch_duration: Histogram,
     /// Shadow builds skipped because QMDB has not caught up with the block's parent.
     shadow_skipped: Counter,
     /// Shadow builds that failed.

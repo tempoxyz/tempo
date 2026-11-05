@@ -23,6 +23,8 @@ const E2E_BLOAT_TMP_DIR = "/reth-bench-a/.bench-tmp/e2e-local-init"
 const TRACY_SAMPLING_HZ = 18999
 const E2E_BLOAT_FREE_MARGIN_MIB = 51200
 const E2E_QMDB_SIZE_MULTIPLIER = 3
+# On-disk format of the QMDB store (tempo-qmdb-state FORMAT): a snapshot of another is reimported.
+const E2E_QMDB_FORMAT = 2
 # Measured peak import working set is ~4.8x bloat per side (ETL + DB + static files + rocksdb).
 const E2E_BLOAT_IMPORT_WORKING_SET_MULTIPLIER = 5
 const E2E_DEFAULT_BLOAT = 100
@@ -391,7 +393,7 @@ def qmdb-import-snapshot [tempo_bin: string, genesis: string, datadir: string, b
     }
     qmdb-import $tempo_bin $genesis $datadir
     let marker_path = $"($datadir)/($BENCH_META_SUBDIR)/marker.json"
-    open $marker_path | upsert qmdb_state true | to json | save -f $marker_path
+    open $marker_path | upsert qmdb_state true | upsert qmdb_format $E2E_QMDB_FORMAT | to json | save -f $marker_path
 }
 
 def bench-save-e2e-meta [datadir: string, meta_dir: string, marker: record, genesis_files: list] {
@@ -1690,7 +1692,10 @@ def "main e2e" [
         [
             { state_path: $E2E_A_STATE_PATH, mount: $E2E_A_MOUNT, datadir: $a_db }
             { state_path: $E2E_B_STATE_PATH, mount: $E2E_B_MOUNT, datadir: $b_db }
-        ] | where { |side| not (read-bench-marker $side.datadir | get -o qmdb_state | default false) }
+        ] | where { |side|
+            let marker = (read-bench-marker $side.datadir)
+            not (($marker | get -o qmdb_state | default false) and ($marker | get -o qmdb_format | default 1) == $E2E_QMDB_FORMAT)
+        }
     } else { [] }
     if ($qmdb_sides | is-not-empty) {
         let snapshot_features = (merge-e2e-features $DEFAULT_FEATURES $features)
