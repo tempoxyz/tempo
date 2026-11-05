@@ -196,7 +196,7 @@ TempoConsensusContext = rlp([
 ])
 ```
 
-All four fields are required (no optionals). `proposer` MUST be exactly 32 bytes that decode as an Ed25519 verification key under `commonware_cryptography::ed25519::PublicKey` (commonware 2026.9.0). That is, `CompressedEdwardsY(proposer).decompress()` (curve25519-dalek) succeeds: the bytes are the compressed encoding of a curve point, with non-canonical encodings accepted per ZIP-215. A context whose `proposer` fails this check is decode-invalid, which makes the whole header decode-invalid.
+All four fields are required (no optionals). `proposer` MUST be exactly 32 bytes that decode as an Ed25519 public key under [commonware/cryptography.md §3.2](commonware/cryptography.md#32-public-key-decoding): the bytes are the compressed encoding of a curve point, with non-canonical encodings accepted per ZIP-215. A context whose `proposer` fails this check is decode-invalid, which makes the whole header decode-invalid.
 
 Presence by fork:
 

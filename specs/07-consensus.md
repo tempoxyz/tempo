@@ -14,27 +14,25 @@ A rule marked *(validator voting rule)* decides whether an honest validator vote
 
 ## 2. Normative dependencies
 
-The following components are normative by reference, pinned to **commonware 2026.9.0** (tag `v2026.9.0` of `commonwarexyz/monorepo`, commit `d476a2361ce6840d2b9d0aa6fb30a924429046d4`). A conforming client MUST reproduce their wire formats and algorithms bit for bit.
+Tempo's consensus is built from components specified in the commonware chapters of this spec, which restate the commonware library that the implementation uses. A conforming client MUST reproduce their wire formats and algorithms bit for bit.
 
-| Component | Crate and item |
+| Component | Specified in |
 |---|---|
-| Codec (varint `UInt`, `bool`, fixed arrays, `Vec` with length prefix, `RangeCfg`) | `commonware-codec` |
-| Ordered sets (sorted and deduplicated, decode rejects unsorted or duplicate items) | `commonware_utils::ordered::Set` |
-| `union` (plain concatenation), `union_unique` (`varint(len(ns)) ‖ ns ‖ msg`), `modulo` (big-endian bytes mod n) | `commonware_utils` |
-| Fault model: `f = (n − 1) / 3` (integer division), quorum `q = n − f` | `commonware_utils::N3f1` |
-| Epoch arithmetic and phases | `commonware_consensus::types::{Epoch, View, Round, Height, FixedEpocher, EpochInfo, EpochPhase}` |
-| Simplex BFT (votes, certificates, view changes, locking, nullification, skip) | `commonware_consensus::simplex` (`Engine`, `config::Config`, `types::{Proposal, Context, Vote, Certificate, Notarization, Nullification, Finalization}`) |
-| Threshold VRF signing scheme | `commonware_consensus::simplex::scheme::bls12381_threshold::vrf::Scheme<ed25519::PublicKey, MinSig>` |
-| Leader election | `commonware_consensus::simplex::elector::{Random<Sha256>, RandomVersion}` |
-| Marshal wrapper (epoch membership, parent linkage, boundary re-proposal) | `commonware_consensus::marshal::standard::Inline` |
-| BLS12-381 MinSig (signatures in G1, 48 bytes compressed; public keys in G2, 96 bytes compressed), hash-to-curve DST `BLS_SIG_BLS12381G1_XMD:SHA-256_SSWU_RO_POP_` | `commonware_cryptography::bls12381::primitives::{variant::MinSig, ops}` |
-| DKG and resharing | `commonware_cryptography::bls12381::dkg::feldman_desmedt::{Info, Mode, Reveal, Dealer, Player, DealerPubMsg, DealerPrivMsg, PlayerAck, DealerLog, SignedDealerLog, Logs, Output, observe}` |
-| Public polynomial and share | `commonware_cryptography::bls12381::primitives::{sharing::Sharing, group::Share}` |
-| Ed25519 (32-byte public keys, `Ord` = lexicographic order of the 32 bytes; ZIP-215 verification) | `commonware_cryptography::ed25519` |
+| Codec (varints, fixed-width integers, `bool`, `Option`, fixed arrays, length-prefixed sequences, decode bounds) | [codec.md §3–§5](commonware/codec.md#3-varint), decoding rules [§11](commonware/codec.md#11-decoding-rules) |
+| Ordered sets (sorted and deduplicated; decoding rejects unsorted or duplicate items) | [codec.md §6.1](commonware/codec.md#61-ordered-set) |
+| `union` (plain concatenation), `union_unique` (`varint(len(ns)) ‖ ns ‖ msg`), `modulo` (big-endian bytes mod n) | [codec.md §7.1](commonware/codec.md#71-union), [§7.2](commonware/codec.md#72-union_unique), [§7.3](commonware/codec.md#73-modulo) |
+| Fault model `N3f1`: `f = (n − 1) / 3` (integer division), quorum `q = n − f` | [codec.md §8](commonware/codec.md#8-fault-model-n3f1) |
+| Epoch, view, height and round; fixed-length epochs and phases | [codec.md §9.1](commonware/codec.md#91-epoch-view-height-and-round), [§10](commonware/codec.md#10-fixed-length-epochs) |
+| Simplex BFT (data types, votes, certificates, view changes, locking, nullification, skip) | [simplex.md](commonware/simplex.md): types [§3](commonware/simplex.md#3-data-types-and-encodings), protocol [§8](commonware/simplex.md#8-protocol) |
+| Threshold VRF signing scheme | [cryptography.md §6](commonware/cryptography.md#6-threshold-vrf-scheme); its use in Simplex: [simplex.md §4](commonware/simplex.md#4-signing), [§5](commonware/simplex.md#5-verification-and-assembly) |
+| Leader election | [simplex.md §6](commonware/simplex.md#6-leader-election) |
+| Marshal wrapper (epoch membership, parent linkage, boundary re-proposal) | [simplex.md §10](commonware/simplex.md#10-marshal-inline-wrapper) |
+| BLS12-381 MinSig (signatures in G1, 48 bytes compressed; public keys in G2, 96 bytes compressed), hash-to-curve DST `BLS_SIG_BLS12381G1_XMD:SHA-256_SSWU_RO_POP_` | [cryptography.md §4](commonware/cryptography.md#4-bls12-381) (hash to curve [§4.4](commonware/cryptography.md#44-hash-to-curve), signing and verification [§4.5](commonware/cryptography.md#45-minsig-signing-and-verification)) |
+| DKG and resharing | [dkg.md](commonware/dkg.md) |
+| Public polynomial and share | [cryptography.md §5.4](commonware/cryptography.md#54-public-polynomial-and-sharing-encoding), [§5.2](commonware/cryptography.md#52-share-encoding); `Sharing` in a DKG output: [dkg.md §11.2](commonware/dkg.md#112-sharing) |
+| Ed25519 (32-byte public keys ordered by their bytes; ZIP-215 verification) | [cryptography.md §3](commonware/cryptography.md#3-ed25519) |
 
-Every BLS signature in this chapter is `ops::sign_message::<MinSig>(sk, ns, msg)`: the G1 hash of `union_unique(ns, msg)` under the DST above, multiplied by the secret scalar. Threshold partials use `ops::threshold::sign_message` with the same message.
-
-Reference implementation: Cargo.toml (commonware-* = "2026.9.0").
+Every BLS signature in this chapter is `bls_sign(sk, ns, msg)` of [cryptography.md §4.5](commonware/cryptography.md#45-minsig-signing-and-verification): the G1 hash of `union_unique(ns, msg)` under the DST above, multiplied by the secret scalar. Threshold partials ([cryptography.md §5.6](commonware/cryptography.md#56-partial-signatures)) sign the same message with a share.
 
 ## 3. Constants
 
@@ -42,9 +40,9 @@ Reference implementation: Cargo.toml (commonware-* = "2026.9.0").
 |---|---|---|
 | `NAMESPACE` | `b"TEMPO"` | Simplex scheme namespace and DKG `Info` namespace |
 | Simplex vote namespaces | `b"TEMPO_NOTARIZE"`, `b"TEMPO_NULLIFY"`, `b"TEMPO_FINALIZE"`, `b"TEMPO_SEED"` | `union(NAMESPACE, suffix)` (§5.2) |
-| P2P handshake namespace | `union_unique(b"TEMPO", b"_P2P")` | Used only by the transport; see 08-p2p-and-sync.md |
+| P2P handshake namespace | `union_unique(b"TEMPO", b"_P2P")` | Used only by the transport; see [08-p2p-and-sync.md](08-p2p-and-sync.md) and [p2p.md §4.1](commonware/p2p.md#41-roles-identities-and-namespace) |
 | `L` (epoch length) | 21,600 blocks on mainnet (4217) and on moderato (42431) | Genesis `config.epochLength`; see 01-chain-and-forks.md |
-| Fault model | `N3f1` | Simplex quorum and DKG thresholds |
+| Fault model | [`N3f1`](commonware/codec.md#8-fault-model-n3f1) | Simplex quorum and DKG thresholds |
 | `MAX_VALIDATORS` | 65,535 (`u16::MAX`) | Decode bound for player sets in `OnchainDkgOutcome` |
 | `TEMPO_MAXIMUM_EXTRA_DATA_SIZE` | 10,240 bytes | EL cap on header `extra_data` (05-block-execution.md); every DKG artifact MUST fit |
 | Mainnet network identity checkpoint | `from_epoch = 2042`, identity `0x8627d33753b0d90a8eae75363d6b393ab9204076545b3af6caf831903e4bedde4374f1106551b481fb5ea35e59d51c92165c963881c718216e3e4570a307c08885af55c274f19488f709afe021ca3d9e567138ab097860d9146e895407bea182` | `mainnet-network-identity.json` (§8.4) |
@@ -58,7 +56,7 @@ Reference implementation: crates/consensus/src/config.rs, crates/dkg-onchain-art
 
 ### 4.1 Mapping heights to epochs
 
-Epochs have a fixed length `L` (`FixedEpocher`). With integer division:
+Epochs have a fixed length `L` ([codec.md §10](commonware/codec.md#10-fixed-length-epochs)). With integer division:
 
 ```python
 def epoch_of(h: int) -> int:        return h // L
@@ -84,7 +82,7 @@ def boundary_timestamp(E):          return header(preceding_boundary_height(E)).
 
 ### 4.2 Phases
 
-The phase of a height within its epoch (`EpochInfo::phase`):
+The phase of a height within its epoch ([codec.md §10.2](commonware/codec.md#102-phases)):
 
 | Phase | Condition | Mainnet heights in epoch `e` (`L = 21600`) |
 |---|---|---|
@@ -94,16 +92,16 @@ The phase of a height within its epoch (`EpochInfo::phase`):
 
 Phases drive DKG timing (§9.4). They do not affect block validity.
 
-Reference implementation: commonware consensus/src/types.rs (FixedEpocher, EpochInfo::phase); crates/consensus/src/consensus/engine.rs (FixedEpocher::new(epoch_length)); crates/consensus/src/dkg/manager/actor/mod.rs (latest_boundary_at_or_before).
+Reference implementation: crates/consensus/src/consensus/engine.rs (FixedEpocher::new(epoch_length)); crates/consensus/src/dkg/manager/actor/mod.rs (latest_boundary_at_or_before).
 
 ## 5. Simplex instantiation
 
 ### 5.1 Block ↔ proposal mapping
 
-- The Simplex **digest** of a block is its 32-byte block hash `keccak256(rlp(TempoHeader))` (02-encoding.md). The digest is the commonware `Digest` codec: 32 raw bytes.
-- A **Proposal** is `{round: Round(epoch, view), parent: View, payload: Digest}`, encoded as `varint(epoch) ‖ varint(view) ‖ varint(parent_view) ‖ payload[32]`.
+- The Simplex **digest** of a block is its 32-byte block hash `keccak256(rlp(TempoHeader))` (02-encoding.md). It is encoded as 32 raw bytes ([simplex.md §3.2](commonware/simplex.md#32-digest)).
+- A **Proposal** is `{round: Round(epoch, view), parent: View, payload: Digest}`, encoded as `varint(epoch) ‖ varint(view) ‖ varint(parent_view) ‖ payload[32]` ([simplex.md §3.3](commonware/simplex.md#33-proposal)).
 - A block's **parent digest** is `header.parent_hash` and its **height** is `header.number`.
-- The Simplex **Context** of a proposal is `{round: (epoch, view), leader: ed25519 public key, parent: (parent_view, parent_digest)}`.
+- The Simplex **Context** of a proposal is `{round: (epoch, view), leader: ed25519 public key, parent: (parent_view, parent_digest)}` ([simplex.md §3.4](commonware/simplex.md#34-context)).
 - On the consensus network a block travels as the raw RLP of the sealed execution block (header and body), with no other framing. A receiver MUST reject an encoding that does not decode, whose body does not match the header commitments (transactions root, withdrawals root and the other body checks of 05-block-execution.md), or whose header contains a `block_access_list_hash`.
 
 #### Header consensus context
@@ -116,17 +114,17 @@ A validator voting on a proposal MUST require that the context is present and eq
 
 Every mainnet block a validator votes on under T13 rules has its timestamp after T4, so the rule above (present and equal) applies to them. A block whose header has no context maps to a Context that can never match a real round. The reference implementation uses leader = the Ed25519 public key of the seed-0 private key, round `(0, 0)` and parent `(0, 0x00…00)`, so its verification always fails.
 
-Reference implementation: crates/consensus/src/consensus/digest.rs, crates/consensus/src/consensus/block.rs, crates/primitives/src/header.rs, commonware consensus/src/simplex/types.rs (Proposal).
+Reference implementation: crates/consensus/src/consensus/digest.rs, crates/consensus/src/consensus/block.rs, crates/primitives/src/header.rs.
 
 ### 5.2 Signing scheme and signing domains
 
-Each epoch's Simplex instance uses `bls12381_threshold::vrf::Scheme<ed25519::PublicKey, MinSig>` with namespace `NAMESPACE = b"TEMPO"`:
+Each epoch's Simplex instance uses the threshold VRF scheme over BLS12-381 MinSig ([cryptography.md §6](commonware/cryptography.md#6-threshold-vrf-scheme)), with Ed25519 participant keys and namespace `NAMESPACE = b"TEMPO"`:
 
 - **Participants** of epoch `E` are `outcome(E).output.players`, the ordered set of Ed25519 keys from the outcome that opened `E` (§8.2). A participant's index is its position in that set.
-- **Group public key** (network identity) of epoch `E` is `outcome(E).output.public.public()`, the constant term of the public polynomial (96-byte G2).
+- **Group public key** (network identity) of epoch `E` is `outcome(E).output.public.public()`, the constant term of the public polynomial (96-byte G2; [cryptography.md §5.4](commonware/cryptography.md#54-public-polynomial-and-sharing-encoding)).
 - A validator with a share for epoch `E` is a **signer**; any other node runs the epoch as a **verifier**.
 
-Each vote carries two threshold partial signatures made with the signer's share: a *vote signature* and a *seed signature*. Each certificate carries the two recovered threshold signatures. The signed messages (each hashed as `union_unique(ns, msg)`, §2) are:
+Each vote carries two threshold partial signatures made with the signer's share: a *vote signature* and a *seed signature*. Each certificate carries the two recovered threshold signatures. The signed messages (each hashed as `union_unique(ns, msg)`, §2; namespaces and subjects as in [simplex.md §4](commonware/simplex.md#4-signing)) are:
 
 | Subject | Vote namespace `ns` | Vote message | Seed namespace | Seed message |
 |---|---|---|---|---|
@@ -134,29 +132,29 @@ Each vote carries two threshold partial signatures made with the signer's share:
 | Nullify / Nullification | `b"TEMPO_NULLIFY"` | `encode(Round)` | `b"TEMPO_SEED"` | `encode(Round)` |
 | Finalize / Finalization | `b"TEMPO_FINALIZE"` | `encode(Proposal)` | `b"TEMPO_SEED"` | `encode(proposal.round)` |
 
-`encode(Round)` is `varint(epoch) ‖ varint(view)`. A certificate is valid iff both recovered signatures verify against the epoch's group public key; the reference implementation batch-verifies the two (`batch::verify_same_signer`). The threshold is the `N3f1` quorum `q = n − f` of the epoch's `n` participants, and so is the number of votes needed for each certificate.
+`encode(Round)` is `varint(epoch) ‖ varint(view)`. A certificate is valid iff both recovered signatures verify against the epoch's group public key ([cryptography.md §6.5](commonware/cryptography.md#65-verifying-certificates); the two MAY be batch-verified, [§4.6](commonware/cryptography.md#46-batch-verification)). The threshold is the `N3f1` quorum `q = n − f` of the epoch's `n` participants ([codec.md §8](commonware/codec.md#8-fault-model-n3f1)), and so is the number of votes needed for each certificate ([cryptography.md §6.6](commonware/cryptography.md#66-assembling-a-certificate)).
 
 Ed25519 keys sign no Simplex votes. They authenticate p2p connections (08-p2p-and-sync.md), DKG acknowledgements and dealer logs (§9), and ValidatorConfigV2 operations.
 
-Reference implementation: crates/consensus/src/epoch/manager/actor.rs (enter), commonware consensus/src/simplex/scheme/mod.rs (namespaces), consensus/src/simplex/scheme/bls12381_threshold/vrf.rs (sign, verify_certificate).
+Reference implementation: crates/consensus/src/epoch/manager/actor.rs (enter).
 
 ### 5.3 Epoch-scoped instances
 
-Each epoch `E` runs its own Simplex instance with this configuration:
+Each epoch `E` runs its own Simplex instance with this configuration (parameter meanings and constraints: [simplex.md §7](commonware/simplex.md#7-engine-configuration)):
 
 | Parameter | Value | Interop-relevant |
 |---|---|---|
 | `epoch` | `E` | yes |
-| `floor` | `Floor::Genesis(hash(preceding_boundary_height(E)))`: the hash of block `last(E−1)`, or the genesis hash for `E = 0` | yes |
+| `floor` | a genesis floor at view 0 whose digest is `hash(preceding_boundary_height(E))`: the hash of block `last(E−1)`, or the genesis hash for `E = 0` | yes |
 | `scheme` | §5.2 with the participants and polynomial of `outcome(E)` | yes |
-| `elector` | `elector::Random::<Sha256>::new(version(E))` (§6) | yes |
+| `elector` | the Random elector (SHA-256) with version `version(E)` (§6) | yes |
 | `leader_timeout` | 1,200 ms | no (liveness) |
 | `certification_timeout` | 2 s | no |
 | `timeout_retry` (nullify rebroadcast) | 10 s | no |
 | `fetch_timeout` | 2 s | no |
 | `view_retention` (activity timeout) | 256 views | no |
-| `skip` | `SkipPolicy::Enabled { timeout: 11.2 s, budget: SkipBudget::Participants }` | no |
-| `forward` | `ForwardPolicy::Disabled` | no |
+| `skip` | enabled, skip timeout 11.2 s, skip budget `n` (the number of participants) | no |
+| `forward` | disabled | no |
 | `track_historical_votes` | true | no |
 
 Parameters marked "no" are local policy. Validators SHOULD use the listed values, because very different timeouts harm liveness, but they do not change which blocks are valid. The engine requires `certification_timeout > leader_timeout`, and `skip.timeout` greater than both `certification_timeout` and `timeout_retry`.
@@ -165,11 +163,11 @@ Within an epoch, views start at 1. The floor sits at view 0. The first block of 
 
 Block-to-epoch membership *(validator voting rule)*: a proposal in round `(E, v)` is acceptable only if its block's height is in epoch `E`. Its parent must be the block named by the context's parent digest, with height exactly one less (§13).
 
-**Boundary re-proposal.** When the parent chosen for a proposal in epoch `E` is the boundary block `last(E)`, the leader MUST NOT build a new block. It re-proposes the boundary block: the proposal's payload equals `context.parent.1`, the parent digest. A proposal whose payload equals its parent digest is valid iff the block it names has height `last(E)`. The application does not verify it again. So the boundary block can be notarized and finalized in a later view than the one recorded in its header `consensus_context`, and no block above `last(E)` is ever proposed in epoch `E`.
+**Boundary re-proposal.** When the parent chosen for a proposal in epoch `E` is the boundary block `last(E)`, the leader MUST NOT build a new block. It re-proposes the boundary block: the proposal's payload equals `context.parent.1`, the parent digest. A proposal whose payload equals its parent digest is valid iff the block it names has height `last(E)`. The application does not verify it again ([simplex.md §10.2](commonware/simplex.md#102-verifyctx-d)). So the boundary block can be notarized and finalized in a later view than the one recorded in its header `consensus_context`, and no block above `last(E)` is ever proposed in epoch `E`.
 
 **Certification (Before T14).** The verification mode is *immediate*: the application's verify (§13) completes before the node sends its notarize vote, and certify returns once the block is available locally. (Deferred verification, the default from T14, is out of scope. TIP-1031 lets a validator keep synchronous verification in any case.)
 
-Reference implementation: crates/consensus/src/epoch/manager/actor.rs (enter), crates/consensus/src/args.rs (defaults, validate_simplex_timing, VerificationMode), crates/consensus/src/consensus/application/mod.rs, commonware consensus/src/marshal/standard/{inline.rs, validation.rs}.
+Reference implementation: crates/consensus/src/epoch/manager/actor.rs (enter), crates/consensus/src/args.rs (defaults, validate_simplex_timing, VerificationMode), crates/consensus/src/consensus/application/mod.rs.
 
 ## 6. Leader election
 
@@ -178,44 +176,44 @@ The leader of round `(E, v)` is participant `players[idx]` of epoch `E` (§5.2),
 ```python
 def leader_index(E: int, v: int, n: int, seed_sig: bytes | None, version: str) -> int:
     # seed_sig: the 48-byte compressed G1 seed signature of round (E, v-1), taken from the
-    # certificate (notarization, nullification or finalization) for view v-1 that let the node
-    # enter view v. It is None only for v == 1.
+    # first valid certificate (notarization, nullification or finalization) of view v-1 that
+    # the node obtained. It is None only for v == 1.
     if seed_sig is None:
         assert v == 1
         return (E + v) % n
     if version == "V0":
-        return int.from_bytes(seed_sig, "big") % n
+        return modulo(seed_sig, n)            # int.from_bytes(seed_sig, "big") % n
     else:  # "V1"
-        return int.from_bytes(sha256(seed_sig), "big") % n
+        return modulo(sha256(seed_sig), n)
 ```
 
-The seed signature of a round is the same whichever certificate kind carries it, so every honest node chooses the same leader.
+`modulo` is defined in [codec.md §7.3](commonware/codec.md#73-modulo) and the seed in [cryptography.md §6.7](commonware/cryptography.md#67-seed). A node sets the leader of view `v` as soon as it holds a valid certificate of view `v−1`, which may be before it enters `v` ([simplex.md §6](commonware/simplex.md#6-leader-election), [§8.9](commonware/simplex.md#89-handling-certificates)). The seed signature of a round is the same whichever certificate kind carries it, so every honest node chooses the same leader.
 
 Version selection:
 
-- **Before T12** (T12 not active at `boundary_timestamp(E)`): `RandomVersion::V0`.
-- **From T12** (T12 active at `boundary_timestamp(E)`): `RandomVersion::V1` (TIP-1116 §5).
+- **Before T12** (T12 not active at `boundary_timestamp(E)`): version `V0` of [simplex.md §6](commonware/simplex.md#6-leader-election).
+- **From T12** (T12 active at `boundary_timestamp(E)`): version `V1` (TIP-1116 §5).
 
 The version is fixed for the whole epoch. The first epoch of mainnet that uses V1 is the first `E` whose block `last(E−1)` has `timestamp ≥ 1791900000`.
 
-Reference implementation: crates/consensus/src/epoch/manager/actor.rs (elector selection), commonware consensus/src/simplex/elector.rs (Random::select_leader), commonware utils/src/lib.rs (modulo).
+Reference implementation: crates/consensus/src/epoch/manager/actor.rs (elector selection).
 
 ## 7. Certificates and follower verification
 
 ### 7.1 Encodings
 
-Encoded with the commonware codec:
+Encoded with the codec of [codec.md](commonware/codec.md), as restated from [simplex.md §3.7](commonware/simplex.md#37-certificates):
 
 ```text
 Round          = varint(epoch:u64) ‖ varint(view:u64)
 Proposal       = Round ‖ varint(parent_view:u64) ‖ payload[32]
-VrfCertificate = vote_signature[48] ‖ seed_signature[48]        # compressed G1 points
+VrfCertificate = vote_signature[48] ‖ seed_signature[48]        # compressed G1 points, read raw
 Notarization   = Proposal ‖ VrfCertificate
 Finalization   = Proposal ‖ VrfCertificate
 Nullification  = Round ‖ VrfCertificate
 ```
 
-A follower decoding a `Finalization` MUST consume the input exactly and MUST reject a G1 point that does not decode (invalid encoding, not on the curve, or not in the subgroup), as the commonware decoder does. The framings that carry certificates (the `tempo/1` `NewFinalization` frame, RPC responses, the marshal resolver) are in 08-p2p-and-sync.md.
+A follower decoding a `Finalization` MUST consume the input exactly. Decoding reads each signature as 48 raw bytes. The G1 point checks (valid compressed encoding, on the curve, in the subgroup; [cryptography.md §4.3](commonware/cryptography.md#43-point-encoding-and-decoding)) run at verification: a signature that fails them makes the certificate invalid (§7.2), not undecodable ([cryptography.md §6.2](commonware/cryptography.md#62-certificate-signature-pair), [simplex.md §3.8](commonware/simplex.md#38-decoding-rules)). The framings that carry certificates (the `tempo/1` `NewFinalization` frame, RPC responses, the marshal resolver) are in 08-p2p-and-sync.md.
 
 ### 7.2 Verification algorithm
 
@@ -231,6 +229,8 @@ def verify_finalization(fin: Finalization, B: Block) -> None:
     require(bls_verify(key, union_unique(b"TEMPO_FINALIZE", encode(fin.proposal)), fin.vote_signature))
     require(bls_verify(key, union_unique(b"TEMPO_SEED",     encode(fin.proposal.round)), fin.seed_signature))
 ```
+
+`bls_verify` fails for a signature whose bytes are not a valid G1 point. This is `verify_certificate` of [cryptography.md §6.5](commonware/cryptography.md#65-verifying-certificates) for the finalize subject.
 
 A valid finalization of `B` finalizes `B` and, through the `parent_hash` chain, every ancestor of `B`. A follower MAY skip certificates for intermediate blocks. It MUST take the ancestors' bodies by following `parent_hash` from `B` down to its last finalized block, checking that each block hashes to the digest its child names. Two valid finalizations for different blocks at the same height cannot exist unless more than `f` participants of the epoch are faulty. A follower that sees them SHOULD stop rather than choose one.
 
@@ -267,7 +267,7 @@ def install(E: int, key: G2) -> None:
 
 ### 8.3 Network identity checkpoints
 
-A client MAY ship a checkpoint `NetworkIdentity = {from_epoch: u64, identity: G2}`. Its JSON form is exactly `{"from_epoch": <u64>, "identity": "0x<192 hex chars>"}` (no other fields), where `identity` is the 96-byte compressed G2 group key, which MUST decode as a valid G2 point. The mainnet and moderato values are in §3. Each one is the identity produced by the network's most recent full DKG at the time of the release, and from_epoch is the epoch whose certificates it first verifies.
+A client MAY ship a checkpoint `NetworkIdentity = {from_epoch: u64, identity: G2}`. Its JSON form is exactly `{"from_epoch": <u64>, "identity": "0x<192 hex chars>"}` (no other fields), where `identity` is the 96-byte compressed G2 group key, which MUST decode as a valid G2 point ([cryptography.md §4.3](commonware/cryptography.md#43-point-encoding-and-decoding)). The mainnet and moderato values are in §3. Each one is the identity produced by the network's most recent full DKG at the time of the release, and from_epoch is the epoch whose certificates it first verifies.
 
 ```python
 def trusted_key(E: int) -> G2:
@@ -299,7 +299,7 @@ Reference implementation: crates/chainspec/src/network_identity.rs, crates/chain
 
 ## 9. Distributed key generation
 
-Each epoch runs one Feldman–Desmedt ceremony (commonware `feldman_desmedt`, fault model `N3f1`). The ceremony run during epoch `E` produces the output that `outcome(E+1)` carries.
+Each epoch runs one Feldman–Desmedt ceremony ([dkg.md](commonware/dkg.md); fault model `N3f1` and derived thresholds in [dkg.md §2](commonware/dkg.md#2-fault-model-and-derived-parameters)). The ceremony run during epoch `E` produces the output that `outcome(E+1)` carries.
 
 ### 9.1 Roles
 
@@ -329,27 +329,27 @@ info(E) = Info.new[N3f1](
 )
 ```
 
-`Reveal::V0` applies before T12 and `Reveal::V1` from T12 (TIP-1116 §4), keyed on the ceremony's starting boundary exactly like the elector (§6). The reveal version enters the round's transcript summary, so acks, dealer logs and outputs from rounds of different versions are incompatible. In a resharing round each dealer deals from its current share. In a full round (`previous = None`) dealers deal fresh secrets. A dealer without a share in a resharing round does not deal.
+`Reveal::V0` applies before T12 and `Reveal::V1` from T12 (TIP-1116 §4), keyed on the ceremony's starting boundary exactly like the elector (§6). `Info`, its validity and the reveal thresholds are defined in [dkg.md §3](commonware/dkg.md#3-round-information) and [§2](commonware/dkg.md#2-fault-model-and-derived-parameters). The reveal version enters the round's transcript summary ([dkg.md §3.3](commonware/dkg.md#33-round-summary)), so acks, dealer logs and outputs from rounds of different versions are incompatible. In a resharing round each dealer deals from its current share. In a full round (`previous = None`) dealers deal fresh secrets. A dealer without a share in a resharing round does not deal.
 
 ### 9.3 DKG messages
 
 DKG messages travel on the DKG channel, multiplexed by `u64` epoch (08-p2p-and-sync.md). A message's payload is:
 
 ```text
-DkgMessage = 0x00 ‖ DealerPubMsg<MinSig> ‖ DealerPrivMsg      # dealer → one player
-           | 0x01 ‖ PlayerAck<ed25519::PublicKey>             # player → dealer
+DkgMessage = 0x00 ‖ DealerPubMsg ‖ DealerPrivMsg      # dealer → one player
+           | 0x01 ‖ PlayerAck                         # player → dealer
 ```
 
-`DealerPubMsg` is read with `cfg = len(S.players)`. The whole payload MUST decode exactly, and any other tag is invalid. A node SHOULD block a peer that sends an undecodable message or an invalid dealing.
+The envelope is [dkg.md §5.4](commonware/dkg.md#54-tempo-dkg-channel-envelope) and the messages are [`DealerPubMsg`](commonware/dkg.md#51-dealerpubmsg), [`DealerPrivMsg`](commonware/dkg.md#52-dealerprivmsg) and [`PlayerAck`](commonware/dkg.md#53-playerack). `DealerPubMsg` is read with `cfg = len(S.players)`. The whole payload MUST decode exactly, and any other tag is invalid. A node SHOULD block a peer that sends an undecodable message or an invalid dealing.
 
 ### 9.4 Timing (validator behaviour)
 
 The DKG is driven by **finalized** blocks of epoch `E`, in height order:
 
 1. **Early phase.** For each finalized block in `Early`, a dealer (re)sends `Dealer(pub, priv_p)` to every player `p` that has not yet acked. A dealer that is also a player processes its own dealing locally.
-2. **Players.** When a player receives a valid dealing from a dealer for the first time, it MUST persist the dealing before it returns `Ack`. It MUST return the same ack for any later copy, and MUST NOT ever ack a different dealing from the same dealer in the same round.
-3. **Acks.** A dealer accepts the first ack from each player, and persists it, until it finalizes. If that first ack is invalid, the dealer stops retrying that player.
-4. **Midpoint and later.** On the first finalized block in `Midpoint` or `Late` (or at startup when the latest finalized block of the epoch is past `Early`), a dealer finalizes its `SignedDealerLog`: its commitment plus, for each player, the ack or the revealed share (`Dealer::finalize::<N3f1>`).
+2. **Players.** When a player receives a valid dealing from a dealer for the first time, it MUST persist the dealing before it returns `Ack`. It MUST return the same ack for any later copy, and MUST NOT ever ack a different dealing from the same dealer in the same round ([dkg.md §7.1](commonware/dkg.md#71-verifying-a-dealing), [§7.2](commonware/dkg.md#72-when-to-acknowledge)).
+3. **Acks.** A dealer accepts the first ack from each player, and persists it, until it finalizes. If that first ack is invalid, the dealer stops retrying that player ([dkg.md §6.2](commonware/dkg.md#62-receiving-acknowledgements)).
+4. **Midpoint and later.** On the first finalized block in `Midpoint` or `Late` (or at startup when the latest finalized block of the epoch is past `Early`), a dealer finalizes its `SignedDealerLog`: its commitment plus, for each player, the ack or the revealed share ([dkg.md §6.3](commonware/dkg.md#63-finalizing-the-dealer-log)).
 5. **Posting.** Whenever the dealer is the leader of a round of epoch `E` and proposes a regular block, it includes its own finalized log as `extra_data` (§10.1). It does this in every such proposal until it observes the log in a finalized block.
 6. **Conclusion.** At the boundary, the output is computed from the logs on chain (§11.1).
 
@@ -359,7 +359,7 @@ A validator MUST persist, per epoch, the dealings it received and the acks it ga
 
 ### 9.5 Share recovery (informative)
 
-A validator that lost its share MAY rebuild it from finalized history. If it was a player in epoch `E−1`'s ceremony and that ceremony succeeded (`outcome(E).output != outcome(E−1).output`), it runs `Player.finalize` on the first valid log of each selected dealer found in blocks `first(E−1)…last(E−1)−1`, together with any shares those logs reveal to it. The rebuilt output MUST equal `outcome(E).output`. A configured initial share is used only if its public share matches `outcome(E).output.public`.
+A validator that lost its share MAY rebuild it from finalized history. If it was a player in epoch `E−1`'s ceremony and that ceremony succeeded (`outcome(E).output != outcome(E−1).output`), it derives its share as in [dkg.md §12](commonware/dkg.md#12-player-share-derivation) from the first valid log of each selected dealer found in blocks `first(E−1)…last(E−1)−1`, together with any shares those logs reveal to it. The rebuilt output MUST equal `outcome(E).output`. A configured initial share is used only if its public share matches `outcome(E).output.public` ([cryptography.md §5.5](commonware/cryptography.md#55-partial-public-keys)).
 
 Reference implementation: crates/consensus/src/dkg/manager/actor/mod.rs (Message, run_dkg_loop, handle_finalized_header, distribute_shares, handle_network_msg, conclude_ceremony, establish_initial_state, maybe_recover_revealed_share), crates/consensus/src/dkg/manager/actor/state.rs (Round::from_state, Dealer, Player).
 
@@ -371,12 +371,12 @@ All decoding below is **prefix decoding**: the reference implementation reads th
 
 ```text
 extra_data (regular block) = empty
-                           | SignedDealerLog<MinSig, ed25519::PrivateKey>     # read with cfg = len(S(E).players)
-SignedDealerLog            = dealer:ed25519::PublicKey[32] ‖ DealerLog<MinSig, ed25519::PublicKey> ‖ sig:ed25519::Signature[64]
-DealerLog                  = DealerPubMsg<MinSig> ‖ results                     # per-player ack or reveal (commonware layout)
+                           | SignedDealerLog                                  # read with cfg = len(S(E).players)
+SignedDealerLog            = dealer:ed25519_public_key[32] ‖ DealerLog ‖ sig:ed25519_signature[64]
+DealerLog                  = DealerPubMsg ‖ results                           # per-player ack or reveal
 ```
 
-`SignedDealerLog.check(info(E))` verifies the dealer's Ed25519 signature over the log's transcript, which is bound to `info(E)`. It returns `(dealer, log)` or fails.
+The layouts are [dkg.md §8.2](commonware/dkg.md#82-signeddealerlog) and [§8.1](commonware/dkg.md#81-dealerlog-encoding). `SignedDealerLog.check(info(E))` verifies the dealer's Ed25519 signature over the log's transcript, which is bound to `info(E)` ([dkg.md §4](commonware/dkg.md#4-transcripts-and-signatures), [§8.3](commonware/dkg.md#83-validating-a-log-against-the-round)). It returns `(dealer, log)` or fails.
 
 Inclusion rule *(validator voting rule)*, for a regular block proposed in round `(E, v)` with leader `ℓ`:
 
@@ -391,15 +391,15 @@ The ceremony itself (§11.1) ignores regular-block `extra_data` that fails to de
 ```text
 OnchainDkgOutcome =
     varint(epoch:u64)                                    # the epoch this outcome opens
-  ‖ Output<MinSig, ed25519::PublicKey>                   # read with cfg (max_participants = 65535, ModeVersion::v0())
-  ‖ ordered::Set<ed25519::PublicKey> next_players        # varint(len) ‖ 32-byte keys, strictly increasing, 1 ≤ len ≤ 65535
+  ‖ Output                                               # decode bounds: max_participants = 65535, mode version 0
+  ‖ set(ed25519_public_key) next_players                # varint(len) ‖ 32-byte keys, strictly increasing, 1 ≤ len ≤ 65535
   ‖ bool is_next_full_dkg                                # one byte, 0x00 or 0x01
 
-Output = Summary[32] ‖ Sharing<MinSig> public ‖ ordered::Set dealers (1..=65535)
-       ‖ ordered::Set players (1..=65535) ‖ ordered::Set revealed (0..=65535)
+Output = Summary[32] ‖ Sharing public ‖ set dealers (1..=65535)
+       ‖ set players (1..=65535) ‖ set revealed (0..=65535)
 ```
 
-`Sharing` is the commonware encoding of the public polynomial (mode version, participant total and G2 coefficients). Its constant term is the network identity. `players` is the committee of epoch `epoch`. `dealers` are the dealers whose logs formed the output. `revealed` lists the players whose shares were revealed.
+`Output` is specified in [dkg.md §11.1](commonware/dkg.md#111-output), sets in [codec.md §6.1](commonware/codec.md#61-ordered-set). `Sharing` is `mode:u8 ‖ total:u32_be ‖ Poly<G2>`, the public polynomial with its mode version and participant total ([dkg.md §11.2](commonware/dkg.md#112-sharing), [cryptography.md §5.4](commonware/cryptography.md#54-public-polynomial-and-sharing-encoding)). Its decoder does not check that `total` equals the number of players or the polynomial's length; dkg.md §11.2 says how such an output is handled. Its constant term is the network identity. `players` is the committee of epoch `epoch`. `dealers` are the dealers whose logs formed the output. `revealed` lists the players whose shares were revealed.
 
 The boundary block `last(E)` MUST carry, as `extra_data`, the encoding of the outcome given by §11 for its parent. `epoch` MUST be `E+1`.
 
@@ -453,14 +453,14 @@ def ceremony_output(E: int, P: Block) -> Output:
         dealer, log = checked
         if dealer not in logs:
             logs[dealer] = log                       # the oldest log per dealer on P's ancestry wins
-    ceremony = Logs[MinSig, PublicKey, N3f1](info(E))
+    ceremony = Logs(info(E))                         # dkg.md §9
     for dealer, log in logs.items():
         ceremony.record(dealer, log)
-    result = observe[N3f1](ceremony)                 # commonware feldman_desmedt::observe
+    result = observe(ceremony)                       # dkg.md §10
     return result.output if result.ok else S.output  # a failed ceremony carries the input output forward
 ```
 
-A validator that is a player computes its share with `Player.finalize` on the same logs. That gives the same output as `observe`. If its local player state cannot produce a share, it continues as an observer and has no share in `E+1`. On failure, the previous output and the previous share (if any) carry forward.
+Log collection and selection are [dkg.md §9](commonware/dkg.md#9-log-collection-and-selection) and `observe` is [dkg.md §10](commonware/dkg.md#10-computing-the-output). A validator that is a player computes its share as in [dkg.md §12](commonware/dkg.md#12-player-share-derivation) on the same logs. That gives the same output as `observe`. If its local player state cannot produce a share, it continues as an observer and has no share in `E+1`. On failure, the previous output and the previous share (if any) carry forward.
 
 Implementation note: the reference implementation takes logs from finalized blocks first (the earliest finalized log per dealer), then walks the notarized blocks from `P` down to the latest finalized block for dealers that have no finalized log yet. Because the finalized blocks are ancestors of `P`, this equals the rule above.
 
@@ -470,7 +470,7 @@ Implementation note: the reference implementation takes logs from finalized bloc
 def active_players(vc) -> ordered_set:
     keys = set()
     for v in vc.getActiveValidators():               # contract order
-        pk = ed25519_decode(v.publicKey)             # 32 bytes, must be a valid point
+        pk = ed25519_decode(v.publicKey)             # 32 bytes, must decompress
         ingress = parse_socket_addr(v.ingress)       # "<ipv4>:<port>" or "[<ipv6>]:<port>"
         egress  = parse_ip_addr(v.egress)            # "<ipv4>" or "<ipv6>"
         if pk is None or ingress is None or egress is None:
@@ -479,7 +479,7 @@ def active_players(vc) -> ordered_set:
     return sorted(keys)                              # ascending by the 32 key bytes
 ```
 
-`getActiveValidators()` returns, in `active_indices` order, the records that are active at the post-state of `P`: added at a height `< last(E)` and not deactivated. This matches TIP-1017's player selection with `boundary(E) = last(E)`. The resulting set MUST NOT be empty, because the encoding requires at least one next player.
+`ed25519_decode` is the public key decoding of [cryptography.md §3.2](commonware/cryptography.md#32-public-key-decoding). `getActiveValidators()` returns, in `active_indices` order, the records that are active at the post-state of `P`: added at a height `< last(E)` and not deactivated. This matches TIP-1017's player selection with `boundary(E) = last(E)`. The resulting set MUST NOT be empty, because the encoding requires at least one next player.
 
 > **Resolved conflict C-CONS-02**: TIP-1017 says the consensus layer reads ValidatorConfig V1 until ValidatorConfigV2 is initialized, but the implementation always reads ValidatorConfigV2. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](conflicts.md#c-cons-02).
 
@@ -491,7 +491,7 @@ Reference implementation: crates/consensus/src/consensus/application/parent_stat
 
 When Simplex asks the leader `ℓ` (this node) to propose in round `(E, v)` with parent `(pv, pd)`:
 
-1. If this node already holds a verified block for round `(E, v)` (a restart after broadcasting), it MUST NOT propose. The view times out instead.
+1. If this node already holds a verified block for round `(E, v)` (a restart after broadcasting), it MUST NOT propose ([simplex.md §10.1](commonware/simplex.md#101-proposectx)). The view times out instead.
 2. Obtain the parent block `P = block(pd)`. If `P.number == last(E)`, re-propose `pd` (§5.3) and stop.
 3. Choose `extra_data`:
    - If `P.number + 1 == last(E)` (building the boundary block): `extra_data = encode(boundary_outcome(P))` (§11), computed only after `P` has been executed and is VALID, because §11.2 reads `P`'s post-state.
@@ -505,18 +505,18 @@ Pacing is local policy and not normative. The reference implementation targets 5
 
 > **Resolved conflict C-CONS-03**: the docs say blocks come about every 600 ms from a 500 ms builder loop, but the implementation uses an adaptive estimator targeting 550 ms with a 50 ms network budget. Decided: this spec follows the implementation, and the docs are fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098). See [conflicts](conflicts.md#c-cons-03).
 
-Reference implementation: crates/consensus/src/consensus/application/impl.rs (build, boundary_dkg_outcome), crates/payload/types/src/attrs.rs (TempoPayloadAttributes::new), crates/payload/builder/src/lib.rs (maybe_override_fee_recipient), crates/payload/types/src/estimator/config.rs, commonware consensus/src/marshal/standard/inline.rs (propose).
+Reference implementation: crates/consensus/src/consensus/application/impl.rs (build, boundary_dkg_outcome), crates/payload/types/src/attrs.rs (TempoPayloadAttributes::new), crates/payload/builder/src/lib.rs (maybe_override_fee_recipient), crates/payload/types/src/estimator/config.rs.
 
 ## 13. Validator verification procedure
 
-For a proposal `(E, v, pv, pd, D)` with leader `ℓ`, a validator runs these checks in order. Each step ends in one of three ways: **continue**, **reject** (the validator answers "invalid" and will never notarize this proposal), or **abstain** (no verdict and no notarize vote; the view ends by timeout or by others' certificates). A reject or abstain from one validator does not make the block invalid for others.
+For a proposal `(E, v, pv, pd, D)` with leader `ℓ`, a validator runs these checks in order. Each step ends in one of three ways: **continue**, **reject** (the validator answers "invalid" and will never notarize this proposal), or **abstain** (no verdict and no notarize vote; the view ends by timeout or by others' certificates). A reject ends verification with `false`, which makes Simplex nullify the view early while its skip budget lasts ([simplex.md §8.5](commonware/simplex.md#85-receiving-a-proposal), [§8.8](commonware/simplex.md#88-timeouts-and-nullify)). Steps 1–4 are the checks of [simplex.md §10.2](commonware/simplex.md#102-verifyctx-d). A reject or abstain from one validator does not make the block invalid for others.
 
 | # | Check | On failure |
 |---|---|---|
 | 1 | Obtain block `B` with `hash(B) = D`. It MUST decode as in §5.1 (body matches header, no `block_access_list_hash`). | an undecodable block is discarded; if no block is obtained, abstain |
 | 2 | `epoch_of(B.number) == E` | reject |
 | 3 | If `D == pd` (re-proposal): accept iff `B.number == last(E)`, and skip steps 4–10 | reject if not at `last(E)` |
-| 4 | Obtain parent `P = block(pd)` and require `B.parent_hash == hash(P) == pd` and `B.number == P.number + 1` | parent unavailable: abstain; mismatch: reject |
+| 4 | Obtain parent `P = block(pd)` and require `B.parent_hash == hash(P) == pd` and `B.number == P.number + 1` | parent unavailable: the node keeps waiting for it; if the fetch is abandoned, the verification request closes without an answer, which Simplex treats as an ignored proposal and nullifies early like a reject; mismatch: reject |
 | 5 | From T4: `B.consensus_context` is present and equals `{E, v, pv, ℓ}` | reject |
 | 6 | If `is_boundary(B.number)`: `B.extra_data` decodes as an `OnchainDkgOutcome` (§10.2) | reject |
 | 7 | Else, if `B.extra_data` is not empty: if the local DKG state is not at epoch `E`, abstain. Otherwise it MUST decode and check as a `SignedDealerLog` and its dealer MUST equal `ℓ` (§10.1) | abstain / reject |
@@ -529,7 +529,7 @@ There is no upper bound on how far a timestamp may be ahead of local time. A blo
 
 After finalization (Simplex finalize votes), a validator delivers finalized blocks to its execution layer in height order and acknowledges them only once they are durably persisted (08-p2p-and-sync.md).
 
-Reference implementation: crates/consensus/src/consensus/application/impl.rs (verify, verify_header, verify_boundary_outcome, wait_until_timestamp), commonware consensus/src/marshal/standard/{inline.rs, validation.rs}, crates/consensus/src/executor/actor.rs (module documentation), crates/evm/src/consensus/mod.rs.
+Reference implementation: crates/consensus/src/consensus/application/impl.rs (verify, verify_header, verify_boundary_outcome, wait_until_timestamp), crates/consensus/src/executor/actor.rs (module documentation), crates/evm/src/consensus/mod.rs.
 
 ## 14. Epoch transition (validator)
 
@@ -540,7 +540,7 @@ For a validator in epoch `E`:
 3. The validator stops epoch `E`'s instance. It SHOULD keep the verification keys of the last two epochs to accept straggler certificates for `last(E)`.
 4. It starts epoch `E+1`'s instance (§5.3) with `floor = hash(last(E))`, participants `outcome(E+1).output.players`, the elector version from `header(last(E)).timestamp`, and its share if it has one. It then starts the ceremony of epoch `E+1` with `info(E+1)`.
 
-A validator that sees votes for an epoch later than its own SHOULD fetch the finalization of its current epoch's boundary block and catch up one epoch at a time (08-p2p-and-sync.md). Simplex's per-epoch vote journal MUST be persisted, so that a validator never signs two conflicting votes in one round across restarts.
+A validator that sees votes for an epoch later than its own SHOULD fetch the finalization of its current epoch's boundary block and catch up one epoch at a time (08-p2p-and-sync.md). Simplex's per-epoch vote journal MUST be persisted ([simplex.md §8.13](commonware/simplex.md#813-persistence)), so that a validator never signs two conflicting votes in one round across restarts.
 
 Reference implementation: crates/consensus/src/epoch/manager/actor.rs (enter, exit, handle_msg_for_unregistered_epoch), crates/consensus/src/dkg/manager/actor/mod.rs (handle_finalized_header, enter_epoch, exit_epoch).
 
@@ -552,16 +552,16 @@ Reference implementation: crates/consensus/src/epoch/manager/actor.rs (enter, ex
 | T2 | block timestamp (EL) | The ValidatorConfigV2 precompile appears (precompiles/validator-config-and-zones.md). The consensus layer reads next players from it once it is initialized (§11.2, C-CONS-02). |
 | T4 | block timestamp | Header `consensus_context` present on every block and checked by voters (§5.1, C-CONS-01). |
 | T8 | block timestamp (EL) | Block execution decodes the boundary `OnchainDkgOutcome` and writes `(outcome.epoch, outcome.output.players)` to CurrentCommittee. An undecodable boundary outcome makes the block invalid (05-block-execution.md). |
-| T12 | `boundary_timestamp(E)` | Leader election `RandomVersion::V1` (§6) and DKG `Reveal::V1` (§9.2) for epoch `E` and its ceremony. |
+| T12 | `boundary_timestamp(E)` | Leader election version V1 (§6) and DKG Reveal V1 (§9.2) for epoch `E` and its ceremony. |
 | T14 (out of scope) | `boundary_timestamp(E)` | Deferred verification by default, and beneficiary validation. Not part of T13. |
 
 No other fork from T0 to T13 changes consensus-layer behaviour.
 
 ## 16. Versions of the commonware documentation
 
-The normative version is the one pinned in §2.
+The commonware chapters listed in §2 restate the commonware version that the implementation uses.
 
-> **Resolved conflict C-CONS-04**: the consensus docs page links commonware-consensus 0.0.65, but the implementation and this chapter use commonware 2026.9.0. Decided: this spec follows the implementation, and the docs are fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098). See [conflicts](conflicts.md#c-cons-04).
+> **Resolved conflict C-CONS-04**: the consensus docs page links version 0.0.65 of commonware's consensus crate, but the implementation and this chapter use commonware 2026.9.0. Decided: this spec follows the implementation, and the docs are fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098). See [conflicts](conflicts.md#c-cons-04).
 
 ## 17. Open items
 

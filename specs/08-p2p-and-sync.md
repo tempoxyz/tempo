@@ -2,14 +2,14 @@
 
 This chapter specifies how Tempo nodes talk to each other and how a node obtains, authenticates, persists and serves finalized history. It covers:
 
-- the validator consensus network (commonware authenticated `lookup` transport), its peer sets and its six channels;
+- the validator consensus network (the authenticated lookup network of [p2p.md §6](commonware/p2p.md#6-authenticated-lookup-network)), its peer sets and its six channels;
 - the execution-layer devp2p network, including the Tempo `tempo/1` RLPx subprotocol that gossips finalization certificates;
 - block and certificate backfill, retention, syncing from genesis and consensus snapshots;
 - follower mode (certificate and block sources, verification, identity installation, execution-layer forkchoice driving);
 - persistence and crash-safety requirements;
 - key and share file formats (informative).
 
-The consensus protocol itself (Simplex, the threshold scheme, certificate formats and verification, epochs, the DKG and the on-chain DKG artifacts, the network-identity trust root) is specified in 07-consensus.md. This chapter references those definitions by name and does not restate them.
+The consensus protocol itself (Simplex, the threshold scheme, certificate formats and verification, epochs, the DKG and the on-chain DKG artifacts, the network-identity trust root) is specified in 07-consensus.md. This chapter references those definitions by name and does not restate them. The commonware protocols that the consensus network uses are specified in [commonware/p2p.md](commonware/p2p.md) (transport, handshake, multiplexer, resolver and broadcast), [commonware/simplex.md](commonware/simplex.md), [commonware/dkg.md](commonware/dkg.md), [commonware/cryptography.md](commonware/cryptography.md) and [commonware/codec.md](commonware/codec.md).
 
 Nothing in this chapter is fork-gated within T0..T13: every rule below applies to every mainnet block height. (Fork-gated consensus behaviour such as the T12 leader elector lives in 07-consensus.md.) Where a rule depends on the fork schedule it is stated explicitly using the fork predicate of 01-chain-and-forks.md.
 
@@ -17,23 +17,22 @@ Nothing in this chapter is fork-gated within T0..T13: every rule below applies t
 
 The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are to be interpreted as in RFC 2119.
 
-Wire formats that this chapter references rather than restates are pinned as follows:
+External wire formats that this chapter references rather than restates are pinned as follows:
 
 | Dependency | Pin | Used for |
 |---|---|---|
-| commonware | crates.io `2026.9.0` (`commonware-p2p`, `commonware-stream`, `commonware-consensus`, `commonware-resolver`, `commonware-broadcast`, `commonware-cryptography`, `commonware-codec`, `commonware-storage`, `commonware-utils`; git tag `v2026.9.0`, commit `d476a2361ce6840d2b9d0aa6fb30a924429046d4`) | consensus p2p transport, handshake, codecs, Simplex messages, resolver and marshal wire, archives |
 | reth | git rev `966010c905449163ef161530a5ee95ac1e0c8487` | devp2p (discv4, RLPx, `eth` wire), engine API semantics |
 | Ethereum | execution-specs Osaka, devp2p specs (RLPx, `eth`), EIP-2124 | devp2p |
 
-Codec notation (commonware codec, 02-encoding.md): `varint(x)` is the commonware `UInt` LEB128 encoding of an unsigned integer; `u8`, `u64be` are fixed-width big-endian integers; `bytes(x)` is `varint(len(x)) || x`; a tuple `(A, B)` encodes as `enc(A) || enc(B)`; an `Option<T>` encodes as a `bool` byte (`0x00`/`0x01`) followed by `T` when present.
+Codec notation ([codec.md §2](commonware/codec.md#2-notation)): `varint(x)` is the unsigned LEB128 encoding of an unsigned integer with the canonical-form rules of [codec.md §3](commonware/codec.md#3-varint); `u8`, `u64be` are fixed-width big-endian integers ([§4](commonware/codec.md#4-fixed-width-integers)); `bytes(x)` is `varint(len(x)) || x` ([§5.4](commonware/codec.md#54-length-prefixed-sequences-and-bytes)); a tuple `(A, B)` encodes as `enc(A) || enc(B)`; an `Option<T>` encodes as a `bool` byte (`0x00`/`0x01`) followed by `T` when present ([§5.2](commonware/codec.md#52-option)).
 
 Terms:
 
 - **CL** / **EL**: the consensus layer and the execution layer of a node. In the reference implementation both run in one process; the EL is reth.
 - **Validator**: a node running the consensus engine with an ed25519 signing key (`--consensus.signing-key`). It may or may not hold a BLS share in a given epoch (signer vs verifier, 07-consensus.md).
 - **Follower**: a node that does not vote. It obtains finalization certificates and blocks from other nodes, verifies them and drives its EL (`tempo node --follow`).
-- **Marshal**: the commonware `commonware_consensus::marshal::core::Actor` instance that orders finalized blocks, persists finalizations and blocks, and repairs gaps.
-- **Finalization**: `commonware_consensus::simplex::types::Finalization<Scheme<ed25519::PublicKey, MinSig>, Digest>` with `Scheme = commonware_consensus::simplex::scheme::bls12381_threshold::vrf::Scheme` and `Digest` = the 32-byte block hash (07-consensus.md §7 "Certificates and follower verification").
+- **Marshal**: the component that orders finalized blocks, persists finalizations and blocks, and repairs gaps; its consensus-facing wrapper is [simplex.md §10](commonware/simplex.md#10-marshal-inline-wrapper).
+- **Finalization**: the Simplex finalization certificate of [simplex.md §3.7](commonware/simplex.md#37-certificates) under the threshold VRF scheme ([cryptography.md §6.2](commonware/cryptography.md#62-certificate-signature-pair)), whose digest is the 32-byte block hash (07-consensus.md §7 "Certificates and follower verification").
 - **Block (consensus encoding)**: the RLP encoding of the Tempo execution block (header + body) as specified in 02-encoding.md, with no additional framing. Decoding MUST reject a block whose body does not match the header commitments (transactions root, ommers hash, withdrawals root) and a block whose header carries a block-access-list hash.
 - **epoch(h)**, **last(E)**, **first(E)**: the fixed epoch mapping of 07-consensus.md with `epochLength = 21600` on mainnet (chain id 4217) and Moderato (chain id 42431). The boundary block of epoch `E` is `last(E)`; its `extra_data` is the `OnchainDkgOutcome` for epoch `E+1`. The genesis block (height 0) plays the role of the boundary of "epoch −1": its `extra_data` is the outcome for epoch 0.
 - **boundary_for(E)**: `0` if `E = 0`, else `last(E−1)`. The outcome in `header(boundary_for(E)).extra_data` describes epoch `E`.
@@ -46,7 +45,7 @@ A Tempo node has two independent network stacks:
 
 | Stack | Who | Identity | Transport | Purpose |
 |---|---|---|---|---|
-| Consensus p2p | validators only | ed25519 consensus key (the `publicKey` registered in ValidatorConfigV2) | commonware `p2p::authenticated::lookup` over TCP, encrypted with `commonware_stream::encrypted` | votes, certificates, block broadcast, backfill, DKG |
+| Consensus p2p | validators only | ed25519 consensus key (the `publicKey` registered in ValidatorConfigV2) | lookup network over TCP ([p2p.md §6](commonware/p2p.md#6-authenticated-lookup-network)), encrypted stream ([p2p.md §4](commonware/p2p.md#4-encrypted-stream-handshake), [§5](commonware/p2p.md#5-encrypted-transport)) | votes, certificates, block broadcast, backfill, DKG |
 | Execution devp2p | every node | secp256k1 node key (enode) | discv4 + RLPx | transaction gossip, header/body serving, EL sync, `tempo/1` certificate gossip |
 
 Validators never accept consensus data from devp2p: they publish certificates on `tempo/1` but discard inbound `tempo/1` frames. Followers have no consensus p2p connection; they obtain certificates from an upstream node over JSON-RPC and, optionally, from `tempo/1` peers.
@@ -64,18 +63,18 @@ flowchart TB
 
 ### 2.1 Identity
 
-A validator's consensus identity is its ed25519 key pair (commonware `commonware_cryptography::ed25519::{PrivateKey, PublicKey}`; 32-byte public key). The public key MUST equal the `publicKey` (bytes32) of the validator's ValidatorConfigV2 entry (precompiles/validator-config-and-zones.md). The same key authenticates the p2p handshake, is the participant identifier in Simplex and the DKG (players and dealers are ordered sets of these keys), and signs DKG dealer logs (07-consensus.md). Simplex votes and certificates are *not* signed with ed25519; they carry BLS12-381 threshold partials or recovered signatures (07-consensus.md).
+A validator's consensus identity is its ed25519 key pair ([cryptography.md §3.1](commonware/cryptography.md#31-ed25519-encodings); 32-byte public key). The public key MUST equal the `publicKey` (bytes32) of the validator's ValidatorConfigV2 entry (precompiles/validator-config-and-zones.md). The same key authenticates the p2p handshake, is the participant identifier in Simplex and the DKG (players and dealers are ordered sets of these keys), and signs DKG dealer logs (07-consensus.md). Simplex votes and certificates are *not* signed with ed25519; they carry BLS12-381 threshold partials or recovered signatures (07-consensus.md).
 
 > **Resolved conflict C-P2P-01**: TIP-1017 says the ed25519 key is used for signing all consensus p2p messages; the code uses it only for transport authentication and DKG artifacts, while votes and certificates carry BLS threshold signatures. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](conflicts.md#c-p2p-01).
 
 ### 2.2 Transport and handshake
 
-Validators MUST implement the commonware 2026.9.0 `commonware_p2p::authenticated::lookup` network with the following parameters. "Normative" parameters MUST be used for interoperability or because peers depend on them; "default" values are the reference implementation's operator defaults and MAY differ.
+Validators MUST implement the authenticated lookup network of [p2p.md §6](commonware/p2p.md#6-authenticated-lookup-network) with the following parameters (named as in [p2p.md §11](commonware/p2p.md#11-constants)). "Normative" parameters MUST be used for interoperability or because peers depend on them; "default" values are the reference implementation's operator defaults and MAY differ.
 
-| Parameter (`lookup::Config` field) | Value | Kind |
+| Parameter | Value | Kind |
 |---|---|---|
 | `namespace` | `union_unique(b"TEMPO", b"_P2P")` = `0x05 \|\| "TEMPO" \|\| "_P2P"` = bytes `05 54 45 4d 50 4f 5f 50 32 50` | normative |
-| stream namespace (derived by `lookup`) | `namespace \|\| b"_STREAM"` | normative (fixed by commonware) |
+| stream namespace (derived from `namespace`) | `namespace \|\| b"_STREAM"` | normative ([p2p.md §4.1](commonware/p2p.md#41-roles-identities-and-namespace)) |
 | `crypto` | the validator's ed25519 private key | normative |
 | `max_message_size` | `8_388_608` bytes (reth `MAX_RLP_BLOCK_SIZE`) | normative lower bound: a node MUST accept application payloads up to this size; see 3.5 |
 | `tracked_peer_sets` | 1 | default (see 2.4) |
@@ -97,9 +96,9 @@ Validators MUST implement the commonware 2026.9.0 `commonware_p2p::authenticated
 | `allow_dns` | true | default (ingress values from ValidatorConfigV2 are always literal socket addresses, so DNS is never used) |
 | `listen` | operator-chosen (reference default `127.0.0.1:8000`; production nodes bind the port of their registered ingress) | default |
 
-The handshake, key exchange, encryption and framing are those of `commonware_stream::encrypted` 2026.9.0 as driven by `lookup`; this chapter does not restate them. A connection is authenticated to an ed25519 public key; the application sees every inbound message tagged with that key.
+The framing, handshake, key exchange and encryption are specified in [p2p.md](commonware/p2p.md): framing [§2](commonware/p2p.md#2-framing), transcript [§3](commonware/p2p.md#3-transcript), handshake [§4](commonware/p2p.md#4-encrypted-stream-handshake), encrypted transport [§5](commonware/p2p.md#5-encrypted-transport). A connection is authenticated to an ed25519 public key; the application sees every inbound message tagged with that key.
 
-On the authenticated stream, each frame carries a `lookup::types::Message`:
+On the authenticated stream, each encrypted frame carries one network message ([p2p.md §6.1](commonware/p2p.md#61-network-messages)):
 
 ```
 Message := 0x00 || Data          ; application data
@@ -107,26 +106,26 @@ Message := 0x00 || Data          ; application data
 Data    := varint(channel) || bytes(payload)
 ```
 
-`channel` is the channel id of section 3 (a u64). `payload` is the channel's application message. Pings are transport keep-alives.
+`channel` is the channel id of section 3 (a u64). `payload` is the channel's application message. Pings are transport keep-alives. A message on an unknown channel, or one that does not decode, closes the connection ([p2p.md §6.3](commonware/p2p.md#63-receiving)).
 
 Reference implementation: crates/consensus/src/lib.rs (`instantiate_network`), crates/consensus/src/args.rs (defaults), crates/consensus/src/config.rs.
 
 ### 2.3 Peer addresses and admission
 
-Each peer in a tracked set has a commonware `Address::Asymmetric { ingress, egress }` built from its ValidatorConfigV2 entry:
+Each peer in a tracked set has an asymmetric address `{ingress, egress}` ([p2p.md §6.5.2](commonware/p2p.md#652-addresses)) built from its ValidatorConfigV2 entry:
 
 - `ingress` = `Ingress::Socket(parse_socket_addr(entry.ingress))` — the address other validators dial. `entry.ingress` is a string `"<ip>:<port>"` (IPv6 as `"[<ip>]:<port>"`) parsed with the Rust `std::net::SocketAddr` grammar.
 - `egress` = `(parse_ip_addr(entry.egress), port 0)` — only the IP is used: it is the source address the peer's outbound connections come from.
 
-An entry whose `publicKey` is not a valid ed25519 point encoding, or whose `ingress` or `egress` fails to parse, is *undecodable* (2.4 says how undecodable entries are handled).
+An entry whose `publicKey` is not a valid ed25519 point encoding ([cryptography.md §3.2](commonware/cryptography.md#32-public-key-decoding)), or whose `ingress` or `egress` fails to parse, is *undecodable* (2.4 says how undecodable entries are handled).
 
-Admission rules of `lookup` (normative behaviour of the reference implementation):
+Admission rules of the lookup network (connection slots [p2p.md §6.5.3](commonware/p2p.md#653-connection-slots), accepting [§6.5.4](commonware/p2p.md#654-accepting-connections), dialing [§6.5.5](commonware/p2p.md#655-dialing)):
 
 1. Outbound dials go only to **primary** peers, at their ingress address.
 2. Inbound connections are accepted only from identities in the union of the primary and secondary peers of the tracked set(s).
 3. Unless `bypass_ip_check` is set, an inbound connection whose source IP is not one of the registered egress IPs (of any primary or secondary peer) is rejected before the handshake.
 4. Unless `allow_private_ips` is set, connections from or to non-global IP addresses are rejected.
-5. Messages sent to `Recipients::All` go to every connected primary and secondary peer.
+5. Messages sent to all peers (`All`, [p2p.md §6.2](commonware/p2p.md#62-sending)) go to every connected primary and secondary peer.
 
 ### 2.4 Peer-set derivation
 
@@ -179,8 +178,8 @@ def refresh_peers(el, consensus_tip_height, last_tracked):
 
 `track_or_overwrite`:
 
-- If nothing was tracked before, or the key sets of `primary` or `secondary` differ from the last tracked set, the node MUST track a new peer set with index `h` (`AddressableManager::track(h, {primary, secondary})`). With `tracked_peer_sets = 1` the previous set is dropped, disconnecting peers that left the union.
-- If only addresses changed, the node MUST overwrite the addresses of the existing set in place (`AddressableManager::overwrite`).
+- If nothing was tracked before, or the key sets of `primary` or `secondary` differ from the last tracked set, the node MUST track a new peer set with index `h` and these primary and secondary peers (`track`, [p2p.md §6.5.1](commonware/p2p.md#651-peer-sets)). With `tracked_peer_sets = 1` the previous set is dropped, disconnecting peers that left the union.
+- If only addresses changed, the node MUST overwrite the addresses of the existing set in place (`overwrite`, [p2p.md §6.5.1](commonware/p2p.md#651-peer-sets)).
 - In all cases the remembered height becomes `h`.
 
 When peer sets are refreshed:
@@ -203,7 +202,7 @@ Reference implementation: crates/consensus/src/peer_manager/{mod.rs,actor.rs}, c
 
 ### 2.5 Misbehaviour and blocking
 
-Components that detect Byzantine behaviour from an authenticated peer (an invalid certificate or signature, an undecodable message on a channel, a resolver response that fails verification) block the peer through the `lookup` oracle (`Blocker::block`): the connection is dropped and the peer is refused for `block_duration` (4 h by default). A node MUST NOT block a peer for a certificate it cannot verify only because it lacks the epoch's scheme; in particular schemes MUST be retained for the two most recent epochs after an epoch ends (07-consensus.md), because straggling peers keep re-proposing and certifying the outgoing epoch's boundary block.
+Components that detect Byzantine behaviour from an authenticated peer (an invalid certificate or signature, an undecodable message on a channel, a resolver response that fails verification) block the peer ([p2p.md §6.7](commonware/p2p.md#67-blocking)): the connection is dropped and the peer is refused for `block_duration` (4 h by default). A node MUST NOT block a peer for a certificate it cannot verify only because it lacks the epoch's scheme; in particular schemes MUST be retained for the two most recent epochs after an epoch ends (07-consensus.md), because straggling peers keep re-proposing and certifying the outgoing epoch's boundary block.
 
 ## 3. Consensus channels
 
@@ -211,20 +210,20 @@ Components that detect Byzantine behaviour from an authenticated peer (an invali
 
 | Id | Name | Per-peer quota (inbound and outbound, each direction independently) | Epoch-multiplexed | Payload |
 |---|---|---|---|---|
-| 0 | votes | 128 msg/s | yes | `commonware_consensus::simplex::types::Vote<S, Digest>` |
-| 1 | certificates | 128 msg/s | yes | `commonware_consensus::simplex::types::Certificate<S, Digest>` |
-| 2 | simplex resolver | 128 msg/s | yes | `commonware_resolver::p2p::wire::Message<commonware_utils::sequence::U64>` (3.3.3) |
+| 0 | votes | 128 msg/s | yes | `Vote` ([simplex.md §3.6](commonware/simplex.md#36-votes)) |
+| 1 | certificates | 128 msg/s | yes | `Certificate` ([simplex.md §3.7](commonware/simplex.md#37-certificates)) |
+| 2 | simplex resolver | 128 msg/s | yes | resolver message ([p2p.md §9.1](commonware/p2p.md#91-message)) with key `u64be(view)` (3.3.3) |
 | 3 | block broadcast | 8 msg/s | no | consensus block encoding (3.3.4) |
-| 4 | marshal backfill | `--consensus.backfill-frequency` msg/s, default 8 | no | `commonware_resolver::p2p::wire::Message<marshal::resolver::handler::Key<Digest>>` (3.3.5) |
+| 4 | marshal backfill | `--consensus.backfill-frequency` msg/s, default 8 | no | resolver message ([p2p.md §9.1](commonware/p2p.md#91-message)) with the marshal key of 3.3.5 |
 | 5 | DKG | 128 msg/s | yes | Tempo DKG message (3.3.6) |
 
-`S` is `bls12381_threshold::vrf::Scheme<ed25519::PublicKey, MinSig>`. Quotas are `governor` GCRA quotas (burst = rate) enforced per channel and per peer by `lookup`; messages over quota are dropped (outbound sends fail). Quotas are local policy but a node that sends above its peers' quotas will see messages dropped; a conforming node SHOULD NOT exceed them.
+Votes and certificates are signed with the threshold VRF scheme ([cryptography.md §6](commonware/cryptography.md#6-threshold-vrf-scheme)). Quotas are GCRA quotas of `n` messages per second with burst `n` ([p2p.md §7](commonware/p2p.md#7-rate-limiting)), enforced per channel and per peer. An inbound message over quota is delayed, not dropped: the receiver stops reading that connection until the quota allows the message ([p2p.md §6.3](commonware/p2p.md#63-receiving), [§7.2](commonware/p2p.md#72-channel-quotas)), which stalls every channel of the connection. Outbound, recipients over quota are left out, and a send is refused only when every recipient is over quota. Quotas are local policy, but a node that sends above its peers' quotas slows its own connections to them; a conforming node SHOULD NOT exceed them.
 
 Reference implementation: crates/consensus/src/config.rs, crates/consensus/src/lib.rs (`run_consensus_stack`).
 
 ### 3.2 Epoch multiplexing
 
-Channels 0, 1, 2 and 5 are multiplexed by epoch with `commonware_p2p::utils::mux`: the channel payload is
+Channels 0, 1, 2 and 5 are multiplexed by epoch with the multiplexer of [p2p.md §8](commonware/p2p.md#8-epoch-multiplexer) (all subchannels share the channel's quota): the channel payload is
 
 ```
 MuxedPayload := varint(epoch) || inner_message
@@ -249,19 +248,19 @@ When a node exits epoch `E` (at the first finalized block of epoch `E+1`, 07-con
 
 ### 3.3 Channel payloads
 
-All payloads are commonware codec encodings of the pinned types.
+All payloads are encoded with the codec of [codec.md](commonware/codec.md), decoded under its rules (no trailing bytes, [§11](commonware/codec.md#11-decoding-rules)), and carried in `Data` messages ([p2p.md §6.1](commonware/p2p.md#61-network-messages)).
 
 #### 3.3.1 Channel 0: votes
 
-`Vote<S, Digest>` (notarize, nullify, finalize) of commonware 2026.9.0 `simplex::types`, under the mux prefix. Signing domains and verification: 07-consensus.md.
+`Vote` (notarize, nullify, finalize) of [simplex.md §3.6](commonware/simplex.md#36-votes), under the mux prefix. Signing domains and verification: 07-consensus.md and [simplex.md §4](commonware/simplex.md#4-signing).
 
 #### 3.3.2 Channel 1: certificates
 
-`Certificate<S, Digest>` (notarization, nullification, finalization) under the mux prefix. Informative summary (normative layout: 07-consensus.md §7): a finalization's encoding is `Proposal || vrf::Certificate` where `Proposal = varint(epoch) || varint(view) || varint(parent_view) || digest[32]` and `vrf::Certificate = vote_signature[48] || seed_signature[48]` (compressed G1 points), as in the golden frame of 4.3.4.
+`Certificate` (notarization, nullification, finalization) of [simplex.md §3.7](commonware/simplex.md#37-certificates) under the mux prefix. Informative summary (normative layout: 07-consensus.md §7): a finalization's encoding is `Proposal || vrf::Certificate` where `Proposal = varint(epoch) || varint(view) || varint(parent_view) || digest[32]` and `vrf::Certificate = vote_signature[48] || seed_signature[48]` (compressed G1 points), as in the golden frame of 4.3.4.
 
 #### 3.3.3 Channel 2: simplex resolver
 
-The Simplex resolver (commonware `simplex::actors::resolver`) fetches certificates for views a node missed. Wire message (`commonware_resolver::p2p::wire::Message<K>`):
+The Simplex resolver fetches certificates for views a node missed ([simplex.md §8.14](commonware/simplex.md#814-fetching-missing-certificates-resolver)). The wire message and the requester and responder rules are those of [p2p.md §9](commonware/p2p.md#9-resolver-protocol):
 
 ```
 Message := u64be(id) || Payload
@@ -270,15 +269,15 @@ Payload := 0x00 || Key            ; Request
          | 0x02                   ; Error
 ```
 
-For channel 2, `Key = U64(view)` (8-byte big-endian view number) and a response value is the encoding of a `Certificate<S, Digest>` (a nullification, notarization or finalization covering that view). Timeouts: requests are retried after `--consensus.wait-for-peer-response` (default 2 s).
+For channel 2, `Key = u64be(view)` (8-byte big-endian view number) and a response value is the encoding of a `Certificate`: a nullification of exactly that view, or a notarization or finalization of that view or a later one. Timeouts: requests are retried after `--consensus.wait-for-peer-response` (default 2 s).
 
 #### 3.3.4 Channel 3: block broadcast
 
-Channel 3 carries the commonware `broadcast::buffered` engine. Each message is exactly one consensus block encoding (the raw block RLP), not epoch-multiplexed and not otherwise framed. The leader broadcasts its proposed block to all peers (sent with priority). Receivers decode it (rejecting body/header mismatches and BAL hashes, section 0), cache it keyed by its digest (at most `--consensus.deque-size` = 10 digests per peer), and hand it to marshal and to the application for verification. A block received on channel 3 has no authority by itself; it becomes final only through a finalization (07-consensus.md).
+Channel 3 carries the buffered broadcast engine ([p2p.md §10](commonware/p2p.md#10-buffered-broadcast)). Each message is exactly one consensus block encoding (the raw block RLP), not epoch-multiplexed and not otherwise framed. The leader broadcasts its proposed block to all peers (sent with priority). Receivers decode it (rejecting body/header mismatches and BAL hashes, section 0) and hand it to marshal and to the application for verification. A block from a primary peer of the latest peer set is also cached, keyed by its digest (at most `--consensus.deque-size` = 10 digests per peer); a block from any other peer satisfies local waiters but is not cached. A block received on channel 3 has no authority by itself; it becomes final only through a finalization (07-consensus.md).
 
 #### 3.3.5 Channel 4: marshal backfill
 
-Channel 4 carries the marshal resolver (`commonware_consensus::marshal::resolver::p2p`, built on `commonware_resolver::p2p`) with the wire message of 3.3.3 and the key:
+Channel 4 carries the marshal resolver, an instance of the resolver protocol of [p2p.md §9](commonware/p2p.md#9-resolver-protocol), with the wire message of 3.3.3 and the key:
 
 ```
 Key := 0x00 || digest[32]                       ; Block: a block by hash
@@ -294,23 +293,23 @@ Response values:
 | `Finalized{h}` | `enc(Finalization) \|\| enc(Block)` | the finalization verifies under the scheme of its epoch (07-consensus.md); its payload equals the block hash; the block's number is `h` |
 | `Notarized{r}` | `enc(Notarization) \|\| enc(Block)` | the notarization's round is `r` and it verifies under the scheme of `r.epoch`; its payload equals the block hash |
 
-A response that fails these checks SHOULD cause the requester to block the responder (2.5) and retry with another peer. Resolver parameters (reference): request timeout 2 s, retry delay 100 ms, requests and responses not sent with priority, peers chosen from the tracked peer set.
+A response that fails these checks SHOULD cause the requester to block the responder (2.5) and retry with another peer. Resolver parameters (reference): request timeout 2 s, retry delay 100 ms, requests and responses not sent with priority, peers chosen from the primary peers of the latest tracked peer set ([p2p.md §9.2](commonware/p2p.md#92-requester)).
 
 #### 3.3.6 Channel 5: DKG
 
 Under the mux prefix (subchannel = the ceremony's epoch):
 
 ```
-DkgMessage := 0x00 || DealerPubMsg<MinSig> || DealerPrivMsg   ; dealer -> one player
-            | 0x01 || PlayerAck<ed25519::PublicKey>           ; player -> its dealer
+DkgMessage := 0x00 || DealerPubMsg || DealerPrivMsg   ; dealer -> one player
+            | 0x01 || PlayerAck                    ; player -> its dealer
 ```
 
-The types are those of `commonware_cryptography::bls12381::dkg::feldman_desmedt` 2026.9.0. Every DKG message is sent to exactly one recipient, with priority. Semantics, validity and when to send: 07-consensus.md §9.3 "DKG messages".
+The message types and the envelope are those of [dkg.md §5](commonware/dkg.md#5-messages) and [§5.4](commonware/dkg.md#54-tempo-dkg-channel-envelope). Every DKG message is sent to exactly one recipient, with priority. Semantics, validity and when to send: 07-consensus.md §9.3 "DKG messages".
 
 ### 3.4 Message size limits
 
 - A node MUST NOT send an application payload (including the mux prefix) larger than its configured `max_message_size` (default 8,388,608 bytes). The reference implementation drops such an outbound message and counts it, instead of passing it to the transport.
-- Inbound frames larger than the receiver's `max_message_size` are rejected by the transport.
+- Inbound encrypted frames whose payload exceeds the receiver's `max_message_size` plus the 32 bytes of message framing and authentication tag are rejected by the transport ([p2p.md §5.3](commonware/p2p.md#53-encrypted-frames)).
 - A proposed block travels as a single channel-3 message and inside channel-4 responses. Every node MUST accept inbound application payloads of at least 8,388,608 bytes (the block RLP size limit `MAX_RLP_BLOCK_SIZE` of EIP-7934, 05-block-execution.md). With the reference default (`max_message_size = 8,388,608`) a channel-4 response carrying a block whose RLP is within a few hundred bytes of that limit exceeds the limit once the finalization and `Message` framing are added, and is dropped by the responder; such a block can still be obtained from the EL (devp2p) or after a retry from a peer configured with a larger limit. Operators SHOULD NOT lower the default.
 
 Reference implementation: crates/consensus/src/network.rs.
@@ -363,7 +362,7 @@ A `NewFinalization` is carried as an RLPx message whose message id is the capabi
 frame := 0x00 || enc(Finalization)
 ```
 
-There is no RLP wrapping: `enc(Finalization)` is the commonware codec encoding of `Finalization<vrf::Scheme<ed25519::PublicKey, MinSig>, Digest>` (3.3.2). Decoding rules, in order:
+There is no RLP wrapping: `enc(Finalization)` is the encoding of a `Finalization` ([simplex.md §3.7](commonware/simplex.md#37-certificates), codec of [codec.md](commonware/codec.md)) (3.3.2). Decoding rules, in order:
 
 1. `len(frame) > 1024` → oversized; the receiver MUST close the connection.
 2. `len(frame) == 0` → empty; malformed.
@@ -434,8 +433,8 @@ Reference implementation: crates/node/src/gossip/{wire.rs,transport.rs,peer_cont
 
 Validators and followers keep the same consensus storage (so a node can switch modes without migration, 9.5):
 
-- **Finalizations by height**: an immutable archive (`commonware_storage::archive::immutable`) mapping height → `Finalization`, keyed also by block digest. It holds one finalization per finalized height from the node's floor upward (heights for which only a later descendant's certificate was received may be absent). The genesis block MUST NOT have a finalization. Validators never prune it.
-- **Finalized blocks**: a *hybrid* store. A prunable archive (`commonware_storage::archive::prunable`, 4,096 items per section) holds recently finalized blocks; every block at or below the EL's finalized height is served from the EL (canonical blocks only). On every insertion the prunable archive drops whole sections below `el_finalized − retention + 1` (default retention 64,800 = 3 × 21,600 blocks, so it holds between 64,800 and 68,895 blocks once the EL has caught up). It never drops a block the EL has not finalized. Gap tracking treats every height at or below the EL's finalized height as present.
+- **Finalizations by height**: an immutable archive mapping height → `Finalization`, keyed also by block digest. It holds one finalization per finalized height from the node's floor upward (heights for which only a later descendant's certificate was received may be absent). The genesis block MUST NOT have a finalization. Validators never prune it.
+- **Finalized blocks**: a *hybrid* store. A prunable archive (4,096 items per section) holds recently finalized blocks; every block at or below the EL's finalized height is served from the EL (canonical blocks only). On every insertion the prunable archive drops whole sections below `el_finalized − retention + 1` (default retention 64,800 = 3 × 21,600 blocks, so it holds between 64,800 and 68,895 blocks once the EL has caught up). It never drops a block the EL has not finalized. Gap tracking treats every height at or below the EL's finalized height as present.
 - **Marshal metadata**: the last processed (delivered and acknowledged) height and marshal's floor.
 
 ### 5.2 Gap repair
@@ -519,7 +518,7 @@ The snapshot manifest (reth `SnapshotManifest` JSON) carries an extension object
 
 The manifest's EL snapshot block MUST be at or above `execution_finalized_height`.
 
-The consensus archive `consensus.tar.zst` is a zstd-compressed tar of commonware storage partitions (blob layout V0) with these and only these partitions:
+The consensus archive `consensus.tar.zst` is a zstd-compressed tar of the reference implementation's storage partitions (blob layout V0) with these and only these partitions:
 
 - `engine-finalizations-by-height-*` (metadata, freezer table, freezer key, freezer value, ordinal): every finalization from the anchor height to the tip height that the source holds;
 - `engine-finalized-blocks-prunable-*` (key, value, metadata): every prunable-archive block above `execution_finalized_height`.
@@ -743,7 +742,7 @@ Reference implementation: crates/consensus/src/executor/{mod.rs,actor.rs}.
 
 ### 9.1 Storage layout (reference)
 
-All consensus storage lives under the consensus data directory (`--consensus.datadir`, default `<datadir>/consensus`), as commonware runtime storage partitions (blob layout V0). `P = "engine"`.
+All consensus storage lives under the consensus data directory (`--consensus.datadir`, default `<datadir>/consensus`), as storage partitions of the reference implementation (blob layout V0). `P = "engine"`.
 
 | Partition(s) | Content | Used by | In snapshot |
 |---|---|---|---|
@@ -764,14 +763,14 @@ A validator MUST satisfy all of the following across crashes and restarts:
 3. **Ack after durability.** A finalized block MUST NOT be acknowledged to marshal (and so marked processed) until the EL has durably persisted it and accepted the forkchoice update finalizing it; marshal emits a block only after durably storing it with its finalization. On restart, marshal resumes delivery above `max(stored processed height, finalization-archive floor)`, and the executor first replays blocks from the EL's finalized height up to that point (5.6), so no finalized block is skipped by the EL.
 4. **Startup checks** of 9.4 MUST pass before any actor starts.
 
-DKG state format (commonware codec): `State := varint(epoch) || seed[32] || Output<MinSig, ed25519> || ShareState || Set<ed25519>(players, 1..=65535) || Set<ed25519>(syncers, 0..=65535, always empty) || bool(is_full_dkg)`; `ShareState := 0x00 || Option<Share>` (plaintext; other tags are reserved). Event journal entries: `0x00 || dealer || DealerPubMsg || DealerPrivMsg` (dealing), `0x01 || player || PlayerAck` (ack), `0x02 || dealer || DealerLog` (log), `0x03 || digest[32] || parent[32] || varint(height)` (finalized). These are local formats; only their durability semantics are normative.
+DKG state format (codec of [codec.md](commonware/codec.md); `Set` is [§6.1](commonware/codec.md#61-ordered-set), `Option` [§5.2](commonware/codec.md#52-option), tags [§5.6](commonware/codec.md#56-tagged-unions-enums)): `State := varint(epoch) || seed[32] || Output || ShareState || Set<ed25519>(players, 1..=65535) || Set<ed25519>(syncers, 0..=65535, always empty) || bool(is_full_dkg)`; `ShareState := 0x00 || Option<Share>` (plaintext; other tags are reserved). `Output` is [dkg.md §11.1](commonware/dkg.md#111-output) and `Share` is [cryptography.md §5.2](commonware/cryptography.md#52-share-encoding). Event journal entries: `0x00 || dealer || DealerPubMsg || DealerPrivMsg` (dealing), `0x01 || player || PlayerAck` (ack), `0x02 || dealer || DealerLog` (log), `0x03 || digest[32] || parent[32] || varint(height)` (finalized), with the messages of [dkg.md §5](commonware/dkg.md#5-messages) and `DealerLog` of [dkg.md §8.1](commonware/dkg.md#81-dealerlog-encoding). These are local formats; only their durability semantics are normative.
 
 On startup the DKG manager uses the persisted state if its epoch is at least the epoch of height `floor + 1`; otherwise it rebuilds the state from the chain as described at the end of 6.4.
 
 ### 9.3 Follower requirements
 
 1. Marshal storage and the ack-after-processing rule as for validators, except that a follower acknowledges a block once its `newPayload` returned `VALID` or `SYNCING` and its forkchoice update was handled; the floor only advances to blocks the EL has durably persisted and that are at least one epoch behind the EL's finalized height (7.6).
-2. The trusted-identity record: `StoredIdentity := 0x01 || u64be(from_epoch) || G2[96]` (version 1; 105 bytes; other versions are rejected), stored under key 0, written with a durable sync when the identity changes (7.5). It is never part of a snapshot.
+2. The trusted-identity record: `StoredIdentity := 0x01 || u64be(from_epoch) || G2[96]` (G2 encoding: [cryptography.md §4.3](commonware/cryptography.md#43-point-encoding-and-decoding); version 1; 105 bytes; other versions are rejected), stored under key 0, written with a durable sync when the identity changes (7.5). It is never part of a snapshot.
 3. A follower MUST NOT move its EL forkchoice to a block that marshal has not stored together with its finalization (or as an ancestor of a stored finalization).
 
 ### 9.4 Startup consistency checks (both modes)
@@ -794,12 +793,12 @@ Validators and followers use the same partition prefix and archive formats for m
 
 | File | Format |
 |---|---|
-| `--consensus.signing-key` (plaintext) | `0x`-prefixed (or bare) hex of the commonware encoding of the ed25519 private key (the 32-byte seed), surrounding whitespace ignored |
-| `--consensus.signing-key` with `--consensus.secret <path>` | an age (age-encryption.org/v1) scrypt passphrase-encrypted file whose plaintext is the raw commonware-encoded ed25519 private key bytes; the passphrase is read from `<path>` (a FIFO is preferred) |
-| `--consensus.signing-share` | `0x`-prefixed hex of the commonware encoding of `commonware_cryptography::bls12381::primitives::group::Share` (index and scalar) |
-| network identity override | `--consensus.network-identity <0x-hex 96-byte G2>` with `--consensus.network-identity-from-epoch <u64>`; the built-in files `mainnet-network-identity.json` / `testnet-network-identity.json` are `{"from_epoch": u64, "identity": "0x" + 192 hex}` |
+| `--consensus.signing-key` (plaintext) | `0x`-prefixed (or bare) hex of the encoding of the ed25519 private key (the 32-byte seed, [cryptography.md §3.1](commonware/cryptography.md#31-ed25519-encodings)), surrounding whitespace ignored |
+| `--consensus.signing-key` with `--consensus.secret <path>` | an age (age-encryption.org/v1) scrypt passphrase-encrypted file whose plaintext is the raw 32-byte encoded ed25519 private key; the passphrase is read from `<path>` (a FIFO is preferred) |
+| `--consensus.signing-share` | `0x`-prefixed hex of the share encoding of [cryptography.md §5.2](commonware/cryptography.md#52-share-encoding) (`varint(index) || scalar[32]`) |
+| network identity override | `--consensus.network-identity <0x-hex 96-byte G2>` ([cryptography.md §4.3](commonware/cryptography.md#43-point-encoding-and-decoding)) with `--consensus.network-identity-from-epoch <u64>`; the built-in files `mainnet-network-identity.json` / `testnet-network-identity.json` are `{"from_epoch": u64, "identity": "0x" + 192 hex}` |
 
-A configured share is used only if it matches the public polynomial of the latest finalized boundary outcome at the share's index (6.4).
+A configured share is used only if it matches the public polynomial of the latest finalized boundary outcome at the share's index (6.4; [cryptography.md §5.5](commonware/cryptography.md#55-partial-public-keys)).
 
 Reference implementation: crates/consensus-config/src/lib.rs, crates/consensus/src/args.rs, crates/chainspec/src/network_identity.rs.
 
@@ -807,7 +806,7 @@ Reference implementation: crates/consensus-config/src/lib.rs, crates/consensus/s
 
 | Constant | Value |
 |---|---|
-| Consensus p2p namespace | `0x05 \|\| "TEMPO_P2P"` (`union_unique(b"TEMPO", b"_P2P")`) |
+| Consensus p2p namespace | `0x05 \|\| "TEMPO_P2P"` (`union_unique(b"TEMPO", b"_P2P")`, [codec.md §7.2](commonware/codec.md#72-union_unique)); stream namespace `0x05 \|\| "TEMPO_P2P_STREAM"` ([p2p.md §11](commonware/p2p.md#11-constants)) |
 | Scheme namespace | `b"TEMPO"` (07-consensus.md) |
 | Channel ids | votes 0, certificates 1, simplex resolver 2, broadcast 3, marshal 4, DKG 5 |
 | Channel quotas (per peer) | 128/s (0, 1, 2, 5), 8/s (3), 8/s default (4) |

@@ -143,12 +143,12 @@ Up to and including T13, two switches use `consensus_fork`. Both change at T12:
 
 | Switch | Before T12 | From T12 | Specified in |
 |---|---|---|---|
-| Simplex leader election (commonware `elector::RandomVersion`) | V0 | V1 | [07-consensus.md](07-consensus.md) |
-| DKG reveal rules for the ceremony run during the epoch | V0 | V1 | [07-consensus.md](07-consensus.md) |
+| Simplex leader election version ([commonware/simplex.md §6](commonware/simplex.md#6-leader-election)) | V0 | V1 | [07-consensus.md](07-consensus.md) |
+| DKG reveal rules for the ceremony run during the epoch | V0 | V1 | [07-consensus.md](07-consensus.md), [commonware/dkg.md §2](commonware/dkg.md#2-fault-model-and-derived-parameters) |
 
 As a result, T12's consensus changes take effect at the first epoch whose boundary block has a timestamp ≥ the T12 activation. That is the epoch after the one in which T12 activated for execution, unless T12 activated exactly at a boundary block. Execution rules in that epoch still switch per block.
 
-Reference implementation: crates/consensus/src/epoch/manager/actor.rs, crates/consensus/src/dkg/manager/actor/mod.rs (`is_state_v1_activated`), commonware_consensus 2026.9.0 `types::FixedEpocher`.
+Reference implementation: crates/consensus/src/epoch/manager/actor.rs, crates/consensus/src/dkg/manager/actor/mod.rs (`is_state_v1_activated`).
 
 ### Simultaneous activations
 
@@ -543,8 +543,8 @@ Mainnet: 1791900000. Scope: [TIP-1006](../tips/tip-1006.md), [TIP-1088](../tips/
 | # | Change | Specified in | TIP |
 |---|---|---|---|
 | T12-1 | From T12 an expiring-nonce tx may carry any nonce (opaque discriminator); before, a nonzero nonce failed ExpiringNonceNonceNotZero. | [06-transactions-and-fees.md](06-transactions-and-fees.md) | [TIP-1106](../tips/tip-1106.md) |
-| T12-2 | For epochs whose starting boundary block has T12 active, leader election uses commonware RandomVersion::V1 (hashes randomness first); before, V0. | [07-consensus.md](07-consensus.md) | [TIP-1116](../tips/tip-1116.md) §5 |
-| T12-3 | For an epoch whose boundary block (see [Consensus-layer switches](#consensus-layer-switches)) is in T12 or later, the DKG ceremony uses the V1 reveal rules; before, V0. | [07-consensus.md](07-consensus.md) | [TIP-1116](../tips/tip-1116.md) §4 |
+| T12-2 | For epochs whose starting boundary block has T12 active, leader election uses version V1 of the Random elector (hashes the seed first); before, V0. | [07-consensus.md](07-consensus.md), [commonware/simplex.md §6](commonware/simplex.md#6-leader-election) | [TIP-1116](../tips/tip-1116.md) §5 |
+| T12-3 | For an epoch whose boundary block (see [Consensus-layer switches](#consensus-layer-switches)) is in T12 or later, the DKG ceremony uses the V1 reveal rules; before, V0. | [07-consensus.md](07-consensus.md), [commonware/dkg.md §2](commonware/dkg.md#2-fault-model-and-derived-parameters) | [TIP-1116](../tips/tip-1116.md) §4 |
 | T12-4 | From T12, strict ABI validation permits trailing bytes after the encoded arguments; at T11 trailing bytes fail decoding. | [precompiles/00-framework.md](precompiles/00-framework.md) | [TIP-1116](../tips/tip-1116.md) |
 | T12-5 | From T12, a mutating precompile call in a static context is a frame-local exceptional halt; before, it reverts with StaticCallNotAllowed() ABI data. | [precompiles/00-framework.md](precompiles/00-framework.md) | [TIP-1116](../tips/tip-1116.md) |
 | T12-6 | From T12, a precompile SSTORE fails OutOfGas when remaining frame gas <= CallStipend (2300), per EIP-2200; before, no stipend sentry. | [precompiles/00-framework.md](precompiles/00-framework.md) | [TIP-1116](../tips/tip-1116.md) |

@@ -782,7 +782,7 @@ From T4: if `st.incentive_gas_used > 0`, the block is invalid.
 
 From T8, if `(h.number + 1) % EPOCH_LENGTH == 0` (i.e. `h.number % EPOCH_LENGTH == EPOCH_LENGTH - 1`, the last block of an epoch; mainnet `EPOCH_LENGTH = 21_600`):
 
-1. Decode `h.extra_data` as an `OnchainDkgOutcome` with the commonware codec, reading from the start of `extra_data` (format in [07-consensus.md](07-consensus.md)). If decoding fails, the block is invalid. (This step does not itself examine bytes after the encoded outcome.) For blocks that are not the last block of an epoch, `extra_data` MUST NOT be interpreted by this step.
+1. Read an `OnchainDkgOutcome` from the start of `h.extra_data` (format in [07-consensus.md](07-consensus.md) §10.2; embedded `Output` per [commonware/dkg.md §11.1](commonware/dkg.md#111-output)). This is a read, not a full decode, in the sense of [commonware/codec.md §11](commonware/codec.md#11-decoding-rules). If decoding fails, the block is invalid. (This step does not itself examine bytes after the encoded outcome.) For blocks that are not the last block of an epoch, `extra_data` MUST NOT be interpreted by this step.
 2. Let `epoch = outcome.epoch` (`uint64`) and `publicKeys = [bytes32(k) for k in outcome.players]`, each player's 32-byte Ed25519 public key, in the outcome's player order (no sorting or deduplication).
 3. Execute a system call (§4.4) with:
    - `caller = 0x0000000000000000000000000000000000000000`,

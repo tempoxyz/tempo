@@ -379,7 +379,7 @@ NS_ADD    = b"TEMPO_VALIDATOR_CONFIG_V2_ADD_VALIDATOR"
 NS_ROTATE = b"TEMPO_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR"
 
 def verify_validator_signature(kind, publicKey, signature, validatorAddress, ingress, egress, feeRecipient=None):
-    sig = commonware_ed25519_Signature_decode(signature)   # exactly 64 bytes, else:
+    sig = ed25519_signature_decode(signature)              # exactly 64 bytes, else:
     #   revert InvalidSignatureFormat()
     msg = keccak256(
         be64(chain_id)                                       # 8 bytes; mainnet 4217
@@ -389,11 +389,11 @@ def verify_validator_signature(kind, publicKey, signature, validatorAddress, ing
         ‖ uint8(len(egress))  ‖ egress
         ‖ (feeRecipient if kind == ADD else b""))            # 20 bytes for ADD only
     ns = NS_ADD if kind == ADD else NS_ROTATE
-    pk = commonware_ed25519_PublicKey_decode(publicKey)      # else: revert InvalidPublicKey()
+    pk = ed25519_public_key_decode(publicKey)                # else: revert InvalidPublicKey()
     if not pk.verify(ns, msg, sig): revert InvalidSignature()
 ```
 
-`commonware_ed25519_*` are the commonware 2026.9.0 types `commonware_cryptography::ed25519::{PublicKey, Signature}` decoded with `commonware_codec::DecodeExt::decode` (exact length, no trailing bytes) and verified with `commonware_cryptography::Verifier::verify(&PublicKey, namespace, message, &Signature)`, whose signed payload is commonware's namespaced union of `namespace` and the 32-byte `msg`. The acceptance set of keys and signatures is exactly that of those types. The signature is decoded before the public key, so a malformed signature reports `InvalidSignatureFormat` even when the key is also undecodable. No gas is charged for decoding or verification.
+`ed25519_signature_decode` and `ed25519_public_key_decode` decode the 64-byte signature and the 32-byte public key of [cryptography.md §3.1](../commonware/cryptography.md#31-ed25519-encodings) (exact length, no trailing bytes); a public key MUST decompress under [§3.2](../commonware/cryptography.md#32-public-key-decoding). `pk.verify(ns, msg, sig)` is the namespaced Ed25519 verification of [§3.5](../commonware/cryptography.md#35-namespaced-ed25519-signatures): ZIP-215 verification ([§3.4](../commonware/cryptography.md#34-ed25519-verification)) over `union_unique(ns, msg)` ([codec.md §7.2](../commonware/codec.md#72-union_unique)). The acceptance set of keys and signatures is exactly that of those sections. The signature is decoded before the public key, so a malformed signature reports `InvalidSignatureFormat` even when the key is also undecodable. No gas is charged for decoding or verification.
 
 ### 2.5 Views
 
@@ -595,7 +595,7 @@ def migrateValidator(sender, idx):
         config.migrationSkippedCount = min(c.migrationSkippedCount + 1, 255)
         return
 
-    if not commonware_ed25519_PublicKey_decodes(r1.publicKey): return skip()
+    if not ed25519_public_key_decodes(r1.publicKey): return skip()
     if not parses_as_SocketAddr(r1.outboundAddress): return skip()
     egress = canonical_ip_text(parse_SocketAddr(r1.outboundAddress).ip)
     if pubkeyToIndex[r1.publicKey] != 0: return skip()
@@ -640,11 +640,11 @@ A validator computing or checking the DKG outcome carried by the boundary block 
 def next_players(S) -> ordered_set[ed25519.PublicKey]:
     keys = {}
     for v in getActiveValidators() evaluated on S:
-        pk = commonware_ed25519_PublicKey_decode(v.publicKey)    # failure: skip entry
+        pk = ed25519_public_key_decode(v.publicKey)              # failure: skip entry
         ok_ingress = parses_as_SocketAddr(v.ingress)            # failure: skip entry
         ok_egress  = parses_as_IpAddr(v.egress)                 # failure: skip entry
         if pk and ok_ingress and ok_egress: keys.add(pk)        # duplicates collapse
-    return ordered_set(keys)        # commonware_utils::ordered::Set order (ascending key bytes)
+    return ordered_set(keys)        # ordered set (commonware/codec.md §6.1): ascending key bytes
 
 def is_next_full_dkg(S, outcome_epoch) -> bool:
     return nextNetworkIdentityRotationEpoch(S) == outcome_epoch
@@ -718,7 +718,7 @@ def apply_current_committee_system_call(block):
 
 Rules:
 
-- `outcome.output.players` is the player set of the DKG `Output` (the committee for `outcome.epoch`), not `next_players`. Keys are written in `commonware_utils::ordered::Set` order, unchanged.
+- `outcome.output.players` is the player set of the DKG `Output` (the committee for `outcome.epoch`), not `next_players`. Keys are written in ordered-set order ([codec.md §6.1](../commonware/codec.md#61-ordered-set), ascending key bytes per [cryptography.md §3.1](../commonware/cryptography.md#31-ed25519-encodings)), unchanged.
 - The call is a system call (05-block-execution.md): it is not a transaction, produces no receipt, does not consume block gas, transfers no value and pays no fee. Its gas limit, 250,000,000 (`SYSTEM_CALL_GAS_LIMIT`), is binding: running out of gas invalidates the block.
 - Ordering within block finalisation: (1) the T4 incentive-gas check, (2) selection of the post-execution EIP-7928 block-access-list index, (3) this call, (4) before T13, the inherited Ethereum post-block processing; from T13 nothing further (TIP-1119).
 - Transactions in the boundary block observe the previous record; the new record is visible from the next block.

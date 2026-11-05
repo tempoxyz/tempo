@@ -15,7 +15,7 @@ Groups:
 
 TIP-1031 and docs upgrades/t4.mdx require consensus_context exactly from T4 and absent before; the code applies no fork gate to its presence (proposers always set it, consensus verification always requires it, execution never checks it by fork).
 
-- Where: [01-chain-and-forks.md:420](01-chain-and-forks.md#L420), [02-encoding.md:207](02-encoding.md#L207), [07-consensus.md:115](07-consensus.md#L115)
+- Where: [01-chain-and-forks.md:420](01-chain-and-forks.md#L420), [02-encoding.md:207](02-encoding.md#L207), [07-consensus.md:113](07-consensus.md#L113)
 - Recommendation: Mainnet blocks before T4 carry no consensus_context and blocks from T4 do, which matches TIP-1031, but the code enforces no fork gate. Recommended: the spec adopts TIP-1031's rule (absent before T4, required from T4), and the missing gate is filed as a code issue.
 - Decision: _open_
 
@@ -656,7 +656,7 @@ the docs say blocks come about every 600 ms from a 500 ms builder loop, but the 
 ### C-CONS-04
 <a id="c-cons-04"></a>
 
-the consensus docs page links commonware-consensus 0.0.65, but the implementation and this chapter use commonware 2026.9.0.
+the consensus docs page links version 0.0.65 of commonware's consensus crate, but the implementation and this chapter use commonware 2026.9.0.
 
 - Where: [07-consensus.md:564](07-consensus.md#L564)
 - Recommendation: Follow the implementation; fix the doc. No effect on block validity.
@@ -667,7 +667,7 @@ the consensus docs page links commonware-consensus 0.0.65, but the implementatio
 
 TIP-1017 says the ed25519 key is used for signing all consensus p2p messages; the code uses it only for transport authentication and DKG artifacts, while votes and certificates carry BLS threshold signatures.
 
-- Where: [08-p2p-and-sync.md:69](08-p2p-and-sync.md#L69), [08-p2p-and-sync.md:829](08-p2p-and-sync.md#L829)
+- Where: [08-p2p-and-sync.md:68](08-p2p-and-sync.md#L68), [08-p2p-and-sync.md:828](08-p2p-and-sync.md#L828)
 - Recommendation: Follow the implementation; fix the doc. No effect on block validity.
 - Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
@@ -676,7 +676,7 @@ TIP-1017 says the ed25519 key is used for signing all consensus p2p messages; th
 
 docs protocol/rpc/index.mdx says `consensus_subscribe` emits notarized, finalized and nullified events and `consensus_getLatest` returns the latest notarized block; the code emits only finalized events and always returns `notarized: null`.
 
-- Where: [08-p2p-and-sync.md:601](08-p2p-and-sync.md#L601), [08-p2p-and-sync.md:831](08-p2p-and-sync.md#L831)
+- Where: [08-p2p-and-sync.md:600](08-p2p-and-sync.md#L600), [08-p2p-and-sync.md:830](08-p2p-and-sync.md#L830)
 - Recommendation: Follow the implementation; fix the doc. No effect on block validity.
 - Decision: follow the implementation; docs fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098).
 

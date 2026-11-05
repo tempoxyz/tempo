@@ -11,8 +11,10 @@ This folder specifies the Tempo protocol precisely enough to build a Tempo clien
 ## Normative references
 
 - Ethereum execution layer as of Osaka: [ethereum/execution-specs](https://github.com/ethereum/execution-specs) and the EIPs cited in each chapter. Tempo runs the EVM at the Osaka spec in every fork, so an EIP up to Osaka applies unless a chapter says otherwise.
-- [commonware](https://github.com/commonwarexyz/monorepo) **2026.9.0**: the Simplex consensus, threshold BLS12-381, the Feldman-Desmedt DKG, the authenticated p2p transport and the codec. This spec refers to their wire formats and does not restate them.
+- Cryptographic and transport standards used by the consensus chapters: Ed25519 ([RFC 8032](https://www.rfc-editor.org/rfc/rfc8032)) with [ZIP-215](https://zips.z.cash/zip-0215) verification, BLS12-381 ([draft-irtf-cfrg-pairing-friendly-curves](https://datatracker.ietf.org/doc/html/draft-irtf-cfrg-pairing-friendly-curves-11)) with hashing to curves per [RFC 9380](https://www.rfc-editor.org/rfc/rfc9380), X25519 ([RFC 7748](https://www.rfc-editor.org/rfc/rfc7748)), ChaCha20-Poly1305 ([RFC 8439](https://www.rfc-editor.org/rfc/rfc8439)), SHA-256 ([FIPS 180-4](https://csrc.nist.gov/pubs/fips/180-4/upd1/final)) and [BLAKE3](https://github.com/BLAKE3-team/BLAKE3-specs/blob/master/blake3.pdf).
 - Tempo Improvement Proposals in [`tips/`](../tips). Where a chapter and a TIP disagree, the chapter wins.
+
+The Simplex consensus, threshold BLS12-381, the Feldman–Desmedt DKG, the validator network and their codec are specified in the five commonware chapters of this spec (listed under Chapters), which restate the commonware library 2026.9.0 so that no commonware source is needed.
 
 ## Conventions
 
@@ -40,4 +42,9 @@ This folder specifies the Tempo protocol precisely enough to build a Tempo clien
 | [precompiles/validator-config-and-zones.md](precompiles/validator-config-and-zones.md) | Validator config, current committee, zone factory and zone runtimes |
 | [07-consensus.md](07-consensus.md) | Epochs, Simplex parameters, leader election, DKG, on-chain artifacts and how validators propose and verify |
 | [08-p2p-and-sync.md](08-p2p-and-sync.md) | Validator p2p, the tempo/1 subprotocol, backfill, follower mode and persistence |
+| [commonware/codec.md](commonware/codec.md) | The consensus codec, ordered sets, namespaced messages, the N3f1 fault model and fixed-length epochs |
+| [commonware/cryptography.md](commonware/cryptography.md) | Ed25519, BLS12-381 MinSig, threshold BLS, the threshold VRF scheme and the BLAKE3 transcript |
+| [commonware/dkg.md](commonware/dkg.md) | The Feldman–Desmedt DKG and resharing: round information, messages, dealer logs, output and share derivation |
+| [commonware/simplex.md](commonware/simplex.md) | Simplex consensus as Tempo runs it: types, signing, leader election, the protocol and the marshal wrapper |
+| [commonware/p2p.md](commonware/p2p.md) | The validator network: framing, handshake, encrypted transport, lookup network, multiplexer, resolver and broadcast |
 | [conflicts.md](conflicts.md) | Open conflicts between docs, TIPs and the implementation |

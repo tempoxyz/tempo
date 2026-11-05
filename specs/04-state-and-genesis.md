@@ -228,7 +228,7 @@ Accounts **not** in the mainnet genesis: validator config V2 (`0xCCCC…0001`), 
 
 ### 4.6 Genesis `extraData`
 
-The genesis `extraData` is the commonware-encoded `OnchainDkgOutcome` for epoch 0 (crate `tempo-dkg-onchain-artifacts`). It carries the initial validator set and the epoch-0 BLS12-381 (MinSig) threshold public key, the network identity. Mainnet's epoch-0 identity is `0xa217bb85…05f5a193` (96 bytes). Its format and use are specified in [07-consensus.md](07-consensus.md). For genesis-hash purposes it is opaque bytes.
+The genesis `extraData` is the `OnchainDkgOutcome` ([07-consensus.md](07-consensus.md) §10.2) for epoch 0, encoded with the codec of [commonware/codec.md](commonware/codec.md) (crate `tempo-dkg-onchain-artifacts`); its embedded `Output` is encoded as in [commonware/dkg.md §11.1](commonware/dkg.md#111-output). It carries the initial validator set and the epoch-0 BLS12-381 (MinSig) threshold public key, the network identity (the constant term of the public polynomial, [commonware/cryptography.md §5.4](commonware/cryptography.md#54-public-polynomial-and-sharing-encoding)). Mainnet's epoch-0 identity is `0xa217bb85…05f5a193` (96 bytes). Its format and use are specified in [07-consensus.md](07-consensus.md). For genesis-hash purposes it is opaque bytes.
 
 ### 4.7 Expected genesis values
 
